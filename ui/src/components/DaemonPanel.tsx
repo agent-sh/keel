@@ -3,8 +3,9 @@
 // report.
 import { CircleAlert } from "lucide-react";
 import { useEffect, useState } from "react";
-import { api, onFeature, reportError, useStore } from "../lib/store.ts";
-import { cn, when } from "../lib/utils.ts";
+import { adoptAllBuilds } from "../lib/builtins.ts";
+import { actions, api, onFeature, reportError, useStore, type BuildPins } from "../lib/store.ts";
+import { cn, fmtTokens, when } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { Card, Segmented, SettingRow } from "./Settings.tsx";
 import { useSettings } from "./StoragePanel.tsx";
@@ -14,6 +15,65 @@ type Awake = { available: boolean; held: boolean; locked: boolean; mode: string;
 
 const btn = "h-8 shrink-0 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50";
 const dur = (ms: number) => (ms < 3600_000 ? `${Math.max(1, Math.round(ms / 60_000))} min` : ms < 86_400_000 ? `${(ms / 3600_000).toFixed(1)} h` : `${(ms / 86_400_000).toFixed(1)} days`);
+
+// A number of hours, or no limit when empty or 0.
+function HoursField({ value, onSave }: { value: number; onSave: (v: number) => Promise<unknown> }) {
+  const [text, setText] = useState(value ? String(value) : "");
+  const [bad, setBad] = useState(false);
+  useEffect(() => setText(value ? String(value) : ""), [value]);
+  const save = () => {
+    const v = text.trim() === "" ? 0 : Number(text.trim());
+    if (!Number.isFinite(v) || v < 0) return setBad(true);
+    setBad(false);
+    if (v !== value) onSave(v).catch((e) => { setBad(true); reportError(e); });
+  };
+  return (
+    <label className={cn("flex h-8 items-center gap-2 rounded-md border bg-raised px-2.5 text-ui", bad ? "border-danger" : "border-line-strong")}>
+      <input
+        aria-label="Hours a session may stay behind"
+        data-testid="build-pin-hours"
+        inputMode="numeric"
+        value={text}
+        placeholder="No limit"
+        onChange={(e) => setText(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => e.key === "Enter" && (e.currentTarget as HTMLInputElement).blur()}
+        className="w-16 bg-transparent text-right tabular-nums outline-none placeholder:text-faint"
+      />
+      <span className="text-muted">hours</span>
+    </label>
+  );
+}
+
+// After an upgrade: how long a session may keep an earlier build's tools and
+// prompt, and taking the running build's in every session at once.
+function BuildPinCard({ hours, onHours }: { hours: number; onHours: (v: number) => Promise<unknown> }) {
+  const [pins, setPins] = useState<BuildPins | null>(null);
+  const load = () => actions.buildPins().then(setPins).catch((e) => reportError(e, { at: "daemon panel" }));
+  useEffect(() => { load(); }, []);
+  const n = pins?.sessions.length ?? 0;
+  return (
+    <Card>
+      <SettingRow
+        label="A session behind takes a new build's tools and prompt after"
+        hint="Across an upgrade a session keeps the tools and system prompt it was last sent, so its cached context is not written again, and takes the new build's when that cache is cold anyway. One that stays warm takes them after this long at the latest, at one rewrite of its context."
+      >
+        <HoursField value={hours} onSave={onHours} />
+      </SettingRow>
+      <SettingRow
+        label="Sessions on an earlier build"
+        hint={!pins ? "Counting." : n || pins.unknown
+          ? `${n} open session${n === 1 ? "" : "s"}${pins.unknown ? `, and ${pins.unknown} not compared yet` : ""}. Taking this build's now rewrites about ${fmtTokens(pins.tokens)} tokens of cached context at their next requests.`
+          : pins.asked ? `${pins.asked} session${pins.asked === 1 ? " takes" : "s take"} this build's tools and prompt at the next request.`
+            : "None: every open session uses this build's tools and prompt."}
+      >
+        <button type="button" className={btn} disabled={!pins || (!n && !pins.unknown)} data-testid="build-adopt-all" onClick={() => adoptAllBuilds().then(load).catch(reportError)}>
+          Use this build's in all
+        </button>
+      </SettingRow>
+    </Card>
+  );
+}
 
 function Dot({ tone }: { tone: "ok" | "warn" | "off" | "danger" }) {
   return <span className={cn("size-2 shrink-0 rounded-full", { ok: "bg-ok", warn: "bg-warn", off: "bg-line-strong", danger: "bg-danger" }[tone])} />;
@@ -108,6 +168,8 @@ export function DaemonPanel() {
           </SettingRow>
         </Card>
       )}
+
+      {settings && <BuildPinCard hours={Number(settings.build_pin?.max_age_hours ?? 0)} onHours={(v) => patch({ build_pin: { max_age_hours: v } })} />}
 
       <Card>
         <SettingRow label="Problem report" hint={report ?? "A redacted bundle (no keys or tokens) of the errors since the start, the providers' state, the settings and what Keel's processes cost, written under the state folder."}>

@@ -1,7 +1,8 @@
 import { expect, test } from "./isolate.ts";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { startFakeMessages } from "./fixtures/fake-messages.ts";
 import { shoot } from "./shots.ts";
 
 // Feature: a daemon upgrade does not make a live session pay for its whole
@@ -17,12 +18,12 @@ const LINE = "Build two: check the diff before you say it is done.";
 const TWO = { id: "build-two", core: LINE, tools: { Bash: { description: "Runs a shell command, as build two words it." } } };
 const THREE = { ...TWO, id: "build-three", tools: { ...TWO.tools, TodoWrite: { remove: true } } };
 
-function daemon(state: string, build?: unknown): Promise<{ proc: ChildProcess; url: string }> {
+function daemon(state: string, build?: unknown, extra: Record<string, string> = {}): Promise<{ proc: ChildProcess; url: string }> {
   const env: Record<string, string | undefined> = {
     ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_DRAIN_MS: "300", KEEL_RESUME_GAP_MS: "0",
     KEEL_SCRIPTED_LOG: join(state, "requests.jsonl"), KEEL_SCRIPTED_CACHE: "prefix", KEEL_CONFIG_DIR: join(state, "config"),
     KEEL_IMPORT_HOME: join(state, "home"), KEEL_DESKTOP_NOTIFY: "off", TACIT_BIN: resolve("test/e2e/fixtures/tacit-standin.sh"),
-    KEEL_TEST_BUILD: build ? JSON.stringify(build) : undefined,
+    KEEL_TEST_BUILD: build ? JSON.stringify(build) : undefined, ...extra,
   };
   delete env.KEEL_MCP_CONFIG;
   const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", join(state, "state"), "--workspace", join(state, "work")], { env: env as NodeJS.ProcessEnv, stdio: ["ignore", "pipe", "pipe"] });
@@ -40,15 +41,14 @@ function daemon(state: string, build?: unknown): Promise<{ proc: ChildProcess; u
 }
 const exited = (p: ChildProcess) => new Promise<void>((r) => (p.exitCode !== null ? r() : p.once("exit", () => r())));
 
-test("a session keeps its tools and prompt across an upgrade and takes the new build's at a compaction", async ({ page }) => {
-  test.setTimeout(240_000);
-  const state = join(ROOT, `build-pin-${Date.now()}`);
+type Sent = { session: string; purpose: string; system: string; tools: string[]; tools_hash: string };
+// A scratch state folder and its daemon, started again as another build by `restart`.
+async function rig(name: string, env: Record<string, string> = {}, before?: (state: string) => void) {
+  const state = join(ROOT, `${name}-${Date.now()}`);
   for (const d of ["state", "work", "config", "home"]) mkdirSync(join(state, d), { recursive: true });
+  before?.(state);
   const log = join(state, "requests.jsonl");
-  type Sent = { session: string; purpose: string; system: string; tools: string[]; tools_hash: string };
-  const sent = (id: string, purpose = "turn"): Sent[] =>
-    (existsSync(log) ? readFileSync(log, "utf8") : "").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Sent).filter((r) => r.session === id && r.purpose === purpose);
-  let d = await daemon(state);
+  let d = await daemon(state, undefined, env);
   const call = (path: string, body?: unknown, method = body === undefined ? "GET" : "POST") =>
     fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json() as any);
   const ended = (id: string) => call(`/api/sessions/${id}`).then((s) => s.events.filter((e: any) => e.kind === "turn_end").length);
@@ -57,18 +57,36 @@ test("a session keeps its tools and prompt across an upgrade and takes the new b
     await call(`/api/sessions/${id}/messages`, { text });
     await expect.poll(() => ended(id), { timeout: 30_000 }).toBe(n + 1);
   };
-  // A session with a history: three turns, one of them long.
-  const open = async () => {
-    const { session } = await call("/api/sessions", { model: "scripted:stand-in" });
-    await call(`/api/sessions/${session.id}/permissions`, { mode: "full-auto" }, "PUT");
-    for (const text of ["hello", "script:grow", "hello again"]) await turn(session.id, text);
-    return session.id as string;
+  return {
+    state, call, turn,
+    url: () => d.url,
+    // The scripted provider's requests of one session.
+    sent: (id: string, purpose = "turn"): Sent[] =>
+      (existsSync(log) ? readFileSync(log, "utf8") : "").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Sent).filter((r) => r.session === id && r.purpose === purpose),
+    // A session with a history: three turns, one of them long.
+    open: async (model = "scripted:stand-in", texts = ["hello", "script:grow", "hello again"]) => {
+      const { session } = await call("/api/sessions", { model });
+      await call(`/api/sessions/${session.id}/permissions`, { mode: "full-auto" }, "PUT");
+      for (const text of texts) await turn(session.id, text);
+      return session.id as string;
+    },
+    restart: async (build: unknown) => {
+      d.proc.kill("SIGTERM");
+      await exited(d.proc);
+      d = await daemon(state, build, env);
+    },
+    close: async () => {
+      d.proc.kill("SIGKILL");
+      await exited(d.proc);
+      if (test.info().errors.length === 0) rmSync(state, { recursive: true, force: true });
+    },
   };
-  const restart = async (build: unknown) => {
-    d.proc.kill("SIGTERM");
-    await exited(d.proc);
-    d = await daemon(state, build);
-  };
+}
+
+test("a session keeps its tools and prompt across an upgrade and takes the new build's at a compaction", async ({ page }) => {
+  test.setTimeout(240_000);
+  const r = await rig("build-pin");
+  const { call, turn, sent, open, restart } = r;
   try {
     const one = (await call("/api/bootstrap")).build_id as string;
     const [kept, asked, urgent, auto] = [await open(), await open(), await open(), await open()];
@@ -100,12 +118,13 @@ test("a session keeps its tools and prompt across an upgrade and takes the new b
 
     // The owner sees it in the context popup of the pinned session.
     await page.setViewportSize({ width: 1920, height: 1040 });
-    await page.goto(`${d.url}/s/${asked}`);
+    await page.goto(`${r.url()}/s/${asked}`);
     await turn(asked, "hello on build two");
     await page.getByTestId("context-meter").click();
     const pin = page.getByTestId("build-pin");
     await expect(pin).toContainText(`Tools and prompt are from build ${one}`);
     await expect(page.getByTestId("build-pin-waiting")).toContainText("This build (build-two) changed the prompt (core) and the tools (Bash)");
+    await expect(page.getByTestId("build-adopt-cost")).toHaveText(/^Rewrites about [\d.]+k? tokens at the next request\.$/);
     await shoot(page, "build-pin-waiting");
 
     // A compaction rewrites the prefix anyway. Its own request still reads the
@@ -158,9 +177,106 @@ test("a session keeps its tools and prompt across an upgrade and takes the new b
     expect(cut.tools).not.toContain("TodoWrite");
     expect(cut.system).toContain(LINE);
     expect((await call(`/api/sessions/${urgent}/build`)).adoptions[0]).toMatchObject({ reason: "TodoWrite is gone from this build", from_build: one, to_build: "build-three", blocks: ["core"] });
+    // A call to the tool that went says why, not only that there is none.
+    await turn(urgent, 'script:calls [{"name":"TodoWrite","input":{"todos":[]}}]');
+    const results = (await call(`/api/sessions/${urgent}`)).events.filter((e: any) => e.kind === "tool_result").at(-1).data.results;
+    expect(results[0].content).toBe("TodoWrite was removed by an upgrade of Keel and is no longer available. Use the tools you have now.");
   } finally {
-    d.proc.kill("SIGKILL");
-    await exited(d.proc);
-    if (test.info().errors.length === 0) rmSync(state, { recursive: true, force: true });
+    await r.close();
+  }
+});
+
+test("a session behind too long takes the build's, and every session can take it at once", async ({ page }) => {
+  test.setTimeout(240_000);
+  const r = await rig("build-age");
+  const { call, turn, sent, open, restart } = r;
+  try {
+    const one = (await call("/api/bootstrap")).build_id as string;
+    const [aged, other] = [await open(), await open()];
+    await restart(TWO);
+    for (const id of [aged, other]) await turn(id, "hello on build two");
+    expect(sent(aged).at(-1)!.system).not.toContain(LINE);
+    // What taking the build's everywhere would cost: both sessions, with their contexts.
+    const pins = await call("/api/build/pins");
+    expect(pins.sessions.map((s: any) => s.id).sort()).toEqual([aged, other].sort());
+    expect(pins.sessions.every((s: any) => s.warm && s.tokens > 500)).toBe(true);
+    expect(pins.tokens).toBe(pins.sessions.reduce((n: number, s: any) => n + s.tokens, 0));
+    const state = await call(`/api/sessions/${aged}/build`);
+    expect(state.takes_at - state.behind_since).toBe(24 * 3_600_000);
+
+    // The owner shortens the longest a session may stay behind: the next request takes the build's.
+    expect((await call("/api/settings", { build_pin: { max_age_hours: 0.0001 } }, "PATCH")).settings.build_pin.max_age_hours).toBe(0.0001);
+    await page.waitForTimeout(600);
+    await turn(aged, "past the age");
+    expect(sent(aged).at(-1)!.system).toContain(LINE);
+    expect((await call(`/api/sessions/${aged}/build`)).adoptions[0]).toMatchObject({ reason: "its tools and prompt were more than 0.0001 hours behind", from_build: one, to_build: "build-two", blocks: ["core"], tools: ["Bash"] });
+    await call("/api/settings", { build_pin: { max_age_hours: 24 } }, "PATCH");
+
+    // Settings > Daemon: the setting, the sessions still behind and what taking the build's in all of them costs.
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto(`${r.url()}/settings/daemon`);
+    await expect(page.getByTestId("build-pin-hours")).toHaveValue("24");
+    const all = page.getByTestId("build-adopt-all");
+    await expect(all).toBeEnabled();
+    await expect(page.getByText(/1 open session\. Taking this build's now rewrites about [\d.]+k? tokens/)).toBeVisible();
+    await all.scrollIntoViewIfNeeded();
+    await shoot(page, "build-pin-settings");
+    await all.click();
+    await expect(page.getByTestId("confirm")).toContainText(/1 session carries an earlier build's tools or prompt\. Taking this build's rewrites about [\d.]+k? tokens/);
+    await shoot(page, "build-pin-all-confirm");
+    await page.getByTestId("confirm").getByRole("button", { name: "Use this build's" }).click();
+    await expect(page.getByTestId("daemon-panel").getByText("1 session takes this build's tools and prompt at the next request.")).toBeVisible();
+    await expect(all).toBeDisabled();
+    await expect.poll(async () => (await call(`/api/sessions/${other}/build`)).asked).toBe(true);
+    await turn(other, "after all were asked");
+    expect(sent(other).at(-1)!.system).toContain(LINE);
+    expect((await call(`/api/sessions/${other}/build`)).adoptions[0].reason).toBe("the owner asked");
+    expect(await call("/api/build/pins")).toMatchObject({ sessions: [], unknown: 0, asked: 0 });
+  } finally {
+    await r.close();
+  }
+});
+
+// On a wire that defers tools the provider puts a loaded tool's definition
+// where the conversation references it, so that definition is part of the
+// cached prefix from there on. The spec talks to a stand-in for the Messages
+// wire that records each request body.
+test("a deferred tool the conversation loaded keeps its definition across an upgrade", async () => {
+  test.setTimeout(240_000);
+  const fake = await startFakeMessages();
+  const r = await rig("build-loaded", {}, (state) => {
+    writeFileSync(join(state, "config", "providers.toml"),
+      `[[endpoint]]\nid = "fanth"\nlabel = "Stand-in"\nwire = "anthropic_messages"\nbase_url = "${fake.url}"\nbilling = "free"\nmodels = ["claude-fake-1"]\n\n[endpoint.model."claude-fake-1"]\ncontext = 200000\noutput = 8000\ntools = true\nimages = false\n`);
+    writeFileSync(join(state, "config", "mcp.json"), JSON.stringify({ servers: { echo: { command: "bun", args: [resolve("test/e2e/fixtures/echo-mcp.ts")] } } }));
+  });
+  const { call, turn, open, restart } = r;
+  const ready = () => expect.poll(async () => (await call("/api/mcp/servers")).servers.find((s: any) => s.name === "echo")?.state, { timeout: 30_000 }).toBe("ready");
+  // The requests of one session, by a word in its prompts.
+  const of = (tag: string) => fake.bodies.filter((b) => JSON.stringify(b.messages).includes(tag));
+  const def = (b: any, name: string) => b.tools.find((t: any) => t.name === name);
+  try {
+    await ready();
+    // The model loads the echo tool: the tool search answers with a reference to it.
+    const id = await open("fanth:claude-fake-1", ["TAG-loaded LOAD-TOOL mcp__echo__echo"]);
+    const before = of("TAG-loaded").at(-1)!;
+    expect(JSON.stringify(before.messages)).toContain('{"type":"tool_reference","tool_name":"mcp__echo__echo"}');
+    expect(def(before, "mcp__echo__echo")).toMatchObject({ defer_loading: true, description: "Echo the given text back, prefixed with 'echo:'." });
+
+    // The next build words both of the server's tools another way.
+    await restart({ id: "build-two", tools: { mcp__echo__echo: { description: "Echo, as build two words it." }, mcp__echo__add: { description: "Add, as build two words it." } } });
+    await ready();
+    await turn(id, "TAG-loaded again");
+    const after = of("TAG-loaded").at(-1)!;
+    expect(def(after, "mcp__echo__echo"), "the loaded tool is sent as it was loaded").toEqual(def(before, "mcp__echo__echo"));
+    expect(def(after, "mcp__echo__add").description, "a tool never loaded follows the build").toBe("Add, as build two words it.");
+    expect(JSON.stringify(after.system)).toBe(JSON.stringify(before.system));
+    expect(JSON.stringify(after.tools.filter((t: any) => !t.defer_loading))).toBe(JSON.stringify(before.tools.filter((t: any) => !t.defer_loading)));
+    // A session that loads it on the new build gets the new words.
+    const fresh = await open("fanth:claude-fake-1", ["TAG-fresh LOAD-TOOL mcp__echo__echo"]);
+    expect(def(of("TAG-fresh").at(-1)!, "mcp__echo__echo").description).toBe("Echo, as build two words it.");
+    expect(fresh).not.toBe(id);
+  } finally {
+    await r.close();
+    fake.server.close();
   }
 });

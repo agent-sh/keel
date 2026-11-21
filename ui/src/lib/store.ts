@@ -268,6 +268,9 @@ export const actions = {
   // Which build the session's tools and system prompt are from, and taking the running build's now.
   buildState: (id: string) => api<BuildState>(`/api/sessions/${id}/build`),
   adoptBuild: (id: string) => api<BuildState>(`/api/sessions/${id}/build/adopt`, { method: "POST" }),
+  // The open sessions on an earlier build's, with the tokens taking this build's in all of them writes again.
+  buildPins: () => api<BuildPins>("/api/build/pins"),
+  adoptAllBuilds: () => api<{ asked: number }>("/api/build/adopt", { method: "POST" }),
   queueResume: (id: string) => api(`/api/sessions/${id}/queue/resume`, { method: "POST" }),
   // `here`: a prompt queued on another branch goes on the one shown now.
   queueEdit: (id: string, qid: string, body: { text?: string; steer?: boolean; position?: number }) =>
@@ -297,9 +300,12 @@ export type BuildState = {
   pinned: { build: string | null; since: number } | null;
   waiting: { blocks: string[]; tools: string[] };
   known: boolean;
+  behind_since: number | null;
+  takes_at: number | null;
   asked: boolean;
   adoptions: { ts: number; reason: string; from_build: string | null; to_build: string; blocks: string[]; tools: string[] }[];
 };
+export type BuildPins = { build: string; sessions: { id: string; title: string; tokens: number; warm: boolean }[]; tokens: number; unknown: number; asked: number };
 export type ContextInfo = {
   context_window: number;
   bytes_per_token?: number;

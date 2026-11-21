@@ -260,7 +260,7 @@ export function ContextMeter({ sessionId }: { sessionId: string }) {
               </dl>
             )}
             <p className="mt-3 text-caption text-faint">System prompt and tools are counted in the measured total; they stay cached.</p>
-            {build && <BuildPin build={build} busy={busy === "build"} disabled={!!busy} onAdopt={() => run("build")} />}
+            {build && <BuildPin build={build} used={used} busy={busy === "build"} disabled={!!busy} onAdopt={() => run("build")} />}
             <div className="mt-3 border-t border-line pt-3">
               <input
                 data-testid="compact-focus"
@@ -305,7 +305,8 @@ const some = (names: string[]) => (names.length > 4 ? `${names.slice(0, 4).join(
 // running build has others: a session keeps what it was last sent across a
 // daemon upgrade, so its cached context is not written again, and takes the
 // build's when that cache is cold anyway. The owner can take them now.
-function BuildPin({ build, busy, disabled, onAdopt }: { build: BuildState; busy: boolean; disabled: boolean; onAdopt: () => void }) {
+// `used`: the tokens in context, which taking the build's writes to the cache again.
+function BuildPin({ build, used, busy, disabled, onAdopt }: { build: BuildState; used: number; busy: boolean; disabled: boolean; onAdopt: () => void }) {
   const p = build.pinned;
   const { blocks, tools } = build.waiting;
   const behind = blocks.length + tools.length > 0;
@@ -326,22 +327,24 @@ function BuildPin({ build, busy, disabled, onAdopt }: { build: BuildState; busy:
       </p>
       <p className="mt-1 text-caption text-faint" data-testid="build-pin-waiting">
         {build.asked
-          ? "This build's are taken at the turn's next request."
+          ? `This build's are taken at the next request, which rewrites about ${fmtTokens(used)} tokens.`
           : behind
-            ? `This build (${build.build}) changed ${what}. They are taken at the next compaction or clear, on another model, or once the cache has expired.`
+            ? `This build (${build.build}) changed ${what}. They are taken at the next compaction or clear, on another model, once the cache has expired${build.takes_at ? `, or on ${when(build.takes_at)} at the latest` : ""}.`
             : `They are compared with this build's (${build.build}) at the session's next request.`}
       </p>
       {!build.asked && (
-        <button
-          type="button"
-          data-testid="build-adopt"
-          disabled={disabled}
-          onClick={onAdopt}
-          title="The next request writes the whole context to the cache again"
-          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-40"
-        >
-          <ArrowUpCircle className="size-3.5" /> {busy ? "Taking this build's" : "Use this build's now"}
-        </button>
+        <>
+          <button
+            type="button"
+            data-testid="build-adopt"
+            disabled={disabled}
+            onClick={onAdopt}
+            className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-40"
+          >
+            <ArrowUpCircle className="size-3.5" /> {busy ? "Taking this build's" : "Use this build's now"}
+          </button>
+          <p className="mt-1.5 text-caption text-faint tabular-nums" data-testid="build-adopt-cost">Rewrites about {fmtTokens(used)} tokens at the next request.</p>
+        </>
       )}
     </div>
   );

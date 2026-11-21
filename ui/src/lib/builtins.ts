@@ -13,7 +13,8 @@ import { leafOf, lineage } from "../../../src/core/tree.ts";
 import { getUI, navigate, notePick, savePref, setScale, setTheme, setUI, stepScale, type ThemePref } from "./ui.ts";
 import { resolveModelArg } from "./picker.ts";
 import { toggleList } from "./rail.ts";
-import { focusBox } from "./utils.ts";
+import { fmtTokens, focusBox } from "./utils.ts";
+import { confirmAction } from "../components/Confirm.tsx";
 import { switchSession } from "./switch.ts";
 import { stopHere } from "./automation.ts";
 
@@ -59,12 +60,27 @@ const lastReply = (id: string) => {
 // upgrade (its cached context is not written again); this takes the running
 // build's now, and says what happened.
 const adoptBuild = async (id: string) => {
-  const was = await actions.buildState(id);
+  const [was, ctx] = await Promise.all([actions.buildState(id), actions.context(id)]);
   const now = await actions.adoptBuild(id);
   const took = now.adoptions[0] && now.adoptions[0].ts !== was.adoptions[0]?.ts;
-  const said = now.asked ? "This build's tools and prompt are taken at the turn's next request." : took ? "The session now uses this build's tools and prompt." : "The session already uses this build's tools and prompt.";
-  tipSay(null, said, 3200);
+  const cost = `rewrites about ${fmtTokens(ctx.context_used_tokens)} tokens`;
+  const said = now.asked ? `This build's tools and prompt are taken at the turn's next request, which ${cost}.` : took ? `The session now uses this build's tools and prompt: its next request ${cost}.` : "The session already uses this build's tools and prompt.";
+  tipSay(null, said, 4200);
   announce(said);
+};
+// The same for every open session, after saying what it costs.
+export const adoptAllBuilds = async () => {
+  const p = await actions.buildPins();
+  const say = (said: string) => { tipSay(null, said, 4200); announce(said); };
+  if (!p.sessions.length && !p.unknown) return say(p.asked ? "The sessions behind already take this build's tools and prompt at their next request." : "Every open session already uses this build's tools and prompt.");
+  const n = (k: number) => `${k} session${k === 1 ? "" : "s"}`;
+  const body = [
+    p.sessions.length ? `${n(p.sessions.length)} carr${p.sessions.length === 1 ? "ies" : "y"} an earlier build's tools or prompt. Taking this build's rewrites about ${fmtTokens(p.tokens)} tokens of cached context at their next requests.` : "",
+    p.unknown ? `${n(p.unknown)} ${p.unknown === 1 ? "has" : "have"} not been compared with this build yet: what differs there is rewritten too.` : "",
+  ].filter(Boolean).join("\n\n");
+  if (!(await confirmAction({ title: "Use this build's tools and prompt in every session?", body, action: "Use this build's" }))) return;
+  const { asked } = await actions.adoptAllBuilds();
+  say(`${n(asked)} take${asked === 1 ? "s" : ""} this build's tools and prompt at the next request.`);
 };
 
 panels.add({
@@ -114,7 +130,8 @@ registerCommand(
   { id: "theme-dark", label: "Theme: dark", group: "View", words: "appearance", run: () => setTheme("dark") },
   { id: "theme-system", label: "Theme: follow the system", group: "View", words: "appearance auto", run: () => setTheme("system") },
   { id: "refresh-models", label: "Refresh the model listings", group: "General", words: "providers reload", run: () => actions.loadModels(true).catch(reportError) },
-  { id: "adopt-build", label: "Use this build's tools and prompt in this session now", group: "Sessions", words: "upgrade pinned cache adopt update", when: () => !!current(), run: () => adoptBuild(current()!.id).catch(reportError) },
+  { id: "adopt-build", label: "Use this build's tools and prompt in this session now (rewrites its cached context)", group: "Sessions", words: "upgrade pinned cache adopt update", when: () => !!current(), run: () => adoptBuild(current()!.id).catch(reportError) },
+  { id: "adopt-build-all", label: "Use this build's tools and prompt in every session (says the cost first)", group: "Sessions", words: "upgrade pinned cache adopt update all", run: () => adoptAllBuilds().catch(reportError) },
 );
 
 slash.add(
@@ -175,7 +192,7 @@ slash.add(
     },
   },
   { id: "agents", label: "Show every session and its agents, by folder", run: () => toggleList(true) },
-  { id: "adopt-build", label: "Use this build's tools and prompt now", when: ({ session }) => !!session, run: (_a, { session }) => adoptBuild(session!.id) },
+  { id: "adopt-build", label: "Use this build's tools and prompt now (rewrites the cached context)", hint: "[all]", when: ({ session }) => !!session, run: (arg, { session }) => (arg.trim() === "all" ? adoptAllBuilds() : adoptBuild(session!.id)) },
 );
 // A placeholder never replaces a command a lane registered (import order varies).
 for (const p of [
