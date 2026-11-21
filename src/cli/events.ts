@@ -104,6 +104,12 @@ export class Follower {
   private wsSeq = -1;
   // What was passed on of the reply after `seq`.
   private passed = nothing();
+  // Streamed text of the reply the socket is at now was not passed on (the
+  // socket and the reads by seq were apart): no more of that reply is, so what
+  // is passed on stays its beginning, and its event passes the rest.
+  private torn = false;
+  // What a callback threw on a socket frame, for the next read to throw.
+  private failed?: { error: unknown };
   constructor(private c: Client, private sessionId: string, public seq: number, private onEvent: (e: StoredEvent) => void, private onDelta?: (d: Delta) => void) {}
 
   private take(e: StoredEvent) {
@@ -114,10 +120,14 @@ export class Follower {
     this.onEvent(e);
   }
 
-  private pass(d: Delta) {
+  private pass(ds: Delta[]) {
     if (!this.onDelta) return;
-    this.passed[d.kind] += d.text;
-    this.onDelta(d);
+    if (this.wsSeq !== this.seq) this.torn = true;
+    if (this.torn) return;
+    for (const d of ds) {
+      this.passed[d.kind] += d.text;
+      this.onDelta(d);
+    }
   }
 
   // The rest of a reply, after what streamed of it. Text that streamed as
@@ -153,26 +163,42 @@ export class Follower {
         ws.onmessage = (m) => {
           let f: any;
           try { f = JSON.parse(String(m.data)); } catch { return; }
-          const here = (f.session_id ?? f.event?.session_id ?? f.session?.id) === this.sessionId;
-          if (f.t === "event" && here) {
-            this.wsSeq = Math.max(this.wsSeq, f.event.seq);
-            if (f.event.seq === this.seq + 1) this.take(f.event);
+          // An error thrown here would be printed and the frame lost: the next read throws it.
+          try { this.frame(f); } catch (error) {
+            this.failed ??= { error };
             this.wake?.();
-          } else if (f.t === "delta" && here) {
-            if (this.wsSeq === this.seq) this.pass({ kind: f.kind, text: f.text });
-          } else if (f.t === "draft" && here) {
-            if (this.wsSeq === this.seq) for (const b of Object.entries(f.blocks ?? {}).sort((x, y) => Number(x[0]) - Number(y[0])).map((x) => x[1] as Delta)) this.pass({ kind: b.kind, text: b.text });
-          } else if (f.t === "status" && here && f.status?.kind === "retry") {
-            this.passed = nothing(); // the retried attempt streams its reply again
-          } else if ((f.t === "session" && here) || f.t === "queue") this.wake?.();
-          else if (f.t === "feature" && (f.name === "approval" || f.name === "question")) this.wake?.();
+          }
         };
       } catch { resolve(); }
     });
   }
 
+  private rethrow() {
+    if (this.failed) throw this.failed.error;
+  }
+
+  private frame(f: any) {
+    const here = (f.session_id ?? f.event?.session_id ?? f.session?.id) === this.sessionId;
+    if (f.t === "event" && here) {
+      this.wsSeq = Math.max(this.wsSeq, f.event.seq);
+      if (f.event.kind === "assistant" || f.event.kind === "turn_end") this.torn = false; // the next reply starts whole
+      if (f.event.seq === this.seq + 1) this.take(f.event);
+      this.wake?.();
+    } else if (f.t === "delta" && here) {
+      this.pass([{ kind: f.kind, text: f.text }]);
+    } else if (f.t === "draft" && here) {
+      this.pass(Object.entries(f.blocks ?? {}).sort((x, y) => Number(x[0]) - Number(y[0])).map(([, b]: [string, any]) => ({ kind: b.kind, text: b.text })));
+    } else if (f.t === "status" && here && f.status?.kind === "retry") {
+      this.passed = nothing(); // the retried attempt streams its reply again
+      this.torn = false;
+    } else if ((f.t === "session" && here) || f.t === "queue") this.wake?.();
+    else if (f.t === "feature" && (f.name === "approval" || f.name === "question")) this.wake?.();
+  }
+
   async read(): Promise<StoredEvent[]> {
+    this.rethrow();
     const { events } = await this.c.get<{ events: StoredEvent[] }>(`/api/sessions/${this.sessionId}/events?after=${this.seq}`);
+    this.rethrow();
     for (const e of events) this.take(e);
     return events;
   }
