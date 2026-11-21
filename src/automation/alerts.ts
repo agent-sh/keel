@@ -412,6 +412,11 @@ export function markRead(opts: { ids?: string[]; session_id?: string; all?: bool
   return hit.length;
 }
 
+// Whether an alert whose data names this value was raised, read or not: a
+// question put back on its card after a restart is the one the owner was told of.
+export const raisedFor = (key: string, value: string) =>
+  !!D().store.db.query("SELECT 1 FROM alerts WHERE json_extract(data, ?) = ? LIMIT 1").get(`$.${key}`, value);
+
 // Reads the unread alerts whose data names this value (an answered approval).
 export function readWhere(key: string, value: string) {
   const sessions = D().store.db.query<{ session_id: string | null }, [string, string]>("SELECT DISTINCT session_id FROM alerts WHERE json_extract(data, ?) = ?").all(`$.${key}`, value);
@@ -540,6 +545,8 @@ const LIMIT = /rate.?limit|usage limit|quota|too many requests|\b429\b|overloade
 // quotes, so opening it shows that reply.
 export function onTurnEnd(sessionId: string, reason: string, opts: { subagent: boolean; loopRun: boolean; more: boolean }) {
   if (opts.subagent || opts.more) return;
+  // Parked for a daemon stop: the turn has not finished, the next daemon goes on with it.
+  if (reason === "restart") return;
   const { store } = D();
   const s = store.session(sessionId);
   if (!s || s.archived) return;

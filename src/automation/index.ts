@@ -83,7 +83,8 @@ function init(deps: Deps) {
       const why = agents.gate(s.id, call.tool.name, call.input, namesOf(name, target ? target.input : call.input, call.tool.name));
       if (why) return { deny: why };
       // A question the model asks the owner is an alert until it is answered.
-      if (QUESTION_TOOLS.has(call.tool.name)) {
+      // (Asked again after a daemon restart, it is the same question: no second alert.)
+      if (QUESTION_TOOLS.has(call.tool.name) && !alerts.raisedFor("call_id", call.id)) {
         const q = (call.input?.questions ?? [])[0];
         const text = String(q?.question ?? call.input?.question ?? call.input?.prompt ?? "The agent asks a question.");
         alerts.raise("question", s.id, `Question: ${deps.store.session(s.id)?.title || "a session"}`, text, { call_id: call.id, open_session: s.id });

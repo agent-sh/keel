@@ -275,6 +275,52 @@ test("a restart cut: questions and open cards wait, approval outcomes are kept, 
   expect(gate.rules()).toEqual([]);
 });
 
+// A prompt that arrives before a cut turn was continued (the owner's, a kept
+// send going out again) does not take the continuation's place: the model is
+// told of the cut first. While a card waits and the model has not read the
+// last such message, a restart adds no other one.
+test("a prompt after a cut turn follows the restart message; a waiting card gets it once", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Engine, RESTART_CUT } = await import("./turn.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "cut-prompt-"));
+  const store = new Store(dir);
+  const engine = new Engine(store, new Bus(), { resolve: async () => { throw new Error("no model here"); } } as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, join(dir, "spill"));
+  const users = (id: string) => store.events(id).filter((e) => e.kind === "user").map((e) => [e.data.origin ?? "owner", String(e.data.text).slice(0, 40)]);
+  const cut = (calls: object[], results: object[] = []) => {
+    const s = store.createSession({ model: "x:y", workspace: dir });
+    store.append(s.id, "user", { text: "go" });
+    store.append(s.id, "turn_start", {});
+    store.append(s.id, "assistant", { blocks: calls, stop: "tool_use" });
+    if (results.length) store.append(s.id, "tool_result", { results });
+    store.append(s.id, "turn_end", { reason: "restart" });
+    return s.id;
+  };
+  // A cut command: the owner's words come after the restart message.
+  const a = cut([{ type: "tool_use", id: "w1", name: "Bash", input: {} }], [{ type: "tool_result", tool_use_id: "w1", is_error: true, content: RESTART_CUT }]);
+  engine.send(a, "typed before the continuation");
+  expect(users(a)).toEqual([["owner", "go"], ["restart", "[harness] The daemon restarted during yo"], ["owner", "typed before the continuation"]]);
+  await engine.interrupt(a);
+  // A waiting question whose continuation was cut again before the model was asked: no second restart message.
+  const b = cut([{ type: "tool_use", id: "q1", name: "AskUserQuestion", input: {} }]);
+  store.append(b, "user", { text: "[harness] The daemon restarted during your previous turn.", origin: "restart" });
+  store.append(b, "turn_start", {});
+  store.append(b, "turn_end", { reason: "restart" });
+  await engine.recover([], async () => {});
+  expect(users(b).map((u) => u[0])).toEqual(["owner", "restart"]);
+  // The same branch once the model replied after that message: the next cut is said again.
+  const c = cut([{ type: "tool_use", id: "q1", name: "AskUserQuestion", input: {} }]);
+  store.append(c, "user", { text: "[harness] The daemon restarted during your previous turn.", origin: "restart" });
+  store.append(c, "turn_start", {});
+  store.append(c, "tool_result", { results: [{ type: "tool_result", tool_use_id: "q1", content: "answered" }] });
+  store.append(c, "assistant", { blocks: [{ type: "tool_use", id: "q2", name: "AskUserQuestion", input: {} }], stop: "tool_use" });
+  store.append(c, "turn_end", { reason: "restart" });
+  await engine.recover([], async () => {});
+  expect(users(c).map((u) => u[0])).toEqual(["owner", "restart", "restart"]);
+});
+
 // Idle compaction: a context past its idle minimum whose cache is about to
 // expire gets a summary while still warm; a turn that starts after the cache
 // expired goes on that summary, the owner's new words after it.

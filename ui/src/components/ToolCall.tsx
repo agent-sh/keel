@@ -332,6 +332,14 @@ function QuestionCard({ use, result, sessionId }: Props) {
     if (!open) answerDrafts.delete(key);
     else if (Object.keys(picked).length || Object.values(other).some((t) => t)) answerDrafts.set(key, { picked, other });
   }, [key, open, picked, other]);
+  // An answer on its way is over when the card closes, and when the daemon
+  // went away under it: a card put back after a restart takes an answer again.
+  const connected = useStore((s) => s.connected);
+  useEffect(() => {
+    if (open && connected) return;
+    inflight.current = false;
+    setSending(false);
+  }, [open, connected]);
   const toggle = (q: { id: string; multi: boolean }, label: string) => setPicked((p) => {
     const cur = p[q.id] ?? [];
     return { ...p, [q.id]: q.multi ? (cur.includes(label) ? cur.filter((x) => x !== label) : [...cur, label]) : [label] };

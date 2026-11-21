@@ -563,6 +563,8 @@ export class Engine {
     }
     // Input that is not the owner's (a report, a wake) never releases a held queue.
     if (!opts.meta) this.release(id);
+    // A prompt that arrives before a cut turn was continued: the model is told of the cut first.
+    this.acceptRestart(id);
     // The owner's prompt after one that could not be sent takes its place (see unanswered).
     const stale = opts.meta ? undefined : this.unanswered(id);
     const ev = this.accept(id, { text, images: opts.images?.length ? opts.images : undefined, ...opts.meta }, stale ? stale.parent : undefined);
@@ -1234,7 +1236,7 @@ export class Engine {
         this.status(id, { kind: "tool", since: Date.now(), names: [...new Set(owed.map((u) => u.name))] });
         // A question whose tool the session's model no longer has cannot be put back: it expired.
         const gone = (u: ToolUseBlock) => asksOwner(u.name) && !st.tools.some((t) => t.name === u.name);
-        await Promise.all(owed.map((u) => (gone(u) ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: QUESTION_CUT }) : this.runTool(session, st.tools, u, ctx)).then(settle(u))));
+        await Promise.all(owed.map((u) => this.tracked(id, u, gone(u) ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: QUESTION_CUT }) : this.runTool(session, st.tools, u, ctx)).then(settle(u))));
         this.status(id, { kind: "idle" });
         if (signal.aborted) throw signal.reason;
       }
@@ -1360,7 +1362,7 @@ export class Engine {
         if (uses.length || cut) {
           if (uses.length) this.status(id, { kind: "tool", since: Date.now(), names: [...new Set(uses.map((u) => u.name))] });
           const spent = budget > 0 && steps >= budget;
-          await Promise.all(uses.map((u) => (spent ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: "Not run: the step budget of this turn is spent." }) : this.runTool(session, st.tools, u, ctx)).then(settle(u))));
+          await Promise.all(uses.map((u) => (spent ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: "Not run: the step budget of this turn is spent." }) : this.tracked(id, u, this.runTool(session, st.tools, u, ctx))).then(settle(u))));
           if (cut) settle(cut)({ type: "tool_result", tool_use_id: cut.id, is_error: true, content: CUT_CALL });
           this.status(id, { kind: "idle" });
           for (const h of allHooks()) await (async () => h.stepDone?.(session))().catch((e) => this.errors.capture("server", e, { hook: "stepDone", session: id }));
@@ -1395,6 +1397,21 @@ export class Engine {
       }
       for (const h of allHooks()) await (async () => h.turnEnd?.(session, reason))().catch((e) => this.errors.capture("server", e, { hook: "turnEnd", session: id }));
     }
+  }
+
+  // The calls of each running turn that have not returned yet.
+  private inflight = new Map<string, Map<string, ToolUseBlock>>();
+  private tracked(id: string, u: ToolUseBlock, run: Promise<ToolResultBlock>): Promise<ToolResultBlock> {
+    const calls = this.inflight.get(id) ?? new Map<string, ToolUseBlock>();
+    this.inflight.set(id, calls.set(u.id, u));
+    return run.finally(() => { calls.delete(u.id); if (!calls.size && this.inflight.get(id) === calls) this.inflight.delete(id); });
+  }
+  // Whether a running turn does nothing but wait on the owner: every call it
+  // has out is a question, a plan put up for approval, or one whose approval
+  // card is open. Such a turn does not end by itself, however long it is given.
+  waitsOnOwner(id: string): boolean {
+    const calls = this.inflight.get(id);
+    return !!calls?.size && [...calls.values()].every((u) => asksOwner(u.name) || allHooks().some((h) => h.awaitsOwner?.(id, u.id)));
   }
 
   private async runTool(session: Session, tools: Tool[], u: ToolUseBlock, ctx: ToolContext): Promise<ToolResultBlock> {
@@ -1880,15 +1897,28 @@ export class Engine {
 
   // The first half of a drain: no new turn starts, and running turns get `ms`
   // to end by themselves. Nothing is cut yet, so the drain can still be called off.
+  // A turn that only waits on the owner (a question, a plan, an approval card)
+  // is not waited for: it would take the whole time and still be waiting, with
+  // new work refused meanwhile. It is parked with its card open, and the next
+  // daemon puts the card back. Looked at again every SETTLE_CHECK_MS, since a
+  // turn at work may start to wait on the owner and the owner may answer one.
   async settle(ms: number) {
     this.draining = true;
     // A summary being prepared is not waited for: the next daemon prepares it again.
     for (const p of this.preparing.values()) p.abort.abort();
-    const all: Promise<unknown>[] = [...this.running.values()].map((r) => r.done);
+    // What a hook still has under way (a fleet move) is waited for like a turn at work.
+    let moving = 0;
+    const moves: Promise<unknown>[] = [];
     for (const h of allHooks()) {
-      try { const p = h.draining?.(); if (p) all.push(p.catch(() => {})); } catch (e) { this.errors.capture("server", e, { hook: "draining" }); }
+      try { const p = h.draining?.(); if (p) { moving++; moves.push(p.catch(() => {}).finally(() => { moving--; })); } } catch (e) { this.errors.capture("server", e, { hook: "draining" }); }
     }
-    if (all.length) await Promise.race([Promise.all(all), Bun.sleep(ms)]);
+    const deadline = Date.now() + ms;
+    for (;;) {
+      const busy = [...this.running.entries()].filter(([id]) => !this.waitsOnOwner(id)).map(([, r]) => r.done);
+      const left = deadline - Date.now();
+      if ((!busy.length && !moving) || left <= 0) return;
+      await Promise.race([Promise.all([...busy, ...(moving ? moves : [])]), Bun.sleep(Math.min(left, SETTLE_CHECK_MS))]);
+    }
   }
 
   // The second half: the turns still running are parked.
@@ -1998,28 +2028,47 @@ export class Engine {
       const stalled = owed ? 0 : stalledContinuations(line);
       const verdict = allHooks().map((h) => h.cutTurn?.(s, { stalled })).find(Boolean);
       if (verdict !== "continue" && (verdict || stalled >= STALLED_MAX)) return held(verdict ? verdict.hold : `This turn was continued after a daemon restart ${stalled} times in a row, and each time the daemon went down again before a tool call finished, so it was not continued again. Continue when you want it to go on.`);
-      const cutTools = line.slice(line.findLastIndex((e) => e.kind === "turn_start")).flatMap((e) => (e.kind === "tool_result" ? e.data.results.filter((r: any) => stopKind(r.content) === "cut") : [])).length;
       try {
         await waitModel(s.model);
       } catch (e) {
         const rec = this.errors.capture("provider", e, { session: s.id, at: "resume after restart" });
         return held(`The turn was cut by a daemon restart and could not continue: ${rec.message}. Continue when the model is back.`);
       }
-      await slots.take();
+      // A turn that goes back to its open card sends no request until the owner
+      // answers: it takes no slot, so the card is back at once and the turns
+      // that do send are not held behind it.
+      if (!owed) await slots.take();
       try {
         // Checked again right before starting: the owner may have moved on, archived or sent meanwhile.
         const now = this.store.session(s.id);
         if (!now || now.archived || this.running.has(s.id) || this.lineage(s.id).at(-1)?.id !== end.id) return;
-        this.accept(s.id, { origin: "restart", text: restartText(cutTools, owed, !!end.data.unstarted) });
+        this.acceptRestart(s.id);
         this.start(s.id);
         this.emitQueue(s.id);
         // Held until the turn ends or its first steps had time to run: a turn that
         // then waits on the owner (an approval) does not hold back the others.
-        await Promise.race([this.running.get(s.id)?.done, Bun.sleep(RESUME_HOLD_MS)]);
+        if (!owed) await Promise.race([this.running.get(s.id)?.done, Bun.sleep(RESUME_HOLD_MS)]);
       } finally {
-        slots.give();
+        if (!owed) slots.give();
       }
     }));
+  }
+
+  // The message that continues a turn a restart cut, stored when the branch
+  // ends in such a turn: by the continuation itself, and before a prompt that
+  // arrives first (the owner's, a kept send going out again), so the model is
+  // told of the cut either way. A branch whose card still waits and whose last
+  // such message the model never read gets no second one: restarts while a
+  // card waits do not grow the context.
+  private acceptRestart(id: string) {
+    const line = this.lineage(id);
+    const end = line.at(-1);
+    if (end?.kind !== "turn_end" || end.data.reason !== "restart") return;
+    const owed = owedCalls(id, line).length;
+    const told = line.findLastIndex((e) => e.kind === "user" && e.data.origin === "restart");
+    if (owed && told >= 0 && !line.slice(told).some((e) => e.kind === "assistant")) return;
+    const cutTools = line.slice(line.findLastIndex((e) => e.kind === "turn_start")).flatMap((e) => (e.kind === "tool_result" ? e.data.results.filter((r: any) => stopKind(r.content) === "cut") : [])).length;
+    this.accept(id, { origin: "restart", text: restartText(cutTools, owed, !!end.data.unstarted) });
   }
 
   // One answer outside the history (a side question): the session's own model,
@@ -2141,6 +2190,8 @@ export function stalledContinuations(line: readonly StoredEvent[]): number {
 const RESUME_AT_ONCE = Number(process.env.KEEL_RESUME_AT_ONCE || 3);
 const RESUME_GAP_MS = Number(process.env.KEEL_RESUME_GAP_MS ?? 1000);
 const RESUME_HOLD_MS = 30_000;
+// How often a drain looks again at which running turns only wait on the owner.
+const SETTLE_CHECK_MS = 250;
 
 class Slots {
   private waiting: (() => void)[] = [];

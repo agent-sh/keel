@@ -31,6 +31,7 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
   registerHooks({
     beforeTool: (s, call) => g.beforeTool(s, call),
     callOutcome: (sid, callId) => g.callOutcome(sid, callId),
+    awaitsOwner: (sid, callId) => g.awaitsOwner(sid, callId),
     turnParking: (sid) => g.park(sid),
     turnStart: (s) => g.turnStarted(s.id),
   });

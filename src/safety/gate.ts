@@ -167,6 +167,12 @@ export class Gate {
     return undefined;
   }
 
+  // Whether this call waits on an open card right now.
+  awaitsOwner(sessionId: string, callId: string): boolean {
+    for (const w of this.waiting.values()) if (w.session.id === sessionId && w.call.id === callId) return true;
+    return false;
+  }
+
   setSandboxCheck(f: (s: Session, p: SessionPerm) => boolean) {
     this.invalidateReview();
     this.sandboxed = f;

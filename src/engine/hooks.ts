@@ -80,6 +80,8 @@ export type TurnHooks = {
   // was answered since), so the continued turn runs the call again and gets
   // that card back. Nothing known: it may have partly run.
   callOutcome?: (sessionId: string, callId: string) => { denied: string } | "not_run" | "waiting" | undefined;
+  // Whether the call waits on a card only the owner can answer, right now (an open approval).
+  awaitsOwner?: (sessionId: string, callId: string) => boolean;
   // The daemon stops and parks this session's turn (before its signal aborts).
   turnParking?: (sessionId: string) => void;
   // Work that is not a turn and that a stop should not cut (a session moving
