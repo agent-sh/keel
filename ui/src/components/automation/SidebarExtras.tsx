@@ -5,6 +5,7 @@ import { useStore } from "../../lib/store.ts";
 import { cn } from "../../lib/utils.ts";
 import { AgentStatus, ALERT_STATE, IconButton, StopIcon } from "./bits.tsx";
 import { Mark } from "../Mark.tsx";
+import { useToldStates } from "../../lib/watch.ts";
 import { Where } from "../Where.tsx";
 
 // The panels load the first time they open.
@@ -24,9 +25,13 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
   // Which agent the parent's unread alerts came from (looking is not reading).
   const unread = useAuto((s) => s.unread.children ?? {});
   const kids = useMemo(() => Object.values(all).filter((a) => a.parent_id === parentId).sort((a, b) => a.created - b.created), [all, parentId]);
-  // The summary says how many run and how many wait.
-  const running = kids.filter((k) => k.status === "running").length;
-  const waiting = kids.filter((k) => k.status === "waiting").length;
+  // The summary says how many ask the owner, how many run and how many wait.
+  // An agent whose session needs them (a question, an approval, a plan) asks: it is not counted as running.
+  const told = useToldStates();
+  const asks = (k: (typeof kids)[number]) => isLive(k) && told[k.session_id]?.watch === "need";
+  const asking = kids.filter(asks).length;
+  const running = kids.filter((k) => k.status === "running" && !asks(k)).length;
+  const waiting = kids.filter((k) => k.status === "waiting" && !asks(k)).length;
   const viewing = kids.find((k) => k.session_id === current);
   const [expanded, setExpanded] = useState(() => openKept()[parentId] === true);
   const setOpen = (o: boolean) => {
@@ -46,8 +51,9 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
         className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-caption text-faint hover:text-muted"
       >
         <ChevronRight className={cn("size-3 shrink-0 transition-transform", expanded && "rotate-90")} />
-        {!expanded && running > 0 && <Mark w="work" className="size-2 border-[1.5px]" />}
+        {!expanded && (asking > 0 ? <Mark w="need" className="size-2" /> : running > 0 && <Mark w="work" className="size-2 border-[1.5px]" />)}
         <span className="shrink-0">{kids.length} agent{kids.length > 1 ? "s" : ""}</span>
+        {asking > 0 && <span className="shrink-0 font-medium text-st-need" data-testid="children-asking">· {asking} {asking === 1 ? "asks" : "ask"} you</span>}
         {running > 0 && <span className="shrink-0 text-accent">· {running} running</span>}
         {waiting > 0 && <span className="shrink-0 text-warn">· {waiting} waiting</span>}
         {!expanded && viewing && <span className="min-w-0 truncate text-fg" data-testid="children-viewing">· viewing {sessions[viewing.session_id]?.title || viewing.title}</span>}
@@ -58,6 +64,7 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
           role="button"
           tabIndex={0}
           data-testid="child-session"
+          data-asking={asks(a) || undefined}
           onClick={() => onPick(a.session_id)}
           onKeyDown={(e) => {
             if (e.key !== "Enter" && e.key !== " ") return;
@@ -70,8 +77,9 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
             current === a.session_id && "bg-raised shadow-1",
           )}
         >
-          <AgentStatus status={a.status} />
-          <span className={cn("min-w-0 flex-1 truncate", !isLive(a) && !unread[a.session_id] && "text-muted", unread[a.session_id] && "font-medium text-fg")}>{sessions[a.session_id]?.title || a.title}</span>
+          {asks(a) ? <span className="grid size-3.5 shrink-0 place-items-center"><Mark w="need" className="size-2" /></span> : <AgentStatus status={a.status} />}
+          <span className={cn("min-w-0 flex-1 truncate", !isLive(a) && !unread[a.session_id] && "text-muted", unread[a.session_id] && "font-medium text-fg")} title={asks(a) ? told[a.session_id]?.text : undefined}>{sessions[a.session_id]?.title || a.title}</span>
+          {asks(a) && <span className="shrink-0 font-medium text-st-need" data-testid="child-asking">asks you</span>}
           {/* Its parent's section says where it runs; only an agent placed elsewhere names its machine. */}
           {(sessions[a.session_id]?.machine ?? a.machine ?? undefined) !== (sessions[parentId]?.machine ?? undefined) && <Where s={{ machine: sessions[a.session_id]?.machine ?? a.machine }} />}
           {unread[a.session_id] ? (

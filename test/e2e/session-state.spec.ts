@@ -397,6 +397,51 @@ test("a row says why once: what is asked of the owner, the step with its time, t
   }
 });
 
+test("an agent that asks the owner is marked as asking in the tree, on its card and in the count", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const made: string[] = [];
+  const gate = `${WS}/asks-${Date.now().toString(36)}.go`;
+  try {
+    const parent = await start(request, "Fan out three checks");
+    made.push(parent);
+    const ask = `Ask about scope\n${script([{ name: "AskUserQuestion", input: { questions: [{ header: "Scope", question: "Should the check cover the staging cluster?", options: [{ label: "Yes" }, { label: "No" }], multiSelect: false }] } }])}`;
+    const run = `Count the handlers\n${script([{ name: "Bash", input: { command: `until [ -f ${gate} ]; do sleep 0.2; done; echo released` } }])}`;
+    await send(request, parent, script([{ name: "spawn_agent", input: { message: ask, isolation: "none" } }, { name: "spawn_agent", input: { message: run, isolation: "none" } }]));
+    const agents = async () => (await (await request.get(`/api/sessions/${parent}/agents`)).json()).agents as { session_id: string; title: string; status: string }[];
+    await expect.poll(async () => (await agents()).length, { timeout: 30_000 }).toBe(2);
+    const asker = (await agents()).find((a) => a.title.startsWith("Ask about scope"))!.session_id;
+    await expect.poll(async () => (await stateOf(request, asker))?.watch, { timeout: 30_000 }).toBe("need");
+
+    await page.goto(`/s/${parent}`);
+    // The parent needs the owner, and says which agent asks what.
+    await expect(row(page, parent)).toHaveAttribute("data-watch", "need");
+    await expect(row(page, parent).getByTestId("row-why")).toHaveText(/^Agent Ask about scope.*: Question: Should the check cover the staging cluster\?$/);
+    // The count under the row: one asks, one runs. Folded, the mark is the owner's.
+    const kids = page.getByTestId("session-list").getByTestId("session-children");
+    await expect(kids.getByTestId("children-asking")).toHaveText("· 1 asks you");
+    await expect(kids.getByTestId("children-toggle")).toContainText("2 agents");
+    await expect(kids.getByTestId("children-toggle")).toContainText("1 running");
+    await expect(kids.getByTestId("children-toggle").locator('.k-mark[data-watch="need"]')).toBeVisible();
+    // The tree: the asking agent is marked, the running one is not.
+    await kids.getByTestId("children-toggle").click();
+    const asking = kids.locator('[data-testid="child-session"][data-asking]');
+    await expect(asking).toHaveCount(1);
+    await expect(asking).toContainText("Ask about scope");
+    await expect(asking.getByTestId("child-asking")).toHaveText("asks you");
+    await expect(kids.getByTestId("child-session")).toHaveCount(2);
+    // Its card in the parent's transcript.
+    const card = page.getByTestId("agent-call").filter({ hasText: "Ask about scope" });
+    await expect(card.getByTestId("agent-call-status")).toHaveText("Asks you");
+    await expect(page.getByTestId("agent-call").filter({ hasText: "Count the handlers" }).getByTestId("agent-call-status")).toHaveText("Running in background");
+    await shoot(page, "session-state-08-agent-asks");
+  } finally {
+    mkdirSync(WS, { recursive: true });
+    writeFileSync(gate, "");
+    await drop(request, made);
+  }
+});
+
 // The look of it: a dozen sessions in mixed states, in the list, on the folded
 // rail and on a phone, in both themes. Each row is checked for its state.
 test("twelve sessions in mixed states read apart at a glance, wide and on a phone", async ({ page, request }) => {

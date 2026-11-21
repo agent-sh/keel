@@ -35,6 +35,9 @@ const subscribe = (f: () => void) => (subs.add(f), () => void subs.delete(f));
 function useTold<T>(sel: (x: Record<string, SessionState>) => T): T {
   return useSyncExternalStore(subscribe, () => sel(told));
 }
+// What the daemon told, as it is: for a part that marks a session by its state without its row (an agent in the tree).
+export const useToldStates = () => useTold((x) => x);
+export const useToldState = (id: string | undefined) => useTold((x) => (id ? x[id] : undefined));
 export async function loadStates() {
   const r = await api<{ states: Record<string, SessionState>; rev?: number }>("/api/state");
   const next = { ...told };

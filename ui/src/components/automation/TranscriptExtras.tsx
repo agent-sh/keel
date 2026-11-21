@@ -8,6 +8,8 @@ import { reportError, useStore } from "../../lib/store.ts";
 import { resultText } from "../../lib/tools.ts";
 import { savePref } from "../../lib/ui.ts";
 import { cn } from "../../lib/utils.ts";
+import { useToldState } from "../../lib/watch.ts";
+import { Mark } from "../Mark.tsx";
 import { Markdown } from "../Markdown.tsx";
 import { AgentStatus, agentWhy, IconButton, STATUS_LABEL, StopIcon } from "./bits.tsx";
 
@@ -267,6 +269,8 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
   }, [agents, out, use.id]);
   const type = input.subagent_type ?? input.agent_type ?? "general-purpose";
   const report = agent && !isLive(agent) ? agent.result : undefined;
+  const state = useToldState(agent?.session_id);
+  const asking = agent && isLive(agent) && state?.watch === "need" ? state : undefined;
 
   return (
     <Collapsible.Root className="group/agent animate-in rounded-lg border border-line bg-raised shadow-1" data-testid="agent-call">
@@ -289,8 +293,11 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           {agent ? (
             <>
-              <AgentStatus status={agent.status} />
-              <span className="text-micro text-faint" data-testid="agent-call-status" title={agentWhy(agent)}>{STATUS_LABEL[agent.status]}{agent.background && isLive(agent) ? " in background" : ""}{agentWhy(agent) ? ` · ${agentWhy(agent)}` : ""}</span>
+              {/* An agent that waits on the owner says so, in their colour: it is not just running. */}
+              {asking ? <span className="grid size-3.5 shrink-0 place-items-center"><Mark w="need" className="size-2" /></span> : <AgentStatus status={agent.status} />}
+              {asking
+                ? <span className="text-micro font-medium text-st-need" data-testid="agent-call-status" data-asking title={asking.text}>Asks you</span>
+                : <span className="text-micro text-faint" data-testid="agent-call-status" title={agentWhy(agent)}>{STATUS_LABEL[agent.status]}{agent.background && isLive(agent) ? " in background" : ""}{agentWhy(agent) ? ` · ${agentWhy(agent)}` : ""}</span>}
               {isLive(agent) && <IconButton title="Stop agent" danger onClick={() => auto.stopAgent(agent).catch(reportError)} testid="agent-call-stop"><StopIcon /></IconButton>}
               {!isLive(agent) && agent.branch && !agent.machine && (
                 <IconButton title="Review this agent's work" onClick={() => auto.reviewAgent(agent).then(() => savePref("panel", "review")).catch(reportError)} testid="agent-call-review"><ScanSearch className="size-3.5" /></IconButton>
