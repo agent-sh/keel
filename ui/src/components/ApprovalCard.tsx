@@ -650,7 +650,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
             aria-expanded={whole}
             aria-controls={`${ids}-summary`}
             onClick={() => setWhole(!whole)}
-            className="rounded-sm text-accent-ink underline underline-offset-2 outline-none hover:text-fg focus-visible:ring-2 focus-visible:ring-ring"
+            className="k-link rounded-sm text-accent-ink underline underline-offset-2 outline-none hover:text-fg focus-visible:ring-2 focus-visible:ring-ring"
           >
             {whole ? "Fold" : a.kind === "shell" ? "Show the whole command" : "Show all of it"}
           </button>

@@ -444,7 +444,7 @@ html[data-resizing] iframe { pointer-events: none; }
 :is(.k-approval[data-many], .k-asks:has(.k-approval:is(:focus-within, [data-hot])) .k-approval):not(:focus-within) .k-allow { background: transparent; color: var(--fg); box-shadow: inset 0 0 0 1px var(--line-strong); }
 .k-approval[data-many]:is(:focus-within, [data-hot]) { box-shadow: 0 0 0 3px color-mix(in oklch, var(--st-need) 13%, transparent); }
 /* What waits, over a list of requests: a state word (its face is the state role's, styles.css). */
-.k-ask-count { font-weight: 700; font-size: var(--text-micro); line-height: 1.25rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--st-need); }
+.k-ask-count { font-weight: 700; font-size: var(--text-micro); line-height: 1.25rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--st-need-ink); }
 .k-allow-all { border-radius: 0.25rem; }
 /* A list's bar stays at the top of the region while the list scrolls under it, where a whole row
    still shows under it (the list says so): it is opaque, and no fade lies over it. */

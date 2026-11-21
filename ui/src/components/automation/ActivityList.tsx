@@ -154,7 +154,7 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
                     type="button"
                     data-testid="activity-cut-turn"
                     onClick={() => { openSession(t.session_id); onClose(); }}
-                    className={cn("-mx-1 mt-0.5 block w-full rounded-md px-1 py-0.5 text-left text-micro leading-snug outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring", t.state === "held" ? "text-warn" : "text-muted")}
+                    className={cn("-mx-1 mt-0.5 block min-h-ctl-sm w-full rounded-md px-1 py-1 text-left text-micro leading-snug outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring", t.state === "held" ? "text-warn" : "text-muted")}
                   >
                     {restartTurnLine(t)}
                   </button>
