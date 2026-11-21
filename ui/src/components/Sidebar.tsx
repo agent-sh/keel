@@ -9,7 +9,7 @@ import { createContext, Fragment, useContext, useEffect, useMemo, useRef, useSta
 import type { Session } from "../../../src/core/types.ts";
 import { machineName, useFleet } from "../lib/fleet.ts";
 import { useSafety } from "../lib/safety.ts";
-import { useUnsent } from "../lib/send-drafts.ts";
+import { useUnsent, useWaitingSend } from "../lib/send-drafts.ts";
 import { stations, useStations } from "../lib/stations.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { callsigns, listBounds, listWidth, panesMax, toggleList, useRail } from "../lib/rail.ts";
@@ -188,10 +188,12 @@ const UNSENT = {
 export function NeedsYou({ sessionId }: { sessionId: string }) {
   const n = useSafety((s) => s.approvals[sessionId]?.length ?? 0);
   const unsent = useUnsent(sessionId);
+  const waiting = useWaitingSend(sessionId);
   return (
     <>
       {n > 0 && <span data-testid="needs-you" title={`${n} approval${n === 1 ? "" : "s"} waiting`} className="k-needs">needs you</span>}
       {unsent && <span data-testid="unsent-mark" title={UNSENT[unsent].title} className="k-needs">{UNSENT[unsent].word}</span>}
+      {waiting && !unsent && <span data-testid="waiting-send-mark" title="A message here waits for Keel and goes out by itself when it is back." className="shrink-0 rounded-md bg-brass-soft px-1.5 text-micro font-medium text-brass">waits to send</span>}
     </>
   );
 }

@@ -133,7 +133,11 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
   store.migrate("CREATE TABLE IF NOT EXISTS sends (client_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, fingerprint TEXT NOT NULL, receipt TEXT NOT NULL, created_ms INTEGER NOT NULL)");
   const sendOf = store.db.query<{ fingerprint: string; receipt: string }, [string]>("SELECT fingerprint, receipt FROM sends WHERE client_id = ?");
   const recordSend = store.db.query("INSERT INTO sends (client_id, session_id, fingerprint, receipt, created_ms) VALUES (?, ?, ?, ?, ?)");
+  // The prune reads by age and a deleted session's rows go by session: an index for each.
+  store.migrate("CREATE INDEX IF NOT EXISTS sends_created ON sends(created_ms)");
+  store.migrate("CREATE INDEX IF NOT EXISTS sends_session ON sends(session_id)");
   const dropOldSends = store.db.query("DELETE FROM sends WHERE created_ms < ?");
+  const dropSendsOf = store.db.query("DELETE FROM sends WHERE session_id = ?");
 
   const routes = withModules({
       // GET: what is served; POST: a bundle (.tar.gz) to serve now; rollback: the one before.
@@ -255,6 +259,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
             if (!x) continue;
             rmSync(join(store.stateDir, "spill", id), { recursive: true, force: true });
             store.deleteSession(id);
+            dropSendsOf.run(id);
             bus.emit({ t: "session", session: { ...x, archived: true, phase: "idle" }, deleted: true });
           }
           return json({ ok: true });

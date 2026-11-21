@@ -60,6 +60,8 @@ export const unsentOf = (sid: string): "refused" | "unconfirmed" | null => {
   return list.some((d) => d.state === "refused") ? "refused" : list.some((d) => d.state === "unconfirmed") ? "unconfirmed" : null;
 };
 export const useUnsent = (sid: string | undefined) => useSyncExternalStore(subscribe, () => (sid ? unsentOf(sid) : null));
+// A message of the session waits for the daemon: nothing for the owner to do, but the list says it is not there yet.
+export const useWaitingSend = (sid: string) => useSyncExternalStore(subscribe, () => sendDrafts(sid).some((d) => d.state === "waiting"));
 export const useShelfVersion = () => useSyncExternalStore(subscribe, () => version);
 
 function put(key: string, next: readonly SendDraft[]) {

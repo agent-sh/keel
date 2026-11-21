@@ -2,10 +2,10 @@
 // back. Each goes under the id it was first sent with, and the daemon stores a
 // named send once, so a message whose answer was lost is confirmed, not sent
 // twice. This runs for the whole page: the session's message box may be gone.
-import { dropImage } from "./drafts.ts";
+import { dropImage, fromServer } from "./drafts.ts";
 import { toBlock } from "./images.ts";
-import { daemonAway, messageRefused, setSendDraft, sendDrafts, unread, waitingSends, type SendDraft } from "./send-drafts.ts";
-import { actions, failed, getState, onFeature } from "./store.ts";
+import { daemonAway, messageRefused, setSendDraft, setSendImage, sendDrafts, unread, waitingSends, type SendDraft } from "./send-drafts.ts";
+import { actions, api, failed, getState, onFeature } from "./store.ts";
 
 // Requests of one message that got no answer while the socket stayed up. A
 // daemon that is there and still never answers this message (a request it
@@ -37,34 +37,62 @@ export async function sendNamed(sid: string, entry: SendDraft) {
 }
 
 const AGAIN_MS = 2_000;
+const AGAIN_MAX_MS = 30_000;
+let again = AGAIN_MS;
 let busy = false;
 let timer: ReturnType<typeof setTimeout> | undefined;
 
-// While connected, what waits is sent, oldest first; a daemon that still takes
-// no work (it is draining) is asked again shortly.
+// A reload leaves a kept message's pictures as references to the session's
+// server draft. They are read here, so the message goes out whether or not
+// its session's box is ever opened. False when one could not be read yet.
+async function readImages(sid: string, d: SendDraft): Promise<boolean> {
+  for (const a of d.images.filter(unread)) {
+    try {
+      setSendImage(sid, d.id, a.id, await fromServer(sid, { id: a.id, name: a.name, mime: a.media_type, bytes: a.bytes, origin: null, added_ms: 0 }));
+    } catch {
+      return false; // asked again at the next look
+    }
+  }
+  return true;
+}
+
+// While connected, what waits is sent, oldest first. The daemon is asked
+// first whether it takes work (one small read): a message, with its pictures,
+// is not posted at a daemon that would refuse it. While it does not, it is
+// asked again later each time; its restart (the socket opens again) or the
+// end of its drain sends at once.
 async function flush() {
   clearTimeout(timer);
   timer = undefined;
-  if (busy || !getState().connected) return;
+  if (busy || !getState().connected || !waitingSends().length) return;
   busy = true;
+  let takes = false;
   try {
-    for (const { key, d } of waitingSends()) {
+    takes = !(await api<{ draining: unknown }>("/api/bootstrap")).draining;
+    for (const { key, d } of takes ? waitingSends() : []) {
       if (!getState().connected) break;
-      // Still on its shelf, and its pictures are read (a reload leaves references until the box reads them).
+      // Still on its shelf, with its pictures read.
+      if (sendDrafts(key).find((x) => x.id === d.id)?.state !== "waiting" || !(await readImages(key, d))) continue;
       const now = sendDrafts(key).find((x) => x.id === d.id);
-      if (now?.state !== "waiting" || now.images.some(unread)) continue;
-      await sendNamed(key, now);
+      if (now?.state === "waiting") await sendNamed(key, now);
     }
+  } catch {
+    // The daemon did not answer the small read: the next look, or the reconnect, tries again.
   } finally {
     busy = false;
   }
-  if (waitingSends().length && getState().connected) timer = setTimeout(() => void flush(), AGAIN_MS);
+  again = takes ? AGAIN_MS : Math.min(again * 2, AGAIN_MAX_MS);
+  if (waitingSends().length && getState().connected) timer = setTimeout(() => void flush(), again);
 }
 
 // A message that starts waiting while the socket is up (the daemon is draining, or the answer was cut) is tried again soon.
 export function sendWaitingSoon() {
-  if (!timer && getState().connected) timer = setTimeout(() => void flush(), AGAIN_MS);
+  if (!timer && getState().connected) timer = setTimeout(() => void flush(), (again = AGAIN_MS));
 }
 
-// Every socket open, the page's first included (a reload with a send still out).
-onFeature({ reconnect: () => void flush() });
+onFeature({
+  // Every socket open, the page's first included (a reload with a send still out).
+  reconnect: () => { again = AGAIN_MS; void flush(); },
+  // A drain that was called off: the daemon takes work again.
+  frame: (f) => { if (f.name === "daemon" && !f.data?.draining) void flush(); },
+});

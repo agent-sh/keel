@@ -214,7 +214,7 @@ function SessionComposer({
     else localStorage.removeItem(draftKey(session?.id));
   }, [text, session?.id]);
   const unsent = !!text.trim() || images.length > 0;
-  const hasUnsent = unsent || saved.some((d) => d.state === "refused" || d.state === "parked");
+  const hasUnsent = unsent || saved.some((d) => d.state === "refused" || d.state === "parked" || d.state === "waiting");
   useEffect(() => (sid ? draftHere(sid, hasUnsent) : undefined), [hasUnsent, sid]);
   useEffect(() => {
     const sid = session?.id;
