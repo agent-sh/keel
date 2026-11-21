@@ -3,6 +3,7 @@
 // calls with a bounded excerpt of their input and output, and summaries. An
 // FTS5 index the database keeps current with triggers, so the turn loop does
 // not have to know about it.
+import type { Database } from "bun:sqlite";
 import type { RouteModule } from "../app.ts";
 
 // How much of one tool call's input or output is indexed (the rest is not
@@ -38,26 +39,71 @@ const ROWS = (SRC: string) => [
   `SELECT json_extract(e.data, '$.summary'), e.id, e.session_id, 'summary', e.ts, NULL, 0 FROM ${SRC}
    WHERE e.kind IN ('compaction', 'note') AND json_extract(e.data, '$.summary') IS NOT NULL AND json_extract(e.data, '$.summary') != ''`,
 ];
-const COLS = "INSERT INTO search_idx (text, event_id, session_id, kind, ts, ref, cut)";
+// Rows go in through `search_in`, a view whose trigger writes the FTS row and
+// maps it to its event in `search_docs` (an event has several rows: one per
+// tool call and result). The index cannot look a row up by its event (the
+// column is not indexed); the map can, so removing an event's rows costs a
+// lookup of that event and a delete by rowid each, whatever else is indexed.
+const COLS = "INSERT INTO search_in (text, event_id, session_id, kind, ts, ref, cut)";
 const NEW_SRC = "(SELECT NEW.id AS id, NEW.session_id AS session_id, NEW.kind AS kind, NEW.ts AS ts, NEW.data AS data) e";
 const KINDS = "('user', 'assistant', 'tool_result', 'compaction', 'note')";
 
 // Bumped when what is indexed changes: the index is made again from the events once.
-const INDEX_VERSION = 3;
+const INDEX_VERSION = 4;
+// The same rows without the map: they are kept and mapped, not made again.
+const UNMAPPED_VERSION = 3;
 
-const SCHEMA = `
+const DROP_LAYOUT = `
 DROP TRIGGER IF EXISTS search_fts_ins;
 DROP TRIGGER IF EXISTS search_fts_del;
 DROP TABLE IF EXISTS search_fts;
-CREATE TABLE IF NOT EXISTS search_meta (version INTEGER NOT NULL);
+DROP TRIGGER IF EXISTS search_idx_ins;
+DROP TRIGGER IF EXISTS search_idx_del;
+DROP VIEW IF EXISTS search_in;
+DROP TABLE IF EXISTS search_docs;
+DROP TABLE IF EXISTS search_meta;
+`;
+const SCHEMA = `
+CREATE TABLE search_meta (version INTEGER NOT NULL);
 CREATE VIRTUAL TABLE IF NOT EXISTS search_idx USING fts5(text, event_id UNINDEXED, session_id UNINDEXED, kind UNINDEXED, ts UNINDEXED, ref UNINDEXED, cut UNINDEXED, tokenize = 'unicode61 remove_diacritics 2');
-CREATE TRIGGER IF NOT EXISTS search_idx_ins AFTER INSERT ON events WHEN NEW.kind IN ${KINDS} BEGIN
+CREATE TABLE search_docs (event_id TEXT NOT NULL, doc INTEGER NOT NULL, PRIMARY KEY (event_id, doc)) WITHOUT ROWID;
+CREATE VIEW search_in AS SELECT NULL AS text, NULL AS event_id, NULL AS session_id, NULL AS kind, NULL AS ts, NULL AS ref, NULL AS cut;
+CREATE TRIGGER search_in_ins INSTEAD OF INSERT ON search_in BEGIN
+  INSERT INTO search_idx (text, event_id, session_id, kind, ts, ref, cut) VALUES (NEW.text, NEW.event_id, NEW.session_id, NEW.kind, NEW.ts, NEW.ref, NEW.cut);
+  INSERT INTO search_docs (event_id, doc) VALUES (NEW.event_id, last_insert_rowid());
+END;
+CREATE TRIGGER search_docs_del AFTER DELETE ON search_docs BEGIN
+  DELETE FROM search_idx WHERE rowid = OLD.doc;
+END;
+CREATE TRIGGER search_idx_ins AFTER INSERT ON events WHEN NEW.kind IN ${KINDS} BEGIN
   ${ROWS(NEW_SRC).map((r) => `${COLS} ${r};`).join("\n  ")}
 END;
-CREATE TRIGGER IF NOT EXISTS search_idx_del AFTER DELETE ON events WHEN OLD.kind IN ${KINDS} BEGIN
-  DELETE FROM search_idx WHERE event_id = OLD.id;
+CREATE TRIGGER search_idx_del AFTER DELETE ON events WHEN OLD.kind IN ${KINDS} BEGIN
+  DELETE FROM search_docs WHERE event_id = OLD.id;
 END;
 `;
+
+// The index and what keeps it current, made or brought to this version in one
+// transaction with the version it records: a start that failed part way left
+// the version it found, and the next start does the work again.
+export function initSearchIndex(db: Database) {
+  const had = db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE name = 'search_meta'").get()
+    ? db.query<{ version: number }, []>("SELECT version FROM search_meta").get()?.version
+    : undefined;
+  if (had !== INDEX_VERSION) {
+    db.transaction(() => {
+      const keep = had === UNMAPPED_VERSION;
+      db.exec(`${DROP_LAYOUT}${keep ? "" : "DROP TABLE IF EXISTS search_idx;"}`);
+      db.exec(SCHEMA);
+      // One read of the rows already indexed (no words are indexed again).
+      if (keep) db.run("INSERT INTO search_docs (event_id, doc) SELECT event_id, rowid FROM search_idx ORDER BY 1, 2");
+      db.run("INSERT INTO search_meta (version) VALUES (?)", [INDEX_VERSION]);
+    })();
+  }
+  // Index what was stored before the index existed (once).
+  const count = db.query<{ n: number }, []>("SELECT count(*) AS n FROM search_idx").get()!.n;
+  if (count === 0) db.transaction(() => { for (const r of ROWS(`events e`)) db.run(`${COLS} ${r}`); })();
+}
 
 type Hit = {
   session_id: string; session_title: string; event_id?: string; kind: string; ts: number; snippet: string; cwd: string; archived: boolean;
@@ -76,15 +122,7 @@ export function ftsQuery(q: string): string | null {
 }
 
 export const searchRoutes: RouteModule = ({ store }) => {
-  const had = store.db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE name = 'search_meta'").get()
-    ? store.db.query<{ version: number }, []>("SELECT version FROM search_meta").get()?.version
-    : undefined;
-  if (had !== INDEX_VERSION) store.db.exec("DROP TRIGGER IF EXISTS search_idx_ins; DROP TRIGGER IF EXISTS search_idx_del; DROP TABLE IF EXISTS search_idx; DROP TABLE IF EXISTS search_meta;");
-  store.migrate(SCHEMA);
-  if (had !== INDEX_VERSION) store.db.run("INSERT INTO search_meta (version) VALUES (?)", [INDEX_VERSION]);
-  // Index what was stored before the index existed (once).
-  const count = store.db.query<{ n: number }, []>("SELECT count(*) AS n FROM search_idx").get()!.n;
-  if (count === 0) store.db.transaction(() => { for (const r of ROWS(`events e`)) store.db.run(`${COLS} ${r}`); })();
+  initSearchIndex(store.db);
 
   // The reply that holds a tool call (its card is where a hit on the call or its output opens).
   const callEvent = (session: string, ref: string) =>
