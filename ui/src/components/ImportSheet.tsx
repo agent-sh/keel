@@ -504,10 +504,11 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
             {sel ? (
               <PreviewPane row={sel} from={from} resume={ssh ? { machineName: ssh.name } : undefined} intent={intent} onIntent={setIntent} onDone={() => onOpenChange(false)} />
             ) : (
-              <div className="grid flex-1 place-items-center px-10 text-center">
-                <div>
-                  <p className="text-ui font-medium">Pick a session to see what an import brings</p>
-                  <p className="mt-1 text-caption text-faint">{from ? "That machine reads its own stores and never writes to them. The copy goes on here with any model, and its tools run on that machine." : "Keel reads the other harness's store and never writes to it. The copy keeps its folder and goes on here with any model."}</p>
+              <div className="flex-1 p-6">
+                <div className="k-empty max-w-md">
+                  <b>No session picked</b>
+                  <p>Pick a session to see what an import brings.</p>
+                  <p className="mt-1">{from ? "That machine reads its own stores and never writes to them. The copy goes on here with any model, and its tools run on that machine." : "Keel reads the other harness's store and never writes to it. The copy keeps its folder and goes on here with any model."}</p>
                 </div>
               </div>
             )}
