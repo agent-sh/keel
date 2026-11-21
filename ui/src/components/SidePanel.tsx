@@ -3,7 +3,7 @@
 // and searchable, is one click away in the Panels picker, and each is a
 // command in the palette. The panel beside the helm is remembered per station.
 import { Popover } from "@base-ui/react/popover";
-import { LayoutPanelLeft, Pin, PinOff, Search, X } from "lucide-react";
+import { ChevronDown, PanelRight, Pin, PinOff, Search, X } from "lucide-react";
 import { Suspense, useMemo, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { panels, type Panel } from "../lib/extend.ts";
@@ -11,7 +11,6 @@ import { composing, registerCommand } from "../lib/keys.ts";
 import { usePanelBeside } from "../lib/rail.ts";
 import { getUI, phone, savePref, useUI } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
-import { iconButton } from "./ui.tsx";
 
 const visible = (s: Session) => panels.all().filter((p) => !p.when || p.when(s)).sort((a, b) => (a.order ?? 50) - (b.order ?? 50));
 
@@ -85,8 +84,8 @@ function Picker({ list, open, label, testid = "panel-menu" }: { list: Panel[]; o
   const pick = (id: string) => { openPanel(id); setShow(false); setQ(""); };
   return (
     <Popover.Root open={show} onOpenChange={(o) => { setShow(o); if (!o) setQ(""); }}>
-      <Popover.Trigger className={cn(iconButton, "k-panels-btn", label && "w-auto gap-1.5 px-2")} aria-label="Panels" title="Panels" data-testid={testid}>
-        <LayoutPanelLeft className="size-4" />{label && <span>Panels</span>}
+      <Popover.Trigger className="k-hand" data-words={label || undefined} aria-label="Panels" title="Every panel" data-testid={testid}>
+        <PanelRight /><span className="k-hand-word">Panels</span><ChevronDown className="k-hand-more" />
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner sideOffset={6} align="end" className="z-50 outline-none">
@@ -155,9 +154,9 @@ export function PanelHand({ session }: { session: Session }) {
           aria-pressed={open === p.id}
           data-testid={`panel-toggle-${p.id}`}
           onClick={() => openPanel(open === p.id ? null : p.id)}
-          className={cn(iconButton, open === p.id && "bg-hover text-fg")}
+          className="k-hand"
         >
-          {p.icon}
+          {p.icon}<span className="k-hand-word">{p.label}</span>
         </button>
       ))}
     </>

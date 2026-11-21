@@ -74,3 +74,38 @@ test("side panel, Errors, Inbox, Loops and Settings share one container grammar"
   expect(got.panel!.close).not.toBe("none");
   for (const n of closing) expect(got[n]!.closeAtEnd, n).toBeLessThanOrEqual(18);
 });
+
+// The header's panel shortcuts are told apart without pointing at them: each
+// shows its glyph and its name, the open one is raised, and the chooser says
+// Panels. In a pane among four the names give way and the glyphs stay, each
+// still named for a screen reader.
+test("the header's panel shortcuts show their names", async ({ page, request }) => {
+  const model = process.env.KEEL_TEST_MODEL ?? "scripted:stand-in";
+  const { session } = await (await request.post("/api/sessions", { data: { model, title: "Named shortcuts" } })).json();
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await page.goto(`/s/${session.id}`);
+  const header = page.getByTestId("session-header").first();
+  const hand = header.locator('[data-testid^="panel-toggle-"]');
+  await expect(hand.first()).toBeVisible();
+  const words = async () => hand.evaluateAll((els) => els.map((el) => {
+    const w = el.querySelector(".k-hand-word");
+    const r = w?.getBoundingClientRect();
+    return { name: el.getAttribute("aria-label"), text: w?.textContent ?? "", shown: !!r && r.width > 8 && r.height > 8, icon: !!el.querySelector("svg") };
+  }));
+  const wide = await words();
+  console.log(JSON.stringify(wide));
+  expect(wide.length).toBeGreaterThanOrEqual(2);
+  for (const w of wide) { expect(w.text).toBe(w.name); expect(w.shown, w.name!).toBe(true); expect(w.icon).toBe(true); }
+  await expect(header.getByTestId("panel-menu")).toContainText("Panels");
+  // The open one is raised.
+  await hand.first().click();
+  await expect(hand.first()).toHaveAttribute("aria-pressed", "true");
+  expect(await hand.first().evaluate((el) => getComputedStyle(el).boxShadow)).not.toBe("none");
+  await shoot(page, "surfaces-06-named-shortcuts");
+  await hand.first().click();
+
+  // A short row: the names are clipped, the glyphs and the accessible names stay.
+  await page.setViewportSize({ width: 900, height: 900 });
+  await expect.poll(async () => (await words()).filter((w) => w.shown).length).toBe(0);
+  for (const w of await words()) { expect(w.text).toBe(w.name); expect(w.icon).toBe(true); }
+});
