@@ -155,6 +155,11 @@ const send = command("send", SEND_USAGE, {
 }, async (v, pos, c) => {
   if (v.steer && v.queue) return usageError("send", "--steer or --queue, not both", SEND_USAGE);
   if (v.send && v["no-send"]) return usageError("send", "--send or --no-send, not both", SEND_USAGE);
+  // Checked here, before a session is made, a file uploaded or anything sent.
+  const onAsk = v["on-ask"] ?? "exit";
+  if (!["exit", "deny", "wait"].includes(onAsk)) return usageError("send", "--on-ask is exit, deny or wait", SEND_USAGE);
+  const timeoutS = v.timeout === undefined ? undefined : Number(v.timeout);
+  if (timeoutS !== undefined && !(Number.isFinite(timeoutS) && timeoutS > 0)) return usageError("send", "--timeout is a number of seconds above 0", SEND_USAGE);
   let id: string | undefined;
   let text: string | undefined = v.text;
   const args = [...pos];
@@ -229,14 +234,12 @@ const send = command("send", SEND_USAGE, {
     else console.log(`${r.queued ? "queued in" : "sent to"} ${s.id}`);
     return EXIT.ok;
   }
-  const onAsk = v["on-ask"] ?? "exit";
-  if (!["exit", "deny", "wait"].includes(onAsk)) return usageError("send", "--on-ask is exit, deny or wait", SEND_USAGE);
   const t0 = Date.now();
   let live = "";
   const tty = !v.json;
   const w = await watch({
     c, sessionId: s.id, afterSeq: before.last_seq, eventId: r.event?.id ?? null, queueId: r.queued?.id ?? null, prompt: body, stay: "turn", onAsk, t0,
-    timeoutS: v.timeout ? Number(v.timeout) : undefined,
+    timeoutS,
     onDelta: tty ? (d) => { if (d.kind === "text") { live += d.text; out(clean(d.text)); } } : undefined,
     onEvent: tty ? (e) => {
       if (e.kind !== "assistant") return;

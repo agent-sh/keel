@@ -424,6 +424,22 @@ describe("a prompt next to other work in its session", () => {
       direct: [0, true],
     });
   }, 90_000);
+
+  test("send --wait refuses a bad --on-ask or --timeout before it does anything", async () => {
+    const { api } = dm;
+    const sid = (await api("/api/sessions", { model: "scripted:stand-in", workspace: WS })).session.id as string;
+    await api(`/api/sessions/${sid}/draft`, { text: "kept words" });
+    const now = async () => [(await api("/api/sessions")).sessions.length, (await api(`/api/sessions/${sid}/events`)).events.length, (await api(`/api/sessions/${sid}/draft`)).text];
+    const before = await now();
+    const got: unknown[] = [];
+    for (const bad of ["--on-ask=later", "--timeout=0", "--timeout=-5", "--timeout=soon", "--timeout=Infinity"]) {
+      for (const to of [[sid], ["--new"]]) {
+        const r = await k(["send", ...to, "hello", "--wait", bad]);
+        got.push([bad, r.code, r.out, r.err.includes(`keel send: --${bad.slice(2).split("=")[0]} is`) && r.err.includes("keel send [ID] [TEXT]")]);
+      }
+    }
+    expect({ got, after: await now() }).toEqual({ got: got.map((g: any) => [g[0], 3, "", true]), after: before });
+  }, 60_000);
 });
 
 // A secret's value reaches the command that uses it and nothing else: not the
