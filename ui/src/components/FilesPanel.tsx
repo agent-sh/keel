@@ -1,4 +1,5 @@
 import { AtSign, ChevronLeft, File as FileIcon, Folder, Search } from "lucide-react";
+import { langOf } from "../lib/lang.ts";
 import { IMAGE, OpenInEditor, rawFile } from "./OpenInEditor.tsx";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
@@ -8,18 +9,6 @@ import { cn } from "../lib/utils.ts";
 
 type Hit = { path: string; dir: boolean };
 type Opened = { path: string; size: number; text?: string; binary?: boolean; truncated?: boolean };
-
-const LANG: Record<string, string> = {
-  py: "python", rs: "rust", md: "markdown", yml: "yaml", sh: "shell", bash: "shell", zsh: "shell", mjs: "js", cjs: "js",
-  h: "c", hpp: "cpp", cc: "cpp", kt: "kotlin", rb: "ruby", jsonc: "json", lock: "plaintext",
-};
-const langOf = (p: string) => {
-  const name = p.split("/").pop()!.toLowerCase();
-  if (name === "dockerfile") return "dockerfile";
-  if (name === "makefile") return "makefile";
-  const ext = name.includes(".") ? name.split(".").pop()! : "";
-  return LANG[ext] ?? ext;
-};
 
 function CodeView({ file, line, end }: { file: Opened; line?: number; end?: number }) {
   const [html, setHtml] = useState<string | null>(null);

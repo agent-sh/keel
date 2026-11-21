@@ -405,6 +405,14 @@ export function nearMiss(text: string, old: string): string {
     `First difference, file line ${best + first + 1}${why}:\n  file:       ${show(lines[best + first])}\n  old_string: ${show(want[first])}`;
 }
 
+// What an edit leaves for its card in the transcript (ToolOutput.shown): the
+// line of the file the replaced text began at, so the diff there is numbered
+// as the file is. Nothing when the text was matched another way than as written.
+export function editShown(before: string, oldS: string): { line: number } | undefined {
+  const at = oldS ? before.indexOf(oldS) : -1;
+  return at < 0 ? undefined : { line: before.slice(0, at).split("\n").length };
+}
+
 export async function editFile(p: string, oldS: string, newS: string, all: boolean, ctx: ToolContext): Promise<{ ok: string; before: string; after: string } | { error: string }> {
   const m = mtime(p);
   if (m === -1) return { error: notFound(p, ctx.cwd) };

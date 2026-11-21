@@ -5,7 +5,7 @@ import { claimNote, isClaimFile } from "../core/claim.ts";
 import { decodeText } from "../core/text.ts";
 import { join } from "node:path";
 import { notFound } from "./missing.ts";
-import { abs, editFile, globFiles, guardOverwrite, lineRange, mtime, numbered, readFile, ripgrep, WHOLE_FILE_BYTES, writeFile } from "./files.ts";
+import { abs, editFile, editShown, globFiles, guardOverwrite, lineRange, mtime, numbered, readFile, ripgrep, WHOLE_FILE_BYTES, writeFile } from "./files.ts";
 import { answerText, ask, type Question } from "./interact.ts";
 import { jobsOf, running, waitJob } from "./jobs.ts";
 import { headTail, runShell, shellCwd } from "./shell.ts";
@@ -133,7 +133,7 @@ const replace: Tool = {
     }
     const r = await editFile(p, String(input.old_string ?? ""), String(input.new_string ?? ""), !!input.allow_multiple, ctx);
     if ("error" in r) return fail(`Failed to edit: ${r.error}`);
-    return ok(`Successfully modified file: ${p}.${r.ok}`);
+    return { ...ok(`Successfully modified file: ${p}.${r.ok}`), shown: editShown(r.before, String(input.old_string ?? "")) };
   },
 };
 

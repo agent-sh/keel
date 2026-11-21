@@ -1,6 +1,6 @@
 // The tool profile Claude models are trained on: Claude Code's current names,
 // argument shapes and result wording (code.claude.com/docs/en/tools-reference).
-import { abs, editFile, globFiles, guardOverwrite, mtime, readFile, ripgrep, writeFile } from "./files.ts";
+import { abs, editFile, editShown, globFiles, guardOverwrite, mtime, readFile, ripgrep, writeFile } from "./files.ts";
 import { answerText, ask, type Question } from "./interact.ts";
 import { findJob, jobsOf, running, stopJob } from "./jobs.ts";
 import { headTail, runShell, shellCwd } from "./shell.ts";
@@ -160,7 +160,7 @@ const Edit: Tool = {
     const p = abs(String(input.file_path ?? ""), ctx);
     const r = await editFile(p, String(input.old_string ?? ""), String(input.new_string ?? ""), !!input.replace_all, ctx);
     if ("error" in r) return fail(r.error);
-    return ok(`The file ${p} has been updated successfully.${r.ok}`);
+    return { ...ok(`The file ${p} has been updated successfully.${r.ok}`), shown: editShown(r.before, String(input.old_string ?? "")) };
   },
 };
 

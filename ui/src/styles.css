@@ -347,6 +347,19 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 .k-diff-line[data-lit] .k-diff-gutter { box-shadow: inset 1px 0 0 var(--accent), inset 0 1px 0 var(--accent), inset 0 -1px 0 var(--accent); }
 .k-diff-wide { position: sticky; left: 0; width: 100cqw; }
 [data-line][data-open] { opacity: 1; }
+/* The one block of a diff, wherever it shows: Changes, Review, and under a call's line in the conversation. */
+.k-diff-file { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--raised); }
+.k-diff-fold { display: block; width: 100%; padding: 0.0625rem 0.75rem; text-align: left; font-family: var(--font-sans); font-size: var(--text-micro); color: var(--faint); background: color-mix(in oklab, var(--accent-soft) 30%, transparent); }
+.k-diff-fold:hover { color: var(--fg); background: color-mix(in oklab, var(--accent-soft) 70%, transparent); }
+/* Under a call's line the block has no head: what the head offers sits in its corner, shown when pointed at. */
+.k-diff-file[data-bare] { position: relative; }
+.k-diff-corner { position: absolute; top: 0.125rem; right: 0.125rem; z-index: 2; display: flex; border-radius: var(--radius-sm); background: var(--raised); opacity: 0; transition: opacity 120ms; }
+.k-diff-file[data-bare]:is(:hover, :focus-within) > .k-diff-corner, .k-diff-corner:has([data-copied], [data-failed]) { opacity: 1; }
+@media (hover: none) { .k-diff-corner { opacity: 1; } }
+table[data-plain] .k-diff-no { display: none; }
+table[data-plain] .k-diff-gutter { box-shadow: none; }
+/* Line numbers are read: the quietest text that still meets 4.5:1 on the gutter's tints. */
+.k-diff-gutter { color: var(--muted); }
 /* Nothing hovers on a touch screen: every line shows its comment mark, quiet, in a place of its
    own beside the number, and the rows of a diff that has marks are tall enough to tap one. */
 @media (hover: none) {
