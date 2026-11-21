@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { peerProblem } from "./peer.ts";
+import { peerProblem, standInDaemon } from "./peer.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -95,19 +95,26 @@ test("fleet move: from another machine a session only comes back here, and the p
     const r = await (await request.post("/api/fleet/machines", { data: { name: "devbox", daemon_url: PEER, workspace_root: ROOT } })).json();
     first = r.machines.find((m: any) => m.id === r.id);
   }
-  // A third machine that is only a record with a granted directory: nothing moves there.
+  // A third machine that answers (a stand-in: nothing moves there), and one that does not.
+  const tag = Date.now().toString(36);
+  const box = standInDaemon("third");
+  await box.open();
+  const thirdName = `Third box ${tag}`;
+  const third = (await (await request.post("/api/fleet/machines", { data: { name: thirdName, daemon_url: box.url(), workspace_root: "/srv/third" } })).json()).id as string;
   const stub = createServer((_, res) => res.writeHead(404).end("{}"));
   await new Promise<void>((resolve, reject) => stub.once("error", reject).listen(0, "127.0.0.1", resolve));
-  const thirdName = `Third box ${Date.now().toString(36)}`;
-  const third = (await (await request.post("/api/fleet/machines", { data: { name: thirdName, daemon_url: `http://127.0.0.1:${(stub.address() as AddressInfo).port}`, workspace_root: "/srv/third" } })).json()).id as string;
+  const silent = (await (await request.post("/api/fleet/machines", { data: { name: `Silent box ${tag}`, daemon_url: `http://127.0.0.1:${(stub.address() as AddressInfo).port}`, workspace_root: "/srv/silent" } })).json()).id as string;
+  await expect.poll(async () => (await (await request.get(`/api/fleet/machines/${third}`)).json()).state).toBe("ready");
   const s = (await (await request.post("/api/sessions", { data: { title: "Move twice", model } })).json()).session;
   const to = (machine: string) => page.locator(`[data-testid="move-to"][data-machine="${machine}"]`);
   try {
     await page.goto(`/s/${s.id}`);
     await page.getByTestId("machine-chip").click();
-    // At home both machines are offered.
+    // At home the machines that answer are offered; the one that does not is marked and is no move.
     await expect(to(first.id)).toBeEnabled();
     await expect(to(third)).toBeEnabled();
+    await expect(to(silent)).toBeDisabled();
+    await expect(to(silent)).toContainText("offline");
     await expect(page.getByTestId("move-later")).toHaveCount(0);
     await page.getByRole("radio", { name: "place only" }).click();
     await to(first.id).click();
@@ -120,7 +127,8 @@ test("fleet move: from another machine a session only comes back here, and the p
     await expect(to(third)).toHaveCount(0);
     const later = page.getByTestId("move-later");
     await expect(later.locator(`[data-testid="move-unavailable"][data-machine="${third}"]`)).toContainText(thirdName);
-    await expect(later).toContainText(`Move it back here first, then to ${thirdName}.`);
+    await expect(later.locator(`[data-testid="move-unavailable"][data-machine="${silent}"]`)).toContainText("offline");
+    await expect(later).toContainText("Move it back here first, then to one of these.");
     await shoot(page, "fleet-move-03-only-back");
     // What the picker no longer offers is what the daemon refuses.
     const refused = await request.post(`/api/sessions/${s.id}/handoff`, { data: { machine_id: third, carry: "none" } });
@@ -133,11 +141,14 @@ test("fleet move: from another machine a session only comes back here, and the p
     await expect(page.getByTestId("move-progress")).toHaveAttribute("data-state", "done");
     await expect(to(first.id)).toBeEnabled();
     await expect(to(third)).toBeEnabled();
+    await expect(to(silent)).toBeDisabled();
     await expect(page.getByTestId("move-later")).toHaveCount(0);
     await shoot(page, "fleet-move-04-home-again");
   } finally {
+    await page.goto("about:blank");
     await request.delete(`/api/sessions/${s.id}`);
-    await request.delete(`/api/fleet/machines/${third}`);
+    for (const id of [third, silent]) await request.delete(`/api/fleet/machines/${id}`);
     stub.close();
+    await box.close();
   }
 });

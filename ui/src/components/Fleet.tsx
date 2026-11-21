@@ -85,7 +85,8 @@ export function MachineChip({ session }: { session: Session }) {
     }
     catch (e) { setErr(failed(e, { at: "Fleet" })); }
   };
-  const dests = [...(runs ? [{ id: "local", name: machines.find((m) => m.source === "local")?.name ?? "this machine", sub: "back here" }] : []), ...targets.map((m) => ({ id: m.id, name: m.name, sub: m.workspace_root! }))];
+  // A machine that does not answer is listed, marked, and not a move.
+  const dests = [...(runs ? [{ id: "local", name: machines.find((m) => m.source === "local")?.name ?? "this machine", sub: "back here", off: false }] : []), ...targets.map((m) => ({ id: m.id, name: m.name, sub: m.state === "offline" ? "offline" : m.workspace_root!, off: m.state === "offline" }))];
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger data-testid="machine-chip" title={`Its tools run on ${name}, in ${session.workspace}${where?.reach === "offline" ? `; ${name} does not answer now` : ""}`} className={cn(cls, "hover:text-fg data-popup-open:border-line-strong")} {...tag}>{chip}</Popover.Trigger>
@@ -109,7 +110,7 @@ export function MachineChip({ session }: { session: Session }) {
                   </span>
                 </div>
                 {dests.map((d) => (
-                  <button key={d.id} type="button" data-testid="move-to" data-machine={d.id} disabled={h?.state === "running"} onClick={() => move(d.id)} className="flex h-11 w-full items-center gap-2.5 rounded-md px-2.5 text-left hover:bg-hover disabled:opacity-50">
+                  <button key={d.id} type="button" data-testid="move-to" data-machine={d.id} data-offline={d.off || undefined} title={d.off ? `${d.name} does not answer now` : undefined} disabled={h?.state === "running" || d.off} onClick={() => move(d.id)} className="flex h-11 w-full items-center gap-2.5 rounded-md px-2.5 text-left hover:bg-hover disabled:opacity-50 disabled:hover:bg-transparent">
                     {d.id === "local" ? <Cpu className="size-4 shrink-0 text-faint" /> : <Server className="size-4 shrink-0 text-faint" />}
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-ui font-medium">{d.name}</span>
@@ -124,15 +125,15 @@ export function MachineChip({ session }: { session: Session }) {
               <div className="border-t border-line p-1.5" data-testid="move-later">
                 <div className="px-2 pb-1 pt-1 text-micro font-medium text-faint">After it is back here</div>
                 {later.map((m) => (
-                  <div key={m.id} data-testid="move-unavailable" data-machine={m.id} aria-disabled="true" className="flex h-11 items-center gap-2.5 px-2.5 text-faint">
+                  <div key={m.id} data-testid="move-unavailable" data-machine={m.id} data-offline={m.state === "offline" || undefined} aria-disabled="true" className="flex h-11 items-center gap-2.5 px-2.5 text-faint">
                     <Server className="size-4 shrink-0" />
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-ui font-medium text-muted">{m.name}</span>
-                      <span className="block truncate font-mono text-micro">{m.workspace_root}</span>
+                      <span className="block truncate text-ui font-medium">{m.name}</span>
+                      <span className="block truncate font-mono text-micro">{m.state === "offline" ? "offline" : m.workspace_root}</span>
                     </span>
                   </div>
                 ))}
-                <p className="px-2.5 pb-1.5 pt-1 text-caption leading-snug text-muted">
+                <p className="px-2 pb-1.5 pt-1 text-caption leading-snug text-muted">
                   A session goes to another machine from this one. Move it back here first, then to {later.length === 1 ? later[0]!.name : "one of these"}.
                 </p>
               </div>
