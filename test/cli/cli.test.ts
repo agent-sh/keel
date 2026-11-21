@@ -714,3 +714,37 @@ describe("a secret in a background job across a restart", () => {
     } finally { d.kill("SIGTERM"); await d.exited; }
   }, 60_000);
 });
+
+// The binary makes its backups in a worker it carries as text, started from a
+// folder that is not the repository; what it wrote restores with the binary.
+describe("a backup made and restored by the binary", () => {
+  const state = join(SCRATCH, "state-backup");
+  const serve = async () => {
+    const d = Bun.spawn([BIN, "serve", "--bind", "127.0.0.1:0", "--state-dir", state, "--workspace", WS], { cwd: "/", env: ENV, stdout: "pipe", stderr: "ignore" });
+    const reader = d.stdout.getReader();
+    let seen = "";
+    while (!seen.includes("listening")) seen += new TextDecoder().decode((await reader.read()).value);
+    reader.releaseLock();
+    return d;
+  };
+  const k = (args: string[]) => keel(args, { state, cwd: "/" });
+  test("keel backup, then keel restore of it once the daemon has stopped", async () => {
+    let d = await serve();
+    try {
+      const kept = json((await k(["run", "--json", "kept by the backup"])).out).session_id;
+      const made = await k(["backup"]);
+      expect([made.code, made.err]).toEqual([0, ""]);
+      expect(made.out).toContain("checked");
+      const later = json((await k(["run", "--json", "written after the backup"])).out).session_id;
+      const [b] = json((await k(["backups", "--json"])).out).backups;
+      expect(b.reason).toBe("asked for");
+      d.kill("SIGTERM");
+      await d.exited;
+      const back = await k(["restore", b.name, "--state-dir", state]);
+      expect([back.code, back.err]).toEqual([0, ""]);
+      d = await serve();
+      const ids = (await k(["ls", "--ids"])).out.trim().split("\n");
+      expect([ids.includes(kept), ids.includes(later)]).toEqual([true, false]);
+    } finally { d.kill("SIGTERM"); await d.exited; }
+  }, 60_000);
+});

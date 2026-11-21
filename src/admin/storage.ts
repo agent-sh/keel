@@ -3,11 +3,11 @@
 // in two steps (list, then delete what is still that old and unchanged),
 // leftovers of deleted sessions, the owner's archive policy, and backups of
 // the durable state that are checked when written and can be restored.
-import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
-import { GRANT_FILES, writeOwnFile } from "../core/ownfile.ts";
+import { closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
+import { writeOwnFile } from "../core/ownfile.ts";
+import { configFiles, listBackups, verify, type Backup, type BackupDone, type BackupJob } from "./backup.ts";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
@@ -16,6 +16,8 @@ import { jobsOf, leftText, jobLive, stopJob, stopJobs } from "../tools/jobs.ts";
 import { daysOrNull, registerSettings, settings } from "./settings.ts";
 import { readText } from "../core/proc.ts";
 import { readsOf } from "../server/reads.ts";
+
+export { backupConfig, configFiles, HASH_CHUNK, hashFile, verify } from "./backup.ts";
 
 const DAY = 86_400_000;
 
@@ -290,55 +292,29 @@ export class Storage {
   // ---- backups ----
 
   private get backupRoot() { return join(this.dir, "backups"); }
+  private backing: Promise<unknown> = Promise.resolve();
 
-  // A consistent copy of the database (VACUUM INTO, safe while the daemon
-  // writes) and the JSON settings files, checked by opening the copy before it
-  // counts: integrity, and the same sessions and events as the source.
-  backup(reason: string) {
+  // A backup of the state (src/admin/backup.ts says what it holds), made in a
+  // worker: the daemon goes on answering while the database is copied, hashed
+  // and checked. One at a time; it settles once the backup is whole, checked
+  // and has its name, or fails with nothing left behind.
+  backup(reason: string): Promise<Backup> {
+    const run = this.backing.then(() => this.backupNow(reason));
+    this.backing = run.catch(() => {});
+    return run;
+  }
+
+  private async backupNow(reason: string): Promise<Backup> {
     // Two backups in the same millisecond get distinct names (-1, -2, ...).
     const base = `keel-${new Date().toISOString().replace(/[:.]/g, "-")}`;
     let stamp = base.slice(5);
     for (let n = 1; existsSync(join(this.backupRoot, `keel-${stamp}`)) || existsSync(join(this.backupRoot, `.keel-${stamp}.partial`)); n++) stamp = `${base.slice(5)}-${n}`;
     const tmp = join(this.backupRoot, `.keel-${stamp}.partial`);
     const final = join(this.backupRoot, `keel-${stamp}`);
-    mkdirSync(tmp, { recursive: true });
     try {
-      const counts = this.counts(this.store.db);
-      this.store.db.run(`VACUUM INTO '${join(tmp, "keel.db").replace(/'/g, "''")}'`);
-      const files: string[] = ["keel.db"];
-      for (const f of readdirSync(this.dir)) {
-        if (!f.endsWith(".json") || f.endsWith(".tmp")) continue;
-        copyFileSync(join(this.dir, f), join(tmp, f));
-        files.push(f);
-      }
-      // Uploaded files the prompts refer to (<state>/attachments/<sha256>/<name>).
-      // They never change once written, so a hard link is a full copy at no
-      // extra space; another filesystem gets a real copy.
-      const att = join(this.dir, "attachments");
-      if (existsSync(att)) for (const id of readdirSync(att)) {
-        if (!/^[0-9a-f]{64}$/.test(id)) continue;
-        for (const name of readdirSync(join(att, id))) {
-          mkdirSync(join(tmp, "attachments", id), { recursive: true });
-          const from = join(att, id, name), to = join(tmp, "attachments", id, name);
-          try { linkSync(from, to); } catch { copyFileSync(from, to); }
-          files.push(`attachments/${id}/${name}`);
-        }
-      }
-      const carried = this.config ? this.carryConfig(resolve(this.config), tmp) : null;
-      const check = verify(tmp);
-      if (!check.ok) throw new Error(`the backup did not check out: ${check.why}`);
-      if (check.sessions !== counts.sessions || check.events < counts.events) throw new Error(`the backup holds ${check.sessions} sessions and ${check.events} events, the store ${counts.sessions} and ${counts.events}`);
-      const manifest: Manifest = {
-        created_ms: Date.now(), reason, sessions: check.sessions, events: check.events,
-        files: [
-          // First, so a keel from before config was carried stops at once (see OLDER_KEEL).
-          ...(carried?.files.length ? [{ name: OLDER_KEEL, bytes: 0, sha256: "", older_keel: true as const }] : []),
-          ...files.map((f) => ({ name: f, bytes: statSync(join(tmp, f)).size, sha256: hashFile(join(tmp, f)) })),
-          ...(carried?.files ?? []),
-        ],
-        ...(carried ? { config: { dir: carried.dir, skipped: carried.skipped } } : {}),
-      };
-      writeFileSync(join(tmp, "manifest.json"), JSON.stringify(manifest, null, 2), { mode: 0o600 });
+      mkdirSync(tmp, { recursive: true });
+      const done = await inWorker({ stateDir: this.dir, root: this.backupRoot, tmp, reason, ...(this.config ? { config: resolve(this.config) } : {}) });
+      if (done.skipped.length) this.errors.capture?.("server", new Error(`the backup left out ${done.skipped.length} config file${done.skipped.length === 1 ? "" : "s"} it could not read: ${done.skipped.map((s) => s.name).join(", ")}`), { at: "backup config", dir: done.config });
       renameSync(tmp, final);
     } catch (e) {
       rmSync(tmp, { recursive: true, force: true });
@@ -349,65 +325,6 @@ export class Storage {
     return this.backups().find((b) => b.name === basename(final))!;
   }
 
-  // The owner's config folder (MCP servers, hooks, skills, plugins, agents,
-  // instructions) goes with the state, under config/: each file at its own
-  // mode, in folders only the owner can open, so a copy is never easier to
-  // read than its original.
-  // A file that is as the newest backup of this folder has it (the same
-  // size, time and mode) is a second name for that backup's copy, not a new
-  // one: a backup's files are never written again, so sharing them is safe,
-  // and an unchanged folder costs a listing. (Never a link to the live file:
-  // an editor that writes in place would change the backup with it.)
-  // A file that cannot be read, or goes away meanwhile, is left out and
-  // named in the manifest: nothing in this folder fails a backup, so nothing
-  // in it calls off the restart that waits on one.
-  private carryConfig(dir: string, tmp: string) {
-    const prev = this.backups().find((b) => !b.unreadable && b.config === dir);
-    const was = new Map<string, ManifestFile>();
-    if (prev) try {
-      for (const f of (JSON.parse(readFileSync(join(prev.path, "manifest.json"), "utf8")) as Manifest).files) if (f.name.startsWith("config/")) was.set(f.name, f);
-    } catch {} // nothing to share with
-    const { files: listed, skipped } = configFiles(dir);
-    const files: ManifestFile[] = [];
-    for (const rel of listed) {
-      const name = `config/${rel}`, from = join(dir, rel), to = join(tmp, name);
-      try {
-        const st = lstatSync(from);
-        if (!st.isFile()) continue; // became a folder or a link since the listing
-        const mode = st.mode & 0o777, old = was.get(name);
-        mkdirSync(dirname(to), { recursive: true, mode: 0o700 });
-        // An unchanged file shares the previous backup's copy. Unchanged is by
-        // content, and that copy is read too: a copy that was damaged since is
-        // not carried into every backup after it.
-        if (old && old.bytes === st.size && old.mode === mode && hashFile(from) === old.sha256) {
-          try {
-            linkSync(join(prev!.path, name), to);
-            if (hashFile(to) === old.sha256) {
-              files.push({ ...old, mtime_ms: st.mtimeMs });
-              continue;
-            }
-            rmSync(to, { force: true });
-          } catch {} // another filesystem, or that copy is gone: a real copy
-        }
-        copyFileSync(from, to);
-        chmodSync(to, mode);
-        files.push({ name, bytes: statSync(to).size, sha256: hashFile(to), mtime_ms: st.mtimeMs, mode });
-      } catch (e) {
-        rmSync(to, { force: true });
-        if ((e as NodeJS.ErrnoException).code !== "ENOENT") skipped.push({ name: rel, why: (e as Error).message });
-      }
-    }
-    if (skipped.length) this.errors.capture?.("server", new Error(`the backup left out ${skipped.length} config file${skipped.length === 1 ? "" : "s"} it could not read: ${skipped.map((s) => s.name).join(", ")}`), { at: "backup config", dir });
-    return { dir, files, skipped };
-  }
-
-  private counts(db: Database) {
-    return {
-      sessions: db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM sessions").get()!.n,
-      events: db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM events").get()!.n,
-    };
-  }
-
   private prune() {
     const keep = settings().backup.keep as number;
     for (const b of this.backups().filter((b) => !b.unreadable).slice(keep)) rmSync(join(this.backupRoot, b.name), { recursive: true, force: true });
@@ -415,140 +332,32 @@ export class Storage {
     if (existsSync(this.backupRoot)) for (const d of readdirSync(this.backupRoot)) if (d.endsWith(".partial")) rmSync(join(this.backupRoot, d), { recursive: true, force: true });
   }
 
-  // Every backup folder, newest first. One whose manifest cannot be read is
-  // listed as such (its time from the folder name) rather than hiding the
-  // others, and is never pruned: nothing says what it holds.
-  backups(): Backup[] {
-    if (!existsSync(this.backupRoot)) return [];
-    return readdirSync(this.backupRoot)
-      .filter((d) => d.startsWith("keel-") && existsSync(join(this.backupRoot, d, "manifest.json")))
-      .map((name): Backup => {
-        const path = join(this.backupRoot, name);
-        try {
-          const m = JSON.parse(readFileSync(join(path, "manifest.json"), "utf8"));
-          if (typeof m.created_ms !== "number" || !Array.isArray(m.files)) throw new Error("it lacks created_ms or files");
-          return { name, path, created_ms: m.created_ms, reason: m.reason, sessions: m.sessions, events: m.events, bytes: (m.files as { bytes: number }[]).reduce((n, f) => n + f.bytes, 0), ...(typeof m.config?.dir === "string" ? { config: m.config.dir } : {}) };
-        } catch (e) {
-          return { name, path, created_ms: stampMs(name), reason: "", sessions: null, events: null, bytes: null, unreadable: `manifest.json cannot be read: ${(e as Error).message}` };
-        }
-      })
-      // By the folder's own stamp (when the backup began, the same clock for a
-      // readable manifest and a damaged one), then its -N suffix.
-      .sort((a, b) => (stampMs(b.name) ?? b.created_ms ?? 0) - (stampMs(a.name) ?? a.created_ms ?? 0) || order(b.name) - order(a.name));
-  }
+  backups(): Backup[] { return listBackups(this.backupRoot); }
 }
 
-// `config`: the config folder the backup carries files of, when it carries any.
-type Backup = { name: string; path: string; created_ms: number | null; reason: string; sessions: number | null; events: number | null; bytes: number | null; unreadable?: string; config?: string };
+// Set by the build: the worker's bundle as text. The binary has no source
+// file to start a worker from; run from source, the worker is its file.
+declare const __KEEL_BACKUP_WORKER_JS__: string | undefined;
 
-type ManifestFile = { name: string; bytes: number; sha256: string; mtime_ms?: number; mode?: number; older_keel?: true };
-type Manifest = { created_ms: number; reason: string; sessions: number; events: number; files: ManifestFile[]; config?: { dir: string; skipped: { name: string; why: string }[] } };
-
-// A backup that carries config files cannot be restored by a keel from
-// before it did (it would take config/ for a state file and stop on it).
-// That keel checks every file the manifest lists and says which one is
-// missing, so the first entry of such a manifest is this sentence: its
-// restore then ends with "the backup cannot be restored: a keel that knows
-// ... is missing", the state untouched. This keel skips the entry.
-const OLDER_KEEL = "a keel that knows backups with a config folder (this one carries it: restore with the keel that made it, or a newer one)";
-
-// keel-2026-11-19T10-00-00-000Z[-N] -> its time, or null; and its N.
-const order = (name: string) => Number(/Z-(\d+)$/.exec(name)?.[1] ?? 0);
-const stampMs = (name: string) => {
-  const m = /^keel-(\d{4}-\d\d-\d\d)T(\d\d)-(\d\d)-(\d\d)-(\d{3})Z(?:-\d+)?$/.exec(name);
-  const t = m ? Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`) : NaN;
-  return Number.isNaN(t) ? null : t;
-};
-
-// The files of a config folder a backup carries, as paths inside it: every
-// regular file. Left out: links (what they point at is not the folder's), the
-// .prev and .tmp files an edit leaves beside a config file, folders that
-// are a tool's own store and not configuration (a name that starts with a
-// dot: a clone's history, a virtual environment, a cache; and
-// node_modules), and a sign-in (GRANT_FILES): its tokens rotate, so an
-// older copy no longer signs in and would replace one that does, and a copy
-// in every backup would outlive a sign-out.
-// `skipped`: what could not be listed (a folder that cannot be opened).
-// Something that went away meanwhile is just not there.
-export function configFiles(dir: string, under = "", skipped: { name: string; why: string }[] = []): { files: string[]; skipped: { name: string; why: string }[] } {
-  const files: string[] = [];
-  const gone = (e: unknown) => (e as NodeJS.ErrnoException).code === "ENOENT";
-  let names: string[] = [];
-  try { names = readdirSync(join(dir, under)).sort(); } catch (e) {
-    if (under && !gone(e)) skipped.push({ name: `${under}/`, why: (e as Error).message });
-  }
-  for (const name of names) {
-    const rel = under ? join(under, name) : name;
-    try {
-      const st = lstatSync(join(dir, rel));
-      if (st.isDirectory()) { if (!name.startsWith(".") && name !== "node_modules") files.push(...configFiles(dir, rel, skipped).files); }
-      else if (st.isFile() && !name.endsWith(".prev") && !name.endsWith(".tmp") && !(under === "" && GRANT_FILES.has(name))) files.push(rel);
-    } catch (e) {
-      if (!gone(e)) skipped.push({ name: rel, why: (e as Error).message });
-    }
-  }
-  return { files, skipped };
-}
-
-// What a backup says of the config files it carries: how many, and the
-// folder they were read from (null: none, or a backup from before that was
-// written down).
-export function backupConfig(backupDir: string): { dir: string | null; files: number } {
-  let dir: string | null = null;
-  try { dir = (JSON.parse(readFileSync(join(backupDir, "manifest.json"), "utf8")) as Manifest).config?.dir ?? null; } catch {}
-  return { dir, files: configFiles(join(backupDir, "config")).files.length };
+// Runs one backup job in a worker of its own and ends the worker. A worker
+// that dies without an answer fails the backup.
+function inWorker(job: BackupJob): Promise<BackupDone> {
+  return new Promise((ok, fail) => {
+    const built = typeof __KEEL_BACKUP_WORKER_JS__ === "string" ? URL.createObjectURL(new Blob([__KEEL_BACKUP_WORKER_JS__], { type: "text/javascript" })) : undefined;
+    const w = new Worker(built ?? new URL("./backup-worker.ts", import.meta.url).href);
+    const end = (f: () => void) => {
+      w.terminate();
+      if (built) URL.revokeObjectURL(built);
+      f();
+    };
+    w.onmessage = (e: MessageEvent<{ ok: true; done: BackupDone } | { ok: false; error: string }>) => end(() => (e.data.ok ? ok(e.data.done) : fail(new Error(e.data.error))));
+    w.onerror = (e) => end(() => fail(new Error(`the backup worker failed: ${e.message}`)));
+    w.postMessage(job);
+  });
 }
 
 export const shadowDir = (stateDir: string, workspace: string) =>
   join(stateDir, "checkpoints", createHash("sha256").update(workspace).digest("hex").slice(0, 16) + ".git");
-
-// A file's SHA-256, read a megabyte at a time into one buffer: the database
-// of a backup can be gigabytes, and so can an upload.
-export const HASH_CHUNK = 1024 * 1024;
-export function hashFile(path: string, read: typeof readSync = readSync): string {
-  const hash = createHash("sha256");
-  const buf = Buffer.allocUnsafe(HASH_CHUNK);
-  const fd = openSync(path, "r");
-  try {
-    for (let n = read(fd, buf, 0, buf.length, null); n > 0; n = read(fd, buf, 0, buf.length, null)) hash.update(buf.subarray(0, n));
-  } finally {
-    closeSync(fd);
-  }
-  return hash.digest("hex");
-}
-
-// Opens a backup's database read-only and checks it: SQLite's integrity check,
-// the files against the manifest, and what it holds.
-export function verify(dir: string): { ok: true; sessions: number; events: number } | { ok: false; why: string } {
-  const path = join(dir, "keel.db");
-  if (!existsSync(path)) return { ok: false, why: "no keel.db in it" };
-  const mf = join(dir, "manifest.json");
-  if (existsSync(mf)) {
-    const m = JSON.parse(readFileSync(mf, "utf8"));
-    for (const f of m.files as ManifestFile[]) {
-      if (f.older_keel) continue; // a sentence for a keel that cannot restore this backup, not a file
-      if (!existsSync(join(dir, f.name))) return { ok: false, why: `${f.name} is missing` };
-      const sha = hashFile(join(dir, f.name));
-      if (sha !== f.sha256) return { ok: false, why: `${f.name} changed since the backup was made` };
-      // An attachment's folder is named by its content's hash.
-      const a = /^attachments\/([0-9a-f]{64})\//.exec(f.name);
-      if (a && a[1] !== sha) return { ok: false, why: `${f.name} does not match its hash` };
-    }
-  }
-  let db: Database | undefined;
-  try {
-    db = new Database(path, { readonly: true });
-    const r = db.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get();
-    if (r?.integrity_check !== "ok") return { ok: false, why: `integrity check: ${r?.integrity_check}` };
-    const sessions = db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM sessions").get()!.n;
-    const events = db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM events").get()!.n;
-    return { ok: true, sessions, events };
-  } catch (e) {
-    return { ok: false, why: (e as Error).message };
-  } finally {
-    db?.close();
-  }
-}
 
 // The swap a restore is in the middle of: the names it moves, in order,
 // relative to the state folder. Written (and synced) before the first move,

@@ -69,6 +69,11 @@ const readsJs = await reads.outputs[0]!.text();
 const checkpoint = await Bun.build({ entrypoints: [join(root, "src/core/checkpoint-worker.ts")], target: "bun", minify: true, define });
 if (!checkpoint.success) fail(checkpoint);
 const checkpointJs = await checkpoint.outputs[0]!.text();
+// The worker a backup is made in (src/admin/backup-worker.ts), carried the same way:
+// a worker of the binary is started from text, whatever folder the daemon runs in.
+const worker = await Bun.build({ entrypoints: [join(root, "src/admin/backup-worker.ts")], target: "bun", minify: true, define });
+if (!worker.success) fail(worker);
+const workerJs = await worker.outputs[0]!.text();
 const res = await Bun.build({
   entrypoints: [join(root, "src/main.ts")],
   compile: target ? { outfile: out, target } : { outfile: out },
@@ -76,7 +81,7 @@ const res = await Bun.build({
   splitting: true,
   sourcemap: "none",
   plugins: [tailwind],
-  define: { ...define, __KEEL_API__: JSON.stringify(api), __KEEL_UI_BUILT__: String(built), __KEEL_HANDS_JS__: JSON.stringify(handsJs), __KEEL_READS_JS__: JSON.stringify(readsJs), __KEEL_CHECKPOINT_JS__: JSON.stringify(checkpointJs) },
+  define: { ...define, __KEEL_API__: JSON.stringify(api), __KEEL_UI_BUILT__: String(built), __KEEL_HANDS_JS__: JSON.stringify(handsJs), __KEEL_READS_JS__: JSON.stringify(readsJs), __KEEL_CHECKPOINT_JS__: JSON.stringify(checkpointJs), __KEEL_BACKUP_WORKER_JS__: JSON.stringify(workerJs) },
 });
 if (!res.success) fail(res);
 await uiBundle(`${out}-ui.tar.gz`);

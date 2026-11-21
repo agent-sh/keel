@@ -72,9 +72,11 @@ export const adminRoutes: RouteModule = (deps) => {
   // restart parks wrote after it: the results of its cut calls and its end.
   // Restored, that turn is found open, as after a crash: the start closes
   // it as cut and continues it.
-  daemon.onRestart(() => {
+  // It is made in a worker and the restart waits for it: the daemon answers
+  // meanwhile (it is draining, so nothing new starts).
+  daemon.onRestart(async () => {
     if (!settings().backup.before_restart) return;
-    try { storage.backup("before a restart"); } catch (e) { throw new Error(`The backup before the restart failed: ${(e as Error).message}`, { cause: e }); }
+    try { await storage.backup("before a restart"); } catch (e) { throw new Error(`The backup before the restart failed: ${(e as Error).message}`, { cause: e }); }
   });
   onSettings(() => awake.update());
   const policy = () => storage.applyPolicy().catch((e) => errors.capture("server", e, { at: "archive policy" }));
@@ -172,7 +174,7 @@ export const adminRoutes: RouteModule = (deps) => {
 
     "/api/backups": {
       GET: () => json({ backups: storage.backups(), settings: settings().backup }),
-      POST: async () => json({ backup: storage.backup("asked for") }, 201),
+      POST: async () => json({ backup: await storage.backup("asked for") }, 201),
     },
 
     "/api/daemon": { GET: () => json(daemon.status()) },

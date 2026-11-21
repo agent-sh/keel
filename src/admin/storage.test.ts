@@ -15,7 +15,7 @@ import { adminCommands } from "../cli/admin.ts";
 import { mobileCommands } from "../cli/mobile.ts";
 import { HASH_CHUNK, hashFile, restore, Storage, undoCutRestore, verify } from "./storage.ts";
 
-test("a backup restores into an empty state folder", () => {
+test("a backup restores into an empty state folder", async () => {
   const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
   try {
     const src = new Store(join(root, "src"));
@@ -24,7 +24,7 @@ test("a backup restores into an empty state folder", () => {
     src.append(s.id, "user", { text: "hello", images: [image] });
     src.append(s.id, "assistant", { blocks: [{ type: "text", text: "hi" }], model: "p:m", usage: {}, stop: "end_turn" });
     const storage = new Storage(src, {} as any, new Bus(), {} as any);
-    const b = storage.backup("test");
+    const b = await storage.backup("test");
     expect(b.sessions).toBe(1);
     expect(b.events).toBe(2);
 
@@ -44,11 +44,34 @@ test("a backup restores into an empty state folder", () => {
   }
 });
 
+// A backup is made in a worker: the daemon's loop goes on turning while the
+// database is copied, hashed and checked, and a second backup asked for
+// meanwhile waits its turn.
+test("the loop turns while a backup is made", async () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
+  try {
+    const src = new Store(join(root, "src"));
+    const s = src.createSession({ model: "p:m", workspace: root, title: "kept" });
+    for (let i = 0; i < 200; i++) src.append(s.id, "user", { text: "x".repeat(4000) });
+    const storage = new Storage(src, {} as any, new Bus(), {} as any);
+    let turns = 0;
+    const tick = setInterval(() => turns++, 1);
+    const [a, b] = await Promise.all([storage.backup("one"), storage.backup("two")]);
+    clearInterval(tick);
+    expect(turns).toBeGreaterThan(0);
+    expect(a.name).not.toBe(b.name);
+    expect(storage.backups().map((x) => x.reason)).toEqual(["two", "one"]);
+    expect(readdirSync(join(src.stateDir, "backups")).filter((d) => d.endsWith(".partial"))).toEqual([]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // The owner's config folder goes with the state. A restore puts its files
 // back only into a folder the caller names, each at the mode the live file
 // has, with what it replaced kept as .prev. A sign-in is neither copied nor
 // put back, and nothing in the folder can fail a backup.
-test("a backup carries the config folder, and a restore puts it back where it is told to", () => {
+test("a backup carries the config folder, and a restore puts it back where it is told to", async () => {
   const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
   const config = join(root, "config");
   try {
@@ -71,7 +94,7 @@ test("a backup carries the config folder, and a restore puts it back where it is
     src.createSession({ model: "p:m", workspace: root, title: "kept" });
     const caught: unknown[][] = [];
     const storage = new Storage(src, {} as any, new Bus(), { capture: (...a: unknown[]) => caught.push(a) } as any, config);
-    const b = storage.backup("test");
+    const b = await storage.backup("test");
     const mode = (p: string) => fs.statSync(p).mode & 0o777;
     const held = (dir: string, under = ""): string[] => readdirSync(join(dir, under)).flatMap((n) => (fs.statSync(join(dir, under, n)).isDirectory() ? held(dir, join(under, n)) : [join(under, n)])).sort();
     expect(held(join(b.path, "config"))).toEqual(["agents/scout.md", "fcm-service-account.json", "mcp.json", "skills/x/SKILL.md"]);
@@ -89,7 +112,7 @@ test("a backup carries the config folder, and a restore puts it back where it is
 
     // The next backup: an unchanged file is a second name for the first backup's copy, a changed one is copied.
     writeFileSync(join(config, "agents", "scout.md"), "scout, changed");
-    const b2 = storage.backup("test");
+    const b2 = await storage.backup("test");
     const ino = (p: string) => fs.statSync(p).ino;
     expect(ino(join(b2.path, "config", "mcp.json"))).toBe(ino(join(b.path, "config", "mcp.json")));
     expect(ino(join(b2.path, "config", "agents", "scout.md"))).not.toBe(ino(join(b.path, "config", "agents", "scout.md")));
@@ -132,7 +155,7 @@ test("a backup carries the config folder, and a restore puts it back where it is
 // A file that did not change shares the previous backup's copy. A copy that
 // was changed inside a backup since is not shared again: the next backup
 // holds the live file and checks out, where it used to carry the damage on.
-test("a config copy damaged inside one backup is not linked into the next", () => {
+test("a config copy damaged inside one backup is not linked into the next", async () => {
   const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
   const config = join(root, "config");
   try {
@@ -141,12 +164,12 @@ test("a config copy damaged inside one backup is not linked into the next", () =
     const store = new Store(join(root, "src"));
     store.createSession({ model: "p:m", workspace: root, title: "kept" });
     const storage = new Storage(store, {} as any, new Bus(), { capture: () => {} } as any, config);
-    const one = storage.backup("test");
-    const two = storage.backup("test");
+    const one = await storage.backup("test");
+    const two = await storage.backup("test");
     expect(fs.statSync(join(two.path, "config", "mcp.json")).ino).toBe(fs.statSync(join(one.path, "config", "mcp.json")).ino);
     // Written in place, so every backup linked to it changes with it.
     writeFileSync(join(two.path, "config", "mcp.json"), '{"servers":{"b":{"command":"b"}}}');
-    const three = storage.backup("test");
+    const three = await storage.backup("test");
     expect(verify(three.path).ok).toBe(true);
     expect(fs.readFileSync(join(three.path, "config", "mcp.json"), "utf8")).toBe('{"servers":{"a":{"command":"a"}}}');
     store.db.close();
@@ -169,7 +192,7 @@ test("keel restore leaves the config folder alone unless asked, and asks for the
     }
     const src = new Store(join(root, "one"));
     src.createSession({ model: "p:m", workspace: root, title: "kept" });
-    const b = new Storage(src, {} as any, new Bus(), {} as any, made).backup("test");
+    const b = await new Storage(src, {} as any, new Bus(), {} as any, made).backup("test");
     src.db.close();
     const state = join(root, "two");
     const run = async (...args: string[]) => { said.length = 0; return adminCommands.restore([b.path, "--state-dir", state, ...args]); };
@@ -222,7 +245,7 @@ test("keel restore leaves the config folder alone unless asked, and asks for the
   }
 });
 
-test("a backup carries uploaded files and a restore reads as the backup did", () => {
+test("a backup carries uploaded files and a restore reads as the backup did", async () => {
   const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
   try {
     const src = new Store(join(root, "src"));
@@ -232,7 +255,7 @@ test("a backup carries uploaded files and a restore reads as the backup did", ()
     const s = src.createSession({ model: "p:m", workspace: root });
     src.append(s.id, "user", { text: "read it", attachments: [ref] });
     src.append(s.id, "user", { text: "again", attachments: [ref] });
-    const b = new Storage(src, {} as any, new Bus(), {} as any).backup("test");
+    const b = await new Storage(src, {} as any, new Bus(), {} as any).backup("test");
     // A settings file written after the backup does not survive its restore.
     writeFileSync(join(src.stateDir, "settings.json"), JSON.stringify({ archive: { archive_idle_days: 99 } }));
     src.db.close();
@@ -256,7 +279,7 @@ test("a backup carries uploaded files and a restore reads as the backup did", ()
 // A file of several chunks: the same hash as reading it whole gives, no read
 // larger than a chunk; a backup carries it, and a byte changed at its very end
 // (in the last chunk) fails the check.
-test("a large file is hashed a chunk at a time, and a change at its end is caught", () => {
+test("a large file is hashed a chunk at a time, and a change at its end is caught", async () => {
   const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
   try {
     const bytes = Buffer.alloc(3 * HASH_CHUNK + 4321);
@@ -278,7 +301,7 @@ test("a large file is hashed a chunk at a time, and a change at its end is caugh
     expect(ref.id).toBe(whole);
     const s = src.createSession({ model: "p:m", workspace: root });
     src.append(s.id, "user", { text: "read it", attachments: [ref] });
-    const b = new Storage(src, {} as any, new Bus(), {} as any).backup("test");
+    const b = await new Storage(src, {} as any, new Bus(), {} as any).backup("test");
     const m = JSON.parse(readFileSync(join(b.path, "manifest.json"), "utf8")) as { files: { name: string; sha256: string; bytes: number }[] };
     expect(m.files.find((f) => f.name === `attachments/${whole}/big.bin`)).toEqual({ name: `attachments/${whole}/big.bin`, bytes: bytes.length, sha256: whole });
     expect(m.files.find((f) => f.name === "keel.db")!.sha256).toBe(createHash("sha256").update(readFileSync(join(b.path, "keel.db"))).digest("hex"));
@@ -303,12 +326,12 @@ test("a large file is hashed a chunk at a time, and a change at its end is caugh
   }
 });
 
-test("an unreadable manifest is listed beside the others, not instead of them", () => {
+test("an unreadable manifest is listed beside the others, not instead of them", async () => {
   const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
   try {
     const src = new Store(join(root, "src"));
     const storage = new Storage(src, {} as any, new Bus(), {} as any);
-    const names = [storage.backup("a").name, storage.backup("b").name, storage.backup("c").name];
+    const names = [(await storage.backup("a")).name, (await storage.backup("b")).name, (await storage.backup("c")).name];
     writeFileSync(join(src.stateDir, "backups", names[1]!, "manifest.json"), '{"created_ms": 1,');
     const list = storage.backups();
     expect(list.map((b) => b.name)).toEqual([...names].reverse());
@@ -365,10 +388,10 @@ mock.module("node:fs", () => ({ ...real, copyFileSync: failing(real.copyFileSync
 
 // A backup holding one session, and a state folder in use holding another,
 // with a settings file the backup does not have.
-function backupAndState(root: string) {
+async function backupAndState(root: string) {
   const src = new Store(join(root, "src"));
   src.createSession({ model: "p:m", workspace: root, title: "from the backup" });
-  const b = new Storage(src, {} as any, new Bus(), {} as any).backup("test");
+  const b = await new Storage(src, {} as any, new Bus(), {} as any).backup("test");
   src.db.close();
   const dst = join(root, "dst");
   const cur = new Store(dst);
@@ -389,10 +412,10 @@ const stateOf = (dst: string) => ({
 });
 const IN_USE = { sessions: ["in use"], settings: JSON.stringify({ archive: { archive_idle_days: 7 } }), left: [] };
 
-test("a restore that fails while the backup goes in leaves the state as it was, and the retry restores", () => {
+test("a restore that fails while the backup goes in leaves the state as it was, and the retry restores", async () => {
   const root = mkdtempSync(join(tmpdir(), "keel-restore-"));
   try {
-    const { backup, dst } = backupAndState(root);
+    const { backup, dst } = await backupAndState(root);
     // The fault: the backup's database cannot be put in place (the one in use can be moved back).
     fault = (to, from) => to === join(dst, "keel.db") && !from.includes("before-restore-");
     let failed: Error | undefined;
@@ -415,10 +438,10 @@ test("a restore that fails while the backup goes in leaves the state as it was, 
   }
 });
 
-test("a restore cut in the middle of its swap is undone before the state is used again", () => {
+test("a restore cut in the middle of its swap is undone before the state is used again", async () => {
   const root = mkdtempSync(join(tmpdir(), "keel-restore-"));
   try {
-    const { backup, dst } = backupAndState(root);
+    const { backup, dst } = await backupAndState(root);
     // The disk goes away in the middle: the database cannot be put in place,
     // and nothing can be moved back either.
     let gone = false;
@@ -453,12 +476,12 @@ const whole = (dst: string) => {
   return now.sessions?.[0] === "in use" ? expect(now).toMatchObject({ sessions: IN_USE.sessions, settings: IN_USE.settings }) : expect(now).toMatchObject(FROM_BACKUP);
 };
 
-test("a restore killed while it tidies up leaves a state that opens, the old one or the backup", () => {
+test("a restore killed while it tidies up leaves a state that opens, the old one or the backup", async () => {
   // Its swap is done; the process dies at one of the two things it removes after it.
   for (const victim of ["restore.pending", ".restore-"]) {
     const root = mkdtempSync(join(tmpdir(), "keel-restore-"));
     try {
-      const { backup, dst } = backupAndState(root);
+      const { backup, dst } = await backupAndState(root);
       dying = (path) => path.startsWith(join(dst, victim));
       expect(() => restore(dst, backup)).toThrow(KILLED);
       dying = null;
@@ -478,10 +501,10 @@ test("a restore killed while it tidies up leaves a state that opens, the old one
   }
 });
 
-test("an undo killed while it removes the staged copy does not cost the database in use", () => {
+test("an undo killed while it removes the staged copy does not cost the database in use", async () => {
   const root = mkdtempSync(join(tmpdir(), "keel-restore-"));
   try {
-    const { backup, dst } = backupAndState(root);
+    const { backup, dst } = await backupAndState(root);
     // The restore is cut in its swap and cannot undo it.
     let gone = false;
     fault = (to) => gone || (gone = to === join(dst, "keel.db"));
@@ -502,10 +525,10 @@ test("an undo killed while it removes the staged copy does not cost the database
   }
 });
 
-test("a restore.pending that cannot be read moves nothing and is said plainly", () => {
+test("a restore.pending that cannot be read moves nothing and is said plainly", async () => {
   const root = mkdtempSync(join(tmpdir(), "keel-restore-"));
   try {
-    const { backup, dst } = backupAndState(root);
+    const { backup, dst } = await backupAndState(root);
     for (const bad of ["", "{", JSON.stringify({ aside: "before-restore-x", stage: ".restore-x.partial", moves: [["keel.db", "../elsewhere/keel.db"]] })]) {
       writeFileSync(join(dst, "restore.pending"), bad);
       expect(undoCutRestore(dst)).toBe("unreadable");
@@ -526,7 +549,7 @@ test("a command that opens the state by itself does not make an empty database i
   const root = mkdtempSync(join(tmpdir(), "keel-restore-"));
   const log = console.log;
   try {
-    const { backup, dst } = backupAndState(root);
+    const { backup, dst } = await backupAndState(root);
     let gone = false;
     fault = (to) => gone || (gone = to === join(dst, "keel.db"));
     expect(() => restore(dst, backup)).toThrow("could not be undone now");
