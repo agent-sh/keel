@@ -1040,7 +1040,7 @@ async function takeoverRig() {
     idle: (ms: number) => rig.resumes.resume(rig.m, "claude", "c1", { when: "idle", jobs: "keep", wait_ms: ms } as any),
     async until(f: () => boolean) { for (let i = 0; i < 300 && !f(); i++) await Bun.sleep(10); return f(); },
     // What the helper does when asked: "lost" ends the original and the answer never arrives.
-    stop: "answer" as "answer" | "lost" | "unsent",
+    stop: "answer" as "answer" | "lost" | "unsent" | "leaving",
     read: "ok" as "ok" | "fail",
     store: undefined as unknown as InstanceType<typeof Store>,
     resumes: undefined as unknown as InstanceType<typeof Resumes>,
@@ -1063,7 +1063,7 @@ async function takeoverRig() {
         },
       };
       const fleet: any = {
-        row: (id: string) => (id === "s1" ? rig.m : undefined),
+        row: (id: string) => (id === rig.m.id ? rig.m : undefined),
         async handsJson(_id: string, path: string) {
           if (path.includes("/activity")) {
             if (!rig.alive) return { state: "ended", why: "", in_flight: [], helpers: [], checked_ms: Date.now() };
@@ -1072,6 +1072,7 @@ async function takeoverRig() {
           if (path.includes("/harness/end")) {
             if (rig.stop === "unsent") throw new LinkError("the link dropped");
             rig.stops++;
+            if (rig.stop === "leaving") throw new LinkError("no answer"); // still there: the test lets it go
             rig.alive = false;
             await rig.hold.stop;
             if (rig.stop === "lost") throw new LinkError("no answer");
@@ -1085,6 +1086,7 @@ async function takeoverRig() {
       const providers: any = { resolve: async () => ({}), models: async () => [], defaultModel: async () => "fixture:m" };
       rig.resumes = new Resumes({ store: rig.store, bus: new Bus(), engine: { isRunning: () => false } as any, providers, errors: { capture: () => ({}) } as any }, fleet, imports);
       if ("poll" in rig.resumes) (rig.resumes as any).poll = 10;
+      if ("exitMs" in rig.resumes) (rig.resumes as any).exitMs = 150; // what an original gets to leave after its stop
     },
     async settled() { for (let i = 0; i < 200 && (rig.resumes as any).ends.size; i++) await Bun.sleep(10); },
     // The daemon's start: what the last one still owed is made good.
@@ -1156,7 +1158,7 @@ test("a stop whose answer never came is settled by looking, never sent again", a
   try {
     // The original is ended and the answer is lost: the next start finds it gone and owes the copy.
     rig.stop = "lost";
-    expect(await rig.now().catch((e) => e.constructor.name)).toBe("LinkError");
+    expect(await rig.now().catch((e) => e)).toMatchObject({ status: 502, more: { maybe_stopped: true } });
     rig.boot();
     rig.recover();
     await rig.settled();
@@ -1179,6 +1181,67 @@ test("a stop whose answer never came is settled by looking, never sent again", a
     expect((other.resumes as any).ends.size).toBe(0);
   } finally {
     other.close();
+  }
+});
+
+// The helper gives an original a few seconds to leave. A look in that time
+// still sees its process: the receipt is kept and looked at again, not dropped.
+test("a stop whose answer never came is not forgotten while the original is still leaving", async () => {
+  const rig = await takeoverRig();
+  try {
+    rig.stop = "leaving";
+    await rig.now().catch(() => {});
+    rig.boot();
+    rig.recover();
+    await Bun.sleep(50); // looked at, still there, within its time to leave
+    expect([(rig.resumes as any).ends.size, rig.copies]).toEqual([1, 0]);
+    rig.alive = false; // now it is gone
+    await rig.settled();
+    expect([rig.stops, rig.copies]).toEqual([1, 1]);
+    expect(rig.notes().filter((t) => t.includes("call, interrupted: Run the slow check"))).toHaveLength(1);
+  } finally {
+    rig.close();
+  }
+});
+
+// The same lost answer with no restart: the error says the original may have
+// been stopped, the card's next look settles it, and the copy is there to finish.
+test("a stop whose answer never came leaves the owner the copy to finish", async () => {
+  const rig = await takeoverRig();
+  try {
+    rig.stop = "lost";
+    const failed = await rig.now().catch((e) => e);
+    expect(failed.message).toBe("box did not answer the stop: no answer. The original may have been stopped: look again, and finish the copy if it was.");
+    const seen = await rig.resumes.activity(rig.m, "claude", "c1");
+    expect(seen.state).toBe("ended");
+    expect(rig.resumes.pending("s1", "claude", "c1", seen)).toMatchObject({ how: "SIGTERM", in_flight: 2 });
+    expect(await rig.resumes.resume(rig.m, "claude", "c1", { when: "copy", jobs: "keep" })).toMatchObject({ action: "taken_over", stopped: true });
+    expect([rig.stops, rig.copies]).toEqual([1, 1]);
+    expect(rig.notes().filter((t) => t.includes("was ended"))).toHaveLength(1);
+  } finally {
+    rig.close();
+  }
+});
+
+// The receipt holds command lines from the far machine: it is stored redacted,
+// as the note made from it is. One for a machine that was removed goes.
+test("an end receipt is stored redacted, and goes with a machine that was removed", async () => {
+  const rig = await takeoverRig();
+  try {
+    rig.store.redact = (_s, _k, v) => JSON.parse(JSON.stringify(v).replaceAll("bench.sh", "[secret:1a2b3c4d]"));
+    rig.read = "fail";
+    await rig.now().catch(() => {});
+    const row = rig.store.db.query<{ data: string }, []>("SELECT data FROM fleet_resume_ends").get()!.data;
+    expect(row).toContain("[secret:1a2b3c4d]");
+    expect(row).not.toContain("bench.sh");
+    rig.m.id = "gone"; // the machine the receipt names is no longer in the fleet
+    rig.boot();
+    rig.recover();
+    await rig.settled();
+    expect(rig.store.db.query("SELECT 1 FROM fleet_resume_ends").all()).toEqual([]);
+    expect(rig.copies).toBe(0);
+  } finally {
+    rig.close();
   }
 });
 

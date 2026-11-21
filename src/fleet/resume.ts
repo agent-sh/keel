@@ -21,7 +21,11 @@
 // It is written before the stop is sent ("stopping") and again with the
 // machine's answer ("stopped"). A stop whose answer never came is settled by
 // looking: the original still runs (nothing was ended, the receipt goes), or
-// it is gone (ended, with what the owner was shown as the work in flight).
+// it is gone (ended, with what the owner was shown as the work in flight). An
+// original that is still leaving is looked at again for as long as the helper
+// gives it to leave. The card's own look settles it too, so a lost answer
+// leaves the owner the copy to finish, not an empty card. The receipt passes
+// through the store's redaction like the note made from it.
 // The note in the copy and the receipt's removal are one write: one copy,
 // told once.
 //
@@ -62,7 +66,7 @@ const open = (w: Wait) => w.state === "waiting" || w.state === "finishing";
 type EndReceipt = {
   machine_id: string; harness: Harness; id: string; model?: string; waited_ms?: number;
   state: "stopping" | "stopped"; process: NonNullable<Seen["process"]>; jobs: "keep" | "end";
-  in_flight: InFlight[]; ended?: Ended; stopped_ms?: number; error?: string;
+  in_flight: InFlight[]; ended?: Ended; sent_ms?: number; stopped_ms?: number; error?: string;
   // The stop's answer never came: the original was found gone afterwards.
   unconfirmed?: boolean;
 };
@@ -81,6 +85,7 @@ export class ResumeError extends Error {
 const POLL_MS = 2000;
 const RECOVER_MS = 20_000; // a copy owed at the start is tried again this often while the machine does not answer
 const RECOVER_TRIES = 6;
+const EXIT_MS = 15_000; // the helper gives an original 10 s to leave after the stop; a little more before it counts as still running
 const KEEP_MS = 10 * 60_000; // a finished wait stays on its row this long
 const clock = (ms: number) => new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 const mins = (ms: number) => (ms < 90_000 ? `${Math.max(1, Math.round(ms / 1000))} s` : `${Math.round(ms / 60_000)} min`);
@@ -104,8 +109,9 @@ export function inFlightLines(items: InFlight[], ended: Pick<Ended, "jobs" | "ca
 
 export class Resumes {
   private waits = new Map<string, Waiting>();
-  // How often a wait looks (a test looks faster).
+  // How often a wait looks, and how long an original may take to leave after its stop (a test is faster).
   poll = POLL_MS;
+  exitMs = EXIT_MS;
   private ends = new Map<string, EndReceipt>();
   // The conversations a resume works on now: one at a time each, so one copy.
   private busy = new Set<string>();
@@ -147,7 +153,9 @@ export class Resumes {
     return t;
   }
 
-  private saveEnd(k: string, r: EndReceipt) {
+  // Redacted as the note is: it holds command lines from the far machine.
+  private saveEnd(k: string, receipt: EndReceipt) {
+    const r = this.d.store.redact(null, "note", receipt) as EndReceipt;
     this.ends.set(k, r);
     this.d.store.db.query("INSERT OR REPLACE INTO fleet_resume_ends (key, data) VALUES (?, ?)").run(k, JSON.stringify(r));
   }
@@ -160,7 +168,8 @@ export class Resumes {
     const r = this.ends.get(k);
     if (!r || this.busy.has(k)) return;
     const m = this.fleet.row(r.machine_id);
-    if (!m?.workspace_root) return this.saveEnd(k, { ...r, error: "the machine is no longer enabled with a granted directory" });
+    if (!m) return this.dropEnd(k); // the machine was removed: there is nothing left to copy from
+    if (!m.workspace_root) return this.saveEnd(k, { ...r, error: "the machine is no longer enabled with a granted directory" });
     this.busy.add(k);
     try {
       const owed = await this.owed(m, k);
@@ -183,13 +192,16 @@ export class Resumes {
     return r?.state === "stopping" ? this.settle(m, r) : r;
   }
 
-  // A stop that was sent and whose answer is not known. The original still
+  // A stop that was sent and whose answer is not known, against a look at the
+  // machine. The original is gone: the stop ended it, and the copy is owed with
+  // what was in flight. It is still there as the same process, within the time
+  // the helper gives it to leave: "leaving", look again. Otherwise it still
   // runs (or runs again, started there since): nothing of this stop is owed.
-  // It is gone: the stop ended it, and the copy is owed with what was in flight.
-  private async settle(m: MachineRow, r: EndReceipt): Promise<EndReceipt | undefined> {
+  private settled(r: EndReceipt, seen: Seen): EndReceipt | "leaving" | undefined {
     const k = this.key(r.machine_id, r.harness, r.id);
-    const seen = await this.activity(m, r.harness, r.id);
     if (seen.process) {
+      const own = seen.process.pid === r.process.pid && seen.process.started_ms === r.process.started_ms;
+      if (own && r.sent_ms && Date.now() - r.sent_ms < this.exitMs) return "leaving";
       this.dropEnd(k);
       // A wait that had sent it waits again, until its deadline.
       const w = this.waits.get(k);
@@ -197,9 +209,25 @@ export class Resumes {
       return undefined;
     }
     const jobs = r.in_flight.filter((i) => i.kind === "job").map((j) => ({ label: j.label, command: j.command, pid: j.pid, pgid: j.pgid, since_ms: j.since_ms, running: r.jobs === "keep" }));
-    const stopped: EndReceipt = { ...r, state: "stopped", unconfirmed: true, stopped_ms: Date.now(), ended: { ended: true, was_running: true, how: "SIGTERM", in_flight: r.in_flight, jobs, calls: [] } };
-    this.saveEnd(k, stopped);
-    return stopped;
+    this.saveEnd(k, { ...r, state: "stopped", unconfirmed: true, stopped_ms: Date.now(), ended: { ended: true, was_running: true, how: "SIGTERM", in_flight: r.in_flight, jobs, calls: [] } });
+    return this.ends.get(k);
+  }
+
+  private async settle(m: MachineRow, r: EndReceipt): Promise<EndReceipt | undefined> {
+    for (;;) {
+      const out = this.settled(r, await this.activity(m, r.harness, r.id));
+      if (out !== "leaving") return out;
+      await Bun.sleep(Math.min(1000, this.poll));
+    }
+  }
+
+  // What a look at the machine leaves the card to do: the copy of an original
+  // that was ended. A stop whose answer never came is settled by this look.
+  pending(machine: string, harness: string, id: string, seen: Seen): Pending | undefined {
+    const k = this.key(machine, harness, id);
+    const r = this.ends.get(k);
+    if (r?.state === "stopping" && !this.busy.has(k)) this.settled(r, seen);
+    return this.pendingOf(machine, harness, id);
   }
 
   private key = (machine: string, harness: string, id: string) => `${machine}:${harness}:${id}`;
@@ -309,10 +337,14 @@ export class Resumes {
       // Stored before the stop leaves: a stop whose answer is lost (the link, or
       // this daemon going down) is settled from it, never sent blind again.
       if (o.wait) this.setWait(o.wait, "finishing");
-      this.saveEnd(k, { machine_id: m.id, harness, id, model: o.model, waited_ms: o.waited_ms, state: "stopping", process: seen.process, jobs: o.jobs, in_flight: seen.in_flight });
+      this.saveEnd(k, { machine_id: m.id, harness, id, model: o.model, waited_ms: o.waited_ms, state: "stopping", process: seen.process, jobs: o.jobs, in_flight: seen.in_flight, sent_ms: Date.now() });
       const ended = await this.fleet.handsJson<Ended>(m.id, "/api/fleet/hands/harness/end", {
         method: "POST", timeout: 60_000,
         body: JSON.stringify({ harness, id, pid: seen.process.pid, started_ms: seen.process.started_ms, jobs: o.jobs, revision: seen.revision, idle_ms: o.idle_ms }),
+      }).catch((e) => {
+        // No answer says nothing about the stop: the receipt stays, and the next look settles it.
+        if (!(e instanceof LinkError)) throw e;
+        throw new ResumeError(502, `${m.name} did not answer the stop: ${e.message}. The original may have been stopped: look again, and finish the copy if it was.`, { link: true, maybe_stopped: true });
       });
       // An answer: nothing was ended, or it was and the copy is owed from here.
       if (!ended.ended || !ended.was_running) this.dropEnd(k);
@@ -477,7 +509,7 @@ export class Resumes {
       if (changed && open(w)) this.emit(w);
     } catch (e) {
       // A machine that does not answer is asked again until the deadline; anything else ends the wait.
-      if (!(e instanceof LinkError)) {
+      if (!(e instanceof LinkError) && !(e instanceof ResumeError && e.more.link === true)) {
         if (!(e instanceof ResumeError)) this.d.errors.capture("server", e, { at: "resume wait", machine: w.machine_id });
         return void (open(w) && this.end(w, "failed", { error: (e as Error).message }));
       }

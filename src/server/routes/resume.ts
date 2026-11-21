@@ -60,7 +60,8 @@ export const resumeRoutes: RouteModule = (deps: Deps) => {
         const t = named(req, { harness: u.get("harness"), id: u.get("id") });
         if (t instanceof Response) return t;
         try {
-          return json({ ...(await service().activity(t.m, t.harness, t.id)), wait: service().waitOf(t.m.id, t.harness, t.id), pending: service().pendingOf(t.m.id, t.harness, t.id) });
+          const seen = await service().activity(t.m, t.harness, t.id);
+          return json({ ...seen, pending: service().pending(t.m.id, t.harness, t.id, seen), wait: service().waitOf(t.m.id, t.harness, t.id) });
         } catch (e) {
           return failed(t.m, e);
         }
