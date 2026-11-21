@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { shoot, tabInto } from "./shots.ts";
 
 // Feature: the layout is the owner's. The number of panes is the one picked
 // in the rail (1, 2, 3, more when the window holds them) and Keel never adds
@@ -203,4 +203,85 @@ test("panes by number, dragging, and text size", async ({ page, request }) => {
   await page.keyboard.press("Control+0");
 
   for (const id of [a, b, c, d, long]) await request.delete(`/api/sessions/${id}`);
+});
+
+// The pane count and the Settings choices (theme, text size, send key) are
+// radio groups: one Tab stop on the option chosen, the arrows move to the
+// next option and choose it, the next Tab leaves the group.
+test("pane count and settings choices by keyboard", async ({ page, request }) => {
+  const s = (await (await request.post("/api/sessions", { data: { model: MODEL, title: `Choices by keyboard ${Date.now().toString(36)}` } })).json()).session;
+  const stored = (k: string) => page.evaluate((k) => JSON.parse(localStorage.getItem(k) ?? "null"), k);
+  const at = (group: ReturnType<typeof page.getByTestId>) => group.locator(":focus");
+
+  await page.goto(`/s/${s.id}`);
+  const panes = page.getByTestId("bridge").locator(":scope > [data-slot]");
+  const count = page.getByTestId("pane-count");
+  await page.getByTestId("panes-2").click();
+  await expect(panes).toHaveCount(2);
+  await tabInto(page, count);
+  await expect(at(count)).toHaveAttribute("data-testid", "panes-2");
+  await page.keyboard.press("ArrowRight");
+  await expect(at(count)).toHaveAttribute("data-testid", "panes-3");
+  await expect(panes).toHaveCount(3);
+  await shoot(page, "layout-09-pane-count-by-keyboard");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  await expect(at(count)).toHaveAttribute("data-testid", "panes-1");
+  await expect(panes).toHaveCount(1);
+  expect((await stored("keel.panes")).count).toBe(1);
+  await page.keyboard.press("Tab");
+  await expect(at(count)).toHaveCount(0);
+
+  await page.goto("/settings/general");
+  const theme = page.getByRole("radiogroup", { name: "Theme" });
+  const sizes = page.getByTestId("text-size");
+  const send = page.getByRole("radiogroup", { name: "Send with" });
+  const dark = () => page.evaluate(() => document.documentElement.classList.contains("dark"));
+  await page.emulateMedia({ colorScheme: "light" });
+  await tabInto(page, theme);
+  await expect(at(theme)).toHaveText("System");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await expect(at(theme)).toHaveText("Dark");
+  await expect.poll(dark).toBe(true);
+  expect(await page.evaluate(() => localStorage.getItem("keel.theme"))).toBe("dark");
+  await page.keyboard.press("ArrowLeft");
+  await expect(at(theme)).toHaveText("Light");
+  await expect.poll(dark).toBe(false);
+  // The next Tab leaves the theme for the text size, on the size in use.
+  await page.keyboard.press("Tab");
+  await expect(at(theme)).toHaveCount(0);
+  await expect(at(sizes)).toHaveAttribute("data-testid", "text-size-100");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await expect(at(sizes)).toHaveAttribute("data-testid", "text-size-120");
+  expect(await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize))).toBeCloseTo(20.4, 1);
+  expect(await stored("keel.textScale")).toBe(1.2);
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  expect(await stored("keel.textScale")).toBe(1);
+  await page.keyboard.press("Tab");
+  await expect(at(send)).toHaveText("Enter");
+  await page.keyboard.press("ArrowRight");
+  await expect(at(send)).toHaveText("Ctrl Enter");
+  await expect(page.getByText("Ctrl Enter sends, Enter makes a new line.")).toBeVisible();
+  expect(await stored("keel.enterSends")).toBe(false);
+  await shoot(page, "layout-10-settings-choices-by-keyboard");
+  // Out of the group and back: it is entered on the option chosen, from either end.
+  await page.keyboard.press("Tab");
+  await expect(at(send)).toHaveCount(0);
+  await page.keyboard.press("Shift+Tab");
+  await expect(at(send)).toHaveText("Ctrl Enter");
+  await page.keyboard.press("Shift+Tab");
+  await expect(at(sizes)).toHaveAttribute("data-testid", "text-size-100");
+
+  // The send key is the one chosen: Enter now makes a new line.
+  await page.goto(`/s/${s.id}`);
+  const composer = page.getByTestId("composer");
+  await composer.fill("one");
+  await composer.press("Enter");
+  await composer.pressSequentially("two");
+  await expect(composer).toHaveValue("one\ntwo");
+  await expect(page.getByTestId("user-message")).toHaveCount(0);
+  await request.delete(`/api/sessions/${s.id}`);
 });

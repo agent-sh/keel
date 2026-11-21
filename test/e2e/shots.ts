@@ -55,3 +55,16 @@ export async function choose(select: Locator, pick: string | { label: string }) 
   await option.click();
   await list.waitFor({ state: "hidden" });
 }
+
+// Enters a group of controls the way the Tab key does: focus on whatever comes
+// before it, then one Tab (a group that leads the page is entered from what
+// follows it, with Shift Tab).
+export async function tabInto(page: Page, group: Locator) {
+  const back = await group.evaluate((g) => {
+    const all = [...document.querySelectorAll<HTMLElement>("a[href], button, input, textarea, select, [tabindex]")].filter((el) => el.tabIndex >= 0 && !el.hasAttribute("disabled") && el.getClientRects().length > 0 && !g.contains(el));
+    const before = all.filter((el) => g.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING).pop();
+    (before ?? all[0]!).focus();
+    return !before;
+  });
+  await page.keyboard.press(back ? "Shift+Tab" : "Tab");
+}

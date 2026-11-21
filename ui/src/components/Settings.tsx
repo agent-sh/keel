@@ -1,3 +1,5 @@
+import { Radio } from "@base-ui/react/radio";
+import { RadioGroup } from "@base-ui/react/radio-group";
 import { ArrowLeft, Bot, Info, Keyboard, Menu, Search, SlidersHorizontal } from "lucide-react";
 import { Fragment, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { settingsSections } from "../lib/extend.ts";
@@ -20,22 +22,23 @@ export function SettingRow({ label, hint, children }: { label: string; hint?: Re
   );
 }
 
+// One choice of a few: a radio group with one Tab stop, on the option chosen;
+// the arrows move to the next option and choose it.
 export function Segmented<T extends string>({ value, options, onChange, label }: { value: T; options: { value: T; label: string }[]; onChange: (v: T) => void; label: string }) {
   return (
-    <div role="radiogroup" aria-label={label} className="inline-flex rounded-md border border-line bg-sunken p-0.5">
+    <RadioGroup aria-label={label} value={value} onValueChange={(v) => onChange(v as T)} className="inline-flex rounded-md border border-line bg-sunken p-0.5">
       {options.map((o) => (
-        <button
+        <Radio.Root
           key={o.value}
-          type="button"
-          role="radio"
-          aria-checked={value === o.value}
-          onClick={() => onChange(o.value)}
+          value={o.value}
+          nativeButton
+          render={<button type="button" />}
           className={cn("h-7 rounded-sm px-3 text-ui text-muted transition-colors", value === o.value ? "bg-raised text-fg shadow-1" : "hover:text-fg")}
         >
           {o.label}
-        </button>
+        </Radio.Root>
       ))}
-    </div>
+    </RadioGroup>
   );
 }
 
@@ -48,24 +51,23 @@ export function Card({ children }: { children: ReactNode }) {
 function TextSize() {
   const scale = useUI((s) => s.scale);
   return (
-    <div role="radiogroup" aria-label="Text size" data-testid="text-size" className="inline-flex items-stretch rounded-md border border-line bg-sunken p-0.5">
+    <RadioGroup aria-label="Text size" data-testid="text-size" value={scale} onValueChange={(v) => setScale(v as number)} className="inline-flex items-stretch rounded-md border border-line bg-sunken p-0.5">
       {SCALES.map((v, i) => (
-        <button
+        <Radio.Root
           key={v}
-          type="button"
-          role="radio"
-          aria-checked={scale === v}
+          value={v}
+          nativeButton
+          render={<button type="button" />}
           aria-label={`${SCALE_NAMES[i]}, ${Math.round(v * 100)}%`}
           title={`${SCALE_NAMES[i]} (${Math.round(v * 100)}%)`}
           data-testid={`text-size-${Math.round(v * 100)}`}
-          onClick={() => setScale(v)}
           className={cn("grid h-8 w-9 place-items-center rounded-sm font-semibold leading-none text-muted transition-colors", scale === v ? "bg-raised text-fg shadow-1" : "hover:text-fg")}
           style={{ fontSize: `${Math.round(13 * v * 10) / 10}px` }}
         >
           A
-        </button>
+        </Radio.Root>
       ))}
-    </div>
+    </RadioGroup>
   );
 }
 
