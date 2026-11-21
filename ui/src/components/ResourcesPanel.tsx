@@ -5,6 +5,7 @@ import { api, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
 import { TimeChart } from "./Chart.tsx";
+import { Stat, Stats } from "./Stat.tsx";
 import { fmtMs } from "./UsagePanel.tsx";
 
 export const fmtBytes = (b: number | null | undefined) => {
@@ -26,16 +27,6 @@ type Report = {
   disk: { path: string; free_bytes: number; total_bytes: number } | null;
   history: { ts_ms: number; cpu_percent: number; daemon_cpu_percent: number; rss_bytes: number; daemon_rss_bytes: number; processes: number }[];
 };
-
-function Tile({ label, value, sub, testid }: { label: string; value: string; sub?: string; testid?: string }) {
-  return (
-    <div className="rounded-lg border border-line bg-raised px-4 py-3 shadow-1" data-testid={testid}>
-      <div className="text-caption text-muted">{label}</div>
-      <div className="mt-1 text-title font-semibold tabular-nums tracking-[-0.01em]">{value}</div>
-      {sub && <div className="mt-0.5 truncate text-caption text-faint">{sub}</div>}
-    </div>
-  );
-}
 
 const th = "px-4 py-1.5 font-normal whitespace-nowrap";
 const td = "px-4 py-1.5 tabular-nums whitespace-nowrap";
@@ -82,12 +73,12 @@ export function ResourcesPanel() {
       <div className="text-caption text-faint">
         Read from /proc every {Math.round(r.interval_ms / 1000)} s. CPU is of one core; memory is resident.
       </div>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Tile testid="tile-memory" label="Memory, all" value={fmtBytes(r.totals.rss_bytes)} sub={`${r.totals.processes} processes, ${r.totals.threads} threads`} />
-        <Tile label="Daemon" value={fmtBytes(d.rss_bytes)} sub={d.growth.per_hour_bytes == null ? `peak ${fmtBytes(d.peak_rss_bytes)}` : `${d.growth.per_hour_bytes >= 0 ? "+" : "-"}${fmtBytes(Math.abs(d.growth.per_hour_bytes))} an hour`} />
-        <Tile testid="tile-cpu" label="CPU now" value={fmtCpu(r.totals.cpu_percent)} sub={`daemon ${fmtCpu(d.cpu_percent)}, ${fmtMs(d.cpu_user_ms + d.cpu_system_ms)} in all`} />
-        <Tile testid="tile-disk" label="Disk free" value={r.disk ? fmtBytes(r.disk.free_bytes) : "unknown"} sub={r.disk ? `of ${fmtBytes(r.disk.total_bytes)} under the state folder` : undefined} />
-      </div>
+      <Stats>
+        <Stat testid="tile-memory" label="Memory, all" value={fmtBytes(r.totals.rss_bytes)} sub={`${r.totals.processes} processes, ${r.totals.threads} threads`} />
+        <Stat label="Daemon" value={fmtBytes(d.rss_bytes)} sub={d.growth.per_hour_bytes == null ? `peak ${fmtBytes(d.peak_rss_bytes)}` : `${d.growth.per_hour_bytes >= 0 ? "+" : "-"}${fmtBytes(Math.abs(d.growth.per_hour_bytes))} an hour`} />
+        <Stat testid="tile-cpu" label="CPU now" value={fmtCpu(r.totals.cpu_percent)} sub={`daemon ${fmtCpu(d.cpu_percent)}, ${fmtMs(d.cpu_user_ms + d.cpu_system_ms)} in all`} />
+        <Stat testid="tile-disk" label="Disk free" value={r.disk ? fmtBytes(r.disk.free_bytes) : "unknown"} sub={r.disk ? `of ${fmtBytes(r.disk.total_bytes)} under the state folder` : undefined} />
+      </Stats>
 
       <section className="rounded-lg border border-line bg-raised p-4 shadow-1">
         <h3 className="mb-3 text-base font-medium">Memory <span className="text-caption font-normal text-faint">last hour</span></h3>

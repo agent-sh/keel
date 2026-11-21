@@ -8,7 +8,7 @@ import { headerActions } from "../lib/extend.ts";
 import { composing } from "../lib/keys.ts";
 import { actions, getState, reportError } from "../lib/store.ts";
 import { navigate, phone, savePref, useUI } from "../lib/ui.ts";
-import { cn, fmtTokens } from "../lib/utils.ts";
+import { cn, fmtSessionCost, fmtTokens } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { archive } from "../lib/sessops.ts";
 import { BackgroundButton, useBackgroundLive } from "./automation/BackgroundPopover.tsx";
@@ -265,7 +265,7 @@ export function SessionHeader({ session }: { session: Session }) {
         title={`Input ${input_.toLocaleString()} tokens (${u.cache_read.toLocaleString()} read from cache), output ${u.output.toLocaleString()}`}
         data-testid="session-usage"
       >
-        {fmtTokens(input_)} in <span className="text-faint">/</span> {fmtTokens(u.output)} out{cached ? <span className="ml-1.5 text-ok">{cached}% cached</span> : null}{u.cost !== undefined ? <span className="ml-1.5" data-testid="session-cost">${u.cost.toFixed(u.cost < 1 ? 4 : 2)}</span> : null}
+        {fmtTokens(input_)} in <span className="text-faint">/</span> {fmtTokens(u.output)} out{cached ? <span className="ml-1.5 text-ok">{cached}% cached</span> : null}{u.cost !== undefined ? <span className="ml-1.5" data-testid="session-cost">{fmtSessionCost(u.cost)}</span> : null}
       </span>}
       {tools.filter((t) => !out.includes(t.id)).map((t) => <span key={t.id} data-tool={t.id} className="k-head-tool">{t.node}</span>)}
       </div>

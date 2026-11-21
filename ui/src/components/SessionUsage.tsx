@@ -1,86 +1,109 @@
-// Tokens of one session, turn by turn: what each turn sent (read from the
-// provider's cache, written to it, or paid in full), what it wrote back, and
-// what it cost. A turn whose first request read less than half of the prompt
-// the turn before sent is marked: that prefix was not reused (an expired cache,
-// a changed prefix); a write that only extends a fully reused prefix is not.
-import type { Session, StoredEvent, Usage } from "../../../src/core/types.ts";
-import { useEffect, useState } from "react";
+// What one session cost and why. The answer first: the cost the header shows
+// (with its agents' when it started any), and what kind of spend it was: the
+// part of a request that cost the most, a compaction, cold starts, the
+// dearest turn, what was spent beside the turns. Then where the money went
+// (by what the tokens were, at their own prices) and the turns, each opening
+// its requests as a table.
+import type { Session, StoredEvent } from "../../../src/core/types.ts";
+import { ChevronRight } from "lucide-react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useAuto } from "../lib/automation.ts";
+import { KINDS, KIND_LABEL, KIND_WORDS, sent, sum, tokensOf, turnCosts, turnsOf, whyOf, type Costs, type Turn, type Why } from "../lib/spend.ts";
 import { api, reportError, useStore } from "../lib/store.ts";
-import { cn, fmtCost, fmtTokens, when } from "../lib/utils.ts";
+import { cn, fmtCost, fmtSessionCost, fmtTokens, when } from "../lib/utils.ts";
+import { PART, Split, SplitBar, type Part } from "./Stat.tsx";
 import { useWholeEvents } from "../lib/whole.ts";
 
-type Turn = { n: number; prompt: string; ts: number; ms?: number; requests: Usage[]; total: Usage; cold: boolean; reused?: { read: number; before: number } };
+// Parts for a bar or a split: cut by money when it is known, else by tokens.
+const parts = (tokens: Costs, costs: Costs | null, output = true): Part[] =>
+  KINDS.filter((k) => output || k !== "output").map((k) => ({ label: KIND_LABEL[k], color: PART[k], value: costs ? costs[k] : tokens[k], also: costs ? fmtTokens(tokens[k]) : undefined, testid: `usage-${k}` }));
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const pct = (share: number) => `${Math.round(100 * share)}%`;
+const NONE: StoredEvent[] = [];
+const h3 = "text-base font-medium";
 
-const zero = (): Usage => ({ input: 0, output: 0, cache_read: 0, cache_write: 0 });
-const add = (a: Usage, b: Usage): Usage => ({
-  input: a.input + b.input,
-  output: a.output + b.output,
-  cache_read: a.cache_read + b.cache_read,
-  cache_write: a.cache_write + b.cache_write,
-  cost: a.cost !== undefined || b.cost !== undefined ? (a.cost ?? 0) + (b.cost ?? 0) : undefined,
-});
-const sent = (u: Usage) => u.input + u.cache_read + u.cache_write;
+// The requests of one turn, one row each, the cost first. Where the panel is narrow (a phone)
+// the counts are short (96k), so the table is whole; where it still scrolls, its edge shows it.
+const HEADS: [string, string][] = [["Request", "The request's place in the turn"], ["Cost", "At the model's price"], ["Read", "Tokens read from the cache"], ["Written", "Tokens written to the cache"], ["New", "New input, at full price"], ["Out", "Output tokens"]];
+const Count = ({ n }: { n: number }) => <><span className="@[30rem]:hidden">{fmtTokens(n)}</span><span className="hidden @[30rem]:inline">{n.toLocaleString()}</span></>;
+function Requests({ t }: { t: Turn }) {
+  const num = "px-1.5 py-1 text-right tabular-nums";
+  let n = 0;
+  return (
+    <div className="@container mt-2 rounded-md border border-line bg-sunken/50" data-testid="usage-requests">
+      <div className="k-scroll-x" data-on="sunken">
+        <table className="w-full text-caption">
+          <thead>
+            <tr className="border-b border-line text-faint">
+              {HEADS.map(([h, full], i) => <th key={h} title={full} className={cn("px-1.5 py-1 font-normal whitespace-nowrap", i ? "text-right" : "text-left")}>{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {t.requests.map((r, i) => (
+              <tr key={i} className="border-b border-line/60 text-muted last:border-0" data-what={r.what}>
+                <td className="px-1.5 py-1 tabular-nums text-faint">{r.what ?? ++n}</td>
+                <td className={cn(num, "text-fg")}>{r.u.cost !== undefined ? fmtCost(r.u.cost) : ""}</td>
+                <td className={num}><Count n={r.u.cache_read} /></td>
+                <td className={num}><Count n={r.u.cache_write} /></td>
+                <td className={num}><Count n={r.u.input} /></td>
+                <td className={num}><Count n={r.u.output} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 
-export function turnsOf(events: StoredEvent[]): Turn[] {
-  const out: Turn[] = [];
-  let prompt = "";
-  let cur: Turn | null = null;
-  for (const e of events) {
-    if (e.kind === "user") prompt = String(e.data.text ?? "");
-    else if (e.kind === "turn_start") cur = { n: out.length + 1, prompt, ts: e.ts, requests: [], total: zero(), cold: false };
-    else if (e.kind === "assistant" && cur && e.data.usage) {
-      cur.requests.push(e.data.usage);
-      cur.total = add(cur.total, e.data.usage);
-    } else if (e.kind === "turn_end" && cur) {
-      cur.ms = e.data.ms;
-      // Cold: the first request read less than half of what the last request
-      // of the turn before sent, the prefix it could have reused.
-      const f = cur.requests[0];
-      const before = out.at(-1)?.requests.at(-1);
-      if (f && before) {
-        cur.reused = { read: f.cache_read, before: sent(before) };
-        cur.cold = sent(before) > 2000 && f.cache_read < 0.5 * sent(before);
-      }
-      out.push(cur);
-      cur = null;
-    }
+// Why it cost that, in one or two sentences: what drove it (a turn, with what drove the turn, or a
+// kind of spend), then a compaction or the turns that started cold. A turn it names is a link to it.
+const LINK = "font-medium text-fg underline decoration-line-strong underline-offset-2 hover:decoration-fg";
+function WhyLine({ why, onTurn }: { why: Why; onTurn: (n: number) => void }) {
+  const said: ReactNode[] = [];
+  const t = why.turn;
+  if (t) {
+    const cause = [t.kind && `mostly ${KIND_WORDS[t.kind]}`, t.compacted && "with a compaction in it", t.cold && "on a cold cache"].filter(Boolean).join(", ");
+    said.push(<span key="turn"><button type="button" className={LINK} data-testid="usage-why-turn" onClick={() => onTurn(t.n)}>Turn {t.n}</button> is {pct(t.share)} of it{cause ? `, ${cause}` : ""}.</span>);
+  } else if (why.top) said.push(`${pct(why.top.share)} of it went on ${KIND_WORDS[why.top.kind]}.`);
+  const next = !t?.compacted && why.compactions ? `${why.compactions.n === 1 ? "A compaction" : `${why.compactions.n} compactions`} took ${why.compactions.cost !== undefined ? fmtCost(why.compactions.cost) : "a cost not known"}.`
+    : null;
+  if (next) said.push(next);
+  else {
+    // The turns that started cold, each a link to its turn (the driver's own cold start is said with it).
+    const cold = why.cold.filter((n) => !(t?.cold && n === t.n));
+    const shown = cold.slice(0, 3);
+    if (shown.length) said.push(
+      <span key="cold" data-testid="usage-why-cold">
+        {/* One turn is linked by its whole name, as the driver above is; several, each by its number. */}
+        {shown.length > 1 && "Turns "}
+        {shown.map((n, i) => <span key={n}>{i ? (i === shown.length - 1 && cold.length === shown.length ? " and " : ", ") : ""}<button type="button" className={LINK} onClick={() => onTurn(n)}>{shown.length > 1 ? n : `Turn ${n}`}</button></span>)}
+        {cold.length > shown.length ? ` and ${cold.length - shown.length} more` : ""} started on a cold cache.
+      </span>,
+    );
   }
-  if (cur) out.push(cur);
-  return out;
-}
-
-function Bar({ u, max }: { u: Usage; max: number }) {
-  const w = (n: number) => `${max ? (100 * n) / max : 0}%`;
-  return (
-    <div className="flex h-2 w-full overflow-hidden rounded-full bg-sunken" aria-hidden>
-      <div className="bg-accent" style={{ width: w(u.cache_read) }} />
-      <div className="bg-brass" style={{ width: w(u.cache_write) }} />
-      <div className="bg-danger" style={{ width: w(u.input) }} />
-    </div>
-  );
-}
-
-function Tile({ label, value, sub, testid }: { label: string; value: string; sub?: string; testid?: string }) {
-  return (
-    <div className="rounded-lg border border-line bg-raised px-3 py-2" data-testid={testid}>
-      <div className="k-label">{label}</div>
-      <div className="mt-0.5 font-mono text-read tabular-nums text-fg">{value}</div>
-      {sub && <div className="text-caption text-muted">{sub}</div>}
-    </div>
-  );
+  if (!said.length) return null;
+  return <p className="mt-1 text-ui leading-relaxed text-muted" data-testid="usage-why">{said.map((x, i) => <span key={i}>{i ? " " : ""}{x}</span>)}</p>;
 }
 
 export function SessionUsage({ session }: { session: Session }) {
   // Every turn of the session, not only the part the page holds (that part shows until the rest is read).
   const held = useStore((s) => s.events[session.id]);
-  const events = useWholeEvents(session.id) ?? held ?? [];
-  const turns = turnsOf(events);
-  const total = turns.reduce((a, t) => add(a, t.total), zero());
-  const all = sent(total);
-  const cached = all ? Math.round((100 * total.cache_read) / all) : 0;
-  const max = Math.max(1, ...turns.map((t) => sent(t.total)));
+  const events = useWholeEvents(session.id) ?? held ?? NONE;
+  const models = useStore((s) => s.models);
+  const turns = useMemo(() => turnsOf(events), [events]);
+  // The session's own figure, the one the header shows: it also counts what ran beside the turns.
+  const whole = session.usage.cost;
+  const why = useMemo(() => whyOf(turns, (id) => models.find((m) => m.id === id)?.price, whole), [turns, models, whole]);
+  const priceOf = (id?: string) => models.find((m) => m.id === id)?.price;
+  // A turn's bar is cut by what it cost, as the legend above it is; by tokens only where a price is not known.
+  const costs = useMemo(() => (why.costs ? turns.map((t) => turnCosts(t, priceOf)) : null), [turns, models, why.costs]);
+  const priced = !!costs && costs.every(Boolean);
+  const max = Math.max(priced ? 0 : 1, ...turns.map((t, i) => (priced ? sum(costs![i]!) : sent(t.total))));
+  // Every row of the turns' tables, a compaction's included: the same count a turn shows.
   const requests = turns.reduce((n, t) => n + t.requests.length, 0);
+  const [open, setOpen] = useState<number | null>(null);
+  const show = (n: number) => { setOpen(n); requestAnimationFrame(() => document.querySelector(`[data-turn="${n}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" })); };
   // What the agents this session started spent: the task's cost is both.
   // Re-read when one of them ends; their requests, not their reports, count.
   const kids = useAuto((s) => Object.values(s.agents).filter((a) => a.parent_id === session.id).map((a) => `${a.id}:${a.status}`).join(","));
@@ -90,54 +113,85 @@ export function SessionUsage({ session }: { session: Session }) {
     api<{ total: { calls: number; cost_usd?: number } }>(`/api/usage?group=session&children_of=${encodeURIComponent(session.id)}`).then((r) => setDelegated(r.total)).catch(reportError);
   }, [session.id, kids]);
   const money = (c?: number) => (c !== undefined ? fmtCost(c) : "not priced");
+  // The headline is the header's figure, digit for digit.
+  const exact = (c?: number) => (c !== undefined ? fmtSessionCost(c) : "not priced");
+  const task = delegated ? (whole !== undefined && delegated.cost_usd !== undefined ? whole + delegated.cost_usd : undefined) : whole;
   return (
-    <div className="k-session-usage flex h-full flex-col gap-3 overflow-y-auto p-3" data-testid="session-usage">
-      {delegated && (
-        <div className="grid grid-cols-3 gap-2" data-testid="usage-task">
-          <Tile testid="usage-direct" label="This session" value={money(total.cost)} sub={`${requests} requests`} />
-          <Tile testid="usage-delegated" label="Its agents" value={money(delegated.cost_usd)} sub={`${delegated.calls} requests, ${kids.split(",").length} agent${kids.split(",").length > 1 ? "s" : ""}`} />
-          <Tile testid="usage-total" label="Task total" value={total.cost !== undefined && delegated.cost_usd !== undefined ? fmtCost(total.cost + delegated.cost_usd) : "not priced"} />
+    <div className="flex h-full flex-col gap-5 overflow-y-auto p-4" data-testid="tokens-panel">
+      <section data-testid="usage-cost">
+        <div className="text-caption text-muted">{delegated ? "This task cost" : "This session cost"}</div>
+        <div className="mt-0.5 text-display font-semibold tabular-nums" data-testid="usage-total">{exact(task)}{session.usage.unpriced ? "+" : ""}</div>
+        <p className="mt-1.5 text-ui leading-relaxed text-muted">
+          {delegated && (
+            <span data-testid="usage-task">
+              <span data-testid="usage-direct">{money(whole)} in this session</span>, <span data-testid="usage-delegated">{money(delegated.cost_usd)} in its {plural(kids.split(",").length, "agent")} ({plural(delegated.calls, "request")})</span>.{" "}
+            </span>
+          )}
+          {/* A mean says nothing where one turn holds most of the cost. */}
+          {turns.length ? `${plural(turns.length, "turn")}, ${plural(requests, "request")}${whole !== undefined && turns.length > 1 && !why.turn ? `, ${fmtCost(whole / turns.length)} a turn` : ""}.` : "No turns yet."}
+          {session.usage.unpriced ? ` ${plural(session.usage.unpriced, "request")} had no known price.` : ""}
+        </p>
+        <WhyLine why={why} onTurn={show} />
+      </section>
+
+      <section>
+        <div className="mb-2.5 flex flex-wrap items-baseline gap-x-2">
+          <h3 className={h3}>{why.costs ? "Where the money went" : "Where the tokens went"}</h3>
+          <span className="text-caption text-faint">{fmtTokens(sum(why.tokens))} tokens in the turns</span>
         </div>
-      )}
-      <div className="grid grid-cols-2 gap-2">
-        <Tile testid="usage-sent" label="Sent" value={fmtTokens(all)} sub={`${cached}% read from cache`} />
-        <Tile label="Written to cache" value={fmtTokens(total.cache_write)} sub={`${fmtTokens(total.input)} paid in full`} />
-        <Tile label="Output" value={fmtTokens(total.output)} sub={`${requests} requests, ${turns.length} turns`} />
-        <Tile testid="usage-cost" label="Cost" value={total.cost !== undefined ? fmtCost(total.cost) : "not priced"} sub={turns.length ? `${fmtCost((total.cost ?? 0) / turns.length)} a turn` : undefined} />
-      </div>
-      <div className="flex items-center gap-3 text-caption text-muted">
-        <span className="flex items-center gap-1"><i className="size-2 rounded-full bg-accent" /> cache read</span>
-        <span className="flex items-center gap-1"><i className="size-2 rounded-full bg-brass" /> written</span>
-        <span className="flex items-center gap-1"><i className="size-2 rounded-full bg-danger" /> full price</span>
-      </div>
-      {!turns.length && <p className="k-empty">No turns yet.</p>}
-      <ol className="flex flex-col gap-1.5">
-        {turns.map((t) => {
-          const s = sent(t.total);
-          return (
-            <li
-              key={t.n}
-              data-testid="usage-turn"
-              className="rounded-md border border-line px-2.5 py-2"
-              title={`${when(t.ts)}\n${t.requests.map((u, i) => `request ${i + 1}: ${u.cache_read} read, ${u.cache_write} written, ${u.input} full, ${u.output} out`).join("\n")}`}
-            >
-              <div className="flex items-baseline gap-2">
-                <span className="font-mono text-caption tabular-nums text-faint">{t.n}</span>
-                <span className="min-w-0 flex-1 truncate text-ui text-fg">{t.prompt || "(no prompt)"}</span>
-                {t.cold && t.reused && <span className="rounded-sm bg-brass-soft px-1.5 py-px text-micro text-brass" data-testid="usage-cold" title={`the first request read ${fmtTokens(t.reused.read)} from cache of the ${fmtTokens(t.reused.before)} the turn before sent`}>cache cold</span>}
-              </div>
-              <div className="mt-1.5"><Bar u={t.total} max={max} /></div>
-              <div className={cn("mt-1 flex gap-3 font-mono text-micro tabular-nums text-muted")}>
-                <span>{fmtTokens(s)} in</span>
-                <span>{s ? Math.round((100 * t.total.cache_read) / s) : 0}% cached</span>
-                <span>{fmtTokens(t.total.output)} out</span>
-                <span>{t.requests.length} req</span>
-                <span className="ml-auto">{t.total.cost !== undefined ? fmtCost(t.total.cost) : ""}</span>
-              </div>
+        <Split parts={parts(why.tokens, why.costs)} format={why.costs ? (v) => fmtCost(v) : fmtTokens} heads={why.costs ? ["Cost", "Tokens", "of cost"] : ["Tokens", "", "of tokens"]} testid="usage-split" />
+      </section>
+
+      <section className="min-h-0">
+        <div className="mb-2 flex items-baseline gap-2">
+          <h3 className={h3}>Turns</h3>
+          <span className="text-caption text-faint">open one for its requests</span>
+        </div>
+        {!turns.length && <p className="k-empty">No turns yet.</p>}
+        <ol className="flex flex-col">
+          {turns.map((t, ti) => {
+            const s = sent(t.total);
+            const on = open === t.n;
+            const compacted = t.requests.filter((r) => r.what).length;
+            return (
+              <li key={t.n} data-testid="usage-turn" data-turn={t.n} className="border-t border-line first:border-0">
+                <button
+                  type="button"
+                  aria-expanded={on}
+                  title={when(t.ts)}
+                  onClick={() => setOpen(on ? null : t.n)}
+                  className="-mx-2 block w-[calc(100%+1rem)] rounded-md px-2 py-2 text-left outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <span className="flex items-baseline gap-2">
+                    <span className="w-4 shrink-0 text-caption tabular-nums text-faint">{t.n}</span>
+                    <span dir="auto" className="min-w-0 flex-1 truncate text-left text-ui text-fg">{t.prompt || "(no prompt)"}</span>
+                    {t.cold && t.reused && <span className="shrink-0 rounded-sm bg-brass-soft px-1.5 py-px text-micro text-brass" data-testid="usage-cold" title={`the first request read ${fmtTokens(t.reused.read)} from cache of the ${fmtTokens(t.reused.before)} the turn before sent`}>cache cold</span>}
+                    {compacted > 0 && <span className="shrink-0 rounded-sm bg-sunken px-1.5 py-px text-micro text-muted" data-testid="usage-compacted">compaction</span>}
+                    <span className="shrink-0 text-ui tabular-nums text-fg" data-testid="usage-turn-cost">{t.total.cost !== undefined ? fmtCost(t.total.cost) : ""}</span>
+                    <ChevronRight className={cn("size-3.5 shrink-0 self-center text-faint transition-transform", on && "rotate-90")} aria-hidden />
+                  </span>
+                  <span className="mt-1.5 block pl-6"><SplitBar parts={parts(tokensOf(t.total), priced ? costs![ti]! : null, priced)} max={max} /></span>
+                  <span className="mt-1 flex flex-wrap gap-x-3 pl-6 text-caption tabular-nums text-muted">
+                    <span>{fmtTokens(s)} sent</span>
+                    <span>{fmtTokens(t.total.output)} out</span>
+                    <span>{plural(t.requests.length, "request")}</span>
+                  </span>
+                </button>
+                {on && <div className="pb-2.5 pl-6 max-sm:pl-0"><Requests t={t} /></div>}
+              </li>
+            );
+          })}
+          {/* What was spent outside the turns' own requests, so the rows add up to the figure at the top. */}
+          {why.beside !== undefined && turns.length > 0 && (
+            <li data-testid="usage-beside" className="flex items-baseline gap-2 border-t border-line py-2">
+              <span className="w-4 shrink-0" aria-hidden />
+              <span className="min-w-0 flex-1 text-ui text-muted">Beside the turns <span className="text-caption text-faint">side questions, readers, summaries on their own</span></span>
+              <span className="shrink-0 text-ui tabular-nums text-fg" data-testid="usage-beside-cost">{fmtCost(why.beside)}</span>
+              <span className="size-3.5 shrink-0" aria-hidden />
             </li>
-          );
-        })}
-      </ol>
+          )}
+        </ol>
+      </section>
     </div>
   );
 }

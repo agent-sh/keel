@@ -8,7 +8,8 @@ import { navigate, setUI } from "../lib/ui.ts";
 import { ago, cn, fmtTokens, when } from "../lib/utils.ts";
 import { TimeChart } from "./Chart.tsx";
 import { Segmented } from "./Settings.tsx";
-import { fmtMs, fmtPct, fmtUsd, Panel, RANGES, Table, Tile, type Range } from "./UsagePanel.tsx";
+import { fmtMs, fmtPct, fmtUsd, Panel, RANGES, Table, type Range } from "./UsagePanel.tsx";
+import { Stat, Stats } from "./Stat.tsx";
 import { Select } from "./Select.tsx";
 
 type ZoneKey = "tools" | "system" | "history" | "tail";
@@ -199,12 +200,12 @@ export function ErrorsView({ range }: { range: Range }) {
   const failed = [...counts.values()].reduce((n, x) => n + x, 0);
   return (
     <div className="flex flex-col gap-4" data-testid="usage-errors">
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Tile label="Requests" value={r.total.calls} sub={`${r.total.interrupted} stopped by the owner`} />
-        <Tile testid="errors-failed" label="Failed or refused" value={failed} tone={failed && failed / Math.max(1, r.total.calls) >= 0.05 ? "danger" : undefined} sub={fmtPct(share(failed, r.total.calls)) + " of requests"} />
-        <Tile label="Most frequent" value={top[0] ? counts.get(top[0])! : 0} sub={top[0] ? CLASS[top[0]] ?? top[0] : "no failures"} />
-        <Tile label="Classes seen" value={top.length} sub={top.length ? top.map((c) => CLASS[c] ?? c).slice(0, 3).join(", ") : "no failures"} />
-      </div>
+      <Stats>
+        <Stat label="Requests" value={r.total.calls} sub={`${r.total.interrupted} stopped by the owner`} />
+        <Stat testid="errors-failed" label="Failed or refused" value={failed} tone={failed && failed / Math.max(1, r.total.calls) >= 0.05 ? "danger" : undefined} sub={fmtPct(share(failed, r.total.calls)) + " of requests"} />
+        <Stat label="Most frequent" value={top[0] ? counts.get(top[0])! : 0} sub={top[0] ? CLASS[top[0]] ?? top[0] : "no failures"} />
+        <Stat label="Classes seen" value={top.length} sub={top.length ? top.map((c) => CLASS[c] ?? c).slice(0, 3).join(", ") : "no failures"} />
+      </Stats>
       <Panel title="Failures over time" hint="by class, per bucket" testid="errors-chart">
         {failed ? (
           <TimeChart
@@ -252,13 +253,13 @@ export function CompactionsView({ range }: { range: Range }) {
   const hits = (c: Compaction) => c.cache.after.map((a) => fmtPct(a.hit_ratio)).join(", ") || "no request yet";
   return (
     <div className="flex flex-col gap-4" data-testid="usage-compactions">
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Tile testid="compactions-count" label="Compactions" value={t.count} sub={Object.entries(t.by_trigger).map(([k, n]) => `${n} ${k}`).join(", ") || "none in this range"} />
-        <Tile testid="compactions-after" label="Context after" value={t.paired.count ? fmtTokens(t.paired.tokens_after / t.paired.count) : "not yet"}
+      <Stats>
+        <Stat testid="compactions-count" label="Compactions" value={t.count} sub={Object.entries(t.by_trigger).map(([k, n]) => `${n} ${k}`).join(", ") || "none in this range"} />
+        <Stat testid="compactions-after" label="Context after" value={t.paired.count ? fmtTokens(t.paired.tokens_after / t.paired.count) : "not yet"}
           sub={!t.count ? "no compaction" : t.paired.count ? `average, from ${fmtTokens(t.paired.tokens_before / t.paired.count)} before; ${t.paired.count} of ${t.count} measured` : `no request after any of the ${t.count} yet`} />
-        <Tile label="Cost of the summaries" value={t.unpriced ? (t.cost_usd ? `${fmtUsd(t.cost_usd)}+` : "unknown") : fmtUsd(t.cost_usd)} sub={`median ${fmtMs(t.duration_p50_ms)} to write`} />
-        <Tile label="Cache after" value={fmtPct(t.after_hit_ratio)} sub={`of the next ${r.after_requests} requests; ${fmtPct(t.before_hit_ratio)} before`} />
-      </div>
+        <Stat label="Cost of the summaries" value={t.unpriced ? (t.cost_usd ? `${fmtUsd(t.cost_usd)}+` : "unknown") : fmtUsd(t.cost_usd)} sub={`median ${fmtMs(t.duration_p50_ms)} to write`} />
+        <Stat label="Cache after" value={fmtPct(t.after_hit_ratio)} sub={`of the next ${r.after_requests} requests; ${fmtPct(t.before_hit_ratio)} before`} />
+      </Stats>
       <Panel title="Each compaction" hint="newest first; open one for what it kept and how the cache came back" testid="compactions-list">
         {r.compactions.length ? (
           <Table

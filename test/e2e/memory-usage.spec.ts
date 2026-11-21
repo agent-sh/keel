@@ -62,7 +62,9 @@ test("memory usage: tokens added, recalls used, nothing added twice, shown in Se
   await expect(page.getByTestId("memory-note")).toHaveCount(1);
   await shoot(page, "memory-usage-01-session");
 
-  await page.goto("/settings/usage");
+  // Memory has a view of its own on the usage page.
+  const memory = async () => { await page.goto("/settings/usage"); await page.getByTestId("usage-panel").getByRole("radio", { name: "Memory" }).click(); };
+  await memory();
   const panel = page.getByTestId("usage-memory");
   await expect(panel).toBeVisible();
   for (const label of ["Memory store, session start", "Memory store, with a prompt", "Memory store, with a tool call", "All memory"]) await expect(panel).toContainText(label);
@@ -108,7 +110,7 @@ test("memory usage: tokens added, recalls used, nothing added twice, shown in Se
   await expect(page.getByText("Memory did not answer in time")).toHaveCount(1);
   await page.getByText("Memory did not answer in time").scrollIntoViewIfNeeded();
   await shoot(page, "memory-usage-03-not-answering");
-  await page.goto("/settings/usage");
+  await memory();
   await expect(panel.getByTestId("memory-out")).toContainText(/did not answer \d+ times? \(\d+ timed out, 0 failed\)/);
   await panel.scrollIntoViewIfNeeded();
   await shoot(page, "memory-usage-04-panel-outage");

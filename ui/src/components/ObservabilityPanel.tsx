@@ -9,7 +9,8 @@ import { cn, fmtTokens } from "../lib/utils.ts";
 import { TimeChart } from "./Chart.tsx";
 import { fmtMetric } from "./ExperimentsPanel.tsx";
 import { Segmented } from "./Settings.tsx";
-import { fmtMs, fmtPct, fmtUsd, Panel, RANGES, Table, Tile, type Range } from "./UsagePanel.tsx";
+import { fmtMs, fmtPct, fmtUsd, Panel, RANGES, Table, type Range } from "./UsagePanel.tsx";
+import { Stat, Stats } from "./Stat.tsx";
 
 type Interval = { estimate: number; lo: number; hi: number; n: number; method: string };
 type Stats = {
@@ -60,14 +61,14 @@ export function ObservabilityPanel() {
         <span className="text-caption text-faint">One row per turn, measured on this machine. A turn that ended normally is not proof the work was right: rate replies, or prove a change with an experiment.</span>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
-        <Tile testid="obs-turns" label="Turns" value={t.turns} sub={`${t.sessions} sessions`} />
-        <Tile label="Ended normally" value={fmtPct(t.ok_rate)} sub={`${r.outcomes.error ?? 0} errors, ${r.outcomes.refusal ?? 0} refused`} />
-        <Tile label="Stopped by you" value={t.stopped_by_owner} sub={`${r.outcomes.cut ?? 0} cut by a restart`} />
-        <Tile testid="obs-cost" label="Cost per turn" value={t.cost_per_turn ? fmtMetric("usd", t.cost_per_turn.estimate) : "unknown"} sub={t.cost_per_turn && t.cost_per_turn.method !== "none" ? `95%: ${fmtUsd(t.cost_per_turn.lo)} to ${fmtUsd(t.cost_per_turn.hi)}` : `${t.priced_turns} priced`} />
-        <Tile label="Cache read share" value={fmtPct(t.cache_read_share)} sub={`${t.retried_steps} retried steps`} />
-        <Tile testid="obs-ratings" label="Replies you rated up" value={t.thumbs_up} sub={`${t.thumbs_down} rated down`} />
-      </div>
+      <Stats>
+        <Stat testid="obs-turns" label="Turns" value={t.turns} sub={`${t.sessions} sessions`} />
+        <Stat label="Ended normally" value={fmtPct(t.ok_rate)} sub={`${r.outcomes.error ?? 0} errors, ${r.outcomes.refusal ?? 0} refused`} />
+        <Stat label="Stopped by you" value={t.stopped_by_owner} sub={`${r.outcomes.cut ?? 0} cut by a restart`} />
+        <Stat testid="obs-cost" label="Cost per turn" value={t.cost_per_turn ? fmtMetric("usd", t.cost_per_turn.estimate) : "unknown"} sub={t.cost_per_turn && t.cost_per_turn.method !== "none" ? `95%: ${fmtUsd(t.cost_per_turn.lo)} to ${fmtUsd(t.cost_per_turn.hi)}` : `${t.priced_turns} priced`} />
+        <Stat label="Cache read share" value={fmtPct(t.cache_read_share)} sub={`${t.retried_steps} retried steps`} />
+        <Stat testid="obs-ratings" label="Replies you rated up" value={t.thumbs_up} sub={`${t.thumbs_down} rated down`} />
+      </Stats>
 
       <Panel title="Regressions" hint="the last 24 hours against the 14 days before, on a control chart of daily values" testid="obs-regressions"
         aside={<button type="button" onClick={check} disabled={checking} className="h-7 rounded-md border border-line px-2.5 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50" data-testid="obs-check">Check now</button>}>

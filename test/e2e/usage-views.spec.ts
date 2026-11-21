@@ -62,7 +62,8 @@ test("usage views: token zones, error classes, compactions, compare", async ({ p
   await panel.getByRole("radio", { name: "Errors" }).click();
   const byModel = panel.getByTestId("errors-classes");
   for (const label of ["Rate limited", "Overloaded", "Stream dropped", "Refused", "Context overflow"]) await expect(byModel).toContainText(label);
-  await expect(panel.getByTestId("errors-chart").locator("svg")).toBeVisible();
+  // A plot, or the one bucket's counts by class when every failure fell in the same bucket.
+  await expect(panel.getByTestId("errors-chart").locator('svg, [data-testid="chart-value"]').first()).toBeVisible();
   await shoot(page, "usage-views-03-errors");
 
   await panel.getByRole("radio", { name: "Compactions" }).click();
@@ -147,10 +148,11 @@ test("usage compare: both sides and the change read together on a phone", async 
   await panel.getByRole("radio", { name: "Two ranges" }).click();
   await expect(table).toContainText("The range before");
   expect(await sideways()).toBeLessThanOrEqual(0);
-  // A group of choices wider than the pane scrolls inside itself, the chosen one in view.
+  // The seven views are wider than the pane: they go on to a second line, none cut, the chosen one in view.
   const views = panel.getByRole("radiogroup", { name: "View" });
   await pane.evaluate((el) => el.scrollTo(0, 0));
-  expect(await views.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+  expect(await views.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(false);
+  await expect(views.getByRole("radio", { name: "Overview" })).toBeInViewport({ ratio: 1 });
   await expect(views.getByRole("radio", { name: "Compare" })).toBeInViewport({ ratio: 1 });
   await panel.getByRole("radio", { name: "Two models" }).click();
   await expect(table).toContainText("Rate limited");

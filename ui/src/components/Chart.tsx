@@ -1,5 +1,6 @@
 // A small time chart in plain SVG: lines (2px, gaps where no bucket had data)
-// or stacked bars (2px surface gap, 4px rounded top). One y-axis, recessive
+// or stacked bars (2px surface gap, 4px rounded top). A range with one bucket
+// of data is shown as that bucket's values, with no plot. One y-axis, recessive
 // grid, a legend for two or more series, and a crosshair readout of every
 // series at the bucket under the pointer or the focused bucket. The readout
 // never leaves the chart's width: it stands beside the crosshair when there
@@ -115,6 +116,33 @@ export function TimeChart({
     data.forEach((p, i) => { const d = Math.abs(center(p) - px); if (d < bd) { bd = d; best = i; } });
     setHover(best >= 0 && bd < Math.max(24, slot) ? best : null);
   };
+
+  // One bucket of data is a value, not a trend: its figures in words, each
+  // with its series' name, and when it was. No axes around a single dot.
+  const filled = data.filter((p) => p.values.some((v) => v != null));
+  if (filled.length === 1) {
+    const p = filled[0]!;
+    const span = bucket >= 86_400_000 ? "day" : bucket >= 3_600_000 ? "hour" : "interval";
+    return (
+      <figure className="m-0" aria-label={label} data-testid="chart-single">
+        <div className="flex flex-wrap gap-x-10 gap-y-3">
+          {series.map((s, si) => (
+            <div key={s.label} data-testid="chart-value">
+              {/* One series is named by the card it stands in. */}
+              {series.length > 1 && (
+                <div className="flex items-center gap-1.5 text-caption text-muted">
+                  {kind === "bars" ? <span className="size-2.5 rounded-xs" style={{ background: s.color }} /> : <span className="h-0.5 w-3 rounded-full" style={{ background: s.color }} />}
+                  {s.label}
+                </div>
+              )}
+              <div className="mt-0.5 text-title font-semibold tabular-nums">{p.values[si] == null ? "none" : format(p.values[si]!)}</div>
+            </div>
+          ))}
+        </div>
+        <figcaption className="mt-2 text-caption text-faint">{fullTime(p.t)}, the only {span} with data in this range. A trend shows from the second.</figcaption>
+      </figure>
+    );
+  }
 
   return (
     <figure className="m-0" aria-label={label}>

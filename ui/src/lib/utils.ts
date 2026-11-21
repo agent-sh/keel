@@ -38,6 +38,8 @@ export const clock = (ts: number, o: { seconds?: boolean; weekday?: boolean; dat
     hour: "2-digit", minute: "2-digit", hourCycle: "h23",
     ...(o.seconds ? { second: "2-digit" } : {}), ...(o.weekday ? { weekday: "short" } : {}), ...(o.date ? { month: "short", day: "numeric" } : {}), ...(o.zone ? { timeZone: o.zone } : {}),
   });
+// A session's cost as its header shows it, digit for digit: wherever the figure is said again it is this.
+export const fmtSessionCost = (usd: number) => `$${usd.toFixed(usd < 1 ? 4 : 2)}`;
 export function fmtCost(usd?: number): string {
   if (usd === undefined) return "";
   if (usd < 0.0001) return usd ? "<$0.0001" : "$0";

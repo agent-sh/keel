@@ -30,19 +30,20 @@ test("usage dashboard", async ({ page, request }) => {
   await expect(panel).toBeVisible();
   await expect(panel.getByTestId("tile-ttft")).not.toContainText("none");
   await expect(panel.getByTestId("tile-cache")).toContainText("%");
-  // A model step through its retries, beside one attempt.
-  await expect(panel.getByTestId("tile-step")).toContainText("one attempt");
-  await expect(panel.getByTestId("tile-step")).not.toContainText("none;");
-  await expect(panel.getByTestId("cache-breaks")).not.toBeEmpty();
   await expect(panel.getByTestId("usage-models")).toContainText("Haiku");
   await shoot(page, "usage-01-dashboard");
+  // How fast the calls were has a view of its own: a whole reply through its retries, beside one try.
+  await panel.getByTestId("usage-go-calls").click();
+  await expect(panel.getByTestId("tile-step")).toContainText("without retries");
+  await expect(panel.getByTestId("tile-step")).not.toContainText("none;");
+  await expect(panel.getByTestId("cache-breaks")).not.toBeEmpty();
 
   // The readout under the pointer lists every series at that bucket.
   await page.getByRole("radio", { name: "Day" }).click();
   const chart = panel.getByTestId("chart-latency").locator("svg");
   const box = (await chart.boundingBox())!;
   await page.mouse.move(box.x + box.width - 20, box.y + box.height / 2);
-  await expect(panel.getByTestId("chart-tooltip")).toContainText("First token");
+  await expect(panel.getByTestId("chart-tooltip")).toContainText("First word");
   await shoot(page, "usage-02-readout");
 
   // A tool with failures opens its last failed calls, linked to the session.
@@ -54,6 +55,7 @@ test("usage dashboard", async ({ page, request }) => {
   await shoot(page, "usage-03-tables");
 
   // A daily limit already passed: the next turn stops before its request and says why.
+  await panel.getByRole("radio", { name: "Overview" }).click();
   await panel.getByTestId("budget-daily_usd").fill("0.000001");
   await panel.getByTestId("budget-daily_usd").press("Enter");
   await expect.poll(async () => (await (await request.get("/api/settings")).json()).settings.budget.daily_usd).toBe(0.000001);
@@ -86,7 +88,8 @@ test("chart readouts stay inside the chart", async ({ page, request }) => {
   await page.route("**/api/telemetry/tokens*", async (route) => {
     const body = await (await route.fetch()).json();
     const mid = Math.floor((body.since_ms + body.until_ms) / 2 / body.bucket_ms) * body.bucket_ms;
-    body.series = body.series.slice(-1).map((p: any) => ({ ...p, t_ms: mid }));
+    // Two buckets side by side: one alone is shown as a value, with no plot to point at.
+    body.series = body.series.slice(-1).flatMap((p: any) => [{ ...p, t_ms: mid - body.bucket_ms }, { ...p, t_ms: mid }]);
     await route.fulfill({ json: body });
   });
   const panel = page.getByTestId("usage-panel");
@@ -96,7 +99,8 @@ test("chart readouts stay inside the chart", async ({ page, request }) => {
   const open = async (block: "end" | "start" = "end") => {
     await page.goto("/settings/usage");
     await panel.getByRole("radio", { name: "Token zones" }).click();
-    await chart.locator("svg").evaluate((el, block) => el.scrollIntoView({ block }), block);
+    // Room under the page, so the plot reaches the pane's top however few rows this daemon has measured.
+    await chart.locator("svg").evaluate((el, block) => { if (block === "start") (el.closest('[data-testid="settings-scroll"]')!.firstElementChild as HTMLElement).style.paddingBottom = "100vh"; el.scrollIntoView({ block }); }, block);
     const box = (await chart.locator("svg").boundingBox())!;
     await page.mouse.move(box.x + box.width / 2 + 10, box.y + box.height / 2);
     await expect(tip).toContainText("Frozen history read from cache");
@@ -149,5 +153,105 @@ test("chart readouts stay inside the chart", async ({ page, request }) => {
   await expect(tip).toBeInViewport({ ratio: 1 });
   await shoot(page, "usage-07-readout-phone-top");
 
+  await request.delete(`/api/sessions/${s.id}`);
+});
+
+// The overview answers where the spend and the tokens went before anything
+// else: the spend, then the tokens cut by what they were. Figures are one
+// component on every page. A chart with one bucket of data is that bucket's
+// values in words, not a dot in an empty plot.
+test("usage: the answer first, one stat component, one bucket reads as a value", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
+  const s = (await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Usage answer", text: "One line." } })).json()).session;
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${s.id}`)).json()).events.some((e: any) => e.kind === "turn_end"), { timeout: 60_000 }).toBe(true);
+  let buckets = 1;
+  await page.route(/\/api\/telemetry\?/, async (route) => {
+    const body = await (await route.fetch()).json();
+    const last = body.series.at(-1);
+    body.series = Array.from({ length: buckets }, (_, i) => ({ ...last, t_ms: last.t_ms - (buckets - 1 - i) * body.bucket_ms }));
+    await route.fulfill({ json: body });
+  });
+  await page.goto("/settings/usage");
+  const panel = page.getByTestId("usage-panel");
+  const answer = panel.getByTestId("usage-answer");
+  await expect(answer.getByTestId("tile-spend")).toContainText("$");
+  await expect(answer).toContainText(/Where the (money|tokens) went/);
+  await expect(answer.getByTestId("tile-cache")).toContainText("%");
+  // The answer leads the page: nothing but the view switch stands above it.
+  expect((await answer.boundingBox())!.y).toBeLessThan((await panel.getByTestId("usage-models").boundingBox())!.y);
+  expect((await panel.getByTestId("usage-models").boundingBox())!.y).toBeLessThan((await panel.getByTestId("usage-health").boundingBox())!.y);
+  // One bucket: its value, named, and no plot.
+  await expect(panel.getByTestId("chart-spend").getByTestId("chart-value").first()).toBeVisible();
+  await expect(panel.getByTestId("chart-spend").locator("svg")).toHaveCount(0);
+  // The cache hit rate is said once on the page, in the answer.
+  expect(((await panel.innerText()).match(/\d+% of the prompt/g) ?? []).length).toBe(1);
+  // The answer: the split is in money beside its tokens, and one sentence says what drove the spend.
+  await expect(answer.getByRole("heading", { name: "Where the money went" })).toBeVisible();
+  await expect(answer.getByTestId("usage-split")).toContainText("of cost");
+  await expect(answer.getByTestId("usage-split")).toContainText("New input, full price");
+  await expect(answer.getByTestId("usage-drivers")).toContainText(/(All|\d+%) of it went to /);
+  // The range is named for what it is; the calendar's pair stands once, in the answer, and the answer holds no input.
+  await expect(answer.getByTestId("tile-spend")).toContainText("Spent in the past 7 days");
+  expect(((await panel.innerText()).match(/This calendar month/g) ?? []).length).toBe(1);
+  await expect(panel.getByText("This month", { exact: true })).toHaveCount(0);
+  await expect(answer.getByTestId("usage-calendar")).toContainText("Today");
+  await expect(answer.locator("input")).toHaveCount(0);
+  await expect(panel.getByTestId("usage-budget").getByTestId("budget-daily_usd")).toBeVisible();
+  // The two lists of where it went have the same columns, their heads on one line, and plain amounts.
+  const heads = (id: string) => panel.getByTestId(id).locator("thead th");
+  await expect(heads("usage-models")).toHaveText(["Model", "Spend", "Share", "Tokens", "Requests"]);
+  await expect(heads("usage-purposes")).toHaveText(["Purpose", "Spend", "Share", "Tokens", "Requests"]);
+  expect(Math.abs((await heads("usage-models").first().boundingBox())!.y - (await heads("usage-purposes").first().boundingBox())!.y)).toBeLessThanOrEqual(1);
+  await expect(panel.getByTestId("usage-models").locator("tbody")).not.toContainText("+");
+  // The page is what a person opens it to learn: the answer, where it went, and whether anything is wrong.
+  // The charts and tables behind those figures are views of their own.
+  const plain = async (ids: string[]) => { for (const id of ids) expect(await panel.getByTestId(id).evaluate((el) => { const c = getComputedStyle(el); return `${c.borderLeftWidth} ${c.boxShadow}`; }), id).toBe("0px none"); };
+  await plain(["usage-answer", "usage-models", "usage-purposes", "chart-spend", "usage-health", "usage-budget"]);
+  for (const id of ["chart-latency", "chart-cache", "usage-tools", "usage-memory"]) await expect(panel.getByTestId(id)).toHaveCount(0);
+  expect(await panel.getByTestId("usage-overview").evaluate((el) => el.scrollHeight)).toBeLessThan(1150);
+  // The three figures stand on the page, not in a frame of their own.
+  expect(await panel.getByTestId("tile-ttft").evaluate((el) => getComputedStyle(el.parentElement!).boxShadow)).toBe("none");
+  await expect(panel.getByTestId("tile-ttft")).toHaveAttribute("data-stat", "");
+  await shoot(page, "usage-08-answer");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await answer.scrollIntoViewIfNeeded();
+  // On a phone the seven views go on to a second line, none cut, and the two lists show the money with no sideways scroll.
+  const strip = panel.getByRole("radiogroup", { name: "View" });
+  expect(await strip.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+  for (const name of ["Overview", "Compare"]) await expect(strip.getByRole("radio", { name })).toBeInViewport({ ratio: 1 });
+  for (const id of ["usage-models", "usage-purposes"]) expect(await panel.getByTestId(id).locator("table").evaluate((el) => el.parentElement!.scrollWidth - el.parentElement!.clientWidth)).toBeLessThanOrEqual(1);
+  await shoot(page, "usage-10-answer-phone");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+
+  // A figure is the door to its view: how fast calls were, whether the cache held, and the tools.
+  await panel.getByTestId("usage-go-calls").click();
+  await expect(panel.getByRole("radio", { name: "Speed and tools" })).toBeChecked();
+  await expect(panel.getByTestId("chart-latency").getByTestId("chart-value").first()).toBeVisible();
+  await expect(panel.getByTestId("chart-latency").locator("svg")).toHaveCount(0);
+  await expect(panel.getByTestId("chart-latency")).toContainText("First word");
+  await expect(panel.getByTestId("chart-cache").locator("svg")).toHaveCount(0);
+  await expect(panel.getByTestId("chart-cache-one")).toContainText(/^One (hour|day|span of [a-z]+ hours) of data so far: \d+% of its prompt was read from cache/);
+  // A section's hint is whole, and no section is a boxed card.
+  expect(await panel.getByTestId("chart-cache").locator("h3 + span").evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+  await plain(["chart-latency", "chart-cache", "usage-tools"]);
+  await shoot(page, "usage-09-one-bucket");
+  await panel.getByRole("radio", { name: "Memory" }).click();
+  await plain(["usage-memory"]);
+  // Two buckets: a plot again.
+  buckets = 2;
+  await page.reload();
+  await panel.getByRole("radio", { name: "Speed and tools" }).click();
+  await expect(panel.getByTestId("chart-cache").locator("svg")).toHaveCount(1);
+  await expect(panel.getByTestId("chart-latency").getByTestId("chart-value")).toHaveCount(0);
+
+  // The same figure component on every page that shows figures.
+  await panel.getByRole("radio", { name: "Errors" }).click();
+  await expect(panel.getByTestId("errors-failed")).toHaveAttribute("data-stat", "");
+  await page.goto("/settings/resources");
+  await expect(page.getByTestId("tile-memory")).toHaveAttribute("data-stat", "");
+  await shoot(page, "usage-11-resources-stats");
+  await page.goto("/settings/observability");
+  await expect(page.getByTestId("obs-turns")).toHaveAttribute("data-stat", "");
   await request.delete(`/api/sessions/${s.id}`);
 });

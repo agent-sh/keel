@@ -55,7 +55,7 @@ export function MemoryUsage({ since }: { since: number }) {
   const slow = kinds(r.store?.degraded), down = kinds(r.store?.out);
 
   return (
-    <Panel title="Memory" hint="what recall added to turns, and an estimate of whether they used it; counts only, no content" testid="usage-memory">
+    <Panel plain title="Memory" hint="what recall added to turns, and an estimate of whether they used it; counts only, no content" testid="usage-memory">
       {r.paths.length ? (
         <>
           <Table

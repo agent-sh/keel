@@ -1,15 +1,20 @@
 // Settings > Usage: what the model calls cost and how they behaved, measured
-// on this machine. Spend and tokens come from the usage report (prices from
-// the listings; an unknown price stays unknown), timings, cache and error
-// rates from the local telemetry.
+// on this machine. The overview answers first: what was spent, and where the
+// tokens went (by what they were, then by model and purpose). How the calls
+// behaved over time comes after. Spend and tokens come from the usage report
+// (prices from the listings; an unknown price stays unknown), timings, cache
+// and error rates from the local telemetry.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { composing } from "../lib/keys.ts";
 import { api, reportError, useStore } from "../lib/store.ts";
 import { navigate, setUI } from "../lib/ui.ts";
-import { ago, cn, fmtTokens, when } from "../lib/utils.ts";
+import { ago, clock, cn, fmtTokens, when } from "../lib/utils.ts";
 import { TimeChart } from "./Chart.tsx";
 import { MemoryUsage } from "./MemoryUsage.tsx";
+import { Seg } from "./Seg.tsx";
 import { Segmented } from "./Settings.tsx";
+import { PART, Split, Stat, Stats } from "./Stat.tsx";
+import { KINDS, KIND_LABEL, addCosts, bucketName, kindCosts, noCosts, spendDrivers, type Costs } from "../lib/spend.ts";
 import { CompactionsView, CompareView, ErrorsView, TokensView } from "./UsageViews.tsx";
 
 type Stats = {
@@ -95,35 +100,39 @@ function MoneyField({ value, onSave, label, testid }: { value: number | null; on
   );
 }
 
+// A range as it is said: 30 days is not "this month".
+const PAST: Record<string, string> = { day: "the past 24 hours", week: "the past 7 days", month: "the past 30 days" };
 export const RANGES = { day: 86_400_000, week: 7 * 86_400_000, month: 30 * 86_400_000 } as const;
 export type Range = keyof typeof RANGES;
 
-export const fmtMs = (v: number | null | undefined) => (v == null ? "none" : v < 1000 ? `${Math.round(v)} ms` : `${(v / 1000).toFixed(v < 10_000 ? 2 : 1)} s`);
+// A duration as a person says it: milliseconds, seconds, then minutes and hours (not 5462.6 s).
+export const fmtMs = (v: number | null | undefined) => {
+  if (v == null) return "none";
+  if (v < 1000) return `${Math.round(v)} ms`;
+  if (v < 60_000) return `${(v / 1000).toFixed(v < 10_000 ? 2 : 1)} s`;
+  const min = Math.round(v / 60_000);
+  if (min < 60) { const sec = Math.round((v % 60_000) / 1000); return v < 600_000 && sec && sec < 60 ? `${Math.floor(v / 60_000)} min ${sec} s` : `${min} min`; }
+  return min % 60 ? `${Math.floor(min / 60)} h ${min % 60} min` : `${min / 60} h`;
+};
 export const fmtPct = (v: number | null | undefined) => (v == null ? "none" : `${(v * 100).toFixed(v > 0 && v < 0.1 ? 1 : 0)}%`);
 // A spend that some calls are missing from (no known price, or usage that never
 // arrived) is a lower bound, or unknown when nothing in it was priced.
 type Cost = { priced_cost_usd: number; unpriced_calls: number; incomplete_calls?: number; calls?: number; total_tokens?: number };
 export const fmtSpend = (c: Cost) => (c.unpriced_calls || c.incomplete_calls ? (c.priced_cost_usd ? `${fmtUsd(c.priced_cost_usd)}+` : "unknown") : fmtUsd(c.priced_cost_usd));
+// An amount in a table: the priced part alone. What is missing from it is said once, under the page's figure.
+const amount = (c: Cost | undefined) => (!c ? "none" : c.priced_cost_usd ? fmtUsd(c.priced_cost_usd) : c.unpriced_calls ? "not priced" : "$0");
 const PURPOSE: Record<string, string> = { turn: "Turns", summary: "Summaries", side: "Side questions", advisor: "Advisor", consult: "Consults", reader: "Reader" };
-type Order = "calls" | "tokens" | "spend";
 export const fmtUsd = (v: number) => (v === 0 ? "$0" : v < 0.01 ? `$${v.toFixed(4)}` : v < 100 ? `$${v.toFixed(2)}` : `$${Math.round(v)}`);
 
-export function Tile({ label, value, sub, tone, testid }: { label: string; value: ReactNode; sub?: ReactNode; tone?: "danger"; testid?: string }) {
+// A boxed card, or with `plain` a section of the page itself: a hairline, a
+// heading and what it holds, with no box around it.
+export function Panel({ title, hint, children, testid, aside, plain, className }: { title: string; hint?: string; children: ReactNode; testid?: string; aside?: ReactNode; plain?: boolean; className?: string }) {
   return (
-    <div className="rounded-lg border border-line bg-raised px-4 py-3 shadow-1" data-testid={testid}>
-      <div className="text-caption text-muted">{label}</div>
-      <div className={cn("mt-1 text-title font-semibold tabular-nums tracking-[-0.01em]", tone === "danger" && "text-danger")}>{value}</div>
-      {sub && <div className="mt-0.5 truncate text-caption text-faint">{sub}</div>}
-    </div>
-  );
-}
-
-export function Panel({ title, hint, children, testid, aside }: { title: string; hint?: string; children: ReactNode; testid?: string; aside?: ReactNode }) {
-  return (
-    <section className="rounded-lg border border-line bg-raised p-4 shadow-1" data-testid={testid}>
-      <div className="mb-3 flex items-baseline gap-x-2 gap-y-1.5 max-md:flex-wrap">
+    <section className={cn(plain ? "min-w-0 border-t border-line px-4 pt-4" : "rounded-lg border border-line bg-raised p-4 shadow-1", className)} data-testid={testid}>
+      <div className={cn("mb-3 flex items-baseline gap-x-2 gap-y-1", plain ? "flex-wrap" : "gap-y-1.5 max-md:flex-wrap")}>
         <h3 className="shrink-0 text-base font-medium">{title}</h3>
-        {hint && <span className="min-w-0 truncate text-caption text-faint">{hint}</span>}
+        {/* A boxed card keeps its hint to a line; a section of the page lets it wrap whole. */}
+        {hint && <span className={cn("min-w-0 text-caption text-faint", !plain && "truncate")}>{hint}</span>}
         {aside && <div className="ml-auto max-w-full shrink-0 self-center">{aside}</div>}
       </div>
       {children}
@@ -131,13 +140,15 @@ export function Panel({ title, hint, children, testid, aside }: { title: string;
   );
 }
 
-export function Table({ head, rows, align, onRow, expanded }: { head: string[]; rows: ReactNode[][]; align?: ("l" | "r")[]; onRow?: (i: number) => void; expanded?: (i: number) => ReactNode }) {
+// `wide`: columns (by index) a phone leaves out, so the ones that matter (the money) stay in view with no sideways scroll.
+export function Table({ head, rows, align, onRow, expanded, wide }: { head: string[]; rows: ReactNode[][]; align?: ("l" | "r")[]; onRow?: (i: number) => void; expanded?: (i: number) => ReactNode; wide?: number[] }) {
+  const phone = (i: number) => (wide?.includes(i) ? "max-sm:hidden" : "");
   return (
-    <div className="-mx-4 overflow-x-auto">
+    <div className="k-scroll-x -mx-4">
       <table className="w-full text-ui">
         <thead>
           <tr className="border-b border-line text-caption text-faint">
-            {head.map((h, i) => <th key={h} className={cn("px-4 py-1.5 font-normal", (align?.[i] ?? (i ? "r" : "l")) === "r" ? "text-right" : "text-left")}>{h}</th>)}
+            {head.map((h, i) => <th key={h} className={cn("px-4 py-1.5 font-normal", phone(i), (align?.[i] ?? (i ? "r" : "l")) === "r" ? "text-right" : "text-left")}>{h}</th>)}
           </tr>
         </thead>
         <tbody>
@@ -145,7 +156,7 @@ export function Table({ head, rows, align, onRow, expanded }: { head: string[]; 
             const more = expanded?.(i);
             return [
               <tr key={i} className={cn("border-b border-line/60 last:border-0", onRow && "cursor-default hover:bg-hover")} onClick={() => onRow?.(i)}>
-                {r.map((c, j) => <td key={j} className={cn("px-4 py-1.5 tabular-nums", (align?.[j] ?? (j ? "r" : "l")) === "r" ? "whitespace-nowrap text-right text-muted" : "max-w-64 truncate text-left")}>{c}</td>)}
+                {r.map((c, j) => <td key={j} className={cn("px-4 py-1.5 tabular-nums", phone(j), (align?.[j] ?? (j ? "r" : "l")) === "r" ? "whitespace-nowrap text-right text-muted" : "max-w-64 truncate text-left")}>{c}</td>)}
               </tr>,
               more ? <tr key={`${i}-more`} className="border-b border-line/60"><td colSpan={r.length} className="bg-sunken/50 px-4 py-2">{more}</td></tr> : null,
             ];
@@ -156,31 +167,54 @@ export function Table({ head, rows, align, onRow, expanded }: { head: string[]; 
   );
 }
 
-type View = "overview" | "tokens" | "errors" | "compactions" | "compare";
+type View = "overview" | "calls" | "tokens" | "errors" | "compactions" | "memory" | "compare";
 
-// The sections of Settings > Usage: the overview, then one view per question.
+// The sections of Settings > Usage. The overview is what a person opens the page to learn: what
+// was spent, what drove it, where it went, and whether anything is wrong. Each further question
+// has a view of its own (how fast calls and tools were, token zones, errors, compactions, memory).
 export function UsagePanel() {
   const [view, setView] = useState<View>("overview");
   const [range, setRange] = useState<Range>("week");
   return (
     <div className="flex flex-col gap-4" data-testid="usage-panel">
       <div className="flex flex-wrap items-center gap-3">
-        <Segmented<View> label="View" value={view} onChange={setView} options={[
-          { value: "overview", label: "Overview" }, { value: "tokens", label: "Token zones" }, { value: "errors", label: "Errors" },
-          { value: "compactions", label: "Compactions" }, { value: "compare", label: "Compare" },
+        {/* Seven views: where they do not fit one line (a phone) they go on to the next, whole, not cut mid-word behind a scroll. */}
+        <Seg<View> wrap label="View" value={view} onChange={setView} options={[
+          { value: "overview", label: "Overview" }, { value: "calls", label: "Speed and tools" }, { value: "tokens", label: "Token zones" }, { value: "errors", label: "Errors" },
+          { value: "compactions", label: "Compactions" }, { value: "memory", label: "Memory" }, { value: "compare", label: "Compare" },
         ]} />
         {view !== "compare" && <Segmented<Range> label="Range" value={range} onChange={setRange} options={[{ value: "day", label: "Day" }, { value: "week", label: "Week" }, { value: "month", label: "Month" }]} />}
         <span className="text-caption text-faint">Measured on this machine. Nothing is sent anywhere.</span>
       </div>
-      {view === "overview" ? <Overview range={range} /> : view === "tokens" ? <TokensView range={range} /> : view === "errors" ? <ErrorsView range={range} />
-        : view === "compactions" ? <CompactionsView range={range} /> : <CompareView />}
+      {view === "overview" ? <Overview range={range} go={setView} /> : view === "calls" ? <CallsView range={range} /> : view === "tokens" ? <TokensView range={range} />
+        : view === "errors" ? <ErrorsView range={range} /> : view === "compactions" ? <CompactionsView range={range} /> : view === "memory" ? <MemoryView range={range} /> : <CompareView />}
     </div>
   );
 }
 
-function Overview({ range }: { range: Range }) {
+// The telemetry report of a range, read again every half minute; an older answer landing late is dropped.
+function useReport(range: Range, also?: (since: number, n: number) => void): Report | null {
   const [r, setR] = useState<Report | null>(null);
-  const [openTool, setOpenTool] = useState<string | null>(null);
+  const extra = useRef(also);
+  extra.current = also;
+  useEffect(() => {
+    let live = true;
+    let sent = 0;
+    let got = 0;
+    const load = () => {
+      const n = ++sent;
+      const since = Date.now() - RANGES[range];
+      api<Report>(`/api/telemetry?since_ms=${since}`).then((t) => { if (live && n > got) { got = n; setR(t); } }).catch(reportError);
+      extra.current?.(since, n);
+    };
+    load();
+    const iv = setInterval(load, 30_000);
+    return () => { live = false; clearInterval(iv); };
+  }, [range]);
+  return r;
+}
+
+function Overview({ range, go }: { range: Range; go: (v: View) => void }) {
   const [budget, setBudget] = useState<{ daily_usd: number | null; monthly_usd: number | null } | null>(null);
   useEffect(() => { api<{ settings: any }>("/api/settings").then((x) => setBudget(x.settings.budget)).catch(reportError); }, []);
   // Each limit takes only its own answer, and only the answer to its latest
@@ -193,7 +227,6 @@ function Overview({ range }: { range: Range }) {
   };
   const [cost, setCost] = useState<Record<string, Cost> | null>(null);
   const [usage, setUsage] = useState<{ total: Cost; by_purpose: (Cost & { purpose: string })[] } | null>(null);
-  const [order, setOrder] = useState<Order>("calls");
   const [costFailed, setCostFailed] = useState<number | null>(null);
   const models = useStore((s) => s.models);
   const name = (id: string) => models.find((m) => m.id === id)?.name ?? id.slice(id.indexOf(":") + 1);
@@ -201,58 +234,199 @@ function Overview({ range }: { range: Range }) {
   // Telemetry and prices load on their own: a failed price lookup leaves fresh
   // measurements in place and marks only the Spend cells. Each source keeps the
   // answer of its latest poll; an older one landing late is dropped.
-  useEffect(() => {
-    let live = true;
-    let sent = 0;
-    const got = { t: 0, u: 0 };
-    const load = () => {
-      const n = ++sent;
-      const since = Date.now() - RANGES[range];
-      api<Report>(`/api/telemetry?since_ms=${since}`)
-        .then((t) => { if (live && n > got.t) { got.t = n; setR(t); } })
-        .catch(reportError);
-      api<any>(`/api/usage?group=model&since_ms=${since}&limit=200`)
-        .then((u) => { if (live && n > got.u) { got.u = n; setCost(Object.fromEntries(u.buckets.map((b: any) => [b.key, b]))); setUsage(u); setCostFailed(null); } })
-        .catch((e) => { if (live && n > got.u) setCostFailed(Date.now()); reportError(e); });
-    };
-    load();
-    const iv = setInterval(load, 30_000);
-    return () => { live = false; clearInterval(iv); };
-  }, [range]);
+  const gotUsage = useRef(0);
+  useEffect(() => { gotUsage.current = 0; }, [range]);
+  const r = useReport(range, (since, n) => {
+    const of = range;
+    api<any>(`/api/usage?group=model&since_ms=${since}&limit=200`)
+      .then((u) => { if (of === rangeNow.current && n > gotUsage.current) { gotUsage.current = n; setCost(Object.fromEntries(u.buckets.map((b: any) => [b.key, b]))); setUsage(u); setCostFailed(null); } })
+      .catch((e) => { if (of === rangeNow.current && n > gotUsage.current) setCostFailed(Date.now()); reportError(e); });
+  });
+  const rangeNow = useRef(range);
+  rangeNow.current = range;
 
   const series = useMemo(() => r?.series ?? [], [r]);
   if (!r) return <div className="text-ui text-faint">Reading the measurements.</div>;
   const t = r.total;
   const costShown = fmtSpend({ priced_cost_usd: t.priced_cost_usd, unpriced_calls: t.unpriced_calls, incomplete_calls: usage?.total.incomplete_calls });
   const prompt = t.input_tokens + t.cache_read_tokens + t.cache_write_tokens;
+  const calls = (n: number) => `${n.toLocaleString()} ${n === 1 ? "call" : "calls"}`;
+  const missing = [t.unpriced_calls ? `${calls(t.unpriced_calls)} with no known price` : "", usage?.total.incomplete_calls ? `${calls(usage.total.incomplete_calls)} that ended before reporting usage` : ""].filter(Boolean);
+  const tokens: Costs = { read: t.cache_read_tokens, written: t.cache_write_tokens, full: t.input_tokens, output: t.output_tokens };
+  // Money by kind: each model's spend cut at its own price. Known only when every model's is.
+  const kinds = !cost || t.unpriced_calls ? null : r.by_model.reduce<Costs | null>((all, m) => {
+    const c = kindCosts({ input: m.input_tokens, output: m.output_tokens, cache_read: m.cache_read_tokens, cache_write: m.cache_write_tokens }, models.find((x) => x.id === m.model)?.price, cost[m.model]?.priced_cost_usd);
+    return all && c ? addCosts(all, c) : null;
+  }, noCosts());
+  // What drove the spend, in sentences (lib/spend.ts).
+  const spent = t.priced_cost_usd;
+  const drivers = spendDrivers({
+    spent, bucket_ms: r.bucket_ms, usd: fmtUsd,
+    models: cost ? r.by_model.map((m) => ({ name: name(m.model), usd: cost[m.model]?.priced_cost_usd ?? 0 })) : [],
+    purposes: usage ? usage.by_purpose.map((x) => ({ purpose: x.purpose, usd: x.priced_cost_usd })) : [],
+    buckets: series.map((x) => ({ t: x.t_ms, usd: x.priced_cost_usd })),
+    at: (ts, day) => (day ? new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : clock(ts, { date: true })),
+  });
+  // A share of the spend as a short bar and its figure, the same in both lists.
+  const Share = ({ usd }: { usd: number | undefined }) => (usd === undefined || !(spent > 0) ? <span className="text-faint">none</span> : (
+    <span className="inline-flex items-center justify-end gap-2">
+      <span className="h-1.5 w-14 overflow-hidden rounded-full bg-sunken max-sm:hidden" aria-hidden><span className="block h-full rounded-full bg-series-1" style={{ width: `${Math.min(100, (100 * usd) / spent)}%` }} /></span>
+      <span className="w-9 text-right">{Math.round((100 * usd) / spent)}%</span>
+    </span>
+  ));
+  const WENT = ["Spend", "Share", "Tokens", "Requests"];
+  const breaks = r.breaks.reduce((n, b) => n + b.count, 0);
+  const modelRows = [...r.by_model].sort((a, b) => (cost?.[b.model]?.priced_cost_usd ?? 0) - (cost?.[a.model]?.priced_cost_usd ?? 0) || b.calls - a.calls);
 
   return (
-    <div className="flex flex-col gap-4" data-testid="usage-overview">
+    <div className="flex flex-col gap-6" data-testid="usage-overview">
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-        <Tile testid="tile-spend" label="Spend" value={costShown} sub={[t.unpriced_calls && `${t.unpriced_calls} without a known price`, usage?.total.incomplete_calls && `${usage.total.incomplete_calls} ended before their usage`].filter(Boolean).join(", ") || `${t.calls} model calls`} />
-        <Tile label="Tokens" value={fmtTokens(prompt + t.output_tokens)} sub={`${fmtTokens(prompt)} in, ${fmtTokens(t.output_tokens)} out`} />
-        <Tile testid="tile-cache" label="Cache hit rate" value={fmtPct(t.cache_hit_ratio)} sub={`${fmtTokens(t.cache_read_tokens)} read from cache`} />
-        <Tile testid="tile-ttft" label="First token, median" value={fmtMs(t.ttft_p50)} sub={`first text ${fmtMs(t.first_text_p50)}, 95th ${fmtMs(t.ttft_p95)}`} />
-        <Tile testid="tile-step" label="Model step, median" value={fmtMs(t.step_latency_p50)}
-          sub={`95th ${fmtMs(t.step_latency_p95)}; one attempt ${fmtMs(t.latency_p50)}${t.retried_steps ? `, ${t.retried_steps} retried` : ""}`} />
-        <Tile
-          testid="tile-errors"
-          label="Failed requests"
-          value={fmtPct(t.error_rate)}
-          tone={t.error_rate >= 0.05 ? "danger" : undefined}
-          sub={`${t.errors} requests, ${t.tool_errors} of ${t.tool_calls} tool calls`}
-        />
+      {/* The answer: what was spent, what drove it, and what it was spent on. The page's one figure in the display size. */}
+      <section className="grid gap-x-12 gap-y-6 px-4 md:grid-cols-2" data-testid="usage-answer">
+        <div className="min-w-0" data-testid="tile-spend">
+          <div className="text-caption text-muted">Spent in {PAST[range]}</div>
+          <div className="mt-1 text-display font-semibold tabular-nums">{costShown}</div>
+          <div className="mt-1.5 text-caption text-faint" data-testid="usage-counted">
+            {t.calls.toLocaleString()} model calls.
+            {/* The plus on the figure, named: what is not in it. */}
+            {missing.length > 0 && <> The + is for {missing.join(" and ")}: their cost is not counted.</>}
+          </div>
+          {drivers.length > 0 && <p className="mt-3 max-w-[34rem] text-ui leading-relaxed text-muted" data-testid="usage-drivers">{drivers.join(" ")}</p>}
+          {/* The calendar's own pair, said here and nowhere else: today and this calendar month, against their limits when set. */}
+          <div className="mt-4 flex flex-wrap gap-x-8 gap-y-3" data-testid="usage-calendar">
+            {([["Today", r.spend.day], ["This calendar month", r.spend.month]] as const).map(([label, sp]) => (
+              <div key={label} className="min-w-28">
+                <div className="text-caption text-faint">{label}</div>
+                <div className="mt-0.5 text-ui tabular-nums"><span className="text-fg">{fmtUsd(sp.usd)}</span>{sp.limit_usd ? <span className="text-faint"> of {fmtUsd(sp.limit_usd)}</span> : null}</div>
+                {sp.limit_usd ? <div className="mt-1.5 h-1 rounded-full bg-sunken"><div className={cn("h-1 rounded-full", sp.usd >= sp.limit_usd ? "bg-danger" : "bg-series-1")} style={{ width: `${Math.min(100, (sp.usd / sp.limit_usd) * 100)}%` }} /></div> : null}
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="min-w-0">
+          <div className="mb-2.5 flex flex-wrap items-baseline gap-x-2">
+            <h3 className="text-base font-medium">{kinds ? "Where the money went" : "Where the tokens went"}</h3>
+            {/* The cache hit rate, said here and nowhere else on the page (a model's own is in its row). */}
+            <span className="text-caption text-faint" data-testid="tile-cache">{fmtTokens(prompt + t.output_tokens)} tokens; {fmtPct(t.cache_hit_ratio)} of the prompt was read from cache</span>
+          </div>
+          <Split format={kinds ? fmtUsd : fmtTokens} heads={kinds ? ["Cost", "Tokens", "of cost"] : ["Tokens", "", "of tokens"]} testid="usage-split"
+            parts={KINDS.map((k) => ({ label: KIND_LABEL[k], color: PART[k], value: kinds ? kinds[k] : tokens[k], also: kinds ? fmtTokens(tokens[k]) : undefined }))} />
+        </div>
+      </section>
+
+      {/* Where it went: who and what took the spend, in two lists of the same columns, and when. */}
+      <div className="grid gap-x-6 gap-y-6 xl:grid-cols-2">
+        <Panel plain title="By model" hint={costFailed && cost ? `spend as of the last price lookup; it failed ${ago(costFailed)} ago` : undefined} testid="usage-models">
+          {modelRows.length ? (
+            <Table
+              head={["Model", ...WENT]} wide={[3, 4]}
+              rows={modelRows.map((m) => {
+                const c = cost?.[m.model];
+                return [
+                  <span title={m.model}>{name(m.model)}</span>,
+                  !cost ? (costFailed ? <span className="text-faint" title="the price lookup failed">unavailable</span> : "") : amount(c),
+                  <Share usd={c?.priced_cost_usd} />,
+                  fmtTokens(m.input_tokens + m.cache_read_tokens + m.cache_write_tokens + m.output_tokens), m.calls,
+                ];
+              })}
+            />
+          ) : <p className="k-empty">No model calls in this range.</p>}
+        </Panel>
+        <Panel plain title="By purpose" hint="turns, and the requests beside them" testid="usage-purposes">
+          {usage?.by_purpose.length ? (
+            <Table head={["Purpose", ...WENT]} wide={[3, 4]}
+              rows={[...usage.by_purpose].sort((a, b) => b.priced_cost_usd - a.priced_cost_usd || (b.calls ?? 0) - (a.calls ?? 0)).map((x) => [PURPOSE[x.purpose] ?? x.purpose, amount(x), <Share usd={x.priced_cost_usd} />, fmtTokens(x.total_tokens ?? 0), x.calls ?? 0])} />
+          ) : <p className="k-empty">No requests in this range.</p>}
+        </Panel>
       </div>
-
-      <Panel title="Cache hit rate" hint="share of the prompt read from the provider's cache" testid="chart-cache">
+      <Panel plain title="Spend over time" hint={`per ${bucketName(r.bucket_ms)}`} testid="chart-spend">
         <TimeChart
-          label="Cache hit rate over time"
-          data={series.map((p) => ({ t: p.t_ms, values: [p.cache_hit_ratio] }))}
-          series={[{ label: "Cache hit rate", color: "var(--series-1)" }]}
-          bucket={r.bucket_ms} since={r.since_ms} until={r.until_ms} max={1} format={(v) => `${Math.round(v * 100)}%`}
+          kind="bars" label="Spend over time" height={150}
+          data={series.map((x) => ({ t: x.t_ms, values: [x.priced_cost_usd] }))}
+          series={[{ label: "Spend", color: "var(--series-1)" }]}
+          bucket={r.bucket_ms} since={r.since_ms} until={r.until_ms} format={fmtUsd}
         />
-        <div className="mt-3 border-t border-line pt-3 text-caption text-muted" data-testid="cache-breaks">
+      </Panel>
+
+      {/* Is anything wrong: three figures, each the door to its own view. */}
+      <Panel plain title="Is anything wrong" testid="usage-health">
+        <Stats plain>
+          <Stat testid="tile-breaks" label="Cache breaks" value={String(breaks)}
+            sub={breaks ? r.breaks.map((b) => `${b.count} ${CAUSE[b.cause] ?? b.cause}`).join("; ") : "every request read at least as much from the cache as the one before"} />
+          <Stat testid="tile-errors" label="Failed requests" value={fmtPct(t.error_rate)} tone={t.error_rate >= 0.05 ? "danger" : undefined}
+            sub={`${t.errors} of ${t.calls.toLocaleString()} requests${r.error_kinds[0] ? `, most often ${r.error_kinds[0].message}` : ""}`} />
+          <Stat testid="tile-ttft" label="Wait for the first word" value={fmtMs(t.ttft_p50)} sub={`in half of the requests; a whole reply takes ${fmtMs(t.step_latency_p50)}`} />
+        </Stats>
+        <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-caption">
+          <button type="button" className={LINK} data-testid="usage-go-calls" onClick={() => go("calls")}>Speed, cache and tools</button>
+          <button type="button" className={LINK} data-testid="usage-go-errors" onClick={() => go("errors")}>Errors by kind</button>
+          <button type="button" className={LINK} onClick={() => go("tokens")}>What the prompt is made of</button>
+        </div>
+      </Panel>
+
+      {budget && (
+        <Panel plain title="Spend limits" hint="a turn stops before a request once a limit is reached; calls with no known price are not counted" testid="usage-budget">
+          <div className="flex flex-wrap gap-x-10 gap-y-3">
+            {([["daily_usd", "A day", r.spend.day], ["monthly_usd", "A calendar month", r.spend.month]] as const).map(([key, label, sp]) => (
+              <label key={key} className="flex items-center gap-2.5 text-ui text-muted">
+                {label}
+                <MoneyField label={`${label}: spend limit`} testid={`budget-${key}`} value={budget[key]} onSave={(v) => saveBudget(key, v)} />
+                {sp.unpriced_calls ? <span className="text-caption text-faint">{calls(sp.unpriced_calls)} not counted</span> : null}
+              </label>
+            ))}
+          </div>
+        </Panel>
+      )}
+    </div>
+  );
+}
+
+const LINK = "rounded-sm text-accent-ink underline decoration-line-strong underline-offset-2 outline-none hover:decoration-fg focus-visible:ring-2 focus-visible:ring-ring";
+
+// How fast the calls and the tools were, and whether the cache held, over the range.
+function CallsView({ range }: { range: Range }) {
+  const r = useReport(range);
+  const [openTool, setOpenTool] = useState<string | null>(null);
+  const models = useStore((s) => s.models);
+  const name = (id: string) => models.find((m) => m.id === id)?.name ?? id.slice(id.indexOf(":") + 1);
+  if (!r) return <div className="text-ui text-faint">Reading the measurements.</div>;
+  const t = r.total;
+  const series = r.series;
+  const span = bucketName(r.bucket_ms);
+  const buckets = series.filter((x) => x.calls > 0).length;
+  return (
+    <div className="flex flex-col gap-6" data-testid="usage-calls">
+      <section className="px-4" data-testid="chart-latency">
+        <Stats plain className="mb-4">
+          <Stat testid="tile-ttft" label="Wait for the first word" value={fmtMs(t.ttft_p50)} sub={`in half of the requests; first text after ${fmtMs(t.first_text_p50)}; 1 in 20 waits over ${fmtMs(t.ttft_p95)}`} />
+          <Stat testid="tile-step" label="A whole reply" value={fmtMs(t.step_latency_p50)}
+            sub={`in half of the requests; 1 in 20 takes over ${fmtMs(t.step_latency_p95)}; ${fmtMs(t.latency_p50)} without retries${t.retried_steps ? `, ${t.retried_steps} were retried` : ""}`} />
+          <Stat testid="tile-speed" label="Writing speed" value={t.output_tokens_per_s ? `${Math.round(t.output_tokens_per_s)} tokens/s` : "none"} sub={`measured on ${t.speed_sample.calls.toLocaleString()} of ${t.calls.toLocaleString()} requests`} />
+        </Stats>
+        <TimeChart
+          label="Wait for the first word and for a whole request over time" height={150}
+          data={series.map((x) => ({ t: x.t_ms, values: [x.ttft_p50, x.latency_p50] }))}
+          series={[{ label: "First word", color: "var(--series-1)" }, { label: "Whole request", color: "var(--series-2)" }]}
+          bucket={r.bucket_ms} since={r.since_ms} until={r.until_ms} format={fmtMs}
+        />
+        {r.by_model.length > 1 && (
+          <div className="mt-4" data-testid="usage-speed">
+            <Table head={["Model", "First word", "Tokens/s", "Read from cache", "Failed"]}
+              rows={[...r.by_model].sort((a, b) => b.calls - a.calls).map((m) => [<span title={m.model}>{name(m.model)}</span>, fmtMs(m.ttft_p50), m.output_tokens_per_s ? Math.round(m.output_tokens_per_s) : "none", fmtPct(m.cache_hit_ratio), m.errors ? <span className="text-danger">{m.errors}</span> : 0])} />
+          </div>
+        )}
+      </section>
+
+      <Panel plain title="Is the cache holding" hint={`how much of the prompt was read from the provider's cache, not paid in full, per ${span}`} testid="chart-cache">
+        {buckets > 1 ? (
+          <TimeChart
+            label="Share of the prompt read from cache over time" height={150}
+            data={series.map((x) => ({ t: x.t_ms, values: [x.cache_hit_ratio] }))}
+            series={[{ label: "Read from cache", color: "var(--series-1)" }]}
+            bucket={r.bucket_ms} since={r.since_ms} until={r.until_ms} max={1} format={(v) => `${Math.round(v * 100)}%`}
+          />
+        ) : <p className="text-ui text-faint" data-testid="chart-cache-one">{/^\w+$/.test(span) ? `One ${span}` : `One span of ${span}`} of data so far: {fmtPct(t.cache_hit_ratio)} of its prompt was read from cache. A trend shows from the second.</p>}
+        <div className={cn("text-caption text-muted", buckets > 1 ? "mt-3" : "mt-2")} data-testid="cache-breaks">
           {r.breaks.length === 0 ? "No request in this range read less from the cache than the one before it." : (
             <div className="flex flex-wrap gap-x-5 gap-y-1">
               {r.breaks.map((b) => (
@@ -267,96 +441,34 @@ function Overview({ range }: { range: Range }) {
         </div>
       </Panel>
 
-      <Panel title="Response time" testid="chart-latency"
-        hint={`median attempt per bucket${t.output_tokens_per_s ? `; output ${Math.round(t.output_tokens_per_s)} tokens/s over ${t.speed_sample.calls} of ${t.calls} requests (${fmtTokens(t.speed_sample.output_tokens)} of ${fmtTokens(t.output_tokens)} tokens)` : ""}`}>
-        <TimeChart
-          label="Time to first token and request time over time"
-          data={series.map((p) => ({ t: p.t_ms, values: [p.ttft_p50, p.latency_p50] }))}
-          series={[{ label: "First token", color: "var(--series-1)" }, { label: "Whole request", color: "var(--series-2)" }]}
-          bucket={r.bucket_ms} since={r.since_ms} until={r.until_ms} format={fmtMs}
-        />
-      </Panel>
-
-      <Panel title="Tokens" hint="per bucket" testid="chart-tokens">
-        <TimeChart
-          kind="bars"
-          label="Tokens over time"
-          data={series.map((p) => ({ t: p.t_ms, values: [p.cache_read_tokens, p.input_tokens + p.cache_write_tokens, p.output_tokens] }))}
-          series={[{ label: "Read from cache", color: "var(--series-1)" }, { label: "New input", color: "var(--series-2)" }, { label: "Output", color: "var(--series-3)" }]}
-          bucket={r.bucket_ms} since={r.since_ms} until={r.until_ms} format={fmtTokens}
-        />
-      </Panel>
-
-      <Panel title="By model" hint={costFailed && cost ? `spend as of the last price lookup; it failed ${ago(costFailed)} ago` : undefined} testid="usage-models"
-        aside={<Segmented<Order> label="Order by" value={order} onChange={setOrder} options={[{ value: "calls", label: "Requests" }, { value: "tokens", label: "Tokens" }, { value: "spend", label: "Spend" }]} />}>
-        {r.by_model.length ? (
-          <Table
-            head={["Model", "Calls", "Cache hit", "First token", "Tokens/s", "Failed", "Spend"]}
-            rows={[...r.by_model].sort((a, b) => (order === "calls" ? b.calls - a.calls : order === "tokens" ? (cost?.[b.model]?.total_tokens ?? 0) - (cost?.[a.model]?.total_tokens ?? 0) : (cost?.[b.model]?.priced_cost_usd ?? 0) - (cost?.[a.model]?.priced_cost_usd ?? 0))).map((m) => {
-              const c = cost?.[m.model];
-              return [
-                <span title={m.model}>{name(m.model)}</span>, m.calls, fmtPct(m.cache_hit_ratio), fmtMs(m.ttft_p50),
-                m.output_tokens_per_s ? Math.round(m.output_tokens_per_s) : "none", m.errors ? <span className="text-danger">{m.errors}</span> : 0,
-                !cost ? (costFailed ? <span className="text-faint" title="the price lookup failed">unavailable</span> : "") : c ? fmtSpend(c) : "none",
-              ];
-            })}
-          />
-        ) : <p className="k-empty">No model calls in this range.</p>}
-      </Panel>
-
-      <Panel title="Tools" hint="calls that ran, after any approval" testid="usage-tools">
-        {r.tools.length ? (
-          <Table
-            head={["Tool", "Calls", "Failed", "Median", "95th", "Total time"]}
-            onRow={(i) => r.tools[i]!.tool_errors ? setOpenTool(openTool === r.tools[i]!.tool ? null : r.tools[i]!.tool) : undefined}
-            expanded={(i) => (openTool === r.tools[i]!.tool ? <Failures tool={openTool} since={r.since_ms} until={r.until_ms} count={r.tools[i]!.tool_errors} /> : null)}
-            rows={r.tools.map((x) => [
-              <span className="font-mono text-caption">{x.tool}</span>, x.tool_calls,
-              x.tool_errors ? <span className={x.tool_error_rate >= 0.15 ? "text-danger" : undefined}>{fmtPct(x.tool_error_rate)}</span> : "0%",
-              fmtMs(x.p50_ms), fmtMs(x.p95_ms),
-              x.total_ms == null ? <span className="text-faint">not measured</span> : x.timed < x.tool_calls ? <span title={`${x.tool_calls - x.timed} calls have no duration`}>{fmtMs(x.total_ms)} <span className="text-faint">({x.timed} of {x.tool_calls})</span></span> : fmtMs(x.total_ms),
-            ])}
-          />
-        ) : <p className="k-empty">No tool calls in this range.</p>}
-      </Panel>
-
-      <MemoryUsage since={r.since_ms} />
-
-      {usage && usage.by_purpose.length > 1 && (
-        <Panel title="By purpose" hint="every request: turns, and the ones beside them" testid="usage-purposes">
-          <Table head={["Purpose", "Requests", "Tokens", "Spend"]}
-            rows={[...usage.by_purpose].sort((a, b) => (b.calls ?? 0) - (a.calls ?? 0)).map((p) => [PURPOSE[p.purpose] ?? p.purpose, p.calls ?? 0, fmtTokens(p.total_tokens ?? 0), fmtSpend(p)])} />
+      <div className="grid gap-x-6 gap-y-6 xl:grid-cols-2">
+        <Panel plain title="Tools" hint="calls that ran, after any approval; a row with failures opens them" testid="usage-tools">
+          {r.tools.length ? (
+            <Table
+              head={["Tool", "Calls", "Failed", "Usual time", "Slow 1 in 20", "All together"]}
+              onRow={(i) => r.tools[i]!.tool_errors ? setOpenTool(openTool === r.tools[i]!.tool ? null : r.tools[i]!.tool) : undefined}
+              expanded={(i) => (openTool === r.tools[i]!.tool ? <Failures tool={openTool} since={r.since_ms} until={r.until_ms} count={r.tools[i]!.tool_errors} /> : null)}
+              rows={r.tools.map((x) => [
+                <span className="font-mono text-caption">{x.tool}</span>, x.tool_calls,
+                x.tool_errors ? <span className={x.tool_error_rate >= 0.15 ? "text-danger" : undefined}>{fmtPct(x.tool_error_rate)}</span> : "0%",
+                fmtMs(x.p50_ms), fmtMs(x.p95_ms),
+                x.total_ms == null ? <span className="text-faint">not measured</span> : x.timed < x.tool_calls ? <span title={`${x.tool_calls - x.timed} calls have no duration`}>{fmtMs(x.total_ms)} <span className="text-faint">({x.timed} of {x.tool_calls})</span></span> : fmtMs(x.total_ms),
+              ])}
+            />
+          ) : <p className="k-empty">No tool calls in this range.</p>}
         </Panel>
-      )}
-
-      {budget && (
-        <Panel title="Spend limits" hint="a turn stops before a request once the limit is reached; calls without a known price are not counted" testid="usage-budget">
-          <div className="flex flex-col gap-3 sm:flex-row sm:gap-8">
-            {([["daily_usd", "Today", r.spend.day], ["monthly_usd", "This month", r.spend.month]] as const).map(([key, label, sp]) => (
-              <div key={key} className="flex flex-1 items-center gap-3">
-                <div className="min-w-0 flex-1">
-                  <div className="text-ui font-medium">{label}</div>
-                  <div className="text-caption text-muted tabular-nums">
-                    {fmtUsd(sp.usd)} spent{sp.limit_usd ? ` of ${fmtUsd(sp.limit_usd)}` : ""}{sp.unpriced_calls ? `, ${sp.unpriced_calls} calls without a price` : ""}
-                  </div>
-                  {sp.limit_usd ? (
-                    <div className="mt-1.5 h-1.5 rounded-full bg-sunken">
-                      <div className={cn("h-1.5 rounded-full", sp.usd >= sp.limit_usd ? "bg-danger" : "bg-series-1")} style={{ width: `${Math.min(100, (sp.usd / sp.limit_usd) * 100)}%` }} />
-                    </div>
-                  ) : null}
-                </div>
-                <MoneyField label={`${label} limit`} testid={`budget-${key}`} value={budget[key]} onSave={(v) => saveBudget(key, v)} />
-              </div>
-            ))}
-          </div>
-        </Panel>
-      )}
-
-      {r.error_kinds.length > 0 && (
-        <Panel title="Why requests failed" testid="usage-failures">
-          <Table head={["Error", "Times"]} rows={r.error_kinds.map((e) => [<span title={e.message}>{e.message}</span>, e.count])} />
-        </Panel>
-      )}
+        {r.error_kinds.length > 0 && (
+          <Panel plain title="Why requests failed" testid="usage-failures">
+            <Table head={["Error", "Times"]} rows={r.error_kinds.map((e) => [<span title={e.message}>{e.message}</span>, e.count])} />
+          </Panel>
+        )}
+      </div>
     </div>
   );
+}
+
+// What recall added to turns, over the range.
+function MemoryView({ range }: { range: Range }) {
+  const since = useMemo(() => Date.now() - RANGES[range], [range]);
+  return <MemoryUsage since={since} />;
 }
