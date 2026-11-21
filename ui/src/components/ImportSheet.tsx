@@ -328,6 +328,9 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
       if (!cursor) setSel((cur) => (cur && r.sessions.find((x) => x.harness === cur.harness && x.id === cur.id && x.path === cur.path)) || cur);
       if (!cursor) setShownFor({ q: q.trim(), all });
     } catch (e) {
+      // A cursor the daemon does not take (one a page of an older build held
+      // through an upgrade): the list is read again from the top, as far as it was shown.
+      if (cursor && (e as { status?: number }).status === 400) return load(undefined, false, shown.current + 60);
       reportError(e);
     }
   }, [harness, q, all, from]);

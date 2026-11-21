@@ -98,10 +98,13 @@ export function readCursor(q: ListQuery, scope = ""): Cursor | undefined {
   if (!given) return undefined;
   let c: any;
   try { c = JSON.parse(Buffer.from(given, "base64url").toString()); } catch {}
-  if (!Array.isArray(c) || c[0] !== 1 || typeof c[3] !== "string") throw new CursorError("the cursor is not one this list gave: start again without it");
+  // A cursor is what a caller sends back: every part is checked for its type before it is used.
+  const not = () => new CursorError("the cursor is not one this list gave: start again without it");
+  if (!Array.isArray(c) || c[0] !== 1 || ![c[3], c[4], c[5]].every((x) => typeof x === "string") || ![c[6], c[7]].every((x) => Number.isFinite(x))) throw not();
   const sort = q.sort ?? "updated";
   if (c[1] !== listingOf(q, scope)) throw new CursorError("the cursor is of another listing (another search, filter or order): start again without it");
   const v = c[2];
+  if (sort === "title" ? typeof v !== "string" : !Number.isFinite(v)) throw not();
   return { sort, row: { updated_ms: sort === "updated" ? v : 0, size_bytes: sort === "size" ? v : 0, title: sort === "title" ? v : "", path: c[3], harness: c[4], id: c[5] }, seen: c[6], sum: c[7] };
 }
 

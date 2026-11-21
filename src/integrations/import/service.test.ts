@@ -185,6 +185,17 @@ test("the index pages, counts and looks up like a pass over every session, and d
   expect(imports.find("keel", "keel-7")).toEqual(side[7]!);
   expect(imports.decodes - d0).toBe(1);
 
+  // A cursor a caller made up is refused as a cursor (the caller's mistake), never bound into a statement.
+  const forged = (q: ListQuery, f: (c: any[]) => unknown) => {
+    const real = JSON.parse(Buffer.from(imports.list({ ...q, limit: 5 }).next_cursor!, "base64url").toString());
+    return Buffer.from(JSON.stringify(f(real))).toString("base64url");
+  };
+  const set = (i: number, v: unknown) => (c: any[]) => (c[i] = v, c);
+  for (const f of [set(2, {}), set(2, [1]), set(2, "9"), set(2, null), set(3, 7), set(4, {}), set(5, null), set(6, "x"), set(7, null), (c: any[]) => c.slice(0, 3), () => ({ a: 1 })])
+    expect(() => imports.list({ limit: 5, cursor: forged({}, f) })).toThrow(CursorError);
+  expect(() => imports.list({ sort: "title", limit: 5, cursor: forged({ sort: "title" }, set(2, 5)) })).toThrow(CursorError);
+  expect(() => imports.list({ sort: "size", limit: 5, cursor: forged({ sort: "size" }, set(2, "big")) })).toThrow(CursorError);
+
   // An index written before the columns existed is filled from its rows when the daemon starts.
   store.db.exec("UPDATE import_index SET sid = NULL, kind = NULL, cwd = NULL, title = NULL, updated_ms = NULL, size_bytes = NULL, hay = NULL, offered = NULL, kh = NULL");
   expect(imports.list({}).total).toBe(side.length);

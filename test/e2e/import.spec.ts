@@ -520,6 +520,10 @@ test("the import sheet lists every harness and imports from each", async ({ page
     if (i === 0) expect((await request.get(`/api/import/sessions?q=other&cursor=${cursor}`)).status()).toBe(400);
   }
   expect(paged).toEqual(mixed.sessions.map((s: any) => s.id));
+  // A cursor a caller made up is the caller's mistake, not the daemon's failure.
+  const real = JSON.parse(Buffer.from((await list(`q=${tag}&limit=1`)).next_cursor, "base64url").toString());
+  real[2] = {};
+  expect((await request.get(`/api/import/sessions?q=${tag}&limit=1&cursor=${Buffer.from(JSON.stringify(real)).toString("base64url")}`)).status()).toBe(400);
   const byId = await (await request.get(`/api/import/preview?harness=codex&id=${mixed.sessions.find((s: any) => s.harness === "codex").id}`)).json();
   expect(byId.session.title).toContain("Pick a code word");
 
@@ -548,6 +552,32 @@ test("the import sheet lists every harness and imports from each", async ({ page
   const after = await list(`q=${tag}`);
   expect(after.sessions.map((s: any) => s.imported?.session_id).sort()).toEqual([...made].sort());
   for (const id of made) await request.delete(`/api/sessions/${id}`);
+
+  // A list longer than a page, and a More button whose cursor the daemon no
+  // longer takes (a page of an older build held it through an upgrade: a row
+  // count): the list is read again from the top and goes on, instead of failing.
+  const longDir = join(store("claude"), `-more-${tag}`);
+  for (let i = 0; i < 70; i++) claudeFile(longDir, cwd, `40000000-0000-4000-8000-${String(i).padStart(4, "0")}${tag.slice(-8)}`, [{ type: "user", message: { role: "user", content: `more-${tag} number ${i}` } }]);
+  expect((await list(`q=more-${tag}&refresh=1`)).total).toBe(70);
+  await page.goto("/");
+  await page.keyboard.press("Control+k");
+  await page.getByTestId("palette-input").fill("Import sessions");
+  await expect(page.getByRole("option", { name: "Import sessions" })).toBeVisible();
+  await page.keyboard.press("Enter");
+  await page.getByTestId("import-tab-claude").click();
+  await page.getByTestId("import-search").fill(`more-${tag}`);
+  await expect(rows).toHaveCount(60, { timeout: 20_000 });
+  let withCursor = 0;
+  await page.route(/\/api\/import\/sessions\?.*cursor=/, (route) => {
+    const u = new URL(route.request().url());
+    if (withCursor++ === 0) u.searchParams.set("cursor", "60");
+    return route.continue({ url: u.toString() });
+  });
+  await sheet.getByRole("button", { name: "More", exact: true }).click();
+  await expect(rows).toHaveCount(70);
+  expect(withCursor).toBe(1);
+  await page.unroute(/\/api\/import\/sessions\?.*cursor=/);
+  rmSync(longDir, { recursive: true, force: true });
 });
 
 // The resume line the dialog shows runs as it is pasted, whatever the

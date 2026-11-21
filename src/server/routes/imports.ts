@@ -89,6 +89,8 @@ export const importRoutes: RouteModule = (deps) => {
       return await fleet!.handsJson<T>(mid, path, { timeout: 30_000, idempotent: true });
     } catch (e) {
       if (!(e instanceof LinkError)) throw e;
+      // The machine answered and refused what was asked (a cursor it did not give): the caller's mistake, in its words.
+      if ((e as { status?: number }).status === 400) return bad((e as Error).message);
       return bad(`${fleet!.row(mid)?.name ?? mid} did not answer: ${(e as Error).message}`, 409);
     }
   };
