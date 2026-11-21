@@ -138,6 +138,8 @@ window.addEventListener("storage", (e) => {
 });
 
 export function setSendDraft(key: string, id: string, draft?: SendDraft) {
+  // A session deleted while its send was out: there is nowhere to send it again, so nothing is kept for it.
+  if (dropped.has(key)) draft = undefined;
   if (draft && (draft.state === "sending" || draft.state === "done")) own.add(id);
   else own.delete(id);
   const old = sendDrafts(key);
@@ -157,10 +159,32 @@ export function setSendImage(key: string, id: string, image: string, got: Attach
 }
 
 // A deleted session takes its shelf with it.
+const dropped = new Set<string>();
 export function dropSendDrafts(key: string) {
+  dropped.add(key);
   for (const d of sendDrafts(key)) own.delete(d.id);
   if (drafts.has(key)) put(key, empty);
   try { localStorage.removeItem(STORE + key); } catch { /* nothing was stored */ }
+}
+
+// A session deleted while no page was open left its kept sends and the words
+// typed into its box in this browser's storage for good. Once the session
+// list is in, each stored key of a session of this daemon that the list does
+// not have is asked about (`exists`: an archived session or an agent's is not
+// in the list and keeps its own), and what belongs to no session is removed.
+const TYPED = "keel.draft.";
+export async function dropOrphans(listed: (id: string) => boolean, exists: (id: string) => Promise<boolean>) {
+  const ids = new Set<string>();
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i)!;
+    const id = k.startsWith(STORE) ? k.slice(STORE.length) : k.startsWith(TYPED) ? k.slice(TYPED.length) : NEW;
+    if (id !== NEW && !splitId(id) && !listed(id)) ids.add(id);
+  }
+  for (const id of ids) {
+    if (listed(id) || (await exists(id))) continue;
+    dropSendDrafts(id);
+    try { localStorage.removeItem(TYPED + id); } catch { /* storage is unavailable */ }
+  }
 }
 
 // Where a new session's first message goes: the plain create, one in a fresh

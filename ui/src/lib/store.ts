@@ -8,7 +8,7 @@ import type { ModelInfo, ProviderStatus } from "../../../src/providers/types.ts"
 import { apiPath, localize, splitId } from "./fleet-ids.ts";
 import { seedComposer } from "./ui.ts";
 import { servedUi } from "./hotui.ts";
-import { dropSendDrafts } from "./send-drafts.ts";
+import { dropOrphans, dropSendDrafts } from "./send-drafts.ts";
 import { setRatio } from "../../../src/engine/compact.ts";
 
 export type ProvidersReport = {
@@ -686,6 +686,7 @@ let onReplayed: ((ends: Record<string, number>) => void) | undefined;
 // The last socket opened and closed before its replay was through (a replay
 // too large for it): the next one reads the open transcripts by HTTP too.
 let cutShort = false;
+let swept = false;
 export function connect() {
   const ws = (socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`));
   let pinger: ReturnType<typeof setInterval> | undefined;
@@ -714,6 +715,16 @@ export function connect() {
     const first = !opened && bootLoad;
     opened = true;
     const listed = first ? first.then(() => {}, reload) : reload();
+    // Once a page: what this browser kept for sessions that were deleted while no page was open goes.
+    void listed.then(() => {
+      if (swept || !state.loaded.sessions) return; // a list that did not come is asked for again at the next socket
+      swept = true;
+      return dropOrphans(
+        (id) => !!state.sessions[id],
+        // Only the daemon's own "no such session" says it is gone: any other answer keeps what was stored.
+        (id) => fetch(apiPath(`/api/sessions/${id}/draft`)).then((r) => r.status !== 404, () => true),
+      );
+    }).catch((e) => reportError(e, { at: "kept sends of deleted sessions" }));
     const loads: Promise<unknown>[] = [listed];
     // Where the daemon's replay of each session ended, once it is through.
     const replayed = new Promise<Record<string, number>>((done) => (onReplayed = done));

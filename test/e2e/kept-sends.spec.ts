@@ -63,3 +63,50 @@ test("a second tab's box gives up an image the kept send took", async ({ page, c
   await expect(saved(other)).toContainText("first.png");
   await request.delete(`/api/sessions/${k.a}`);
 });
+
+// EXTRA-S13. A session deleted while no page was open leaves its kept sends
+// and its typed draft in the browser's storage: the next load removes them
+// (an archived session keeps its own), and a send that fails after its
+// session was deleted is not written back.
+test("what was kept for a deleted session is removed at the next load", async ({ page, request }) => {
+  const mk = async (title: string) => (await (await request.post("/api/sessions", { data: { model: HAIKU, title } })).json()).session.id as string;
+  const [open, gone, archived] = [await mk("Kept keys, open"), await mk("Kept keys, deleted"), await mk("Kept keys, archived")];
+  await page.goto(`/s/${open}`);
+  await page.evaluate((ids) => {
+    for (const id of ids) {
+      localStorage.setItem(`keel.sends.${id}`, JSON.stringify([{ id: `kept-${id}`, text: "kept words", images: [], queue: false, state: "refused", error: "refused" }]));
+      localStorage.setItem(`keel.draft.${id}`, "typed words");
+    }
+  }, [gone, archived]);
+  // No page is open while the one is deleted and the other archived.
+  await page.goto("about:blank");
+  await request.delete(`/api/sessions/${gone}`);
+  expect((await request.patch(`/api/sessions/${archived}`, { data: { archived: true } })).ok()).toBe(true);
+  const stored = (k: string) => page.evaluate((key) => localStorage.getItem(key), k);
+  await page.goto(`/s/${open}`);
+  await expect.poll(() => stored(`keel.sends.${gone}`)).toBeNull();
+  await expect.poll(() => stored(`keel.draft.${gone}`)).toBeNull();
+  expect(await stored(`keel.sends.${archived}`)).toContain("kept words");
+  expect(await stored(`keel.draft.${archived}`)).toBe("typed words");
+
+  // A send still out when its session is deleted: its failure writes nothing back.
+  const messages = `/api/sessions/${open}/messages`;
+  const held = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  await page.route(messages, async (r) => {
+    held.resolve();
+    await release.promise;
+    await r.fulfill({ status: 404, json: { error: "no such session" } });
+  }, { times: 1 });
+  await composer(page).fill("Sent just before the session went.");
+  await composer(page).press("Enter");
+  await held.promise;
+  await request.delete(`/api/sessions/${open}`);
+  await expect(page.locator(`[data-testid="session-row"][data-session="${open}"]`)).toHaveCount(0);
+  const answered = page.waitForResponse((r) => r.url().endsWith(messages));
+  release.resolve();
+  await answered;
+  await page.evaluate(() => new Promise((r) => setTimeout(r, 300)));
+  expect(await stored(`keel.sends.${open}`)).toBeNull();
+  await request.delete(`/api/sessions/${archived}`);
+});
