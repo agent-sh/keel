@@ -113,12 +113,18 @@ export function Palette() {
         });
       }
     }
+    // A row's key is its own: a command and its output are two hits of one event and one call.
+    // Two rows with one key would leave the first on the page under every later query.
+    const keyed = new Set<string>();
     for (const [i, h] of hits.entries()) {
       if (!h.event_id) continue;
       const tool = h.kind === "tool_use" || h.kind === "tool_result";
       const where = `${h.session_title || "New session"} · ${names.get(h.cwd)}`;
+      const key = `h:${h.event_id}:${h.kind}:${h.ref ?? ""}`;
+      if (keyed.has(key)) continue;
+      keyed.add(key);
       out.push({
-        key: `h:${h.event_id}:${h.ref ?? h.kind}`, group: "In conversations",
+        key, group: "In conversations",
         detail: `${h.archived ? "Archived · " : ""}${tool ? (h.kind === "tool_use" ? "Command · " : "Tool output · ") : h.kind === "summary" ? "Summary · " : ""}${where}${h.partial ? " · first part searched" : ""}`,
         label: <><Snippet text={h.snippet} />{h.archived && <Archived />}</>, icon: tool ? <SquareTerminal className="size-4" /> : <TextSearch className="size-4" />, score: 50 - i,
         // Read it where it is: another branch is previewed, the session's own branch stays; a tool hit opens its card.
