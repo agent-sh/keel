@@ -8,12 +8,14 @@ import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
 import { KEEP_REQUEST_BYTES, SPAN_DAYS, packRequest, parseTraceparent, requestShape, type Span, toolSpanId, traceIdOf, traceparent, Tracer, turnPlace, turnSpanId } from "./trace.ts";
 
-// A tracer over a store of its own, with the hooks it registered.
+// A tracer over a store of its own, with the hooks it registered. Closing takes
+// the hooks away with the store: a turn of a later test file would call them.
 function tracer() {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "trace-test-"));
   const store = new Store(dir);
   const t = new Tracer(store, new Bus(), () => false);
-  return { dir, store, t, hooks: allHooks().at(-1)!, close: () => { store.db.close(); rmSync(dir, { recursive: true, force: true }); } };
+  const hooks = allHooks().at(-1)!;
+  return { dir, store, t, hooks, close: () => { allHooks().splice(allHooks().indexOf(hooks), 1); store.db.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
 
 const parentTurn = "019a0000-0000-7000-8000-00000000aaaa";
