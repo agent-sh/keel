@@ -334,8 +334,8 @@ describe("keel run with no daemon", () => {
 
 // A command whose standard input stays open: a line is written to it, and its
 // output lines are read as they come.
-function held(args: string[], state: string) {
-  const p = Bun.spawn([BIN, ...args], { cwd: WS, env: { ...ENV, KEEL_STATE_DIR: state }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+function held(args: string[], state: string, env: Record<string, string> = {}) {
+  const p = Bun.spawn([BIN, ...args], { cwd: WS, env: { ...ENV, KEEL_STATE_DIR: state, ...env }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   const got: any[] = [];
   const read = (async () => {
     const dec = new TextDecoder();
@@ -362,6 +362,35 @@ function held(args: string[], state: string) {
   };
 }
 const said = (text: string, uuid?: string) => ({ type: "user", message: { role: "user", content: text }, ...(uuid ? { uuid } : {}) });
+const freePort = () => 20_000 + Math.floor(Math.random() * 20_000);
+
+// A daemon on one port and one state folder that is restarted in place:
+// gracefully (it drains, parks its turns and starts itself again) or killed
+// and started again.
+async function restartable(state: string) {
+  const port = freePort();
+  const url = `http://127.0.0.1:${port}`;
+  const env = { ...ENV, KEEL_DRAIN_MS: "300", KEEL_RESUME_AT_ONCE: "1" };
+  const pid = async () => ((await (await fetch(`${url}/api/health`)).json()) as { pid: number }).pid;
+  const up = async (not?: number) => {
+    for (let i = 0; i < 600; i++) {
+      try { const now = await pid(); if (now !== not) return now; } catch {}
+      await Bun.sleep(50);
+    }
+    throw new Error(`no daemon came up at ${url}`);
+  };
+  const down = async () => { for (let i = 0; i < 200; i++) { try { await pid(); } catch { return; } await Bun.sleep(50); } throw new Error(`the daemon at ${url} did not go down`); };
+  const start = () => { Bun.spawn([BIN, "serve", "--bind", `127.0.0.1:${port}`, "--state-dir", state, "--workspace", WS], { cwd: WS, env, stdout: "ignore", stderr: "ignore" }); return up(); };
+  let now = await start();
+  const api = async (path: string, body?: unknown) =>
+    (await fetch(url + path, { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) })).json() as Promise<any>;
+  return {
+    url, api,
+    graceful: async () => { const old = now; await api("/api/drain", { timeout_seconds: 1, restart: true }); now = await up(old); },
+    killed: async () => { process.kill(now, "SIGKILL"); await down(); now = await start(); },
+    stop: async () => { try { process.kill(now, "SIGTERM"); await down(); } catch {} },
+  };
+}
 const isResult = (l: any) => l.type === "result";
 
 // docs/headless.md: keel run --input-format stream-json.
@@ -542,6 +571,143 @@ describe("a session a script holds open", () => {
       await d.exited;
     }
   }, 120_000);
+
+  // Whatever waits on an answer when the daemon restarts waits again after it,
+  // under the same request, and the turn it is in gets one result: the one of
+  // its continuation. Each kind of thing that can wait, a restart that drains
+  // and one that kills, the script answering and the owner answering.
+  test("a request open across a daemon restart is asked again, its answer is taken, and its turn gets one result", async () => {
+    const d = await restartable(join(SCRATCH, "state-stream-cards"));
+    const calls = (name: string, input: unknown) => `script:calls ${JSON.stringify([{ name, input }])}`;
+    const kinds = {
+      approval: { mode: "ask", list: "approvals", subtype: "can_use_tool", prompt: (tag: string) => calls("Bash", { command: `touch restart-${tag}.txt` }) },
+      question: { mode: "ask", list: "questions", subtype: "ask_question", prompt: () => calls("AskUserQuestion", { questions: [{ header: "Color", question: "Which color?", options: [{ label: "Teal" }, { label: "Amber" }], multiSelect: false }] }) },
+      plan: { mode: "plan", list: "plans", subtype: "approve_plan", prompt: () => calls("present_plan", { plan: "1. Read it.\n2. Change it.", title: "The plan" }) },
+      secret: { mode: "ask", list: "secrets", subtype: "give_secret", prompt: (tag: string) => calls("request_secret", { name: `STREAM_${tag.toUpperCase().replace(/-/g, "_")}`, purpose: "for the restart test" }) },
+    } as const;
+    const seen: Record<string, unknown> = {};
+    const want: Record<string, unknown> = {};
+    try {
+      for (const how of ["graceful", "killed"] as const) for (const onAsk of ["stdin", "wait"] as const) for (const kind of Object.keys(kinds) as (keyof typeof kinds)[]) {
+        const k = kinds[kind], tag = `${kind}-${how}-${onAsk}`;
+        const s = held(["run", "--input-format", "stream-json", "--permission-mode", k.mode, "--on-ask", onAsk, "--url", d.url], join(SCRATCH, "state-stream-cards"));
+        try {
+          s.write(said(k.prompt(tag), tag));
+          const init = await s.until((l) => l.type === "system" && l.subtype === "init");
+          const sid = s.got[init].session_id as string;
+          const open = async () => { for (let i = 0; i < 600; i++) { const st = await d.api(`/api/cli/state/${sid}`).catch(() => null); if (st?.[k.list]?.length) return st[k.list][0]; await Bun.sleep(50); } throw new Error(`${tag}: nothing waits`); };
+          const asked = (l: any) => l.type === "control_request" && l.request.subtype === k.subtype;
+          await open();
+          if (onAsk === "stdin") await s.until(asked);
+          await d[how]();
+          const card = await open();
+          // The answer: the script's on the stream, the owner's on the daemon. A plan is the owner's to approve; a script can only decline it.
+          if (onAsk === "stdin") {
+            // The request as the script holds it now: asked again after a drain withdrew it, or still the first one.
+            const again = async () => { for (let i = 0; i < 400; i++) { const c = s.got.findLastIndex((l) => l.type === "control_cancel_request"), r = s.got.findLastIndex(asked); if (r > c) return s.got[r]; await Bun.sleep(50); } throw new Error(`${tag}: not asked again:\n${s.got.slice(-6).map((l) => JSON.stringify(l).slice(0, 200)).join("\n")}`); };
+            const req = await again();
+            expect(kind === "question" ? req.request.input.questions[0].question : kind === "plan" ? req.request.plan : kind === "secret" ? req.request.name : req.request.input.command).toBeTruthy();
+            const response = kind === "approval" ? { behavior: "allow" } : kind === "question" ? { answers: { 0: { picked: ["Amber"] } } } : kind === "plan" ? { behavior: "deny", message: "not yet" } : { behavior: "allow", value: "s3cret-from-the-script" };
+            s.write({ type: "control_response", response: { subtype: "success", request_id: req.request_id, response } });
+          } else {
+            const [path, body] = kind === "approval" ? [`approvals/${card.id}`, { choice: "once" }] : kind === "question" ? [`questions/${card.call_id}`, { answers: { 0: { picked: ["Amber"] } } }]
+              : kind === "plan" ? [`plan/${card.id}`, { approve: true, mode: "ask" }] : [`secrets/${card.id}`, { value: "s3cret-from-the-owner" }];
+            expect(await d.api(`/api/sessions/${card.session_id}/${path}`, body)).toMatchObject({ ok: true });
+          }
+          const at = await s.until(isResult, 0, 60_000);
+          const end = await s.end();
+          const told = JSON.stringify(s.got.filter((l) => l.type === "user" && l.message.content[0]?.type === "tool_result").at(-1) ?? null);
+          seen[tag] = [s.got.filter(isResult).map((l) => [l.subtype, l.user_message_uuids, l.num_turns]), end.code,
+            kind === "approval" ? existsSync(join(WS, `restart-${tag}.txt`)) : kind === "question" ? told.includes("Amber") : kind === "plan" ? told.includes(onAsk === "stdin" ? "not yet" : "approved the plan") : told.includes("The owner gave STREAM_"),
+            JSON.stringify(s.got).includes("s3cret-from")];
+          want[tag] = [[["success", [tag], 1]], 0, true, false];
+          expect(at).toBeGreaterThan(0);
+        } finally {
+          s.kill();
+        }
+      }
+      expect(seen).toEqual(want);
+    } finally {
+      await d.stop();
+    }
+  }, 600_000);
+
+  test("a prompt whose answer was lost is stored once and keeps its id; a daemon that takes no refusal, or is another one, ends the command with a result", async () => {
+    // An address that lets the daemon take the second prompt and drops the connection before the answer; it is back a moment later.
+    const port = freePort();
+    let runs = 0, dropped = 0;
+    let fr: ReturnType<typeof Bun.serve>;
+    const serve = () => (fr = Bun.serve({ port, hostname: "127.0.0.1", idleTimeout: 60, fetch: async (req) => {
+      const u = new URL(req.url);
+      if (u.pathname === "/ws") return new Response("no socket here", { status: 404 });
+      const r = await fetch(dm.url + u.pathname + u.search, { method: req.method, headers: { "content-type": "application/json" }, body: req.method === "GET" ? undefined : await req.arrayBuffer() });
+      const body = await r.arrayBuffer();
+      if (req.method === "POST" && u.pathname === "/api/run" && ++runs === 2) {
+        dropped++;
+        const old = fr;
+        setTimeout(serve, 400);
+        void old.stop(true);
+        await Bun.sleep(1000);
+      }
+      return new Response(body, { status: r.status, headers: { "content-type": "application/json" } });
+    } }));
+    serve();
+    const s = held(["run", "--input-format", "stream-json", "--url", `http://127.0.0.1:${port}`], state);
+    try {
+      s.write(said("first", "a"));
+      let at = await s.until(isResult);
+      s.write(said("second, its answer lost", "b"));
+      at = await s.until(isResult, at + 1);
+      expect([dropped, s.got[at].subtype, s.got[at].user_message_uuids, s.got[at].num_turns]).toEqual([1, "success", ["b"], 2]);
+      s.write(said("third", "c"));
+      at = await s.until(isResult, at + 1);
+      const end = await s.end();
+      // Three prompts, three turns, three results, each with its id; the second is in the session once.
+      expect([end.code, s.got.filter(isResult).map((l) => [l.subtype, l.user_message_uuids])]).toEqual([0, [["success", ["a"]], ["success", ["b"]], ["success", ["c"]]]]);
+      const events = (await dm.api(`/api/sessions/${s.got.find((l) => l.session_id).session_id}/events`)).events as any[];
+      expect(events.filter((e) => e.kind === "user").map((e) => e.data.text)).toEqual(["first", "second, its answer lost", "third"]);
+    } finally {
+      s.kill();
+      fr!.stop(true);
+    }
+
+    // A daemon that answers and takes no refusal of a request: the command does not try for ever.
+    const deaf = front(dm.url, (method, path) => (method === "POST" && path.includes("/approvals/") ? Response.json({ error: "nothing is taken here" }, { status: 500 }) : undefined));
+    const t0 = Date.now();
+    const r = await keel(["run", "--input-format", "stream-json", "--permission-mode", "ask", "--url", deaf.url], { state, stdin: JSON.stringify(said('script:calls [{"name":"Bash","input":{"command":"touch stream-deaf.txt"}}]', "d")) + "\n", env: { KEEL_STREAM_AWAY_MS: "1500" } });
+    deaf.stop();
+    const last = lines(r.out).filter(isResult).at(-1);
+    expect([r.code, last.subtype, last.result, Date.now() - t0 < 20_000, existsSync(join(WS, "stream-deaf.txt"))]).toEqual([3, "error_during_execution", expect.stringContaining("took no answer to a request"), true, false]);
+    await dm.api(`/api/sessions/${last.session_id}/interrupt`, {});
+
+    // The address answers again as a daemon of another state folder: the command says so in a result and ends.
+    const one = join(SCRATCH, "state-stream-one"), other = join(SCRATCH, "state-stream-other"), p2 = freePort();
+    const start = async (dir: string) => {
+      const d = Bun.spawn([BIN, "serve", "--bind", `127.0.0.1:${p2}`, "--state-dir", dir, "--workspace", WS], { cwd: WS, env: ENV, stdout: "pipe", stderr: "ignore" });
+      const reader = d.stdout.getReader();
+      let text = "";
+      while (!text.includes("listening")) text += new TextDecoder().decode((await reader.read()).value);
+      reader.releaseLock();
+      return d;
+    };
+    let d = await start(one);
+    const h = held(["run", "--input-format", "stream-json", "--url", `http://127.0.0.1:${p2}`], one);
+    try {
+      h.write(said("here", "e"));
+      const first = await h.until(isResult);
+      d.kill("SIGKILL");
+      await d.exited;
+      d = await start(other);
+      h.write(said("still here?", "f"));
+      const gone = await h.until(isResult, first + 1);
+      const end = await h.end();
+      expect([end.code, h.got[gone].subtype, h.got[gone].result]).toEqual([3, "error_during_execution", expect.stringContaining("another daemon answers there now")]);
+    } finally {
+      h.kill();
+      d.kill("SIGTERM");
+      await d.exited;
+    }
+  }, 180_000);
 
   test("prompts piped in one go run one after another, with no daemon running", async () => {
     const alone = join(SCRATCH, "state-stream-alone");

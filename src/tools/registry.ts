@@ -49,7 +49,13 @@ export function unregisterShared(name: string) {
 }
 
 // A tool of any family that only waits on the owner's answer.
-export const asksOwner = (name: string) => [...byFamily.values(), shared].some((l) => l.some((t) => t.name === name && t.asksOwner));
+// A tool that only waits on the owner, named before the tool itself is
+// registered: a route module registers its tools at its turn, and the start
+// closes the turns a crash cut before the later modules had theirs. A call
+// of such a tool is asked again after a restart, never closed as cut.
+const ownerAsking = new Set<string>();
+export const declareAsksOwner = (...names: string[]) => { for (const n of names) ownerAsking.add(n); };
+export const asksOwner = (name: string) => ownerAsking.has(name) || [...byFamily.values(), shared].some((l) => l.some((t) => t.name === name && t.asksOwner));
 
 // The provider-neutral way to deferred tools, replaced by ToolSearch where tools load natively.
 const SEARCH_PAIR = new Set(["search_tools", "mcp_call"]);

@@ -5,7 +5,8 @@
 //                            -> { session_id, replayed, after_seq, event_id?, queued? }
 //   One prompt to a new or existing session, settings first. With a key, a
 //   retry gets the first answer back and starts neither a session nor a turn.
-// GET  /api/cli/state/:id               -> the session's state, running, queue, open cards and questions, background work
+// GET  /api/cli/state/:id               -> the session's state, running, queue, what waits on an answer
+//                                          (approvals, questions, plans, secret requests), background work
 // GET  /api/cli/resolve?id=PREFIX       -> { session } (a unique prefix of an id, or an agent's id or a prefix of it)
 // GET  /api/cli/model?model=&provider=  -> { model } (an id, a bare model name or a listed name)
 import { existsSync, statSync } from "node:fs";
@@ -20,6 +21,8 @@ import { owedWake } from "../../automation/failures.ts";
 import * as waits from "../../automation/waits.ts";
 import { sessionState } from "../../automation/state.ts";
 import { pendingQuestions } from "../../tools/interact.ts";
+import { plansWaiting } from "./plan.ts";
+import { secretsWaiting } from "./secrets.ts";
 import { jobsOf, running } from "../../tools/jobs.ts";
 import { fitted } from "../../engine/image-fit.ts";
 import { sessionRef } from "../../admin/session-ref.ts";
@@ -55,6 +58,20 @@ const lastSeq = (deps: Deps, id: string) =>
 
 export const runRoutes: RouteModule = (deps) => {
   const { store, bus, engine, providers } = deps;
+  // The call that asked a question: its tool and input, read once from the
+  // reply that made it. A caller is told the question with the fact that it waits.
+  const asked = new Map<string, { tool: string; input: unknown }>();
+  const callOf = (sessionId: string, callId: string): { tool: string; input: unknown } | undefined => {
+    const key = `${sessionId}:${callId}`;
+    const hit = asked.get(key);
+    if (hit) return hit;
+    const e = store.db.query<{ data: string }, [string, string]>("SELECT data FROM events WHERE session_id = ? AND kind = 'assistant' AND instr(data, ?) > 0 ORDER BY seq DESC LIMIT 1").get(sessionId, JSON.stringify(callId));
+    let use: any;
+    try { use = e && (JSON.parse(e.data).blocks ?? []).find((b: any) => b.type === "tool_use" && b.id === callId); } catch {}
+    if (!use) return undefined;
+    if (asked.size > 500) asked.clear();
+    return asked.set(key, { tool: String(use.name), input: use.input }).get(key);
+  };
   store.migrate(SCHEMA);
   // What the first request with a key asked for (a retry must ask the same),
   // and the queued prompt it became when the session was busy.
@@ -86,7 +103,10 @@ export const runRoutes: RouteModule = (deps) => {
         const s = resolveSession(deps, req.params.id);
         const ids = family(s.id);
         const approvals = (gate?.approvals({ pending: true }) ?? []).filter((a) => ids.includes(a.session_id));
-        const questions = ids.flatMap((id) => pendingQuestions(id).map((call_id) => ({ session_id: id, call_id })));
+        const questions = ids.flatMap((id) => pendingQuestions(id).map((call_id) => ({ session_id: id, call_id, ...callOf(id, call_id) })));
+        // A plan put up for approval and a secret asked for wait on an answer too; each is its call's id.
+        const plans = plansWaiting().filter((p) => ids.includes(p.session_id));
+        const secrets = secretsWaiting().filter((r) => ids.includes(r.session_id));
         // An agent that ended but whose report has not reached the session yet
         // still counts: its report starts the turn that uses it.
         // (A failure notice that stands in for failed agents' reports counts the same.)
@@ -104,6 +124,8 @@ export const runRoutes: RouteModule = (deps) => {
           status: engine.statusOf(s.id),
           approvals,
           questions,
+          plans,
+          secrets,
           background: { agents: agentsLive, waits: waitsLive, jobs: jobsLive },
         });
       },

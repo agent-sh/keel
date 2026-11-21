@@ -83,6 +83,13 @@ An answer to a permission request or a question (only with `--on-ask stdin`, see
 {"type":"control_response","response":{"subtype":"success","request_id":"ID","response":{"answers":{"0":{"picked":["Teal"]}}}}}
 ```
 
+- A `give_secret` request is allowed with the value:
+  `{"behavior":"allow","value":"..."}`. The value goes to the daemon's memory and is never part
+  of the conversation.
+- An `approve_plan` request can be declined (`deny`, with words for the model). It cannot be
+  approved over the stream: approving a plan lets the session leave plan mode, and that is the
+  owner's to allow. An allow declines it, the model is told to end with the plan as its answer,
+  and an `input_error` says so. With `--on-ask wait` the owner approves it in the workbench.
 - A call runs as it was asked or not at all. An allow may carry `updatedInput` when it equals
   the input of the request. One that differs refuses the call: the model is told to call the
   tool again with the input wanted, and an `input_error` says so.
@@ -102,8 +109,8 @@ A line that is none of these is skipped and said back as
 | `assistant` | a reply of the model | `message.content`: `text`, `thinking` and `tool_use` blocks (`id`, `name`, `input`) |
 | `stream_event` | with `--include-partial-messages`, as the reply streams | `event.delta`: `{type: "text_delta", text}`, `{type: "thinking_delta", thinking}` or `{type: "input_json_delta", partial_json}` |
 | `system` / other | every other stored event (`turn_start`, `turn_end`, `error`, `note`, ...) | `subtype` is the event's kind |
-| `control_request` | with `--on-ask stdin`: a call needs an answer | `request_id`, `request.subtype`: `can_use_tool` (`tool_name`, `tool_use_id`, `input`, `summary`, `risk`, `input_cut`, `once_only`) or `ask_question` (`tool_use_id`, `input`) |
-| `control_cancel_request` | an open request closed without the script (its turn was stopped, or it was answered in the workbench) | `request_id` |
+| `control_request` | with `--on-ask stdin`: something waits on an answer | `request_id`, `request.subtype`: `can_use_tool` (`tool_name`, `tool_use_id`, `input`, `summary`, `risk`, `input_cut`, `once_only`), `ask_question` (`tool_use_id`, `input`), `approve_plan` (`tool_use_id`, `plan`, `title`) or `give_secret` (`tool_use_id`, `name`, `purpose`) |
+| `control_cancel_request` | an open request closed without the script (its turn was stopped, it was answered in the workbench, or the daemon restarts) | `request_id` |
 | `control_response` | the answer to a control request of the script | `response.subtype`: `success` or `error`, `response.request_id` |
 | `system` / `permission_denied` | a request was refused here | `request_id`, `tool_name`, `tool_use_id`, `reason` |
 | `system` / `input_error` | an input line was not taken | `error`, `request_id` when it names one |
@@ -142,7 +149,8 @@ The session's permission mode decides what runs without asking (`--permission-mo
 flag a person uses). A call the mode asks about is never allowed silently:
 
 - `--on-ask deny` (the default here): the request is refused at once, a `permission_denied` line
-  says so, the model is told, and the turn goes on.
+  says so, the model is told, and the turn goes on. A question gets no answer, a plan is
+  declined and a secret is not given, the same way.
 - `--on-ask stdin`: the request is written as a `control_request` and the turn waits for the
   script's `control_response`. `allow` covers that one call. A standing grant is the owner's to
   give in the workbench. When standard input closes, open requests and later ones are refused.
@@ -159,8 +167,15 @@ A command that runs the session inside itself has no daemon to lose. With a daem
 - While no daemon takes a connection the command writes `daemon_away` (`reason: "unreached"`)
   and waits up to 90 seconds, the time `keel restart` gives a daemon to come back. Then
   `daemon_back`, and the session goes on. A prompt is stored once, also when its answer was lost.
-- A turn the restart cut is continued by the new daemon. It gets one result, at its end. When
-  the daemon does not continue it, its result is `error_during_execution` with the reason.
+- A turn the restart cut is continued by the new daemon. It gets one result, at the end of its
+  continuation, with the ids of the prompts it took. When the daemon does not continue it, its
+  result is `error_during_execution` with the reason.
+- A request that was open is withdrawn while the daemon restarts (`control_cancel_request`)
+  and asked again after it, under the same `request_id`: answer the second one.
+- A daemon that answers but takes no refusal of a request for 90 seconds ends the command the
+  same way, with exit 3.
+- When the address answers as a daemon that does not have the session (another state folder),
+  the command writes an `error_during_execution` result that says so and exits 3.
 - When the daemon does not come back in that time, the command writes an
   `error_during_execution` result and exits 3. The session is kept: `-r ID` holds it again.
 
@@ -210,6 +225,7 @@ Differences from Claude Code's lines:
 
 - An interrupted turn gets a `result`, with `subtype: "cancelled"`.
 - A question is its own request (`ask_question`), not a `can_use_tool` of the question tool.
+  A plan and a secret are requests of their own too (`approve_plan`, `give_secret`).
 - The permission mode and the model are not changed over the stream.
 - An allow cannot change the call's input (`updatedInput`) or store a rule
   (`updatedPermissions`).

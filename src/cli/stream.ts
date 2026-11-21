@@ -17,7 +17,8 @@ export type Input =
   | { kind: "interrupt"; request_id: string }
   // `updated`: the input the script wants the call to run with (Claude Code's
   // updatedInput). `grants`: it asked for a standing rule (updatedPermissions).
-  | { kind: "answer"; request_id: string; allow: boolean; message?: string; answers?: Record<string, unknown>; updated?: unknown; grants?: boolean }
+  // `value`: the secret a give_secret request asked for.
+  | { kind: "answer"; request_id: string; allow: boolean; message?: string; answers?: Record<string, unknown>; updated?: unknown; grants?: boolean; value?: string }
   | { kind: "refused"; request_id: string; error: string }
   | { kind: "bad"; error: string };
 
@@ -65,6 +66,7 @@ export function parseInput(line: string): Input {
       kind: "answer", request_id: id, allow, message: typeof a.message === "string" ? a.message : undefined,
       ...(allow && a.updatedInput !== undefined && a.updatedInput !== null ? { updated: a.updatedInput } : {}),
       ...(allow && Array.isArray(a.updatedPermissions) && a.updatedPermissions.length ? { grants: true } : {}),
+      ...(allow && typeof a.value === "string" ? { value: a.value } : {}),
     };
   }
   return { kind: "bad", error: `unknown message type ${JSON.stringify(m.type)}: user, control_request or control_response` };
@@ -114,16 +116,29 @@ export function sameJson(a: unknown, b: unknown): boolean {
 }
 
 type OnAsk = "exit" | "deny" | "wait" | "stdin";
-type Prompt = Extract<Input, { kind: "user" }> & { key?: string };
+// `key`: the send's own key, kept for a send again. `landed`: the stored
+// event of a send whose answer was lost, read before the send was made again.
+type Prompt = Extract<Input, { kind: "user" }> & { key?: string; landed?: string };
 type Sent = { event_id: string | null; queue_id: string | null; text: string; uuid?: string; seen: boolean; at: number };
-type Card = { id: string; session_id: string; card: "approval" | "question"; call_id?: string; tool?: string; input?: unknown; summary?: string; risk?: string; cut?: boolean; why?: string };
+// What waits on an answer: a call's approval, a question, a plan put up for
+// approval, a secret asked for. Each is one request to the script.
+type Card = {
+  id: string; session_id: string; card: "approval" | "question" | "plan" | "secret"; call_id?: string; tool?: string; input?: unknown;
+  summary?: string; risk?: string; cut?: boolean; why?: string; plan?: string; title?: string; name?: string; purpose?: string;
+};
 
 const NO_ONE = "No one answers permission requests here: the run was started without --on-ask stdin.";
 const CLOSED = "Standard input closed before this request was answered.";
 const CHANGED = "The script allowed this call with another input than the one asked about. Keel runs a call as it was asked or not at all, so it was refused: call the tool again with the input wanted.";
+// A plan is the owner's to approve: approving it lets the session leave plan
+// mode, which is more than the mode the command was started with.
+const PLAN_NO_ONE = "No one can approve a plan in this run (it was started in plan mode with no one to answer). Do not present the plan again: end the turn with the plan as your answer.";
+const PLAN_SCRIPT = "The script that runs this session read the plan but cannot approve it: leaving plan mode is the owner's to allow. Do not present the plan again: end the turn with the plan as your answer.";
 // How long a daemon that takes no connection is waited for: what `keel
 // restart` gives a daemon to come back after its drain (src/cli/admin.ts).
-const AWAY_MS = 90_000;
+// The same bounds a daemon that answers but takes no answer to a request.
+// (KEEL_STREAM_AWAY_MS: a test's shorter one.)
+const AWAY_MS = Number(process.env.KEEL_STREAM_AWAY_MS) || 90_000;
 
 // The daemon is not there to take the call: it took no connection, the call
 // broke on the way, or it is draining and turned the call away at the door.
@@ -171,6 +186,7 @@ export async function runStream(v: any, pos: string[], c0: Client, found: Found,
   if (pos.join(" ").trim()) prompts.push({ kind: "user", text: pos.join(" ").trim(), images: [] });
   let open = true;
   let inputError: unknown;
+  const stdinOpen = () => open;
   void (async () => {
     try {
       for await (const l of inputLines(chunks(Bun.stdin.stream()))) {
@@ -203,7 +219,15 @@ export async function runStream(v: any, pos: string[], c0: Client, found: Found,
   let owed: { parked: boolean } | null = null;
   const calls = new Map<string, { name: string; input: unknown }>();
   const pending = new Map<string, Card>();
+  // The requests open now that were dealt with: passed to the script, or
+  // refused. One that is not open any more is forgotten, so a request a
+  // daemon restart withdrew is a request again when it is open again.
   const handled = new Set<string>();
+  // When a refusal the daemon did not take was first tried, per request.
+  const refusing = new Map<string, number>();
+  // The prompts read in the session that no send of this command was waiting
+  // for: one of them may be a send whose answer was lost.
+  const strays = new Set<string>();
 
   const result = (w: Partial<Watched> & Pick<Watched, "subtype" | "outcome">) => {
     const one: Watched = { answer, errors, turns: total.turns, pending: 0, refused: denials.length, held: false, usage: { ...used, cost: total.cost, unpriced: total.unpriced }, ...w };
@@ -242,7 +266,20 @@ export async function runStream(v: any, pos: string[], c0: Client, found: Found,
       const s = sent.find((x) => !x.seen && ((x.event_id && x.event_id === e.id) || (x.queue_id && e.data?.queue_id === x.queue_id)));
       if (s) {
         s.seen = true;
-        if (s.uuid) uuids.push(s.uuid);
+        if (s.uuid && !uuids.includes(s.uuid)) uuids.push(s.uuid);
+      } else if (!e.data?.kind) {
+        // No send was waiting for it. It may be the prompt whose send got no
+        // answer (the daemon took it, the connection broke): then this is its
+        // turn, and the send made again will name this event.
+        if (strays.size > 500) strays.clear();
+        strays.add(e.id);
+        if (e.data?.queue_id) strays.add(`q:${e.data.queue_id}`);
+        const lost = prompts[0];
+        if (lost?.key && !lost.landed && String(e.data?.text ?? "").trim() === lost.text) {
+          lost.landed = e.id;
+          if (lost.uuid) uuids.push(lost.uuid);
+          since ??= e.ts;
+        }
       }
     } else if (e.kind === "assistant") {
       const t = assistantText(e).trim();
@@ -310,6 +347,8 @@ export async function runStream(v: any, pos: string[], c0: Client, found: Found,
       r = await c.post<any>("/api/run", first
         ? { text: p.text, images: p.images, idempotency_key: p.key, session_id: sessionArg, continue: v.continue, cwd, model: v.model, provider: v.provider, permission_mode: v["permission-mode"] ?? v.mode, effort: v.effort, worktree: v.worktree, peer: v.peer ?? v.machine }
         : { text: p.text, images: p.images, idempotency_key: p.key, session_id: sessionId, ...(v.steer ? { mode: "steer" } : {}) });
+      // An answer that broke off on the way says nothing of where the prompt went: it is asked for again.
+      if (typeof r?.session_id !== "string") throw new ApiError(`the answer of ${c.base} to a prompt was cut short`, 0);
     } catch (e) {
       if (!own && gone(e)) {
         prompts.unshift(p);
@@ -325,6 +364,12 @@ export async function runStream(v: any, pos: string[], c0: Client, found: Found,
       return true;
     }
     cameBack();
+    // The daemon had it already (the first send's answer was lost) and its
+    // event was read: its turn is known from the events, and it is not waited for again.
+    if (r.replayed && ((r.event_id && (p.landed === r.event_id || strays.has(r.event_id))) || (r.queue_id && strays.has(`q:${r.queue_id}`)))) {
+      if (!p.landed && p.uuid && (began || owed) && !uuids.includes(p.uuid)) uuids.push(p.uuid);
+      return true;
+    }
     since ??= Date.now();
     sent.push({ event_id: r.event_id ?? null, queue_id: r.queue_id ?? null, text: p.text, uuid: p.uuid, seen: false, at: Date.now() });
     if (!first) return true;
@@ -334,7 +379,7 @@ export async function runStream(v: any, pos: string[], c0: Client, found: Found,
     const perm = await c.get<any>(`/api/sessions/${sessionId}/permissions`).catch(() => null);
     say({
       type: "system", subtype: "init", schema_version: STREAM_SCHEMA, session_id: sessionId, cwd: st.session.workspace, model: st.session.model, provider: String(st.session.model).split(":")[0],
-      permission_mode: perm?.perm?.mode ?? null, on_ask: onAsk, capabilities: ["interrupt", "can_use_tool", "ask_question", "control_cancel_request", "daemon_away"], keel_version: "bun", url,
+      permission_mode: perm?.perm?.mode ?? null, on_ask: onAsk, capabilities: ["interrupt", "can_use_tool", "ask_question", "approve_plan", "give_secret", "control_cancel_request", "daemon_away"], keel_version: "bun", url,
     });
     f = new Follower(c, sessionId, r.after_seq, onEvent, onDelta);
     void f.connect();
@@ -344,9 +389,10 @@ export async function runStream(v: any, pos: string[], c0: Client, found: Found,
   // An answer to a card. `done`: taken. `closed`: the card is not open any
   // more (answered elsewhere, its turn ended). An error: the daemon did not
   // take it and the card is still open.
+  const ROUTE = { approval: "approvals", question: "questions", plan: "plan", secret: "secrets" } as const;
   const answerCard = async (k: Card, body: unknown): Promise<"done" | "closed" | Error> => {
     try {
-      await c.post(k.card === "approval" ? `/api/sessions/${k.session_id}/approvals/${k.id}` : `/api/sessions/${k.session_id}/questions/${k.call_id}`, body);
+      await c.post(`/api/sessions/${k.session_id}/${ROUTE[k.card]}/${k.id}`, body);
       return "done";
     } catch (e) {
       const st = (e as ApiError).status;
@@ -354,7 +400,7 @@ export async function runStream(v: any, pos: string[], c0: Client, found: Found,
     }
   };
   const deny = async (k: Card, reason: string): Promise<"done" | "closed" | Error> => {
-    const r = await answerCard(k, k.card === "approval" ? { choice: "deny", reason } : { answers: {} });
+    const r = await answerCard(k, k.card === "approval" ? { choice: "deny", reason } : k.card === "question" ? { answers: {} } : k.card === "plan" ? { approve: false, feedback: reason } : { deny: true, reason });
     if (r !== "done") return r;
     denials.push({ tool_name: k.tool ?? null, tool_use_id: k.call_id ?? null, tool_input: k.input ?? null });
     say({ type: "system", subtype: "permission_denied", session_id: k.session_id, request_id: k.id, tool_name: k.tool ?? null, tool_use_id: k.call_id ?? null, ...(k.summary ? { summary: k.summary } : {}), reason });
@@ -373,50 +419,74 @@ export async function runStream(v: any, pos: string[], c0: Client, found: Found,
       } else {
         const k = pending.get(m.request_id);
         if (!k) { say({ type: "system", subtype: "input_error", request_id: m.request_id, error: "no open request has this id (it was answered, or its turn ended)" }); continue; }
+        // A secret is given by its value: an allow without one gives nothing, and the request stays open.
+        if (m.allow && k.card === "secret" && !m.value) { say({ type: "system", subtype: "input_error", request_id: m.request_id, error: "a give_secret request is allowed with its value: response.response.value (or deny it)" }); continue; }
         // The call runs as it was shown or not at all: an allow that changes its input refuses it.
-        const changed = m.allow && m.updated !== undefined && !sameJson(m.updated, k.input);
-        const r = !m.allow || changed
-          ? await deny(k, changed ? CHANGED : m.message || "The script refused this request.")
+        const changed = m.allow && k.card === "approval" && m.updated !== undefined && !sameJson(m.updated, k.input);
+        // A plan is read here and approved by the owner: an allow declines it, with the reason.
+        const plan = m.allow && k.card === "plan";
+        const r = !m.allow || changed || plan
+          ? await deny(k, changed ? CHANGED : plan ? PLAN_SCRIPT : m.message || "The script refused this request.")
           // One call, once: a standing rule is the owner's to give.
-          : await answerCard(k, k.card === "approval" ? { choice: "once" } : { answers: m.answers ?? {} });
+          : await answerCard(k, k.card === "approval" ? { choice: "once" } : k.card === "question" ? { answers: m.answers ?? {} } : { value: m.value });
         // Not taken: the request stays open for another answer, and is refused when standard input closes.
         if (r instanceof Error) { say({ type: "system", subtype: "input_error", request_id: m.request_id, error: `the answer was not taken (${r.message}): the request is still open, answer it again` }); continue; }
         pending.delete(m.request_id);
         if (r === "closed") say({ type: "control_cancel_request", request_id: m.request_id });
         else if (changed) say({ type: "system", subtype: "input_error", request_id: m.request_id, error: "updatedInput differs from the input asked about, which Keel does not take: the call was refused" });
+        else if (plan) say({ type: "system", subtype: "input_error", request_id: m.request_id, error: "a plan is approved by the owner (in the workbench, with --on-ask wait), not over the stream: it was declined, and the model was told to end with the plan" });
         else if (m.grants) say({ type: "system", subtype: "input_error", request_id: m.request_id, error: "updatedPermissions is not taken: the allow covers this one call, and the same call asks again" });
       }
     }
   };
 
-  // The cards open in the session and its agents: answered here, or passed to the script.
-  const cards = async (st: any): Promise<boolean> => {
+  // What waits on an answer in the session and its agents: answered here, or
+  // passed to the script. "exit": the command leaves it open and ends.
+  // An error: the daemon answers but took no refusal for as long as it is waited for.
+  const cards = async (st: any): Promise<"exit" | Error | null> => {
     const now: Card[] = [
       ...st.approvals.map((a: any) => ({ id: a.id, session_id: a.session_id, card: "approval" as const, call_id: a.call_id, tool: a.tool, input: a.input, summary: a.summary, risk: a.risk, cut: a.cut, why: a.why })),
-      ...st.questions.map((q: any) => ({ id: q.call_id, session_id: q.session_id, card: "question" as const, call_id: q.call_id, tool: calls.get(q.call_id)?.name, input: calls.get(q.call_id)?.input })),
+      // A question is passed on with what it asks: one whose call the daemon has not read yet waits for the next look.
+      ...st.questions.filter((q: any) => q.input !== undefined).map((q: any) => ({ id: q.call_id, session_id: q.session_id, card: "question" as const, call_id: q.call_id, tool: q.tool, input: q.input })),
+      ...(st.plans ?? []).map((x: any) => ({ id: x.id, session_id: x.session_id, card: "plan" as const, call_id: x.id, tool: calls.get(x.id)?.name, plan: x.plan, title: x.title })),
+      ...(st.secrets ?? []).map((x: any) => ({ id: x.id, session_id: x.session_id, card: "secret" as const, call_id: x.id, tool: calls.get(x.id)?.name, name: x.name, purpose: x.purpose })),
     ];
-    // A request that closed without the script (answered in the workbench, its turn stopped).
+    const open = new Set(now.map((k) => k.id));
+    // A request that closed without the script (answered in the workbench, its
+    // turn stopped, or withdrawn while the daemon restarts).
     for (const id of [...pending.keys()]) {
-      if (now.some((k) => k.id === id)) continue;
+      if (open.has(id)) continue;
       pending.delete(id);
       say({ type: "control_cancel_request", request_id: id });
     }
+    // What is not open is not dealt with any more: the same request open again
+    // (a turn a restart cut asks again, under the same id) is a request again.
+    for (const id of [...handled]) if (!open.has(id)) handled.delete(id);
+    for (const id of [...refusing.keys()]) if (!open.has(id)) refusing.delete(id);
     for (const k of now) {
       if (handled.has(k.id)) continue;
-      if (onAsk === "exit") return true;
+      if (onAsk === "exit") return "exit";
       if (onAsk === "wait") continue;
       if (onAsk === "deny") {
-        // One the daemon did not take the refusal of is refused again at the next look.
-        if (!((await deny(k, open ? NO_ONE : CLOSED)) instanceof Error)) handled.add(k.id);
+        const r = await deny(k, k.card === "plan" ? PLAN_NO_ONE : stdinOpen() ? NO_ONE : CLOSED);
+        // One the daemon did not take the refusal of is refused again at the
+        // next look, for as long as a daemon is waited for.
+        if (!(r instanceof Error)) { handled.add(k.id); refusing.delete(k.id); continue; }
+        const first = refusing.get(k.id) ?? Date.now();
+        refusing.set(k.id, first);
+        if (Date.now() - first > AWAY_MS) return new Error(`the daemon took no answer to a request for ${Math.round(AWAY_MS / 1000)} s: ${r.message}`);
         continue;
       }
       handled.add(k.id);
       pending.set(k.id, k);
-      say({ type: "control_request", request_id: k.id, request: k.card === "approval"
-        ? { subtype: "can_use_tool", session_id: k.session_id, tool_name: k.tool, tool_use_id: k.call_id, input: k.input, summary: k.summary, risk: k.risk, ...(k.cut ? { input_cut: true } : {}), ...(k.why ? { once_only: k.why } : {}) }
-        : { subtype: "ask_question", session_id: k.session_id, tool_name: k.tool ?? null, tool_use_id: k.call_id, input: k.input ?? null } });
+      const at = { session_id: k.session_id, tool_name: k.tool ?? null, tool_use_id: k.call_id };
+      say({ type: "control_request", request_id: k.id, request:
+        k.card === "approval" ? { subtype: "can_use_tool", ...at, input: k.input, summary: k.summary, risk: k.risk, ...(k.cut ? { input_cut: true } : {}), ...(k.why ? { once_only: k.why } : {}) }
+        : k.card === "question" ? { subtype: "ask_question", ...at, input: k.input }
+        : k.card === "plan" ? { subtype: "approve_plan", ...at, plan: k.plan, ...(k.title ? { title: k.title } : {}) }
+        : { subtype: "give_secret", ...at, name: k.name, ...(k.purpose ? { purpose: k.purpose } : {}) } });
     }
-    return false;
+    return null;
   };
 
   let interrupted: number | null = null;
@@ -436,14 +506,15 @@ export async function runStream(v: any, pos: string[], c0: Client, found: Found,
     wake = () => { clearTimeout(t); done(); };
     void f?.pause(ms).then(done);
   }).then(() => void (wake = undefined));
-  // One look at the session and one step: "more" (go on at once), "wait", or "end".
-  const step = async (): Promise<"more" | "wait" | "end"> => {
+  // One look at the session and one step: "more" (go on at once), "wait",
+  // "end", or "fail" (its result is written; the command ends with an error).
+  const step = async (): Promise<"more" | "wait" | "end" | "fail"> => {
     await drain();
     if (inputError) throw inputError;
     // No one is left to answer: what is open, and what opens from here on, is refused.
     if (!open && onAsk === "stdin") {
       onAsk = "deny";
-      for (const id of pending.keys()) handled.delete(id);
+      handled.clear();
       pending.clear();
     }
     // At rest: no turn runs and none will start by itself (a held queue starts none).
@@ -452,18 +523,43 @@ export async function runStream(v: any, pos: string[], c0: Client, found: Found,
     let bg = 0;
     if (sessionId && f) {
       await f.read();
-      const st = await c.get<any>(`/api/cli/state/${sessionId}`);
+      let st: any;
+      try {
+        st = await c.get<any>(`/api/cli/state/${sessionId}`);
+      } catch (e) {
+        // The address answers and does not know the session: it is not the daemon this session is in.
+        if (!(e instanceof ApiError) || e.status !== 404) throw e;
+        const why = `the daemon at ${c.base} has no session ${sessionId}: another daemon answers there now (another state folder), or the session was deleted`;
+        answer = "";
+        errors = [why];
+        owed = null;
+        result(failure);
+        console.error(`keel ${name}: ${why}`);
+        return "fail";
+      }
       // Read once more: a turn that ended between the two reads is seen now.
       if (!st.running && st.last_seq > f.seq) await f.read();
       if (away?.why === "unreached") cameBack();
       if (f.lost) void f.connect();
-      // Nothing runs and what followed the turn's end was read: its result is due.
-      // A turn a restart cut is waited for while the daemon says it will continue it.
-      if (owed && !st.running && !(owed.parked && st.state?.watch === "resume")) flush();
-      if (await cards(st)) {
-        result({ subtype: "needs_input", outcome: "action_required", pending: st.approvals.length + st.questions.length });
+      // Nothing runs and what followed the turn's end was read: a failed turn's result is due.
+      // A turn a restart cut is settled by the events alone: the turn start that
+      // continues it, or the note that says it was not continued. What the
+      // session reads as in between (a drain, a card open again) settles nothing.
+      // Only an archived session gets neither.
+      if (owed?.parked && st.session?.archived) errors.push("The session was archived before the turn a daemon restart cut was continued.");
+      if (owed && ((!owed.parked && !st.running) || (owed.parked && st.session?.archived))) flush();
+      const asks = await cards(st);
+      if (asks === "exit") {
+        result({ subtype: "needs_input", outcome: "action_required", pending: st.approvals.length + st.questions.length + (st.plans?.length ?? 0) + (st.secrets?.length ?? 0) });
         console.error(`keel ${name}: the session waits for the owner; answer with keel approve ${sessionId}`);
         return "end";
+      }
+      if (asks) {
+        answer = "";
+        errors = [asks.message];
+        result(failure);
+        console.error(`keel ${name}: ${asks.message}; the session is kept: keel run --input-format stream-json -r ${sessionId}`);
+        return "fail";
       }
       free = !st.running && !owed;
       rest = free && (st.queue === 0 || st.held);
@@ -492,7 +588,7 @@ export async function runStream(v: any, pos: string[], c0: Client, found: Found,
   let code: number | undefined;
   try {
     for (;;) {
-      let next: "more" | "wait" | "end";
+      let next: "more" | "wait" | "end" | "fail";
       try {
         next = await step();
       } catch (e) {
@@ -502,6 +598,7 @@ export async function runStream(v: any, pos: string[], c0: Client, found: Found,
         // It did not come back: the command ends, the session is kept.
         if (Date.now() - away!.since > AWAY_MS) {
           if (sessionId) {
+            answer = "";
             errors = [`the daemon at ${c.base} has taken no connection for ${Math.round(AWAY_MS / 1000)} s: ${e.message}`];
             result(failure);
           }
@@ -511,7 +608,8 @@ export async function runStream(v: any, pos: string[], c0: Client, found: Found,
         }
         next = "wait";
       }
-      if (next === "end") break;
+      if (next === "fail") code = EXIT.error;
+      if (next === "end" || next === "fail") break;
       if (Date.now() >= deadline) {
         if (sessionId) {
           result({ subtype: "timeout", outcome: null });

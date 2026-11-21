@@ -21,7 +21,7 @@ export const STABLE: StableRoute[] = [
   },
   {
     method: "GET", path: "/api/cli/state/:id", what: "What a caller that waits needs on every tick, without the transcript.",
-    response: "`{ session, state, last_seq, running, queue, held, status, approvals, questions, background: { agents, waits, jobs } }`. `state.watch` is the session's one state: `need`, `work`, `wait`, `fail`, `declined`, `resume` (a turn a restart cut is about to continue), `stop`, `done` or `idle`, with `why` and `text`. `approvals` are the open permission requests of the session and its agents (`id`, `session_id`, `call_id`, `tool`, `input`, `summary`, `risk`, `cut`, `why`); `questions` are `{ session_id, call_id }`.",
+    response: "`{ session, state, last_seq, running, queue, held, status, approvals, questions, plans, secrets, background: { agents, waits, jobs } }`. `state.watch` is the session's one state: `need`, `work`, `wait`, `fail`, `declined`, `resume` (a turn a restart cut is about to continue), `stop`, `done` or `idle`, with `why` and `text`. The four lists are what waits on an answer in the session and its agents: `approvals` (`id`, `session_id`, `call_id`, `tool`, `input`, `summary`, `risk`, `cut`, `why`), `questions` (`session_id`, `call_id`, and the call that asks: `tool`, `input`), `plans` (`id`, `session_id`, `plan`, `title`) and `secrets` (`id`, `session_id`, `name`, `purpose`). While a daemon drains for a restart the last three are empty; the same ids are open again after it.",
   },
   { method: "GET", path: "/api/cli/resolve", what: "A session from any unique prefix of its id (`?id=PREFIX`).", response: "`{ session }`" },
   {
@@ -39,6 +39,16 @@ export const STABLE: StableRoute[] = [
     method: "POST", path: "/api/sessions/:id/questions/:call", what: "Answers a question the model asked (`:call` is the tool call's id).",
     request: "`{ answers }`: per question id (or its index), `{ picked: [labels], other? }`. `{}` leaves the question without an answer.",
     response: "`{ ok: true }`, or `404` when no question waits for that call.",
+  },
+  {
+    method: "POST", path: "/api/sessions/:id/plan/:pid", what: "Answers a plan put up for approval (`:pid` is its id).",
+    request: "`{ approve: false, feedback? }` declines it. `{ approve: true, mode, plan?, note? }` approves it and puts the session in `mode`; from a remote device that needs the owner's passkey.",
+    response: "`{ ok: true }`, or `404` when no plan waits with that id.",
+  },
+  {
+    method: "POST", path: "/api/sessions/:id/secrets/:rid", what: "Answers a secret the model asked for (`:rid` is the request's id).",
+    request: "`{ value }` gives it, `{ deny: true, reason? }` declines. The value is kept in the daemon's memory and never stored in the session.",
+    response: "`{ ok: true }`, or `404` when no request is open with that id.",
   },
   { method: "PATCH", path: "/api/sessions/:id", what: "Changes a session's fields. Stable for archiving only.", request: "`{ archived: true }`", response: "The session." },
 ];

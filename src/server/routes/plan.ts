@@ -2,7 +2,7 @@
 // family, present_plan for the others) and waits on a card; the owner approves
 // it, edited or not, and picks the mode the work goes on in, or sends it back
 // with what to change. The plan last approved is kept with the session.
-import { registerShared } from "../../tools/registry.ts";
+import { declareAsksOwner, registerShared } from "../../tools/registry.ts";
 import type { Tool, ToolContext } from "../../tools/types.ts";
 import { isMode } from "../../safety/policy.ts";
 import type { Deps, RouteModule } from "../app.ts";
@@ -18,6 +18,8 @@ let emit: (c: PlanCard, state: "open" | "closed") => void = () => {};
 // The plans that wait for the owner now: a session with one needs them (src/automation/state.ts).
 export const plansWaiting = (): PlanCard[] => Array.from(waiting.values(), ({ resolve: _r, ...c }) => c);
 export const planWaits = (id: string) => waiting.has(id);
+// Known as calls that wait on the owner before their route module registers them (see declareAsksOwner).
+declareAsksOwner("ExitPlanMode", "present_plan");
 
 async function present(input: any, ctx: ToolContext) {
   const plan = String(input?.plan ?? "").trim();

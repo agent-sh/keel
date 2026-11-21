@@ -9,7 +9,7 @@ import { setConcealer } from "../../core/conceal.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { nameError, SHELL_FIELDS, vault } from "../../safety/secrets.ts";
 import { dropCallEnv, registerEnv, setCallEnv } from "../../tools/jobs.ts";
-import { registerShared } from "../../tools/registry.ts";
+import { declareAsksOwner, registerShared } from "../../tools/registry.ts";
 import type { Tool, ToolContext } from "../../tools/types.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { gate } from "./permissions.ts";
@@ -22,6 +22,10 @@ type Waiting = SecretRequest & { resolve: (r: { given: true } | { given: false; 
 const waiting = new Map<string, Waiting>();
 // The secrets asked for that the owner has not given yet: a session with one needs them (src/automation/state.ts).
 export const secretsWaiting = (): SecretRequest[] => Array.from(waiting.values(), ({ resolve: _r, ...c }) => c);
+// Known as a call that waits on the owner from the moment this file loads:
+// its route module registers the tool after the start has closed the turns a
+// killed daemon left, and a request open then must be asked again, not cut.
+declareAsksOwner("request_secret");
 
 const RequestSecret: Tool = {
   name: "request_secret",
