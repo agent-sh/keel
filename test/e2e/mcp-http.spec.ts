@@ -56,6 +56,8 @@ test("mcp http: a session the server ended", async ({ page, request }) => {
     expect(st.calls.map((c: any) => c.status)).toEqual([200, 404, 200]);
     expect(st.initializes).toBe(2);
     expect(st.calls[2].session).not.toBe(st.calls[1].session);
+    // The ended session gets no goodbye: the server no longer knows it.
+    expect(st.deletes).toBe(0);
     const row = await s.row();
     expect(row.state).toBe("ready");
     expect(row.last_connected).toBeGreaterThan(connected);
