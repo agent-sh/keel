@@ -487,15 +487,20 @@ scripts/smoke.sh test/e2e/copy.spec.ts         # other specs the same way
 
 The command starts a daemon of its own on the scripted stand-in provider, runs
 the Playwright specs against it and stops it. Nothing of the caller reaches the
-run: the daemon and the browser get a clean environment and a throwaway folder
-for their home, state, config, workspace, screenshots and traces, so no key is
-read and `KEEL_URL` cannot point the specs at another daemon. They run in a
-network namespace with only a loopback interface, so no request leaves the
-machine. The folder is removed after a green run and kept, with its path
-printed, after a failed one or with `--keep`. Linux with unprivileged user
-namespaces is needed for the namespace; `--allow-network` runs without it
-(still no credentials, traffic not blocked). Dependencies are installed before
-the network is cut.
+run: the daemon and the browser get a clean environment, a `PATH` of Bun, Node
+and the system's tools, no keyring (no session bus, a runtime folder of their
+own) and a throwaway folder for their home, state, config, workspace,
+screenshots and traces. No key is read, and `KEEL_URL` cannot point the specs
+at another daemon. Before a spec runs, the daemon is asked which providers it
+has: a run whose daemon has any besides the scripted one is refused.
+
+They run in namespaces of their own: a network with only a loopback interface,
+so no request leaves the machine, and a process tree that ends as a whole when
+the run does, however it ends. The folder is removed after a green run and
+kept, with its path printed, after a failed one or with `--keep`. Linux with
+unprivileged user namespaces is needed for the namespaces; `--allow-network`
+runs without them (still no credentials and the same provider check, traffic
+not blocked). Dependencies are installed before the network is cut.
 
 ## Automatic diagnostic notices
 
