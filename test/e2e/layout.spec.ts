@@ -388,7 +388,8 @@ test("settings search shows keyboard focus", async ({ page }) => {
   await shoot(page, "layout-12-settings-search-focus");
   await field.fill("usage");
   await expect(page.getByRole("textbox", { name: "Find a setting" })).toHaveValue("usage");
-  await expect(page.getByRole("navigation", { name: "Settings sections" }).getByRole("button")).toHaveText(["Usage"]);
+  // (Storage answers to the word too: it keeps the usage records and says for how long.)
+  await expect(page.getByRole("navigation", { name: "Settings sections" }).getByRole("button")).toHaveText(["Usage", "Storage"]);
   // Away from the field the mark goes.
   await page.keyboard.press("Tab");
   expect((await mark()).shown).not.toContain((await mark()).ring);
