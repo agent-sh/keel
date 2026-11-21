@@ -114,4 +114,3 @@ test("a session's own bundle holds its own log lines and the daemon's lines that
   expect(logFor(lines, me, true).map((l) => l.text)).toEqual(["[provider] 529 overloaded", `[daemon] session ${me} was archived by policy`]);
   expect(logFor(lines, undefined, true)).toEqual([]);
 });
-

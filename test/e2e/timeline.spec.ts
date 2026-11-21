@@ -537,4 +537,3 @@ test("a turn far up a long session says its branch is not placed yet, and is pla
     await exited(d.proc);
   }
 });
-

@@ -164,4 +164,3 @@ test("a process leaves its sign of life as one fixed line: a stop, a failure wit
     rmSync(dir, { recursive: true, force: true });
   }
 });
-

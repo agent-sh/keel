@@ -58,4 +58,3 @@ test("turns not placed on a branch yet are asked for again from the newest of th
   expect(next.next).toBe("200:t2");
   expect(unplacedFrom(next)).toBe("301:");
 });
-
