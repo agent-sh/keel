@@ -43,7 +43,10 @@ const rawInput = (input: unknown) => (typeof input === "string" ? input : typeof
 // as functions of its namespace (mcp__<server>), as Codex does it. The items
 // stay in the history, so a loaded tool stays loaded and the prefix stays.
 const searchOf = (req: ProviderRequest) => req.tools.find((t) => t.search);
-const memberOf = (t: { name: string; namespace?: string }) => (t.namespace ? t.name.slice(t.namespace.length + 2) : t.name);
+// The Responses backend reserves `web` for its own tools. Keep custom tools
+// from that group as individual deferred functions with their full names.
+const namespaceOf = (t: { namespace?: string }) => t.namespace === "web" ? undefined : t.namespace;
+const memberOf = (name: string, namespace?: string) => namespace ? name.slice(namespace.length + 2) : name;
 // A function call's tool, by its namespace and name there.
 const calledName = (it: { name?: string; namespace?: string }) =>
   it.namespace && it.namespace !== it.name ? `${it.namespace}__${it.name}` : String(it.name ?? "");
@@ -54,10 +57,11 @@ function loaded(req: ProviderRequest, names: string[]): any[] {
   for (const n of names) {
     const t = req.tools.find((x) => x.name === n && x.defer);
     if (!t) continue;
-    const fn = { type: "function", name: memberOf(t), description: t.description, strict: false, defer_loading: true, parameters: t.input_schema };
-    if (!t.namespace) { out.push(fn); continue; }
-    let ns = spaces.get(t.namespace);
-    if (!ns) { ns = { type: "namespace", name: t.namespace, description: `Tools in the ${t.namespace} namespace.`, tools: [] }; spaces.set(t.namespace, ns); out.push(ns); }
+    const namespace = namespaceOf(t);
+    const fn = { type: "function", name: memberOf(t.name, namespace), description: t.description, strict: false, defer_loading: true, parameters: t.input_schema };
+    if (!namespace) { out.push(fn); continue; }
+    let ns = spaces.get(namespace);
+    if (!ns) { ns = { type: "namespace", name: namespace, description: `Tools in the ${namespace} namespace.`, tools: [] }; spaces.set(namespace, ns); out.push(ns); }
     ns.tools.push(fn);
   }
   return out;
@@ -86,9 +90,10 @@ export function responsesBody(req: ProviderRequest, ctx: WireCtx, dialect: Respo
         flush();
         const raw = custom.has(b.name) ? rawInput(b.input) : undefined;
         const t = req.tools.find((x) => x.name === b.name);
+        const namespace = t && namespaceOf(t);
         if (search && b.name === search.name) { searches.add(b.id); input.push({ type: "tool_search_call", call_id: b.id, execution: "client", status: "completed", arguments: b.input ?? {} }); }
         else if (raw !== undefined) { customCalls.add(b.id); input.push({ type: "custom_tool_call", call_id: b.id, name: b.name, input: raw }); }
-        else if (search && t?.namespace) input.push({ type: "function_call", call_id: b.id, namespace: t.namespace, name: memberOf(t), arguments: JSON.stringify(b.input ?? {}) });
+        else if (search && namespace) input.push({ type: "function_call", call_id: b.id, namespace, name: memberOf(b.name, namespace), arguments: JSON.stringify(b.input ?? {}) });
         else input.push({ type: "function_call", call_id: b.id, name: wireName(dialect, b.name), arguments: JSON.stringify(b.input ?? {}) });
       } else if (b.type === "tool_result" && searches.has(b.tool_use_id)) {
         flush();

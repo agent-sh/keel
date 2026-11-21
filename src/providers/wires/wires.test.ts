@@ -257,13 +257,16 @@ test("deferred tools on the Responses wire: client tool_search, namespaces, roun
     { name: "tool_search", description: "find tools", input_schema: { type: "object", properties: { query: { type: "string" } } }, search: true as const },
     { name: "mcp__echo__say", description: "say it", input_schema: { type: "object", properties: { text: { type: "string" } } }, defer: true, namespace: "mcp__echo" },
     { name: "request_secret", description: "ask for a secret", input_schema: { type: "object" }, defer: true },
+    { name: "web__websearch", description: "search the web", input_schema: { type: "object" }, defer: true, namespace: "web" },
   ];
   const history: Message[] = [
     { role: "user", content: [{ type: "text", text: "go" }] },
     { role: "assistant", content: [{ type: "tool_use", id: "s1", name: "tool_search", input: { query: "echo" } }] },
-    { role: "user", content: [{ type: "tool_result", tool_use_id: "s1", content: [{ type: "tool_reference", tool_name: "mcp__echo__say" }, { type: "tool_reference", tool_name: "request_secret" }] }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "s1", content: [{ type: "tool_reference", tool_name: "mcp__echo__say" }, { type: "tool_reference", tool_name: "request_secret" }, { type: "tool_reference", tool_name: "web__websearch" }] }] },
     { role: "assistant", content: [{ type: "tool_use", id: "c1", name: "mcp__echo__say", input: { text: "hi" } }] },
     { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: "hi" }] },
+    { role: "assistant", content: [{ type: "tool_use", id: "w1", name: "web__websearch", input: {} }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "w1", content: "results" }] },
   ];
   const b = responsesBody({ ...req, messages: history, tools }, ctx, "codex");
   expect(b.tools.map((t: any) => [t.type, t.name ?? null, t.execution ?? null])).toEqual([["function", "exec_command", null], ["tool_search", null, "client"]]);
@@ -273,10 +276,13 @@ test("deferred tools on the Responses wire: client tool_search, namespaces, roun
       type: "tool_search_output", call_id: "s1", execution: "client", status: "completed", tools: [
         { type: "namespace", name: "mcp__echo", description: "Tools in the mcp__echo namespace.", tools: [{ type: "function", name: "say", description: "say it", strict: false, defer_loading: true, parameters: tools[2]!.input_schema }] },
         { type: "function", name: "request_secret", description: "ask for a secret", strict: false, defer_loading: true, parameters: { type: "object" } },
+        { type: "function", name: "web__websearch", description: "search the web", strict: false, defer_loading: true, parameters: { type: "object" } },
       ],
     },
     { type: "function_call", call_id: "c1", namespace: "mcp__echo", name: "say", arguments: '{"text":"hi"}' },
     { type: "function_call_output", call_id: "c1", output: "hi" },
+    { type: "function_call", call_id: "w1", name: "web__websearch", arguments: "{}" },
+    { type: "function_call_output", call_id: "w1", output: "results" },
   ]);
   const parse = (item: any) => {
     const p = responsesWire("codex").parser({ ...req, tools } as any, ctx, () => {});
@@ -289,6 +295,7 @@ test("deferred tools on the Responses wire: client tool_search, namespaces, roun
   expect(searched.stop).toBe("tool_use");
   expect(parse({ type: "function_call", call_id: "c2", namespace: "mcp__echo", name: "say", arguments: "{}" }).blocks).toMatchObject([{ type: "tool_use", name: "mcp__echo__say" }]);
   expect(parse({ type: "function_call", call_id: "c3", namespace: "request_secret", name: "request_secret", arguments: "{}" }).blocks).toMatchObject([{ type: "tool_use", name: "request_secret" }]);
+  expect(parse({ type: "function_call", call_id: "c4", name: "web__websearch", arguments: "{}" }).blocks).toMatchObject([{ type: "tool_use", name: "web__websearch" }]);
   // Without a search tool (a route that refused it) nothing changes.
   expect(responsesBody({ ...req, messages: [], tools: tools.slice(0, 1) }, ctx, "codex").tools).toEqual([{ type: "function", name: "exec_command", description: "run", parameters: { type: "object" }, strict: false }]);
 });
