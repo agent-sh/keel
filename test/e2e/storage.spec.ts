@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, openPanel, shoot } from "./shots.ts";
 
 // Feature: Settings > Storage measures what is on disk, lists archived
 // sessions archived long ago and deletes them only after the list is
@@ -147,6 +147,12 @@ test("storage, cleanup and backups", async ({ page, request }) => {
   await cutRow.getByRole("button").first().click();
   await expect(cutRow.getByTestId("spill-removed")).toHaveText("The full output this result names was removed by the storage retention. Run the command again to get it.");
   await shoot(page, "storage-03f-output-removed");
+  // The Terminal panel still lists the command, and says where its output went.
+  await openPanel(page, "terminal");
+  const termRow = page.getByTestId("terminal-panel").getByTestId("term-entry").filter({ hasText: "echo from the command" });
+  await termRow.getByTestId("term-toggle").click();
+  await expect(termRow.getByTestId("term-no-output")).toHaveText("The output was removed by the storage retention. Run the command again to get it.");
+  await shoot(page, "storage-03g-terminal-removed");
   await request.patch("/api/settings", { data: { retention: null } });
   await page.goto("/settings/storage");
 
