@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   archived INTEGER NOT NULL DEFAULT 0,
   usage TEXT NOT NULL DEFAULT '{}'
 );
+-- The session list: one partition (active or archived), newest activity first.
+CREATE INDEX IF NOT EXISTS sessions_list ON sessions(archived, updated DESC);
 CREATE TABLE IF NOT EXISTS events (
   id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,

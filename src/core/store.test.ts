@@ -66,3 +66,40 @@ test("a cursor read parses only the events after the cursor, and finds them in m
   expect(cold.events(id, N).map((e) => e.id)).toEqual([more.id]);
   expect(new Store(dir).events(id, N).map((e) => e.id)).toEqual([more.id]);
 });
+
+test("the session list reads its partition in order from an index, with the same sessions in the same order", () => {
+  const store = new Store(scratch());
+  // 400 sessions, three in four archived, activity times in no order of creation.
+  const made: { id: string; archived: boolean; updated: number }[] = [];
+  store.db.transaction(() => {
+    for (let i = 0; i < 400; i++) {
+      const s = store.createSession({ model: "m", workspace: "/" });
+      const row = { id: s.id, archived: i % 4 !== 0, updated: 1_000_000 + ((i * 7919) % 400) };
+      store.db.query("UPDATE sessions SET archived = ?, updated = ? WHERE id = ?").run(row.archived ? 1 : 0, row.updated, row.id);
+      made.push(row);
+    }
+  })();
+  store.db.exec("ANALYZE");
+  // The statement the list runs, and its plan.
+  const seen: string[] = [];
+  const db = store.db as any;
+  const real = db.query.bind(db);
+  db.query = (sql: string) => { seen.push(sql); return real(sql); };
+  const lists = { active: store.sessions(), archived: store.sessions({ archived: true }) };
+  db.query = real;
+  expect(seen.length).toBe(2);
+  const plan = store.db.query<{ detail: string }, [number]>(`EXPLAIN QUERY PLAN ${seen[0]}`).all(0).map((r) => r.detail);
+  expect(plan).toEqual(["SEARCH sessions USING INDEX sessions_list (archived=?)"]);
+
+  for (const [name, list] of Object.entries(lists)) {
+    const want = made.filter((m) => m.archived === (name === "archived")).sort((a, b) => b.updated - a.updated).map((m) => m.id);
+    expect(list.map((s) => s.id)).toEqual(want);
+  }
+  // Activity moves a session to the top of its list; archiving moves it to the other.
+  const last = lists.active.at(-1)!.id;
+  store.append(last, "user", { text: "again" });
+  expect(store.sessions()[0]!.id).toBe(last);
+  store.updateSession(last, { archived: true });
+  expect(store.sessions().some((s) => s.id === last)).toBe(false);
+  expect(store.sessions({ archived: true })[0]!.id).toBe(last);
+});
