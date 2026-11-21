@@ -1,7 +1,7 @@
 import { ChevronRight, MessageSquarePlus, Undo2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { parsePatch, type FilePatch, type PatchLine } from "../../../src/safety/patch.ts";
-import { cn } from "../lib/utils.ts";
+import { cn, scrollMotion } from "../lib/utils.ts";
 
 export { parsePatch };
 export type FileChange = { path: string; status: string; added: number; removed: number; outside?: boolean };
@@ -138,9 +138,9 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk }: {
       const end = d.end ?? d.line;
       d.found = !!p?.lines.some((l) => l.kind !== "hunk" && l.kind !== "del" && l.new! >= d.line && l.new! <= end);
       setOpen(true);
-      if (!d.found) { body.current?.closest("section")?.scrollIntoView({ behavior: "smooth", block: "start" }); return; }
+      if (!d.found) { body.current?.closest("section")?.scrollIntoView({ behavior: scrollMotion(), block: "start" }); return; }
       setFlash({ line: d.line, end });
-      requestAnimationFrame(() => [...(body.current?.querySelectorAll<HTMLElement>("tr[data-new]") ?? [])].find((r) => Number(r.dataset.new) >= d.line && Number(r.dataset.new) <= end)?.scrollIntoView({ behavior: "smooth", block: "center" }));
+      requestAnimationFrame(() => [...(body.current?.querySelectorAll<HTMLElement>("tr[data-new]") ?? [])].find((r) => Number(r.dataset.new) >= d.line && Number(r.dataset.new) <= end)?.scrollIntoView({ behavior: scrollMotion(), block: "center" }));
     };
     window.addEventListener(JUMP, on);
     return () => window.removeEventListener(JUMP, on);

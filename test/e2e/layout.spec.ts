@@ -1,6 +1,8 @@
 import type { APIRequestContext, Page } from "@playwright/test";
 import { expect, test } from "./isolate.ts";
-import { shoot, tabInto } from "./shots.ts";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { openPanel, shoot, tabInto } from "./shots.ts";
 
 // Feature: the layout is the owner's. The number of panes is the one picked
 // in the rail (1, 2, 3, more when the window holds them) and Keel never adds
@@ -609,7 +611,7 @@ test("a pane off screen is shown without a glide under reduced motion", async ({
       const scrolls: { station?: string; behavior?: string }[] = ((window as any).scrolls = []);
       const real = Element.prototype.scrollIntoView;
       Element.prototype.scrollIntoView = function (arg?: boolean | ScrollIntoViewOptions) {
-        scrolls.push({ station: (this as HTMLElement).dataset.station, behavior: typeof arg === "object" ? arg.behavior : undefined });
+        scrolls.push({ station: (this as HTMLElement).dataset.station ?? this.tagName, behavior: typeof arg === "object" ? arg.behavior : undefined });
         return real.call(this, arg);
       };
       if (sessionStorage.getItem("seeded")) return;
@@ -643,5 +645,32 @@ test("a pane off screen is shown without a glide under reduced motion", async ({
     await expect(pane(0)).toHaveAttribute("data-helm", "true");
     await expect(pane(0)).toBeInViewport({ ratio: 0.99 });
     expect(await asked(0)).toEqual(["smooth"]);
+
+    // A jump to a changed line in the Changes panel follows the same rule.
+    const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `motion-${tag}`);
+    mkdirSync(ws, { recursive: true });
+    const changed = (await (await request.post("/api/sessions", { data: { model: MODEL, title: `Changed lines ${tag}`, workspace: ws } })).json()).session.id as string;
+    ids.push(changed);
+    await request.put(`/api/sessions/${changed}/permissions`, { data: { mode: "full-auto" } });
+    const lines = Array.from({ length: 240 }, (_, i) => `line ${i + 1}`).join("\n");
+    await request.post(`/api/sessions/${changed}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Write", input: { file_path: join(ws, "notes.txt"), content: lines } }])}` } });
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${changed}`)).json()).session.phase, { timeout: 30_000 }).toBe("idle");
+    await page.setViewportSize({ width: 1700, height: 980 });
+    await page.goto(`/s/${changed}`);
+    await openPanel(page, "changes");
+    const file = page.getByTestId("diff-file").first();
+    await expect(file.locator('tr[data-new="200"]')).toBeAttached();
+    const path = (await file.getAttribute("data-path"))!;
+    const jump = async () => {
+      await clear();
+      await page.evaluate((path) => { window.dispatchEvent(new CustomEvent("keel:diff-jump", { detail: { path, line: 200 } })); }, path);
+      await expect(file.locator('tr[data-new="200"]')).toBeInViewport();
+      return page.evaluate(() => ((window as any).scrolls as { station?: string; behavior?: string }[]).filter((s) => s.station === "TR").map((s) => s.behavior));
+    };
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    expect(await jump()).toEqual(["instant"]);
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await file.evaluate((el) => el.scrollIntoView({ block: "start" }));
+    expect(await jump()).toEqual(["smooth"]);
   } finally { for (const id of ids) await request.delete(`/api/sessions/${id}`); }
 });

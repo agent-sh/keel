@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import type { Finding, Review } from "../../../src/safety/review.ts";
 import { api, onFeature, reportError, failed } from "../lib/store.ts";
-import { cn } from "../lib/utils.ts";
+import { cn, scrollMotion } from "../lib/utils.ts";
 import { JUMP, type JumpDetail } from "./DiffView.tsx";
 import { Segmented } from "./Settings.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
@@ -55,7 +55,7 @@ export function ReviewFindings({ session }: { session: Session }) {
     if (!existing) return;
     if (!reviews.slice(-RECENT).some((r) => r.id === existing)) setOlder(true);
     setLit(existing);
-    requestAnimationFrame(() => document.querySelector(`[data-review-id="${CSS.escape(existing)}"]`)?.scrollIntoView({ behavior: "smooth", block: "nearest" }));
+    requestAnimationFrame(() => document.querySelector(`[data-review-id="${CSS.escape(existing)}"]`)?.scrollIntoView({ behavior: scrollMotion(), block: "nearest" }));
   };
   const latest = [...reviews].reverse();
   const shown = older ? latest : latest.slice(0, RECENT);
