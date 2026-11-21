@@ -158,6 +158,9 @@ test("a replay the model declines shows as declined, an answered one as answered
     await expect(detail).toContainText("529 overloaded");
     await detail.getByTestId("span-replay").click();
     await expect(page.getByTestId("replay-result")).toBeVisible({ timeout: 15_000 });
+    // The replay is a trace of its own: it joins the list above with nothing reloaded by hand, and the turn's trace stays open.
+    await expect(page.getByTestId("trace-row")).toHaveCount(2);
+    await expect(page.getByTestId("trace-row").last()).toHaveAttribute("aria-current", "true");
     const traces = (await (await request.get(`/api/debug/traces?session_id=${session.id}`)).json()).traces;
     // The turn's own row is the oldest of the list.
     const row = page.getByTestId("trace-row").last();
@@ -181,6 +184,7 @@ test("a replay the model declines shows as declined, an answered one as answered
   expect(answered.span).toMatchObject({ status: "ok", error: null, error_type: null, attrs: { result: { stop: "end_turn" } } });
   expect(answered.turn).toMatchObject({ status: "ok", error: null });
   expect(answered.row[0]).toBe("ok");
+  await expect(page.getByTestId("trace-row").first()).toContainText("Replay on scripted:stand-in");
   await shoot(page, "observe-08-replay-answered");
 });
 

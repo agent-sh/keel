@@ -70,7 +70,7 @@ export function TracesPanel({ session }: { session: Session }) {
           </button>
         ))}
       </div>
-      {open && <Trace key={`${open} ${span ?? ""} ${asks}`} id={open} span={span} ends={ends} onOpen={show} />}
+      {open && <Trace key={`${open} ${span ?? ""} ${asks}`} id={open} span={span} ends={ends} onOpen={show} onReplayed={load} />}
     </div>
   );
 }
@@ -95,7 +95,8 @@ function tree(spans: Span[]): { s: Span; depth: number }[] {
 // trace no longer holds it, the first failed request or call is picked.
 // `ends`: how many turns of the session have ended. The open trace is read
 // again when one does, so a trace opened while its turn ran shows how it ended.
-function Trace({ id, span, ends, onOpen }: { id: string; span: string | null; ends: number; onOpen: (trace: string) => void }) {
+// `onReplayed`: a request was sent again. The replay is a trace of its own, so the list is read again.
+function Trace({ id, span, ends, onOpen, onReplayed }: { id: string; span: string | null; ends: number; onOpen: (trace: string) => void; onReplayed: () => void }) {
   const [spans, setSpans] = useState<Span[] | null>(null);
   const [sel, setSel] = useState<string | null>(span);
   // Spans are kept for a while: a trace opened from an old error may be gone.
@@ -164,7 +165,7 @@ function Trace({ id, span, ends, onOpen }: { id: string; span: string | null; en
           </button>
         ))}
       </div>
-      <div ref={detail}>{pick && <Detail s={pick} onReplayed={load} onOpen={onOpen} />}</div>
+      <div ref={detail}>{pick && <Detail s={pick} onReplayed={() => { load(); onReplayed(); }} onOpen={onOpen} />}</div>
     </div>
   );
 }
