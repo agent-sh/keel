@@ -11,9 +11,15 @@ let watch: MutationObserver | null = null;
 // transcript scrolls by itself while a reply is written.
 let pinned = false;
 let pinTimer = 0;
+// Words put up by tipSay: the pointer and the focus moving on do not take them down.
+let saying = false;
 
 function place() {
-  if (!tip || !host) return;
+  if (!tip) return;
+  // No control to stand at: under the top of the page (the stylesheet places it).
+  if (saying && !host) { tip.dataset.free = ""; tip.style.transform = ""; return; }
+  delete tip.dataset.free;
+  if (!host) return;
   const r = host.getBoundingClientRect();
   const t = tip.getBoundingClientRect();
   const gap = 6;
@@ -59,7 +65,7 @@ function hide() {
     host.removeAttribute("data-tip");
   }
   host = null;
-  pinned = false;
+  pinned = saying = false;
   if (tip) { delete tip.dataset.open; tip.remove(); }
 }
 
@@ -74,14 +80,32 @@ export function tipNow(el: Element, ms: number) {
   pinTimer = window.setTimeout(() => { if (host === el && pinned) hide(); }, ms);
 }
 
+// Words about what just happened, not a control's own name (a copy that
+// failed, from a control with no failed state of its own): shown at the
+// control, or under the top of the page when there is none left (a menu item
+// is gone by then, a shortcut never had one), for `ms` or until the next press.
+export function tipSay(el: Element | null | undefined, text: string, ms: number) {
+  hide();
+  host = el?.isConnected ? el : null;
+  saying = pinned = true;
+  tip ??= Object.assign(document.createElement("div"), { className: "k-tip" });
+  tip.setAttribute("role", "tooltip");
+  tip.textContent = text;
+  document.body.append(tip);
+  place();
+  tip.dataset.open = "";
+  clearTimeout(pinTimer);
+  pinTimer = window.setTimeout(() => { if (saying) hide(); }, ms);
+}
+
 const titled = (t: EventTarget | null) => (t instanceof Element ? t.closest("[title], [data-tip]") : null);
 
 // Touch has no hover: a long press there keeps what the browser does.
 if (matchMedia("(hover: hover)").matches) {
-  document.addEventListener("mouseover", (e) => { const el = titled(e.target); if (el) show(el, 450); else hide(); }, true);
-  document.addEventListener("mouseleave", hide);
+  document.addEventListener("mouseover", (e) => { if (saying) return; const el = titled(e.target); if (el) show(el, 450); else hide(); }, true);
+  document.addEventListener("mouseleave", () => { if (!saying) hide(); });
   // Not on a row of a tree: the arrows move through them, and a tip under each would cover the next.
-  document.addEventListener("focusin", (e) => { const el = titled(e.target); if (el && el === e.target && el.matches(":focus-visible") && el.getAttribute("role") !== "treeitem") show(el, 150); });
-  document.addEventListener("focusout", hide);
-  for (const ev of ["mousedown", "keydown", "wheel", "scroll"] as const) window.addEventListener(ev, () => { if (pinned && (ev === "scroll" || ev === "wheel")) place(); else if (tip?.isConnected) { clearTimeout(timer); delete tip.dataset.open; tip.remove(); } else clearTimeout(timer); }, { capture: true, passive: true });
+  document.addEventListener("focusin", (e) => { const el = titled(e.target); if (!saying && el && el === e.target && el.matches(":focus-visible") && el.getAttribute("role") !== "treeitem") show(el, 150); });
+  document.addEventListener("focusout", () => { if (!saying) hide(); });
+  for (const ev of ["mousedown", "keydown", "wheel", "scroll"] as const) window.addEventListener(ev, () => { if (pinned && (ev === "scroll" || ev === "wheel")) place(); else if (saying) hide(); else if (tip?.isConnected) { clearTimeout(timer); delete tip.dataset.open; tip.remove(); } else clearTimeout(timer); }, { capture: true, passive: true });
 }

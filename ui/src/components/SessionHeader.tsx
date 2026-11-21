@@ -1,4 +1,4 @@
-import { copyText } from "../lib/copy.ts";
+import { copyOrSay } from "../lib/copy.ts";
 import { Menu } from "@base-ui/react/menu";
 import { Popover } from "@base-ui/react/popover";
 import { Archive, ArchiveRestore, ChevronDown, Copy, Ellipsis, Folder, FolderPlus, GitBranch, Link2, Menu as MenuIcon, Pencil, Trash2 } from "lucide-react";
@@ -170,6 +170,7 @@ function MoreTools({ tools, live, list, changed }: { tools: Tool[]; live: boolea
 }
 
 export function SessionHeader({ session }: { session: Session }) {
+  const menuButton = useRef<HTMLButtonElement>(null); // where a menu item's failed copy is said
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(session.title);
   const input = useRef<HTMLInputElement>(null);
@@ -235,7 +236,7 @@ export function SessionHeader({ session }: { session: Session }) {
           <button
             type="button"
             title={`${session.workspace}\nClick to copy the path`}
-            onClick={() => copyText(session.workspace)}
+            onClick={(e) => void copyOrSay(session.workspace, e.currentTarget)}
             className="hidden h-6 shrink-0 items-center gap-1 rounded-sm px-1.5 text-caption text-faint hover:bg-hover hover:text-muted sm:inline-flex"
           >
             <Folder className="size-3.5" />
@@ -258,15 +259,15 @@ export function SessionHeader({ session }: { session: Session }) {
       {!out.includes("hand") && <span data-tool="hand" className="k-head-tool"><PanelHand session={session} /></span>}
       <PanelsButton session={session} />
       <Menu.Root>
-        <Menu.Trigger aria-label="Session actions" data-testid="session-menu" className={iconButton}>
+        <Menu.Trigger ref={menuButton} aria-label="Session actions" data-testid="session-menu" className={iconButton}>
           <Ellipsis className="size-4" />
         </Menu.Trigger>
         <Menu.Portal>
           <Menu.Positioner sideOffset={6} align="end" className="z-50 outline-none">
             <Menu.Popup className={cn(popupClass, "min-w-52")}>
               <Menu.Item className={itemClass} data-testid="menu-rename" onClick={() => setEditing(true)}><Pencil /> Rename</Menu.Item>
-              <Menu.Item className={itemClass} onClick={() => copyText(location.href)}><Link2 /> Copy link</Menu.Item>
-              <Menu.Item className={itemClass} onClick={() => copyText(session.workspace)}><Copy /> Copy folder path</Menu.Item>
+              <Menu.Item className={itemClass} onClick={() => void copyOrSay(location.href, menuButton.current)}><Link2 /> Copy link</Menu.Item>
+              <Menu.Item className={itemClass} onClick={() => void copyOrSay(session.workspace, menuButton.current)}><Copy /> Copy folder path</Menu.Item>
               <Menu.Item className={itemClass} onClick={() => { savePref("newWorkspace", session.workspace); navigate({ name: "new" }); }}><FolderPlus /> New session here</Menu.Item>
               <Menu.Separator className="mx-1 my-1 h-px bg-line" />
               <Menu.Item

@@ -1,6 +1,7 @@
 import { Menu } from "@base-ui/react/menu";
 import { ClipboardPaste, Copy, ExternalLink, Link2, Scissors, TextSelect } from "lucide-react";
 import { useEffect, useState } from "react";
+import { copyOrSay } from "../lib/copy.ts";
 import { inShell } from "../lib/shell.ts";
 import { reportError } from "../lib/store.ts";
 import { itemClass, popupClass } from "./ui.tsx";
@@ -43,8 +44,9 @@ export function ContextMenuHost() {
     else if (at.range) { at.editable?.focus(); const s = getSelection(); s?.removeAllRanges(); s?.addRange(at.range); }
   };
   const run = (fn: () => unknown) => () => { setAt(null); requestAnimationFrame(() => { back(); Promise.resolve().then(fn).catch((err) => reportError(err, { at: "context menu" })); }); };
-  const copy = () => navigator.clipboard.writeText(at.picked);
-  const cut = async () => { await copy(); document.execCommand("delete"); };
+  // Through the shared copy: it works on a page with no async clipboard, and a failure is said.
+  const copy = () => copyOrSay(at.picked);
+  const cut = async () => { if (await copy()) document.execCommand("delete"); };
   const paste = async () => { const text = await navigator.clipboard.readText(); if (text) document.execCommand("insertText", false, text); };
   const all = () => (at.field ? at.field.select() : document.execCommand("selectAll"));
   const writes = !!(at.field || at.editable) && !at.field?.readOnly && !at.field?.disabled;
@@ -56,7 +58,7 @@ export function ContextMenuHost() {
         <Menu.Positioner anchor={anchor} side="bottom" align="start" sideOffset={2} className="z-[80] outline-none">
           <Menu.Popup className={`${popupClass} min-w-44`} data-testid="context-menu">
             {at.href && <Menu.Item className={itemClass} onClick={run(() => window.open(new URL(at.href!, location.href).href, "_blank", "noopener"))}><ExternalLink />Open link</Menu.Item>}
-            {at.href && <Menu.Item className={itemClass} onClick={run(() => navigator.clipboard.writeText(new URL(at.href!, location.href).href))}><Link2 />Copy link</Menu.Item>}
+            {at.href && <Menu.Item className={itemClass} onClick={run(() => copyOrSay(new URL(at.href!, location.href).href))}><Link2 />Copy link</Menu.Item>}
             {writes && <Menu.Item className={itemClass} disabled={!at.picked} onClick={run(cut)}><Scissors />Cut</Menu.Item>}
             {(at.picked || writes) && <Menu.Item className={itemClass} disabled={!at.picked} onClick={run(copy)}><Copy />Copy</Menu.Item>}
             {writes && <Menu.Item className={itemClass} onClick={run(paste)}><ClipboardPaste />Paste</Menu.Item>}

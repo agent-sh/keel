@@ -136,6 +136,23 @@ test("a failed copy says so", async ({ page, request }) => {
   await expect(code.locator("svg rect")).toHaveCount(1);
   await page.waitForTimeout(500);
   expect(await recorded()).toBe(before + 4);
+
+  // A copy with no failed state of its own to show says it too, in view and
+  // to assistive technology: a menu item (gone by then) at the menu's button,
+  // and a command with no control at all (the shortcut) under the top of the page.
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+  await expect(page.getByRole("alert")).toHaveText("", { timeout: 8000 });
+  await page.getByTestId("session-menu").click();
+  await page.getByRole("menuitem", { name: "Copy link" }).click();
+  await expect(page.getByRole("tooltip")).toHaveText("Copy failed");
+  await expect(page.locator(".k-tip[data-free]")).toHaveCount(0);
+  await expect(page.getByRole("alert")).toHaveText("Copy failed: the browser refused the clipboard.");
+  await expect.poll(recorded).toBe(before + 5);
+  await shoot(page, "copy-05-menu-failed");
+  await page.keyboard.press("ControlOrMeta+Shift+C");
+  await expect(page.locator(".k-tip[data-free]")).toHaveText("Copy failed");
+  await expect.poll(recorded).toBe(before + 6);
+  await shoot(page, "copy-06-command-failed");
   expect(await page.evaluate(() => (window as any).said.filter((x: string) => /Copied|\|true$/.test(x)))).toEqual([]);
   await request.delete(`/api/sessions/${s.id}`);
 });

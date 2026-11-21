@@ -104,7 +104,7 @@ function Row({ e }: { e: ErrorRecord }) {
             type="button"
             className={tool}
             title="The failure, its trace, the transcript before it and the daemon log, as Markdown"
-            onClick={() => copyBundle(target).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }).catch(reportError)}
+            onClick={(e) => copyBundle(target, e.currentTarget).then((ok) => { if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1500); } })}
             data-testid="error-bundle"
           >
             <ClipboardCopy className="size-3.5" /> {copied ? "Copied" : "Copy debug bundle"}

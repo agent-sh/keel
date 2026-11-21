@@ -1,7 +1,7 @@
-import { copyText } from "../../lib/copy.ts";
+import { copyOrSay } from "../../lib/copy.ts";
 import { Dialog } from "@base-ui/react/dialog";
 import { Check, CircleAlert, CircleCheck, CircleDashed, CircleSlash, Copy, ExternalLink, KeyRound, Pause, Play, Plus, Repeat, ShieldCheck, Trash2, X } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { auto, autoState, inMs, openSession, useAuto, type LoopRecord, type RunRecord } from "../../lib/automation.ts";
 import { reportError, useStore, failed } from "../../lib/store.ts";
 import { ago, cn, fmtTokens } from "../../lib/utils.ts";
@@ -20,12 +20,13 @@ const OUTCOME: Record<string, string> = { ok: "finished", failed: "failed", inco
 
 function CopyLine({ label, value, testid }: { label: string; value: string; testid: string }) {
   const [done, setDone] = useState(false);
+  const line = useRef<HTMLDivElement>(null);
   return (
     <div>
       <p className="text-micro font-medium text-muted">{label}</p>
-      <div className="mt-0.5 flex items-start gap-1.5">
+      <div ref={line} className="mt-0.5 flex items-start gap-1.5">
         <code data-testid={testid} className="min-w-0 flex-1 break-all rounded-md bg-code px-2 py-1 font-mono text-micro">{value}</code>
-        <IconButton title={`Copy ${label.toLowerCase()}`} onClick={() => copyText(value).then(() => setDone(true)).catch(reportError)}>
+        <IconButton title={`Copy ${label.toLowerCase()}`} onClick={() => copyOrSay(value, line.current?.querySelector("button")).then((ok) => { if (ok) setDone(true); })}>
           {done ? <Check className="size-3.5 text-ok" /> : <Copy className="size-3.5" />}
         </IconButton>
       </div>

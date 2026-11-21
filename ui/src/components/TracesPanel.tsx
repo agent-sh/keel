@@ -263,7 +263,7 @@ function Detail({ s, onReplayed, onOpen }: { s: Span; onReplayed: () => void; on
         <button
           type="button"
           className={btn}
-          onClick={() => copyBundle(target).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }).catch(reportError)}
+          onClick={(e) => copyBundle(target, e.currentTarget).then((ok) => { if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1500); } })}
           data-testid="span-bundle"
         >
           <ClipboardCopy className="size-3.5" /> {copied ? "Copied" : "Copy debug bundle"}

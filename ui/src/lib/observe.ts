@@ -1,6 +1,6 @@
 // Traces, the debug bundle and "fix this", shared by the Errors panel, the
 // Traces side panel and the Logs settings.
-import { copyText } from "./copy.ts";
+import { copyOrSay } from "./copy.ts";
 import { api } from "./store.ts";
 import { getUI, navigate, savePref, setUI } from "./ui.ts";
 
@@ -32,8 +32,9 @@ export async function bundleText(t: BundleTarget): Promise<string> {
   return r.text();
 }
 
-export async function copyBundle(t: BundleTarget) {
-  await copyText(await bundleText(t));
+// True when the bundle is on the clipboard; a failure (the bundle or the copy) is said at `at`.
+export function copyBundle(t: BundleTarget, at?: Element | null): Promise<boolean> {
+  return copyOrSay(() => bundleText(t), at);
 }
 
 // A new session asked to find the cause and fix it, with the bundle on disk; the page goes there.

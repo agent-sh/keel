@@ -2,7 +2,7 @@
 // its output with the program's colors, the ones running or in the background
 // with their output streaming in, and the owner's stop, copy and re-run. A
 // command line at the foot runs the owner's own command in the session's folder.
-import { copyText } from "../lib/copy.ts";
+import { copyOrSay } from "../lib/copy.ts";
 import { Tabs } from "@base-ui/react/tabs";
 import { Check, ChevronRight, Copy, Play, RotateCw, Square, SquareTerminal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -83,12 +83,10 @@ function Output({ session, e }: { session: string; e: Entry }) {
 
 function Row({ session, e, now, open, onToggle, onRun }: { session: string; e: Entry; now: number; open: boolean; onToggle: () => void; onRun: (cmd: string, cwd?: string) => void }) {
   const [copied, setCopied] = useState(false);
-  const copy = async () => {
-    try {
-      await copyText(stripAnsiText(e.output));
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch (err) { reportError(err, { at: "terminal copy" }); }
+  const copy = async (at: Element) => {
+    if (!(await copyOrSay(stripAnsiText(e.output), at))) return;
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
   };
   const stop = () => api(`/api/sessions/${session}/terminal/${e.job_id}/stop`, { method: "POST" }).catch(reportError);
   return (
@@ -113,7 +111,7 @@ function Row({ session, e, now, open, onToggle, onRun }: { session: string; e: E
           {live(e) && e.job_id && (
             <button type="button" title="Stop" data-testid="term-stop" onClick={stop} className="grid size-6 place-items-center rounded-md text-faint hover:bg-danger-soft hover:text-danger"><Square className="size-3" /></button>
           )}
-          <button type="button" title={copied ? "Copied" : "Copy the output"} data-testid="term-copy" data-copied={copied || undefined} onClick={copy} className="grid size-6 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg">
+          <button type="button" title={copied ? "Copied" : "Copy the output"} data-testid="term-copy" data-copied={copied || undefined} onClick={(ev) => void copy(ev.currentTarget)} className="grid size-6 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg">
             {copied ? <Check className="size-3.5 text-ok" /> : <Copy className="size-3.5" />}
           </button>
           <button type="button" title="Run it again" data-testid="term-rerun" onClick={() => onRun(e.command, e.cwd)} className="grid size-6 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg"><RotateCw className="size-3.5" /></button>

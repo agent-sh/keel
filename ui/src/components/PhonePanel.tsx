@@ -1,6 +1,6 @@
 // Settings > Phone: pair the phone app with a one-time QR, see each paired
 // phone with whether its alerts arrive, send a test push, revoke.
-import { copyText } from "../lib/copy.ts";
+import { copyOrSay } from "../lib/copy.ts";
 import { BellRing, Check, Copy, QrCode, Send, ShieldAlert, Smartphone, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { api, onFeature, reportError, failed } from "../lib/store.ts";
@@ -87,7 +87,7 @@ function PairCard({ settings, paired }: { settings: Settings | null; paired: Dev
                 <button
                   type="button"
                   aria-label="Copy the pairing link"
-                  onClick={() => copyText(bundle.pair_link).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }, reportError)}
+                  onClick={(e) => copyOrSay(bundle.pair_link, e.currentTarget).then((ok) => { if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1500); } })}
                   className="grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg"
                 >
                   {copied ? <Check className="size-3.5 text-ok" /> : <Copy className="size-3.5" />}
@@ -98,7 +98,7 @@ function PairCard({ settings, paired }: { settings: Settings | null; paired: Dev
                 <button
                   type="button"
                   data-testid="pair-hermes"
-                  onClick={() => copyText(bundle.hermes_link).then(() => { setHermesCopied(true); setTimeout(() => setHermesCopied(false), 1500); }, reportError)}
+                  onClick={(e) => copyOrSay(bundle.hermes_link, e.currentTarget).then((ok) => { if (ok) { setHermesCopied(true); setTimeout(() => setHermesCopied(false), 1500); } })}
                   className="text-muted underline decoration-line-strong underline-offset-2 hover:text-fg"
                 >
                   {hermesCopied ? "Copied the Hermes app link" : "Copy the link for the Hermes app"}

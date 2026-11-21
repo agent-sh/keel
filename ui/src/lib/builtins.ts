@@ -1,6 +1,6 @@
 // The workbench's own commands and slash commands. Feature lanes register
 // theirs the same way from their own modules; an id registered again wins.
-import { copyText } from "./copy.ts";
+import { copyOrSay } from "./copy.ts";
 import { FolderTree } from "lucide-react";
 import { createElement, lazy } from "react";
 import { panels, slash } from "./extend.ts";
@@ -75,7 +75,7 @@ registerCommand(
   { id: "text-smaller", label: "Smaller text", group: "View", keys: "mod+-", inInput: true, words: "zoom font size letters", run: () => stepScale(-1) },
   { id: "text-reset", label: "Default text size", group: "View", keys: "mod+0", inInput: true, words: "zoom font size reset letters", run: () => setScale(1) },
   { id: "model-menu", label: "Choose a model", group: "Session", keys: "alt+m", inInput: true, words: "switch model", run: () => setUI({ modelMenu: getUI().modelMenu + 1 }) },
-  { id: "copy-reply", label: "Copy the last reply", group: "Session", keys: "mod+shift+c", inInput: true, when: () => !!current(), run: () => copyText(lastReply(current()!.id)) },
+  { id: "copy-reply", label: "Copy the last reply", group: "Session", keys: "mod+shift+c", inInput: true, when: () => !!current(), run: () => void copyOrSay(lastReply(current()!.id)) },
   // A panel lying over the conversation takes Escape first: it closes, and the
   // turn working behind it is not stopped by the same press.
   { id: "panel-leave", label: "Close the panel over the conversation", group: "View", keys: "escape", when: () => !!document.querySelector('.k-side[data-mode="sheet"]'), run: () => savePref("panel", null) },
@@ -85,7 +85,7 @@ registerCommand(
   { id: "to-parent", label: "Back to the session that started this agent", group: "Session", keys: "escape", when: () => !!current()?.parent_id, run: () => navigate({ name: "session", id: current()!.parent_id! }) },
   { id: "stop-agent", label: "Stop this agent", group: "Session", when: () => current()?.phase === "working" && !!current()?.parent_id, run: () => void stopHere(current()!) },
   { id: "archive", label: "Archive this session", group: "Session", when: () => !!current(), run: () => { actions.patch(current()!.id, { archived: true }).catch(reportError); navigate({ name: "new" }); } },
-  { id: "copy-link", label: "Copy a link to this session", group: "Session", when: () => !!current(), run: () => copyText(location.href) },
+  { id: "copy-link", label: "Copy a link to this session", group: "Session", when: () => !!current(), run: () => void copyOrSay(location.href) },
   { id: "end", label: "Go to the end and follow", group: "Session", keys: "end mod+end", when: () => !!current(), run: () => dispatchEvent(new Event("keel:end")) },
   { id: "settings", label: "Settings", group: "General", keys: "mod+,", inInput: true, words: "preferences options", run: () => navigate({ name: "settings", section: "general" }) },
   { id: "errors", label: "Show recorded errors", group: "General", words: "failures bugs log", run: () => setUI({ errors: true }) },

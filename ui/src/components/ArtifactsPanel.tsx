@@ -13,7 +13,7 @@ import { ArrowLeft, Code2, Download, ExternalLink, FileText, Globe, Image as Ima
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import type { Artifact } from "../../../src/server/routes/artifacts.ts";
-import { copyText } from "../lib/copy.ts";
+import { copyOrSay } from "../lib/copy.ts";
 import { api, onFeature, reportError } from "../lib/store.ts";
 import { ago, cn, when } from "../lib/utils.ts";
 import { DiffView, type FileChange } from "./DiffView.tsx";
@@ -198,7 +198,7 @@ function Preview({ a }: { a: Listed }) {
         </div>
         <div className="ml-auto flex items-center gap-1.5">
         <button type="button" className={button} data-testid="artifact-open" title={said || "Open in your editor on this machine"} onClick={() => api(`/api/sessions/${a.session_id}/artifacts/open`, { method: "POST", body: JSON.stringify({ path: a.path }) }).then(() => setSaid("Opened"), (e) => setSaid((e as Error).message))}><ExternalLink className="size-3.5" />{said === "Opened" ? "Opened" : "Open"}</button>
-        <button type="button" className={button} data-testid="artifact-copy-path" onClick={() => copyText(a.path).then(() => setSaid("Path copied"), reportError)}>{said === "Path copied" ? "Copied" : "Copy path"}</button>
+        <button type="button" className={button} data-testid="artifact-copy-path" onClick={(e) => copyOrSay(a.path, e.currentTarget).then((ok) => { if (ok) setSaid("Path copied"); })}>{said === "Path copied" ? "Copied" : "Copy path"}</button>
         <a className={button} href={raw(a, true)} download={a.name} data-testid="artifact-download" aria-label="Download"><Download className="size-3.5" /></a>
         </div>
       </div>

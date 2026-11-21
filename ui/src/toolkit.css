@@ -127,6 +127,8 @@
   opacity: 0; transition: opacity 0.12s;
 }
 .k-tip[data-open] { opacity: 1; }
+/* Words with no control to stand at (lib/tips.ts tipSay): under the top of the page, in the middle. */
+.k-tip[data-free] { left: 50%; top: 3.75rem; transform: translateX(-50%); }
 
 input[type="checkbox"]:not(.sr-only) {
   appearance: none; -webkit-appearance: none; flex: none; display: inline-grid; place-content: center; width: 0.9375rem; height: 0.9375rem; margin: 0;
