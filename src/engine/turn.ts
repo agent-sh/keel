@@ -277,7 +277,10 @@ const SUMMARY_GAVE_UP = new Set(["summary_truncated", "summary_too_long", "summa
 // context cannot be sent: the prompt that opened it got no answer (Engine.unanswered).
 const NOT_SENT = new Set([...SUMMARY_GAVE_UP, "context_over_window"]);
 
-type Step = { provider: Provider; info: ModelInfo; tools: Tool[]; system: string; systemSplit: number; effort?: string; native?: boolean };
+type Step = { provider: Provider; info: ModelInfo; tools: Tool[]; system: string; systemSplit: number; systemOwn?: number; effort?: string; native?: boolean };
+// A session's system prompt as a request carries it: the text, where the part
+// its folder's sessions share starts (`split`) and where its own part starts (`own`).
+type System = { text: string; split: number; own?: number };
 
 // What the caller counted for a request before it is built: the tokens of the
 // request that carries its context (Engine.whole), and the messages that
@@ -339,11 +342,11 @@ export class Engine {
   // Bounded: a session that dropped out reads its system prompt back from the
   // store (the same bytes) and asks to read a file again before editing it.
   private seen = new SessionMap<Map<string, number>>(64);
-  private systems = new SessionMap<{ text: string; split: number; model?: string }>(64);
+  private systems = new SessionMap<System & { model?: string }>(64);
   private prompts: PromptStore;
   // The tools and prompt each session was last sent, kept across a daemon upgrade (src/engine/build-pin.ts).
   private pins: BuildPins;
-  private rendering = new Map<string, Promise<{ text: string; split: number }>>();
+  private rendering = new Map<string, Promise<System>>();
   // Sessions whose kept prompt was compared with a fresh render in this run,
   // and sessions that moved (their next request renders for the new place).
   private checked = new Set<string>();
@@ -860,7 +863,7 @@ export class Engine {
     try {
       const system = await this.systemOf(session, info);
       const effort = effectiveEffort(info, session.settings.effort);
-      return { provider, info, tools: own ? this.pins.tools(session, to, built) : built, system: system.text, systemSplit: system.split, effort, native };
+      return { provider, info, tools: own ? this.pins.tools(session, to, built) : built, system: system.text, systemSplit: system.split, systemOwn: system.own, effort, native };
     } finally {
       this.pins.end(session.id);
     }
@@ -912,7 +915,7 @@ export class Engine {
   // A session moved to another model (its own, not a subagent riding on its
   // parent's prompt) gets its prompt rendered again for that model: blocks
   // that depend on the model (the skill listing is cut to its window) follow it.
-  private async systemOf(session: Session, info?: ModelInfo, own = true): Promise<{ text: string; split: number }> {
+  private async systemOf(session: Session, info?: ModelInfo, own = true): Promise<System> {
     const system = this.systems.get(session.id);
     const local = session.parent_id && !session.machine;
     if (system && own && !local && info?.id === session.model && system.model && system.model !== info.id) {
@@ -937,9 +940,9 @@ export class Engine {
   // build reworded one) replaces the kept prompt when the session's cache is
   // cold or the change must not wait, and the row then names the blocks;
   // until then the kept prompt is sent as it was (src/engine/build-pin.ts).
-  private async loadSystem(session: Session, info?: ModelInfo): Promise<{ text: string; split: number }> {
+  private async loadSystem(session: Session, info?: ModelInfo): Promise<System> {
     const parent = session.parent_id && !session.machine ? this.store.session(session.parent_id) : undefined;
-    let system: { text: string; split: number };
+    let system: System;
     if (parent) system = await this.systemOf(parent, info, false);
     else {
       const kept = this.prompts.get(session.id);
@@ -960,7 +963,8 @@ export class Engine {
         // next run compares it against that model.
         if (kept && !taken) {
           system = kept;
-          if (moved && !changed.length && forModel && kept.model !== forModel.id) this.prompts.put(session.id, made);
+          // (Its blocks stay cut as the kept one's were sent.)
+          if (moved && !changed.length && forModel && kept.model !== forModel.id) this.prompts.put(session.id, { ...made, own: kept.own });
         } else {
           this.prompts.put(session.id, made, changed);
           system = made;
@@ -969,7 +973,7 @@ export class Engine {
         this.moved.delete(session.id);
       }
     }
-    this.systems.set(session.id, { text: system.text, split: system.split, model: parent ? undefined : this.prompts.get(session.id)?.model ?? undefined });
+    this.systems.set(session.id, { text: system.text, split: system.split, own: system.own, model: parent ? undefined : this.prompts.get(session.id)?.model ?? undefined });
     return system;
   }
 
@@ -983,8 +987,12 @@ export class Engine {
       typeof b === "string" ? (b ? [sent({ name: blockName(b), text: wrap(b) })] : []) : [sent({ name: b.name, text: b.text ? wrap(b.text) : "", data: b.data })];
     const shared: PromptPart[] = [sent({ name: "core", text: `${CORE}${testBuild?.core ? `\n${testBuild.core}` : ""}\n\n` }), ...extra.flatMap((b) => part(b, (t) => t + "\n\n"))];
     const own = (await Promise.all(allHooks().map((h) => h.sessionSystem?.(session, info) ?? ""))).flatMap((b) => part(b, (t) => `\n${t}\n`));
-    const parts = [...shared, ...sessionParts(session.workspace, session.created).map(sent), ...own];
-    return { text: parts.map((p) => p.text).join(""), split: shared.reduce((n, p) => n + p.text.length, 0), blocks: blocksOf(parts), model: info?.id ?? null };
+    // The place and its instruction files: the same for every session of the
+    // folder (started that day), so the session's own blocks come after them.
+    const folder = sessionParts(session.workspace, session.created).map(sent);
+    const parts = [...shared, ...folder, ...own];
+    const chars = (list: PromptPart[]) => list.reduce((n, p) => n + p.text.length, 0);
+    return { text: parts.map((p) => p.text).join(""), split: chars(shared), own: chars(shared) + chars(folder), blocks: blocksOf(parts), model: info?.id ?? null };
   }
 
   // The first request on a model other than the one that wrote the last reply
@@ -1026,7 +1034,7 @@ export class Engine {
       // A deferred tool the conversation loaded keeps the definition it was loaded with (src/engine/build-pin.ts).
       if (st.info.id === session.model) st.tools = this.pins.loaded(id, st.tools, referenced(messages));
     }
-    let req: ProviderRequest = { model: st.info.model, system: st.system, systemSplit: st.systemSplit, messages, tools: st.tools, effort: st.effort, maxTokens: st.info.output, signal, sessionKey: id, purpose, route: st.info.id , dropThinking: this.store.session(id)?.settings.drop_thinking || undefined };
+    let req: ProviderRequest = { model: st.info.model, system: st.system, systemSplit: st.systemSplit, systemOwn: st.systemOwn, messages, tools: st.tools, effort: st.effort, maxTokens: st.info.output, signal, sessionKey: id, purpose, route: st.info.id , dropThinking: this.store.session(id)?.settings.drop_thinking || undefined };
     // A reader's request carries no conversation for the hooks to add to.
     if (purpose === "reader") req.cache = false;
     else for (const h of allHooks()) if (h.beforeRequest) req = { ...req, ...(await h.beforeRequest(session, req)) };

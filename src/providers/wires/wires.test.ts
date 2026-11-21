@@ -226,6 +226,22 @@ test("deferred tools and tool_reference blocks on each wire", () => {
   expect(resp.input.find((i: any) => i.type === "function_call_output").output).toEqual([{ type: "input_text", text: "Tool loaded: mcp__echo__echo" }]);
 });
 
+// The system prompt on the Messages wire: what every session shares, what the
+// sessions of one folder share, each with a breakpoint, then the session's
+// own text without one, so two sessions of a folder differ only in the last.
+test("the session's own system text is a block of its own after the folder's cached one", () => {
+  const shared = "Core.\n\n", folder = "Working directory: /w\nInstructions.\n";
+  const of = (own: string, marks: { systemSplit?: number; systemOwn?: number }) => anthropicWire.body({ ...req, system: shared + folder + own, ...marks }, ctx).system as any[];
+  const at = { systemSplit: shared.length, systemOwn: shared.length + folder.length };
+  const a = of("\nArtifacts go in /a/1/.\n", at), b = of("\nArtifacts go in /a/2/.\n", at);
+  expect(a.map((x) => [x.text, !!x.cache_control])).toEqual([[shared, true], [folder, true], ["\nArtifacts go in /a/1/.\n", false]]);
+  expect(JSON.stringify(a.slice(0, 2))).toBe(JSON.stringify(b.slice(0, 2)));
+  // A prompt kept from before the mark was recorded goes as it always did, and a session with no text of its own has no third block.
+  expect(of("\nArtifacts go in /a/1/.\n", { systemSplit: shared.length }).map((x) => [x.text.length, !!x.cache_control])).toEqual([[shared.length, true], [folder.length + 24, true]]);
+  expect(of("", at).map((x) => x.text)).toEqual([shared, folder]);
+  expect(of("own", { systemOwn: (shared + folder).length }).map((x) => [x.text, !!x.cache_control])).toEqual([[shared + folder, true], ["own", false]]);
+});
+
 // A freeform tool goes as an OpenAI custom tool and its call round-trips as one.
 test("freeform tools are Responses custom tools, except on xAI", () => {
   const tools = [{ name: "exec", description: "run js", input_schema: { type: "object" }, freeform: { syntax: "lark" as const, definition: "start: /.+/" } }];

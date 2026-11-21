@@ -248,6 +248,7 @@ test("a deferred tool the conversation loaded keeps its definition across an upg
     writeFileSync(join(state, "config", "providers.toml"),
       `[[endpoint]]\nid = "fanth"\nlabel = "Stand-in"\nwire = "anthropic_messages"\nbase_url = "${fake.url}"\nbilling = "free"\nmodels = ["claude-fake-1"]\n\n[endpoint.model."claude-fake-1"]\ncontext = 200000\noutput = 8000\ntools = true\nimages = false\n`);
     writeFileSync(join(state, "config", "mcp.json"), JSON.stringify({ servers: { echo: { command: "bun", args: [resolve("test/e2e/fixtures/echo-mcp.ts")] } } }));
+    writeFileSync(join(state, "work", "AGENTS.md"), "# Rules\n\nAlways answer in one line.\n");
   });
   const { call, turn, open, restart } = r;
   const ready = () => expect.poll(async () => (await call("/api/mcp/servers")).servers.find((s: any) => s.name === "echo")?.state, { timeout: 30_000 }).toBe("ready");
@@ -261,6 +262,16 @@ test("a deferred tool the conversation loaded keeps its definition across an upg
     const before = of("TAG-loaded").at(-1)!;
     expect(JSON.stringify(before.messages)).toContain('{"type":"tool_reference","tool_name":"mcp__echo__echo"}');
     expect(def(before, "mcp__echo__echo")).toMatchObject({ defer_loading: true, description: "Echo the given text back, prefixed with 'echo:'." });
+
+    // Another session in the same folder reads the folder's instruction block
+    // from the cache: the two prompts differ only in the last block, the
+    // session's own (its artifacts folder), which carries no breakpoint.
+    await open("fanth:claude-fake-1", ["TAG-second hello"]);
+    const [mine, theirs] = [before.system as any[], of("TAG-second").at(-1)!.system as any[]];
+    expect(mine.map((b) => !!b.cache_control)).toEqual([true, true, false]);
+    expect(mine[1].text).toContain("Always answer in one line.");
+    expect(JSON.stringify(mine.slice(0, 2)), "the shared and the folder's blocks are the same bytes").toBe(JSON.stringify(theirs.slice(0, 2)));
+    expect([mine[2].text.startsWith("\nArtifacts: "), mine[2].text === theirs[2].text]).toEqual([true, false]);
 
     // The next build words both of the server's tools another way.
     await restart({ id: "build-two", tools: { mcp__echo__echo: { description: "Echo, as build two words it." }, mcp__echo__add: { description: "Add, as build two words it." } } });

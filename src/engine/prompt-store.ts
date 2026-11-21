@@ -20,6 +20,9 @@ export type PromptPart = { name: string; text: string; data?: string };
 export type StoredPrompt = {
   text: string;
   split: number;
+  // Where the session's own blocks start (ProviderRequest.systemOwn); absent
+  // for a prompt kept from before it was recorded.
+  own?: number;
   blocks: PromptBlock[];
   // The model the blocks were rendered for (a listing is cut to its window).
   model: string | null;
@@ -95,16 +98,17 @@ export function changedBlocks(was: PromptBlock[], now: PromptBlock[]): string[] 
 
 function readPrompt(store: Store, id: string): StoredPrompt | undefined {
   const r = store.db
-    .query<{ text: string; split: number; blocks: string; model: string | null; rendered: number; changed_ts: number | null; changed: string | null }, [string]>(
-      "SELECT text, split, blocks, model, rendered, changed_ts, changed FROM session_prompts WHERE session_id = ?")
+    .query<{ text: string; split: number; own: number | null; blocks: string; model: string | null; rendered: number; changed_ts: number | null; changed: string | null }, [string]>(
+      "SELECT text, split, own, blocks, model, rendered, changed_ts, changed FROM session_prompts WHERE session_id = ?")
     .get(id);
   if (!r) return undefined;
-  return { text: r.text, split: r.split, blocks: JSON.parse(r.blocks), model: r.model, rendered: r.rendered, changed: r.changed_ts === null ? null : { ts: r.changed_ts, blocks: JSON.parse(r.changed ?? "[]") } };
+  return { text: r.text, split: r.split, ...(r.own !== null && { own: r.own }), blocks: JSON.parse(r.blocks), model: r.model, rendered: r.rendered, changed: r.changed_ts === null ? null : { ts: r.changed_ts, blocks: JSON.parse(r.changed ?? "[]") } };
 }
 
 export class PromptStore {
   constructor(private store: Store) {
     store.migrate(SCHEMA);
+    if (!store.columnExists("session_prompts", "own")) store.db.exec("ALTER TABLE session_prompts ADD COLUMN own INTEGER");
   }
 
   get(id: string): StoredPrompt | undefined {
@@ -112,13 +116,13 @@ export class PromptStore {
   }
 
   // `changed`: the blocks that differ from the row this one replaces (none for a first render).
-  put(id: string, p: { text: string; split: number; blocks: PromptBlock[]; model: string | null }, changed?: string[]) {
+  put(id: string, p: { text: string; split: number; own?: number; blocks: PromptBlock[]; model: string | null }, changed?: string[]) {
     const now = Date.now();
     this.store.db
-      .query(`INSERT INTO session_prompts (session_id, text, split, blocks, model, rendered, changed_ts, changed) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-              ON CONFLICT(session_id) DO UPDATE SET text = excluded.text, split = excluded.split, blocks = excluded.blocks, model = excluded.model, rendered = excluded.rendered,
+      .query(`INSERT INTO session_prompts (session_id, text, split, own, blocks, model, rendered, changed_ts, changed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ON CONFLICT(session_id) DO UPDATE SET text = excluded.text, split = excluded.split, own = excluded.own, blocks = excluded.blocks, model = excluded.model, rendered = excluded.rendered,
                 changed_ts = COALESCE(excluded.changed_ts, changed_ts), changed = COALESCE(excluded.changed, changed)`)
-      .run(id, p.text, p.split, JSON.stringify(p.blocks), p.model, now, changed?.length ? now : null, changed?.length ? JSON.stringify(changed) : null);
+      .run(id, p.text, p.split, p.own ?? null, JSON.stringify(p.blocks), p.model, now, changed?.length ? now : null, changed?.length ? JSON.stringify(changed) : null);
   }
 }
 

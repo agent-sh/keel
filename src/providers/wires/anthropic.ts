@@ -126,11 +126,18 @@ export function anthropicBody(req: ProviderRequest, ctx: WireCtx, systemPrefix?:
     ...deferred.map((t) => ({ name: t.name, description: t.description, input_schema: t.input_schema, defer_loading: true })),
   ];
   // Breakpoints (4 at most): the tools, the system text every session shares,
-  // the session's own system text, and the rolling one on the last user message.
+  // the text the sessions of one folder share (the place and its instruction
+  // files), and the rolling one on the last user message. The session's own
+  // text (its artifacts folder, its project) follows as a block without a
+  // breakpoint: it is cached with the messages, and it no longer makes the
+  // folder's block, the long one, differ from session to session.
   const cut = req.systemSplit ?? 0;
+  const from = cut > 0 && cut < req.system.length ? cut : 0;
+  const own = req.systemOwn !== undefined && req.systemOwn > from && req.systemOwn < req.system.length ? req.systemOwn : req.system.length;
   const system: any[] = [];
-  if (cut > 0 && cut < req.system.length) system.push({ type: "text", text: req.system.slice(0, cut), ...(cache && { cache_control: cache }) });
-  system.push({ type: "text", text: cut > 0 && cut < req.system.length ? req.system.slice(cut) : req.system, ...(cache && { cache_control: cache }) });
+  if (from) system.push({ type: "text", text: req.system.slice(0, from), ...(cache && { cache_control: cache }) });
+  system.push({ type: "text", text: req.system.slice(from, own), ...(cache && { cache_control: cache }) });
+  if (own < req.system.length) system.push({ type: "text", text: req.system.slice(own) });
   if (systemPrefix) system.unshift({ type: "text", text: systemPrefix });
   // Thinking whose prefix changed since it was written is left out (binding.ts).
   // null, not undefined: a request without a cache marks no message either (undefined takes the default mark).

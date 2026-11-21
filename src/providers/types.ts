@@ -28,6 +28,12 @@ export type ProviderRequest = {
   // session on this machine shares (identity, skills, MCP servers), so a new
   // session reads it from the provider's cache instead of writing it again.
   systemSplit?: number;
+  // Where the session's own part of `system` starts (its artifacts folder,
+  // its project). Before it, from the split, is what the sessions of one
+  // folder share (the place and its instruction files): a new session or
+  // agent in the folder reads that from the cache too. Absent for a prompt
+  // kept from before this was recorded: its blocks stay as they were sent.
+  systemOwn?: number;
   messages: Message[];
   tools: ToolSpec[];
   effort?: string;
