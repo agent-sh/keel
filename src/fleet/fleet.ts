@@ -342,7 +342,11 @@ export class Fleet {
 
   // ---- checks
 
-  async check(id: string): Promise<MachineRow> {
+  // `owner`: the owner asked for this check. A relay waiting out a backoff is
+  // then opened at once: they are looking, and a check that reached the
+  // machine should not leave it offline for the rest of the wait. (A stream
+  // cut again goes on backing off from where it was.)
+  async check(id: string, opts: { owner?: boolean } = {}): Promise<MachineRow> {
     const m = this.row(id)!;
     if (this.isSsh(m)) return this.checkSshMachine(m);
     this.set(id, { state: m.state === "unknown" ? "starting" : m.state });
@@ -356,7 +360,9 @@ export class Fleet {
       const q = this.queues.get(id);
       const busy = (q?.waiting.length ?? 0) > 0 || facts.load1 >= facts.cpus;
       const measured = { checked_ms: Date.now(), facts: JSON.stringify({ ...facts, measured_ms: Date.now() }) };
-      const held = this.heldRelay(id);
+      const waiting = this.heldRelay(id);
+      if (waiting && opts.owner) waiting.cut = undefined;
+      const held = opts.owner ? undefined : waiting;
       if (held) {
         // The machine answers, and its stream is still cut as it opens: the
         // loss stands, with its reason and the time of the next try.

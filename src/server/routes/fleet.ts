@@ -378,7 +378,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
           return json(await f.checkSsh(alias));
         }
         if (!f.row(id)) return bad("no such machine", 404);
-        await f.check(id);
+        await f.check(id, { owner: true });
         return json(machineView(id));
       },
     },

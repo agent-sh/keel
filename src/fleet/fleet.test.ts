@@ -189,10 +189,17 @@ test("the relay: a stream that is lost as soon as it opens keeps backing off", a
     expect(streams).toBe(2);
     expect(f.relayLive(m.id)).toBe(false);
     expect(f.view(f.row(m.id)!)).toMatchObject({ state: "offline", reason: expect.stringContaining("fell too far behind"), daemon: { state: "offline", retry_at_ms: retryAt, reason: expect.stringContaining("fell too far behind") } });
-    // The owner's own check does not cut the wait short either.
+    // A check nobody asked for (placing work, the snapshot's own) leaves the wait as it is.
     await f.check(m.id);
     expect(streams).toBe(2);
     expect(f.view(f.row(m.id)!).daemon).toMatchObject({ state: "offline", retry_at_ms: retryAt });
+    // The owner's Check reaches the machine and opens the stream at once. It is
+    // cut again, and the backoff goes on from where it was: 4 s, not 1 s.
+    await f.check(m.id, { owner: true });
+    for (let i = 0; i < 30 && streams < 3; i++) await Bun.sleep(10); // well before the backoff's own try, over a second away
+    expect(streams).toBe(3);
+    for (let i = 0; i < 200 && waits.size < 3; i++) await Bun.sleep(10);
+    expect([...waits.values()][2]).toBeGreaterThan(3500);
   } finally {
     f.stop();
     srv.stop(true);
