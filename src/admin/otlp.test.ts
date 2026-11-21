@@ -6,7 +6,7 @@ import type { Span } from "./trace.ts";
 const base = { session_id: "s1", end_ms: 1_700_000_001_500, error_id: null, replayable: false } as const;
 
 test("spans map to OTLP JSON with the GenAI names, ids as hex and times as nanosecond strings", () => {
-  const turn: Span = { ...base, span_id: "aaaaaaaaaaaaaaaa", trace_id: "0".repeat(16) + "a".repeat(16), parent_id: null, kind: "turn", name: "invoke_agent", start_ms: 1_700_000_000_000, status: "error", error: "HTTP 402: no credit", error_type: "quota", attrs: { model: "bedrock:m", reason: "error" } };
+  const turn: Span = { ...base, span_id: "aaaaaaaaaaaaaaaa", trace_id: "0".repeat(16) + "a".repeat(16), parent_id: null, kind: "turn", name: "invoke_agent", start_ms: 1_700_000_000_000, status: "error", error: "HTTP 402: no credit for CANARY-acct-7731 at /home/owner/work", error_type: "quota", attrs: { model: "bedrock:m", reason: "error" } };
   const req: Span = {
     ...base, span_id: "bbbbbbbbbbbbbbbb", trace_id: turn.trace_id, parent_id: turn.span_id, kind: "request", name: "chat m", start_ms: 1_700_000_000_250, status: "ok", error: null, error_type: null,
     attrs: { route: "bedrock:m", model: "m", attempt: 2, ttft_ms: 1500, shape: { purpose: "turn", effort: "high", max_tokens: 64000, messages: 3, tools: 9 }, wire: { url: "https://h.example/model/m", status: 200, request_id: "r-1" }, result: { response_model: "m", stop: "end_turn", usage: { input: 4, output: 7, cache_read: 100, cache_write: 20 } } },
@@ -16,7 +16,12 @@ test("spans map to OTLP JSON with the GenAI names, ids as hex and times as nanos
   const [t, r, x] = out.resourceSpans[0]!.scopeSpans[0]!.spans;
   const attr = (s: any, k: string) => s.attributes.find((a: any) => a.key === k)?.value;
   expect(t!.name).toBe("invoke_agent keel");
-  expect(t!.status).toEqual({ code: 2, message: "HTTP 402: no credit" });
+  // A failure leaves as its code and class. Its text stays on the local span.
+  expect(turn.error).toContain("CANARY-acct-7731");
+  expect(t!.status).toEqual({ code: 2 });
+  expect(JSON.stringify(out)).not.toContain("CANARY");
+  expect(JSON.stringify(out)).not.toContain("no credit");
+  expect([t!.traceId, t!.spanId]).toEqual([turn.trace_id, turn.span_id]);
   expect(t!.startTimeUnixNano).toBe("1700000000000000000");
   expect(attr(t, "error.type")).toEqual({ stringValue: "quota" });
   expect(r!.kind).toBe(3);

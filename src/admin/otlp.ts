@@ -3,7 +3,8 @@
 // (semantic-conventions-genai, main as of 2026-11): invoke_agent per turn,
 // chat per model request, execute_tool per tool call. No SDK: one POST of
 // resourceSpans per batch. Only shapes and numbers leave; never prompt text,
-// replies or tool input (the conventions make content opt-in).
+// replies, tool input or a failure's message (the conventions make content
+// opt-in): a failed span goes out as status code 2 with its error.type class.
 import type { KeySource } from "../providers/creds.ts";
 import type { Span } from "./trace.ts";
 
@@ -94,7 +95,8 @@ export function toOtlp(spans: Span[], resource: Record<string, unknown>) {
           startTimeUnixNano: nanos(s.start_ms),
           endTimeUnixNano: nanos(s.end_ms ?? s.start_ms),
           attributes: kvs(spanAttrs(s)),
-          status: s.status === "error" ? { code: 2, message: (s.error ?? "").slice(0, 500) } : s.status === "ok" ? { code: 1 } : {},
+          // The failure's text stays here: it can quote a provider's reply, a path or tool output.
+          status: s.status === "error" ? { code: 2 } : s.status === "ok" ? { code: 1 } : {},
         })),
       }],
     }],

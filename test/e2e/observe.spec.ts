@@ -89,8 +89,11 @@ test("a failed request is traced, bundled, replayed and handed to a fix", async 
     const chat = spans.find((s: any) => s.name === "chat stand-in" && s.spanId === err.span_id);
     expect(chat.status.code).toBe(2);
     expect(chat.attributes).toEqual(expect.arrayContaining([{ key: "gen_ai.operation.name", value: { stringValue: "chat" } }, { key: "error.type", value: { stringValue: "quota" } }, { key: "gen_ai.conversation.id", value: { stringValue: session.id } }]));
-    // Shapes and numbers only: no prompt text leaves.
+    // Shapes and numbers only: no prompt text leaves, and no failure text (it stays in the local span).
     expect(JSON.stringify(got)).not.toContain("script:billing");
+    expect(chat.status).toEqual({ code: 2 });
+    expect(JSON.stringify(got)).not.toContain("credit balance");
+    expect((await (await request.get(`/api/debug/spans/${err.span_id}`)).json()).span.error).toContain("credit balance is too low");
 
     // A subagent's first turn sits under the spawn call in the parent's trace.
     const { session: lead } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Subagent trace" } })).json();
