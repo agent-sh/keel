@@ -98,7 +98,7 @@ function WorktreesCard() {
   useEffect(load, []);
   const live = list.filter((w) => w.state !== "removed");
   return (
-    <div className="flex flex-col gap-2">
+    <div className="k-after-card flex flex-col gap-2">
       <h3 className="px-1 text-ui font-medium text-muted">Worktrees</h3>
       <Card>
         <SettingRow label="Keep" hint="Past this many, the worktrees of archived or deleted sessions are removed, each with its working state saved so it can be restored. Running and open sessions keep theirs.">
@@ -141,7 +141,7 @@ function TrustCard() {
   useEffect(() => { api<{ new_files: "auto" | "ask" }>("/api/trust/settings").then((r) => setV(r.new_files)).catch(reportError); }, []);
   const put = (new_files: "auto" | "ask") => api<{ new_files: "auto" | "ask" }>("/api/trust/settings", { method: "PUT", body: JSON.stringify({ new_files }) }).then((r) => setV(r.new_files)).catch(reportError);
   return (
-    <div className="flex flex-col gap-2">
+    <div className="k-after-card flex flex-col gap-2">
       <h3 className="px-1 text-ui font-medium text-muted">Repository files</h3>
       <Card>
         <SettingRow label="A repository's new instruction files and skills" hint="A changed one always waits for you, and a repository's hook file always does. The Trust panel of a session shows what is held.">
@@ -244,7 +244,7 @@ function RemoteAccessCard() {
   if (!link) return null;
   const full = link.hosts[0] ? `https://${link.hosts[0]}${link.path}` : link.path;
   return (
-    <div className="flex flex-col gap-2">
+    <div className="k-after-card flex flex-col gap-2">
       <h3 className="px-1 text-ui font-medium text-muted">Remote access</h3>
       <Card>
         <div className="py-4" data-testid="remote-access">
