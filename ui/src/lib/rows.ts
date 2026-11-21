@@ -16,6 +16,7 @@ export type Row = {
   handled?: boolean; // refusal: the fallback model took the request
   results?: (ToolResultBlock | undefined)[]; // assistant: the result of each block that is a tool call
   reply?: string[]; // end: the texts of the turn's replies, for Copy
+  partial?: boolean; // end: the turn began before the events shown (its reply above is not all here)
   prompt?: StoredEvent; // end: the prompt that started the turn
   notes?: StoredEvent[]; // end: harness notes of the turn, shown on its footer
   failures?: StoredEvent[]; // end: what failed in the turn, shown above its footer
@@ -58,7 +59,7 @@ const EMPTY: StoredEvent[] = [];
 const sameList = <T>(a: T[] | undefined, b: T[] | undefined) => a === b || (!!a && !!b && a.length === b.length && a.every((x, i) => x === b[i]));
 const sameRow = (a: Row, b: Row) =>
   a.kind === b.kind && a.e === b.e && a.undoable === b.undoable && a.handled === b.handled && a.prompt === b.prompt &&
-  a.times === b.times && a.folded === b.folded && a.after === b.after &&
+  a.times === b.times && a.folded === b.folded && a.after === b.after && a.partial === b.partial &&
   sameList(a.vs, b.vs) && sameList(a.results, b.results) && sameList(a.reply, b.reply) && sameList(a.notes, b.notes) && sameList(a.failures, b.failures);
 
 // `input`: what an owner-side message is shown as when it is not a prompt
@@ -171,7 +172,9 @@ export function buildRows(prev: Built | undefined, events: StoredEvent[], siblin
       if (before) patch(before.id, (r) => (r.folded ? null : { folded: true }));
       const notes = before ? [...before.notes, ...b.pending] : b.pending;
       const times = (before?.times ?? 0) + 1;
-      row("end", { reply: b.reply.slice(), prompt: b.prompt, notes, ...(times > 1 ? { times } : {}) });
+      // No prompt since the first event shown, and events before it: the turn began in a part not held.
+      const partial = !b.prompt && events[0]!.parent !== null;
+      row("end", { reply: b.reply.slice(), prompt: b.prompt, notes, ...(times > 1 ? { times } : {}), ...(partial ? { partial } : {}) });
       b.pending = [];
       b.restart = e.data.reason === "restart" ? { id: e.id, times, notes } : null;
       if (e.data.reason === "error") b.failed = e.id;
@@ -238,6 +241,13 @@ export function nextLineage(prev: LineageOf | undefined, all: StoredEvent[], hea
 // A list of a whole session a view keeps for itself (lib/whole.ts), with the
 // events the page holds after its last one. What the page lets go of later
 // stays in the list.
+// Whether the page may have let go of events the list never saw: everything
+// it holds is newer than the list's last event, with seqs between them (a
+// reconnect that replayed more than the page keeps, trimmed before the view
+// looked). The view then reads what follows its last event from the daemon.
+export const missedSince = (list: StoredEvent[], held: StoredEvent[] | undefined): boolean =>
+  !!held?.length && !!list.length && held[0]!.seq > list.at(-1)!.seq + 1;
+
 export function grown(list: StoredEvent[], held: StoredEvent[] | undefined): StoredEvent[] {
   const last = list.at(-1)?.seq ?? 0;
   if (!held?.length || held.at(-1)!.seq <= last) return list;

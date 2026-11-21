@@ -43,6 +43,15 @@ export const treeRoutes: RouteModule = ({ store }) => {
         const shown = new Set(lineage(all, s.head).map((e) => e.id));
         const ls = labels(s.id);
         const lmap = new Map(ls.map((l) => [l.event_id, l.label]));
+        // Where the branch that grew from each event ends (leafOf, for all of
+        // them in one pass from the newest back: an event's own children are
+        // stored after it, so its answer is whole when the pass reaches it).
+        const leaf = new Map<string, StoredEvent>();
+        for (let i = all.length - 1; i >= 0; i--) {
+          const e = all[i]!;
+          const end = leaf.get(e.id) ?? e;
+          if (e.parent && (leaf.get(e.parent)?.seq ?? -1) < end.seq) leaf.set(e.parent, end);
+        }
         const nodes = all.filter(isNode).map((e) => {
           // The node above: the nearest prompt or summary among its ancestors.
           let p = e.parent ? byId.get(e.parent) : undefined;
@@ -50,7 +59,7 @@ export const treeRoutes: RouteModule = ({ store }) => {
           return {
             event_id: e.id, parent_event_id: p?.id ?? null, kind: e.kind === "user" ? "prompt" : "summary",
             preview: previewOf(e), ts_ms: e.ts, seq: e.seq, label: lmap.get(e.id) ?? null,
-            active: shown.has(e.id), head_event_id: leafOf(all, e.id),
+            active: shown.has(e.id), head_event_id: (leaf.get(e.id) ?? e).id,
           };
         });
         // A label on a reply or another event is listed with what it says.

@@ -2,7 +2,7 @@
 // holds after its last one, and keeps what the page later lets go of.
 import { expect, test } from "bun:test";
 import type { StoredEvent } from "../../../src/core/types.ts";
-import { grown } from "./rows.ts";
+import { grown, missedSince } from "./rows.ts";
 
 const ev = (seq: number): StoredEvent => ({ id: `e${seq}`, session_id: "s", seq, parent: seq > 1 ? `e${seq - 1}` : null, kind: "note", data: {}, ts: seq });
 const run = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => ev(from + i));
@@ -18,4 +18,13 @@ test("events held after the list's last one are added; a trim of the held list t
   list = grown(list, run(1100, 1500));
   expect(list.map((e) => e.seq)).toEqual(run(1, 1500).map((e) => e.seq));
   expect(grown(list, undefined)).toBe(list);
+});
+
+test("a held list that starts after a gap says events may have been missed", () => {
+  const list = run(1, 1000);
+  expect(missedSince(list, run(801, 1000))).toBe(false);
+  expect(missedSince(list, run(1001, 1200))).toBe(false); // the next event on: nothing between
+  expect(missedSince(list, run(1400, 1600))).toBe(true); // 1001 to 1399 came and went
+  expect(missedSince(list, undefined)).toBe(false);
+  expect(missedSince([], run(1, 5))).toBe(false);
 });

@@ -170,7 +170,7 @@ export function TerminalPanel({ session }: { session: Session }) {
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [cmd, setCmd] = useState("");
   const [now, setNow] = useState(Date.now());
-  const events = useStore((s) => s.events[id]?.length ?? 0);
+  const events = useStore((s) => s.events[id]?.at(-1)?.seq ?? 0); // the newest event: the list's length can stay as it was through a trim
   const working = useStore((s) => s.sessions[id]?.phase === "working");
   const [tick, setTick] = useState(0);
   useEffect(() => {

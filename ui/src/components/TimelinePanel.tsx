@@ -96,7 +96,7 @@ function Mark({ row }: { row: TimelineRow }) {
 
 // The card a "needs you" line is about: in this session's conversation when it
 // is shown there, else in the agent's own session.
-function toCard(l: TimelineRow) {
+function toCard(l: TimelineRow, session: string) {
   const find = () =>
     (l.refs?.approval_id ? document.querySelector<HTMLElement>(`[data-testid="approval"][data-approval-id="${CSS.escape(l.refs.approval_id)}"]`) : null)
     ?? (l.refs?.call_id ? document.querySelector<HTMLElement>(`[data-call="${CSS.escape(l.refs.call_id)}"]`) : null)
@@ -113,8 +113,10 @@ function toCard(l: TimelineRow) {
   requestAnimationFrame(() => {
     if (show()) return;
     if (l.refs?.child_session) return openSession(l.refs.child_session);
-    // Scrolled away: the conversation's end holds the open cards.
-    dispatchEvent(new Event("keel:end"));
+    // Scrolled away, or reading an earlier part: the conversation's end holds
+    // the open cards. The command names its session (the pane's transcript
+    // answers only to its own).
+    dispatchEvent(new CustomEvent("keel:end", { detail: session }));
     requestAnimationFrame(() => void show());
   });
 }
@@ -175,7 +177,7 @@ function Panel({ session }: { session: Session }) {
   // the queue, an activity row, a failure, an agent or a wait of its own)
   // reads again what can have changed, at most four times a second, and never
   // from a hidden tab: one read when it shows again covers what it missed.
-  const events = useStore((s) => s.events[id]?.length ?? 0);
+  const events = useStore((s) => s.events[id]?.at(-1)?.seq ?? 0); // the newest event (the list's length can stay as it was through a trim)
   const status = useStore((s) => s.status[id]);
   const queued = useStore((s) => s.queues[id]);
   const failure = useStore((s) => { const e = s.errors.find((x) => x.session_id === id); return e ? `${e.id} ${e.ts} ${e.count ?? 1} ${e.resolved_ts ?? 0}` : ""; });
@@ -315,7 +317,7 @@ function Panel({ session }: { session: Session }) {
   const bounded = !!list?.next && !!list.scanned;
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="timeline-panel">
-      <Now now={now} onTurn={(t) => { setApart(null); setAsked(t); }} />
+      <Now now={now} session={id} onTurn={(t) => { setApart(null); setAsked(t); }} />
       <div className="flex shrink-0 items-center gap-3 border-b border-line px-3 py-2">
         <Seg label="Show" value={only} onChange={setOnly} options={FILTERS.map(([v, label]) => ({ value: v, label, testid: `timeline-only-${v || "all"}` }))} />
       </div>
@@ -397,7 +399,7 @@ function Since({ ts }: { ts: number }) {
 // What the session is doing and waiting on, pinned above the list. A line
 // leads to what it is about: the card that waits on the owner, the running
 // turn's receipt, the agent's session.
-function Now({ now, onTurn }: { now: TimelineNow | null; onTurn: (turn: string) => void }) {
+function Now({ now, session, onTurn }: { now: TimelineNow | null; session: string; onTurn: (turn: string) => void }) {
   const live = !!now?.lines.some((l) => l.open || l.until);
   const at = useTick(live);
   if (!now) return <div className="h-[4.25rem] shrink-0 border-b border-line bg-raised" />;
@@ -413,7 +415,7 @@ function Now({ now, onTurn }: { now: TimelineNow | null; onTurn: (turn: string) 
         {now.lines.map((l) => {
           const child = l.refs?.child_session;
           const card = l.kind === "approval" || l.kind === "question";
-          const act = card ? () => toCard(l) : l.turn_event ? () => onTurn(l.turn_event!) : child ? () => openSession(child) : undefined;
+          const act = card ? () => toCard(l, session) : l.turn_event ? () => onTurn(l.turn_event!) : child ? () => openSession(child) : undefined;
           const hint = card ? (child ? "Go to the card, or to the agent's session" : "Go to the card") : l.turn_event ? "Show this turn's receipt" : "Open the agent's session";
           const timer = l.until ? (l.until > at ? `due in ${dur(l.until - at)}` : "due now") : l.open ? dur(Math.max(0, at - l.ts)) : l.kind === "idle" && l.ts < at - 1000 ? `since ${clock(l.ts)}` : "";
           const body = (
@@ -528,7 +530,7 @@ function TurnReceipt({ turn, sessionId, facts, onRead }: { turn: string; session
   // A running turn's receipt grows: it is read again as the turn's events
   // arrive, at most once in RECEIPT_MS (a busy turn stores many a second and
   // each read walks the whole turn), and once more when the turn has ended.
-  const events = useStore((s) => s.events[sessionId]?.length ?? 0);
+  const events = useStore((s) => s.events[sessionId]?.at(-1)?.seq ?? 0);
   const running = !!r && !r.end;
   const due = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {

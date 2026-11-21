@@ -69,6 +69,49 @@ export function firstAt(line: readonly StoredEvent[], seq: number): number {
   return lo;
 }
 
+// How many branches a session has: its events that nothing was stored under.
+// Events are in seq order and nearly every one continues the one before it,
+// so only the parents reached from further on are kept in a set.
+export function leafCount(all: readonly StoredEvent[]): number {
+  let adjacent = 0;
+  const far = new Set<string>();
+  for (let i = 0; i < all.length; i++) {
+    const p = all[i]!.parent;
+    if (p === null) continue;
+    if (i > 0 && all[i - 1]!.id === p) adjacent++;
+    else far.add(p);
+  }
+  // A parent reached both ways is one parent.
+  let both = 0;
+  if (far.size) for (let i = 0; i + 1 < all.length; i++) if (all[i + 1]!.parent === all[i]!.id && far.has(all[i]!.id)) both++;
+  return all.length - (adjacent + far.size - both);
+}
+
+// The texts of a turn's replies, oldest first: the text blocks of the replies
+// stored before `end` (a place on the branch) back to the turn's prompt. A turn
+// starts at a prompt; a restart or harness note inside it does not start one.
+// `last`: the newest reply that has any text, going back over turns without
+// (what "Copy the last reply" gives).
+export function replyBefore(line: readonly StoredEvent[], end: number, last = false): string[] {
+  const text: string[] = [];
+  for (let i = Math.min(end, line.length) - 1; i >= 0; i--) {
+    const e = line[i]!;
+    if (e.kind === "user" && e.data.origin !== "restart" && e.data.origin !== "harness") { if (!last || text.length) break; continue; }
+    if (e.kind === "assistant" && e.data.stop !== "refusal") text.unshift(...e.data.blocks.filter((b: any) => b.type === "text" && b.text.trim()).map((b: any) => b.text as string));
+  }
+  return text;
+}
+
+// Whether a part may start at `k`: at the branch's start, or after a turn's
+// end and the failures stored right after it (they are shown with that end).
+function turnEdge(line: readonly StoredEvent[], k: number): boolean {
+  if (k === 0) return true;
+  if (line[k]?.kind === "error") return false;
+  let j = k - 1;
+  while (j > 0 && line[j]!.kind === "error") j--;
+  return line[j]!.kind === "turn_end";
+}
+
 // The page of a branch already walked (the daemon keeps the session's own):
 // its edges are found by halving on seq and nothing outside it is read.
 // `at`: the place of the event a page is asked around. `versions`: the
@@ -88,9 +131,11 @@ export function pageOfLine(line: readonly StoredEvent[], ask: { limit: number; b
   }
   if (ask.after === undefined) {
     for (let k = a; k >= Math.max(0, a - limit); k--) {
-      if (k === 0 || line[k - 1]!.kind === "turn_end") { a = k; break; }
+      if (turnEdge(line, k)) { a = k; break; }
     }
   }
+  // What failed in a turn is stored right after its end and shown with it: a part does not end between them.
+  while (b > a && b < line.length && line[b]!.kind === "error") b++;
   const part = line.slice(a, b);
   const out = new Map(part.map((e) => [e.id, e]));
   for (const e of part) if (e.kind === "user" && !e.data.origin) for (const v of versions(e.parent)) out.set(v.id, v);

@@ -50,7 +50,8 @@ function ActionButton({ label, onClick, children, testid }: { label: string; onC
 // with a selector, so a new event renders the rows it changes and no other.
 // The session is replaced only when something other than its head, last
 // activity and revision changed (those move with every event; no row shows them).
-type Tail = { session: Session; lastEnd?: string; last?: string; reading: boolean }; // `last`: the newest event shown
+// `last`: the newest event shown. `other`: the head of the branch shown when it is not the session's.
+type Tail = { session: Session; lastEnd?: string; last?: string; reading: boolean; other?: string };
 const MOVING = new Set(["head", "updated", "rev"]);
 const sameSession = (a: Session, b: Session) => {
   if (a === b) return true;
@@ -66,9 +67,9 @@ function tailStore() {
     get: () => st!,
     // Called while the transcript renders: rows rendered in the same pass read it at once.
     // `reading`: the transcript shows a run away from the end of the session's branch.
-    put(session: Session, lastEnd: string | undefined, last: string | undefined, reading: boolean) {
-      if (st && st.lastEnd === lastEnd && st.last === last && st.reading === reading && sameSession(st.session, session)) return;
-      st = { session, lastEnd, last, reading };
+    put(session: Session, lastEnd: string | undefined, last: string | undefined, reading: boolean, other?: string) {
+      if (st && st.lastEnd === lastEnd && st.last === last && st.reading === reading && st.other === other && sameSession(st.session, session)) return;
+      st = { session, lastEnd, last, reading, other };
       dirty = true;
     },
     // After the commit: rows that did not render ask their selector again.
@@ -461,16 +462,19 @@ const REASONS: Record<string, string> = { interrupted: "Stopped", max_tokens: "C
 // way on (try again, the fix), and a turn with no reply has nothing to copy,
 // mark or rate: the footer keeps only what applies.
 // `times`: how many restarts in a row this footer stands for.
-function TurnFooter({ e, reply, prompt, sid, notes, boxed = false, times = 1 }: { e: StoredEvent; reply: string[]; prompt?: StoredEvent; sid: string; notes: StoredEvent[]; boxed?: boolean; times?: number }) {
+// `partial`: the turn began before the events the page holds (a turn longer
+// than a part): Copy reads the whole reply from the daemon.
+function TurnFooter({ e, reply, prompt, sid, notes, boxed = false, times = 1, partial = false }: { e: StoredEvent; reply: string[]; prompt?: StoredEvent; sid: string; notes: StoredEvent[]; boxed?: boolean; times?: number; partial?: boolean }) {
   const last = useTail((t) => t.lastEnd === e.id);
   // The turn's state shows on the last footer (its actions) and on a restart chip.
   const working = useTail((t) => (last || notes.some((n) => n.kind === "user")) && isWorking(t));
+  const tailOf = useContext(TailContext);
   const u = e.data.usage;
   const input = u ? u.input + u.cache_read + u.cache_write : 0;
   const cached = u && input ? Math.round((100 * u.cache_read) / input) : 0;
   return (
     <div className="k-turn-foot group/foot -mt-1 flex h-7 items-center gap-0.5" data-quiet={!last || undefined}>
-      {reply.length > 0 && <CopyButton text={() => reply.join("\n\n")} label="Copy the reply" testid="copy-reply" className="size-7" />}
+      {(reply.length > 0 || partial) && <CopyButton text={() => (partial ? actions.reply(sid, { before: e.seq, head: tailOf.get().other }) : reply.join("\n\n"))} label="Copy the reply" testid="copy-reply" className="size-7" />}
       {prompt && last && !working && (
         <ActionButton label="Answer again (a new version; this one stays a branch)" testid="retry" onClick={() => actions.edit(sid, prompt.id, prompt.data.text).catch(reportError)}>
           <RotateCcw className="size-3.5" />
@@ -598,7 +602,7 @@ const TranscriptRow = memo(function TranscriptRow({ row, sid }: { row: Row; sid:
       return (
         <>
           {row.failures?.map((f) => <Failure key={f.id} e={f} end={e.id} />)}
-          <TurnFooter e={e} reply={row.reply!} prompt={row.prompt} sid={sid} notes={row.notes!} boxed={!!row.failures?.length} times={row.times} />
+          <TurnFooter e={e} reply={row.reply!} prompt={row.prompt} sid={sid} notes={row.notes!} boxed={!!row.failures?.length} times={row.times} partial={row.partial} />
         </>
       );
   }
@@ -982,9 +986,14 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       const el = document.getElementById(`e-${at.id}`);
       const sc = scroller.current;
       if (!el || !sc) return;
-      stick.current = false;
       const pinned = content.current?.querySelector<HTMLElement>("[data-pinned]")?.offsetHeight ?? 0;
       sc.scrollTop += el.getBoundingClientRect().top - sc.getBoundingClientRect().top - parseFloat(getComputedStyle(el).scrollMarginTop) - pinned;
+      // Where the view ended says whether it follows: at the end (the newest
+      // prompt of a short tail) it goes on following, anywhere else the Latest
+      // pill shows. A move that changed nothing sends no scroll event to say so.
+      stick.current = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 80 && !short.current;
+      lastTop.current = sc.scrollTop;
+      setAway(!stick.current);
       remember();
       el.tabIndex = -1;
       el.focus({ preventScroll: true });
@@ -1000,8 +1009,13 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   const asking = useStore((s) => !!s.questionCalls[sessionId]?.length);
   if (!events || !built) return <div className="flex-1" />;
   const lastStart = events.findLast((e) => e.kind === "turn_start");
-  tail.setImages(events.findLast((e) => e.kind === "note" && e.data.kind === "images")?.id);
-  tail.put(session, events.findLast((e) => e.kind === "turn_end")?.id, events.at(-1)?.id, !!reading);
+  // A run that stops short of its branch's end has no last turn: its last
+  // footer is a turn in the middle of the session, and what acts on the
+  // session where it stands (Answer again, Continue, a failure's Try again,
+  // sending the images again) is not offered there.
+  const short_ = !!reading?.end;
+  tail.setImages(short_ ? undefined : events.findLast((e) => e.kind === "note" && e.data.kind === "images")?.id);
+  tail.put(session, short_ ? undefined : events.findLast((e) => e.kind === "turn_end")?.id, short_ ? undefined : events.at(-1)?.id, !!reading, reading?.other ? reading.head ?? undefined : undefined);
 
   return (
     // A strip of the conversation stays above a tall stack of cards and a long
@@ -1092,9 +1106,14 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           type="button"
           onClick={() => toEnd(true)}
           data-testid="jump-latest"
+          data-live={session.phase === "working" || undefined}
+          title="Go to the latest messages"
           className="absolute bottom-3 left-1/2 flex h-8 -translate-x-1/2 items-center gap-1.5 rounded-full border border-line bg-raised px-3 text-caption font-medium text-muted shadow-2 animate-pop hover:text-fg"
         >
-          <ArrowDown className="size-3.5" /> Latest
+          {/* A reply being written below the view (a prompt sent from elsewhere moves no reader): the way there says so. */}
+          {session.phase === "working"
+            ? <><span className="size-1.5 rounded-full bg-brass animate-pulse-dot" aria-hidden="true" /> A reply is being written</>
+            : <><ArrowDown className="size-3.5" /> Latest</>}
         </button>
       )}
     </div>

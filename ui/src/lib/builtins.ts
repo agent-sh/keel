@@ -36,7 +36,7 @@ const newIn = (ws?: string) => {
 };
 // The last turn's reply on the branch on screen (a previewed one included),
 // all of its text around its tool calls: what its footer's Copy gives.
-const lastReply = (id: string) => {
+const lastReply = (id: string): string | Promise<string> => {
   const all = getState().events[id] ?? [];
   const s = getState().sessions[id];
   if (!s) return "";
@@ -47,12 +47,15 @@ const lastReply = (id: string) => {
   for (let i = line.length - 1; i >= 0; i--) {
     const e = line[i]!;
     // A turn starts at a prompt (a restart or harness note inside it does not), as the footer counts it.
-    if (e.kind === "user" && e.data.origin !== "restart" && e.data.origin !== "harness") { if (text.length) break; continue; }
+    if (e.kind === "user" && e.data.origin !== "restart" && e.data.origin !== "harness") { if (text.length) return text.join("\n\n"); continue; }
     if (e.kind === "assistant" && e.data.stop !== "refusal") {
       const t = e.data.blocks.filter((b: any) => b.type === "text" && b.text.trim()).map((b: any) => b.text);
       text.unshift(...t);
     }
   }
+  // No prompt before the reply in what the page holds: when the branch goes on
+  // above it (a turn longer than a part), the daemon has the whole reply.
+  if (line.length && line[0]!.parent !== null) return actions.reply(id, { last: true, head: head === s.head ? undefined : head ?? undefined });
   return text.join("\n\n");
 };
 
@@ -106,7 +109,7 @@ registerCommand(
   { id: "text-smaller", label: "Smaller text", group: "View", keys: "mod+-", inInput: true, words: "zoom font size letters", run: () => stepScale(-1) },
   { id: "text-reset", label: "Default text size", group: "View", keys: "mod+0", inInput: true, words: "zoom font size reset letters", run: () => setScale(1) },
   { id: "model-menu", label: "Choose a model", group: "Session", keys: "alt+m", inInput: true, words: "switch model", run: () => setUI({ modelMenu: getUI().modelMenu + 1 }) },
-  { id: "copy-reply", label: "Copy the last reply", group: "Session", keys: "mod+shift+c", inInput: true, when: () => !!current(), run: () => void copyOrSay(lastReply(current()!.id)) },
+  { id: "copy-reply", label: "Copy the last reply", group: "Session", keys: "mod+shift+c", inInput: true, when: () => !!current(), run: () => void copyOrSay(() => lastReply(current()!.id)) },
   // A panel lying over the conversation takes Escape first: it closes, and the
   // turn working behind it is not stopped by the same press.
   { id: "panel-leave", label: "Close the panel over the conversation", group: "View", keys: "escape", when: () => !!document.querySelector('.k-side[data-mode="sheet"]'), run: () => savePref("panel", null) },

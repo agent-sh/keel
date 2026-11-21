@@ -135,3 +135,22 @@ test("a turn's failures stand with its footer, and restarts in a row are one foo
   // The folded footers' notes (the restart marks) are on the one that stands for them.
   expect(rows.get(r3.id)!.notes!.length).toBe(2);
 });
+
+test("a footer whose turn began before the events shown says its reply is not all here", () => {
+  const from = all.length;
+  ev("user", { text: "a long turn" });
+  ev("turn_start", {});
+  for (let i = 0; i < 6; i++) ev("assistant", { blocks: [{ type: "text", text: `step ${i}` }] });
+  const end = ev("turn_end", { reason: "end_turn", ms: 1 });
+  const next = turn(99);
+  const line = lineage(all, all.at(-1)!.id);
+  // The part held starts inside the long turn.
+  const part = line.slice(line.findIndex((e) => e.id === all[from + 5]!.id));
+  const rows = new Map(buildRows(undefined, part, nextSiblings(undefined, part).map, false, input).blocks.flat().map((r) => [r.id, r]));
+  expect(rows.get(end.id)).toMatchObject({ partial: true, reply: ["step 3", "step 4", "step 5"] });
+  expect(rows.get(end.id)!.prompt).toBeUndefined();
+  // The next turn's prompt is held: its footer is whole. So is the long turn's with its prompt in the run.
+  expect(rows.get(all.at(-1)!.id)!.partial).toBeUndefined();
+  expect(rows.get(all.at(-1)!.id)!.prompt).toBe(next);
+  expect(buildRows(undefined, line, nextSiblings(undefined, line).map, false, input).blocks.flat().find((r) => r.id === end.id)!.partial).toBeUndefined();
+});

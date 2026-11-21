@@ -115,7 +115,8 @@ export function BranchTree({ session }: { session: Session }) {
   const working = session.phase === "working";
   // The row the Tab key lands on: the last one visited, else the newest prompt of the branch shown.
   const nodes = data.nodes;
-  const stop = nodes.some((n) => n.event_id === visited) ? visited : (nodes.find((n) => n.active && !nodes.some((c) => c.active && c.parent_event_id === n.event_id)) ?? nodes[0])?.event_id;
+  const shownAbove = new Set(nodes.filter((n) => n.active).map((n) => n.parent_event_id));
+  const stop = nodes.some((n) => n.event_id === visited) ? visited : (nodes.find((n) => n.active && !shownAbove.has(n.event_id)) ?? nodes[0])?.event_id;
   // Keys on a row (a label box keeps its own): Up and Down through every row,
   // Left to the split a row hangs under, Right into the rows under it.
   const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -140,17 +141,18 @@ export function BranchTree({ session }: { session: Session }) {
   const branches = [...kids.values()].filter((l) => l.length > 1).length;
 
   // A chain stays flat; where it splits, each way is indented under the split.
-  const chain = (list: TreeNode[], depth: number): ReactNode =>
-    list.map((n) => {
-      const below = kids.get(n.event_id) ?? [];
-      return (
-        <Fragment key={n.event_id}>
-          <Row n={n} sid={session.id} depth={depth} fork={below.length > 1} working={working} stop={n.event_id === stop} onStop={setVisited} />
-          {below.length === 1 ? chain(below, depth) : below.length > 1 ? below.map((b) => <Fragment key={b.event_id}>{chain([b], depth + 1)}</Fragment>) : null}
-        </Fragment>
-      );
-    });
-  const extra = data.labels.filter((l) => !data.nodes.some((n) => n.event_id === l.event_id));
+  // The rows in order, walked with a list of what is still to show: a session
+  // of thousands of prompts is one chain, and a call per prompt overflowed.
+  const rows: { n: TreeNode; depth: number; fork: boolean }[] = [];
+  const todo = (kids.get(null) ?? []).map((n) => ({ n, depth: 0 })).reverse();
+  while (todo.length) {
+    const { n, depth } = todo.pop()!;
+    const below = kids.get(n.event_id) ?? [];
+    rows.push({ n, depth, fork: below.length > 1 });
+    for (let i = below.length - 1; i >= 0; i--) todo.push({ n: below[i]!, depth: below.length > 1 ? depth + 1 : depth });
+  }
+  const isNode = new Set(nodes.map((n) => n.event_id));
+  const extra = data.labels.filter((l) => !isNode.has(l.event_id));
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="branch-tree">
@@ -187,7 +189,7 @@ export function BranchTree({ session }: { session: Session }) {
           <div className="mb-3 flex items-center gap-2 px-3"><Bookmark className="size-3.5 text-brass" /><LabelInput sid={session.id} eventId={editing} value="" /></div>
         )}
         {data.nodes.length === 0 ? <p className="k-empty px-3 py-4">No prompts yet.</p> : (
-          <div role="tree" aria-label="Branches" onKeyDown={onKey}>{chain(kids.get(null) ?? [], 0)}</div>
+          <div role="tree" aria-label="Branches" onKeyDown={onKey}>{rows.map(({ n, depth, fork }) => <Row key={n.event_id} n={n} sid={session.id} depth={depth} fork={fork} working={working} stop={n.event_id === stop} onStop={setVisited} />)}</div>
         )}
       </div>
     </div>

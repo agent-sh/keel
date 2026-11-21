@@ -10,7 +10,7 @@ import { reportError } from "../lib/store.ts";
 import { tipNow } from "../lib/tips.ts";
 import { cn } from "../lib/utils.ts";
 
-export function CopyButton({ text, label = "Copy", testid = "copy", className }: { text: string | (() => string); label?: string; testid?: string; className?: string }) {
+export function CopyButton({ text, label = "Copy", testid = "copy", className }: { text: string | (() => string | Promise<string>); label?: string; testid?: string; className?: string }) {
   const [state, setState] = useState<"idle" | "done" | "failed">("idle");
   const timer = useRef(0);
   useEffect(() => () => clearTimeout(timer.current), []);
@@ -19,7 +19,7 @@ export function CopyButton({ text, label = "Copy", testid = "copy", className }:
     clearTimeout(timer.current);
     timer.current = window.setTimeout(() => setState("idle"), ms);
   };
-  const copy = (button: Element) => copyText(typeof text === "function" ? text() : text).then(
+  const copy = (button: Element) => Promise.resolve(typeof text === "function" ? text() : text).then(copyText).then(
     () => { show("done", 1400); announce("Copied"); },
     (err) => {
       show("failed", 2600);

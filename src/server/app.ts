@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
-import { firstAt, lineage, pageOf, pageOfLine } from "../core/tree.ts";
+import { firstAt, leafCount, lineage, pageOf, pageOfLine, replyBefore } from "../core/tree.ts";
 import { shownAsPrompt } from "../core/owner.ts";
 import type { StoredEvent } from "../core/types.ts";
 import type { Session } from "../core/types.ts";
@@ -97,6 +97,16 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
   live.state = (id) => ({ queue: engine.queued(id), held: engine.isHeld(id), status: engine.statusOf(id) });
 
   const session = (id: string) => store.session(id);
+  // The session's own branch as the store keeps it, when `head` names it or
+  // an event on it (a reader in the middle of the branch names the last event
+  // it holds): the routes below then walk nothing. Null: another branch.
+  const keptLine = (s: Session, head?: string | null): readonly StoredEvent[] | null => {
+    if (!head || head === s.head) return store.lineage(s.id);
+    const e = store.event(head);
+    if (!e || e.session_id !== s.id) return null;
+    const line = store.lineage(s.id);
+    return line[firstAt(line, e.seq)]?.id === e.id ? line : null;
+  };
 
   const wrap = (h: (req: Request & { params: any }, srv: Bun.Server<unknown>) => Promise<Response> | Response) =>
     async (req: any, srv: any) => {
@@ -314,7 +324,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
             const line = store.lineage(s.id);
             const at = firstAt(line, e.seq);
             if (line[at]?.id === e.id) return own(at);
-          } else if (!head || head === s.head) return own();
+          } else if (keptLine(s, head)) return own();
           const page = pageOf(store.events(s.id), s.head, { ...ask, head, around });
           return page ? json(page) : bad("no such event in this session", 404);
         }),
@@ -329,7 +339,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           if (!s) return bad("no such session", 404);
           const q = new URL(req.url).searchParams;
           const head = q.get("head") || s.head;
-          const line = head === s.head ? store.lineage(s.id) : lineage(store.events(s.id), head);
+          const line = keptLine(s, head) ?? lineage(store.events(s.id), head);
           let seqs = promptSeqs.get(line);
           if (!seqs) promptSeqs.set(line, (seqs = line.filter(shownAsPrompt).map((e) => e.seq)));
           const below = (seq: number) => { let lo = 0, hi = seqs.length; while (lo < hi) { const mid = (lo + hi) >>> 1; if (seqs[mid]! >= seq) hi = mid; else lo = mid + 1; } return lo; };
@@ -363,6 +373,21 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
         }),
       },
 
+      // The whole reply of a turn, for a reader that holds only the end of it
+      // (a turn longer than a part): the texts stored before `before` (a seq)
+      // back to the turn's prompt. `last`: the newest reply with any text.
+      // `head`: a branch other than the session's.
+      "/api/sessions/:id/reply": {
+        GET: wrap((req) => {
+          const s = session(req.params.id);
+          if (!s) return bad("no such session", 404);
+          const q = new URL(req.url).searchParams;
+          const head = q.get("head");
+          const line = keptLine(s, head) ?? lineage(store.events(s.id), head);
+          return json({ texts: replyBefore(line, q.has("before") ? firstAt(line, Number(q.get("before"))) : line.length, q.has("last")) });
+        }),
+      },
+
       // What an export leaves behind and what it would carry, counted here so
       // the dialog needs no event: the session's branches, and for the branch
       // shown and for every branch the sizes of the files its prompts name
@@ -373,14 +398,12 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           const s = session(req.params.id);
           if (!s) return bad("no such session", 404);
           const all = store.events(s.id);
-          const parents = new Set<string>();
-          for (const e of all) if (e.parent) parents.add(e.parent);
           const carried = (list: readonly StoredEvent[]) => {
             const sizes = new Map<string, number>();
             for (const e of list) if (e.kind === "user") for (const b of e.data.images ?? []) if (b.type === "attachment") sizes.set(b.id, b.size ?? 0);
             return { sizes: [...sizes.values()], json: sizes.size ? Buffer.byteLength(JSON.stringify(list)) : 0 };
           };
-          return json({ branches: all.filter((e) => !parents.has(e.id)).length, shown: carried(store.lineage(s.id)), all: carried(all) });
+          return json({ branches: leafCount(all), shown: carried(store.lineage(s.id)), all: carried(all) });
         }),
       },
 

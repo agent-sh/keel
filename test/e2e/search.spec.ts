@@ -249,9 +249,14 @@ test("previous and next prompt walk the conversation by keyboard", async ({ page
     await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "full-auto" } });
     await request.post(`/api/sessions/${id}/messages`, { data: { text: "script:long-tool" } });
     await expect(page.getByTestId("stop")).toBeVisible();
+    await expect(page.getByTestId("user-message").last()).toContainText("script:long-tool");
     await box.focus();
     await page.keyboard.press("Alt+ArrowUp");
-    await expect(page.getByTestId("user-message").last()).toBeFocused();
+    // The view is still at the first prompts (a turn started elsewhere moves no
+    // reader, and the conversation stays on screen while its new prompt arrives):
+    // the move starts from the prompt nearest above the middle of the view.
+    await expect(page.locator('[data-testid="user-message"]:focus')).toHaveCount(1);
+    await expect(said).toHaveText(/^Prompt [2-6] of 45\. Escape returns to the message box\.$/);
     await page.keyboard.press("Escape");
     await expect(box).toBeFocused();
     await page.waitForTimeout(400);

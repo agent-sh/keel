@@ -188,6 +188,10 @@ test("a long session opens with its newest part and reads the rest as asked", as
     await expect(page.locator(`#e-${far.id}`)).toBeInViewport({ timeout: 30_000 });
     await expect(page.getByTestId("branch-preview")).toHaveCount(0);
     expect(got.at(-1)!.url).toBe(`/page?limit=200&around=${far.id}`);
+    // The part stops short of the end: its last turn is not the session's last,
+    // and what acts on the session where it stands is not offered on it.
+    await expect(page.getByTestId("turn-end").first()).toBeVisible();
+    await expect(page.getByTestId("retry")).toHaveCount(0);
     // The browser's own Find reaches only what is loaded: its key says so and offers the search of the whole conversation.
     await page.keyboard.press("Control+f");
     await expect(page.getByTestId("find-note")).toContainText("reaches only the messages loaded here");
@@ -199,7 +203,10 @@ test("a long session opens with its newest part and reads the rest as asked", as
     // agent's report) leaves the reader in the part: only this page's own send moves them.
     const idle = () => expect.poll(async () => ((await (await fetch(`${d.url}/api/sessions/${id}?events=0`)).json()) as any).running, { timeout: 30_000 }).toBe(false);
     await fetch(`${d.url}/api/sessions/${id}/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "script:render sent from elsewhere" }) });
+    // The way to the end says a reply is being written there.
+    await expect(page.getByTestId("jump-latest")).toContainText("A reply is being written");
     await idle();
+    await expect(page.getByTestId("jump-latest")).toContainText("Latest");
     await expect(page.locator(`#e-${far.id}`)).toHaveCount(1);
     await expect(page.getByTestId("later-messages")).toHaveCount(1);
     // The strip that says later messages are not shown stands clear of the Latest pill.

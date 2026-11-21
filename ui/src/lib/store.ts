@@ -299,6 +299,14 @@ export const actions = {
     api(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ text, edit_of: eventId }) }),
   answer: (id: string, callId: string, answers: Record<string, { picked: string[]; other?: string }>) =>
     api(`/api/sessions/${id}/questions/${callId}`, { method: "POST", body: JSON.stringify({ answers }) }),
+  // The whole reply of a turn the page holds only the end of (see the route).
+  reply: (id: string, ask: { before?: number; head?: string; last?: boolean }) => {
+    const q = new URLSearchParams();
+    if (ask.before !== undefined) q.set("before", String(ask.before));
+    if (ask.head) q.set("head", ask.head);
+    if (ask.last) q.set("last", "1");
+    return api<{ texts: string[] }>(`/api/sessions/${id}/reply?${q}`).then((r) => r.texts.join("\n\n"));
+  },
   jobs: (id: string) => api<{ jobs: JobView[] }>(`/api/sessions/${id}/jobs`),
   stopJob: (id: string, job: string) => api(`/api/sessions/${id}/jobs/${job}/stop`, { method: "POST" }),
   interrupt: (id: string) => api(`/api/sessions/${id}/interrupt`, { method: "POST", body: JSON.stringify({ by: "owner" }) }),
@@ -421,7 +429,8 @@ export function trimmed(list: StoredEvent[], head: string | null): StoredEvent[]
   // A head the page does not hold yet (its part is on its way): nothing is let go.
   if (!line.length) return list;
   let k = Math.max(0, line.length - PAGE);
-  for (let i = k; i > Math.max(0, k - PAGE); i--) if (line[i - 1]!.kind === "turn_end") { k = i; break; }
+  // From a turn's start: after a turn's end and what failed in it (stored right after, shown with it).
+  for (let i = k; i > Math.max(0, k - PAGE); i--) if (line[i - 1]!.kind === "turn_end" && line[i]?.kind !== "error") { k = i; break; }
   if (k === 0 && line.length === list.length) return list;
   const keep = new Set(line.slice(k).map((e) => e.id));
   const parents = new Set(line.slice(k).filter((e) => e.kind === "user" && !e.data.origin).map((e) => e.parent));
