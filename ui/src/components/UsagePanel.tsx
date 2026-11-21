@@ -7,6 +7,7 @@ import { api, reportError, useStore } from "../lib/store.ts";
 import { navigate, setUI } from "../lib/ui.ts";
 import { ago, cn, fmtTokens, when } from "../lib/utils.ts";
 import { TimeChart } from "./Chart.tsx";
+import { MemoryUsage } from "./MemoryUsage.tsx";
 import { Segmented } from "./Settings.tsx";
 import { CompactionsView, CompareView, ErrorsView, TokensView } from "./UsageViews.tsx";
 
@@ -316,6 +317,8 @@ function Overview({ range }: { range: Range }) {
           />
         ) : <p className="k-empty">No tool calls in this range.</p>}
       </Panel>
+
+      <MemoryUsage since={r.since_ms} />
 
       {usage && usage.by_purpose.length > 1 && (
         <Panel title="By purpose" hint="every request: turns, and the ones beside them" testid="usage-purposes">

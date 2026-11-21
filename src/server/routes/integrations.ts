@@ -4,6 +4,7 @@ import { registerSessionPatch, type RouteModule } from "../app.ts";
 import { draftPresent } from "./drafts.ts";
 import { deliver } from "../../automation/core.ts";
 import { momentumReport, momentumSocketPath, startMomentumSocket } from "../../integrations/momentum.ts";
+import { memoryMeter } from "../../integrations/memory-meter.ts";
 import { findBin, Tacit } from "../../integrations/tacit.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -48,6 +49,20 @@ export const integrationRoutes: RouteModule = (deps) => {
     },
     "/api/integrations/tacit/stats": {
       GET: () => Response.json(tacit.stats(), { headers: { "cache-control": "no-store" } }),
+    },
+    // GET /api/telemetry/memory?since_ms=&until_ms=&session_id=: what memory added to
+    // the turns and whether they used it, per recall path and in total. Counts,
+    // tokens and times only: no fact, name or prompt is kept or returned.
+    "/api/telemetry/memory": {
+      GET: (req: Request) => {
+        const q = new URL(req.url).searchParams;
+        const num = (k: string) => (q.get(k) ? Number(q.get(k)) : undefined);
+        const since = num("since_ms"), until = num("until_ms");
+        if ([since, until].some((v) => v !== undefined && !Number.isFinite(v))) return bad("a bound is not a number");
+        const session = q.get("session_id") || undefined;
+        if (session && !store.session(session)) return bad("no such session", 404);
+        return Response.json(memoryMeter(store).report({ since, until, session }), { headers: { "cache-control": "no-store" } });
+      },
     },
     "/api/momentum": { GET: async () => json(await momentumReport()) },
     "/api/sessions/:id/memory": {

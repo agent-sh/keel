@@ -14,9 +14,11 @@ const usageOf = (u: any) => ({
   cache_creation_input_tokens: u?.cache_write ?? 0,
 });
 
-export function toClaudeRecords(s: Session, events: StoredEvent[], sessionId: string = s.id, opts: { version?: string } = {}): ClaudeRecord[] {
+// `parent`: the uuid the first record hangs under, when these events go on
+// from records already written (the memory tool's transcript grows by appending).
+export function toClaudeRecords(s: Session, events: StoredEvent[], sessionId: string = s.id, opts: { version?: string; parent?: string | null } = {}): ClaudeRecord[] {
   const out: ClaudeRecord[] = [];
-  let parent: string | null = null;
+  let parent: string | null = opts.parent ?? null;
   const base = (ts: number) => ({
     parentUuid: parent,
     isSidechain: false,

@@ -8,18 +8,33 @@
 // request after it carries the same bytes (append-only; the prefix holds).
 // A pre-tool block is appended to that call's result. Every block is marked
 // with its source: memory is context, never the owner's words.
-import { existsSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+//
+// What a turn pays for it is kept small and measured (memory-meter.ts):
+// - a line the context already holds is not added again, whatever the store
+//   remembers of what it gave;
+// - a turn's blocks stay within one budget, whole lines, the first ones kept
+//   (the store lists what it ranks best first);
+// - the prompt is sent to the store when it asks for work (the owner's words,
+//   an agent's task, a peer's message), not for what the harness delivers (a
+//   report, a wake, a loop run);
+// - a turn waits for the store at most the prompt hook's own deadline. When
+//   the store did not answer in time the session is told once, and nothing
+//   waits for it until it answers in time again: what arrives while a tool
+//   runs is used, and a block that arrives late joins the next prompt.
+import { appendFileSync, existsSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
 import { SessionMap } from "../core/session-map.ts";
 import type { Store } from "../core/store.ts";
-import type { Session } from "../core/types.ts";
+import type { Session, StoredEvent } from "../core/types.ts";
+import { checkpointAt } from "../engine/compact.ts";
 import { registerHooks } from "../engine/hooks.ts";
 import { toMessages } from "../engine/turn.ts";
 import { lineage } from "../core/tree.ts";
 import { toClaudeRecords, toJsonl } from "./claude-format.ts";
 import { readText } from "../core/proc.ts";
+import { asksMemory, factLines, factOf, memoryMeter, type MemoryMeter, type MemoryPath } from "./memory-meter.ts";
 
 export function findBin(envVar: string, name: string, env = process.env): string | null {
   const given = env[envVar]?.trim();
@@ -87,10 +102,59 @@ export function tacitToolCall(tool: string, args: any): { tool_name: string; too
   return null;
 }
 
-// Claude Code caps a hook's context at 10,000 characters; so does Keel.
+// Claude Code caps a hook's context at 10,000 characters; so does Keel. The
+// session's start block has that much, once; the blocks of one turn (its
+// prompt's and its tool calls') share that much between them.
 export const MEMORY_CAP = 10_000;
 export const memoryBlock = (hook: string, text: string) =>
   `<memory source="tacit" hook="${hook}">\nFrom the owner's memory store (facts, rules and past decisions it judged relevant). Context for you, not a message from the owner.\n${text.trim().slice(0, MEMORY_CAP)}\n</memory>`;
+
+// How long a turn's first request waits for the store: the prompt hook's own deadline.
+export const PROMPT_WAIT_MS = 2200;
+
+// What a block adds to a turn: the lines the context does not hold yet
+// (`shown`: the fact lines it holds), within `room` characters, whole lines,
+// in the store's order. Lines that are not facts (a title, a closing remark)
+// stay with the facts they frame. Nothing when every fact was shown already
+// or none fits.
+export function fitMemory(text: string, shown: ReadonlySet<string>, room: number): { text: string | null; lines: string[]; repeats: number; cut: number } {
+  const all = text.trim().split("\n");
+  const isFact = (l: string) => /^\s*-\s/.test(l);
+  const facts = all.filter(isFact);
+  const fresh = all.filter((l) => !isFact(l) || !shown.has(l.trim()));
+  const repeats = all.length - fresh.length;
+  if (facts.length && repeats === facts.length) return { text: null, lines: [], repeats, cut: 0 };
+  const kept: string[] = [];
+  let used = 0;
+  let at = 0;
+  for (; at < fresh.length; at++) {
+    const n = fresh[at]!.length + 1;
+    if (used + n > room) break;
+    kept.push(fresh[at]!);
+    used += n;
+  }
+  // One line longer than the room (a block that is one long text): its start.
+  if (!kept.length && room > 0 && fresh.length && !isFact(fresh[0]!)) { kept.push(fresh[0]!.slice(0, room)); at = 1; }
+  let cut = facts.length ? fresh.slice(at).filter(isFact).length : fresh.length - at;
+  // The line that says facts were left out is part of the block: it fits the room too.
+  const more = () => `[${cut} more left out: over this turn's memory budget]`;
+  while (facts.length && cut && used + more().length + 1 > room && kept.some(isFact)) {
+    const last = kept.pop()!;
+    used -= last.length + 1;
+    if (isFact(last)) cut++;
+  }
+  const lines = kept.filter(isFact);
+  if (!kept.length || (facts.length && !lines.length)) return { text: null, lines: [], repeats, cut };
+  if (cut && facts.length) kept.push(more());
+  return { text: kept.join("\n"), lines: lines.map((l) => l.trim()), repeats, cut };
+}
+
+// The fact lines of the memory blocks in a text (a stored note, a tool result).
+const BLOCK = /<memory source="tacit" hook="[a-z-]+">\n([\s\S]*?)\n<\/memory>/g;
+export function shownLines(text: string): string[] {
+  if (!text.includes('<memory source="tacit"')) return [];
+  return [...text.matchAll(BLOCK)].flatMap((m) => factLines(m[1]!)).map((l) => l.trim());
+}
 
 type Flags = { use_memory: boolean; feed_memory: boolean };
 type Hook = "session-start" | "prompt" | "pre-tool" | "pre-compact";
@@ -128,22 +192,46 @@ function writeTranscript(path: string, bytes: Buffer) {
   }
 }
 
+type HookResult = { outcome: HookOutcome; text: string | null };
+// A hook call that may still be running: `got` is set when it ended.
+type Running = { got?: HookResult; done: Promise<HookResult> };
+const running = (done: Promise<HookResult>): Running => {
+  const r: Running = { done };
+  done.then((got) => { r.got = got; });
+  return r;
+};
+const NOTHING: HookResult = { outcome: "empty", text: null };
+
 export class Tacit {
   bin: string | null;
-  private start = new Map<string, Promise<string | null>>();
+  private start = new Map<string, Running>();
   private done = new Set<string>(); // user events already answered
-  private preTool = new Map<string, Promise<string | null>>();
+  private preTool = new Map<string, Running>();
+  // The store did not answer a call in time: nothing waits for it until one
+  // does. `told`: the sessions that were told, once each while it lasts.
+  private slow = false;
+  private failing = false;
+  private told = new Set<string>();
+  // Blocks that arrived after their turn stopped waiting: they join the session's next prompt.
+  private late = new Map<string, { hook: "session-start" | "prompt"; text: string; row: number }[]>();
+  // The fact lines each session's context holds (since its last summary), read
+  // on from the last event looked at; and what each running turn has added.
+  private shown = new SessionMap<{ head: string; checkpoint: string | null; lines: Set<string> }>(64);
+  private spent = new Map<string, number>();
+  private meter: MemoryMeter;
   // One version per session, no transcript bytes kept here. Store deletion
   // clears SessionMaps; evicting an idle one just costs a rebuild next time.
-  private transcriptVersions = new SessionMap<{ head: Session["head"]; model: string; workspace: string; stamp: string }>(64);
+  // `last`: the uuid of the file's last record, which the next ones hang under.
+  private transcriptVersions = new SessionMap<{ head: Session["head"]; model: string; workspace: string; stamp: string; last: string | null }>(64);
   private readonly metrics = {
     since_ms: Date.now(),
     hooks: { "session-start": hookStats(), prompt: hookStats(), "pre-tool": hookStats(), "pre-compact": hookStats() } satisfies Record<Hook, ReturnType<typeof hookStats>>,
-    transcript: { reused: 0, rebuilt: 0, failed: 0, duration_ms: totals(), bytes: totals() },
+    transcript: { reused: 0, appended: 0, rebuilt: 0, failed: 0, duration_ms: totals(), bytes: totals() },
   };
 
   constructor(private store: Store, private bus: Bus, private errors: ErrorTracker, bin = findBin("TACIT_BIN", "tacit")) {
     this.bin = bin;
+    this.meter = memoryMeter(store);
     store.migrate(`CREATE TABLE IF NOT EXISTS memory_flags (session_id TEXT PRIMARY KEY, use_memory INTEGER NOT NULL DEFAULT 1, feed_memory INTEGER NOT NULL DEFAULT 1);`);
   }
 
@@ -197,12 +285,29 @@ export class Tacit {
         return path;
       }
       this.transcriptVersions.delete(s.id);
+      const line = lineage(this.store.events(s.id), head);
+      // The branch only grew since the file was written (the usual case: a
+      // prompt, a reply, a tool result): the new events are appended, as the
+      // format's own writer does, and the file is not encoded and written
+      // whole again on every hook call.
+      const at = cached && cached.model === model && cached.workspace === workspace && cached.stamp === fileStamp(path) ? line.findLastIndex((e) => e.id === cached.head) : -1;
+      if (cached && at >= 0) {
+        const records = toClaudeRecords(current, line.slice(at + 1), s.id, { parent: cached.last });
+        const bytes = Buffer.from(toJsonl(records));
+        if (bytes.length) appendFileSync(path, bytes);
+        const stamp = fileStamp(path);
+        if (stamp !== undefined) this.transcriptVersions.set(s.id, { head, model, workspace, stamp, last: (records.at(-1)?.uuid as string | undefined) ?? cached.last });
+        stat.appended++;
+        add(stat.bytes, bytes.length);
+        return path;
+      }
       mkdirSync(dirname(path), { recursive: true });
       // Encode once for the write and reuse its byte length.
-      const bytes = Buffer.from(toJsonl(toClaudeRecords(current, lineage(this.store.events(s.id), head))));
+      const records = toClaudeRecords(current, line);
+      const bytes = Buffer.from(toJsonl(records));
       writeTranscript(path, bytes);
       const stamp = fileStamp(path);
-      if (stamp !== undefined) this.transcriptVersions.set(s.id, { head, model, workspace, stamp });
+      if (stamp !== undefined) this.transcriptVersions.set(s.id, { head, model, workspace, stamp, last: (records.at(-1)?.uuid as string | undefined) ?? null });
       stat.rebuilt++;
       add(stat.bytes, bytes.length);
     } catch (e) {
@@ -216,8 +321,8 @@ export class Tacit {
     return path;
   }
 
-  private async hook(hook: Hook, payload: unknown, ms: number): Promise<string | null> {
-    if (!this.bin) return null;
+  private async hook(hook: Hook, payload: unknown, ms: number): Promise<HookResult> {
+    if (!this.bin) return NOTHING;
     const started = performance.now();
     const argv = [this.bin, "hook", hook];
     if (hook !== "pre-compact") argv.push("--mcp");
@@ -240,33 +345,120 @@ export class Tacit {
     stat.outcomes[outcome]++;
     add(stat.duration_ms, performance.now() - started);
     if (text) add(stat.context_bytes, Buffer.byteLength(text.slice(0, MEMORY_CAP)));
-    return text;
+    if (hook !== "pre-compact") this.health(outcome);
+    return { outcome, text };
+  }
+
+  // An answer in time ends an outage; a call that timed out or failed starts one.
+  private health(outcome: HookOutcome) {
+    if (outcome === "timeout") {
+      if (!this.slow) this.errors.capture("server", new Error("the memory store did not answer in time: turns go on without it until it does"), { at: "tacit hook" });
+      this.slow = true;
+    } else if (outcome === "failure") {
+      if (!this.failing) this.errors.capture("server", new Error("the memory store failed to answer: turns go on without it"), { at: "tacit hook" });
+      this.failing = true;
+    } else {
+      this.slow = this.failing = false;
+      this.told.clear();
+    }
+  }
+
+  // Said in the session once while the store is out: a line for the owner, not for the model.
+  private tell(id: string, outcome: HookOutcome) {
+    if ((outcome !== "timeout" && outcome !== "failure") || this.told.has(id)) return;
+    this.told.add(id);
+    const text = outcome === "timeout"
+      ? "Memory did not answer in time. This turn goes on without it, and nothing waits for it until it answers again."
+      : "Memory failed to answer. This turn goes on without it.";
+    this.bus.emit({ t: "event", event: this.store.append(id, "note", { kind: "memory_out", text }) });
   }
 
   // Fetched once per session (prefetched when the session appears).
-  startBlock(s: Session) {
+  private startCall(s: Session): Running {
     let p = this.start.get(s.id);
     if (!p) {
-      p = this.hook("session-start", { session_id: s.id, cwd: s.workspace, transcript_path: this.transcript(s), source: "keel" }, 6000);
+      p = running(this.hook("session-start", { session_id: s.id, cwd: s.workspace, transcript_path: this.transcript(s), source: "keel" }, 6000));
       this.start.set(s.id, p);
     }
     return p;
   }
-
-  promptBlock(s: Session, prompt: string) {
-    return this.hook("prompt", { session_id: s.id, cwd: s.workspace, prompt, transcript_path: this.transcript(s) }, 2200);
+  private promptCall(s: Session, prompt: string): Running {
+    return running(this.hook("prompt", { session_id: s.id, cwd: s.workspace, prompt, transcript_path: this.transcript(s) }, PROMPT_WAIT_MS));
+  }
+  private preToolCall(s: Session, tool: string, args: any): Running | null {
+    const call = tacitToolCall(tool, args);
+    return call ? running(this.hook("pre-tool", { session_id: s.id, cwd: s.workspace, transcript_path: this.transcript(s), ...call }, 900)) : null;
   }
 
+  async startBlock(s: Session) {
+    return (await this.startCall(s).done).text;
+  }
+  async promptBlock(s: Session, prompt: string) {
+    return (await this.promptCall(s, prompt).done).text;
+  }
   async preToolBlock(s: Session, tool: string, args: any): Promise<string | null> {
-    const call = tacitToolCall(tool, args);
-    if (!call) return null;
-    return this.hook("pre-tool", { session_id: s.id, cwd: s.workspace, transcript_path: this.transcript(s), ...call }, 900);
+    return (await (this.preToolCall(s, tool, args)?.done ?? NOTHING)).text;
   }
 
   // Before compaction, and when a session is archived: tacit dreams it.
   async preCompact(s: Session) {
     if (!this.bin || !this.flags(s.id).use_memory || !this.flags(s.id).feed_memory) return;
     await this.hook("pre-compact", { session_id: s.id, cwd: s.workspace, transcript_path: this.transcript(s) }, 4000);
+  }
+
+  // The fact lines the session's context holds: those of the memory notes and
+  // tool results since its last summary. Read once, then only the events that
+  // came since; a new summary or another branch starts over.
+  private shownIn(id: string, events: readonly StoredEvent[]): Set<string> {
+    const cp = checkpointAt(events);
+    const checkpoint = cp.at >= 0 ? events[cp.at]!.id : null;
+    const c = this.shown.get(id);
+    const at = c && c.checkpoint === checkpoint ? events.findLastIndex((e) => e.id === c.head) : -1;
+    const lines = c && at >= 0 ? c.lines : new Set<string>();
+    for (const e of events.slice(at >= 0 ? at + 1 : cp.keepFrom)) {
+      if (e.kind === "note" && e.data.memory?.source === "tacit") for (const l of shownLines(String(e.data.text ?? ""))) lines.add(l);
+      else if (e.kind === "tool_result") {
+        for (const r of e.data.results ?? []) {
+          const text = typeof r.content === "string" ? r.content : Array.isArray(r.content) ? r.content.map((b: any) => (b.type === "text" ? b.text : "")).join("\n") : "";
+          for (const l of shownLines(text)) lines.add(l);
+        }
+      }
+    }
+    if (events.length) this.shown.set(id, { head: events.at(-1)!.id, checkpoint, lines });
+    return lines;
+  }
+
+  // One block as the turn gets it, and its row in the measurements: the lines
+  // the context lacks, within the room the turn has left.
+  // `row`: the row of this ask, when it was written before the answer came.
+  private admit(id: string, path: MemoryPath, hook: string, r: HookResult, shown: Set<string>, room: number, waitMs: number, row?: number): string | null {
+    if (!r.text) {
+      this.meter.record(id, path, { outcome: r.outcome === "timeout" || r.outcome === "failure" ? r.outcome : "empty", waitMs }, row);
+      return null;
+    }
+    // The room is for the block as the turn gets it, its frame included.
+    const fit = fitMemory(r.text, shown, room - memoryBlock(hook, "").length);
+    if (!fit.text) {
+      this.meter.record(id, path, { outcome: fit.cut ? "empty" : "repeat", repeats: fit.repeats, cut: fit.cut, waitMs }, row);
+      return null;
+    }
+    for (const l of fit.lines) shown.add(l);
+    const block = memoryBlock(hook, fit.text);
+    this.meter.record(id, path, { outcome: "added", text: block, facts: fit.lines.map(factOf), repeats: fit.repeats, cut: fit.cut, waitMs }, row);
+    return block;
+  }
+
+  // A call the turn did not wait for: its row says so until the call ends.
+  // With a block, the block joins the session's next prompt; without one, the
+  // row gets how the call ended.
+  private keepLate(id: string, hook: "session-start" | "prompt", call: Running, waitMs: number) {
+    const path: MemoryPath = hook === "prompt" ? "store_prompt" : "store_start";
+    const row = this.meter.record(id, path, { outcome: "late", waitMs });
+    call.done.then((r) => {
+      if (!this.store.session(id)) return;
+      if (r.text) this.late.set(id, [...(this.late.get(id) ?? []), { hook, text: r.text, row }]);
+      else this.meter.record(id, path, { outcome: r.outcome === "timeout" || r.outcome === "failure" ? r.outcome : "empty" }, row);
+    });
   }
 
   lineage(id: string) {
@@ -276,11 +468,17 @@ export class Tacit {
   forget(id: string) {
     this.start.delete(id);
     this.transcriptVersions.delete(id);
+    this.late.delete(id);
+    this.spent.delete(id);
+    this.told.delete(id);
+    this.meter.forget(id);
   }
 
   install() {
     const t = this;
     registerHooks({
+      // A turn's blocks share one budget.
+      turnStart: (s) => void t.spent.delete(s.id),
       async beforeRequest(s, req) {
         // Memory for a prompt joins the turn request that answers it. A summary
         // or side request sent first keeps its own messages: rebuilding them
@@ -295,10 +493,45 @@ export class Tacit {
         if (last?.kind !== "user" || t.done.has(last.id)) return req;
         t.done.add(last.id);
         const first = !events.slice(0, i).some((e) => e.kind === "user");
-        const [start, prompt] = await Promise.all([first ? t.startBlock(s) : null, t.promptBlock(s, last.data.text ?? "")]);
-        const parts = [start && memoryBlock("session-start", start), prompt && memoryBlock("prompt", prompt)].filter(Boolean) as string[];
+        const asks = asksMemory(last.data);
+        const began = performance.now();
+        const start = first ? t.startCall(s) : null;
+        const prompt = asks ? t.promptCall(s, last.data.text ?? "") : null;
+        // The request waits for the prompt's answer (the hook's own deadline
+        // bounds that) and, within the same time, for a start block still on
+        // its way. While the store is not answering in time it does not wait
+        // at all: what is there is used, the rest joins the next prompt.
+        if (!t.slow) {
+          const window = Bun.sleep(PROMPT_WAIT_MS);
+          if (prompt) await prompt.done;
+          if (start && !start.got) await Promise.race([start.done, window]);
+        }
+        const waited = performance.now() - began;
+        if (start && !start.got) t.keepLate(s.id, "session-start", start, prompt ? 0 : waited);
+        if (prompt && !prompt.got) t.keepLate(s.id, "prompt", prompt, waited);
+        for (const c of [start, prompt]) if (c?.got) t.tell(s.id, c.got.outcome);
+        if (t.slow && prompt && !prompt.got) t.tell(s.id, "timeout");
+
+        const shown = t.shownIn(s.id, events);
+        const parts: string[] = [];
+        const hooks: string[] = [];
+        const put = (hook: "session-start" | "prompt", path: MemoryPath, r: HookResult, room: number, waitMs: number, row?: number) => {
+          const block = t.admit(s.id, path, hook, r, shown, room, waitMs, row);
+          if (!block) return;
+          if (path === "store_prompt") t.spent.set(s.id, (t.spent.get(s.id) ?? 0) + block.length);
+          parts.push(block);
+          if (!hooks.includes(hook)) hooks.push(hook);
+        };
+        const room = () => MEMORY_CAP - (t.spent.get(s.id) ?? 0);
+        // What an earlier turn did not wait for.
+        const late = t.late.get(s.id) ?? [];
+        t.late.delete(s.id);
+        for (const l of late) put(l.hook, l.hook === "prompt" ? "store_prompt" : "store_start", { outcome: "hit", text: l.text }, l.hook === "prompt" ? room() : MEMORY_CAP, 0, l.row);
+        if (start?.got) put("session-start", "store_start", start.got, MEMORY_CAP, prompt ? 0 : waited);
+        if (prompt?.got) put("prompt", "store_prompt", prompt.got, room(), waited);
+        else if (!prompt) t.meter.record(s.id, "store_prompt", { outcome: "skipped" });
         if (!parts.length) return req;
-        const ev = t.store.append(s.id, "note", { text: parts.join("\n\n"), model: true, memory: { source: "tacit", hooks: [start && "session-start", prompt && "prompt"].filter(Boolean) } });
+        const ev = t.store.append(s.id, "note", { text: parts.join("\n\n"), model: true, memory: { source: "tacit", hooks } });
         t.bus.emit({ t: "event", event: ev });
         return { ...req, messages: toMessages(t.lineage(s.id)) };
       },
@@ -306,15 +539,23 @@ export class Tacit {
       beforeTool(s, call) {
         if (!t.bin || !t.flags(s.id).use_memory) return;
         // Runs beside the tool; its answer joins the result.
-        t.preTool.set(call.id, t.preToolBlock(s, call.tool.name, call.input).catch(() => null));
+        const p = t.preToolCall(s, call.tool.name, call.input);
+        if (p) t.preTool.set(call.id, p);
       },
-      async afterTool(_s, call, result) {
+      async afterTool(s, call, result) {
         const p = t.preTool.get(call.id);
         if (!p) return;
         t.preTool.delete(call.id);
-        const text = await p;
-        if (!text) return;
-        const block = memoryBlock("pre-tool", text);
+        // The tool is done. A store that answers in time is waited for (its own
+        // deadline bounds that); one that does not is used only when it already answered.
+        const began = performance.now();
+        if (!p.got && t.slow) return void t.meter.record(s.id, "store_tool", { outcome: "skipped" });
+        const got = p.got ?? (await p.done.catch((): HookResult => ({ outcome: "failure", text: null })));
+        t.tell(s.id, got.outcome);
+        const shown = got.text ? t.shownIn(s.id, t.lineage(s.id)) : new Set<string>();
+        const block = t.admit(s.id, "store_tool", "pre-tool", got, shown, MEMORY_CAP - (t.spent.get(s.id) ?? 0), performance.now() - began);
+        if (!block) return;
+        t.spent.set(s.id, (t.spent.get(s.id) ?? 0) + block.length);
         if (typeof result.content === "string") result.content = `${result.content}\n\n${block}`;
         else result.content = [...result.content, { type: "text", text: block }];
       },
@@ -326,7 +567,7 @@ export class Tacit {
         if (!this.store.session(f.session.id)) return; // deleted: nothing left to dream
         this.preCompact(f.session).catch((e) => this.errors.capture("server", e, { at: "tacit pre-compact" }));
       } else if (!this.start.has(f.session.id) && this.flags(f.session.id).use_memory && !this.store.events(f.session.id).length) {
-        this.startBlock(f.session);
+        this.startCall(f.session);
       }
     });
   }

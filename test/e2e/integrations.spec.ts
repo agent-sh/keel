@@ -81,9 +81,9 @@ test("tacit and momentum", async ({ page, request }) => {
   expect(await ask(info.momentum.socket, { cmd: "supervise_act", session_id: session.id, action: "queue", text: "Reply with the single word: done." })).toMatchObject({ ok: true });
   await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 120_000 });
   await expect(page.getByText("[momentum] Reply with the single word: done.")).toBeVisible();
-  // The second prompt asked tacit again, without a second session-start.
-  await expect(note).toHaveCount(2);
-  await expect(note.last()).not.toContainText("session-start");
+  // The second prompt asked tacit again and got the fact the context already
+  // holds: nothing is added twice, so there is no second memory note.
+  await expect(note).toHaveCount(1);
   await shoot(page, "integ-03-momentum");
 
   // Memory use is fixed once the session has a message.

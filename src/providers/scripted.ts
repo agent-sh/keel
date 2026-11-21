@@ -203,6 +203,15 @@ export class ScriptedProvider implements Provider {
         const said = (b: any) => (typeof b.content === "string" ? b.content : (b.content as any[]).map((c: any) => c.text ?? "").join("\n"));
         return reply(`Batch done. ${got.map((b) => `[${said(b).slice(0, 200)}]`).join(" ")}`);
       }
+      case "memory": {
+        // `script:memory`: the reply names the first fact of the newest memory
+        // block the request carries (a note with the prompt, or a tool result's
+        // block), as a model that used what it was given would.
+        const texts = (msgs as any[]).flatMap((m) => (m.content as any[]).flatMap((b) => (b.type === "text" ? [String(b.text)] : b.type === "tool_result" ? [typeof b.content === "string" ? b.content : (b.content as any[]).map((c) => c.text ?? "").join("\n")] : [])));
+        const block = [...texts.join("\n").matchAll(/<memory source="tacit" hook="[a-z-]+">\n([\s\S]*?)\n<\/memory>/g)].at(-1)?.[1];
+        const name = block?.match(/^- (?:RULE )?([^:\n]+):/m)?.[1];
+        return reply(name ? `From memory: ${name}.` : "No memory came with this prompt.");
+      }
       case "liar":
         // A worker that says it finished without doing anything, and a judge
         // that believes it: what the independent goal check exists for.

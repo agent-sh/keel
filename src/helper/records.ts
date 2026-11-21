@@ -238,15 +238,14 @@ export class RecordIndex {
   }
 
   // How many of the words each record holds, from the postings of those words
-  // alone. `all`: reference data and topic words count too (a search); without
-  // it, only what a turn may recall unnamed.
-  private wordHits(words: Iterable<string>, all: boolean): Map<string, number> {
+  // alone: values, aliases, keys and topics, reference data too (a search).
+  private wordHits(words: Iterable<string>): Map<string, number> {
     const n = new Map<string, number>();
     for (const w of words) {
       // A key is in one of the two body postings; its topic words may repeat a body word.
-      const body = [this.body.get(w), all ? this.refBody.get(w) : undefined];
+      const body = [this.body.get(w), this.refBody.get(w)];
       for (const s of body) if (s) for (const k of s) n.set(k, (n.get(k) ?? 0) + 1);
-      const t = all ? this.topicWord.get(w) : undefined;
+      const t = this.topicWord.get(w);
       if (t) for (const k of t) if (!body.some((s) => s?.has(k))) n.set(k, (n.get(k) ?? 0) + 1);
     }
     this.work.records += n.size;
@@ -268,7 +267,7 @@ export class RecordIndex {
       if (!seen.size) {
         const want = [...wordSet(q)];
         if (want.length) {
-          const scored = [...this.wordHits(want, true)].map(([key, n]) => ({ key, n, u: this.byKey.get(key)!.updated, seq: this.own.get(key)!.seq }));
+          const scored = [...this.wordHits(want)].map(([key, n]) => ({ key, n, u: this.byKey.get(key)!.updated, seq: this.own.get(key)!.seq }));
           const best = Math.max(0, ...scored.map((s) => s.n));
           // Every word when some record has them all; else the best partial matches.
           scored.filter((s) => s.n === best || (best < want.length && s.n >= Math.max(1, best - 1))).sort((a, b) => b.n - a.n || b.u - a.u || a.seq - b.seq).forEach((s) => put([s.key], "words"));
@@ -289,10 +288,16 @@ export class RecordIndex {
   // seen since the last summary; within `budget` characters. Topics and
   // namespaces the text names come back as one-line hints (how many records,
   // how to look them up), never as their values.
-  recall(text: string, seen: Set<string>, budget: number): { records: MemoryRecord[]; hints: string[] } {
+  // A word brings its records only when all of them fit the budget: a word
+  // that more records hold than a turn can carry does not say which of them
+  // is meant (that is a search, helper__memory_find), and its postings are
+  // not read past the budget.
+  // `other`: text that came with the prompt and is not a request (a digest, a
+  // report). It recalls the records it names, never by its words.
+  recall(text: string, seen: Set<string>, budget: number, other = ""): { records: MemoryRecord[]; hints: string[] } {
     const named = new Set<string>();
     const hintKeys = new Map<string, number>();
-    for (const c of candidates(text)) {
+    for (const c of candidates(other ? `${text}\n${other}` : text)) {
       const k = normKey(c);
       if (this.byKey.has(k)) named.add(k);
       for (const x of this.byAlias(c)) named.add(x);
@@ -310,8 +315,20 @@ export class RecordIndex {
       at++;
     }
     this.work.records += named.size;
-    // Sharing words: from the postings of the text's words.
-    const shared = this.wordHits(wordSet(text), false);
+    // Sharing words: from the postings of the text's words that fit.
+    const shared = new Map<string, number>();
+    for (const w of wordSet(text)) {
+      const keys = this.body.get(w);
+      if (!keys) continue;
+      let size = 0;
+      for (const k of keys) {
+        this.work.records++;
+        size += recallLine(this.byKey.get(k)!).length + 1;
+        if (size > budget) break;
+      }
+      if (size > budget) continue;
+      for (const k of keys) shared.set(k, (shared.get(k) ?? 0) + 1);
+    }
     for (const [key, hits] of shared) if (!seen.has(key) && !named.has(key)) push(key, 2, hits);
     // Standing: every preference and commitment not already in.
     for (const key of this.standing) if (!seen.has(key) && !named.has(key) && !shared.has(key)) push(key, 1, 0);

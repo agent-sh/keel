@@ -44,17 +44,24 @@ test("Tacit reuses only the retained transcript of the same version", () => {
     expect(JSON.parse(read()).cwd).toBe(moved.workspace);
     expect(stats.rebuilt).toBe(4);
     store.append(s.id, "assistant", { blocks: [{ type: "text", text: "No stored model" }] });
+    const beforeAppend = readFileSync(path, "utf8");
     const beforeModel = read(moved);
+    // The branch only grew: the reply is appended under the file's last record,
+    // and what was there keeps its bytes (the file is not written whole again).
+    expect(stats).toMatchObject({ rebuilt: 4, appended: 1 });
+    expect(beforeModel.startsWith(beforeAppend)).toBe(true);
+    const records = beforeModel.trim().split("\n").map((l) => JSON.parse(l));
+    expect(records.map((r) => r.parentUuid)).toEqual([null, ...records.slice(0, -1).map((r) => r.uuid)]);
     const changedModel = store.updateSession(s.id, { model: "fixture:new-model" });
     const modelUpdated = read(moved);
     expect(beforeModel).toContain('"model":"model"');
     expect(modelUpdated).toContain('"model":"new-model"');
-    expect(stats.rebuilt).toBe(6);
+    expect(stats.rebuilt).toBe(5);
 
     rmSync(path);
     mkdirSync(path); // a failed replacement must leave no cached version or temporary file
     expect(existsSync(tacit.transcript(changedModel))).toBe(false);
-    expect(stats).toMatchObject({ rebuilt: 6, reused: 1, failed: 1 });
+    expect(stats).toMatchObject({ rebuilt: 5, reused: 1, failed: 1 });
     expect(failures).toHaveLength(1);
     expect(readdirSync(join(dir, "transcripts"))).toEqual([`${s.id}.jsonl`]);
     rmSync(path, { recursive: true });
@@ -62,19 +69,19 @@ test("Tacit reuses only the retained transcript of the same version", () => {
     expect(restored).toContain('"model":"new-model"');
     expect(restored).not.toBe(modelUpdated);
     expect(read(changedModel)).toBe(restored);
-    expect(stats).toMatchObject({ rebuilt: 7, reused: 2 });
+    expect(stats).toMatchObject({ rebuilt: 6, reused: 2 });
 
     tacit.forget(s.id);
     expect(read(changedModel)).not.toBe(restored);
     tacit.setFlags(s.id, { feed_memory: false });
     expect(existsSync(tacit.transcript(changedModel))).toBe(false);
-    expect(stats).toMatchObject({ rebuilt: 8, reused: 2 });
+    expect(stats).toMatchObject({ rebuilt: 7, reused: 2 });
     tacit.setFlags(s.id, { feed_memory: true });
     read(changedModel);
-    expect(stats.rebuilt).toBe(9);
+    expect(stats.rebuilt).toBe(8);
     store.deleteSession(s.id);
     expect(existsSync(tacit.transcript(changedModel))).toBe(false);
-    expect(stats).toMatchObject({ rebuilt: 9, reused: 2 });
+    expect(stats).toMatchObject({ rebuilt: 8, reused: 2 });
   } finally {
     store.db.close();
     rmSync(dir, { recursive: true, force: true });
@@ -177,3 +184,111 @@ esac
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// What the memory hooks add across the prompts of one session, with a store
+// that answers, then stops answering, then answers again (no e2e can hold a
+// store back for one prompt and release it for the next).
+test("memory across prompts: nothing twice, nothing for a delivered input, a slow store told once and not waited for", async () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "memory-flow-"));
+  const bin = join(dir, "store");
+  writeFileSync(join(dir, "mode"), "ok");
+  writeFileSync(bin, `#!/bin/sh
+input=$(cat)
+mode=$(cat ${JSON.stringify(join(dir, "mode"))})
+echo "$2" >> ${JSON.stringify(join(dir, "calls"))}
+[ "$mode" = slow ] && exec sleep 5
+if [ "$2" = prompt ]; then
+  echo "# store: facts matching this request"
+  echo "- fact-a: Always keep the alpha rule"
+  case "$input" in *beta*) echo "- fact-b: The beta rule applies too" ;; esac
+  case "$input" in *gamma*) echo "- fact-c: The gamma rule came late" ;; esac
+fi
+`, { mode: 0o755 });
+  const installed = allHooks().length;
+  try {
+    const store = new Store(dir);
+    const bus = new Bus();
+    const captured: string[] = [];
+    const errors = { capture: (_s: string, e: unknown) => { captured.push(String((e as Error).message)); return { message: "" }; } } as any;
+    const asked: { at: number; messages: string }[] = [];
+    const info = { id: "p:m", provider: "p", model: "m", name: "M", family: "other", context: 100_000, output: 1_000, efforts: [], billing: "per_token" };
+    const provider = {
+      id: "p", wire: "anthropic_messages", available: () => true, list: async () => [],
+      stream: async (req: any) => {
+        asked.push({ at: performance.now(), messages: JSON.stringify(req.messages) });
+        const said = JSON.stringify(req.messages.at(-1)).includes("first") ? "Following fact-a here." : "ok";
+        return { blocks: [{ type: "text", text: said }], usage: { input: 1, output: 1, cache_read: 0, cache_write: 0 }, stop: "end_turn", model: "m" };
+      },
+    };
+    const providers = { resolve: async () => ({ provider, info }), models: async () => [info], current: () => [info] } as any;
+    const engine = new Engine(store, bus, providers, errors, join(dir, "spill"));
+    const tacit = new Tacit(store, bus, errors, bin);
+    tacit.install();
+    const s = store.createSession({ model: "p:m", workspace: dir });
+    const say = async (text: string, meta?: Record<string, unknown>) => {
+      const t0 = performance.now();
+      engine.send(s.id, text, { meta });
+      await engine.idle(s.id);
+      return asked.at(-1)!.at - t0;
+    };
+    const notes = () => store.events(s.id).filter((e) => e.kind === "note" && e.data.memory).map((e) => String(e.data.text));
+    const told = () => store.events(s.id).filter((e) => e.kind === "note" && e.data.kind === "memory_out");
+    const calls = () => readFileSync(join(dir, "calls"), "utf8").trim().split("\n").filter((c) => c === "prompt").length;
+    // Waits on what the store did, never on the clock alone.
+    const until = async (what: () => boolean) => { for (let i = 0; i < 400 && !what(); i++) await Bun.sleep(25); expect(what()).toBe(true); };
+
+    await say("first alpha");
+    await say("second beta");
+    // The second prompt got the new fact; the one the context holds was not added again.
+    expect(notes().length).toBe(2);
+    expect(notes()[1]).toContain("fact-b");
+    expect(notes()[1]).not.toContain("fact-a");
+    // The request carries each fact once, and the first note's bytes are where they were.
+    expect(asked.at(-1)!.messages.split("fact-a: Always").length - 1).toBe(1);
+    // A report is not a request: the store is not asked, nothing is added.
+    await say("<agent_report>the beta work is done</agent_report>", { kind: "subagent", agent_id: "a" });
+    expect(calls()).toBe(2);
+    expect(notes().length).toBe(2);
+
+    // The store stops answering: the turn waits the hook's deadline once and is told once.
+    writeFileSync(join(dir, "mode"), "slow");
+    const waited = await say("third");
+    expect(waited).toBeGreaterThan(2_000);
+    expect(waited).toBeLessThan(4_000);
+    expect(told().length).toBe(1);
+    expect(told()[0]!.data.model).toBeUndefined(); // a line for the owner, not sent to the model
+    expect(asked.at(-1)!.messages).not.toContain("Memory did not answer");
+    // The next prompt does not wait for it, and says nothing more.
+    expect(await say("fourth")).toBeLessThan(1_000);
+    expect(told().length).toBe(1);
+    expect(captured.filter((m) => m.includes("memory store"))).toHaveLength(1);
+    await until(() => calls() === 4); // its call started while the store was not answering
+
+    // It answers again: the prompt that found out did not wait, and its block joins the next one.
+    writeFileSync(join(dir, "mode"), "ok");
+    const hits = tacit.stats().hooks.prompt.outcomes.hit;
+    expect(await say("fifth gamma")).toBeLessThan(1_000);
+    expect(notes().length).toBe(2);
+    await until(() => tacit.stats().hooks.prompt.outcomes.hit === hits + 1);
+    await say("sixth");
+    expect(notes().length).toBe(3);
+    expect(notes()[2]).toContain("fact-c");
+    expect(notes()[2]).not.toContain("fact-a");
+    expect(store.events(s.id).filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).toEqual(Array(7).fill("end_turn"));
+
+    // The measurements, without content: what was asked, added, left out, used and waited for.
+    const { memoryMeter } = await import("./memory-meter.ts");
+    const report = memoryMeter(store).report({ session: s.id });
+    const prompt = report.paths.find((p) => p.path === "store_prompt")!;
+    // Seven inputs, one row each: three added (the late one among them, written
+    // over its own row), the report not asked, the last one all held already.
+    expect(prompt).toMatchObject({ asked: 7, recalls: 3, skipped: 1, facts: 3, facts_checked: 3, used: 1, recalls_used: 1 });
+    expect(prompt.timeouts + prompt.late).toBe(2); // "fourth" is late until its call is given up
+    expect(prompt.repeats).toBe(3); // fact-a: with the second prompt, with the late block, with the last prompt
+    expect(prompt.wait_ms).toBeGreaterThan(2_000);
+    expect(JSON.stringify(report)).not.toContain("fact-");
+  } finally {
+    allHooks().length = installed;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 20_000);

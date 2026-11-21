@@ -260,10 +260,25 @@ it succeeded without context, and `ok` means pre-compaction succeeded without
 requesting context. `timeout` and `failure` are counted separately.
 
 Context bytes count UTF-8 text after Keel's cap, before its memory wrapper.
-Transcript metrics count reused versions, rebuilds, failures, elapsed
-milliseconds, and bytes written by successful rebuilds. Reuse writes no bytes.
+Transcript metrics count reused versions, appends (a branch that only grew
+gets its new events appended), rebuilds, failures, elapsed milliseconds, and
+bytes written. Reuse writes no bytes.
 The endpoint includes no prompts, transcripts, facts, or session identifiers.
 Poll it and compare counter deltas to track changes over time.
+
+`GET /api/telemetry/memory?since_ms=&until_ms=&session_id=` reports what memory
+cost the turns and whether they used it, kept across restarts: per recall path
+(the memory store's blocks at a session's start, with a prompt and with a tool
+call; the helper's records) how often it was asked and how that ended, the
+facts and tokens it added, the facts the turn's reply or tool calls named,
+the lines not added again because the context held them, the lines left out as
+over a turn's budget, and the time turns waited. Counts, tokens and times
+only. Settings, then Usage, shows it as the Memory panel.
+
+`bun scripts/bench/memory.ts` measures the same on generated data, with a
+stand-in store and a scripted model: tokens added per turn, facts used,
+repeats, the cache prefix, time before the first request, and a store that is
+slow or failing.
 
 ## License
 

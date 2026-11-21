@@ -131,6 +131,9 @@ test("the indexed search and recall answer as a walk over every record does", ()
     }
     const named1 = [...new Set(named)];
     const q = wordSet(text);
+    // A word counts when the records holding it (reference data aside) all fit the budget.
+    const words = (r: MemoryRecord) => wordSet(`${r.value} ${r.aliases.join(" ")} ${r.key.replace(/[._-]+/g, " ")}`);
+    const broad = new Set([...q].filter((w) => all.filter((r) => r.kind !== "reference" && words(r).has(w)).reduce((n, r) => n + recallLine(r).length + 1, 0) > budget));
     const scored: { r: MemoryRecord; rank: number; hits: number }[] = [];
     for (const r of all) {
       if (seen.has(r.key)) continue;
@@ -138,7 +141,7 @@ test("the indexed search and recall answer as a walk over every record does", ()
       if (at >= 0) { scored.push({ r, rank: 3, hits: named1.length - at }); continue; }
       if (r.kind === "reference") continue;
       let hits = 0;
-      for (const w of wordSet(`${r.value} ${r.aliases.join(" ")} ${r.key.replace(/[._-]+/g, " ")}`)) if (q.has(w)) hits++;
+      for (const w of words(r)) if (q.has(w) && !broad.has(w)) hits++;
       if (hits) scored.push({ r, rank: 2, hits });
       else if (r.kind === "preference" || r.kind === "commitment") scored.push({ r, rank: 1, hits: 0 });
     }
@@ -181,6 +184,32 @@ test("the indexed search and recall answer as a walk over every record does", ()
     const p = `${["a", "b", "mail"][next(3)]}.k${next(10)}`;
     expect(ix.byPrefix(p)).toEqual(all.map((r) => r.key).filter((k) => k.startsWith(normKey(p))));
   }
+});
+
+// A word many records hold says nothing about which of them a turn means; a
+// text that is not a request (a digest, a report) recalls by name only.
+test("recall: a word brings its records only when they all fit; other text recalls by name alone", () => {
+  const ix = new RecordIndex([
+    ...Array.from({ length: 300 }, (_, i) => rec(`fact.deploy-${i}`, `The deploy of service ${i} runs from the release branch`)),
+    rec("fact.staging", "The staging gateway is called halcyon"),
+    rec("person.dana-levi", "Dana is the accountant; invoices go to her", { kind: "person", aliases: ["dana"] }),
+    rec("pref.replies", "Replies in short sentences", { kind: "preference" }),
+  ]);
+  const keys = (text: string, budget = 2000, other = "") => ix.recall(text, new Set(), budget, other).records.map((r) => r.key);
+  // "deploy" is in 300 records (far over the budget together); "halcyon" in one.
+  expect(keys("Check the deploy on halcyon")).toEqual(["fact.staging", "pref.replies"]);
+  // With room for all of them the word counts, as before.
+  expect(keys("Check the deploy on halcyon", 40_000).length).toBe(302);
+  // A named record is recalled whatever its words.
+  expect(keys("What about deploy-7?")).toEqual(["fact.deploy-7", "pref.replies"]);
+  // A digest that came with the prompt: by name only; standing ones still come.
+  expect(keys("", 2000, "Mail about invoices and halcyon from Dana")).toEqual(["person.dana-levi", "pref.replies"]);
+  expect(keys("What is new?", 2000, "A session finished the halcyon work")).toEqual(["pref.replies"]);
+  const before = ix.work.records;
+  ix.recall("Check the deploy and the release branch of the service", new Set(), 2000);
+  // Four words that 300 records hold: each posting is read only until it is
+  // over the budget (about 30 records), not to its end.
+  expect(ix.work.records - before).toBeLessThan(150);
 });
 
 test("candidates keep ids whole and runs of words", () => {

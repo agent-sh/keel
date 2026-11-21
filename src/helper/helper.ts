@@ -26,6 +26,7 @@ import { mailSource, type MailMsg, type MailSource } from "./mail.ts";
 import { Memory } from "./memory.ts";
 import { digestLines, levelOfAlert, nextWakeAt, spike, type DigestEvent, type Level } from "./policy.ts";
 import { recallLine, type MemoryRecord } from "./records.ts";
+import { asksMemory, memoryMeter, type MemoryMeter } from "../integrations/memory-meter.ts";
 
 export type HelperSettings = {
   on: boolean;
@@ -77,6 +78,7 @@ export class Helper {
   checking: Promise<unknown> | null = null;
   // Keyed records (memory.ts); the old free-text list moves into them at start.
   readonly records: Memory;
+  private meter: MemoryMeter;
 
   constructor(readonly deps: Deps, source = mailSource()) {
     this.source = source;
@@ -86,6 +88,7 @@ CREATE TABLE IF NOT EXISTS helper_events (id TEXT PRIMARY KEY, ts INTEGER NOT NU
 CREATE INDEX IF NOT EXISTS helper_events_ts ON helper_events(ts);
 CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT NULL);`);
     this.records = new Memory(deps.store.db, () => deps.bus.emit({ t: "feature", name: "helper_memory", data: { items: this.memory() } }));
+    this.meter = memoryMeter(deps.store);
   }
 
   // --- state ---------------------------------------------------------------
@@ -272,26 +275,34 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
 
   // The note a helper prompt gets: events not told yet, and the remembered
   // items it calls up that the context has not seen since its last summary.
-  private note(s: Session, events: StoredEvent[], prompt: string): { text: string; recalled: string[]; told: DigestEvent[] } | null {
+  // `asks`: the prompt is a request (the owner's words, a message). What the
+  // harness delivers (a digest, a report) and the events told with a prompt
+  // recall the records they name, never by their words.
+  private note(s: Session, events: StoredEvent[], prompt: string, asks = true): { text: string; recalled: MemoryRecord[]; hints: string[]; repeats: number; told: DigestEvent[] } | null {
     const at = checkpointAt(events).at;
     // A record a note already carried is not sent again while it is as that
     // note had it. One changed since (by the owner, or by a tool) is: its new
     // value comes in a new note, and the earlier note stays as it was stored.
+    // A hint the context holds is not said again either.
     const seen = new Set<string>();
+    const hinted = new Set<string>();
     for (const e of events.slice(at + 1)) {
       for (const id of e.data?.helper?.recall ?? []) {
         const r = this.records.index.byKey.get(id);
         if (r && r.updated <= e.ts) seen.add(id);
       }
+      for (const h of e.data?.helper?.hints ?? []) hinted.add(h);
     }
     const told = this.unfed();
-    const query = `${prompt}\n${told.map((e) => `${e.title} ${e.body}`).join("\n")}`;
-    const { records: items, hints } = this.records.index.recall(query, seen, RECALL_CHARS);
+    const digest = told.map((e) => `${e.title} ${e.body}`).join("\n");
+    const found = this.records.index.recall(asks ? prompt : "", seen, RECALL_CHARS, asks ? digest : `${prompt}\n${digest}`);
+    const items = found.records;
+    const hints = found.hints.filter((h) => !hinted.has(h));
     const parts: string[] = [];
     if (told.length) parts.push(`<digest>\nEvents since you last heard (times in UTC):\n${digestLines(told, DIGEST_LINES, this.title)}\n</digest>`);
     if (items.length || hints.length) parts.push(`<remembered>\nFrom your memory (key: value; context, not the owner's words):\n${[...items.map(recallLine), ...hints.map((h) => `- more in memory: ${h}`)].join("\n")}\n</remembered>`);
     if (!parts.length) return null;
-    return { text: parts.join("\n\n"), recalled: items.map((m) => m.key), told };
+    return { text: parts.join("\n\n"), recalled: items, hints, repeats: found.hints.length - hints.length, told };
   }
 
   install() {
@@ -309,12 +320,20 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
         const last = events[i];
         if (last?.kind !== "user" || h.done.has(last.id)) return req;
         h.done.add(last.id);
-        const n = h.note(s, events, String(last.data.text ?? ""));
+        const began = performance.now();
+        const n = h.note(s, events, String(last.data.text ?? ""), asksMemory(last.data));
+        const waitMs = performance.now() - began;
+        const remembered = n ? /<remembered>\n[\s\S]*<\/remembered>/.exec(n.text)?.[0] : undefined;
+        // Measured without content: what the block adds, and (at the turn's end) whether the reply named it.
+        h.meter.record(s.id, "helper", remembered
+          ? { outcome: "added", text: remembered, facts: n!.recalled.map((r) => ({ names: [r.key, ...r.aliases, r.key.split(".").at(-1)!], text: r.value })), repeats: n!.repeats, waitMs }
+          : { outcome: "empty", repeats: n?.repeats ?? 0, waitMs });
         if (!n) return req;
         h.markFed(n.told);
-        if (n.recalled.length) h.records.touch(n.recalled);
-        const hooks = [n.told.length && "digest", n.recalled.length && "remembered"].filter(Boolean);
-        const ev = h.deps.store.append(s.id, "note", { text: n.text, model: true, memory: { source: "helper", hooks }, helper: { recall: n.recalled, events: n.told.length } });
+        const recalled = n.recalled.map((r) => r.key);
+        if (recalled.length) h.records.touch(recalled);
+        const hooks = [n.told.length && "digest", (recalled.length || n.hints.length) && "remembered"].filter(Boolean);
+        const ev = h.deps.store.append(s.id, "note", { text: n.text, model: true, memory: { source: "helper", hooks }, helper: { recall: recalled, hints: n.hints, events: n.told.length } });
         h.deps.bus.emit({ t: "event", event: ev });
         return { ...req, messages: toMessages(lineage(h.deps.store.events(s.id), h.deps.store.session(s.id)?.head ?? null)) };
       },
