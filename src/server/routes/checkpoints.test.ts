@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { Bus } from "../../core/bus.ts";
 import { ErrorTracker } from "../../core/errors.ts";
 import { Store } from "../../core/store.ts";
+import { allHooks } from "../../engine/hooks.ts";
 import { checkpointRoutes, checkpoints } from "./checkpoints.ts";
 
 const root = join(process.env.HOME!, ".cache/keel-work/bun/unit", `ckpt-route-${process.pid}`);
@@ -18,6 +19,7 @@ test("a rewind is refused while another session works in the same folder through
     mkdirSync(real, { recursive: true });
     symlinkSync(real, alias, "dir");
     const store = new Store(join(base, "state"));
+    const hooks = allHooks().length; // the routes register tool hooks on this store: taken off before it closes
     const bus = new Bus();
     const target = linked === "target" ? alias : real;
     const s = store.createSession({ workspace: target, model: "m", title: "rewind" });
@@ -35,6 +37,7 @@ test("a rewind is refused while another session works in the same folder through
     const res = await routes["/api/sessions/:id/rewind"].POST(req);
     expect(res.status).toBe(409);
     expect(readFileSync(join(real, "note.txt"), "utf8")).toBe("beta\n");
+    allHooks().splice(hooks);
     store.db.close();
   }
 });
