@@ -26,7 +26,7 @@ const engine = {
 function boot(dir: string) {
   running.clear();
   store = new Store(dir);
-  setDeps({ store, bus: new Bus(), errors: { capture() {} }, engine } as any);
+  setDeps({ store, bus: new Bus(), errors: { capture() {} }, engine, providers: { current: () => [] } } as any);
   activity.migrate();
   loops.migrate();
 }
@@ -56,13 +56,13 @@ const continued = (id: string, crashed: boolean) => {
 const started = (loopId: string) => loops.runs(loopId).filter((r) => r.started_ms);
 const skipped = (loopId: string) => loops.runs(loopId).filter((r) => r.skip_reason).map((r) => r.skip_reason);
 const at = (ms: number) => setSystemTime(new Date(ms));
-afterEach(() => void setSystemTime());
+afterEach(() => { setSystemTime(); sent.length = 0; });
 
 for (const how of ["a graceful stop", "a crash"] as const) {
   test(`a loop run cut by ${how} closes once as ok when the engine continues its turn`, () => {
     fresh();
     const s = session();
-    const { loop } = loops.create({ session_id: s.id, schedule: "10m", prompt: "tick" });
+    const { loop } = loops.create({ session_id: s.id, schedule: "1m", prompt: "tick" });
     loops.runNow(loop.id);
     step(s.id, 5);
     if (how === "a graceful stop") {
@@ -83,15 +83,14 @@ for (const how of ["a graceful stop", "a crash"] as const) {
     continued(s.id, how === "a crash");
     expect(started(loop.id)).toMatchObject([{ outcome: "ok", ok: true, detail: "end_turn", usage: { calls: 2, input: 12 }, note: expect.stringContaining("Continued after a daemon restart.") }]);
     expect(loops.get(loop.id)).toMatchObject({ fails: 0, runs: 1, last_status: "ok", enabled: true });
-    sent.length = 0;
   });
 }
 
 test("a cut loop turn the engine holds closes its run with the reason, and no other run starts before that", () => {
   fresh();
   const s = session();
-  const { loop } = loops.create({ session_id: s.id, schedule: "10m", prompt: "tick" });
-  const other = loops.create({ session_id: s.id, schedule: "10m", prompt: "tock" }).loop;
+  const { loop } = loops.create({ session_id: s.id, schedule: "1m", prompt: "tick" });
+  const other = loops.create({ session_id: s.id, schedule: "1m", prompt: "tock" }).loop;
   loops.runNow(loop.id);
   step(s.id, 5);
   store.append(s.id, "turn_end", { reason: "restart" });
@@ -112,20 +111,61 @@ test("a cut loop turn the engine holds closes its run with the reason, and no ot
   // The session is free now: the prompt that waited goes, as one new run.
   expect(sent.map((x) => x.text)).toEqual(["tick", "tock"]);
   expect(started(other.id)).toMatchObject([{ ended_ms: null }]);
-  sent.length = 0;
 });
 
 test("a run whose turn had ended when the daemon went down is settled with how it ended", () => {
   fresh();
   const s = session();
-  const { loop } = loops.create({ session_id: s.id, schedule: "10m", prompt: "tick" });
+  const { loop } = loops.create({ session_id: s.id, schedule: "1m", prompt: "tick" });
   loops.runNow(loop.id);
   step(s.id, 5);
   store.append(s.id, "turn_end", { reason: "end_turn" }); // the daemon stops before the turn-end hook runs
   restart();
   expect(started(loop.id)).toMatchObject([{ outcome: "ok", detail: "end_turn" }]);
   expect(loops.get(loop.id)).toMatchObject({ fails: 0, last_status: "ok" });
-  sent.length = 0;
+});
+
+test("a parked turn the engine neither continues nor holds is not waited for past the engine's time to decide", () => {
+  fresh();
+  const s = session();
+  const { loop } = loops.create({ session_id: s.id, schedule: "1m", prompt: "tick" });
+  const other = loops.create({ session_id: s.id, schedule: "1m", prompt: "tock" }).loop;
+  loops.runNow(loop.id);
+  step(s.id, 5);
+  store.append(s.id, "turn_end", { reason: "restart" });
+  loops.onTurnEnd(s.id, "restart");
+  restart();
+  const boot = Date.now();
+  // While the engine may still decide: the other loop's prompt waits, the cut run stays open.
+  at(boot + 61_000);
+  loops.tick();
+  expect(sent).toHaveLength(1);
+  expect(started(loop.id)).toMatchObject([{ ended_ms: null }]);
+  expect(started(other.id)).toHaveLength(0);
+  // Past that time nothing was decided: the cut run closes as not finished and the prompt that waited goes.
+  at(boot + 5 * 60_000 + 1000);
+  loops.tick();
+  expect(started(loop.id).at(-1)).toMatchObject({ outcome: "incomplete", detail: expect.stringContaining("not continued") });
+  expect(sent.map((x) => x.text)).toEqual(["tick", "tock"]);
+  expect(started(other.id)).toMatchObject([{ ended_ms: null }]);
+});
+
+test("a self-paced loop whose run stays open across a restart is not armed again until that run ends", () => {
+  fresh();
+  const s = session();
+  const { loop } = loops.create({ session_id: s.id, schedule: "auto", prompt: "tick" });
+  loops.tick();
+  step(s.id, 5);
+  store.append(s.id, "turn_end", { reason: "restart" });
+  loops.onTurnEnd(s.id, "restart");
+  restart();
+  expect(loops.get(loop.id)!.next_ms ?? null).toBeNull();
+  at(Date.now() + 61_000);
+  loops.tick();
+  expect(skipped(loop.id)).toEqual([]);
+  continued(s.id, false);
+  expect(started(loop.id)).toMatchObject([{ outcome: "ok" }]);
+  expect(loops.get(loop.id)!.next_ms).toBeGreaterThan(Date.now());
 });
 
 // --- a webhook request that waits
@@ -160,7 +200,6 @@ for (const [state, input, change, reason] of dropped) {
     expect(sent.map((x) => x.text)).toEqual([expect.stringContaining('n\\":1')]);
     expect(started(loop.id)).toHaveLength(1);
     expect(skipped(loop.id)).toEqual([expect.stringMatching(reason)]);
-    sent.length = 0;
   });
 }
 
@@ -193,7 +232,6 @@ test("a webhook request that waited survives a restart and runs once, no sooner 
   expect(started(loop.id)).toMatchObject([{ outcome: "ok" }, { outcome: "ok" }]);
   expect(skipped(loop.id)).toEqual([]);
   expect(loops.get(loop.id)).toMatchObject({ runs: 2, next_ms: null, enabled: true });
-  sent.length = 0;
 });
 
 test("a calendar loop whose saved schedule the parser now refuses is turned off with the reason, once", () => {

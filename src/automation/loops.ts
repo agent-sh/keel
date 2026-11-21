@@ -375,17 +375,44 @@ function lastTurn(sessionId: string): string | undefined {
   return reason === "restart" ? (ended === line.length - 1 ? "cut" : undefined) : reason;
 }
 
+// The engine decides a cut turn soon after a start: it waits for the turn's
+// model for about a minute, then for one of its three slots, each held half a
+// minute at most. Five minutes covers that wait with two dozen cut sessions
+// ahead. A turn still parked after it is one nothing will continue (its close
+// or a hook failed, the session was archived at the start and restored since).
+const CUT_DECIDED_MS = 5 * 60_000;
+let bootMs = Date.now();
+const deciding = () => Date.now() - bootMs < CUT_DECIDED_MS;
+const UNCONTINUED = "the daemon restarted during the run and its turn was not continued";
+const releasing = new Set<string>();
+
+// The engine's time to decide has passed: a turn still parked is not waited
+// for any longer. Its runs did not finish, and a prompt held for it goes.
+function release(sessionId: string) {
+  releasing.delete(sessionId);
+  if (D().engine.isRunning(sessionId)) return; // the turn's end sends what waited
+  if (lastTurn(sessionId) === "cut") closeRuns(sessionId, "incomplete", "restart", UNCONTINUED);
+  flush(sessionId);
+}
+
 // Starts one run now, or as soon as the session's running turn ends.
 export function start(l: LoopRecord, due: number, opts: { note?: string; body?: string; manual?: boolean } = {}): RunRecord | undefined {
   const s = D().store.session(l.session_id);
   if (!s) { remove(l.id); return undefined; }
   if (s.archived) { skip(l, due, "the session is archived"); return undefined; }
+  // A turn a restart cut is the engine's to continue first: the prompt waits
+  // for it, as for a running turn, while the engine may still decide.
+  let cut = !D().engine.isRunning(l.session_id) && lastTurn(l.session_id) === "cut";
+  if (cut && !deciding()) { release(l.session_id); cut = false; }
   if (openRun(l.session_id)?.loop_id === l.id) { skip(l, due, "the previous run was still going"); return undefined; }
   if (queuedRun(l.id)) { skip(l, due, "a run was already waiting for the session's turn to end"); return undefined; }
   const runId = Bun.randomUUIDv7();
-  // A turn a restart cut is the engine's to continue first: the prompt waits for it, as for a running turn.
-  const cut = !D().engine.isRunning(l.session_id) && lastTurn(l.session_id) === "cut";
   const busy = cut || D().engine.isRunning(l.session_id);
+  if (cut && !releasing.has(l.session_id)) {
+    releasing.add(l.session_id);
+    const t = setTimeout(() => { try { release(l.session_id); } catch (e) { capture(e, { at: "loop release", session: l.session_id }); } }, Math.max(0, bootMs + CUT_DECIDED_MS - Date.now()) + 50);
+    (t as { unref?: () => void }).unref?.();
+  }
   const note = [opts.note, busy ? "Waited for the session's turn to end." : "", opts.manual ? "Started by hand." : ""].filter(Boolean).join(" ") || null;
   db().query("INSERT INTO loop_runs (id, loop_id, session_id, due_ms, note) VALUES (?, ?, ?, ?, ?)").run(runId, l.id, l.session_id, due, note);
   const extra = opts.body !== undefined
@@ -670,6 +697,8 @@ function drainWebhook(id: string, now = Date.now()) {
 // has no turn that will end: it is closed so the loop goes on.
 export function recover() {
   const now = Date.now();
+  bootMs = now;
+  releasing.clear();
   db().query("UPDATE loop_runs SET ended_ms = ?, skip_reason = 'the daemon stopped before the session was free' WHERE ended_ms IS NULL AND started_ms IS NULL").run(now);
   const open = db().query<{ session_id: string; first: number | null }, []>("SELECT session_id, MAX(first_seq) AS first FROM loop_runs WHERE ended_ms IS NULL AND started_ms IS NOT NULL GROUP BY session_id").all();
   for (const { session_id, first } of open) {
@@ -681,7 +710,10 @@ export function recover() {
     else db().query("UPDATE loop_runs SET ended_ms = ?, ok = 0, outcome = 'failed', detail = 'the daemon stopped during the run' WHERE session_id = ? AND ended_ms IS NULL AND started_ms IS NOT NULL").run(now, session_id);
   }
   for (const l of list()) {
-    if (l.enabled && l.kind === "auto" && !l.next_ms) patch(l.id, { next_ms: Date.now() + l.min_delay * 1000 });
+    // A self-paced loop with no next time gets one, unless a run of its is
+    // still open (its turn is being continued): that run's end names the next.
+    const going = !!db().query("SELECT 1 FROM loop_runs WHERE loop_id = ? AND started_ms IS NOT NULL AND ended_ms IS NULL LIMIT 1").get(l.id);
+    if (l.enabled && l.kind === "auto" && !l.next_ms && !going) patch(l.id, { next_ms: Date.now() + l.min_delay * 1000 });
     // A webhook request that waited when the daemon went down still goes, once.
     if (l.kind === "webhook") drainWebhook(l.id, now);
   }
