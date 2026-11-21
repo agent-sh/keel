@@ -9,7 +9,6 @@ import type { Store } from "../core/store.ts";
 import { SessionMap } from "../core/session-map.ts";
 import { conceal } from "../core/conceal.ts";
 import { blockName, blocksOf, changedBlocks, PromptStore, type PromptPart } from "./prompt-store.ts";
-import { lineage } from "../core/tree.ts";
 import type { AssistantBlock, Message, QueueItem, Session, StoredEvent, ToolResultBlock, ToolUseBlock, TurnStatus, Usage, UserBlock } from "../core/types.ts";
 import { addUsage, emptyUsage } from "../core/types.ts";
 import type { Providers } from "../providers/registry.ts";
@@ -428,8 +427,11 @@ export class Engine {
     this.moved.add(id);
   }
 
+  // The branch the session shows, oldest first. The store keeps it (walked
+  // once, grown by each appended event), so the loop's many reads of one step
+  // do not rebuild the tree; the array is frozen and shared, never changed.
   lineage(id: string): StoredEvent[] {
-    return lineage(this.store.events(id), this.store.session(id)?.head ?? null);
+    return this.store.lineage(id);
   }
 
   // Stop the running turn: the model stream and running tools are cut, the

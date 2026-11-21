@@ -30,6 +30,92 @@ test("toMessages is a pure function of the branch", () => {
   expect(m.at(-1)!.content.map((c: any) => c.type)).toEqual(["tool_result", "text"]);
 });
 
+// The engine reads the branch a session shows many times a step. The store
+// keeps that branch: a warm read copies nothing and touches no other branch,
+// and what it gives is, event for event and byte for byte in the projected
+// messages, what a walk of the whole tree gives, through every way a branch
+// changes.
+test("the kept branch projects the same bytes as a walk of the tree, and a warm read rebuilds nothing", async () => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { spyOn } = await import("bun:test");
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Engine } = await import("./turn.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "lineage-"));
+  const store = new Store(dir);
+  const engine = new Engine(store, new Bus(), {} as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, join(dir, "spill"));
+  try {
+    const id = store.createSession({ model: "x:y", workspace: dir }).id;
+    // One long branch, and at every tenth prompt a sibling branch of its own (an edited prompt and its reply).
+    const sides: string[] = [];
+    for (let n = 0; n < 120; n++) {
+      const before = store.session(id)!.head;
+      const u = store.append(id, "user", { text: `prompt ${n}` });
+      store.append(id, "assistant", { blocks: [{ type: "text", text: `reply ${n}` }, { type: "tool_use", id: `t${n}`, name: "Bash", input: { command: `echo ${n}` } }], stop: "tool_use" });
+      store.append(id, "tool_result", { results: [{ type: "tool_result", tool_use_id: `t${n}`, content: `out ${n}` }] });
+      if (n % 10 === 0) {
+        const main = store.session(id)!.head!;
+        const edited = store.append(id, "user", { text: `prompt ${n}, edited` }, before);
+        sides.push(store.append(id, "assistant", { blocks: [{ type: "text", text: `side reply ${n}` }], stop: "end_turn" }, edited.id).id);
+        store.updateSession(id, { head: main });
+        expect(u.parent).toBe(before);
+      }
+    }
+    const walked = () => lineage(store.events(id), store.session(id)!.head);
+    const same = () => {
+      const kept = engine.lineage(id), tree = walked();
+      expect(kept.map((e) => e.id)).toEqual(tree.map((e) => e.id));
+      expect(JSON.stringify(toMessages(kept))).toBe(JSON.stringify(toMessages(tree)));
+      return kept;
+    };
+    const warm = same();
+    expect(warm).toHaveLength(360);
+    expect(Object.isFrozen(warm)).toBe(true);
+    // Warm: the same array, and the session's events (all branches) are not read at all.
+    const all = spyOn(store, "events");
+    for (let n = 0; n < 50; n++) expect(engine.lineage(id)).toBe(warm);
+    toMessages(engine.lineage(id));
+    // An append at the head: the branch grows by that event, the events before it are the same objects.
+    const added = store.append(id, "user", { text: "one more" });
+    const grown = engine.lineage(id);
+    expect(grown).toHaveLength(361);
+    expect(grown.at(-1)!.id).toBe(added.id);
+    expect(grown.every((e, i) => i === 360 || e === warm[i])).toBe(true);
+    expect(warm).toHaveLength(360); // a reader that held the branch as it was still has it
+    // Another branch is shown, and the first one again: walked by position, no copy of the session.
+    store.updateSession(id, { head: sides[3]! });
+    expect(engine.lineage(id).at(-1)!.id).toBe(sides[3]!);
+    store.updateSession(id, { head: added.id });
+    expect(engine.lineage(id).map((e) => e.id)).toEqual(grown.map((e) => e.id));
+    expect(all).toHaveBeenCalledTimes(0);
+    all.mockRestore();
+    same();
+    // A sibling branch, an edited prompt, a summary with events kept after it, a clear, its undo.
+    for (const head of sides) { store.updateSession(id, { head }); same(); }
+    store.updateSession(id, { head: added.id });
+    store.append(id, "user", { text: "one more, edited" }, added.parent);
+    same();
+    store.append(id, "assistant", { blocks: [{ type: "text", text: "after the edit" }], stop: "end_turn" });
+    store.append(id, "compaction", { mode: "summary", summary: "what happened", owner_messages: ["prompt 119"], covered: grown[350]!.id });
+    same();
+    store.append(id, "user", { text: "after the summary" });
+    same();
+    const cleared = engine.clear(id);
+    expect(toMessages(same())).toEqual([]);
+    store.append(id, "user", { text: "fresh" });
+    same();
+    store.updateSession(id, { head: cleared.data.undo_head });
+    expect(JSON.stringify(toMessages(same()))).toContain("after the summary");
+    // A write that is undone leaves the kept branch as the table has it.
+    expect(() => store.atomic(id, () => { store.append(id, "user", { text: "never stored" }); throw new Error("undone"); })).toThrow("undone");
+    expect(JSON.stringify(toMessages(same()))).not.toContain("never stored");
+  } finally {
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("tool replay keeps paired results and omits late, unrelated and duplicate results", () => {
   const call = (id: string) => ({ type: "tool_use" as const, id, name: "Read", input: { id } });
   const result = (tool_use_id: string, content: string) => ({ type: "tool_result" as const, tool_use_id, content });

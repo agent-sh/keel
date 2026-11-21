@@ -134,6 +134,11 @@ export class Store {
   // change once written, so each is parsed once. A 2,000-event session is about
   // 2 MB parsed, so only a few sessions are kept.
   private parsed = new SessionMap<StoredEvent[]>(4);
+  // The branch each of those sessions shows, as it was last read: its events
+  // from the first to the head, frozen. A turn asks for it several times a
+  // step; it is walked once, grows by each event appended at its head, and is
+  // walked again only when the session shows another branch.
+  private lines = new SessionMap<{ head: string; events: StoredEvent[] }>(4);
 
   constructor(readonly stateDir: string) {
     mkdirSync(stateDir, { recursive: true });
@@ -199,7 +204,7 @@ export class Store {
     try {
       return this.db.transaction(fn)();
     } catch (e) {
-      this.parsed.delete(session_id);
+      this.forget(session_id);
       throw e;
     }
   }
@@ -303,16 +308,69 @@ export class Store {
     });
     const { n, p } = tx();
     const ev: StoredEvent = { id, session_id, seq: n, parent: p, kind, data, ts };
-    // The cached copy is what a read from the table would give (a JSON round trip).
-    this.parsed.get(session_id)?.push(deepFreeze({ ...ev, data: JSON.parse(text) }));
+    const all = this.parsed.get(session_id);
+    const line = this.lines.get(session_id);
+    if (all || line) {
+      // The cached copy is what a read from the table would give (a JSON round trip).
+      const kept = deepFreeze({ ...ev, data: JSON.parse(text) });
+      all?.push(kept);
+      // The branch that ended at its parent now ends at it. An event on another
+      // parent starts a branch, which is walked when it is asked for.
+      if (line?.head === p) this.lines.set(session_id, { head: id, events: Object.freeze([...line.events, kept]) as StoredEvent[] });
+      else this.lines.delete(session_id);
+    }
     return ev;
+  }
+
+  private forget(session_id: string) {
+    this.parsed.delete(session_id);
+    this.lines.delete(session_id);
+  }
+
+  // The session's parsed events, all branches, as kept: not a copy.
+  private all(session_id: string): StoredEvent[] {
+    let all = this.parsed.get(session_id);
+    if (!all) {
+      all = this.db
+        .query<EventRow, [string]>("SELECT * FROM events WHERE session_id = ? ORDER BY seq")
+        .all(session_id)
+        .map((r) => deepFreeze(rowToEvent(r)));
+      this.parsed.set(session_id, all);
+    }
+    return all;
+  }
+
+  // The branch the session shows (the events from the first to its head),
+  // oldest first: the same events, in the same order, as lineage() of
+  // src/core/tree.ts gives over events(). The array is kept and frozen: the
+  // same one comes back until the head moves, so a reader that asks again pays
+  // nothing, and none may change it. A walk goes back from the head by
+  // position (a parent is always stored before its child), so it copies and
+  // indexes nothing of the other branches.
+  lineage(session_id: string): StoredEvent[] {
+    const head = this.db.query<{ head: string | null }, [string]>("SELECT head FROM sessions WHERE id = ?").get(session_id)?.head ?? null;
+    if (!head) return [];
+    const have = this.lines.get(session_id);
+    if (have?.head === head) return have.events;
+    const all = this.all(session_id);
+    const out: StoredEvent[] = [];
+    let want: string | null = head;
+    for (let at = all.length - 1; want; at--) {
+      while (at >= 0 && all[at]!.id !== want) at--;
+      if (at < 0) break;
+      out.push(all[at]!);
+      want = all[at]!.parent;
+    }
+    const events = Object.freeze(out.reverse()) as StoredEvent[];
+    this.lines.set(session_id, { head, events });
+    return events;
   }
 
   // Every event of the session, all branches, in seq order. With a cursor,
   // only the events after it: a reader that is catching up pays for what it
   // missed, not for the session.
   events(session_id: string, afterSeq = 0): StoredEvent[] {
-    let all = this.parsed.get(session_id);
+    const all = this.parsed.get(session_id);
     if (afterSeq > 0) {
       if (all) return all.slice(firstAfter(all, afterSeq));
       // Not in memory: the (session_id, seq) index finds the rows after the
@@ -322,14 +380,7 @@ export class Store {
         .all(session_id, afterSeq)
         .map((r) => deepFreeze(rowToEvent(r)));
     }
-    if (!all) {
-      all = this.db
-        .query<EventRow, [string]>("SELECT * FROM events WHERE session_id = ? ORDER BY seq")
-        .all(session_id)
-        .map((r) => deepFreeze(rowToEvent(r)));
-      this.parsed.set(session_id, all);
-    }
-    return all.slice();
+    return this.all(session_id).slice();
   }
 
   event(id: string): StoredEvent | undefined {
@@ -356,7 +407,7 @@ export class Store {
       return ses.id;
     });
     const id = tx();
-    this.parsed.delete(id);
+    this.forget(id);
     return this.session(id)!;
   }
 
@@ -389,7 +440,7 @@ export class Store {
       this.db.query("UPDATE sessions SET head = ? WHERE id = ?").run(prev, session_id);
     });
     tx();
-    this.parsed.delete(session_id);
+    this.forget(session_id);
     return prev;
   }
 
