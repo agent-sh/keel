@@ -26,6 +26,9 @@ export function registerCommand(...list: Command[]) {
   subs.forEach((f) => f());
 }
 export const allCommands = () => [...commands.values()].filter((c) => !c.when || c.when());
+// Every command, also the ones that do not apply now: the shortcut sheet is a
+// reference, and a key that works only while a turn runs (Esc stops it) belongs in it.
+export const everyCommand = () => [...commands.values()];
 export const commandsVersion = () => version;
 export const onCommands = (f: () => void) => (subs.add(f), () => void subs.delete(f));
 export const runCommand = (id: string) => commands.get(id)?.run();

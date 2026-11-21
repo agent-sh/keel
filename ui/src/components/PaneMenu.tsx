@@ -30,8 +30,9 @@ function Panes({ id }: { id: string }) {
   );
 }
 
-export function PaneMenu({ id, label, testid, className, children, open, onOpenChange, back }: {
+export function PaneMenu({ id, label, testid, className, children, open, onOpenChange, back, tabIndex }: {
   id: string; label: string; testid: string; className?: string; children: ReactNode;
+  tabIndex?: number; // -1 where the button is reached another way (a list row's actions: Right and Left)
   open?: boolean; onOpenChange?: (open: boolean) => void;
   back?: RefObject<HTMLElement | null>; // where the keys go when the menu closes (default: its button)
 }) {
@@ -55,7 +56,7 @@ export function PaneMenu({ id, label, testid, className, children, open, onOpenC
   }, [shown]);
   return (
     <Menu.Root open={open} onOpenChange={(o) => { setOwn(o); onOpenChange?.(o); }}>
-      <Menu.Trigger aria-label={label} title={label} data-testid={testid} className={className} onClick={(e) => e.stopPropagation()}>{children}</Menu.Trigger>
+      <Menu.Trigger aria-label={label} title={label} data-testid={testid} className={className} tabIndex={tabIndex} onClick={(e) => e.stopPropagation()}>{children}</Menu.Trigger>
       <Menu.Portal>
         <Menu.Positioner sideOffset={6} align="start" className="z-50 outline-none">
           <Menu.Popup ref={popup} className={cn(popupClass, "w-72")} data-testid="pane-menu" aria-label={label} finalFocus={back}>

@@ -111,6 +111,8 @@ registerCommand(
   { id: "new-here", label: "New session in this folder", group: "Sessions", words: "clear fresh", when: () => !!current(), run: () => newIn(current()!.workspace) },
   { id: "next-session", label: "Next session", group: "Sessions", keys: "mod+shift+]", inInput: true, run: () => step(1) },
   { id: "prev-session", label: "Previous session", group: "Sessions", keys: "mod+shift+[", inInput: true, run: () => step(-1) },
+  // From anywhere to the list in one key: the row of the session on screen, else the first. Up and Down move, Enter opens.
+  { id: "focus-list", label: "Focus the session list", group: "Sessions", keys: "alt+l", inInput: true, words: "sidebar rows keyboard jump", run: () => (document.querySelector<HTMLElement>('[data-testid="session-list"] [data-testid="session-row"][aria-current="page"]') ?? document.querySelector<HTMLElement>('[data-testid="session-list"] [data-testid="session-row"]'))?.focus() },
   { id: "sidebar", label: "Show or fold the session list", group: "View", keys: "mod+b", inInput: true, words: "sidebar rail toggle", run: () => toggleList() },
   { id: "text-bigger", label: "Bigger text", group: "View", keys: "mod+= mod+shift+=", inInput: true, words: "zoom font size larger letters", run: () => stepScale(1) },
   { id: "text-smaller", label: "Smaller text", group: "View", keys: "mod+-", inInput: true, words: "zoom font size letters", run: () => stepScale(-1) },

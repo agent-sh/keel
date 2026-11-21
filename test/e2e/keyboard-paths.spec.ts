@@ -138,3 +138,73 @@ test("a new session starts in the folder of the session being worked in", async 
 
   for (const id of [a, b, made]) { await request.post(`/api/sessions/${id}/interrupt`); await request.delete(`/api/sessions/${id}`); }
 });
+
+test("Esc is in the shortcut sheet and a session row is one Tab stop", async ({ page, request }) => {
+  await scripted(request);
+  const ws = folder("rows");
+  const ids: string[] = [];
+  for (const n of ["one", "two", "three"]) ids.push(await create(request, `Row ${n}`, ws));
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await page.addInitScript(() => localStorage.setItem("keel.focus", "true")); // one pane: the list is open beside it
+  await page.goto(`/s/${ids[1]}`);
+  await expect(page.getByTestId("composer")).toBeFocused();
+
+  // The sheet is a reference: Esc stops a turn, listed also while none runs.
+  await page.keyboard.press("Control+/");
+  const sheet = page.getByTestId("shortcuts");
+  await expect(sheet.locator("div").filter({ hasText: /^Stop the turnEsc$/ })).toBeVisible();
+  await expect(sheet.locator("div").filter({ hasText: /^Focus the session listAltL$/ })).toBeVisible();
+  await shoot(page, "keyboard-paths-08-sheet-esc");
+  await page.keyboard.press("Escape");
+
+  // One key from the box to the list: the row of the session on screen.
+  const rows = page.getByTestId("session-list").locator('[data-testid="session-row"]');
+  const row = (id: string) => page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${id}"]`);
+  await page.keyboard.press("Alt+l");
+  await expect(row(ids[1]!)).toBeFocused();
+  // Tab leaves the row for the next one: its own buttons are not stops.
+  const order = await rows.evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.session));
+  const at = order.indexOf(ids[1]);
+  await page.keyboard.press("Tab");
+  await expect(row(order[at + 1]!)).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(row(ids[1]!)).toBeFocused();
+  // Right reaches a row's actions, Left comes back; Up and Down move by rows from either.
+  const next = row(order[at + 1]!); // not on screen: it can open beside
+  await page.keyboard.press("ArrowDown");
+  await expect(next).toBeFocused();
+  await page.keyboard.press("ArrowRight");
+  await expect(next.getByTestId("row-beside")).toBeFocused();
+  await page.keyboard.press("ArrowRight");
+  await expect(next.getByTestId("row-archive")).toBeFocused();
+  await shoot(page, "keyboard-paths-09-row-actions");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  await expect(next).toBeFocused();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowUp");
+  await expect(row(ids[1]!)).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  // Enter opens it, and Shift Esc is back in the message box.
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(new RegExp(`/s/${order[at + 1]}$`));
+  await page.keyboard.press("Shift+Escape");
+  await expect(page.getByTestId("composer")).toBeFocused();
+
+  // With a second pane a row has a third action (place it in a pane): still one Tab stop, and Right reaches all three.
+  await page.getByTestId("panes-2").click();
+  const off = page.getByTestId("session-list").locator('[data-testid="session-row"]:not([data-shown])').first();
+  await off.focus();
+  for (const act of ["row-beside", "row-place", "row-archive"]) {
+    await page.keyboard.press("ArrowRight");
+    await expect(off.getByTestId(act)).toBeFocused();
+  }
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  await expect(off).toBeFocused();
+  await page.keyboard.press("Tab");
+  expect(await off.evaluate((el) => el.contains(document.activeElement))).toBe(false);
+
+  for (const id of ids) await request.delete(`/api/sessions/${id}`);
+});

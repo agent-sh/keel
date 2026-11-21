@@ -74,12 +74,23 @@ function useCard() {
   return { card, bind, hide };
 }
 
-// Up and Down step through the entries, Home and End reach the ends.
+// Up and Down step through the entries, Home and End reach the ends. A row is
+// one Tab stop: Right goes to its own actions (open beside, archive), Left
+// comes back to it.
 function stepRows(e: KeyboardEvent<HTMLElement>) {
-  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key) || e.altKey || e.ctrlKey || e.metaKey) return;
+  if (!["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key) || e.altKey || e.ctrlKey || e.metaKey) return;
   const rows = [...e.currentTarget.querySelectorAll<HTMLElement>('[data-testid="session-row"]')];
-  const i = rows.indexOf(document.activeElement as HTMLElement);
+  const at = document.activeElement as HTMLElement;
+  const row = at.closest<HTMLElement>('[data-testid="session-row"]');
+  const i = row ? rows.indexOf(row) : -1;
   if (i < 0) return;
+  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+    const stops = [row!, ...row!.querySelectorAll<HTMLElement>(".k-row-act")];
+    if (stops.length < 2 || !stops.includes(at)) return;
+    e.preventDefault();
+    stops[stops.indexOf(at) + (e.key === "ArrowRight" ? 1 : -1)]?.focus();
+    return;
+  }
   e.preventDefault();
   (e.key === "Home" ? rows[0] : e.key === "End" ? rows.at(-1) : rows[i + (e.key === "ArrowDown" ? 1 : -1)])?.focus();
 }
@@ -146,17 +157,19 @@ function Row({ s, active, where }: { s: Session; active: boolean; where?: boolea
         ? <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-live title={st.until ? `Due ${when(st.until)}` : `Since ${when(st.since!)}`}>{stateClock(st, now, true)}</span>
         : <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" title={when(s.updated)}>{ago(s.updated)}</span>}
       {!restore && !shown && !phone() && (
-        <button type="button" title="Open beside, in a new pane (Ctrl click)" aria-label="Open beside" data-testid="row-beside" onClick={(e) => { e.stopPropagation(); openBeside(s.id); }} className="k-row-act hidden group-hover:grid group-focus-within:grid">
+        <button type="button" tabIndex={-1} title="Open beside, in a new pane (Ctrl click)" aria-label="Open beside" data-testid="row-beside" onClick={(e) => { e.stopPropagation(); openBeside(s.id); }} className="k-row-act hidden group-hover:grid group-focus-within:grid">
           <Columns2 />
         </button>
       )}
       {!restore && panes > 1 && !phone() && (
-        <PaneMenu id={s.id} label="Place in a pane (Shift Enter)" testid="row-place" open={placing} onOpenChange={setPlacing} back={row} className="k-row-act hidden group-hover:grid group-focus-within:grid data-popup-open:grid">
+        <PaneMenu id={s.id} label="Place in a pane (Shift Enter)" testid="row-place" tabIndex={-1} open={placing} onOpenChange={setPlacing} back={row} className="k-row-act hidden group-hover:grid group-focus-within:grid data-popup-open:grid">
           <PanelsTopLeft />
         </PaneMenu>
       )}
       <button
         type="button"
+        tabIndex={-1}
+        data-testid="row-archive"
         title={restore ? "Restore" : "Archive"}
         aria-label={restore ? "Restore session" : "Archive session"}
         onClick={(e) => {

@@ -1,7 +1,7 @@
 import { Dialog } from "@base-ui/react/dialog";
 import { Keyboard, X } from "lucide-react";
 import { useSyncExternalStore } from "react";
-import { allCommands, commandsVersion, onCommands, QUEUE_KEYS, SEND_KEYS } from "../lib/keys.ts";
+import { commandsVersion, everyCommand, onCommands, QUEUE_KEYS, SEND_KEYS } from "../lib/keys.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { Kbd } from "./Kbd.tsx";
 
@@ -22,7 +22,7 @@ export function ShortcutList() {
   useSyncExternalStore(onCommands, commandsVersion);
   const enterSends = useUI((s) => s.enterSends);
   const rows: [string, string, string][] = [
-    ...allCommands().filter((c) => c.keys).map((c) => [c.group ?? "General", c.label, c.keys!] as [string, string, string]),
+    ...everyCommand().filter((c) => c.keys).map((c) => [c.group ?? "General", c.label, c.keys!] as [string, string, string]),
     ...fixed(enterSends),
   ];
   const groups = [...new Set(rows.map((r) => r[0]))];
