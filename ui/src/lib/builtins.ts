@@ -34,6 +34,13 @@ const newIn = (ws?: string) => {
   if (ws) savePref("newWorkspace", ws);
   navigate({ name: "new" });
 };
+// A new session starts where the owner is working: in the folder of the session on
+// screen. Not from a session on another machine (its folder is not one of this
+// machine's) or one whose folder is gone; from the start page the folder chosen there stays.
+export const newSession = () => {
+  const s = current();
+  newIn(s && !s.machine && !s.workspace_gone ? s.workspace : undefined);
+};
 // The last turn's reply on the branch on screen (a previewed one included),
 // all of its text around its tool calls: what its footer's Copy gives.
 const lastReply = (id: string): string | Promise<string> => {
@@ -100,7 +107,7 @@ registerCommand(
   { id: "panel-close", label: "Close the side panel", group: "View", keys: "mod+\\", inInput: true, when: () => !!getUI().panel, run: () => savePref("panel", null) },
   { id: "palette", label: "Search sessions and commands", group: "General", keys: "mod+k", inInput: true, run: () => setUI({ palette: !getUI().palette }) },
   { id: "shortcuts", label: "Keyboard shortcuts", group: "General", keys: "mod+/", inInput: true, run: () => setUI({ shortcuts: !getUI().shortcuts }) },
-  { id: "new-session", label: "New session", group: "Sessions", keys: "mod+shift+o", inInput: true, words: "start create", run: () => newIn() },
+  { id: "new-session", label: "New session", group: "Sessions", keys: "mod+shift+o", inInput: true, words: "start create", run: newSession },
   { id: "new-here", label: "New session in this folder", group: "Sessions", words: "clear fresh", when: () => !!current(), run: () => newIn(current()!.workspace) },
   { id: "next-session", label: "Next session", group: "Sessions", keys: "mod+shift+]", inInput: true, run: () => step(1) },
   { id: "prev-session", label: "Previous session", group: "Sessions", keys: "mod+shift+[", inInput: true, run: () => step(-1) },
@@ -156,7 +163,7 @@ slash.add(
     },
   },
   { id: "clear", label: "Start fresh in this folder", run: (_a, { session }) => newIn(session?.workspace) },
-  { id: "new", label: "New session", run: () => newIn() },
+  { id: "new", label: "New session", run: newSession },
   { id: "rename", label: "Rename this session", hint: "<title>", when: ({ session }) => !!session, run: (arg, { session }) => { if (session && arg) return actions.patch(session.id, { title: arg }).then(() => {}); } },
   { id: "archive", label: "Archive this session", when: ({ session }) => !!session, run: (_a, { session }) => { actions.patch(session!.id, { archived: true }).catch(reportError); navigate({ name: "new" }); } },
   { id: "stop", label: "Stop the turn", when: ({ session }) => session?.phase === "working", run: (_a, { session }) => actions.interrupt(session!.id).then(() => {}) },

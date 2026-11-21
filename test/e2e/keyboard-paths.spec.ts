@@ -104,3 +104,37 @@ test("End, Page Up and Page Down scroll the conversation from an empty message b
   await page.keyboard.press("Escape");
   await request.delete(`/api/sessions/${id}`);
 });
+
+test("a new session starts in the folder of the session being worked in", async ({ page, request }) => {
+  await scripted(request);
+  const one = folder("ws-one"), two = folder("ws-two");
+  const a = await create(request, "Works in the first folder", one);
+  const b = await create(request, "Works in the second folder", two); // the folder used last
+  const name = (ws: string) => ws.split("/").pop()!;
+  const picker = page.getByTestId("workspace-picker");
+
+  // From a session in the first folder, the key: the start box is on that folder, not on the one used last.
+  await page.goto(`/s/${a}`);
+  await expect(page.getByTestId("composer")).toBeFocused();
+  await page.keyboard.press("Control+Shift+O");
+  await expect(page).toHaveURL(/\/$/);
+  await expect(picker).toContainText(name(one));
+  await expect(page.getByTestId("composer")).toBeFocused();
+  await shoot(page, "keyboard-paths-07-new-in-folder");
+  // The session made there is in it.
+  await page.getByTestId("composer").fill("script:quiet");
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/s\//);
+  const made = page.url().split("/s/")[1]!;
+  expect((await (await request.get(`/api/sessions/${made}`)).json()).session.workspace).toBe(one);
+
+  // The list's button does the same from a session in the second folder.
+  await page.goto(`/s/${b}`);
+  await page.getByTestId("new-session").click();
+  await expect(picker).toContainText(name(two));
+  // From the start page itself the folder stays the one chosen.
+  await page.keyboard.press("Control+Shift+O");
+  await expect(picker).toContainText(name(two));
+
+  for (const id of [a, b, made]) { await request.post(`/api/sessions/${id}/interrupt`); await request.delete(`/api/sessions/${id}`); }
+});

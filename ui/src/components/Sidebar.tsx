@@ -7,6 +7,7 @@
 import { Archive, ArchiveRestore, Bug, Columns2, Folder, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, Plus, Search, Settings, Sparkles, Sun, SunMoon, Tag } from "lucide-react";
 import { createContext, Fragment, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
+import { runCommand } from "../lib/keys.ts";
 import { machineName, useFleet } from "../lib/fleet.ts";
 import { stations, useStations } from "../lib/stations.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
@@ -580,7 +581,7 @@ export function Sidebar({ open }: { open: boolean }) {
       <div className="k-rail-acts">
         {!open && toggle}
         {!open && <PaneCount />}
-        <button type="button" className="k-new-session k-act" data-testid="new-session" aria-label={newUnsent ? `New session, ${NEW_UNSENT[newUnsent].line}` : "New session"} title={newUnsent ? NEW_UNSENT[newUnsent].title : "New session (Ctrl Shift O)"} aria-current={route.name === "new" ? "page" : undefined} onClick={() => navigate({ name: "new" })}>
+        <button type="button" className="k-new-session k-act" data-testid="new-session" aria-label={newUnsent ? `New session, ${NEW_UNSENT[newUnsent].line}` : "New session"} title={newUnsent ? NEW_UNSENT[newUnsent].title : "New session (Ctrl Shift O)"} aria-current={route.name === "new" ? "page" : undefined} onClick={() => runCommand("new-session")}>
           <Plus /><span className="k-act-label">New session</span>
           {/* A first message kept in the New box, which nobody may be looking at: said here, in words when the list is open (in the shortcut's place). */}
           {newUnsent && <span data-testid="new-unsent-mark" className="k-act-mark">{NEW_UNSENT[newUnsent].word}</span>}
