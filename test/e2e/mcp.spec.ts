@@ -7,11 +7,23 @@ const FIXTURE = `${import.meta.dirname}/fixtures/echo-mcp.ts`;
 // its tools, turn it off and on, reconnect it, then a model finds its tool
 // with ToolSearch (a tool_reference loads it, the cached prefix unchanged) and
 // calls it by its own name, mcp__echo__echo, as Claude Code names MCP tools.
+// However a test here ends (a step that failed, a timeout), it leaves nothing
+// on the daemon for the tests after it: not its echo server (the same command
+// under another name is one endpoint to an import) and not the permission
+// default it set.
+let modeBefore: string | undefined;
+test.afterEach(async ({ request }) => {
+  await request.delete("/api/mcp/servers/echo").catch(() => {});
+  if (modeBefore !== undefined) await request.put("/api/permissions/settings", { data: { default_mode: modeBefore } });
+  modeBefore = undefined;
+});
+
 test("mcp servers", async ({ page, request }) => {
   await request.delete("/api/mcp/servers/echo").catch(() => {});
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   // This feature is the tools, not the approval cards: run them without asking.
   const prev = (await (await request.get("/api/permissions/settings")).json()).default_mode;
+  modeBefore = prev;
   await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
 
   // Opened with the slash command (the palette path is in the chrome spec).
@@ -170,10 +182,12 @@ test("mcp import from other agents", async ({ page, request }) => {
   const home = imp.home as string;
   const tag = Date.now().toString(36);
   const names = [`ec${tag}`, `cx${tag}`, `hm${tag}`, `gm${tag}`];
-  // Every copy that follows a source on this scratch daemon is this spec's (an earlier run's included).
+  // Every copy that follows a source on this scratch daemon is this spec's (an earlier run's included),
+  // and so is every server that runs the echo fixture: one left by another test is the same endpoint
+  // as the one imported here, and Import all would pass it over as already in Keel.
   const clear = async () => {
     const all = (await (await request.get("/api/mcp/servers")).json()).servers as any[];
-    for (const s of all) if (s.sync || names.includes(s.name)) await request.delete(`/api/mcp/servers/${s.name}`).catch(() => {});
+    for (const s of all) if (s.sync || names.includes(s.name) || String(s.target ?? "").includes(FIXTURE)) await request.delete(`/api/mcp/servers/${s.name}`).catch(() => {});
   };
   await clear();
   rmSync(join(home, ".codex"), { recursive: true, force: true });
