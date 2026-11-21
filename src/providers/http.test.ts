@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { classify, ProviderError, streamEvents } from "./http.ts";
+import { type Wire, wireScope } from "./wiretap.ts";
 
 // A stream that sends one event and then nothing is cut after the idle
 // timeout as a retryable network failure, not left hanging.
@@ -24,6 +25,22 @@ test("a stalled stream is cut as a retryable failure", async () => {
     server.stop(true);
   }
 }, 3000);
+
+// The wire record's size of the body is what went on the wire: UTF-8 bytes.
+test("the wire record counts the request body in bytes", async () => {
+  let got = 0;
+  const server = Bun.serve({ port: 0, fetch: async (r) => { got = (await r.arrayBuffer()).byteLength; return new Response("data: {}\n\n", { headers: { "content-type": "text/event-stream" } }); } });
+  try {
+    const tap: Wire = {};
+    await wireScope.run(tap, async () => {
+      for await (const _ of streamEvents({ label: "stub", url: `http://127.0.0.1:${server.port}/`, headers: {}, body: { text: "h\u00e9llo \u20ac" }, signal: new AbortController().signal })) {}
+    });
+    expect(got).toBe(JSON.stringify({ text: "hello E" }).length + 3);
+    expect(tap.body_bytes).toBe(got);
+  } finally {
+    server.stop(true);
+  }
+});
 
 // A request over the model's window is refused in each provider's own words;
 // all of them must read as an overflow (the turn compacts and goes on).

@@ -142,7 +142,7 @@ async function* stream(o: StreamOpts, guard: ReturnType<typeof idleGuard>): Asyn
     try {
       const body = JSON.stringify(o.body);
       const sent = { "content-type": "application/json", accept: o.format === "json_array" ? "application/json" : "text/event-stream", ...headers, ...o.sign?.(body) };
-      if (w) Object.assign(w, { method: "POST", url: safeUrl(o.url), req_headers: redactHeaders(sent), body_bytes: body.length, transport: "http", resent_after_auth: renewed || undefined });
+      if (w) Object.assign(w, { method: "POST", url: safeUrl(o.url), req_headers: redactHeaders(sent), body_bytes: Buffer.byteLength(body), transport: "http", resent_after_auth: renewed || undefined });
       res = await fetch(o.url, { method: "POST", headers: sent, body, signal: guard.signal });
     } catch (e) {
       const stalled = guard.stalled();

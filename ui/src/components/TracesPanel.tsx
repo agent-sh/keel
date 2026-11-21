@@ -168,7 +168,7 @@ function Detail({ s, onReplayed, onOpen }: { s: Span; onReplayed: () => void; on
         <Fact k="Stop" v={a.result?.stop ?? a.reason} />
         <Fact k="Tokens" v={u ? `${u.input} in, ${u.cache_read} cached, ${u.cache_write} written, ${u.output} out` : undefined} />
         <Fact k="Sent" v={a.shape ? `${a.shape.messages} message${a.shape.messages === 1 ? "" : "s"}, ${a.shape.tools} tools, ${a.shape.system_chars} system chars${a.shape.effort ? `, effort ${a.shape.effort}` : ""}` : undefined} />
-        <Fact k="Tool input" v={a.input_keys ? `${a.input_keys.join(", ") || "none"} (${a.input_bytes} chars), ${a.result_bytes} chars out` : undefined} />
+        <Fact k="Tool input" v={a.input_keys ? `${a.input_keys.join(", ") || "none"} (${a.input_bytes} bytes), ${a.result_bytes} bytes out` : undefined} />
         <Fact k="Span" v={s.span_id} mono />
         <Fact
           k="Started by"

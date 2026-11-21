@@ -78,7 +78,7 @@ export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { mark
       const a = x.attrs;
       const extra = x.kind === "request"
         ? [a.route, `attempt ${a.attempt}`, a.ttft_ms !== undefined ? `first token ${dur(a.ttft_ms)}` : "", a.wire?.status ? `HTTP ${a.wire.status}` : "", a.result ? `${a.result.stop}, in ${a.result.usage?.input ?? 0}+${a.result.usage?.cache_read ?? 0} cached, out ${a.result.usage?.output ?? 0}` : ""]
-        : x.kind === "tool" ? [`call ${a.call_id}`, `${a.result_bytes} chars out`] : [a.reason ? `ended: ${a.reason}` : ""];
+        : x.kind === "tool" ? [`call ${a.call_id}`, `${a.result_bytes} bytes out`] : [a.reason ? `ended: ${a.reason}` : ""];
       return `${mark} +${((x.start_ms - t0) / 1000).toFixed(2).padStart(7)}s ${indent}${x.name.padEnd(28)} ${dur(x.end_ms === null ? null : x.end_ms - x.start_ms).padStart(9)}  ${x.status}${x.error_type ? ` (${x.error_type})` : ""}  ${extra.filter(Boolean).join(", ")}  [span ${x.span_id}]`;
     });
     out.push(fence(lines.join("\n")), "");
@@ -132,7 +132,7 @@ function failingSection(f: Span): string[] {
     if (w.req_headers) out.push("", "Request headers (credentials shown by length only):", "", fence(JSON.stringify(w.req_headers, null, 2), "json"));
     if (w.error_body) out.push("", "Answer body:", "", fence(w.error_body));
   } else if (f.kind === "request") out.push("", "Wire: no HTTP record (a scripted, plugin or WebSocket driver, or the call failed before it was sent).");
-  if (a.input_keys) out.push("", `Tool input keys: ${a.input_keys.join(", ") || "none"}; ${a.input_bytes} chars in, ${a.result_bytes} out.`);
+  if (a.input_keys) out.push("", `Tool input keys: ${a.input_keys.join(", ") || "none"}; ${a.input_bytes} bytes in, ${a.result_bytes} out.`);
   out.push("");
   return out;
 }

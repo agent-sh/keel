@@ -61,8 +61,8 @@ export const SPAN_DAYS = 14;
 // How many traces a list returns: when the caller names no number, and at most.
 export const TRACE_LIST = 50;
 export const TRACE_LIST_MAX = 200;
-// A request larger than this (images inline) is not kept for replay.
-const KEEP_REQUEST_BYTES = 16 * 1024 * 1024;
+// A request larger than this as UTF-8 (images inline) is not kept for replay.
+export const KEEP_REQUEST_BYTES = 16 * 1024 * 1024;
 
 const hex = (n: number) => Array.from(crypto.getRandomValues(new Uint8Array(n)), (b) => b.toString(16).padStart(2, "0")).join("");
 export const traceIdOf = (turnEvent: string) => turnEvent.replace(/-/g, "").toLowerCase();
@@ -96,7 +96,8 @@ export function turnPlace(turnEvent: string, spawn: { trace: string; span: strin
   return { trace: own, span, parent: null, links: [{ trace_id: spawn.trace, span_id: spawn.span }] };
 }
 
-// What a request carries, by count and size, never its text.
+// What a request carries, by count and size, never its text. Bytes are UTF-8
+// bytes of the JSON, as they go on the wire, not UTF-16 units of the string.
 export function requestShape(req: Pick<ProviderRequest, "system" | "messages" | "tools" | "effort" | "maxTokens" | "purpose" | "speed">) {
   const roles: Record<string, number> = {};
   const blocks: Record<string, number> = {};
@@ -105,7 +106,7 @@ export function requestShape(req: Pick<ProviderRequest, "system" | "messages" | 
     roles[m.role] = (roles[m.role] ?? 0) + 1;
     const content = Array.isArray(m.content) ? m.content : [{ type: "text" }];
     for (const b of content as any[]) blocks[b.type] = (blocks[b.type] ?? 0) + 1;
-    bytes += JSON.stringify(m.content).length;
+    bytes += Buffer.byteLength(JSON.stringify(m.content));
   }
   const last = req.messages.at(-1);
   return {
@@ -309,7 +310,7 @@ export class Tracer {
       "INSERT OR REPLACE INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, error, error_type, attrs) VALUES (?, ?, ?, ?, 'tool', ?, ?, ?, ?, ?, ?, ?)",
       [span, parent?.trace ?? hex(16), parent?.span ?? null, s.id, `execute_tool ${name}`, now - ran.ms, now, ran.outcome, ran.outcome === "error" ? conceal(content.slice(0, 1000), s.id) : null,
         ran.outcome === "error" ? "tool_error" : null,
-        JSON.stringify({ tool: name, call_id: callId, input_keys: input && typeof input === "object" ? Object.keys(input) : [], input_bytes: inputJson.length, result_bytes: content.length, ...(turn ? { turn_event: turn.id } : {}) })],
+        JSON.stringify({ tool: name, call_id: callId, input_keys: input && typeof input === "object" ? Object.keys(input) : [], input_bytes: Buffer.byteLength(inputJson), result_bytes: Buffer.byteLength(content), ...(turn ? { turn_event: turn.id } : {}) })],
     );
     this.emitEnd(span);
   }
@@ -370,7 +371,7 @@ export class Tracer {
 export function packRequest(req: ProviderRequest): Uint8Array | null {
   const { signal: _s, onHeaders: _h, ...rest } = req;
   const body = JSON.stringify({ ...rest, ...(rest.extraHeaders ? { extraHeaders: redactHeaders(rest.extraHeaders) } : {}) });
-  return body.length > KEEP_REQUEST_BYTES ? null : gzipSync(body);
+  return Buffer.byteLength(body) > KEEP_REQUEST_BYTES ? null : gzipSync(body);
 }
 
 export type { Message };
