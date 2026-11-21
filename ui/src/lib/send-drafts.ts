@@ -118,19 +118,26 @@ const cutSend = (key: string) =>
 // resend.ts sends what waits; it is told when a cut send starts to.
 export const onCutSend: { waiting?: () => void } = {};
 const watched = new Set<string>();
-function watch(key: string, id: string) {
+// Nobody waits for this send's answer any more: it is cut, unless the page
+// that sent it has stored what became of it meanwhile.
+function cutIfOut(key: string, id: string) {
+  let stored: Stored[] = [];
+  try { stored = JSON.parse(localStorage.getItem(STORE + key) ?? "[]"); } catch { /* unreadable: the storage event says */ }
+  const mine = sendDrafts(key).find((d) => d.id === id);
+  if (own.has(id) || mine?.state !== "sending" || !Array.isArray(stored) || stored.find((d) => d?.id === id)?.state !== "sending") return;
+  setSendDraft(key, id, { ...mine, ...cutSend(key) });
+  if (namedSends(key)) onCutSend.waiting?.();
+}
+// `boot`: the item was found as this page loaded. A browser that has Web
+// Locks and refuses the request (a page it gives no lock manager to) cannot
+// say whether the sender lives: a page that just loaded then takes the send
+// for cut, as one without Web Locks does, instead of leaving it out for good.
+function watch(key: string, id: string, boot = false) {
   if (!locks || own.has(id) || watched.has(id)) return;
   watched.add(id);
-  locks.request(LOCK + id, { mode: "shared" }, () => {
-    watched.delete(id);
-    // The page that sent it wrote what became of it before it let the lock go.
-    let stored: Stored[] = [];
-    try { stored = JSON.parse(localStorage.getItem(STORE + key) ?? "[]"); } catch { /* unreadable: the storage event says */ }
-    const mine = sendDrafts(key).find((d) => d.id === id);
-    if (own.has(id) || mine?.state !== "sending" || !Array.isArray(stored) || stored.find((d) => d?.id === id)?.state !== "sending") return;
-    setSendDraft(key, id, { ...mine, ...cutSend(key) });
-    if (namedSends(key)) onCutSend.waiting?.();
-  }).catch(() => {});
+  // Granted: the page that sent it wrote what became of it before it let the lock go.
+  locks.request(LOCK + id, { mode: "shared" }, () => { watched.delete(id); cutIfOut(key, id); })
+    .catch(() => { watched.delete(id); if (boot) cutIfOut(key, id); });
 }
 
 // `boot`: this page has just loaded. Without Web Locks a request marked as
@@ -175,7 +182,7 @@ for (let i = 0; i < localStorage.length; i++) {
   const key = k.slice(STORE.length);
   const list = read(key, localStorage.getItem(k), true);
   if (list.length) drafts.set(key, list);
-  for (const d of list) if (d.state === "sending") watch(key, d.id);
+  for (const d of list) if (d.state === "sending") watch(key, d.id, true);
 }
 // Another tab changed a shelf: take its list, beside what this page is sending.
 window.addEventListener("storage", (e) => {

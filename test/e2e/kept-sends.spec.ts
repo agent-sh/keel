@@ -168,6 +168,23 @@ test("a send whose tab was closed is taken up by a tab still open", async ({ pag
   await request.delete(`/api/sessions/${a}`);
 });
 
+// A browser that has Web Locks and refuses them to the page: a send the
+// reload cut is not left hidden for good. The page that loads takes it for
+// cut, as a browser without Web Locks does, and sends it again under its id.
+test("a send cut by a reload goes out again where the browser refuses the lock", async ({ page, request }) => {
+  const a = (await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Send cut, no lock" } })).json()).session.id as string;
+  await page.addInitScript((sid) => {
+    navigator.locks.request = (() => Promise.reject(new DOMException("no lock manager for this page", "SecurityError"))) as typeof navigator.locks.request;
+    if (!sessionStorage.getItem("seeded")) localStorage.setItem(`keel.sends.${sid}`, JSON.stringify([{ id: "cut-by-reload", text: "Sent just before the reload.", images: [], queue: false, state: "sending" }]));
+    sessionStorage.setItem("seeded", "1");
+  }, a);
+  await page.goto(`/s/${a}`);
+  await expect(page.getByTestId("user-message").filter({ hasText: "Sent just before the reload." })).toHaveCount(1, { timeout: 20_000 });
+  await expect(saved(page)).toHaveCount(0);
+  expect((await (await request.get(`/api/sessions/${a}/sends/cut-by-reload`)).json()).stored).toBe(true);
+  await request.delete(`/api/sessions/${a}`);
+});
+
 // EXTRA-S15. After a reload a kept send's image is read back from the
 // session's draft. A read that failed (the daemon was restarting) is made
 // again when the page reconnects: until then Retry and Restore wait.
