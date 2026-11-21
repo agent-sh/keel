@@ -191,15 +191,21 @@ test("the owner's steer into a harness turn of a held parent ends the hold", asy
 // speech is the owner's word: the hold ends and the next report arrives.
 test("a momentum steer carries a held parent's reports, and the owner's speech ends the hold", async () => {
   const { p, lanes } = await heldWith("spoken", 2);
+  let open!: () => void;
+  gate = new Promise<void>((r) => (open = r));
+  const c = await lane(p.id, "spoken lane c"); // still at work when the steer goes in
   const sent = handleLine(JSON.stringify({ cmd: "supervise_act", session_id: p.id, action: "steer", text: "look at lane 0" }), { store, engine, deliver: core.deliver });
   expect(sent).toMatchObject({ ok: true });
   await quiet(p.id);
   expect(engine.isHeld(p.id)).toBe(true);
   expect(inputs(p.id).at(-1)).toMatchObject({ reports: lanes.map((l) => l.id) });
   expect(inputs(p.id).at(-1)!.text).toStartWith("[momentum] look at lane 0");
+  // A held parent is not told a report will wake it: it will not.
+  expect(inputs(p.id).at(-1)!.text).toEndWith("1 more of your agents is still running; the owner stopped this session, so its report does not wake you: it comes with your next input.");
   expect(owed(p.id)).toBe(0);
 
-  const c = await lane(p.id, "spoken lane c");
+  open();
+  gate = undefined;
   await c.ended();
   await quiet(p.id);
   expect(reports(p.id)).toHaveLength(2); // it rides

@@ -3,7 +3,7 @@ import type { Store } from "../core/store.ts";
 import type { Session, ToolResultBlock } from "../core/types.ts";
 import type { TurnHooks } from "../engine/hooks.ts";
 import { errorText } from "../engine/retry.ts";
-import { D, capture, clip, deliver, isPending, rider, type Pending } from "./core.ts";
+import { D, capture, clip, deliver, isPending, rider, stillRunning, type Pending } from "./core.ts";
 import { cutTurn } from "./waits.ts";
 import { acked, add, classOf, cleared, fingerprintOf, render, room, settledBy, SELF, type Failure, type FailureGroup, type FailureKind, type Told } from "./failure-groups.ts";
 
@@ -190,7 +190,7 @@ function notice(sessionId: string, parts: Record<string, unknown>[] = []): Pendi
   if (r.agents) {
     const left = store.db.query<{ n: number }, [string]>(AGENTS_LEFT).get(sessionId)!.n;
     if (!left) tail = notes.get(sessionId) ?? "";
-    else if (!reports.length) tail = `\n${left} more of your agents ${left === 1 ? "is" : "are"} still running; ${left === 1 ? "its report wakes" : "their reports wake"} you when ready, so end your turn unless you have other work.`;
+    else if (!reports.length) tail = stillRunning(left, D().engine.isHeld(sessionId));
   }
   return {
     text: r.text + tail,

@@ -176,6 +176,14 @@ export function afterTurn(sessionId: string, then?: () => void) {
   });
 }
 
+// Said after a report or a failure notice while other agents of the session
+// still run (models set timers to wait for the rest). In a session held after
+// the owner's Stop a report starts no turn, so it is not said to wake it.
+export const stillRunning = (left: number, held: boolean) =>
+  `\n${left} more of your agents ${left === 1 ? "is" : "are"} still running; ${held
+    ? `the owner stopped this session, so ${left === 1 ? "its report does" : "their reports do"} not wake you: ${left === 1 ? "it comes" : "they come"} with your next input.`
+    : `${left === 1 ? "its report wakes" : "their reports wake"} you when ready, so end your turn unless you have other work.`}`;
+
 // Text a model or a webhook wrote is put inside a frame it cannot close.
 export function inert(text: string, tag: string): string {
   return text.replace(new RegExp(`<(\\s*/?\\s*${tag})`, "gi"), "&lt;$1");

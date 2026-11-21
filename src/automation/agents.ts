@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { lineage } from "../core/tree.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
-import { D, attr, capture, deliver, dropPending, emit, hasPending, inert, isPending, takeRiding, withdraw } from "./core.ts";
+import { D, attr, capture, deliver, dropPending, emit, hasPending, inert, isPending, stillRunning, takeRiding, withdraw } from "./core.ts";
 import * as perm from "../server/routes/permissions.ts";
 import * as waits from "./waits.ts";
 import * as activity from "./activity.ts";
@@ -785,7 +785,7 @@ function handback(a: AgentRecord, grouped = false) {
 function tail(parentId: string): { text: string; timers: string[] } {
   const mine = list(parentId);
   const left = mine.filter((o) => !isEnded(o) && o.type !== "reviewer").length;
-  if (left) return { text: `\n${left} more of your agents ${left === 1 ? "is" : "are"} still running; ${left === 1 ? "its report wakes" : "their reports wake"} you when ready, so end your turn unless you have other work.`, timers: [] };
+  if (left) return { text: stillRunning(left, D().engine.isHeld(parentId)), timers: [] };
   const during = (t: number) => mine.some((o) => o.created <= t && (o.ended ?? Date.now()) >= t);
   const timers = waits.list(parentId, 0).filter((w) => w.status === "active" && w.kind === "timer" && during(w.created)).map((w) => w.id);
   return { text: timers.length ? `\nThe timer wait${timers.length > 1 ? "s" : ""} ${timers.join(", ")} you set while your agents ran ${timers.length > 1 ? "are" : "is"} cancelled now that their reports are in; set a new one if it was for something else.` : "", timers };
