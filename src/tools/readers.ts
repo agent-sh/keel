@@ -6,15 +6,17 @@
 // style name, the other families a snake_case one.
 import { mkdirSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { READ_WHOLE_CHARS, wholeText, type Material } from "../engine/reader.ts";
+import { READ_WHOLE_CHARS, READERS_AT_ONCE, wholeText, type Material } from "../engine/reader.ts";
 import { coverageNote } from "../engine/readers.ts";
 import { readText } from "../core/proc.ts";
 import { spill } from "./spill.ts";
 import { fail, ok, type Tool, type ToolContext, type ToolOutput } from "./types.ts";
-import { webFetch } from "./web.ts";
+import { webFetch, type Fetched, type FetchOpts } from "./web.ts";
 
-// What one job gathers into memory at most (characters): a bound on the
-// daemon's memory, far above what one job reads (src/engine/reader.ts materialCap).
+// What one job gathers into memory at most (characters), whatever the model
+// listing allows: a bound on the daemon's memory. The job's own budget is what
+// its readers read at most (ctx.readBudget, from the listing), and it is
+// applied here before a file or a page is read, never after.
 const GATHER_MAX_CHARS = 64_000_000;
 
 const GLOB = /[*?[{]/;
@@ -45,19 +47,43 @@ async function globbed(pattern: string, cwd: string): Promise<string[]> {
 
 const show = (f: string, cwd: string) => { const r = relative(cwd, f); return r && !r.startsWith("..") && !isAbsolute(r) ? r : f; };
 
-// A file's text, or why it is not read: binary (a NUL byte, or not UTF-8).
-async function textOf(f: string): Promise<string | { skip: string }> {
-  const b = await Bun.file(f).bytes();
+// A file's text, or why it is not read: binary (a NUL byte, or not UTF-8). At
+// most `max` bytes of it are read (a character is never more than its bytes);
+// `cut` says the file is longer.
+async function textOf(f: string, max: number): Promise<{ text: string; cut: boolean } | { skip: string }> {
+  const file = Bun.file(f);
+  const cut = file.size > max;
+  const b = await (cut ? file.slice(0, max) : file).bytes();
   if (b.subarray(0, 8192).includes(0)) return { skip: "binary" };
-  try { return new TextDecoder("utf-8", { fatal: true }).decode(b); } catch { return { skip: "not UTF-8 text" }; }
+  // A character the cut split is left out, not an error.
+  try { return { text: new TextDecoder("utf-8", { fatal: true }).decode(b, { stream: cut }), cut }; } catch { return { skip: "not UTF-8 text" }; }
 }
 
-export async function gather(input: { paths?: unknown; urls?: unknown }, ctx: ToolContext): Promise<{ items: Material[]; skipped: string[]; saved?: string }> {
+// Text the budget cut: its whole lines, and where the rest starts.
+function wholeLines(text: string): { text: string; after: string } {
+  const at = text.lastIndexOf("\n");
+  if (at < 0) return { text, after: `its first ${text.length} characters` };
+  const kept = text.slice(0, at + 1);
+  return { text: kept, after: `line ${kept.split("\n").length - 1}` };
+}
+
+// `budget`: characters the job keeps at most (default: what the session's
+// readers read in one job); `atOnce`: pages fetched side by side; `fetch`: the
+// page fetch.
+export type GatherOpts = { budget?: number; atOnce?: number; fetch?: (url: string, o: FetchOpts, signal?: AbortSignal) => Promise<Fetched> };
+
+// The material of one job, files first, then pages, each in the order named.
+// It keeps at most the budget: a file is read up to what is left of it, a page
+// body only while it lasts, and what did not fit is named (the rest of a
+// source from a line on, or the whole source), never read first and dropped.
+export async function gather(input: { paths?: unknown; urls?: unknown }, ctx: ToolContext, o: GatherOpts = {}): Promise<{ items: Material[]; skipped: string[]; saved?: string }> {
   const list = (v: unknown) => (Array.isArray(v) ? v : typeof v === "string" && v ? [v] : []).map(String).map((s) => s.trim()).filter(Boolean);
+  const stop = () => { if (ctx.signal.aborted) throw Object.assign(new Error("interrupted"), { name: "AbortError" }); };
   const items: Material[] = [];
   const skipped: string[] = [];
   const files: string[] = [];
   for (const p of list(input.paths)) {
+    stop();
     if (GLOB.test(p)) {
       const got = await globbed(p, ctx.cwd);
       if (!got.length) skipped.push(`${p} (no file matches)`);
@@ -67,31 +93,70 @@ export async function gather(input: { paths?: unknown; urls?: unknown }, ctx: To
     const full = isAbsolute(p) ? p : resolve(ctx.cwd, p);
     let st;
     try { st = statSync(full); } catch { skipped.push(`${p} (not found)`); continue; }
-    files.push(...(st.isDirectory() ? await filesIn(full, ctx.signal) : [full]));
+    if (st.isDirectory()) files.push(...await filesIn(full, ctx.signal));
+    else if (st.isFile()) files.push(full);
+    else skipped.push(`${p} (not a regular file)`);
   }
-  let total = 0;
+  const budget = Math.max(0, Math.min(GATHER_MAX_CHARS, o.budget ?? (await ctx.readBudget?.()) ?? GATHER_MAX_CHARS));
+  const past = `past what one job reads, ${budget} characters`;
+  // What is left of the budget, shared by the files and the pages.
+  const pool = { left: budget };
   for (const f of [...new Set(files)]) {
+    stop();
     const name = show(f, ctx.cwd);
-    if (total >= GATHER_MAX_CHARS) { skipped.push(`${name} (past ${GATHER_MAX_CHARS} characters gathered)`); continue; }
-    let t: string | { skip: string };
-    try { t = await textOf(f); } catch (e) { skipped.push(`${name} (${(e as Error).message})`); continue; }
-    if (typeof t !== "string") { skipped.push(`${name} (${t.skip})`); continue; }
-    if (!t.length) continue;
-    items.push({ source: name, text: t });
-    total += t.length;
+    if (pool.left <= 0) { skipped.push(`${name} (${past})`); continue; }
+    let t: Awaited<ReturnType<typeof textOf>>;
+    try { t = await textOf(f, pool.left); } catch (e) { skipped.push(`${name} (${(e as Error).message})`); continue; }
+    if ("skip" in t) { skipped.push(`${name} (${t.skip})`); continue; }
+    let text = t.text;
+    if (t.cut) {
+      // The rest of the budget went to this file: nothing after it is read.
+      const w = wholeLines(text);
+      text = w.text;
+      skipped.push(`${name} after ${w.after} (${past})`);
+      pool.left = 0;
+    } else pool.left -= text.length;
+    if (text.length) items.push({ source: name, text });
   }
   let saved: string | undefined;
   const urls = list(input.urls);
   if (urls.length) {
     saved = join(ctx.spillDir, "readers");
     mkdirSync(saved, { recursive: true });
-    await Promise.all(urls.map(async (url, i) => {
-      const r = await webFetch(url, { spillDir: ctx.spillDir, whole: true }, ctx.signal);
-      if (r.error) { skipped.push(`${url} (${r.text.slice(0, 200)})`); return; }
-      const path = join(saved!, `${Date.now()}-${i}-${Bun.hash(url).toString(36)}.md`);
-      await Bun.write(path, r.text);
-      items.push({ source: path, label: url, text: r.text });
+    const fetchPage = o.fetch ?? webFetch;
+    const pages: (Material | undefined)[] = [];
+    const notes: (string | undefined)[] = [];
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(o.atOnce ?? READERS_AT_ONCE, urls.length) }, async () => {
+      while (next < urls.length) {
+        const i = next++, url = urls[i]!;
+        stop();
+        if (pool.left <= 0) { notes[i] = `${url} (${past})`; continue; }
+        let r: Fetched;
+        try { r = await fetchPage(url, { spillDir: ctx.spillDir, whole: true, budget: pool }, ctx.signal); } catch (e) {
+          if (ctx.signal.aborted) throw e;
+          notes[i] = `${url} (${String((e as Error).message ?? e).slice(0, 200)})`;
+          continue;
+        }
+        stop();
+        // A page that failed is not kept: what it took goes back.
+        if (r.error) { pool.left += r.text.length; notes[i] = `${url} (${r.text.slice(0, 200)})`; continue; }
+        let text = r.text;
+        if (r.cut) {
+          const w = wholeLines(text);
+          text = w.text;
+          notes[i] = text ? `${url} after ${w.after} (${past})` : `${url} (${past})`;
+        }
+        if (!text) continue;
+        const path = join(saved!, `${Date.now()}-${i}-${Bun.hash(url).toString(36)}.md`);
+        await Bun.write(path, text);
+        pages[i] = { source: path, label: url, text };
+      }
     }));
+    urls.forEach((_, i) => {
+      if (pages[i]) items.push(pages[i]!);
+      if (notes[i]) skipped.push(notes[i]!);
+    });
   }
   return { items, skipped, saved };
 }

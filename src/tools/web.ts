@@ -10,7 +10,7 @@ import { registerCatalog } from "./catalog.ts";
 import { spill } from "./spill.ts";
 import type { ToolContext } from "./types.ts";
 import { READ_WHOLE_CHARS } from "../engine/reader.ts";
-import { readText } from "../core/proc.ts";
+import { chunks, readText } from "../core/proc.ts";
 
 const HOME = homedir();
 const findBin = (name: string, env?: string) =>
@@ -93,7 +93,40 @@ async function exaSearch(query: string, count: number, signal?: AbortSignal): Pr
 }
 
 // `whole`: the page uncut (for the reader), else long pages are spilled.
-export type FetchOpts = { method?: string; body?: string; headers?: Record<string, string>; extract?: string; spillDir: string; whole?: boolean };
+// `budget` (with `whole`): the characters the job this page is fetched for may
+// still keep, shared by its fetches. A body is read only while the budget
+// lasts, the page takes what it keeps, and `cut` says it did not fit.
+export type FetchOpts = { method?: string; body?: string; headers?: Record<string, string>; extract?: string; spillDir: string; whole?: boolean; budget?: { left: number } };
+export type Fetched = { text: string; error?: boolean; cut?: boolean };
+
+// A body as text. With a budget each chunk takes from it as it comes and the
+// reading stops when it is spent, so a long body is never held whole.
+async function bodyText(body: ReadableStream<Uint8Array> | null | undefined, pool?: { left: number }): Promise<{ text: string; taken: number; cut: boolean }> {
+  if (!body) return { text: "", taken: 0, cut: false };
+  if (!pool) return { text: await readText(body), taken: 0, cut: false };
+  const dec = new TextDecoder();
+  let text = "", taken = 0;
+  for await (const c of chunks(body)) {
+    const t = dec.decode(c, { stream: true });
+    const n = Math.min(t.length, Math.max(0, pool.left));
+    pool.left -= n;
+    taken += n;
+    text += n < t.length ? t.slice(0, n) : t;
+    if (n < t.length) return { text, taken, cut: true };
+  }
+  return { text, taken, cut: false };
+}
+
+// A whole page charged to its job's budget: what the body took while it was
+// read goes back, and the page takes what it keeps.
+function charge(page: string, o: FetchOpts, taken = 0, cut = false): { text: string; cut?: boolean } {
+  const pool = o.budget;
+  if (!pool) return { text: page };
+  pool.left += taken;
+  const keep = Math.min(page.length, Math.max(0, pool.left));
+  pool.left -= keep;
+  return cut || keep < page.length ? { text: page.slice(0, keep), cut: true } : { text: page };
+}
 
 const PRIVATE_HOST = /^(localhost|.*\.localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|0\.|\[?::1\]?$|\[?f[cd])/i;
 // A host the web tools do not reach: this machine and private networks (and a
@@ -101,7 +134,7 @@ const PRIVATE_HOST = /^(localhost|.*\.localhost|127\.|10\.|192\.168\.|172\.(1[6-
 // http wait share it.
 export const privateHost = (hostname: string) => !hostname.includes(".") || PRIVATE_HOST.test(hostname);
 
-export async function webFetch(url: string, o: FetchOpts, signal?: AbortSignal): Promise<{ text: string; error?: boolean }> {
+export async function webFetch(url: string, o: FetchOpts, signal?: AbortSignal): Promise<Fetched> {
   let u: URL;
   try { u = new URL(url.trim()); } catch { return { text: `Not a URL: ${url}`, error: true }; }
   if (u.protocol === "http:") u.protocol = "https:";
@@ -121,8 +154,13 @@ export async function webFetch(url: string, o: FetchOpts, signal?: AbortSignal):
     // The page itself, without the request echo: the model knows the URL.
     const body = typeof r.body_markdown === "string" && o.extract !== "raw" ? r.body_markdown : String(r.output ?? "");
     const final = r.meta?.final_url && r.meta.final_url !== u.href ? `Final URL: ${r.meta.final_url}\n\n` : "";
-    return { text: o.whole ? final + body : await spill(final + body, o.spillDir, "webfetch"), error: r.kind !== "ok" };
+    return { ...(o.whole ? charge(final + body, o) : { text: await spill(final + body, o.spillDir, "webfetch") }), error: r.kind !== "ok" };
   }
+  return plainFetch(u, o, signal);
+}
+
+// The built-in fetch of a page webFetch has let through.
+export async function plainFetch(u: URL, o: FetchOpts, signal?: AbortSignal): Promise<Fetched> {
   const res = await fetch(u.href, {
     method: o.method ?? "GET", body: o.body, redirect: "manual", signal: signal ?? AbortSignal.timeout(60_000),
     headers: { "user-agent": "Keel (coding agent)", accept: "text/markdown, text/html;q=0.9, */*;q=0.5", ...o.headers },
@@ -133,21 +171,22 @@ export async function webFetch(url: string, o: FetchOpts, signal?: AbortSignal):
     return webFetch(to, o, signal);
   }
   const type = res.headers.get("content-type") ?? "";
-  const raw = await res.text();
-  const text = /html/.test(type) && o.extract !== "raw" ? htmlToText(raw) : raw;
+  const raw = await bodyText(res.body, o.whole ? o.budget : undefined);
+  const text = /html/.test(type) && o.extract !== "raw" ? htmlToText(raw.text) : raw.text;
   const page = `HTTP ${res.status}\n\n${text}`;
-  return { text: o.whole ? page : await spill(page, o.spillDir, "webfetch"), error: !res.ok };
+  return { ...(o.whole ? charge(page, o, raw.taken, raw.cut) : { text: await spill(page, o.spillDir, "webfetch") }), error: !res.ok };
 }
 
-async function pdfText(url: string, o: FetchOpts, signal?: AbortSignal) {
+async function pdfText(url: string, o: FetchOpts, signal?: AbortSignal): Promise<Fetched> {
   const res = await fetch(url, { signal: signal ?? AbortSignal.timeout(60_000) });
   if (!res.ok) return { text: `HTTP ${res.status} fetching the PDF`, error: true };
   const path = join(o.spillDir, "web", `${Bun.hash(url).toString(36)}.pdf`);
   await Bun.write(path, res);
   const p = Bun.spawn(["pdftotext", "-layout", "-enc", "UTF-8", path, "-"], { stdout: "pipe", stderr: "ignore" });
-  const text = await readText(p.stdout);
-  const page = `PDF saved to ${path}\n\n${text}`;
-  return { text: o.whole ? page : await spill(page, o.spillDir, "webfetch-pdf") };
+  const text = await bodyText(p.stdout, o.whole ? o.budget : undefined);
+  if (text.cut) p.kill();
+  const page = `PDF saved to ${path}\n\n${text.text}`;
+  return o.whole ? charge(page, o, text.taken, text.cut) : { text: await spill(page, o.spillDir, "webfetch-pdf") };
 }
 
 // A page fetched for a request (the prompt of WebFetch and web_fetch): a long

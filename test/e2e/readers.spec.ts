@@ -75,3 +75,51 @@ test("readers: a folder of logs is read in parts and compiled into one answer", 
   expect(job.usage.cache_write).toBe(0);
   rmSync(DIR, { recursive: true, force: true });
 });
+
+// The job's budget comes from the model listing. On the scripted stand-in (a
+// small window, no paid model) a long log is gathered only up to that budget:
+// its tail and the file after it are named in the answer, never read first.
+test("readers: material past the job's budget is named, not gathered", async ({ page, request }) => {
+  const ids = ((await (await request.get("/api/models")).json()).models as any[]).map((m) => m.id);
+  test.skip(!ids.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const dir = `${DIR}-budget`;
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  const rows = (n: number, tag: string) => Array.from({ length: n }, (_, i) => `2026-11-20T10:00:00Z INFO ${tag} request ${i + 1} served`).join("\n") + "\n";
+  writeFileSync(join(dir, "a.log"), rows(60, "api"));
+  writeFileSync(join(dir, "big.log"), rows(8_000, "worker"));
+  writeFileSync(join(dir, "c.log"), rows(60, "cron"));
+  const whole = rows(60, "api").length + rows(8_000, "worker").length + rows(60, "cron").length;
+
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in" } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+  const call = { name: "ask_readers", input: { question: "Which service fails, and where?", paths: [dir] } };
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([call])}` } });
+  await expect.poll(async () => {
+    const r = await (await request.get(`/api/sessions/${session.id}`)).json();
+    return !r.running && r.events.filter((e: any) => e.kind === "turn_end").length;
+  }, { timeout: 90_000 }).toBe(1);
+
+  const events = (await (await request.get(`/api/sessions/${session.id}`)).json()).events as any[];
+  const result = events.filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results)[0];
+  const text = typeof result.content === "string" ? result.content : result.content.map((c: any) => c.text ?? "").join("\n");
+  const job = events.flatMap((e) => (e.kind === "tool_result" && e.data.shown ? Object.values(e.data.shown) : [])).map((x: any) => x.readers).find(Boolean);
+  const budget = Number(/past what one job reads, (\d+) characters/.exec(text)?.[1]);
+  expect(budget).toBeGreaterThan(0);
+  expect(budget).toBeLessThan(whole / 4);
+  // What the readers were handed is within the budget; the rest is named.
+  expect(job.sources).toBe(2);
+  expect(job.chars).toBeLessThanOrEqual(budget);
+  expect(text).toMatch(new RegExp(`big\\.log after line \\d+ \\(past what one job reads, ${budget} characters\\)`));
+  expect(text).toContain(`c.log (past what one job reads, ${budget} characters)`);
+  expect(job.unread).toHaveLength(2);
+
+  await page.goto(`/s/${session.id}`);
+  const card = page.locator('[data-tool="ask_readers"]').first();
+  await card.getByRole("button").first().click();
+  await expect(card).toContainText("2 unread");
+  await expect(card.getByTestId("readers-notes")).toContainText("big.log after line");
+  await card.scrollIntoViewIfNeeded();
+  await shoot(page, "readers-02-past-budget");
+  rmSync(dir, { recursive: true, force: true });
+});

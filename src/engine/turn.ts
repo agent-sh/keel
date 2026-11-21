@@ -22,7 +22,7 @@ import { isDeferError, loadsNatively, refuseDefer, withCatalog } from "../tools/
 import { allHooks, type ExternalTurn, type ToolAuthorization, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, type Material } from "./reader.ts";
-import { readMaterial, type ReaderHost, type ReadOutcome } from "./readers.ts";
+import { readBudget, readMaterial, type ReaderHost, type ReadOutcome } from "./readers.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
 import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, utf8Bytes, IDLE_MARGIN_MS, idleMinTokens, checkpointData, lastWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
 import { effectiveEffort, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
@@ -779,7 +779,8 @@ export class Engine {
       questionChanged: () => this.bus.emit({ t: "questions", pending: allPendingQuestions() }),
       inContext: (text) => JSON.stringify(toMessages(this.lineage(id))).includes(JSON.stringify(text).slice(1, -1)),
       read: (source, text, prompt) => this.read(id, source, text, prompt, signal),
-      readMaterial: (items, question, callId) => this.readMaterial(id, items, question, signal, callId) };
+      readMaterial: (items, question, callId) => this.readMaterial(id, items, question, signal, callId),
+      readBudget: () => readBudget(this.readerHost(id)) };
 
     this.setPhase(id, "working");
     const t0 = Date.now();
@@ -1395,8 +1396,12 @@ export class Engine {
   // each request is booked with purpose "reader", and `callId` gets the job's
   // progress on the bus (feature "readers").
   async readMaterial(id: string, items: Material[], question: string, signal: AbortSignal, callId?: string): Promise<ReadOutcome> {
+    return readMaterial(this.readerHost(id, callId), items, question, signal);
+  }
+
+  private readerHost(id: string, callId?: string): ReaderHost {
     const session = this.store.session(id)!;
-    const host: ReaderHost = {
+    return {
       models: () => this.providers.models(),
       current: async () => (await this.providers.resolve(session.model)).info,
       listPrice: (m) => this.providers.catalog.lookup(m.model)?.price,
@@ -1412,7 +1417,6 @@ export class Engine {
         return { text: res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n"), usage: res.usage, stop: res.stop };
       },
     };
-    return readMaterial(host, items, question, signal);
   }
 
   // /clear: a fresh context in the same session (no summary). Undo = head back.

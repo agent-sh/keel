@@ -43,6 +43,9 @@ export type ToolContext = {
   // Set by the engine: one reading job over many sources, split across reader
   // models and compiled into one answer (src/engine/readers.ts).
   readMaterial?: (items: Material[], question: string, callId?: string) => Promise<ReadOutcome>;
+  // Set by the engine: the most characters one reading job of the session
+  // reads, from the model listing; the readers tool gathers no more.
+  readBudget?: () => Promise<number>;
 };
 
 // `shown`: what the transcript shows for the call besides its result (the

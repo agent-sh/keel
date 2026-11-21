@@ -51,6 +51,15 @@ export type ReadOutcome = {
 
 const short = (e: unknown) => String((e as Error)?.message ?? e).slice(0, 200);
 
+// The most characters one job of this host reads, known before any material
+// is: the largest cap among its reader choices (a job's own cap is that of the
+// choice that reads it). The readers tool gathers no more than this.
+export async function readBudget(host: Pick<ReaderHost, "models" | "current" | "listPrice" | "env">): Promise<number> {
+  const [models, cur] = await Promise.all([host.models(), host.current()]);
+  const list = (m: ModelInfo) => host.listPrice?.(m);
+  return Math.max(...readerChoices(models, cur, 0, host.env ?? process.env, list, smallModels()).map((r) => materialCap(cur, r, list)));
+}
+
 export async function readMaterial(host: ReaderHost, items: Material[], question: string, signal: AbortSignal): Promise<ReadOutcome> {
   const env = host.env ?? process.env;
   const [models, cur] = await Promise.all([host.models(), host.current()]);
