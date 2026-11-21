@@ -13,6 +13,7 @@ import type { ToolAuthorization, ToolCall, ToolGate } from "../engine/hooks.ts";
 import { preAllow } from "./autonomy.ts";
 import { lookRepo, repoContext } from "./repofacts.ts";
 import { confine } from "./sandbox.ts";
+import { detect, placeholdersIn, vault } from "./secrets.ts";
 import { splitCommand } from "./shell.ts";
 import { artifactsDir, contains, realOf } from "../core/paths.ts";
 import { classify, decide, isMode, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
@@ -93,6 +94,13 @@ type AutoReview = { ask: Ask; cwd?: string; input: unknown; interpreter?: string
 type CheckResult = { deny: string } | { cls: CallClass; authorization?: ToolAuthorization };
 const interruptedApproval = "The earlier approval cannot be used under Auto. Check the prior outcome before proposing the action again.";
 const changedReview = { deny: "Refused: authorization or the action changed while permission was pending. Check the current permissions before proposing it again." };
+const secretReview = { deny: "Refused: Auto cannot review an action that contains a secret or requires secret substitution. Use Ask to approve the action yourself." };
+
+function hasSecret(input: unknown, values: string[]): boolean {
+  if (typeof input === "string") return !!(placeholdersIn(input).length || values.some((v) => input.includes(v)) || detect(input).length);
+  if (!input || typeof input !== "object") return false;
+  return Object.entries(input).some(([k, v]) => hasSecret(k, values) || hasSecret(v, values));
+}
 
 function callClass(call: ToolCall, target: Target): CallClass {
   const cls = target ? target.cls ?? (target.readOnly ? { kind: "read" } : { kind: "other" }) : classifyCall(call);
@@ -389,7 +397,8 @@ export class Gate {
       return (await this.wait({ ...back, ...settled }, session, call, name, cls)) ?? { cls };
     }
     if ("deny" in d) return { deny: d.deny };
-    const checkShell = mode === "auto" && (cls.kind === "shell" || !!call.tool.autoShell) && !("ask" in d && d.ask.ownerOnly);
+    if (mode === "auto" && cls.kind !== "read" && hasSecret([call.input, target?.input, cls], vault.pairs().map(([value]) => value))) return secretReview;
+    const checkShell = mode === "auto" && (cls.kind === "shell" || !!call.tool.autoShell);
     const shell = checkShell ? call.tool.autoShell?.(call.input ?? {}) : undefined;
     if (checkShell && (cls.kind !== "shell" || !shell || shell.command !== cls.command || !dir))
       return { deny: 'Refused: Auto cannot verify this shell invocation. Use a supported local non-login Bash command (for exec_command, shell: "bash" and login: false), or use Ask.' };
@@ -399,7 +408,7 @@ export class Gate {
     const key = keyOf(name, target, cls, call, summary);
     if (mode === "auto") {
       const input = shell ? shell.options : target ? target.input : call.input;
-      if (!d.ask.ownerOnly && (summary.length > REVIEW_SUMMARY_LIMIT || JSON.stringify(input ?? {}).length > REVIEW_INPUT_LIMIT))
+      if ((!d.ask.ownerOnly || checkShell) && (summary.length > REVIEW_SUMMARY_LIMIT || JSON.stringify(input ?? {}).length > REVIEW_INPUT_LIMIT))
         return { deny: "Refused: the complete action does not fit in Auto review. Break it into smaller actions or use Ask for owner approval." };
       return this.checkAuto(session, call, target, cls, name, summary, d.ask, input, dir?.path, shell?.interpreter);
     }

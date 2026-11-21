@@ -1004,11 +1004,13 @@ export class Engine {
       let input = call.input;
       preparedInput = true;
       for (const h of allHooks()) { const x = h.execInput?.(session, call); if (x !== undefined) input = x; }
-      for (const a of authorizations) if (!a.valid(call, input))
-        return { type: "tool_result", tool_use_id: u.id, content: a.deny, is_error: true };
+      const authorizationError = authorizations.length ? () => authorizations.find((a) => !a.valid(call, input))?.deny : undefined;
+      const deny = authorizationError?.();
+      if (deny) return { type: "tool_result", tool_use_id: u.id, content: deny, is_error: true };
+      const runCtx = authorizationError ? { ...call.ctx, authorizationError } : call.ctx;
       // A dispatch set by a hook runs the call elsewhere (another machine's hands).
       t0 = Date.now();
-      const run = call.ctx.dispatch ? call.ctx.dispatch(tool, input, call.ctx) : tool.run(input, call.ctx);
+      const run = runCtx.dispatch ? runCtx.dispatch(tool, input, runCtx) : tool.run(input, runCtx);
       // After a stop the tool may still fail on its way out; that is expected.
       run.catch(() => {});
       const out = await Promise.race([run, stopped]);

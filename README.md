@@ -22,7 +22,7 @@ or confined commands, and standing grants run without review. The configured
 judge reviews other ordinary calls and flagged high-risk calls.
 A refusal or unavailable judge does not open an approval
 card. Auto also refuses actions it cannot review in full, including
-unsupported shell invocations such as login shells. Explicit sandbox
+login shells and actions that require secret substitution. Explicit sandbox
 escalation and other owner-only actions still ask. **Full auto** runs
 ordinary work without review and retains its
 nonblocking high-risk checks. Tools that explicitly require confirmation

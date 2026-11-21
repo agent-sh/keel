@@ -10,7 +10,7 @@ import type { ErrorTracker } from "../core/errors.ts";
 import { registerCatalog, unregisterCatalog, type CatalogTool } from "../tools/catalog.ts";
 import type { CallClass } from "../safety/policy.ts";
 import type { ToolContext, ToolOutput } from "../tools/types.ts";
-import { AuthRequired, McpClient, RpcError, type McpCallResult, type McpTool, type Transport } from "./client.ts";
+import { AuthRequired, McpAuthorizationError, McpClient, RpcError, type McpCallResult, type McpTool, type Transport } from "./client.ts";
 import { expand, importable, readConfig, validate, writeConfig, type McpConfigFile, type McpServerConfig } from "./config.ts";
 import { binding, endpoint, readSources, sourceFiles, sourced } from "./sources.ts";
 import { OAuthStore } from "./oauth.ts";
@@ -422,6 +422,8 @@ export class McpManager {
 
   private async callRaw(name: string, tool: string, input: unknown, ctx: ToolContext, meta?: Record<string, unknown>): Promise<ToolOutput> {
     const e = this.entries.get(name);
+    const config = e?.config;
+    const tools = e?.tools;
     let client: McpClient;
     try {
       client = await this.ensure(name);
@@ -429,10 +431,16 @@ export class McpManager {
       const msg = e?.state === "needs_auth" ? `${name} needs sign-in: the owner signs in from the MCP servers panel.` : (err as Error).message;
       return { content: `MCP server ${name} is not available: ${msg}`, is_error: true };
     }
+    // Keep the same entry and listing across connection setup and (for HTTP)
+    // header preparation. Those awaits are still before the request is sent.
+    const authorize = ctx.authorizationError ? () => ctx.authorizationError!() ??
+      (!e || this.entries.get(name) !== e || e.client !== client || e.config !== config || e.tools !== tools
+        ? "Refused: the MCP server or tool changed before invocation. Look up the tool again." : undefined) : undefined;
     let r: McpCallResult;
     try {
-      r = await client.callTool(tool, input, ctx.signal, (e?.config.tool_timeout_secs ?? 600) * 1000, meta);
+      r = await client.callTool(tool, input, ctx.signal, (e?.config.tool_timeout_secs ?? 600) * 1000, meta, authorize);
     } catch (err) {
+      if (err instanceof McpAuthorizationError) return { content: err.message, is_error: true };
       if (err instanceof AuthRequired && e) {
         e.state = "needs_auth";
         e.www = err.wwwAuthenticate;

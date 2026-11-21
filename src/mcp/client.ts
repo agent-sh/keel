@@ -36,6 +36,8 @@ export class RpcError extends Error {
 
 // 401 from an HTTP server: the manager turns it into needs_auth and the
 // WWW-Authenticate header starts discovery.
+export class McpAuthorizationError extends Error {}
+
 export class AuthRequired extends Error {
   constructor(readonly wwwAuthenticate: string | null) {
     super("the server needs sign-in");
@@ -231,11 +233,14 @@ export class McpClient {
   }
 
   // POST one message; responses (JSON or an SSE stream) are dispatched.
-  private async post(msg: any, signal?: AbortSignal): Promise<void> {
+  private async post(msg: any, signal?: AbortSignal, authorize?: () => string | undefined): Promise<void> {
     const t = this.t as Extract<Transport, { kind: "http" }>;
+    const headers = await this.headers(msg.method, msg.params);
+    const deny = authorize?.();
+    if (deny) throw new McpAuthorizationError(deny);
     const res = await fetch(t.url, {
       method: "POST",
-      headers: await this.headers(msg.method, msg.params),
+      headers,
       body: JSON.stringify(msg),
       signal,
     });
@@ -290,7 +295,9 @@ export class McpClient {
     };
   }
 
-  async rpc(method: string, params: any = {}, opt: { signal?: AbortSignal; timeoutMs?: number; modern?: boolean } = {}): Promise<any> {
+  async rpc(method: string, params: any = {}, opt: { signal?: AbortSignal; timeoutMs?: number; modern?: boolean; authorize?: () => string | undefined } = {}): Promise<any> {
+    const deny = opt.authorize?.();
+    if (deny) throw new McpAuthorizationError(deny);
     if (this.closed) throw new Error("the connection is closed");
     const id = this.nextId++;
     const p = opt.modern || this.era === "modern" ? { ...params, _meta: { ...params._meta, ...this.meta() } } : params;
@@ -315,7 +322,7 @@ export class McpClient {
       if (this.t.kind === "stdio") this.write(msg);
       else {
         opt.signal?.addEventListener("abort", forward, { once: true });
-        this.post(msg, ac.signal).then(
+        this.post(msg, ac.signal, opt.authorize).then(
           () => {
             // A stream that ended without our answer loses the request.
             if (this.pending.has(id)) { this.pending.delete(id); done(reject)(new Error(`${method}: the server closed the response without an answer`)); }
@@ -356,8 +363,8 @@ export class McpClient {
   listPrompts(signal?: AbortSignal) { return this.list<any>("prompts/list", "prompts", signal); }
   readResource(uri: string, signal?: AbortSignal) { return this.rpc("resources/read", { uri }, { signal }); }
   getPrompt(name: string, args: Record<string, string> = {}, signal?: AbortSignal) { return this.rpc("prompts/get", { name, arguments: args }, { signal }); }
-  callTool(name: string, args: unknown, signal?: AbortSignal, timeoutMs?: number, meta?: Record<string, unknown>): Promise<McpCallResult> {
-    return this.rpc("tools/call", { name, arguments: args ?? {}, ...(meta ? { _meta: meta } : {}) }, { signal, timeoutMs });
+  callTool(name: string, args: unknown, signal?: AbortSignal, timeoutMs?: number, meta?: Record<string, unknown>, authorize?: () => string | undefined): Promise<McpCallResult> {
+    return this.rpc("tools/call", { name, arguments: args ?? {}, ...(meta ? { _meta: meta } : {}) }, { signal, timeoutMs, authorize });
   }
 
   // Close once nothing waits on this client (a reload replaced it).

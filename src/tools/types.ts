@@ -32,6 +32,8 @@ export type ToolContext = {
   // Set by a beforeTool hook: runs the call somewhere else (the session's
   // machine) instead of tool.run here.
   dispatch?: (tool: Tool, input: any, ctx: ToolContext) => Promise<ToolOutput>;
+  // Recheck an Auto authorization at an invocation reached after a lookup.
+  authorizationError?: () => string | undefined;
   // Set by the engine: runs another tool of the session as a call of its own
   // (gate, hooks, dispatch, under the id given), for a tool that calls tools (run_code).
   callTool?: (name: string, input: any, id: string) => Promise<ToolResultBlock>;

@@ -86,6 +86,8 @@ function wrap(t: CatalogTool): Deferred {
       if (!now) return fail(`${name} is no longer available (its server was removed or is not connected). Search with ${TOOL_SEARCH} again.`);
       const why = stale(input && typeof input === "object" ? judged.get(input) : undefined, now, name, "Load it again");
       if (why) return fail(why);
+      const deny = ctx.authorizationError?.();
+      if (deny) return fail(deny);
       return now.run(input ?? {}, ctx);
     },
   };

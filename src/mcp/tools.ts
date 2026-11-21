@@ -116,6 +116,8 @@ const McpCall: Tool = {
     const required: string[] = (t.input_schema as any).required ?? [];
     const missing = required.filter((k) => (args as any)[k] === undefined);
     if (missing.length) return fail(`${t.qualified} needs ${missing.join(", ")}. Input schema: ${compactSchema(t.input_schema)}`);
+    const deny = ctx.authorizationError?.();
+    if (deny) return fail(deny);
     return t.run(args, ctx);
   },
 };

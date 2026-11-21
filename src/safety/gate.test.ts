@@ -109,9 +109,13 @@ test("Auto sends the whole supported invocation, not a clipped or different comm
   const cmd = "printf marker > scratch.txt";
   const allowed = { cmd, shell: "bash", login: false };
   for (const input of [ { cmd }, { cmd: "pwd", shell: "bash", login: true }, { ...allowed, shell: "sh" },
+    { ...allowed, login: true, sandbox_permissions: "require_escalated" },
     { ...allowed, cmd: `printf '${"x".repeat(4000)}' > scratch.txt` }, { ...allowed, description: "x".repeat(2001) } ]) {
     expect(await g.check(session, call(exec, input))).toHaveProperty("deny");
   }
+  const placeholder = "[value of " + "$FIXTURE_KEY]";
+  const secret = await g.check(session, call(exec, { ...allowed, cmd: `printf '%s' '${placeholder}'` }));
+  expect("deny" in secret ? secret.deny : "").toContain("requires secret substitution");
   expect(requests).toEqual([]);
   expect(await g.check(session, call(exec, allowed))).toHaveProperty("cls");
   expect(requests).toMatchObject([{ summary: cmd, interpreter: "bash -c", input: { shell: "bash", login: false } }]);

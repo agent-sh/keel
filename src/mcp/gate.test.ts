@@ -111,6 +111,34 @@ test("an always grant for an MCP tool covers the source it was given for, not a 
   store.db.close();
 });
 
+test("both catalog dispatchers recheck permission after resolving a tool", async () => {
+  const { withCatalog } = await import("../tools/defer.ts");
+  installMcpTools({ configured: () => [] } as any);
+  const workspace = mkdtempSync(join(tmpdir(), "keel-mcp-dispatch-"));
+  let runs = 0;
+  const fixture = { server: "dispatch_fixture", name: "note", qualified: "dispatch_fixture__note", mcp: true,
+    input_schema: { type: "object" }, description: "Inert fixture", run: async () => (runs++, { content: "ok" }) };
+  let beforeLookup = async () => {};
+  registerCatalog({ name: "dispatch_fixture", known: () => [fixture], tools: async () => { await beforeLookup(); return [fixture]; } });
+  try {
+    const native = (await withCatalog([], "claude", [])).find((t) => t.name === "mcp__dispatch_fixture__note")!;
+    const dispatcher = toolsFor("gpt").find((t) => t.name === "mcp_call")!;
+    for (const [tool, input] of [[native, {}], [dispatcher, { tool: fixture.qualified, arguments: {} }]] as const) {
+      let allowed = true;
+      beforeLookup = async () => {};
+      await tool.target!(input);
+      const ctx = { sessionId: "fixture", cwd: workspace, signal: new AbortController().signal, seen: new Map(), spillDir: workspace,
+        authorizationError: () => allowed ? undefined : "Permission changed" };
+      expect(await tool.run(input, ctx)).toEqual({ content: "ok" });
+      beforeLookup = async () => { allowed = false; };
+      expect(await tool.run(input, ctx)).toEqual({ content: "Permission changed", is_error: true });
+    }
+    expect(runs).toBe(2);
+  } finally {
+    unregisterCatalog("dispatch_fixture");
+  }
+});
+
 test("a server's source binding follows its endpoint, program and credentials, not Keel's own choices", async () => {
   const { binding } = await import("./sources.ts");
   const key = new Uint8Array(32);
