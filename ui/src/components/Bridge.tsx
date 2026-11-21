@@ -18,6 +18,7 @@ import { byAttention, getStations, opened, shares, stations, target, useStations
 import { getState, useStore } from "../lib/store.ts";
 import { getUI, navigate, savePref, setUI, useUI } from "../lib/ui.ts";
 import { ago, scrollMotion, when } from "../lib/utils.ts";
+import { focusPane } from "../lib/utils.ts";
 import { branchOf, lastLine, useAgentCount, useAgentCounts, useSessionState, useWatch, watchLabel, type Watch } from "../lib/watch.ts";
 import { MachineSep, machineRuns, whereWords } from "./Where.tsx";
 import { isPinned, pin as pinSession } from "../lib/sessops.ts";
@@ -296,6 +297,21 @@ export function Bridge() {
   // Opening a session places it (kept below); this render already shows it there.
   const st = helm ? opened(kept, helm) : kept;
   useEffect(() => { if (helm && kept.seeded) stations.open(helm); }, [helm, kept.seeded]);
+  // The caret follows the helm. When the keys move it to another pane (Next pane, Previous
+  // pane, a jump to a session that is on screen), the keyboard goes there too: what is
+  // typed next lands in the pane that is highlighted, not in the one left behind. Only
+  // from a pane or from nowhere: a field outside the panes (the list's filter, a dialog)
+  // keeps the keyboard.
+  const helmWas = useRef(helm);
+  useEffect(() => {
+    const was = helmWas.current;
+    helmWas.current = helm;
+    if (!helm || helm === was || phone) return;
+    const at = document.activeElement as HTMLElement | null;
+    const from = at?.closest<HTMLElement>("[data-station]")?.dataset.station;
+    if (at && at !== document.body && (!from || from === helm)) return;
+    focusPane(helm);
+  }, [helm]);
   // A session that is gone (deleted, archived) leaves its pane empty.
   const gone = (id: string) => id !== helm && (!sessions[id] || sessions[id]!.archived);
   useEffect(() => { if (loaded) stations.drop(gone); }, [loaded, sessions, helm]);

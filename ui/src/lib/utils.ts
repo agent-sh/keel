@@ -80,3 +80,10 @@ export const scrollMotion = (): ScrollBehavior => (matchMedia("(prefers-reduced-
 
 // The message box of a session's pane takes the keyboard.
 export const focusBox = (id: string) => (document.querySelector<HTMLElement>(`[data-station="${CSS.escape(id)}"] [data-testid="composer"]`) ?? document.querySelector<HTMLElement>('[data-testid="composer"]'))?.focus();
+// The keyboard goes into a session's pane: to the first answer that waits above its box
+// (so Enter answers it), else to the message box.
+export const focusPane = (id: string) => {
+  const ask = document.querySelector<HTMLElement>(`[data-station="${CSS.escape(id)}"] [data-testid="composer-asks"] [data-testid="allow-once"]:not(:disabled)`);
+  if (ask) ask.focus({ preventScroll: true });
+  else focusBox(id);
+};

@@ -208,3 +208,42 @@ test("Esc is in the shortcut sheet and a session row is one Tab stop", async ({ 
 
   for (const id of ids) await request.delete(`/api/sessions/${id}`);
 });
+
+const pane = (page: Page, id: string) => page.locator(`section.k-station[data-station="${id}"]`);
+// Where the keyboard is: the test id of the focused element and the pane it is in.
+const keysAt = (page: Page) => page.evaluate(() => {
+  const a = document.activeElement as HTMLElement | null;
+  return { testid: a?.dataset.testid ?? a?.tagName ?? "", pane: a?.closest<HTMLElement>("[data-station]")?.dataset.station ?? "" };
+});
+
+test("the caret moves with the pane the keys move to", async ({ page, request }) => {
+  await scripted(request);
+  const ws = folder("panes");
+  const ids: string[] = [];
+  for (const n of ["A", "B", "C", "D"]) ids.push(await create(request, `Caret pane ${n}`, ws));
+  await page.addInitScript((slots) => localStorage.setItem("keel.panes", JSON.stringify({ count: 4, slots, sizes: {}, active: 0 })), ids);
+  await page.goto(`/s/${ids[0]}`);
+  for (const id of ids) await expect(pane(page, id)).toBeVisible();
+  await expect(pane(page, ids[0]!).getByTestId("composer")).toBeFocused();
+
+  // Next pane: the highlight and the caret go together, so what is typed lands where the eye is.
+  await page.keyboard.press("Alt+]");
+  await expect(pane(page, ids[1]!)).toHaveAttribute("data-helm", "true");
+  await expect(pane(page, ids[1]!).getByTestId("composer")).toBeFocused();
+  await page.keyboard.type("for pane B");
+  await expect(pane(page, ids[1]!).getByTestId("composer")).toHaveValue("for pane B");
+  await expect(pane(page, ids[0]!).getByTestId("composer")).toHaveValue("");
+  await shoot(page, "keyboard-paths-01-next-pane");
+
+  // Twice on, and once back: the caret is in the pane that is the helm each time.
+  await page.keyboard.press("Alt+]");
+  await page.keyboard.press("Alt+]");
+  await expect(pane(page, ids[3]!).getByTestId("composer")).toBeFocused();
+  await page.keyboard.press("Alt+[");
+  await expect(pane(page, ids[2]!)).toHaveAttribute("data-helm", "true");
+  await page.keyboard.type("for pane C");
+  await expect(pane(page, ids[2]!).getByTestId("composer")).toHaveValue("for pane C");
+  expect(await keysAt(page)).toEqual({ testid: "composer", pane: ids[2] });
+
+  for (const id of ids) await request.delete(`/api/sessions/${id}`);
+});
