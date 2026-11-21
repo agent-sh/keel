@@ -162,6 +162,14 @@ test("now: what waits on the owner first, then what runs, then what is waited on
   expect(nowLines({ ...quiet, turn: { id: "t1", ts: 1, steps: 0, status: { kind: "idle" } } }).lines[0]!.text).toBe("Running a turn started by the owner: step 1, between steps");
   expect(nowLines({ ...quiet, ts: 100_000, turn: { id: "t1", ts: 1, steps: 0, status: { kind: "model", since: 60_000, model: "m", connected: 60_000, quiet: 60_000 } } }).lines[0]!.text)
     .toBe("Running a turn started by the owner: step 1, the model is answering, no output for 40 s");
+  // A plan presented for approval waits on the owner; a command left running is waited on.
+  const plan = nowLines({ ...quiet, turn: { id: "t1", ts: 1, steps: 1, status: { kind: "tool", since: 1, names: ["present_plan"] } }, plans: [{ id: "p1", created: 50_000 }] });
+  expect(plan.state).toBe("owner");
+  expect(plan.lines[0]).toMatchObject({ kind: "question", tone: "owner", text: "Waits on the owner: a plan to approve", open: true, ts: 50_000 });
+  expect(nowLines({ ...quiet, jobs: [{ id: "j1", started: 70_000 }] })).toMatchObject({ state: "waiting", lines: [{ kind: "wait", text: "Waits on a background command", ts: 70_000 }] });
+  // The word follows the session's one state where that says more.
+  expect(nowLines({ ...quiet, watch: "wait" }).state).toBe("waiting");
+  expect(nowLines({ ...quiet, turn: { id: "t1", ts: 1, steps: 1, status: { kind: "idle" } }, watch: "need" }).state).toBe("owner");
   // A parked agent: what it waits for, and until when.
   const parked = nowLines({ ...quiet, agents: [{ id: "a1", session_id: "c1", title: "Scout", status: "waiting", created: 40_000, wait: { kind: "timer", until: 100_000 + 42 * 60_000 } }, { id: "a2", session_id: "c2", title: "Other", status: "waiting", created: 40_000 }] });
   expect(parked.lines.map((l) => l.text)).toEqual(['Agent "Scout" is waiting on a timer', 'Agent "Other" is waiting on a wake of its own']);

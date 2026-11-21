@@ -56,6 +56,10 @@ test("a plan waiting for approval reads Needs you on the row, the pane, the tab 
     const st = await stateOf(request, planner);
     expect(st).toMatchObject({ watch: "need", why: "plan" });
     expect(st!.since).toBeGreaterThan(Date.now() - 120_000);
+    // The timeline's Now reads the same state and names the plan.
+    const now = await (await request.get(`/api/sessions/${planner}/timeline?format=text&limit=1`)).text();
+    expect(now).toContain("Now: waiting on the owner.");
+    expect(now).toContain("Waits on the owner: a plan to approve");
 
     // Its own pane: the band and the word.
     await page.goto(`/s/${planner}`);
@@ -108,6 +112,10 @@ test("a session waiting on a timer or a background command says so, with what it
     await expect(j.getByTestId("row-time")).toHaveText(/^\d+s$/);
     expect(await stateOf(request, timer)).toMatchObject({ watch: "wait", why: "timer", text: "Timer: check the deploy" });
     expect(await stateOf(request, job)).toMatchObject({ watch: "wait", why: "command" });
+    // The timeline's Now says waiting too, and on what.
+    const now = await (await request.get(`/api/sessions/${job}/timeline?format=text&limit=1`)).text();
+    expect(now).toContain("Now: waiting.");
+    expect(now).toContain("Waits on a background command");
     await shoot(page, "session-state-02-waiting");
 
     // The wait cancelled: nothing is waited on, the session is done.
@@ -487,10 +495,12 @@ test("the phone strip says how many need the owner in plain words, and its marks
     const dock = page.locator(".k-dock");
     await expect(dock.getByTestId("dock-need")).toHaveText("1 needs you");
     // Every mark has the session's short code beside its state.
-    const marks = dock.locator(".k-dock-mark");
-    await expect(marks).toHaveCount(2);
-    await expect(dock.locator('.k-dock-mark[data-watch="need"]').getByTestId("dock-code")).toHaveText("CB");
-    await expect(dock.locator(".k-dock-mark[aria-current]").getByTestId("dock-code")).toHaveText("EB");
+    // (The letters are the initials of the title unless another session on the daemon took them.)
+    await expect(dock.locator('.k-dock-mark[data-watch="need"]').getByTestId("dock-code")).toHaveText(/^[A-Z0-9]{2}$/);
+    await expect(dock.locator(".k-dock-mark[aria-current]").getByTestId("dock-code")).toHaveText(/^[A-Z0-9]{2}$/);
+    const codes = await dock.getByTestId("dock-code").allInnerTexts();
+    expect(codes.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(codes).size).toBe(codes.length);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await shoot(page, "session-state-10-phone-strip");
   } finally {

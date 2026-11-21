@@ -75,6 +75,9 @@ export type Live = {
   statusOf?(id: string): TurnStatus;
   outputOf?(id: string): number | undefined; // when the reply being streamed last gave output
   parkedOn?(id: string): { kind: string; until?: number } | undefined; // what a waiting agent's session waits on
+  plans?(): { id: string; session_id: string; created: number }[]; // plans presented for approval
+  jobs?(id: string): { id: string; started: number }[]; // commands the session left running in the background
+  watchOf?(id: string): string | undefined; // the session's one state (src/core/watch.ts)
   isHeld?(id: string): boolean;
   owed?(id: string): boolean; // reports and wakes waiting for the turn to end
   questions?(): { session_id: string; call_id: string; parent_id?: string }[];
@@ -561,8 +564,11 @@ export class Timeline {
     const loops = this.table("loops")
       ? db.query<NowInput["loops"][number], [string, number]>("SELECT id, name, next_ms FROM loops WHERE session_id = ? AND enabled = 1 AND next_ms IS NOT NULL AND next_ms > ? ORDER BY next_ms LIMIT 3").all(sessionId, ts - 60_000)
       : [];
+    const plans = (live.plans?.() ?? [])
+      .filter((p) => p.session_id === sessionId || children.has(p.session_id))
+      .map((p) => ({ id: p.id, created: p.created, ...(p.session_id === sessionId ? {} : { child_session: p.session_id, child_title: children.get(p.session_id) }) }));
     return nowLines({
-      ts, turn, last, held, approvals, questions, waits, loops,
+      ts, turn, last, held, approvals, questions, waits, loops, plans, jobs: live.jobs?.(sessionId) ?? [], watch: live.watchOf?.(sessionId),
       agents: agents.map((a) => (a.status === "waiting" ? { ...a, wait: live.parkedOn?.(a.session_id) } : a)),
       // A turn the engine has taken up and not opened yet: its system prompt, its model, its first event.
       starting: !turn && !!live.isRunning?.(sessionId),

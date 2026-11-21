@@ -59,8 +59,10 @@ test("keys and drafts per station", async ({ page, request }) => {
   reply.data.blocks = [{ type: "text", text: "\x1b[1;32mPASS\x1b[0m all colored \x1b]0;title\x07done" }];
   const copy = await (await request.post("/api/sessions/import", { data: file.map((r) => JSON.stringify(r)).join("\n") + "\n", headers: { "content-type": "application/x-ndjson" } })).json();
   await page.goto(`/s/${copy.session.id}`);
-  const line = page.locator(`section[data-station="${copy.session.id}"]`).getByTestId("station-head").locator(".k-station-line");
-  await expect(line).toHaveText("PASS all colored done");
+  // (The pane worked in carries no line of its own; the card beside its row shows the same line.)
+  await expect(page.locator(`section[data-station="${copy.session.id}"]`)).toBeVisible();
+  await page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${copy.session.id}"]`).hover();
+  await expect(page.getByTestId("rail-card").locator(".k-rail-card-line")).toHaveText("PASS all colored done");
   await request.delete(`/api/sessions/${copy.session.id}`);
 
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;

@@ -185,7 +185,9 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     // The same story as text, for a model; without ids when it only reads.
     const plain = await (await fetch(`${d.url}${base}/timeline?format=text`)).text();
     expect(plain).toContain('Timeline of session "Parser cleanup"');
-    expect(plain).toContain("Now: idle.");
+    // The command the cut turn started may still run (the daemon took it back to report its end): the session waits on it until then.
+    expect(plain).toMatch(/Now: (idle|waiting)\./);
+    if (plain.includes("Now: waiting.")) expect(plain).toContain("Waits on a background command");
     expect(plain).toMatch(/\n\d\d-\d\d \d\d:\d\d:\d\d {3}Wait wake \(a timer, after \d s\), 1 step, \d+ m?s, \$[\d.]+ {2}\[turn=[0-9a-f-]{36}\]\n/);
     for (const word of PRIVATE) expect(plain).not.toContain(word);
     expect(await (await fetch(`${d.url}${base}/timeline?format=text&ids=0`)).text()).not.toMatch(/\[turn=/);
@@ -225,8 +227,9 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     const rows = panel.getByTestId("timeline-row");
     const line = (r: TimelineRow) => panel.locator(`[data-testid="timeline-row"][data-id="${r.id}"]`);
     await expect(rows).toHaveCount(all.rows.length);
-    await expect(panel.getByTestId("timeline-state")).toHaveText("Idle");
-    await expect(panel.getByTestId("timeline-now-line")).toHaveText(/Nothing is running or waited on\. The last turn finished\./);
+    // While the command the cut turn started still runs, the session waits on it; after it, nothing is going on.
+    await expect(panel.getByTestId("timeline-state")).toHaveText(/^(Waiting|Idle)$/);
+    await expect(panel.getByTestId("timeline-now-line").first()).toHaveText(/Waits on a background command|Nothing is running or waited on\. The last turn finished\./);
     await expect(rows.first()).toContainText("Continued after a daemon restart, 1 step");
     await expect(panel.getByTestId("timeline-bad")).toHaveText("1 failed tool");
     // The minute is said once; rows in the same minute show their time to the second, whole: every row has a full time.
@@ -315,7 +318,8 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     expect(pending).toHaveLength(1);
     await call(`${base}/approvals/${pending[0].id}`, { choice: "deny" });
     // The answer moves it on, and what was open is now a row each.
-    await expect(panel.getByTestId("timeline-state")).toHaveText("Idle", { timeout: 30_000 });
+    // (Idle once the command the cut turn left running has ended too: it sleeps for 30 s.)
+    await expect(panel.getByTestId("timeline-state")).toHaveText("Idle", { timeout: 60_000 });
     await expect(rows.first()).toContainText(/Approval for Bash denied after/);
     await expect(rows.nth(1)).toContainText("Approval asked for Bash");
     // The owner's denial is a decision, said as one: not a failed tool, not red, not under Failures.

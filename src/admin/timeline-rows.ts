@@ -346,6 +346,10 @@ export type NowInput = {
   starting?: boolean; // a turn is being set up: nothing of it is stored yet
   approvals: { id: string; call_id?: string; tool?: string; risk?: string; created?: number; child_session?: string; child_title?: string }[];
   questions: { call_id: string; child_session?: string; child_title?: string }[];
+  plans?: { id: string; created?: number; child_session?: string; child_title?: string }[]; // plans presented for approval
+  jobs?: { id: string; started: number }[]; // commands left running in the background
+  // The session's one state (src/core/watch.ts), when the caller has it: the word of "now" follows it.
+  watch?: string;
   held?: { since?: number; note_id?: string } | null; // a cut turn that was not continued
   waits: { id: string; kind: string; created: number; deadline: number }[];
   // `wait`: what an agent that waits is waiting on, and for a timer when it is due.
@@ -378,6 +382,7 @@ export function nowLines(n: NowInput): TimelineNow {
     add(`approval:${a.id}`, "approval", "owner", `Waits on the owner: approval for ${a.tool ?? "a tool"}${a.risk === "high" ? " (high risk)" : ""}${inChild(a)}`, { ts: a.created, open: true }, { approval_id: a.id, call_id: a.call_id, child_session: a.child_session });
   }
   for (const q of n.questions) add(`question:${q.call_id}`, "question", "owner", `Waits on the owner: a question${inChild(q)}`, { open: true }, { call_id: q.call_id, child_session: q.child_session });
+  for (const p of n.plans ?? []) add(`plan:${p.id}`, "question", "owner", `Waits on the owner: a plan to approve${inChild(p)}`, { ...(p.created ? { ts: p.created } : {}), open: true }, { child_session: p.child_session });
   if (n.held) add("held", "restart", "owner", "Waits on the owner: a turn cut by a daemon restart was not continued", { ts: n.held.since }, { note_id: n.held.note_id });
   if (n.turn) {
     const who = originOf(n.turn.opener);
@@ -393,6 +398,7 @@ export function nowLines(n: NowInput): TimelineNow {
   }
   if (n.agents.length > AGENTS_SHOWN) add("agents", "agent", "live", `${n.agents.length - AGENTS_SHOWN} more agents are running`, { open: true });
   for (const w of n.waits) add(`wait:${w.id}`, "wait", "plain", `Waits on ${waitWords(w.kind)}`, { ts: w.created, until: w.deadline, open: true }, { wait_id: w.id });
+  for (const j of n.jobs ?? []) add(`job:${j.id}`, "wait", "plain", "Waits on a background command", { ts: j.started, open: true });
   const q = n.queue;
   if (q.queued || q.steers) {
     const parts = [q.queued ? plural(q.queued, "queued prompt") : "", q.steers ? plural(q.steers, "steer") : ""].filter(Boolean).join(" and ");
@@ -400,7 +406,9 @@ export function nowLines(n: NowInput): TimelineNow {
   } else if (q.held && !n.turn) add("queue", "queue", "plain", "The queue is held: nothing starts by itself until the owner sends or resumes");
   if (q.owed) add("owed", "queue", "plain", "A report or a wake waits for the turn to end");
   for (const l of n.loops.slice(0, 2)) add(`loop:${l.id}`, "loop", "plain", `Loop ${title(l.name, "(unnamed)")} runs next`, { until: l.next_ms }, { loop_id: l.id });
-  const state: TimelineNow["state"] = n.approvals.length || n.questions.length || n.held ? "owner" : n.turn || n.starting || n.agents.length ? "working" : n.waits.length || n.loops.length || q.queued || q.steers || q.owed ? "waiting" : "idle";
+  const own: TimelineNow["state"] = n.approvals.length || n.questions.length || n.plans?.length || n.held ? "owner" : n.turn || n.starting || n.agents.length ? "working" : n.waits.length || n.jobs?.length || n.loops.length || q.queued || q.steers || q.owed ? "waiting" : "idle";
+  // The session's one state leads where it says more: it needs the owner, it works, it waits.
+  const state: TimelineNow["state"] = n.watch === "need" ? "owner" : own === "owner" ? own : n.watch === "work" ? "working" : n.watch === "wait" ? "waiting" : own;
   if (!lines.length) add("idle", "idle", "plain", n.last ? `Nothing is running or waited on. The last turn ${ENDED[n.last.outcome] ?? "ended"}.` : "Nothing has run in this session yet.", n.last ? { ts: n.last.ts } : {});
   return { state, lines };
 }

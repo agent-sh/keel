@@ -13,6 +13,7 @@ import { Fragment, type KeyboardEvent, type ReactNode, useCallback, useEffect, u
 import { dur, whoWords } from "../../../src/admin/timeline-rows.ts";
 import type { Session } from "../../../src/core/types.ts";
 import { openSession, useAuto } from "../lib/automation.ts";
+import { useToldState } from "../lib/watch.ts";
 import { copyBundle, openTrace, traceOfTurn } from "../lib/observe.ts";
 import { reportError, useStore } from "../lib/store.ts";
 import {
@@ -185,6 +186,8 @@ function Panel({ session }: { session: Session }) {
   const act = useAuto((s) => (s.lastActivity?.session_id === id ? s.activityTick : 0));
   const agents = useAuto((s) => Object.values(s.agents).filter((a) => a.parent_id === id).map((a) => `${a.id} ${a.status}`).join());
   const waits = useAuto((s) => Object.values(s.waits).filter((w) => w.session_id === id).map((w) => `${w.id} ${w.status}`).join());
+  // The session's one state: it changes when something no other frame tells does (a command left running ends).
+  const told = useToldState(id);
   const first = useRef(true);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const owed = useRef(false);
@@ -192,7 +195,7 @@ function Panel({ session }: { session: Session }) {
     if (first.current) { first.current = false; return; }
     if (document.hidden) { owed.current = true; return; }
     timer.current ??= setTimeout(() => { timer.current = null; loadNow.current(false).catch((e) => reportError(e, { at: "timeline live" })); }, 250);
-  }, [events, status, queued, failure, questions, act, agents, waits, session.phase]);
+  }, [events, status, queued, failure, questions, act, agents, waits, session.phase, told]);
   useEffect(() => {
     const shown = () => {
       if (document.hidden || !owed.current) return;

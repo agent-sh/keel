@@ -26,6 +26,9 @@ import { sessionRef, sessionRefs } from "../../admin/session-ref.ts";
 import { ONLY, PAGE, PAGE_MAX, parseSince, Timeline, type Only } from "../../admin/timeline.ts";
 import { timelineText } from "../../admin/timeline-rows.ts";
 import { hasPending } from "../../automation/core.ts";
+import { sessionState } from "../../automation/state.ts";
+import { jobsOf, running } from "../../tools/jobs.ts";
+import { plansWaiting } from "./plan.ts";
 import { allPendingQuestions } from "../../tools/interact.ts";
 import { registerShared } from "../../tools/registry.ts";
 import { fail, ok, type Tool } from "../../tools/types.ts";
@@ -40,6 +43,9 @@ export const timelineRoutes: RouteModule = ({ store, engine }) => {
     turnOf: (id) => engine.turnOf(id),
     statusOf: (id) => engine.statusOf(id),
     outputOf: (id) => engine.outputOf(id),
+    plans: plansWaiting,
+    jobs: (id) => jobsOf(id).filter((j) => j.background && running(j)).map((j) => ({ id: j.id, started: j.started })),
+    watchOf: (id) => { const s = store.session(id); return s ? sessionState(s, { from: { store, engine } }).watch : undefined; },
     // What a waiting agent waits on: the wait due first (a timer at its wake time), else its oldest.
     parkedOn: (id) => {
       const rows = store.db.query<{ kind: string; spec: string }, [string]>("SELECT kind, spec FROM waits WHERE status = 'active' AND session_id = ? ORDER BY created").all(id);
