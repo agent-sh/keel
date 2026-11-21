@@ -3,7 +3,7 @@
 import { configured, fingerprint, forget, key, recheck, shown, sourceIdentity, type KeySource } from "./creds.ts";
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
 import { notChat } from "./family.ts";
-import { getJson, NoKey } from "./http.ts";
+import { allPages, getJson, NoKey } from "./http.ts";
 import type { Delta, Family, ListedModel, Provider, ProviderRequest, ProviderResult, ProviderStatus, Wire } from "./types.ts";
 import { geminiWire } from "./wires/gemini.ts";
 import { responsesWire } from "./wires/responses.ts";
@@ -82,20 +82,18 @@ export class GeminiProvider extends KeyedProvider {
 
   async list(): Promise<ListedModel[]> {
     const k = await this.key();
-    const out: ListedModel[] = [];
-    let token = "";
-    for (let page = 0; page < 20; page++) {
+    // Every page, to the end: a listing that names a token twice or has no end fails and says so.
+    return allPages(this.label, async (token) => {
       const d = await getJson(this.label, `${this.base}/v1beta/models?pageSize=1000${token ? `&pageToken=${encodeURIComponent(token)}` : ""}`, { "x-goog-api-key": k }, [k]);
+      const rows: ListedModel[] = [];
       for (const m of d.models ?? []) {
         const id = String(m.name ?? "").replace(/^models\//, "");
         if (!(m.supportedGenerationMethods ?? []).includes("generateContent") || notChat(id) || !/gemini/.test(id)) continue;
         this.thinks.set(id, !!m.thinking);
-        out.push({ model: id, name: m.displayName, context: m.inputTokenLimit, output: m.outputTokenLimit, family: "gemini" });
+        rows.push({ model: id, name: m.displayName, context: m.inputTokenLimit, output: m.outputTokenLimit, family: "gemini" });
       }
-      token = d.nextPageToken ?? "";
-      if (!token) break;
-    }
-    return out;
+      return { rows, next: d.nextPageToken };
+    });
   }
 
   async stream(req: ProviderRequest, onDelta: (d: Delta) => void) {

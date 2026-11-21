@@ -183,6 +183,32 @@ async function* stream(o: StreamOpts, guard: ReturnType<typeof idleGuard>): Asyn
   }
 }
 
+// More pages than any listing has: a server whose pages never end is stopped here.
+export const MAX_PAGES = 200;
+
+// Every page of a listing, from its first: `read` gives a page's rows and the
+// cursor of the page after it (none at the end). A cursor the server gave
+// before would read the same pages again without end, and a listing of more
+// pages than MAX_PAGES is not one either: the listing fails and says so, and
+// the pages read so far are not taken for the whole list.
+export async function allPages<T>(label: string, read: (cursor: string) => Promise<{ rows: T[]; next?: unknown }>): Promise<T[]> {
+  const out: T[] = [];
+  const seen = new Set<string>();
+  let cursor = "";
+  for (let page = 1; ; page++) {
+    const d = await read(cursor);
+    out.push(...d.rows);
+    const next = d.next ? String(d.next) : "";
+    if (!next) return out;
+    if (seen.has(next) || page >= MAX_PAGES) {
+      const why = seen.has(next) ? `page ${page} names a page cursor it gave before` : `it has more than ${MAX_PAGES} pages`;
+      throw new ProviderError("server", `${label}: the model listing does not end (${why}); ${out.length} models were read and the list is not complete`);
+    }
+    seen.add(next);
+    cursor = next;
+  }
+}
+
 // A GET that returns JSON, for listings.
 export async function getJson(label: string, url: string, headers: Record<string, string>, secrets: string[] = []): Promise<any> {
   let r: Response;

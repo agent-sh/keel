@@ -4,7 +4,7 @@
 import { sigv4, type AwsCreds } from "./aws.ts";
 import { fingerprint } from "./creds.ts";
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
-import { getJson } from "./http.ts";
+import { allPages, getJson } from "./http.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } from "./types.ts";
 import { anthropicWire } from "./wires/anthropic.ts";
 
@@ -85,15 +85,11 @@ export class AnthropicProvider implements Provider {
     if (!this.auth) return [];
     if (this.id === "anthropic") {
       const base = (this.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com").replace(/\/$/, "");
-      const out: ListedModel[] = [];
-      let after = "";
-      for (let page = 0; page < 20; page++) {
+      // Every page, to the end: a listing that names a cursor twice or has no end fails and says so.
+      return allPages(this.label, async (after) => {
         const d = await getJson(this.label, `${base}/v1/models?limit=1000${after ? `&after_id=${encodeURIComponent(after)}` : ""}`, { ...this.headers(), "anthropic-version": API_VERSION }, this.secrets);
-        for (const m of d.data ?? []) out.push({ model: m.id, name: m.display_name, context: m.max_input_tokens, output: m.max_tokens });
-        if (!d.has_more || !d.last_id) break;
-        after = d.last_id;
-      }
-      return out;
+        return { rows: (d.data ?? []).map((m: any): ListedModel => ({ model: m.id, name: m.display_name, context: m.max_input_tokens, output: m.max_tokens })), next: d.has_more && d.last_id };
+      });
     }
     // Bedrock: the inference profiles on the control plane. A local broker
     // serves the same path on its own address.

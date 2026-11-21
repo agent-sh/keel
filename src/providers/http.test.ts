@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { classify, ProviderError, streamEvents } from "./http.ts";
+import { classify, MAX_PAGES, ProviderError, streamEvents } from "./http.ts";
 import { type Wire, wireScope } from "./wiretap.ts";
 
 // A stream that sends one event and then nothing is cut after the idle
@@ -61,4 +61,51 @@ test("a model outside the plan is not a rate limit", () => {
   expect(e.kind).toBe("invalid");
   expect(e.retryable).toBe(false);
   expect(classify("p", 429, new Headers(), JSON.stringify({ error: { message: "Rate limit reached for requests" } })).kind).toBe("rate");
+});
+
+// A paged listing that does not end: the built-in Anthropic and Gemini
+// listings say so and fail, as a configured endpoint's does, instead of
+// stopping quietly at a page count with a list that looks whole. A stand-in
+// server plays the pages (the real listings never do this on demand).
+test("a built-in listing whose pages repeat or never end fails and says so", async () => {
+  const { AnthropicProvider } = await import("./anthropic.ts");
+  let mode: "ends" | "repeats" | "endless" = "ends";
+  let asked = 0;
+  const server = Bun.serve({
+    port: 0, hostname: "127.0.0.1",
+    fetch(req) {
+      asked++;
+      const u = new URL(req.url);
+      const gemini = u.pathname.startsWith("/v1beta");
+      const at = Number(u.searchParams.get(gemini ? "pageToken" : "after_id")?.replace("p", "") ?? 0);
+      const more = mode === "endless" || (mode === "ends" ? at < 2 : true);
+      const next = `p${mode === "repeats" ? (at + 1) % 2 : at + 1}`;
+      return Response.json(gemini
+        ? { models: [{ name: `models/gemini-test-${at}`, supportedGenerationMethods: ["generateContent"], displayName: `G ${at}` }], ...(more ? { nextPageToken: next } : {}) }
+        : { data: [{ id: `claude-test-${at}`, display_name: `C ${at}` }], has_more: more, last_id: more ? next : null });
+    },
+  });
+  const base = `http://127.0.0.1:${server.port}`;
+  const before = { g: process.env.GEMINI_BASE_URL, k: process.env.GEMINI_API_KEY };
+  process.env.GEMINI_BASE_URL = base;
+  process.env.GEMINI_API_KEY = "test-key";
+  try {
+    const { GeminiProvider } = await import("./keyed.ts");
+    const lists = { "Anthropic API": () => new AnthropicProvider("anthropic", { ANTHROPIC_API_KEY: "test-key", ANTHROPIC_BASE_URL: base }).list(), "Gemini API": () => new GeminiProvider().list() };
+    for (const [label, list] of Object.entries(lists)) {
+      mode = "ends";
+      expect((await list()).map((m) => m.model)).toEqual([0, 1, 2].map((n) => `${label === "Gemini API" ? "gemini" : "claude"}-test-${n}`));
+      mode = "repeats";
+      asked = 0;
+      await expect(list()).rejects.toThrow(`${label}: the model listing does not end (page 3 names a page cursor it gave before); 3 models were read and the list is not complete`);
+      expect(asked).toBe(3);
+      mode = "endless";
+      asked = 0;
+      await expect(list()).rejects.toThrow(`${label}: the model listing does not end (it has more than ${MAX_PAGES} pages); ${MAX_PAGES} models were read and the list is not complete`);
+      expect(asked).toBe(MAX_PAGES);
+    }
+  } finally {
+    server.stop(true);
+    for (const [k, v] of [["GEMINI_BASE_URL", before.g], ["GEMINI_API_KEY", before.k]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
 });

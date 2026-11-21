@@ -7,7 +7,7 @@ import type { AuthStyle, EndpointConfig } from "./config.ts";
 import { configured, fingerprint, forget, key, recheck, shown, sourceIdentity, type KeySource } from "./creds.ts";
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
 import { familyOf, notChat } from "./family.ts";
-import { getJson, NoKey, ProviderError } from "./http.ts";
+import { allPages, getJson, NoKey, ProviderError } from "./http.ts";
 import { fromOpenRouterKey, type WindowReading } from "./limits.ts";
 import type { Billing, Delta, ListedModel, Price, Provider, ProviderRequest, ProviderResult, ProviderStatus, Wire } from "./types.ts";
 import { anthropicWire } from "./wires/anthropic.ts";
@@ -45,8 +45,6 @@ const metaCache = new Map<string, { at: number; ids: string; meta: Map<string, M
 // Gemini listings say per model whether it thinks; the stream asks for thoughts only then.
 const thinks = new Map<string, boolean>();
 const META_TTL = 10 * 60_000;
-// More pages than any listing has: a server whose pages never end is stopped here.
-const MAX_PAGES = 200;
 
 export class EndpointProvider implements Provider {
   readonly id: string;
@@ -153,25 +151,17 @@ export class EndpointProvider implements Provider {
 
   // The listing's rows, every page of it, from its first page. Anthropic-style
   // pages name the next one with `last_id` while `has_more`, Gemini-style ones
-  // with `nextPageToken`; the OpenAI-style listing is one page. A cursor the
-  // server gave before would read the same pages again without end: the listing
-  // fails and says so, and the pages read so far are not taken for the whole list.
-  private async rows(first: any, a: { headers: Record<string, string>; secrets: string[] }): Promise<any[]> {
+  // with `nextPageToken`; the OpenAI-style listing is one page. A listing that
+  // does not end fails and says so (allPages).
+  private rows(first: any, a: { headers: Record<string, string>; secrets: string[] }): Promise<any[]> {
     const paged = this.wire === "anthropic_messages" ? "after_id" : this.wire === "gemini_generate_content" ? "pageToken" : "";
-    const out: any[] = [];
-    const seen = new Set<string>();
-    let d = first;
-    for (let page = 1; ; page++) {
-      out.push(...(this.wire === "gemini_generate_content" ? d.models ?? [] : d.data ?? d.models ?? []));
-      const next = !paged ? "" : this.wire === "anthropic_messages" ? (d.has_more && d.last_id ? String(d.last_id) : "") : String(d.nextPageToken ?? "");
-      if (!next) return out;
-      if (seen.has(next) || page >= MAX_PAGES) {
-        const why = seen.has(next) ? `page ${page} names a page cursor it gave before` : `it has more than ${MAX_PAGES} pages`;
-        throw new ProviderError("server", `${this.label}: the model listing does not end (${why}); ${out.length} models were read and the list is not complete`);
-      }
-      seen.add(next);
-      d = await getJson(this.label, `${this.listUrl}&${paged}=${encodeURIComponent(next)}`, a.headers, a.secrets);
-    }
+    return allPages(this.label, async (cursor) => {
+      const d = cursor ? await getJson(this.label, `${this.listUrl}&${paged}=${encodeURIComponent(cursor)}`, a.headers, a.secrets) : first;
+      return {
+        rows: this.wire === "gemini_generate_content" ? d.models ?? [] : d.data ?? d.models ?? [],
+        next: !paged ? "" : this.wire === "anthropic_messages" ? (d.has_more && d.last_id ? d.last_id : "") : d.nextPageToken,
+      };
+    });
   }
 
   // `first`: the listing's first page when the caller read it already (the
