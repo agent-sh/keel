@@ -596,12 +596,13 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   ].filter(Boolean).join("\n\n");
   // The assignment is stored with the running record, before the start may
   // wait for the first agent's cache: a daemon stopped in that wait starts
-  // the agent with all of it (recover), not on a bare "continue".
+  // the agent with all of it (recover), not on a bare "continue". It is kept
+  // as history is: a secret in it is its placeholder.
   // task_at: where the parent's own words start, so the page shows them verbatim.
   store.db.query(
     "INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def, worktree, branch, machine, output_schema, call_id, task) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?)",
   ).run(id, parentId, child.id, title, def.name, model, input.background === false ? 0 : 1, now, JSON.stringify(def), iso?.wt.path ?? placed?.worktree ?? null, iso?.wt.branch ?? placed?.branch ?? null, placed?.machine ?? null, schema, input.call_id ?? null,
-    JSON.stringify({ text: task, task_at: task.length - input.prompt.length }));
+    JSON.stringify(store.redact(child.id, "user", { text: task, task_at: task.length - input.prompt.length })));
   release(); // the persisted running row now occupies the slot
   activity.record("agent", "started", parentId, `Started agent "${title}" (${def.name} on ${model}${placed ? `, its tools on ${placed.name}` : ""})`, { agent_id: id, child_session: child.id });
   const waited = await stagger(parentId, model, child.id, signal);
@@ -635,8 +636,10 @@ function sendTask(a: AgentRecord): boolean {
   const { store, engine } = D();
   const row = store.db.query<{ task: string | null }, [string]>("SELECT task FROM agents WHERE id = ?").get(a.id);
   if (!row?.task) return false;
-  // Stored but not yet taken off the record (a stop between the two writes): it is not sent again.
-  const there = store.events(a.session_id).some((e) => e.kind === "user" && e.data.kind === "task" && e.data.agent_id === a.id);
+  // Stored but not yet taken off the record (a stop between the two writes): it
+  // is not sent again, and the record is told where it starts.
+  const there = store.events(a.session_id).find((e) => e.kind === "user" && e.data.kind === "task" && e.data.agent_id === a.id);
+  if (there && a.first_seq !== there.seq - 1) update(a.id, { first_seq: there.seq - 1 });
   if (!there) {
     const { text, task_at } = JSON.parse(row.task) as { text: string; task_at: number };
     // traceparent: the spawn call's span, so the child's turns trace under it.

@@ -660,11 +660,16 @@ test("an agent whose start was staggered starts once with its whole assignment a
   const lead = await start("lead");
   const schema = { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } };
   const second = start("the second assignment", { output_schema: schema });
-  const third = start("the stopped one");
+  // What is kept of an assignment is kept as history is: a secret in it is its placeholder.
+  const plain = store.redact;
+  store.redact = (_s, _k, v) => JSON.parse(JSON.stringify(v).replaceAll("hunter2", "[secret:1a2b3c4d]"));
+  const third = start("the stopped one, key hunter2").finally(() => (store.redact = plain));
   await settled();
   const [, b, c] = agents.list(p.id);
   const to = (a: agents.AgentRecord) => sends.filter((x) => x.id === a.session_id).map((x) => x.text);
   expect([to(b!), to(c!)]).toEqual([[], []]);
+  const kept = store.db.query<{ task: string }, [string]>("SELECT task FROM agents WHERE id = ?").get(c!.id)!.task;
+  expect([kept.includes("hunter2"), kept.includes("key [secret:1a2b3c4d]")]).toEqual([false, true]);
   agents.stop(c!.id, "parent");
   await settled();
   agents.recover(); // the next daemon
@@ -683,7 +688,30 @@ test("an agent whose start was staggered starts once with its whole assignment a
   expect(to(c!)).toEqual([]);
   // A message that continues the stopped one gives it the assignment it never got, then the message.
   await agents.send(c!.id, "go on");
-  expect(to(c!).map((t) => t.split("\n").at(-1))).toEqual(["the stopped one", "go on"]);
+  expect(to(c!).map((t) => t.split("\n").at(-1))).toEqual(["the stopped one, key [secret:1a2b3c4d]", "go on"]);
+});
+
+// A daemon stopped after a forked agent's task was stored and before its
+// record said where the task starts: the next daemon finds the task there,
+// sends nothing twice and puts the start right, so what the agent reports is
+// its own and never a reply copied from its parent.
+test("a task found already stored at a restart is where the agent's report starts", async () => {
+  const p = store.createSession({ model: parent.model, workspace: dir, title: "fork parent" });
+  store.append(p.id, "user", { text: "Question" });
+  store.append(p.id, "assistant", { blocks: [{ type: "text", text: "The parent's own answer" }] });
+  store.append(p.id, "assistant", { blocks: [{ type: "tool_use", id: "call-f", name: "spawn_agent", input: {} }] });
+  const a = await agents.spawn(p.id, { prompt: "go on", fork: true, isolation: "none", background: true, call_id: "call-f" });
+  const start = agents.get(a.id)!.first_seq;
+  expect(start).toBeGreaterThan(0);
+  // As the stop left it: the task in the session, the record not yet updated.
+  store.db.query("UPDATE agents SET first_seq = 0, task = ? WHERE id = ?").run(JSON.stringify({ text: "go on", task_at: 0 }), a.id);
+  agents.recover();
+  expect(agents.get(a.id)!.first_seq).toBe(start);
+  expect(store.events(a.session_id).filter((e) => e.kind === "user" && e.data.kind === "task")).toHaveLength(1);
+  store.append(a.session_id, "turn_end", { reason: "end_turn" }); // it ends without a word of its own
+  agents.onTurnEnd(a.session_id, "end_turn");
+  await settled();
+  expect(agents.get(a.id)!.result).toBe("(the agent ended without a report)");
 });
 
 // A finished work agent whose empty worktree went is given more work: the
