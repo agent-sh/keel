@@ -111,3 +111,76 @@ test("projects: instructions, folders, defaults, membership", async ({ page, req
   expect((await (await request.get(`/api/sessions/${b.id}`)).json()).session.settings.project).toBe("none");
   for (const id of [a.id, b.id, c]) await request.delete(`/api/sessions/${id}`);
 });
+
+// The page lays out by its own width, not the window's: beside the session
+// list and at a large text size it is one column while a second would squeeze
+// the forms, and on a phone every control of a row stays whole inside it.
+test("the project page lays out by its own width", async ({ page, request }) => {
+  const word = `pw${Date.now().toString(36)}`;
+  const root = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", word);
+  const first = join(root, "services/billing-reconciliation"), second = join(root, "packages/shared-contracts");
+  mkdirSync(first, { recursive: true });
+  mkdirSync(second, { recursive: true });
+  mkdirSync(join(first, "docs"), { recursive: true });
+  writeFileSync(join(first, "docs/reconciliation-spec.md"), "# Spec\n");
+  const s = (await (await request.post("/api/sessions", { data: { workspace: first, model: "scripted:stand-in", title: `Reconcile the ledger exports ${word}` } })).json()).session;
+  const p = (await (await request.post("/api/projects", { data: { name: `Ledger ${word}`, folders: [first, second], files: [join(first, "docs/reconciliation-spec.md")], instructions: "Target the release branch. Keep replies short." } })).json()).project;
+  const box = async (id: string) => (await page.getByTestId(id).boundingBox())!;
+  const rem = () => page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
+  // Whole inside the window, and inside the block it belongs to.
+  const whole = async (l: ReturnType<typeof page.getByTestId>, block?: string) => {
+    await l.scrollIntoViewIfNeeded();
+    const b = (await l.boundingBox())!, w = page.viewportSize()!.width;
+    expect(b.x).toBeGreaterThanOrEqual(0);
+    expect(b.x + b.width).toBeLessThanOrEqual(w);
+    if (block) { const o = await box(block); expect(b.x).toBeGreaterThanOrEqual(o.x); expect(b.x + b.width).toBeLessThanOrEqual(o.x + o.width); }
+  };
+  const noPan = () => page.getByTestId("project-page").evaluate((el) => [el, ...el.querySelectorAll("*")].every((n) => n.scrollWidth <= n.clientWidth + 1 || !["auto", "scroll"].includes(getComputedStyle(n).overflowX)));
+
+  // A wide page: the sessions stand beside the forms.
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await page.goto(`/p/${p.id}`);
+  await expect(page.getByTestId("project-session")).toHaveCount(1);
+  expect((await box("project-sessions")).x).toBeGreaterThan((await box("project-instructions")).x + (await box("project-instructions")).width);
+  await shoot(page, "projects-05-wide");
+
+  // 1024 px with the session list open and the text at 150%: one column, the forms at a working width.
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await page.evaluate(() => { localStorage.setItem("keel.textScale", "1.5"); localStorage.setItem("keel.list", "true"); });
+  await page.reload();
+  await expect(page.getByTestId("sidebar")).toBeVisible();
+  await expect(page.getByTestId("project-session")).toHaveCount(1);
+  const form = await box("project-instructions"), list = await box("project-sessions");
+  expect(list.y).toBeGreaterThan(form.y + form.height);
+  expect(Math.abs(list.x - form.x)).toBeLessThan(2);
+  expect(form.width).toBeGreaterThan(24 * (await rem()));
+  expect(await noPan()).toBe(true);
+  await shoot(page, "projects-06-1024-text-150");
+  await page.evaluate(() => localStorage.removeItem("keel.textScale"));
+
+  // A phone: each row's controls are whole.
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.reload();
+  await expect(page.getByTestId("project-folder")).toHaveCount(2);
+  await whole(page.getByTestId("project-new-session"));
+  await whole(page.getByTestId("project-delete"));
+  await shoot(page, "projects-07-phone-head");
+  await whole(page.getByTestId("project-instructions-save"), "project-instructions");
+  await whole(page.getByTestId("project-instructions-text"), "project-instructions");
+  const folder = page.getByTestId("project-folder").nth(1);
+  await whole(folder.getByRole("button", { name: "Make primary" }), "project-folders");
+  await whole(folder.getByRole("button", { name: /^Remove / }), "project-folders");
+  await whole(page.getByTestId("project-add-folder").getByRole("button"), "project-folders");
+  await shoot(page, "projects-08-phone-folders");
+  await whole(page.getByTestId("project-file-input"), "project-files");
+  await whole(page.getByTestId("project-files").getByRole("button", { name: "Add" }), "project-files");
+  await whole(page.getByTestId("project-mode"), "project-defaults");
+  await shoot(page, "projects-09-phone-files");
+  expect(await noPan()).toBe(true);
+  // The controls still work there: the second folder becomes the primary one.
+  await folder.getByRole("button", { name: "Make primary" }).click();
+  await expect.poll(async () => (await (await request.get(`/api/projects/${p.id}`)).json()).project.folders[0]).toBe(second);
+
+  await request.delete(`/api/projects/${p.id}`);
+  await request.delete(`/api/sessions/${s.id}`);
+});

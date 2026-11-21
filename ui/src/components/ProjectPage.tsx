@@ -14,6 +14,7 @@ import { MachineSep, machineRuns } from "./Where.tsx";
 import { confirmAction } from "./Confirm.tsx";
 import { Mark } from "./Mark.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
+import { PathText } from "./PathText.tsx";
 import { Select } from "./Select.tsx";
 import { WorkspacePicker } from "./WorkspacePicker.tsx";
 import { ArtifactBrowser, useArtifacts } from "./ArtifactsPanel.tsx";
@@ -25,12 +26,12 @@ const home = (p: string) => p.replace(/^\/(home|Users)\/[^/]+/, "~");
 function Block({ title, hint, children, testid, aside }: { title: string; hint?: ReactNode; children: ReactNode; testid?: string; aside?: ReactNode }) {
   return (
     <section className="rounded-lg border border-line bg-raised px-5 py-4 shadow-1" data-testid={testid}>
-      <div className="mb-3 flex items-start gap-3">
-        <div className="min-w-0 flex-1">
-          <h2 className="text-base font-semibold">{title}</h2>
-          {hint && <p className="mt-0.5 text-ui text-muted">{hint}</p>}
+      <div className="mb-3">
+        <div className={cn("flex items-center gap-3", aside && "min-h-8")}>
+          <h2 className="min-w-0 flex-1 text-base font-semibold">{title}</h2>
+          {aside}
         </div>
-        {aside}
+        {hint && <p className="mt-0.5 text-ui text-muted">{hint}</p>}
       </div>
       {children}
     </section>
@@ -61,28 +62,31 @@ function Body({ p }: { p: Project }) {
   const agents = useAgentCounts();
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col" data-testid="project-page" data-project={p.id}>
+    // The page is the container its parts measure: beside the session list or at a
+    // large text size it is narrower than the window, and lays out as that.
+    <div className="@container/page flex min-h-0 flex-1 flex-col" data-testid="project-page" data-project={p.id}>
       <header className="k-page-head flex h-12 shrink-0 items-center gap-2 border-b border-line px-3 md:px-5">
         <button type="button" onClick={() => (history.length > 1 ? history.back() : navigate({ name: "new" }))} className="flex h-8 items-center gap-1.5 rounded-md px-2 text-ui text-muted hover:bg-hover hover:text-fg">
           <ArrowLeft className="size-4" /> Back
         </button>
-        <span className="text-ui text-faint">Project</span>
+        <span className="hidden text-ui text-faint @sm/page:inline">Project</span>
         <div className="ml-auto flex items-center gap-2">
           <button type="button" className={button} data-testid="project-new-session" onClick={() => newInProject(p)}><Plus className="size-4" />New session</button>
           <button
             type="button"
-            className={cn(button, "text-danger")}
+            className={cn(button, "px-2 text-danger @sm/page:px-3")}
             data-testid="project-delete"
             onClick={async () => {
               if (!(await confirmAction({ title: `Delete the project ${p.name}?`, body: "Its sessions stay; they leave the project and its instructions.", action: "Delete project", danger: true }))) return;
               await projects.remove(p.id).catch(reportError);
               navigate({ name: "new" });
             }}
-          ><Trash2 className="size-4" />Delete</button>
+            aria-label="Delete project"
+          ><Trash2 className="size-4" /><span className="hidden @sm/page:inline">Delete</span></button>
         </div>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto grid max-w-[72rem] gap-5 px-4 py-6 md:px-10 md:py-8 lg:grid-cols-[minmax(0,1fr)_22rem]">
+        <div className="mx-auto grid max-w-[72rem] gap-5 px-4 py-6 @2xl/page:px-10 @2xl/page:py-8 @4xl/page:grid-cols-[minmax(0,1fr)_22rem]">
           <div className="flex min-w-0 flex-col gap-5">
             <input
               value={name}
@@ -115,7 +119,7 @@ function Body({ p }: { p: Project }) {
                 {p.folders.map((f, i) => (
                   <li key={f} className="flex h-9 items-center gap-2 border-b border-line text-ui last:border-0" data-testid="project-folder">
                     <Folder className="size-4 shrink-0 text-faint" />
-                    <span className="min-w-0 flex-1 truncate font-mono text-caption" title={f}>{home(f)}</span>
+                    <PathText path={home(f)} className="font-mono text-caption" />
                     {i === 0 ? <span className="rounded-xs bg-accent-soft px-1.5 text-micro text-accent-ink">primary</span> : (
                       <button type="button" title="Start new sessions here" aria-label="Make primary" className="grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg" onClick={() => save({ folders: [f, ...p.folders.filter((x) => x !== f)] })}><Star className="size-3.5" /></button>
                     )}
@@ -134,7 +138,7 @@ function Body({ p }: { p: Project }) {
                 {p.files.map((f) => (
                   <li key={f} className="flex h-9 items-center gap-2 border-b border-line text-ui last:border-0" data-testid="project-file">
                     <FileText className="size-4 shrink-0 text-faint" />
-                    <span className="min-w-0 flex-1 truncate font-mono text-caption" title={f}>{home(f)}</span>
+                    <PathText path={home(f)} className="font-mono text-caption" />
                     <button type="button" aria-label={`Remove ${f}`} className="grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg" onClick={() => save({ files: p.files.filter((x) => x !== f) })}><X className="size-3.5" /></button>
                   </li>
                 ))}
@@ -162,7 +166,7 @@ function Body({ p }: { p: Project }) {
             </Block>
           </div>
           <ProjectArtifacts p={p} members={members} />
-          <aside className="flex min-w-0 flex-col gap-5 lg:col-start-2 lg:row-start-1 lg:row-end-3">
+          <aside className="flex min-w-0 flex-col gap-5 @4xl/page:col-start-2 @4xl/page:row-start-1 @4xl/page:row-end-3">
             <Block title="Sessions" hint={list.length ? `${list.length} in the project` : "None yet"} testid="project-sessions">
               <div className="flex flex-col">
                 {machineRuns(list).map((run, ri, runs) => (<Fragment key={run.machine ?? "local"}>{runs.length > 1 && <MachineSep machine={run.machine} count={run.list.length} />}{run.list.map((s) => (
