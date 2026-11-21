@@ -63,7 +63,7 @@ export function MemoryUsage({ since }: { since: number }) {
             {out > 0 && <span className="text-danger" data-testid="memory-out"> The store did not answer {plural(out, "time")} ({r.total.timeouts} timed out, {r.total.failures} failed): those turns went on without it.</span>}
           </p>
         </>
-      ) : <p className="text-ui text-faint">No memory was recalled in this range.</p>}
+      ) : <p className="k-empty">No memory was recalled in this range.</p>}
     </Panel>
   );
 }
