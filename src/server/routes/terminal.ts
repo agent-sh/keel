@@ -10,7 +10,7 @@ import { SessionMap } from "../../core/session-map.ts";
 import type { Session, StoredEvent } from "../../core/types.ts";
 import { LinkError } from "../../fleet/link.ts";
 import { addNotice, cleanTerm } from "../../tools/jobs.ts";
-import { listJobs, logPath, ownerNote, ownerRun, readJobLog, stopOne, TAIL, type TermJob } from "../../tools/terminal.ts";
+import { jobOfCall, listJobs, logPath, ownerNote, ownerRun, readJobLog, stopOne, TAIL, type TermJob } from "../../tools/terminal.ts";
 import type { RouteModule } from "../app.ts";
 import { fleet } from "./fleet.ts";
 import { presence } from "./permissions.ts";
@@ -181,6 +181,21 @@ export const terminalRoutes: RouteModule = (deps) => {
         const from = Number(new URL(req.url).searchParams.get("from") ?? 0);
         const r = placed(s) ? (await onPeer(s, "log", { job: req.params.job, from })).log : readJobLog(spillRoot, s.id, req.params.job, from);
         return r ? json(r) : json({ error: "no such job" }, 404);
+      }),
+    },
+    // The output of the command a tool call started, by the call's id: what the
+    // call's card in the conversation follows while it runs, and reads whole
+    // when its result was cut to fit. `job` names the command for the reads after.
+    "/api/sessions/:id/terminal/call/:call/log": {
+      GET: (req: any) => guard(async () => {
+        const s = store.session(req.params.id);
+        if (!s) return json({ error: "no such session" }, 404);
+        const from = Number(new URL(req.url).searchParams.get("from") ?? 0);
+        // Here: among every record the session's jobs left. On another machine: among the jobs its list carries.
+        const job = placed(s) ? (((await onPeer(s, "list")).jobs ?? []) as TermJob[]).findLast((j) => j.call_id === req.params.call)?.id : jobOfCall(spillRoot, s.id, req.params.call);
+        if (!job) return json({ error: "no command of this call" }, 404);
+        const r = placed(s) ? (await onPeer(s, "log", { job, from })).log : readJobLog(spillRoot, s.id, job, from);
+        return r ? json({ ...r, job }) : json({ error: "no such job" }, 404);
       }),
     },
     "/api/sessions/:id/terminal/:job/stop": {

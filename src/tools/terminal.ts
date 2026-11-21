@@ -79,27 +79,45 @@ function exitOf(c: Seen, log: string): number | null | undefined {
   return n;
 }
 
-export function listJobs(spillRoot: string, sessionId: string): TermJob[] {
+// The records a session's jobs left, read as far as they changed since the
+// last look (see Seen): every record, not only the ones a list carries.
+function recordsOf(spillRoot: string, sessionId: string): { c: Seen; dir: string } {
   const c = seen.get(sessionId) ?? { metas: new Map(), tails: new Map(), exits: new Map() };
   seen.set(sessionId, c);
-  // Every job without its output first: the records the jobs left, then the
-  // ones in memory (a job of this daemon is in both; memory is the newer).
-  type Bare = Omit<TermJob, "bytes" | "last" | "tail" | "tail_from" | "log_missing" | "log_removed"> & { log: string; open: boolean };
-  const out = new Map<string, Bare>();
   const dir = jobsDir(spillRoot, sessionId);
   let files: string[] = [];
   try { files = io.readdirSync(dir).filter((f) => f.endsWith(".json")); } catch {}
   const here = new Set(files);
   for (const f of c.metas.keys()) if (!here.has(f)) c.metas.delete(f);
   for (const f of files) {
-    let k = c.metas.get(f);
-    if (!k || k.m.ended === undefined) {
-      try {
-        const st = io.statSync(join(dir, f));
-        if (!k || k.size !== st.size || k.mtime !== st.mtimeMs || k.ino !== st.ino) c.metas.set(f, (k = { m: JSON.parse(io.readFileSync(join(dir, f), "utf8")), size: st.size, mtime: st.mtimeMs, ino: st.ino }));
-      } catch { c.metas.delete(f); continue; }
-    }
-    const m = k.m;
+    const k = c.metas.get(f);
+    if (k && k.m.ended !== undefined) continue;
+    try {
+      const st = io.statSync(join(dir, f));
+      if (!k || k.size !== st.size || k.mtime !== st.mtimeMs || k.ino !== st.ino) c.metas.set(f, { m: JSON.parse(io.readFileSync(join(dir, f), "utf8")), size: st.size, mtime: st.mtimeMs, ino: st.ino });
+    } catch { c.metas.delete(f); }
+  }
+  return { c, dir };
+}
+
+// The job a tool call started, by the call's id: the newest when a call was
+// run again. Looked for among the jobs in memory and every record on disk
+// (a list carries only the newest), and no log is read for it.
+export function jobOfCall(spillRoot: string, sessionId: string, callId: string): string | undefined {
+  const live = jobsOf(sessionId).filter((j) => j.callId === callId).sort((a, b) => a.started - b.started).at(-1);
+  if (live) return live.id;
+  let found: Meta | undefined;
+  for (const { m } of recordsOf(spillRoot, sessionId).c.metas.values()) if (m.call_id === callId && (!found || m.started >= found.started)) found = m;
+  return found?.id;
+}
+
+export function listJobs(spillRoot: string, sessionId: string): TermJob[] {
+  // Every job without its output first: the records the jobs left, then the
+  // ones in memory (a job of this daemon is in both; memory is the newer).
+  type Bare = Omit<TermJob, "bytes" | "last" | "tail" | "tail_from" | "log_missing" | "log_removed"> & { log: string; open: boolean };
+  const out = new Map<string, Bare>();
+  const { c, dir } = recordsOf(spillRoot, sessionId);
+  for (const { m } of c.metas.values()) {
     out.set(m.id, {
       id: m.id, call_id: m.call_id, by: m.by, command: m.command, description: m.description, cwd: m.cwd, started: m.started,
       ended: m.ended, exit_code: m.exit_code, signal: m.signal, stop_reason: m.stop_reason, background: m.background,

@@ -162,3 +162,21 @@ test("what a list keeps is not trusted past what it can tell: another file, an e
     expect(asked).toEqual([{ after: 0, got: 10 }]);
   }
 });
+
+test("a command's output is read by its call among every record, also one a list leaves out", async () => {
+  const id = "bold0001";
+  writeFileSync(join(jobs, `${id}.json`), JSON.stringify({ id, num: 0, sessionId: s.id, command: "echo old", cwd: dir, started: T0 - 5000, background: false, pid: 1, reported: true, ended: T0 - 4000, exit_code: 0, call_id: "call-old" }));
+  writeFileSync(logOf(id), "the old output\n");
+  // Older than the jobs a list carries.
+  expect((await list()).some((e) => e.job_id === id)).toBe(false);
+  const log = (call: string, from = 0) => routes["/api/sessions/:id/terminal/call/:call/log"].GET({ params: { id: s.id, call }, url: `http://keel/x?from=${from}` }) as Promise<Response>;
+  opened.length = 0;
+  const r = await log("call-old");
+  expect(r.status).toBe(200);
+  expect(await r.json()).toMatchObject({ job: id, text: "the old output\n", from: 0, to: 15, size: 15, running: false });
+  // Found from the records alone: no log of the list was read for it.
+  expect(logsOpened()).toEqual([]);
+  expect(await (await log("call-old", 4)).json()).toMatchObject({ text: "old output\n", from: 4 });
+  expect((await log("call-newest")).status).toBe(200);
+  expect((await log("call-of-nothing")).status).toBe(404);
+});
