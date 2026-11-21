@@ -137,7 +137,7 @@ registerCommand(
   // Back to typing from anywhere in the pane worked in (Escape does it from a prompt reached by the two above).
   { id: "focus-box", label: "Focus the message box", group: "Conversation", keys: "shift+escape", inInput: true, words: "composer input type reply write", when: () => !!current(), run: () => focusBox(current()!.id) },
   { id: "settings", label: "Settings", group: "General", keys: "mod+,", inInput: true, words: "preferences options", run: () => navigate({ name: "settings", section: "general" }) },
-  { id: "errors", label: "Show recorded errors", group: "General", words: "failures bugs log", run: () => setUI({ errors: true }) },
+  { id: "errors", label: "Show recorded errors", group: "General", keys: "alt+r", inInput: true, words: "failures bugs log", run: () => setUI({ errors: !getUI().errors }) },
   { id: "theme-light", label: "Theme: light", group: "View", words: "appearance", run: () => setTheme("light") },
   { id: "theme-dark", label: "Theme: dark", group: "View", words: "appearance", run: () => setTheme("dark") },
   { id: "theme-system", label: "Theme: follow the system", group: "View", words: "appearance auto", run: () => setTheme("system") },

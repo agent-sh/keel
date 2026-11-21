@@ -247,3 +247,91 @@ test("the caret moves with the pane the keys move to", async ({ page, request })
 
   for (const id of ids) await request.delete(`/api/sessions/${id}`);
 });
+
+// Stops every turn an earlier test left open: what waits on the owner is read across the daemon's sessions.
+async function settle(request: APIRequestContext) {
+  const { sessions } = (await (await request.get("/api/sessions")).json()) as { sessions: { id: string; phase: string }[] };
+  for (const s of sessions) if (s.phase === "working") await request.post(`/api/sessions/${s.id}/interrupt`);
+}
+const question = { name: "AskUserQuestion", input: { questions: [{ header: "Color", question: "Which color should I use?", options: [{ label: "Teal" }, { label: "Amber" }], multiSelect: false }] } };
+
+test("a key and the palette reach what waits on the owner, the inbox and the errors", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const ws = folder("waits");
+  const quiet = await create(request, "Nothing waits here", ws);
+  // Two sessions wait: one on an approval, then one on a question (the longer wait comes first).
+  const asks = await create(request, "Waits on an approval", ws);
+  await request.put(`/api/sessions/${asks}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+  await request.post(`/api/sessions/${asks}/messages`, { data: { text: calls([{ name: "Bash", input: { command: "echo waits > waits.txt" } }]) } });
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${asks}/approvals`)).json()).approvals.length).toBe(1);
+  const picks = await create(request, "Waits on a question", ws);
+  await request.post(`/api/sessions/${picks}/messages`, { data: { text: calls([question]) } });
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${picks}/questions`)).json()).pending.length).toBe(1);
+
+  await page.goto(`/s/${quiet}`);
+  await expect(page.getByTestId("composer")).toBeFocused();
+  const row = (id: string) => page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${id}"]`);
+  await expect(row(asks)).toHaveAttribute("data-watch", "need");
+  await expect(row(picks)).toHaveAttribute("data-watch", "need");
+
+  // The key, from a session where nothing waits: the one that has waited longest, its approval under the keys.
+  await page.keyboard.press("Alt+a");
+  await expect(page).toHaveURL(new RegExp(`/s/${asks}$`));
+  await expect(page.getByTestId("allow-once")).toBeFocused();
+  await shoot(page, "keyboard-paths-02-next-waiting");
+  // Again: the next one, and around.
+  await page.keyboard.press("Alt+a");
+  await expect(page).toHaveURL(new RegExp(`/s/${picks}$`));
+  await expect(page.getByTestId("question")).toHaveAttribute("data-state", "open");
+  await page.keyboard.press("Alt+a");
+  await expect(page).toHaveURL(new RegExp(`/s/${asks}$`));
+
+  // The palette has the three by name.
+  const palette = page.getByTestId("palette");
+  const pick = async (words: string, label: string) => {
+    await page.keyboard.press("Control+k");
+    await page.getByTestId("palette-input").fill(words);
+    await expect(palette.getByRole("option").first()).toContainText(label);
+    await page.keyboard.press("Enter");
+    await expect(palette).toHaveCount(0);
+  };
+  await page.goto(`/s/${quiet}`);
+  await pick("needs you", "Go to the next session that needs you");
+  await expect(page).toHaveURL(new RegExp(`/s/${asks}$`));
+  await pick("inbox", "Open the inbox");
+  await expect(page.getByTestId("inbox-list")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("inbox-list")).toHaveCount(0);
+  await pick("errors", "Show recorded errors");
+  await expect(page.getByTestId("errors-panel")).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  // Their keys open them too, and the shortcut sheet lists all three.
+  await page.keyboard.press("Alt+b");
+  await expect(page.getByTestId("inbox-list")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Alt+r");
+  await expect(page.getByTestId("errors-panel")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Control+/");
+  const sheet = page.getByTestId("shortcuts");
+  for (const [label, key] of [["Go to the next session that needs you", "A"], ["Open the inbox", "B"], ["Show recorded errors", "R"]] as const) {
+    const line = sheet.locator("div").filter({ hasText: new RegExp(`^${label}Alt${key}$`) });
+    await expect(line).toBeVisible();
+  }
+  await shoot(page, "keyboard-paths-03-sheet");
+  await page.keyboard.press("Escape");
+
+  // With nothing left waiting the key says so and stays.
+  await request.post(`/api/sessions/${asks}/interrupt`);
+  await request.post(`/api/sessions/${picks}/interrupt`);
+  await expect(row(asks)).not.toHaveAttribute("data-watch", "need");
+  await expect(row(picks)).not.toHaveAttribute("data-watch", "need");
+  await page.goto(`/s/${quiet}`);
+  await page.keyboard.press("Alt+a");
+  await expect(page.locator(".k-tip")).toHaveText("Nothing waits for you.");
+  await expect(page).toHaveURL(new RegExp(`/s/${quiet}$`));
+
+  for (const id of [quiet, asks, picks]) await request.delete(`/api/sessions/${id}`);
+});

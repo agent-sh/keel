@@ -1,5 +1,5 @@
 import { Bell, BellOff, ChevronRight, Moon, Repeat } from "lucide-react";
-import { lazy, Suspense, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { auto, isLive, openSession, snoozeText, useAuto } from "../../lib/automation.ts";
 import { useStore } from "../../lib/store.ts";
 import { cn } from "../../lib/utils.ts";
@@ -121,6 +121,12 @@ export function AutomationFooter() {
   const [loops, setLoops] = useState(false);
   const [seen, setSeen] = useState({ inbox: false, loops: false });
   if ((inbox && !seen.inbox) || (loops && !seen.loops)) setSeen({ inbox: seen.inbox || inbox, loops: seen.loops || loops });
+  // The "Open the inbox" command (a key, the palette): the same press closes it again.
+  useEffect(() => {
+    const toggle = () => setInbox((o) => !o);
+    addEventListener("keel:inbox", toggle);
+    return () => removeEventListener("keel:inbox", toggle);
+  }, []);
   return (
     <>
       <FooterButtons onInbox={() => setInbox(true)} onLoops={() => setLoops(true)} />

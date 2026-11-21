@@ -5,6 +5,7 @@ import { Attention, setBaseTitle } from "./components/Attention.tsx";
 import { Boundary } from "./components/Boundary.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import "./lib/builtins.ts";
+import { AnswerQueue } from "./components/AnswerQueue.tsx";
 import "./lib/tools-ui.ts";
 import "./lib/providers-ui.ts";
 import "./lib/admin-ui.ts";
@@ -146,6 +147,7 @@ export function App() {
   return (
     <Boundary>
       <Attention />
+      <AnswerQueue />
       <div className="k-shell">
         <AdminBand />
         <ArchivedRefusalNotice />
