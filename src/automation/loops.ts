@@ -141,7 +141,8 @@ function toRec(r: Row): LoopRecord {
   void hook_hash; void fallback_used; void webhook_pending; void last_hook_ms;
   const rec: LoopRecord = { ...rest, enabled: !!r.enabled };
   if (r.kind === "webhook") rec.signed = !!hook_secret;
-  if (r.kind === "cron") rec.next_runs = nextRuns(r.schedule, Date.now(), 3, r.tz ?? undefined);
+  // A schedule stored before the parser refused it lists no times (the scheduler turns the loop off).
+  if (r.kind === "cron") try { rec.next_runs = nextRuns(r.schedule, Date.now(), 3, r.tz ?? undefined); } catch { rec.next_runs = []; }
   return rec;
 }
 type RunRow = Omit<RunRecord, "ok" | "usage"> & { ok: number | null; usage: string | null; stop: number };
@@ -532,8 +533,16 @@ export function tick() {
         // Next slot from now: a run longer than the interval skips the slots it
         // covered. The new next time and the slot's run row commit together, so a
         // crash between them cannot lose a slot without a trace.
+        let next: number | null;
+        try {
+          next = l.kind === "auto" ? null : nextDue(l, l.kind === "interval" ? Math.max(now, l.next_ms!) : now);
+        } catch (e) {
+          // A schedule saved before the parser refused it: off, with the reason, not retried every second.
+          patch(l.id, { enabled: false, next_ms: null, disabled_reason: `its schedule is not valid: ${(e as Error).message}` });
+          continue;
+        }
         db().transaction(() => {
-          patch(l.id, { next_ms: l.kind === "auto" ? null : nextDue(l, l.kind === "interval" ? Math.max(now, l.next_ms!) : now) });
+          patch(l.id, { next_ms: next });
           start(l, l.next_ms!, { note });
         })();
       } catch (e) {

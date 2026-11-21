@@ -59,3 +59,18 @@ test("a calendar schedule keeps its zone, and its times always move forward", ()
     for (const x of nextRuns(expr, from, 12, ny)) { expect(x).toBeGreaterThan(t); t = x; }
   }
 });
+
+test("a malformed list, range or step is refused; the legal forms read as before", () => {
+  for (const bad of ["*/2/3 * * * *", "1-2-3 * * * *", "1,,2 * * * *", ",1 * * * *", "1, * * * *", "1- * * * *", "-5 * * * *", "/5 * * * *", "5/ * * * *", "*-5 * * * *", "1e1 * * * *", "0x10 * * * *", "0 0 * * mon-", "0 0 * janx *"]) {
+    expect(() => parseCron(bad), bad).toThrow();
+  }
+  const f = parseCron("*/20 9-11 1,15 jan,jul mon-fri");
+  expect([...f.min]).toEqual([0, 20, 40]);
+  expect([...f.hour]).toEqual([9, 10, 11]);
+  expect([...f.dom]).toEqual([1, 15]);
+  expect([...f.mon]).toEqual([1, 7]);
+  expect([...f.dow]).toEqual([1, 2, 3, 4, 5]);
+  expect([...parseCron("10-30/10,45 * * * *").min]).toEqual([10, 20, 30, 45]);
+  expect([...parseCron("50/5 * * * *").min]).toEqual([50, 55]); // a start with a step runs to the end of the field
+  expect([...parseCron("0 0 * * 7").dow]).toEqual([0]);
+});

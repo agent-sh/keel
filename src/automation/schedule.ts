@@ -74,23 +74,29 @@ function interval(seconds: number): Schedule {
 
 type Fields = { min: Set<number>; hour: Set<number>; dom: Set<number>; mon: Set<number>; dow: Set<number>; domAny: boolean; dowAny: boolean };
 
+// One field: items joined by commas, each `*`, a value or a range (a-b), with
+// an optional step (/n). Anything else is refused by name (an empty item, a
+// second range or step, a value that is not a whole number or a name), never
+// read as something near it.
+const ITEM = /^(?:\*|([a-z]+|\d+)(?:-([a-z]+|\d+))?)(?:\/(\d+))?$/i;
 function field(src: string, lo: number, hi: number, names?: string[]): Set<number> {
   const out = new Set<number>();
   const val = (x: string) => {
     const i = names?.indexOf(x.toLowerCase()) ?? -1;
-    const n = i >= 0 ? i + (names === MONTHS ? 1 : 0) : Number(x);
+    const n = i >= 0 ? i + (names === MONTHS ? 1 : 0) : /^\d+$/.test(x) ? Number(x) : NaN;
     if (!Number.isInteger(n) || n < lo || n > hi) throw new Error(`"${x}" is out of range ${lo}-${hi}`);
     return n;
   };
   for (const part of src.split(",")) {
-    const [range, stepS] = part.split("/");
+    const m = part.match(ITEM);
+    if (!m) throw new Error(`"${part}" in "${src}" is not a value, a range (1-5) or a step (*/15, 1-30/5)`);
+    const [, from, to, stepS] = m;
     const step = stepS === undefined ? 1 : Number(stepS);
-    if (!Number.isInteger(step) || step < 1) throw new Error(`bad step in "${part}"`);
-    let a: number, b: number;
-    if (range === "*") [a, b] = [lo, hi];
-    else if (range!.includes("-")) { const [x, y] = range!.split("-"); a = val(x!); b = val(y!); }
-    else { a = val(range!); b = stepS === undefined ? a : hi; }
-    if (a > b) throw new Error(`bad range "${range}"`);
+    if (step < 1) throw new Error(`bad step in "${part}"`);
+    // A value with a step runs from it to the end of the field.
+    const a = from === undefined ? lo : val(from);
+    const b = from === undefined ? hi : to !== undefined ? val(to) : stepS === undefined ? a : hi;
+    if (a > b) throw new Error(`bad range "${part}"`);
     for (let i = a; i <= b; i += step) out.add(i);
   }
   return out;

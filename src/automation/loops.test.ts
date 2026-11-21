@@ -195,3 +195,14 @@ test("a webhook request that waited survives a restart and runs once, no sooner 
   expect(loops.get(loop.id)).toMatchObject({ runs: 2, next_ms: null, enabled: true });
   sent.length = 0;
 });
+
+test("a calendar loop whose saved schedule the parser now refuses is turned off with the reason, once", () => {
+  fresh();
+  const s = session();
+  const { loop } = loops.create({ session_id: s.id, schedule: "0 9 * * *", prompt: "tick" });
+  store.db.run("UPDATE loops SET schedule = '*/2/3 * * * *', next_ms = ? WHERE id = ?", [Date.now() - 1000, loop.id]);
+  expect(loops.get(loop.id)!.next_runs).toEqual([]);
+  loops.tick();
+  expect(loops.get(loop.id)).toMatchObject({ enabled: false, next_ms: null, disabled_reason: expect.stringContaining("not valid") });
+  expect(sent).toHaveLength(0);
+});
