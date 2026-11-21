@@ -187,8 +187,8 @@ export function HelperSettings() {
         <SettingRow label="Helper" hint="One conversation that never ends, at the top of the list (Ctrl J). It follows your sessions, checks your mail, and keeps what is worth remembering. Off: no wakes and no mail checks; the conversation and the list stay.">
           <button type="button" role="switch" aria-checked={view.on} data-testid="helper-on" aria-label="Helper on"
             onClick={() => (view.on ? setHelper({ on: false }) : openHelper()).catch(reportError)}
-            className={cn("relative flex h-5 w-9 rounded-full p-0.5 transition-colors", view.on ? "bg-accent" : "bg-line-strong")}>
-            <span className={cn("size-4 rounded-full bg-raised transition-transform", view.on && "translate-x-4")} />
+            className="k-switch">
+            <span className="k-switch-thumb" />
           </button>
         </SettingRow>
         <SettingRow label="Mail" hint={view.mail.available ? `${view.mail.label} as ${view.mail.account ?? "your account"}. Sending always asks you first, on a card for that message.` : `Not connected: the helper reads the Google sign-in file named by KEEL_GOOGLE_TOKEN (by default the one Hermes keeps).`}>

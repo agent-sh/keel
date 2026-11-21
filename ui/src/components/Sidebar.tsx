@@ -378,11 +378,11 @@ function Index({ current }: { current: string | null }) {
         )}
         {(arr.group === "folder" || arr.group === "flat" || tab !== "active") && grouped.length === 0 && flat.length === 0 && pinned.length === 0 && (
           q
-            ? <p className="k-empty" data-testid="filter-empty">No sessions match {q}. <button type="button" className="text-accent-ink underline-offset-2 hover:underline" onClick={() => setQ("")}>Clear the filter</button></p>
+            ? <p className="k-empty" data-testid="filter-empty">No sessions match {q}. <button type="button" className="k-link text-accent-ink underline-offset-2 hover:underline" onClick={() => setQ("")}>Clear the filter</button></p>
             : hidden > 0
-            ? <p className="k-empty">All {hidden} sessions here are finished and hidden. <button type="button" className="text-accent-ink underline-offset-2 hover:underline" onClick={() => setArrange({ hideDone: false })}>Show them</button></p>
+            ? <p className="k-empty">All {hidden} sessions here are finished and hidden. <button type="button" className="k-link text-accent-ink underline-offset-2 hover:underline" onClick={() => setArrange({ hideDone: false })}>Show them</button></p>
             : tag
-            ? <p className="k-empty" data-testid="tag-empty">No sessions match the tag {tag}. <button type="button" className="text-accent-ink underline-offset-2 hover:underline" onClick={() => setTag(null)}>Show all</button></p>
+            ? <p className="k-empty" data-testid="tag-empty">No sessions match the tag {tag}. <button type="button" className="k-link text-accent-ink underline-offset-2 hover:underline" onClick={() => setTag(null)}>Show all</button></p>
             : <p className="k-empty">{tab === "active" ? "Sessions you start show up here, grouped by folder." : "Archived sessions show up here. Restore one to bring it back."}</p>
         )}
         {sections.map((sec) => {

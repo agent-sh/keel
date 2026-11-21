@@ -125,7 +125,7 @@ export function FilesPanel({ session }: { session: Session }) {
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
         {hits.map((h) => (
           <div key={h.path} className="group flex h-8 items-center gap-2 rounded-md px-2 text-ui hover:bg-hover focus-within:bg-hover touch:h-10">
-            <button type="button" onClick={() => show(h)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+            <button type="button" onClick={() => show(h)} className="flex h-full min-w-0 flex-1 items-center gap-2 text-left">
               {h.dir ? <Folder className="size-4 shrink-0 text-faint" /> : <FileIcon className="size-4 shrink-0 text-faint" />}
               <span className={cn("truncate font-mono text-caption", h.dir ? "text-muted" : "text-fg")}>{h.path}</span>
             </button>

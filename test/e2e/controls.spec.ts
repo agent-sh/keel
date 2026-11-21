@@ -48,4 +48,55 @@ test("no control is under 24 px and icon buttons keep to the four heights", asyn
   expect(got.small).toEqual([]);
   for (const h of Object.keys(got.icons)) expect(["1.50", "1.75", "2.00", "2.25"], `${h}rem: ${got.icons[h]!.slice(0, 3).join(", ")}`).toContain(h);
   await shoot(page, "controls-sizes");
+
+  // The same holds past that one screen: a diff's comment mark, the permission menu's modes and
+  // its switch, the model chooser's pin and hide, the session panel's switches, a settings page.
+  const small = () => page.evaluate(() => {
+    const out: string[] = [];
+    for (const el of document.querySelectorAll<HTMLElement>("button, [role=button], [role=tab], [role=radio], [role=switch]")) {
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height || r.bottom < 0 || r.top > innerHeight || getComputedStyle(el).visibility === "hidden") continue;
+      if (r.width < 24 || r.height < 24) out.push(`${Math.round(r.width)}x${Math.round(r.height)} ${el.getAttribute("data-testid") ?? (el.getAttribute("aria-label") ?? el.textContent ?? "").trim().slice(0, 30)}`);
+    }
+    return out;
+  });
+  const seen: Record<string, string[]> = {};
+  await openPanel(page, "review");
+  await page.getByTestId("review-panel").or(page.getByTestId("side-panel")).first().waitFor();
+  await page.waitForTimeout(600);
+  seen.review = await small();
+  await page.getByTestId("permission-menu").first().click();
+  await page.getByTestId("mode-ask").waitFor();
+  seen.permissions = await small();
+  await page.keyboard.press("Escape");
+  await page.getByTestId("model-picker").first().click();
+  await page.getByPlaceholder("Search models").waitFor();
+  await page.waitForTimeout(300);
+  seen.models = await small();
+  await page.keyboard.press("Escape");
+  await openPanel(page, "session");
+  await page.getByTestId("pin-toggle").waitFor();
+  seen.session = await small();
+  for (const section of ["alerts", "providers", "machines"]) {
+    await page.goto(`/settings/${section}`);
+    await page.getByTestId("settings-title").waitFor();
+    await page.waitForTimeout(400);
+    seen[section] = await small();
+  }
+  console.log(Object.entries(seen).map(([k, v]) => `${k}: ${v.length} under 24 px ${v.slice(0, 6).join(", ")}`).join("\n"));
+  expect(seen).toEqual({ review: [], permissions: [], models: [], session: [], alerts: [], providers: [], machines: [] });
+});
+
+// On a touch screen a segmented option is a full control tall, not the 26 px of a pointer.
+test.describe("on a touch screen", () => {
+  test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
+  test("segmented options are a full control tall", async ({ page }) => {
+    await page.goto("/settings/general");
+    await page.getByTestId("text-size").waitFor();
+    const heights = await page.locator(".k-seg > button").evaluateAll((els) => els.filter((e) => e.getBoundingClientRect().height > 0).map((e) => Math.round(e.getBoundingClientRect().height)));
+    console.log(`segmented option heights on a phone: ${[...new Set(heights)].join(", ")}`);
+    expect(heights.length).toBeGreaterThan(5);
+    expect(Math.min(...heights)).toBeGreaterThanOrEqual(34);
+    await shoot(page, "controls-phone-settings");
+  });
 });

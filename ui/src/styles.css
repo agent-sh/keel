@@ -357,6 +357,11 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
   textarea, input { font-size: max(16px, 1rem) !important; }
 }
 
+/* ---------- A link among words ----------
+   A button that reads as a link in a sentence or a caption: it takes the press
+   over a full control's height and leaves the line where it was. */
+.k-link { padding-block: calc((var(--spacing-ctl-sm) - 1lh) / 2); margin-block: calc((1lh - var(--spacing-ctl-sm)) / 2); text-underline-offset: 2px; }
+
 /* ---------- An overlay ends cleanly ----------
    What scrolls inside a popup or a dialog never stops in the middle of a line
    without saying so: while more is below, its foot fades out; at the end the

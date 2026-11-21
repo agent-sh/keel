@@ -115,7 +115,7 @@ function ProviderRow({ p }: { p: Row }) {
           {p.source === "providers.toml" && p.kind === "endpoint" && <MoveOut id={p.id} />}
           <span className="ml-auto flex shrink-0 items-center gap-1 text-caption tabular-nums text-muted">
             {p.available && l.models > 0 ? (
-              <button type="button" data-testid="provider-models-toggle" aria-expanded={open} onClick={() => setOpen(!open)} className="inline-flex items-center gap-0.5 rounded-md px-1.5 hover:bg-hover hover:text-fg">
+              <button type="button" data-testid="provider-models-toggle" aria-expanded={open} onClick={() => setOpen(!open)} className="inline-flex min-h-ctl-sm items-center gap-0.5 rounded-md px-1.5 hover:bg-hover hover:text-fg">
                 {l.models} model{l.models === 1 ? "" : "s"} {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
               </button>
             ) : p.available ? "0 models" : "not set up"}

@@ -55,7 +55,7 @@ function Plan({ c }: { c: Card }) {
       <div className="flex items-center gap-2.5 px-4 pt-3">
         <span className="grid size-6 place-items-center rounded-md bg-accent-soft text-accent"><ClipboardList className="size-3.5" /></span>
         <span className="text-ui font-medium">{c.title || "The model's plan"}</span>
-        <button onClick={() => setEditing(!editing)} className="ml-auto inline-flex items-center gap-1 text-caption text-faint hover:text-fg" data-testid="plan-edit">
+        <button onClick={() => setEditing(!editing)} className="ml-auto inline-flex min-h-ctl-sm items-center gap-1 text-caption text-faint hover:text-fg" data-testid="plan-edit">
           <Pencil className="size-3" /> {editing ? "Done editing" : "Edit"}
         </button>
       </div>

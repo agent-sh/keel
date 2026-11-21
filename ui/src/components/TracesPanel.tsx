@@ -276,7 +276,7 @@ function Detail({ s, spans, onReplayed, onOpen }: { s: Span; spans: Span[]; onRe
         <Fact
           k="Started by"
           v={(a.links as { trace_id: string; span_id: string }[] | undefined)?.length && a.links.map((l: { trace_id: string; span_id: string }) => (
-            <button key={l.span_id} type="button" className="text-accent hover:underline" onClick={() => onOpen(l.trace_id)} data-testid="span-link">
+            <button key={l.span_id} type="button" className="k-link text-accent hover:underline" onClick={() => onOpen(l.trace_id)} data-testid="span-link">
               the parent's spawn call
             </button>
           ))}

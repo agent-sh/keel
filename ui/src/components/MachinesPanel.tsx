@@ -55,8 +55,8 @@ function FactsLine({ m }: { m: Machine }) {
 function Toggle({ on, busy, label, onChange }: { on: boolean; busy?: boolean; label: string; onChange: (on: boolean) => void }) {
   return (
     <button type="button" role="switch" aria-checked={on} aria-label={label} disabled={busy} data-testid="machine-toggle" onClick={() => onChange(!on)}
-      className={cn("relative h-5 w-9 shrink-0 rounded-full border transition-colors disabled:opacity-50", on ? "border-accent bg-accent" : "border-line-strong bg-sunken")}>
-      <span className={cn("absolute top-1/2 size-3.5 -translate-y-1/2 rounded-full shadow-1 transition-all", on ? "left-[1.125rem] bg-accent-fg" : "left-0.5 bg-raised")} />
+      className="k-switch">
+      <span className="k-switch-thumb" />
     </button>
   );
 }

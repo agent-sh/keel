@@ -89,7 +89,7 @@ export function ReviewFindings({ session }: { session: Session }) {
       {err && (
         <p className="mt-2 flex items-center gap-2 text-caption text-warn" data-testid="review-note-err">
           {err}
-          {existing && <button data-testid="review-open-existing" onClick={openExisting} className="font-medium text-accent hover:underline">Open that review</button>}
+          {existing && <button data-testid="review-open-existing" onClick={openExisting} className="k-link font-medium text-accent hover:underline">Open that review</button>}
         </p>
       )}
       <div className="mt-3 flex flex-col gap-3">

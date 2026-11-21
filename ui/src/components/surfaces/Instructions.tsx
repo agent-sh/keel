@@ -83,7 +83,7 @@ export default function Instructions() {
         ) : <Blank title="No instruction files">Pick a folder above.</Blank>}
       </Ledger>
       <p className="mt-3 text-caption text-muted">
-        What a session remembers across sessions is the memory store, under <button type="button" className="underline underline-offset-2 hover:text-fg" onClick={() => navigate({ name: "settings", section: "integrations" }, true)}>Memory and supervisor</button>.
+        What a session remembers across sessions is the memory store, under <button type="button" className="k-link underline underline-offset-2 hover:text-fg" onClick={() => navigate({ name: "settings", section: "integrations" }, true)}>Memory and supervisor</button>.
       </p>
     </div>
   );

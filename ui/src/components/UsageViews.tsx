@@ -147,7 +147,7 @@ export function TokensView({ range }: { range: Range }) {
                   <li key={t.turn_event} className="rounded-md border border-line px-3 py-2" data-testid="zones-turn">
                     <div className="flex items-baseline gap-3">
                       <span className="w-12 shrink-0 text-caption tabular-nums text-faint" title={when(t.ts_ms)}>{ago(t.ts_ms)}</span>
-                      <button type="button" className="min-w-0 flex-1 truncate text-left text-ui hover:underline" onClick={() => openSession(session, t.prompt_event)}>{t.prompt || "(no prompt)"}</button>
+                      <button type="button" className="k-link min-w-0 flex-1 truncate text-left text-ui hover:underline" onClick={() => openSession(session, t.prompt_event)}>{t.prompt || "(no prompt)"}</button>
                       <span className="shrink-0 text-caption tabular-nums text-muted">{t.requests} {t.requests > 1 ? "requests" : "request"}, {fmtTokens(sum)} sent</span>
                     </div>
                     <div className="mt-1.5 flex flex-col gap-1">
@@ -272,7 +272,7 @@ export function CompactionsView({ range }: { range: Range }) {
             }}
             rows={r.compactions.map((c) => [
               <span title={when(c.ts_ms)}>{ago(c.ts_ms)}</span>,
-              c.session_gone ? <span className="text-faint">deleted session</span> : <button type="button" className="max-w-48 truncate text-accent hover:underline" onClick={(e) => { e.stopPropagation(); openSession(c.session_id, c.event_id); }}>{c.session_title || "the session"}</button>,
+              c.session_gone ? <span className="text-faint">deleted session</span> : <button type="button" className="k-link max-w-48 truncate text-accent hover:underline" onClick={(e) => { e.stopPropagation(); openSession(c.session_id, c.event_id); }}>{c.session_title || "the session"}</button>,
               c.mode === "clear" ? "cleared" : `${TRIGGER[c.trigger] ?? c.trigger}${c.ahead ? ", prepared ahead" : ""}`,
               c.tokens_before == null ? "?" : fmtTokens(c.tokens_before), c.tokens_after == null ? "not yet" : fmtTokens(c.tokens_after),
               fmtMs(c.duration_ms), c.mode === "clear" ? "none" : c.priced && c.cost_usd != null ? fmtUsd(c.cost_usd) : "unknown", hits(c),

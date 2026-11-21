@@ -60,15 +60,16 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
               <Popover.Title className="px-2 pt-1 pb-1.5 text-micro font-medium text-faint">Permissions</Popover.Title>
               <RadioGroup value={perm.mode} onValueChange={(v) => set({ mode: v as SessionPerm["mode"] })} className="flex flex-col">
                 {modes.map((m) => (
-                  <label key={m.id} className="flex cursor-default gap-2.5 rounded-lg px-2 py-1.5 hover:bg-hover has-[[data-checked]]:bg-accent-soft/60">
-                    <Radio.Root value={m.id} data-testid={`mode-${m.id}`} className="mt-0.5 grid size-4 shrink-0 place-items-center rounded-full border border-line-strong outline-none focus-visible:ring-2 focus-visible:ring-accent/40 data-checked:border-accent">
+                  // The whole row is the radio: its mark is drawn inside it.
+                  <Radio.Root key={m.id} value={m.id} data-testid={`mode-${m.id}`} className="group/mode flex cursor-default gap-2.5 rounded-lg px-2 py-1.5 outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring data-checked:bg-accent-soft/60">
+                    <span aria-hidden className="mt-0.5 grid size-4 shrink-0 place-items-center rounded-full border border-line-strong group-data-checked/mode:border-accent">
                       <Radio.Indicator className="size-2 rounded-full bg-accent" />
-                    </Radio.Root>
+                    </span>
                     <span className="min-w-0">
                       <span className="block text-ui font-medium">{m.name}</span>
                       <span className="block text-caption leading-snug text-muted">{m.description}</span>
                     </span>
-                  </label>
+                  </Radio.Root>
                 ))}
               </RadioGroup>
               <div className="mx-2 my-1.5 h-px bg-line" />
@@ -95,9 +96,9 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
                     disabled={perm.sandbox === "off"}
                     onCheckedChange={(v) => set({ network: v })}
                     data-testid="sandbox-network"
-                    className="relative h-5 w-9 rounded-full bg-line-strong transition-colors data-checked:bg-accent"
+                    className="k-switch"
                   >
-                    <Switch.Thumb className="block size-4 translate-x-0.5 rounded-full bg-raised shadow-2 transition-transform data-checked:translate-x-[1.125rem]" />
+                    <Switch.Thumb className="k-switch-thumb" />
                   </Switch.Root>
                 </label>
               </div>
@@ -145,7 +146,7 @@ export function GrantsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
             {undo && (
               <div className="mb-2 flex items-center gap-2 rounded-lg bg-accent-soft/50 px-3 py-1.5 text-caption" data-testid="grant-undo">
                 <span className="min-w-0 flex-1 truncate">Revoked <code className="font-mono">{undo.pattern}</code></span>
-                <button className="font-medium text-accent hover:underline" onClick={() => safety.restore(undo.id).then(() => setUndo(null)).catch(reportError)}>Undo</button>
+                <button className="k-link font-medium text-accent hover:underline" onClick={() => safety.restore(undo.id).then(() => setUndo(null)).catch(reportError)}>Undo</button>
               </div>
             )}
             {grants.length === 0 && <p className="k-empty px-3 py-4">No grants yet. "Always allow" on an approval adds one.</p>}

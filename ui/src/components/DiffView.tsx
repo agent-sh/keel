@@ -219,7 +219,7 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk }: {
                                     data-open={drafts[key] !== undefined ? "" : undefined}
                                     tabIndex={key === stop ? 0 : -1}
                                     aria-label={`Comment on ${lineName(f.path, l)}`}
-                                    className="absolute -right-[0.9rem] top-0 grid size-[1.2rem] place-items-center rounded bg-accent text-accent-fg opacity-0 group-hover/line:opacity-100 focus-visible:opacity-100"
+                                    className="absolute -right-[1.05rem] top-1/2 grid size-ctl-sm -translate-y-1/2 place-items-center rounded bg-accent text-accent-fg opacity-0 group-hover/line:opacity-100 focus-visible:opacity-100"
                                   >
                                     <MessageSquarePlus className="size-3" />
                                   </button>

@@ -64,7 +64,7 @@ export function Failures({ tool, session, since, until, count }: { tool?: string
           {!tool && <span className="shrink-0 font-mono text-muted">{e.tool}</span>}
           <span className="min-w-0 flex-1 truncate font-mono text-muted" title={e.error ?? ""}>{e.error || "failed"}</span>
           {!session && (e.session_gone ? <span className="shrink-0 text-faint">deleted session</span> : (
-            <button type="button" className="max-w-48 shrink-0 truncate text-accent hover:underline" onClick={() => { if (e.event_id) setUI({ focusEvent: e.event_id }); navigate({ name: "session", id: e.session_id }); }}>
+            <button type="button" className="k-link max-w-48 shrink-0 truncate text-accent hover:underline" onClick={() => { if (e.event_id) setUI({ focusEvent: e.event_id }); navigate({ name: "session", id: e.session_id }); }}>
               {e.session_title || "the session"}
             </button>
           ))}

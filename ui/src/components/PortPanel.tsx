@@ -72,7 +72,7 @@ function Sessions({ items, picked, set }: { items: Item[]; picked: Set<string>; 
               <span className="text-caption text-muted">
                 {[run.length && `${run.length} to bring`, rest.filter((i) => i.state === "done").length && `${rest.filter((i) => i.state === "done").length} here`].filter(Boolean).join(", ")}
               </span>
-              <button type="button" className="ml-auto text-caption text-accent hover:underline" onClick={() => setOpen(open === src ? null : src)}>{open === src ? "Hide" : "Show"}</button>
+              <button type="button" className="k-link ml-auto text-caption text-accent hover:underline" onClick={() => setOpen(open === src ? null : src)}>{open === src ? "Hide" : "Show"}</button>
             </div>
             {rest.filter((i) => i.state === "skip").map((i) => <div key={i.id} className="ml-7 mt-1 text-caption text-faint">{i.title}: {i.reason}</div>)}
             {open === src && (

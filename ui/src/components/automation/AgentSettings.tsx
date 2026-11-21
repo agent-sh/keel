@@ -33,7 +33,7 @@ function ThisSession({ id, title, onDone }: { id: string; title: string; onDone:
       </SettingRow>
       <div className="pb-4 text-caption text-muted" data-testid="advisor-session-current">
         {a.own === "off" ? "This session has no advisor." : inherits ? `This session uses the default: ${name(a.default)}.` : `This session's advisor: ${name(a.own)}.`}
-        <button type="button" onClick={onDone} className="ml-2 text-accent hover:underline">Done</button>
+        <button type="button" onClick={onDone} className="k-link ml-2 text-accent hover:underline">Done</button>
       </div>
     </Card>
   );

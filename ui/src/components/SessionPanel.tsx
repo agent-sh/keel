@@ -42,9 +42,9 @@ export function Toggle({ on, label, onChange, testid }: { on: boolean; label: st
       aria-label={label}
       data-testid={testid}
       onClick={() => onChange(!on)}
-      className={cn("relative h-5 w-9 shrink-0 rounded-full border border-line-strong transition-colors", on ? "bg-accent" : "bg-sunken")}
+      className="k-switch"
     >
-      <span className={cn("absolute top-0.5 size-3.5 rounded-full shadow-1 transition-[left]", on ? "left-[1.125rem] bg-accent-fg" : "left-0.5 bg-faint")} />
+      <span className="k-switch-thumb" />
     </button>
   );
 }

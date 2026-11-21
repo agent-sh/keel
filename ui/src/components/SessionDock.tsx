@@ -104,7 +104,7 @@ export function SessionDock({ sessionId }: { sessionId: string }) {
               title="Stop"
               data-testid="dock-job-stop"
               onClick={() => actions.stopJob(sessionId, j.id).catch(reportError)}
-              className="grid size-5 place-items-center rounded-md text-faint hover:bg-danger-soft hover:text-danger"
+              className="grid size-ctl-sm place-items-center rounded-md text-faint hover:bg-danger-soft hover:text-danger"
             >
               <Square className="size-3" />
             </button>

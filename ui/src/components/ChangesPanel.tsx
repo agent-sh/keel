@@ -138,7 +138,7 @@ export function ChangesPanel({ session }: { session: Session }) {
                   {done!.failed.length > 0 && <span className="block text-caption" data-testid="rewind-failed">Not restored: {done!.failed.map((f) => `${f.path} (${f.error})`).join("; ")}</span>}
                 </span>
                 {done!.undo && (
-                  <button data-testid="rewind-undo" className="font-medium text-accent hover:underline" onClick={() => { run({ checkpoint: done!.undo }); }}>
+                  <button data-testid="rewind-undo" className="k-link font-medium text-accent hover:underline" onClick={() => { run({ checkpoint: done!.undo }); }}>
                     Undo
                   </button>
                 )}

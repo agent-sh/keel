@@ -20,7 +20,7 @@ export function SessionOrganize({ s }: { s: Session }) {
   const current = list.find((p) => p.id === member);
   return (
     <Section title="Organize" testid="session-organize">
-      <Line label="Project" hint={current ? <>Its instructions are part of this session's prompt. <button type="button" className="text-accent-ink hover:underline" onClick={() => navigate({ name: "project", id: current.id })}>Open {current.name}</button></> : "Sessions in a project read its instructions."}>
+      <Line label="Project" hint={current ? <>Its instructions are part of this session's prompt. <button type="button" className="k-link text-accent-ink hover:underline" onClick={() => navigate({ name: "project", id: current.id })}>Open {current.name}</button></> : "Sessions in a project read its instructions."}>
         <Select value={value} onChange={(e) => projects.move(s.id, e.target.value || null).catch(reportError)} aria-label="Project" data-testid="session-project">
           <option value="">{byFolder ? `${byFolder.name} (its folder's)` : "By its folder (none)"}</option>
           {list.filter((p) => p.id !== byFolder?.id).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}

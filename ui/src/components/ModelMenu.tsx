@@ -199,7 +199,7 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
                         data-testid="hide-provider"
                         onPointerDown={(e) => e.preventDefault()}
                         onClick={(e) => { e.stopPropagation(); actions.choose({ hide_provider: group.provider }).catch(reportError); }}
-                        className="ml-auto grid size-5 shrink-0 place-items-center rounded-xs opacity-0 hover:bg-hover hover:text-fg focus-visible:opacity-100 group-hover/head:opacity-100 pointer-coarse:size-7 pointer-coarse:opacity-100"
+                        className="ml-auto grid size-ctl-sm shrink-0 place-items-center rounded-xs opacity-0 hover:bg-hover hover:text-fg focus-visible:opacity-100 group-hover/head:opacity-100 pointer-coarse:size-7 pointer-coarse:opacity-100"
                       >
                         <EyeOff className="size-3" />
                       </button>
@@ -341,7 +341,7 @@ function RowAction({ label, on, testid, onPress, children }: { label: string; on
       onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
       onClick={(e) => { e.preventDefault(); e.stopPropagation(); onPress(); }}
       className={cn(
-        "grid size-5 shrink-0 place-items-center rounded-xs hover:bg-line hover:text-fg", FINGER,
+        "grid size-ctl-sm shrink-0 place-items-center rounded-xs hover:bg-line hover:text-fg", FINGER,
         on ? "opacity-100" : "opacity-0 group-hover/row:opacity-100 group-data-highlighted/row:opacity-100 pointer-coarse:opacity-100",
       )}
     >

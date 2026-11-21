@@ -548,7 +548,7 @@ function TurnReceipt({ turn, sessionId, facts, onRead }: { turn: string; session
   const errorId = failedRequests.find((q) => q.error_id)?.error_id;
   const span = (id: string | null, label: string, testid: string) =>
     id && r.trace_id ? (
-      <button key={id} type="button" className="rounded-xs px-1 text-st-fail underline decoration-line-strong underline-offset-2 hover:bg-hover" onClick={() => openTrace(sessionId, r.trace_id!, id)} data-testid={testid}>{label}</button>
+      <button key={id} type="button" className="k-link rounded-xs px-1 text-st-fail underline decoration-line-strong underline-offset-2 hover:bg-hover" onClick={() => openTrace(sessionId, r.trace_id!, id)} data-testid={testid}>{label}</button>
     ) : <span key={label} className="text-st-fail">{label}</span>;
   const link = "relative pb-2 pl-4 before:absolute before:left-0 before:top-[0.4375rem] before:size-1.5 before:rounded-full before:bg-line-strong after:absolute after:bottom-0 after:left-[0.1875rem] after:top-[0.9375rem] after:w-px after:-translate-x-1/2 after:bg-line last:pb-0 last:after:hidden";
   // The prompt it answers, else the turn itself: where the conversation shows it.
