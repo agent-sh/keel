@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { claudeTools } from "./claude.ts";
-import { applyEdit, editFile, globFiles, lineRange, readFile } from "./files.ts";
+import { applyEdit, editFile, GLOB_SCAN_MAX, globFiles, lineRange, readFile } from "./files.ts";
 import { geminiTools } from "./gemini.ts";
 import { notFound, similar } from "./missing.ts";
 
@@ -148,4 +148,45 @@ test("a ranged read of a large file reads up to its page and no further, and can
   const g = geminiTools.find((t) => t.name === "read_file")!;
   expect((await g.run({ file_path: p, start_line: 3, end_line: 4 }, ctx)).content).toBe(`line 2 ${"x".repeat(60)}\nline 3 ${"x".repeat(60)}`);
   rmSync(dir, { recursive: true, force: true });
+}, 60_000);
+
+// More matches than a result shows is ordinary truncation. A scan that stopped
+// at its ceiling is something else: it never examined every match, so the
+// result says files may be missing and that newest first holds only among
+// the ones examined. The two are told apart.
+test("a glob that reaches the scan ceiling says the scan was cut, unlike one that only shows fewer", async () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? ".", "ceil-"));
+  const ctx = { cwd: root } as any;
+  const claude = claudeTools.find((t) => t.name === "Glob")!, gemini = geminiTools.find((t) => t.name === "glob")!;
+  const cut = `The scan stopped after ${GLOB_SCAN_MAX} matches, before it had examined them all`;
+  try {
+    mkdirSync(join(root, "few"));
+    for (let i = 0; i < 250; i++) writeFileSync(join(root, "few", `f${i}.log`), "");
+    // Shown fewer than found, every match examined: the ordinary note, no warning.
+    const few = await globFiles("**/*.log", join(root, "few"), root) as any;
+    expect([few.files.length, few.truncated, few.ceiling]).toEqual([100, true, undefined]);
+    const c = String((await claude.run({ pattern: "**/*.log", path: join(root, "few") }, ctx)).content);
+    expect(c).toEndWith("(Results are truncated. Consider using a more specific path or pattern.)");
+    const g = String((await gemini.run({ pattern: "**/*.log", dir_path: join(root, "few") }, ctx)).content);
+    expect(g).toStartWith(`Found 200+ file(s) matching "**/*.log" within ${join(root, "few")}, sorted by modification time (newest first):`);
+    for (const text of [c, g]) expect(text).not.toContain("The scan stopped");
+
+    // One match more than the ceiling: the scan was cut.
+    mkdirSync(join(root, "many"));
+    for (let i = 0; i <= GLOB_SCAN_MAX; i++) writeFileSync(join(root, "many", `m${i}.log`), "");
+    const many = await globFiles("**/*.log", join(root, "many"), root) as any;
+    expect([many.files.length, many.truncated]).toEqual([100, true]);
+    expect(many.ceiling).toStartWith(cut);
+    const cm = String((await claude.run({ pattern: "**/*.log", path: join(root, "many") }, ctx)).content);
+    expect(cm).toContain(`${cut}: files that match may be missing here, and newest first holds only among the ${GLOB_SCAN_MAX} examined.`);
+    expect(cm).not.toContain("Results are truncated");
+    const gm = String((await gemini.run({ pattern: "**/*.log", dir_path: join(root, "many") }, ctx)).content);
+    expect(gm).toStartWith(`Found 200+ file(s) matching "**/*.log" within ${join(root, "many")}, newest first among the matches examined:`);
+    expect(gm).toContain(cut);
+    // Exactly the ceiling: every match was examined, nothing was cut.
+    rmSync(join(root, "many", "m0.log"));
+    expect((await globFiles("**/*.log", join(root, "many"), root) as any).ceiling).toBeUndefined();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 }, 60_000);

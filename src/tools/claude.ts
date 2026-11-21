@@ -216,7 +216,9 @@ const Glob: Tool = {
     if ("error" in r) return fail(r.error);
     const stopped = r.stopped ? `\n(${r.stopped})` : "";
     if (!r.files.length) return ok(`No files found${stopped}`);
-    return ok(r.files.join("\n") + (r.truncated ? "\n(Results are truncated. Consider using a more specific path or pattern.)" : "") + stopped);
+    // More matches than are shown is one thing; a scan that never examined them all is another.
+    const more = r.ceiling ? `\n(${r.ceiling})` : r.truncated ? "\n(Results are truncated. Consider using a more specific path or pattern.)" : "";
+    return ok(r.files.join("\n") + more + stopped);
   },
 };
 

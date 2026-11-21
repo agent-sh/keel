@@ -420,23 +420,32 @@ function isUtf8(b: Uint8Array): boolean {
 // A folder to search that is not there (a guessed tests/ folder, a removed worktree) or is a
 // file is answered with where to look instead. Bun's scan throws on both, and on a folder it
 // cannot read part-way: the files found until then are returned with what stopped the search.
-export async function globFiles(pattern: string, root: string, cwd: string, cap = 100): Promise<{ files: string[]; truncated: boolean; stopped?: string } | { error: string }> {
+// The scan examines at most GLOB_SCAN_MAX matches. Reaching that is not the same as
+// having more matches than are shown (`truncated`): matches were never looked at, so
+// some may be missing and the newest of all may not be among them. `ceiling` says so.
+export const GLOB_SCAN_MAX = 20_000;
+export async function globFiles(pattern: string, root: string, cwd: string, cap = 100): Promise<{ files: string[]; truncated: boolean; stopped?: string; ceiling?: string } | { error: string }> {
   let st;
   try { st = statSync(root); } catch { return { error: notFound(root, cwd, "Directory") }; }
   if (!st.isDirectory()) return { error: `${root} is a file, not a directory. Search in ${dirname(root)}.` };
   const files: { p: string; m: number }[] = [];
   let stopped: string | undefined;
+  let ceiling: string | undefined;
   try {
     for await (const f of new Bun.Glob(pattern).scan({ cwd: root, absolute: true, onlyFiles: true, dot: true })) {
       if (f.includes("/node_modules/") || f.includes("/.git/")) continue;
+      // One match past the ceiling proves the scan was cut, not that it ended exactly there.
+      if (files.length >= GLOB_SCAN_MAX) {
+        ceiling = `The scan stopped after ${GLOB_SCAN_MAX} matches, before it had examined them all: files that match may be missing here, and newest first holds only among the ${GLOB_SCAN_MAX} examined. Use a narrower path or pattern.`;
+        break;
+      }
       files.push({ p: f, m: mtime(f) });
-      if (files.length >= 20_000) break;
     }
   } catch (e) {
     stopped = `The search stopped before it covered every folder, so this list is incomplete: ${(e as Error).message}`;
   }
   files.sort((a, b) => b.m - a.m);
-  return { files: files.slice(0, cap).map((f) => f.p), truncated: files.length > cap, stopped };
+  return { files: files.slice(0, cap).map((f) => f.p), truncated: files.length > cap, stopped, ceiling };
 }
 
 export type RgOpts = {

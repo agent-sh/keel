@@ -147,7 +147,9 @@ const glob: Tool = {
     if ("error" in r) return fail(r.error);
     const stopped = r.stopped ? `\n(${r.stopped})` : "";
     if (!r.files.length) return ok(`No files found matching pattern "${input.pattern}" within ${root}${stopped}`);
-    return ok(`Found ${r.files.length}${r.truncated ? "+" : ""} file(s) matching "${input.pattern}" within ${root}, sorted by modification time (newest first):\n${r.files.join("\n")}${stopped}`);
+    // A scan cut at its ceiling orders only what it examined, and says so.
+    const order = r.ceiling ? "newest first among the matches examined" : "sorted by modification time (newest first)";
+    return ok(`Found ${r.files.length}${r.truncated ? "+" : ""} file(s) matching "${input.pattern}" within ${root}, ${order}:\n${r.files.join("\n")}${r.ceiling ? `\n(${r.ceiling})` : ""}${stopped}`);
   },
 };
 
