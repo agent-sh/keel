@@ -745,6 +745,22 @@ test("a session placed in a chosen pane by keyboard", async ({ page, request }) 
     await expect(menu).toHaveCount(0);
     expect(await slots()).toEqual([c, d, a]);
     expect(await kept()).toEqual({ slots: [c, d, a], active: 2 });
+
+    // With an empty pane on the bridge, the keys start on it (it costs no session its pane),
+    // and the card that stands beside a row is away while the menu is open.
+    await page.getByTestId("panes-2").click();
+    await page.getByTestId("panes-3").click();
+    await expect.poll(slots).toEqual([c, a, null]);
+    await row.hover();
+    await expect(page.getByTestId("rail-card")).toBeVisible();
+    await row.getByTestId("row-place").click();
+    await expect(menu).toBeVisible();
+    await expect(page.getByTestId("rail-card")).toHaveCount(0);
+    await expect(menu.getByTestId("pane-menu-item").nth(2)).toContainText("Empty pane");
+    await expect(menu.getByTestId("pane-menu-item").nth(2)).toBeFocused();
+    await shoot(page, "layout-09-pane-menu-empty-pane-first");
+    await page.keyboard.press("Enter");
+    await expect.poll(slots).toEqual([c, a, d]);
   } finally {
     for (const id of [a, b, c, d]) await request.delete(`/api/sessions/${id}`);
   }

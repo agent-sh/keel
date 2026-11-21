@@ -3,7 +3,7 @@
 // drop on that pane does): a session that already has a pane trades places
 // with the one picked. Escape leaves the layout as it was.
 import { Menu } from "@base-ui/react/menu";
-import { useEffect, useRef, type ReactNode, type RefObject } from "react";
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { stations, useStations } from "../lib/stations.ts";
 import { useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
@@ -19,7 +19,7 @@ function Panes({ id }: { id: string }) {
   return (
     <>
       {slots.map((held, i) => (
-        <Menu.Item key={i} className={itemClass} disabled={i === from} data-testid="pane-menu-item" data-slot={i}
+        <Menu.Item key={i} className={itemClass} disabled={i === from} data-testid="pane-menu-item" data-slot={i} data-empty={held ? undefined : true}
           onClick={() => { stations.place(id, i); navigate({ name: "session", id }); }}>
           <span className="grid size-5 shrink-0 place-items-center rounded-sm bg-sunken font-mono text-micro tabular-nums text-muted">{i + 1}</span>
           <span className={cn("min-w-0 flex-1 truncate", !held && "text-muted")}>{held ? titles[i] : "Empty pane"}</span>
@@ -35,19 +35,26 @@ export function PaneMenu({ id, label, testid, className, children, open, onOpenC
   open?: boolean; onOpenChange?: (open: boolean) => void;
   back?: RefObject<HTMLElement | null>; // where the keys go when the menu closes (default: its button)
 }) {
-  // Opened by a key on the row (not from its button): the keys start on the
-  // first pane it can go to, as they do when the button opens it.
+  // The keys start on the first empty pane when there is one (the place that
+  // costs no other session its pane), else on the first pane it can go to:
+  // also when a key on the row opened the menu, not its button.
   const popup = useRef<HTMLDivElement>(null);
+  const [own, setOwn] = useState(false);
+  const shown = open ?? own;
   useEffect(() => {
-    if (!open) return;
-    const raf = requestAnimationFrame(() => {
-      if (popup.current?.contains(document.activeElement) && document.activeElement !== popup.current) return;
-      popup.current?.querySelector<HTMLElement>('[role="menuitem"]:not([aria-disabled="true"])')?.focus();
-    });
+    if (!shown) return;
+    let raf = 0, tries = 0;
+    const start = () => {
+      const items = popup.current ? [...popup.current.querySelectorAll<HTMLElement>('[role="menuitem"]:not([aria-disabled="true"])')] : [];
+      const to = items.find((el) => el.dataset.empty) ?? items[0];
+      if (to) to.focus();
+      else if (tries++ < 10) raf = requestAnimationFrame(start);
+    };
+    raf = requestAnimationFrame(start);
     return () => cancelAnimationFrame(raf);
-  }, [open]);
+  }, [shown]);
   return (
-    <Menu.Root open={open} onOpenChange={onOpenChange}>
+    <Menu.Root open={open} onOpenChange={(o) => { setOwn(o); onOpenChange?.(o); }}>
       <Menu.Trigger aria-label={label} title={label} data-testid={testid} className={className} onClick={(e) => e.stopPropagation()}>{children}</Menu.Trigger>
       <Menu.Portal>
         <Menu.Positioner sideOffset={6} align="start" className="z-50 outline-none">

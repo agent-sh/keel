@@ -101,6 +101,8 @@ function Row({ s, active, where }: { s: Session; active: boolean; where?: boolea
   const [placing, setPlacing] = useState(false);
   const row = useRef<HTMLDivElement>(null);
   const unread = useAuto((x) => (x.unread.sessions[s.id] ?? 0) > 0);
+  // The card beside the row is away while the menu of panes is open over it.
+  useEffect(() => { if (placing && row.current) card.onClick?.({ currentTarget: row.current }); }, [placing]);
   return (
     <div
       ref={row}
@@ -112,7 +114,7 @@ function Row({ s, active, where }: { s: Session; active: boolean; where?: boolea
       data-shown={shown || undefined}
       data-unread={unread || undefined}
       aria-current={active ? "page" : undefined}
-      {...card}
+      {...(placing ? {} : card)}
       draggable
       onDragStart={(e) => { card.onDragStart?.(e); dragSession(s.id)(e); }}
       onClick={(e) => { card.onClick?.(e); if (e.ctrlKey || e.metaKey) openBeside(s.id); else navigate({ name: "session", id: s.id }); }}
