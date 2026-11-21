@@ -236,8 +236,11 @@ export class MobileStore implements ReplayStore {
 
   // --- global sequence ---------------------------------------------------------
 
+  // The newest place given out. It never goes back while this store lives,
+  // also when the newest events are deleted with their session: a phone's
+  // cursor above it was given by another store (a restored backup).
   globalSeq(): number {
-    return this.db.query<{ n: number | null }, []>("SELECT MAX(gseq) AS n FROM event_gseq").get()!.n ?? 0;
+    return this.db.query<{ n: number | null }, []>("SELECT seq AS n FROM sqlite_sequence WHERE name = 'event_gseq'").get()?.n ?? 0;
   }
   gseqOf(eventId: string): number {
     return this.db.query<{ gseq: number }, [string]>("SELECT gseq FROM event_gseq WHERE event_id = ?").get(eventId)?.gseq ?? 0;

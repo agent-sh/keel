@@ -66,7 +66,8 @@ A release build without signing fails; there is no debug-key fallback.
 | --- | --- |
 | `Net.kt` | encrypted preferences, Keystore keys, the signed HTTP client, pairing |
 | `Wire.kt` | the daemon's shapes and the signed messages, as pure functions |
-| `Hub.kt` | sync from the global cursor, then the event stream |
+| `Feed.kt` | what the app holds of the daemon and how sync answers and stream frames change it, as plain state |
+| `Hub.kt` | the event stream, opened from the cursor, and the requests the screens make |
 | `Approve.kt` | the biometric approval and the lock-screen approve activity |
 | `Push.kt` | notifications, Firebase push, the background check |
 | `ui/Theme.kt` | the design tokens (the workbench's colors and type) |

@@ -249,6 +249,15 @@ export function mobileApi(ctx: MobileCtx) {
   // The newest messages of a chat's shown branch, walking back from its head:
   // what a phone starting from nothing gets per chat. The rest comes by paging.
   const FIRST_PAGE = 40;
+  // The words each running turn has streamed since its last stored step, for
+  // a phone that connects (or recovers) in the middle of a reply.
+  const drafts = new Map<string, string>();
+  bus.on((f) => {
+    if (f.t === "delta" && f.kind === "text") drafts.set(f.session_id, (drafts.get(f.session_id) ?? "") + f.text);
+    else if (f.t === "event" && (f.event.kind === "assistant" || f.event.kind === "turn_end")) drafts.delete(f.event.session_id);
+    else if (f.t === "status" && f.status.kind === "retry") drafts.delete(f.session_id);
+    else if (f.t === "session" && f.deleted) drafts.delete(f.session.id);
+  });
   function recent(s: Session) {
     const out: any[] = [];
     let id = s.head;
@@ -439,8 +448,21 @@ export function mobileApi(ctx: MobileCtx) {
     return json({ approval: approvalOf(g.approval(aid)!), resolved: 1 });
   }
 
+  // The live stream. With `since` (the phone's cursor) it opens with what the
+  // phone missed: the first frame is `hello` with `sync`, the answer /v1/sync
+  // gives for that cursor, made in the same step that subscribes the stream to
+  // what follows. So nothing falls between the catch-up and the live frames
+  // and nothing comes twice, also across a reconnect or a daemon restart (the
+  // cursor is a stored place). A stream that fell behind drops frames until
+  // the phone reads again, then says `resync` and sends `hello` with `sync`
+  // from the last place it delivered: the phone recovers on the same stream.
+  // `cursor` on a frame says every stored event up to there has gone out on
+  // this stream; the phone reconnects from the newest one it got. Without
+  // `since` (an older app) the stream starts live, as before.
   function events(req: Req, dev: Device, srv: Server<unknown>) {
     srv.timeout(req, 0);
+    const q = new URL(req.url).searchParams;
+    const resumes = q.has("since");
     const enc = new TextEncoder();
     let off = () => {}, beat: Timer | undefined, lagged = 0, forget = () => {};
     const stream = new ReadableStream<Uint8Array>(
@@ -448,20 +470,40 @@ export function mobileApi(ctx: MobileCtx) {
         start(c) {
           forget = holdStream(c);
           const close = () => { off(); clearInterval(beat); forget(); try { c.close(); } catch {} };
-          const send = (p: unknown) => {
-            if (!mobile.isActive(dev.id)) return close();
-            // Fell behind: drop until the phone reads again, then say so once.
-            if ((c.desiredSize ?? 1) <= 0) { lagged++; return; }
-            if (lagged) { const missed = lagged; lagged = 0; c.enqueue(enc.encode(`data: ${JSON.stringify({ type: "resync", missed, seq: mobile.globalSeq() })}\n\n`)); }
-            c.enqueue(enc.encode(`data: ${JSON.stringify(p)}\n\n`));
+          // Every stored event up to `sent` has gone out here.
+          let sent = mobile.globalSeq();
+          const put = (p: unknown) => c.enqueue(enc.encode(`data: ${JSON.stringify(p)}\n\n`));
+          const hello = (from: number) => {
+            const sync = syncBody(from);
+            sent = sync.seq;
+            put({ type: "hello", seq: sync.seq, cursor: sync.seq, working: sync.working, sync });
           };
-          send({ type: "hello", seq: mobile.globalSeq(), working: working() });
+          // False when the frame was not sent. Within one bus frame, once a
+          // send is dropped the ones after it are too.
+          const send = (p: unknown) => {
+            if (!mobile.isActive(dev.id)) { close(); return false; }
+            // Fell behind: drop until the phone reads again, then say so once.
+            if ((c.desiredSize ?? 1) <= 0) { lagged++; return false; }
+            if (lagged) {
+              const missed = lagged;
+              lagged = 0;
+              put({ type: "resync", missed, seq: mobile.globalSeq() });
+              if (resumes) hello(sent);
+            }
+            put(p);
+            return true;
+          };
+          if (resumes) hello(Math.max(0, Number(q.get("since")) || 0));
+          else send({ type: "hello", seq: sent, working: working() });
           off = bus.on((f) => {
             try {
               if (f.t === "event") {
                 const gseq = mobile.gseqOf(f.event.id);
                 const s = store.session(f.event.session_id);
-                for (const m of msgsOf(f.event, gseq)) send({ type: "message", seq: gseq, message: m, chat: s ? chatFull(s) : null });
+                const out = msgsOf(f.event, gseq);
+                const chat = s ? chatFull(s) : null;
+                out.forEach((m, i) => send({ type: "message", seq: gseq, message: m, chat, ...(i === out.length - 1 ? { cursor: gseq } : {}) }));
+                if (!lagged) sent = Math.max(sent, gseq);
                 // A question answered elsewhere: its card closes on the phone too.
                 if (f.event.kind === "tool_result") {
                   const ids = new Set(((f.event.data.results ?? []) as any[]).map((r) => r.tool_use_id));
@@ -507,7 +549,12 @@ export function mobileApi(ctx: MobileCtx) {
               errors.capture("server", e, { at: "mobile event stream" });
             }
           });
-          beat = setInterval(() => send({ type: "seq", seq: mobile.globalSeq(), working: working() }), 15_000);
+          // Between two bus frames every stored event has had its frame: a
+          // stream that dropped none is level with the store.
+          beat = setInterval(() => {
+            if (!lagged) sent = Math.max(sent, mobile.globalSeq());
+            send({ type: "seq", seq: mobile.globalSeq(), cursor: sent, working: working() });
+          }, 15_000);
           req.signal.addEventListener("abort", close, { once: true });
         },
         cancel() { off(); clearInterval(beat); forget(); },
@@ -577,6 +624,40 @@ export function mobileApi(ctx: MobileCtx) {
     };
   }
 
+  // What a phone at cursor `since` needs to be level with the daemon.
+  // From nothing: every chat with its newest page, at the current cursor.
+  // After a cursor: the events the app shows that were stored since (so a run
+  // of tool rounds and notes costs nothing).
+  // `reload` says the cursor cannot be caught up from, and the answer is the
+  // one from nothing; the app drops what it holds first. "ahead": this store
+  // never gave that cursor (a restored backup, another machine). "behind":
+  // more than a page of events were stored since, more than the newest page of
+  // every chat costs.
+  function syncBody(since: number) {
+    const seq = mobile.globalSeq();
+    const page = since > 0 && since <= seq ? mobile.eventsAfter(since, SYNC_PAGE + 1, SHOWN_KINDS) : [];
+    const reload = since > seq ? "ahead" : page.length > SYNC_PAGE ? "behind" : undefined;
+    const whole = since === 0 || !!reload;
+    const u = unread();
+    const all = allSessions();
+    // Cards that closed since the cursor's time, or within a push's lifetime.
+    const from = Math.min(Date.now() - 15 * 60_000, whole ? Infinity : (mobile.tsOfGseq(since) ?? 0));
+    return {
+      // `more` is always false now: an older app pages while it is true.
+      seq, more: false,
+      // `complete`: the chats are every chat there is, so the app drops the
+      // ones it holds that are not among them (deleted on the desktop).
+      complete: true,
+      ...(reload ? { reload } : {}),
+      chats: all.map((s) => chatFull(s, u)),
+      messages: whole ? all.flatMap(recent) : page.flatMap((e) => msgsOf(e, e.gseq)),
+      approvals: [...pendingApprovals(), ...closedCards(from)],
+      working: working(),
+      // The reply each running turn has streamed so far.
+      drafts: [...drafts].map(([chat_id, text]) => ({ chat_id, text })),
+    };
+  }
+
   const chat = (sid: string) => store.session(sid);
 
   // The receipt of a prompt already stored, as it stands now: the committed
@@ -620,32 +701,8 @@ export function mobileApi(ctx: MobileCtx) {
       }),
     },
     // `since` and `seq` are positions in the global event sequence, so a long
-    // session never hides a newer event of a short one.
-    "/v1/sync": {
-      GET: signed((req) => {
-        const since = Math.max(0, Number(new URL(req.url).searchParams.get("since")) || 0);
-        // From nothing: every chat with its newest page, at the current cursor.
-        // After a cursor: a page of events the app shows, so a run of tool rounds
-        // and notes never fills a page with nothing to show.
-        const head = since === 0 ? mobile.globalSeq() : 0;
-        const page = since === 0 ? [] : mobile.eventsAfter(since, SYNC_PAGE, SHOWN_KINDS);
-        const more = page.length === SYNC_PAGE;
-        const seq = since === 0 ? head : more ? page.at(-1)!.gseq : Math.max(since, mobile.globalSeq());
-        const u = unread();
-        const all = allSessions();
-        // Cards that closed since the cursor's time, or within a push's lifetime.
-        const from = Math.min(Date.now() - 15 * 60_000, since ? (mobile.tsOfGseq(since) ?? 0) : Infinity);
-        // `complete`: the chats are every chat there is, so the app drops the
-        // ones it holds that are not among them (deleted on the desktop).
-        return json({
-          seq, more, complete: true,
-          chats: all.map((s) => chatFull(s, u)),
-          messages: since === 0 ? all.flatMap(recent) : page.flatMap((e) => msgsOf(e, e.gseq)),
-          approvals: [...pendingApprovals(), ...closedCards(from)],
-          working: working(),
-        });
-      }),
-    },
+    // session never hides a newer event of a short one (syncBody).
+    "/v1/sync": { GET: signed((req) => json(syncBody(Math.max(0, Number(new URL(req.url).searchParams.get("since")) || 0)))) },
     "/v1/events": { GET: signed((req, dev, _b, srv) => events(req, dev, srv)) },
     "/v1/chats": {
       GET: signed(() => { const u = unread(); return json({ chats: store.sessions().map((s) => chatFull(s, u)), working: working() }); }),

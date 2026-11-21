@@ -428,26 +428,124 @@ describe("run, usage and pulse", () => {
   });
 });
 
-test("a live stream that falls behind says resync instead of dropping silently", async () => {
+// The event stream as the app reads it: `read` pulls frames until `until` holds.
+async function openStream(since?: number) {
+  const path = since === undefined ? "/v1/events" : `/v1/events?since=${since}`;
   const ts = String(Math.floor(Date.now() / 1000));
-  const sig = sign("sha256", Buffer.from(`GET\n/v1/events\n${ts}\n${sha256Hex("")}`), { key: privateKey, dsaEncoding: "der" }).toString("base64");
-  const req: any = new Request("http://x/v1/events", { headers: { authorization: `Bearer ${dev.token}`, "x-hm-ts": ts, "x-hm-sig": sig } });
+  const sig = sign("sha256", Buffer.from(`GET\n${path}\n${ts}\n${sha256Hex("")}`), { key: privateKey, dsaEncoding: "der" }).toString("base64");
+  const req: any = new Request(`http://x${path}`, { headers: { authorization: `Bearer ${dev.token}`, "x-hm-ts": ts, "x-hm-sig": sig } });
   req.params = {};
   const res: Response = await routes["/v1/events"].GET(req, { requestIP: () => null, timeout() {} });
-  const s = session();
-  for (let i = 0; i < 1100; i++) bus.emit({ t: "delta", session_id: s.id, kind: "text", index: 0, text: "x" } as any);
   const reader = res.body!.getReader();
-  let text = "", sentAfter = false;
-  while (!text.includes('"resync"')) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    text += new TextDecoder().decode(value);
+  const dec = new TextDecoder();
+  const frames: any[] = [];
+  let buf = "";
+  const read = async (until: (frames: any[]) => boolean) => {
+    while (!until(frames)) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      for (let i; (i = buf.indexOf("\n\n")) >= 0; buf = buf.slice(i + 2)) frames.push(JSON.parse(buf.slice(6, i)));
+    }
+    return frames;
+  };
+  return { frames, read, close: () => reader.cancel() };
+}
+const texts = (messages: any[], sid: string) => messages.filter((m) => m.chat_id === sid && m.kind !== "deleted").map((m) => m.content);
+
+describe("the event stream", () => {
+  test("a stream that falls behind says resync instead of dropping silently", async () => {
+    const st = await openStream();
+    const s = session();
+    for (let i = 0; i < 1100; i++) bus.emit({ t: "delta", session_id: s.id, kind: "text", index: 0, text: "x" } as any);
+    let sentAfter = false;
     // The phone read what was queued; the next frame says what it missed.
-    if (!sentAfter && text.split("data: ").length > 1000) { sentAfter = true; bus.emit({ t: "delta", session_id: s.id, kind: "text", index: 0, text: "after" } as any); }
-    if (text.length > 2_000_000) break;
-  }
-  await reader.cancel();
-  expect(text).toContain('"type":"resync"');
+    await st.read((f) => {
+      if (!sentAfter && f.length >= 1000) { sentAfter = true; bus.emit({ t: "delta", session_id: s.id, kind: "text", index: 0, text: "after" } as any); }
+      return f.some((x) => x.type === "resync") || f.length > 5000;
+    });
+    await st.close();
+    expect(st.frames.some((x) => x.type === "resync")).toBe(true);
+    // An app that names no cursor gets no catch-up in the stream.
+    expect(st.frames.filter((x) => x.type === "hello").map((x) => "sync" in x)).toEqual([false]);
+  });
+
+  test("a stream opened at the phone's cursor starts with what it missed and goes on live, nothing twice", async () => {
+    const s = session();
+    store.append(s.id, "user", { text: "one" });
+    store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "call-m", name: "AskUserQuestion", input: { question: "Go?", type: "yesno" } }] });
+    const ac = new AbortController();
+    const asked = ask({ callId: "call-m", sessionId: s.id, signal: ac.signal } as any);
+    // The phone is level here, holding the open card. Then it loses the connection.
+    const cursor = (await call("GET", "/v1/sync?since=0")).body.seq;
+    const missed = store.append(s.id, "assistant", { blocks: [{ type: "text", text: "missed reply" }] });
+    ac.abort();
+    await asked;
+    const st = await openStream(cursor);
+    const [hello] = await st.read((f) => f.length >= 1);
+    expect(hello).toMatchObject({ type: "hello", seq: mobile.globalSeq(), cursor: mobile.globalSeq() });
+    expect(texts(hello.sync.messages, s.id)).toEqual(["missed reply"]);
+    expect(hello.sync.approvals.filter((a: any) => a.id === "q-call-m").map((a: any) => a.state)).toEqual(["expired"]);
+    // What is stored next comes live, with the place to reconnect from.
+    const live = store.append(s.id, "assistant", { blocks: [{ type: "text", text: "live reply" }, { type: "tool_use", id: "t9", name: "Bash", input: { command: "ls" } }] });
+    bus.emit({ t: "event", event: live } as any);
+    await st.read((f) => f.filter((x) => x.type === "message").length >= 2);
+    const after = st.frames.slice(1).filter((x) => x.type === "message");
+    expect(after.map((x) => [x.message.kind, x.cursor])).toEqual([["text", undefined], ["trace", mobile.gseqOf(live.id)]]);
+    expect(st.frames.slice(1).some((x) => x.message?.id === missed.id)).toBe(false);
+    await st.close();
+    // Reconnecting from the last cursor it got brings nothing again.
+    const again = await openStream(after.at(-1).cursor);
+    const [h2] = await again.read((f) => f.length >= 1);
+    expect(h2.sync.messages).toEqual([]);
+    await again.close();
+  });
+
+  test("a stream that fell behind catches up on the same stream once the phone reads again", async () => {
+    const s = session();
+    const st = await openStream(mobile.globalSeq());
+    for (let i = 0; i < 1100; i++) bus.emit({ t: "delta", session_id: s.id, kind: "text", index: 0, text: "x" } as any);
+    // Stored while the stream drops frames: the phone never gets this one live.
+    const lost = store.append(s.id, "assistant", { blocks: [{ type: "text", text: "stored during the lag" }] });
+    bus.emit({ t: "event", event: lost } as any);
+    let poked = false;
+    await st.read((f) => {
+      if (!poked && f.length >= 1000) { poked = true; bus.emit({ t: "session", session: store.session(s.id)! } as any); }
+      return f.filter((x) => x.type === "hello").length >= 2 || f.length > 5000;
+    });
+    await st.close();
+    const types = st.frames.map((x) => x.type);
+    expect(types.indexOf("resync")).toBeGreaterThan(0);
+    const recovered = st.frames[types.lastIndexOf("hello")];
+    expect(types.lastIndexOf("hello")).toBe(types.indexOf("resync") + 1);
+    expect(texts(recovered.sync.messages, s.id)).toEqual(["stored during the lag"]);
+    expect(recovered.cursor).toBe(mobile.gseqOf(lost.id));
+  });
+
+  test("a cursor this store never gave, or one more than a page behind, is told to reload whole", async () => {
+    const s = session();
+    store.append(s.id, "user", { text: "kept" });
+    const now = mobile.globalSeq();
+    // A cursor from another store (a restored backup): above anything given here.
+    const ahead = (await call("GET", `/v1/sync?since=${now + 500}`)).body;
+    expect([ahead.reload, ahead.seq, ahead.more]).toEqual(["ahead", now, false]);
+    expect(texts(ahead.messages, s.id)).toEqual(["kept"]);
+    // Deleting the newest session does not put a level phone ahead.
+    const gone = session();
+    store.append(gone.id, "user", { text: "gone" });
+    const level = mobile.globalSeq();
+    store.deleteSession(gone.id);
+    expect((await call("GET", `/v1/sync?since=${level}`)).body.reload).toBeUndefined();
+    // More than a page behind: the newest page of every chat, not the backlog.
+    for (let i = 0; i < 2001; i++) store.append(s.id, "user", { text: `row-${i}` });
+    const behind = (await call("GET", `/v1/sync?since=${level}`)).body;
+    expect([behind.reload, behind.seq, behind.more, texts(behind.messages, s.id).length]).toEqual(["behind", mobile.globalSeq(), false, 40]);
+    // The stream says the same in its first frame.
+    const st = await openStream(level);
+    const [hello] = await st.read((f) => f.length >= 1);
+    await st.close();
+    expect(hello.sync.reload).toBe("behind");
+  });
 });
 
 describe("push health", () => {

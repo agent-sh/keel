@@ -62,6 +62,7 @@ fun SessionScreen(act: MainActivity, id: String) {
     val working by Hub.working.collectAsState()
     val drafts by Hub.drafts.collectAsState()
     val older by Hub.older.collectAsState()
+    val reloads by Hub.reloads.collectAsState()
     val scope = rememberCoroutineScope()
     var error by remember(id) { mutableStateOf("") }
     var usage by remember(id) { mutableStateOf<String?>(null) }
@@ -73,7 +74,8 @@ fun SessionScreen(act: MainActivity, id: String) {
     val now = nowTick()
     val draft = drafts[id].orEmpty()
 
-    LaunchedEffect(id) { runCatching { Hub.open(id) }.onFailure { error = it.message ?: "Could not load the session" } }
+    // Again when the app dropped what it held and read the daemon whole (its cursor could not be caught up from).
+    LaunchedEffect(id, reloads) { runCatching { Hub.open(id) }.onFailure { error = it.message ?: "Could not load the session" } }
     // Read as it arrives while open.
     LaunchedEffect(id, msgs.size) { if (msgs.isNotEmpty()) runCatching { dev.avifenesh.keel.Api.post("/v1/chats/$id/read") } }
 
