@@ -133,7 +133,7 @@ export function BranchReview({ session }: { session: Session }) {
             {b.base && <>over <span className="font-mono">{b.base}</span> · </>}
             {b.commits} commit{b.commits === 1 ? "" : "s"}, {b.files.length} file{b.files.length === 1 ? "" : "s"}
             {b.truncated && <span className="text-warn" data-testid="branch-truncated"> · diff cut at 400 KB</span>}
-            <span className="text-faint"> · hover a line number to comment</span>
+            <span className="text-faint"> · hover a line number to comment; by keyboard, Tab to a line, the arrows move between lines, Page Down and Page Up between hunks</span>
           </p>
         </div>
         {refresh}

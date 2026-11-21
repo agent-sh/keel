@@ -1,5 +1,5 @@
 import { ChevronRight, MessageSquarePlus, Undo2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { parsePatch, type FilePatch, type PatchLine } from "../../../src/safety/patch.ts";
 import { cn } from "../lib/utils.ts";
 
@@ -22,8 +22,14 @@ export type Comment = { id: string; path: string; side: "old" | "new"; line: num
 export type JumpDetail = { path: string; line: number; end?: number; found?: boolean };
 export const JUMP = "keel:diff-jump";
 
+// A line as a comment names it: its side and its number on that side.
+const lineKey = (l: PatchLine) => (l.kind === "del" ? `old:${l.old ?? 0}` : `new:${l.new ?? 0}`);
+const lineName = (path: string, l: PatchLine) => `${path}, ${l.kind === "del" ? `old line ${l.old} (removed)` : `new line ${l.new}${l.kind === "add" ? " (added)" : ""}`}`;
+
 // Files with their diffs. `actions` renders per-file buttons (revert);
-// `onComment` turns line numbers into "add a comment" targets; `onHunk`
+// `onComment` turns line numbers into "add a comment" targets (one Tab stop a
+// file; Up and Down move between lines, Page Down and Page Up to the first
+// changed line of the next or the previous hunk); `onHunk`
 // puts a revert button on each hunk. `truncated`/`partial` say the patch was
 // cut to fit; `loadFile` fetches one file's whole diff in its place.
 export type HunkRef = { path: string; index: number; header: string; body: string };
@@ -80,6 +86,29 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk }: {
   const body = useRef<HTMLDivElement>(null);
   const st = STATUS[f.status[0]!] ?? { label: f.status, cls: "text-muted" };
   const mode = modeNote(p);
+  // The line of this file the Tab key lands on: the one last visited, else the first changed one.
+  const [visited, setVisited] = useState<string | null>(null);
+  const rows = p?.lines.filter((l) => l.kind !== "hunk") ?? [];
+  const stop = visited && rows.some((l) => lineKey(l) === visited) ? visited : lineKey(rows.find((l) => l.kind !== "ctx") ?? rows[0] ?? { kind: "ctx", text: "" });
+  const focusLine = (key: string) => body.current?.querySelector<HTMLElement>(`[data-line="${key}"]`)?.focus();
+  const onKeys = (e: KeyboardEvent<HTMLTableElement>) => {
+    const at = e.target as HTMLElement;
+    if (at.dataset.line === undefined || e.ctrlKey || e.metaKey || e.altKey) return;
+    const all = [...e.currentTarget.querySelectorAll<HTMLElement>("[data-line]")];
+    const i = all.indexOf(at);
+    const hunk = (el: HTMLElement) => Number(el.dataset.hunk);
+    const lead = (h: number) => all.find((b) => hunk(b) === h && b.dataset.changed !== undefined) ?? all.find((b) => hunk(b) === h);
+    let to: HTMLElement | undefined;
+    if (e.key === "ArrowDown") to = all[i + 1];
+    else if (e.key === "ArrowUp") to = all[i - 1];
+    else if (e.key === "Home") to = all[0];
+    else if (e.key === "End") to = all.at(-1);
+    else if (e.key === "PageDown") to = lead(hunk(at) + 1);
+    else if (e.key === "PageUp") to = lead(hunk(at) - 1);
+    else return;
+    e.preventDefault();
+    to?.focus();
+  };
 
   useEffect(() => {
     const on = (e: Event) => {
@@ -104,6 +133,7 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk }: {
     </button>
   );
 
+  let hunks = 0;
   return (
     <section className="overflow-hidden rounded-xl border border-line bg-raised" data-testid="diff-file" data-path={f.path}>
       <header className="flex items-center gap-2 border-b border-line bg-panel/60 px-3 py-1.5">
@@ -129,19 +159,20 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk }: {
           ) : !p || !p.lines.length ? (
             !mode && <p className="px-3 py-2 text-faint">No text change shown.</p>
           ) : (
-            <table className="w-full border-collapse">
+            <table className="w-full border-collapse" onKeyDown={onComment ? onKeys : undefined}>
               <tbody>
                 {p.lines.map((l, i) => {
-                  const hunkIndex = l.kind === "hunk" ? p.lines.slice(0, i).filter((x) => x.kind === "hunk").length : -1;
+                  if (l.kind === "hunk") hunks++;
+                  const hunkIndex = hunks - 1;
                   const side: "old" | "new" = l.kind === "del" ? "old" : "new";
                   const lineNo = (side === "old" ? l.old : l.new) ?? 0;
-                  const key = `${side}:${lineNo}`;
+                  const key = lineKey(l);
                   const here = l.kind === "hunk" ? [] : comments?.filter((c) => c.side === side && c.line === lineNo) ?? [];
                   const lit = flash && l.kind !== "del" && l.kind !== "hunk" && l.new! >= flash.line && l.new! <= flash.end;
                   return [
                     <tr key={i} data-new={l.kind !== "del" && l.kind !== "hunk" ? l.new : undefined} data-old={l.kind === "del" ? l.old : undefined}
                       className={cn(
-                        "group/line",
+                        "group/line has-focus-visible:outline has-focus-visible:outline-1 has-focus-visible:-outline-offset-1 has-focus-visible:outline-accent",
                         l.kind === "add" && "bg-ok/10",
                         l.kind === "del" && "bg-danger-soft/70",
                         l.kind === "hunk" && "bg-accent-soft/40 text-faint",
@@ -152,8 +183,15 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk }: {
                         {l.kind === "hunk" ? "" : l.new ?? ""}
                         {onComment && l.kind !== "hunk" && (
                           <button
+                            type="button"
                             data-testid="comment-line"
+                            data-line={key}
+                            data-hunk={hunkIndex}
+                            data-changed={l.kind !== "ctx" ? "" : undefined}
+                            tabIndex={key === stop ? 0 : -1}
+                            aria-label={`Comment on ${lineName(f.path, l)}`}
                             title={side === "old" ? "Comment on this removed line" : "Comment on this line"}
+                            onFocus={() => setVisited(key)}
                             onClick={() => setDrafts((d) => ({ ...d, [key]: d[key] ?? "" }))}
                             className="absolute -right-2 top-0 grid size-[1.2rem] place-items-center rounded bg-accent text-accent-fg opacity-0 group-hover/line:opacity-100 focus-visible:opacity-100"
                           >
@@ -181,10 +219,11 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk }: {
                     drafts[key] !== undefined && l.kind !== "hunk" ? (
                       <tr key={`${i}-draft`}>
                         <td colSpan={4} className="px-3 py-1.5">
-                          <CommentForm l={l} side={side} text={drafts[key]!}
+                          {/* Added or discarded, the keyboard is back on the line's comment button. */}
+                          <CommentForm l={l} side={side} text={drafts[key]!} label={`Comment on ${lineName(f.path, l)}`}
                             onText={(t) => setDrafts((d) => ({ ...d, [key]: t }))}
-                            onClose={() => setDrafts(({ [key]: _, ...d }) => d)}
-                            onAdd={(t) => { onComment?.({ path: f.path, side, line: lineNo, text: t, quote: l.text }); setDrafts(({ [key]: _, ...d }) => d); }}
+                            onClose={() => { focusLine(key); setDrafts(({ [key]: _, ...d }) => d); }}
+                            onAdd={(t) => { focusLine(key); onComment?.({ path: f.path, side, line: lineNo, text: t, quote: l.text }); setDrafts(({ [key]: _, ...d }) => d); }}
                           />
                         </td>
                       </tr>
@@ -203,13 +242,14 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk }: {
   );
 }
 
-function CommentForm({ l, side, text, onText, onClose, onAdd }: { l: PatchLine; side: "old" | "new"; text: string; onText: (t: string) => void; onClose: () => void; onAdd: (t: string) => void }) {
+function CommentForm({ l, side, text, label, onText, onClose, onAdd }: { l: PatchLine; side: "old" | "new"; text: string; label: string; onText: (t: string) => void; onClose: () => void; onAdd: (t: string) => void }) {
   return (
     <form className="flex items-center gap-2 font-sans" onSubmit={(e) => { e.preventDefault(); if (text.trim()) onAdd(text.trim()); else onClose(); }}>
       {side === "old" && <span className="shrink-0 rounded bg-danger-soft px-1.5 text-micro text-danger" title={`Removed line ${l.old}`}>removed line</span>}
       <input
         autoFocus
         data-testid="comment-input"
+        aria-label={label}
         value={text}
         onChange={(e) => onText(e.target.value)}
         onKeyDown={(e) => { if (e.key === "Escape" && !text.trim()) onClose(); }}
