@@ -187,7 +187,9 @@
   --shadow-3: var(--shadow-3);
   --shadow-soft: var(--shadow-2);
 
-  /* Type scale, in rem: a 15 px interface, 16 px body and an 18 px reading size at the default text size. */
+  /* Type scale, in rem: eight sizes and no other. A 15 px interface, 16 px body and an
+     18 px reading size at the default text size; head, title and display name things.
+     No stylesheet or component writes a size of its own (src/ui-conventions.test.ts). */
   --text-micro: 0.75rem;
   --text-micro--line-height: 1.35;
   --text-caption: 0.8125rem;
@@ -198,6 +200,8 @@
   --text-base--line-height: 1.5;
   --text-read: 1.0625rem;
   --text-read--line-height: 1.7;
+  --text-head: 1.25rem;
+  --text-head--line-height: 1.3;
   --text-title: 1.5rem;
   --text-title--line-height: 1.25;
   --text-display: 2rem;
@@ -234,6 +238,27 @@
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
 }
+
+/* The instrument face (Martian Mono, narrow) has five jobs and no other. Everything
+   else is set in the text face, code in the code face. A rule joins a role by
+   being listed here; no other rule and no component names the face
+   (src/ui-conventions.test.ts). */
+/* 1. A state word: Working, Needs you, Failed, Done, Stopped, Offline. */
+.k-face-state, .k-station-word, .k-row-state, .k-marks-head, .k-rail-card-word, .k-where-reach, .k-needs, .k-pane-empty-word, .k-alert[data-unread] .k-alert-word {
+  font-family: var(--font-inst); font-stretch: 75%;
+}
+/* 2. A figure a glance reads: a clock, an age, a count. */
+.k-face-figure, .k-station-clock, .k-row-time, .k-rail-card-time, .k-pane-empty-time, .k-act-count, .k-act-n, .k-inbox-count, .k-dock-need, .k-machine-sep-count, .k-tally b {
+  font-family: var(--font-inst); font-stretch: 75%; font-variant-numeric: tabular-nums;
+}
+/* 3. A session's call sign on the folded rail. */
+.k-tick-code { font-family: var(--font-inst); font-stretch: 75%; }
+/* 4. The name of a surface: the product, a page, a panel, a dialog. */
+.k-face-title, .text-display, .text-title, .k-page h1, .k-brand-name, .k-side-title, .k-page-head h1, .k-settings-jump-label, .k-reader-title h3 {
+  font-family: var(--font-inst); font-stretch: 87.5%; letter-spacing: -0.02em;
+}
+/* 5. A key of the keyboard. */
+kbd { font-family: var(--font-inst); font-stretch: 75%; }
 
 html, body, #root { height: 100%; }
 /* Every length in the interface is a rem: the text size the owner picks
@@ -295,7 +320,6 @@ button { cursor: default; }
 .k-image-toggle { cursor: zoom-in; border-radius: var(--radius-lg); }
 .k-image-toggle[aria-expanded="true"] { cursor: zoom-out; }
 .k-image-toggle:focus-visible { border-radius: var(--radius-lg); }
-kbd { font-family: var(--font-sans); }
 /* Code shows the characters typed: no programming ligatures. */
 code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "calt" 0; }
 /* Phone: inputs at 16 px so iOS does not zoom on focus. */
@@ -345,7 +369,7 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .prose-keel > * + * { margin-top: 0.8em; }
 .prose-keel > :first-child { margin-top: 0; }
 .prose-keel h1, .prose-keel h2, .prose-keel h3, .prose-keel h4 { font-weight: 600; letter-spacing: -0.012em; line-height: 1.3; margin-top: 1.4em; }
-.prose-keel h1 { font-size: 1.42em; } .prose-keel h2 { font-size: 1.22em; } .prose-keel h3 { font-size: 1.06em; } .prose-keel h4 { font-size: 1em; color: var(--muted); }
+.prose-keel h1 { font-size: var(--text-title); } .prose-keel h2 { font-size: var(--text-head); } .prose-keel h3 { font-size: var(--text-read); } .prose-keel h4 { font-size: var(--text-read); color: var(--muted); }
 .prose-keel strong { font-weight: 600; }
 .prose-keel ul { list-style: disc; padding-left: 1.35em; }
 .prose-keel ol { list-style: decimal; padding-left: 1.5em; }
@@ -354,9 +378,11 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .prose-keel li > ul, .prose-keel li > ol { margin-top: 0.3em; }
 .prose-keel a { color: var(--accent-ink); text-decoration: underline; text-decoration-color: color-mix(in oklch, var(--accent) 45%, transparent); text-underline-offset: 0.1875rem; }
 .prose-keel a:hover { text-decoration-color: var(--accent); }
-.prose-keel :not(pre) > code { font-family: var(--font-mono); font-size: 0.86em; background: var(--sunken); border: 1px solid var(--line); padding: 0.05em 0.32em; border-radius: var(--radius-xs); }
+.prose-keel :not(pre) > code { font-family: var(--font-mono); font-size: var(--text-base); background: var(--sunken); border: 1px solid var(--line); padding: 0.05em 0.32em; border-radius: var(--radius-xs); }
 .prose-keel blockquote { border-left: 2px solid var(--line-strong); padding-left: 1em; color: var(--muted); }
-.prose-keel table { border-collapse: collapse; font-size: 0.9em; display: block; overflow-x: auto; max-width: 100%; }
+/* In a heading the code is the heading's size. */
+.prose-keel :is(h1, h2, h3, h4) > code { font-size: inherit; }
+.prose-keel table { border-collapse: collapse; font-size: var(--text-base); display: block; overflow-x: auto; max-width: 100%; }
 .prose-keel th, .prose-keel td { border-bottom: 1px solid var(--line); padding: 0.45em 0.9em 0.45em 0; text-align: left; vertical-align: top; }
 .prose-keel th { font-weight: 600; border-bottom-color: var(--line-strong); white-space: nowrap; }
 .prose-keel th, .prose-keel td { overflow-wrap: normal; }
@@ -368,8 +394,9 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .prose-keel code.k-fileref[data-rel]:hover { text-decoration-color: var(--accent); }
 .prose-keel code.k-fileref[data-rel]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 /* TeX as MathML, drawn by the browser; the source shows until it is converted. */
-.prose-keel .math:not([data-done]) { font-family: var(--font-mono); font-size: 0.86em; color: var(--muted); }
+.prose-keel .math:not([data-done]) { font-family: var(--font-mono); font-size: var(--text-base); color: var(--muted); }
 .prose-keel div.math { overflow-x: auto; overflow-y: hidden; padding: 0.2em 0; }
+/* The math faces draw small beside the text face: the one size set by eye, not from the scale. */
 .prose-keel math { font-family: "STIX Two Math", "Latin Modern Math", "Cambria Math", math; font-size: 1.08em; }
 .prose-keel math[display="block"] { margin: 0.2em 0; }
 
@@ -392,7 +419,7 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .k-copy-corner { position: absolute; top: 0.25rem; right: 0.25rem; z-index: 1; background: var(--code-bg); opacity: 0; transition: opacity 120ms; }
 .k-copyable:hover > .k-copy-corner, .k-copy-corner:focus-visible, .k-copy-corner[data-copied], .k-copy-corner[data-failed] { opacity: 1; }
 @media (hover: none) { .k-copy-corner { opacity: 1; } }
-.code-block pre { margin: 0; padding: 0.75rem 0.875rem; overflow-x: auto; font-family: var(--font-mono); font-size: 0.8438rem; line-height: 1.6; tab-size: 2; }
+.code-block pre { margin: 0; padding: 0.75rem 0.875rem; overflow-x: auto; font-family: var(--font-mono); font-size: var(--text-ui); line-height: 1.6; tab-size: 2; }
 .code-block pre code { font-family: inherit; }
 
 .th-keyword, .th-command { color: var(--syn-keyword); }

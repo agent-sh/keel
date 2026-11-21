@@ -350,12 +350,12 @@ function Panel({ session }: { session: Session }) {
                     onClick={() => { setActiveId(r.id); setOpen(isOpen ? null : r.id); }}
                     className="grid w-full grid-cols-[3rem_1.5rem_minmax(0,1fr)_auto] items-start gap-x-2 px-3 py-1 text-left hover:bg-hover focus-visible:bg-hover focus-visible:outline-offset-[-2px]"
                   >
-                    <time dateTime={new Date(r.ts).toISOString()} title={when(r.ts)} className={cn("pt-px text-right font-inst text-micro leading-5 tabular-nums [font-stretch:87.5%]", sameMinute ? "text-faint" : "text-muted")}>
+                    <time dateTime={new Date(r.ts).toISOString()} title={when(r.ts)} className={cn("pt-px text-right k-face-figure text-micro leading-5", sameMinute ? "text-faint" : "text-muted")}>
                       {stamp}
                     </time>
                     <span className={cn("grid h-5 place-items-center", aside && "opacity-50")} aria-hidden><Mark row={r} /></span>
                     <span className={cn("text-ui leading-5", ink(r.tone === "live" ? "plain" : r.tone, turn ? "text-fg" : "text-muted"), aside && "text-faint")}><Sentence row={r} /></span>
-                    <span className="pt-px font-inst text-micro leading-5 tabular-nums text-muted [font-stretch:87.5%]">{turn ? (r.open ? <Since ts={r.ts} /> : r.ms ? dur(r.ms) : "") : ""}</span>
+                    <span className="pt-px k-face-figure text-micro leading-5 text-muted">{turn ? (r.open ? <Since ts={r.ts} /> : r.ms ? dur(r.ms) : "") : ""}</span>
                   </button>
                   {isOpen && <Detail row={r} sessionId={id} />}
                 </div>
@@ -395,9 +395,9 @@ function Now({ now, onTurn }: { now: TimelineNow | null; onTurn: (turn: string) 
   return (
     <section className="shrink-0 border-b border-line bg-raised px-3 pb-2.5 pt-2.5" aria-label="Now" data-testid="timeline-now" data-state={now.state}>
       <h3 className="flex items-center gap-2">
-        <span className="grid w-12 place-items-end pr-0.5 font-inst text-micro text-muted [font-stretch:87.5%]">Now</span>
+        <span className="grid w-12 place-items-end pr-0.5 k-face-figure text-micro text-muted">Now</span>
         <span className="grid w-6 place-items-center"><span className={cn("size-2 rounded-full", st.dot)} /></span>
-        <span className={cn("font-inst text-base font-semibold tracking-tight [font-stretch:87.5%]", now.state === "owner" && "text-st-need")} data-testid="timeline-state">{st.word}</span>
+        <span className={cn("k-face-state text-base font-semibold tracking-tight", now.state === "owner" && "text-st-need")} data-testid="timeline-state">{st.word}</span>
       </h3>
       <ul className="mt-1 flex flex-col">
         {now.lines.map((l) => {
@@ -413,7 +413,7 @@ function Now({ now, onTurn }: { now: TimelineNow | null; onTurn: (turn: string) 
                 {l.kind === "turn" ? <Route className="size-3.5 text-st-work" /> : <Mark row={l} />}
               </span>
               <span className={cn("min-w-0 flex-1 text-ui leading-5", ink(l.tone === "live" ? "plain" : l.tone, "text-fg"))}>{l.text}</span>
-              <span className="shrink-0 pt-px font-inst text-micro leading-5 tabular-nums text-muted [font-stretch:87.5%]">{timer}</span>
+              <span className="shrink-0 pt-px k-face-figure text-micro leading-5 text-muted">{timer}</span>
             </>
           );
           return (
