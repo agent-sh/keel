@@ -7,7 +7,7 @@ import { readMaterial, type ReaderHost } from "../engine/readers.ts";
 import type { ModelInfo } from "../providers/types.ts";
 import { AskReaders, gather } from "./readers.ts";
 import type { ToolContext } from "./types.ts";
-import { plainFetch } from "./web.ts";
+import { htmlToText, plainFetch } from "./web.ts";
 
 const DIR = mkdtempSync(join(tmpdir(), "keel-readers-"));
 afterAll(() => rmSync(DIR, { recursive: true, force: true }));
@@ -247,4 +247,13 @@ test("sources past the budget are counted by folder with the list in a file, so 
   const listed = readFileSync(m![2]!, "utf8").trim().split("\n");
   expect(listed.length).toBe(left);
   expect(listed.at(-1)).toBe("tree/pkg-12/file-25.txt");
+});
+
+test("a whole page keeps the text after a self-closed svg or script; only a cut page drops an open tail", () => {
+  const page = '<p>before</p><svg width="1" height="1"/><p>after the mark</p><script src="/a.js"/><p>and the end</p>';
+  expect(htmlToText(page)).toContain("after the mark");
+  expect(htmlToText(page)).toContain("and the end");
+  // Cut inside a script: the open tail is markup, not text.
+  expect(htmlToText("<p>kept</p><script>var a = 1; var b =", true)).toBe("kept");
+  expect(htmlToText('<p>kept</p><a href="/long', true)).toBe("kept");
 });

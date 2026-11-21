@@ -172,7 +172,7 @@ export async function plainFetch(u: URL, o: FetchOpts, signal?: AbortSignal): Pr
   const markup = /html/.test(type) && o.extract !== "raw";
   const pool = o.whole ? o.budget : undefined;
   const raw = await bodyText(res.body, pool && markup ? { left: MARKUP_MAX } : pool);
-  const page = `HTTP ${res.status}\n\n${markup ? htmlToText(raw.text) : raw.text}`;
+  const page = `HTTP ${res.status}\n\n${markup ? htmlToText(raw.text, raw.cut) : raw.text}`;
   if (!o.whole) return { text: await spill(page, o.spillDir, "webfetch"), error: !res.ok };
   return { text: page, error: !res.ok, ...(raw.cut ? { cut: true } : {}), ...(pool && !markup ? { took: raw.taken } : {}) };
 }
@@ -207,7 +207,8 @@ export async function fetchFor(url: string, prompt: string, ctx: Pick<ToolContex
     const a = await ctx.read(url, r.text, ask);
     // Findings no reader could compile come back as they are, spilled when long.
     const how = a.compiled === false ? " in parts; their findings could not be compiled into one answer and follow as they are" : "";
-    return { text: `${await spill(a.text, ctx.spillDir, "webfetch-findings")}\n\n[${a.model} read the page (${r.text.length} chars) for this request${how}. The whole page is saved to ${path}; Read or Grep it when this does not answer.]` };
+    // A compiled answer comes back whole; only uncompiled findings can be long enough to spill.
+    return { text: `${a.compiled === false ? await spill(a.text, ctx.spillDir, "webfetch-findings") : a.text}\n\n[${a.model} read the page (${r.text.length} chars) for this request${how}. The whole page is saved to ${path}; Read or Grep it when this does not answer.]` };
   } catch (e) {
     if (ctx.signal.aborted) throw e;
     return { text: `[No reader could read the page for this request (${String((e as Error).message ?? e).slice(0, 300)}); the page follows as it is.]\n\n${await spill(r.text, ctx.spillDir, "webfetch")}` };
@@ -215,12 +216,10 @@ export async function fetchFor(url: string, prompt: string, ctx: Pick<ToolContex
 }
 
 // A plain reading of an HTML page for when the extractor is not installed.
-export function htmlToText(html: string): string {
-  return html
-    .replace(/<(script|style|noscript|svg|head)[\s\S]*?<\/\1>/gi, "")
-    // A page cut inside a script or a tag: what is left of it is not text.
-    .replace(/<(script|style|noscript|svg)\b[\s\S]*$/i, "")
-    .replace(/<[^>]*$/, "")
+// `cut`: the body stopped before its end, so an open script or tag at the tail is not text.
+export function htmlToText(html: string, cut = false): string {
+  const whole = html.replace(/<(script|style|noscript|svg|head)[\s\S]*?<\/\1>/gi, "");
+  return (cut ? whole.replace(/<(script|style|noscript|svg)\b[\s\S]*$/i, "").replace(/<[^>]*$/, "") : whole)
     .replace(/<h([1-6])[^>]*>/gi, (_m, n) => "\n\n" + "#".repeat(Number(n)) + " ")
     .replace(/<li[^>]*>/gi, "\n- ")
     .replace(/<a [^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi, "[$2]($1)")
