@@ -22,11 +22,14 @@ export function bounded(text: string, max = SHOWN, slack = max === SHOWN ? SLACK
   const line = text.indexOf("\n", at);
   if (line >= 0 && line - at < 4096) at = line + 1;
   else {
-    // A sequence that began before the cut and ends after it goes whole.
+    // A sequence that began before the cut and ends after it goes whole; one
+    // with no end in reach (a title or a link that never closed) stays whole
+    // in what is kept, from its start.
     const esc = text.lastIndexOf("\x1b", at - 1);
-    if (esc >= 0 && at - esc < 256) {
-      const m = SEQUENCE.exec(text.slice(esc, esc + 512));
+    if (esc >= 0 && at - esc < 8192) {
+      const m = SEQUENCE.exec(text.slice(esc, esc + 16384));
       if (m && esc + m[0].length > at) at = esc + m[0].length;
+      else if (!m && text.charCodeAt(esc + 1) === 0x5d) at = esc;
     }
     const c = text.charCodeAt(at);
     if (c >= 0xdc00 && c <= 0xdfff) at++; // the second half of a character

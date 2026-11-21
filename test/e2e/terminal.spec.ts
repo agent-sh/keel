@@ -148,6 +148,19 @@ test("terminal pane: commands, output, filters, stop, copy and re-run", async ({
     expect(start.text.startsWith("steady-start\n")).toBe(true);
     expect(start.size).toBe(whole.bytes);
     await shoot(page, "terminal-04-steady-output-bounded");
+    // The note opens the log: it is read here from its start, a part at a time, and back to the newest output.
+    await mine.first().getByTestId("term-log-open").click();
+    const log = mine.first().getByTestId("term-output");
+    await expect(log).toHaveAttribute("data-log", "1");
+    await expect(log).toContainText("steady-start");
+    await expect(mine.first().getByTestId("term-log-bar")).toContainText(/The log, 0 to [\d,.\s]+ of [\d,.\s]+ bytes/);
+    await mine.first().getByTestId("term-log-next").click();
+    await expect(mine.first().getByTestId("term-log-prev")).toBeVisible();
+    await expect(log).not.toContainText("steady-start");
+    await shoot(page, "terminal-05-log-read-in-parts");
+    await mine.first().getByTestId("term-log-leave").click();
+    await expect(mine.first().getByTestId("term-output")).toContainText("steady-end");
+    await expect(mine.first().getByTestId("term-output")).not.toHaveAttribute("data-log", "1");
 
     // The model hears of the owner's commands at its next request.
     await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "And now?" } });

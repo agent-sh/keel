@@ -84,9 +84,37 @@ function Output({ session, e }: { session: string; e: Entry }) {
   const pre = useRef<HTMLPreElement>(null);
   const text = own ?? e.output;
   useEffect(() => { const p = pre.current; if (p && follow) p.scrollTop = p.scrollHeight; }, [text, follow]);
+  // The output above what is shown is in the command's log: it is read here a
+  // part at a time, from the start, with the way back to the newest output.
+  const [part, setPart] = useState<{ text: string; from: number; to: number; size: number; before: number[] } | null>(null);
+  const read = (from: number, before: number[]) =>
+    api<{ text: string; from: number; to: number; size: number }>(`/api/sessions/${session}/terminal/${e.job_id}/log?from=${from}`)
+      .then((r) => { setPart({ ...r, before }); if (pre.current) pre.current.scrollTop = 0; })
+      .catch((err) => reportError(err, { at: "terminal log" }));
+  const earlier = (e.output_from ?? 0) > 0 || cut;
+  const linkClass = "rounded-sm px-1 font-sans font-medium text-accent-ink hover:bg-accent-soft";
+  if (part) {
+    return (
+      <pre ref={pre} data-testid="term-output" data-log="1" className="max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-line bg-code-bg px-3 py-2 font-mono text-micro leading-relaxed text-fg">
+        <span className="sticky top-0 -mx-3 -mt-2 mb-1 flex flex-wrap items-center gap-x-1 border-b border-line bg-code-bg px-3 py-1 text-faint" data-testid="term-log-bar">
+          <span className="tabular-nums">The log, {part.from.toLocaleString()} to {part.to.toLocaleString()} of {part.size.toLocaleString()} bytes</span>
+          {part.before.length > 0 && <button type="button" data-testid="term-log-prev" className={linkClass} onClick={() => read(part.before.at(-1)!, part.before.slice(0, -1))}>Earlier part</button>}
+          {part.to < part.size && <button type="button" data-testid="term-log-next" className={linkClass} onClick={() => read(part.to, [...part.before, part.from])}>Next part</button>}
+          <button type="button" data-testid="term-log-leave" className={linkClass} onClick={() => setPart(null)}>Newest output</button>
+        </span>
+        {part.text ? <Ansi text={part.text} /> : <span className="text-faint">Nothing here.</span>}
+      </pre>
+    );
+  }
   return (
     <pre ref={pre} data-testid="term-output" className="max-h-80 overflow-auto whitespace-pre-wrap break-words border-t border-line bg-code-bg px-3 py-2 font-mono text-micro leading-relaxed text-fg">
-      {((e.output_from ?? 0) > 0 || cut) && <span className="text-faint" data-testid="term-earlier">[earlier output is in the log]{"\n"}</span>}
+      {earlier && (
+        <span className="text-faint" data-testid="term-earlier">
+          [earlier output is in the log]
+          {e.job_id && <button type="button" data-testid="term-log-open" className={linkClass} onClick={() => read(0, [])}>Read the log from its start</button>}
+          {"\n"}
+        </span>
+      )}
       {text ? <Ansi text={text} /> : <span className="text-faint" data-testid="term-no-output">{e.log_missing ? "Output log unavailable." : live(e) ? "No output yet." : "No output."}</span>}
     </pre>
   );

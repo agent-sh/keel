@@ -55,3 +55,16 @@ test("one long line is cut between characters and outside escape sequences", () 
   expect(cut.text.startsWith(seq + "a")).toBe(true); // carried as the color in force
   expect(parseAnsi(cut.text)[0]!.fg).toBe("rgb(10, 20, 30)");
 });
+
+test("a long title or link sequence is never cut in two", () => {
+  // An OSC sequence of 3,000 characters across the cut: it goes whole.
+  const osc = "\x1b]8;;https://example.com/" + "p".repeat(3000) + "\x07";
+  const t = "a".repeat(5000) + osc + "b".repeat(4000);
+  const r = bounded(t, 5500); // the cut falls inside the sequence
+  expect(r.text.startsWith("b")).toBe(true);
+  expect(r.text.includes("\x1b]")).toBe(false);
+  // One that never closes stays whole in what is kept, from its start.
+  const open = "a".repeat(5000) + "\x1b]0;" + "t".repeat(6000);
+  const k = bounded(open, 5500);
+  expect(k.text.startsWith("\x1b]0;")).toBe(true);
+});
