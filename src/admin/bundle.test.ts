@@ -62,6 +62,13 @@ test("a bundle asked from a span is about that span and the branch its turn ran 
     expect(pruned).not.toContain("## The failing span");
     expect(pruned).toContain("MARK-ORIGINAL");
     expect(pruned).not.toContain("MARK-SIBLING");
+    // The error row happened again an hour later, elsewhere: the bundle stays at the turn's end, not there.
+    const end = store.events(s.id).find((x) => x.kind === "turn_end")!;
+    const iso = (ms: number) => new Date(ms).toISOString().replace("T", " ").replace(/\.\d+Z$/, "Z");
+    const row = { id: "err-1", ts: end.ts + 3_600_000, first_ts: end.ts, count: 2, source: "provider", message: "fixture: the original request was refused", session_id: s.id } as any;
+    const later = buildBundle(store, tracer, { error: row, session_id: s.id, turn_event: original.turn, span_id: original.span, daemon: { state_dir: store.stateDir } }).markdown;
+    expect(later).toContain(`## Daemon log around it (${iso(end.ts - 120_000)} to `);
+    expect(later).toContain("MARK-ORIGINAL");
     // The turn's events are gone too: no transcript rather than the present branch's.
     const gone = bundle({ turn_event: "019a0000-0000-7000-8000-00000000dead", span_id: original.span });
     expect(gone).toContain("The turn's events are no longer in the session");

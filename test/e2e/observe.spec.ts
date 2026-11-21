@@ -319,6 +319,9 @@ test("an error opens the exact span that failed", async ({ page, request }) => {
   const bundled = await (await request.get(asked.url())).text();
   expect(bundled).toContain(`Asked from the span \`${attempts[0].span_id}\``);
   expect(bundled.slice(bundled.indexOf("## The failing span")).split("\n## ")[0]).toContain(`span \`${attempts[0].span_id}\``);
+  // A span that is not kept, asked for alone, is no bundle at all.
+  const unknown = await request.get("/api/debug/bundle?span_id=0000000000000000");
+  expect([unknown.status(), (await unknown.json()).error]).toEqual([404, "no such span"]);
   row = await openRow();
   await row.getByTestId("error-trace").click();
   await expect(detail).toContainText(attempts[1].span_id);

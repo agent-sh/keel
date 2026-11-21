@@ -54,7 +54,6 @@ export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { mark
     ? asked.kind === "turn" ? spans.findLast((x) => x.parent_id === asked.span_id && x.status === "error") ?? asked : asked
     : spanGone ? undefined : own ?? spans.findLast((x) => x.status === "error" && x.kind !== "turn");
   const elsewhere = !!e && !asked && (!last || (!!named && !own));
-  const at = asked ? failing?.end_ms ?? asked.end_ms ?? Date.now() : (elsewhere ? failing?.end_ms : undefined) ?? e?.ts ?? failing?.end_ms ?? Date.now();
   // The transcript is the branch the turn ran on. A session that went back and
   // took another branch since still has it; the present branch is another
   // conversation and is never shown in its place.
@@ -62,6 +61,12 @@ export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { mark
   const left = !!turnAt && !head.some((x) => x.id === turnEvent);
   const turnGone = !!s && !!turnEvent && !turnAt;
   const events = left ? lineage(all, leafOf(all, turnEvent!)) : turnGone ? [] : head;
+  // The moment the bundle is about. A span that is gone leaves its turn's end
+  // on that branch (the error row may have happened again later, elsewhere).
+  const turnEnd = turnAt ? events.slice(events.findIndex((x) => x.id === turnEvent) + 1).find((x) => x.kind === "turn_end") : undefined;
+  const at = asked ? failing?.end_ms ?? asked.end_ms ?? Date.now()
+    : spanGone && turnAt ? turnEnd?.ts ?? Date.now()
+    : (elsewhere ? failing?.end_ms : undefined) ?? e?.ts ?? failing?.end_ms ?? Date.now();
   const out: string[] = [];
 
   const title = e ? `${e.source}: ${clip(e.message, 120)}` : `turn in ${s?.title || sid}`;

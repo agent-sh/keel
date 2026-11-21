@@ -88,6 +88,8 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
     if (q.error_id && !error) return { status: 404, error: "no such error" } as const;
     if (!error && !q.session_id && !q.span_id) return { status: 400, error: "error_id, session_id or span_id" } as const;
     if (q.session_id && !store.session(q.session_id)) return { status: 404, error: "no such session" } as const;
+    // A span alone names its own session: one that is not kept leaves nothing to bundle.
+    if (q.span_id && !error && !q.session_id && !t.span(q.span_id)) return { status: 404, error: "no such span" } as const;
     return buildBundle(store, t, { error, session_id: q.session_id ?? undefined, turn_event: q.turn_event ?? undefined, span_id: q.span_id ?? undefined, daemon: { state_dir: store.stateDir }, version, live: (id) => ({ running: engine.isRunning(id), status: engine.statusOf(id) }) });
   };
 
