@@ -194,6 +194,17 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     return { ...p, stream: { readers: feeds.length, pending_bytes: Math.max(0, ...feeds.map((x) => x.pending())), limit_bytes: Math.max(FEED_LIMIT, ...feeds.map((x) => x.bound)), stalled: r?.stalled ?? 0, stalled_ms: r?.stalled_ms } };
   });
 
+  // Why a machine cannot take a name, or null. A name finds one machine
+  // whatever its case, and an address that starts with this daemon's own name
+  // or with "local" means this daemon: none of those may name another machine.
+  // The same answer (409) when a machine is added and when one is renamed.
+  const nameTaken = (name: string, except?: string): string | null => {
+    const n = name.toLowerCase();
+    if (n === "local" || n === f.name.toLowerCase()) return `${name} is the name of this machine`;
+    const other = f.rows().find((r) => r.id !== except && r.name.toLowerCase() === n);
+    return other ? `a machine is already named ${other.name}` : null;
+  };
+
   const machineView = (id: string) => {
     const m = f.row(id);
     return m ? f.view(m) : undefined;
@@ -277,7 +288,8 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
           const port = daemonPort(b.daemon_port);
           if (port === undefined) return bad(BAD_PORT);
           const name = String(b.name || group.alias);
-          if (f.rows().some((r) => r.name.toLowerCase() === name.toLowerCase())) return bad(`a machine is already named ${name}`);
+          const taken = nameTaken(name);
+          if (taken) return bad(taken, 409);
           m = f.add({ name, source: "ssh", ssh_host: group.alias, daemon_port: port ?? undefined, workspace_root: root });
           if (port === null) {
             // The account is the owner's own: its home is the directory granted unless they name one.
@@ -293,7 +305,8 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
           if (!url) return bad("daemon_url must be http on a loopback address (reach another machine through its ssh host)");
           const name = String(b.name ?? "").trim();
           if (!name) return bad("a machine needs a name");
-          if (f.rows().some((r) => r.name.toLowerCase() === name.toLowerCase())) return bad(`a machine is already named ${name}`);
+          const taken = nameTaken(name);
+          if (taken) return bad(taken, 409);
           // One record per daemon: a second pairing would replace the first one's key there.
           const same = f.rows().find((r) => r.daemon_url === url.origin);
           if (same) return bad(`that daemon is already enabled as ${same.name}`);
@@ -315,9 +328,9 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         if (b.name !== undefined) {
           const name = String(b.name).trim();
           if (!name) return bad("a name cannot be empty");
-          // A name finds one machine whatever its case: no other machine may hold it. Its own case may change.
-          const other = f.rows().find((r) => r.id !== id && r.name.toLowerCase() === name.toLowerCase());
-          if (other) return bad(`a machine is already named ${other.name}`, 409);
+          // No other machine may hold it. Its own case may change.
+          const taken = nameTaken(name, id);
+          if (taken) return bad(taken, 409);
           patch.name = name;
         }
         if (b.auto_connect !== undefined) patch.auto_connect = b.auto_connect ? 1 : 0;

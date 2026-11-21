@@ -262,6 +262,21 @@ test("fleet machines: a rename keeps names unique", async ({ request }) => {
     expect(await name(a)).toBe(`ALPHA-${tag}`);
     expect((await request.patch(`/api/fleet/machines/${a}`, { data: { name: ` Gamma-${tag} ` } })).ok()).toBe(true);
     expect(await name(a)).toBe(`Gamma-${tag}`);
+    // This daemon's own name and "local" mean this machine in an address: no machine takes them.
+    const here = (await (await request.get("/api/fleet/identity")).json()).server_name as string;
+    for (const taken of ["local", "LOCAL", here, here.toUpperCase()]) {
+      const r = await request.patch(`/api/fleet/machines/${a}`, { data: { name: taken } });
+      expect(r.status(), taken).toBe(409);
+      expect((await r.json()).error).toBe(`${taken} is the name of this machine`);
+    }
+    expect(await name(a)).toBe(`Gamma-${tag}`);
+    // The same collisions are the same answer when a machine is added.
+    for (const [taken, error] of [[`beta-${tag}`, `a machine is already named Beta-${tag}`], ["Local", "Local is the name of this machine"], [here, `${here} is the name of this machine`]] as const) {
+      const r = await request.post("/api/fleet/machines", { data: { name: taken, daemon_url: `http://[::1]:${port}` } });
+      expect(r.status(), taken).toBe(409);
+      expect((await r.json()).error).toBe(error);
+    }
+    expect(((await (await request.get("/api/fleet/machines")).json()).machines as any[]).filter((m) => m.daemon_url?.endsWith(`:${port}`))).toHaveLength(2);
   } finally {
     for (const id of [a, b]) await request.delete(`/api/fleet/machines/${id}`);
     stub.close();
