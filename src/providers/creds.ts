@@ -14,7 +14,11 @@ const missing = new Map<string, number>();
 
 export type KeySource = { env?: string; cred?: string };
 
+// KEEL_CRED_GET names the helper to run instead (a test or a scratch daemon
+// points it at a program that prints nothing, so the owner's own credential
+// helper is never run for it).
 function credGet(): string {
+  if (process.env.KEEL_CRED_GET) return process.env.KEEL_CRED_GET;
   const local = join(homedir(), ".local/bin/cred-get");
   return existsSync(local) ? local : "cred-get";
 }

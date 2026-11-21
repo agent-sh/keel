@@ -30,6 +30,11 @@ Object.assign(process.env, {
   KEEL_MAIL_STANDIN: join(dir, "mail"),
   KEEL_PHONE_SOCKET: join(made("phone"), "phone.sock"),
   KEEL_DESKTOP_NOTIFY: "off",
+  // No test looks a key up in the owner's keyring or runs their credential
+  // helper: both answer "no key" at once (the helper took seconds at times,
+  // and a test that named a made-up key timed out waiting for it).
+  KEEL_KEYRING_SERVICE: "keel-test-empty",
+  KEEL_CRED_GET: "/bin/false",
 });
 // A path the shell names for one config file would point past the scratch folder.
 for (const k of ["KEEL_MCP_CONFIG", "KEEL_HOOKS", "KEEL_ACP_AGENTS", "KEEL_ACP_FOLDERS"]) delete process.env[k];
