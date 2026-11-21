@@ -8,6 +8,16 @@ import { Kbd } from "./Kbd.tsx";
 // Keys that are not commands of the registry but work everywhere. Send and
 // New line follow the owner's "Send with" setting (SEND_KEYS in keys.ts).
 const fixed = (enterSends: boolean): [string, string, string][] => [
+  // A card that waits above the message box (an approval, a question, a plan): its own keys.
+  ["Answering", "From the card to its answers", "tab"],
+  ["Answering", "Next answer of the card", "arrowdown"],
+  ["Answering", "Previous answer of the card", "arrowup"],
+  ["Answering", "Allow once, send the answer, approve the plan", "enter"],
+  ["Answering", "Choose an option of a question (1 to 9)", "1"],
+  ["Answering", "Deny an approval with a reason", "escape"],
+  // A row of the session list is one Tab stop: its actions are reached from it.
+  ["Sessions", "To a list row's actions", "arrowright"],
+  ["Sessions", "Back to the row", "arrowleft"],
   ["Message box", "Send", SEND_KEYS(enterSends).send],
   ["Message box", "New line", SEND_KEYS(enterSends).newline],
   ["Message box", "Queue for after the turn", QUEUE_KEYS],

@@ -131,6 +131,9 @@ export function keyLabel(spec: string): string[] {
     if (l === "pagedown") return "PgDn";
     if (l === "arrowup") return "↑";
     if (l === "arrowdown") return "↓";
+    if (l === "arrowright") return "→";
+    if (l === "arrowleft") return "←";
+    if (l === "tab") return "Tab";
     return p.length === 1 ? p.toUpperCase() : p[0]!.toUpperCase() + p.slice(1);
   });
 }
