@@ -234,7 +234,7 @@ export function InputNotice({ e }: { e: StoredEvent }) {
         <div className="flex items-center gap-2 text-caption text-muted">
           <Bot className="size-3.5 text-accent" /> Task from
           {parentId ? (
-            <button type="button" onClick={() => openSession(parentId)} className="flex items-center gap-1 font-medium text-fg hover:text-accent">
+            <button type="button" onClick={() => openSession(parentId)} className="flex min-h-ctl-sm items-center gap-1 font-medium text-fg hover:text-accent">
               {sessions[parentId]?.title || "the parent session"} <ExternalLink className="size-3" />
             </button>
           ) : <span className="font-medium text-fg">the parent session</span>}

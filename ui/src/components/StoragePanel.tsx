@@ -282,7 +282,7 @@ export function StoragePanel() {
               <div className="mb-2 max-h-80 overflow-y-auto rounded-md border border-line bg-sunken/40" data-testid="checkpoint-sessions">
                 {f.session_list.map((s) => (
                   <div key={s.id} className="flex h-9 items-center gap-3 border-b border-line/60 px-3 text-ui last:border-0" data-testid="checkpoint-session" data-id={s.id}>
-                    <button type="button" onClick={() => !s.subagent && navigate({ name: "session", id: s.id })} className="min-w-0 flex-1 truncate text-left hover:underline">{s.title || "Untitled"}</button>
+                    <button type="button" onClick={() => !s.subagent && navigate({ name: "session", id: s.id })} className="k-link min-w-0 flex-1 truncate text-left hover:underline">{s.title || "Untitled"}</button>
                     {s.archived && <span className="rounded-xs bg-sunken px-1.5 text-micro text-muted">archived</span>}
                     {s.subagent && <span className="rounded-xs bg-sunken px-1.5 text-micro text-muted">subagent</span>}
                     <span className="text-caption tabular-nums text-faint">{s.checkpoints} checkpoints, about {fmtBytes(s.checkpoint_bytes)}</span>
@@ -306,7 +306,7 @@ export function StoragePanel() {
         <div className="-mx-5 border-t border-line">
           {(allSessions ? r.by_session : r.by_session.slice(0, 15)).map((s) => (
             <div key={s.id} className="group flex h-9 w-full items-center gap-3 border-b border-line/60 px-5 text-ui last:border-0 hover:bg-hover" data-testid="storage-session">
-              <button type="button" onClick={() => !s.subagent && navigate({ name: "session", id: s.id })} className="min-w-0 flex-1 truncate text-left hover:underline">{s.title || "Untitled"}</button>
+              <button type="button" onClick={() => !s.subagent && navigate({ name: "session", id: s.id })} className="k-link min-w-0 flex-1 truncate text-left hover:underline">{s.title || "Untitled"}</button>
               {s.archived && <span className="rounded-xs bg-sunken px-1.5 text-micro text-muted">archived</span>}
               {s.subagent && <span className="rounded-xs bg-sunken px-1.5 text-micro text-muted">subagent</span>}
               {s.checkpoints > 0 && (

@@ -131,7 +131,7 @@ export function ResourcesPanel() {
                   <td className={cn(td, "max-w-60")}>
                     <div className="truncate font-mono text-caption" title={p.command}>{p.label}</div>
                     {p.session_id && (
-                      <button type="button" onClick={() => navigate({ name: "session", id: p.session_id! })} className="truncate text-caption text-accent hover:underline">
+                      <button type="button" onClick={() => navigate({ name: "session", id: p.session_id! })} className="k-link truncate text-caption text-accent hover:underline">
                         {title(p.session_id)}
                       </button>
                     )}
@@ -162,7 +162,7 @@ export function ResourcesPanel() {
                 {r.sessions.map((s) => (
                   <tr key={s.session_id} className="border-b border-line/60 last:border-0">
                     <td className={cn(td, "max-w-80 truncate")}>
-                      <button type="button" onClick={() => navigate({ name: "session", id: s.session_id })} className="truncate hover:underline">{title(s.session_id)}</button>
+                      <button type="button" onClick={() => navigate({ name: "session", id: s.session_id })} className="k-link truncate hover:underline">{title(s.session_id)}</button>
                     </td>
                     <td className={cn(td, "text-right text-muted")}>{s.processes}</td>
                     <td className={cn(td, "text-right")}>{fmtBytes(s.rss_bytes)}</td>

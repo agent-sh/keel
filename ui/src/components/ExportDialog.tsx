@@ -49,8 +49,8 @@ function Option({ icon, title, hint, onClick, href, testid, busy }: { icon: Reac
 function Carry({ on, onChange, testid, disabled, children }: { on: boolean; onChange: (v: boolean) => void; testid: string; disabled?: boolean; children: React.ReactNode }) {
   return (
     <label className={cn("flex items-center gap-2.5 px-1 text-caption text-muted", disabled ? "cursor-not-allowed" : "cursor-pointer")}>
-      <Switch.Root checked={on} onCheckedChange={onChange} disabled={disabled} data-testid={testid} className="relative flex h-4 w-7 shrink-0 rounded-full bg-line-strong p-0.5 transition-colors data-checked:bg-accent data-disabled:opacity-50">
-        <Switch.Thumb className="size-3 rounded-full bg-raised transition-transform data-checked:translate-x-3" />
+      <Switch.Root checked={on} onCheckedChange={onChange} disabled={disabled} data-testid={testid} className="k-switch">
+        <Switch.Thumb className="k-switch-thumb" />
       </Switch.Root>
       <span>{children}</span>
     </label>

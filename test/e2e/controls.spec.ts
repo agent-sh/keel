@@ -53,7 +53,7 @@ test("no control is under 24 px and icon buttons keep to the four heights", asyn
   // its switch, the model chooser's pin and hide, the session panel's switches, a settings page.
   const small = () => page.evaluate(() => {
     const out: string[] = [];
-    for (const el of document.querySelectorAll<HTMLElement>("button, [role=button], [role=tab], [role=radio], [role=switch]")) {
+    for (const el of document.querySelectorAll<HTMLElement>("button, [role=button], [role=tab], [role=radio], [role=switch], [role=checkbox]")) {
       const r = el.getBoundingClientRect();
       if (!r.width || !r.height || r.bottom < 0 || r.top > innerHeight || getComputedStyle(el).visibility === "hidden") continue;
       if (r.width < 24 || r.height < 24) out.push(`${Math.round(r.width)}x${Math.round(r.height)} ${el.getAttribute("data-testid") ?? (el.getAttribute("aria-label") ?? el.textContent ?? "").trim().slice(0, 30)}`);
@@ -85,6 +85,18 @@ test("no control is under 24 px and icon buttons keep to the four heights", asyn
   }
   console.log(Object.entries(seen).map(([k, v]) => `${k}: ${v.length} under 24 px ${v.slice(0, 6).join(", ")}`).join("\n"));
   expect(seen).toEqual({ review: [], permissions: [], models: [], session: [], alerts: [], providers: [], machines: [] });
+  // Which alert goes where is a grid of marks, not a wall of switches.
+  await page.goto("/settings/alerts");
+  await page.getByTestId("alert-routes").waitFor();
+  expect(await page.getByTestId("alert-routes").getByRole("checkbox").count()).toBeGreaterThan(20);
+  expect(await page.getByTestId("alert-routes").getByRole("switch").count()).toBe(0);
+  await shoot(page, "controls-alert-routes");
+  // A switch's thumb keeps its color inside a side panel, where a card's surface is the page's paper.
+  await page.goto(`/s/${session.id}`);
+  await openPanel(page, "session");
+  const thumb = await page.getByTestId("pin-toggle").evaluate((el) => ({ thumb: getComputedStyle(el.firstElementChild!).backgroundColor, card: getComputedStyle(el.closest("[class*=border-line]") ?? el.parentElement!).backgroundColor }));
+  expect(thumb.thumb).not.toBe(thumb.card);
+  await shoot(page, "controls-session-switches");
 });
 
 // On a touch screen a segmented option is a full control tall, not the 26 px of a pointer.

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { auto, useAuto, type AlertSettings as Settings } from "../../lib/automation.ts";
 import { reportError } from "../../lib/store.ts";
 import { Card, Segmented, SettingRow } from "../Settings.tsx";
-import { Toggle } from "../surfaces/kit.tsx";
+import { Tick } from "../surfaces/kit.tsx";
 import { ALERT_LABEL, CHANNEL_NAME } from "./bits.tsx";
 
 const KINDS: (keyof Settings["routes"])[] = ["approval", "question", "finished", "failed", "limit", "loop_failed", "agent", "snooze_over", "regression", "refused"];
@@ -76,7 +76,7 @@ export default function AlertSettings() {
                 <td className="px-5 py-2.5">{ALERT_LABEL[k]}</td>
                 {channels.map((c) => (
                   <td key={c.id} className="px-3 py-2.5 text-center">
-                    <Toggle
+                    <Tick
                       testid={`route-${k}-${c.id}`}
                       on={settings.routes[k]?.includes(c.id) ?? false}
                       onChange={(on) => toggle(k, c.id, on)}

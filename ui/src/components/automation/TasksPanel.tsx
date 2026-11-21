@@ -92,7 +92,7 @@ function GoalCard({ g, sid }: { g: Goal; sid: string }) {
           )}
         </div>
       )}
-      {!open && <button type="button" onClick={() => setEdit(true)} className="mt-2 text-caption text-accent hover:underline">Set a new goal</button>}
+      {!open && <button type="button" onClick={() => setEdit(true)} className="k-link mt-2 text-caption text-accent hover:underline">Set a new goal</button>}
     </div>
   );
 }

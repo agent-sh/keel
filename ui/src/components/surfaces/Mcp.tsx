@@ -145,16 +145,16 @@ function ToolReads({ s, base, act }: { s: McpServerState; base: string; act: Act
       <div className="mt-1 flex flex-wrap items-center gap-x-3 text-micro text-faint">
         <span data-testid="mcp-reads-count">{current.length ? `${current.length} of ${s.tool_names.length} current tools count as reads` : "Every tool asks first"}</span>
         {hinted.length > 0 && (
-          <button type="button" data-testid="mcp-reads-hinted" onClick={() => put([...s.read_tools, ...hinted])} className="text-accent hover:underline">
+          <button type="button" data-testid="mcp-reads-hinted" onClick={() => put([...s.read_tools, ...hinted])} className="k-link text-accent hover:underline">
             Count the {hinted.length} it calls read-only as reads
           </button>
         )}
-        {reads.size > 0 && <button type="button" onClick={() => put([])} className="hover:text-fg hover:underline">Ask for all</button>}
+        {reads.size > 0 && <button type="button" onClick={() => put([])} className="k-link hover:text-fg hover:underline">Ask for all</button>}
       </div>
       {gone.length > 0 && (
         <div className="mt-1 flex flex-wrap items-center gap-x-2 text-micro text-faint" data-testid="mcp-reads-gone">
           <span>Marked as reads, no longer offered: <span className="font-mono">{gone.join(", ")}</span></span>
-          <button type="button" onClick={() => put(current)} className="hover:text-fg hover:underline">Forget them</button>
+          <button type="button" onClick={() => put(current)} className="k-link hover:text-fg hover:underline">Forget them</button>
         </div>
       )}
     </div>
@@ -215,7 +215,7 @@ function ServerContents({ s, base }: { s: McpServerState; base: string }) {
       {h.items.map((r) => (
         <li key={r.uri ?? r.uriTemplate} className="flex items-baseline gap-2 text-caption">
           {r.uri ? (
-            <button type="button" data-testid="mcp-resource" onClick={() => read(r.uri!)} className="font-mono text-accent hover:underline">{r.uri}</button>
+            <button type="button" data-testid="mcp-resource" onClick={() => read(r.uri!)} className="k-link font-mono text-accent hover:underline">{r.uri}</button>
           ) : (
             <span data-testid="mcp-resource-template" className="font-mono text-muted" title="A template: the model fills it in">{r.uriTemplate}</span>
           )}
@@ -225,11 +225,11 @@ function ServerContents({ s, base }: { s: McpServerState; base: string }) {
       {h.error && (
         <li className="flex items-baseline gap-2 text-caption text-danger" data-testid="mcp-list-failed" data-list={list}>
           {h.next !== undefined ? `Listing more ${label} failed` : `Listing the ${label} failed`}: {h.error}
-          <button type="button" data-testid="mcp-list-retry" onClick={() => (h.next !== undefined ? more(list, h.next) : loadLists())} className="text-muted hover:text-fg hover:underline">Retry</button>
+          <button type="button" data-testid="mcp-list-retry" onClick={() => (h.next !== undefined ? more(list, h.next) : loadLists())} className="k-link text-muted hover:text-fg hover:underline">Retry</button>
         </li>
       )}
       {h.next !== undefined && !h.error && (
-        <li><button type="button" data-testid="mcp-load-more" data-list={list} onClick={() => more(list, h.next!)} className="text-caption text-muted hover:text-fg hover:underline">More may exist: load more {label}</button></li>
+        <li><button type="button" data-testid="mcp-load-more" data-list={list} onClick={() => more(list, h.next!)} className="k-link text-caption text-muted hover:text-fg hover:underline">More may exist: load more {label}</button></li>
       )}
     </>
   );
@@ -274,7 +274,7 @@ function ServerContents({ s, base }: { s: McpServerState; base: string }) {
             <div className="flex items-center justify-between gap-2 border-b border-line px-2 py-1">
               <span className="truncate font-mono text-micro text-muted">{shown.title}</span>
               {stale && (
-                <button type="button" data-testid="mcp-resource-stale" onClick={() => read(shown.uri!)} className="ml-auto text-micro text-warn hover:underline">Changed on the server: read again</button>
+                <button type="button" data-testid="mcp-resource-stale" onClick={() => read(shown.uri!)} className="k-link ml-auto text-micro text-warn hover:underline">Changed on the server: read again</button>
               )}
               <IconButton title="Close" onClick={() => setShown(null)}><X className="size-3.5" /></IconButton>
             </div>

@@ -58,6 +58,9 @@
   /* Violet as a word: the fill is 4.2:1 on its own tint over the rail (the Need tally). */
   --st-need-ink: oklch(0.46 0.2 295);
   --code-bg: oklch(0.95 0.005 250);
+  /* A switch's thumb: one color on every surface, never the card's own. */
+  --switch-thumb: oklch(0.995 0.001 250);
+  --switch-thumb-on: oklch(0.995 0.001 250);
   /* Solid: at 60% the violet was under 3:1 on the grey rail and panels. */
   --ring: oklch(0.52 0.22 295);
   --overlay: oklch(0.22 0.02 255 / 0.32);
@@ -121,6 +124,9 @@
   --ok-ink: var(--ok);
   --st-need-ink: var(--st-need);
   --code-bg: oklch(0.18 0.015 255);
+  /* At night the track is ink when on, so the thumb turns with it: light when off, dark when on. */
+  --switch-thumb: oklch(0.93 0.008 250);
+  --switch-thumb-on: oklch(0.205 0.016 255);
   --ring: oklch(0.74 0.17 295 / 0.65);
   --overlay: oklch(0.08 0.01 255 / 0.55);
   --shadow-1: 0 1px 0 oklch(0 0 0 / 0.2);

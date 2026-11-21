@@ -439,8 +439,8 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
                 <input data-testid="import-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Title, folder or prompt" className="h-8 min-w-0 flex-1 bg-transparent text-ui outline-none placeholder:text-faint" />
                 <label className="flex shrink-0 items-center gap-1.5 text-caption text-faint" title="Also subagents and sessions nobody sat at (headless, loops)">
                   All
-                  <Switch.Root checked={all} onCheckedChange={setAll} className="relative flex h-4 w-7 rounded-full bg-line-strong p-0.5 transition-colors data-checked:bg-accent">
-                    <Switch.Thumb className="size-3 rounded-full bg-raised transition-transform data-checked:translate-x-3" />
+                  <Switch.Root checked={all} onCheckedChange={setAll} className="k-switch">
+                    <Switch.Thumb className="k-switch-thumb" />
                   </Switch.Root>
                 </label>
               </div>
@@ -466,7 +466,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
                     {fails.map((f) => (
                       <li key={f.item.harness + f.item.id + (f.item.path ?? "")} className="px-3 py-1.5" data-testid="import-fail">
                         <div className="truncate font-medium text-fg">{f.item.title || f.item.id}</div>
-                        <div className="text-muted">{f.error}{f.reason === "no_model" && <button type="button" onClick={() => { onOpenChange(false); navigate({ name: "settings", section: "providers" }); }} className="ml-1 text-accent hover:underline">Set up a provider</button>}</div>
+                        <div className="text-muted">{f.error}{f.reason === "no_model" && <button type="button" onClick={() => { onOpenChange(false); navigate({ name: "settings", section: "providers" }); }} className="k-link ml-1 text-accent hover:underline">Set up a provider</button>}</div>
                       </li>
                     ))}
                   </ul>

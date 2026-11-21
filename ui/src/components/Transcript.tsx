@@ -121,7 +121,7 @@ function UserMessage({ e, s, vs }: { e: StoredEvent; s: Session; vs: StoredEvent
         <div className="k-user-words relative max-w-[min(85%,40rem)] rounded-xl rounded-br-sm bg-accent-soft px-4 py-2.5 text-read leading-relaxed text-fg">
           <div className={cn("whitespace-pre-wrap break-words", long && !full && "max-h-72 overflow-hidden [mask-image:linear-gradient(to_bottom,black_70%,transparent)]")}>{text}</div>
           {long && (
-            <button type="button" onClick={() => setFull(!full)} className="mt-1 text-caption font-medium text-accent-ink hover:underline">
+            <button type="button" onClick={() => setFull(!full)} className="k-link mt-1 text-caption font-medium text-accent-ink hover:underline">
               {full ? "Show less" : "Show all"}
             </button>
           )}

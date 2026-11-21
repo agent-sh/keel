@@ -200,7 +200,7 @@ function ReviewCard({ r, sessionId, lit }: { r: Review; sessionId: string; lit: 
           </button>
           {err && <span className="ml-auto text-micro text-danger">{err}</span>}
           {gone && (
-            <button data-testid="findings-fix-session" disabled={pending} onClick={() => act("fix", [...picked], "session")} className="text-micro font-medium text-accent hover:underline">
+            <button data-testid="findings-fix-session" disabled={pending} onClick={() => act("fix", [...picked], "session")} className="k-link text-micro font-medium text-accent hover:underline">
               Send to this session's model instead
             </button>
           )}

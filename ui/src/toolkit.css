@@ -94,12 +94,22 @@
 .k-form-hint { font-size: var(--text-caption); color: var(--faint); }
 .k-form-err { font-size: var(--text-caption); color: var(--danger-ink); }
 
-/* The one switch: a track a full control tall, ink when on. It reads its state from
+/* A mark in a grid: the checkbox's box drawn on a button that is a full control to press. */
+.k-check { position: relative; display: inline-grid; place-items: center; width: var(--spacing-ctl-sm); height: var(--spacing-ctl-sm); border-radius: var(--radius-sm); vertical-align: middle; }
+.k-check::before { content: ""; width: 0.9375rem; height: 0.9375rem; border: 1.5px solid var(--line-strong); border-radius: 0.1875rem; background: var(--bg); transition: background 0.12s, border-color 0.12s; }
+.k-check::after { content: ""; position: absolute; width: 0.5625rem; height: 0.5625rem; background: var(--accent-fg); transform: scale(0); transition: transform 0.1s; clip-path: polygon(13% 50%, 0 64%, 37% 100%, 100% 24%, 86% 11%, 36% 71%); }
+.k-check:hover::before { border-color: var(--muted); }
+.k-check[aria-checked="true"]::before { background: var(--accent); border-color: var(--accent); }
+.k-check[aria-checked="true"]::after { transform: scale(1); }
+.k-check:focus-visible { outline: 2px solid var(--ring); outline-offset: 0; }
+
+/* The one switch: a track a full control tall, ink when on. Its thumb keeps one color on
+   every surface (a surface's body gives "raised" another meaning). It reads its state from
    the attribute its element has (Base UI's data-checked, or aria-checked on a plain button). */
 .k-switch { position: relative; display: inline-flex; align-items: center; vertical-align: middle; flex-shrink: 0; width: 2.625rem; height: var(--spacing-ctl-sm); padding: 0.1875rem; border-radius: var(--spacing-ctl-sm); background: var(--line-strong); transition: background-color 150ms var(--ease-out); }
 .k-switch:is([data-checked], [aria-checked="true"]) { background: var(--fg); }
-.k-switch-thumb { display: block; width: 1.125rem; height: 1.125rem; border-radius: 50%; background: var(--raised); box-shadow: var(--shadow-1); transition: transform 150ms var(--ease-out); }
-.k-switch:is([data-checked], [aria-checked="true"]) .k-switch-thumb { transform: translateX(1.125rem); }
+.k-switch-thumb { display: block; width: 1.125rem; height: 1.125rem; border-radius: 50%; background: var(--switch-thumb); box-shadow: var(--shadow-1); transition: transform 150ms var(--ease-out); }
+.k-switch:is([data-checked], [aria-checked="true"]) .k-switch-thumb { transform: translateX(1.125rem); background: var(--switch-thumb-on); }
 .k-switch:is(:disabled, [data-disabled]) { opacity: 0.5; }
 .k-switch:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 
