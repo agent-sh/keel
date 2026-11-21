@@ -21,7 +21,11 @@ test("alerts: snooze per session and global, activity list", async ({ page, requ
   await page.keyboard.press("Escape");
 
   // Away from the session: a routine alert is put away read, a failed turn comes through and ends the snooze.
+  // (The daemon drops a routine finish of a session a page is watching, and a page says where it is
+  // once a second: the alert is raised after this page has said it left the session.)
+  const left = page.waitForRequest((r) => r.url().endsWith("/api/presence") && r.postDataJSON()?.session_id == null);
   await page.goto("/");
+  await (await left).response();
   await request.post("/api/alerts/test", { data: { kind: "finished", session_id: session.id } });
   await page.getByTestId("inbox-button").click();
   // (This session's rows: a turn another spec left running may finish meanwhile and stand above them.)
