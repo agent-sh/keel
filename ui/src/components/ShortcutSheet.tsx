@@ -13,7 +13,6 @@ const fixed = (enterSends: boolean): [string, string, string][] => [
   ["Message box", "Queue for after the turn", QUEUE_KEYS],
   ["Message box", "Commands", "/"],
   ["Message box", "Mention a file", "@"],
-  ["Conversation", "Go to the end and follow", "end"],
 ];
 
 export function ShortcutList() {

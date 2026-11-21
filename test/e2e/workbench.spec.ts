@@ -451,7 +451,7 @@ test("the message box names its suggestions and the active one", async ({ page, 
 
 // The shortcut sheet names the keys that send and that make a new line as
 // the "Send with" setting has them now, not as they are by default.
-test("the shortcut sheet follows the Send with setting", async ({ page }) => {
+test("the shortcut sheet follows the Send with setting", async ({ page, request }) => {
   await page.goto("/settings/general");
   const sendWith = page.getByRole("radiogroup", { name: "Send with" });
   const sheet = page.getByTestId("shortcuts");
@@ -479,6 +479,22 @@ test("the shortcut sheet follows the Send with setting", async ({ page }) => {
   await expect(keys("Send")).toHaveText(["Enter"]);
   await expect(keys("New line")).toHaveText(["Shift", "Enter"]);
   await close();
+
+  // In a session the conversation's keys are listed once each, together.
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  if (!models.includes("scripted:stand-in")) return;
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Sheet in a session" } })).json();
+  try {
+    await page.goto(`/s/${session.id}`);
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await open();
+    await expect(sheet.locator("div.h-8", { hasText: "Go to the end and follow" })).toHaveCount(1);
+    const conversation = sheet.locator("section", { has: page.getByRole("heading", { name: "Conversation" }) });
+    await expect(conversation.locator("div.h-8 > span:first-child")).toHaveText(["Go to the end and follow", "Previous prompt", "Next prompt", "Focus the message box"]);
+    await conversation.scrollIntoViewIfNeeded();
+    await shoot(page, "wb-17b-shortcuts-conversation");
+    await close();
+  } finally { await request.delete(`/api/sessions/${session.id}`); }
 });
 
 // Panels search: Enter opens the result at the top of the list as it is
