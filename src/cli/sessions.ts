@@ -64,7 +64,8 @@ const sessions = command("sessions", SESSIONS_USAGE, {
   const list = all.filter((s) => (v.subagents || !s.parent_id) && (!cwd || s.workspace === cwd)).sort((a, b) => b.updated - a.updated).slice(0, limit);
   if (v.ids) return (list.forEach((s) => console.log(s.id)), EXIT.ok);
   // The state is the daemon's one answer for each session, the same the pages and the session tools read.
-  const { states } = await c.get<{ states: Record<string, SessionState> }>("/api/state");
+  // (A daemon from before the route, still running after an upgrade or reached with --url, has no states: the phase is shown.)
+  const { states } = await c.get<{ states: Record<string, SessionState> }>("/api/state").catch((e) => { if ((e as { status?: number }).status === 404) return { states: {} as Record<string, SessionState> }; throw e; });
   if (v.json) return (printJson(list.map((s) => (states[s.id] ? { ...s, state: states[s.id] } : s))), EXIT.ok);
   if (!list.length) return (console.error("no sessions"), EXIT.ok);
   const now = Date.now();

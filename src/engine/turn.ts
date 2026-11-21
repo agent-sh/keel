@@ -556,6 +556,13 @@ export class Engine {
     return this.outputs.get(id);
   }
 
+  // When the provider last sent anything on the running request (output or a
+  // keep-alive): a model that thinks without showing it is still alive.
+  private wires = new Map<string, Wire>();
+  aliveOf(id: string): number | undefined {
+    return this.wires.get(id)?.last_ms;
+  }
+
   private setPhase(id: string, phase: Session["phase"]) {
     const s = this.store.updateSession(id, { phase });
     this.bus.emit({ t: "session", session: s });
@@ -1116,6 +1123,7 @@ export class Engine {
       try {
         const tap: Wire = {};
         wireOf.set(req, tap);
+        if (!quiet) this.wires.set(id, tap);
         const res = await wireScope.run(tap, () => st.provider.stream({ ...req, onHeaders }, (d) => {
           if ((first || silent) && !quiet) { first = silent = false; this.status(id, { kind: "idle" }); }
           last = Date.now();
@@ -1127,7 +1135,7 @@ export class Engine {
           if (!quiet) this.bus.emit({ t: "delta", session_id: id, ...d });
         }));
         clearInterval(hush);
-        if (!quiet) this.outputs.delete(id);
+        if (!quiet) { this.outputs.delete(id); this.wires.delete(id); }
         if (!quiet || attempt) this.status(id, { kind: "idle" });
         this.measure(id, (h) => h.requestDone?.(session, req, res));
         this.boundThinking(id, res);
@@ -1135,7 +1143,7 @@ export class Engine {
         return res;
       } catch (e) {
         clearInterval(hush);
-        if (!quiet) this.outputs.delete(id);
+        if (!quiet) { this.outputs.delete(id); this.wires.delete(id); }
         this.measure(id, (h) => h.requestFailed?.(session, req, e, signal.aborted));
         if (signal.aborted) throw abortError();
         // A route that cannot take deferred tools gets the search pair, once.

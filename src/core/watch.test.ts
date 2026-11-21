@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Session } from "./types.ts";
-import { askText, liveAgentCounts, stateOf, watchLabel, watchOf, watchWord, whyText } from "./watch.ts";
+import { askText, clockText, LIST_TIER, liveAgentCounts, span, stateLine, stateOf, WATCH_LABEL, watchLabel, watchOf, watchWord, whyText } from "./watch.ts";
 
 const s = (over: Partial<Session> = {}): Session => ({
   id: "p", title: "", model: "m", workspace: "/w", created: 0, updated: 0, phase: "idle", archived: false,
@@ -62,4 +62,49 @@ test("a running turn says what it does now, and a stream that went silent says f
   const stalled = stateOf(on, undefined, { status: { kind: "model", since: 60_000, model: "m", connected: 60_000, quiet: 60_000 }, turn: 1 });
   expect(stalled).toMatchObject({ watch: "work", why: "stalled", since: 60_000 });
   expect(whyText(stalled, 100_000)).toBe("The model is answering, no output for 40s");
+});
+
+test("a failure is not hidden by a wait still armed; a provider's wait that ends by itself is waiting", () => {
+  const failed = s({ settings: { failed_ms: 500, last_end: "error" } });
+  const timer = { kind: "timer", text: "poll the queue", since: 5, until: 900 };
+  // Billing failed while a timer is armed: Failed, with its class, not Waiting.
+  expect(stateOf(failed, undefined, { pending: [timer], failure: { cls: "quota", text: "HTTP 402: no credit", at: 500 } })).toEqual({ watch: "fail", agents: 0, why: "quota", cls: "quota", text: "HTTP 402: no credit", since: 500 });
+  expect(stateOf(failed, undefined, { pending: [timer] }).watch).toBe("fail");
+  // The provider asked for a long wait and the session continues by itself: waiting, until then.
+  const resumes = s({ settings: { failed_ms: 500, last_end: "error", continue_at: { at: 9000, after: "e1" } } as Session["settings"] });
+  expect(stateOf(resumes, undefined, { failure: { cls: "rate_limit", at: 500 } })).toEqual({ watch: "wait", agents: 0, why: "resume", text: "Continues by itself after the rate limit", until: 9000, cls: "rate_limit" });
+});
+
+test("a turn the model declined, cut at the output limit or stopped at its step budget is not done", () => {
+  expect(stateOf(s({ settings: { last_end: "refusal" } }), undefined)).toEqual({ watch: "declined", agents: 0, why: "refusal", text: "The model declined the turn" });
+  expect(stateOf(s({ settings: { last_end: "max_tokens" } }), undefined)).toEqual({ watch: "fail", agents: 0, why: "max_tokens", cls: "max_tokens", text: "Cut at the output limit" });
+  expect(stateOf(s({ settings: { last_end: "max_steps" } }), undefined)).toEqual({ watch: "stop", agents: 0, why: "max_steps", text: "Stopped at the step budget" });
+  // The same from the events of a loaded session.
+  const ended = (reason: string) => [{ kind: "user", data: {} }, { kind: "turn_start", data: {} }, { kind: "turn_end", data: { reason } }] as any;
+  expect(stateOf(s(), ended("refusal")).watch).toBe("declined");
+  expect(stateOf(s(), ended("max_tokens")).watch).toBe("fail");
+  expect(stateOf(s(), ended("end_turn")).watch).toBe("done");
+  // Declined is a failure under its own word: ranked and listed with the failed ones.
+  expect(WATCH_LABEL.declined).toBe("Declined");
+  expect(LIST_TIER.declined).toBe(LIST_TIER.fail);
+  expect(stateLine(stateOf(s({ settings: { last_end: "refusal" } }), undefined))).toBe("declined: The model declined the turn");
+});
+
+test("a turn a restart cut that was not continued needs the owner; a stopped session says what its queue holds", () => {
+  const cut = s({ settings: { last_end: "restart" } });
+  expect(stateOf(cut, undefined).watch).toBe("resume");
+  expect(stateOf(cut, undefined, { held: { text: "continued three times in a row", since: 70 } })).toEqual({ watch: "need", agents: 0, why: "resume", text: "Continue the turn a restart cut", asks: 1, since: 70 });
+  const stopped = s({ settings: { last_end: "interrupted" } });
+  expect(stateOf(stopped, undefined, { queue: { held: true, queued: 2 } })).toEqual({ watch: "stop", agents: 0, why: "held", text: "2 queued prompts wait until you resume" });
+  expect(stateOf(stopped, undefined, { queue: { held: true, queued: 0 }, pending: [{ kind: "timer", until: 5 }] })).toEqual({ watch: "stop", agents: 0 });
+});
+
+test("one clock: a retry says when it goes again, a connected model is answering, minutes round as the timeline's do", () => {
+  const on = s({ phase: "working" });
+  expect(stateOf(on, undefined, { status: { kind: "retry", attempt: 1, max: 9, at: 4000, message: "429" }, turn: 1 })).toEqual({ watch: "work", agents: 0, why: "retry", text: "Retry 1 of 9 of the model request", since: 1, until: 4000 });
+  expect(stateOf(on, undefined, { status: { kind: "model", since: 9, model: "m", connected: 10 }, turn: 1 }).text).toBe("The model is answering");
+  expect([span(59_000), span(90_000), span(41.6 * 60_000), span(3_600_000), span(26 * 3_600_000)]).toEqual(["59s", "2m", "42m", "1h 00m", "1d"]);
+  expect(clockText({ watch: "wait", agents: 0, until: 16 * 60_000 }, 60_000)).toBe("due in 15m");
+  // Agents that run with a reason of their own (a goal's check) say it.
+  expect(stateOf(s(), undefined, { agents: 1, running: "Checking that the goal is met" })).toEqual({ watch: "work", agents: 1, why: "agents", text: "Checking that the goal is met" });
 });

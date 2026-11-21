@@ -16,6 +16,7 @@ import { answer, closedQuestions, pendingQuestions, type Answers } from "../../t
 import * as alerts from "../../automation/alerts.ts";
 import * as loops from "../../automation/loops.ts";
 import { sessionState } from "../../automation/state.ts";
+import { WATCH_LABEL } from "../../core/watch.ts";
 import { lineage } from "../../core/tree.ts";
 import * as push from "./push.ts";
 import {
@@ -301,26 +302,29 @@ export function mobileApi(ctx: MobileCtx) {
   // How the last turn on the shown branch ended, walking back from the head.
   // A failed turn says why, in a line.
   function status(s: Session): { status: ChatStatus; failure?: string; agents?: number } {
-    const st = sessionState(s, { from: { store, engine } });
+    // The end of the shown branch, back to the owner's last prompt: how its last turn ended.
+    const tail: StoredEvent[] = [];
+    for (let id = s.head, i = 0; id && i < 200; i++) {
+      const e = store.event(id);
+      if (!e) break;
+      tail.unshift(e);
+      if (e.kind === "user" && !originOf(e, () => undefined, () => null)) break;
+      id = e.parent;
+    }
+    const st = sessionState(s, { from: { store, engine }, events: tail });
     const agents = st.agents ? { agents: st.agents } : {};
     // The phone's words for the one state: what waits on the owner (a card, a question, a plan),
     // then what moves by itself (a running turn, agents, a wait that will wake it).
     if (st.watch === "need") return { status: "needs_you", ...agents };
-    if (st.watch === "work" || st.watch === "wait" || engine.isRunning(s.id)) return { status: "working", ...agents };
-    let id = s.head;
-    for (let i = 0; id && i < 200; i++) {
-      const e = store.event(id);
-      if (!e) break;
-      if (e.kind === "error") return { status: "failed", failure: String(e.data.message ?? "the turn failed").split("\n")[0]!.slice(0, 200) };
-      if (e.kind === "turn_end") {
-        if (e.data.reason === "interrupted") return { status: "stopped" };
-        if (NORMAL_STOP.has(e.data.reason)) return { status: "done" };
-        return { status: "failed", failure: OUTCOME[e.data.reason] ?? `ended: ${e.data.reason}` };
-      }
-      if (e.kind === "user" && !originOf(e, () => undefined, () => null)) return { status: "idle" };
-      id = e.parent;
+    // A turn a restart cut is about to go on: it moves by itself too.
+    if (st.watch === "work" || st.watch === "wait" || st.watch === "resume" || engine.isRunning(s.id)) return { status: "working", ...agents };
+    // How the last turn ended is the same fact the page shows: failed or declined with the reason, stopped, done.
+    if (st.watch === "fail" || st.watch === "declined") {
+      const said = String(tail.findLast((e) => e.kind === "error")?.data.message ?? "").split("\n")[0];
+      return { status: "failed", failure: (st.text || said || WATCH_LABEL[st.watch]).slice(0, 200) };
     }
-    return { status: "idle" };
+    if (st.watch === "stop") return { status: "stopped" };
+    return { status: st.watch === "done" ? "done" : "idle" };
   }
   const chatFull = (s: Session, u = unread()) => chatOf(s, lastSeq(s.id), { unread: u[s.id] ?? 0, preview: preview(s), ...status(s) });
 

@@ -15,6 +15,7 @@ export type Wire = {
   headers_ms?: number;
   events?: number;
   bytes_in?: number;
+  last_ms?: number; // when the last bytes of the answer arrived (output or a keep-alive)
   last_event?: string;
   error_body?: string;
   resent_after_auth?: boolean;

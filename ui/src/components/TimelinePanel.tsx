@@ -39,6 +39,10 @@ const STATE: Record<TimelineNow["state"], { word: string; dot: string }> = {
   working: { word: "Working", dot: "bg-st-work animate-pulse-dot" },
   owner: { word: "Needs you", dot: "bg-st-need" },
   waiting: { word: "Waiting", dot: "border-2 border-muted" },
+  failed: { word: "Failed", dot: "bg-st-fail" },
+  declined: { word: "Declined", dot: "bg-st-fail" },
+  stopped: { word: "Stopped", dot: "border-2 border-line-strong" },
+  resume: { word: "Waiting to resume", dot: "border-2 border-muted" },
   idle: { word: "Idle", dot: "border-2 border-line-strong" },
 };
 const ink = (tone: TimelineRow["tone"], plain: string) => (tone === "failed" ? "text-st-fail" : tone === "owner" ? "text-st-need" : tone === "live" ? "text-st-work" : plain);
@@ -412,7 +416,7 @@ function Now({ now, session, onTurn }: { now: TimelineNow | null; session: strin
       <h3 className="flex items-center gap-2">
         <span className="grid w-14 place-items-end pr-0.5 k-face-figure text-micro text-muted">Now</span>
         <span className="grid w-6 place-items-center"><span className={cn("size-2 rounded-full", st.dot)} /></span>
-        <span className={cn("k-face-state text-base font-semibold tracking-tight", now.state === "owner" && "text-st-need")} data-testid="timeline-state">{st.word}</span>
+        <span className={cn("k-face-state text-base font-semibold tracking-tight", now.state === "owner" && "text-st-need", (now.state === "failed" || now.state === "declined") && "text-st-fail")} data-testid="timeline-state">{st.word}</span>
       </h3>
       <ul className="mt-1 flex flex-col">
         {now.lines.map((l) => {

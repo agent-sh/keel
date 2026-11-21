@@ -167,7 +167,7 @@ async function* stream(o: StreamOpts, guard: ReturnType<typeof idleGuard>): Asyn
   try {
     for await (const chunk of chunks(res.body!)) {
       guard.touch();
-      if (w) w.bytes_in = (w.bytes_in ?? 0) + chunk.length;
+      if (w) { w.bytes_in = (w.bytes_in ?? 0) + chunk.length; w.last_ms = Date.now(); }
       for (const ev of dec.push(chunk)) {
         if (w) { w.events = (w.events ?? 0) + 1; w.last_event = ev.event ?? /"type"\s*:\s*"([^"]{1,60})"/.exec(ev.data.slice(0, 200))?.[1]; }
         yield ev;

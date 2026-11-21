@@ -170,6 +170,19 @@ test("now: what waits on the owner first, then what runs, then what is waited on
   // The word follows the session's one state where that says more.
   expect(nowLines({ ...quiet, watch: "wait" }).state).toBe("waiting");
   expect(nowLines({ ...quiet, turn: { id: "t1", ts: 1, steps: 1, status: { kind: "idle" } }, watch: "need" }).state).toBe("owner");
+  // The word is the session's state: a stopped session is stopped whatever waits under it, and a loop or a held queue is a line, not a word.
+  expect(nowLines({ ...quiet, watch: "stop", waits: [{ id: "w", kind: "timer", created: 1, deadline: 100_000 + 11 * 60_000 + 60_000 }], queue: { queued: 1, steers: 0, held: true, owed: false } }).state).toBe("stopped");
+  expect(nowLines({ ...quiet, watch: "done", loops: [{ id: "l", name: "Daily", next_ms: 200_000 }] })).toMatchObject({ state: "idle", lines: [{ kind: "loop" }] });
+  expect(nowLines({ ...quiet, watch: "fail", waits: [{ id: "w", kind: "timer", created: 1, deadline: 200_000 }] }).state).toBe("failed");
+  expect(nowLines({ ...quiet, watch: "declined" }).state).toBe("declined");
+  expect(nowLines({ ...quiet, watch: "resume" }).state).toBe("resume");
+  // One clock for a timer: it is due at its wake time, a minute before its deadline.
+  const timed = nowLines({ ...quiet, waits: [{ id: "w", kind: "timer", created: 40_000, deadline: 100_000 + 15 * 60_000 + 60_000 }] });
+  expect(timed.lines[0]).toMatchObject({ until: 100_000 + 15 * 60_000 });
+  expect(timelineText({ session_id: "s", as_of: 100_000, now: timed, rows: [], next: null } as any)).toContain("Waits on a timer, for 1 min, due in 15 min");
+  // A line that says how long a silence has lasted is not given the turn's time after it.
+  const silent = nowLines({ ...quiet, ts: 100_000, turn: { id: "t1", ts: 40_000, steps: 0, status: { kind: "model", since: 79_000, model: "m", connected: 79_000, quiet: 79_000 } } });
+  expect(timelineText({ session_id: "s", as_of: 100_000, now: silent, rows: [], next: null } as any).split("\n")[2]).toMatch(/no output for 21 s  \[turn=t1\]$/);
   // A parked agent: what it waits for, and until when.
   const parked = nowLines({ ...quiet, agents: [{ id: "a1", session_id: "c1", title: "Scout", status: "waiting", created: 40_000, wait: { kind: "timer", until: 100_000 + 42 * 60_000 } }, { id: "a2", session_id: "c2", title: "Other", status: "waiting", created: 40_000 }] });
   expect(parked.lines.map((l) => l.text)).toEqual(['Agent "Scout" is waiting on a timer', 'Agent "Other" is waiting on a wake of its own']);

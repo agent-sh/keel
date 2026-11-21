@@ -116,12 +116,14 @@ const VERB: Partial<Record<ToolKind, string>> = {
 export function toolLine(name: string, input: any, cwd?: string): string {
   const k = toolKind(name);
   const arg =
-    k === "shell" ? input.cmd ?? input.command ?? input.description
+    k === "shell" ? input.cmd ?? input.command
     : k === "read" || k === "edit" || k === "write" ? shortPath(input.file_path ?? "", cwd)
     : k === "search" || k === "glob" ? input.pattern
     : k === "list" ? shortPath(input.dir_path ?? input.path ?? "", cwd)
     : k === "web" ? input.query
     : k === "fetch" ? input.url
     : k === "ask" ? "" : name;
+  // A command the model described reads by its description: what it is for, not how it is spelled.
+  if (k === "shell" && typeof input.description === "string" && input.description.trim()) return input.description.trim();
   return [VERB[k] ?? "Using", arg].filter(Boolean).join(" ");
 }

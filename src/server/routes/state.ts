@@ -12,23 +12,30 @@
 //   "is anything stuck": the running turns whose step has made no progress
 //   for too long (src/core/stuck.ts), agents' included, longest first.
 //   `after` sets the limit for a model and a tool alike; format=text is the
-//   same answer a line an item.
+//   same answer a line an item. Without `after` the limits are the owner's:
+//   the `stuck` section of the daemon settings (model_s, tool_s; 120 and 600).
 import type { Frame } from "../../core/types.ts";
 import { STUCK_AFTER, stuckOf, stuckText, type After, type StuckItem } from "../../core/stuck.ts";
 import type { SessionState } from "../../core/watch.ts";
-import { lens, sessionState, type Lens } from "../../automation/state.ts";
+import { registerSettings } from "../../admin/settings.ts";
+import { factsOf, lens, progressOf, sessionState, stuckAfter, type Lens } from "../../automation/state.ts";
 import type { Deps, RouteModule } from "../app.ts";
 
 // Changes that arrive together (a turn ending, its card closing) are read once.
 const SETTLE_MS = 25;
-// What no frame tells (a background command ending) is caught within this.
+// What no frame tells (a background command ending, a step passing its limit) is caught within this.
 const SWEEP_MS = 5000;
+// A working session's step changes many times a second (one tool call after
+// another). Its row is read at a glance, so a change from one step to the next
+// is told at most this often; a change of the word itself is told at once.
+const STEP_MS = 600;
 
 export class StateBoard {
   private last = new Map<string, string>();
   private dirty = new Set<string>();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private asking = new Set<string>();
+  private sent = new Map<string, { at: number; watch: string }>();
 
   constructor(private deps: Pick<Deps, "store" | "bus" | "engine">) {}
 
@@ -37,7 +44,8 @@ export class StateBoard {
   // One session's state as told now, without its words.
   read(id: string, l: Lens = lens(this.from())): SessionState | null {
     const s = this.deps.store.session(id);
-    if (!s) return null;
+    // An archived session is told to no page: its row is the archive's.
+    if (!s || s.archived) return null;
     const { label: _l, word: _w, ...st } = sessionState(s, { lens: l });
     return st;
   }
@@ -54,12 +62,12 @@ export class StateBoard {
   }
 
   // The steps that have made no progress for too long, the longest first.
-  stuck(after: After = STUCK_AFTER, now = Date.now()): StuckItem[] {
+  stuck(after: After = stuckAfter(), now = Date.now()): StuckItem[] {
     const l = lens(this.from());
     const out: StuckItem[] = [];
     for (const s of this.deps.store.sessions()) {
       if (!this.deps.engine.isRunning(s.id)) continue;
-      const hit = stuckOf(this.read(s.id, l) ?? undefined, now, after);
+      const hit = stuckOf(progressOf(s, l, factsOf(s, l)), now, after);
       if (!hit) continue;
       const parent = s.parent_id ? this.deps.store.session(s.parent_id) : undefined;
       out.push({ ...hit, session_id: s.id, title: s.title, agent: !!s.parent_id, ...(parent ? { parent_id: parent.id, parent_title: parent.title } : {}), elapsed_ms: now - hit.since });
@@ -83,14 +91,25 @@ export class StateBoard {
     const ids = [...this.dirty];
     this.dirty.clear();
     const l = lens(this.from());
+    const at = Date.now();
+    let again = Infinity;
     for (const id of ids) {
       const st = this.read(id, l);
       if (!st) { this.gone(id); continue; }
       const now = JSON.stringify(st);
       if (this.last.get(id) === now) continue;
+      // One step after another inside a working turn: told when the last telling is old enough.
+      const told = this.sent.get(id);
+      if (told && told.watch === "work" && st.watch === "work" && at - told.at < STEP_MS) {
+        this.dirty.add(id);
+        again = Math.min(again, told.at + STEP_MS - at);
+        continue;
+      }
       this.last.set(id, now);
+      this.sent.set(id, { at, watch: st.watch });
       this.deps.bus.emit({ t: "feature", name: "state", session_id: id, data: st });
     }
+    if (this.dirty.size) this.timer ??= setTimeout(() => this.flush(), Math.max(SETTLE_MS, again));
   }
 
   onFrame(f: Frame) {
@@ -112,6 +131,7 @@ export class StateBoard {
 
   private gone(id: string) {
     this.dirty.delete(id);
+    this.sent.delete(id);
     if (this.last.delete(id)) this.deps.bus.emit({ t: "feature", name: "state", session_id: id, data: null });
   }
 
@@ -126,7 +146,16 @@ export class StateBoard {
 
 export let board: StateBoard | undefined;
 
+const positive = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v > 0;
+
 export const stateRoutes: RouteModule = (deps) => {
+  // How long a step may go without progress before it is called stuck, in seconds (src/core/stuck.ts).
+  registerSettings("stuck", { model_s: STUCK_AFTER.model / 1000, tool_s: STUCK_AFTER.tool / 1000 }, (v) => (positive(v.model_s) && positive(v.tool_s) ? undefined : "model_s and tool_s are numbers of seconds above 0"));
+  // What the state reads on every change: the sessions under a session, and the cards that wait.
+  if (deps.store.columnExists("sessions", "parent_id")) deps.store.migrate("CREATE INDEX IF NOT EXISTS sessions_parent ON sessions(parent_id)");
+  if (deps.store.db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'approvals'").get()) {
+    deps.store.migrate("CREATE INDEX IF NOT EXISTS approvals_pending ON approvals(created, id) WHERE state = 'pending'");
+  }
   const b = (board = new StateBoard(deps));
   const g = globalThis as { __keelStateOff?: () => void; __keelStateSweep?: ReturnType<typeof setInterval> };
   g.__keelStateOff?.();
@@ -142,7 +171,7 @@ export const stateRoutes: RouteModule = (deps) => {
         const given = q.get("after");
         const secs = given === null ? undefined : Number(given);
         if (secs !== undefined && !(secs > 0)) return Response.json({ error: "after is a number of seconds above 0" }, { status: 400 });
-        const after = secs === undefined ? STUCK_AFTER : { model: secs * 1000, tool: secs * 1000 };
+        const after = secs === undefined ? stuckAfter() : { model: secs * 1000, tool: secs * 1000 };
         const now = Date.now();
         const items = b.stuck(after, now);
         if (q.get("format") === "text") return new Response(`${stuckText(items, after)}\n`, { headers: { "content-type": "text/plain; charset=utf-8" } });
