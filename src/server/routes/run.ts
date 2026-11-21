@@ -20,6 +20,7 @@ import { owedWake } from "../../automation/failures.ts";
 import * as waits from "../../automation/waits.ts";
 import { pendingQuestions } from "../../tools/interact.ts";
 import { jobsOf, running } from "../../tools/jobs.ts";
+import { fitPromptImages } from "../../engine/image-fit.ts";
 
 const SCHEMA = `CREATE TABLE IF NOT EXISTS cli_runs (key TEXT PRIMARY KEY, session_id TEXT NOT NULL, after_seq INTEGER NOT NULL, event_id TEXT, created INTEGER NOT NULL);`;
 
@@ -205,7 +206,7 @@ export const runRoutes: RouteModule = (deps) => {
         }
 
         const after_seq = lastSeq(deps, s.id);
-        const r = engine.send(s.id, text, { mode: b.mode, images: Array.isArray(b.images) ? b.images : [] });
+        const r = engine.send(s.id, text, { mode: b.mode, images: await fitPromptImages(b.images) });
         const event_id = "event" in r && r.event ? r.event.id : null;
         const queue_id = "queued" in r && r.queued ? r.queued.id : null;
         if (key) store.db.run("INSERT OR REPLACE INTO cli_runs (key, session_id, after_seq, event_id, created, fingerprint, queue_id) VALUES (?, ?, ?, ?, ?, ?, ?)", [key, s.id, after_seq, event_id, Date.now(), fingerprint, queue_id]);

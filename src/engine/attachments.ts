@@ -22,6 +22,7 @@ import { TEXT_INLINE, TEXT_MEDIA } from "./compact.ts";
 
 let root = "";
 export const setAttachmentsRoot = (dir: string) => void (root = join(dir, "attachments"));
+export const hasAttachmentsRoot = () => !!root;
 
 // The name the owner sees and the model reads: the file's own name in any
 // script, without path parts, control characters or quotes.
@@ -102,6 +103,8 @@ export function resolveAttachments(messages: Message[], info: Pick<ModelInfo, "p
       const a = b as AttachmentBlock;
       const path = attachmentPath(a.id);
       if (!path) return { type: "text", text: `[Attached file ${a.name} is no longer stored.]` };
+      // The original of an image stored scaled down: its path, for the model's tools.
+      if (a.scaled) return { type: "text", text: `[The image before this was scaled from ${a.scaled.from.join("x")} to ${a.scaled.to.join("x")} to fit the providers' image limits; the original is at ${path}.]` };
       const bytes = read(path);
       if (a.media_type === "application/pdf" && info.pdf) return { type: "document", media_type: a.media_type, data: bytes.toString("base64"), name: a.name };
       const t = a.media_type === "application/pdf" || a.size > TEXT_INLINE ? undefined : attachmentText(a, bytes);
@@ -110,6 +113,7 @@ export function resolveAttachments(messages: Message[], info: Pick<ModelInfo, "p
       // the note says support is unverified rather than missing.
       const why = a.media_type === "application/pdf"
         ? info.pdf === false ? `${info.name} does not read PDFs` : `PDF support of ${info.name} is unverified`
+        : /^image\//.test(a.media_type) ? "it is an image in a format the model is not sent; convert it to PNG or JPEG to look at it"
         : a.size > TEXT_INLINE ? "it is too long to inline" : t!.why;
       return { type: "text", text: `[Attached file ${a.name} (${a.media_type}, ${a.size} bytes) is saved at ${path}; it was not inlined because ${why}. Read it with your tools if it matters.]` };
     });

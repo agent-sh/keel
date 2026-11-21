@@ -9,7 +9,9 @@ export type TextBlock = { type: "text"; text: string; signature?: string; origin
 // `bind`: the fingerprint of what was sent before the block (src/providers/wires/binding.ts).
 export type ThinkingBlock = { type: "thinking"; thinking: string; signature?: string; origin?: string; opaque?: unknown; bind?: string };
 export type RedactedThinkingBlock = { type: "redacted_thinking"; data: string; bind?: string };
-export type ImageBlock = { type: "image"; media_type: string; data: string };
+// `path`: the file a tool read the image from, for the note about a scaled
+// image; never stored (src/engine/image-fit.ts).
+export type ImageBlock = { type: "image"; media_type: string; data: string; path?: string };
 export type ToolUseBlock = { type: "tool_use"; id: string; name: string; input: unknown; signature?: string; origin?: string };
 // A deferred tool a tool search loaded: on the Anthropic wire the provider puts
 // the tool's definition in place of the block (the cached prefix is unchanged);
@@ -27,7 +29,9 @@ export type AssistantBlock = TextBlock | ThinkingBlock | RedactedThinkingBlock |
 // It travels with the prompt among its image blocks and is resolved per model
 // just before a request: text inline, a PDF as a document where the model
 // reads PDFs, anything else as a note with the saved path.
-export type AttachmentBlock = { type: "attachment"; id: string; name: string; media_type: string; size: number; charset?: string };
+// `scaled`: the original of the image block before it, which was stored scaled
+// down (its pixel size then and now).
+export type AttachmentBlock = { type: "attachment"; id: string; name: string; media_type: string; size: number; charset?: string; scaled?: { from: [number, number]; to: [number, number] } };
 // A PDF as the provider reads it (resolved from an attachment, never stored).
 export type DocumentBlock = { type: "document"; media_type: string; data: string; name: string };
 // What a prompt carries besides its text (stored in the user event's `images`).
@@ -138,6 +142,8 @@ export type SessionSettings = {
   skill_mode?: string; // a skill kept on as standing instructions
   cache_long?: boolean; // an agent's request came after a pause near its short cache lifetime: it asks for the long one from then on
   drop_thinking?: boolean; // the provider refused this session's sent-back thinking once: "drop_block" from then on
+  image_edge?: number; // px: the image limit the provider stated when it refused a request; larger images are sent scaled to it
+  images_out?: string[]; // images (imageKey) the provider refused a request over: sent as a note from then on (src/engine/image-fit.ts)
   folder_id?: string;  // the owner's folder of sessions it is filed in (src/server/routes/session-folders.ts)
   project?: string;    // a project's id, or "none"; absent = the project that holds its folder (src/server/routes/projects.ts)
   helper?: boolean; // the owner's always-on helper conversation (src/helper/)

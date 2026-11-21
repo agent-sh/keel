@@ -57,6 +57,6 @@ export const promptsOf = (store: Store, sessionId: string, queueId: string) =>
   store.events(sessionId).filter((e) => e.kind === "user" && e.data.queue_id === queueId);
 
 // What the crash tests queue: words and an attachment the owner was told are queued.
-export const QUEUED = { text: "queued while the first turn ran", images: [{ type: "image" as const, media_type: "image/png", data: "iVBORw0KGgo=" }] };
+export const QUEUED = { text: "queued while the first turn ran", images: [{ type: "image" as const, media_type: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" }] };
 // What they send to an idle session.
 export const SENT = { text: "sent just before the daemon went down", images: QUEUED.images };

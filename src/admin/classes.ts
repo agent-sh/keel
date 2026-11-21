@@ -2,8 +2,10 @@
 // so failures can be counted per provider and model over time. A driver's own
 // classification (ProviderError.kind) wins; then the HTTP status; then words
 // of the message.
+import { imageRefusal } from "../providers/image-limits.ts";
+
 export const ERROR_CLASSES = [
-  "rate_limit", "overloaded", "server", "stream_drop", "context_overflow", "auth", "quota", "refusal", "invalid_request", "other",
+  "rate_limit", "overloaded", "server", "stream_drop", "context_overflow", "auth", "quota", "refusal", "image", "invalid_request", "other",
 ] as const;
 export type ErrorClass = (typeof ERROR_CLASSES)[number];
 
@@ -29,6 +31,9 @@ const WORDS: [RegExp, ErrorClass][] = [
 export function errorClass(e: unknown): ErrorClass | null {
   const err = e as any;
   if (!err || err.kind === "cancelled") return null;
+  // A request refused over one of its images (a size limit, a format, bytes
+  // the provider could not decode): told from the other invalid requests.
+  if (imageRefusal(e)) return "image";
   if (typeof err.kind === "string" && KIND[err.kind]) return KIND[err.kind]!;
   if (err.name === "AbortError" || err.name === "TimeoutError") return "stream_drop";
   const status = Number(err.status ?? err.statusCode ?? 0);

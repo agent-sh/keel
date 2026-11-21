@@ -29,6 +29,7 @@ import type { Deps, RouteModule } from "../app.ts";
 import { gate, presence } from "./permissions.ts";
 import { runMode } from "../../core/runmode.ts";
 import { allPendingQuestions } from "../../tools/interact.ts";
+import { fitPromptImages } from "../../engine/image-fit.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -466,7 +467,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
             const s = store.createSession({ model, workspace: ws, title: b.title });
             store.append(s.id, "note", { text: `Kept on ${f.name}: ${placed.reason}.` });
             bus.emit({ t: "session", session: store.session(s.id)! });
-            if (b.text || b.images?.length) engine.send(s.id, String(b.text ?? "").trim(), { images: b.images ?? [] });
+            if (b.text || b.images?.length) engine.send(s.id, String(b.text ?? "").trim(), { images: await fitPromptImages(b.images) });
             return json({ session: store.session(s.id), placed }, 201);
           }
           b.machine = placed.machine_id;
@@ -491,7 +492,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         const next = store.session(s.id)!;
         bus.emit({ t: "session", session: next });
         if (placed) store.append(s.id, "note", { text: `Placed on ${m.name} by ${placed.reason}.` });
-        if (b.text || b.images?.length) engine.send(s.id, String(b.text ?? "").trim(), { images: b.images ?? [] });
+        if (b.text || b.images?.length) engine.send(s.id, String(b.text ?? "").trim(), { images: await fitPromptImages(b.images) });
         return json({ session: store.session(s.id), placed }, 201);
       },
     },

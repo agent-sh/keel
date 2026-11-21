@@ -197,7 +197,7 @@ const view_image: Tool = {
     if (!/^image\/(png|jpeg|gif|webp)$/.test(type)) return fail(`\`${p}\` is not a PNG, JPEG, GIF or WebP image (${type})`);
     if (st.size > 20 * 1024 * 1024) return fail(`\`${p}\` is ${(st.size / 1048576).toFixed(0)} MB; resize it (e.g. magick) and view the copy`);
     ctx.seen.set(p, st.mtimeMs);
-    return { content: [{ type: "image", media_type: type, data: Buffer.from(await Bun.file(p).arrayBuffer()).toString("base64") }] };
+    return { content: [{ type: "image", media_type: type, data: Buffer.from(await Bun.file(p).arrayBuffer()).toString("base64"), path: p }] };
   },
 };
 

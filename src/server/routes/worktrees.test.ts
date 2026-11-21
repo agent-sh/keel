@@ -77,7 +77,7 @@ test("a worktree create sends the first message with its images", async () => {
   const providers = { defaultModel: async () => "m", resolve: async () => ({}) };
   const routes = worktreeRoutes({ store, bus, errors: new ErrorTracker(store, bus), providers, workspace: repo, engine: { isRunning: () => false, send: (...a: unknown[]) => void sent.push(a) } } as any) as any;
   const make = async (body: unknown) => (await (await routes["/api/worktrees"].POST(new Request("http://x/api/worktrees", { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" } }))).json()).session.id as string;
-  const image = { type: "image", media_type: "image/png", data: "AAAA" };
+  const image = { type: "image", media_type: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" };
   const both = await make({ workspace: repo, text: " look at this ", images: [image] });
   const alone = await make({ workspace: repo, title: "image only", images: [image] });
   expect(sent).toEqual([[both, "look at this", { images: [image] }], [alone, "", { images: [image] }]]);

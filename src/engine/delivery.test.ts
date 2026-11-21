@@ -10,7 +10,7 @@ import { promptsOf, QUEUED, rig, SENT, untilStopped } from "./delivery.fixture.t
 import { STALLED_MAX } from "./turn.ts";
 
 const scratch = (name: string) => mkdtempSync(join(process.env.TMPDIR ?? ".", `${name}-`));
-const image = { type: "image" as const, media_type: "image/png", data: "iVBORw0KGgo=" };
+const image = { type: "image" as const, media_type: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" };
 
 // A steer is the same row as a queued prompt with a mark on it: it carries the
 // branch it was written on, and the running turn takes it only on that branch.

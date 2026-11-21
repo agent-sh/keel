@@ -20,6 +20,7 @@ import {
   approvalMessage, canonicalMessage, checkAndClaim, loadSpki, PairLimiter, REPLAY_VERSION, requestSource, revokeMessage,
 } from "./sig.ts";
 import type { Device, MobileStore } from "./store.ts";
+import { fitPromptImages } from "../../engine/image-fit.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const err = (error: string, status: number) => json({ error }, status);
@@ -669,7 +670,7 @@ export function mobileApi(ctx: MobileCtx) {
         const page = chatMessages(s, new URL(req.url).searchParams);
         return page ? json(page) : err("that message is not on this chat's shown branch; reload the chat", 409);
       }),
-      POST: signed(withBody((req, dev, b) => {
+      POST: signed(withBody(async (req, dev, b) => {
         const text = String(b.text ?? b.caption ?? "").trim();
         // What the phone uploaded goes with the words, or nothing is sent.
         const refs: any[] = Array.isArray(b.attachments) ? b.attachments : [];
@@ -690,7 +691,7 @@ export function mobileApi(ctx: MobileCtx) {
           return err("This phone has no screen lock, so it can only prompt chats where every tool call asks", 403);
         // While a turn runs: steer (the default) joins it, queue waits for it.
         const mode = b.mode === "queue" ? "queue" : b.mode === "steer" ? "steer" : "send";
-        const r: any = engine.send(s.id, text, { mode, images });
+        const r: any = engine.send(s.id, text, { mode, images: await fitPromptImages(images) });
         if (r.event) return json({ message: toMsg(r.event, mobile.gseqOf(r.event.id)) });
         return json({ message: { id: r.queued.id, chat_id: s.id, role: "user", kind: r.steer ? "steer" : "queued", content: text, meta: {}, ts: secs(Date.now()), seq: 0 } });
       })),

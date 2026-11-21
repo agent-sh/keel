@@ -175,7 +175,7 @@ export function TokensView({ range }: { range: Range }) {
 
 const CLASS: Record<string, string> = {
   rate_limit: "Rate limited", overloaded: "Overloaded", server: "Server error", stream_drop: "Stream dropped", context_overflow: "Context overflow",
-  auth: "Sign-in or key refused", quota: "Quota or billing", refusal: "Refused", invalid_request: "Request refused as invalid", other: "Other",
+  auth: "Sign-in or key refused", quota: "Quota or billing", refusal: "Refused", image: "Image refused", invalid_request: "Request refused as invalid", other: "Other",
 };
 
 type Report = {

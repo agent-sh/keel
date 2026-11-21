@@ -141,7 +141,8 @@ export async function readFile(p: string, ctx: ToolContext, o: { offset?: number
   if (IMAGE.test(f.type)) {
     if (st.size > 20 * 1024 * 1024) return { content: `${p} is ${(st.size / 1048576).toFixed(0)} MB; resize it (e.g. magick) and read the copy.`, error: true };
     ctx.seen.set(p, st.mtimeMs);
-    return { content: [{ type: "image", media_type: f.type, data: Buffer.from(await f.arrayBuffer()).toString("base64") }] };
+    // Scaled to what Keel stores before it enters the history (src/engine/image-fit.ts).
+    return { content: [{ type: "image", media_type: f.type, data: Buffer.from(await f.arrayBuffer()).toString("base64"), path: p }] };
   }
   if (ext === ".pdf") return readPdf(p, ctx, o.pages);
   if (ext === ".ipynb") return readNotebook(p, ctx);

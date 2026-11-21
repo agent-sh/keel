@@ -28,6 +28,8 @@ import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE
 import { effectiveEffort, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { withoutImages } from "./images.ts";
+import { fitForWire, fitToolImages, imageKeys } from "./image-fit.ts";
+import { imageLimits, imageRefusal, requestTooLarge } from "../providers/image-limits.ts";
 import { resolveAttachments } from "./attachments.ts";
 import { RETRY, RETRY_WAIT_MAX_MS, RetryTooLong, backoffMs, errorText, retryable, sleep } from "./retry.ts";
 
@@ -733,7 +735,16 @@ export class Engine {
     if (session.parent_id && purpose !== "reader") req.cacheLife = this.cacheLife(id, st);
     if (req.cache !== false) req.cacheMs = askedLife(st.provider.wire, req.cacheLife) ?? (retention(st.provider.wire, this.lineage(id), st.info.id).sure || undefined);
     // What the model can read, applied after the hooks (a hook may rebuild the messages).
-    req.messages = resolveAttachments(st.info.images === false ? withoutImages(req.messages, st.info.name ?? st.info.model) : req.messages, st.info);
+    const whole = resolveAttachments(st.info.images === false ? withoutImages(req.messages, st.info.name ?? st.info.model) : req.messages, st.info);
+    // Every image within what the model's host takes (a history may hold a
+    // larger one from before images were scaled when stored): a refused image
+    // would fail this request and every later one of the session.
+    const set = this.store.session(id)?.settings;
+    let limits = imageLimits(st.info.family, set?.image_edge);
+    let out = new Set(set?.images_out ?? []);
+    req.messages = await fitForWire(whole, limits, out);
+    // What an image refusal changed for this request; kept for the session once it passes.
+    let fixed: { cause: unknown; edge?: number; out?: string[] } | undefined;
     for (let attempt = 0; ; attempt++) {
       partial.clear();
       this.measure(id, (h) => h.requestSent?.(session, req));
@@ -760,6 +771,7 @@ export class Engine {
         if (!quiet || attempt) this.status(id, { kind: "idle" });
         this.measure(id, (h) => h.requestDone?.(session, req, res));
         this.boundThinking(id, res);
+        if (fixed) this.imagesFixed(id, fixed, purpose);
         return res;
       } catch (e) {
         this.measure(id, (h) => h.requestFailed?.(session, req, e, signal.aborted));
@@ -773,6 +785,26 @@ export class Engine {
           req = { ...req, tools: st.tools };
           continue;
         }
+        // The provider refused the request over an image, or as too large in
+        // bytes while it holds images. A pixel limit it states, lower than the
+        // one used, is tried first: the images are scaled to it. Else the
+        // images of this history are left out, each as a note. Either way the
+        // turn goes on.
+        const held = retryable(e) ? [] : imageKeys(whole);
+        const refusal = held.length ? imageRefusal(e) ?? (requestTooLarge(e) ? {} : null) : null;
+        if (refusal) {
+          const left = held.filter((k) => !out.has(k));
+          if (!left.length) throw Object.assign(new Error(`The provider refused the request over an image, and again with every image of this session left out: compact the session or go on in a new one. (${errorText(e).slice(0, 110)})`), { cause: e, kind: "invalid", status: (e as any)?.status });
+          if (!fixed && refusal.edge && !(limits.edge && limits.edge <= refusal.edge)) {
+            fixed = { cause: e, edge: refusal.edge };
+            limits = imageLimits(st.info.family, refusal.edge);
+          } else {
+            fixed = { cause: fixed?.cause ?? e, edge: fixed?.edge, out: left };
+            out = new Set([...out, ...left]);
+          }
+          req = { ...req, messages: await fitForWire(whole, limits, out) };
+          continue;
+        }
         if (!retryable(e) || attempt + 1 >= RETRY.max) throw e;
         const wait = backoffMs(attempt, e);
         if (wait > RETRY_WAIT_MAX_MS) throw new RetryTooLong(e, Date.now() + wait);
@@ -781,6 +813,24 @@ export class Engine {
         await sleep(wait, signal);
       }
     }
+  }
+
+  // A request passed after the provider refused it over an image: what made
+  // it pass holds for the session from here (the same bytes on every later
+  // request), the refusal is captured once, and the transcript says it.
+  private imagesFixed(id: string, fixed: { cause: unknown; edge?: number; out?: string[] }, purpose: ProviderRequest["purpose"]) {
+    const s = this.store.session(id);
+    if (!s) return;
+    this.store.mergeSettings(id, {
+      ...(fixed.edge ? { image_edge: fixed.edge } : {}),
+      ...(fixed.out ? { images_out: [...new Set([...(s.settings.images_out ?? []), ...fixed.out])] } : {}),
+    });
+    const n = fixed.out?.length ?? 0;
+    const text = n
+      ? `The provider refused a request over this session's images (${errorText(fixed.cause).slice(0, 160)}). ${n === 1 ? "The image" : `The ${n} images`} sent so far ${n === 1 ? "is" : "are"} left out of what the model reads from here; new images are sent as before.`
+      : `The provider takes images of at most ${fixed.edge} px a side here: larger ones in this session are sent scaled down from now on.`;
+    this.errors.capture("provider", fixed.cause, { session: id, then: n ? `${n} images left out for this session` : `images scaled to ${fixed.edge} px for this session` });
+    if (purpose !== "reader") this.append(id, "note", { kind: "images", text });
   }
 
   // A subagent's cache lifetime, where the route offers a choice. It starts
@@ -1113,7 +1163,8 @@ export class Engine {
       run.catch(() => {});
       const out = await Promise.race([run, stopped]);
       if (!out) return ran(interrupted(), "interrupted");
-      result = { type: "tool_result", tool_use_id: u.id, content: out.content, is_error: out.is_error || undefined };
+      // An image enters the history within what every provider takes.
+      result = { type: "tool_result", tool_use_id: u.id, content: await fitToolImages(out.content, ctx.spillDir), is_error: out.is_error || undefined };
       if (out.shown !== undefined) this.shown.set(u.id, out.shown);
       ran(result, result.is_error ? "error" : "ok");
     } catch (e) {

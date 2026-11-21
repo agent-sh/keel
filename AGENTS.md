@@ -30,6 +30,12 @@ under `~/.cache/keel-work/bun/research/`.
   its provider reports (`token_ratios`). A history too long for one summary
   request is read as a text transcript: long tool outputs shortened oldest first,
   then in parts, each with the summary of the parts before it.
+- An image never breaks a session. It is stored within `STORE`
+  (`src/providers/image-limits.ts`, the one place for image limits, each with
+  its reason and source), scaled down when it is larger; a larger one already
+  in a history is sent as a scaled copy, the same bytes each request
+  (`src/engine/image-fit.ts`); a request the provider still refuses over an
+  image is sent again with the images at the limit it stated, else left out.
 - Every failure is captured once in the `errors` table (`ErrorTracker.capture`)
   and shown live in the UI's Errors panel. Browser errors post to `/api/errors`.
 - A session is told what went wrong in its scope without asking: failures of its
