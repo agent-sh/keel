@@ -6,7 +6,7 @@ import { lineage } from "../../../src/core/tree.ts";
 import type { AssistantBlock, AttachmentBlock, ImageBlock, PromptBlock, Session, StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { shownAsPrompt } from "../../../src/core/owner.ts";
 import { rowActions } from "../lib/extend.ts";
-import { blockKey, buildRows, nextLineage, nextSiblings, rowProbe, type Built, type LineageOf, type Row, type SiblingsOf } from "../lib/rows.ts";
+import { blockKey, buildRows, nextLineage, nextSiblings, PROBE, rowProbe, type Built, type LineageOf, type Row, type SiblingsOf } from "../lib/rows.ts";
 import { actions, api, forgetEvents, getState, keepEvents, liveNow, reportError, useStore, type DraftBlock } from "../lib/store.ts";
 import { useSafety } from "../lib/safety.ts";
 import { getUI, navigate, seedComposer, setUI, useUI } from "../lib/ui.ts";
@@ -558,7 +558,7 @@ const isInput = (e: StoredEvent) => SYSTEM_INPUT.has(e.data.kind) || isPeerMessa
 // that does not change), so a reply streaming or an event added below renders
 // nothing here.
 const TranscriptRow = memo(function TranscriptRow({ row, sid }: { row: Row; sid: string }) {
-  rowProbe.rendered?.(row.id);
+  if (PROBE) rowProbe.rendered?.(row.id);
   const e = row.e;
   switch (row.kind) {
     case "harness":

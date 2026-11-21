@@ -7,9 +7,10 @@ import { join } from "node:path";
 
 export const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
 
-export function daemon(state: string, port = 0): Promise<{ proc: ChildProcess; url: string }> {
+// `dev`: the page as a development build (it has the counters a spec reads).
+export function daemon(state: string, port = 0, dev = false): Promise<{ proc: ChildProcess; url: string }> {
   mkdirSync(state, { recursive: true });
-  const proc = spawn("bun", ["src/main.ts", "serve", "--bind", `127.0.0.1:${port}`, "--state-dir", state, "--workspace", state], {
+  const proc = spawn("bun", ["src/main.ts", "serve", ...(dev ? ["--dev"] : []), "--bind", `127.0.0.1:${port}`, "--state-dir", state, "--workspace", state], {
     env: { ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_CONFIG_DIR: join(state, "config"), KEEL_DESKTOP_NOTIFY: "off" },
     stdio: ["ignore", "pipe", "pipe"],
   });

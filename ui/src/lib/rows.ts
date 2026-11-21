@@ -48,9 +48,11 @@ export type Built = {
   restart: { id: string; times: number; notes: StoredEvent[] } | null;
 };
 
-// Counters for the e2e: a row model made, a row rendered.
+// Counters for the e2e: a row model made, a row rendered. Development builds
+// only: the production bundle has neither the counters nor their calls.
+export const PROBE = process.env.NODE_ENV !== "production";
 export const rowProbe: { made?: (id: string) => void; rendered?: (id: string) => void } = {};
-(globalThis as any).__keelRows = rowProbe;
+if (PROBE) (globalThis as any).__keelRows = rowProbe;
 
 const EMPTY: StoredEvent[] = [];
 const sameList = <T>(a: T[] | undefined, b: T[] | undefined) => a === b || (!!a && !!b && a.length === b.length && a.every((x, i) => x === b[i]));
@@ -79,7 +81,7 @@ export function buildRows(prev: Built | undefined, events: StoredEvent[], siblin
     return b.blocks[j]!;
   };
   const push = (row: Row) => {
-    rowProbe.made?.(row.id);
+    if (PROBE) rowProbe.made?.(row.id);
     const last = b.blocks.length - 1;
     const j = last >= 0 && blockKey(b.blocks[last]!) === row.e.seq >> BLOCK_BITS ? last : last + 1;
     own(j).push(row);
