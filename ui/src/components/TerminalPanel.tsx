@@ -3,6 +3,7 @@
 // with their output streaming in, and the owner's stop, copy and re-run. A
 // command line at the foot runs the owner's own command in the session's folder.
 import { copyText } from "../lib/copy.ts";
+import { Tabs } from "@base-ui/react/tabs";
 import { Check, ChevronRight, Copy, Play, RotateCw, Square, SquareTerminal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { stripAnsiText } from "../../../src/core/ansi.ts";
@@ -169,25 +170,25 @@ export function TerminalPanel({ session }: { session: Session }) {
   const shown = all.filter((e) => filter === "all" || (filter === "running" ? live(e) : e.state === "failed")).slice().reverse();
   const toggle = (k: string) => setOpen((o) => { const n = new Set(o); n.has(k) ? n.delete(k) : n.add(k); return n; });
   return (
-    <div className="flex h-full min-h-0 flex-col" data-testid="terminal-panel">
-      <div className="flex items-center gap-1 border-b border-line px-3 py-2" role="tablist" aria-label="Which commands">
+    // The filters are tabs of the one list: one Tab stop on the filter
+    // chosen, Left and Right move to the next one and show its commands.
+    <Tabs.Root value={filter} onValueChange={(v) => setFilter(v as Filter)} className="flex h-full min-h-0 flex-col" data-testid="terminal-panel">
+      <Tabs.List activateOnFocus aria-label="Which commands" className="flex items-center gap-1 border-b border-line px-3 py-2">
         {(["all", "running", "failed"] as Filter[]).map((f) => (
-          <button
+          <Tabs.Tab
             key={f}
-            type="button"
-            role="tab"
-            aria-selected={filter === f}
+            value={f}
             data-testid={`term-filter-${f}`}
-            onClick={() => setFilter(f)}
             className={cn("inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-caption capitalize", filter === f ? "bg-accent-soft text-fg" : "text-muted hover:bg-hover hover:text-fg")}
           >
             {f}
             <span className={cn("tabular-nums text-micro", f === "failed" && counts.failed ? "text-danger" : "text-faint")}>{counts[f]}</span>
-          </button>
+          </Tabs.Tab>
         ))}
-      </div>
+      </Tabs.List>
       {note && <p className="border-b border-line px-3 py-1.5 text-micro text-warn">{note}</p>}
-      <ul className="min-h-0 flex-1 overflow-auto" data-testid="term-list">
+      <Tabs.Panel value={filter} className="k-ring-in min-h-0 flex-1 overflow-auto">
+      <ul data-testid="term-list">
         {list && !shown.length && (
           <li className="flex flex-col items-center gap-2 px-6 py-10 text-center text-ui text-faint">
             <SquareTerminal className="size-5" />
@@ -198,6 +199,7 @@ export function TerminalPanel({ session }: { session: Session }) {
           <Row key={e.key} session={id} e={e} now={now} open={open.has(e.key) || (!!e.job_id && open.has(e.job_id))} onToggle={() => toggle(e.key)} onRun={run} />
         ))}
       </ul>
+      </Tabs.Panel>
       <form
         className="flex items-center gap-2 border-t border-line px-3 py-2"
         onSubmit={(ev) => { ev.preventDefault(); run(cmd).then(() => setCmd("")); }}
@@ -214,6 +216,6 @@ export function TerminalPanel({ session }: { session: Session }) {
         />
         <button type="submit" title="Run" data-testid="term-run" disabled={!cmd.trim()} className="grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg disabled:opacity-40"><Play className="size-3.5" /></button>
       </form>
-    </div>
+    </Tabs.Root>
   );
 }

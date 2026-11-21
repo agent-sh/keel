@@ -1,6 +1,6 @@
 import { expect, test } from "./isolate.ts";
 import { mkdirSync, unlinkSync } from "node:fs";
-import { openPanel, shoot } from "./shots.ts";
+import { openPanel, shoot, tabInto } from "./shots.ts";
 
 // Feature: the terminal pane. Every command the session ran, newest first,
 // with how it ended and its colored output; a background one streams and is
@@ -50,11 +50,39 @@ test("terminal pane: commands, output, filters, stop, copy and re-run", async ({
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("all green and plain\n");
     await shoot(page, "terminal-01-running");
 
-    // Filters.
-    await panel.getByTestId("term-filter-failed").click();
+    // Filters, by keyboard: one Tab stop on the filter chosen; Left and Right
+    // move to the next filter and show its commands; each is tied to the list.
+    const filters = panel.getByRole("tablist", { name: "Which commands" });
+    const filter = (f: string) => panel.getByTestId(`term-filter-${f}`);
+    const list = panel.getByRole("tabpanel");
+    const tied = async (f: string) => {
+      await expect(list).toHaveCount(1);
+      await expect(filter(f)).toHaveAttribute("aria-selected", "true");
+      await expect(filter(f)).toHaveAttribute("aria-controls", (await list.getAttribute("id"))!);
+      await expect(list).toHaveAttribute("aria-labelledby", (await filter(f).getAttribute("id"))!);
+      await expect(list.getByTestId("term-list")).toBeVisible();
+    };
+    await tabInto(page, filters);
+    await expect(filter("all")).toBeFocused();
+    await tied("all");
+    await page.keyboard.press("ArrowRight");
+    await expect(filter("running")).toBeFocused();
+    await tied("running");
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toHaveAttribute("data-state", "background");
+    await page.keyboard.press("ArrowRight");
+    await expect(filter("failed")).toBeFocused();
+    await tied("failed");
     await expect(rows).toHaveCount(1);
     await expect(rows.first().getByTestId("term-ending")).toHaveText("exit 3");
-    await panel.getByTestId("term-filter-running").click();
+    await shoot(page, "terminal-03-filter-by-keyboard");
+    // The next Tab leaves the filters; coming back lands on the one chosen.
+    await page.keyboard.press("Tab");
+    await expect(filters.locator(":focus")).toHaveCount(0);
+    await tabInto(page, filters);
+    await expect(filter("failed")).toBeFocused();
+    await page.keyboard.press("ArrowLeft");
+    await tied("running");
     await expect(rows).toHaveCount(1);
     // Stopped from the pane.
     await rows.first().getByTestId("term-stop").click();

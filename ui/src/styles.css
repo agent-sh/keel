@@ -225,6 +225,8 @@ body {
 * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: var(--radius-sm); }
 input:focus-visible, textarea:focus-visible { outline: none; }
+/* The ring inside the control, where the control's edge is its container's and a ring outside would be cut. */
+.k-ring-in:focus-visible { outline-offset: -2px; }
 button { cursor: default; }
 kbd { font-family: var(--font-sans); }
 /* Code shows the characters typed: no programming ligatures. */
