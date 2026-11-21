@@ -54,7 +54,7 @@ export const resumeRoutes: RouteModule = (deps: Deps) => {
         const t = named(req, { harness: u.get("harness"), id: u.get("id") });
         if (t instanceof Response) return t;
         try {
-          return json({ ...(await service().activity(t.m, t.harness, t.id)), wait: service().waitOf(t.m.id, t.harness, t.id) });
+          return json({ ...(await service().activity(t.m, t.harness, t.id)), wait: service().waitOf(t.m.id, t.harness, t.id), pending: service().pendingOf(t.m.id, t.harness, t.id) });
         } catch (e) {
           return failed(t.m, e);
         }
@@ -66,7 +66,7 @@ export const resumeRoutes: RouteModule = (deps: Deps) => {
         const b = ((await req.json().catch(() => ({}))) ?? {}) as any;
         const t = named(req, b);
         if (t instanceof Response) return t;
-        if (b.when !== "now" && b.when !== "idle") return bad("when is now or idle");
+        if (b.when !== "now" && b.when !== "idle" && b.when !== "copy") return bad("when is now, idle or copy");
         if (b.jobs !== undefined && b.jobs !== "keep" && b.jobs !== "end") return bad("jobs is keep or end");
         if (b.wait_ms !== undefined && !(typeof b.wait_ms === "number" && b.wait_ms > 0)) return bad("wait_ms must be a number above 0");
         try {

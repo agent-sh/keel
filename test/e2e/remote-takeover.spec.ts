@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
 import { spawn } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { choose, shoot } from "./shots.ts";
 
@@ -36,8 +36,8 @@ function transcript(home: string, cwd: string, id: string, title: string, fruit:
 }
 
 // A stand-in harness at work in `cwd`: its pid, for the checks and the cleanup.
-function harness(home: string, cwd: string, id: string, title: string, hold: number, job: number): number {
-  const p = spawn("bun", [resolve("test/e2e/fixtures/harness-standin.ts"), "--home", home, "--cwd", cwd, "--session", id, "--hold", String(hold), "--job", String(job), "--title", title], { detached: true, stdio: "ignore" });
+function harness(home: string, cwd: string, id: string, title: string, hold: number, job: number, ...more: string[]): number {
+  const p = spawn("bun", [resolve("test/e2e/fixtures/harness-standin.ts"), "--home", home, "--cwd", cwd, "--session", id, "--hold", String(hold), "--job", String(job), "--title", title, ...more], { detached: true, stdio: "ignore" });
   p.unref();
   return p.pid!;
 }
@@ -257,5 +257,96 @@ test("resume from an ssh machine: listed, imported, waited for or resumed now, a
     rmSync(join(home, ".codex", "sessions", `rollout-${sid(6)}.jsonl`), { force: true });
     rmSync(outside, { recursive: true, force: true });
     rmSync(join(root, ".ssh", tag), { recursive: true, force: true });
+  }
+});
+
+// Ending the original cannot be undone. What the copy needs is looked at
+// first: a model that cannot run it is refused while the original still runs.
+// And when the copy fails after the stop (here the transcript cannot be read
+// once its harness has left), the card says the original was stopped and the
+// copy did not finish, and offers the copy alone: it is made once, with what
+// the original was ended in the middle of, and nothing is stopped again.
+test("resume from an ssh machine: checked before the stop, and a copy that fails after it is finished alone", async ({ page, request }) => {
+  test.setTimeout(240_000);
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const machines = (await (await request.get("/api/fleet/machines")).json()).machines as any[];
+  test.skip(!machines.some((m) => m.ssh_host === HOST), `the daemon's ssh configuration has no stand-in host ${HOST} (scripts/dev.sh adds it)`);
+  let m = machines.find((x) => x.ssh_host === HOST && x.enabled);
+  const enabledHere = !m;
+  if (!m) {
+    const r = await (await request.post("/api/fleet/machines", { data: { ssh_host: HOST } })).json();
+    m = r.machines.find((x: any) => x.id === r.id);
+  }
+  const home = m.facts.home as string;
+  expect(home).toContain("keel-work");
+  const root = join(home, "work");
+  const proj = join(root, `proj-cut-${tag}`);
+  mkdirSync(proj, { recursive: true });
+  await request.patch(`/api/fleet/machines/${m.id}`, { data: { workspace_root: root } });
+  const file = join(home, ".claude", "projects", proj.replace(/[^A-Za-z0-9]/g, "-"), `${sid(7)}.jsonl`);
+  const base = `/api/fleet/machines/${m.id}/transcripts`;
+  const look = async () => (await (await request.get(`${base}/activity?harness=claude&id=${sid(7)}`)).json()) as any;
+  const procs: number[] = [];
+  let copy = "";
+  try {
+    const original = harness(home, proj, sid(7), `Stopped then copied ${tag}`, 600, 600, "--lock-on-end");
+    procs.push(original);
+    await expect.poll(async () => (await look()).in_flight?.map((i: any) => i.kind), { timeout: 30_000 }).toEqual(["job", "tool"]);
+    const seen = await look();
+    const job = seen.in_flight[0].pid as number;
+    procs.push(...seen.in_flight.map((i: any) => i.pid));
+
+    // A model nothing here can run: refused before anything is ended.
+    const refused = await request.post(`${base}/resume`, { data: { harness: "claude", id: sid(7), when: "now", revision: seen.revision, model: "nowhere:none" } });
+    expect(refused.status()).toBe(400);
+    expect((await refused.json()).error).toMatch(/cannot run the copy.*The original was left as it is\./);
+    expect(alive(original)).toBe(true);
+    expect((await look()).process).toEqual(seen.process);
+
+    // Resume now: it is ended, then its transcript cannot be read.
+    await page.goto("/");
+    const sheet = await openSheet(page, m.name);
+    await sheet.locator(`[data-testid="import-row"][data-id="${sid(7)}"]`).click();
+    const card = sheet.getByTestId("resume-card");
+    await card.getByTestId("resume-now").click();
+    await expect(card.getByTestId("jobs-keep")).toBeChecked();
+    await card.getByTestId("resume-now-go").click();
+    await expect(card).toHaveAttribute("data-state", "stopped", { timeout: 60_000 });
+    await expect(card.getByTestId("resume-state")).toContainText(`was stopped on ${m.name}, but the copy did not finish`);
+    await expect(card.getByTestId("resume-stopped")).toContainText("Keel kept what was in flight (2 items)");
+    await expect(card.getByTestId("resume-stopped")).toContainText("Nothing is stopped again.");
+    await expect(card.getByTestId("resume-copy-go")).toBeVisible();
+    expect(alive(original)).toBe(false);
+    expect(alive(job)).toBe(true); // its job was to keep running
+    const before = (await (await request.get(`${base}?q=${tag}`)).json()).sessions.find((s: any) => s.id === sid(7));
+    expect(before?.imported).toBeUndefined(); // no copy yet
+    await shoot(page, "resume-08-stopped-copy-not-finished");
+
+    // The copy alone: made once, told what the original was ended in the middle of.
+    chmodSync(file, 0o644);
+    await card.getByTestId("resume-copy-go").click();
+    await expect(sheet).toBeHidden({ timeout: 60_000 });
+    copy = page.url().split("/s/")[1]!.split(/[/?#]/)[0]!;
+    await expect(page.getByTestId("machine-chip")).toContainText(m.name);
+    const note = (await notes(request, copy)).filter((t) => t.includes("was ended"));
+    expect(note).toHaveLength(1);
+    expect(note[0]).toContain(`on ${m.name} was ended (SIGTERM)`);
+    expect(note[0]).toContain("background job, left running there");
+    expect(note[0]).toContain("call, interrupted");
+    expect(alive(job)).toBe(true); // nothing more was stopped
+    const after = (await (await request.get(`${base}?q=${tag}`)).json()).sessions.find((s: any) => s.id === sid(7));
+    expect(after.imported.session_id).toBe(copy);
+    expect((await look()).pending).toBeUndefined();
+    // Asked again, there is nothing left to finish.
+    const none = await request.post(`${base}/resume`, { data: { harness: "claude", id: sid(7), when: "copy" } });
+    expect(none.status()).toBe(409);
+  } finally {
+    for (const pid of procs) { try { process.kill(-pid, "SIGKILL"); } catch {} try { process.kill(pid, "SIGKILL"); } catch {} }
+    try { chmodSync(file, 0o644); } catch {}
+    if (copy) await request.delete(`/api/sessions/${copy}`);
+    if (enabledHere) await request.delete(`/api/fleet/machines/${m.id}`);
+    rmSync(file, { force: true });
+    rmSync(proj, { recursive: true, force: true });
   }
 });

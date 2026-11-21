@@ -3,7 +3,8 @@
 // choice. Wait until it is idle (with a deadline that is shown), or resume now
 // (shown what is in flight, its background jobs first, kept running or ended
 // with it). The same state and choices sit on the conversation's row of the
-// import list.
+// import list. An original that was ended while its copy failed is said so,
+// with the one thing left to do: finish the copy (nothing is stopped again).
 import { Radio } from "@base-ui/react/radio";
 import { RadioGroup } from "@base-ui/react/radio-group";
 import { CircleStop, Hourglass, Play } from "lucide-react";
@@ -27,6 +28,8 @@ type Seen = {
   state: "ended" | "idle" | "active"; why: string; brief?: string; in_flight: InFlight[];
   helpers: { pid: number; command: string; since_ms: number }[];
   process?: { pid: number; started_ms: number; status?: string }; checked_ms: number; revision?: string; wait?: Wait;
+  // The original was ended and its copy is still to be made.
+  pending?: { stopped_ms: number; how?: string; in_flight: number; error?: string };
 };
 export type Intent = "wait" | "now" | null;
 type Target = { machine: string; harness: string; id: string };
@@ -123,17 +126,19 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
   const [busy, setBusy] = useState(false);
   const [jobs, setJobs] = useState<"keep" | "end">("keep");
   const [waitMs, setWaitMs] = useState(DEADLINES[1]!.ms);
+  const [again, setAgain] = useState(0); // looked at again after a resume that stopped it and did not finish
   const wait = useKnown(target).wait;
   const waiting = wait?.state === "waiting";
   const now = useNow(waiting || intent === "wait");
   const k = keyOf(target);
+  const lastKey = useRef(k);
 
   // Looked at again every two seconds while it runs: what is in flight changes.
   useEffect(() => {
     let live = true;
     let timer: ReturnType<typeof setTimeout>;
-    setSeen(null);
-    setErr("");
+    if (lastKey.current !== k || !again) { setSeen(null); setErr(""); }
+    lastKey.current = k;
     const look = () => api<Seen>(`/api/fleet/machines/${target.machine}/transcripts/activity?harness=${target.harness}&id=${encodeURIComponent(target.id)}`).then((r) => {
       if (!live) return;
       setSeen(r);
@@ -145,7 +150,7 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
     });
     look();
     return () => { live = false; clearTimeout(timer); };
-  }, [k]);
+  }, [k, again]);
 
   // A wait that ends in a resume while this is on screen opens the session it made.
   const was = useRef(wait?.state);
@@ -154,8 +159,8 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
     was.current = wait?.state;
   }, [wait?.state, wait?.session_id]);
 
-  if (!seen || seen.state === "ended") return null;
-  const go = async (when: "now" | "idle") => {
+  if (!seen || (seen.state === "ended" && !seen.pending)) return null;
+  const go = async (when: "now" | "idle" | "copy") => {
     setBusy(true);
     setErr("");
     try {
@@ -166,6 +171,8 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
       if (r.action === "taken_over" && r.session) { setSeen(null); onDone(); navigate({ name: "session", id: r.session.id }); }
     } catch (e) {
       setErr(failed(e, { at: "ResumeFrom" }));
+      // It may have been ended before the failure: the card then offers the copy alone.
+      setAgain((n) => n + 1);
     } finally {
       setBusy(false);
     }
@@ -176,6 +183,30 @@ export function ResumeCard({ target, tool, machineName, every = 2000, onDone = (
   const quiet = "h-8 rounded-lg px-3 text-ui text-muted hover:bg-hover hover:text-fg disabled:opacity-40";
   const plain = "inline-flex h-8 items-center gap-1.5 rounded-lg border border-line-strong px-3 text-ui font-medium hover:bg-hover disabled:opacity-40";
   const primary = "inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-40";
+
+  // Ended, and the copy did not finish: what happened, and the copy alone to retry.
+  if (seen.pending) {
+    const p = seen.pending;
+    return (
+      <section data-testid="resume-card" data-state="stopped" className={cn("rounded-xl border border-line bg-raised text-left", ctl.onIntent ? "mb-5" : "mb-2")}>
+        <div className="flex items-start gap-2.5 px-4 pt-3.5 pb-3">
+          <CircleStop className="mt-0.5 size-4 shrink-0 text-warn" />
+          <div className="min-w-0 flex-1">
+            <p className="text-ui font-medium" data-testid="resume-state">{tool} was stopped on {machineName}, but the copy did not finish</p>
+            <p className="mt-0.5 text-caption text-muted" data-testid="resume-stopped">
+              Stopped at {clock(p.stopped_ms)}{p.how ? ` (${p.how})` : ""}. {p.in_flight > 0 ? `Keel kept what was in flight (${p.in_flight} ${p.in_flight === 1 ? "item" : "items"}): the copy gets it in a note. ` : ""}Nothing is stopped again.
+            </p>
+          </div>
+        </div>
+        <div className="border-t border-line px-4 py-3">
+          <div className="flex items-center gap-3">
+            <p className="min-w-0 flex-1 break-words text-caption text-danger" data-testid="resume-error">{p.error ?? err}</p>
+            <button type="button" data-testid="resume-copy-go" disabled={busy} onClick={() => void go("copy")} className={primary}><Play className="size-3.5" /> Finish the copy</button>
+          </div>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section data-testid="resume-card" data-state={waiting ? "waiting" : seen.state} className={cn("rounded-xl border border-line bg-raised text-left", ctl.onIntent ? "mb-5" : "mb-2")}>

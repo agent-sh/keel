@@ -5,10 +5,12 @@
 // for --hold seconds. Nothing is written to the transcript while that shell
 // runs. When the shell ends it writes the result and its last words and sits
 // idle, as a harness at its prompt does. Asked to end (SIGTERM) it stops its
-// running command and leaves; its job goes on.
-//   bun harness-standin.ts --home HOME --cwd DIR --session ID --hold SECONDS [--job SECONDS] [--title TEXT]
+// running command and leaves; its job goes on. With --lock-on-end its
+// transcript cannot be read once it has left (until the spec makes it readable
+// again): a copy that fails after the original was ended.
+//   bun harness-standin.ts --home HOME --cwd DIR --session ID --hold SECONDS [--job SECONDS] [--title TEXT] [--lock-on-end]
 import { spawn } from "node:child_process";
-import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const arg = (k: string) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : undefined; };
@@ -68,6 +70,7 @@ let leaving = false;
 const leave = () => {
   leaving = true;
   try { process.kill(-shell.pid!, "SIGTERM"); } catch {}
+  if (process.argv.includes("--lock-on-end")) chmodSync(file, 0o000);
   rmSync(record, { force: true });
   process.exit(143);
 };
