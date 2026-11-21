@@ -125,6 +125,92 @@ describe("help, usage and completion", () => {
   });
 });
 
+// The words of a unit's ExecStart line as systemd reads them: split at blanks
+// outside double quotes, a backslash escapes inside them, %% is a percent
+// sign and $$ a dollar sign.
+function execWords(line: string): string[] {
+  const out: string[] = [];
+  let cur = "", open = false, any = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]!;
+    if (open) {
+      if (c === "\\") cur += line[++i];
+      else if (c === '"') open = false;
+      else cur += c;
+    } else if (c === '"') { open = true; any = true; }
+    else if (/\s/.test(c)) { if (cur || any) out.push(cur); cur = ""; any = false; }
+    else cur += c;
+  }
+  if (cur || any) out.push(cur);
+  return out.map((w) => w.replaceAll("%%", "%").replaceAll("$$", "$"));
+}
+
+describe("keel service install", () => {
+  const state = join(SCRATCH, "state-service");
+  const config = join(SCRATCH, "service config");
+  // The paths hold what a unit file reads specially: spaces, a percent sign, a dollar sign and,
+  // where systemd takes one (not in the executable's path), a quote.
+  const odd = join(SCRATCH, "odd 100% $HOME dir");
+  const exec = join(odd, "bin dir", "keel");
+  const workspace = join(odd, 'work "space"');
+  const stateDir = join(odd, "state dir");
+  const args = ["service", "install", "--bind", "127.0.0.1:0", "--exec", exec, "--workspace", workspace, "--state-dir", stateDir];
+  const unitPath = join(config, "systemd/user/keel-bun.service");
+  beforeAll(() => {
+    mkdirSync(join(odd, "bin dir"), { recursive: true });
+    mkdirSync(workspace, { recursive: true });
+    symlinkSync(BIN, exec);
+  });
+
+  test("the unit keeps the executable, workspace and state paths as single words", async () => {
+    // --print shows the unit and writes nothing.
+    const printed = await keel([...args, "--print"], { state, env: { XDG_CONFIG_HOME: config } });
+    expect(printed.code).toBe(0);
+    expect(existsSync(config)).toBe(false);
+    const line = printed.out.split("\n").find((l) => l.startsWith("ExecStart="))!;
+    expect(execWords(line.slice("ExecStart=".length))).toEqual([exec, "serve", "--bind", "127.0.0.1:0", "--workspace", workspace, "--state-dir", stateDir]);
+
+    // Installed: the unit file and nothing else. Nothing links it in (not enabled) and no daemon runs.
+    const installed = await keel(args, { state, env: { XDG_CONFIG_HOME: config } });
+    expect(installed.code).toBe(0);
+    expect(readFileSync(unitPath, "utf8")).toBe(printed.out);
+    expect(readdirSync(config, { recursive: true }).map(String).sort()).toEqual(["systemd", "systemd/user", "systemd/user/keel-bun.service"]);
+    expect(existsSync(stateDir)).toBe(false);
+
+    // systemd reads it the same way: it finds the executable at its whole path.
+    if (Bun.which("systemd-analyze")) {
+      const v = Bun.spawnSync(["systemd-analyze", "--user", "verify", unitPath], { stdout: "pipe", stderr: "pipe" });
+      expect(v.stderr.toString().split("\n").filter((l) => l.includes("keel-bun.service"))).toEqual([]);
+    }
+
+    // Without the two paths the unit is the plain one: the daemon keeps its defaults.
+    const plain = await keel(["service", "install", "--print"], { state, env: { XDG_CONFIG_HOME: config } });
+    expect(plain.out).toMatch(/^ExecStart=\S+ serve --bind 127\.0\.0\.1:47960$/m);
+
+    // An executable systemd would refuse is refused here, and the unit on disk stays as it was.
+    const quoted = await keel(["service", "install", "--exec", join(odd, 'the "keel"')], { state, env: { XDG_CONFIG_HOME: config } });
+    expect([quoted.code, quoted.out, quoted.err.trim()]).toEqual([1, "", `keel: systemd does not start an executable whose path holds a quote or a backslash: ${join(odd, 'the "keel"')}`]);
+    expect(readFileSync(unitPath, "utf8")).toBe(printed.out);
+  }, 30_000);
+
+  test("a daemon started by the unit's command line uses the workspace and state it names", async () => {
+    const line = readFileSync(unitPath, "utf8").split("\n").find((l) => l.startsWith("ExecStart="))!;
+    const p = Bun.spawn(execWords(line.slice("ExecStart=".length)), { cwd: SCRATCH, env: { ...ENV, KEEL_SUPERVISED: "", KEEL_DRAIN_MS: "300" }, stdout: "pipe", stderr: "pipe" });
+    try {
+      let out = "";
+      const dec = new TextDecoder();
+      for await (const chunk of p.stdout) { out += dec.decode(chunk); if (/keel listening on \S+/.test(out)) break; }
+      const url = out.match(/keel listening on (http:\/\/\S+?)\/? /)![1]!;
+      const daemon = await (await fetch(`${url}/api/daemon`)).json() as any;
+      const spaces = await (await fetch(`${url}/api/workspaces`)).json() as any;
+      expect({ state: daemon.state_dir, workspace: spaces.default }).toEqual({ state: stateDir, workspace });
+    } finally {
+      p.kill();
+      await p.exited;
+    }
+  }, 60_000);
+});
+
 describe("keel help serve", () => {
   const state = join(SCRATCH, "state-help-serve");
   test("prints the serve usage, as serve --help does, and starts no daemon", async () => {

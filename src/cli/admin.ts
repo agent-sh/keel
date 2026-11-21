@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { unitTemplate } from "../admin/unit.ts";
+import { unitFor } from "../admin/unit.ts";
 import { claimState, lockHolder } from "../admin/daemon.ts";
 import { restartSummary, restartTurnLine, type RestartTurn } from "../admin/life-rows.ts";
 import { parseBind } from "../core/bind.ts";
@@ -283,16 +283,18 @@ const usage = wrap(USAGE_USAGE, { days: { type: "string" } }, async (v) => {
 });
 
 // The systemd user unit. Written, never enabled or started by this command.
-const service = wrap("keel service install [--bind HOST:PORT] [--print] [--exec PATH]\n  Writes ~/.config/systemd/user/keel-bun.service for this binary. It does not enable or start it.",
-  { bind: { type: "string", default: "127.0.0.1:47960" }, print: { type: "boolean" }, exec: { type: "string" } },
+const SERVICE_USAGE = "keel service install [--bind HOST:PORT] [--workspace DIR] [--state-dir DIR] [--exec PATH] [--print]\n  Writes ~/.config/systemd/user/keel-bun.service for this binary. It does not enable or start it.\n  --workspace and --state-dir are kept in the unit as absolute paths; without them the daemon uses its defaults.\n  --exec names another binary to start; --print shows the unit and writes nothing.";
+const service = wrap(SERVICE_USAGE,
+  { bind: { type: "string", default: "127.0.0.1:47960" }, print: { type: "boolean" }, exec: { type: "string" }, workspace: { type: "string" }, "state-dir": { type: "string" } },
   async (v, pos) => {
     if (pos[0] !== "install") throw new Error("keel service install");
     const bind = parseBind(v.bind);
     if ("error" in bind) throw new Error(bind.error);
-    // A compiled binary is its own ExecStart; under bun it is bun and the script.
+    // A compiled binary is its own command; under bun it is bun and the script.
+    // Each is one word of ExecStart, whatever its path holds.
     const compiled = process.argv[1]?.startsWith("/$bunfs/");
-    const exec = v.exec ?? (compiled ? process.execPath : `${process.execPath} ${resolve(process.argv[1]!)}`);
-    const unit = unitTemplate.replace("@EXEC@", exec).replace("@BIND@", v.bind);
+    const command = v.exec ? [resolve(v.exec)] : compiled ? [process.execPath] : [process.execPath, resolve(process.argv[1]!)];
+    const unit = unitFor({ command, bind: v.bind, workspace: v.workspace ? resolve(v.workspace) : undefined, stateDir: v["state-dir"] ? resolve(v["state-dir"]) : undefined });
     if (v.print) return (process.stdout.write(unit), 0);
     const path = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "systemd/user/keel-bun.service");
     mkdirSync(dirname(path), { recursive: true });
