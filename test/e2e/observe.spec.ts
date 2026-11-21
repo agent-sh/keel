@@ -159,7 +159,9 @@ test("a replay the model declines shows as declined, an answered one as answered
     await detail.getByTestId("span-replay").click();
     await expect(page.getByTestId("replay-result")).toBeVisible({ timeout: 15_000 });
     const traces = (await (await request.get(`/api/debug/traces?session_id=${session.id}`)).json()).traces;
-    return { shown: await page.getByTestId("replay-result").innerText(), span: traces.find((t: any) => t.attrs.replay_of) };
+    // The turn's own row is the oldest of the list.
+    const row = page.getByTestId("trace-row").last();
+    return { shown: await page.getByTestId("replay-result").innerText(), span: traces.find((t: any) => t.attrs.replay_of), turn: traces.find((t: any) => t.kind === "turn"), row: [await row.getAttribute("data-status"), await row.innerText()] };
   };
 
   const refused = await replayOf("refuse-late");
@@ -167,12 +169,18 @@ test("a replay the model declines shows as declined, an answered one as answered
   expect(refused.shown).toContain("Scripted refusal for the test.");
   expect(refused.shown).not.toContain("Answered");
   expect(refused.span).toMatchObject({ status: "error", error_type: "refusal", error: "Scripted refusal for the test.", attrs: { result: { stop: "refusal" } } });
+  // The turn the model declined is a failed turn in the list, in the refusal's words, not a green one.
+  expect(refused.turn).toMatchObject({ status: "error", error_type: "refusal", error: "Scripted refusal for the test.", attrs: { reason: "refusal" } });
+  expect(refused.row[0]).toBe("error");
+  expect(refused.row[1]).toContain("Scripted refusal for the test.");
   await shoot(page, "observe-07-replay-declined");
 
   const answered = await replayOf("overloaded");
   expect(answered.shown).toContain("Answered in ");
   expect(answered.shown).toContain("Answered after the overload passed.");
   expect(answered.span).toMatchObject({ status: "ok", error: null, error_type: null, attrs: { result: { stop: "end_turn" } } });
+  expect(answered.turn).toMatchObject({ status: "ok", error: null });
+  expect(answered.row[0]).toBe("ok");
   await shoot(page, "observe-08-replay-answered");
 });
 

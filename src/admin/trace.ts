@@ -348,9 +348,11 @@ export class Tracer {
     const turn = this.lastTurn(s.id);
     if (!turn) return;
     const { span } = this.ensureTurn(s, turn);
-    const status: SpanStatus = reason === "error" ? "error" : reason === "interrupted" || reason === "restart" ? "interrupted" : "ok";
+    // A turn the model declined did not do its work: failed, as its declined request is.
+    const declined = reason === "refusal";
+    const status: SpanStatus = reason === "error" || declined ? "error" : reason === "interrupted" || reason === "restart" ? "interrupted" : "ok";
     const fail = status === "error" ? this.store.db.query<{ error: string; error_type: string }, [string]>("SELECT error, error_type FROM spans WHERE parent_id = ? AND status = 'error' ORDER BY start_ms DESC LIMIT 1").get(span) : null;
-    this.finish(span, { status, error: fail?.error ?? null, error_type: fail?.error_type ?? (status === "error" ? "error" : null), attrs: { reason } });
+    this.finish(span, { status, error: fail?.error ?? (declined ? "refusal" : null), error_type: fail?.error_type ?? (declined ? "refusal" : status === "error" ? "error" : null), attrs: { reason } });
   }
 
   span(id: string): Span | undefined {

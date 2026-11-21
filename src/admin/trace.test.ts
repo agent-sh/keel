@@ -102,6 +102,32 @@ test("a chain of spawns stays in the first turn's trace, each agent under the ca
   }
 });
 
+test("a turn the model declined is a failed turn in the list of traces, with the refusal's words", () => {
+  const x = tracer(true);
+  try {
+    const s = x.store.createSession({ workspace: x.dir, model: "p:m" });
+    const turn = (stop: string, details?: { explanation: string }) => {
+      x.store.append(s.id, "turn_start", { model: "p:m" });
+      const sent = { model: "m", system: "", tools: [], messages: [] } as any;
+      x.hooks.requestSent!(s, sent);
+      x.hooks.requestDone!(s, sent, { blocks: [], stop, stop_details: details, usage: {} } as any);
+      x.store.append(s.id, "turn_end", { reason: stop });
+      x.hooks.turnEnd!(s, stop);
+    };
+    turn("end_turn");
+    turn("refusal", { explanation: "Declined for the test." });
+    const [declined, answered] = x.t.traces(s.id);
+    expect(answered).toMatchObject({ kind: "turn", status: "ok", error: null, error_type: null });
+    expect(declined).toMatchObject({ kind: "turn", status: "error", error: "Declined for the test.", error_type: "refusal", attrs: { reason: "refusal" } });
+    // And leaves for a collector as a failure of the refusal class.
+    const out = toOtlp([declined!], {}).resourceSpans[0]!.scopeSpans[0]!.spans[0]!;
+    expect(out.status).toEqual({ code: 2 });
+    expect(out.attributes).toContainEqual({ key: "error.type", value: { stringValue: "refusal" } });
+  } finally {
+    x.close();
+  }
+});
+
 const req = (text: string) => ({ model: "m", system: "", tools: [], messages: [{ role: "user", content: [{ type: "text", text }] }] }) as any;
 
 test("a shape's message size is UTF-8 bytes", () => {
