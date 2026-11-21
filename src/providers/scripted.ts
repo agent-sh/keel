@@ -181,7 +181,10 @@ export class ScriptedProvider implements Provider {
         this.paused.set(req.sessionKey ?? "", JSON.stringify(msgs));
         return reply("Paused at a server tool.", "pause_turn");
       }
-      case "refuse": {
+      case "refuse":
+      case "refuse-late": {
+        // `script:refuse-late`: overloaded once first, so the failed request is kept and sending it again ends in the refusal.
+        if (scenario === "refuse-late" && attempt === 0) throw new ProviderError("overloaded", "Scripted: 529 overloaded", 529);
         // `script:refuse <word>`: the partial reply carries the word (a search test looks for it).
         const word = owner.match(/script:refuse\s+(\S+)/)?.[1];
         const r = await reply(word ? `I will not ${word}` : "I will not");

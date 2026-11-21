@@ -131,9 +131,15 @@ function Fact({ k, v, mono }: { k: string; v: ReactNode; mono?: boolean }) {
   );
 }
 
+// A replay the model declined, in the words a declined turn uses: the category and the explanation when the provider gave them.
+function declined(s: Span) {
+  const d = s.attrs.result?.stop_details;
+  return `Declined${d?.category ? ` (${d.category})` : ""} in ${fmtMs(spanMs(s))}${d?.explanation ? `: ${d.explanation}` : "."}`;
+}
+
 function Detail({ s, onReplayed, onOpen }: { s: Span; onReplayed: () => void; onOpen: (trace: string) => void }) {
   const [busy, setBusy] = useState(false);
-  const [replay, setReplay] = useState<{ ok: boolean; error?: string; text?: string; span: Span } | null>(null);
+  const [replay, setReplay] = useState<{ ok: boolean; error?: string; text?: string; stop?: string; span: Span } | null>(null);
   const [copied, setCopied] = useState(false);
   const a = s.attrs;
   const w = a.wire ?? {};
@@ -202,7 +208,7 @@ function Detail({ s, onReplayed, onOpen }: { s: Span; onReplayed: () => void; on
       </div>
       {replay && (
         <p className={cn("rounded-md border px-2.5 py-2 text-caption", replay.ok ? "border-line text-fg" : "border-danger-soft bg-danger-soft text-danger")} data-testid="replay-result">
-          {replay.ok ? `Answered in ${fmtMs(spanMs(replay.span))}${replay.text ? `: ${replay.text.slice(0, 300)}` : "."}` : `Failed again: ${replay.error}`}
+          {replay.ok ? `Answered in ${fmtMs(spanMs(replay.span))}${replay.text ? `: ${replay.text.slice(0, 300)}` : "."}` : replay.stop === "refusal" ? declined(replay.span) : `Failed again: ${replay.error}`}
         </p>
       )}
     </div>

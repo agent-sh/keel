@@ -139,3 +139,39 @@ test("a failed request is traced, bundled, replayed and handed to a fix", async 
     collector.close();
   }
 });
+
+// Sending a failed request again: what came back is said as it ended. The
+// scripted provider is overloaded on the first attempt, so the request is
+// kept, and what a later send of it gets depends on the scenario.
+test("a replay the model declines shows as declined, an answered one as answered", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes(STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const replayOf = async (script: string) => {
+    const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: `Replay ${script}` } })).json();
+    await page.goto(`/s/${session.id}`);
+    await page.getByTestId("composer").fill(`script:${script}`);
+    await page.getByTestId("composer").press("Enter");
+    await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 30_000 });
+    await openPanel(page, "traces");
+    // The first failed request is picked: the overloaded attempt, which kept its request.
+    const detail = page.getByTestId("span-detail");
+    await expect(detail).toContainText("529 overloaded");
+    await detail.getByTestId("span-replay").click();
+    await expect(page.getByTestId("replay-result")).toBeVisible({ timeout: 15_000 });
+    const traces = (await (await request.get(`/api/debug/traces?session_id=${session.id}`)).json()).traces;
+    return { shown: await page.getByTestId("replay-result").innerText(), span: traces.find((t: any) => t.attrs.replay_of) };
+  };
+
+  const refused = await replayOf("refuse-late");
+  expect(refused.shown).toContain("Declined (cyber) in ");
+  expect(refused.shown).toContain("Scripted refusal for the test.");
+  expect(refused.shown).not.toContain("Answered");
+  expect(refused.span).toMatchObject({ status: "error", error_type: "refusal", error: "Scripted refusal for the test.", attrs: { result: { stop: "refusal" } } });
+  await shoot(page, "observe-07-replay-declined");
+
+  const answered = await replayOf("overloaded");
+  expect(answered.shown).toContain("Answered in ");
+  expect(answered.shown).toContain("Answered after the overload passed.");
+  expect(answered.span).toMatchObject({ status: "ok", error: null, error_type: null, attrs: { result: { stop: "end_turn" } } });
+  await shoot(page, "observe-08-replay-answered");
+});

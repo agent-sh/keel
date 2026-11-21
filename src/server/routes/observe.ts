@@ -11,7 +11,7 @@
 // GET  /api/debug/traces/:id                    { spans } of one trace, in start order
 // GET  /api/debug/spans/:id                     { span }
 // POST /api/debug/spans/:id/replay { route? }   sends a failed request again (to its own route or another)
-//                                               -> { span, ok, error?, text? }
+//                                               -> { span, ok, error?, text?, stop? }; a refusal is ok: false with stop "refusal"
 // GET  /api/debug/export                        the OTLP exporter's state
 // GET  /api/logs?since_ms=&level=&q=&limit=     the daemon's kept log lines -> { lines, dir }
 // GET  /api/logs/stream?level=                  the same, live, as server-sent events
@@ -171,8 +171,11 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
             { ...sent, model: resolved.info.model, route: resolved.info.id, signal: AbortSignal.timeout(300_000), purpose: "side" },
             (d) => { first ??= Date.now(); if (d.kind === "text") text += d.text; },
           ));
-          const span = t.recordReplay(of, resolved.info.id, t0, { ok: true, result: res, wire: tap, ttft: first ? first - t0 : undefined });
-          return json({ span, ok: true, text: text.slice(0, 2000), stop: res.stop });
+          // A stream that ends in a refusal did not answer: the same error class a turn's request gets.
+          const refused = res.stop === "refusal";
+          const error = refused ? res.stop_details?.explanation ?? "refusal" : undefined;
+          const span = t.recordReplay(of, resolved.info.id, t0, { ok: !refused, ...(refused ? { error, error_type: "refusal" } : {}), result: res, wire: tap, ttft: first ? first - t0 : undefined });
+          return json({ span, ok: !refused, ...(refused ? { error } : {}), text: text.slice(0, 2000), stop: res.stop });
         } catch (e) {
           const span = t.recordReplay(of, resolved.info.id, t0, { ok: false, error: errorText(e).slice(0, 4000), error_type: errorClass(e) ?? (e as any)?.kind ?? "error", wire: tap });
           return json({ span, ok: false, error: errorText(e) });
