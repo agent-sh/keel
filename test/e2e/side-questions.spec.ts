@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { HAIKU, shoot } from "./shots.ts";
+import { HAIKU, openPanel, shoot } from "./shots.ts";
 
 // Feature: /btw asks a side question answered from the session's context with
 // no tools; it opens the side panel, a follow-up continues the thread, and
@@ -102,4 +102,39 @@ test("side questions in order, retried, and per branch", async ({ page, request 
   expect(r.branched).toBe(true);
   expect(r.thread_id).not.toBe(threads[0].id);
   await request.delete(`/api/sessions/${session.id}`);
+});
+
+// A word being composed (an input method's candidates on screen) is confirmed
+// with Enter: that Enter belongs to the input method, and the question is not
+// asked until an Enter after it.
+test("a side question is not asked by the Enter that confirms a composed word", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", text: "first" } })).json();
+  try {
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).session.phase, { timeout: 20_000 }).toBe("idle");
+    await page.goto(`/s/${session.id}`);
+    await openPanel(page, "side");
+    const panel = page.getByTestId("side-questions");
+    const input = panel.getByTestId("side-input");
+    const posts: string[] = [];
+    page.on("request", (r) => { if (r.method() === "POST" && r.url().endsWith(`/api/sessions/${session.id}/side`)) posts.push(r.postData() ?? ""); });
+    await input.fill("东京の天気は");
+    // The two ways browsers mark it: the event says it is composing, or carries the input method's key code.
+    for (const init of [{ isComposing: true }, { keyCode: 229 }]) {
+      const prevented = await input.evaluate((el, init) => !el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true, ...init })), init);
+      expect(prevented).toBe(false);
+    }
+    await page.waitForTimeout(300);
+    await expect(input).toHaveValue("东京の天気は");
+    await expect(panel.getByTestId("side-pending")).toHaveCount(0);
+    expect(posts).toHaveLength(0);
+    await shoot(page, "side-03-composing");
+    // The composition is over: Enter asks, once.
+    await input.press("Enter");
+    await expect(panel.getByTestId("side-exchange")).toHaveCount(1, { timeout: 20_000 });
+    await expect(input).toHaveValue("");
+    expect(posts).toHaveLength(1);
+    expect(JSON.parse(posts[0]!).question ?? JSON.parse(posts[0]!).text).toBe("东京の天気は");
+  } finally { await request.delete(`/api/sessions/${session.id}`); }
 });

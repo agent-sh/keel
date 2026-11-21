@@ -93,7 +93,11 @@ export function SideQuestions({ session }: { session: Session }) {
           value={text}
           rows={2}
           onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); } }}
+          onKeyDown={(e) => {
+            // The Enter that confirms a word being composed is the input method's (key code 229 where the event does not say so).
+            if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); }
+          }}
           placeholder={current ? "Ask a follow-up" : "Ask a side question"}
           className="block w-full resize-none rounded-lg border border-line bg-raised px-3 py-2 text-ui outline-none placeholder:text-faint focus:border-line-strong"
         />
