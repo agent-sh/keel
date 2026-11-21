@@ -7,6 +7,14 @@
 // back, the snapshot lands in the directory the session first left, only when
 // that directory is as the session left it; its own state is saved to a ref
 // first, always.
+//
+// A move is safe to cut at any step and to start again. Each step leaves what
+// it did on the session's row first (the worktree it is about to make, the ref
+// a folder's own state went to), the switch is one write (the machine, the
+// folder, the note and the receipt together), and a daemon that starts finds
+// the moves the last one left running and closes them: the session is on one
+// side with both its machine and its folder, and its transcript says where the
+// move stopped and what it kept.
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Bus } from "../core/bus.ts";
@@ -25,8 +33,16 @@ export type Handoff = {
   from: { machine_id: string; machine: string; cwd: string }; to: { machine_id: string; machine: string; cwd?: string };
   steps: Step[]; started_ms: number; ended_ms?: number; summary?: string; error?: string; home?: string; away?: Record<string, string>;
   before_ref?: string; replaced?: boolean;
+  // Closed by the daemon that started after the one that ran it.
+  interrupted?: boolean;
+  // The switch is stored; the session's queue is still to be let go on.
+  settle?: boolean;
 };
-type Moves = { home?: string; away: Record<string, string>; left: Record<string, string>; last?: Handoff };
+// `away`: the worktree the session has on a machine. `making`: one about to be
+// made there, written before the call that makes it, so a move cut in between
+// makes that one again and never a second. `left`: the state a folder was in
+// when the session left it or a move last put it there.
+type Moves = { home?: string; away: Record<string, string>; left: Record<string, string>; making?: Record<string, { dir: string; branch: string }>; last?: Handoff };
 
 const GIT = "git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c user.name=Keel -c user.email=keel@localhost";
 const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
@@ -36,11 +52,87 @@ export class MoveError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
 
+const STEP_SAYS: Record<StepName, string> = { interrupt: "its turn was being stopped", snapshot: "its folder was being snapshotted", transfer: "its git state was being sent", worktree: "its files were being put in place", switch: "it was being switched" };
+
 export class Handoffs {
-  private moving = new Set<string>();
+  // The moves this process runs. One set for the process: a hot reload builds a
+  // new Handoffs while a move of the old one may still run.
+  private moving = ((globalThis as { __keelMoving?: Set<string> }).__keelMoving ??= new Set<string>());
 
   constructor(private store: Store, private bus: Bus, private engine: Engine, private fleet: Fleet) {
     store.migrate("CREATE TABLE IF NOT EXISTS fleet_moves (session_id TEXT PRIMARY KEY, data TEXT NOT NULL)");
+    this.reconcile();
+  }
+
+  // What the last daemon left: a move still marked running was cut (no move
+  // runs in a process that just started), and one whose switch is stored may
+  // still owe its queue. Safe to run again: a closed move is not found again.
+  private reconcile() {
+    const rows = this.store.db.query<{ session_id: string }, []>("SELECT session_id FROM fleet_moves WHERE json_extract(data, '$.last.state') = 'running' OR json_extract(data, '$.last.settle') = 1").all();
+    for (const { session_id: id } of rows) {
+      if (this.moving.has(id)) continue;
+      const m = this.moves(id);
+      if (m.last?.state === "running") this.closeCut(id, m, m.last);
+      // After the start has closed the turns the last daemon left open.
+      if (m.last?.settle) setTimeout(() => this.settle(id), 0);
+    }
+  }
+
+  // A move the daemon went down in the middle of. The switch is one write, so
+  // the session is where it was; a row an older build wrote in two (the
+  // machine, then the folder) is read as it stands: both new is a finished
+  // move, the machine alone is put back.
+  private closeCut(id: string, m: Moves, h: Handoff) {
+    const s = this.store.session(id);
+    const at = h.steps.find((st) => st.state === "running") ?? h.steps.find((st) => st.state === "pending");
+    const to = h.to.machine_id === "local" ? null : h.to.machine_id;
+    h.ended_ms = Date.now();
+    if (s && (s.machine ?? null) === to && s.workspace !== h.from.cwd) {
+      for (const st of h.steps) if (st.state === "pending" || st.state === "running") st.state = "done";
+      h.state = "done";
+      h.to.cwd = s.workspace;
+      h.away = Object.keys(m.away).length ? m.away : undefined;
+      h.summary = `Moved from ${h.from.machine} to ${h.to.machine}: now in ${s.workspace}. The daemon restarted as the move ended.`;
+      h.settle = true;
+    } else {
+      for (const st of h.steps) {
+        if (st.state === "running") { st.state = "failed"; st.detail = "cut by a daemon restart"; }
+        else if (st.state === "pending") st.state = "skipped";
+      }
+      h.state = "failed";
+      h.interrupted = true;
+      const kept: string[] = [];
+      const done = (n: StepName) => h.steps.find((st) => st.name === n)?.state === "done";
+      if (h.carry === "git" && done("snapshot")) kept.push(`Its state at that time is kept in refs/keel/handoff/${id}.`);
+      const wt = to ? m.making?.[to]?.dir ?? m.away[to] : undefined;
+      if (wt && at?.name !== "interrupt" && at?.name !== "snapshot") kept.push(`The worktree for it on ${h.to.machine} is ${wt}; the next move there uses it.`);
+      if (h.before_ref) kept.push(`What ${m.home ?? "the folder here"} held before the move is saved in ${h.before_ref}.`);
+      h.error = `The daemon restarted while ${at ? STEP_SAYS[at.name] : "the move ran"}. The session stays on ${h.from.machine}. ${kept.join(" ")}${kept.length ? " " : ""}Move it again to finish.`;
+    }
+    const note = this.store.atomic(id, () => {
+      if (s && h.state === "failed" && (s.machine ?? null) !== (h.from.machine_id === "local" ? null : h.from.machine_id)) {
+        this.store.db.query("UPDATE sessions SET machine = ? WHERE id = ?").run(h.from.machine_id === "local" ? null : h.from.machine_id, id);
+      }
+      this.saveMoves(id, { ...m, last: h });
+      return s ? this.store.append(id, "note", { kind: "handoff", text: h.state === "done" ? h.summary! : `The move to ${h.to.machine} was cut. ${h.error}` }) : undefined;
+    });
+    if (note) this.bus.emit({ t: "event", event: note });
+    this.bus.emit({ t: "feature", name: "handoff_progress", session_id: id, data: h });
+  }
+
+  // The last thing a finished move does: the queue it stopped goes on. Its own
+  // step, marked on the receipt, so a daemon that went down after the switch
+  // was stored still does it.
+  private settle(id: string) {
+    const m = this.moves(id);
+    if (!m.last?.settle) return;
+    try {
+      if (this.store.session(id)) this.engine.resumeQueue(id);
+    } catch {
+      // A prompt queued on another branch: the queue stays held until the owner says where it goes.
+    }
+    delete m.last.settle;
+    this.saveMoves(id, m);
   }
 
   isMoving = (id: string) => this.moving.has(id);
@@ -102,14 +194,28 @@ roots=$(git rev-list --max-parents=0 HEAD | tr '\\n' ' '); echo "roots=$roots"`,
   // Put a snapshot into an existing directory: its own state saved to a ref of
   // its own first; replaced only when it is as the session left it and its
   // HEAD is an ancestor of the snapshot. Otherwise its files stay.
-  private async land(machine: MachineRow | null, dir: string, sid: string, snap: { head: string; snap: string }, leftTree?: string) {
-    const beforeRef = `refs/keel/handoff-before/${sid}/${Date.now()}`;
+  private async land(machine: MachineRow | null, dir: string, beforeRef: string, snap: { head: string; snap: string; tree: string }, leftTree?: string) {
     const now = await this.snapshot(machine, dir, beforeRef);
+    // A move cut after this step put it here already: nothing to do.
+    if (now.head === snap.head && now.tree === snap.tree) return { replaced: true };
     const asLeft = leftTree !== undefined && now.tree === leftTree;
     const anc = (await this.sh(machine, dir, `git merge-base --is-ancestor ${now.head} ${snap.snap}`)).code === 0;
-    if (!asLeft || !anc) return { beforeRef, replaced: false, why: !asLeft ? "it changed since the session left it" : "its commit is not an ancestor of the carried state" };
+    if (!asLeft || !anc) return { replaced: false, why: !asLeft ? "it changed since the session left it" : "its commit is not an ancestor of the carried state" };
     await this.must(machine, dir, `${GIT} reset -q --hard ${snap.head}\n${GIT} read-tree -u --reset ${snap.snap}\n${GIT} reset -q ${snap.head}`, "apply");
-    return { beforeRef, replaced: true };
+    return { replaced: true };
+  }
+
+  // Lands the snapshot in a folder that exists. Where the folder's own state
+  // goes is on the receipt before anything is written there.
+  private async landIn(h: Handoff, moves: Moves, machine: MachineRow | null, dir: string, snap: { head: string; snap: string; tree: string }, ref: string) {
+    const place = key(machine?.id ?? "local", dir);
+    h.before_ref = `refs/keel/handoff-before/${h.session_id}/${Date.now()}`;
+    this.saveMoves(h.session_id, { ...moves, last: h });
+    const r = await this.land(machine, dir, h.before_ref, snap, moves.left[place]);
+    h.replaced = r.replaced;
+    if (r.replaced) moves.left[place] = snap.tree;
+    else h.summary = `${machine ? "The worktree there" : dir} was kept as it was (${r.why}); the carried state is in ${ref}.`;
+    this.saveMoves(h.session_id, { ...moves, last: h });
   }
 
   private async put(machine: MachineRow, path: string, data: Uint8Array) {
@@ -179,6 +285,7 @@ roots=$(git rev-list --max-parents=0 HEAD | tr '\\n' ' '); echo "roots=$roots"`,
     const moves = this.moves(s.id);
     const sid = s.id;
     const ref = `refs/keel/handoff/${sid}`;
+    let switched = false;
     try {
       await step("interrupt", async () => (this.engine.isRunning(sid) ? void (await this.engine.interrupt(sid)) : "skip"));
       let target = "";
@@ -224,18 +331,23 @@ roots=$(git rev-list --max-parents=0 HEAD | tr '\\n' ' '); echo "roots=$roots"`,
           target = (await step("worktree", async () => {
             const wt = moves.away[dest.id];
             if (wt && (await this.sh(dest, root, `test -d ${q(wt)}`)).code === 0) {
-              const r = await this.land(dest, wt, sid, snap, moves.left[key(dest.id, wt)]);
-              h.before_ref = r.beforeRef;
-              h.replaced = r.replaced;
-              if (!r.replaced) h.summary = `The worktree there was kept as it was (${r.why}); the carried state is in ${ref}.`;
+              await this.landIn(h, moves, dest, wt, snap, ref);
               return wt;
             }
+            // A new worktree. Its name is stored before it is made: a move cut
+            // between the two makes this one again (the session never ran in
+            // it, so what is there is only what the cut move put) and no other.
             const stamp = Date.now().toString(36);
-            const dir = join(root, ".keel", "worktrees", `handoff-${sid.slice(-12)}-${stamp}`);
-            await this.must(dest, root, `${GIT} -C ${q(repo)} worktree add -q -B ${q(`keel/handoff-${sid.slice(-12)}-${stamp}`)} ${q(dir)} ${snap.snap}\n${snap.snap !== snap.head ? `cd ${q(dir)} && ${GIT} reset -q ${snap.head}` : "true"}`, "worktree there");
-            moves.away[dest.id] = dir;
+            const cut = moves.making?.[dest.id];
+            const made = cut ?? { dir: join(root, ".keel", "worktrees", `handoff-${sid.slice(-12)}-${stamp}`), branch: `keel/handoff-${sid.slice(-12)}-${stamp}` };
+            moves.making = { ...moves.making, [dest.id]: made };
             this.saveMoves(sid, { ...moves, last: h });
-            return dir;
+            await this.must(dest, root, `${cut ? `rm -rf ${q(made.dir)}\n${GIT} -C ${q(repo)} worktree prune\n` : ""}${GIT} -C ${q(repo)} worktree add -q -B ${q(made.branch)} ${q(made.dir)} ${snap.snap}\n${snap.snap !== snap.head ? `cd ${q(made.dir)} && ${GIT} reset -q ${snap.head}` : "true"}`, "worktree there");
+            moves.away[dest.id] = made.dir;
+            moves.left[key(dest.id, made.dir)] = snap.tree;
+            delete moves.making[dest.id];
+            this.saveMoves(sid, { ...moves, last: h });
+            return made.dir;
           })) ?? "";
         } else {
           // Back here, into the directory the session first left (or the one named).
@@ -257,34 +369,44 @@ roots=$(git rev-list --max-parents=0 HEAD | tr '\\n' ' '); echo "roots=$roots"`,
             rmSync(file, { force: true });
           });
           target = (await step("worktree", async () => {
-            const r = await this.land(null, home, sid, snap, moves.left[key("local", home)]);
-            h.before_ref = r.beforeRef;
-            h.replaced = r.replaced;
-            if (!r.replaced) h.summary = `${home} was kept as it was (${r.why}); the carried state is in ${ref}.`;
+            await this.landIn(h, moves, null, home, snap, ref);
             return home;
           })) ?? "";
         }
       }
-      await step("switch", async () => {
-        this.store.db.query("UPDATE sessions SET machine = ? WHERE id = ?").run(dest ? dest.id : null, sid);
-        const next = this.store.updateSession(sid, { workspace: target });
-        this.engine.forgetSystem(sid);
-        this.bus.emit({ t: "session", session: next });
-      });
-      h.to.cwd = target;
-      h.away = Object.keys(moves.away).length ? moves.away : undefined;
-      h.state = "done";
-      h.ended_ms = Date.now();
-      const carried = h.carry === "git" ? "with its git state" : "without its files";
-      h.summary = h.summary ?? `Moved from ${h.from.machine} to ${h.to.machine} ${carried}: now in ${target}.`;
-      this.note(sid, h.summary);
+      // The switch: the machine, the folder, the note and the finished receipt
+      // are one write. A daemon killed before it finds the session where it
+      // was; one killed after it finds the move done.
+      const sw = h.steps.find((x) => x.name === "switch")!;
+      sw.state = "running";
       this.record(h);
-      this.engine.resumeQueue(sid);
+      const carried = h.carry === "git" ? "with its git state" : "without its files";
+      const summary = h.summary ?? `Moved from ${h.from.machine} to ${h.to.machine} ${carried}: now in ${target}.`;
+      const note = this.store.atomic(sid, () => {
+        if (!this.store.session(sid)) throw new Error("the session was deleted while it moved");
+        this.store.db.query("UPDATE sessions SET machine = ? WHERE id = ?").run(dest ? dest.id : null, sid);
+        this.store.updateSession(sid, { workspace: target });
+        const done: Handoff = { ...h, steps: h.steps.map((x) => (x === sw ? { ...x, state: "done" } : x)), to: { ...h.to, cwd: target }, away: Object.keys(moves.away).length ? moves.away : undefined, state: "done", ended_ms: Date.now(), summary, settle: true };
+        this.saveMoves(sid, { ...moves, last: done });
+        return this.store.append(sid, "note", { kind: "handoff", text: summary });
+      });
+      switched = true;
+      this.engine.forgetSystem(sid);
+      this.bus.emit({ t: "session", session: this.store.session(sid)! });
+      this.bus.emit({ t: "event", event: note });
+      this.settle(sid);
+      this.bus.emit({ t: "feature", name: "handoff_progress", session_id: sid, data: this.moves(sid).last });
     } catch (e) {
+      if (switched) throw e; // the move is stored as done: nothing after it makes it a failed one
       h.state = "failed";
       h.error = e instanceof LinkError ? `${h.to.machine} does not answer: ${(e as Error).message}` : (e as Error).message;
       h.ended_ms = Date.now();
       for (const st of h.steps) if (st.state === "pending" || st.state === "running") st.state = st.state === "running" ? "failed" : "skipped";
+      // Deleted while it moved: what the move made for it goes with it.
+      if (!this.store.session(sid)) {
+        this.saveMoves(sid, { ...moves, last: h });
+        return void (await this.cleanup(sid).catch(() => {}));
+      }
       this.note(sid, `The move to ${h.to.machine} failed; the session stays on ${h.from.machine}. ${h.error}`);
       this.record(h);
     }
@@ -301,7 +423,8 @@ roots=$(git rev-list --max-parents=0 HEAD | tr '\\n' ' '); echo "roots=$roots"`,
     const m = this.moves(id);
     const ref = `refs/keel/handoff/${id}`;
     if (m.home) await this.sh(null, m.home, `git update-ref -d ${q(ref)}; git for-each-ref --format='%(refname)' ${q(`refs/keel/handoff-before/${id}/`)} | while read r; do git update-ref -d "$r"; done; true`).catch(() => {});
-    for (const [mid, wt] of Object.entries(m.away)) {
+    const there = [...Object.entries(m.away), ...Object.entries(m.making ?? {}).map(([mid, w]) => [mid, w.dir] as [string, string])];
+    for (const [mid, wt] of there) {
       const mr = this.fleet.row(mid);
       if (!mr?.workspace_root) continue;
       await this.sh(mr, mr.workspace_root, `if [ -d ${q(wt)} ]; then b=$(git -C ${q(wt)} rev-parse --abbrev-ref HEAD); c=$(git -C ${q(wt)} rev-parse --git-common-dir); repo=$(cd ${q(wt)} && cd "$c/.." && pwd); git -C "$repo" worktree remove --force ${q(wt)}; git -C "$repo" branch -D "$b" >/dev/null 2>&1; git -C "$repo" update-ref -d ${q(ref)}; fi; true`).catch(() => {});

@@ -27,6 +27,7 @@ const dot = (colour?: string) => <span className="size-1.5 shrink-0 rounded-full
 type Handoff = {
   state: "running" | "done" | "failed"; carry: "git" | "none"; from: { machine: string }; to: { machine: string; cwd?: string };
   steps: { name: string; state: string; detail?: string }[]; summary?: string; error?: string; started_ms?: number;
+  interrupted?: boolean; // closed by the daemon that started after the one that ran it
 };
 
 const STEP_LABEL: Record<string, string> = { interrupt: "Stop the turn", snapshot: "Snapshot the folder", transfer: "Send what is missing", worktree: "Put it in place", switch: "Switch" };
@@ -140,8 +141,8 @@ export function MachineChip({ session }: { session: Session }) {
             )}
             {err && <div className="px-3.5 pb-3 text-caption text-danger">{err}</div>}
             {h && (
-              <div className="border-t border-line px-3.5 py-3" data-testid="move-progress" data-state={h.state}>
-                <div className="mb-2 text-caption text-muted">{h.state === "running" ? `Moving to ${h.to.machine}` : h.state === "done" ? `Last move: ${h.from.machine} to ${h.to.machine}` : `The move to ${h.to.machine} failed`}</div>
+              <div className="border-t border-line px-3.5 py-3" data-testid="move-progress" data-state={h.state} data-interrupted={h.interrupted || undefined}>
+                <div className="mb-2 text-caption text-muted">{h.state === "running" ? `Moving to ${h.to.machine}` : h.state === "done" ? `Last move: ${h.from.machine} to ${h.to.machine}` : h.interrupted ? `The move to ${h.to.machine} was cut by a restart` : `The move to ${h.to.machine} failed`}</div>
                 <ol className="flex flex-col gap-1">
                   {h.steps.map((st) => (
                     <li key={st.name} className="flex items-center gap-2 text-caption">

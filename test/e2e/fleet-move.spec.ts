@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
-import { peerProblem, standInDaemon } from "./peer.ts";
+import { exited, holdingProxy, ownDaemon, peerProblem, standInDaemon } from "./peer.ts";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { basename } from "node:path";
@@ -150,5 +150,90 @@ test("fleet move: from another machine a session only comes back here, and the p
     for (const id of [third, silent]) await request.delete(`/api/fleet/machines/${id}`);
     stub.close();
     await box.close();
+  }
+});
+
+// A daemon that goes down in the middle of a move. Its own daemon here (the
+// spec kills it), reaching the peer through a way that keeps back the answer
+// to one call: the worktree is made over there and this daemon never hears
+// so. The daemon that starts next closes the move: the session is still here
+// with its folder, its transcript says where the move stopped, the picker
+// offers the move again, and that move uses the worktree already made.
+test("fleet move: a daemon restart in the middle leaves the session on one side, and it moves again", async ({ page, request }) => {
+  const peerWhy = await peerProblem(request, PEER);
+  test.skip(!!peerWhy, peerWhy ?? "");
+  mkdirSync(ROOT, { recursive: true });
+  const tag = Date.now().toString(36);
+  const state = `${process.env.HOME}/.cache/keel-work/bun/e2e-state/move-cut-${tag}`;
+  const home = `${process.env.HOME}/.cache/keel-work/bun/e2e-ws/move-cut-${tag}`;
+  mkdirSync(home, { recursive: true });
+  const git = (...a: string[]) => execFileSync("git", ["-C", home, "-c", "user.name=t", "-c", "user.email=t@t", ...a], { encoding: "utf8" });
+  git("init", "-q");
+  writeFileSync(`${home}/a.txt`, "one\n");
+  git("add", "a.txt");
+  git("commit", "-qm", "init");
+  writeFileSync(`${home}/a.txt`, "one\ntwo\n");
+  const way = holdingProxy(PEER);
+  await way.open();
+  let d = await ownDaemon(state);
+  const api = async (path: string, init?: { method?: string; data?: unknown }) => (await fetch(`${d.url}${path}`, { method: init?.method ?? (init?.data ? "POST" : "GET"), headers: { "content-type": "application/json" }, body: init?.data ? JSON.stringify(init.data) : undefined })).json() as Promise<any>;
+  let sid = "";
+  try {
+    const machine = (await api("/api/fleet/machines", { data: { name: "devbox", daemon_url: way.url(), workspace_root: ROOT } })).id as string;
+    sid = (await api("/api/sessions", { data: { workspace: home, title: "Cut in the middle", model: "scripted:stand-in" } })).session.id;
+    const made = () => readdirSync(`${ROOT}/.keel/worktrees`).filter((n) => n.startsWith(`handoff-${sid.slice(-12)}-`));
+
+    const held = way.hold((path, body) => path === "/api/fleet/hands/exec" && body.includes("worktree add"));
+    expect((await api(`/api/sessions/${sid}/handoff`, { data: { machine_id: machine, carry: "git" } })).handoff.state).toBe("running");
+    await held;
+    expect(made()).toHaveLength(1);
+    d.proc.kill("SIGKILL");
+    await exited(d.proc);
+    d = await ownDaemon(state, d.port);
+
+    // One side: here, with its folder. One closed receipt, said in the transcript.
+    const cut = (await api(`/api/sessions/${sid}/handoff`)).handoff;
+    expect(cut).toMatchObject({ state: "failed", interrupted: true });
+    expect(cut.error).toContain(made()[0]);
+    const s = (await api(`/api/sessions/${sid}`)).session;
+    expect(s.machine ?? null).toBeNull();
+    expect(s.workspace).toBe(home);
+    expect(readFileSync(`${home}/a.txt`, "utf8")).toBe("one\ntwo\n");
+
+    await page.addInitScript(() => localStorage.setItem("keel.focus", "true"));
+    await page.goto(`${d.url}/s/${sid}`);
+    await expect(page.getByTestId("note").filter({ hasText: "The move to devbox was cut" })).toHaveCount(1);
+    await page.getByTestId("machine-chip").click();
+    const progress = page.getByTestId("move-progress");
+    await expect(progress).toHaveAttribute("data-interrupted", "true");
+    await expect(progress).toContainText("was cut by a restart");
+    await expect(progress).toContainText("Move it again to finish.");
+    await shoot(page, "fleet-move-05-cut-by-restart");
+
+    // The move again, from the same picker: done, into the worktree the cut move made.
+    await page.locator(`[data-testid="move-to"][data-machine="${machine}"]`).click();
+    await expect(progress).toHaveAttribute("data-state", "done", { timeout: 60_000 });
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("machine-chip")).toContainText("devbox");
+    expect(made()).toHaveLength(1);
+    const there = (await api(`/api/sessions/${sid}`)).session;
+    expect(there.machine).toBe(machine);
+    expect(there.workspace).toBe(`${ROOT}/.keel/worktrees/${made()[0]}`);
+    expect(readFileSync(`${there.workspace}/a.txt`, "utf8")).toBe("one\ntwo\n");
+    const notes = (await api(`/api/sessions/${sid}`)).events.filter((e: any) => e.kind === "note" && e.data.kind === "handoff").map((e: any) => e.data.text as string);
+    expect(notes.filter((t: string) => t.includes("was cut"))).toHaveLength(1);
+    expect(notes.filter((t: string) => t.startsWith("Moved from"))).toHaveLength(1);
+
+    // Deleted: the worktree over there goes with it.
+    await api(`/api/sessions/${sid}`, { method: "DELETE" });
+    await expect.poll(() => made().length, { timeout: 20_000 }).toBe(0);
+    sid = "";
+  } finally {
+    await page.goto("about:blank");
+    if (sid) await api(`/api/sessions/${sid}`, { method: "DELETE" }).catch(() => {});
+    d.proc.kill("SIGTERM");
+    await exited(d.proc);
+    await way.close();
+    for (const dir of [state, home, `${ROOT}/${basename(home)}`]) rmSync(dir, { recursive: true, force: true });
   }
 });

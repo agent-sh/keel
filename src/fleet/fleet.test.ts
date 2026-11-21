@@ -547,3 +547,168 @@ test("keel__run_on asks the far daemon to confine its command as the session's o
   if (Array.isArray(c)) expect(c[0]).not.toBe("bash");
   else expect(c.error).toContain("cannot sandbox");
 });
+
+// A move's own pieces: one machine that is a folder on this disk (the scripts a
+// move sends it run there), a session in a repository with an uncommitted
+// change, and a daemon that can go down while a call to the machine is out.
+async function moveRig() {
+  const { execFileSync } = await import("node:child_process");
+  const { readFileSync, rmSync } = await import("node:fs");
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Handoffs } = await import("./handoff.ts");
+  const { migrate } = await import("./db.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "keel-move-"));
+  const root = join(dir, "there"), home = join(dir, "home"), state = join(dir, "state");
+  for (const d of [root, home, state]) mkdirSync(d);
+  const git = (cwd: string, ...a: string[]) => execFileSync("git", ["-C", cwd, "-c", "user.name=t", "-c", "user.email=t@t", ...a], { encoding: "utf8" });
+  git(home, "init", "-q");
+  writeFileSync(join(home, "a.txt"), "one\n");
+  git(home, "add", "a.txt");
+  git(home, "commit", "-qm", "init");
+  writeFileSync(join(home, "a.txt"), "one\ntwo\n");
+  const rig = {
+    dir, root, home, git,
+    // "after": the call is done there and its answer never arrives; "before": it never leaves.
+    cut: undefined as ((path: string, script: string) => "before" | "after" | undefined) | undefined,
+    reached: Promise.withResolvers<void>(),
+    released: [] as string[], held: false,
+    store: undefined as unknown as InstanceType<typeof Store>,
+    moves: undefined as unknown as InstanceType<typeof Handoffs>,
+    session: () => rig.store.session(sid)!,
+    notes: () => rig.store.events(sid).filter((e) => e.kind === "note").map((e) => String((e.data as any).text)),
+    worktrees: () => { try { return execFileSync("ls", [join(root, ".keel/worktrees")], { encoding: "utf8" }).split("\n").filter(Boolean); } catch { return []; } },
+    // The daemon starts (again): a new process holds no move.
+    boot() {
+      rig.store?.db.close();
+      delete (globalThis as any).__keelMoving;
+      rig.cut = undefined;
+      rig.reached = Promise.withResolvers<void>();
+      rig.store = new Store(state);
+      migrate(rig.store);
+      const engine: any = { isRunning: () => false, interrupt: async () => {}, forgetSystem() {}, isHeld: () => rig.held, resumeQueue: (id: string) => { rig.released.push(id); } };
+      rig.moves = new Handoffs(rig.store, new Bus(), engine, fleet);
+    },
+    async moved(to: string, more: Record<string, unknown> = {}) {
+      rig.moves.start(rig.session(), { machine_id: to, ...more });
+      for (let i = 0; i < 400 && rig.moves.latest(sid)!.state === "running"; i++) await Bun.sleep(25);
+      return rig.moves.latest(sid)!;
+    },
+    close() { rig.store.db.close(); rmSync(dir, { recursive: true, force: true }); },
+  };
+  const fleet: any = {
+    name: "here",
+    row: (id: string) => (id === "m1" ? { id: "m1", name: "devbox", workspace_root: root } : undefined),
+    async hands(_id: string, path: string, init: any = {}) {
+      const u = new URL(path, "http://there");
+      const b = typeof init.body === "string" ? JSON.parse(init.body) : {};
+      const when = rig.cut?.(u.pathname, String(b.script ?? ""));
+      const never = () => { rig.reached.resolve(); return new Promise<Response>(() => {}); };
+      if (when === "before") return never();
+      let res: Response;
+      if (u.pathname.endsWith("/exec")) {
+        const p = Bun.spawnSync(["bash", "-c", b.script], { cwd: b.cwd, stdout: "pipe", stderr: "pipe" });
+        res = Response.json({ code: p.exitCode, out: p.stdout.toString() + p.stderr.toString() });
+      } else if (u.pathname.endsWith("/put")) {
+        mkdirSync(join(u.searchParams.get("path")!, ".."), { recursive: true });
+        writeFileSync(u.searchParams.get("path")!, init.body);
+        res = Response.json({ ok: true });
+      } else res = new Response(readFileSync(u.searchParams.get("path")!));
+      return when === "after" ? never() : res;
+    },
+  };
+  rig.boot();
+  const sid = rig.store.createSession({ model: "fixture:m", workspace: home }).id;
+  return rig;
+}
+
+test("a move cut by a restart: one side, one receipt, one worktree, and it moves again", async () => {
+  const rig = await moveRig();
+  try {
+    // The worktree is made over there; the daemon goes down before it hears so.
+    rig.cut = (path, script) => (path.endsWith("/exec") && script.includes("worktree add") ? "after" : undefined);
+    rig.moves.start(rig.session(), { machine_id: "m1" });
+    await rig.reached.promise;
+    expect(rig.worktrees()).toHaveLength(1);
+    rig.boot();
+    const cut = rig.moves.latest(rig.session().id)!;
+    expect(cut).toMatchObject({ state: "failed", interrupted: true });
+    expect(cut.steps.map((s) => s.state)).toEqual(["skipped", "done", "done", "failed", "skipped"]);
+    expect(cut.error).toContain(rig.worktrees()[0]);
+    expect(rig.session()).toMatchObject({ workspace: rig.home });
+    expect(rig.session().machine ?? null).toBeNull();
+    expect(rig.moves.isMoving(rig.session().id)).toBe(false);
+    expect(rig.notes().filter((t) => t.includes("was cut"))).toHaveLength(1);
+    // Another start finds nothing left to close.
+    rig.boot();
+    expect(rig.notes().filter((t) => t.includes("was cut"))).toHaveLength(1);
+
+    // Moved again: the same worktree, not a second one, with the folder as it is now.
+    writeFileSync(join(rig.home, "a.txt"), "one\ntwo\nthree\n");
+    const again = await rig.moved("m1");
+    expect(again).toMatchObject({ state: "done" });
+    expect(again.interrupted).toBeUndefined();
+    expect(rig.worktrees()).toHaveLength(1);
+    const wt = rig.session().workspace;
+    expect(wt).toBe(join(rig.root, ".keel/worktrees", rig.worktrees()[0]!));
+    expect(rig.session().machine).toBe("m1");
+    expect(await Bun.file(join(wt, "a.txt")).text()).toBe("one\ntwo\nthree\n");
+    expect(rig.git(wt, "status", "--short")).toContain(" M a.txt");
+    expect(rig.released).toHaveLength(1);
+
+    // Back, cut before the folder here is touched: still over there, whole.
+    writeFileSync(join(wt, "a.txt"), "one\ntwo\nthree\nfour\n");
+    rig.cut = (path) => (path.endsWith("/get") ? "after" : undefined);
+    rig.moves.start(rig.session(), { machine_id: "local" });
+    await rig.reached.promise;
+    rig.boot();
+    expect(rig.moves.latest(rig.session().id)).toMatchObject({ state: "failed", interrupted: true });
+    expect(rig.session()).toMatchObject({ machine: "m1", workspace: wt });
+    expect(await Bun.file(join(rig.home, "a.txt")).text()).toBe("one\ntwo\nthree\n");
+    expect(await rig.moved("local")).toMatchObject({ state: "done", replaced: true });
+    expect(rig.session().machine ?? null).toBeNull();
+    expect(rig.session().workspace).toBe(rig.home);
+    expect(await Bun.file(join(rig.home, "a.txt")).text()).toBe("one\ntwo\nthree\nfour\n");
+  } finally {
+    rig.close();
+  }
+});
+
+test("a move cut at the switch: the machine and the folder are both old or both new", async () => {
+  const rig = await moveRig();
+  try {
+    const id = rig.session().id;
+    const cutAtSwitch = async () => {
+      rig.cut = (path, script) => (path.endsWith("/exec") && (script.includes("worktree add") || script.includes("handoff-before")) ? "after" : undefined);
+      rig.moves.start(rig.session(), { machine_id: "m1" });
+      await rig.reached.promise;
+      const row = JSON.parse(rig.store.db.query<{ data: string }, [string]>("SELECT data FROM fleet_moves WHERE session_id = ?").get(id)!.data);
+      for (const st of row.last.steps) st.state = st.name === "switch" ? "running" : st.state === "running" ? "done" : st.state;
+      rig.store.db.query("UPDATE fleet_moves SET data = ? WHERE session_id = ?").run(JSON.stringify(row), id);
+    };
+    // An older build wrote the machine and the folder apart, and went down between them.
+    await cutAtSwitch();
+    rig.store.db.query("UPDATE sessions SET machine = 'm1' WHERE id = ?").run(id);
+    rig.boot();
+    expect(rig.moves.latest(id)).toMatchObject({ state: "failed", interrupted: true });
+    expect(rig.session().machine ?? null).toBeNull();
+    expect(rig.session().workspace).toBe(rig.home);
+
+    // Both written, the receipt not: the move is done, and its queue goes on once.
+    await cutAtSwitch();
+    const wt = join(rig.root, ".keel/worktrees", rig.worktrees()[0]!);
+    rig.store.db.query("UPDATE sessions SET machine = 'm1', workspace = ? WHERE id = ?").run(wt, id);
+    rig.boot();
+    expect(rig.moves.latest(id)).toMatchObject({ state: "done", to: { cwd: wt } });
+    expect(rig.session()).toMatchObject({ machine: "m1", workspace: wt });
+    expect(rig.worktrees()).toHaveLength(1);
+    await Bun.sleep(20);
+    expect(rig.released).toEqual([id]);
+    rig.boot();
+    await Bun.sleep(20);
+    expect(rig.released).toEqual([id]);
+    expect(rig.notes().filter((t) => t.startsWith("Moved from"))).toHaveLength(1);
+  } finally {
+    rig.close();
+  }
+});

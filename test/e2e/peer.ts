@@ -5,7 +5,7 @@
 import type { APIRequestContext } from "@playwright/test";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHmac, randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -75,4 +75,72 @@ export async function emptyKeel(dir: string): Promise<{ url: string; state: stri
   });
   const stop = () => new Promise<void>((r) => { if (proc.exitCode !== null) return r(); proc.once("exit", () => r()); proc.kill("SIGTERM"); });
   return { url, state: join(dir, "state"), stop };
+}
+
+// A daemon of the spec's own on a scratch state, on the scripted stand-in: one
+// a spec may kill and start again on the same port. It reads nothing of the
+// owner's (its own config folder and stores, an empty ssh configuration).
+export function ownDaemon(state: string, port = 0): Promise<{ proc: ChildProcess; url: string; port: number }> {
+  for (const d of ["config", "home", "stores"]) mkdirSync(join(state, d), { recursive: true });
+  writeFileSync(join(state, "ssh_config"), "");
+  const proc = spawn("bun", ["src/main.ts", "serve", "--bind", `127.0.0.1:${port}`, "--state-dir", state, "--workspace", state], {
+    env: {
+      ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_SERVER_NAME: "desk", KEEL_CONFIG_DIR: join(state, "config"), KEEL_SSH_CONFIG: join(state, "ssh_config"), KEEL_DESKTOP_NOTIFY: "off",
+      KEEL_MCP_CONFIG: join(state, "mcp.json"), KEEL_IMPORT_HOME: join(state, "home"), KEEL_IMPORT_CLAUDE_DIR: join(state, "stores/claude"), KEEL_IMPORT_CODEX_DIR: join(state, "stores/codex"), KEEL_IMPORT_AGY_DIR: join(state, "stores/agy"),
+      KEEL_IMPORT_KEEL_DB: join(state, "stores/keel.db"), KEEL_IMPORT_HERMES_DIR: join(state, "stores/hermes"), TACIT_BIN: resolve("test/e2e/fixtures/tacit-standin.sh"),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  return new Promise((done, reject) => {
+    let out = "";
+    const t = setTimeout(() => reject(new Error(`no listen line:\n${out}`)), 30_000);
+    const on = (d: Buffer) => {
+      out += d;
+      const m = out.match(/keel listening on (http:\/\/\S+?)\/? /);
+      if (m) { clearTimeout(t); const url = m[1]!.replace(/\/$/, ""); done({ proc, url, port: Number(new URL(url).port) }); }
+    };
+    proc.stdout!.on("data", on);
+    proc.stderr!.on("data", on);
+  });
+}
+export const exited = (p: ChildProcess) => new Promise<void>((r) => (p.exitCode !== null ? r() : p.once("exit", () => r())));
+
+// The way to another daemon with a hand on it: every request goes through to
+// `target` as it is, and the answer to the next one `hold` matches is kept
+// back after the daemon there has done the work. What a daemon that goes down
+// in the middle of a call leaves behind, at a step the spec names.
+export function holdingProxy(target: string) {
+  let server: Server | undefined, port = 0;
+  let want: { match: (path: string, body: string) => boolean; held: () => void } | undefined;
+  const open = () => new Promise<void>((resolve, reject) => {
+    server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", async () => {
+        const body = Buffer.concat(chunks);
+        const path = (req.url ?? "").split("?")[0]!;
+        const holding = want?.match(path, body.toString("utf8")) ? want : undefined;
+        if (holding) want = undefined;
+        const headers = Object.fromEntries(Object.entries(req.headers).filter(([k, v]) => typeof v === "string" && !["host", "connection", "content-length"].includes(k))) as Record<string, string>;
+        const gone = new AbortController();
+        res.on("close", () => gone.abort());
+        try {
+          const up = await fetch(`${target}${req.url}`, { method: req.method, headers, body: body.length ? body : undefined, signal: holding ? undefined : gone.signal });
+          if (holding) { await up.arrayBuffer(); return holding.held(); }
+          const out: Record<string, string> = {};
+          up.headers.forEach((v, k) => { if (!["content-encoding", "content-length", "transfer-encoding", "connection"].includes(k)) out[k] = v; });
+          res.writeHead(up.status, out);
+          for await (const c of up.body ?? []) res.write(c);
+          res.end();
+        } catch {
+          if (!res.headersSent) res.writeHead(502);
+          res.end();
+        }
+      });
+    });
+    server.once("error", reject).listen(0, "127.0.0.1", () => { port = (server!.address() as AddressInfo).port; resolve(); });
+  });
+  const hold = (match: (path: string, body: string) => boolean) => new Promise<void>((held) => { want = { match, held }; });
+  const close = () => new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
+  return { open, close, hold, url: () => `http://127.0.0.1:${port}` };
 }
