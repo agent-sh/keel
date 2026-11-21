@@ -269,3 +269,53 @@ test("keel sessions, the page and keel__sessions_list report the same state", as
     await drop(request, made);
   }
 });
+
+test("a session that needs the owner or failed is never behind the fold, and a failure carries its class", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const made: string[] = [];
+  const folder = `${WS}/many-${Date.now().toString(36)}`;
+  const ended = async (id: string) => {
+    const d = await (await request.get(`/api/sessions/${id}`)).json();
+    return !d.running && ["turn_end", "error"].includes(d.events.at(-1)?.kind);
+  };
+  try {
+    // The oldest of fourteen: three that failed and one that waits on an approval. Ten finished ones are newer.
+    const failed: string[] = [];
+    for (const title of ["Reindex the docs", "Summarize the incident", "Draft the changelog"]) {
+      const id = await start(request, title, "full-auto", folder);
+      made.push(id); failed.push(id);
+      await send(request, id, "script:billing");
+    }
+    const asks = await start(request, "Clean the build output", "ask", folder);
+    made.push(asks);
+    await send(request, asks, script([{ name: "Bash", input: { command: "rm -rf dist build" } }]));
+    for (const id of failed) await expect.poll(() => ended(id), { timeout: 30_000 }).toBe(true);
+    const quiet: string[] = [];
+    for (let i = 1; i <= 10; i++) {
+      const id = await start(request, `Finished piece of work ${i}`, "full-auto", folder);
+      made.push(id); quiet.push(id);
+      await send(request, id, "Say hello.");
+    }
+    for (const id of quiet) await expect.poll(() => ended(id), { timeout: 30_000 }).toBe(true);
+
+    await page.goto(`/s/${quiet.at(-1)}`);
+    await expect(row(page, quiet.at(-1)!)).toBeVisible();
+    // Without a click: the one that needs the owner, and every failure with what kind it was.
+    await expect(row(page, asks)).toBeVisible();
+    await expect(row(page, asks)).toHaveAttribute("data-watch", "need");
+    for (const id of failed) {
+      await expect(row(page, id)).toBeVisible();
+      await expect(row(page, id).getByTestId("row-state")).toHaveText("Failed");
+      await expect(row(page, id).getByTestId("row-class")).toHaveText("billing");
+    }
+    expect(await stateOf(request, failed[0]!)).toMatchObject({ watch: "fail", cls: "quota" });
+    // Only finished ones are folded, and the fold says how many.
+    const group = page.locator(".k-group").filter({ has: page.locator(`[data-session="${asks}"]`) });
+    await expect(group.locator(".k-more")).toHaveText("4 more");
+    await expect(row(page, quiet[0]!)).toHaveCount(0);
+    await shoot(page, "session-state-05-never-folded");
+  } finally {
+    await drop(request, made);
+  }
+});

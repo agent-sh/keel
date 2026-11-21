@@ -7,7 +7,7 @@ import { WATCH_LABEL, WATCH_RANK, useWatches, type SessionState, type Watch } fr
 import { cn } from "../lib/utils.ts";
 import { span } from "../../../src/core/watch.ts";
 
-export { span, whyText } from "../../../src/core/watch.ts";
+export { failWord, span, whyText } from "../../../src/core/watch.ts";
 
 // A state is a shape as well as a color, so it reads without color too.
 export function Mark({ w, className }: { w: Watch; className?: string }) {

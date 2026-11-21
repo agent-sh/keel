@@ -8,11 +8,12 @@
 // agent it started still runs, and as waiting while all that is left waits.
 import type { Store } from "../core/store.ts";
 import type { Session, TurnStatus } from "../core/types.ts";
-import { stateOf, watchLabel, watchWord, type Ask, type Pending, type SessionState as State, type Watch, type WatchFacts } from "../core/watch.ts";
+import { failWord, stateOf, watchLabel, watchWord, type Ask, type Pending, type SessionState as State, type Watch, type WatchFacts } from "../core/watch.ts";
 import * as perm from "../server/routes/permissions.ts";
 import { plansWaiting } from "../server/routes/plan.ts";
 import { allPendingQuestions } from "../tools/interact.ts";
 import { liveJobs, running } from "../tools/jobs.ts";
+import { errorClass } from "../admin/classes.ts";
 import { D } from "./core.ts";
 
 // The fact with its words: `label` as a page shows it, `word` as a tool says it.
@@ -58,6 +59,25 @@ function questionOf(store: Store, sessionId: string, callId: string): { text: st
   const out = { text, since: e.ts };
   if (asked.size > 500) asked.clear();
   asked.set(key, out);
+  return out;
+}
+
+// The failure a session's last turn ended in: its class and its first line,
+// read once per failure from the error the turn recorded.
+const failures = new Map<string, { cls?: string; text?: string; at: number }>();
+function failureOf(store: Store, s: Session): { cls?: string; text?: string; at?: number } | undefined {
+  const at = s.settings.failed_ms;
+  if (!at) return undefined;
+  const key = `${s.id}:${at}`;
+  const hit = failures.get(key);
+  if (hit) return hit;
+  const e = store.db.query<{ data: string }, [string]>("SELECT data FROM events WHERE session_id = ? AND kind = 'error' ORDER BY seq DESC LIMIT 1").get(s.id);
+  let message = "";
+  try { message = String(JSON.parse(e?.data ?? "{}").message ?? ""); } catch {}
+  const cls = message ? errorClass({ message }) ?? undefined : undefined;
+  const out = { ...(cls && cls !== "other" ? { cls } : {}), ...(message ? { text: message.split("\n")[0]! } : {}), at };
+  if (failures.size > 2000) failures.clear();
+  failures.set(key, out);
   return out;
 }
 
@@ -112,7 +132,7 @@ export function factsOf(s: Session, l: Lens): WatchFacts {
   const e = l.d.engine;
   const turn = e.isRunning(s.id) ? e.turnOf?.(s.id) : undefined;
   const live = turn ? { status: e.statusOf?.(s.id), turn: l.d.store.event(turn)?.ts, output: e.outputOf?.(s.id) } : {};
-  return { asks, agents: l.counts.get(s.id) ?? 0, parked: parked.length, pending, ...live };
+  return { asks, agents: l.counts.get(s.id) ?? 0, parked: parked.length, pending, ...live, failure: failureOf(l.d.store, s) };
 }
 
 // The state in a tool's words. What a session waits on is named by its kind
@@ -121,6 +141,7 @@ export function factsOf(s: Session, l: Lens): WatchFacts {
 const WAITS: Record<string, string> = { timer: "a timer", command: "a background command", agent: "an agent that waits" };
 export function stateWord(st: State): string {
   if (st.watch === "wait") return `waiting on ${WAITS[st.why ?? ""] ?? "a condition it set"}`;
+  if (st.watch === "fail" && failWord(st.cls)) return `failed (${failWord(st.cls)})`;
   return watchWord(st.watch, st.agents);
 }
 

@@ -40,6 +40,7 @@ export type SessionState = {
   text?: string;    // the reason in words: "Approve Bash: rm -rf dist", "Plan to approve", "Timer: check the deploy"
   since?: number;   // when the reason began (ms)
   until?: number;   // wait: when what it waits for is due (a timer's wake)
+  cls?: string;     // fail: the failure's class (rate_limit, quota, auth, ...: src/admin/classes.ts), when it has one
   asks?: number;    // how many things wait on the owner here, each counted once
   child?: string;   // the agent session the first of them waits in
 };
@@ -60,6 +61,8 @@ export type Pending = { kind: string; text?: string; since?: number; until?: num
 export type WatchFacts = {
   asks?: Ask[]; approvals?: number; asking?: boolean; agents?: number; parked?: number; pending?: Pending[];
   status?: TurnStatus; turn?: number; output?: number;
+  // The failure the last turn ended in: its class, its first line, when.
+  failure?: { cls?: string; text?: string; at?: number };
 };
 
 // An agent still at work: running, or waiting on something it set up.
@@ -138,12 +141,21 @@ export function whyText(st: SessionState, now = Date.now()): string {
   return st.text ?? "";
 }
 
+// A failure's class in a reader's words. A class with no better word than
+// the failure itself (other) has none.
+const FAIL_WORD: Record<string, string> = {
+  rate_limit: "rate limit", overloaded: "overloaded", server: "server error", stream_drop: "stream dropped", context_overflow: "context full",
+  auth: "sign-in", quota: "billing", refusal: "declined", image: "image refused", invalid_request: "invalid request",
+};
+export const failWord = (cls: string | undefined) => (cls ? FAIL_WORD[cls] ?? "" : "");
+
 // The state as one line of text, for a terminal: the word, why, and since
 // when or until when. "needs you: Approve Bash: rm -rf dist, for 4m".
 export function stateLine(st: SessionState, now = Date.now()): string {
   const why = whyText(st, now);
   const time = st.until ? (st.until > now ? `due in ${span(st.until - now)}` : "due now") : st.since && st.why !== "stalled" ? `for ${span(now - st.since)}` : "";
-  return [`${watchLabel(st.watch, why ? 0 : st.agents).toLowerCase()}${why ? `: ${why}` : ""}`, time].filter(Boolean).join(", ");
+  const cls = st.watch === "fail" && failWord(st.cls) ? ` (${failWord(st.cls)})` : "";
+  return [`${watchLabel(st.watch, why ? 0 : st.agents).toLowerCase()}${cls}${why ? `: ${why}` : ""}`, time].filter(Boolean).join(", ");
 }
 
 // The session's own state, from its events when they are loaded, else from
@@ -185,7 +197,9 @@ export function stateOf(s: Session, events: StoredEvent[] | undefined, f: WatchF
   if (w === "work") return { watch: "work", agents, ...(f.status || f.turn ? doing(f) : {}) };
   if (agents - (f.parked ?? 0) > 0) return { watch: "work", agents };
   // A turn the owner stopped, or a restart cut, waits on them, not on a timer.
-  if (w === "stop" || w === "resume" || !f.pending?.length) return { watch: w, agents };
+  // A failure says what kind it was and what the provider said.
+  const failed = w === "fail" && f.failure ? { why: f.failure.cls ?? "error", ...(f.failure.cls ? { cls: f.failure.cls } : {}), ...(f.failure.text ? { text: oneLine(f.failure.text, 200) } : {}), ...(f.failure.at ? { since: f.failure.at } : {}) } : {};
+  if (w === "stop" || w === "resume" || !f.pending?.length) return { watch: w, agents, ...failed };
   // What is due first leads; without a due time, what has waited longest.
   const pending = [...f.pending].sort((a, b) => (a.until ?? Infinity) - (b.until ?? Infinity) || (a.since ?? Infinity) - (b.since ?? Infinity));
   const first = pending[0]!;

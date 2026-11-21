@@ -19,7 +19,7 @@ import { lastLine, useAgentCount, useAgentCounts, useSessionState, useWatch, use
 import { MachineSep, machineRuns, WherePip, whereWords } from "./Where.tsx";
 import { finished, ListFind, matches, order, setArrange, useArrange } from "./ListArrange.tsx";
 import { useAuto } from "../lib/automation.ts";
-import { folderOf, Mark, modelOf, stateClock, timed, useNow, whyText } from "./Mark.tsx";
+import { failWord, folderOf, Mark, modelOf, stateClock, timed, useNow, whyText } from "./Mark.tsx";
 import { AutomationFooter, SessionBadges, SessionChildren } from "./automation/SidebarExtras.tsx";
 import { dragSession, PaneCount } from "./Panes.tsx";
 import { PaneMenu } from "./PaneMenu.tsx";
@@ -136,6 +136,7 @@ function Row({ s, active, where }: { s: Session; active: boolean; where?: boolea
         {SPELLED.includes(w) && (
           <span className="k-row-sub">
             <span className="k-row-state" data-testid="row-state">{watchLabel(w, st.agents)}</span>
+            {w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="row-class">{failWord(st.cls)}</span>}
             {st.text && <span className="k-row-why" data-testid="row-why" data-why={st.why} title={whyText(st, now)}>{whyText(st, now)}</span>}
             {timed(st) && <span className="k-row-clock tabular-nums" data-testid="row-clock">{stateClock(st, now)}</span>}
           </span>
@@ -181,12 +182,16 @@ function rootSessionId(sessions: Record<string, Session>, current: string | null
 
 // A folder shows its newest sessions; the rest open on request (and the open
 // one is always shown, also when it is a subagent's: its parent's row then).
+// A session that needs the owner, failed, works or waits is never folded
+// away: only the ones at rest are (done, stopped, not started).
 const SHOWN = 6;
+const AT_REST: Watch[] = ["done", "idle", "stop"];
 export function Group({ list, current, every, where }: { list: Session[]; current: string | null; every?: boolean; where?: boolean }) {
   const [more, setAll] = useState(false);
   const all = more || !!every;
   const root = useStore((x) => rootSessionId(x.sessions, current));
-  const shown = all ? list : list.filter((s, i) => i < SHOWN || s.id === root);
+  const watches = useWatches(list);
+  const shown = all ? list : list.filter((s, i) => i < SHOWN || s.id === root || !AT_REST.includes(watches[s.id] ?? "idle"));
   return (
     <div className="flex flex-col gap-px">
       {shown.map((s) => (
