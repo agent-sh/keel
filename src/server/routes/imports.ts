@@ -324,7 +324,11 @@ export const importRoutes: RouteModule = (deps) => {
         const u = new URL(req.url).searchParams;
         const format = u.get("format") ?? "md";
         const include = new Set((u.get("include") ?? "").split(",").filter(Boolean));
-        for (const p of include) if (!["reasoning", "tools", "diffs"].includes(p)) return bad(`unknown part ${p}`);
+        // The parts the Markdown writer has text for. An edit's change is in its
+        // tool call: there is no part of diffs, and asking for one is refused
+        // instead of answered with a file that silently has none.
+        if (include.has("diffs")) return bad("the export has no diffs part: an edit's change is in its tool call (include=tools); the parts are reasoning and tools");
+        for (const p of include) if (!["reasoning", "tools"].includes(p)) return bad(`unknown part ${p}: the parts are reasoning and tools`);
         // The download name: the title on one line, in its own script where the
         // browser reads filename*, an ASCII name of the session's own otherwise.
         const title = (s.title || "").replace(/\s+/g, " ").trim();

@@ -229,3 +229,31 @@ test("import and export", async ({ page, request }) => {
     .map((e) => e.message);
   expect([...pageErrors, ...serverErrors]).toEqual([]);
 });
+
+// The Markdown export writes the parts it has text for, tool calls and
+// reasoning. A part it does not write (diffs) is refused, not answered with a
+// file that leaves it out.
+test("a Markdown export refuses a part it does not write", async ({ request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Export parts" } })).json();
+  try {
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Read", input: { file_path: "/no/such/file.txt" } }])}` } });
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}/events`)).json()).events.some((e: any) => e.kind === "turn_end"), { timeout: 30_000 }).toBe(true);
+    const get = (include: string) => request.get(`/api/sessions/${session.id}/export?format=md&include=${include}`);
+    for (const include of ["diffs", "tools,diffs"]) {
+      const r = await get(include);
+      expect([include, r.status(), (await r.json()).error]).toEqual([include, 400, "the export has no diffs part: an edit's change is in its tool call (include=tools); the parts are reasoning and tools"]);
+    }
+    expect((await (await get("patches")).json()).error).toBe("unknown part patches: the parts are reasoning and tools");
+    const plain = await request.get(`/api/sessions/${session.id}/export?format=md`);
+    expect([plain.status(), (await plain.text()).includes("**Call 1: Read**")]).toEqual([200, false]);
+    for (const include of ["tools", "tools,reasoning"]) {
+      const r = await get(include);
+      expect([include, r.status(), (await r.text()).includes("**Call 1: Read**")]).toEqual([include, 200, true]);
+    }
+    expect((await get("reasoning")).status()).toBe(200);
+  } finally {
+    await request.delete(`/api/sessions/${session.id}`);
+  }
+});
