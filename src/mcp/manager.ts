@@ -24,6 +24,18 @@ import { toOutput } from "./result.ts";
 import { conceal } from "../core/conceal.ts";
 import { runMode } from "../core/runmode.ts";
 
+// How often one call's server may ask (2025-11-25 client/elicitation, security
+// considerations: "Clients SHOULD implement rate limiting"). Past it the rest
+// of the call's questions are answered as if the owner made no choice.
+const QUESTIONS_MAX = 20;
+const DECLINES_MAX = 5;
+// The questions that wait behind the one on the card.
+const QUEUED_MAX = 5;
+type CallAsks = { asked: number; declined: number; queued: number; notes: Set<string>; readOnly: boolean };
+const overLimit = (server: string, c: CallAsks): string | undefined =>
+  c.declined >= DECLINES_MAX ? `${server} went on asking after the owner declined ${DECLINES_MAX} of its questions in this call.`
+    : c.asked >= QUESTIONS_MAX ? `${server} asked more than ${QUESTIONS_MAX} questions in this call.` : undefined;
+
 // A folder as the roots a server is told (2025-11-25 client/roots): one root,
 // a file URI of the real path, named by the folder.
 const rootsOf = (dir: string) => {
@@ -259,7 +271,8 @@ export class McpManager {
     this.bundledOffPath = join(stateDir, "mcp-bundled-off.json");
     this.publishedPath = join(stateDir, "mcp-instructions.json");
     this.askedPath = join(stateDir, "mcp-asked.json");
-    try { this.asked = new Set(JSON.parse(readFileSync(this.askedPath, "utf8"))); } catch {} // none kept
+    // (Entries of sessions that are gone are never asked about: only the newest are kept.)
+    try { this.asked = new Set((JSON.parse(readFileSync(this.askedPath, "utf8")) as string[]).slice(-200)); } catch {} // none kept
     try { this.published = JSON.parse(readFileSync(this.publishedPath, "utf8")); } catch {} // none kept yet
     const keyPath = join(stateDir, "mcp-bind.key");
     if (!existsSync(keyPath)) {
@@ -758,9 +771,20 @@ export class McpManager {
         ? "Refused: the MCP server or tool changed before invocation. Look up the tool again." : undefined) : undefined;
     // A call a program made has no card of its own: its questions get no answer.
     const card = ctx.callId && !ctx.nestedIn ? `${ctx.sessionId}:${ctx.callId}` : undefined;
+    const call: CallAsks = { asked: 0, declined: 0, queued: 0, notes: new Set(), readOnly: tools?.find((t) => t.name === tool)?.annotations?.readOnlyHint === true };
+    // What the model is told besides the result: what the server asked that got no answer, and why.
+    const noted = (out: ToolOutput): ToolOutput => {
+      if (!call.notes.size) return out;
+      const text = [...call.notes].map((n) => `[keel] ${n}`).join("\n");
+      return { ...out, content: typeof out.content === "string" ? `${out.content}\n\n${text}` : [...out.content, { type: "text", text }] };
+    };
     let r: McpCallResult;
     try {
-      r = await client.callTool(tool, input, ctx.signal, (e?.config.tool_timeout_secs ?? 600) * 1000, meta, authorize, (q) => this.input(name, q, ctx, card));
+      r = await client.callTool(tool, input, ctx.signal, (e?.config.tool_timeout_secs ?? 600) * 1000, meta, authorize, {
+        session: ctx.sessionId,
+        ask: (q) => this.input(name, q, ctx, card, call),
+        dropped: (method, why) => call.notes.add(`${name} ${method === "roots/list" ? "asked for the session's folder" : "asked the owner a question"} while this call ran and got no answer: ${why}. If the result depends on it, run the call again when no other session is using ${name}.`),
+      });
     } catch (err) {
       this.callEnded(ctx.sessionId, card);
       if (err instanceof McpAuthorizationError) return { content: err.message, is_error: true };
@@ -772,20 +796,23 @@ export class McpManager {
       // A call the owner's stop or a daemon stop ended did not fail.
       if (!ctx.signal.aborted) this.errors.capture("tool", err, { mcp: name, tool, session: ctx.sessionId });
       if (err instanceof SessionExpired) return { content: `${shown}__${tool} did not run: ${err.message}. Keel opens a new session; the call was not sent again. Look the tool up again and call it if it is still needed.`, is_error: true };
-      return { content: `${shown}__${tool} failed: ${(err as Error).message}`, is_error: true };
+      return noted({ content: `${shown}__${tool} failed: ${(err as Error).message}`, is_error: true });
     }
     this.callEnded(ctx.sessionId, card);
-    return toOutput(r, ctx, `${shown}__${tool}`);
+    return noted(await toOutput(r, ctx, `${shown}__${tool}`));
   }
 
   // ---- what a server asks while it works on a call ----
 
-  // Calls whose question is open on a card now, and calls that had asked one
-  // when they were last seen (kept in a file). A daemon that stops while a
-  // card is open parks the turn: the call keeps no result, and the next
-  // daemon runs it again, so the server asks again and the card is back
-  // (callOutcome "waiting"). A crash leaves the same record.
+  // Calls whose question is open on a card now.
   private asking = new Set<string>();
+  // Calls of tools their server marks read-only (readOnlyHint) that have a
+  // card open, kept in a file. A daemon that stops or dies with such a card
+  // open runs the call again, so the server asks again and the card is back
+  // (callOutcome "waiting"): a call that only reads loses nothing by that.
+  // Any other call that asked ends as a call a restart cut, which may have
+  // partly run: the server had begun its work before it asked, and running
+  // it again would do that work twice.
   private asked = new Set<string>();
   private askedPath: string;
   private parked = new Set<string>();
@@ -800,16 +827,25 @@ export class McpManager {
     if (card && !this.parked.has(sessionId) && this.asked.delete(card)) this.keepAsked();
   }
 
-  private input(server: string, q: InputRequest, ctx: ToolContext, card?: string): Promise<unknown> {
+  private input(server: string, q: InputRequest, ctx: ToolContext, card: string | undefined, call: CallAsks): Promise<unknown> {
     // The folders of the session whose call the server works on.
     if (q.method === "roots/list") return Promise.resolve(rootsOf(ctx.cwd));
     if (q.method !== "elicitation/create") throw new RpcError(-32601, `keel does not support ${q.method}`);
     const mode = q.params?.mode ?? "form";
     // 2025-11-25 elicitation, Error Handling: a mode the client did not declare is invalid params.
     if (mode !== "form") throw new RpcError(-32602, `keel offers form elicitation only, not ${mode} mode`);
-    if (!card) return Promise.resolve<ElicitResult>({ action: "cancel" });
+    const unasked = (why: string) => {
+      call.notes.add(`${why} It was answered as if the owner made no choice.`);
+      return Promise.resolve<ElicitResult>({ action: "cancel" });
+    };
+    if (!card) return unasked(`${server} asked the owner a question, and a call a program made has no card to show it on: call the tool directly.`);
+    const over = overLimit(server, call);
+    if (over) return unasked(over);
+    if (call.queued > QUEUED_MAX) return unasked(`${server} asked more than ${QUEUED_MAX} questions at once: one card is shown at a time, and no more than that wait behind it.`);
+    call.asked++;
+    call.queued++;
     // One card per call: a second question waits for the first.
-    const run = (this.queue.get(card) ?? Promise.resolve()).then(() => this.elicit(server, q.params, ctx, card));
+    const run = (this.queue.get(card) ?? Promise.resolve()).then(() => (overLimit(server, call) ? unasked(overLimit(server, call)!) : this.elicit(server, q.params, ctx, card, call))).finally(() => { call.queued--; });
     const tail = run.catch(() => {});
     this.queue.set(card, tail);
     void tail.then(() => { if (this.queue.get(card) === tail) this.queue.delete(card); });
@@ -828,25 +864,40 @@ export class McpManager {
   // The owner answers on the call's question card. An answer the schema does
   // not take is asked again with what was wrong; a declined card is the
   // protocol's decline; a stopped turn (or a stopping daemon) is its cancel.
-  private async elicit(server: string, params: unknown, ctx: ToolContext, card: string): Promise<ElicitResult> {
+  private questions = 0;
+  private async elicit(server: string, params: unknown, ctx: ToolContext, card: string, call: CallAsks): Promise<ElicitResult> {
     const form = formOf(params);
-    if (!this.asked.has(card)) { this.asked.add(card); this.keepAsked(); }
+    if (form.unanswerable) {
+      call.notes.add(`${server} asked the owner a form that cannot be answered: ${form.unanswerable}. It was answered as if the owner made no choice.`);
+      return { action: "cancel" };
+    }
+    // One id per question, so the card knows a new question from the last one on the same call.
+    const id = `${Date.now().toString(36)}-${++this.questions}`;
+    if (call.readOnly && !this.asked.has(card)) {
+      this.asked.add(card);
+      this.keepAsked();
+    }
     this.asking.add(card);
     const tell = (f: (h: ReturnType<typeof allHooks>[number]) => void) => { for (const h of allHooks()) try { f(h); } catch (e) { this.errors.capture("server", e, { hook: "ownerAsked", session: ctx.sessionId }); } };
-    tell((h) => h.ownerAsked?.(ctx.sessionId, ctx.callId!, `${server} asks: ${form.message}`));
+    tell((h) => h.ownerAsked?.(ctx.sessionId, ctx.callId!, `${server} asks: ${form.message}`, id));
     let answered = false;
     try {
       for (let round = 0, note: string | undefined; ; round++) {
-        const a = await askFor(ctx, { from: server, message: form.message, questions: form.questions, ...(note ? { note, round } : {}) });
+        const a = await askFor(ctx, {
+          id, from: server, message: form.message, questions: form.questions,
+          ...(form.notes.length ? { notes: form.notes } : {}), ...(form.sensitive ? { sensitive: true } : {}), ...(note ? { note, round } : {}),
+        });
         if (a === null) return { action: "cancel" };
-        if (a === DECLINED) return { action: "decline" };
+        if (a === DECLINED) { call.declined++; return { action: "decline" }; }
         const r = form.content(a);
         if ("content" in r) { answered = true; return { action: "accept", content: r.content }; }
         note = r.problems.join(" ");
       }
     } finally {
       this.asking.delete(card);
-      tell((h) => h.ownerAnswered?.(ctx.sessionId, ctx.callId!, answered));
+      // The card closed: a restart from here on finds a call that may have gone on.
+      if (!this.parked.has(ctx.sessionId) && this.asked.delete(card)) this.keepAsked();
+      tell((h) => h.ownerAnswered?.(ctx.sessionId, ctx.callId!, answered, id));
     }
   }
 

@@ -26,12 +26,12 @@ export function planItems(name: string, input: any): PlanItem[] {
   return list(input?.todos).map((t: any) => ({ text: String(t?.content ?? ""), status: t?.status, active: t?.activeForm }));
 }
 
-// `optional`: the card can be sent without it.
-export type UiQuestion = { id: string; header?: string; question: string; options: { label: string; description?: string }[]; multi: boolean; optional?: boolean };
+// `optional`: the card can be sent without it. `secret`: typed masked.
+export type UiQuestion = { id: string; header?: string; question: string; options: { label: string; description?: string }[]; multi: boolean; optional?: boolean; secret?: boolean };
 
 // The questions a server asked on a call's card (the registry's, by their own ids).
 export const askedQuestions = (asked: Asked): UiQuestion[] =>
-  asked.questions.map((q) => ({ id: q.id, header: q.header, question: q.question, options: q.options, multi: !!q.multiSelect, optional: !!q.optional }));
+  asked.questions.map((q) => ({ id: q.id, header: q.header, question: q.question, options: q.options, multi: !!q.multiSelect, optional: !!q.optional, secret: !!q.secret }));
 
 export function questions(name: string, input: any): UiQuestion[] {
   return (input?.questions ?? []).map((q: any, i: number) => ({

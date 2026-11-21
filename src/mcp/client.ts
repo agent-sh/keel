@@ -33,6 +33,11 @@ const offered = (t: Transport, era: "modern" | "legacy"): Record<string, object>
 // (an ElicitResult) and throws an RpcError for what Keel refuses.
 export type InputRequest = { method: string; params?: any };
 export type InputHandler = (req: InputRequest) => Promise<unknown>;
+// What a call gives so the server's own requests can reach it. `session`: the
+// session the call belongs to (a request is never routed across sessions).
+// `dropped`: told when a request that may have been this call's was not
+// routed to any call, with the reason.
+export type CallInput = { session: string; ask: InputHandler; dropped?: (method: string, why: string) => void };
 // A modern server answers a call with input_required and no question, to be
 // called again with its state. Each such round is sent at once with no owner
 // in it, so a server that never stops would spin: this many in a row end the call.
@@ -113,9 +118,10 @@ const pause = (ms: number, signal: AbortSignal) => new Promise<void>((res) => {
   signal.addEventListener("abort", end, { once: true });
 });
 
-// `onInput`: the call takes the server's questions. `hold` stops the
-// request's timer while the owner is asked, and gives back what starts it again.
-type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; onInput?: InputHandler; hold: () => () => void };
+// `input`: the call takes the server's own requests. `asked`: a question was
+// routed to it. `hold` stops the request's timer while the owner is asked,
+// and gives back what starts it again.
+type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; input?: CallInput; asked?: boolean; hold: () => () => void };
 
 export class McpClient {
   era: "modern" | "legacy" = "legacy";
@@ -289,23 +295,41 @@ export class McpClient {
 
   // A legacy server's own request (2025-11-25: elicitation/create is sent
   // while the server works on a client request; roots/list at any time). It
-  // goes to the call it belongs to: over HTTP the one whose response stream
-  // carried it. Over stdio nothing names the call, so it is the one call in
-  // flight that takes questions, or the newest of several. With no such call
-  // it goes to `outside`: there is no card to ask on and no session's folder.
+  // goes to the call it belongs to. Over HTTP that is the call whose response
+  // stream carried it. Over stdio (and on the stream a server opens for
+  // itself) nothing names the call, and Keel does not guess across sessions:
+  // - calls of one session in flight: the oldest that has not been asked yet,
+  //   else the oldest (one call asking twice);
+  // - calls of more than one session in flight: no call gets it. A question
+  //   is answered as if the owner made no choice, a request for the folders
+  //   is refused, and each of those calls is told, so its result says why;
+  // - no call in flight: `outside`. There is no card to ask on and no
+  //   session's folder then.
   outside?: InputHandler;
   private async serverRequest(msg: any, origin?: number | string) {
     const reply = (body: object) => this.write({ jsonrpc: "2.0", id: msg.id, ...body });
     const refuse = (code: number, message: string) => reply({ error: { code, message } });
-    if (!Object.hasOwn(offered(this.t, this.era), String(msg.method).split("/")[0]!)) return refuse(-32601, `keel does not support ${msg.method}`);
-    const asker = (origin !== undefined && this.pending.get(origin)?.onInput ? this.pending.get(origin) : undefined)
-      ?? [...this.pending.values()].filter((p) => p.onInput).at(-1);
-    const handler = asker?.onInput ?? this.outside;
+    const method = String(msg.method);
+    if (!Object.hasOwn(offered(this.t, this.era), method.split("/")[0]!)) return refuse(-32601, `keel does not support ${method}`);
+    let asker: Pending | undefined;
+    if (origin !== undefined) asker = this.pending.get(origin)?.input ? this.pending.get(origin) : undefined;
+    else {
+      const calls = [...this.pending.values()].filter((p) => p.input); // oldest first
+      const sessions = new Set(calls.map((p) => p.input!.session));
+      if (sessions.size > 1) {
+        const why = `calls of ${sessions.size} sessions were in flight on this server, and nothing names the call such a request belongs to`;
+        for (const p of calls) p.input!.dropped?.(method, why);
+        return method === "elicitation/create" ? reply({ result: { action: "cancel" } }) : refuse(-32603, `not answered: ${why}`);
+      }
+      asker = calls.find((p) => !p.asked) ?? calls[0];
+    }
+    const handler = asker?.input?.ask ?? this.outside;
     if (!handler) return refuse(-32603, "nothing here answers this");
+    if (asker && method === "elicitation/create") asker.asked = true;
     // The owner's time is not the server's: the call's timer waits with it.
     const resume = asker?.hold();
     try {
-      reply({ result: await handler({ method: msg.method, params: msg.params }) });
+      reply({ result: await handler({ method, params: msg.params }) });
     } catch (e) {
       refuse(e instanceof RpcError ? e.code : -32603, (e as Error).message);
     } finally {
@@ -603,7 +627,7 @@ export class McpClient {
     };
   }
 
-  async rpc(method: string, params: any = {}, opt: { signal?: AbortSignal; timeoutMs?: number; modern?: boolean; authorize?: () => string | undefined; onInput?: InputHandler } = {}): Promise<any> {
+  async rpc(method: string, params: any = {}, opt: { signal?: AbortSignal; timeoutMs?: number; modern?: boolean; authorize?: () => string | undefined; input?: CallInput } = {}): Promise<any> {
     const deny = opt.authorize?.();
     if (deny) throw new McpAuthorizationError(deny);
     if (this.closed) throw new Error("the connection is closed");
@@ -645,7 +669,7 @@ export class McpClient {
         if (held++ === 0) clearTimeout(timer);
         return () => { if (--held === 0 && this.pending.has(id)) arm(); };
       };
-      this.pending.set(id, { resolve: done(resolve), reject: fail, onInput: opt.onInput, hold });
+      this.pending.set(id, { resolve: done(resolve), reject: fail, input: opt.input, hold });
       arm();
       opt.signal?.addEventListener("abort", onAbort, { once: true });
       if (this.t.kind === "stdio") this.write(msg);
@@ -702,8 +726,8 @@ export class McpClient {
   listPrompts(signal?: AbortSignal) { return this.list<any>("prompts/list", "prompts", signal); }
   readResource(uri: string, signal?: AbortSignal) { return this.rounds("resources/read", { uri }, { signal }); }
   getPrompt(name: string, args: Record<string, string> = {}, signal?: AbortSignal) { return this.rounds("prompts/get", { name, arguments: args }, { signal }); }
-  callTool(name: string, args: unknown, signal?: AbortSignal, timeoutMs?: number, meta?: Record<string, unknown>, authorize?: () => string | undefined, onInput?: InputHandler): Promise<McpCallResult> {
-    return this.rounds("tools/call", { name, arguments: args ?? {}, ...(meta ? { _meta: meta } : {}) }, { signal, timeoutMs, authorize, onInput });
+  callTool(name: string, args: unknown, signal?: AbortSignal, timeoutMs?: number, meta?: Record<string, unknown>, authorize?: () => string | undefined, input?: CallInput): Promise<McpCallResult> {
+    return this.rounds("tools/call", { name, arguments: args ?? {}, ...(meta ? { _meta: meta } : {}) }, { signal, timeoutMs, authorize, input });
   }
 
   // A modern server asks for input by answering the request with
@@ -720,9 +744,9 @@ export class McpClient {
       const asked = Object.entries((r.inputRequests ?? {}) as Record<string, InputRequest>);
       if (!asked.length && ++quiet > QUIET_ROUNDS) throw new Error("the server kept asking to be called again without asking for anything");
       if (asked.length) quiet = 0;
-      if (asked.length && !opt.onInput) throw new Error(`the server asked for input (${asked.map(([, q]) => q?.method).join(", ")}), which only a tool call can gather`);
+      if (asked.length && !opt.input) throw new Error(`the server asked for input (${asked.map(([, q]) => q?.method).join(", ")}), which only a tool call can gather`);
       const inputResponses: Record<string, unknown> = {};
-      for (const [key, q] of asked) inputResponses[key] = await opt.onInput!({ method: String(q?.method), params: q?.params });
+      for (const [key, q] of asked) inputResponses[key] = await opt.input!.ask({ method: String(q?.method), params: q?.params });
       next = { ...params, ...(asked.length ? { inputResponses } : {}), ...(r.requestState !== undefined ? { requestState: r.requestState } : {}) };
     }
   }

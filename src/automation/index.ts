@@ -104,11 +104,12 @@ function init(deps: Deps) {
       }
     },
     // A question a server asked on a call's card is an alert like the model's own.
-    ownerAsked: (sessionId, callId, text) => {
-      if (!alerts.raisedFor("call_id", callId, sessionId)) alerts.raise("question", sessionId, `Question: ${deps.store.session(sessionId)?.title || "a session"}`, text, { call_id: callId, open_session: sessionId });
+    // (One alert per question: a call's server can ask more than one.)
+    ownerAsked: (sessionId, callId, text, askId) => {
+      if (!alerts.raisedFor("ask_id", askId, sessionId)) alerts.raise("question", sessionId, `Question: ${deps.store.session(sessionId)?.title || "a session"}`, text, { call_id: callId, open_session: sessionId, ask_id: askId });
     },
-    ownerAnswered: (sessionId, callId, answered) => {
-      alerts.readWhere("call_id", callId, sessionId);
+    ownerAnswered: (sessionId, _callId, answered, askId) => {
+      alerts.readWhere("ask_id", askId, sessionId);
       if (answered) snooze.end(deps.store.session(sessionId)?.parent_id ?? sessionId, "the owner answered");
     },
     turnStart: (s) => agents.onTurnStart(s.id),

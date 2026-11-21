@@ -300,7 +300,9 @@ const approve = command("approve", APPROVE_USAGE, {
   for (const q of st.questions) {
     const { events } = await c.get<{ events: StoredEvent[] }>(`/api/sessions/${q.session_id}/events`);
     const use = events.flatMap((e) => (e.kind === "assistant" ? e.data.blocks : [])).find((b: any) => b.type === "tool_use" && b.id === q.call_id);
-    questions.push({ ...q, questions: (use?.input?.questions ?? []).map((x: any, i: number) => ({ id: x.id ?? String(i), question: x.question, options: (x.options ?? []).map((o: any) => o.label) })) });
+    // A question an MCP server asked is in the state, not in the call's input.
+    const asked = q.asked ? [{ id: "", question: `MCP server ${q.asked.from} asks: ${q.asked.message}`, options: [] }, ...q.asked.questions.map((x: any) => ({ id: x.id, question: x.question, options: (x.options ?? []).map((o: any) => o.label) }))] : undefined;
+    questions.push({ ...q, questions: asked ?? (use?.input?.questions ?? []).map((x: any, i: number) => ({ id: x.id ?? String(i), question: x.question, options: (x.options ?? []).map((o: any) => o.label) })) });
   }
   if (v.list) {
     if (v.json) return (printJson({ approvals: st.approvals, questions }), EXIT.ok);
@@ -324,11 +326,12 @@ const approve = command("approve", APPROVE_USAGE, {
   if (v.answer === undefined && !v.deny) return usageError("approve", `a question is open: ${q.questions.map((x: any) => line(x.question)).join(" / ")}; pass --answer TEXT (or --deny)`, APPROVE_USAGE);
   // Free text answers every question of the call; a text that is one of the
   // options is picked as that option.
-  const answers = Object.fromEntries(q.questions.map((x: any) => {
+  const answers = Object.fromEntries(q.questions.filter((x: any) => x.id !== "").map((x: any) => {
     const pick = x.options.find((o: string) => o.toLowerCase() === String(v.answer ?? "").toLowerCase());
     return [x.id, v.deny ? { picked: [] } : pick ? { picked: [pick] } : { picked: [], other: v.answer }];
   }));
-  await c.post(`/api/sessions/${q.session_id}/questions/${q.call_id}`, { answers });
+  // Refusing a server's question is the protocol's decline.
+  await c.post(`/api/sessions/${q.session_id}/questions/${q.call_id}`, q.asked && v.deny ? { decline: true } : { answers });
   if (v.json) console.log(JSON.stringify({ ok: true, question: q.call_id }));
   else console.log(v.deny ? "the question was left without an answer" : "answered");
   return EXIT.ok;
@@ -357,6 +360,9 @@ export function answerOf(q: UiQuestion, arg: string): Answer {
   if (byNumber && (q.multi || nums.length === 1)) return { picked: [...new Set(nums.map((n) => q.options[Number(n) - 1]!.label))] };
   return { picked: [], other: arg };
 }
+
+// One card per question: a server can ask more than one on the same call.
+const cardKey = (q: { call_id: string; asked?: { id: string } }) => (q.asked ? `${q.call_id}:${q.asked.id}` : q.call_id);
 
 // A question card as the terminal shows it, once: each question with its choices numbered.
 function questionLines(qs: UiQuestion[], from: string): string[] {
@@ -391,23 +397,32 @@ export async function attachTo(c: Client, sessionId: string, v: { thoughts?: boo
     }
     seenCards = new Set([...seenCards].filter((id) => st.approvals.some((a: any) => a.id === id)));
     for (const q of st.questions) {
-      if (asked.has(q.call_id)) continue;
+      const key = cardKey(q);
+      if (asked.has(key)) continue;
       const card = (async () => {
-        const { events } = await c.get<{ events: StoredEvent[] }>(`/api/sessions/${q.session_id}/events`);
-        const use = events.flatMap((e) => (e.kind === "assistant" ? e.data.blocks ?? [] : [])).find((b: any) => b.type === "tool_use" && b.id === q.call_id);
-        const qs = askedOf(use?.name ?? "", use?.input);
-        for (const l of questionLines(qs, q.session_id !== sessionId ? `  (subagent ${q.session_id})` : "")) console.log(l);
-        shown.add(q.call_id);
+        let qs: UiQuestion[];
+        if (q.asked) {
+          // A question an MCP server asked: it is in the state, not in the call's input.
+          qs = q.asked.questions.map((x: any) => ({ id: x.id, question: x.question, options: x.options ?? [], multi: !!x.multiSelect }));
+          console.log(`?? MCP server ${line(q.asked.from)} asks: ${line(q.asked.message)}${qs.length ? "" : "   (nothing to choose: answer it in the workbench)"}`);
+          for (const n of q.asked.notes ?? []) console.log(`   ${line(n)}`);
+        } else {
+          const { events } = await c.get<{ events: StoredEvent[] }>(`/api/sessions/${q.session_id}/events`);
+          const use = events.flatMap((e) => (e.kind === "assistant" ? e.data.blocks ?? [] : [])).find((b: any) => b.type === "tool_use" && b.id === q.call_id);
+          qs = askedOf(use?.name ?? "", use?.input);
+        }
+        if (qs.length) for (const l of questionLines(qs, q.session_id !== sessionId ? `  (subagent ${q.session_id})` : "")) console.log(l);
+        shown.add(key);
         return { session_id: q.session_id, call_id: q.call_id, qs, answers: {} };
       })();
-      asked.set(q.call_id, card);
+      asked.set(key, card);
       // A card that could not be read is not kept: the next look reads it again.
       card.catch((e) => {
-        if (asked.get(q.call_id) === card) asked.delete(q.call_id);
+        if (asked.get(key) === card) asked.delete(key);
         console.error(`keel attach: a question could not be read (${(e as Error).message}); it is read again shortly`);
       });
     }
-    for (const id of [...asked.keys()]) if (!st.questions.some((q: any) => q.call_id === id)) { asked.delete(id); shown.delete(id); }
+    for (const id of [...asked.keys()]) if (!st.questions.some((q: any) => cardKey(q) === id)) { asked.delete(id); shown.delete(id); }
     return st;
   };
   const f = new Follower(c, sessionId, events.at(-1)?.seq ?? 0, (e) => { for (const l of textLines(e, v)) console.log(l); });
@@ -441,11 +456,11 @@ export async function attachTo(c: Client, sessionId: string, v: { thoughts?: boo
         // answer typed was for a question the owner had read.
         const read = new Set(shown);
         const st = await sync();
-        const id = st?.questions[0]?.call_id;
-        const q = await asked.get(id)?.catch(() => undefined);
+        const id = st?.questions[0] ? cardKey(st.questions[0]) : undefined;
+        const q = id === undefined ? undefined : await asked.get(id)?.catch(() => undefined);
         const next = q?.qs.find((x) => !q.answers[x.id]);
         if (!q) console.error(id ? "the open question could not be read; try /answer again" : "no question is open");
-        else if (!read.has(id)) console.error("-- this question is new here, shown above: nothing was answered. Give its answer with /answer");
+        else if (!read.has(id!)) console.error("-- this question is new here, shown above: nothing was answered. Give its answer with /answer");
         else if (!arg) console.error("give the choice's number, or your own answer: /answer N or /answer TEXT");
         else if (next) {
           q.answers[next.id] = answerOf(next, arg);

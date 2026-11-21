@@ -20,7 +20,7 @@ import * as agents from "../../automation/agents.ts";
 import { owedWake } from "../../automation/failures.ts";
 import * as waits from "../../automation/waits.ts";
 import { sessionState } from "../../automation/state.ts";
-import { pendingQuestions } from "../../tools/interact.ts";
+import { askedOf, pendingQuestions } from "../../tools/interact.ts";
 import { plansWaiting } from "./plan.ts";
 import { secretsWaiting } from "./secrets.ts";
 import { jobsOf, running } from "../../tools/jobs.ts";
@@ -103,7 +103,8 @@ export const runRoutes: RouteModule = (deps) => {
         const s = resolveSession(deps, req.params.id);
         const ids = family(s.id);
         const approvals = (gate?.approvals({ pending: true }) ?? []).filter((a) => ids.includes(a.session_id));
-        const questions = ids.flatMap((id) => pendingQuestions(id).map((call_id) => ({ session_id: id, call_id, ...callOf(id, call_id) })));
+        // `asked`: a question an MCP server put on the call's card (the call's input does not hold it).
+        const questions = ids.flatMap((id) => pendingQuestions(id).map((call_id) => { const asked = askedOf(id, call_id); return { session_id: id, call_id, ...callOf(id, call_id), ...(asked ? { asked } : {}) }; }));
         // A plan put up for approval and a secret asked for wait on an answer too; each is its call's id.
         const plans = plansWaiting().filter((p) => ids.includes(p.session_id));
         const secrets = secretsWaiting().filter((r) => ids.includes(r.session_id));

@@ -162,10 +162,14 @@ export type QueueItem = { id: string; session_id: string; text: string; images?:
 
 // `asked`: a question that is not the call's own input (an MCP server asked
 // it while the call ran): who asks, its words as plain text, the fields, what
-// was wrong with the last answer, and that the owner can decline it.
-export type AskedQuestion = { id: string; header?: string; question: string; options: { label: string; description?: string }[]; multiSelect?: boolean; optional?: boolean };
-// `round`: how often it was asked before (an answer that did not fit is asked again).
-export type Asked = { from: string; message: string; questions: AskedQuestion[]; note?: string; round?: number };
+// the card says besides (what was wrong with the last answer, fields left
+// out), and that the owner can decline it.
+// `id`: one per question asked, so a card knows a new question from the one before it on the same call.
+// `round`: how often this one was asked before (an answer that did not fit is asked again).
+// `sensitive`: a field looks like a secret; an answer is sent only when the owner says to send it anyway.
+// `secret` (a question): its answer is typed masked.
+export type AskedQuestion = { id: string; header?: string; question: string; options: { label: string; description?: string }[]; multiSelect?: boolean; optional?: boolean; secret?: boolean };
+export type Asked = { id: string; from: string; message: string; questions: AskedQuestion[]; notes?: string[]; note?: string; round?: number; sensitive?: boolean };
 export type PendingQuestion = { session_id: string; call_id: string; parent_id?: string; asked?: Asked };
 
 // Frames pushed over the WebSocket. `event` frames are durable (replayable by seq);

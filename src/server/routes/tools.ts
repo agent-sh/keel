@@ -46,13 +46,13 @@ export const toolRoutes: RouteModule = (deps) => {
     },
     "/api/sessions/:id/questions/:call": {
       POST: async (req: any) => {
-        const body = (await req.json().catch(() => ({}))) as { answers?: Answers; decline?: boolean };
+        const body = (await req.json().catch(() => ({}))) as { answers?: Answers; decline?: boolean; send_anyway?: boolean };
         // A question a server asked can be declined; the model's own takes an answer.
         if (body.decline === true) return decline(req.params.id, req.params.call) ? json({ ok: true }) : json({ error: "no question that can be declined is waiting for that call" }, 404);
         if (!body.answers || typeof body.answers !== "object") return json({ error: "answers must be an object" }, 400);
-        return answer(req.params.id, req.params.call, body.answers)
-          ? json({ ok: true })
-          : json({ error: "no question is waiting for that call" }, 404);
+        const sent = answer(req.params.id, req.params.call, body.answers, body.send_anyway === true);
+        if (sent === "unsent") return json({ error: "this form asks for what looks like a secret: decline it, or send the answer with send_anyway" }, 409);
+        return sent ? json({ ok: true }) : json({ error: "no question is waiting for that call" }, 404);
       },
     },
     "/api/sessions/:id/jobs": {

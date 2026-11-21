@@ -339,7 +339,7 @@ export function mobileApi(ctx: MobileCtx) {
     const options = qs.flatMap((q) => q.options.map((o) => o.label));
     return {
       id: `q-${callId}`, chat_id: s.id, session_key: s.id, kind: "question",
-      command: asked ? [`${asked.from} asks: ${asked.message}`, ...qs.map((q) => q.question)].join("\n") : tu ? qs.map((q) => q.question).join("\n") || "A question" : "This question is no longer stored; answer it in the workbench",
+      command: asked ? [`${asked.from} asks: ${asked.message}`, ...(asked.notes ?? []), ...qs.map((q) => q.question)].join("\n") : tu ? qs.map((q) => q.question).join("\n") || "A question" : "This question is no longer stored; answer it in the workbench",
       description: options.join(" / "), options, unavailable: !tu,
       // One entry per question, by id: a card of several takes one answer each.
       questions: qs.map((q) => ({ id: q.id, question: q.question, options: q.options.map((o) => o.label), multi: q.multi })),
@@ -479,8 +479,12 @@ export function mobileApi(ctx: MobileCtx) {
         for (const v of vals) { const hit = q.options.find((o) => o.toLowerCase() === v.toLowerCase()); (hit ? picked : other).push(hit ?? v); }
         answers[q.id] = other.length ? { picked, other: other.join(", ") } : { picked };
       }
-      if (!answer(s.id, callId, answers)) return err("this question is no longer waiting", 409);
-      return json({ approval: { ...card, actions: [], state: choice === "deny" ? "denied" : "approved", choice, answers }, resolved: 1 });
+      const sent = answer(s.id, callId, answers);
+      // A form that asks for what looks like a secret is sent from the workbench only, on the owner's word there.
+      if (sent === "unsent") return err("this form asks for what looks like a secret: dismiss it here, or answer it in the workbench", 409);
+      if (!sent) return err("this question is no longer waiting", 409);
+      // (What was typed for a server's question is the server's alone: it is not sent back.)
+      return json({ approval: { ...card, actions: [], state: choice === "deny" ? "denied" : "approved", choice, ...(askedOf(s.id, callId) ? {} : { answers }) }, resolved: 1 });
     }
     const g = ctx.gate();
     const a = g?.approval(aid);

@@ -139,8 +139,9 @@ export type TurnHooks = {
   awaitsOwner?: (sessionId: string, callId: string) => boolean;
   // A call that is no question tool put a question to the owner on its card
   // (an MCP server asked while the call ran), and that question closed.
-  ownerAsked?: (sessionId: string, callId: string, text: string) => void;
-  ownerAnswered?: (sessionId: string, callId: string, answered: boolean) => void;
+  // `askId`: one per question (a call's server can ask more than one).
+  ownerAsked?: (sessionId: string, callId: string, text: string, askId: string) => void;
+  ownerAnswered?: (sessionId: string, callId: string, answered: boolean, askId: string) => void;
   // The daemon stops and parks this session's turn (before its signal aborts).
   turnParking?: (sessionId: string) => void;
   // Work that is not a turn and that a stop should not cut (a session moving
