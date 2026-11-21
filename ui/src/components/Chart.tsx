@@ -3,10 +3,13 @@
 // grid, a legend for two or more series, and a crosshair readout of every
 // series at the bucket under the pointer or the focused bucket. The readout
 // never leaves the chart's width: it stands beside the crosshair when there
-// is room on that side, and over the plot's top edge, as wide as it needs and
-// no wider than the chart, when there is not (a phone, a long series name):
-// there a finger on the plot does not cover it, and the plot stays readable.
+// is room on that side. When there is not (a phone, a long series name) it is
+// as wide as it needs and no wider than the chart, over the plot's top edge,
+// where a finger on the plot does not cover it and the plot stays readable;
+// or, when the pane shows too little above the plot for it, inside the plot's
+// top, so it is never cut off by what scrolls the chart.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { cn } from "../lib/utils.ts";
 
 export type Series = { label: string; color: string };
 export type Point = { t: number; values: (number | null)[] };
@@ -40,6 +43,8 @@ export function TimeChart({
   const box = useRef<HTMLDivElement>(null);
   const [w, setW] = useState(640);
   const [hover, setHover] = useState<number | null>(null);
+  // The width it has, before the first paint: a chart never draws wider than its place.
+  useLayoutEffect(() => { if (box.current) setW(Math.max(160, Math.floor(box.current.clientWidth))); }, []);
   useEffect(() => {
     const el = box.current;
     if (!el) return;
@@ -81,17 +86,27 @@ export function TimeChart({
   };
 
   const hp = hover === null ? null : data[hover];
-  // Where the readout goes, from its measured width.
+  // Where the readout goes, from its measured size. Distances are rem, read in
+  // pixels at the owner's text size.
   const tip = useRef<HTMLDivElement>(null);
-  const [place, setPlace] = useState<{ left: number; above: boolean } | null>(null);
+  const [place, setPlace] = useState<{ left: number; at: "beside" | "above" | "over" } | null>(null);
   useLayoutEffect(() => {
-    const el = tip.current;
-    if (!el || !hp) return setPlace(null);
-    const tw = el.offsetWidth, c = center(hp), gap = 12;
+    const el = tip.current, plot = box.current;
+    if (!el || !plot || !hp) return setPlace(null);
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
+    const tw = el.offsetWidth, c = center(hp), gap = 0.75 * rem;
     const beside = c > w / 2 ? c - gap - tw : c + gap;
-    const above = beside < 0 || beside + tw > w;
-    const left = above ? Math.max(0, Math.min(w - tw, c - tw / 2)) : beside;
-    setPlace((p) => (p && p.left === left && p.above === above ? p : { left, above }));
+    let at: "beside" | "above" | "over" = "beside", left = beside;
+    if (beside < 0 || beside + tw > w) {
+      left = Math.max(0, Math.min(w - tw, c - tw / 2));
+      // What is on screen above the plot: down to the nearest edge that clips it.
+      let edge = 0;
+      for (let a = plot.parentElement; a; a = a.parentElement) {
+        if (getComputedStyle(a).overflowY !== "visible") edge = Math.max(edge, a.getBoundingClientRect().top);
+      }
+      at = plot.getBoundingClientRect().top - edge >= el.offsetHeight + 0.5 * rem ? "above" : "over";
+    }
+    setPlace((p) => (p && p.left === left && p.at === at ? p : { left, at }));
   });
   const move = (clientX: number) => {
     const r = box.current!.getBoundingClientRect();
@@ -172,10 +187,10 @@ export function TimeChart({
         {hp && (
           <div
             ref={tip}
-            className="pointer-events-none absolute z-10 w-max min-w-[min(9rem,100%)] max-w-full rounded-md border border-line bg-raised px-2.5 py-2 text-caption shadow-2"
-            style={{ left: place?.left ?? 0, ...(place?.above ? { bottom: height + 4 } : { top: 4 }), visibility: place ? undefined : "hidden" }}
+            className={cn("pointer-events-none absolute z-10 w-max min-w-[min(9rem,100%)] max-w-full rounded-md border border-line bg-raised px-2.5 py-2 text-caption shadow-2", place?.at === "above" ? "bottom-[calc(100%+0.25rem)]" : "top-1")}
+            style={{ left: place?.left ?? 0, visibility: place ? undefined : "hidden" }}
             data-testid="chart-tooltip"
-            data-above={place?.above || undefined}
+            data-at={place?.at}
           >
             <div className="mb-1 text-micro text-faint">{fullTime(hp.t)}</div>
             {series.map((s, si) => (

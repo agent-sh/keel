@@ -73,8 +73,9 @@ test("usage dashboard", async ({ page, request }) => {
 
 // A chart readout stays inside its chart. A bucket near the middle (the
 // measurement is moved there) with long series names: beside the crosshair
-// with room, and on a small phone at the largest text size over the plot's
-// top edge, no wider than the chart, every name whole.
+// with room; on a small phone at the largest text size over the plot's top
+// edge, no wider than the chart, every name whole; and inside the plot's top
+// when the pane shows nothing above the plot, so it is never cut off.
 test("chart readouts stay inside the chart", async ({ page, request }) => {
   const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
   test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
@@ -91,11 +92,11 @@ test("chart readouts stay inside the chart", async ({ page, request }) => {
   const panel = page.getByTestId("usage-panel");
   const chart = panel.getByRole("figure", { name: "Share of each bucket's prompt read from the cache" });
   const tip = chart.getByTestId("chart-tooltip");
-  const open = async () => {
+  // The plot at the foot of what the pane shows, its legend above it, or at the pane's top.
+  const open = async (block: "end" | "start" = "end") => {
     await page.goto("/settings/usage");
     await panel.getByRole("radio", { name: "Token zones" }).click();
-    // The plot at the foot of what the pane shows, its legend above it.
-    await chart.locator("svg").evaluate((el) => el.scrollIntoView({ block: "end" }));
+    await chart.locator("svg").evaluate((el, block) => el.scrollIntoView({ block }), block);
     const box = (await chart.locator("svg").boundingBox())!;
     await page.mouse.move(box.x + box.width / 2 + 10, box.y + box.height / 2);
     await expect(tip).toContainText("Frozen history read from cache");
@@ -105,7 +106,8 @@ test("chart readouts stay inside the chart", async ({ page, request }) => {
   const measure = () => tip.evaluate((el) => {
     const t = el.getBoundingClientRect(), c = el.parentElement!.getBoundingClientRect();
     const cut = [...el.querySelectorAll("span")].some((n) => n.scrollWidth > n.clientWidth + 1);
-    return { left: t.left - c.left, right: c.right - t.right, top: t.top - c.top, bottom: t.bottom - c.top, plot: c.height, cut, view: innerWidth - t.right };
+    const pane = el.closest('[data-testid="settings-scroll"]')!.getBoundingClientRect();
+    return { left: t.left - c.left, right: c.right - t.right, top: t.top - c.top, bottom: t.bottom - c.top, plot: c.height, cut, view: innerWidth - t.right, underPaneTop: t.top - pane.top, plotUnderPaneTop: c.top - pane.top };
   });
 
   await open();
@@ -115,6 +117,7 @@ test("chart readouts stay inside the chart", async ({ page, request }) => {
   expect(wide.top).toBeGreaterThanOrEqual(0);
   expect(wide.bottom).toBeLessThanOrEqual(wide.plot);
   expect(wide.cut).toBe(false);
+  await expect(tip).toHaveAttribute("data-at", "beside");
   await shoot(page, "usage-05-readout-middle");
 
   await page.evaluate(() => localStorage.setItem("keel.textScale", "1.5"));
@@ -127,8 +130,24 @@ test("chart readouts stay inside the chart", async ({ page, request }) => {
   expect(narrow.cut).toBe(false);
   // It leaves the plot to the lines: it ends where the plot begins, and is on the screen.
   expect(narrow.bottom).toBeLessThanOrEqual(0);
+  await expect(tip).toHaveAttribute("data-at", "above");
   await expect(tip).toBeInViewport({ ratio: 1 });
   await shoot(page, "usage-06-readout-phone");
+
+  // A shorter phone, the plot at the top of the pane: nothing shows above it,
+  // so the readout stands inside the plot's top, whole.
+  await page.setViewportSize({ width: 320, height: 568 });
+  await open("start");
+  const top = await measure();
+  expect(top.plotUnderPaneTop).toBeLessThan(40);
+  expect(top.underPaneTop).toBeGreaterThanOrEqual(0);
+  expect(top.top).toBeGreaterThanOrEqual(0);
+  expect(top.left).toBeGreaterThanOrEqual(0);
+  expect(top.right).toBeGreaterThanOrEqual(0);
+  expect(top.cut).toBe(false);
+  await expect(tip).toHaveAttribute("data-at", "over");
+  await expect(tip).toBeInViewport({ ratio: 1 });
+  await shoot(page, "usage-07-readout-phone-top");
 
   await request.delete(`/api/sessions/${s.id}`);
 });
