@@ -36,9 +36,9 @@ function Thinking({ text, live }: { text: string; live?: boolean }) {
   );
 }
 
-function ActionButton({ label, onClick, children, testid }: { label: string; onClick: () => void; children: ReactNode; testid?: string }) {
+function ActionButton({ label, onClick, children, testid, idle }: { label: string; onClick: () => void; children: ReactNode; testid?: string; idle?: boolean }) {
   return (
-    <button type="button" title={label} aria-label={label} data-testid={testid} onClick={onClick} className="grid size-7 place-items-center rounded-sm text-faint hover:bg-hover hover:text-fg">
+    <button type="button" title={label} aria-label={label} data-testid={testid} data-idle-only={idle || undefined} onClick={onClick} className="grid size-7 place-items-center rounded-sm text-faint hover:bg-hover hover:text-fg">
       {children}
     </button>
   );
@@ -101,7 +101,7 @@ function Extra({ on, e }: { on: "user" | "assistant"; e: StoredEvent }) {
   return (
     <>
       {rowActions.all().filter((a) => a.on === on && ids.has(a.id)).map((a) => (
-        <ActionButton key={a.id} label={a.label} testid={`rowaction-${a.id}`} onClick={() => a.run(e, getState().sessions[s.id] ?? s)}>{typeof a.icon === "function" ? a.icon(e, s) : a.icon}</ActionButton>
+        <ActionButton key={a.id} label={a.label} testid={`rowaction-${a.id}`} idle={a.idle} onClick={() => a.run(e, getState().sessions[s.id] ?? s)}>{typeof a.icon === "function" ? a.icon(e, s) : a.icon}</ActionButton>
       ))}
     </>
   );
@@ -1091,7 +1091,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           if (near && down) later(true);
         }}
       >
-        <div ref={content} className="k-transcript mx-auto flex max-w-[48rem] flex-col gap-4 px-4 py-8 md:px-6" data-testid="transcript">
+        <div ref={content} className="k-transcript mx-auto flex max-w-[48rem] flex-col gap-4 px-4 py-8 md:px-6" data-testid="transcript" data-working={session.phase === "working" || undefined}>
           {previewing && (
             <div className="sticky top-2 z-10 flex items-center gap-2 rounded-lg border border-brass/50 bg-raised px-3.5 py-2 text-ui shadow-2" data-testid="branch-preview" data-pinned="1">
               <GitBranch className="size-4 shrink-0 text-brass" />

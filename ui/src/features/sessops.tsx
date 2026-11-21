@@ -81,8 +81,8 @@ slash.add(
 const summarize = (direction: "from" | "up_to") => (e: { id: string }, s: { id: string }) =>
   void import("../components/SummarizeDialog.tsx").then((m) => m.summarize({ sessionId: s.id, eventId: e.id, direction }));
 rowActions.add(
-  { id: "summarize-from", label: "Summarize from here", icon: createElement(FoldVertical, { className: "size-3.5" }), on: "user", when: (_e, s) => s.phase !== "working", run: summarize("from") },
-  { id: "summarize-up-to", label: "Summarize up to here", icon: createElement(ListCollapse, { className: "size-3.5" }), on: "user", when: (e, s) => s.phase !== "working" && e.parent !== null, run: summarize("up_to") },
+  { id: "summarize-from", label: "Summarize from here", icon: createElement(FoldVertical, { className: "size-3.5" }), on: "user", idle: true, run: summarize("from") },
+  { id: "summarize-up-to", label: "Summarize up to here", icon: createElement(ListCollapse, { className: "size-3.5" }), on: "user", idle: true, when: (e) => e.parent !== null, run: summarize("up_to") },
 );
 
 slash.add({

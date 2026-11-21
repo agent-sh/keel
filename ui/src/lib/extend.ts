@@ -55,6 +55,10 @@ export type RowAction = {
   icon: ReactNode | ((e: StoredEvent, s: Session) => ReactNode);
   on: "user" | "assistant";
   when?: (e: StoredEvent, s: Session) => boolean;
+  // Offered only while no turn runs. The transcript hides it with one write
+  // of its own state; a `when` on the session's phase would render every row
+  // again at each turn's start and end.
+  idle?: boolean;
   run: (e: StoredEvent, s: Session) => void;
 };
 export const rowActions = registry<RowAction>();
