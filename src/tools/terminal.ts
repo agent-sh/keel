@@ -2,10 +2,11 @@
 // job its tools (or the owner) started, from memory and from the sidecars the
 // jobs leave next to their logs, so commands of earlier daemons are listed too.
 // The same functions answer for a session placed here by another daemon.
-import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { conceal, concealDeep } from "../core/conceal.ts";
-import { findJob, jobsOf, lastLine, type Meta, running, startJob, stopJob, toolEnv, waitJob } from "./jobs.ts";
+import { SessionMap } from "../core/session-map.ts";
+import { findJob, jobsOf, lastLineOf, type Meta, running, startJob, stopJob, toolEnv, waitJob } from "./jobs.ts";
 
 export type TermJob = {
   id: string; call_id?: string; by?: "owner"; command: string; description?: string; cwd: string;
@@ -23,58 +24,103 @@ const LISTED = 300;
 
 const jobsDir = (spillRoot: string, sessionId: string) => join(spillRoot, sessionId, "jobs");
 
-function slice(path: string, from: number, max: number): { text: string; from: number; size: number } {
+// The file reads of a list go through here, so a test can count them.
+export const io = { readdirSync, readFileSync, openSync, statSync };
+
+// What the last list of a session read from its files, kept while they stay
+// as they were: the record of a job that ended is final, a record still open
+// and a log are read again only when the file's size or time moved. A list
+// is asked for every second or two while a command runs; without this each
+// one read every record and every log of the session again. Dropped with
+// the session, or when more sessions than this were listed since.
+type Seen = {
+  metas: Map<string, { m: Meta; size: number; mtime: number }>;
+  tails: Map<string, { size: number; mtime: number; text: string; from: number; last?: string }>;
+  exits: Map<string, number | null>;
+};
+const seen = new SessionMap<Seen>(16);
+
+// The end of a log and its last line, read once per state of the file.
+// Undefined: the log is gone.
+function tailOf(c: Seen, log: string) {
+  let st: { size: number; mtimeMs: number };
+  try { st = io.statSync(log); } catch { c.tails.delete(log); return undefined; }
+  const had = c.tails.get(log);
+  if (had && had.size === st.size && had.mtime === st.mtimeMs) return had;
   let fd: number | undefined;
   try {
-    fd = openSync(path, "r");
+    fd = io.openSync(log, "r");
     const size = fstatSync(fd).size;
-    const start = Math.max(0, Math.min(from, size), size - max);
-    const buf = Buffer.alloc(size - start);
-    readSync(fd, buf, 0, buf.length, start);
-    return { text: buf.toString("utf8"), from: start, size };
+    const from = Math.max(0, size - TAIL);
+    const buf = Buffer.alloc(size - from);
+    readSync(fd, buf, 0, buf.length, from);
+    const t = { size, mtime: st.size === size ? st.mtimeMs : -1, text: buf.toString("utf8"), from, last: lastLineOf(buf.subarray(-4096).toString("utf8")) };
+    c.tails.set(log, t);
+    return t;
   } catch {
-    return { text: "", from: 0, size: 0 };
+    return undefined;
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
 }
 
 // The exit code a wrapper wrote for a job no daemon saw end.
-function exitOf(log: string): number | null | undefined {
-  const p = `${log}.exit`;
-  if (!existsSync(p)) return undefined;
-  const c = Number.parseInt(readFileSync(p, "utf8"), 10);
-  return Number.isFinite(c) ? c : null;
+function exitOf(c: Seen, log: string): number | null | undefined {
+  if (c.exits.has(log)) return c.exits.get(log);
+  let text: string;
+  try { text = io.readFileSync(`${log}.exit`, "utf8"); } catch { return undefined; }
+  const n = Number.parseInt(text, 10);
+  const code = Number.isFinite(n) ? n : null;
+  c.exits.set(log, code);
+  return code;
 }
 
 export function listJobs(spillRoot: string, sessionId: string): TermJob[] {
-  const out = new Map<string, TermJob>();
+  const c = seen.get(sessionId) ?? { metas: new Map(), tails: new Map(), exits: new Map() };
+  seen.set(sessionId, c);
+  // Every job without its output first: the records the jobs left, then the
+  // ones in memory (a job of this daemon is in both; memory is the newer).
+  type Bare = Omit<TermJob, "bytes" | "last" | "tail" | "tail_from" | "log_missing"> & { log: string; open: boolean };
+  const out = new Map<string, Bare>();
   const dir = jobsDir(spillRoot, sessionId);
   let files: string[] = [];
-  try { files = readdirSync(dir).filter((f) => f.endsWith(".json")); } catch {}
+  try { files = io.readdirSync(dir).filter((f) => f.endsWith(".json")); } catch {}
+  const here = new Set(files);
+  for (const f of c.metas.keys()) if (!here.has(f)) c.metas.delete(f);
   for (const f of files) {
-    let m: Meta;
-    try { m = JSON.parse(readFileSync(join(dir, f), "utf8")); } catch { continue; }
-    const log = join(dir, `${m.id}.log`);
-    const t = slice(log, 0, TAIL);
-    const code = m.ended !== undefined ? m.exit_code : exitOf(log);
+    let k = c.metas.get(f);
+    if (!k || k.m.ended === undefined) {
+      try {
+        const st = io.statSync(join(dir, f));
+        if (!k || k.size !== st.size || k.mtime !== st.mtimeMs) c.metas.set(f, (k = { m: JSON.parse(io.readFileSync(join(dir, f), "utf8")), size: st.size, mtime: st.mtimeMs }));
+      } catch { c.metas.delete(f); continue; }
+    }
+    const m = k.m;
     out.set(m.id, {
       id: m.id, call_id: m.call_id, by: m.by, command: m.command, description: m.description, cwd: m.cwd, started: m.started,
-      ended: m.ended, exit_code: code, signal: m.signal, stop_reason: m.stop_reason, background: m.background,
+      ended: m.ended, exit_code: m.exit_code, signal: m.signal, stop_reason: m.stop_reason, background: m.background,
       // A record with no end and no live job here: its daemon went before it ended.
-      running: false, pty: !!m.pty, bytes: t.size, last: lastLine(log), tail: t.text, tail_from: t.from, log_missing: !existsSync(log) || undefined,
+      running: false, pty: !!m.pty, log: join(dir, `${m.id}.log`), open: m.ended === undefined,
     });
   }
   for (const j of jobsOf(sessionId)) {
-    const t = slice(j.log, 0, TAIL);
     out.set(j.id, {
       id: j.id, call_id: j.callId, by: j.by, command: j.command, description: j.description, cwd: j.cwd, started: j.started,
       ended: j.ended, exit_code: j.exitCode, signal: j.signal, stop_reason: j.stopReason, background: j.background,
-      running: running(j), pty: j.pty, bytes: t.size, last: lastLine(j.log), tail: t.text, tail_from: t.from, log_missing: !existsSync(j.log) || undefined,
+      running: running(j), pty: j.pty, log: j.log, open: false,
     });
   }
+  // Only the jobs that are listed have their output read.
+  const listed = [...out.values()].sort((a, b) => a.started - b.started).slice(-LISTED);
+  const logs = new Set(listed.map((j) => j.log));
+  for (const log of c.tails.keys()) if (!logs.has(log)) c.tails.delete(log);
+  for (const log of c.exits.keys()) if (!logs.has(log)) c.exits.delete(log);
+  const jobs = listed.map(({ log, open, ...j }): TermJob => {
+    const t = tailOf(c, log);
+    return { ...j, exit_code: open ? exitOf(c, log) : j.exit_code, bytes: t?.size ?? 0, last: t?.last, tail: t?.text ?? "", tail_from: t?.from ?? 0, log_missing: t ? undefined : true };
+  });
   // The whole record as the routes send it: secrets as placeholders.
-  return concealDeep([...out.values()].sort((a, b) => a.started - b.started).slice(-LISTED), sessionId);
+  return concealDeep(jobs, sessionId);
 }
 
 // The log from `from` on, at most LOG_READ bytes of it, ending on a whole

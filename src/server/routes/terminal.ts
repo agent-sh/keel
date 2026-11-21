@@ -6,6 +6,7 @@
 // machine of the fleet asks that machine's daemon for its jobs.
 import { isAbsolute, resolve } from "node:path";
 import { contains } from "../../core/paths.ts";
+import { SessionMap } from "../../core/session-map.ts";
 import type { Session, StoredEvent } from "../../core/types.ts";
 import { LinkError } from "../../fleet/link.ts";
 import { addNotice, cleanTerm } from "../../tools/jobs.ts";
@@ -42,31 +43,56 @@ export function commandOf(input: any): string | null {
 
 const EXIT = /(?:exit(?:ed with)? code|Exit code:?|Process exited with code)\s*(-?\d+)/i;
 
+// What the list needs of a transcript: its commands, and how the result of
+// each ended. Events never change once stored, so this is kept per session
+// and only the events after `seq` are read into it: a list asked for every
+// second or two does not walk the whole conversation each time.
+type Call = { id: string; tool: string; command: string; description?: string; started: number; machine?: string };
+type Result = { error: boolean; ts: number; code?: number; output: string; from: number };
+export type Commands = { seq: number; calls: Call[]; ids: Set<string>; results: Map<string, Result> };
+export const noCommands = (): Commands => ({ seq: 0, calls: [], ids: new Set(), results: new Map() });
+
+export function readCommands(c: Commands, events: StoredEvent[]): Commands {
+  for (const e of events) {
+    c.seq = Math.max(c.seq, e.seq);
+    if (e.kind === "assistant") {
+      for (const b of e.data.blocks ?? []) {
+        if (b.type !== "tool_use") continue;
+        const command = commandOf(b.input);
+        if (command === null) continue;
+        c.ids.add(b.id);
+        c.calls.push({ id: b.id, tool: b.name, command, description: b.input?.description, started: e.ts, machine: b.name === "keel__run_on" ? String(b.input?.machine ?? "") : undefined });
+      }
+    } else if (e.kind === "tool_result") {
+      // A result follows its call; only a command's result is kept, and of its text the end.
+      for (const r of e.data.results ?? []) {
+        if (!c.ids.has(r.tool_use_id)) continue;
+        const text = textOf(r.content);
+        const code = text.match(EXIT)?.[1];
+        const output = text.length > TAIL ? text.slice(-TAIL) : text;
+        c.results.set(r.tool_use_id, { error: !!r.is_error, ts: e.ts, code: code === undefined ? undefined : Number(code), output, from: text.length - output.length });
+      }
+    }
+  }
+  return c;
+}
+
 // Calls and jobs joined: a job names its call; a call with no job here (a
 // command of keel__run_on, or one older than its job records) stands on its result.
-export function entries(events: StoredEvent[], jobs: TermJob[], live: boolean, machineOf: (callId: string) => string | undefined): TermEntry[] {
+export function entries(c: Commands, jobs: TermJob[], live: boolean, machineOf: (callId: string) => string | undefined): TermEntry[] {
   const byCall = new Map(jobs.filter((j) => j.call_id).map((j) => [j.call_id!, j]));
-  const results = new Map<string, { text: string; error: boolean; ts: number }>();
-  for (const e of events) if (e.kind === "tool_result") for (const r of e.data.results ?? []) results.set(r.tool_use_id, { text: textOf(r.content), error: !!r.is_error, ts: e.ts });
   const out: TermEntry[] = [];
   const used = new Set<string>();
-  for (const e of events) {
-    if (e.kind !== "assistant") continue;
-    for (const b of e.data.blocks ?? []) {
-      if (b.type !== "tool_use") continue;
-      const command = commandOf(b.input);
-      if (command === null) continue;
-      const j = byCall.get(b.id);
-      const r = results.get(b.id);
-      if (j) used.add(j.id);
-      out.push(fromJob(j, { key: b.id, call_id: b.id, tool: b.name, command, description: b.input?.description, started: e.ts, machine: machineOf(b.id) ?? (b.name === "keel__run_on" ? String(b.input?.machine ?? "") : undefined) }, r, live));
-    }
+  for (const call of c.calls) {
+    const j = byCall.get(call.id);
+    if (j) used.add(j.id);
+    out.push(fromJob(j, { key: call.id, call_id: call.id, tool: call.tool, command: call.command, description: call.description, started: call.started, machine: machineOf(call.id) ?? call.machine }, c.results.get(call.id), live));
   }
   for (const j of jobs) if (!used.has(j.id) && (j.by === "owner" || !j.call_id)) out.push(fromJob(j, { key: j.id, command: j.command, description: j.description, started: j.started }, undefined, live));
   return out.sort((a, b) => a.started - b.started);
 }
 
-function fromJob(j: TermJob | undefined, base: Pick<TermEntry, "key" | "command" | "started"> & Partial<TermEntry>, r: { text: string; error: boolean; ts: number } | undefined, live: boolean): TermEntry {
+function fromJob(j: TermJob | undefined, base: Pick<TermEntry, "key" | "command" | "started"> & Partial<TermEntry>, r: Result | undefined, live: boolean): TermEntry {
   const by = j?.by === "owner" ? "owner" : "model";
   if (j) {
     const state: TermEntry["state"] = j.running ? (j.background ? "background" : "running")
@@ -81,14 +107,19 @@ function fromJob(j: TermJob | undefined, base: Pick<TermEntry, "key" | "command"
     };
   }
   if (!r) return { ...base, by, state: live ? "running" : "stopped", reason: live ? undefined : "it never ran, or its turn was stopped", output: "" };
-  const code = r.text.match(EXIT)?.[1];
-  const output = r.text.length > TAIL ? r.text.slice(-TAIL) : r.text;
-  return { ...base, by, ended: r.ts, state: r.error ? "failed" : "ok", exit_code: code === undefined ? undefined : Number(code), output, output_from: r.text.length - output.length };
+  return { ...base, by, ended: r.ts, state: r.error ? "failed" : "ok", exit_code: r.code, output: r.output, output_from: r.from };
 }
 
 export const terminalRoutes: RouteModule = (deps) => {
   const { store, engine, errors } = deps;
   const spillRoot = `${store.stateDir}/spill`;
+  // The commands read so far of the sessions listed last (read again from the events when dropped).
+  const commands = new SessionMap<Commands>(8);
+  const commandsOf = (id: string) => {
+    const c = commands.get(id) ?? noCommands();
+    commands.set(id, c);
+    return readCommands(c, store.events(id, c.seq));
+  };
 
   // The session's machine, when its tools run on one of the fleet.
   const placed = (s: Session) => (s.machine && fleet ? fleet.row(s.machine) : undefined);
@@ -128,7 +159,7 @@ export const terminalRoutes: RouteModule = (deps) => {
           }
         } else jobs = listJobs(spillRoot, s.id);
         const steps = fleet?.steps(s.id) ?? {};
-        const list = entries(store.events(s.id), jobs, engine.isRunning(s.id), (c) => steps[c]?.name);
+        const list = entries(commandsOf(s.id), jobs, engine.isRunning(s.id), (c) => steps[c]?.name);
         const name = placed(s)?.name;
         if (name) for (const e of list) e.machine ??= name;
         return json({ commands: list, machine: name, note });

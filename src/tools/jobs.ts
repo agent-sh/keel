@@ -539,9 +539,13 @@ export function lastLine(log: string): string | undefined {
     const n = Math.min(size, 4096);
     const buf = Buffer.alloc(n);
     readSync(fd, buf, 0, n, size - n);
-    const line = cleanTerm(buf.toString("utf8")).split("\n").map((l) => l.trim()).filter(Boolean).pop();
-    return line && conceal(line).slice(0, 300);
+    return lastLineOf(buf.toString("utf8"));
   } catch { return undefined; } finally { if (fd !== undefined) closeSync(fd); }
+}
+// The last line with something on it of a log's end (its last 4096 bytes).
+export function lastLineOf(end: string): string | undefined {
+  const line = cleanTerm(end).split("\n").map((l) => l.trim()).filter(Boolean).pop();
+  return line && conceal(line).slice(0, 300);
 }
 
 // A PTY cannot outlive its terminal; every other job runs on and is adopted.
