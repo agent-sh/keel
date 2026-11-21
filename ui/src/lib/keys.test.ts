@@ -5,18 +5,27 @@
 // names the fields that break it.
 //
 // What it reads: a key handler (down, up, press, their capture forms) written
-// on an input, a textarea, a component (any capitalized tag: it may hand the
-// handler to a field), in place or as a function of the same file, with the
-// functions of that file it calls. A handler it cannot read (one that comes
-// from props or another file) is named too, to be looked at by hand.
+// on an input, a textarea (plain, or a library's: motion.input, X.Input) or a
+// component (any capitalized tag: it may hand the handler to a field), in
+// place or as a function of the same file, with the functions of that file it
+// calls directly.
+//
+// What it names without judging: a handler it cannot read because it is not
+// declared in the file (it comes from props, a hook or another file). Such a
+// field fails the rule until someone has read the handler: then it is listed
+// in READ_BY_HAND below, with where its Enter is guarded.
 //
 // What it does not see, so a review still has to:
 // - a handler on a plain element around a field (a div, a form) that acts on
 //   the field's Enter;
+// - a handler written in place that is built by, or passes the key to, a
+//   function of another file (a helper, a hook), and one reached through two
+//   calls inside the file;
+// - a choice between two handlers (`cond ? a : b`), and props spread onto a field;
 // - Enter spelled some other way than "Enter", "NumpadEnter" or key code 13
 //   (a table of keys, a helper that matches a shortcut);
 // - composing() asked on another branch than the one Enter takes;
-// - props spread onto a field, and handlers attached outside JSX (.ts files).
+// - handlers attached outside JSX (.ts files).
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -58,21 +67,30 @@ function declared(s: string, name: string): string {
   return s.slice(m.index!);
 }
 
+// Handlers that are not in the file of the field they are on, read by hand:
+// "path:handler" with the place that asks composing() for it. A wrapper that
+// passes a key handler from its props to its input is listed here once its
+// callers are fields the rule reads.
+const READ_BY_HAND = new Set<string>([]);
+
 const ENTER = /["'](?:Numpad)?Enter["']|keyCode\s*===?\s*13\b/;
 const WORDS = new Set(["if", "for", "while", "switch", "return", "function", "catch", "typeof", "composing"]);
 
-export function unguarded(path: string, source: string): string[] {
+export function unguarded(path: string, source: string, byHand?: ReadonlySet<string>): string[] {
   const out: string[] = [];
   for (const m of source.matchAll(/\bonKey(?:Down|Up|Press)(?:Capture)?=\{/g)) {
     const tag = tagOf(source, m.index);
-    if (tag !== "input" && tag !== "textarea" && !/^[A-Z]/.test(tag)) continue;
+    if (!/(^|\.)(input|textarea)$/.test(tag) && !/^[A-Z]/.test(tag)) continue;
     const at = `${path}:${source.slice(0, m.index).split("\n").length}`;
     const value = balanced(source, m.index + m[0].length - 1);
     const name = value.slice(1, -1).trim();
     let text = value;
     if (/^[\w.]+$/.test(name)) {
       text = declared(source, name);
-      if (!text) { out.push(`${at} (its handler ${name} is not in this file: read it by hand)`); continue; }
+      if (!text) {
+        if (!(byHand ?? READ_BY_HAND).has(`${path}:${name}`)) out.push(`${at} (its handler ${name} is not in this file: read it by hand)`);
+        continue;
+      }
     }
     // The functions of this file the handler calls: one that only passes the key on is read through.
     for (const call of text.matchAll(/(?<![.\w])([A-Za-z_]\w*)\(/g)) if (!WORDS.has(call[1]!)) text += declared(source, call[1]!);
@@ -98,6 +116,10 @@ test("the rule finds a field that acts on Enter without asking, and passes one t
   // A handler that is not in the file cannot be read: it is named.
   expect(unguarded("a.tsx", `const A = ({ onKeys }) => <input onKeyDown={onKeys} />;`)).toEqual(["a.tsx:1 (its handler onKeys is not in this file: read it by hand)"]);
   expect(unguarded("a.tsx", `const A = (props) => <textarea onKeyDown={props.keys} />;`)).toEqual(["a.tsx:1 (its handler props.keys is not in this file: read it by hand)"]);
+  // Once read by hand and listed, it passes: a plain wrapper does not block the suite.
+  expect(unguarded("a.tsx", `const A = ({ onKeys }) => <input onKeyDown={onKeys} />;`, new Set(["a.tsx:onKeys"]))).toEqual([]);
+  // A library's field is a field.
+  expect(unguarded("a.tsx", `const A = () => <motion.input onKeyDown={(e) => e.key === "Enter" && save()} />;`)).toEqual(["a.tsx:1"]);
 });
 
 test("every field that acts on Enter asks composing() first", () => {

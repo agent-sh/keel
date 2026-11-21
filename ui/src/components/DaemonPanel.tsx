@@ -4,6 +4,7 @@
 import { CircleAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 import { adoptAllBuilds } from "../lib/builtins.ts";
+import { composing } from "../lib/keys.ts";
 import { actions, api, onFeature, reportError, useStore, type BuildPins } from "../lib/store.ts";
 import { cn, fmtTokens, when } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
@@ -37,7 +38,7 @@ function HoursField({ value, onSave }: { value: number; onSave: (v: number) => P
         placeholder="No limit"
         onChange={(e) => setText(e.target.value)}
         onBlur={save}
-        onKeyDown={(e) => e.key === "Enter" && (e.currentTarget as HTMLInputElement).blur()}
+        onKeyDown={(e) => e.key === "Enter" && !composing(e) && (e.currentTarget as HTMLInputElement).blur()}
         className="w-16 bg-transparent text-right tabular-nums outline-none placeholder:text-faint"
       />
       <span className="text-muted">hours</span>
