@@ -8,6 +8,7 @@
 import { conceal } from "../core/conceal.ts";
 import { gunzipSync, gzipSync } from "node:zlib";
 import type { Bus } from "../core/bus.ts";
+import { errorScope } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
 import type { Message, Session, ToolResultBlock } from "../core/types.ts";
 import { registerHooks } from "../engine/hooks.ts";
@@ -194,10 +195,16 @@ export class Tracer {
     this.store.db.run("DELETE FROM spans WHERE start_ms < ?", [Date.now() - SPAN_DAYS * 86_400_000]);
   }
 
-  // The open turn of a running session: its turn_start event.
+  // The turn a request or tool call belongs to: its turn_start event. The
+  // engine's scope names the turn the code runs in, and none once that turn is
+  // over, so a summary a turn left behind is in no turn when it is sent during
+  // the next one. Code the engine did not start (a call from the HTTP API) is
+  // in the open turn of a running session.
   private turnOf(s: Session, purpose: string): Turn | null {
-    if (purpose === "side" || !this.isRunning(s.id)) return null;
-    return this.lastTurn(s.id);
+    if (purpose === "side") return null;
+    const scope = errorScope.getStore();
+    if (scope?.session === s.id) return scope.turn ? this.store.db.query<Turn, [string, string]>("SELECT id, ts, seq FROM events WHERE id = ? AND session_id = ? AND kind = 'turn_start'").get(scope.turn, s.id) : null;
+    return this.isRunning(s.id) ? this.lastTurn(s.id) : null;
   }
 
   private lastTurn(sessionId: string): Turn | null {

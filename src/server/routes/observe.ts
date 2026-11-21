@@ -20,6 +20,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { buildBundle } from "../../admin/bundle.ts";
+import { detached } from "../../core/errors.ts";
 import { installLogs, LEVELS, logDir, logLines, onLog } from "../../admin/logs.ts";
 import { turnReceipt } from "../../admin/receipt.ts";
 import { endpointOf, headerRefError, headerSourceOf, OtlpExporter } from "../../admin/otlp.ts";
@@ -71,7 +72,8 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
   point();
   G.__keelOtlpOff?.();
   G.__keelOtlpOff = onSettings(point);
-  t.onEnd((s) => exporter.push(s));
+  // The export is the daemon's own work: its timers and what they fail with belong to no turn.
+  t.onEnd((s) => detached(() => exporter.push(s)));
   // A command a turn runs joins the turn's trace (W3C trace context), as Claude Code's shells do, when traces go out.
   registerEnv((sid): Record<string, string> => {
     if (!exporter.state.endpoint || !engine.isRunning(sid)) return {};

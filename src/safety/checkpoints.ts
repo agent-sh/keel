@@ -6,7 +6,7 @@
 import { lstatSync, mkdirSync, readdirSync, rmSync, statfsSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import type { Bus } from "../core/bus.ts";
-import type { ErrorTracker } from "../core/errors.ts";
+import { detached, type ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import type { ToolCall } from "../engine/hooks.ts";
@@ -271,7 +271,8 @@ export class Checkpoints {
     this.ends.set(workspace, e);
     if (e.n < 20 && Date.now() - e.at < 3600_000) return;
     this.ends.set(workspace, { n: 0, at: Date.now() });
-    this.maintain().catch((err) => this.errors.capture("server", err, { at: "checkpoint maintenance" }));
+    // The store's upkeep, not this turn's work: it runs and fails in no turn.
+    detached(() => this.maintain().catch((err) => this.errors.capture("server", err, { at: "checkpoint maintenance" })));
   }
 
   // A checkpoint retention lets go keeps its row with no tree when it is a

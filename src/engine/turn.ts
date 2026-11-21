@@ -637,8 +637,8 @@ export class Engine {
   }
 
   // Measuring hooks never stop a call.
-  private measure(f: (h: ReturnType<typeof allHooks>[number]) => void) {
-    for (const h of allHooks()) try { f(h); } catch (e) { this.errors.capture("server", e, { hook: "measure" }); }
+  private measure(id: string, f: (h: ReturnType<typeof allHooks>[number]) => void) {
+    for (const h of allHooks()) try { f(h); } catch (e) { this.errors.capture("server", e, { hook: "measure", session: id }); }
   }
 
   // One provider call with retries for passing failures. The UI is told about
@@ -657,7 +657,7 @@ export class Engine {
     req.messages = resolveAttachments(st.info.images === false ? withoutImages(req.messages, st.info.name ?? st.info.model) : req.messages, st.info);
     for (let attempt = 0; ; attempt++) {
       partial.clear();
-      this.measure((h) => h.requestSent?.(session, req));
+      this.measure(id, (h) => h.requestSent?.(session, req));
       const since = Date.now();
       if (!quiet) this.status(id, { kind: "model", since, model: st.info.name });
       let first = true;
@@ -675,15 +675,15 @@ export class Engine {
           const p = partial.get(d.index) ?? { kind: d.kind, text: "" };
           p.text += d.text;
           partial.set(d.index, p);
-          this.measure((h) => h.requestDelta?.(session, req, d));
+          this.measure(id, (h) => h.requestDelta?.(session, req, d));
           if (!quiet) this.bus.emit({ t: "delta", session_id: id, ...d });
         }));
         if (!quiet || attempt) this.status(id, { kind: "idle" });
-        this.measure((h) => h.requestDone?.(session, req, res));
+        this.measure(id, (h) => h.requestDone?.(session, req, res));
         this.boundThinking(id, res);
         return res;
       } catch (e) {
-        this.measure((h) => h.requestFailed?.(session, req, e, signal.aborted));
+        this.measure(id, (h) => h.requestFailed?.(session, req, e, signal.aborted));
         if (signal.aborted) throw abortError();
         // A route that cannot take deferred tools gets the search pair, once.
         if (st.native && !retryable(e) && isDeferError(e)) {
@@ -889,7 +889,7 @@ export class Engine {
         }
         for (const h of allHooks()) await h.afterResponse?.(session, res, messages);
         const u: Usage = res.usage; // priced by the registry from the model's listed price
-        this.learn(st, events, u);
+        this.learn(id, st, events, u);
         usage = addUsage(usage, u);
         this.store.addUsage(id, u);
         this.emitSession(id);
@@ -991,7 +991,7 @@ export class Engine {
     let preparedInput = false;
     const ran = (r: ToolResultBlock, outcome: "ok" | "error" | "interrupted", error?: Error) => {
       const ms = Date.now() - t0!;
-      this.measure((h) => h.toolRan?.(session, call, r, { ms, outcome, error }));
+      this.measure(session.id, (h) => h.toolRan?.(session, call, r, { ms, outcome, error }));
       return r;
     };
     try {
@@ -1156,12 +1156,12 @@ export class Engine {
 
   // What the provider counted for a request against the bytes Keel counted
   // for it: the model's bytes a token, kept across restarts.
-  private learn(st: Step, events: StoredEvent[], u: Usage) {
+  private learn(id: string, st: Step, events: StoredEvent[], u: Usage) {
     try {
       const ratio = learnRatio(st.info.id, contextBytes(events, st.info.id) + this.prefixBytes(st), u.input + u.cache_read + u.cache_write);
       if (ratio) this.store.db.run("INSERT OR REPLACE INTO token_ratios (model, ratio, ts) VALUES (?, ?, ?)", [st.info.id, ratio, Date.now()]);
     } catch (e) {
-      this.errors.capture("server", e, { at: "learning the token ratio", model: st.info.id });
+      this.errors.capture("server", e, { at: "learning the token ratio", model: st.info.id, session: id });
     }
   }
 
@@ -1245,7 +1245,7 @@ export class Engine {
       if (tokens >= st.info.context) throw Object.assign(new Error(`The prompt this turn answers is about ${tokens} tokens (${opening.reduce((n, e) => n + (e.kind === "user" ? utf8Bytes(String(e.data.text ?? "")) : 0), 0)} bytes), more than ${st.info.name}'s window of ${st.info.context} tokens, so it cannot be sent whole: shorten it, or continue on a model with a larger window.`), { status: 409, code: "context_over_window" });
     }
     const before = this.used(events, st);
-    for (const h of allHooks()) await Promise.resolve().then(() => h.beforeCompact?.(session)).catch((e) => this.errors.capture("server", e, { hook: "beforeCompact" }));
+    for (const h of allHooks()) await Promise.resolve().then(() => h.beforeCompact?.(session)).catch((e) => this.errors.capture("server", e, { hook: "beforeCompact", session: id }));
     this.status(id, { kind: "compacting", auto: !!opts.auto });
     const own = new AbortController();
     const signal = opts.signal ?? own.signal;

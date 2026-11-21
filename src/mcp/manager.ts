@@ -6,7 +6,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import type { ErrorTracker } from "../core/errors.ts";
+import { detached, type ErrorTracker } from "../core/errors.ts";
 import { registerCatalog, unregisterCatalog, type CatalogTool } from "../tools/catalog.ts";
 import type { CallClass } from "../safety/policy.ts";
 import type { ToolContext, ToolOutput } from "../tools/types.ts";
@@ -326,7 +326,9 @@ export class McpManager {
       e.state = "connecting";
       e.error = undefined;
       const t = this.transport(e);
-      e.connecting = (async () => {
+      // One connection for every session: a turn that happens to open it does
+      // not own it, so what it fails with later is no turn's.
+      e.connecting = detached(() => (async () => {
         if (e.config.transport === "sse") throw new Error("this server uses the older SSE transport, which Keel does not speak; give its Streamable HTTP address instead");
         if (t.kind === "http" && e.config.headers_helper) {
           const h = await helperHeaders(expand(e.config.headers_helper));
@@ -405,7 +407,7 @@ export class McpManager {
           }
           throw err;
         })
-        .finally(() => { e.connecting = undefined; });
+        .finally(() => { e.connecting = undefined; }));
     }
     if (!wait) return e.connecting;
     return Promise.race([

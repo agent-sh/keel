@@ -8,6 +8,9 @@ import type { ErrorRecord } from "./types.ts";
 // when the turn is over: work the turn left behind then fails in no turn.
 export type ErrorScope = { session: string; turn?: string };
 export const errorScope = new AsyncLocalStorage<ErrorScope>();
+// Work a turn happens to start that is not the turn's own (a shared connection,
+// an exporter's timer, maintenance): its timers and callbacks run in no scope.
+export const detached = <T>(f: () => T): T => errorScope.exit(f);
 // Where a failure happened, when its catcher knows better than its surroundings say.
 export type ErrorPlace = Pick<ErrorRecord, "session_id" | "turn_event" | "span_id">;
 export type ErrorCapture = Pick<ErrorRecord, "id" | "source"> & { context: unknown; turnSession?: string };
@@ -29,16 +32,18 @@ export class ErrorTracker {
   spanOf?: (spanId: string) => { session_id: string; attrs: { turn_event?: string } } | undefined;
 
   // The row says where this occurrence happened and nothing it did not see: the
-  // session its catcher named (else the failed span's, else the running turn's),
-  // the turn the code ran in (else the span's own turn), and the span. Nothing
-  // is read off the session's history, where the newest turn may be another one.
+  // session its catcher named (else the failed span's), the turn the code ran
+  // in when that turn is this session's (else the span's own turn), and the
+  // span. A catcher that names no session gets none: a daemon-wide failure that
+  // surfaces while a turn runs is not that turn's. Nothing is read off the
+  // session's history, where the newest turn may be another one.
   capture(source: ErrorRecord["source"], err: unknown, context?: unknown, at: ErrorPlace = {}): ErrorRecord {
     const e = err instanceof Error ? err : new Error(String(err));
     // A failed model request or tool call names its trace span on the error it threw (src/admin/trace.ts).
     const span_id = at.span_id ?? (typeof (err as any)?.span_id === "string" ? (err as any).span_id : undefined);
     const span = span_id ? this.spanOf?.(span_id) : undefined;
     const scope = errorScope.getStore();
-    const session_id = at.session_id ?? sessionOf(context) ?? span?.session_id ?? (scope?.turn ? scope.session : undefined);
+    const session_id = at.session_id ?? sessionOf(context) ?? span?.session_id;
     const turn_event = at.turn_event ?? (scope?.session === session_id ? scope?.turn : undefined) ?? (span?.session_id === session_id ? span?.attrs.turn_event : undefined);
     const rec = this.store.recordError({ source, message: e.message, stack: e.stack, context, session_id, turn_event, span_id });
     this.bus.emit({ t: "error", error: rec });

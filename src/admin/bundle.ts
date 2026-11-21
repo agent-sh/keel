@@ -25,18 +25,26 @@ export type BundleOpts = { error?: ErrorRecord; session_id?: string; turn_event?
 
 export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { markdown: string; title: string; trace_id?: string } {
   const e = o.error;
-  const sid = e?.session_id ?? o.session_id;
+  // What was asked for wins over where the row last happened: a bundle asked
+  // from a span of an earlier turn is about that turn, in that session.
+  const sid = o.session_id ?? e?.session_id;
   const s = sid ? store.session(sid) : undefined;
   const events = s ? lineage(store.events(s.id), s.head) : [];
-  // An error's turn is the one it names, or none (a side request ran in no
-  // turn): the trace is then its span's own. Only a bundle asked for a session
-  // alone is about that session's newest turn.
-  const named = e?.span_id ? tracer.span(e.span_id) : undefined;
-  const turnEvent = e?.turn_event ?? o.turn_event ?? (e ? undefined : events.findLast((x) => x.kind === "turn_start")?.id);
+  // The row's last occurrence, when it was in this session. Its turn is the one
+  // it names, or none (a side request ran in no turn): the trace is then its
+  // span's own. Only a bundle asked for a session alone is about that
+  // session's newest turn.
+  const last = e && e.session_id === sid ? e : undefined;
+  const named = last?.span_id ? tracer.span(last.span_id) : undefined;
+  const turnEvent = o.turn_event ?? last?.turn_event ?? (e ? undefined : events.findLast((x) => x.kind === "turn_start")?.id);
   const traceId = turnEvent ? traceIdOf(turnEvent) : named?.trace_id;
   const spans = traceId ? tracer.trace(traceId) : [];
-  const failing = named ?? spans.findLast((x) => x.status === "error" && x.kind !== "turn");
-  const at = e?.ts ?? failing?.end_ms ?? Date.now();
+  // One trace a bundle: the span the row names is its failing span only when it
+  // is in the trace shown. A row that moved on since leaves that trace's own failure.
+  const own = named && (!spans.length || spans.some((x) => x.span_id === named.span_id)) ? named : undefined;
+  const failing = own ?? spans.findLast((x) => x.status === "error" && x.kind !== "turn");
+  const elsewhere = !!e && (!last || (!!named && !own));
+  const at = (elsewhere ? failing?.end_ms : undefined) ?? e?.ts ?? failing?.end_ms ?? Date.now();
   const out: string[] = [];
 
   const title = e ? `${e.source}: ${clip(e.message, 120)}` : `turn in ${s?.title || sid}`;
