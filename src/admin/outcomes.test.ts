@@ -92,3 +92,49 @@ test("rows from before the ids were recorded are counted once, in the last turn 
     expect(total).toBe(2);
   } finally { close(); }
 });
+
+// What a turn's end reads, by the statements it runs and their plans.
+test("a turn's end reads rows without an id by its time range, and the next turn's start once", () => {
+  const { store, close } = fixture();
+  try {
+    const [a, b] = [id(1), id(2)];
+    const s = store.createWithEvents({ model: "p:m", workspace: "/" }, [
+      { id: id(10), kind: "user", data: { text: "one" }, ts: T },
+      { id: a, kind: "turn_start", data: { model: "p:m" }, ts: T },
+      { id: id(11), kind: "turn_end", data: { reason: "end_turn", usage: {} }, ts: T + 50 },
+      { id: id(12), kind: "user", data: { text: "two" }, ts: T + 60 },
+      { id: b, kind: "turn_start", data: { model: "p:m" }, ts: T + 60 },
+      { id: id(13), kind: "turn_end", data: { reason: "end_turn", usage: {} }, ts: T + 90 },
+    ]);
+    // Many rows without an id elsewhere in time: what the turn_event index holds under one key.
+    const tool = store.db.query("INSERT INTO telemetry_tools (session_id, ts, tool, is_error, turn_event) VALUES (?, ?, 'Bash', 0, ?)");
+    const call = store.db.query("INSERT INTO telemetry_calls (session_id, ts, model, input, output, outcome, purpose, turn_event) VALUES (?, ?, 'p:m', 1, 1, 'ok', ?, ?)");
+    store.db.transaction(() => { for (let i = 0; i < 2000; i++) { tool.run("other", T - 10_000 - i, null); call.run("other", T - 10_000 - i, null, null); } })();
+    // In the first turn's time: five rows without an id of each kind, and side answers.
+    for (let i = 0; i < 5; i++) { tool.run(s.id, T + i, null); call.run(s.id, T + i, null, null); call.run(s.id, T + i, "side", null); }
+    // The second turn has only rows with its id.
+    tool.run(s.id, T + 70, b);
+    call.run(s.id, T + 70, "turn", b);
+
+    const seen: string[] = [];
+    const query = store.db.query.bind(store.db);
+    (store.db as any).query = (sql: string) => (seen.push(sql), query(sql));
+    new Outcomes(store);
+    (store.db as any).query = query;
+    const rows = turnRows(store);
+    expect(rows[a]).toMatchObject({ requests: 5, tool_calls: 5 });
+    expect(rows[b]).toMatchObject({ requests: 1, tool_calls: 1 });
+
+    const plan = (sql: string) => store.db.query<{ detail: string }, []>(`EXPLAIN QUERY PLAN ${sql}`).all().map((r) => r.detail).join("\n");
+    const noId = seen.filter((q) => /turn_event IS NULL/.test(q));
+    const [tools, calls] = [noId.find((q) => q.includes("telemetry_tools"))!, noId.find((q) => q.includes("telemetry_calls"))!];
+    // The time range and the session's own rows, never every row without an id; no look at the events per row.
+    expect(plan(tools)).toContain("telemetry_tools_ts");
+    expect(plan(tools)).not.toContain("telemetry_tools_turn");
+    expect(plan(calls)).toContain("telemetry_calls_session");
+    expect(plan(calls)).not.toContain("telemetry_calls_turn");
+    for (const q of [tools, calls]) expect(plan(q)).not.toContain("SUBQUERY");
+    // The next turn's start: once for the first turn (it has rows to place), not at all for the second.
+    expect(seen.filter((q) => /FROM events WHERE session_id = \? AND kind = 'turn_start'/.test(q))).toHaveLength(1);
+  } finally { close(); }
+});

@@ -129,14 +129,25 @@ export class Outcomes {
   private write(sessionId: string, span: StoredEvent[], reason: string): Turn | undefined {
     const start = span[0]!, end = span.at(-1)!;
     const db = this.store.db;
-    const own = (table: string, cols: string) => db.query<any, [string, string, number, number, number]>(
-      `SELECT ${cols} FROM ${table} r WHERE r.turn_event = ?1
-       UNION ALL
-       SELECT ${cols} FROM ${table} r WHERE r.session_id = ?2 AND r.turn_event IS NULL AND r.ts >= ?3 AND r.ts <= ?4
-         AND NOT EXISTS (SELECT 1 FROM events e WHERE e.session_id = ?2 AND e.kind = 'turn_start' AND e.ts <= r.ts AND (e.ts > ?3 OR (e.ts = ?3 AND e.seq > ?5)))
-       ORDER BY ts, id`).all(start.id, sessionId, start.ts, end.ts, start.seq);
-    const calls = own("telemetry_calls", "r.*").filter((c) => (c.purpose ?? "turn") !== "side");
-    const tools: { tool: string; is_error: number }[] = own("telemetry_tools", "r.id, r.ts, r.tool, r.is_error");
+    const own = (table: string, cols: string) => db.query<any, [string]>(`SELECT ${cols} FROM ${table} r WHERE r.turn_event = ?`).all(start.id);
+    // Rows without an id in the turn's time, read by the time range: the unary
+    // plus keeps the planner off the turn_event index, which holds every row
+    // without an id under one key.
+    const undated = (table: string, cols: string, more = "") => db.query<any, [string, number, number]>(
+      `SELECT ${cols} FROM ${table} r WHERE r.session_id = ? AND r.ts >= ? AND r.ts <= ? AND +r.turn_event IS NULL${more}`).all(sessionId, start.ts, end.ts);
+    // When the next turn of the session started (by time, then by order): read
+    // once a turn, and only when a row without an id is there to place.
+    let next: { ts: number | null } | undefined;
+    const placed = (rows: any[]) => {
+      if (!rows.length) return rows;
+      next ??= { ts: db.query<{ ts: number | null }, [string, number, number, number]>(
+        "SELECT MIN(ts) AS ts FROM events WHERE session_id = ? AND kind = 'turn_start' AND (ts > ? OR (ts = ? AND seq > ?))").get(sessionId, start.ts, start.ts, start.seq)?.ts ?? null };
+      const bound = next.ts;
+      return bound === null ? rows : rows.filter((r) => r.ts < bound);
+    };
+    const rowsOf = (table: string, cols: string, more = "") => [...own(table, cols), ...placed(undated(table, cols, more))].sort((x, y) => x.ts - y.ts || x.id - y.id);
+    const calls = rowsOf("telemetry_calls", "r.*", " AND COALESCE(r.purpose, 'turn') != 'side'").filter((c) => (c.purpose ?? "turn") !== "side");
+    const tools: { tool: string; is_error: number }[] = rowsOf("telemetry_tools", "r.id, r.ts, r.tool, r.is_error");
     const ok = calls.filter((c) => c.outcome === "ok");
     const turnCalls = ok.filter((c) => (c.purpose ?? "turn") === "turn");
     const sum = (k: string) => ok.reduce((n, c) => n + (c[k] ?? 0), 0);
