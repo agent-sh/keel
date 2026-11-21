@@ -189,6 +189,14 @@ function SessionComposer({
     return () => { live = false; off(); have.current.clear(); };
   }, [sid]);
 
+  // An image a kept send holds is that send's: it leaves this box. In the
+  // page that sent it the box was emptied already; another tab on the session
+  // learns of it here, when the shelf it shares takes the image, and would
+  // else send it again with its own next message.
+  useEffect(() => {
+    if (draft.current.images.some((a) => hasSavedImage(shelf, a.id))) setImages((cur) => cur.filter((a) => !hasSavedImage(shelf, a.id)));
+  }, [saved]);
+
   // After a reload the shelf knows its images by reference: read them from the
   // session's draft. One the draft no longer has is named on its item.
   useEffect(() => {
