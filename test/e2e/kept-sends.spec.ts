@@ -161,3 +161,31 @@ test("a send whose tab was closed is taken up by a tab still open", async ({ pag
   await kept.getByRole("button", { name: "Discard" }).click();
   await request.delete(`/api/sessions/${a}`);
 });
+
+// EXTRA-S15. After a reload a kept send's image is read back from the
+// session's draft. A read that failed (the daemon was restarting) is made
+// again when the page reconnects: until then Retry and Restore wait.
+test("a kept image that could not be read is read again on reconnect", async ({ page, request }) => {
+  let cut: (() => void) | undefined;
+  await page.routeWebSocket(/\/ws$/, (ws) => {
+    const server = ws.connectToServer();
+    server.onMessage((m) => ws.send(m));
+    ws.onMessage((m) => server.send(m));
+    cut = () => { ws.close({ code: 4000, reason: "cut by the test" }); server.close({ code: 1000 }); };
+  });
+  const k = await keptWithImage(page, request, "Kept image, failed read");
+  await k.refuse();
+  let fail = true;
+  await page.route(`**/api/sessions/${k.a}/draft/files/*`, (r) => (fail && r.request().method() === "GET" ? r.fulfill({ status: 503, body: "restarting" }) : r.fallback()));
+  await page.reload();
+  const retry = saved(page).getByRole("button", { name: "Retry send" });
+  await expect(saved(page)).toContainText("first.png");
+  await expect(retry).toBeDisabled();
+  await page.evaluate(() => new Promise((r) => setTimeout(r, 500)));
+  await expect(retry).toBeDisabled();
+  fail = false;
+  cut!();
+  await expect(retry).toBeEnabled({ timeout: 20_000 });
+  await expect(saved(page).getByRole("button", { name: "Restore draft" })).toBeEnabled();
+  await request.delete(`/api/sessions/${k.a}`);
+});

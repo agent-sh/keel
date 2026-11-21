@@ -199,6 +199,10 @@ function SessionComposer({
 
   // After a reload the shelf knows its images by reference: read them from the
   // session's draft. One the draft no longer has is named on its item.
+  // A read that failed (the daemon was away) is made again when the page
+  // reconnects: until an image is read its item can be neither sent nor restored.
+  const [reread, setReread] = useState(0);
+  useEffect(() => onFeature({ reconnect: () => setReread((n) => n + 1) }), []);
   useEffect(() => {
     if (!sid) return;
     for (const d of saved) for (const a of d.images) {
@@ -209,7 +213,7 @@ function SessionComposer({
         .catch((e) => reportError(e, { at: "kept image" }))
         .finally(() => reading.delete(a.id));
     }
-  }, [saved, sid]);
+  }, [saved, sid, reread]);
   // One live region, mounted before any item: it says each kept item once.
   const told = useRef(new Set<string>());
   const [said, setSaid] = useState("");
