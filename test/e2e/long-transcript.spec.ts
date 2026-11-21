@@ -293,8 +293,12 @@ test("a part that does not load says so and can be asked for again", async ({ pa
     // The page's socket can be cut, and kept from opening again.
     const live: { ws?: import("@playwright/test").WebSocketRoute; down: boolean } = { down: false };
     await page.routeWebSocket(/\/ws$/, (ws) => { if (live.down) return void ws.close({ code: 4000, reason: "down for the test" }); ws.connectToServer(); live.ws = ws; });
-    let cut = true, asked = 0;
-    await page.route(`**/api/sessions/${id}/page?*`, (r) => { asked++; return cut ? r.abort("connectionrefused") : r.fallback(); });
+    let cut: boolean | "other" = true, asked = 0;
+    await page.route(`**/api/sessions/${id}/page?*`, (r) => {
+      asked++;
+      // "other": the daemon answers 404 for something that is not the session (an event the branch no longer has).
+      return cut === "other" ? r.fulfill({ status: 404, json: { error: "no such event in this session" } }) : cut ? r.abort("connectionrefused") : r.fallback();
+    });
     await page.goto(`${d.url}/s/${id}`);
     const button = page.getByTestId("load-earlier");
     await expect(button).toBeVisible({ timeout: 30_000 });
@@ -326,7 +330,38 @@ test("a part that does not load says so and can be asked for again", async ({ pa
     await expect(said).toHaveCount(0);
     await expect(button).toHaveText("Load earlier messages");
 
+    // A 404 that is not about the session is a failure like any other: said, not taken for a deleted session.
+    cut = "other";
+    const twice = asked;
+    await scroller.evaluate((el) => el.scrollTo({ top: 0 }));
+    await expect(said).toHaveText("Earlier messages did not load: no such event in this session");
+    await expect(page.getByTestId("session-missing")).toHaveCount(0);
+    await scroller.evaluate((el) => { el.scrollTo({ top: 400 }); el.scrollTo({ top: 0 }); });
+    await page.waitForTimeout(300);
+    expect(asked).toBe(twice + 1);
+
+    // The other direction: reading a part far up, the part after it does not load, and says so.
+    cut = false;
+    const all = ((await (await fetch(`${d.url}/api/sessions/${id}/events`)).json()) as any).events as { id: string; kind: string; data: any }[];
+    const far = all.find((e) => e.kind === "user" && String(e.data.text).startsWith("Prompt 3:"))!;
+    await page.goto(`${d.url}/s/${id}?e=${far.id}`);
+    await expect(page.locator(`#e-${far.id}`)).toBeInViewport({ timeout: 30_000 });
+    const later = page.getByTestId("load-later");
+    await expect(later).toHaveText("Load later messages");
+    cut = true;
+    await later.click();
+    await expect(page.getByTestId("later-failed")).toHaveText("Later messages did not load: Keel is not reachable.");
+    await expect(later).toHaveText("Try again");
+    await shoot(page, "long-transcript-09-later-part-did-not-load");
+    cut = false;
+    const before = await held();
+    await later.click();
+    await expect.poll(held).toBeGreaterThan(before);
+    await expect(page.getByTestId("later-failed")).toHaveCount(0);
+
     // The session is deleted while the page is cut off: the next part's read finds it gone.
+    await page.goto(`${d.url}/s/${id}`);
+    await expect(button).toBeVisible({ timeout: 30_000 });
     live.down = true;
     await live.ws!.close({ code: 4000, reason: "cut by the test" });
     expect((await fetch(`${d.url}/api/sessions/${id}`, { method: "DELETE" })).ok).toBe(true);

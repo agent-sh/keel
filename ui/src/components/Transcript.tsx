@@ -820,7 +820,9 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   const unreadNow = useRef(unread);
   unreadNow.current = unread;
   const partFailed = (which: "older" | "later") => (e: unknown) => {
-    if ((e as { status?: number }).status === 404) return dropSession(sessionId);
+    // Only the daemon's "no such session" says the session is gone; another 404 (an event the branch no longer has) is a failure to say.
+    const err = e as { status?: number; body?: { error?: unknown } };
+    if (err.status === 404 && err.body?.error === "no such session") return dropSession(sessionId);
     // An unreachable daemon is a state the page already shows, not an error of its own.
     setUnread((u) => ({ ...u, [which]: e instanceof TypeError ? "Keel is not reachable." : failed(e, { at: "transcript part", session_id: sessionId }) }));
   };
