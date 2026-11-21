@@ -82,6 +82,16 @@ fun SessionsScreen() {
     val scope = rememberCoroutineScope()
     var creating by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
+    // Both "New session" buttons start one here: a second tap while the first is on its way starts nothing,
+    // and a refusal shows under the header and gives both buttons back.
+    fun create() {
+        if (creating) return
+        creating = true; error = ""
+        scope.launch {
+            runCatching { Hub.newChat() }.onSuccess { Ui.open(it) }.onFailure { error = it.message ?: "Could not start a session" }
+            creating = false
+        }
+    }
     val now = nowTick()
     val pendingBy = cards.values.filter { it.pending }.groupBy { it.chatId }
     val rows = chats.values.filter { !it.archived }
@@ -94,18 +104,12 @@ fun SessionsScreen() {
 
     Column(Modifier.fillMaxSize()) {
         Head("Sessions", sub = { ConnLine() }) {
-            IconBtn(Ic.Plus, "New session", {
-                creating = true; error = ""
-                scope.launch {
-                    runCatching { Hub.newChat() }.onSuccess { Ui.open(it) }.onFailure { error = it.message ?: "Could not start a session" }
-                    creating = false
-                }
-            }, enabled = !creating)
+            IconBtn(Ic.Plus, "New session", { create() }, enabled = !creating)
         }
         if (error.isNotBlank()) Notice(error, modifier = Modifier.padding(horizontal = S.lg, vertical = S.sm))
         if (synced && rows.isEmpty()) {
             Empty("No sessions yet", "Start one here or on the computer. It shows up on both.") {
-                Btn("New session", { scope.launch { runCatching { Hub.newChat() }.onSuccess { Ui.open(it) } } }, icon = Ic.Plus)
+                Btn(if (creating) "Starting" else "New session", { create() }, icon = Ic.Plus, enabled = !creating, tag = "New session")
             }
             return
         }
