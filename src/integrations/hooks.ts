@@ -9,7 +9,10 @@
 //
 // What a hook can do: block a call or a prompt, send a call to the owner, add
 // context for the model (with the call's result; after the prompt), keep a turn
-// going (Stop). What it cannot: allow anything.
+// going (Stop), change a call's input before it is judged, and allow a call:
+// that answers the call's low-risk ask in the owner's place and nothing more
+// (src/safety/gate.ts: no high-risk card, no never-allowed command, nothing in
+// Read only or Plan).
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { contains, realOf } from "../core/paths.ts";
@@ -201,7 +204,10 @@ export function namesOf(tool: string, input: any, via?: string): string[] {
   return [...new Set(out)];
 }
 
-export type HookResult = { block?: string; ask?: string; context: string[]; continueWith?: string };
+// `allow`: a PreToolUse hook allowed the call, with its reason (a block or an
+// ask from another hook wins). `input`: the input a PreToolUse hook gave the
+// call in place of the model's (the first hook's, in file order).
+export type HookResult = { block?: string; ask?: string; allow?: string; input?: Record<string, unknown>; context: string[]; continueWith?: string };
 
 export class Hooks {
   constructor(private store: Store) {
@@ -323,13 +329,23 @@ export class Hooks {
         else res.block ??= String(j.reason ?? "a hook blocked this");
       }
       if (j.continue === false && event !== "Stop") res.block ??= String(j.stopReason ?? "a hook stopped this");
-      if (hso.permissionDecision === "deny") res.block ??= String(hso.permissionDecisionReason ?? "a hook denied this call");
-      else if (hso.permissionDecision === "ask") res.ask ??= String(hso.permissionDecisionReason ?? "a hook asks the owner about this call");
-      // "allow" is ignored: a hook cannot allow anything. A rewrite is not supported.
-      if (hso.updatedInput !== undefined) res.block ??= "a hook tried to change the call's input, which Keel does not do";
+      if (event === "PreToolUse") {
+        // The older top-level form: "approve" is "allow" ("block" is read above).
+        const decision = hso.permissionDecision ?? (j.decision === "approve" ? "allow" : undefined);
+        if (decision === "deny") res.block ??= String(hso.permissionDecisionReason ?? "a hook denied this call");
+        else if (decision === "ask") res.ask ??= String(hso.permissionDecisionReason ?? "a hook asks the owner about this call");
+        else if (decision === "allow") res.allow ??= String(hso.permissionDecisionReason ?? j.reason ?? "");
+        // A changed input replaces the whole input. One that is not an object cannot be judged: the call does not run.
+        if (hso.updatedInput !== undefined && decision !== "deny") {
+          if (hso.updatedInput && typeof hso.updatedInput === "object" && !Array.isArray(hso.updatedInput)) res.input ??= hso.updatedInput;
+          else res.block ??= "a hook answered an input for this call that is not an object";
+        }
+      }
       if (typeof hso.additionalContext === "string" && hso.additionalContext.trim()) res.context.push(hso.additionalContext.trim().slice(0, 10_000));
       if (typeof j.systemMessage === "string" && j.systemMessage.trim()) res.context.push(j.systemMessage.trim().slice(0, 10_000));
     }
+    // Between hooks: a block beats an ask, and an ask beats an allow.
+    if (res.block || res.ask) delete res.allow;
     return res;
   }
 }

@@ -3,7 +3,15 @@ import type { ModelInfo, ProviderRequest, ProviderResult } from "../providers/ty
 import type { Tool, ToolContext } from "../tools/types.ts";
 
 // One tool call as the turn is about to run it.
-export type ToolCall = { id: string; tool: Tool; input: any; ctx: ToolContext };
+// `hook`: what the owner's PreToolUse hooks did to the call before any gate saw
+// it. `from`: the input the model wrote, when a hook changed it (`input` is then
+// what every gate judges and what runs). `allowed`: a hook allowed the call,
+// with its reason; `skipped`: that allow answered an ask in the owner's place.
+export type ToolCall = { id: string; tool: Tool; input: any; ctx: ToolContext; hook?: { from?: any; allowed?: string; skipped?: true } };
+
+// What the model reads on the result of a call whose input a hook changed.
+export const hookChanged = (input: unknown) =>
+  `<hook event="PreToolUse">\nA hook of the owner's changed this call's input before it was judged and run. It ran with:\n${(JSON.stringify(input) ?? "").slice(0, 4000)}\n</hook>`;
 
 // What a beforeTool hook may answer: refuse the call (the reason is the tool
 // result the model sees), or run it with a changed input or context (a
@@ -68,6 +76,10 @@ export type TurnHooks = {
   // Each streamed piece of the answer, side answers too (they never reach the bus).
   requestDelta?: (s: Session, req: ProviderRequest, d: { kind: string; text: string }) => void;
   afterResponse?: (s: Session, res: ProviderResult, messages: Message[]) => void | Promise<void>;
+  // The owner's hooks on a call, before every beforeTool: refuse it, change its
+  // input (`call.input` becomes it and `call.hook.from` keeps what the model
+  // wrote) or allow it (`call.hook.allowed`, which the permission gate reads).
+  prepareTool?: (s: Session, call: ToolCall) => void | { deny: string } | { input?: any; allow?: string } | Promise<void | { deny: string } | { input?: any; allow?: string }>;
   // Before each tool call, in registration order; may wait (an approval). The
   // first deny wins and the call does not run. Watch call.ctx.signal.
   beforeTool?: (s: Session, call: ToolCall) => ToolGate | Promise<ToolGate>;

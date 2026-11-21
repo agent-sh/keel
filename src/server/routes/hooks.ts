@@ -13,11 +13,23 @@ const bad = (error: string, status = 400) => json({ error }, status);
 const STOP_LIMIT = 5;
 export const HOOK_PREFIX = "[hook]";
 
+// The call's input with the part the hook saw replaced. A dispatcher (mcp_call)
+// shows its hooks the arguments of the tool it runs: those are replaced where
+// they sit in its own input. Undefined: the part cannot be found, so the call
+// cannot run changed.
+export function changedInput(callInput: any, seen: any, updated: Record<string, unknown>): any {
+  if (seen === callInput) return updated;
+  if (!callInput || typeof callInput !== "object") return undefined;
+  const key = Object.keys(callInput).find((k) => callInput[k] === seen);
+  return key === undefined ? undefined : { ...callInput, [key]: updated };
+}
+
 export const hookRoutes: RouteModule = (deps) => {
   const { store, bus, engine, errors } = deps;
   const hooks = new Hooks(store);
   const answered = new Set<string>(); // user events already given to UserPromptSubmit
   const after = new Map<string, string[]>(); // call id -> PreToolUse context, joined to its result
+  const asks = new Map<string, string>(); // call id -> why a PreToolUse hook sends it to the owner
   const stops = new Map<string, number>();
   const events = (id: string) => store.lineage(id); // kept by the store: no copy or walk of the session per request
   const note = (sid: string, event: string, lines: string[]) => {
@@ -50,18 +62,27 @@ export const hookRoutes: RouteModule = (deps) => {
       note(s.id, first ? "SessionStart, UserPromptSubmit" : "UserPromptSubmit", lines);
       return { ...req, messages: toMessages(events(s.id)) };
     },
-    async beforeTool(s, call) {
+    // PreToolUse runs before every gate: a call a hook changed is judged as changed.
+    async prepareTool(s, call) {
       const target = call.tool.target ? await call.tool.target(call.input) : null;
       const name = target?.name ?? call.tool.name;
       const input = target ? target.input : call.input;
       const r = await hooks.run("PreToolUse", s, { tool_name: name, tool_input: input, tool_use_id: call.id }, namesOf(name, input, call.tool.name));
       if (r.block) return { deny: `A hook blocked this call: ${r.block}` };
-      if (r.ask) {
-        if (!gate) return { deny: `A hook asks the owner about this call (${r.ask}), and no one can be asked here.` };
-        const d = await gate.askOnce(s, call, name, `a hook asks: ${r.ask}`);
-        if (d) return d;
-      }
       if (r.context.length) after.set(call.id, r.context);
+      if (r.ask) asks.set(call.id, r.ask);
+      const changed = r.input === undefined ? undefined : changedInput(call.input, input, r.input);
+      if (r.input !== undefined && changed === undefined) return { deny: `A hook changed the input of ${name}, which ${call.tool.name} cannot run changed.` };
+      return changed !== undefined || r.allow !== undefined ? { input: changed, allow: r.allow } : undefined;
+    },
+    // A hook's ask goes to the owner after the gate let the call through (a call the gate refuses asks nobody).
+    async beforeTool(s, call) {
+      const ask = asks.get(call.id);
+      if (ask === undefined) return;
+      asks.delete(call.id);
+      if (!gate) return { deny: `A hook asks the owner about this call (${ask}), and no one can be asked here.` };
+      const d = await gate.askOnce(s, call, call.tool.target ? (await call.tool.target(call.input))?.name ?? call.tool.name : call.tool.name, `a hook asks: ${ask}`);
+      if (d) return d;
     },
     async afterTool(s, call, result) {
       const target = call.tool.target ? await call.tool.target(call.input) : null;

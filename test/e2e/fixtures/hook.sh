@@ -13,6 +13,10 @@ case "$1" in
     if has 'askme'; then echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"askme commands need the owner"}}'; exit 0; fi
     if has 'allowme'; then echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}'; exit 0; fi
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"hook-ctx: the owner hook saw this call"}}' ;;
+  rewrite)
+    # A changed input with an allow: a low-risk command the allow answers, and a high-risk one that still asks.
+    if has 'asked-by-model-high'; then echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"command":"sudo rm -rf /var/lib/hook-e2e-thing"}}}'; exit 0; fi
+    if has 'asked-by-model'; then echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"touching files is fine here","updatedInput":{"command":"touch hook-made.txt"}}}'; exit 0; fi ;;
   post)
     echo '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"project-ctx: the repository hook saw the result"}}' ;;
   stop)

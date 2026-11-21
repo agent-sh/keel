@@ -2,9 +2,9 @@ import { Collapsible } from "@base-ui/react/collapsible";
 import { Ansi } from "./Ansi.tsx";
 import {
   Brain, Check, ChevronRight, Circle, CircleDot, FilePen, FilePlus2, FileText, FolderSearch, FolderTree, Globe,
-  ListChecks, MessageCircleQuestion, NotebookPen, Plug, RotateCcw, Search, Sparkles, SquareTerminal, Square, Wrench, X,
+  ListChecks, MessageCircleQuestion, NotebookPen, Plug, RotateCcw, Search, Sparkles, SquareTerminal, Square, Webhook, Wrench, X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { setUI, useUI } from "../lib/ui.ts";
 import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { diffLines, splitLines } from "../../../src/tools/diff.ts";
@@ -75,15 +75,21 @@ function planSummary(items: PlanItem[]): string {
   return `${done}/${items.length} done${now ? ` · ${now.active ?? now.text}` : ""}`;
 }
 
-export function ToolCall({ use, result, live, sessionId, cwd }: Props) {
-  if (AGENT_TOOLS.has(use.name)) return <AgentCall use={use} result={result} live={live} />;
-  if (use.name === "run_code") return <CodeCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} />;
-  if (use.name === "AskReaders" || use.name === "ask_readers") return <ReadersCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} />;
-  const kind = toolKind(use.name);
-  const input: any = use.input ?? {};
-  if (kind === "ask" && !live) return <QuestionCard use={use} result={result} sessionId={sessionId} />;
-  if (kind === "plan" && !live) return <PlanCard items={planItems(use.name, input)} explanation={input.explanation} rejected={result?.is_error ? resultText(result) : undefined} />;
-  return <GenericCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} kind={kind} input={input} />;
+// What the owner's hooks did to a call rides with its result: the input they
+// gave it in place of the model's, and an allow that answered its ask.
+type HookMark = { input?: any; allowed?: string };
+
+// The line that says so: the card shows the input that ran, this names what the model asked for.
+function HookRow({ hook, asked, name, cwd, alone }: { hook: HookMark; asked: any; name: string; cwd?: string; alone?: boolean }) {
+  return (
+    <div className={cn("flex items-start gap-2 px-3 py-2 text-caption text-muted", alone ? "rounded-lg border border-line bg-raised" : "border-t border-line")} data-testid="tool-hook">
+      <Webhook className="mt-0.5 size-3.5 shrink-0 text-faint" />
+      <p className="min-w-0 flex-1">
+        {hook.input !== undefined && <>A hook changed this call before it was judged and run. The model asked for <span className="font-mono text-micro break-all text-fg" data-testid="tool-asked">{summary(toolKind(name), name, asked ?? {}, cwd) || JSON.stringify(asked ?? {}).slice(0, 400)}</span>. </>}
+        {hook.allowed !== undefined && <span data-testid="tool-hook-allowed">A hook allowed it without asking you{hook.allowed ? `: ${hook.allowed}` : ""}.</span>}
+      </p>
+    </div>
+  );
 }
 
 // A result that was cut names the file with all of it ("saved to <path>").
@@ -103,7 +109,22 @@ function useSpillRemoved(sessionId: string | undefined, out: string): boolean {
   return gone;
 }
 
-function GenericCall({ use, result, live, sessionId, cwd, kind, input }: Props & { kind: ToolKind; input: any }) {
+export function ToolCall({ use: asked, result, live, sessionId, cwd }: Props) {
+  const hook = (result as (ToolResultBlock & { shown?: { hook?: HookMark } }) | undefined)?.shown?.hook;
+  // Every card shows the input that ran.
+  const use = hook?.input !== undefined ? { ...asked, input: hook.input } : asked;
+  const beside = (card: ReactNode) => (hook ? <div className="flex flex-col gap-1.5">{card}<HookRow hook={hook} asked={asked.input} name={use.name} cwd={cwd} alone /></div> : card);
+  if (AGENT_TOOLS.has(use.name)) return beside(<AgentCall use={use} result={result} live={live} />);
+  if (use.name === "run_code") return beside(<CodeCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} />);
+  if (use.name === "AskReaders" || use.name === "ask_readers") return beside(<ReadersCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} />);
+  const kind = toolKind(use.name);
+  const input: any = use.input ?? {};
+  if (kind === "ask" && !live) return beside(<QuestionCard use={use} result={result} sessionId={sessionId} />);
+  if (kind === "plan" && !live) return beside(<PlanCard items={planItems(use.name, input)} explanation={input.explanation} rejected={result?.is_error ? resultText(result) : undefined} />);
+  return <GenericCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} kind={kind} input={input} hook={hook} asked={asked.input} />;
+}
+
+function GenericCall({ use, result, live, sessionId, cwd, kind, input, hook, asked }: Props & { kind: ToolKind; input: any; hook?: HookMark; asked?: any }) {
   const Icon = ICONS[kind];
   const { text: out, nested, memory } = useMemo(() => { const m = splitMemory(resultText(result)); return { ...splitNested(m.text), memory: m.memory }; }, [result]);
   const images = resultImages(result);
@@ -140,6 +161,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input }: Props &
             <span className="font-mono"><span className="text-ok">+{diff.added}</span> <span className="text-danger">-{diff.removed}</span></span>
           )}
           {nested.length > 0 && <span className="rounded-full bg-sunken px-1.5 py-px text-muted" data-testid="tool-nested" title={nested.map((n) => n.path).join("\n")}>+ {nested.length === 1 ? shortPath(nested[0]!.path, cwd) : `${nested.length} instruction files`}</span>}
+          {hook?.input !== undefined && <span className="rounded-full bg-sunken px-1.5 py-px text-muted" data-testid="tool-rewritten">changed by a hook</span>}
           {shell.background && <span className="rounded-full bg-accent-soft px-1.5 py-px text-accent-ink" data-testid="tool-background">background</span>}
           {shell.session && <span className="rounded-full bg-accent-soft px-1.5 py-px text-accent-ink">session {shell.session}</span>}
           {state === "running" && <span className="size-1.5 rounded-full bg-brass animate-pulse-dot" />}
@@ -158,6 +180,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input }: Props &
             : <button data-testid="tool-retry" onClick={() => allowRetry(sessionId, refused.id)} className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-line px-2.5 text-caption hover:bg-hover"><RotateCcw className="size-3" /> Allow one retry</button>}
         </div>
       )}
+      {hook && <HookRow hook={hook} asked={asked} name={use.name} cwd={cwd} />}
       <Collapsible.Panel className="k-tool-panel overflow-hidden border-t border-line">
         {pathOf(input) && kind !== "shell" && (
           <Copyable text={pathOf(input)!} label="Copy the path" testid="copy-path" className="k-tool-path">

@@ -17,7 +17,7 @@ import { detect, placeholdersIn, vault } from "./secrets.ts";
 import { splitCommand } from "./shell.ts";
 import { artifactsDir, contains, realOf } from "../core/paths.ts";
 import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
-import { classify, decide, isMode, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
+import { classify, decide, isMode, shellText, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 
 // An edit is judged by where it sits (its folders' links resolved) and by
 // where it lands (the file's own link followed too): a link inside the
@@ -416,6 +416,16 @@ export class Gate {
     const invocation = dir && shell ? { ...dir, interpreter: shell.interpreter } : undefined;
     if ("allow" in d) return { cls, ...(mode === "auto" ? { authorization: this.autoAuthorization(session, call, target, cls, false, invocation).authorization } : {}) };
     if (cls.kind === "control") return { cls };
+    // A hook's allow (the owner's own hooks file, or a repository's they read
+    // and pinned) answers this one call's low-risk ask in their place, and
+    // nothing more: what is refused above stays refused (Read only, Plan, the
+    // never-allowed commands), a high-risk action still gets its card or its
+    // judge, a tool that asks for the owner's confirmation still asks, and the
+    // sandbox still confines what runs.
+    if (call.hook?.allowed !== undefined && d.ask.risk === "low" && !d.ask.ownerOnly) {
+      call.hook.skipped = true;
+      return { cls, ...(mode === "auto" ? { authorization: this.autoAuthorization(session, call, target, cls, false, invocation).authorization } : {}) };
+    }
     const { summary, cut } = inShort(cls, target ? target.input : call.input);
     const key = keyOf(name, target, cls, call, summary);
     if (mode === "auto") {
@@ -577,9 +587,12 @@ export class Gate {
 
   private async card(session: Session, call: ToolCall, name: string, cls: CallClass, summary: string,
     ask: { risk: "high" | "low"; why?: string; suggest: Suggest[]; notice?: string; bind?: string; autoOwner?: true; cut?: true }, once = false): Promise<{ deny: string } | void> {
+    // A call a hook changed is asked about as changed: the card says what the model wrote.
+    const from = call.hook?.from;
+    const changed = from === undefined ? undefined : `A hook of yours changed this call. The model asked for: ${(shellText(from) ?? JSON.stringify(from) ?? "").slice(0, 300)}`;
     const a: Approval = this.unpark(session.id, call.id, once) ?? {
       id: crypto.randomUUID(), session_id: session.id, call_id: call.id, tool: name, kind: cls.kind as Approval["kind"],
-      summary, cut: ask.cut, notice: ask.notice,
+      summary, cut: ask.cut, notice: [ask.notice, changed].filter(Boolean).join(" ") || undefined,
       // Cards of one reply are made in the same millisecond: each gets a later time than the one before, so they list in call order.
       input: clip(call.input), risk: ask.risk, why: ask.why, suggest: ask.suggest, state: "pending", created: (this.lastCard = Math.max(Date.now(), this.lastCard + 1)),
       once: once || undefined, bind: ask.bind, autoOwner: ask.autoOwner,

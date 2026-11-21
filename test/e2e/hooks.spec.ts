@@ -9,9 +9,9 @@ const file = (groups: Record<string, string>) =>
 
 // Feature: hooks. The owner's hooks.json runs; a repository's runs only after
 // the owner reads and pins it. A prompt hook refuses a prompt or adds context,
-// a pre-tool hook blocks a call, asks the owner or adds context (an "allow"
-// allows nothing), a post-tool hook adds context to the result, a Stop hook
-// sends the session back to work once.
+// a pre-tool hook blocks a call, asks the owner or adds context (what an
+// "allow" and a changed input do: hook-events.spec.ts), a post-tool hook adds
+// context to the result, a Stop hook sends the session back to work once.
 // Run the daemon with KEEL_HOOKS at a scratch file: this test writes it.
 test("hooks", async ({ page, request }) => {
   const info = await (await request.get("/api/hooks")).json();
@@ -61,7 +61,7 @@ test("hooks", async ({ page, request }) => {
   const texts = (await events()).filter((e: any) => e.kind === "assistant").map((e: any) => JSON.stringify(e.data.blocks)).join(" ");
   expect(texts.toLowerCase()).toContain("falcon");
 
-  // A hook that asks puts the call to the owner, with no standing answer; an "allow" allows nothing.
+  // A hook that asks puts the call to the owner, with no standing answer.
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
   await page.getByTestId("composer").fill("Run exactly this Bash command and nothing else: echo askme. Then reply with one word: ok.");
   await page.keyboard.press("Enter");

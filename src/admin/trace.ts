@@ -259,7 +259,7 @@ export class Tracer {
       },
       requestDone: (_s, req, res) => this.done(req, res),
       requestFailed: (_s, req, err, aborted) => this.failed(req, err, aborted),
-      toolRan: (s, call, result, ran) => this.tool(s, call.id, call.tool.name, call.input, result, ran),
+      toolRan: (s, call, result, ran) => this.tool(s, call.id, call.tool.name, call.input, result, ran, call.hook),
       turnEnd: (s, reason) => this.turnEnd(s, reason),
     });
   }
@@ -409,7 +409,8 @@ export class Tracer {
     });
   }
 
-  private tool(s: Session, callId: string, name: string, input: unknown, result: ToolResultBlock, ran: { ms: number; outcome: "ok" | "error" | "interrupted"; error?: Error }) {
+  // `hook`: what the owner's hooks did to the call (`input` is then the input they left, which is what ran).
+  private tool(s: Session, callId: string, name: string, input: unknown, result: ToolResultBlock, ran: { ms: number; outcome: "ok" | "error" | "interrupted"; error?: Error }, hook?: { from?: unknown; skipped?: true }) {
     const turn = this.turnOf(s, "turn");
     const parent = turn ? this.ensureTurn(s, turn) : null;
     const span = toolSpanId(s.id, callId);
@@ -426,7 +427,8 @@ export class Tracer {
       "INSERT OR REPLACE INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, error, error_type, attrs) VALUES (?, ?, ?, ?, 'tool', ?, ?, ?, ?, ?, ?, ?)",
       [span, trace, parent?.span ?? null, s.id, `execute_tool ${name}`, now - ran.ms, now, ran.outcome, ran.outcome === "error" ? conceal(content.slice(0, 1000), s.id) : null,
         ran.outcome === "error" ? "tool_error" : null,
-        JSON.stringify({ tool: name, call_id: callId, input_keys: input && typeof input === "object" ? Object.keys(input) : [], input_bytes: Buffer.byteLength(inputJson), result_bytes: Buffer.byteLength(content), ...(turn ? { turn_event: turn.id } : {}) })],
+        JSON.stringify({ tool: name, call_id: callId, input_keys: input && typeof input === "object" ? Object.keys(input) : [], input_bytes: Buffer.byteLength(inputJson), result_bytes: Buffer.byteLength(content), ...(turn ? { turn_event: turn.id } : {}),
+          ...(hook?.from !== undefined ? { hook_rewrote: true, asked_input_bytes: Buffer.byteLength(JSON.stringify(hook.from ?? {})) } : {}), ...(hook?.skipped ? { hook_allowed: true } : {}) })],
     );
     this.emitEnd(span);
   }

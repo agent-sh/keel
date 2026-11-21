@@ -179,6 +179,58 @@ sandboxing separately from approvals and can review eligible approvals
 automatically. [OpenCode](https://opencode.ai/docs/permissions/) uses
 `allow`, `ask` and `deny` rules scoped by action and resource.
 
+## Hooks
+
+Keel reads hooks in the shape Claude Code and Codex share:
+`{ "hooks": { "<Event>": [{ "matcher": "...", "hooks": [{ "type": "command", "command": "..." }] }] } }`.
+Your own file, `hooks.json` in Keel's config folder, always runs. A
+repository's `.keel/hooks.json` runs only after you read it and pin it in
+Settings, Hooks. The pin holds the file and every script under `.keel/` its
+commands run. A changed file or script runs nothing until you pin it again.
+
+### What a PreToolUse hook can do to a call
+
+A `PreToolUse` hook runs before the permission gate. It answers with
+`hookSpecificOutput.permissionDecision` and, to change the call,
+`hookSpecificOutput.updatedInput`.
+
+| Answer | What Keel does |
+| --- | --- |
+| `deny`, exit code 2, or `decision: "block"` | The call does not run. The model reads the reason. |
+| `ask` | The call goes to you on a card, after the gate let it through. The card takes no standing answer. |
+| `allow` | It answers the call's low-risk ask in your place, once. Nothing else. |
+| `updatedInput` | The call's input is replaced before anything judges it. |
+
+Between hooks, a deny beats an ask and an ask beats an allow. When several
+hooks change the input, the first one in file order wins, your file before
+the repository's.
+
+An allow never widens what the session's mode and sandbox permit:
+
+- A high-risk action still gets its card, or its judge in Auto and Full auto.
+- A command that never runs without you is still refused or asked.
+- Read only and Plan still refuse what they refuse.
+- A tool that asks for your confirmation on every call still asks.
+- The sandbox still confines the command.
+
+What the allow does skip is the card, or the review, of an ordinary action
+that the mode would ask about: an edit outside the workspace, a command no
+grant covers, a tool with no standing answer.
+
+A changed input is the one the gate judges, the one an approval card shows
+and the one that runs. The session's history keeps what the model wrote. The
+model reads the input that ran on the call's result. The call's card shows
+the input that ran and names what the model asked for. The call's trace span
+carries `hook_rewrote` and the size of the input the model wrote, and
+`hook_allowed` when a hook's allow answered an ask. For a tool that runs
+another tool (`mcp_call`), the hook sees and changes that tool's arguments.
+
+Both follow the documented contracts, read on 2026-11-21:
+[Claude Code hooks](https://code.claude.com/docs/en/hooks) evaluates deny
+and ask rules whatever a hook allows, and judges the returned input, not the
+one the model sent. [Codex hooks](https://developers.openai.com/codex/hooks)
+accepts `updatedInput` together with `allow`.
+
 ## Subagent concurrency
 
 From the machine running the session's daemon, set a limit for that session:

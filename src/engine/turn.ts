@@ -22,7 +22,7 @@ import { allPendingQuestions } from "../tools/interact.ts";
 import { APPROVAL_CUT, QUESTION_CUT, RESTART_CUT, STOPPED_BEFORE, STOPPED_WHILE, stopKind } from "../core/stops.ts";
 import { dropCallEnv } from "../tools/jobs.ts";
 import { isDeferError, loadsNatively, referenced, refuseDefer, withCatalog } from "../tools/defer.ts";
-import { allHooks, type CutState, type CutTurn, type ExternalTurn, type SystemBlock, type ToolAuthorization, type ToolCall } from "./hooks.ts";
+import { allHooks, hookChanged, type CutState, type CutTurn, type ExternalTurn, type SystemBlock, type ToolAuthorization, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, type Material } from "./reader.ts";
 import { readBudget, readMaterial, readSource, type ReaderHost, type ReadOutcome } from "./readers.ts";
@@ -1625,13 +1625,39 @@ export class Engine {
       if (outcome === "error") this.verdicts.set(r, "failed");
       return r;
     };
+    // What a hook of the owner's did to the call rides with its result: the
+    // model reads the input that was judged and ran (the history keeps what it
+    // wrote), and the card shows both.
+    const told = (r: ToolResultBlock): ToolResultBlock => {
+      const h = call.hook;
+      if (!h || (h.from === undefined && !h.skipped)) return r;
+      if (h.from !== undefined) {
+        const note = hookChanged(call.input);
+        r.content = typeof r.content === "string" ? `${r.content}\n\n${note}` : [...r.content, { type: "text", text: note }];
+      }
+      const shown = this.shown.get(u.id);
+      this.shown.set(u.id, { ...(shown && typeof shown === "object" ? shown : {}), hook: { ...(h.from !== undefined ? { input: call.input } : {}), ...(h.skipped ? { allowed: h.allowed ?? "" } : {}) } });
+      return r;
+    };
     // Refused before it ran (the owner's answer, a rule, the judge): the model is told why.
     const denied = (why: string): ToolResultBlock => {
       const r: ToolResultBlock = { type: "tool_result", tool_use_id: u.id, content: why, is_error: true };
       this.verdicts.set(r, "denied");
-      return r;
+      return told(r);
     };
     try {
+      // The owner's hooks first: every gate after them judges the input they left.
+      for (const h of allHooks()) {
+        if (!h.prepareTool) continue;
+        const prepared = Promise.resolve(h.prepareTool(session, call));
+        prepared.catch(() => {});
+        const g = await Promise.race([prepared, stopped]);
+        if (ctx.signal.aborted) return interrupted();
+        if (!g) continue;
+        if ("deny" in g) return denied(g.deny);
+        if (g.input !== undefined) { call.hook = { ...call.hook, from: call.hook?.from ?? call.input }; call.input = g.input; }
+        if (g.allow !== undefined) call.hook = { ...call.hook, allowed: g.allow };
+      }
       const authorizations: ToolAuthorization[] = [];
       for (const h of allHooks()) {
         if (!h.beforeTool) continue;
@@ -1680,14 +1706,14 @@ export class Engine {
       // named itself on the error, so the error row and the span point at each other.
       if (t0 !== undefined) ran(failed, "error", err);
       this.errors.capture("tool", err, { tool: u.name, session: ctx.sessionId });
-      return failed;
+      return told(failed);
     } finally {
       if (preparedInput && t0 === undefined) dropCallEnv(call.id);
       ctx.signal.removeEventListener("abort", onStop);
     }
     // A hook that throws at once is caught like one that rejects.
     for (const h of allHooks()) await (async () => h.afterTool?.(session, call, result))().catch((e) => this.errors.capture("server", e, { hook: "afterTool", tool: u.name, session: session.id }));
-    return result;
+    return told(result);
   }
 
   // Sessions whose summary could not be written whole (cut at the output limit
