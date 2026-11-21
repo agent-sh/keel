@@ -604,8 +604,10 @@ export function mergeEvents(a: StoredEvent[], b: StoredEvent[]): StoredEvent[] {
 // The live feed. On every (re)connect the page names the newest seq it has seen of
 // each loaded session; the daemon replays what came after, and the reply a
 // running turn has streamed so far, then sends live (see src/server/live.ts).
-// A ping every 20 s proves the socket still delivers; no pong in 10 s and it
-// is closed and opened again.
+// A ping every 20 s proves the socket still delivers: when nothing at all
+// arrived for 10 s after one (and still nothing a moment later), it is closed
+// and opened again. A page too busy to read its pong in time is not a dead
+// socket: any frame since the ping counts.
 let retry = 500;
 let socket: WebSocket | undefined;
 // When the live feed dropped (null while it is up, and before the page's
@@ -637,6 +639,8 @@ export function connect() {
   let pinger: ReturnType<typeof setInterval> | undefined;
   let deadline: ReturnType<typeof setTimeout> | undefined;
   let open = false, caught = false;
+  // When the last ping left and when the socket last delivered anything.
+  let pinged = 0, heard = 0, waited = false;
   ws.onopen = () => {
     open = true;
     retry = 500;
@@ -706,11 +710,25 @@ export function connect() {
       }
     }, 1_000);
     pinger = setInterval(() => {
+      if (ws.readyState !== WebSocket.OPEN) return;
       ws.send(JSON.stringify({ op: "ping", nonce: Date.now() }));
-      deadline ??= setTimeout(() => ws.close(), 10_000);
+      deadline ??= setTimeout(function check() {
+        deadline = undefined;
+        // Anything the socket delivered since the ping proves it works. A busy
+        // page gets to its frames late: the pong may still wait behind others
+        // (or behind this very timer), so a quiet look is taken once more
+        // before the socket is given up, and only a socket that delivered
+        // nothing in all that time is closed.
+        if (heard >= pinged) return;
+        if (!waited) { waited = true; deadline = setTimeout(check, 5_000); return; }
+        ws.close();
+      }, 10_000);
+      pinged = Date.now();
+      waited = false;
     }, 20_000);
   };
   ws.onmessage = (m) => {
+    heard = Date.now();
     const f = JSON.parse(m.data) as Frame | SocketFrame;
     if (f.t === "pong") { clearTimeout(deadline); deadline = undefined; }
     // The replay's whole draft, also at the rev of a snapshot that came before this socket
