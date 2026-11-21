@@ -84,25 +84,26 @@ END;
 `;
 
 // The index and what keeps it current, made or brought to this version in one
-// transaction with the version it records: a start that failed part way left
-// the version it found, and the next start does the work again.
+// transaction with the version it records. The recorded version is the whole
+// answer of a later start: the index is there and filled, and nothing in it
+// is read or counted. A start that failed part way left the version it found,
+// and the next start does the work again.
 export function initSearchIndex(db: Database) {
   const had = db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE name = 'search_meta'").get()
     ? db.query<{ version: number }, []>("SELECT version FROM search_meta").get()?.version
     : undefined;
-  if (had !== INDEX_VERSION) {
-    db.transaction(() => {
-      const keep = had === UNMAPPED_VERSION;
-      db.exec(`${DROP_LAYOUT}${keep ? "" : "DROP TABLE IF EXISTS search_idx;"}`);
-      db.exec(SCHEMA);
-      // One read of the rows already indexed (no words are indexed again).
-      if (keep) db.run("INSERT INTO search_docs (event_id, doc) SELECT event_id, rowid FROM search_idx ORDER BY 1, 2");
-      db.run("INSERT INTO search_meta (version) VALUES (?)", [INDEX_VERSION]);
-    })();
-  }
-  // Index what was stored before the index existed (once).
-  const count = db.query<{ n: number }, []>("SELECT count(*) AS n FROM search_idx").get()!.n;
-  if (count === 0) db.transaction(() => { for (const r of ROWS(`events e`)) db.run(`${COLS} ${r}`); })();
+  if (had === INDEX_VERSION) return;
+  db.transaction(() => {
+    const keep = had === UNMAPPED_VERSION;
+    db.exec(`${DROP_LAYOUT}${keep ? "" : "DROP TABLE IF EXISTS search_idx;"}`);
+    db.exec(SCHEMA);
+    // One read of the rows already indexed (no words are indexed again).
+    if (keep) db.run("INSERT INTO search_docs (event_id, doc) SELECT event_id, rowid FROM search_idx ORDER BY 1, 2");
+    // Index what was stored before the index existed. A kept index with no
+    // rows was never filled: that version recorded itself before its fill.
+    if (!keep || !db.query("SELECT 1 FROM search_docs LIMIT 1").get()) for (const r of ROWS(`events e`)) db.run(`${COLS} ${r}`);
+    db.run("INSERT INTO search_meta (version) VALUES (?)", [INDEX_VERSION]);
+  })();
 }
 
 type Hit = {

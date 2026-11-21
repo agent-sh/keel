@@ -122,3 +122,65 @@ test("an index from before the map keeps its rows and gets them mapped", async (
   for (const p of deletePlans(next.store).filter((x) => x.includes("search_idx"))) expect(p).toMatch(/:=$/);
   next.store.db.close();
 });
+
+// Every statement a start runs on the database.
+function record(store: Store): string[] {
+  const seen: string[] = [];
+  const db = store.db as any;
+  for (const m of ["query", "prepare", "run", "exec"]) {
+    const real = db[m].bind(db);
+    db[m] = (sql: string, ...rest: unknown[]) => { seen.push(sql); return real(sql, ...rest); };
+  }
+  return seen;
+}
+const version = (store: Store) =>
+  store.db.query("SELECT 1 FROM sqlite_master WHERE name = 'search_meta'").get() ? store.db.query<{ version: number }, []>("SELECT version FROM search_meta").get()?.version : undefined;
+
+test("the first start and a new version index what was stored before", async () => {
+  const { dir, store, start, hits } = open();
+  const s = talk(store, "numbat");
+  expect((await hits(start(), "numbat")).length).toBe(6);
+  // An older version of the index is made again from the events; so is the
+  // last version's when its fill never ran (it holds nothing).
+  let last = store;
+  for (const old of [2, 3]) {
+    last.db.exec(`DELETE FROM search_docs; UPDATE search_meta SET version = ${old};`);
+    expect(last.db.query<{ n: number }, []>("SELECT count(*) AS n FROM search_idx").get()!.n).toBe(0);
+    last.db.close();
+    const next = open(dir);
+    expect((await next.hits(next.start(), "numbat")).map((h) => h.session_id)).toEqual(Array(6).fill(s));
+    last = next.store;
+  }
+  last.db.close();
+});
+
+test("a fill that failed records nothing, and the next start fills", async () => {
+  const { store, start, hits } = open();
+  const s = talk(store, "bilby");
+  store.db.run("INSERT INTO events (id, session_id, seq, kind, data, ts) VALUES ('broken', ?, 99, 'user', '{not json', 1)", [s]);
+  expect(() => start()).toThrow();
+  expect(version(store)).toBeUndefined();
+  store.db.run("DELETE FROM events WHERE id = 'broken'");
+  expect((await hits(start(), "bilby")).length).toBe(6);
+  expect(version(store)).toBeGreaterThan(0);
+});
+
+test("a later start reads the recorded version and nothing of the index, even an empty one", async () => {
+  const first = open();
+  talk(first.store, "dunnart");
+  expect((await first.hits(first.start(), "dunnart")).length).toBe(6);
+  const done = version(first.store);
+  first.store.db.exec("DELETE FROM search_docs");
+  first.store.db.close();
+  for (let i = 0; i < 2; i++) {
+    const next = open(first.dir);
+    const seen = record(next.store);
+    const get = next.start();
+    expect(seen.some((q) => q.includes("search_meta"))).toBe(true);
+    expect(seen.filter((q) => /count\s*\(|\bFROM events\b|\bsearch_idx\b|\bsearch_docs\b/i.test(q))).toEqual([]);
+    expect(version(next.store)).toBe(done);
+    // Emptied on purpose and not filled again: the events are still there, the hits are not.
+    expect(await next.hits(get, "dunnart")).toEqual([]);
+    next.store.db.close();
+  }
+});
