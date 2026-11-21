@@ -83,6 +83,59 @@ test("the outbox: handed out until acknowledged, and kept once however often it 
   expect(a.msgs.pendingOutbound("dB")).toHaveLength(1);
 });
 
+// A message for a session the owner stopped waits in its held queue through
+// the engine's own queue path, so it is still a peer message when it runs.
+test("a peer message held by a Stop keeps who sent it", async () => {
+  const { rmSync } = await import("node:fs");
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { allHooks } = await import("../engine/hooks.ts");
+  const { Engine } = await import("../engine/turn.ts");
+  const { Messages } = await import("./messages.ts");
+  const { migrate } = await import("./db.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "keel-peer-held-"));
+  const store = new Store(dir);
+  migrate(store);
+  const engine = new Engine(store, new Bus(), {} as any, { capture: (_s: string, e: unknown) => { throw e; } } as any, dir);
+  const f: any = { id: "dA", name: "dA", rows: () => [], pairs: () => [] };
+  const msgs = new Messages(store, new Bus(), engine, f, () => ({ mode: "full-auto", sandbox: "off" }), () => {});
+  const from = store.createSession({ model: "fixture:m", workspace: dir });
+  const to = store.createSession({ model: "fixture:m", workspace: dir });
+  const running = Promise.withResolvers<void>();
+  let pause = true;
+  allHooks().push({ external: (session) => session.id === to.id ? async ({ signal }) => {
+    if (pause) {
+      running.resolve();
+      await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+    }
+    return { reason: "end_turn" };
+  } : undefined });
+  try {
+    engine.send(to.id, "work");
+    await running.promise;
+    await engine.interrupt(to.id, "owner");
+    pause = false;
+    const stopped = store.events(to.id).at(-1)!;
+    const sender = msgs.senderOf(from);
+    const m = msgs.receive(to, "hello", sender, true, true);
+    expect(m.state).toBe("queued");
+    expect(engine.isRunning(to.id)).toBe(false);
+    expect(engine.isHeld(to.id)).toBe(true);
+    const meta = { kind: "peer", from: sender, message_id: m.id };
+    expect(store.queue(to.id)).toMatchObject([{ steer: false, meta }]);
+    engine.resumeQueue(to.id);
+    await engine.idle(to.id);
+    const prompts = store.events(to.id, stopped.seq).filter((e) => e.kind === "user");
+    expect(prompts.map((e) => e.data)).toMatchObject([{ ...meta, origin: "queued" }]);
+    expect(String(prompts[0]!.data.text)).toContain(`message_id="${m.id}"`);
+  } finally {
+    await engine.interrupt(to.id);
+    allHooks().pop();
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("keel__run_on asks the far daemon to confine its command as the session's own shell is", async () => {
   let sent: any;
   const key = "k", daemonId = "far";

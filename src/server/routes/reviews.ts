@@ -187,7 +187,14 @@ export const reviewRoutes: RouteModule = (deps: Deps) => {
         if (b.action === "fix") {
           try {
             if (agent) await agents.send(agent.id, fixPrompt(r, chosen));
-            else engine.send(s.id, fixPrompt(r, chosen), { mode: "queue", meta: { kind: "review_fix", review_id: r.id } });
+            else {
+              engine.send(s.id, fixPrompt(r, chosen), { mode: "queue", meta: { kind: "review_fix", review_id: r.id } });
+              // Fix is the owner's own action: after a Stop it releases the held
+              // queue, as a prompt they type does. A prompt queued on another
+              // branch still waits for them to say where it goes.
+              const first = store.queue(s.id)[0];
+              if (engine.isHeld(s.id) && !(first && engine.offBranch(first))) engine.resumeQueue(s.id);
+            }
           } catch (e) {
             const back = get(r.id)!;
             save({ ...back, findings: back.findings.map((f) => (picked.has(f.id) ? chosen.find((c) => c.id === f.id)! : f)) });

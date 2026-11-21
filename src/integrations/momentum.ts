@@ -79,7 +79,10 @@ export function handleLine(line: string, c: Ctx): Record<string, unknown> {
     // is not overtaken (interrupt still goes through).
     if (c.draft?.(s.id)) return { ok: false, code: "hold_ui_draft", error: "the owner has an unsent message in this session" };
     const tagged = text.trimStart().startsWith("[momentum]") ? text : `[momentum] ${text.trim()}`;
-    // A message sent while a turn runs reaches it at the next step (steer); else it starts one.
+    // steer: joins the running turn at its next step, or starts a turn in an idle session.
+    // queue: waits for the running turn and what is queued before it. In an idle
+    // session it starts a turn, unless the queue is held (a turn was stopped and
+    // nothing resumed it): then it waits there for the owner.
     c.engine.send(s.id, tagged, { mode: action === "steer" ? "steer" : "queue", meta: { origin: "momentum" } });
     return { ok: true, accepted: action };
   }
