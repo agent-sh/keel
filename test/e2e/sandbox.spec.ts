@@ -76,6 +76,9 @@ test("a sandboxed session commits in its worktree", async ({ page, request }) =>
     `echo x >> ${repo}/.git/config`,
     `echo ref: refs/heads/x > ${repo}/.git/HEAD`,
     `echo ref: refs/heads/x > ${repo}/.git/worktrees/${repo.split("/").pop()}-other/HEAD`,
+    // The state of an operation in progress, which the main checkout would continue.
+    `mkdir ${repo}/.git/rebase-merge`,
+    `touch ${repo}/.git/MERGE_HEAD`,
   ];
   const command = `echo hello > NOTES.md && git add NOTES.md && git -c user.name=k -c user.email=k@k commit -qm notes && echo com""mitted; ${tries.map((t, i) => `(${t}) 2>&1 || echo re""fused-${i}`).join("; ")}`;
   await page.goto(`/s/${id}`);
@@ -97,6 +100,7 @@ test("a sandboxed session commits in its worktree", async ({ page, request }) =>
   expect(existsSync(join(repo, "README.new"))).toBe(false);
   expect(existsSync(join(repo, ".git/hooks/pre-commit"))).toBe(false);
   expect(readFileSync(join(repo, ".git/HEAD"), "utf8")).toBe(mainHead);
+  for (const planted of ["rebase-merge", "MERGE_HEAD"]) expect(existsSync(join(repo, ".git", planted))).toBe(false);
   expect(readFileSync(join(repo, ".git/worktrees", `${repo.split("/").pop()}-other`, "HEAD"), "utf8")).toBe(otherHead);
   expect(git(repo, "config", "--get", "core.bare")).toBe("false");
 
@@ -138,4 +142,11 @@ test("a sandboxed session commits in its worktree", async ({ page, request }) =>
   await last.click();
   await expect(last).toContainText("moved branch main");
   await shoot(page, "sandbox-05-refs-changed");
+
+  // What the worktree's read-only view of the shared git directory closes is
+  // said in the result of a command that runs into it.
+  const shut = await run("git pack-refs --all; echo status-$?", 4);
+  expect(shut).toContain("status-128");
+  expect(shut).toContain("[sandbox] This worktree's sandbox keeps the top of the repository's git directory read-only");
+  expect(git(repo, "rev-parse", "--verify", "-q", "refs/heads/main")).toHaveLength(40);
 });

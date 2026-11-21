@@ -3,11 +3,9 @@
 //
 // The sandbox cannot keep such a command to its own branch: a commit needs
 // lock files next to the refs it writes, so every ref of the repository is
-// writable, and so is the top of the common git directory, where the main
-// checkout keeps the state of a merge or a rebase (src/safety/sandbox.ts).
-// So the refs and that folder are read before the command and after it, and
-// what changed outside the session's own branch is said in the command's
-// result and in the session's activity.
+// writable (src/safety/sandbox.ts). So the refs are read before the command
+// and after it, and what changed outside the session's own branch is said in
+// the command's result and in the session's activity.
 //
 // It names what changed while the command ran, not who changed it: nothing
 // ties a ref update to a process. One case is ruled out, because it is the
@@ -17,18 +15,12 @@
 import { closeSync, fstatSync, openSync, readdirSync, readFileSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { git } from "../core/git.ts";
-import { linkedWorktree } from "./sandbox.ts";
+import { linkedWorktree, SCRATCH } from "./sandbox.ts";
 
-export type RefState = { refs: Map<string, string>; top: Set<string>; branch?: string };
+export type RefState = { refs: Map<string, string>; branch?: string };
 export type Watch = { dir: string; common: string; own: string; before: RefState };
 
-// What a linked worktree's git makes at the top of the common directory. Any
-// other new entry there is the main checkout's state (MERGE_HEAD,
-// rebase-merge, an index lock), which git run in a linked worktree never
-// writes.
-const SHARED = new Set(["packed-refs", "gc.pid", "gc.log", "shallow", "lfs", "rr-cache", "logs", "info", "objects", "refs", "hooks", "worktrees", "modules", "config", "config.worktree", "description", "branches", "remotes", "reftable", "svn"]);
-
-async function read(dir: string, common: string, own: string): Promise<RefState | undefined> {
+async function read(dir: string, own: string): Promise<RefState | undefined> {
   // (Through src/core/git.ts, as every git the daemon runs.)
   const { code, out } = await git(dir, ["for-each-ref", "--format=%(refname) %(objectname)"], { read: true, timeout: 10_000 });
   if (code !== 0) return undefined;
@@ -37,7 +29,7 @@ async function read(dir: string, common: string, own: string): Promise<RefState 
     const at = line.lastIndexOf(" ");
     if (at > 0) refs.set(line.slice(0, at), line.slice(at + 1));
   }
-  return { refs, top: new Set(readdirSync(common)), branch: branchOf(own) };
+  return { refs, branch: branchOf(own) };
 }
 
 const branchOf = (gitDir: string): string | undefined => {
@@ -76,7 +68,7 @@ export async function watch(workspace: string): Promise<Watch | undefined> {
   const at = linkedWorktree(workspace);
   if (!at) return undefined;
   try {
-    const before = await read(workspace, at.common, at.own);
+    const before = await read(workspace, at.own);
     return before && { dir: workspace, common: at.common, own: at.own, before };
   } catch {
     return undefined;
@@ -99,21 +91,27 @@ export function changed(before: RefState, after: RefState, out: Map<string, stri
     if (now === undefined) deleted.push(short(ref));
     else if (now !== was && out.get(ref) !== now) moved.push(`${short(ref)} (${was.slice(0, 7)} to ${now.slice(0, 7)})`);
   }
-  const made = [...after.top].filter((n) => !before.top.has(n) && !SHARED.has(n) && !n.endsWith(".lock")).sort();
-  const parts = [
-    moved.length ? `moved ${list(moved)}` : "",
-    deleted.length ? `deleted ${list(deleted)}` : "",
-    made.length ? `new at the top of the repository's git directory, where the main checkout keeps its own state: ${list(made)}` : "",
-  ].filter(Boolean);
+  const parts = [moved.length ? `moved ${list(moved)}` : "", deleted.length ? `deleted ${list(deleted)}` : ""].filter(Boolean);
   return parts.length ? `While this command ran, what this worktree shares with the repository's other checkouts changed: ${parts.join("; ")}.` : undefined;
 }
 
 export async function report(w: Watch): Promise<string | undefined> {
   try {
-    const after = await read(w.dir, w.common, w.own);
+    const after = await read(w.dir, w.own);
     // The other checkouts are read only when something is there to explain.
     return after && changed(w.before, after) && changed(w.before, after, others(w.common, w.own));
   } catch {
     return undefined;
   }
+}
+
+// What the profile of a linked worktree closes at the top of the repository's
+// git directory (src/safety/sandbox.ts), as git says it when a command runs
+// into it. One sentence for the command's result, so the refusal is not read
+// as a broken repository.
+const CLOSED = new RegExp(`/${SCRATCH}/packed-refs\\.\\d+\\.new|/(gc\\.pid|shallow)\\.lock'?: Read-only file system|could not lock config file [^\\n]*: Read-only file system|could not create directory of '[^']*/worktrees/[^']*': Read-only file system`);
+export function closed(output: string): string | undefined {
+  return CLOSED.test(output)
+    ? "This worktree's sandbox keeps the top of the repository's git directory read-only (the main checkout's own state is there). Closed in it: deleting a branch or tag that is packed, git pack-refs, git gc, git config, git worktree add, and changing a shallow clone's depth. Commits, branches, merges, rebases, stashes and fetches work. Ask to run the command outside the sandbox if it is needed."
+    : undefined;
 }

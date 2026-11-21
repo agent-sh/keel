@@ -3,7 +3,7 @@
 // runs at a lower CPU and IO weight (and a memory cap when one is set). When
 // bwrap is missing or cannot start, sandboxing is unavailable and says why;
 // a session never believes it is confined when it is not.
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { gitViewsDir } from "../core/git.ts";
 import type { SessionPerm } from "./gate.ts";
@@ -127,9 +127,11 @@ const GIT_DIRS_MAX = 256;
 // submodule's under `modules`. It stays writable (a commit writes it) with
 // its code read-only, and so is the code of what lives inside it: each
 // submodule's git directory, and each linked worktree's directory. A linked
-// worktree whose folder is inside `root` (the session made it, or works in
-// it) keeps its directory writable but for its config.worktree; one checked
-// out anywhere else is another checkout's, and read-only as a whole.
+// worktree checked out anywhere outside `root` is another checkout's, and
+// read-only as a whole. One whose folder is inside `root` is the session's
+// own (it made it, or it can write that folder and the `.git` file in it
+// anyway): its directory stays writable and nothing in it is a mount point,
+// so the session can also remove a worktree it made.
 function guardGitDir(dir: string, root: string, budget: { left: number }): string[] {
   const code = budget.left-- > 0 ? codeOf(dir) : null;
   if (!code) return ro(dir);
@@ -143,8 +145,7 @@ function guardGitDir(dir: string, root: string, budget: { left: number }): strin
       const k = kindOf(wt);
       if (k === "file") continue;
       if (k !== "dir") return ro(dir);
-      const inner = budget.left-- > 0 && within(root, wt) && plainFile(join(wt, "config.worktree")) ? modulesOf(join(wt, "modules"), root, budget) : null;
-      out.push(...(inner ? [...pin(wt), ...ro(join(wt, "config.worktree")), ...inner] : ro(wt)));
+      if (!within(root, wt)) out.push(...ro(wt));
     }
   } else if (kind !== "none") return ro(dir);
   const modules = modulesOf(join(dir, "modules"), root, budget);
@@ -196,23 +197,54 @@ function cloneGitBinds(workspace: string): string[] {
 }
 
 // A linked worktree keeps git's files outside its folder: its own directory
-// `<common>/worktrees/<name>` (index, HEAD, logs) and the repository's common
-// directory (objects, refs). A commit writes both, so both are writable.
-// Read-only in them: the code (hooks, config, both config.worktree files),
-// the other worktrees' directories, the main checkout's HEAD and index, the
-// submodules, and the three files that say where this worktree is.
+// `<common>/worktrees/<name>` (index, HEAD, logs, the state of its own merge,
+// rebase, cherry-pick, revert and bisect) and the repository's common
+// directory (objects, refs). A commit writes both.
 //
-// What stays writable, and is not the session's own (a stated limit, since
-// bubblewrap binds paths and a commit needs lock files next to what it
-// writes):
-// - Every ref of the repository. A command can move or delete a branch that
-//   another checkout has out, a tag, a stash. The gate compares the refs
-//   around each such command and says what changed (src/safety/refwatch.ts).
-// - The top of the common directory, where the main checkout keeps the state
-//   of a merge or a rebase it is in the middle of (MERGE_HEAD, rebase-merge)
-//   next to packed-refs, which a branch deletion rewrites there. New entries
-//   are named after the command with the refs.
-// - Smaller files that hold no code: info/, shallow, objects/info/alternates.
+// The common directory is the main checkout's git directory too. Its top
+// holds that checkout's HEAD and index and the state of a merge or a rebase
+// it is in the middle of (MERGE_HEAD and its companions, CHERRY_PICK_HEAD,
+// REVERT_HEAD, BISECT_*, AUTO_MERGE, rebase-merge, rebase-apply, sequencer).
+// A `rebase-merge` planted there runs its `exec` line when the main checkout
+// next continues a rebase, and a planted MERGE_HEAD gives its next commit a
+// second parent. bubblewrap binds paths that exist: it cannot close a name
+// that is not there yet in a folder that is writable. So the top is not
+// bound writable at all:
+//
+// - A private, empty, read-only folder is mounted in its place, and what the
+//   repository has at the top is bound into it one entry at a time. The
+//   shared stores are writable (objects, refs, logs, info, and reftable, lfs
+//   and rr-cache when the repository has them). Everything else is read-only:
+//   the code (hooks, config, config.worktree), the main checkout's HEAD, index
+//   and in-progress state, the other worktrees' directories, the submodules.
+//   A name that is not there cannot be made: nothing a confined command does
+//   at the top reaches the repository.
+// - The worktree's own directory is writable, apart from its config.worktree
+//   and the two files that say where it is. Its submodules' git directories
+//   are guarded like a clone's.
+// - `packed-refs` is the one file at the top that git rewrites from a linked
+//   worktree, and it takes a lock beside it for every ref it deletes, the
+//   ones of its own directory (CHERRY_PICK_HEAD, MERGE_HEAD) included. It is
+//   reached through a chain of links that ends at the repository's own file,
+//   read where it is (so a pack of the refs by another checkout is seen at
+//   once: a copy taken when the command started would lose every branch that
+//   was packed since, and a commit on one would start a new history). git
+//   resolves a link at most five times before it puts its lock and its new
+//   file beside the name it reached (lockfile.h: "symbolic links in the
+//   destination path are resolved", and MAXDEPTH in lockfile.c), so both
+//   land in a private scratch folder: the lock is taken, and the new file's
+//   name is taken already, which refuses the rewrite before anything changed.
+//
+// What that closes, as plain errors: deleting a branch or a tag that is
+// packed, `git pack-refs`, `git gc`, changing a shallow clone's depth, a
+// first `git lfs` object or `git worktree add` (they make a folder at the
+// top), and `git config`. The owner runs those outside the sandbox.
+//
+// What stays writable and is not the session's own (a stated limit, since a
+// commit needs lock files next to what it writes): every ref of the
+// repository. A command can move or delete a branch that another checkout
+// has out, a tag, a stash. The gate compares the refs around each such
+// command and says what changed (src/safety/refwatch.ts).
 //
 // The `.git` file that names the directory is read-only for a confined
 // command, and is still not believed by itself (a command the owner let out
@@ -239,20 +271,49 @@ export function linkedWorktree(workspace: string): { dot: string; own: string; c
   }
 }
 
+// The shared stores at the top of a common directory: writable for a linked worktree.
+const SHARED_STORES = new Set(["objects", "refs", "logs", "info", "reftable", "lfs", "rr-cache"]);
+const CODE = new Set(["hooks", "config", "config.worktree", "modules", "worktrees"]);
+// The scratch folder inside the private top: git's lock for packed-refs, and
+// the links to the file itself. More links than git resolves.
+export const SCRATCH = "keel-sandbox";
+const LINKS = 8;
+
 export function linkedGitBinds(workspace: string): string[] {
   const at = linkedWorktree(workspace);
   if (!at) return [];
   const { dot, own, common } = at;
   try {
-    const code = codeOf(common);
-    const modules = join(common, "modules");
-    // A missing modules folder is made empty: one a command could create would
-    // be found, with its hooks, by the next `git submodule update` there.
-    if (!code || !plainDir(modules) || !plainFile(join(own, "config.worktree"))) return [];
-    const out = [...ro(dot), ...pin(common), ...code, ...ro(join(common, "worktrees")), ...ro(modules)];
-    for (const p of ["HEAD", "index"]) if (kindOf(join(common, p)) === "file") out.push(...ro(join(common, p)));
+    // The session's own config.worktree, made empty when missing (see codeOf).
+    if (!plainFile(join(own, "config.worktree"))) return [];
+    const modules = modulesOf(join(own, "modules"), realpathSync(workspace), { left: GIT_DIRS_MAX });
+    if (!modules) return [];
+    const scratch = join(common, SCRATCH);
+    const out = [...ro(dot), "--tmpfs", common];
+    for (const name of readdirSync(common).sort()) {
+      const p = join(common, name);
+      const kind = kindOf(p);
+      // The stores and the code must be plain folders and files (a link could
+      // lead into the writable folder), and the scratch name must be free:
+      // else nothing is writable.
+      if (name === SCRATCH || ((SHARED_STORES.has(name) || CODE.has(name)) && kind === "other")) return [];
+      if (SHARED_STORES.has(name) && kind !== "dir") return [];
+      if (name === "packed-refs" || name.endsWith(".lock")) continue;
+      // Any other link is kept as the link it is; a socket or a pipe is left out.
+      if (kind === "other") { if (lstatSync(p).isSymbolicLink()) out.push("--symlink", readlinkSync(p), p); continue; }
+      out.push(...(kind === "dir" && SHARED_STORES.has(name) ? pin(p) : ro(p)));
+    }
     out.push(...pin(own));
-    for (const p of ["config.worktree", "gitdir", "commondir"]) out.push(...ro(join(own, p)));
+    for (const f of ["config.worktree", "gitdir", "commondir"]) out.push(...ro(join(own, f)));
+    out.push(...modules);
+    // packed-refs: the links, the repository's top as it is (read-only), and
+    // every name git could write a new file under, taken.
+    out.push("--tmpfs", scratch, "--ro-bind", common, join(scratch, "top"), "--symlink", join(SCRATCH, "packed-refs.1"), join(common, "packed-refs"));
+    for (let i = 1; i <= LINKS; i++) {
+      out.push("--symlink", i < LINKS ? `packed-refs.${i + 1}` : "top/packed-refs", join(scratch, `packed-refs.${i}`), "--dir", join(scratch, `packed-refs.${i}.new`));
+    }
+    // Last: the top itself. Nothing can be made in it from here on.
+    out.push("--remount-ro", common);
     return out;
   } catch {
     return [];

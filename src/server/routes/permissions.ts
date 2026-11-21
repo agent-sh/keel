@@ -1,6 +1,7 @@
 // Permission gate routes and its beforeTool hook. app.ts wraps every handler
 // so a throw is captured as an error.
 import { deliver } from "../../automation/core.ts";
+import { closed } from "../../safety/refwatch.ts";
 import * as activity from "../../automation/activity.ts";
 import { stopKind } from "../../core/stops.ts";
 import { registerHooks } from "../../engine/hooks.ts";
@@ -40,10 +41,14 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
     // What a confined command in a linked worktree changed outside its own
     // branch is said in its result and in the session's activity.
     afterTool: async (s, call, result) => {
-      const note = await g.refsChanged(s.id, call.id);
-      if (!note) return;
-      activity.record("approval", "sandbox", s.id, note, { call_id: call.id });
-      const text = `[sandbox] ${note} If this command did that and it was not asked for, put it back and say so.`;
+      const watched = await g.refsChanged(s.id, call.id);
+      if (!watched) return;
+      const said = typeof result.content === "string" ? result.content : result.content.map((b) => (b.type === "text" ? b.text : "")).join("\n");
+      // What the worktree's profile closes, when the command ran into it.
+      const shut = closed(said);
+      if (watched.note) activity.record("approval", "sandbox", s.id, watched.note, { call_id: call.id });
+      const text = [watched.note && `[sandbox] ${watched.note} If this command did that and it was not asked for, put it back and say so.`, shut && `[sandbox] ${shut}`].filter(Boolean).join("\n\n");
+      if (!text) return;
       // (A result that says the turn was stopped under the call is read by its exact words.)
       if (typeof result.content !== "string") result.content = [...result.content, { type: "text", text }];
       else if (!stopKind(result.content)) result.content = result.content ? `${result.content}\n\n${text}` : text;

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { confine, linkedGitBinds, sandboxStatus } from "./sandbox.ts";
@@ -8,7 +8,6 @@ const git = (cwd: string, ...args: string[]) => {
   const r = Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "protocol.file.allow=always", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
   if (!r.success) throw new Error(r.stderr.toString());
 };
-const pairs = (b: string[]) => b.reduce<string[][]>((out, _, i) => (i % 3 === 0 ? [...out, [b[i]!, b[i + 1]!]] : out), []);
 const scratch = () => realpathSync(mkdtempSync(join(tmpdir(), "keel-sandbox-")));
 // A repository with a main checkout and two linked worktrees beside it.
 function repo(root: string, init: string[] = []) {
@@ -30,27 +29,24 @@ test("a linked worktree's git directories are writable only when the layout conf
     const { main, wt, common } = repo(root);
     const prize = join(root, "prize");
 
-    // The real worktree: the pointer pinned, the common directory and its own
-    // writable, and read-only in them the code that runs outside the sandbox
-    // (also what was missing and is made empty), the other checkouts' files
-    // and the files that say where the worktree is.
-    expect(pairs(linkedGitBinds(wt))).toEqual([
-      ["--ro-bind", join(wt, ".git")],
-      ["--bind", common],
-      ["--ro-bind", join(common, "hooks")],
-      ["--ro-bind", join(common, "config")],
-      ["--ro-bind", join(common, "config.worktree")],
-      ["--ro-bind", join(common, "worktrees")],
-      ["--ro-bind", join(common, "modules")],
-      ["--ro-bind", join(common, "HEAD")],
-      ["--ro-bind", join(common, "index")],
-      ["--bind", join(common, "worktrees/wt")],
-      ["--ro-bind", join(common, "worktrees/wt/config.worktree")],
-      ["--ro-bind", join(common, "worktrees/wt/gitdir")],
-      ["--ro-bind", join(common, "worktrees/wt/commondir")],
-    ]);
-    for (const made of ["config.worktree", "worktrees/wt/config.worktree"]) expect(readFileSync(join(common, made), "utf8")).toBe("");
-    expect(statSync(join(common, "modules")).isDirectory()).toBe(true);
+    // The real worktree: the pointer read-only, a private folder in place of
+    // the common directory's top with what the repository has there bound in
+    // (the shared stores writable, the rest read-only), its own directory
+    // writable but for the files that say where it is, and the top closed last.
+    const b = linkedGitBinds(wt);
+    const has = (...run: string[]) => b.some((_, i) => run.every((a, j) => b[i + j] === a));
+    expect(b.slice(0, 5)).toEqual(["--ro-bind", join(wt, ".git"), join(wt, ".git"), "--tmpfs", common]);
+    for (const store of ["objects", "refs", "logs", "info"]) expect(has("--bind", join(common, store), join(common, store))).toBe(true);
+    for (const closed of ["hooks", "config", "HEAD", "worktrees", "description"]) expect(has("--ro-bind", join(common, closed), join(common, closed))).toBe(true);
+    expect(has("--bind", join(common, "worktrees/wt"), join(common, "worktrees/wt"))).toBe(true);
+    for (const f of ["config.worktree", "gitdir", "commondir"]) expect(has("--ro-bind", join(common, "worktrees/wt", f), join(common, "worktrees/wt", f))).toBe(true);
+    // packed-refs is a link into the scratch folder, never a bind of the file.
+    expect(has("--symlink", "keel-sandbox/packed-refs.1", join(common, "packed-refs"))).toBe(true);
+    expect(b.includes(join(common, "index.lock"))).toBe(false);
+    expect(b.slice(-2)).toEqual(["--remount-ro", common]);
+    // Only the worktree's own config.worktree is made (empty): nothing is added to the shared directory.
+    expect(readFileSync(join(common, "worktrees/wt/config.worktree"), "utf8")).toBe("");
+    for (const absent of ["config.worktree", "modules", "keel-sandbox"]) expect(existsSync(join(common, absent))).toBe(false);
     // The main checkout keeps git's files inside its folder: nothing here.
     expect(linkedGitBinds(main)).toEqual([]);
 
@@ -74,11 +70,16 @@ test("a linked worktree's git directories are writable only when the layout conf
     writeFileSync(join(wt, ".git"), `gitdir: ${join(common, "worktrees/wt")}\n`);
     writeFileSync(join(common, "worktrees/wt/commondir"), `${prize}\n`);
     expect(linkedGitBinds(wt)).toEqual([]);
-    // A hooks folder that is a link cannot be pinned: nothing is opened.
+    // A hooks folder that is a link could lead into the writable folder:
+    // nothing is opened. The same for a store that is no plain folder.
     writeFileSync(join(common, "worktrees/wt/commondir"), "../..\n");
     expect(linkedGitBinds(wt)).not.toEqual([]);
     rmSync(join(common, "hooks"), { recursive: true });
     symlinkSync(prize, join(common, "hooks"));
+    expect(linkedGitBinds(wt)).toEqual([]);
+    rmSync(join(common, "hooks"));
+    expect(linkedGitBinds(wt)).not.toEqual([]);
+    mkdirSync(join(common, "keel-sandbox"));
     expect(linkedGitBinds(wt)).toEqual([]);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -124,6 +125,8 @@ test.skipIf(!sandboxStatus().available)("a confined command cannot plant code fo
       expect(r.out).toContain("committed");
       // (The main checkout may start a submodule: its last line is the one thing it is let do.)
       for (let i = 0; i < (from === wt ? 6 : 5); i++) expect(r.out).toContain(`refused-${i}`);
+      // From the worktree nothing was made at the top, a hooks folder included.
+      if (from === wt) for (const absent of ["hooks", "config.worktree", "modules"]) expect(existsSync(join(common, absent))).toBe(false);
     }
     expect(existsSync(join(common, "hooks/post-checkout"))).toBe(false);
     expect(readFileSync(join(common, "config.worktree"), "utf8")).toBe("");
@@ -138,10 +141,14 @@ test.skipIf(!sandboxStatus().available)("a confined command cannot plant code fo
     expect(swap.out).toContain(".git/hooks\n.git/worktrees");
     expect(swap.out.match(/Device or resource busy/g)).toHaveLength(3);
     expect(existsSync(join(main, "old"))).toBe(false);
-    // A worktree the session makes inside its folder is its own to commit in.
+    // A worktree the session makes inside its folder is its own: to commit
+    // in, and to remove in a later command. The one beside the folder is not.
     const nested = run(main, `git worktree add -q -b inner inner 2>&1 && cd inner && ${commit}`);
     expect(nested.out).toContain("committed");
-    expect(run(main, `cd inner && ${commit}; (echo '[core]' > ${common}/worktrees/inner/config.worktree) 2>/dev/null || echo refused`).out).toBe("committed\nrefused\n");
+    expect(run(main, `cd inner && ${commit}; cd .. && git worktree remove --force inner && git worktree prune && git worktree list | wc -l`).out).toBe("committed\n3\n");
+    expect(existsSync(join(common, "worktrees/inner"))).toBe(false);
+    expect(run(main, `git worktree remove --force ${join(root, "other")} >/dev/null 2>&1 || echo refused`).out).toBe("refused\n");
+    expect(existsSync(join(common, "worktrees/other/HEAD"))).toBe(true);
 
     // A `.git` that is a link to another repository's: the commands still
     // run, and what they write there fails as any write outside the folder.
@@ -150,6 +157,87 @@ test.skipIf(!sandboxStatus().available)("a confined command cannot plant code fo
     symlinkSync(common, join(linked, ".git"));
     const l = run(linked, "echo ran; (echo x >> .git/config) 2>/dev/null || echo refused-config; (: > .git/refs/heads/zz) 2>/dev/null || echo refused-ref");
     expect(l.out).toBe("ran\nrefused-config\nrefused-ref\n");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The top of the common directory is the main checkout's git directory: the
+// state of its merge or rebase lives there, and a planted one runs or commits
+// for the owner later. A linked worktree keeps its own under its own
+// directory, so nothing it does needs the top.
+test.skipIf(!sandboxStatus().available)("a linked worktree cannot plant an operation in progress for the main checkout, and its own still work", async () => {
+  const root = scratch();
+  try {
+    const { main, wt, common } = repo(root);
+    const own = join(common, "worktrees/wt");
+    writeFileSync(join(main, "f"), "one\n");
+    git(main, "add", "f");
+    git(main, "commit", "-q", "-m", "a file");
+    git(main, "branch", "packed");
+    git(main, "pack-refs", "--all");
+    git(wt, "reset", "-q", "--hard", "main");
+    const marker = join(root, "MARK");
+    // The reproduction: a rebase state whose todo holds an exec line.
+    const state = `${common}/rebase-merge`;
+    const planted = run(wt, [
+      `mkdir ${state} && cd ${state} && echo refs/heads/main > head-name && git -C ${wt} rev-parse main > onto && cp onto orig-head && : > interactive && : > done && echo 1 > end && echo 0 > msgnum && echo 'exec touch ${marker}' > git-rebase-todo`,
+      `echo made-$?`,
+    ].join("; "));
+    expect(planted.out).toContain("Read-only file system");
+    expect(planted.out).not.toContain("made-0");
+    expect(existsSync(state)).toBe(false);
+    const cont = Bun.spawnSync(["git", "-c", "core.editor=true", "rebase", "--continue"], { cwd: main, stdout: "pipe", stderr: "pipe" });
+    expect(cont.stderr.toString().toLowerCase()).toContain("no rebase in progress");
+    expect(existsSync(marker)).toBe(false);
+    // Every name of an operation in progress, and what else is the main checkout's.
+    const names = ["rebase-merge", "rebase-apply", "sequencer", "MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "MERGE_AUTOSTASH", "CHERRY_PICK_HEAD", "REVERT_HEAD", "AUTO_MERGE", "BISECT_LOG", "BISECT_START", "BISECT_TERMS", "BISECT_EXPECTED_REV", "BISECT_NAMES", "BISECT_RUN", "ORIG_HEAD", "FETCH_HEAD", "COMMIT_EDITMSG", "SQUASH_MSG", "REBASE_HEAD"];
+    const made = run(wt, names.map((n) => `(mkdir ${common}/${n} || : > ${common}/${n}) 2>/dev/null && echo made-${n}`).join("; ") + `; (echo x >> ${common}/HEAD) 2>/dev/null && echo made-HEAD; (echo x >> ${common}/index) 2>/dev/null && echo made-index; echo done`);
+    expect(made.out).toBe("done\n");
+    for (const n of names) if (n !== "COMMIT_EDITMSG") expect(existsSync(join(common, n))).toBe(false);
+
+    // Its own: a conflicting merge and a conflicting cherry-pick keep their
+    // state in its own directory and end clean; a rebase runs its exec line.
+    const c = "git -c user.name=k -c user.email=k@k -c core.editor=true";
+    const work = run(wt, [
+      `echo wt > f && ${c} commit -qam mine && ${c} checkout -q -b side main && echo side > f && ${c} commit -qam theirs && ${c} checkout -q a`,
+      `${c} merge side >/dev/null 2>&1; test -e ${own}/MERGE_HEAD && echo merge-in-own`,
+      `echo both > f && ${c} add f && ${c} commit -qm merged && test ! -e ${own}/MERGE_HEAD && echo merge-done`,
+      `${c} checkout -q -b pick main && echo pick > f && ${c} commit -qam pick && ${c} checkout -q a`,
+      `${c} cherry-pick pick >/dev/null 2>&1; test -e ${own}/CHERRY_PICK_HEAD && echo pick-in-own`,
+      `echo all > f && ${c} add f && ${c} cherry-pick --continue >/dev/null && test ! -e ${own}/CHERRY_PICK_HEAD && echo pick-done`,
+      `GIT_SEQUENCE_EDITOR="sed -i '1a exec touch ${wt}/ran'" ${c} rebase -q -i HEAD~1 && test -e ran && test ! -e ${own}/rebase-merge && echo rebase-done`,
+      `echo more >> f && ${c} stash -q && ${c} stash pop -q && ${c} tag t1 && ${c} tag -d t1 >/dev/null && ${c} branch -D pick side >/dev/null && echo refs-done`,
+    ].join("; "));
+    // (Besides git's own words: a deleted branch's section cannot be taken out of the read-only config.)
+    expect(work.out.split("\n").filter((l) => /-(in-own|done)$/.test(l))).toEqual(["merge-in-own", "merge-done", "pick-in-own", "pick-done", "rebase-done", "refs-done"]);
+    // What the read-only top closes fails before anything changed: a packed
+    // branch stays, and the refs are not packed (which would drop the loose ones).
+    const shut = run(wt, `git branch -D packed; echo branch-$?; git pack-refs --all; echo pack-$?; git gc -q; echo gc-$?`);
+    expect(shut.out).toContain("branch-1");
+    expect(shut.out).toContain("pack-128");
+    expect(shut.out).toContain("gc-128");
+    git(main, "rev-parse", "--verify", "-q", "refs/heads/packed");
+    git(main, "rev-parse", "--verify", "-q", "refs/heads/a");
+    git(main, "fsck", "--no-dangling");
+
+    // The refs another checkout packs while a command runs are read as they
+    // are now: the worktree's branch is still there, and its next commit has a parent.
+    const before = Bun.spawnSync(["git", "rev-list", "--count", "a"], { cwd: main, stdout: "pipe" }).stdout.toString().trim();
+    const tmp = process.env.TMPDIR;
+    process.env.TMPDIR = mkdtempSync(join(tmpdir(), "keel-sandbox-tmp-"));
+    try {
+      const p = Bun.spawn(confine(["bash", "-c", `: > ready; while [ ! -e go ]; do sleep 0.05; done; ${commit}; git rev-list --count HEAD`], { sandbox: "workspace-write", network: false }, wt), { cwd: wt, stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
+      for (let i = 0; i < 200 && !existsSync(join(wt, "ready")); i++) await Bun.sleep(25);
+      git(main, "pack-refs", "--all");
+      expect(existsSync(join(common, "refs/heads/a"))).toBe(false); // packed, and the loose file pruned
+      writeFileSync(join(wt, "go"), "");
+      const [out] = await Promise.all([new Response(p.stdout).text(), p.exited]);
+      expect(out).toBe(`committed\n${Number(before) + 1}\n`);
+    } finally {
+      rmSync(process.env.TMPDIR!, { recursive: true, force: true });
+      process.env.TMPDIR = tmp;
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

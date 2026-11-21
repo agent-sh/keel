@@ -454,14 +454,15 @@ export class Gate {
     } };
   }
 
-  // After a call: what a confined command in a linked worktree changed in the
-  // repository outside its own branch, in one sentence, or nothing.
+  // After a call that was watched (a confined command in a linked worktree):
+  // what it changed in the repository outside its own branch, in one
+  // sentence, or no note.
   private watches = new Map<string, Watch>();
-  async refsChanged(sessionId: string, callId: string): Promise<string | undefined> {
+  async refsChanged(sessionId: string, callId: string): Promise<{ note?: string } | undefined> {
     const key = callKey(sessionId, callId);
     const w = this.watches.get(key);
     this.watches.delete(key);
-    return w && report(w);
+    return w && { note: await report(w) };
   }
 
   // A dispatcher (mcp_call) is judged as the tool it runs: its own read flag,

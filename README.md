@@ -201,36 +201,62 @@ A session can commit. That needs git's own files to be writable, so the
 profile opens them and keeps read-only what git would run outside the sandbox
 later, for this checkout or another:
 
-- The hooks, `config` and every `config.worktree` of the repository, of its
-  submodules and of its linked worktrees. A hooks folder or a
+- The hooks, `config` and `config.worktree` of the repository and of its
+  submodules. In a checkout's own git directory a hooks folder or a
   `config.worktree` that is missing is made empty first, so there is always
   something to keep read-only.
-- A session in a linked worktree gets the repository's common git directory
-  and its own directory in it. The other worktrees' directories, the main
-  checkout's `HEAD` and index, and the submodules stay read-only.
-- A session in the main checkout keeps its `.git` writable. The directories
-  of linked worktrees checked out outside its folder are read-only.
+- A session in a linked worktree gets its own directory in the repository's
+  common git directory, and the shared stores there: objects, refs, logs,
+  `info`, and `reftable`, `lfs` and `rr-cache` when the repository has them.
+  The top of the common directory is the main checkout's git directory, so
+  the session gets a private read-only view of it: the main checkout's
+  `HEAD`, index and the state of a merge, rebase, cherry-pick, revert or
+  bisect it is in the middle of cannot be changed, and none can be planted
+  (a planted rebase would run its `exec` line when the main checkout next
+  continues one). The worktree's own merge, rebase, cherry-pick, revert and
+  bisect keep their state in its own directory and work as usual.
+- A session in the main checkout keeps its `.git` writable, the state of its
+  own operations included. The directories of linked worktrees checked out
+  outside its folder are read-only. A worktree it makes inside its folder is
+  its own, to commit in and to remove.
 - The folders that hold those files cannot be renamed away or replaced.
 
-What the sandbox does not stop, because git writes lock files next to what
-it changes and a bind covers a path, not one ref:
+What a worktree session's read-only view closes, as plain errors from git:
+deleting a branch or a tag that is packed, `git pack-refs`, `git gc`,
+`git config`, `git worktree add`, changing a shallow clone's depth, and
+anything else that makes a new entry at the top of the common directory. A
+command that runs into one of these is told so in its result. Run it outside
+the sandbox when it is needed.
+
+`git submodule update` of a submodule that is already checked out rewrites
+that submodule's config, which is read-only: it fails in a sandboxed
+session. A first `git submodule update --init` in a linked worktree works,
+and so do commits inside a submodule.
+
+What the sandbox does not stop:
 
 - A session in a linked worktree can write every ref of the repository: move
-  or delete a branch another checkout has out, a tag, a stash. After each
-  such command Keel compares the refs with what they were and says what
-  changed outside the session's own branch, in the command's result and in
-  the session's activity. It names what changed while the command ran, not
-  who changed it: with several sessions in one repository, another session's
-  work can show up there.
-- It can also create files at the top of the common git directory, where the
-  main checkout keeps the state of a merge or a rebase it is in the middle
-  of. A new entry there is named the same way. Do not continue a rebase or a
-  merge in the main checkout that you did not start.
-- `git gc` in a worktree session cannot expire the other worktrees' reflogs.
-  It says so, repacks, and exits 0.
-- A repository the session creates inside its folder is its own, hooks and
-  config included. So is a folder whose `.git` is a symbolic link: nothing
-  pins a link, so such a folder gets no git protection and no git access.
+  or delete a branch another checkout has out, a tag, a stash. git writes
+  lock files next to the refs it changes, and a bind covers a path, not one
+  ref. After each such command Keel compares the refs with what they were
+  and says what changed outside the session's own branch, in the command's
+  result and in the session's activity. It names what changed while the
+  command ran, not who changed it: with several sessions in one repository,
+  another session's work can show up there.
+- A repository inside the session's folder that the session made or can
+  write is its own, hooks and config included: a nested clone, a repository
+  it starts with `git init`, a worktree checked out inside its folder. git
+  run there by you or by another session runs what its config names, and so
+  does `git status` in the repository around it once the nested one is added
+  as a submodule. Keel's own git calls never do (`src/core/git.ts`). So is a
+  folder whose `.git` is a symbolic link: nothing pins a link, so such a
+  folder gets no git protection and no git access.
+- In the main checkout, `config` and `config.worktree` are single files in a
+  folder the session writes, kept read-only by a bind on each file. When
+  another process replaces one of them while a sandboxed command is still
+  running (`git config`, a new remote, a branch's upstream), that command
+  sees the new file without the bind and can write it until it ends. The
+  shared `config` of a linked worktree's repository has no such gap.
 - A command that was moved to the background is compared when the call
   returns, not when the command ends.
 
