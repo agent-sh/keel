@@ -49,7 +49,7 @@ md.use({
       if (!text) return "";
       const l = (lang ?? "").trim().split(/\s/)[0] ?? "";
       if (l === "math") return mathHtml(text, true);
-      return `<div class="code-block"><div class="code-head"><span>${esc(l || "text")}</span><button type="button" class="code-copy" aria-label="Copy code">${copyFace(COPY_ICON, "Copy")}</button></div><pre><code data-lang="${esc(l)}">${esc(text)}</code></pre></div>`;
+      return `<div class="code-block"><div class="code-head"><span class="code-lang" title="${esc(l || "text")}">${esc(l || "text")}</span><button type="button" class="code-copy" aria-label="Copy code">${copyFace(COPY_ICON, "Copy")}</button></div><pre><code data-lang="${esc(l)}">${esc(text)}</code></pre></div>`;
     },
   },
 });

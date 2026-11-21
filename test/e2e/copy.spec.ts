@@ -139,3 +139,51 @@ test("a failed copy says so", async ({ page, request }) => {
   expect(await page.evaluate(() => (window as any).said.filter((x: string) => /Copied|\|true$/.test(x)))).toEqual([]);
   await request.delete(`/api/sessions/${s.id}`);
 });
+
+// A code block whose fence carries a long unbroken label, on a small phone:
+// only the label is cut short, Copy stays whole on the screen and copies the
+// code, not the fence. The reply is the stand-in's, exported as a Keel file,
+// given the long label and imported again.
+test("code copy stays in view under a long fence label", async ({ page, context, request }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const s = (await (await request.post("/api/sessions", { data: { model: MODEL, title: `Fence ${Date.now()}`, text: "Show the parser. script:render" } })).json()).session;
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${s.id}`)).json()).events.filter((e: any) => e.kind === "turn_end").length, { timeout: 30_000 }).toBe(1);
+  const LABEL = "typescript-with-a-very-long-unbroken-fence-label-that-keeps-going-and-going";
+  const file = await (await request.get(`/api/sessions/${s.id}/export?format=jsonl`)).text();
+  expect(file).toContain("```ts");
+  const made = await (await request.post("/api/sessions/import", { data: file.replaceAll("```ts", "```" + LABEL), headers: { "content-type": "application/x-ndjson" } })).json();
+  const id = made.session.id as string;
+
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.goto(`/s/${id}`);
+  const block = page.locator(`[data-station="${id}"] .code-block`).first();
+  const copy = block.locator(".code-copy");
+  await block.scrollIntoViewIfNeeded();
+  await expect(block).toContainText("export function parse");
+  // Copy is whole inside its block and on the screen; the label is what gives way.
+  await expect(copy).toBeInViewport({ ratio: 1 });
+  const fit = await block.evaluate((el) => {
+    const b = el.getBoundingClientRect(), c = el.querySelector(".code-copy")!.getBoundingClientRect(), l = el.querySelector(".code-head > span")!;
+    const h = el.querySelector(".code-head")!.getBoundingClientRect(), lr = l.getBoundingClientRect();
+    return { inside: c.left >= b.left && c.right <= b.right, right: b.right, spills: lr.top < h.top - 1 || lr.bottom > h.bottom + 1, cut: l.scrollWidth > l.clientWidth, label: l.textContent, title: l.getAttribute("title") };
+  });
+  expect(fit.inside).toBe(true);
+  expect(fit.right).toBeLessThanOrEqual(320);
+  // One line in the head: the label does not run on over the code under it.
+  expect(fit.spills).toBe(false);
+  expect(fit.cut).toBe(true);
+  expect(fit.label).toBe(LABEL);
+  expect(fit.title).toBe(LABEL);
+  await copy.click();
+  await expect(copy).toHaveAttribute("data-copied", "");
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copied).toContain("export function parse(input: string): string[] {");
+  expect(copied).not.toContain(LABEL);
+  expect(copied).not.toContain("```");
+  await shoot(page, "copy-03-long-fence-label-phone");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await expect(copy).toBeInViewport({ ratio: 1 });
+  await shoot(page, "copy-04-long-fence-label");
+
+  for (const x of [s.id, id]) await request.delete(`/api/sessions/${x}`);
+});
