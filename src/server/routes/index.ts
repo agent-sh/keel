@@ -58,6 +58,7 @@ import { experimentRoutes } from "./experiments.ts";
 import { timelineRoutes } from "./timeline.ts";
 import { overviewRoutes } from "./overview.ts";
 import { stateRoutes } from "./state.ts";
+import { shellRoutes } from "./shell.ts";
 
 // Each feature module adds one line here.
 export const routeModules: RouteModule[] = [
@@ -120,4 +121,5 @@ export const routeModules: RouteModule[] = [
   timelineRoutes, // reads what the others record: events, activity, errors, telemetry
   overviewRoutes, // every session's state, failure and spend as one answer
   stateRoutes, // last: it reads every module's cards and records to tell each session's state
+  shellRoutes, // after state: it reads the board the state routes make
 ];

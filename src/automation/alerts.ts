@@ -11,6 +11,7 @@ import { plainLine } from "../core/plain.ts";
 import { lockedDaemon } from "../admin/daemon.ts";
 import { openUrl } from "../cli/client.ts";
 import { desktopNotifications } from "./desktop.ts";
+import { shellAttached, tellShell, tellShells } from "../server/shell.ts";
 
 // What needs the owner becomes one alert: kept in the inbox with unread state,
 // sent as a frame, and delivered to the channels the settings name for its
@@ -454,24 +455,27 @@ const shown = new Map<string, number>();
 const gdbusArgs = ["call", "--session", "--dest", "org.freedesktop.Notifications", "--object-path", "/org/freedesktop/Notifications"];
 let desktop: ReturnType<typeof desktopNotifications> | undefined;
 
+// Where an alert's click leads: a path of the page (with its query). The
+// session it names, at the card or the message it is about; the inbox when
+// the session is gone.
+export function alertPath(id: string): string {
+  const a = getAlert(id);
+  const t = a && alertTarget(a);
+  const approval = a?.kind === "approval" ? a.data?.approval_id : undefined;
+  const session = approval ? (t?.approval === "pending" ? t.parent ?? t.open : null) : t?.open;
+  if (!session) return "/?inbox=1";
+  const q = new URLSearchParams();
+  if (approval) q.set("approval", approval);
+  else if (a?.data?.event_id && !t?.child_deleted) q.set("e", a.data.event_id);
+  return `/s/${encodeURIComponent(session)}${q.size ? `?${q}` : ""}`;
+}
+
 function openDesktopAlert(id: string, token?: string) {
   try {
     const base = lockedDaemon(D().store.stateDir)?.url;
     if (!base) return;
-    const url = new URL(base);
+    const url = new URL(alertPath(id), base);
     if (url.hostname === "0.0.0.0" || url.hostname === "[::]") url.hostname = "localhost";
-    const a = getAlert(id);
-    const t = a && alertTarget(a);
-    const approval = a?.kind === "approval" ? a.data?.approval_id : undefined;
-    const session = approval ? (t?.approval === "pending" ? t.parent ?? t.open : null) : t?.open;
-    if (session) {
-      url.pathname = `/s/${encodeURIComponent(session)}`;
-      if (approval) url.searchParams.set("approval", approval);
-      else if (a?.data?.event_id && !t?.child_deleted) url.searchParams.set("e", a.data.event_id);
-    } else {
-      url.pathname = "/";
-      url.searchParams.set("inbox", "1");
-    }
     if (!openUrl(url.href, token)) throw new Error("could not start the browser");
   } catch (e) {
     capture(e, { at: "desktop notification click", alert: id });
@@ -491,10 +495,19 @@ export function gvariantString(s: string) {
 registerChannel({
   id: "desktop",
   label: "Desktop notification",
-  available: () => process.env.KEEL_DESKTOP_NOTIFY !== "off" && !!(process.env.DBUS_SESSION_BUS_ADDRESS || process.env.XDG_RUNTIME_DIR) && !!(Bun.which("gjs") || Bun.which("gdbus")),
+  // An attached desktop shell shows them itself, whatever this daemon could do alone.
+  available: () => shellAttached() || (process.env.KEEL_DESKTOP_NOTIFY !== "off" && !!(process.env.DBUS_SESSION_BUS_ADDRESS || process.env.XDG_RUNTIME_DIR) && !!(Bun.which("gjs") || Bun.which("gdbus"))),
   async deliver(a) {
     const key = a.session_id ?? "_";
     const urgency = a.kind === "approval" || a.kind === "question" || a.kind === "failed" || a.kind === "loop_failed" ? 2 : 1;
+    // The shell's to show while one is attached: its click opens the shell's
+    // window. Handed over or shown here, never both; one this daemon showed
+    // for the session before the shell came is taken down first.
+    if (tellShell("notify", { key, alert: a.id, title: a.title.replaceAll("\0", ""), body: a.body.replaceAll("\0", ""), urgency, kind: a.kind })) {
+      void withdrawOwn(key).catch(() => {});
+      return;
+    }
+    if (process.env.KEEL_DESKTOP_NOTIFY === "off") throw new Error("the desktop shell went away before it took the alert");
     const gjs = Bun.which("gjs");
     if (gjs) {
       if (!desktop || desktop.ended) {
@@ -520,14 +533,20 @@ registerChannel({
     if (m) shown.set(key, Number(m[1]));
   },
   async withdraw(sessionId) {
-    const helper = desktop;
-    if (helper && await helper.ready && !helper.ended) await helper.send({ key: sessionId });
-    const id = shown.get(sessionId);
-    if (!id) return;
-    shown.delete(sessionId);
-    await Bun.spawn(["gdbus", ...gdbusArgs, "--method", "org.freedesktop.Notifications.CloseNotification", String(id)], { stdout: "ignore", stderr: "ignore" }).exited;
+    tellShells("withdraw", { key: sessionId });
+    await withdrawOwn(sessionId);
   },
 });
+
+// Takes down the notification this daemon itself showed for a session, if any.
+async function withdrawOwn(sessionId: string) {
+  const helper = desktop;
+  if (helper && await helper.ready && !helper.ended) await helper.send({ key: sessionId });
+  const id = shown.get(sessionId);
+  if (!id) return;
+  shown.delete(sessionId);
+  await Bun.spawn(["gdbus", ...gdbusArgs, "--method", "org.freedesktop.Notifications.CloseNotification", String(id)], { stdout: "ignore", stderr: "ignore" }).exited;
+}
 
 // Command: KEEL_NOTIFY_COMMAND (split on spaces) gets the alert as JSON in one
 // more argument. Nothing waits for it but the alert's own handoff state: sent
