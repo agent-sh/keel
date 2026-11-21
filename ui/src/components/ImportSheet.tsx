@@ -15,6 +15,7 @@ import { takeOver, TOOL } from "./TakeOver.tsx";
 import { noteRows, OriginalStrip, ResumeCard, useStopped, type Intent, type Original, type Wait } from "./ResumeFrom.tsx";
 import { ago, cn } from "../lib/utils.ts";
 import { Select } from "./Select.tsx";
+import { Seg } from "./Seg.tsx";
 
 // `original`, `wait`: on a machine reached over ssh, what the harness that still runs it does, and a resume waiting for it.
 type Row = Found & { imported?: { session_id: string; synced_ms: number; grew: boolean; went_on?: boolean }; original?: Original; wait?: Wait };
@@ -378,22 +379,19 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
           <div className="flex items-center gap-3 border-b border-line px-4 py-3">
             <History className="size-4 text-muted" />
             <Dialog.Title className="font-semibold">Import sessions</Dialog.Title>
-            <div className="k-seg ml-2" role="tablist">
-              {(harnesses.length ? harnesses : [{ harness: "claude", label: "Claude Code" }, { harness: "codex", label: "Codex" }, { harness: "keel", label: "Keel (Rust)" }] as HarnessState[]).map((h) => (
-                <button
-                  key={h.harness}
-                  type="button"
-                  role="tab"
-                  aria-selected={harness === h.harness}
-                  data-testid={`import-tab-${h.harness}`}
-                  onClick={() => setHarness(h.harness)}
-                  className={cn(h.installed === false && "opacity-50")}
-                >
-                  {h.label}
-                  {h.interactive !== undefined && <span className="ml-1.5 tabular-nums text-faint">{h.interactive.toLocaleString()}</span>}
-                </button>
-              ))}
-            </div>
+            <Seg
+              kind="tabs"
+              className="ml-2"
+              label="Where to import from"
+              value={harness}
+              onChange={setHarness}
+              options={(harnesses.length ? harnesses : [{ harness: "claude", label: "Claude Code" }, { harness: "codex", label: "Codex" }, { harness: "keel", label: "Keel (Rust)" }] as HarnessState[]).map((h) => ({
+                value: h.harness,
+                testid: `import-tab-${h.harness}`,
+                className: cn(h.installed === false && "opacity-50"),
+                label: <>{h.label}{h.interactive !== undefined && <span className="ml-1.5 tabular-nums text-faint">{h.interactive.toLocaleString()}</span>}</>,
+              }))}
+            />
             <input ref={pick} type="file" accept=".jsonl,application/x-ndjson,application/jsonl" hidden data-testid="import-keel-file-input" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) void importKeelFile(f); }} />
             <button type="button" data-testid="import-keel-file" title="A session exported from another Keel as a Keel file" disabled={keelFile?.state === "sending"} onClick={() => pick.current?.click()} className="ml-auto flex h-7 items-center gap-1.5 rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50">
               <FileUp className="size-3.5" />

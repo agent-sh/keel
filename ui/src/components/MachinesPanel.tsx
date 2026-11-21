@@ -10,6 +10,7 @@ import { ago, cn, when } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { Card } from "./Settings.tsx";
 import { Select } from "./Select.tsx";
+import { Seg } from "./Seg.tsx";
 
 const field = "h-8 w-full rounded-lg border border-line bg-bg px-2.5 text-ui outline-none placeholder:text-faint focus:border-accent focus:ring-2 focus:ring-accent/20";
 const btn = "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50 [&>svg]:size-3.5 [&>svg]:text-faint";
@@ -193,13 +194,7 @@ function AddMachine({ offered, preset, onDone }: { offered: Machine[]; preset?: 
   };
   return (
     <form className="py-4" data-testid="machine-add" onSubmit={(e) => { e.preventDefault(); submit(); }}>
-      <div role="radiogroup" aria-label="How it is reached" className="k-seg mb-3">
-        {(["daemon", "ssh"] as const).map((v) => (
-          <button key={v} type="button" role="radio" aria-checked={mode === v} onClick={() => setMode(v)}>
-            {v === "daemon" ? "Daemon on this machine's loopback" : "Daemon behind an ssh host"}
-          </button>
-        ))}
-      </div>
+      <Seg className="mb-3" label="How it is reached" value={mode} onChange={setMode} options={[{ value: "daemon", label: "Daemon on this machine's loopback" }, { value: "ssh", label: "Daemon behind an ssh host" }]} />
       <div className="grid gap-2 sm:grid-cols-2">
         <input className={field} placeholder={mode === "ssh" ? "Name (the host's alias)" : "Name"} value={name} onChange={(e) => setName(e.target.value)} aria-label="Machine name" data-testid="machine-add-name" />
         {mode === "daemon" ? (

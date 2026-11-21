@@ -1,11 +1,10 @@
 // The pieces of the pane layout the rail needs too: the control for how many
 // panes are open, and the drag of a session into one.
-import { Radio } from "@base-ui/react/radio";
 import type { DragEvent } from "react";
 import { panesMax, useWidth } from "../lib/rail.ts";
 import { getStations, stations, useStations } from "../lib/stations.ts";
 import { useUI } from "../lib/ui.ts";
-import { Choices } from "./Choices.tsx";
+import { Seg } from "./Seg.tsx";
 
 // A session being dragged: from the rail, or a pane by its header.
 export const DRAG = "application/x-keel-session";
@@ -30,13 +29,20 @@ export function PaneCount() {
   const max = Math.max(panesMax(width), count);
   const shown = focus ? 1 : count;
   return (
-    <Choices className="k-seg k-panes" aria-label="Panes" data-testid="pane-count" title="How many panes are open" value={shown} onValueChange={(n) => setPanes(n as number)}>
-      {Array.from({ length: max }, (_, i) => i + 1).map((n) => (
-        // The number shown again (one pane while only the helm shows) still sets it.
-        <Radio.Root key={n} value={n} nativeButton render={<button type="button" />} aria-label={`${n} pane${n > 1 ? "s" : ""}`} data-testid={`panes-${n}`} onClick={() => { if (n === shown) setPanes(n); }}>
-          <span aria-hidden="true" className="k-panes-glyph">{Array.from({ length: n }, (_, j) => <i key={j} />)}</span>
-        </Radio.Root>
-      ))}
-    </Choices>
+    <Seg
+      className="k-panes"
+      label="Panes"
+      testid="pane-count"
+      title="How many panes are open"
+      value={shown}
+      // The number shown again (one pane while only the helm shows) still sets it.
+      onChange={setPanes}
+      options={Array.from({ length: max }, (_, i) => i + 1).map((n) => ({
+        value: n,
+        name: `${n} pane${n > 1 ? "s" : ""}`,
+        testid: `panes-${n}`,
+        label: <span aria-hidden="true" className="k-panes-glyph">{Array.from({ length: n }, (_, j) => <i key={j} />)}</span>,
+      }))}
+    />
   );
 }

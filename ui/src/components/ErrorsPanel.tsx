@@ -6,6 +6,7 @@ import type { ErrorRecord } from "../../../src/core/types.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { navigate, setUI } from "../lib/ui.ts";
 import { ago, cn, when } from "../lib/utils.ts";
+import { Seg } from "./Seg.tsx";
 
 // One row per kind of failure (the daemon folds repeats into a count), with
 // where it last happened and a way to mark it fixed. A resolved kind that
@@ -175,19 +176,13 @@ export function ErrorsPanel({ open, onOpenChange }: { open: boolean; onOpenChang
             </Dialog.Close>
           </div>
           <div className="flex items-center gap-2 border-b border-line px-3 py-2">
-            <div role="tablist" aria-label="Which errors" className="k-seg">
-              {([["open", "Open", openList.length], ["resolved", "Resolved", resolved.length]] as const).map(([id, label, n]) => (
-                <button
-                  key={id}
-                  type="button"
-                  role="tab"
-                  aria-selected={tab === id}
-                  onClick={() => setTab(id)}
-                >
-                  {label}<span className="text-micro tabular-nums text-faint">{n}</span>
-                </button>
-              ))}
-            </div>
+            <Seg
+              kind="tabs"
+              label="Which errors"
+              value={tab}
+              onChange={setTab}
+              options={([["open", "Open", openList.length], ["resolved", "Resolved", resolved.length]] as const).map(([id, label, n]) => ({ value: id, label: <>{label}<span className="text-micro tabular-nums text-faint">{n}</span></> }))}
+            />
             {tab === "open" && (
               <label className="flex h-7 items-center gap-1.5 px-1.5 text-caption text-muted">
                 <input type="checkbox" checked={unreadOnly} onChange={(ev) => setUnreadOnly(ev.currentTarget.checked)} className="accent-[var(--accent)]" data-testid="errors-unread-only" />

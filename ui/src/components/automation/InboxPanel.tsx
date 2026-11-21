@@ -1,7 +1,6 @@
 import { Dialog } from "@base-ui/react/dialog";
-import { Tabs } from "@base-ui/react/tabs";
 import { Bell, CheckCheck, Dot, Settings2, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { alertTarget, auto, focusApproval, openSession, placeName, useAuto, type Alert, type Target } from "../../lib/automation.ts";
 import { navigate, setUI } from "../../lib/ui.ts";
 import { reportError, useStore } from "../../lib/store.ts";
@@ -10,6 +9,7 @@ import { ActivityList } from "./ActivityList.tsx";
 import { AwayDigest } from "./AwayDigest.tsx";
 import { ALERT_LABEL, ALERT_STATE, AlertIcon, CHANNEL_NAME, Empty } from "./bits.tsx";
 import { GlobalSnoozeButton } from "./Snooze.tsx";
+import { Seg, tabId } from "../Seg.tsx";
 
 
 
@@ -63,12 +63,15 @@ function Inbox({ onClose }: { onClose: () => void }) {
     <div className="flex min-h-0 flex-1 flex-col">
       <AwayDigest onClose={onClose} />
       <div className="flex items-center gap-1 px-3 py-2 text-caption">
-        <div className="k-seg" role="group" aria-label="Show">
-          <button type="button" aria-pressed={!onlyUnread} onClick={() => setOnlyUnread(false)}>All</button>
-          <button type="button" data-testid="inbox-unread-filter" aria-pressed={onlyUnread} onClick={() => setOnlyUnread(true)}>
-            Unread{unread ? <span className="tabular-nums text-faint">{unread}</span> : null}
-          </button>
-        </div>
+        <Seg
+          label="Show"
+          value={onlyUnread ? "unread" : "all"}
+          onChange={(v) => setOnlyUnread(v === "unread")}
+          options={[
+            { value: "all", label: "All" },
+            { value: "unread", testid: "inbox-unread-filter", label: <>Unread{unread ? <span className="tabular-nums text-faint">{unread}</span> : null}</> },
+          ]}
+        />
         <button
           type="button"
           data-testid="mark-all-read"
@@ -187,6 +190,7 @@ function Failed({ a }: { a: Alert }) {
 
 export function InboxPanel({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   const [tab, setTab] = useState("inbox");
+  const panel = useId();
   useEffect(() => {
     if (open) auto.loadAlerts().catch(reportError);
   }, [open]);
@@ -202,14 +206,11 @@ export function InboxPanel({ open, onOpenChange }: { open: boolean; onOpenChange
             "transition-[transform,opacity] duration-200 data-starting-style:-translate-x-3 data-starting-style:opacity-0 data-ending-style:-translate-x-3 data-ending-style:opacity-0",
           )}
         >
-          <Tabs.Root value={tab} onValueChange={(v) => setTab(String(v))} className="flex min-h-0 flex-1 flex-col">
+          <div className="flex min-h-0 flex-1 flex-col">
           <div className="k-surface-head">
             <Bell className="k-surface-icon" />
             <Dialog.Title className="k-surface-title">Inbox</Dialog.Title>
-            <Tabs.List className="k-seg">
-              <Tabs.Tab value="inbox" data-testid="tab-inbox">Alerts</Tabs.Tab>
-              <Tabs.Tab value="activity" data-testid="tab-activity">Activity</Tabs.Tab>
-            </Tabs.List>
+            <Seg kind="tabs" panel={panel} label="Inbox views" value={tab} onChange={setTab} options={[{ value: "inbox", label: "Alerts", testid: "tab-inbox" }, { value: "activity", label: "Activity", testid: "tab-activity" }]} />
             <span className="k-surface-end">
             <GlobalSnoozeButton />
             <button
@@ -225,9 +226,9 @@ export function InboxPanel({ open, onOpenChange }: { open: boolean; onOpenChange
             </Dialog.Close>
             </span>
           </div>
-          <Tabs.Panel value="inbox" className="flex min-h-0 flex-1 flex-col"><Inbox onClose={() => onOpenChange(false)} /></Tabs.Panel>
-          <Tabs.Panel value="activity" className="flex min-h-0 flex-1 flex-col"><ActivityList onClose={() => onOpenChange(false)} /></Tabs.Panel>
-          </Tabs.Root>
+          {tab === "inbox" && <div role="tabpanel" id={panel} aria-labelledby={tabId(panel, tab)} className="flex min-h-0 flex-1 flex-col"><Inbox onClose={() => onOpenChange(false)} /></div>}
+          {tab === "activity" && <div role="tabpanel" id={panel} aria-labelledby={tabId(panel, tab)} className="flex min-h-0 flex-1 flex-col"><ActivityList onClose={() => onOpenChange(false)} /></div>}
+          </div>
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>

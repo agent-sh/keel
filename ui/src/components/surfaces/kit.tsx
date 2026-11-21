@@ -6,6 +6,7 @@ import { Plus, Search } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { api, reportError, failed } from "../../lib/store.ts";
 import { WorkspacePicker } from "../WorkspacePicker.tsx";
+import { Seg as Track } from "../Seg.tsx";
 
 export type Mark = "on" | "off" | "need" | "fail" | "work";
 const WATCH: Record<Mark, string | undefined> = { on: undefined, off: "idle", need: "need", fail: "fail", work: "work" };
@@ -130,9 +131,7 @@ export function Toggle({ on, onChange, label, testid }: { on: boolean; onChange:
 
 export function Seg<T extends string>({ value, options, onChange, label }: { value: T; options: [T, string][]; onChange: (v: T) => void; label: string }) {
   return (
-    <div className="k-seg" role="radiogroup" aria-label={label}>
-      {options.map(([v, l]) => <button key={v} type="button" role="radio" aria-checked={v === value} data-testid={`seg-${v}`} onClick={() => onChange(v)}>{l}</button>)}
-    </div>
+    <Track label={label} value={value} onChange={onChange} options={options.map(([v, l]) => ({ value: v, label: l, testid: `seg-${v}` }))} />
   );
 }
 

@@ -1,12 +1,12 @@
 import { AlertDialog } from "@base-ui/react/alert-dialog";
-import { Tabs } from "@base-ui/react/tabs";
 import { FileDiff, FolderX, History, RotateCcw, X } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { api, onFeature, reportError, reportUnlessGone, failed } from "../lib/store.ts";
 import { stoppingShells } from "../lib/shells.ts";
 import { ago, cn } from "../lib/utils.ts";
 import { DiffView, RevertButton, type FileChange } from "./DiffView.tsx";
+import { Seg, tabId } from "./Seg.tsx";
 
 type Turn = { turn: number; prompt: string; created: number; files: FileChange[]; added: number; removed: number; scope: "tree" | "written"; incomplete?: boolean; elsewhere?: string; unavailable?: string };
 type Diff = { files: FileChange[]; diff: string; truncated: boolean; partial?: string; scope: "tree" | "written"; incomplete?: boolean };
@@ -31,6 +31,7 @@ export function ChangesPanel({ session }: { session: Session }) {
   const [done, setDone] = useState<RewindResult | null>(null);
   const [err, setErr] = useState("");
   const [tab, setTab] = useState<string>("session");
+  const panel = useId();
   // With the folder gone there is nothing to put files back into: the diffs
   // still read, the reverts are not offered.
   const gone = !!session.workspace_gone;
@@ -107,12 +108,9 @@ export function ChangesPanel({ session }: { session: Session }) {
 
   return (
     <div data-testid="changes-panel" className="flex h-full min-h-0 flex-col">
-      <Tabs.Root value={tab} onValueChange={(v) => setTab(String(v))} className="flex min-h-0 flex-1 flex-col">
+      <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex items-center gap-3 border-b border-line px-3 py-2">
-          <Tabs.List className="k-seg">
-            <Tabs.Tab value="session" data-testid="tab-session">Session</Tabs.Tab>
-            <Tabs.Tab value="turns" data-testid="tab-turns">By turn</Tabs.Tab>
-          </Tabs.List>
+          <Seg kind="tabs" panel={panel} label="Which changes" value={tab} onChange={setTab} options={[{ value: "session", label: "Session", testid: "tab-session" }, { value: "turns", label: "By turn", testid: "tab-turns" }]} />
           {scope.scope === "written" && (
             <span className="truncate text-caption text-warn" title={scope.reason ?? ""}>Only files the tools wrote are tracked: {scope.reason}</span>
           )}
@@ -149,7 +147,7 @@ export function ChangesPanel({ session }: { session: Session }) {
             <button className="ml-auto text-faint hover:text-fg" onClick={() => { setDone(null); setErr(""); }}><X className="size-3.5" /></button>
           </div>
         )}
-        <Tabs.Panel value="session" className="min-h-0 flex-1 overflow-y-auto p-4">
+        {tab === "session" && <div role="tabpanel" id={panel} aria-labelledby={tabId(panel, tab)} className="min-h-0 flex-1 overflow-y-auto p-4">
           {all && all.files.length > 0 && gone && (
             <p className="mb-3 flex items-start gap-2 rounded-md border border-line border-l-[3px] border-l-st-fail bg-raised px-3 py-2 text-caption text-muted" data-testid="revert-gone" role="note">
               <FolderX className="mt-px size-3.5 shrink-0 text-st-fail" aria-hidden="true" />
@@ -189,8 +187,8 @@ export function ChangesPanel({ session }: { session: Session }) {
               }}
             />
           )}
-        </Tabs.Panel>
-        <Tabs.Panel value="turns" className="min-h-0 flex-1 overflow-y-auto p-4">
+        </div>}
+        {tab === "turns" && <div role="tabpanel" id={panel} aria-labelledby={tabId(panel, tab)} className="min-h-0 flex-1 overflow-y-auto p-4">
           {turns.length === 0 && <p className="k-empty py-4">No turn has changed files yet.</p>}
           <ol className="flex flex-col gap-2">
             {[...turns].reverse().map((t) => (
@@ -222,8 +220,8 @@ export function ChangesPanel({ session }: { session: Session }) {
               </li>
             ))}
           </ol>
-        </Tabs.Panel>
-      </Tabs.Root>
+        </div>}
+      </div>
       <AlertDialog.Root open={!!pending} onOpenChange={(o) => !o && setPending(null)}>
         <AlertDialog.Portal>
           <AlertDialog.Backdrop className="fixed inset-0 z-50 bg-black/20" />

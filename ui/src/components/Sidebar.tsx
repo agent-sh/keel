@@ -29,6 +29,7 @@ import { archive } from "../lib/sessops.ts";
 import { ProjectGroups } from "./SidebarProjects.tsx";
 import { FolderGroups } from "./SidebarFolders.tsx";
 import { openHelper } from "../lib/helper.ts";
+import { Seg } from "./Seg.tsx";
 
 const base = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
 
@@ -356,13 +357,7 @@ function Index({ current }: { current: string | null }) {
   const sections = useMemo(() => machineRuns(rest), [rest]);
   return (
     <>
-      <div role="tablist" aria-label="Session list" className="k-seg mx-2.5 mb-1" data-fill>
-        {(["active", "archived"] as const).map((t) => (
-          <button key={t} type="button" role="tab" aria-selected={tab === t} data-testid={`tab-${t}`} onClick={() => setTab(t)}>
-            {t === "active" ? "Sessions" : "Archived"}
-          </button>
-        ))}
-      </div>
+      <Seg kind="tabs" fill className="mx-2.5 mb-1" label="Session list" value={tab} onChange={setTab} options={[{ value: "active", label: "Sessions", testid: "tab-active" }, { value: "archived", label: "Archived", testid: "tab-archived" }]} />
       <ListFind q={q} setQ={setQ} />
       {tags.length > 0 && (
         <div className="flex flex-wrap gap-1 px-3 pb-2" role="group" aria-label="Filter by tag" data-testid="tag-filter">

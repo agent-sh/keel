@@ -65,11 +65,13 @@ test("the instrument face is named by its five roles and nowhere else", () => {
 });
 
 test("a choice of a few is the one segmented control", () => {
-  // Tabs, a segmented choice and a filter share one track (k-seg in styles.css); no surface draws its own.
-  expect(found(components, /^.*(role="tablist"|<Tabs\.List|<Choices ).*$/, (line) => /\bk-seg\b/.test(line))).toEqual([]);
+  // Tabs, a segmented choice and a filter are components/Seg.tsx (its look is k-seg in
+  // styles.css): no surface draws a track or writes a tab or a radio of its own.
+  const others = components.filter((f) => !f.endsWith("components/Seg.tsx"));
+  expect(found(others, /\bk-seg\b|role="(tablist|tab|radio)"|<Tabs\.(List|Tab)\b/)).toEqual([]);
   expect(found(sheets, /^\.k-seg \{|^\.k-tabs\b[^{]*\{/m)).toEqual(["styles.css:" + (readFileSync(join(UI, "styles.css"), "utf8").split("\n").findIndex((l) => l.startsWith(".k-seg {")) + 1) + ": .k-seg {"]);
-  // An option's look comes from the track: no component raises the chosen one by hand.
-  expect(found(components, /\? "bg-raised text-fg shadow-[12]"|data-\[active\]:bg-raised|data-checked:bg-raised/)).toEqual([]);
+  // The track styles its options, which are buttons, and nothing else that sits in it.
+  expect(found(sheets, /\.k-seg(\[[^\]]*\])? > (\*|:)/)).toEqual([]);
 });
 
 test("steel is the frame and nothing else", () => {

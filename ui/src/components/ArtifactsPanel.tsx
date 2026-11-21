@@ -19,6 +19,7 @@ import { ago, cn, when } from "../lib/utils.ts";
 import { DiffView, type FileChange } from "./DiffView.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { PathText } from "./PathText.tsx";
+import { Seg } from "./Seg.tsx";
 
 export type Listed = Artifact & { session_title?: string };
 const ICON = { image: ImageIcon, html: Globe, markdown: FileText, code: Code2 } as const;
@@ -193,11 +194,7 @@ function Preview({ a }: { a: Listed }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="artifact-preview" data-kind={a.kind}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2" data-testid="artifact-toolbar">
-        <div className="k-seg" role="tablist" aria-label="View">
-          {views.map(([v, label]) => (
-            <button key={v} type="button" role="tab" aria-selected={view === v} data-testid={`artifact-view-${v}`} onClick={() => setView(v)}>{label}</button>
-          ))}
-        </div>
+        <Seg kind="tabs" label="View" value={view} onChange={setView} options={views.map(([v, label]) => ({ value: v, label, testid: `artifact-view-${v}` }))} />
         <div className="ml-auto flex items-center gap-1.5">
         <button type="button" className={button} data-testid="artifact-open" title={said || "Open in your editor on this machine"} onClick={() => api(`/api/sessions/${a.session_id}/artifacts/open`, { method: "POST", body: JSON.stringify({ path: a.path }) }).then(() => setSaid("Opened"), (e) => setSaid((e as Error).message))}><ExternalLink className="size-3.5" />{said === "Opened" ? "Opened" : "Open"}</button>
         <button type="button" className={button} data-testid="artifact-copy-path" onClick={(e) => copyOrSay(a.path, e.currentTarget).then((ok) => { if (ok) setSaid("Path copied"); })}>{said === "Path copied" ? "Copied" : "Copy path"}</button>

@@ -291,23 +291,25 @@ body {
 * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: var(--radius-sm); }
 input:focus-visible, textarea:focus-visible { outline: none; }
-/* A choice of a few on one track: the one control for a segmented choice, a set of
-   tabs and a filter, on every surface. The track is sunken and the chosen option is
-   raised; an option says it is chosen the way its role does. Under the keyboard the
-   ring hugs the option and stays inside the track. data-fill spreads the options
-   over the track's width. */
+/* A choice of a few on one track: the look of the one control for a segmented
+   choice, a set of tabs and a filter (components/Seg.tsx, which is also its
+   keyboard). The track is sunken and the chosen option is raised. Under the
+   keyboard the ring hugs the option and stays inside the track. data-fill
+   spreads the options over the track's width. Where nothing hovers (a touch
+   screen) an option is a full control tall. */
 .k-seg { display: inline-flex; flex-shrink: 0; max-width: 100%; gap: 2px; padding: 2px; overflow-x: auto; scrollbar-width: none; border-radius: var(--radius-md); background: var(--sunken); box-shadow: inset 0 0 0 1px var(--line); }
-.k-seg > * {
-  display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; gap: 0.375rem; height: var(--spacing-ctl-sm); min-width: 1.5rem; padding: 0 0.625rem;
+.k-seg > button {
+  display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; gap: 0.375rem; height: var(--spacing-ctl-sm); min-width: var(--spacing-ctl-sm); padding: 0 0.625rem;
   border-radius: var(--radius-sm); font-size: var(--text-caption); font-weight: 500; line-height: 1; white-space: nowrap; color: var(--muted); cursor: default;
   transition: color 120ms var(--ease-out), background-color 120ms var(--ease-out);
 }
-.k-seg > :hover { color: var(--fg); }
-.k-seg > :is([aria-selected="true"], [aria-checked="true"], [aria-pressed="true"]) { background: var(--raised); color: var(--fg); box-shadow: var(--shadow-1), inset 0 0 0 1px var(--line-strong); }
-.k-seg > :disabled { opacity: 0.45; }
-.k-seg > :focus-visible { outline-offset: 0; }
+.k-seg > button:hover { color: var(--fg); }
+.k-seg > button:is([aria-selected="true"], [aria-checked="true"]) { background: var(--raised); color: var(--fg); box-shadow: var(--shadow-1), inset 0 0 0 1px var(--line-strong); }
+.k-seg > button:disabled { opacity: 0.45; }
+.k-seg > button:focus-visible { outline-offset: 0; }
 .k-seg[data-fill] { display: flex; }
-.k-seg[data-fill] > * { flex: 1 1 0; min-width: 0; padding: 0 0.25rem; }
+.k-seg[data-fill] > button { flex: 1 1 0; min-width: 0; padding: 0 0.25rem; }
+@media (hover: none) { .k-seg > button { height: var(--spacing-ctl-lg); min-width: var(--spacing-ctl-lg); } }
 /* A diff line under the keyboard has one ring, on the row; its comment button draws none over the line number. */
 .k-diff-line:has([data-line]:focus-visible) { outline: 2px solid var(--ring); outline-offset: -2px; }
 [data-line]:focus-visible { outline: none; }

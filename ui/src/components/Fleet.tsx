@@ -12,6 +12,7 @@ import { api, onFeature, reportError, failed } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { popupClass } from "./ui.tsx";
 import { useWhere, WhereBody, whereStyle } from "./Where.tsx";
+import { Seg } from "./Seg.tsx";
 
 // Names and one-line summaries of the fleet's tools on their rows.
 export const FLEET_LABEL: Record<string, string> = { keel__session_send: "Message", keel__sessions_list: "Sessions", keel__machines_list: "Machines", keel__send_files: "Send files" };
@@ -108,13 +109,7 @@ export function MachineChip({ session }: { session: Session }) {
               <div className="p-1.5">
                 <div className="flex items-center px-2 pb-1.5 pt-1 text-micro font-medium text-faint">
                   Move it to
-                  <span role="radiogroup" aria-label="What travels" className="k-seg ml-auto">
-                    {(["git", "none"] as const).map((c) => (
-                      <button key={c} type="button" role="radio" aria-checked={carry === c} onClick={() => setCarry(c)}>
-                        {c === "git" ? "with its git state" : "place only"}
-                      </button>
-                    ))}
-                  </span>
+                  <Seg className="ml-auto" label="What travels" value={carry} onChange={setCarry} options={[{ value: "git", label: "with its git state" }, { value: "none", label: "place only" }]} />
                 </div>
                 {dests.map((d) => (
                   <button key={d.id} type="button" data-testid="move-to" data-machine={d.id} data-offline={d.off || undefined} title={d.off ? `${d.name} does not answer now` : undefined} disabled={h?.state === "running" || d.off} onClick={() => move(d.id)} className="flex h-11 w-full items-center gap-2.5 rounded-md px-2.5 text-left hover:bg-hover disabled:opacity-50 disabled:hover:bg-transparent">

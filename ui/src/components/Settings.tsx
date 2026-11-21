@@ -1,13 +1,12 @@
-import { Radio } from "@base-ui/react/radio";
 import { ArrowLeft, Bot, ChevronDown, Info, Keyboard, Menu, Search, SlidersHorizontal } from "lucide-react";
 import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { settingsSections } from "../lib/extend.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
 import { navigate, savePref, SCALE_NAMES, SCALES, setScale, setTheme, setUI, useUI, type ThemePref } from "../lib/ui.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
-import { Choices } from "./Choices.tsx";
 import { ShortcutList } from "./ShortcutSheet.tsx";
 import { SmallModels } from "./SmallModels.tsx";
+import { Seg } from "./Seg.tsx";
 
 // Settings building blocks other lanes reuse for their sections.
 export function SettingRow({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
@@ -28,18 +27,7 @@ export function SettingRow({ label, hint, children }: { label: string; hint?: Re
 // does not: Choices keeps the chosen option in view.
 export function Segmented<T extends string>({ value, options, onChange, label }: { value: T; options: { value: T; label: string }[]; onChange: (v: T) => void; label: string }) {
   return (
-    <Choices aria-label={label} value={value} onValueChange={(v) => onChange(v as T)} className="k-seg">
-      {options.map((o) => (
-        <Radio.Root
-          key={o.value}
-          value={o.value}
-          nativeButton
-          render={<button type="button" />}
-        >
-          {o.label}
-        </Radio.Root>
-      ))}
-    </Choices>
+    <Seg label={label} value={value} onChange={onChange} options={options} />
   );
 }
 
@@ -53,23 +41,22 @@ export function Card({ children }: { children: ReactNode }) {
 function TextSize() {
   const scale = useUI((s) => s.scale);
   return (
-    <Choices aria-label="Text size" data-testid="text-size" value={scale} onValueChange={(v) => setScale(v as number)} className="k-seg w-56" data-fill>
-      {SCALES.map((v, i) => (
-        <Radio.Root
-          key={v}
-          value={v}
-          nativeButton
-          render={<button type="button" />}
-          aria-label={`${SCALE_NAMES[i]}, ${Math.round(v * 100)}%`}
-          title={`${SCALE_NAMES[i]} (${Math.round(v * 100)}%)`}
-          data-testid={`text-size-${Math.round(v * 100)}`}
-          className="font-semibold"
-          style={{ fontSize: `${Math.round(13 * v * 10) / 10}px` }}
-        >
-          A
-        </Radio.Root>
-      ))}
-    </Choices>
+    <Seg
+      label="Text size"
+      testid="text-size"
+      fill
+      className="w-56"
+      value={scale}
+      onChange={setScale}
+      options={SCALES.map((v, i) => ({
+        value: v,
+        label: "A",
+        name: `${SCALE_NAMES[i]}, ${Math.round(v * 100)}%`,
+        title: `${SCALE_NAMES[i]} (${Math.round(v * 100)}%)`,
+        testid: `text-size-${Math.round(v * 100)}`,
+        style: { fontSize: `${Math.round(13 * v * 10) / 10}px`, fontWeight: 600 },
+      }))}
+    />
   );
 }
 

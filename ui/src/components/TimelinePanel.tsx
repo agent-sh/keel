@@ -5,7 +5,6 @@
 // and idle time as a gap. A row opens its detail: a turn's receipt as a short
 // chain of cause, with the way into its trace, its error and its place in the
 // conversation.
-import { Radio } from "@base-ui/react/radio";
 import {
   Anchor, ArrowLeftRight, Bot, ClipboardCopy, CornerDownRight, FileClock, Flag, FoldVertical, Gauge, Hand, ListEnd, MessageCircleQuestionMark, MessagesSquare, Power, Repeat,
   Route, Timer, TriangleAlert, X, type LucideIcon,
@@ -22,7 +21,7 @@ import {
 } from "../lib/timeline.ts";
 import { savePref, setUI } from "../lib/ui.ts";
 import { clock, cn, fmtCost, fmtTokens, when } from "../lib/utils.ts";
-import { Choices } from "./Choices.tsx";
+import { Seg } from "./Seg.tsx";
 
 const MARK: Record<Exclude<TimelineKind, "turn">, LucideIcon> = {
   agent: Bot, wait: Timer, loop: Repeat, approval: Hand, question: MessageCircleQuestionMark, compaction: FoldVertical, model: ArrowLeftRight,
@@ -318,17 +317,7 @@ function Panel({ session }: { session: Session }) {
     <div className="flex h-full min-h-0 flex-col" data-testid="timeline-panel">
       <Now now={now} onTurn={(t) => { setApart(null); setAsked(t); }} />
       <div className="flex shrink-0 items-center gap-3 border-b border-line px-3 py-2">
-        <Choices value={only} onValueChange={(v) => setOnly(v as Only)} aria-label="Show" className="k-seg">
-          {FILTERS.map(([v, label]) => (
-            <Radio.Root
-              key={v}
-              value={v}
-              data-testid={`timeline-only-${v || "all"}`}
-            >
-              {label}
-            </Radio.Root>
-          ))}
-        </Choices>
+        <Seg label="Show" value={only} onChange={setOnly} options={FILTERS.map(([v, label]) => ({ value: v, label, testid: `timeline-only-${v || "all"}` }))} />
       </div>
       <div ref={scroller} tabIndex={-1} onScroll={(e) => { view.current.top = e.currentTarget.scrollTop; }} className="min-h-0 flex-1 overflow-y-auto pb-3 outline-none" data-testid="timeline-scroll">
         {apart && <Apart turn={apart} sessionId={id} onClose={closeApart} />}

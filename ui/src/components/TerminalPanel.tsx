@@ -3,14 +3,14 @@
 // with their output streaming in, and the owner's stop, copy and re-run. A
 // command line at the foot runs the owner's own command in the session's folder.
 import { copyOrSay } from "../lib/copy.ts";
-import { Tabs } from "@base-ui/react/tabs";
 import { Check, ChevronRight, Copy, Play, RotateCw, Square } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { stripAnsiText } from "../../../src/core/ansi.ts";
 import { Ansi } from "./Ansi.tsx";
 import type { Session } from "../../../src/core/types.ts";
 import { api, reportError, useStore } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
+import { Seg, tabId } from "./Seg.tsx";
 
 type Entry = {
   key: string; call_id?: string; tool?: string; by: "model" | "owner"; command: string; description?: string; cwd?: string;
@@ -127,6 +127,7 @@ export function TerminalPanel({ session }: { session: Session }) {
   const [list, setList] = useState<Entry[] | null>(null);
   const [note, setNote] = useState<string>();
   const [filter, setFilter] = useState<Filter>("all");
+  const panel = useId();
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [cmd, setCmd] = useState("");
   const [now, setNow] = useState(Date.now());
@@ -170,25 +171,25 @@ export function TerminalPanel({ session }: { session: Session }) {
   return (
     // The filters are tabs of the one list: one Tab stop on the filter
     // chosen, Left and Right move to the next one and show its commands.
-    <Tabs.Root value={filter} onValueChange={(v) => setFilter(v as Filter)} className="flex h-full min-h-0 flex-col" data-testid="terminal-panel">
+    <div className="flex h-full min-h-0 flex-col" data-testid="terminal-panel">
       <div className="flex items-center border-b border-line px-3 py-2">
-      <Tabs.List activateOnFocus aria-label="Which commands" className="k-seg">
-        {(["all", "running", "failed"] as Filter[]).map((f) => (
-          <Tabs.Tab
-            key={f}
-            value={f}
-            data-testid={`term-filter-${f}`}
-            className="capitalize"
-          >
-            {f}
-            <span className={cn("tabular-nums text-micro", f === "failed" && counts.failed ? "text-danger" : "text-faint")}>{counts[f]}</span>
-          </Tabs.Tab>
-        ))}
-      </Tabs.List>
+      <Seg
+        kind="tabs"
+        panel={panel}
+        label="Which commands"
+        value={filter}
+        onChange={setFilter}
+        options={(["all", "running", "failed"] as Filter[]).map((f) => ({
+          value: f,
+          testid: `term-filter-${f}`,
+          className: "capitalize",
+          label: <>{f}<span className={cn("tabular-nums text-micro", f === "failed" && counts.failed ? "text-danger" : "text-faint")}>{counts[f]}</span></>,
+        }))}
+      />
       </div>
       {note && <p className="border-b border-line px-3 py-1.5 text-micro text-warn">{note}</p>}
       {/* The list is no Tab stop of its own: the next Tab goes from the filters to its first row. */}
-      <Tabs.Panel value={filter} tabIndex={-1} className="min-h-0 flex-1 overflow-auto outline-none">
+      <div role="tabpanel" id={panel} aria-labelledby={tabId(panel, filter)} tabIndex={-1} className="min-h-0 flex-1 overflow-auto outline-none">
       <ul data-testid="term-list">
         {list && !shown.length && (
           <li className="k-empty px-3 py-4">
@@ -199,7 +200,7 @@ export function TerminalPanel({ session }: { session: Session }) {
           <Row key={e.key} session={id} e={e} now={now} open={open.has(e.key) || (!!e.job_id && open.has(e.job_id))} onToggle={() => toggle(e.key)} onRun={run} />
         ))}
       </ul>
-      </Tabs.Panel>
+      </div>
       <form
         className="flex items-center gap-2 border-t border-line px-3 py-2"
         onSubmit={(ev) => { ev.preventDefault(); run(cmd).then(() => setCmd("")); }}
@@ -216,6 +217,6 @@ export function TerminalPanel({ session }: { session: Session }) {
         />
         <button type="submit" title="Run" data-testid="term-run" disabled={!cmd.trim()} className="grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg disabled:opacity-40"><Play className="size-3.5" /></button>
       </form>
-    </Tabs.Root>
+    </div>
   );
 }

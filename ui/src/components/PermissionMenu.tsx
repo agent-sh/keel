@@ -9,6 +9,7 @@ import { safety, useSafety, type SessionPerm } from "../lib/safety.ts";
 import { reportError } from "../lib/store.ts";
 import { useUI } from "../lib/ui.ts";
 import { ago, cn } from "../lib/utils.ts";
+import { Seg } from "./Seg.tsx";
 
 const PROFILES: { id: SessionPerm["sandbox"]; name: string; hint: string }[] = [
   { id: "off", name: "Off", hint: "Commands run as you" },
@@ -76,21 +77,14 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
                   <span className="text-ui font-medium">Sandbox for commands</span>
                   {sandbox && !sandbox.available && <span className="text-micro text-warn" title={sandbox.reason}>unavailable</span>}
                 </div>
-                <div className="k-seg mt-1.5" data-fill role="radiogroup" aria-label="Sandbox">
-                  {PROFILES.map((p) => (
-                    <button
-                      key={p.id}
-                      role="radio"
-                      aria-checked={perm.sandbox === p.id}
-                      data-testid={`sandbox-${p.id}`}
-                      title={p.hint}
-                      disabled={p.id !== "off" && sandbox?.available === false}
-                      onClick={() => set({ sandbox: p.id })}
-                    >
-                      {p.name}
-                    </button>
-                  ))}
-                </div>
+                <Seg
+                  fill
+                  className="mt-1.5"
+                  label="Sandbox"
+                  value={perm.sandbox}
+                  onChange={(id) => set({ sandbox: id })}
+                  options={PROFILES.map((p) => ({ value: p.id, label: p.name, title: p.hint, testid: `sandbox-${p.id}`, disabled: p.id !== "off" && sandbox?.available === false }))}
+                />
                 <p className="mt-1.5 text-caption leading-snug text-muted">
                   {sandbox && !sandbox.available ? sandbox.reason : PROFILES.find((p) => p.id === perm.sandbox)!.hint + (perm.sandbox === "off" ? "." : ", in bubblewrap.")}
                 </p>
