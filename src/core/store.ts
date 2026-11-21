@@ -88,6 +88,8 @@ type Kept = {
   // first to the head. Walked once, it grows by each event appended at its
   // head, and is walked again only when the session shows another branch.
   line?: { head: string; events: readonly StoredEvent[] };
+  // When it was last read or appended to.
+  at: number;
 };
 
 // How many bytes of stored events are kept parsed at most: a thirty-second of
@@ -100,6 +102,9 @@ export function eventsBudget(): number {
   if (Number.isFinite(set) && set > 0) return set * 1e6;
   return Math.min(512e6, Math.max(64e6, totalmem() / 32));
 }
+// A session no turn runs in gives its events back after this long unread:
+// the next read parses them again, once.
+export const IDLE_KEPT_MS = 120_000;
 
 type SessionRow = Omit<Session, "archived" | "usage" | "settings"> & { archived: number; usage: string; settings: string };
 
@@ -158,10 +163,12 @@ export class Store {
   // change once written, so each is parsed once and an appended event joins
   // what is held. A session a turn runs in stays while the whole is within
   // the byte budget, however many others work; idle sessions go first, the
-  // longest unread first.
+  // longest unread first, and an idle session unread for IDLE_KEPT_MS goes
+  // by itself, so a daemon at rest holds none.
   private kept = new Map<string, Kept>();
   private keptBytes = 0;
   private budget = eventsBudget();
+  private sweeper: ReturnType<typeof setInterval> | undefined;
 
   constructor(readonly stateDir: string) {
     mkdirSync(stateDir, { recursive: true });
@@ -366,10 +373,12 @@ export class Store {
     if (!k) return;
     this.keptBytes -= k.bytes;
     this.kept.delete(session_id);
+    if (!this.kept.size) this.rest();
   }
 
   // Read or written now: the last in line to go.
   private touch(session_id: string, k: Kept) {
+    k.at = Date.now();
     this.kept.delete(session_id);
     this.kept.set(session_id, k);
   }
@@ -389,6 +398,30 @@ export class Store {
         if (id !== keep && working.has(id) === busy) this.forget(id);
       }
     }
+  }
+
+  // Idle sessions unread for IDLE_KEPT_MS give their events back, and so does
+  // a working one unread for fifteen times that (a turn inside one long tool
+  // call reads them again when the call ends). The check runs only while
+  // something is kept, and never holds the process open.
+  private sweep() {
+    const now = Date.now();
+    const stale = [...this.kept].filter(([, k]) => now - k.at >= IDLE_KEPT_MS);
+    if (!stale.length) return;
+    let working: Set<string>;
+    try {
+      working = this.working();
+    } catch {
+      // The database is closed: nothing reads this store again.
+      for (const id of [...this.kept.keys()]) this.forget(id);
+      return;
+    }
+    for (const [id, k] of stale) if (!working.has(id) || now - k.at >= 15 * IDLE_KEPT_MS) this.forget(id);
+  }
+
+  private rest() {
+    clearInterval(this.sweeper);
+    this.sweeper = undefined;
   }
 
   // What is kept parsed: for the resources report and tests.
@@ -411,9 +444,13 @@ export class Store {
         bytes += r.data.length;
         return deepFreeze(rowToEvent(r));
       });
-    k = { all, bytes };
+    k = { all, bytes, at: Date.now() };
     this.kept.set(session_id, k);
     this.keptBytes += bytes;
+    if (!this.sweeper) {
+      this.sweeper = setInterval(() => this.sweep(), IDLE_KEPT_MS / 4);
+      this.sweeper.unref?.();
+    }
     this.trim(session_id);
     return k;
   }

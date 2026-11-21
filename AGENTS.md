@@ -61,6 +61,12 @@ under `~/.cache/keel-work/bun/research/`.
   any test loads (`test/preload.ts`, from the repository root), and the
   defaults refuse the owner's folders under a test. A probe or script that
   imports Keel source sets `KEEL_CONFIG_DIR` and a state folder first.
+- The loop is never held by a read over a whole table. A report over the
+  ledger, a ranked search or a sum over every event runs on the read thread
+  (`src/server/reads.ts`: a read-only connection of its own, tasks in
+  `src/server/read-tasks.ts`); a session's parsed events are kept while a turn
+  runs in it, within a byte budget, and given back two minutes after it idles
+  (`src/core/store.ts`).
 - Every failure is captured once in the `errors` table (`ErrorTracker.capture`)
   and shown live in the UI's Errors panel. Browser errors post to `/api/errors`.
 - A session is told what went wrong in its scope without asking: failures of its
@@ -97,6 +103,7 @@ under `~/.cache/keel-work/bun/research/`.
 | `src/providers/` | provider drivers, listing registry, catalog |
 | `src/tools/` | tool profiles per family, spill |
 | `src/server/app.ts` | HTTP API and WebSocket |
+| `src/server/reads.ts` | the read thread: heavy reads off the loop |
 | `ui/` | React 19 UI, bundled by Bun from `ui/index.html` |
 | `test/e2e/` | Playwright e2e per feature |
 

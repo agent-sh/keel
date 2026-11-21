@@ -5,7 +5,7 @@ import { afterAll, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Store } from "./store.ts";
+import { IDLE_KEPT_MS, Store } from "./store.ts";
 
 const dirs: string[] = [];
 afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
@@ -105,7 +105,7 @@ test("a step of a working session parses nothing again, however many other sessi
   for (const id of ids) expect(store.lineage(id)).toEqual(cold.lineage(id));
 });
 
-test("kept events are bounded by their bytes, and idle sessions go first", () => {
+test("kept events are bounded by their bytes: idle sessions go first, and an idle session unread for a while goes by itself", () => {
   const dir = scratch();
   const seed = new Store(dir);
   const text = "x".repeat(1000);
@@ -139,9 +139,19 @@ test("kept events are bounded by their bytes, and idle sessions go first", () =>
   store.updateSession(a, { phase: "working" });
   store.lineage(a);
   expect(held()).toEqual([a]);
-  // A deleted session is not kept.
-  store.deleteSession(a);
+  store.updateSession(a, { phase: "idle" });
+  // Unread for the idle time: an idle session goes, a working one stays.
+  store.updateSession(w, { phase: "idle" });
+  store.updateSession(b, { phase: "working" });
+  store.lineage(b);
+  expect(held()).toEqual([a, b]);
+  for (const k of ((store as any).kept as Map<string, { at: number }>).values()) k.at -= IDLE_KEPT_MS;
+  (store as any).sweep();
+  expect(held()).toEqual([b]);
+  // A deleted session is not kept, and with nothing kept nothing is checked.
+  store.deleteSession(b);
   expect(store.keptEvents()).toEqual({ sessions: 0, bytes: 0, budget: 0.7e6 });
+  expect((store as any).sweeper).toBeUndefined();
   // What was dropped reads the same again.
   expect(store.lineage(c).length).toBe(300);
 });
