@@ -261,24 +261,40 @@ requesting context. `timeout` and `failure` are counted separately.
 
 Context bytes count UTF-8 text after Keel's cap, before its memory wrapper.
 Transcript metrics count reused versions, appends (a branch that only grew
-gets its new events appended), rebuilds, failures, elapsed milliseconds, and
-bytes written. Reuse writes no bytes.
+gets its new events appended), rebuilds, failures, files removed with their
+session, elapsed milliseconds, and bytes written. Reuse writes no bytes.
+`processes` counts hook processes: the most alive at once and their limit,
+calls not made because one of the same session was still out unanswered, and
+probes. `out` names the kinds of call (asking, tool) the store is not
+answering in time right now.
 The endpoint includes no prompts, transcripts, facts, or session identifiers.
 Poll it and compare counter deltas to track changes over time.
 
+The store gives a session each fact once, so a fact it printed always reaches
+the model: a block holds at most one hook's cap in whole lines, and the lines
+it had no room for are kept in the state and follow with the turn's next
+request or the next prompt. A call that misses its deadline starts an outage
+of its kind: the session is told once, later calls of that kind are made but
+not waited for (what they answer follows the same way), and a probe that asks
+the store nothing ends the outage when it answers again. After a summary or a
+clear the store is told, so what it gave before can come again.
+
 `GET /api/telemetry/memory?since_ms=&until_ms=&session_id=` reports what memory
-cost the turns and whether they used it, kept across restarts: per recall path
-(the memory store's blocks at a session's start, with a prompt and with a tool
-call; the helper's records) how often it was asked and how that ended, the
-facts and tokens it added, the facts the turn's reply or tool calls named,
-the lines not added again because the context held them, the lines left out as
-over a turn's budget, and the time turns waited. Counts, tokens and times
-only. Settings, then Usage, shows it as the Memory panel.
+cost the turns and whether they used it, kept across restarts for 90 days: per
+recall path (the memory store's blocks at a session's start, with a prompt,
+with a tool call and carried to a later step; the helper's records) how often
+it was asked and how that ended, the facts and tokens it added, the facts the
+turn's reply or tool calls named (an estimate that reads low: a fact can shape
+a reply without being named), the lines not added again because the context
+held them, the lines carried to a later step, and the time turns waited.
+Counts, tokens and times only. Settings, then Usage, shows it as the Memory
+panel.
 
 `bun scripts/bench/memory.ts` measures the same on generated data, with a
 stand-in store and a scripted model: tokens added per turn, facts used,
-repeats, the cache prefix, time before the first request, and a store that is
-slow or failing.
+repeats, facts the store gave that never reached a request (this must be 0),
+the cache prefix, time before the first request, a store that is slow or
+failing, and whether the helper recalls the record a prompt is about.
 
 ## License
 

@@ -14,22 +14,36 @@ import { lineage } from "../core/tree.ts";
 import { bytesPerToken } from "../engine/compact.ts";
 import { registerHooks } from "../engine/hooks.ts";
 
-// Inputs the harness delivers about something that happened: a report, a
-// wake, a loop run, a goal going on, a failure notice, a digest, its own
-// instructions. They ask for no new work in the owner's words, and memory
-// is not searched for what it knows about them (a record they name is still
-// recalled where names can be looked up). Everything else is a request.
-const DELIVERED = new Set(["subagent", "wait", "wake", "loop", "goal", "failures", "helper_digest", "harness", "verify_goal"]);
-export const asksMemory = (d: { kind?: unknown; origin?: unknown } | undefined): boolean =>
-  ownerPrompt(d) || (!!d && !DELIVERED.has(String(d.kind ?? "")) && d.origin !== "harness" && d.origin !== "restart");
+// Which inputs the store is asked about. Everything that asks for work is:
+// the owner's words, an agent's or a verifier's task, a parent's steer, a
+// peer's message, a loop's run (its prompt is the owner's standing words), a
+// goal's start and resume (they carry the objective). What the harness
+// delivers about something that happened is not: an agent's report, a wait's
+// wake, a goal going on after a check, a failure notice, a digest, its own
+// instructions, a continuation after a restart. Several deliveries in one
+// input ask when any of them does.
+const DELIVERED = new Set(["subagent", "wait", "failures", "helper_digest", "harness"]);
+type InputMeta = { kind?: unknown; origin?: unknown; goal?: unknown; parts?: unknown } | undefined;
+export function asksMemory(d: InputMeta): boolean {
+  if (ownerPrompt(d)) return true;
+  if (!d || d.origin === "harness" || d.origin === "restart") return false;
+  if (d.kind === "wake") return Array.isArray(d.parts) && d.parts.some((p) => asksMemory(p as InputMeta));
+  if (d.kind === "goal") return d.goal === "start" || d.goal === "resume";
+  return !DELIVERED.has(String(d.kind ?? ""));
+}
 
-export type MemoryPath = "store_start" | "store_prompt" | "store_tool" | "helper";
-export const MEMORY_PATHS: MemoryPath[] = ["store_start", "store_prompt", "store_tool", "helper"];
+// store_owed: lines the store gave earlier that joined a later request (a
+// block was full, or the answer came after its request went).
+export type MemoryPath = "store_start" | "store_prompt" | "store_tool" | "store_owed" | "helper";
+export const MEMORY_PATHS: MemoryPath[] = ["store_start", "store_prompt", "store_tool", "store_owed", "helper"];
+// Rows are kept this long: three times the longest range the Usage views
+// show (a month), so this month can be read against the ones before it.
+export const KEEP_MS = 90 * 86_400_000;
 // added: the turn got a block; empty: the store had nothing; repeat: all of it
 // was in the context already; skipped: not asked (an input that is not a
-// request, or a store that is not answering); late: the turn did not wait for
-// its answer (the row is written over when the answer joins a later prompt,
-// or when it turns out there is none); timeout and failure: the store's.
+// request, or one of the session's calls was still out); late: the turn did
+// not wait for its answer (the store was not answering in time; what it
+// answers joins a later request as store_owed); timeout and failure: the store's.
 export type MemoryOutcome = "added" | "empty" | "repeat" | "skipped" | "late" | "timeout" | "failure";
 export type Fact = { names: string[]; text: string };
 
@@ -59,7 +73,6 @@ export function usedBy(f: Fact, output: string): boolean {
 
 type Open = { row: number; facts: Fact[]; ts: number };
 export type MemoryFilter = { since?: number; until?: number; session?: string };
-type Row = { path: MemoryPath; outcome: MemoryOutcome; facts: number; tokens: number; used: number | null; repeats: number; cut: number; wait_ms: number };
 
 export class MemoryMeter {
   // Recalls of each session's running turn, until it ends.
@@ -69,8 +82,18 @@ export class MemoryMeter {
     store.migrate(`CREATE TABLE IF NOT EXISTS telemetry_memory (
   id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, ts INTEGER NOT NULL, path TEXT NOT NULL, outcome TEXT NOT NULL,
   facts INTEGER NOT NULL DEFAULT 0, tokens INTEGER NOT NULL DEFAULT 0, used INTEGER, repeats INTEGER NOT NULL DEFAULT 0, cut INTEGER NOT NULL DEFAULT 0, wait_ms INTEGER NOT NULL DEFAULT 0);
-CREATE INDEX IF NOT EXISTS telemetry_memory_ts ON telemetry_memory(ts);`);
+CREATE INDEX IF NOT EXISTS telemetry_memory_ts ON telemetry_memory(ts);
+CREATE INDEX IF NOT EXISTS telemetry_memory_session ON telemetry_memory(session_id);`);
+    this.prune();
     registerHooks({ turnEnd: (s) => this.settle(s.id) });
+  }
+
+  // Rows past their keep time go: at start, then once a day as rows are written.
+  private pruned = 0;
+  private prune(now = Date.now()) {
+    if (now - this.pruned < 86_400_000) return;
+    this.pruned = now;
+    this.store.db.query("DELETE FROM telemetry_memory WHERE ts < ?").run(now - KEEP_MS);
   }
 
   // One recall. `text`: what was added to the turn (nothing for the other
@@ -79,6 +102,7 @@ CREATE INDEX IF NOT EXISTS telemetry_memory_ts ON telemetry_memory(ts);`);
   // `row`: an earlier row of the same ask (a block that came late), written
   // over with how it ended.
   record(sessionId: string, path: MemoryPath, r: { outcome: MemoryOutcome; text?: string; facts?: Fact[]; repeats?: number; cut?: number; waitMs?: number }, row?: number): number {
+    this.prune();
     const model = this.store.session(sessionId)?.model;
     const tokens = r.text ? Math.round(Buffer.byteLength(r.text) / bytesPerToken(model)) : 0;
     const ts = Date.now();
@@ -122,31 +146,28 @@ CREATE INDEX IF NOT EXISTS telemetry_memory_ts ON telemetry_memory(ts);`);
   // Per path and in total: how often it was asked and how that ended, what it
   // added, what the turns used, what it left out, and the time turns waited.
   // `used` is over the recalls whose turn ended (`facts_checked` of `facts`).
+  // `cut`: lines a block had no room for, carried to a later request.
+  // Summed in the database: the table has a row per prompt and tool call.
   report(f: MemoryFilter = {}) {
     const where = ["1 = 1"];
     const args: (string | number)[] = [];
     if (f.session) { where.push("session_id = ?"); args.push(f.session); }
     if (f.since !== undefined) { where.push("ts >= ?"); args.push(f.since); }
     if (f.until !== undefined) { where.push("ts < ?"); args.push(f.until); }
-    const rows = this.store.db.query<Row, any[]>(`SELECT path, outcome, facts, tokens, used, repeats, cut, wait_ms FROM telemetry_memory WHERE ${where.join(" AND ")}`).all(...args);
-    const sum = (list: Row[]) => {
-      const added = list.filter((r) => r.outcome === "added");
-      const checked = added.filter((r) => r.used !== null);
-      const n = (o: MemoryOutcome) => list.filter((r) => r.outcome === o).length;
-      const waits = list.map((r) => r.wait_ms).sort((a, b) => a - b);
-      return {
-        asked: list.length, recalls: added.length, empty: n("empty"), skipped: n("skipped"), late: n("late"), timeouts: n("timeout"), failures: n("failure"),
-        facts: added.reduce((a, r) => a + r.facts, 0), tokens: added.reduce((a, r) => a + r.tokens, 0),
-        facts_checked: checked.reduce((a, r) => a + r.facts, 0), used: checked.reduce((a, r) => a + (r.used ?? 0), 0),
-        recalls_checked: checked.length, recalls_used: checked.filter((r) => (r.used ?? 0) > 0).length,
-        repeats: list.reduce((a, r) => a + r.repeats, 0), cut: list.reduce((a, r) => a + r.cut, 0),
-        wait_ms: list.reduce((a, r) => a + r.wait_ms, 0), wait_max_ms: waits.at(-1) ?? 0,
-      };
-    };
+    const n = (o: MemoryOutcome) => `COALESCE(SUM(outcome = '${o}'), 0)`;
+    const added = (col: string, more = "") => `COALESCE(SUM(CASE WHEN outcome = 'added'${more} THEN ${col} ELSE 0 END), 0)`;
+    const checked = " AND used IS NOT NULL";
+    const cols = `COUNT(*) AS asked, ${n("added")} AS recalls, ${n("empty")} AS empty, ${n("repeat")} AS repeat, ${n("skipped")} AS skipped, ${n("late")} AS late, ${n("timeout")} AS timeouts, ${n("failure")} AS failures,
+      ${added("facts")} AS facts, ${added("tokens")} AS tokens, ${added("facts", checked)} AS facts_checked, ${added("used", checked)} AS used,
+      ${added("1", checked)} AS recalls_checked, ${added("1", " AND used > 0")} AS recalls_used,
+      COALESCE(SUM(repeats), 0) AS repeats, COALESCE(SUM(cut), 0) AS cut, COALESCE(SUM(wait_ms), 0) AS wait_ms, COALESCE(MAX(wait_ms), 0) AS wait_max_ms`;
+    const from = `FROM telemetry_memory WHERE ${where.join(" AND ")}`;
+    type Sum = Record<"asked" | "recalls" | "empty" | "repeat" | "skipped" | "late" | "timeouts" | "failures" | "facts" | "tokens" | "facts_checked" | "used" | "recalls_checked" | "recalls_used" | "repeats" | "cut" | "wait_ms" | "wait_max_ms", number>;
+    const total = this.store.db.query<Sum, any[]>(`SELECT ${cols} ${from}`).get(...args)!;
+    const paths = this.store.db.query<Sum & { path: MemoryPath }, any[]>(`SELECT path, ${cols} ${from} GROUP BY path`).all(...args);
     return {
-      since_ms: f.since ?? null, until_ms: f.until ?? Date.now(), estimate: true,
-      total: sum(rows),
-      paths: MEMORY_PATHS.map((path) => ({ path, ...sum(rows.filter((r) => r.path === path)) })).filter((p) => p.asked),
+      since_ms: f.since ?? null, until_ms: f.until ?? Date.now(), estimate: true, total,
+      paths: MEMORY_PATHS.flatMap((path) => paths.filter((p) => p.path === path)),
     };
   }
 }

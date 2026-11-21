@@ -10,7 +10,7 @@ import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
 import { Engine } from "../engine/turn.ts";
 import { hookRoutes } from "../server/routes/hooks.ts";
-import { MEMORY_CAP, Tacit } from "./tacit.ts";
+import { MEMORY_CAP, START_WAIT_MS, Tacit } from "./tacit.ts";
 
 test("Tacit reuses only the retained transcript of the same version", () => {
   const dir = mkdtempSync(join(tmpdir(), "tacit-transcript-"));
@@ -162,7 +162,7 @@ esac
       expect(await tacit.preToolBlock(s, "bash", { command: `fixture-${kind}` })).toBeNull();
     const stats = tacit.stats();
     expect(stats.hooks["prompt"].outcomes.hit).toBe(1);
-    expect(stats.hooks["session-start"].outcomes.empty).toBe(1);
+    expect(stats.hooks["session-start"].outcomes.empty).toBe(2); // told of the summary, then asked here
     expect(stats.hooks["pre-compact"].outcomes.ok).toBe(1);
     const preTool = stats.hooks["pre-tool"];
     expect(preTool.outcomes).toEqual({ hit: 1, empty: 1, failure: 2, timeout: 1, ok: 0 });
@@ -185,110 +185,313 @@ esac
   }
 });
 
-// What the memory hooks add across the prompts of one session, with a store
-// that answers, then stops answering, then answers again (no e2e can hold a
-// store back for one prompt and release it for the next).
-test("memory across prompts: nothing twice, nothing for a delivered input, a slow store told once and not waited for", async () => {
-  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "memory-flow-"));
-  const bin = join(dir, "store");
-  writeFileSync(join(dir, "mode"), "ok");
-  writeFileSync(bin, `#!/bin/sh
+// --- the memory hooks against a store that gives a fact once ----------------------
+//
+// The stand-in answers like the store these hooks are written for: it gives a
+// session each fact name once and marks it as given before it prints it, so a
+// fact Keel drops is gone for that session; told of a summary or a clear
+// (session-start with that source) it forgets what it gave. A prompt or a
+// command names facts by words kwN: a prompt gets fact-kwN, a command
+// rule-kwN, each `len` characters long. `mode`: slow (nothing is answered),
+// slowtool (tool calls are not), slowstart (the start block takes 2.5 s).
+// No e2e can hold a store back for one call and release it for the next.
+function standIn(dir: string) {
+  const sd = join(dir, "standin");
+  mkdirSync(sd, { recursive: true });
+  const set = (k: string, v: string | number) => writeFileSync(join(sd, k), String(v));
+  set("mode", "ok"); set("len", 40); set("calls", "");
+  const bin = join(sd, "store.sh");
+  writeFileSync(bin, `#!/bin/bash
+dir=${JSON.stringify(sd)}
 input=$(cat)
-mode=$(cat ${JSON.stringify(join(dir, "mode"))})
-echo "$2" >> ${JSON.stringify(join(dir, "calls"))}
-[ "$mode" = slow ] && exec sleep 5
-if [ "$2" = prompt ]; then
-  echo "# store: facts matching this request"
-  echo "- fact-a: Always keep the alpha rule"
-  case "$input" in *beta*) echo "- fact-b: The beta rule applies too" ;; esac
-  case "$input" in *gamma*) echo "- fact-c: The gamma rule came late" ;; esac
-fi
+hook=$2
+mode=$(cat "$dir/mode"); len=$(cat "$dir/len")
+sid=$(sed -n 's/.*"session_id":"\\([^"]*\\)".*/\\1/p' <<<"$input")
+src=$(sed -n 's/.*"source":"\\([^"]*\\)".*/\\1/p' <<<"$input")
+echo "$hook $sid $src" >> "$dir/calls"
+seen="$dir/seen-$sid"; touch "$seen"
+pad=$(head -c "$len" /dev/zero | tr '\\0' 'x')
+out=""
+give() { grep -qx "$1" "$seen" && return; echo "$1" >> "$seen"; out+="- $1: the text of $1 $pad\\n"; }
+case "$hook" in
+  session-start)
+    case "$mode" in slow) exec sleep 8 ;; slowstart) sleep 2.5 ;; esac
+    case "$src" in compact|clear) : > "$seen" ;; startup) ;; *) exit 0 ;; esac
+    give start-rule; printf '# store: standing rules\\n%b' "$out" ;;
+  prompt)
+    case "$mode" in slow) exec sleep 8 ;; esac
+    q=$(sed -n 's/.*"prompt":"\\(.*\\)","transcript_path.*/\\1/p' <<<"$input")
+    for w in $(grep -o 'kw[0-9]*' <<<"$q" | sort -u -V); do give "fact-$w"; done
+    [ -n "$out" ] && printf '# store: facts matching this request\\n%b' "$out" ;;
+  pre-tool)
+    case "$mode" in slow|slowtool) exec sleep 8 ;; esac
+    cmd=$(sed -n 's/.*"command":"\\([^"]*\\)".*/\\1/p' <<<"$input")
+    for w in $(grep -o 'kw[0-9]*' <<<"$cmd" | sort -u -V); do give "rule-$w"; done
+    [ -n "$out" ] && printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"# store: before this step\\\\n%s"}}\\n' "$(printf '%s' "$out" | sed 's/\\\\n$//')" ;;
+esac
+exit 0
 `, { mode: 0o755 });
+  const calls = (hook?: string) => readFileSync(join(sd, "calls"), "utf8").trim().split("\n").filter((l) => l && (!hook || l.startsWith(hook + " ")));
+  return { bin, set, calls };
+}
+
+// An engine with the memory hooks on a store folder. The scripted model runs
+// the commands a prompt lists ("tools=1,2" runs `echo kw1`, then `echo kw2`).
+function memoryWorld(dir: string, bin: string) {
+  const store = new Store(dir);
+  const bus = new Bus();
+  const captured: string[] = [];
+  const errors = { capture: (_s: string, e: unknown) => { captured.push(String((e as Error).message)); return { message: "" }; } } as any;
+  const asked: { session: string; at: number; messages: string }[] = [];
+  const info = { id: "p:m", provider: "p", model: "m", name: "M", family: "claude", context: 1_000_000, output: 4_000, efforts: [], billing: "per_token" };
+  let n = 0;
+  const usage = { input: 1, output: 1, cache_read: 0, cache_write: 0 };
+  const provider = {
+    id: "p", family: "claude", wire: "anthropic_messages", available: () => true, list: async () => [],
+    stream: async (req: any) => {
+      if (req.purpose === "summary") return { blocks: [{ type: "text", text: "SUMMARY: the work so far, with no memory in it." }], usage, stop: "end_turn", model: "m" };
+      asked.push({ session: req.sessionKey, at: performance.now(), messages: JSON.stringify(req.messages) });
+      const isPrompt = (m: any) => m.role === "user" && !JSON.stringify(m.content).includes('"tool_result"');
+      const at = req.messages.findLastIndex((m: any) => isPrompt(m) && /tools=/.test(JSON.stringify(m)));
+      if (at >= 0 && at === req.messages.findLastIndex(isPrompt)) {
+        const plan = /tools=([\d,]+)/.exec(JSON.stringify(req.messages[at]))![1]!.split(",");
+        const done = req.messages.slice(at + 1).filter((m: any) => m.role === "assistant").length;
+        if (plan[done]) return { blocks: [{ type: "tool_use", id: `c${++n}`, name: "Bash", input: { command: `echo kw${plan[done]}` } }], usage, stop: "tool_use", model: "m" };
+      }
+      return { blocks: [{ type: "text", text: "ok" }], usage, stop: "end_turn", model: "m" };
+    },
+  };
+  const providers = { resolve: async () => ({ provider, info }), models: async () => [info], current: () => [info] } as any;
+  const engine = new Engine(store, bus, providers, errors, join(dir, "spill"));
+  const tacit = new Tacit(store, bus, errors, bin);
+  tacit.install();
+  const session = () => {
+    return store.createSession({ model: "p:m", workspace: dir }).id;
+  };
+  // Sends an input; answers with how long its first request took to go.
+  const say = async (id: string, text: string, meta?: Record<string, unknown>) => {
+    const before = asked.length;
+    const t0 = performance.now();
+    engine.send(id, text, { meta });
+    await engine.idle(id);
+    return (asked.slice(before).find((r) => r.session === id)?.at ?? NaN) - t0;
+  };
+  const last = (id: string) => asked.findLast((r) => r.session === id)!.messages;
+  const names = (text: string) => [...new Set([...text.matchAll(/- ((?:fact|rule)-kw\d+|start-rule):/g)].map((m) => m[1]!))];
+  const told = (id: string) => store.events(id).filter((e) => e.kind === "note" && e.data.kind === "memory_out").length;
+  const copies = (id: string, name: string) => last(id).split(`- ${name}:`).length - 1;
+  return { store, bus, engine, tacit, session, say, last, names, told, copies, captured, asked };
+}
+const until = async (what: () => boolean, ms = 15_000) => { const t = Date.now(); while (!what() && Date.now() - t < ms) await Bun.sleep(25); expect(what()).toBe(true); };
+const seq = (a: number, b: number) => Array.from({ length: b - a + 1 }, (_, i) => a + i);
+async function inWorld(name: string, run: (w: ReturnType<typeof memoryWorld>, st: ReturnType<typeof standIn>, dir: string) => Promise<void>) {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", `memory-${name}-`));
   const installed = allHooks().length;
   try {
-    const store = new Store(dir);
-    const bus = new Bus();
-    const captured: string[] = [];
-    const errors = { capture: (_s: string, e: unknown) => { captured.push(String((e as Error).message)); return { message: "" }; } } as any;
-    const asked: { at: number; messages: string }[] = [];
-    const info = { id: "p:m", provider: "p", model: "m", name: "M", family: "other", context: 100_000, output: 1_000, efforts: [], billing: "per_token" };
-    const provider = {
-      id: "p", wire: "anthropic_messages", available: () => true, list: async () => [],
-      stream: async (req: any) => {
-        asked.push({ at: performance.now(), messages: JSON.stringify(req.messages) });
-        const said = JSON.stringify(req.messages.at(-1)).includes("first") ? "Following fact-a here." : "ok";
-        return { blocks: [{ type: "text", text: said }], usage: { input: 1, output: 1, cache_read: 0, cache_write: 0 }, stop: "end_turn", model: "m" };
-      },
-    };
-    const providers = { resolve: async () => ({ provider, info }), models: async () => [info], current: () => [info] } as any;
-    const engine = new Engine(store, bus, providers, errors, join(dir, "spill"));
-    const tacit = new Tacit(store, bus, errors, bin);
-    tacit.install();
-    const s = store.createSession({ model: "p:m", workspace: dir });
-    const say = async (text: string, meta?: Record<string, unknown>) => {
-      const t0 = performance.now();
-      engine.send(s.id, text, { meta });
-      await engine.idle(s.id);
-      return asked.at(-1)!.at - t0;
-    };
-    const notes = () => store.events(s.id).filter((e) => e.kind === "note" && e.data.memory).map((e) => String(e.data.text));
-    const told = () => store.events(s.id).filter((e) => e.kind === "note" && e.data.kind === "memory_out");
-    const calls = () => readFileSync(join(dir, "calls"), "utf8").trim().split("\n").filter((c) => c === "prompt").length;
-    // Waits on what the store did, never on the clock alone.
-    const until = async (what: () => boolean) => { for (let i = 0; i < 400 && !what(); i++) await Bun.sleep(25); expect(what()).toBe(true); };
-
-    await say("first alpha");
-    await say("second beta");
-    // The second prompt got the new fact; the one the context holds was not added again.
-    expect(notes().length).toBe(2);
-    expect(notes()[1]).toContain("fact-b");
-    expect(notes()[1]).not.toContain("fact-a");
-    // The request carries each fact once, and the first note's bytes are where they were.
-    expect(asked.at(-1)!.messages.split("fact-a: Always").length - 1).toBe(1);
-    // A report is not a request: the store is not asked, nothing is added.
-    await say("<agent_report>the beta work is done</agent_report>", { kind: "subagent", agent_id: "a" });
-    expect(calls()).toBe(2);
-    expect(notes().length).toBe(2);
-
-    // The store stops answering: the turn waits the hook's deadline once and is told once.
-    writeFileSync(join(dir, "mode"), "slow");
-    const waited = await say("third");
-    expect(waited).toBeGreaterThan(2_000);
-    expect(waited).toBeLessThan(4_000);
-    expect(told().length).toBe(1);
-    expect(told()[0]!.data.model).toBeUndefined(); // a line for the owner, not sent to the model
-    expect(asked.at(-1)!.messages).not.toContain("Memory did not answer");
-    // The next prompt does not wait for it, and says nothing more.
-    expect(await say("fourth")).toBeLessThan(1_000);
-    expect(told().length).toBe(1);
-    expect(captured.filter((m) => m.includes("memory store"))).toHaveLength(1);
-    await until(() => calls() === 4); // its call started while the store was not answering
-
-    // It answers again: the prompt that found out did not wait, and its block joins the next one.
-    writeFileSync(join(dir, "mode"), "ok");
-    const hits = tacit.stats().hooks.prompt.outcomes.hit;
-    expect(await say("fifth gamma")).toBeLessThan(1_000);
-    expect(notes().length).toBe(2);
-    await until(() => tacit.stats().hooks.prompt.outcomes.hit === hits + 1);
-    await say("sixth");
-    expect(notes().length).toBe(3);
-    expect(notes()[2]).toContain("fact-c");
-    expect(notes()[2]).not.toContain("fact-a");
-    expect(store.events(s.id).filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).toEqual(Array(7).fill("end_turn"));
-
-    // The measurements, without content: what was asked, added, left out, used and waited for.
-    const { memoryMeter } = await import("./memory-meter.ts");
-    const report = memoryMeter(store).report({ session: s.id });
-    const prompt = report.paths.find((p) => p.path === "store_prompt")!;
-    // Seven inputs, one row each: three added (the late one among them, written
-    // over its own row), the report not asked, the last one all held already.
-    expect(prompt).toMatchObject({ asked: 7, recalls: 3, skipped: 1, facts: 3, facts_checked: 3, used: 1, recalls_used: 1 });
-    expect(prompt.timeouts + prompt.late).toBe(2); // "fourth" is late until its call is given up
-    expect(prompt.repeats).toBe(3); // fact-a: with the second prompt, with the late block, with the last prompt
-    expect(prompt.wait_ms).toBeGreaterThan(2_000);
-    expect(JSON.stringify(report)).not.toContain("fact-");
+    const st = standIn(dir);
+    await run(memoryWorld(dir, st.bin), st, dir);
   } finally {
     allHooks().length = installed;
     rmSync(dir, { recursive: true, force: true });
   }
-}, 20_000);
+}
+
+test("memory across prompts: nothing twice; a report and a wait's wake do not ask; a loop run and a goal's start do", () => inWorld("asks", async (w, st) => {
+  const s = w.session();
+  await w.say(s, "first kw1");
+  await w.say(s, "second kw1 kw2");
+  // The fact the context holds is there once; the new one came.
+  expect(w.names(w.last(s))).toEqual(["start-rule", "fact-kw1", "fact-kw2"]);
+  expect(w.copies(s, "fact-kw1")).toBe(1);
+  expect(st.calls("session-start").map((l) => l.split(" ")[2])).toEqual(["startup"]);
+  const prompts = () => st.calls("prompt").length;
+  // Deliveries: the store is not asked, so it marks nothing as given.
+  for (const [text, meta] of [["<agent_report>the kw3 work is done</agent_report>", { kind: "subagent", agent_id: "a" }], ["<wait_fired>kw4</wait_fired>", { kind: "wait" }], ["[harness] The goal is not met yet: kw5", { kind: "goal", goal: "continue" }]] as const) {
+    const before = prompts();
+    await w.say(s, text, meta);
+    expect(prompts()).toBe(before);
+  }
+  // Requests that are not typed: asked, and their facts are in the turn.
+  for (const [text, meta, name] of [["Check the kw6 queue", { kind: "loop", loop_name: "x" }, "fact-kw6"], ["Make kw7 pass", { kind: "goal", goal: "start" }, "fact-kw7"], ["Verify kw8", { kind: "verify_goal" }, "fact-kw8"],
+    ["report kw9\n\nsteer kw10", { kind: "wake", parts: [{ kind: "subagent" }, { kind: "steer" }] }, "fact-kw10"]] as const) {
+    await w.say(s, text, meta);
+    expect(w.names(w.last(s))).toContain(name);
+  }
+  const { memoryMeter } = await import("./memory-meter.ts");
+  const report = memoryMeter(w.store).report({ session: s });
+  const prompt = report.paths.find((p) => p.path === "store_prompt")!;
+  expect(prompt).toMatchObject({ asked: 9, recalls: 6, skipped: 3, timeouts: 0 });
+  expect(JSON.stringify(report)).not.toContain("kw");
+}), 30_000);
+
+// The reviewer's probe: one turn whose prompt brings more than a block holds
+// and whose 40 tool calls each bring one new fact. Every fact the store gave
+// is in the model's context by the end of the turn; with one step only, by
+// the next prompt, after a restart too.
+test("a fact the store gave is never dropped for size: what a block cannot hold is owed and follows", () => inWorld("owed", async (w, st) => {
+  st.set("len", 400);
+  const s = w.session();
+  const facts = seq(100, 140).map((k) => `fact-kw${k}`); // 41 facts of 400 characters: more than one block
+  const rules = seq(1, 40).map((k) => `rule-kw${k}`);
+  await w.say(s, `work ${seq(100, 140).map((k) => `kw${k}`).join(" ")} tools=${seq(1, 40).join(",")}`);
+  const first = w.asked.find((r) => r.session === s)!.messages;
+  // The first request holds what one block holds, and says more follows.
+  expect(w.names(first).length).toBeLessThan(41);
+  expect(first).toMatch(/\[\d+ more lines follow with the next step: this block is full\]/);
+  const end = w.names(w.last(s));
+  for (const name of [...facts, ...rules]) expect(end).toContain(name);
+  for (const name of [...facts, ...rules]) expect(w.copies(s, name)).toBe(1);
+  expect(w.tacit.owed(s)).toBe(0);
+  // No block is over the cap.
+  for (const m of w.last(s).matchAll(/<memory source=\\"tacit\\"[\s\S]*?<\/memory>/g)) expect(JSON.parse(`"${m[0]}"`).length).toBeLessThanOrEqual(MEMORY_CAP);
+
+  // A turn of one step: what did not fit stays owed, in the state, through a restart.
+  const one = w.session();
+  await w.say(one, `only ${seq(200, 240).map((k) => `kw${k}`).join(" ")}`);
+  const owed = w.tacit.owed(one);
+  expect(owed).toBeGreaterThan(0);
+  expect(w.names(w.last(one)).length).toBeLessThan(42);
+  // A new daemon reads the same state.
+  const again = new Tacit(w.store, w.bus, { capture: () => ({ message: "" }) } as any, st.bin);
+  expect(again.owed(one)).toBe(owed);
+  await w.say(one, "and then?");
+  const after = w.names(w.last(one));
+  for (const k of seq(200, 240)) expect(after).toContain(`fact-kw${k}`);
+  expect(w.tacit.owed(one)).toBe(0);
+}), 60_000);
+
+// A store that answers prompts and never answers tool calls (the reviewer's
+// probe): only tool results stop waiting for it, and only once is it said.
+test("a tool hook that hangs stops the waiting for tool hooks only; a probe of its own ends the outage", () => inWorld("kinds", async (w, st) => {
+  const a = w.session(), b = w.session();
+  st.set("mode", "slowtool");
+  const t0 = performance.now();
+  await w.say(a, "A1 kw1 tools=50");
+  // The prompt's fact came in its turn; the tool's result waited the tool hook's deadline once.
+  expect(w.names(w.last(a))).toContain("fact-kw1");
+  expect(performance.now() - t0).toBeGreaterThan(800);
+  expect(w.told(a)).toBe(1);
+  expect(w.tacit.stats().out).toEqual({ ask: false, tool: true });
+  // Another session's prompt is waited for as ever, and gets its fact in the turn.
+  await w.say(b, "B1 kw2");
+  expect(w.names(w.last(b))).toContain("fact-kw2");
+  expect(w.told(b)).toBe(0);
+  // More turns with tool calls: no wait for the tool hook, prompts in their turn, no second note.
+  for (const k of [3, 4, 5]) {
+    const t = performance.now();
+    await w.say(a, `A kw${k} tools=${50 + k}`);
+    expect(performance.now() - t).toBeLessThan(800);
+    expect(w.names(w.last(a))).toContain(`fact-kw${k}`);
+  }
+  expect(w.told(a)).toBe(1);
+  expect(w.captured.filter((m) => m.includes("memory store"))).toHaveLength(1);
+  // The store answers tool calls again: the probe finds out, with no prompt spent on it.
+  st.set("mode", "ok");
+  await until(() => !w.tacit.stats().out.tool);
+  await w.say(a, "A kw6 tools=60");
+  expect(w.names(w.last(a))).toEqual(expect.arrayContaining(["fact-kw6", "rule-kw60"]));
+  expect(w.told(a)).toBe(1);
+  expect(w.tacit.stats().processes.probes).toBeGreaterThan(0);
+}), 60_000);
+
+test("a store that hangs: the deadline once, said once, no wait after; a probe of its own ends it", () => inWorld("hang", async (w, st) => {
+  const s = w.session();
+  await w.say(s, "first kw1");
+  st.set("mode", "slow");
+  const waited = await w.say(s, "third kw3");
+  expect(waited).toBeGreaterThan(2_000);
+  expect(waited).toBeLessThan(4_000);
+  const notes = () => w.store.events(s).filter((e) => e.kind === "note" && e.data.kind === "memory_out");
+  expect(notes()).toHaveLength(1);
+  expect(notes()[0]!.data.model).toBeUndefined(); // a line for the owner, not sent to the model
+  expect(w.last(s)).not.toContain("Memory did not answer");
+  // The next prompts do not wait; the session's calls go out one at a time;
+  // one line in the session, though both its prompts and its tool calls hang.
+  for (const k of [4, 5, 6]) expect(await w.say(s, `more kw${k} tools=${k}`)).toBeLessThan(1_000);
+  expect(notes()).toHaveLength(1);
+  expect(w.captured.filter((m) => m.includes("did not answer in time: turns"))).toHaveLength(1);
+  const p = w.tacit.stats().processes;
+  expect(p.not_started).toBeGreaterThan(0);
+  expect(p.max).toBeLessThanOrEqual(p.limit);
+  expect(w.tacit.stats().out).toEqual({ ask: true, tool: true });
+  // It answers again: the probe finds out, with no prompt spent on it.
+  st.set("mode", "ok");
+  await until(() => !w.tacit.stats().out.ask, 30_000);
+  expect(w.tacit.stats().processes.probes).toBeGreaterThan(0);
+  // So the next prompt is waited for and gets its fact in its own turn.
+  await w.say(s, "back kw7");
+  expect(w.names(w.last(s))).toContain("fact-kw7");
+  expect(w.store.events(s).filter((e) => e.kind === "turn_end").every((e) => e.data.reason === "end_turn")).toBe(true);
+}), 90_000);
+
+test("a call the turn did not wait for: its answer is kept in the state and joins the next request, after a restart too", () => inWorld("late", async (w, st) => {
+  const s = w.session();
+  await w.say(s, "first kw1");
+  // One hung call counts the store out; its probe starts while it still hangs.
+  st.set("mode", "slow");
+  await w.say(s, "hung kw2");
+  await until(() => st.calls("prompt").some((l) => l.includes("keel-probe")));
+  st.set("mode", "ok");
+  expect(w.tacit.stats().out.ask).toBe(true);
+  // This prompt's call is made and not waited for: its fact is not in its (one step) turn.
+  expect(await w.say(s, "late kw3")).toBeLessThan(1_000);
+  expect(w.names(w.last(s))).not.toContain("fact-kw3");
+  // The store answered and marked the fact as given: it is owed, in the state.
+  await until(() => w.tacit.owed(s) > 0);
+  expect(w.tacit.stats().out.ask).toBe(false); // an answer in time ends the outage too
+  // A restart: a new instance on the same state still owes it.
+  expect(new Tacit(w.store, w.bus, { capture: () => ({ message: "" }) } as any, st.bin).owed(s)).toBe(w.tacit.owed(s));
+  await w.say(s, "next kw4 tools=9");
+  expect(w.names(w.last(s))).toEqual(expect.arrayContaining(["fact-kw3", "fact-kw4", "rule-kw9"]));
+  expect(w.copies(s, "fact-kw3")).toBe(1);
+  expect(w.tacit.owed(s)).toBe(0);
+}), 60_000);
+
+test("a session's first prompt waits for the start block up to the start hook's own deadline", () => inWorld("start", async (w, st) => {
+  st.set("mode", "slowstart");
+  const s = w.session();
+  // An agent's task, sent at once: the standing rules are in its first request.
+  const waited = await w.say(s, "the task: kw1", { kind: "task", agent_id: "x" });
+  expect(waited).toBeGreaterThan(2_300);
+  expect(waited).toBeLessThan(START_WAIT_MS);
+  expect(w.names(w.asked.find((r) => r.session === s)!.messages)).toEqual(["start-rule", "fact-kw1"]);
+  expect(w.told(s)).toBe(0);
+}), 30_000);
+
+test("after a summary or a clear the store is told, and what it gave before comes again", () => inWorld("checkpoint", async (w, st) => {
+  for (const how of ["summary", "clear"] as const) {
+    const s = w.session();
+    await w.say(s, "about kw1 please");
+    await w.say(s, "kw1 once more");
+    expect(w.copies(s, "fact-kw1")).toBe(1);
+    if (how === "summary") await w.engine.compactNow(s, { trigger: "owner" });
+    else w.engine.clear(s);
+    await w.say(s, "and kw1 after it");
+    // The context was replaced: the fact and the standing rules are in it again, once.
+    expect(w.copies(s, "fact-kw1")).toBe(1);
+    expect(w.copies(s, "start-rule")).toBe(1);
+    expect(st.calls("session-start").filter((l) => l.includes(s)).map((l) => l.split(" ")[2])).toEqual(["startup", how === "summary" ? "compact" : "clear"]);
+    // Told once per checkpoint, not with every prompt.
+    await w.say(s, "kw1 again");
+    expect(st.calls("session-start").filter((l) => l.includes(s))).toHaveLength(2);
+    expect(w.copies(s, "fact-kw1")).toBe(1);
+  }
+}), 30_000);
+
+test("a deleted session's transcript file goes with it, and one left behind is removed at the next start", () => inWorld("files", async (w, st, dir) => {
+  const a = w.session(), b = w.session();
+  await w.say(a, "one kw1");
+  await w.say(b, "two kw2");
+  const file = (id: string) => join(dir, "transcripts", `${id}.jsonl`);
+  expect(existsSync(file(a)) && existsSync(file(b))).toBe(true);
+  w.store.deleteSession(a); // any path that deletes: the store drops it everywhere
+  expect(existsSync(file(a))).toBe(false);
+  expect(existsSync(file(b))).toBe(true);
+  // Left by a deletion while no daemon ran: gone when the next one starts.
+  writeFileSync(file("01aaaaaa-0000-7000-8000-000000000000"), "{}\n");
+  const fresh = new Tacit(w.store, w.bus, { capture: () => ({ message: "" }) } as any, st.bin);
+  const hooks = allHooks().length;
+  fresh.install();
+  allHooks().length = hooks;
+  expect(readdirSync(join(dir, "transcripts"))).toEqual([`${b}.jsonl`]);
+}), 30_000);

@@ -3,28 +3,40 @@ import { expect, test } from "bun:test";
 import { asksMemory, factOf, usedBy } from "./memory-meter.ts";
 import { fitMemory, memoryBlock, shownLines } from "./tacit.ts";
 
-test("a block adds the lines the context lacks, whole, within the room, first ones kept", () => {
+test("a block adds the lines the context lacks, whole, within its cap; what does not fit is owed, never dropped", () => {
   const block = "# store: facts matching this request\n- alpha-rule: Keep the first thing\n- beta-rule: Keep the second thing\n- gamma-rule: Keep the third thing\nOpen one with its name.";
   const all = fitMemory(block, new Set(), 10_000);
-  expect(all).toMatchObject({ text: block, repeats: 0, cut: 0 });
+  expect(all).toMatchObject({ text: block, repeats: 0, owed: [] });
   expect(all.lines).toEqual(["- alpha-rule: Keep the first thing", "- beta-rule: Keep the second thing", "- gamma-rule: Keep the third thing"]);
   // A line the context holds is left out; the title and the closing line stay with the rest.
   const some = fitMemory(block, new Set(["- beta-rule: Keep the second thing"]), 10_000);
-  expect(some).toMatchObject({ repeats: 1, cut: 0, lines: ["- alpha-rule: Keep the first thing", "- gamma-rule: Keep the third thing"] });
+  expect(some).toMatchObject({ repeats: 1, owed: [], lines: ["- alpha-rule: Keep the first thing", "- gamma-rule: Keep the third thing"] });
   expect(some.text).not.toContain("beta-rule");
   expect(some.text).toContain("Open one with its name.");
-  // Everything held already: no block at all.
-  expect(fitMemory(block, new Set(all.lines), 10_000)).toEqual({ text: null, lines: [], repeats: 3, cut: 0 });
-  // Room for the title, one fact and the line that says the rest was left out
-  // (two facts fit without that line, and it counts): the first fact whole.
-  const tight = fitMemory(block, new Set(), 130);
-  expect(tight).toMatchObject({ lines: ["- alpha-rule: Keep the first thing"], cut: 2 });
-  expect(tight.text).toBe("# store: facts matching this request\n- alpha-rule: Keep the first thing\n[2 more left out: over this turn's memory budget]");
-  expect(tight.text!.length).toBeLessThanOrEqual(130);
-  // No room for a fact with that line: nothing, never half a line.
-  for (const room of [40, 80]) expect(fitMemory(block, new Set(), room)).toMatchObject({ text: null, cut: 3 });
-  // A block that is one long text keeps its start.
-  expect(fitMemory("x".repeat(500), new Set(), 100).text).toBe("x".repeat(100));
+  // Everything held already: no block, and nothing owed (it is in the context).
+  expect(fitMemory(block, new Set(all.lines), 10_000)).toEqual({ text: null, lines: [], repeats: 3, owed: [] });
+  // Room for the title, one fact and the line that says more follow: the
+  // first fact whole, and the rest owed in the store's order.
+  const tight = fitMemory(block, new Set(), 150);
+  expect(tight.lines).toEqual(["- alpha-rule: Keep the first thing"]);
+  expect(tight.owed).toEqual(["- beta-rule: Keep the second thing", "- gamma-rule: Keep the third thing", "Open one with its name."]);
+  expect(tight.text).toBe("# store: facts matching this request\n- alpha-rule: Keep the first thing\n[3 more lines follow with the next step: this block is full]");
+  expect(tight.text!.length).toBeLessThanOrEqual(150);
+  // Every line is in the block or owed, whatever the room: nothing is lost.
+  for (const room of [110, 150, 200, 10_000]) {
+    const f = fitMemory(block, new Set(), room);
+    expect([...f.lines, ...f.owed.filter((l) => l.startsWith("- "))]).toEqual(all.lines);
+    expect(f.lines.length).toBeGreaterThan(0); // what is owed always shrinks
+  }
+  // What is owed, offered again, goes on where the block stopped.
+  const next = fitMemory(tight.owed.join("\n"), new Set(tight.lines), 10_000);
+  expect(next).toMatchObject({ lines: ["- beta-rule: Keep the second thing", "- gamma-rule: Keep the third thing"], owed: [] });
+  // One line longer than a block: its start, and a line that says it was cut.
+  const long = fitMemory(`- huge: ${"x".repeat(500)}\n- small: fits`, new Set(), 200);
+  expect(long.text).toContain("[the line above is cut: it is longer than a block]");
+  expect(long.text!.length).toBeLessThanOrEqual(200);
+  expect(long.owed).toEqual(["- small: fits"]);
+  expect(fitMemory("x".repeat(500), new Set(), 100).text!.startsWith("xxxxxxxx")).toBe(true);
 });
 
 test("the lines a context holds are read from its memory blocks only", () => {
@@ -34,9 +46,21 @@ test("the lines a context holds are read from its memory blocks only", () => {
   expect(shownLines("- a list in a file: nothing from memory")).toEqual([]);
 });
 
-test("the store is asked about requests, not about what the harness delivers", () => {
-  for (const d of [{}, { origin: "steer" }, { origin: "queued" }, { origin: "voice" }, { kind: "task" }, { kind: "peer" }, { origin: "momentum" }, { kind: "review" }]) expect(asksMemory(d)).toBe(true);
-  for (const d of [{ kind: "subagent" }, { kind: "wait" }, { kind: "wake" }, { kind: "loop" }, { kind: "goal" }, { kind: "failures" }, { kind: "helper_digest" }, { kind: "harness" }, { origin: "harness" }, { origin: "restart" }]) expect(asksMemory(d)).toBe(false);
+test("the store is asked about what asks for work, not about what the harness delivers", () => {
+  const asks = [
+    {}, { origin: "steer" }, { origin: "queued" }, { origin: "voice" }, { origin: "cli" }, { origin: "momentum" }, { origin: "hook" },
+    { kind: "task" }, { kind: "task_start" }, { kind: "steer" }, { kind: "peer" }, { kind: "review" }, { kind: "review_fix" }, { kind: "verify_goal" },
+    // A loop's run is the owner's standing prompt; a goal's start and resume carry the objective.
+    { kind: "loop", loop_name: "x" }, { kind: "goal", goal: "start" }, { kind: "goal", goal: "resume" },
+    // Several deliveries in one input: any part that asks.
+    { kind: "wake", parts: [{ kind: "subagent" }, { kind: "steer" }] }, { kind: "wake", parts: [{ kind: "wait" }, { kind: "loop" }] },
+  ];
+  const delivered = [
+    { kind: "subagent" }, { kind: "wait" }, { kind: "goal", goal: "continue" }, { kind: "failures" }, { kind: "helper_digest" }, { kind: "harness" },
+    { origin: "harness" }, { origin: "restart" }, { kind: "wake", parts: [{ kind: "subagent" }, { kind: "wait" }] }, { kind: "wake" },
+  ];
+  for (const d of asks) expect([d, asksMemory(d)]).toEqual([d, true]);
+  for (const d of delivered) expect([d, asksMemory(d)]).toEqual([d, false]);
 });
 
 test("a fact counts as used when the output names it or repeats three of its words in a row", () => {

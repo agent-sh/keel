@@ -7,8 +7,8 @@ import { shoot } from "./shots.ts";
 // and the time it took. A fact the context already holds is not added a second
 // time, so a second prompt that gets the same fact shows no memory chip.
 // A store that does not answer in time does not hold a turn past the hook's
-// deadline: the session says so once, later turns do not wait for it, and
-// the panel counts it.
+// deadline: the session says so once, a probe that asks nothing finds it
+// answering again, and the panel counts it.
 // The daemon runs with TACIT_BIN at test/e2e/fixtures/tacit-standin.sh (the same
 // fact for every prompt, a rule for every shell command, no answer to a prompt
 // holding standin:slow) and the scripted provider (`script:memory` replies
@@ -66,6 +66,8 @@ test("memory usage: tokens added, recalls used, nothing added twice, shown in Se
   for (const label of ["Memory store, session start", "Memory store, with a prompt", "Memory store, with a tool call", "All memory"]) await expect(panel).toContainText(label);
   const row = panel.locator("tbody tr").filter({ hasText: "with a prompt" });
   await expect(row).toContainText(/\d+ of \d+/);
+  await expect(panel.locator("thead")).toContainText("Named in reply (estimate)");
+  await expect(panel.getByTestId("memory-notes")).toContainText("It reads low");
   await expect(panel.getByTestId("memory-notes")).toContainText("not added again");
   await panel.scrollIntoViewIfNeeded();
   await shoot(page, "memory-usage-02-panel");
@@ -81,7 +83,7 @@ test("memory usage: tokens added, recalls used, nothing added twice, shown in Se
   const held = await prompts();
   expect(held).toMatchObject({ asked: 4, timeouts: 1 });
   expect(held.wait_max_ms).toBeGreaterThan(2_000);
-  // The next prompt does not wait for it (its answer, in time again, ends the outage) and is not told again.
+  // The next prompt costs no second deadline (the probe found the store answering) and is not told again.
   await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "script:memory Back again?" } });
   await ended(request, session.id, 5);
   expect(await out()).toHaveLength(1);
