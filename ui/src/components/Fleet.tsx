@@ -3,6 +3,7 @@
 import { Popover } from "@base-ui/react/popover";
 import { ArrowRight, Check, ChevronDown, ChevronLeft, CloudOff, Cpu, Folder, FolderGit2, History, RefreshCw, Server, Wand2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import type { Session } from "../../../src/core/types.ts";
 import { splitId } from "../lib/fleet-ids.ts";
 import { fleet, machineName, setNewMachine, useFleet, type RemoteDirs } from "../lib/fleet.ts";
@@ -56,7 +57,11 @@ export function MachineChip({ session }: { session: Session }) {
   useEffect(() => {
     if (lives) return;
     api<{ handoff: Handoff | null }>(`/api/sessions/${session.id}/handoff`).then((r) => setH(r.handoff)).catch(reportError);
-    return onFeature({ frame: (f) => { if (f.name === "handoff_progress" && f.session_id === session.id) setH(f.data); } });
+    // A move's frames come milliseconds apart, with the session's own frame between them, and each
+    // resizes the chip or the popup under it. The frame is rendered as it arrives: a state update
+    // left pending here is flushed by the popup's positioner inside its ResizeObserver callback,
+    // which resizes what the browser is in the middle of reporting ("ResizeObserver loop" notices).
+    return onFeature({ frame: (f) => { if (f.name === "handoff_progress" && f.session_id === session.id) flushSync(() => setH(f.data)); } });
   }, [session.id, lives]);
   if (!id && !others.length) return null;
   const name = id ? machineName(id) : machines.find((m) => m.source === "local")?.name ?? "this machine";
