@@ -27,9 +27,18 @@ setAttachmentsRoot(dir);
 const mobile = new MobileStore(store);
 const running = new Set<string>();
 const sent: any[] = [];
+// The engine's send, as far as the phone API sees it: a prompt starts a turn,
+// joins a running one (steer) or waits in the queue.
+let sendBreaks = false;
 const engine = {
   isRunning: (id: string) => running.has(id),
-  send: (id: string, text: string, opts: any) => { sent.push({ id, text, opts }); return { event: store.append(id, "user", { text, images: opts.images?.length ? opts.images : undefined }) }; },
+  send: (id: string, text: string, opts: any) => {
+    sent.push({ id, text, opts });
+    const images = opts.images?.length ? opts.images : undefined;
+    const r = running.has(id) || opts.mode === "queue" ? (() => { const q = store.enqueue(id, text, opts.mode !== "queue", images); return { queued: q, steer: q.steer }; })() : { event: store.append(id, "user", { text, images }) };
+    if (sendBreaks) throw new Error("the daemon stopped here");
+    return r;
+  },
   interrupt: async () => {},
 };
 const providers = { models: async () => [], marked: (m: any) => m, defaultModel: async () => "fx:default", resolve: async () => ({}) };
@@ -242,6 +251,60 @@ describe("chats", () => {
     const img: Response = await routes["/v1/media/:id"].GET(Object.assign(signedRaw("GET", `/v1/media/${shown.media}`, new Uint8Array()), { params: { id: shown.media } }), {});
     expect(new Uint8Array(await img.arrayBuffer())).toEqual(png);
     expect(sent.map((x) => [x.text, x.opts.images?.[0]?.type, x.opts.images?.[0]?.data === Buffer.from(png).toString("base64")])).toEqual([["look", "image", true], ["", "image", true]]);
+  });
+});
+
+describe("sends", () => {
+  const prompts = (sid: string) => store.events(sid).filter((e) => e.kind === "user").length + store.queue(sid).length;
+
+  test("a send retried under its id gets the first receipt and stores one prompt, in every mode", async () => {
+    for (const mode of ["send", "steer", "queue"]) {
+      const s = session();
+      if (mode === "steer") running.add(s.id);
+      sent.length = 0;
+      const first = await call("POST", `/v1/chats/${s.id}/messages`, { text: "ship it", mode, client_id: `c-${mode}` });
+      expect(first.status).toBe(200);
+      expect(first.body.message.kind).toBe(mode === "send" ? "text" : mode === "steer" ? "steer" : "queued");
+      // The answer never arrived. By the retry the turn runs, so the app asks to steer.
+      running.add(s.id);
+      const again = await call("POST", `/v1/chats/${s.id}/messages`, { text: "ship it", mode: "steer", client_id: `c-${mode}` });
+      expect([again.status, again.body.replayed]).toEqual([200, true]);
+      expect(again.body.message).toEqual(first.body.message);
+      expect([sent.length, prompts(s.id)]).toEqual([1, 1]);
+      // The same words on purpose, under ids of their own: two prompts more.
+      await call("POST", `/v1/chats/${s.id}/messages`, { text: "ship it", mode, client_id: `c-${mode}-2` });
+      await call("POST", `/v1/chats/${s.id}/messages`, { text: "ship it", mode });
+      expect([sent.length, prompts(s.id)]).toEqual([3, 3]);
+      // Other words under a used id are refused, not taken for the first send.
+      expect((await call("POST", `/v1/chats/${s.id}/messages`, { text: "something else", client_id: `c-${mode}` })).status).toBe(409);
+      expect(sent.length).toBe(3);
+      running.delete(s.id);
+    }
+  });
+
+  test("a retry after the queue moved says what the prompt became", async () => {
+    const s = session();
+    sent.length = 0;
+    const send = (id: string) => call("POST", `/v1/chats/${s.id}/messages`, { text: `later ${id}`, mode: "queue", client_id: id });
+    const a = (await send("q-a")).body.message, b = (await send("q-b")).body.message;
+    // The queue ran the first: its prompt is in the history under the receipt's id.
+    store.dequeue(a.id);
+    store.append(s.id, "user", { text: "later q-a", origin: "queued", queue_id: a.id });
+    expect((await send("q-a")).body.message).toMatchObject({ id: a.id, kind: "text", content: "later q-a" });
+    // The owner took the second off the queue on the desktop.
+    store.dequeue(b.id);
+    expect((await send("q-b")).body.message).toMatchObject({ id: b.id, kind: "deleted" });
+    expect(sent.length).toBe(2);
+  });
+
+  test("a send that fails part way leaves no prompt and no receipt; the retry stores it once", async () => {
+    const s = session();
+    sendBreaks = true;
+    await expect(call("POST", `/v1/chats/${s.id}/messages`, { text: "once", client_id: "c-broken" })).rejects.toThrow("the daemon stopped here");
+    sendBreaks = false;
+    expect(prompts(s.id)).toBe(0);
+    const r = await call("POST", `/v1/chats/${s.id}/messages`, { text: "once", client_id: "c-broken" });
+    expect([r.status, r.body.replayed, prompts(s.id)]).toEqual([200, undefined, 1]);
   });
 });
 

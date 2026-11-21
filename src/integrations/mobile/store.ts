@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS pushes (
   id TEXT PRIMARY KEY, device_id TEXT NOT NULL, kind TEXT NOT NULL, session_id TEXT, sent_ms INTEGER NOT NULL,
   ok INTEGER NOT NULL, error TEXT, acked_ms INTEGER);
 CREATE INDEX IF NOT EXISTS pushes_device ON pushes(device_id, sent_ms);
+CREATE TABLE IF NOT EXISTS mobile_sends (
+  device_id TEXT NOT NULL, client_id TEXT NOT NULL, session_id TEXT NOT NULL, fingerprint TEXT NOT NULL,
+  event_id TEXT, queue_id TEXT, receipt TEXT NOT NULL, created_ms INTEGER NOT NULL, PRIMARY KEY (device_id, client_id));
 CREATE TABLE IF NOT EXISTS event_gseq (gseq INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT UNIQUE NOT NULL);
 CREATE TRIGGER IF NOT EXISTS event_gseq_ins AFTER INSERT ON events BEGIN INSERT INTO event_gseq (event_id) VALUES (new.id); END;
 CREATE TRIGGER IF NOT EXISTS event_gseq_del AFTER DELETE ON events BEGIN DELETE FROM event_gseq WHERE event_id = old.id; END;
@@ -30,6 +33,9 @@ export type PushRecord = {
   id: string; device_id: string; kind: string; session_id?: string | null; sent_ms: number; ok: boolean; error?: string | null; acked_ms?: number | null;
   token_hash?: string | null;
 };
+
+// A prompt a phone sent under an id of its own making, and what it was told.
+export type SendRecord = { session_id: string; fingerprint: string; event_id: string | null; queue_id: string | null; receipt: string };
 
 const nowSecs = () => Date.now() / 1000;
 export const hostOf = (u?: string | null) => { try { return u ? new URL(u).host : null; } catch { return null; } };
@@ -159,6 +165,21 @@ export class MobileStore implements ReplayStore {
       this.db.query("DELETE FROM signature_replays WHERE expires_secs < ?").run(now);
       return this.db.query("INSERT OR IGNORE INTO signature_replays (identity, expires_secs) VALUES (?, ?)").run(identity, expiresSecs).changes === 1;
     }).immediate();
+  }
+
+  // --- sends ------------------------------------------------------------------
+
+  // What a phone was told for a prompt it sent under `clientId`, if it sent one.
+  sendOf(deviceId: string, clientId: string): SendRecord | undefined {
+    return this.db.query<SendRecord, [string, string]>("SELECT session_id, fingerprint, event_id, queue_id, receipt FROM mobile_sends WHERE device_id = ? AND client_id = ?").get(deviceId, clientId) ?? undefined;
+  }
+  // Written in the transaction that stores the prompt (the caller's), so a
+  // prompt and its receipt are there together or not at all. A phone that
+  // kept a send retries it when it is next opened: a month covers that.
+  recordSend(deviceId: string, clientId: string, r: SendRecord) {
+    this.db.query("INSERT INTO mobile_sends (device_id, client_id, session_id, fingerprint, event_id, queue_id, receipt, created_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(deviceId, clientId, r.session_id, r.fingerprint, r.event_id, r.queue_id, r.receipt, Date.now());
+    this.db.query("DELETE FROM mobile_sends WHERE created_ms < ?").run(Date.now() - 30 * 86_400_000);
   }
 
   // --- push ------------------------------------------------------------------

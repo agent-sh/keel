@@ -42,6 +42,18 @@ object Wire {
         return b.append('"').toString()
     }
 
+    /**
+     * The id a send goes under. The composer keeps it with the words until the
+     * daemon answers, so the same words sent again after a lost answer are the
+     * same send (the daemon stores them once); other words are a new send.
+     */
+    fun sendId(keptId: String, keptText: String, text: String, fresh: () -> String = { java.util.UUID.randomUUID().toString() }): String =
+        if (keptId.isNotEmpty() && keptText == text) keptId else fresh()
+
+    /** A prompt as the daemon takes it (POST /v1/chats/:id/messages). mode: send, steer or queue. */
+    fun sendBody(text: String, mode: String, clientId: String): JSONObject =
+        JSONObject().put("text", text).put("mode", mode).put("client_id", clientId)
+
     data class PairLink(val base: String, val code: String, val name: String)
 
     /**

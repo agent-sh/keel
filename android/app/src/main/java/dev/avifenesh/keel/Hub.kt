@@ -186,9 +186,9 @@ object Hub {
         older.update { it + (chat to o.str("older").takeIf { s -> s.isNotBlank() }) }
     }
 
-    /** mode: send, steer or queue. */
-    suspend fun send(chat: String, text: String, mode: String) {
-        val o = Api.post("/v1/chats/${Uri.encode(chat)}/messages", JSONObject().put("text", text).put("mode", mode))
+    /** mode: send, steer or queue. clientId names the send: a retry under it stores no second prompt. */
+    suspend fun send(chat: String, text: String, mode: String, clientId: String) {
+        val o = Api.post("/v1/chats/${Uri.encode(chat)}/messages", Wire.sendBody(text, mode, clientId))
         o.optJSONObject("message")?.let { mergeMsgs(listOf(Msg.of(it))) }
     }
 

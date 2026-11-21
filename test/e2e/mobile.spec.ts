@@ -1,8 +1,8 @@
-import { expect, test, type APIRequestContext } from "./isolate.ts";
-import { createHash, generateKeyPairSync, sign, type KeyObject } from "node:crypto";
+import { expect, test } from "./isolate.ts";
 import { existsSync, mkdirSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
+import { key, Phone, sig } from "./fixtures/phone-app.ts";
 import { HAIKU, shoot } from "./shots.ts";
 
 // Feature: the phone. The workbench shows a one-time pairing QR; a simulated
@@ -17,30 +17,6 @@ import { HAIKU, shoot } from "./shots.ts";
 // The daemon runs with KEEL_FCM_URL=http://127.0.0.1:<FCM_PORT> and a
 // service-account file whose token_uri points at the same stand-in.
 const FCM_PORT = Number(process.env.KEEL_TEST_FCM_PORT ?? 47993);
-
-type Key = { priv: KeyObject; pub: string };
-const key = (): Key => {
-  const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
-  return { priv: privateKey, pub: publicKey.export({ type: "spki", format: "der" }).toString("base64") };
-};
-const sig = (k: Key, msg: string) => sign("sha256", Buffer.from(msg), { key: k.priv, dsaEncoding: "der" }).toString("base64");
-const sha = (b: string) => createHash("sha256").update(b).digest("hex");
-
-// The phone app's request signer: METHOD\npath?query\nts\nsha256(body).
-class Phone {
-  token = "";
-  id = "";
-  seq = 0;
-  constructor(private http: APIRequestContext, readonly req = key(), readonly apr = key()) {}
-  headers(method: string, path: string, body: string, ts = String(Math.floor(Date.now() / 1000))) {
-    return { authorization: `Bearer ${this.token}`, "x-hm-ts": ts, "x-hm-sig": sig(this.req, `${method}\n${path}\n${ts}\n${sha(body)}`), "content-type": "application/json" };
-  }
-  async call(method: "GET" | "POST" | "DELETE", path: string, data?: unknown, extra: Record<string, string> = {}) {
-    const body = data === undefined ? "" : JSON.stringify(data);
-    const headers = { ...this.headers(method, path, body), ...extra };
-    return this.http.fetch(path, { method, headers, data: body || undefined });
-  }
-}
 
 test("pair a phone, approve from it, push, revoke", async ({ page, request }) => {
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;

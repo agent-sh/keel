@@ -17,9 +17,9 @@ import { sessionState } from "../../automation/state.ts";
 import { lineage } from "../../core/tree.ts";
 import * as push from "./push.ts";
 import {
-  approvalMessage, canonicalMessage, checkAndClaim, loadSpki, PairLimiter, REPLAY_VERSION, requestSource, revokeMessage,
+  approvalMessage, canonicalMessage, checkAndClaim, loadSpki, PairLimiter, REPLAY_VERSION, requestSource, revokeMessage, sha256Hex,
 } from "./sig.ts";
-import type { Device, MobileStore } from "./store.ts";
+import type { Device, MobileStore, SendRecord } from "./store.ts";
 import { fitted } from "../../engine/image-fit.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -579,6 +579,20 @@ export function mobileApi(ctx: MobileCtx) {
 
   const chat = (sid: string) => store.session(sid);
 
+  // The receipt of a prompt already stored, as it stands now: the committed
+  // message, a queued prompt still waiting as it was first told, or the
+  // message a queued prompt became (the same id). One the owner took off the
+  // queue comes back as "deleted": the app drops its row.
+  function receiptNow(p: SendRecord) {
+    const told = JSON.parse(p.receipt);
+    const committed = (e?: StoredEvent | null) => (e ? toMsg(e, mobile.gseqOf(e.id)) : null);
+    if (p.event_id) return committed(store.event(p.event_id)) ?? told;
+    if (!p.queue_id || store.queueItem(p.queue_id)) return told;
+    const row = store.db.query<{ id: string }, [string, string]>("SELECT id FROM events WHERE session_id = ? AND kind = 'user' AND instr(data, ?) > 0 ORDER BY seq DESC LIMIT 1").get(p.session_id, JSON.stringify(p.queue_id));
+    const e = row ? store.event(row.id) : null;
+    return (e?.data.queue_id === p.queue_id ? committed(e) : null) ?? { ...told, kind: "deleted", content: "" };
+  }
+
   return {
     "/v1/health": { GET: () => json({ ok: true, name: host(), profile: "keel", api: 1, security: { signature_replay: REPLAY_VERSION }, degraded: [] }) },
     "/v1/pair": { POST: pair },
@@ -670,13 +684,27 @@ export function mobileApi(ctx: MobileCtx) {
         const page = chatMessages(s, new URL(req.url).searchParams);
         return page ? json(page) : err("that message is not on this chat's shown branch; reload the chat", 409);
       }),
+      // `client_id` names the send, made by the phone and kept with its draft
+      // until an answer arrives. The same id again (the answer was lost) gets
+      // the receipt of the prompt it already stored and stores nothing; the
+      // mode may differ by then (the first attempt started the turn). A send
+      // without one is a new prompt each time.
       POST: signed(withBody(async (req, dev, b) => {
         const text = String(b.text ?? b.caption ?? "").trim();
         // What the phone uploaded goes with the words, or nothing is sent.
         const refs: any[] = Array.isArray(b.attachments) ? b.attachments : [];
+        const ids = refs.map((r) => String(r?.id ?? r?.media ?? ""));
+        const clientId = typeof b.client_id === "string" ? b.client_id.trim().slice(0, 200) : "";
+        const fingerprint = sha256Hex(JSON.stringify([req.params.cid, text, ids]));
+        const prior = clientId ? mobile.sendOf(dev.id, clientId) : undefined;
+        if (prior) {
+          if (prior.fingerprint !== fingerprint) return err("this send id was used for another message; send this one under a new id", 409);
+          if (!chat(prior.session_id)) return err("unknown chat", 404);
+          return json({ message: receiptNow(prior), replayed: true });
+        }
         const images: any[] = [];
-        for (const r of refs) {
-          const id = String(r?.id ?? r?.media ?? "");
+        for (const [i, r] of refs.entries()) {
+          const id = ids[i]!;
           const path = attachmentPath(id);
           if (!path) return err(`attachment ${id.slice(0, 80) || "(no id)"} is not stored here; upload it again`, 400);
           const mime = String(r?.mime ?? Bun.file(path).type ?? "");
@@ -691,9 +719,21 @@ export function mobileApi(ctx: MobileCtx) {
           return err("This phone has no screen lock, so it can only prompt chats where every tool call asks", 403);
         // While a turn runs: steer (the default) joins it, queue waits for it.
         const mode = b.mode === "queue" ? "queue" : b.mode === "steer" ? "steer" : "send";
-        const r: any = await fitted(s.id, images, (fit) => engine.send(s.id, text, { mode, images: fit }));
-        if (r.event) return json({ message: toMsg(r.event, mobile.gseqOf(r.event.id)) });
-        return json({ message: { id: r.queued.id, chat_id: s.id, role: "user", kind: r.steer ? "steer" : "queued", content: text, meta: {}, ts: secs(Date.now()), seq: 0 } });
+        // The prompt and its receipt are one write: a daemon that stops between
+        // them has neither, and the retry stores the prompt once.
+        // Fitted and stored in the order the session's prompts came.
+        const message = await fitted(s.id, images, (fit) => store.atomic(s.id, () => {
+          // Read again inside the write: the same send may have come in while the images were fitted.
+          const now = clientId ? mobile.sendOf(dev.id, clientId) : undefined;
+          if (now) return receiptNow(now);
+          const r: any = engine.send(s.id, text, { mode, images: fit });
+          const message = r.event
+            ? toMsg(r.event, mobile.gseqOf(r.event.id))
+            : { id: r.queued.id, chat_id: s.id, role: "user", kind: r.steer ? "steer" : "queued", content: text, meta: {}, ts: secs(Date.now()), seq: 0 };
+          if (clientId) mobile.recordSend(dev.id, clientId, { session_id: s.id, fingerprint, event_id: r.event?.id ?? null, queue_id: r.queued?.id ?? null, receipt: JSON.stringify(message) });
+          return message;
+        }));
+        return json({ message });
       })),
     },
     // Read on the phone is read everywhere: the same alerts the workbench counts.

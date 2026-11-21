@@ -47,6 +47,7 @@ import dev.avifenesh.keel.Msg
 import dev.avifenesh.keel.Route
 import dev.avifenesh.keel.State
 import dev.avifenesh.keel.Ui
+import dev.avifenesh.keel.Wire
 import dev.avifenesh.keel.elapsed
 import dev.avifenesh.keel.stateOf
 import dev.avifenesh.keel.str
@@ -178,12 +179,18 @@ private fun Composer(id: String, working: Boolean, archived: Boolean, onError: (
     var text by rememberSaveable(id) { mutableStateOf("") }
     var mode by rememberSaveable(id) { mutableStateOf("steer") }
     var busy by remember { mutableStateOf(false) }
+    // The send in hand: its id stays with the words until the daemon answers,
+    // so sending them again after a lost answer makes no second prompt.
+    var keptId by rememberSaveable(id) { mutableStateOf("") }
+    var keptText by rememberSaveable(id) { mutableStateOf("") }
     fun send() {
         val t = text.trim(); if (t.isEmpty()) return
+        val cid = Wire.sendId(keptId, keptText, t)
+        keptId = cid; keptText = t
         busy = true
         scope.launch {
-            runCatching { Hub.send(id, t, if (working) mode else "send") }
-                .onSuccess { text = ""; onError("") }.onFailure { onError(it.message ?: "Not sent") }
+            runCatching { Hub.send(id, t, if (working) mode else "send", cid) }
+                .onSuccess { text = ""; keptId = ""; keptText = ""; onError("") }.onFailure { onError(it.message ?: "Not sent") }
             busy = false
         }
     }

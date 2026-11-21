@@ -33,6 +33,19 @@ class WireTest {
         )
     }
 
+    @Test fun aSendKeepsItsIdForTheSameWords() {
+        var n = 0
+        val fresh = { "id-${++n}" }
+        val first = Wire.sendId("", "", "ship it", fresh)
+        assertEquals("id-1", first)
+        // The answer was lost: the same words go under the same id.
+        assertEquals("id-1", Wire.sendId(first, "ship it", "ship it", fresh))
+        // Other words are another send.
+        assertEquals("id-2", Wire.sendId(first, "ship it", "ship it now", fresh))
+        val body = Wire.sendBody("ship it", "steer", first)
+        assertEquals(listOf("ship it", "steer", "id-1"), listOf(body.getString("text"), body.getString("mode"), body.getString("client_id")))
+    }
+
     @Test fun pairLinks() {
         val l = Wire.parsePair("keel://pair?u=https%3A%2F%2Fkeel.example.test&c=abc123&n=desk%20one")!!
         assertEquals(Wire.PairLink("https://keel.example.test", "abc123", "desk one"), l)
