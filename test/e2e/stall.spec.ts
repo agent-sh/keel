@@ -38,7 +38,8 @@ test("a blocked event loop leaves one error row and one log line with its durati
 
   const row = (await stalls()).sort((a, b) => b.ts - a.ts)[0];
   expect(row.source).toBe("server");
-  expect(row.message).toMatch(/^Daemon unresponsive for 2\.\d s: blocked by its own code, outside anything it times \(1 turn was running/);
+  // (Its own turn is among the ones running, however many other sessions' turns were.)
+  expect(row.message).toMatch(/^Daemon unresponsive for 2\.\d s: blocked by its own code, outside anything it times \(\d+ turns? (was|were) running/);
   expect(row.context.ms).toBeGreaterThanOrEqual(HELD_MS - 300);
   expect(row.context.ms).toBeLessThan(HELD_MS + 3000);
   expect(row.context.busy_ms).toBeGreaterThan(HELD_MS / 2);
@@ -47,7 +48,7 @@ test("a blocked event loop leaves one error row and one log line with its durati
     expect(row.context.cause).toMatchObject({ kind: "compute", key: "compute", note: expect.stringContaining("no JavaScript frames across threads") });
     expect(row.context.cause.run_ms).toBeGreaterThan(HELD_MS / 2);
   }
-  expect(row.context.turns).toEqual([expect.objectContaining({ session_id: session.id, doing: "model" })]);
+  expect(row.context.turns).toContainEqual(expect.objectContaining({ session_id: session.id, doing: "model" }));
   expect(row.ts).toBeGreaterThanOrEqual(t0);
 
   // The log has the same line once, as an error.
@@ -87,7 +88,7 @@ test("each stall names what took the time: a child it waited for, its own code, 
   const waited = await turn("Waits for a child", "script:child 3000");
   await expect.poll(() => times("child"), { timeout: 10_000 }).toBe(before.child + 1);
   const child = (await of("child"))[0];
-  expect(child.message).toMatch(/^Daemon unresponsive for [23]\.\d s: [23]\.\d s waiting for a child: sleep 3 \(pid \d+\) \(1 turn was running/);
+  expect(child.message).toMatch(/^Daemon unresponsive for [23]\.\d s: [23]\.\d s waiting for a child: sleep 3 \(pid \d+\) \(\d+ turns? (was|were) running/);
   expect(child.context.cause).toMatchObject({ kind: "child", key: "child sleep", state: "S", call: { child: { command: "sleep 3" } } });
   expect(child.context.cause.sampled_ms).toBeGreaterThan(2000);
   expect(child.context.cause.run_ms).toBeLessThan(500);
