@@ -3,6 +3,11 @@
 // it for as long as its child runs. The child is `cat` on a pipe from the
 // daemon, so a daemon that dies, however it dies, closes the pipe and the lock
 // goes with it: no inhibitor is ever left behind.
+// One lock is held for as long as any reason holds: it is taken when the
+// first reason appears and given back when the last is gone. The reasons
+// between (another turn starts, one ends, a loop comes due) change what the
+// daemon shows, not the lock, so a dozen working sessions start one
+// `systemd-inhibit`, not one at each change of their count.
 import type { Subprocess } from "bun";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import type { Bus } from "../core/bus.ts";
@@ -34,8 +39,12 @@ export const awakeHolds: { ended?: (since: number, ms: number, reason: string) =
 let current: Awake | undefined;
 export const recheckAwake = () => current?.update();
 
+// The lock's process: `systemd-inhibit` in the daemon, a stand-in in a test.
+type Lock = Pick<Subprocess<"pipe", "ignore", "pipe">, "stdin" | "stderr" | "exited" | "exitCode" | "kill">;
+const inhibit = (why: string): Lock => Bun.spawn(["systemd-inhibit", "--what=sleep:idle", "--who=keel-bun", `--why=${why}`, "--mode=block", "cat"], { stdin: "pipe", stdout: "ignore", stderr: "pipe" });
+
 export class Awake {
-  private proc?: Subprocess<"pipe", "ignore", "pipe">;
+  private proc?: Lock;
   private working = new Set<string>();
   private untilMs: number | null = null;
   private timer?: ReturnType<typeof setTimeout>;
@@ -43,12 +52,14 @@ export class Awake {
   private reason?: string;
   private locked = false;
   refused?: string;
-  readonly available = process.platform === "linux" && which("systemd-inhibit") && existsSync("/run/dbus/system_bus_socket");
+  readonly available: boolean;
   draining = false;
 
   private firstReason?: string;
 
-  constructor(private bus: Bus, private capture: (e: unknown, ctx?: unknown) => void) {
+  // `lock`: what takes the lock (a test's stand-in; the daemon asks logind).
+  constructor(private bus: Bus, private capture: (e: unknown, ctx?: unknown) => void, private lock?: (why: string) => Lock) {
+    this.available = lock ? true : process.platform === "linux" && which("systemd-inhibit") && existsSync("/run/dbus/system_bus_socket");
     current = this;
     bus.on((f) => {
       if (f.t !== "session") return;
@@ -83,22 +94,24 @@ export class Awake {
     const why = this.want();
     if (!why || !this.available) return this.release();
     if (this.refused) return;
-    if (this.proc && this.reason === why) return;
-    // The reason shown in the lock list changes with the count: take a new lock first.
-    const old = this.proc;
+    // Held already: the lock stays, only the reason shown follows.
+    if (this.proc) {
+      if (this.reason !== why) { this.reason = why; this.emit(); }
+      return;
+    }
     this.start(why);
-    if (old) this.stop(old);
   }
 
   private start(why: string) {
-    const p = Bun.spawn(["systemd-inhibit", "--what=sleep:idle", "--who=keel-bun", `--why=${why} (daemon pid ${process.pid})`, "--mode=block", "cat"], { stdin: "pipe", stdout: "ignore", stderr: "pipe" });
+    // The lock list names the daemon; why it holds now is in the daemon's own state.
+    const p = (this.lock ?? inhibit)(`a turn, a hold or a loop that is due (daemon pid ${process.pid})`);
     this.proc = p;
     this.reason = why;
     this.since ??= Date.now();
     this.firstReason ??= why;
     this.locked = false;
     // logind answers at once; a lock still held after half a second was handed out.
-    setTimeout(() => { if (this.proc === p && p.exitCode === null) { this.locked = true; this.emit(); } }, 500);
+    setTimeout(() => { if (this.proc === p && p.exitCode === null) { this.locked = true; this.emit(); } }, 500).unref?.();
     p.exited.then(async (code) => {
       if (this.proc !== p) return;
       this.proc = undefined;
@@ -111,7 +124,7 @@ export class Awake {
     this.emit();
   }
 
-  private stop(p: Subprocess<"pipe", "ignore", "pipe">) {
+  private stop(p: Lock) {
     try { p.stdin.end(); } catch {}
     p.kill();
   }
