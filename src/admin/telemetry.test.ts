@@ -70,6 +70,21 @@ test("a request is booked to its own branch, route and turn", () => withStore(as
   expect(turn.prompt).toBe("Verify A");
   expect(turn.requests).toBe(1); // the side answers are in no turn
   expect((await t.report({})).by_model.map((m) => [m.model, m.calls]).sort()).toEqual([["p:main", 4], ["q:advisor", 1]]);
+
+  // Why the cache broke, from what each request recorded. The request on A
+  // after the one on B: another branch, though A has a compaction B has not
+  // (it was made before either request). Then a compaction on A itself.
+  const causes = async () => (await t.report({})).breaks.map((b) => [b.cause, b.count]);
+  expect(await causes()).toEqual([["branch_switch", 1]]);
+  store.append(s.id, "turn_start", { model: "p:main" });
+  store.append(s.id, "compaction", { mode: "summary", summary: "s2", covered: turnA.id, tokens_before: 70 });
+  send("turn", 40);
+  expect(await causes()).toEqual([["compaction", 1], ["branch_switch", 1]]);
+  // Back on B, where neither compaction is: another branch again.
+  store.updateSession(s.id, { head: askB.id });
+  store.append(s.id, "turn_start", { model: "p:main" });
+  send("turn", 900);
+  expect(await causes()).toEqual([["compaction", 1], ["branch_switch", 2]]);
 }));
 
 test("a cache break is a changed prefix only where a stored fingerprint differs", () => {
@@ -91,6 +106,10 @@ test("a cache break is a changed prefix only where a stored fingerprint differs"
   // The build's tools and prompt taken because the cache had expired: an expiry, though the prefix differs.
   expect(breakCause({ ...gap, gapMs: 3_600_000, diff: ["tools", "system (core)"], tookExpired: true })).toBe("expired");
   expect(breakCause({ ...gap, gapMs: 1_000, diff: null })).toBe("prefix_changed");
+  // Another branch is its own cause: before a changed prefix, after a compaction or a model switch.
+  expect(breakCause({ ...gap, gapMs: 1_000, switched: true, diff: ["history"] })).toBe("branch_switch");
+  expect(breakCause({ ...gap, compacted: true, gapMs: 1_000, switched: true, diff: ["history"] })).toBe("compaction");
+  expect(breakCause({ ...gap, modelChanged: true, gapMs: 1_000, switched: true, diff: [] })).toBe("model_switch");
   const b = (name: string, hash: string) => ({ name, hash, bytes: 1 });
   expect(changedBlocks([b("core", "1"), b("skills", "2"), b("place", "3")], [b("core", "1"), b("place", "3"), b("mcp", "4")])).toEqual(["mcp", "skills"]);
   expect(changedBlocks([b("core", "1")], [b("core", "1")])).toEqual([]);

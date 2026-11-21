@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS telemetry_toolsets (h TEXT PRIMARY KEY, names TEXT NO
 // One attempt in flight. `step0`: when the first attempt of its model step
 // started (a retry sends the same request object again); `first`: the first
 // piece of anything streamed; `text`: the first piece of reply text.
-type Pending = { t0: number; step0: number; attempt: number; first?: number; text?: number; session: string; model: string; purpose: string; turn: string | null; compaction: string; bytes: Zones; prefix: Prefix | null; cacheMs: number | null; toolset: string | null; effort: string | null };
+type Pending = { t0: number; step0: number; attempt: number; first?: number; text?: number; session: string; model: string; purpose: string; turn: string | null; compaction: string; line: readonly { id: string }[]; bytes: Zones; prefix: Prefix | null; cacheMs: number | null; toolset: string | null; effort: string | null };
 
 // Fingerprints of what a turn request's cached prefix is made of, stored with
 // the call so the next one (after a daemon restart too) can say what differs:
@@ -160,7 +160,7 @@ export class Telemetry {
         if (purpose === "turn") this.turnOf.set(s.id, turn);
         const p: Pending = {
           t0: now, step0: step.t0, attempt: step.attempt, session: s.id, model: req.route ?? this.store.session(s.id)?.model ?? s.model, purpose,
-          turn, compaction: line.findLast((e) => e.kind === "compaction")?.id ?? "", bytes,
+          turn, compaction: line.findLast((e) => e.kind === "compaction")?.id ?? "", line, bytes,
           prefix: purpose === "turn" ? prefixOf(req, marks) : null, cacheMs: req.cacheMs ?? null,
           toolset: purpose === "reader" ? null : this.toolset(req.tools.map((t) => t.name)), effort: req.effort ?? null,
         };
@@ -235,7 +235,7 @@ export class Telemetry {
     const prompt = (u.input ?? 0) + (u.cache_read ?? 0) + (u.cache_write ?? 0);
     // Zones only where the provider counted the prompt.
     const z = r.outcome === "ok" && prompt > 0 ? scaleZones(p.bytes, prompt) : null;
-    const brk = r.outcome === "ok" && p.purpose === "turn" ? this.cacheBreak(p.session, p.model, p.t0, u, p.prefix, p.compaction) : null;
+    const brk = r.outcome === "ok" && p.purpose === "turn" ? this.cacheBreak(p, u) : null;
     const x = p.prefix;
     const tag = armOf(this.store, p.session);
     this.store.db
@@ -257,19 +257,25 @@ export class Telemetry {
   // (side requests are not turn requests and are never compared). Why, by what the
   // two requests' stored fingerprints, the history and the clock say; `detail`
   // names the parts of the prefix that differ.
-  // `compaction`: the last compaction of the branch this request was sent on ("" for none).
-  private cacheBreak(sessionId: string, model: string, ts: number, u: any, now: Prefix | null, compaction: string): { cause: string; detail: string | null } | null {
+  // The request knows the branch it was sent on and that branch's last compaction.
+  private cacheBreak(p: Pending, u: any): { cause: string; detail: string | null } | null {
+    const { session: sessionId, model, t0: ts, prefix: now } = p;
     const prev = this.store.db
-      .query<{ ts: number; model: string; prompt: number; h_tools: string | null; h_system: string | null; n_msgs: number | null; h_msgs: string | null; h_kept: string | null; cache_ms: number | null; compaction_event: string | null }, [string]>(
-        "SELECT ts, model, input + cache_read + cache_write AS prompt, h_tools, h_system, n_msgs, h_msgs, h_kept, cache_ms, compaction_event FROM telemetry_calls WHERE session_id = ? AND outcome = 'ok' AND COALESCE(purpose, 'turn') = 'turn' ORDER BY ts DESC LIMIT 1")
+      .query<{ ts: number; model: string; prompt: number; h_tools: string | null; h_system: string | null; n_msgs: number | null; h_msgs: string | null; h_kept: string | null; cache_ms: number | null; compaction_event: string | null; turn_event: string | null }, [string]>(
+        "SELECT ts, model, input + cache_read + cache_write AS prompt, h_tools, h_system, n_msgs, h_msgs, h_kept, cache_ms, compaction_event, turn_event FROM telemetry_calls WHERE session_id = ? AND outcome = 'ok' AND COALESCE(purpose, 'turn') = 'turn' ORDER BY ts DESC LIMIT 1")
       .get(sessionId);
     if (!prev || prev.prompt <= 0) return null;
     const prompt = (u.input ?? 0) + (u.cache_read ?? 0) + (u.cache_write ?? 0);
     if ((u.cache_read ?? 0) >= 0.5 * Math.min(prev.prompt, prompt)) return null;
-    // Compacted since the last request: the two were sent on different
-    // compactions, as each recorded. Only a row from before that was recorded
+    // What the last request was sent on, as it recorded it: its turn and its
+    // branch's last compaction. When either is not on this request's branch,
+    // the session shows another branch (it went back, or to a sibling). When
+    // both are and this branch's last compaction is another one, the history
+    // was compacted since. Only a row from before the compaction was recorded
     // has the session's events searched (every event of it is read for that).
-    const compacted = prev.compaction_event !== null ? prev.compaction_event !== compaction : this.compactedBetween(sessionId, prev.ts, ts);
+    const on = (id: string | null) => !id || p.line.some((e) => e.id === id);
+    const switched = !on(prev.turn_event) || !on(prev.compaction_event);
+    const compacted = prev.compaction_event === null ? this.compactedBetween(sessionId, prev.ts, ts) : !switched && prev.compaction_event !== p.compaction;
     // The blocks of the system prompt the engine replaced since the last request.
     const changed = promptOf(this.store, sessionId)?.changed;
     const diff = now ? prefixDiff(prev, now, changed && changed.ts > prev.ts && changed.ts <= ts ? changed.blocks : []) : null;
@@ -278,7 +284,7 @@ export class Telemetry {
     const took = adoptionBetween(this.store, sessionId, prev.ts, ts);
     const parts = (diff ?? []).map((d) => (d === "tools" && took?.tools.length ? `tools (${took.tools.slice(0, 8).join(", ")}${took.tools.length > 8 ? `, ${took.tools.length - 8} more` : ""})` : d));
     if (took) parts.push(`build ${took.to_build} taken: ${took.reason}`);
-    return { cause: breakCause({ gapMs: ts - prev.ts, lifeMs: prev.cache_ms, modelChanged: prev.model !== model, compacted, diff, tookExpired: took?.reason === EXPIRED }), detail: parts.length ? parts.join("; ") : null };
+    return { cause: breakCause({ gapMs: ts - prev.ts, lifeMs: prev.cache_ms, modelChanged: prev.model !== model, compacted, switched, diff, tookExpired: took?.reason === EXPIRED }), detail: parts.length ? parts.join("; ") : null };
   }
 
   private compactedBetween(sessionId: string, a: number, b: number) {
@@ -475,9 +481,12 @@ const ratio = (list: { prompt_tokens: number; cache_read: number }[]) => {
 // `tookExpired`: the session took the running build's tools and prompt at this
 // request because its cache had expired (src/engine/build-pin.ts): the prefix
 // differs only because nothing was left to keep, so the break is an expiry.
-export function breakCause(b: { gapMs: number; lifeMs?: number | null; modelChanged: boolean; compacted: boolean; diff?: string[] | null; tookExpired?: boolean }): (typeof BREAK_CAUSES)[number] {
+// `switched`: the request was sent on another branch than the last one (the
+// history before it is another), with no compaction since.
+export function breakCause(b: { gapMs: number; lifeMs?: number | null; modelChanged: boolean; compacted: boolean; switched?: boolean; diff?: string[] | null; tookExpired?: boolean }): (typeof BREAK_CAUSES)[number] {
   if (b.modelChanged) return "model_switch";
   if (b.compacted) return "compaction";
+  if (b.switched) return "branch_switch";
   if (b.tookExpired) return "expired";
   if (b.diff?.length) return "prefix_changed";
   if (b.lifeMs && b.gapMs > b.lifeMs) return "expired";

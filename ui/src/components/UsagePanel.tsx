@@ -36,6 +36,7 @@ export const CAUSE: Record<string, string> = {
   expired: "the cache lifetime passed",
   model_switch: "the model changed",
   compaction: "a compaction rewrote the history",
+  branch_switch: "the session showed another branch",
   prefix_changed: "the prompt prefix changed",
   provider_miss: "the provider's cache missed an unchanged prefix",
 };

@@ -6,7 +6,7 @@ import type { Database } from "bun:sqlite";
 import type { Filter, ToolRow } from "./telemetry.ts";
 import { ZONES, zoneCache, type Zone, type ZoneCache } from "./zones.ts";
 
-export const BREAK_CAUSES = ["expired", "model_switch", "compaction", "prefix_changed", "provider_miss"] as const;
+export const BREAK_CAUSES = ["expired", "model_switch", "compaction", "branch_switch", "prefix_changed", "provider_miss"] as const;
 
 export type CallRow = {
   ts: number; model: string; latency_ms: number | null; ttft_ms: number | null; input: number; output: number; cache_read: number; cache_write: number;
