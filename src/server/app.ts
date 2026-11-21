@@ -156,6 +156,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
   // The sends the page named (`client_id` on a message): each is stored once.
   store.migrate("CREATE TABLE IF NOT EXISTS sends (client_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, fingerprint TEXT NOT NULL, receipt TEXT NOT NULL, created_ms INTEGER NOT NULL)");
   const sendOf = store.db.query<{ fingerprint: string; receipt: string }, [string]>("SELECT fingerprint, receipt FROM sends WHERE client_id = ?");
+  const sendIn = store.db.query<{ receipt: string }, [string, string]>("SELECT receipt FROM sends WHERE client_id = ? AND session_id = ?");
   const recordSend = store.db.query("INSERT INTO sends (client_id, session_id, fingerprint, receipt, created_ms) VALUES (?, ?, ?, ?, ?)");
   // The prune reads by age and a deleted session's rows go by session: an index for each.
   store.migrate("CREATE INDEX IF NOT EXISTS sends_created ON sends(created_ms)");
@@ -463,6 +464,19 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
             return r;
           }));
           return json(out, "replayed" in out ? 200 : 201);
+        }),
+      },
+
+      // What became of a send the page named: the receipt of the prompt it
+      // stored (the event, or the queue entry it waits in), or that nothing
+      // was stored under that id. A page whose answer was lost asks here, by
+      // the send's own id: the words of a prompt say nothing about which
+      // send it was.
+      "/api/sessions/:id/sends/:send": {
+        GET: wrap((req) => {
+          if (!store.session(req.params.id)) return bad("no such session", 404);
+          const r = sendIn.get(req.params.send, req.params.id);
+          return json(r ? { stored: true, ...JSON.parse(r.receipt) } : { stored: false });
         }),
       },
 

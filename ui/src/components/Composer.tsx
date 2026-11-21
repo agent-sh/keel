@@ -9,7 +9,7 @@ import { splitId } from "../lib/fleet-ids.ts";
 import { draftGone, draftHere, dropImage, fromServer, getDraft, isKeeping, keepImage, textTaken, typing, type Draft } from "../lib/drafts.ts";
 import { daemonAway, hasSavedImage, messageRefused, namedSends, savedImages, sendDrafts, setSendDraft, setSendImage, shelfKey, shown, unread, useSendDrafts, type SendDraft } from "../lib/send-drafts.ts";
 import { sendWaitingSoon } from "../lib/resend.ts";
-import { getState, onFeature, reportError, reportUnlessGone, useStore, failed } from "../lib/store.ts";
+import { onFeature, reportError, reportUnlessGone, useStore, failed } from "../lib/store.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { lineage } from "../../../src/core/tree.ts";
 import { cn, scrollMotion } from "../lib/utils.ts";
@@ -499,10 +499,7 @@ function SessionComposer({
     return null;
   };
 
-  const attempt = async (given: SendDraft, fromBox: boolean) => {
-    // Where the transcript stood at the first try: a prompt with these words after it is this message.
-    const held = sid ? getState().events[sid] : undefined; // not loaded: nothing to hold the message against
-    const entry = { ...given, after: given.after ?? (held ? held.at(-1)?.seq ?? 0 : undefined) };
+  const attempt = async (entry: SendDraft, fromBox: boolean) => {
     const { id, text, images, queue } = entry;
     // Lock this snapshot before awaiting anything, including a rapid click
     // on Retry before React has disabled its button.

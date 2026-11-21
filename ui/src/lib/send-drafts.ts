@@ -15,9 +15,6 @@ export type SendDraft = {
   error?: string;
   // Attachments a reload could not bring back, by name.
   lost?: string[];
-  // The session's last event the page held when the message was first sent:
-  // a prompt with these words after it is this message (resend.ts).
-  after?: number;
 };
 
 // This browser's recovery shelf: sends the daemon refused or did not confirm,

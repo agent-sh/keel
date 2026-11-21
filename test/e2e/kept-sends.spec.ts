@@ -232,36 +232,54 @@ test("the New session button marks a message kept in the New box", async ({ page
 });
 
 // EXTRA-S17. A message whose answer was lost after the daemon took it shows
-// as unconfirmed. Once the transcript shows that message the item says
-// nothing the owner needs: it goes, with its mark on the row. One that did
-// not arrive stays, also when an earlier message had the same words.
-test("an unconfirmed send clears itself once the transcript shows the message", async ({ page, request }) => {
+// as unconfirmed. The daemon keeps what it stored under each send's own id:
+// once it says it holds this one, the item says nothing the owner needs and
+// goes, with its mark on the row. A send is never taken for delivered by its
+// words: one that did not arrive stays, also when the same words arrived
+// under another send.
+test("an unconfirmed send clears itself once the daemon holds it, by its id and not its words", async ({ page, request }) => {
   const a = (await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Unconfirmed, then seen" } })).json()).session.id as string;
   const messages = `/api/sessions/${a}/messages`;
   const row = page.locator(`[data-testid="session-row"][data-session="${a}"]`);
+  // What the daemon holds of a send, asked by its id.
+  expect(await (await request.get(`/api/sessions/${a}/sends/never-sent`)).json()).toEqual({ stored: false });
   await page.goto(`/s/${a}`);
-  const lose = (deliver: boolean) => page.route(messages, async (r) => {
-    if (deliver) expect((await r.fetch()).status()).toBe(201);
+  const ids: string[] = [];
+  await page.route(messages, async (r) => {
+    ids.push(r.request().postDataJSON().client_id);
+    expect((await r.fetch()).status()).toBe(201);
     await r.fulfill({ status: 502, json: { error: "The proxy lost the daemon." } });
   }, { times: 1 });
-  await lose(true);
   await composer(page).fill("Arrived, though nobody said so.");
   await composer(page).press("Enter");
   await expect(page.getByTestId("user-message").filter({ hasText: "Arrived, though nobody said so." })).toHaveCount(1);
   await expect(saved(page)).toHaveCount(0);
   await expect(row).not.toHaveAttribute("data-watch", "need");
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 30_000 });
+  expect((await (await request.get(`/api/sessions/${a}/sends/${ids[0]}`)).json()).stored).toBe(true);
 
-  // The same words again, and this time the daemon never got them: the earlier message is not taken for it.
-  await lose(false);
-  await composer(page).fill("Arrived, though nobody said so.");
+  // The same words twice: the first is still out when the second fails without reaching the daemon.
+  // The first then arrives. Its prompt is not the second's: the second stays for the owner.
+  const late = Promise.withResolvers<void>();
+  let posts = 0;
+  await page.route(messages, async (r) => {
+    if (++posts === 1) { await late.promise; return r.fallback(); }
+    await r.fulfill({ status: 502, json: { error: "The proxy lost the daemon." } });
+  });
+  await composer(page).fill("continue");
+  await composer(page).press("Enter");
+  await expect.poll(() => posts).toBe(1);
+  await composer(page).fill("continue");
   await composer(page).press("Enter");
   await expect(saved(page)).toContainText("Delivery unconfirmed");
-  await page.evaluate(() => new Promise((r) => setTimeout(r, 500)));
+  late.resolve();
+  await expect(page.getByTestId("user-message").filter({ hasText: "continue" })).toHaveCount(1);
+  await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 30_000 });
+  await expect(saved(page)).toHaveCount(1);
   await expect(saved(page)).toContainText("Delivery unconfirmed");
   await expect(row).toHaveAttribute("data-watch", "need");
   await expect(row.getByTestId("row-why")).toHaveText("A message's delivery is unconfirmed");
   const texts = (await (await request.get(`/api/sessions/${a}`)).json()).events.filter((e: any) => e.kind === "user").map((e: any) => e.data.text);
-  expect(texts).toEqual(["Arrived, though nobody said so."]);
+  expect(texts).toEqual(["Arrived, though nobody said so.", "continue"]);
   await request.delete(`/api/sessions/${a}`);
 });

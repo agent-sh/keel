@@ -6,7 +6,6 @@ import { dropImage, fromServer } from "./drafts.ts";
 import { toBlock } from "./images.ts";
 import { daemonAway, messageRefused, onCutSend, onShelf, setSendDraft, setSendImage, sendDrafts, unconfirmedSends, unread, waitingSends, type SendDraft } from "./send-drafts.ts";
 import { actions, api, failed, getState, onFeature, subscribe } from "./store.ts";
-import type { StoredEvent } from "../../../src/core/types.ts";
 
 // Requests of one message that got no answer while the socket stayed up. A
 // daemon that is there and still never answers this message (a request it
@@ -102,35 +101,59 @@ onFeature({
 });
 
 // A send whose answer was lost says "delivery unconfirmed" until the owner
-// checks. When the transcript shows the message there is nothing left to
-// check: the item goes, with its mark on the row, and its images leave the
-// session's draft as after any send. The message is the owner's prompt with
-// the same words and as many images that came after the first try (an
-// earlier one with the same words is not it).
-const isIt = (e: StoredEvent, d: SendDraft) =>
-  e.kind === "user" && !e.data.kind && (!e.data.origin || e.data.origin === "queued" || e.data.origin === "steer")
-  && String(e.data.text ?? "").trim() === d.text.trim() && (e.data.images?.length ?? 0) === d.images.length;
+// checks. The daemon keeps what it stored under each send's own id, so the
+// page asks it: once the daemon says it holds this send (as a prompt, or as
+// an entry of the queue), there is nothing left to check and the item goes,
+// with its mark on the row, and its images leave the session's draft as
+// after any send. A send is never matched to a prompt by its words: the same
+// words may have arrived under another send. Asked when the item turns
+// unconfirmed, when its session gets a prompt or its queue changes, and at a
+// reconnect. A daemon that cannot say (an older build on another machine, or
+// away) leaves the item to the owner.
 async function arrived(key: string, d: SendDraft) {
   setSendDraft(key, d.id, { ...d, state: "done" });
   await Promise.all(d.images.map((a) => (a.file ? undefined : dropImage(key, a.id))));
   setSendDraft(key, d.id);
 }
+const asking = new Set<string>();
+async function ask(key: string, id: string) {
+  if (asking.has(id)) return;
+  asking.add(id);
+  try {
+    const r = await api<{ stored?: boolean }>(`/api/sessions/${key}/sends/${encodeURIComponent(id)}`);
+    const now = sendDrafts(key).find((x) => x.id === id);
+    if (r.stored === true && now?.state === "unconfirmed") await arrived(key, now);
+  } catch {
+    // No answer: nothing is known, so nothing changes.
+  } finally {
+    asking.delete(id);
+  }
+}
 let unconfirmed = unconfirmedSends();
-const looked = new Map<string, StoredEvent[]>(); // the transcript each item was last held against
+// What each item's session held when the daemon was last asked about it: its newest prompt and its queue.
+const asked = new Map<string, string>();
 function look() {
   for (const { key, d } of unconfirmed) {
-    const events = getState().events[key];
-    if (!events || d.after === undefined || looked.get(d.id) === events) continue;
-    looked.set(d.id, events);
-    for (let i = events.length - 1; i >= 0 && events[i]!.seq > d.after; i--) {
-      if (isIt(events[i]!, d)) { void arrived(key, d); break; }
-    }
+    const st = getState();
+    const mark = `${st.events[key]?.findLast((e) => e.kind === "user")?.id ?? ""} ${st.queues[key]?.queue.map((q) => q.id).join(",") ?? ""}`;
+    if (asked.get(d.id) === mark) continue;
+    asked.set(d.id, mark);
+    void ask(key, d.id);
   }
 }
 onShelf(() => {
   unconfirmed = unconfirmedSends();
-  for (const id of looked.keys()) if (!unconfirmed.some((u) => u.d.id === id)) looked.delete(id);
+  for (const id of asked.keys()) if (!unconfirmed.some((u) => u.d.id === id)) asked.delete(id);
   look();
 });
 // The store says every change of the page; with nothing unconfirmed this is one length check.
-subscribe(() => { if (unconfirmed.length) look(); });
+let held: unknown, heldQueues: unknown;
+subscribe(() => {
+  if (!unconfirmed.length) return;
+  const st = getState();
+  if (st.events === held && st.queues === heldQueues) return;
+  held = st.events;
+  heldQueues = st.queues;
+  look();
+});
+onFeature({ reconnect: () => { asked.clear(); look(); } });
