@@ -141,3 +141,13 @@ test("a paged listing has one deadline over all its pages", async () => {
     server.stop(true);
   }
 });
+
+test("a credential that could not be read in time is a passing failure; a refused one is not", () => {
+  const of = (status: number, message: string) => classify("p", status, new Headers(), JSON.stringify({ error: { message } }));
+  const late = of(403, "the credential cannot be read (the secret store did not answer in time; it may be locked)");
+  expect([late.kind, late.retryable]).toEqual(["network", true]);
+  expect(of(401, "credential helper timed out").retryable).toBe(true);
+  for (const refused of [of(403, "The security token included in the request is invalid."), of(401, "invalid x-api-key"), of(403, "access denied")]) {
+    expect([refused.kind, refused.retryable]).toEqual(["auth", false]);
+  }
+});

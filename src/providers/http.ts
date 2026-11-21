@@ -65,6 +65,11 @@ export function classify(label: string, status: number, headers: Headers, body: 
   const wait = retryAfter(headers);
   if (/context.{0,20}(length|window)|too many tokens|prompt is too long|maximum context|input.{0,20}too long|input token count|exceeds? the maximum number of tokens|exceed.{0,20}token limit|exceed.{0,30}context/.test(low))
     return new ProviderError("context", text, status);
+  // A credential that could not be read in time (a keyring or a credential
+  // helper behind a local broker that did not answer under load) is a passing
+  // failure of this machine, not a refusal of the credential: it is tried
+  // again like a dropped connection. A refused credential says nothing of time.
+  if ((status === 401 || status === 403) && /did not answer in time|timed? ?out/.test(low)) return new ProviderError("network", text, status);
   if (status === 401 || status === 403) return new ProviderError("auth", text, status);
   if (status === 402 || /insufficient_quota|quota|billing|credit|balance|usage limit|plan limit/.test(low) && status === 429)
     return new ProviderError("quota", text, status, wait);
