@@ -10,7 +10,7 @@ import { detached, type ErrorTracker } from "../core/errors.ts";
 import { registerCatalog, unregisterCatalog, type CatalogTool } from "../tools/catalog.ts";
 import type { CallClass } from "../safety/policy.ts";
 import type { ToolContext, ToolOutput } from "../tools/types.ts";
-import { AuthRequired, McpAuthorizationError, McpClient, RpcError, type McpCallResult, type McpTool, type Transport } from "./client.ts";
+import { AuthRequired, McpAuthorizationError, McpClient, RpcError, SessionExpired, type McpCallResult, type McpTool, type Transport } from "./client.ts";
 import { expand, importable, readConfig, validate, writeConfig, type McpConfigFile, type McpServerConfig } from "./config.ts";
 import { binding, endpoint, readSources, sourceFiles, sourced } from "./sources.ts";
 import { OAuthStore } from "./oauth.ts";
@@ -349,6 +349,15 @@ export class McpManager {
           gone = why;
           if (e.client !== client) return;
           e.client = undefined;
+          // A legacy HTTP session the server ended: a new one starts at once
+          // (a new initialize, discovery again). Only the handshake and the
+          // listing are sent; the request that found out is not.
+          if (client.expired) {
+            e.state = "connecting";
+            e.error = undefined;
+            this.ensure(name).catch(() => {});
+            return;
+          }
           e.state = "error";
           e.error = why;
         };
@@ -449,6 +458,7 @@ export class McpManager {
         return { content: `${name} needs sign-in again: the owner signs in from the MCP servers panel.`, is_error: true };
       }
       this.errors.capture("tool", err, { mcp: name, tool, session: ctx.sessionId });
+      if (err instanceof SessionExpired) return { content: `${name}__${tool} did not run: ${err.message}. Keel opens a new session; the call was not sent again. Look the tool up again and call it if it is still needed.`, is_error: true };
       return { content: `${name}__${tool} failed: ${(err as Error).message}`, is_error: true };
     }
     return toOutput(r, ctx, `${name}__${tool}`);

@@ -44,6 +44,14 @@ export class AuthRequired extends Error {
   }
 }
 
+// 404 on a request that named the legacy HTTP session: the server ended it.
+// The request was refused, not run; nothing sends it again.
+export class SessionExpired extends Error {
+  constructor() {
+    super("the server ended its session and refused the request (HTTP 404)");
+  }
+}
+
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
 
 export class McpClient {
@@ -64,6 +72,8 @@ export class McpClient {
     if (f && this.closedWhy !== undefined) f(this.closedWhy);
   }
   get isClosed() { return this.closed; }
+  // The server ended this client's session: it takes no new request, and a new session needs a new client.
+  expired = false;
   get inflight() { return this.pending.size; }
 
   private nextId = 1;
@@ -160,12 +170,16 @@ export class McpClient {
     proc.exited.then((code) => {
       const why = `the server exited (code ${code})`;
       this.failAll(this.withStderr(new Error(why)));
-      if (!this.closed) {
-        this.closed = true;
-        this.closedWhy = why;
-        this.closeHook?.(why);
-      }
+      this.shut(why);
     });
+  }
+
+  // The other side ended it: no new request goes out, and the owner of this client hears why.
+  private shut(why: string) {
+    if (this.closed) return;
+    this.closed = true;
+    this.closedWhy = why;
+    this.closeHook?.(why);
   }
 
   private onMessage(line: string) {
@@ -245,6 +259,19 @@ export class McpClient {
       signal,
     });
     if (res.status === 401) throw new AuthRequired(res.headers.get("www-authenticate"));
+    // Legacy sessions (2025-11-25 transports, Session Management 3 and 4): a
+    // server that ended the session answers 404 to every request naming it,
+    // and the client starts a new session with a new initialize. Requests
+    // already answering on the old session end on their own.
+    const named = headers["mcp-session-id"];
+    if (res.status === 404 && named) {
+      if (this.sessionId === named) {
+        this.sessionId = undefined; // nothing left to say goodbye to
+        this.expired = true;
+        this.shut("the server ended the session");
+      }
+      throw new SessionExpired();
+    }
     const sid = res.headers.get("mcp-session-id");
     if (sid && this.era === "legacy") this.sessionId = sid;
     if (res.status === 202 || res.status === 204) return;
@@ -378,9 +405,9 @@ export class McpClient {
   }
 
   close() {
+    this.failAll(new Error("the connection is closed"));
     if (this.closed) return;
     this.closed = true;
-    this.failAll(new Error("the connection is closed"));
     if (this.proc) {
       try { (this.proc.stdin as import("bun").FileSink).end(); } catch {}
       const proc = this.proc;
