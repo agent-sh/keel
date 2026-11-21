@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { brotliDecompressSync } from "node:zlib";
 import { bundleRoutes, compressJson, MIN_BYTES, pick } from "./compress.ts";
 
 const req = (ae: string | null, extra: Record<string, string> = {}) => new Request("http://x/", { headers: { ...(ae ? { "accept-encoding": ae } : {}), ...extra } });
@@ -33,6 +34,42 @@ test("JSON above the floor is compressed, small JSON and streams pass", async ()
   expect(await compressJson(req("gzip"), sse)).toBe(sse);
   const done = new Response(Bun.gzipSync(JSON.stringify(big)), { headers: { "content-type": "application/json", "content-encoding": "gzip" } });
   expect(await compressJson(req("zstd"), done)).toBe(done);
+});
+
+// A JSON body that counts how often it is read: nothing is pulled before a reader asks.
+function counted(data: unknown, status = 200) {
+  const body = new TextEncoder().encode(JSON.stringify(data));
+  const read = { pulls: 0 };
+  const stream = new ReadableStream<Uint8Array>({ pull(c) { read.pulls++; c.enqueue(body); c.close(); } }, { highWaterMark: 0 });
+  return { read, res: new Response(stream, { status, headers: { "content-type": "application/json;charset=utf-8", "x-keel": "kept" } }) };
+}
+
+test("a request that accepts no coding the daemon has gets the answer unread", async () => {
+  for (const ae of ["identity", "deflate, compress", "gzip;q=0, br;q=0, zstd;q=0", null]) {
+    const { read, res } = counted(big, 201);
+    const out = await compressJson(req(ae), res);
+    // Not read inside the wrapper: the body goes to the client as the handler made it.
+    expect([ae, read.pulls, res.bodyUsed]).toEqual([ae, 0, false]);
+    expect(out.status).toBe(201);
+    expect(out.headers.get("content-encoding")).toBeNull();
+    expect(out.headers.get("vary")).toBe("Accept-Encoding");
+    expect(out.headers.get("content-type")).toBe("application/json;charset=utf-8");
+    expect(out.headers.get("x-keel")).toBe("kept");
+    expect(await out.json()).toEqual(big);
+    expect(read.pulls).toBe(1);
+  }
+  // A Vary the handler set is kept and added to.
+  const own = Response.json(big, { headers: { vary: "Cookie" } });
+  expect((await compressJson(req("identity"), own)).headers.get("vary")).toBe("Cookie, Accept-Encoding");
+  // The codings the daemon has still read and encode it.
+  for (const [ae, coding] of [["gzip", "gzip"], ["br", "br"], ["zstd, br, gzip", "zstd"]] as const) {
+    const { read, res } = counted(big, 201);
+    const out = await compressJson(req(ae), res);
+    expect([ae, read.pulls, out.status, out.headers.get("content-encoding"), out.headers.get("vary"), out.headers.get("x-keel")]).toEqual([ae, 1, 201, coding, "Accept-Encoding", "kept"]);
+    const bytes = new Uint8Array(await out.arrayBuffer());
+    const plain = coding === "gzip" ? Bun.gunzipSync(bytes) : coding === "br" ? brotliDecompressSync(bytes) : Bun.zstdDecompressSync(bytes);
+    expect(JSON.parse(new TextDecoder().decode(plain))).toEqual(big);
+  }
 });
 
 test("a built bundle is served precompressed, with per-coding ETags and 304s", async () => {

@@ -49,13 +49,20 @@ export async function compressJson(req: Request, res: Response): Promise<Respons
   // A handler that upgraded the request to a WebSocket answers nothing.
   if (!res?.body || req.method === "HEAD" || res.headers.has("content-encoding")) return res;
   if (!(res.headers.get("content-type") ?? "").startsWith("application/json")) return res;
-  const raw = new Uint8Array(await res.arrayBuffer());
+  const e = pick(req.headers.get("accept-encoding"), DYNAMIC);
   const headers = new Headers(res.headers);
   const init = () => ({ status: res.status, statusText: res.statusText, headers });
+  if (!e) {
+    // No coding to compress with: the answer goes as it is, its body unread
+    // here. It still says that another request may get it encoded.
+    try { vary(res.headers); return res; } catch {}
+    // Headers that cannot be changed (an answer passed on from a fetch): the same body under a copy of them.
+    vary(headers);
+    return new Response(res.body, init());
+  }
+  const raw = new Uint8Array(await res.arrayBuffer());
   if (raw.length < MIN_BYTES) return new Response(raw, init());
   vary(headers);
-  const e = pick(req.headers.get("accept-encoding"), DYNAMIC);
-  if (!e) return new Response(raw, init());
   headers.set("content-encoding", e);
   headers.delete("content-length");
   return new Response(encode(raw, e), init());
