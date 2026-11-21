@@ -135,8 +135,12 @@ export function flush(sessionId: string) {
 
 // After a drain that was called off: what came due while the daemon started
 // no turn (a wait that fired, an agent's report, a loop run) is sent now.
+// What a drain put off besides queued input (a goal's check of a turn that
+// ended while the daemon drained): run when the drain is called off.
+export const afterCallOff: (() => void)[] = [];
 export function flushAll() {
   for (const id of [...pending.keys()]) flush(id);
+  for (const f of afterCallOff) try { f(); } catch (e) { capture(e, { at: "after a called-off restart" }); }
 }
 
 // Called by the turn-end hook: once the turn has fully ended, what waited runs.

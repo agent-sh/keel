@@ -12,7 +12,7 @@ import * as agents from "./agents.ts";
 import * as alerts from "./alerts.ts";
 import * as failures from "./failures.ts";
 import * as snooze from "./snooze.ts";
-import { afterTurn, capture, D, hasPending, setDeps } from "./core.ts";
+import { afterCallOff, afterTurn, capture, D, hasPending, setDeps } from "./core.ts";
 import * as loops from "./loops.ts";
 import { parseLoopCommand } from "./schedule.ts";
 import { automationTools, extendTaskStop, waitAckHooks } from "./tools.ts";
@@ -57,6 +57,8 @@ function init(deps: Deps) {
   consult.migrate();
   goals.migrate();
   failures.init();
+  // A called-off restart checks the goal turns its drain put off.
+  afterCallOff.splice(0, afterCallOff.length, () => goals.recheckOwed());
   registerShared(...automationTools, consult.advisorTool);
   extendTaskStop();
 

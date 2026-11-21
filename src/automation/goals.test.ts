@@ -463,3 +463,20 @@ test("a resume whose prompt was lost in a drain is sent at the next start, the s
   expect(said(s.id, "resume")).toHaveLength(1);
   expect(goals.get(s.id)).toMatchObject({ status: "pursuing", turns: 1 });
 });
+
+test("a restart that is called off checks the goal turn its drain put off", async () => {
+  const s = session();
+  await goals.set(s.id, { objective: "ship it" });
+  turn(s.id, 5);
+  draining = true;
+  await goals.afterTurn(s.id, "end_turn");
+  expect(asks(s.id)).toBe(0);
+  // The backup before the restart failed: the same daemon goes on.
+  draining = false;
+  const before = asked.length;
+  goals.recheckOwed();
+  await until(() => asks(s.id) === 1);
+  asked.slice(before)[0]!('{"verdict": "not_met", "reason": "no test run yet"}');
+  await until(() => said(s.id, "continue").length);
+  expect(goals.get(s.id)).toMatchObject({ status: "pursuing", turns: 1 });
+});

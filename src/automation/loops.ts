@@ -391,7 +391,8 @@ const releasing = new Set<string>();
 // for any longer. Its runs did not finish, and a prompt held for it goes.
 function release(sessionId: string) {
   releasing.delete(sessionId);
-  if (D().engine.isRunning(sessionId)) return; // the turn's end sends what waited
+  // A running turn's end sends what waited; a daemon on its way down leaves the parked turn to the next one.
+  if (D().engine.isRunning(sessionId) || D().engine.isDraining?.()) return;
   if (lastTurn(sessionId) === "cut") closeRuns(sessionId, "incomplete", "restart", UNCONTINUED);
   flush(sessionId);
 }

@@ -235,12 +235,21 @@ export function recover() {
     }
     const s = D().store.session(g.session_id);
     if (!active(g) || !s || s.archived) continue;
-    if (!verifying && g.counted === undefined) continue;
+    if (!verifying && g.counted === undefined && g.checked === undefined) continue;
     // The judge's model may still be starting (a plugin): waited for, as the
     // engine waits for a cut turn's. A model that does not come is not asked:
     // the goal stays as it is, for its next turn end or the next start.
     const id = g.session_id;
     ready(g.judge_model ?? s.model).then(() => owed(id)).catch((e) => capture(e, { at: "goal recheck", session: id }));
+  }
+}
+
+// A restart was called off: a turn that ended while the daemon drained was
+// left for the next start to check, and there is none. Checked now.
+export function recheckOwed() {
+  for (const r of db().query<{ data: string }, []>("SELECT data FROM goals").all()) {
+    const g = JSON.parse(r.data) as Goal;
+    if (active(g) && !g.verifying && g.counted !== undefined) owed(g.session_id).catch((e) => capture(e, { at: "goal recheck", session: g.session_id }));
   }
 }
 
