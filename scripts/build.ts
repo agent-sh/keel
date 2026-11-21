@@ -2,13 +2,20 @@
 //   bun scripts/build.ts [OUT [TARGET]]   the binary (default dist/keel), and OUT-ui.tar.gz beside it
 //   bun scripts/build.ts --ui OUT.tar.gz  only the UI bundle, for `keel ui install OUT.tar.gz`
 //                                         (a running daemon built from the same src/ serves it at once)
+// It runs from any folder: the sources and the default dist/ are the repository's,
+// and an OUT that is given is taken from where the command runs. The build itself
+// runs in the repository, since the styles are made from the files found there.
 import tailwind from "bun-plugin-tailwind";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { sourceApi, UI_PREFIX, type UiManifest } from "../src/server/ui-bundle.ts";
 
 const root = resolve(import.meta.dir, "..");
+const outPath = (given: string | undefined, name: string) => (given ? resolve(given) : join(root, "dist", name));
+const uiOnly = process.argv[2] === "--ui";
+const out = uiOnly ? outPath(process.argv[3], "keel-ui.tar.gz") : outPath(process.argv[2], "keel");
+process.chdir(root);
 const t0 = performance.now();
 const built = Date.now();
 const api = sourceApi(root);
@@ -33,29 +40,28 @@ async function uiBundle(out: string) {
     };
     walk(dir);
     const manifest: UiManifest = { format: 1, version: built, api, files: Object.keys(files).sort() };
+    mkdirSync(dirname(out), { recursive: true });
     await Bun.Archive.write(out, { ...files, "manifest.json": JSON.stringify(manifest, null, 1) }, { compress: "gzip" });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
 
-if (process.argv[2] === "--ui") {
-  const out = process.argv[3] ?? "dist/keel-ui.tar.gz";
+if (uiOnly) {
   await uiBundle(out);
   console.log(`built ${out} (UI ${built}, api ${api}) in ${((performance.now() - t0) / 1000).toFixed(2)}s`);
   process.exit(0);
 }
 
-const out = process.argv[2] ?? "dist/keel";
 // Another platform's binary: bun-linux-x64, bun-darwin-arm64, ...
 const target = process.argv[3] as Bun.Build.Target | undefined;
 // The helper an ssh machine runs (src/fleet/sshlink.ts), carried as text: the
 // binary has no source to bundle it from.
-const hands = await Bun.build({ entrypoints: ["src/fleet/hands-main.ts"], target: "bun", minify: true, define });
+const hands = await Bun.build({ entrypoints: [join(root, "src/fleet/hands-main.ts")], target: "bun", minify: true, define });
 if (!hands.success) fail(hands);
 const handsJs = await hands.outputs[0]!.text();
 const res = await Bun.build({
-  entrypoints: ["src/main.ts"],
+  entrypoints: [join(root, "src/main.ts")],
   compile: target ? { outfile: out, target } : { outfile: out },
   minify: true,
   splitting: true,

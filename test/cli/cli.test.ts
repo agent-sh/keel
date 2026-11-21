@@ -46,8 +46,10 @@ beforeAll(async () => {
   rmSync(SCRATCH, { recursive: true, force: true });
   mkdirSync(WS, { recursive: true });
   if (process.env.KEEL_CLI_BIN) return symlinkSync(process.env.KEEL_CLI_BIN, BIN);
-  const b = Bun.spawnSync(["bun", "scripts/build.ts", BIN], { cwd: ROOT, stdout: "pipe", stderr: "pipe" });
+  // Built from a folder that is not the repository: the script finds its sources by itself.
+  const b = Bun.spawnSync(["bun", join(ROOT, "scripts/build.ts"), BIN], { cwd: SCRATCH, stdout: "pipe", stderr: "pipe" });
   if (b.exitCode !== 0) throw new Error(`build failed: ${b.stderr}`);
+  for (const f of [BIN, `${BIN}-ui.tar.gz`]) if (!existsSync(f)) throw new Error(`the build did not write ${f}`);
 }, 120_000);
 // A run's own default folder goes with it; a named one is the caller's to keep.
 afterAll(() => { if (!process.env.KEEL_CLI_SCRATCH) rmSync(SCRATCH, { recursive: true, force: true }); });
