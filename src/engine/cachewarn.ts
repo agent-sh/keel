@@ -43,6 +43,11 @@ export function retention(wire: Wire | undefined, prior: readonly StoredEvent[],
   return { sure: 0, max: 5 * MIN };
 }
 
+// The longest lifetime any answer on this wire can show for sure: what
+// retention() gives at most. A wire below a use's need is skipped without
+// reading a session's events.
+export const longestSure = (wire: Wire | undefined): number => (wire === "anthropic_messages" ? 60 * MIN : wire === "openai_responses" ? 30 * MIN : 0);
+
 export type SwitchWarning = {
   cause: "model" | "effort";
   // false when the provider does not say whether the change reaches the prompt.

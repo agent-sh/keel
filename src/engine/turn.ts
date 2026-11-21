@@ -27,8 +27,8 @@ import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, type Material } from "./reader.ts";
 import { readBudget, readMaterial, readSource, type ReaderHost, type ReadOutcome } from "./readers.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
-import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleMinTokens, checkpointData, lastWarm, preparedWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
-import { effectiveEffort, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
+import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, type IdleFacts, checkpointData, lastWarm, preparedWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
+import { effectiveEffort, longestSure, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { withoutImages } from "./images.ts";
 import { anyOver, damagedImages, fitForWire, fitToolImages, imageKeys } from "./image-fit.ts";
@@ -369,6 +369,8 @@ export class Engine {
     registerPinnedDeferred((id) => this.pins.deferred(id));
     // A summary prepared ahead survives a restart.
     store.migrate("CREATE TABLE IF NOT EXISTS prepared_summaries (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, covered TEXT NOT NULL, data TEXT NOT NULL, ts INTEGER NOT NULL)");
+    // What idle compaction knows of each session's context, so a daemon that starts reads no events for it (resumeIdle).
+    store.migrate("CREATE TABLE IF NOT EXISTS idle_facts (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, head TEXT, model TEXT NOT NULL, wire TEXT NOT NULL, used INTEGER NOT NULL, warm INTEGER NOT NULL, sure INTEGER NOT NULL, max INTEGER NOT NULL)");
     store.migrate("CREATE TABLE IF NOT EXISTS queue_holds (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE)");
     this.held = new Set(store.db.query<{ session_id: string }, []>("SELECT session_id FROM queue_holds").all().map((r) => r.session_id));
     // Each model's bytes a token, learned from what its provider counted.
@@ -1696,45 +1698,83 @@ export class Engine {
     return warm > 0 && Date.now() - warm > retention(st.provider.wire, events, st.info.id).max;
   }
 
-  // After a restart: idle sessions whose cache may still be warm get their timer again.
+  // After a restart: idle sessions whose cache may still be warm get their timer
+  // again. The pass reads no session's events: what the decision needs was
+  // kept when the session last ended a turn (idle_facts), and it holds for as
+  // long as the session shows the same head on the same model and route. A
+  // session with no such facts (one an older build left, one whose branch
+  // changed outside a turn) is read once, and the loop is given back before
+  // the next. The request itself (tools, system prompt) is built when the
+  // timer fires, for the sessions it fires for.
   async resumeIdle() {
     const since = Date.now() - 60 * 60_000;
+    const routes = new Map<string, Promise<{ provider: Provider; info: ModelInfo }>>();
+    const route = (model: string) => routes.get(model) ?? routes.set(model, this.providers.resolve(model)).get(model)!;
     for (const { id } of this.store.db.query<{ id: string }, [number]>("SELECT id FROM sessions WHERE updated > ? AND archived = 0").all(since)) {
       const s = this.store.session(id);
-      if (!s || this.running.has(id)) continue;
-      try { this.scheduleIdle(id, await this.step(s, s.model)); } catch (e) { this.errors.capture("provider", e, { session: id, at: "idle compaction after a restart" }); }
+      if (!s || this.running.has(id) || s.parent_id || s.settings.idle_compact === false) continue;
+      try {
+        const { provider, info } = await route(s.model);
+        // No answer on this route can show a lifetime that leaves idle time to use.
+        if (longestSure(provider.wire) < 2 * IDLE_MARGIN_MS) continue;
+        let facts = this.idleFacts(id);
+        if (!facts || facts.head !== s.head || facts.model !== info.id || facts.wire !== provider.wire) {
+          facts = this.readIdleFacts(s, provider.wire, info.id);
+          // One session's events were read: the loop is given back before the next.
+          await new Promise<void>((r) => setImmediate(r));
+          if (this.running.has(id) || this.store.session(id)?.head !== facts.head) continue;
+        }
+        this.armIdle(s, facts, info.context, () => this.step(this.store.session(id)!, s.model));
+      } catch (e) { this.errors.capture("provider", e, { session: id, at: "idle compaction after a restart" }); }
     }
+  }
+
+  private idleFacts(id: string): IdleFacts | undefined {
+    return this.store.db.query<IdleFacts, [string]>("SELECT head, model, wire, used, warm, sure, max FROM idle_facts WHERE session_id = ?").get(id) ?? undefined;
+  }
+
+  // What idle compaction needs to know of the context the session shows, read
+  // from its events and kept with it.
+  private readIdleFacts(session: Session, wire: Provider["wire"], model: string): IdleFacts {
+    const events = this.lineage(session.id);
+    const keep = retention(wire, events, model);
+    const facts: IdleFacts = { head: session.head, model, wire: wire ?? "", used: contextTokens(events, model).used, warm: lastWarm(events, model), sure: keep.sure, max: keep.max };
+    this.store.db.query("INSERT OR REPLACE INTO idle_facts (session_id, head, model, wire, used, warm, sure, max) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(session.id, facts.head, facts.model, facts.wire, facts.used, facts.warm, facts.sure, facts.max);
+    return facts;
   }
 
   // After a turn: a context big enough gets its summary prepared shortly
   // before its cache lifetime ends, unless the session works again before then.
   private scheduleIdle(id: string, st: Step) {
-    clearTimeout(this.idleTimers.get(id));
-    this.idleTimers.delete(id);
     const session = this.store.session(id);
     // An agent's context is not prepared while idle: an ended agent is seldom
     // taken up again, and one that waits within its turn is not idle.
-    if (!session || session.parent_id || session.settings.idle_compact === false) return;
-    const events = this.lineage(id);
-    const limit = session.settings.compact_at ?? Math.floor(st.info.context * COMPACT_SHARE);
-    if (this.used(events, st) < idleMinTokens(limit)) return;
-    const keep = retention(st.provider.wire, events, st.info.id);
-    const life = keep.sure;
-    if (life < 2 * IDLE_MARGIN_MS) return; // a five-minute cache leaves no idle time to use
-    // Nothing shows this model's cache holds the context: there is no warm prefix to read it from.
-    const warm = lastWarm(events, st.info.id);
-    if (!warm) return;
-    // The cache has surely expired already (a turn that failed long after its
-    // last cached reply, a restart of an old session): a summary now would
-    // read the whole context at the full price, which is what this avoids.
-    if (Date.now() - warm > keep.max) return;
-    const due = warm + life - IDLE_MARGIN_MS - Date.now();
-    const t = setTimeout(() => {
+    if (!session || session.parent_id || session.settings.idle_compact === false) {
+      clearTimeout(this.idleTimers.get(id));
       this.idleTimers.delete(id);
-      const now = this.store.session(id);
-      if (this.running.has(id) || this.draining || !now || now.archived) return;
-      this.prepare(id, st, true);
-    }, Math.max(0, due));
+      return;
+    }
+    this.armIdle(session, this.readIdleFacts(session, st.provider.wire, st.info.id), st.info.context, () => st);
+  }
+
+  // Sets the session's idle timer from the facts of its context (idleDue).
+  // `step`: the request the summary is asked on, made when the timer fires.
+  private armIdle(session: Session, facts: IdleFacts, context: number, step: () => Step | Promise<Step>) {
+    const id = session.id;
+    clearTimeout(this.idleTimers.get(id));
+    this.idleTimers.delete(id);
+    const due = idleDue(facts, session.settings.compact_at ?? Math.floor(context * COMPACT_SHARE), Date.now());
+    if (due === undefined) return;
+    const t = setTimeout(async () => {
+      this.idleTimers.delete(id);
+      const idle = () => { const now = this.store.session(id); return !this.running.has(id) && !this.draining && !!now && !now.archived; };
+      if (!idle()) return;
+      try {
+        const st = await step();
+        if (idle()) this.prepare(id, st, true);
+      } catch (e) { this.errors.capture("provider", e, { session: id, at: "idle compaction" }); }
+    }, Math.max(0, due - Date.now()));
     (t as any).unref?.();
     this.idleTimers.set(id, t);
   }

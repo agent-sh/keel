@@ -58,6 +58,26 @@ export const IDLE_MARGIN_MS = 6 * 60_000;
 export const IDLE_MIN_TOKENS = 200_000;
 export const idleMinTokens = (limit: number) => Math.min(IDLE_MIN_TOKENS, Math.floor(limit * (PREPARE_SHARE / COMPACT_SHARE)));
 
+// What idle compaction needs to know of the context a session shows: the
+// tokens it holds, when its cache was last read or written on the model's
+// route, and how long that route keeps it. They are read from the events once
+// and kept with the head they were read at, so a daemon that starts decides
+// without reading any events (the engine's idle_facts).
+export type IdleFacts = { head: string | null; model: string; wire: string; used: number; warm: number; sure: number; max: number };
+
+// When the summary of an idle context is due, undefined when none is
+// prepared: the context is too small, the documented lifetime leaves no idle
+// time to use (a five-minute cache), nothing shows the model's cache holds
+// the context, or the cache has surely expired already (a turn that failed
+// long after its last cached reply, a restart of an old session), when a
+// summary would read the whole context at the full price.
+export function idleDue(f: Pick<IdleFacts, "used" | "warm" | "sure" | "max">, limit: number, now: number): number | undefined {
+  if (f.used < idleMinTokens(limit)) return undefined;
+  if (f.sure < 2 * IDLE_MARGIN_MS) return undefined;
+  if (!f.warm || now - f.warm > f.max) return undefined;
+  return f.warm + f.sure - IDLE_MARGIN_MS;
+}
+
 // The newest reply that shows this context's cache was read or written on
 // `model`'s route: a reply of that model after the last checkpoint whose usage
 // reported cache activity. Another model's reply used another route's cache, a

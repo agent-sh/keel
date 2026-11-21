@@ -391,3 +391,63 @@ test("cache warmth follows the route and prefix a request used", async () => {
     setSystemTime();
   }
 });
+
+// A daemon that starts sets the idle timers of the sessions used in the last
+// hour from what each kept when it last ended a turn: no session's events are
+// read. One whose branch changed since (a note, another branch shown) is read
+// once, and its facts are kept again.
+test("a restart sets the idle timers from kept facts and reads no session's events", async () => {
+  const { setSystemTime, spyOn } = await import("bun:test");
+  const MIN = 60_000;
+  const T0 = Date.UTC(2026, 0, 1);
+  const r = rig();
+  const real = globalThis.setTimeout;
+  // The delays the idle timers are set with (no timer is left running).
+  const timers = async (f: () => unknown) => {
+    const out: number[] = [];
+    (globalThis as any).setTimeout = (_f: unknown, ms: number) => { out.push(Math.round(ms / MIN)); return real(() => {}, 0); };
+    try { await f(); } finally { globalThis.setTimeout = real; }
+    return out;
+  };
+  try {
+    setSystemTime(new Date(T0));
+    const usage = { input: 10, output: 2_000, cache_read: 0, cache_write: 9_000, cache_write_1h: 9_000 };
+    const long = r.session(BIG.id);
+    r.store.updateSession(long, { settings: { compact_at: 2_000 } });
+    r.store.append(long, "user", { text: "read the big file" });
+    r.store.append(long, "assistant", { blocks: [{ type: "text", text: words(8_000) }], model: BIG.id, stop: "end_turn", usage });
+    const short = r.session(BIG.id);
+    r.store.append(short, "user", { text: "hello" });
+    r.store.append(short, "assistant", { blocks: [{ type: "text", text: "ok" }], model: BIG.id, stop: "end_turn", usage: { ...usage, cache_write: 20, cache_write_1h: 20, output: 5 } });
+    // The turns end at minute 20: the long context's summary is due at minute 54, the short one gets none.
+    setSystemTime(new Date(T0 + 20 * MIN));
+    for (const id of [long, short]) {
+      const st = await (r.engine as any).step(r.store.session(id), BIG.id);
+      expect(await timers(() => (r.engine as any).scheduleIdle(id, st))).toEqual(id === long ? [34] : []);
+    }
+    // Another daemon on the same store, at minute 30.
+    const next = new Engine(r.store, new Bus(), (r.engine as any).providers, (r.engine as any).errors, join(r.dir, "spill"));
+    setSystemTime(new Date(T0 + 30 * MIN));
+    const read = spyOn(r.store, "lineage");
+    const all = spyOn(r.store, "events");
+    expect(await timers(() => next.resumeIdle())).toEqual([24]);
+    expect(read).toHaveBeenCalledTimes(0);
+    expect(all).toHaveBeenCalledTimes(0);
+    // The branch changed outside a turn: that session is read once, and not again at the next start.
+    r.store.append(long, "note", { text: "a job ended" });
+    expect(await timers(() => next.resumeIdle())).toEqual([24]);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(await timers(() => next.resumeIdle())).toEqual([24]);
+    expect(read).toHaveBeenCalledTimes(1);
+    // Past the hour the cache is gone: no summary is prepared from it.
+    setSystemTime(new Date(T0 + 70 * MIN));
+    r.store.db.run("UPDATE sessions SET updated = ?", [Date.now()]);
+    expect(await timers(() => next.resumeIdle())).toEqual([]);
+    expect(read).toHaveBeenCalledTimes(1);
+    read.mockRestore();
+    all.mockRestore();
+  } finally {
+    globalThis.setTimeout = real;
+    setSystemTime();
+  }
+});

@@ -3,7 +3,7 @@
 import { expect, test } from "bun:test";
 import type { StoredEvent } from "../core/types.ts";
 import type { ModelInfo } from "../providers/types.ts";
-import { switchWarning } from "./cachewarn.ts";
+import { longestSure, retention, switchWarning } from "./cachewarn.ts";
 
 const MIN = 60_000;
 const to = { id: "b:m", name: "B", efforts: [], price: { input: 1, output: 1 } } as unknown as ModelInfo;
@@ -59,4 +59,15 @@ test("only a reply that used the cache keeps the prefix warm", () => {
   // A 1-hour write before a checkpoint says nothing about the prefix written after it.
   const after = [...line(), { kind: "compaction", ts: 2 * MIN, data: { mode: "summary", summary: "s" } }, { kind: "user", ts: 3 * MIN, data: {} }, { kind: "assistant", ts: 3 * MIN + 1000, data: { model: "a:m", usage: usage({ cache_write: 900 }) } }] as any[];
   expect(warn(after, 20).warning).toMatchObject({ certain: false, uncached_tokens: 900 });
+});
+
+// A start skips a session whose route can never show a lifetime long enough
+// (longestSure) without reading its events: no evidence gives more than that.
+test("no evidence shows a longer sure lifetime than the wire's longest", () => {
+  const usages: Record<string, number>[] = [{}, { cache_read: 100 }, { cache_write: 100 }, { cache_write: 100, cache_write_1h: 100 }];
+  for (const wire of ["anthropic_messages", "openai_responses", "openai_chat", "gemini", undefined] as any[]) {
+    for (const u of usages) expect(retention(wire, history(u), "a:m").sure).toBeLessThanOrEqual(longestSure(wire));
+  }
+  expect(longestSure("anthropic_messages")).toBe(60 * MIN);
+  expect(longestSure("openai_chat" as any)).toBe(0);
 });
