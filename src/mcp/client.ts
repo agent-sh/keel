@@ -453,11 +453,20 @@ export class McpClient {
   // Lists follow nextCursor: only a missing one ends a listing (a cursor is an
   // opaque string, "" included). A bound stops a server that never ends one;
   // what it stopped at comes back as `next`, so a caller can go on from there.
-  async page<T>(method: string, key: string, signal?: AbortSignal, from?: string): Promise<{ items: T[]; next?: string }> {
+  // A continuation that failed comes back the same way, with the pages before
+  // it and the failure: asking again from `next` sends the cursor that failed.
+  // (A cursor is this connection's: on a closed one the failure is thrown.)
+  async page<T>(method: string, key: string, signal?: AbortSignal, from?: string): Promise<{ items: T[]; next?: string; error?: Error }> {
     const items: T[] = [];
     let cursor = from;
     for (let page = 0; page < 50; page++) {
-      const r = await this.rpc(method, cursor !== undefined ? { cursor } : {}, { signal });
+      let r: any;
+      try {
+        r = await this.rpc(method, cursor !== undefined ? { cursor } : {}, { signal });
+      } catch (e) {
+        if (cursor === undefined || signal?.aborted || this.closed) throw e;
+        return { items, next: cursor, error: e as Error };
+      }
       items.push(...(r?.[key] ?? []));
       cursor = typeof r?.nextCursor === "string" ? r.nextCursor : undefined;
       if (cursor === undefined) return { items };
@@ -465,7 +474,9 @@ export class McpClient {
     return { items, next: cursor };
   }
   private async list<T>(method: string, key: string, signal?: AbortSignal): Promise<T[]> {
-    return (await this.page<T>(method, key, signal)).items;
+    const r = await this.page<T>(method, key, signal);
+    if (r.error) throw r.error; // a whole list or none
+    return r.items;
   }
 
   listTools(signal?: AbortSignal) { return this.list<McpTool>("tools/list", "tools", signal); }

@@ -111,3 +111,35 @@ test("mcp http: updates the server sends on its own", async ({ page, request }) 
     await s.stop();
   }
 });
+
+// A later page of the resource list fails once. The rows of the pages before
+// it stay with the failure under them; Retry asks for that page again with
+// the same cursor, leaves the templates as they are, and adds its rows once.
+test("mcp http: a resource page that failed", async ({ page, request }) => {
+  const s = await standIn(request, "legacy");
+  try {
+    await s.control({ fail_page: true });
+    await page.goto("/");
+    await page.getByTestId("composer").fill("/mcp");
+    await page.keyboard.press("Enter");
+    const panel = page.getByTestId("mcp-panel");
+    await panel.locator('[data-testid="mcp-entry"]').filter({ hasText: "legacy" }).first().click();
+    const row = panel.locator('[data-testid="mcp-server"][data-name="legacy"]');
+    await row.getByTestId("mcp-contents-toggle").click();
+    const failedRow = row.locator('[data-testid="mcp-list-failed"][data-list="resources"]');
+    await expect(failedRow).toContainText("Listing more resources failed: the second page is not ready");
+    await expect(row.getByTestId("mcp-resource")).toHaveText(["legacy://one"]);
+    await expect(row.getByTestId("mcp-resource-template")).toHaveText(["legacy://item/{id}"]);
+    await shoot(page, "mcp-http-03-page-failed");
+
+    await failedRow.getByTestId("mcp-list-retry").dblclick();
+    await expect(row.getByTestId("mcp-resource")).toHaveText(["legacy://one", "legacy://two"]);
+    await expect(row.getByTestId("mcp-list-failed")).toHaveCount(0);
+    await expect(row.getByTestId("mcp-resource-template")).toHaveText(["legacy://item/{id}"]);
+    // Page one once, then the failed cursor twice: the failure and the retry.
+    expect((await s.stats()).cursors).toEqual([null, "p2", "p2"]);
+    await shoot(page, "mcp-http-04-page-retried");
+  } finally {
+    await s.stop();
+  }
+});

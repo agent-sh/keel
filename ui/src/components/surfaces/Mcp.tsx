@@ -178,8 +178,13 @@ function ServerContents({ s, base }: { s: McpServerState; base: string }) {
   const [prompts, setPrompts] = useState<Prompt[] | null>(null);
   const [shown, setShown] = useState<Shown | null>(null);
   const [err, setErr] = useState("");
+  // A listing from page one makes any continuation still on its way another list's: its rows are dropped.
+  const listing = useRef(0);
+  const going = useRef<Record<string, boolean>>({});
   const loadLists = useCallback(() => {
-    api<{ resources: Half; templates: Half }>(`${base}/resources`).then(setLists).catch((e) => setErr(failed(e, { at: "Mcp resources" })));
+    const mine = ++listing.current;
+    going.current = {};
+    api<{ resources: Half; templates: Half }>(`${base}/resources`).then((r) => { if (mine === listing.current) setLists(r); }).catch((e) => setErr(failed(e, { at: "Mcp resources" })));
   }, [base]);
   useEffect(() => {
     if (open && s.resources) loadLists();
@@ -187,11 +192,18 @@ function ServerContents({ s, base }: { s: McpServerState; base: string }) {
   useEffect(() => {
     if (open && s.prompts) api<{ prompts: Prompt[] }>(`${base}/prompts`).then((r) => setPrompts(r.prompts)).catch((e) => setErr(failed(e, { at: "Mcp prompts" })));
   }, [open, base, s.prompts, s.last_connected]);
-  // Load more goes on from where the bound stopped, for that one list.
-  const more = (list: "resources" | "templates", cursor: string) =>
+  // Load more goes on from where the bound stopped, and Retry from the page
+  // that failed, for that one list: the rows already shown and the other list
+  // stay. One request at a time per list, so a page's rows are added once.
+  const more = (list: "resources" | "templates", cursor: string) => {
+    if (going.current[list]) return;
+    going.current[list] = true;
+    const mine = listing.current;
     api<{ resources: Half; templates: Half }>(`${base}/resources?list=${list}&cursor=${encodeURIComponent(cursor)}`)
-      .then((r) => setLists((x) => x && { ...x, [list]: { ...x[list], items: [...x[list].items, ...r[list].items], next: r[list].next, error: r[list].error } }))
-      .catch((e) => setErr(failed(e, { at: "Mcp resources" })));
+      .then((r) => { if (mine === listing.current) setLists((x) => x && { ...x, [list]: { ...x[list], items: [...x[list].items, ...r[list].items], next: r[list].next, error: r[list].error } }); })
+      .catch((e) => setErr(failed(e, { at: "Mcp resources" })))
+      .finally(() => { if (mine === listing.current) going.current[list] = false; });
+  };
   const read = (uri: string) =>
     api<{ items: Item[] }>(`${base}/resource?uri=${encodeURIComponent(uri)}`)
       .then((r) => setShown({ title: uri, uri, rev: s.resource_updates[uri] ?? 0, items: r.items }))
@@ -200,23 +212,23 @@ function ServerContents({ s, base }: { s: McpServerState; base: string }) {
   const what = [s.resources && "resources", s.prompts && "prompts"].filter(Boolean).join(" and ");
   const half = (label: string, list: "resources" | "templates", h: Half) => (
     <>
-      {h.error && (
-        <li className="flex items-baseline gap-2 text-caption text-danger" data-testid="mcp-list-failed" data-list={list}>
-          Listing the {label} failed: {h.error}
-          <button type="button" onClick={loadLists} className="text-muted hover:text-fg hover:underline">Retry</button>
-        </li>
-      )}
       {h.items.map((r) => (
         <li key={r.uri ?? r.uriTemplate} className="flex items-baseline gap-2 text-caption">
           {r.uri ? (
             <button type="button" data-testid="mcp-resource" onClick={() => read(r.uri!)} className="font-mono text-accent hover:underline">{r.uri}</button>
           ) : (
-            <span className="font-mono text-muted" title="A template: the model fills it in">{r.uriTemplate}</span>
+            <span data-testid="mcp-resource-template" className="font-mono text-muted" title="A template: the model fills it in">{r.uriTemplate}</span>
           )}
           {(r.name || r.description) && <span className="truncate text-faint">{r.description ?? r.name}</span>}
         </li>
       ))}
-      {h.next !== undefined && (
+      {h.error && (
+        <li className="flex items-baseline gap-2 text-caption text-danger" data-testid="mcp-list-failed" data-list={list}>
+          {h.next !== undefined ? `Listing more ${label} failed` : `Listing the ${label} failed`}: {h.error}
+          <button type="button" data-testid="mcp-list-retry" onClick={() => (h.next !== undefined ? more(list, h.next) : loadLists())} className="text-muted hover:text-fg hover:underline">Retry</button>
+        </li>
+      )}
+      {h.next !== undefined && !h.error && (
         <li><button type="button" data-testid="mcp-load-more" data-list={list} onClick={() => more(list, h.next!)} className="text-caption text-muted hover:text-fg hover:underline">More may exist: load more {label}</button></li>
       )}
     </>

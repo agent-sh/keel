@@ -71,7 +71,8 @@ export type McpServerState = {
 
 // One item of a resources/read result, as the server gave it (a body is never fetched beyond it).
 export type ResourceItem = { uri: string; mimeType?: string; text?: string; bytes?: number };
-// One half of a resource listing: its entries, or why it failed; `next` when the bound stopped it.
+// One half of a resource listing: its entries, or why it failed. `next` is where to go on from: the bound
+// stopped it there, or (with `error`) that page failed and can be asked for again.
 export type ResourceHalf = { items: any[]; error?: string; unsupported?: boolean; next?: string };
 // A prompt message as the server returned it, its role kept apart from its content.
 export type PromptMessage = { role: string; type: string; text: string };
@@ -754,7 +755,7 @@ export class McpManager {
       if (from && from.list !== list) return { items: [] };
       try {
         const r = await (list === "resources" ? c.listResources(signal, from?.cursor) : c.listResourceTemplates(signal, from?.cursor));
-        return { items: r.items, next: r.next };
+        return { items: r.items, next: r.next, error: r.error?.message };
       } catch (err) {
         if (err instanceof RpcError && err.code === -32601) return { items: [], unsupported: true };
         return { items: [], error: (err as Error).message };
