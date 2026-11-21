@@ -794,3 +794,47 @@ test("a message that restarts a finished agent holds its slot while its worktree
   expect(agents.get(b.id)!.status).toBe("running");
   expect(sends.filter((x) => x.id === b.session_id).map((x) => x.text.split("\n").at(-1))).toEqual(["first message", "second message"]);
 });
+
+test("a report is said once: an earlier round the final one repeats is left out, and words before a tool call stay short", async () => {
+  const round = (a: agents.AgentRecord, text: string, tool = false) => {
+    store.append(a.session_id, "assistant", { blocks: [{ type: "text", text }, ...(tool ? [{ type: "tool_use", id: "t", name: "Bash", input: {} }] : [])] });
+    if (tool) store.append(a.session_id, "tool_result", { results: [{ type: "tool_result", tool_use_id: "t", content: "ok" }] });
+    store.append(a.session_id, "turn_end", { reason: tool ? "restart" : "end_turn" });
+    store.append(a.session_id, "user", { text: "[harness] go on", kind: "harness" });
+  };
+  const report = "The parser has three bugs:\n1. off by one\n2. a missed quote\n3. no end of file check";
+  const result = async (a: agents.AgentRecord) => { await settled(); return agents.get(a.id)!.result!; };
+  const count = (text: string, part: string) => text.split(part).length - 1;
+
+  // Cut before its answer, then the report, the same report again, and a final one that holds it.
+  const a = await spawn();
+  const thinking = `Looking at the parser first. ${"It reads a token at a time. ".repeat(60)}`.trim();
+  round(a, thinking, true);
+  round(a, report);
+  round(a, report);
+  end(a, "end_turn", `Checked again after the restart.\n\n${report}\n\nAll three are in parse.ts.`);
+  const got = await result(a);
+  expect(got.startsWith("Checked again after the restart.")).toBe(true);
+  expect(count(got, report)).toBe(1);
+  expect(count(got, "Earlier reports, oldest first:")).toBe(1);
+  const note = got.slice(got.indexOf("(No final answer. Before its last tool call it wrote:)\n"));
+  expect(note.length).toBeLessThanOrEqual(55 + 400);
+  expect(note.endsWith("…")).toBe(true);
+
+  // The same report twice is the report, with no tail.
+  const b = await spawn();
+  round(b, report);
+  end(b, "end_turn", report);
+  expect(await result(b)).toBe(report);
+
+  // Two different reports are both kept, the newest first; an only round that had no answer keeps its words whole.
+  const c = await spawn();
+  round(c, "First finding: the lexer drops tabs.");
+  end(c, "end_turn", "Second finding: the parser is fine.");
+  expect(await result(c)).toBe("Second finding: the parser is fine.\n\nEarlier reports, oldest first:\n\nFirst finding: the lexer drops tabs.");
+  const d = await spawn();
+  store.append(d.session_id, "assistant", { blocks: [{ type: "text", text: thinking }, { type: "tool_use", id: "t", name: "Bash", input: {} }] });
+  store.append(d.session_id, "turn_end", { reason: "max_steps" });
+  agents.onTurnEnd(d.session_id, "max_steps");
+  expect(await result(d)).toContain(`(No final answer. Before its last tool call it wrote:)\n${thinking}`);
+});

@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { lineage } from "../core/tree.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
-import { D, attr, capture, deliver, dropPending, emit, hasPending, inert, isPending, stillRunning, takeRiding, withdraw } from "./core.ts";
+import { D, attr, capture, clip, deliver, dropPending, emit, hasPending, inert, isPending, stillRunning, takeRiding, withdraw } from "./core.ts";
 import * as perm from "../server/routes/permissions.ts";
 import * as waits from "./waits.ts";
 import * as activity from "./activity.ts";
@@ -667,20 +667,25 @@ export function adopt(parentId: string, childId: string, o: { title: string; typ
 // The final message of every round since the task: the newest first (a late
 // correction is what the parent reads first), the earlier ones after it. Words
 // said before a tool call are not a report: a round that ended without a final
-// answer says so, with the last tool failure it did not get past. A long result
-// keeps its start and its end. `own`: the agent wrote something itself;
-// `error`: the error its last turn ended on.
+// answer says so, with the last tool failure it did not get past. An earlier
+// round the newest one repeats (an agent asked to go on often says its whole
+// report again) is left out, and so is one said twice; an earlier round's
+// words before a tool call are kept short. A long result keeps its start and
+// its end. `own`: the agent wrote something itself; `error`: the error its
+// last turn ended on.
+const NO_FINAL = "(No final answer. Before its last tool call it wrote:)\n";
+const EARLIER_NOTE_MAX = 400;
 function collect(a: AgentRecord, end?: string): { text: string; own: boolean; error: string } {
   const evs = D().store.events(a.session_id, a.first_seq);
-  const rounds: string[] = [];
+  const rounds: { text: string; note?: boolean }[] = [];
   let final = "";
   let before = "";
   let failure = "";
   let bad: any[] = []; // the failed results of the newest step
   let err = "";
   const close = () => {
-    if (final) rounds.push(final);
-    else if (before) rounds.push(`(No final answer. Before its last tool call it wrote:)\n${before}`);
+    if (final) rounds.push({ text: final });
+    else if (before) rounds.push({ text: before, note: true });
     final = before = "";
   };
   for (const e of evs) {
@@ -699,7 +704,10 @@ function collect(a: AgentRecord, end?: string): { text: string; own: boolean; er
     else if (e.kind === "turn_end") close();
   }
   close();
-  let text = rounds.length > 1 ? `${rounds.at(-1)}\n\nEarlier reports, oldest first:\n\n${rounds.slice(0, -1).join("\n\n")}` : rounds.join("");
+  const last = rounds.at(-1);
+  const earlier = rounds.slice(0, -1).filter((r, i, all) => !last!.text.includes(r.text) && all.findIndex((x) => x.text === r.text) === i);
+  let text = last ? `${last.note ? NO_FINAL : ""}${last.text}` : "";
+  if (earlier.length) text += `\n\nEarlier reports, oldest first:\n\n${earlier.map((r) => (r.note ? `${NO_FINAL}${clip(r.text, EARLIER_NOTE_MAX)}` : r.text)).join("\n\n")}`;
   if (end && END_TEXT[end]) text += `${text ? "\n\n" : ""}It did not finish: ${END_TEXT[end]}.${failure ? `\nIts last tool failure:\n${failure}` : ""}`;
   if (err) text += `${text ? "\n\n" : ""}Error: ${err}`;
   if (text.length > RESULT_CAP) text = `${text.slice(0, RESULT_CAP / 2)}\n\n[... cut ...]\n\n${text.slice(-RESULT_CAP / 2)}`;
