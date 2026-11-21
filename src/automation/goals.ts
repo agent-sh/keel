@@ -1,6 +1,6 @@
 import { lineage } from "../core/tree.ts";
 import * as activity from "./activity.ts";
-import { D, capture, deliver, emit, hasPending } from "./core.ts";
+import { D, alertHook, capture, deliver, emit, hasPending } from "./core.ts";
 import { check, extractJson } from "./schema.ts";
 import { liveAgents } from "./state.ts";
 import { verify } from "./verify.ts";
@@ -328,7 +328,14 @@ export async function afterTurn(sessionId: string, reason: string, opts: { judge
       if (!ours(after)) return; // cleared or replaced meanwhile: the goal there now is not this check's to touch
       if (!active(after)) return void done({ ...after!, verifying: false }); // paused meanwhile
       next = { ...after!, verifying: false, verifier_session: out.child_id, tokens_used: after!.tokens_used + out.tokens };
-      if ("error" in out.result) return void done({ ...next, status: "paused", status_reason: `the judge said met; ${out.result.error}. Resume to try again.` });
+      if ("error" in out.result) {
+        // No verdict to act on (a met with no evidence, no answer, a verifier that ran out of time):
+        // the goal stops here until the owner resumes it, so the owner is told.
+        const why = `the judge said met; ${out.result.error}. Resume to try again.`;
+        activity.record("turn", "goal", sessionId, `Goal paused: ${why}`.slice(0, 400));
+        alertHook.raise?.("failed", sessionId, `Goal paused: ${D().store.session(sessionId)?.title || "a session"}`, why, { open_session: sessionId });
+        return void done({ ...next, status: "paused", status_reason: why });
+      }
       const r = out.result;
       activity.record("turn", "goal", sessionId, `Goal verification: ${r.verdict.replace("_", " ")}. ${r.reason}`.slice(0, 400));
       next = { ...next, last_verdict: r.verdict, last_reason: r.reason, evidence: r.evidence };

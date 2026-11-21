@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
-import { dropPending, setDeps } from "./core.ts";
+import { alertHook, dropPending, setDeps } from "./core.ts";
 import * as activity from "./activity.ts";
 import * as agents from "./agents.ts";
 import * as goals from "./goals.ts";
@@ -196,7 +196,10 @@ test("a verifier's met counts only with evidence it names", async () => {
   expect(parseVerdict('{"verdict": "met", "reason": "all good", "evidence": [" bun test: 4 pass ", ""]}')).toEqual({ verdict: "met", reason: "all good", evidence: ["bun test: 4 pass"] });
   expect(parseVerdict('{"verdict": "not_met", "reason": "no test was run, so there is nothing to cite"}')).toEqual({ verdict: "not_met", reason: "no test was run, so there is nothing to cite", evidence: [] });
 
-  // A bare met is asked for its evidence once, in the verifier's own context; still bare, the goal is not achieved.
+  // A bare met is asked for its evidence once, in the verifier's own context; still bare, the goal is not
+  // achieved: it pauses, and the owner is told (an alert and an activity row).
+  const alerts: string[][] = [];
+  alertHook.raise = (kind, id, title, body) => void alerts.push([kind, id ?? "", title, body]);
   for (const bare of ['{"verdict": "met", "reason": "all good"}', '{"verdict": "met", "reason": "all good", "evidence": []}', '{"verdict": "met", "reason": "all good", "evidence": ["   "]}']) {
     const g = await judgedMet("ship it");
     verifierSays(g.child, bare);
@@ -205,7 +208,12 @@ test("a verifier's met counts only with evidence it names", async () => {
     await g.check;
     expect(goals.get(g.id)).toMatchObject({ status: "paused", status_reason: expect.stringContaining("no evidence"), verifying: false });
     expect(goals.get(g.id)!.verified ?? false).toBe(false);
+    expect(alerts.filter((a) => a[1] === g.id)).toEqual([["failed", g.id, expect.stringContaining("Goal paused"), expect.stringContaining("no evidence")]]);
+    const rows = store.db.query<{ text: string }, [string]>("SELECT text FROM activity WHERE session_id = ? AND text LIKE 'Goal paused%'").all(g.id);
+    expect(rows.map((r) => r.text)).toEqual([expect.stringContaining("no evidence")]);
   }
+  alertHook.raise = undefined;
+  expect(alerts).toHaveLength(3);
 
   const second = await judgedMet("ship it");
   verifierSays(second.child, '{"verdict": "met", "reason": "all good"}');
