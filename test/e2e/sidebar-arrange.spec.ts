@@ -156,13 +156,14 @@ test("panes on request, agents folded, the list filtered and arranged", async ({
   await request.post(`/api/sessions/${c}/messages`, { data: { text: "script:long-tool" } });
   const band = pane(0).locator(".k-band");
   await expect(pane(0)).toHaveAttribute("data-watch", "work", { timeout: 15_000 });
-  await expect.poll(() => band.evaluate((el) => getComputedStyle(el).animationName)).toBe("k-breathe");
+  // The breathing is a layer over the band (its opacity moves, so nothing is painted again).
+  await expect.poll(() => band.evaluate((el) => getComputedStyle(el, "::after").animationName)).toBe("k-breathe");
   await expect(page.getByTestId("wake-line")).toBeVisible();
   expect(await band.evaluate((el) => getComputedStyle(el).transitionProperty)).toContain("background-color");
   await shoot(page, "arrange-09-working-line");
   await request.post(`/api/sessions/${c}/interrupt`);
   await expect(pane(0)).not.toHaveAttribute("data-watch", "work", { timeout: 15_000 });
-  expect(await band.evaluate((el) => getComputedStyle(el).animationName)).toBe("none");
+  expect(await band.evaluate((el) => getComputedStyle(el, "::after").animationName)).toBe("none");
   await request.post(`/api/sessions/${parent}/interrupt`).catch(() => {});
 });
 
