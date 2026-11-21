@@ -86,7 +86,7 @@ registerCommand(
   { id: "stop-agent", label: "Stop this agent", group: "Session", when: () => current()?.phase === "working" && !!current()?.parent_id, run: () => void stopHere(current()!) },
   { id: "archive", label: "Archive this session", group: "Session", when: () => !!current(), run: () => { actions.patch(current()!.id, { archived: true }).catch(reportError); navigate({ name: "new" }); } },
   { id: "copy-link", label: "Copy a link to this session", group: "Session", when: () => !!current(), run: () => void copyOrSay(location.href) },
-  { id: "end", label: "Go to the end and follow", group: "Session", keys: "end mod+end", when: () => !!current(), run: () => dispatchEvent(new Event("keel:end")) },
+  { id: "end", label: "Go to the end and follow", group: "Session", keys: "end mod+end", when: () => !!current(), run: () => dispatchEvent(new CustomEvent("keel:end", { detail: current()!.id })) }, // the pane worked in, not every transcript on screen
   // The transcript of the pane with the keys moves to the prompt before or after the one it is on.
   { id: "prev-prompt", label: "Previous prompt", group: "Conversation", keys: "alt+arrowup", inInput: true, words: "message question earlier jump back", when: () => !!current(), run: () => dispatchEvent(new CustomEvent("keel:prompt", { detail: { session: current()!.id, dir: -1 } })) },
   { id: "next-prompt", label: "Next prompt", group: "Conversation", keys: "alt+arrowdown", inInput: true, words: "message question later jump forward", when: () => !!current(), run: () => dispatchEvent(new CustomEvent("keel:prompt", { detail: { session: current()!.id, dir: 1 } })) },

@@ -1,3 +1,4 @@
+import type { APIRequestContext, Page } from "@playwright/test";
 import { expect, test } from "./isolate.ts";
 import { shoot, tabInto } from "./shots.ts";
 
@@ -527,4 +528,51 @@ test("the settings head fits a small phone at the largest text size", async ({ p
   expect(await title.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
   await back.click();
   await expect(page).not.toHaveURL(/\/settings\//);
+});
+
+// Two long conversations side by side, both scrolled away from their ends.
+async function twoLong(page: Page, request: APIRequestContext) {
+  const tag = Date.now().toString(36);
+  const mk = async (title: string) => {
+    const s = (await (await request.post("/api/sessions", { data: { model: MODEL, title } })).json()).session;
+    await request.post(`/api/sessions/${s.id}/messages`, { data: { text: "Fill it. script:fill" } });
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${s.id}`)).json()).events.some((e: any) => e.kind === "turn_end" || e.kind === "error"), { timeout: 30_000 }).toBe(true);
+    return s.id as string;
+  };
+  const a = await mk(`Left conversation ${tag}`);
+  const b = await mk(`Right conversation ${tag}`);
+  const pane = (id: string) => page.getByTestId("station").and(page.locator(`[data-station="${id}"]`));
+  const scroller = (id: string) => pane(id).getByTestId("transcript").locator("..");
+  await page.goto(`/s/${a}`);
+  await expect(pane(a)).toHaveAttribute("data-helm", "true");
+  const row = page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${b}"]`);
+  await row.hover();
+  await row.getByTestId("row-beside").click();
+  await expect(pane(b)).toHaveAttribute("data-helm", "true");
+  return { a, b, pane, scroller, drop: async () => { for (const id of [a, b]) await request.delete(`/api/sessions/${id}`); } };
+}
+
+// End goes to the end of the conversation in the pane worked in, and of no other.
+test("End follows the end of the active pane only", async ({ page, request }) => {
+  const { a, b, pane, scroller, drop } = await twoLong(page, request);
+  try {
+    const top = (id: string) => scroller(id).evaluate((el) => el.scrollTop);
+    const fromEnd = (id: string) => scroller(id).evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight);
+    for (const id of [a, b]) {
+      await expect.poll(() => fromEnd(id)).toBeLessThan(2);
+      await scroller(id).evaluate((el) => { el.scrollTop = 200; });
+      await expect(pane(id).getByTestId("jump-latest")).toBeVisible();
+    }
+    // The left pane is the one worked in: a press in its conversation, then End.
+    await pane(a).getByTestId("assistant-text").first().click({ position: { x: 20, y: 20 } });
+    await expect(pane(a)).toHaveAttribute("data-helm", "true");
+    await page.keyboard.press("End");
+    await expect(pane(a).getByTestId("jump-latest")).toHaveCount(0);
+    await expect.poll(() => fromEnd(a)).toBeLessThan(2);
+    // The other one stays where it was being read.
+    await page.waitForTimeout(600); // a smooth scroll would be on its way by now
+    expect(await top(b)).toBe(200);
+    await expect(pane(b).getByTestId("jump-latest")).toBeVisible();
+    await shoot(page, "layout-19-end-active-pane");
+  } finally { await drop(); }
 });

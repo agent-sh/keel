@@ -549,10 +549,11 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       remember();
     });
     ro.observe(c);
-    const onEnd = () => toEnd(true);
+    // End is for the pane worked in: the command names its session.
+    const onEnd = (e: Event) => { if ((e as CustomEvent<string>).detail === sessionId) toEnd(true); };
     addEventListener("keel:end", onEnd);
     return () => { ro.disconnect(); removeEventListener("keel:end", onEnd); };
-  }, [!!events]);
+  }, [!!events, sessionId]);
 
   // A search hit opens the session at its message.
   // The request is checked when the frame runs, before anything moves: one
