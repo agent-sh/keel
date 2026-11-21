@@ -429,6 +429,18 @@ export class Imports {
     return !!this.store.db.query("SELECT 1 FROM events WHERE session_id = ? AND kind = 'turn_start' LIMIT 1").get(sessionId);
   }
 
+  // The source's events at the head of the copy, each at the time the source
+  // gives it. One the source does not date takes the time of the one before
+  // it (now, when it is the first), so the order in time stays the order of
+  // the conversation.
+  private copy(sessionId: string, events: Read["events"]) {
+    let last: number | undefined;
+    for (const e of events) {
+      if (Number.isFinite(e.ts) && e.ts > 0) last = e.ts;
+      this.store.append(sessionId, e.kind, e.data, undefined, last);
+    }
+  }
+
   // A new keel-bun session from a source, or the events the source gained
   // since an earlier import appended to that session.
   // `from`: a transcript another machine read (its daemon sent what it read);
@@ -463,7 +475,7 @@ export class Imports {
       if (r.events.length <= link.items) return { action: "opened", session: s, imported_events: 0, read: r };
       const more = r.events.slice(link.items);
       this.store.atomic(s.id, () => {
-        for (const e of more) this.store.append(s.id, e.kind, e.data);
+        this.copy(s.id, more);
         this.store.db.query("UPDATE import_links SET items = ?, digest = ?, source_size = ?, source_mtime = ?, synced_ms = ? WHERE session_id = ?").run(r.events.length, digestOf(r.events), st.size, st.mtime, Date.now(), s.id);
       });
       return { action: "updated", session: this.store.session(s.id)!, imported_events: more.length, read: r };
@@ -477,7 +489,7 @@ export class Imports {
     const id = this.store.db.transaction(() => {
       const s = this.store.createSession({ title: o.title ?? found.title, model: o.model, workspace: o.workspace });
       if (o.from) this.store.db.query("UPDATE sessions SET machine = ? WHERE id = ?").run(o.from.machine, s.id);
-      for (const e of r.events) this.store.append(s.id, e.kind, e.data);
+      this.copy(s.id, r.events);
       const counts = r.counts;
       const summary = `Imported from ${label}${o.from ? " on another machine" : ""} (${f.id}): ${counts.prompts} prompts, ${counts.assistant_messages} replies, ${counts.tool_calls} tool calls. The original is unchanged.`;
       this.store.append(s.id, "note", { text: [summary, ...r.notes].join(" "), imported: true });

@@ -189,3 +189,33 @@ test("the index pages, counts and looks up like a pass over every session, and d
   both({ q: "שלום", sort: "title" });
   both({ offered: true, limit: 200 });
 }, 60_000); // ten thousand rows written and read many ways: a busy machine takes its time
+
+test("a copy's events keep the times the source gives them; the receipt and the link say when it was copied", async () => {
+  const { store, imports, grow, found, o } = fixture();
+  const t0 = Date.now();
+  const made = await imports.import(found(), o);
+  const at = (i: number) => T0 + i * 60_000; // the fixture dates its records a minute apart, in March 2024
+  const evs = () => store.events(made.session.id);
+  const talk = () => evs().filter((e) => e.kind === "user" || e.kind === "assistant");
+  expect(talk().map((e) => e.ts)).toEqual([at(0), at(1), at(2), at(3)]);
+  expect(talk().map((e) => e.seq)).toEqual([1, 2, 3, 4]);
+  // The receipt is of the import, not of the conversation.
+  const receipt = evs().at(-1)!;
+  expect(receipt.data.text).toContain("Imported from Claude Code");
+  expect(receipt.ts).toBeGreaterThanOrEqual(t0);
+  const link = imports.link(made.session.id)!;
+  expect(link.imported_ms).toBeGreaterThanOrEqual(t0);
+  expect(store.session(made.session.id)!.updated).toBeGreaterThanOrEqual(t0);
+
+  grow();
+  await Bun.sleep(5);
+  const t1 = Date.now();
+  const upd = await imports.import(found(), { ...o, mode: "update" });
+  expect(upd.imported_events).toBe(2);
+  expect(talk().map((e) => e.ts)).toEqual([at(0), at(1), at(2), at(3), at(4), at(5)]);
+  const synced = imports.link(made.session.id)!;
+  expect(synced.synced_ms).toBeGreaterThanOrEqual(t1);
+  expect(synced.imported_ms).toBe(link.imported_ms);
+  // The copy is the last one worked on, whatever its events' dates.
+  expect(store.session(made.session.id)!.updated).toBeGreaterThanOrEqual(t1);
+});

@@ -280,11 +280,14 @@ export class Store {
 
   // A new event at the head of the session's branch (or after `parent`, which
   // starts a new branch there: an edited prompt). It becomes the head.
-  append(session_id: string, kind: EventKind, data: unknown, parent?: string | null): StoredEvent {
+  // `at`: when it happened, for an event copied from another store; the
+  // session's last activity is still now.
+  append(session_id: string, kind: EventKind, data: unknown, parent?: string | null, at?: number): StoredEvent {
     data = this.redact(session_id, kind, data);
     const id = Bun.randomUUIDv7();
     const text = JSON.stringify(data);
-    const ts = Date.now();
+    const now = Date.now();
+    const ts = at ?? now;
     const tx = this.db.transaction(() => {
       const { n } = this.db
         .query<{ n: number }, [string]>("SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM events WHERE session_id = ?")
@@ -295,7 +298,7 @@ export class Store {
       this.db
         .query("INSERT INTO events (id, session_id, seq, parent, kind, data, ts) VALUES (?, ?, ?, ?, ?, ?, ?)")
         .run(id, session_id, n, p, kind, text, ts);
-      this.db.query("UPDATE sessions SET updated = ?, head = ? WHERE id = ?").run(ts, id, session_id);
+      this.db.query("UPDATE sessions SET updated = ?, head = ? WHERE id = ?").run(now, id, session_id);
       return { n, p };
     });
     const { n, p } = tx();
