@@ -40,3 +40,17 @@ test("the trace list takes a whole number from 1, gives 50 by default and never 
   // Newest first.
   expect(((await list("1").json()) as any).traces[0].span_id).toBe("0".repeat(16));
 });
+
+test("a retry whose kept request aged out is not offered for replay, and says why when asked", async () => {
+  const s = store.createSession({ workspace: dir, model: "p:m" });
+  store.db.run("INSERT INTO spans (span_id, trace_id, session_id, kind, name, start_ms, end_ms, status, error, error_type, attrs) VALUES ('lone-retry', 'trace-lone-retry', ?, 'request', 'chat m', ?, ?, 'error', 'HTTP 529', 'overloaded', ?)", [s.id, Date.now() - 10, Date.now(), JSON.stringify({ request_in: "aged-out" })]);
+  const at = (method: "GET" | "POST", path: string) => {
+    const r = new Request(`http://x/api/debug/spans/lone-retry${path}`, { method }) as any;
+    r.params = { id: "lone-retry" };
+    return routes[`/api/debug/spans/:id${path}`][method](r) as Promise<Response>;
+  };
+  expect(((await (await at("GET", "")).json()) as any).span.replayable).toBe(false);
+  const r = await at("POST", "/replay");
+  expect(r.status).toBe(409);
+  expect(((await r.json()) as any).error).toContain("aged out");
+});

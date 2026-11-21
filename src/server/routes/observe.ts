@@ -157,7 +157,7 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
         const of = t.span(req.params.id);
         if (!of) return json({ error: "no such span" }, 404);
         const sent = t.request(of.span_id);
-        if (!sent) return json({ error: "this span kept no request (only failed model requests do)" }, 409);
+        if (!sent) return json({ error: of.attrs.request_in ? "the request this retry sent is no longer kept: the attempt that held it aged out" : "this span kept no request (only failed model requests do)" }, 409);
         const body = (await req.json().catch(() => ({}))) as any;
         const route = String(body.route || sent.route || of.attrs.route);
         let resolved;

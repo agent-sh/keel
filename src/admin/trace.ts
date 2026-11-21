@@ -145,7 +145,8 @@ const row = (r: any): Span => ({
   error_id: r.error_id ?? null, attrs: JSON.parse(r.attrs), replayable: !!r.replayable,
 });
 // A retry sends the same request object again: its bytes are kept once, on the first failed attempt, and later attempts point there.
-const COLS = "span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, error, error_type, error_id, attrs, (request IS NOT NULL OR json_extract(attrs, '$.request_in') IS NOT NULL) AS replayable";
+// The pointer alone does not make a retry replayable: the span it names can age out first, and its bytes go with it.
+const COLS = "span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, error, error_type, error_id, attrs, (request IS NOT NULL OR EXISTS (SELECT 1 FROM spans AS kept WHERE kept.span_id = json_extract(spans.attrs, '$.request_in') AND kept.request IS NOT NULL)) AS replayable";
 
 type Turn = { id: string; ts: number; seq: number };
 type Open = { span: string; trace: string; t0: number; first?: number; attempt: number };

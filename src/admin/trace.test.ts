@@ -6,7 +6,7 @@ import { gunzipSync } from "node:zlib";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
-import { KEEP_REQUEST_BYTES, packRequest, parseTraceparent, requestShape, type Span, toolSpanId, traceIdOf, traceparent, Tracer, turnPlace, turnSpanId } from "./trace.ts";
+import { KEEP_REQUEST_BYTES, SPAN_DAYS, packRequest, parseTraceparent, requestShape, type Span, toolSpanId, traceIdOf, traceparent, Tracer, turnPlace, turnSpanId } from "./trace.ts";
 
 // A tracer over a store of its own, with the hooks it registered.
 function tracer() {
@@ -75,6 +75,37 @@ test("a tool span's input and result sizes are UTF-8 bytes", () => {
     x.hooks.toolRan!(s, { id: "c1", tool: { name: "Bash" }, input: { command: "\u00e9" } } as any, { type: "tool_result", tool_use_id: "c1", content: "\u20ac\u20ac" } as any, { ms: 1, outcome: "ok" });
     const a = x.t.span(toolSpanId(s.id, "c1"))!.attrs;
     expect([a.input_bytes, a.result_bytes]).toEqual(['{"command":"e"}'.length + 1, 6]);
+  } finally {
+    x.close();
+  }
+});
+
+test("a retry is replayable only while the span that kept its request is", () => {
+  const x = tracer();
+  try {
+    const s = x.store.createSession({ workspace: x.dir, model: "p:m" });
+    const edge = Date.now() - SPAN_DAYS * 86_400_000;
+    const sent = req("again");
+    const add = (id: string, start: number, kept: { request?: Uint8Array; request_in?: string }) =>
+      x.store.db.run(
+        "INSERT INTO spans (span_id, trace_id, session_id, kind, name, start_ms, end_ms, status, error, error_type, attrs, request) VALUES (?, ?, ?, 'request', 'chat m', ?, ?, 'error', 'HTTP 529', 'overloaded', ?, ?)",
+        [id, `trace-${id}`, s.id, start, start + 5, JSON.stringify(kept.request_in ? { request_in: kept.request_in } : {}), kept.request ?? null],
+      );
+    // The first failed attempt keeps the request; its retry points there. One pair straddles the retention edge.
+    add("old-first", edge - 60_000, { request: packRequest(sent)! });
+    add("old-retry", edge + 60_000, { request_in: "old-first" });
+    add("new-first", edge + 120_000, { request: packRequest(sent)! });
+    add("new-retry", edge + 180_000, { request_in: "new-first" });
+    expect(x.t.span("old-retry")!.replayable).toBe(true);
+    expect(x.t.request("old-retry")).toEqual(sent);
+
+    x.t.prune();
+    expect(x.t.span("old-first")).toBeUndefined();
+    expect(x.t.span("old-retry")).toMatchObject({ status: "error", error_type: "overloaded", replayable: false });
+    expect(x.t.request("old-retry")).toBeUndefined();
+    expect(x.t.traces(s.id).map((t) => [t.span_id, t.replayable])).toEqual([["new-retry", true], ["new-first", true], ["old-retry", false]]);
+    expect(x.t.trace("trace-old-retry").map((t) => t.replayable)).toEqual([false]);
+    expect(x.t.request("new-retry")).toEqual(sent);
   } finally {
     x.close();
   }
