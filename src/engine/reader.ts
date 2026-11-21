@@ -79,6 +79,11 @@ export function readerChoices(
 
 export const pickReader = (...a: Parameters<typeof readerChoices>): ModelInfo => readerChoices(...a)[0]!;
 
+// Whether one request to `m` holds `prompt` and the answer in its listed
+// window. A request that does not is never sent.
+export const holds = (m: ModelInfo, prompt: string): boolean =>
+  Math.ceil(prompt.length / bytesPerToken(m.id)) + Math.min(m.output || READER_OUTPUT, READER_OUTPUT) <= m.context;
+
 // Characters of material one request to `reader` takes: its window less the
 // prompt and the answer, below its first price tier (a prompt above it is
 // billed whole at the dearer rate), and at most READ_CHUNK_CHARS.
@@ -199,22 +204,79 @@ export function partPrompt(chunk: Chunk, question: string, k: number, n: number)
   return `${head}<material>\n${chunk.parts.map(partBlock).join("\n")}\n</material>\n\nRequest: ${question}\n\n${ask}`;
 }
 
+export type Finding = { covers: string; text: string };
+const findingBlock = (f: Finding, i: number) => `<findings reader="${i + 1}" read="${f.covers}">\n${f.text}\n</findings>`;
+const findingSize = (f: Finding) => findingBlock(f, 999).length + 1;
+export const findingsSize = (fs: Finding[]) => fs.reduce((n, f) => n + findingSize(f), 0);
+
+// Findings in order, grouped so each group's blocks stay within `maxChars`
+// (what one request to the reader holds). A finding longer than that is a
+// group alone.
+export function groupFindings<T extends Finding>(findings: T[], maxChars: number): T[][] {
+  const groups: T[][] = [];
+  let size = 0;
+  for (const f of findings) {
+    const n = findingSize(f);
+    if (!groups.length || size + n > maxChars) { groups.push([]); size = 0; }
+    groups.at(-1)!.push(f);
+    size += n;
+  }
+  return groups;
+}
+
 // The compile step: the readers' findings merged into one answer. The parts
 // that held nothing are named, so the compiler does not take them for unread;
-// what went unread is Keel's to say, under the answer.
-export function compilePrompt(question: string, findings: { covers: string; text: string }[], nothing: string[] = []): string {
+// what went unread is Keel's to say, under the answer. With `group` the
+// findings are too many for one request: this request merges group k of n
+// into one set of findings, and a later one writes the answer from the sets.
+export function compilePrompt(question: string, findings: Finding[], nothing: string[] = [], group?: { k: number; n: number }): string {
   return [
-    "Readers each read one part of the material for this request and reported what they found.",
+    "Readers each read one part of the material for this request and reported what they found." +
+      (group ? ` The findings are too many for one request, so they are merged in groups first: this is group ${group.k} of ${group.n}.` : ""),
     "",
     `Request: ${question}`,
     "",
-    ...findings.map((f, i) => `<findings reader="${i + 1}" read="${f.covers}">\n${f.text}\n</findings>`),
+    ...findings.map(findingBlock),
     ...(nothing.length ? ["", `These parts were read too and hold nothing that bears on the request: ${nothing.join(", ")}.`] : []),
     "",
-    "Write one answer to the request from these findings only: merge findings that repeat, keep every exact quote and its path:line reference, " +
-      "and put what matters most first. If the findings leave part of the request unanswered, say which in one sentence. " +
-      "Do not comment on which parts were read, on coverage, or on whether quotes or line numbers were checked: the harness reports that itself. No preamble.",
+    group
+      ? "Merge these findings into one set of findings: say once what repeats, and keep every finding that bears on the request with its exact quote and " +
+        "its path:line reference, in the order of the material. Do not answer the request yet and do not guess about the other groups. No preamble."
+      : "Write one answer to the request from these findings only: merge findings that repeat, keep every exact quote and its path:line reference, " +
+        "and put what matters most first. If the findings leave part of the request unanswered, say which in one sentence. " +
+        "Do not comment on which parts were read, on coverage, or on whether quotes or line numbers were checked: the harness reports that itself. No preamble.",
   ].join("\n");
+}
+
+// Room in a preview for one part's findings at the least: a quote, its
+// reference and a sentence around them. Fewer parts are shown before each
+// gets less.
+const PREVIEW_PART = 400;
+const PREVIEW_HEAD = 160;
+
+// Findings no reader could compile, as the working model gets them: each
+// part's findings from their start (a reader puts what bears most on the
+// request first), in part order, within `cap` characters in all. Short
+// findings are whole and leave their room to the long ones. `whole`, `cut`
+// and `left` count the parts shown whole, shown in part, and not shown.
+export function findingsPreview(found: (Finding & { k: number })[], cap: number): { text: string; whole: number; cut: number; left: number } {
+  const shown = found.slice(0, Math.max(1, Math.floor(cap / (PREVIEW_PART + PREVIEW_HEAD))));
+  const take = new Map<number, number>();
+  let room = cap - shown.length * PREVIEW_HEAD, n = shown.length;
+  for (const f of [...shown].sort((a, b) => a.text.length - b.text.length)) {
+    const t = Math.min(f.text.length, Math.floor(room / n--));
+    take.set(f.k, t);
+    room -= t;
+  }
+  let cut = 0;
+  const blocks = shown.map((f) => {
+    const t = take.get(f.k)!;
+    const covers = f.covers.length > 100 ? `${f.covers.slice(0, 100)}...` : f.covers;
+    if (t >= f.text.length) return `Findings of part ${f.k} (${covers}):\n${f.text}`;
+    cut++;
+    return `Findings of part ${f.k} (${covers}), the first ${t} of ${f.text.length} characters:\n${f.text.slice(0, t)}`;
+  });
+  return { text: blocks.join("\n\n"), whole: shown.length - cut, cut, left: found.length - shown.length };
 }
 
 export const READER_SYSTEM = "You read material for a coding agent and answer its request from that material.";

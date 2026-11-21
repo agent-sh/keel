@@ -1,9 +1,11 @@
 // The readers tool around a job: what it gathers before any reader runs.
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gather } from "./readers.ts";
+import { readMaterial, type ReaderHost } from "../engine/readers.ts";
+import type { ModelInfo } from "../providers/types.ts";
+import { AskReaders, gather } from "./readers.ts";
 import type { ToolContext } from "./types.ts";
 import { plainFetch } from "./web.ts";
 
@@ -112,4 +114,40 @@ test("a stop ends the gathering: nothing more is fetched", async () => {
   writeFileSync(join(DIR, "late.txt"), rows(10, "late"));
   await expect(gather({ paths: ["late.txt"], urls }, ctxOf(gone.signal), { budget: 50_000, fetch: async () => { read++; return { text: "x" }; } })).rejects.toMatchObject({ name: "AbortError" });
   expect(read).toBe(0);
+});
+
+// A reader that reports long findings for every part and cannot compile them.
+const model: ModelInfo = { id: "p:r", provider: "p", model: "r", name: "r", family: "claude", context: 400_000, output: 8_000, efforts: [], billing: "per_token", price: { input: 1, output: 5 } as any };
+const noCompile: ReaderHost = {
+  models: async () => [model], current: async () => model, capture: () => {},
+  ask: async (_m, prompt) => {
+    if (prompt.startsWith("Readers each")) throw new Error("throttled");
+    const k = /part (\d+) of/.exec(prompt)![1];
+    return { text: `"EVIDENCE-${k} is here" (logs/f${k}.log:7)\n${"More of the same finding. ".repeat(800)}`, usage: { input: 1000, output: 20, cache_read: 0, cache_write: 0 } };
+  },
+};
+
+test("when the findings cannot be compiled the working model gets a bounded preview, the path of the saved findings and what the preview covers", async () => {
+  const dir = join(DIR, "logs");
+  mkdirSync(dir);
+  for (let i = 1; i <= 3; i++) writeFileSync(join(dir, `f${i}.log`), rows(1_400, `f${i}`));
+  const ctx = ctxOf();
+  ctx.readMaterial = (items, q) => readMaterial(noCompile, items, q, ctx.signal);
+  const out = await AskReaders.run({ question: "where is the evidence?", paths: ["logs"] }, ctx);
+  const text = out.content as string;
+  const parts = (out.shown as any).readers.parts.length;
+  expect(parts).toBeGreaterThan(3);
+  // Far less than the findings (about 20,000 characters a part), all of which are in the file.
+  expect(text.length).toBeLessThan(36_000);
+  const path = /saved whole, in part order, to (\S+\.md)/.exec(text)?.[1];
+  expect(path).toBeDefined();
+  const saved = readFileSync(path!, "utf8");
+  expect(saved.length).toBeGreaterThan(parts * 20_000);
+  for (let k = 1; k <= parts; k++) {
+    expect(text).toContain(`"EVIDENCE-${k} is here"`);
+    expect(saved).toContain(`"EVIDENCE-${k} is here"`);
+  }
+  expect(text).toContain(`the start of ${parts}`);
+  expect(text).toContain("could not be compiled");
+  expect((out.shown as any).readers.compiled).toBe(false);
 });

@@ -3,14 +3,18 @@
 // findings with exact quotes and path:line references, and a compile step that
 // merges them into one answer for the working model. A reader that fails or
 // refuses hands its part to the next choice; a part no reader could read is
-// named in the answer, never left out silently.
+// named in the answer, never left out silently. No request is sent to a model
+// whose listed window does not hold it: findings too many for one compile
+// request are merged in groups first, and findings no reader could compile
+// come back as a preview within what a tool result holds.
 import { addUsage, emptyUsage, type Usage } from "../core/types.ts";
 import type { ModelInfo, Price } from "../providers/types.ts";
 import { bytesPerToken } from "./compact.ts";
 import { registerSettings, settings } from "../admin/settings.ts";
+import { OUTPUT_CAP } from "../tools/spill.ts";
 import {
-  checkAnswer, checkedNote, chunkChars, chunkMaterial, compilePrompt, type Checked, materialCap, NOTHING, partPrompt, partRef, READ_CHUNK_CHARS, READERS_AT_ONCE,
-  readerChoices, readRate, type Chunk, type Material,
+  checkAnswer, checkedNote, chunkChars, chunkMaterial, compilePrompt, type Checked, type Finding, findingsPreview, findingsSize, groupFindings, holds,
+  materialCap, NOTHING, partPrompt, partRef, READ_CHUNK_CHARS, READERS_AT_ONCE, readerChoices, readRate, type Chunk, type Material,
 } from "./reader.ts";
 
 // The owner's small models, best first: they read before any other choice.
@@ -36,7 +40,7 @@ export type PartState = { k: number; covers: string; chars: number; model?: stri
 export type ReadProgress = { parts: PartState[]; compiling?: boolean };
 
 export type ReadOutcome = {
-  text: string;            // the answer (or the readers' findings, when the compile failed)
+  text: string;            // the answer (or a preview of the readers' findings, when the compile failed)
   models: string[];        // names of the models that read
   parts: PartState[];
   unread: string[];        // what no reader read: parts every choice failed on, material past the cap
@@ -46,6 +50,10 @@ export type ReadOutcome = {
   plan?: boolean;          // every reader that read is on a subscription: no per-token cost
   working?: { model: string; tokens: number; cost?: number }; // the working model reading the same material once, uncached (at least)
   compiled: boolean;
+  // Set when several parts had findings and no reader could compile them:
+  // every part's findings in part order (for a file), why, and how many parts
+  // the preview in `text` shows whole, shows the start of, and leaves out.
+  uncompiled?: { findings: string; error: string; whole: number; cut: number; left: number };
   checked?: Checked;       // the answer held against the material
 };
 
@@ -87,7 +95,9 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
     kept.push(m);
     room -= m.text.length;
   }
-  const chunks = chunkMaterial(kept, chunkChars(first));
+  // What one request holds besides the question: a part, or a group of findings.
+  const perRequest = Math.max(4_000, chunkChars(first) - question.length);
+  const chunks = chunkMaterial(kept, perRequest);
   const parts: PartState[] = chunks.map((c, i) => ({ k: i + 1, covers: c.parts.map(partRef).join(", "), chars: c.chars, state: "waiting" }));
   let usage = emptyUsage();
   // Prompt tokens of the readers' part requests, as the provider counted them:
@@ -102,6 +112,7 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
     let last = "no reader model";
     for (const m of choices) {
       if (signal.aborted) throw Object.assign(new Error("interrupted"), { name: "AbortError" });
+      if (!holds(m, prompt)) { last = `${m.name}: the request is over its window (${m.context} tokens)`; continue; }
       onModel?.(m);
       try {
         const r = await host.ask(m, prompt, signal);
@@ -140,44 +151,87 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
     tell();
   };
   const atOnce = Math.max(1, Number(env.KEEL_READERS_AT_ONCE) || READERS_AT_ONCE);
-  let next = 0;
-  await Promise.all(Array.from({ length: Math.min(atOnce, chunks.length) }, async () => {
-    while (next < chunks.length) { const i = next++; await readOne(chunks[i]!, i); }
-  }));
+  // `n` runs side by side, at most `atOnce` at a time.
+  const sideBySide = async (n: number, run: (i: number) => Promise<void>) => {
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(atOnce, n) }, async () => { while (next < n) await run(next++); }));
+  };
+  await sideBySide(chunks.length, (i) => readOne(chunks[i]!, i));
   found.sort((a, b) => a.k - b.k);
+
+  // The findings compiled into one answer. One request when it holds them all
+  // (as much as one part: what the readers' windows were sized for); else
+  // neighbours are merged group by group, stage by stage, until one request
+  // holds what is left. Every stage has fewer findings than the one before.
+  const compile = async (): Promise<{ text: string } | { error: string }> => {
+    const none = parts.filter((p) => p.state === "nothing").map((p) => p.covers);
+    let items: Finding[] = found;
+    for (let stage = 1; ; stage++) {
+      const groups = groupFindings(items, perRequest);
+      if (groups.length === 1) {
+        // The parts that held nothing are named while the names fit, else counted.
+        const names = none.join(", ").length <= perRequest - findingsSize(items) ? none : [`${none.length} other parts`];
+        return ask(compilePrompt(question, items, names), { part: "compile" });
+      }
+      if (groups.length === items.length) return { error: `the findings are too long to merge in one request to ${first.name}` };
+      const merged: Finding[] = new Array(groups.length);
+      let failed: string | undefined;
+      await sideBySide(groups.length, async (i) => {
+        const g = groups[i]!;
+        if (g.length === 1) { merged[i] = g[0]!; return; }
+        const r = await ask(compilePrompt(question, g, [], { k: i + 1, n: groups.length }), { part: `compile stage ${stage}, group ${i + 1}/${groups.length}` });
+        if ("error" in r) failed ??= r.error;
+        else merged[i] = { covers: `group ${i + 1} of ${groups.length}, merged`, text: r.text };
+      });
+      if (failed) return { error: failed };
+      items = merged;
+    }
+  };
 
   let text: string;
   let compiled = false;
+  let uncompiled: ReadOutcome["uncompiled"];
   if (found.length === 0) {
     text = parts.some((p) => p.state === "nothing") ? "Nothing in the material bears on the request." : "";
   } else if (found.length === 1) {
     text = found[0]!.text;
   } else {
     tell(true);
-    const r = await ask(compilePrompt(question, found, parts.filter((p) => p.state === "nothing").map((p) => p.covers)), { part: "compile" });
-    if ("error" in r) text = found.map((f) => `Findings in ${f.covers}:\n${f.text}`).join("\n\n");
-    else { text = r.text; compiled = true; }
+    const r = await compile();
+    if ("error" in r) {
+      const preview = findingsPreview(found, OUTPUT_CAP);
+      text = preview.text;
+      uncompiled = { findings: found.map((f) => `Findings of part ${f.k} (${f.covers}):\n${f.text}`).join("\n\n"), error: r.error, whole: preview.whole, cut: preview.cut, left: preview.left };
+    } else { text = r.text; compiled = true; }
   }
   tell();
   const rate = readRate(cur, list);
   const chars = kept.reduce((n, m) => n + m.text.length, 0);
   const tokens = partTokens || chars / bytesPerToken(cur.id);
   return {
-    text, models: [...used], parts, unread, chars, usage, cost: usage.cost, compiled, ...(text ? { checked: checkAnswer(text, kept) } : {}),
+    text, models: [...used], parts, unread, chars, usage, cost: usage.cost, compiled, ...(uncompiled ? { uncompiled } : {}), ...(text ? { checked: checkAnswer(text, kept) } : {}),
     ...(billed.size === 1 && billed.has("subscription") ? { plan: true } : {}),
     working: { model: cur.name, tokens: Math.round(tokens), cost: rate === undefined || cur.billing !== "per_token" ? undefined : (tokens * rate) / 1e6 },
   };
 }
 
 // The line the working model reads under the answer: who read what, what went
-// unread, where the material is.
-export function coverageNote(o: ReadOutcome, sources: number, saved?: string): string {
+// unread, where the material is; and, when the findings were not compiled,
+// what of them the text above shows and where all of them are (`findings`).
+export function coverageNote(o: ReadOutcome, sources: number, saved?: string, findings?: string): string {
   const who = o.models.length ? o.models.join(" and ") : "no reader";
   const n = o.parts.length;
   const all = !o.unread.length && o.parts.every((p) => p.state === "read" || p.state === "nothing");
   const lines = [`[${who} read ${all ? "every line of " : ""}${sources} source${sources === 1 ? "" : "s"} (${o.chars} chars) in ${n} part${n === 1 ? "" : "s"} for this request` +
     `${o.compiled ? `; their findings were compiled into this answer` : ""}${all ? "; nothing was left unread" : ""}. References are path:line in the files as they are on disk: Read one when you need its context.` +
     `${saved ? ` Fetched pages are saved under ${saved}.` : ""}]`];
+  if (o.uncompiled) {
+    const u = o.uncompiled;
+    const shown = [u.whole ? `the findings of ${u.whole} part${u.whole === 1 ? "" : "s"} whole` : "", u.cut ? `the start of ${u.cut}` : ""].filter(Boolean).join(" and ");
+    lines.push(`[The readers' findings could not be compiled into one answer (${u.error}). The text above is a preview, not an answer: ${shown}, in part order` +
+      `${u.left ? `; the findings of the last ${u.left} part${u.left === 1 ? " are" : "s are"} not in it` : ""}.` +
+      `${findings ? ` Every part's findings are saved whole, in part order, to ${findings}: Read or search it before relying on what the preview leaves out.` : ""}]`);
+  }
   const checked = o.checked ? checkedNote(o.checked) : "";
   if (checked) lines.push(checked);
   if (o.unread.length) lines.push(`[Not read, so not covered by this answer:\n- ${o.unread.join("\n- ")}]`);

@@ -8,6 +8,7 @@ import { mkdirSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { READ_WHOLE_CHARS, READERS_AT_ONCE, wholeText, type Material } from "../engine/reader.ts";
 import { coverageNote } from "../engine/readers.ts";
+import { conceal } from "../core/conceal.ts";
 import { readText } from "../core/proc.ts";
 import { spill } from "./spill.ts";
 import { fail, ok, type Tool, type ToolContext, type ToolOutput } from "./types.ts";
@@ -180,7 +181,14 @@ async function run(input: any, ctx: ToolContext): Promise<ToolOutput> {
     const spilled = await spill(wholeText(items), ctx.spillDir, "readers");
     return { content: `[No reader could read the material for this request; it follows as it is.]\n${coverageNote(o, items.length, saved)}\n\n${spilled}`, shown };
   }
-  return { content: `${o.text}\n\n${coverageNote(o, items.length, saved)}`, shown };
+  // Findings no reader could compile: the preview goes to the model, all of them to a file.
+  let findings: string | undefined;
+  if (o.uncompiled) {
+    findings = join(ctx.spillDir, "readers", `${Date.now()}-findings.md`);
+    mkdirSync(join(ctx.spillDir, "readers"), { recursive: true });
+    await Bun.write(findings, conceal(o.uncompiled.findings));
+  }
+  return { content: `${o.text}\n\n${coverageNote(o, items.length, saved, findings)}`, shown };
 }
 
 const DESCRIPTION =

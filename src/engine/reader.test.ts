@@ -2,8 +2,8 @@
 // session's provider and family that holds the text, never a dearer one.
 import { expect, test } from "bun:test";
 import type { ModelInfo } from "../providers/types.ts";
-import { checkAnswer, checkedNote, chunkChars, chunkMaterial, NOTHING, partRef, pickReader, READ_CHUNK_CHARS, readerChoices } from "./reader.ts";
-import { readMaterial, type ReaderHost } from "./readers.ts";
+import { checkAnswer, checkedNote, chunkChars, chunkMaterial, NOTHING, partRef, pickReader, READ_CHUNK_CHARS, READER_OUTPUT, readerChoices } from "./reader.ts";
+import { coverageNote, readMaterial, type ReaderHost } from "./readers.ts";
 
 const m = (id: string, input: number | undefined, o: Partial<ModelInfo> = {}): ModelInfo => ({
   id: `p:${id}`, provider: "p", model: id, name: id, family: "claude", context: 200_000, output: 8_000, efforts: [],
@@ -106,6 +106,57 @@ test("a failed reader hands its part to the next choice; the findings are compil
   expect(all3.text).toBe("");
   expect(all3.unread.length).toBe(all3.parts.length);
   expect(all3.unread[0]).toContain("every reader failed");
+});
+
+// A job with many long findings: twelve parts, each reader reporting about a
+// fifth of what one request to the reader holds. `compile`: what the fake
+// reader does with a compile request.
+const wide = m("wide", 0.1, { context: 60_000, output: 8_000 });
+const listed = (model: ModelInfo, prompt: string) => Math.ceil(prompt.length / 2.5) + Math.min(model.output, READER_OUTPUT) <= model.context;
+function fanIn(compile: "merge" | "fail") {
+  const asked: { model: ModelInfo; prompt: string; compile: boolean }[] = [];
+  const h: ReaderHost = {
+    models: async () => [big, wide], current: async () => big, capture: () => {}, env: { KEEL_READER_MODEL: "p:wide", KEEL_READERS_AT_ONCE: "4" },
+    ask: async (model, prompt) => {
+      const isCompile = prompt.startsWith("Readers each");
+      asked.push({ model, prompt, compile: isCompile });
+      const usage = { input: 1000, output: 20, cache_read: 0, cache_write: 0, cost: 0.001 };
+      if (!isCompile) return { text: `"EVIDENCE-${/part (\d+) of/.exec(prompt)![1]} is here" (f${/part (\d+) of/.exec(prompt)![1]}.log:7)\n${"More of the same finding. ".repeat(800)}`, usage };
+      if (compile === "fail") throw new Error("throttled");
+      // A merge that keeps the evidence and drops the repetition.
+      return { text: [...new Set([...prompt.matchAll(/"EVIDENCE-\d+ is here" \(f\d+\.log:7\)/g)].map((x) => x[0]))].join("\n"), usage };
+    },
+  };
+  const items = Array.from({ length: 12 }, (_, i) => ({ source: `f${i + 1}.log`, text: lines(3_500) }));
+  return { h, asked, items };
+}
+
+test("many long findings are compiled in stages: no request is over the reader's listed window, and early and late evidence reach the answer", async () => {
+  const { h, asked, items } = fanIn("merge");
+  const o = await readMaterial(h, items, "where is the evidence?", new AbortController().signal);
+  expect(o.parts.length).toBe(12);
+  expect(asked.filter((a) => !listed(a.model, a.prompt)).map((a) => `${a.model.id} ${a.prompt.length}`)).toEqual([]);
+  expect(asked.filter((a) => a.compile).length).toBeGreaterThan(1);
+  expect(o.compiled).toBe(true);
+  for (let k = 1; k <= 12; k++) expect(o.text).toContain(`"EVIDENCE-${k} is here" (f${k}.log:7)`);
+  expect(o.uncompiled).toBeUndefined();
+});
+
+test("findings no reader could compile come back as a bounded preview, every part's start in it, with the whole kept for a file", async () => {
+  const { h, asked, items } = fanIn("fail");
+  const o = await readMaterial(h, items, "where is the evidence?", new AbortController().signal);
+  expect(asked.filter((a) => !listed(a.model, a.prompt)).map((a) => `${a.model.id} ${a.prompt.length}`)).toEqual([]);
+  expect(o.compiled).toBe(false);
+  const all = 12 * (`"EVIDENCE-1 is here" (f1.log:7)\n`.length + 25 * 800);
+  expect(o.text.length).toBeLessThan(all / 4);
+  expect(o.text.length).toBeLessThanOrEqual(34_000);
+  for (let k = 1; k <= 12; k++) expect(o.text).toContain(`"EVIDENCE-${k} is here" (f${k}.log:7)`);
+  expect(o.uncompiled).toMatchObject({ whole: 0, cut: 12, left: 0 });
+  expect(o.uncompiled!.findings.length).toBeGreaterThan(all);
+  const note = coverageNote(o, 12, undefined, "/state/spill/readers/findings.md");
+  expect(note).toContain("could not be compiled");
+  expect(note).toContain("the start of 12");
+  expect(note).toContain("/state/spill/readers/findings.md");
 });
 
 test("the owner's small models read first, in their order, from any provider, skipping one not listed or too small", () => {
