@@ -8,7 +8,7 @@ import { McpClient, type CallInput, type InputRequest } from "./client.ts";
 const FIXTURE = join(import.meta.dir, "../../test/e2e/fixtures/ask-mcp.ts");
 const text = (r: { content?: unknown[] }) => (r.content![0] as { text: string }).text;
 
-test("a server's request is never guessed between two sessions, and goes to the oldest call of one", async () => {
+test("a server's request is never guessed between two calls, and goes to a call that is alone", async () => {
   const c = await McpClient.connect({ kind: "stdio", command: "bun", args: [FIXTURE], env: { ...(process.env as Record<string, string>), ASK_MCP_HOLD: "3500" } }, 10_000, "legacy", undefined, undefined, async () => ({ roots: [] }));
   try {
     const seen: string[] = [];
@@ -28,11 +28,15 @@ test("a server's request is never guessed between two sessions, and goes to the 
     expect(seen).toEqual(["b-hold dropped roots/list", "a-roots dropped roots/list", "b-hold dropped elicitation/create", "a-later dropped elicitation/create"]);
     expect(text(await held)).toBe('hold: "held"');
 
-    // One session, two calls: the question goes to the older call that was not asked yet, the next one to the other.
+    // One session, two calls: the call that started first is not the one
+    // that asks, so no card is guessed, and both are told. The folders are the
+    // session's, whichever call the server meant.
     seen.length = 0;
-    const first = call("later", input("s1", "first")), second = call("later", input("s1", "second"));
-    await Promise.all([first, second]);
-    expect(seen).toEqual(["first asked elicitation/create", "second asked elicitation/create"]);
+    const holder = call("hold", input("s1", "first"));
+    expect(text(await call("ask", input("s1", "second")))).toBe('ask: {"action":"cancel"}');
+    expect(seen).toEqual(["first dropped elicitation/create", "second dropped elicitation/create"]);
+    expect(text(await call("roots", input("s1", "folders")))).toBe('roots: {"roots":[{"uri":"file:///first"}]}');
+    expect(text(await holder)).toBe('hold: "held"');
     // A call alone that asks twice gets both.
     seen.length = 0;
     expect(text(await call("twice", input("s1", "alone")))).toContain('"action":"accept"');

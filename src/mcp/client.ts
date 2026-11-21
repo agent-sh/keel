@@ -118,10 +118,9 @@ const pause = (ms: number, signal: AbortSignal) => new Promise<void>((res) => {
   signal.addEventListener("abort", end, { once: true });
 });
 
-// `input`: the call takes the server's own requests. `asked`: a question was
-// routed to it. `hold` stops the request's timer while the owner is asked,
+// `input`: the call takes the server's own requests. `hold` stops the request's timer while the owner is asked,
 // and gives back what starts it again.
-type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; input?: CallInput; asked?: boolean; hold: () => () => void };
+type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; input?: CallInput; hold: () => () => void };
 
 export class McpClient {
   era: "modern" | "legacy" = "legacy";
@@ -297,12 +296,15 @@ export class McpClient {
   // while the server works on a client request; roots/list at any time). It
   // goes to the call it belongs to. Over HTTP that is the call whose response
   // stream carried it. Over stdio (and on the stream a server opens for
-  // itself) nothing names the call, and Keel does not guess across sessions:
-  // - calls of one session in flight: the oldest that has not been asked yet,
-  //   else the oldest (one call asking twice);
-  // - calls of more than one session in flight: no call gets it. A question
-  //   is answered as if the owner made no choice, a request for the folders
-  //   is refused, and each of those calls is told, so its result says why;
+  // itself) nothing names the call, and Keel does not guess:
+  // - one call in flight: it gets the request, however often the server asks;
+  // - a question with more than one call in flight, also of one session
+  //   (the call that started first is not the one that asks first): no call
+  //   gets it. It is answered as if the owner made no choice, and each of
+  //   those calls is told, so its result says why;
+  // - a request for the folders with calls of one session in flight: that
+  //   session's folders, which are the same for each of its calls; with more
+  //   than one session it is refused, and each call is told;
   // - no call in flight: `outside`. There is no card to ask on and no
   //   session's folder then.
   outside?: InputHandler;
@@ -316,16 +318,18 @@ export class McpClient {
     else {
       const calls = [...this.pending.values()].filter((p) => p.input); // oldest first
       const sessions = new Set(calls.map((p) => p.input!.session));
-      if (sessions.size > 1) {
-        const why = `calls of ${sessions.size} sessions were in flight on this server, and nothing names the call such a request belongs to`;
+      const question = method === "elicitation/create";
+      if (sessions.size > 1 || (question && calls.length > 1)) {
+        const why = sessions.size > 1
+          ? `calls of ${sessions.size} sessions were in flight on this server, and nothing names the call such a request belongs to`
+          : `${calls.length} calls were in flight on this server, and nothing names the call a question belongs to`;
         for (const p of calls) p.input!.dropped?.(method, why);
-        return method === "elicitation/create" ? reply({ result: { action: "cancel" } }) : refuse(-32603, `not answered: ${why}`);
+        return question ? reply({ result: { action: "cancel" } }) : refuse(-32603, `not answered: ${why}`);
       }
-      asker = calls.find((p) => !p.asked) ?? calls[0];
+      asker = calls[0];
     }
     const handler = asker?.input?.ask ?? this.outside;
     if (!handler) return refuse(-32603, "nothing here answers this");
-    if (asker && method === "elicitation/create") asker.asked = true;
     // The owner's time is not the server's: the call's timer waits with it.
     const resume = asker?.hold();
     try {

@@ -5,11 +5,12 @@
 // - every code point a renderer ignores by default (a variation selector, a
 //   Hangul filler, a combining grapheme joiner): it draws nothing;
 // - every space other than the plain one (a no-break space, an ideographic
-//   space) and the braille blank, which draw as a plain space and are not one.
+//   space) and the braille blank, which draw as a plain space and are not one;
+// - the object replacement character, a place holder that draws nothing or a box.
 // Text that is to be approved is never shown with one of them left as it is:
 // a place that shows one line refuses the text (`plainAscii`), a place that
 // shows it whole spells each one out (`spellHidden`).
-const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800]|(?!\u0020)\p{Zs}/u;
+const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800\uFFFC]|(?!\u0020)\p{Zs}/u;
 
 // Nothing but the printable characters of ASCII: what a one-line row can show exactly as it will run.
 export const plainAscii = (text: string): boolean => /^[\x20-\x7E]*$/.test(text);
@@ -31,7 +32,7 @@ const NAMES: Record<number, string> = {
   0x202a: "left-to-right embedding", 0x202b: "right-to-left embedding", 0x202c: "pop directional formatting", 0x202d: "left-to-right override", 0x202e: "right-to-left override",
   0x2066: "left-to-right isolate", 0x2067: "right-to-left isolate", 0x2068: "first strong isolate", 0x2069: "pop directional isolate",
   0x3164: "Hangul filler", 0x115f: "Hangul filler", 0x1160: "Hangul filler", 0xffa0: "Hangul filler", 0xfe0f: "variation selector", 0xfe0e: "variation selector", 0x034f: "combining grapheme joiner",
-  0x2800: "braille blank", 0x00a0: "no-break space", 0x3000: "ideographic space", 0x202f: "narrow no-break space", 0x2009: "thin space", 0x2003: "em space", 0x2002: "en space", 0x180e: "Mongolian vowel separator",
+  0xfffc: "object replacement character", 0x2800: "braille blank", 0x00a0: "no-break space", 0x3000: "ideographic space", 0x202f: "narrow no-break space", 0x2009: "thin space", 0x2003: "em space", 0x2002: "en space", 0x180e: "Mongolian vowel separator",
   0x00ad: "soft hyphen", 0x2028: "line separator", 0x2029: "paragraph separator", 0x1b: "escape", 0x7f: "delete", 0x00: "null", 0x08: "backspace", 0x0d: "carriage return", 0x09: "tab",
 };
 const code = (cp: number) => `U+${cp.toString(16).toUpperCase().padStart(4, "0")}`;

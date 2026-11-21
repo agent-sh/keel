@@ -34,19 +34,33 @@ const OPTIONS_KEPT = 2000;
 // What a form must not ask for (2025-11-25 client/elicitation: "Servers MUST
 // NOT use form mode elicitation to request sensitive information such as
 // passwords, API keys, access tokens, or payment credentials"). A field is
-// taken for one by the words of its name and title.
+// taken for one by the words of its name, its title and its description (a
+// server can put the ask in any of them). A field taken for one by mistake
+// costs the owner one tick; one missed is typed in the clear.
 export const MUST_NOT = "The MCP specification says a server must not ask for passwords, API keys, access tokens or payment details in a form like this one.";
-const SECRET_WORDS = new Set(["password", "passwd", "pwd", "passphrase", "passcode", "secret", "token", "apikey", "credential", "credentials", "cvv", "cvc", "pin", "otp"]);
+const SECRET_WORDS = new Set([
+  "password", "passwd", "pwd", "passphrase", "passcode", "secret", "token", "apikey", "credential", "cvv", "cvc", "pin", "otp", "totp", "mfa", "2fa", "tfa",
+  "ssn", "iban", "bearer",
+]);
+// A word that is one only next to another: "key" after one of these, a code that proves who you are, a number that pays.
 const KEY_OF = new Set(["api", "access", "secret", "private", "license", "licence", "encryption", "signing", "ssh", "auth"]);
+const CODE_OF = new Set(["security", "verification", "auth", "authentication", "login", "recovery", "backup", "sms", "access"]);
+const NUMBER_OF = new Set(["card", "account", "routing", "social", "passport", "tax"]);
+// The same words written as one or split another way ("pass_word", "passWord1", "api-key").
+const JOINED = /pass(word|wd|phrase|code)|apikey|secretkey|privatekey|accesskey|accesstoken|authtoken|bearertoken|creditcard|cardnumber|socialsecurity|onetime(code|password|pin)/;
+// A plural or a trailing number is the same word ("tokens", "secret2").
+const stem = (w: string) => { const bare = w.replace(/\d+$/, "") || w; return bare.length > 3 && bare.endsWith("s") && !bare.endsWith("ss") ? bare.slice(0, -1) : bare; };
 export function looksSecret(...names: unknown[]): boolean {
   return names.some((n) => {
     if (typeof n !== "string") return false;
-    const words = n.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    const words = n.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).map(stem);
+    if (JOINED.test(words.join(""))) return true;
     return words.some((w, i) => SECRET_WORDS.has(w)
       || (w === "key" && (words.length === 1 || KEY_OF.has(words[i - 1] ?? "")))
-      || (w === "card" && ["number", "no", "num"].includes(words[i + 1] ?? ""))
+      || (w === "code" && CODE_OF.has(words[i - 1] ?? ""))
+      || (["number", "no", "num"].includes(w) && NUMBER_OF.has(words[i - 1] ?? ""))
       || (w === "credit" && words[i + 1] === "card")
-      || (w === "security" && words[i + 1] === "code"));
+      || (w === "social" && words[i + 1] === "security"));
   });
 }
 
@@ -105,7 +119,7 @@ export function formOf(params: any): Form {
     const one = many ? undefined : choicesOf(s);
     const kind: Field["kind"] = many ? "many" : one ? "one" : s.type === "boolean" ? "boolean" : s.type === "number" ? "number" : s.type === "integer" ? "integer" : "text";
     const choices = many ?? one ?? (kind === "boolean" ? [{ label: "Yes", value: true }, { label: "No", value: false }] : []);
-    return { name, kind, schema: s, choices, required: need.has(name), secret: looksSecret(name, s.title) };
+    return { name, kind, schema: s, choices, required: need.has(name), secret: looksSecret(name, s.title, s.description) };
   };
   const fields = props.slice(0, FIELDS_MAX).map(fieldOf);
   // The fields past what a card shows: a default still goes with the answer,

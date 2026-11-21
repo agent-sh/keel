@@ -5,8 +5,10 @@
 // controls and format characters (a right-to-left override, zero-width
 // spaces and joiners, tag characters), the line and paragraph separators,
 // every code point a renderer ignores by default (a variation selector, a
-// Hangul filler), the braille blank, and every space other than the plain one.
-const DRAWS_NOTHING = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800]/gu;
+// Hangul filler), the braille blank, the object replacement character (a
+// place holder for something that is not there), and every space other than
+// the plain one.
+const DRAWS_NOTHING = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800\uFFFC]/gu;
 const OTHER_SPACE = /(?!\u0020)\p{Zs}/gu;
 
 // The text with each of them gone: a space that is not the plain one becomes

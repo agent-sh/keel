@@ -267,6 +267,17 @@ test("a server's questions are bounded, and none is shown in a session that did 
     expect(k.answers().at(-1).answer).toEqual([...Array(5).fill("accept"), "decline", ...Array(6).fill("cancel")]);
     expect((await k.results(id)).at(-1)).toContain("[keel] asker asked more than 5 questions at once: one card is shown at a time, and no more than that wait behind it. It was answered as if the owner made no choice.");
 
+    // Twenty questions in one call are shown, each answered; the twenty-first is not.
+    await run(page, "asker__forever");
+    for (let i = 1; i <= 20; i++) {
+      await expect(words).toContainText(`Question ${i}: go on?`, { timeout: 30_000 });
+      await card.getByTestId("question-option").filter({ hasText: "Yes" }).click();
+      await card.getByTestId("question-submit").click();
+    }
+    await expect(page.getByTestId("turn-end")).toHaveCount(3, { timeout: 30_000 });
+    expect(k.answers().at(-1).answer).toEqual([...Array(20).fill("accept"), ...Array(10).fill("cancel")]);
+    expect((await k.results(id)).at(-1)).toContain("[keel] asker asked more than 20 questions in this call. It was answered as if the owner made no choice.");
+
     // Two sessions with a call each on the one server: over stdio nothing names
     // the call a question belongs to, so nobody is asked, and both calls say so.
     const asker = await k.session("Asks late"), other = await k.session("Only waits");
@@ -275,7 +286,7 @@ test("a server's questions are bounded, and none is shown in a session that did 
     await k.send(other, "asker__hold");
     await expect.poll(() => k.answers().find((a) => a.tool === "later")?.answer, { timeout: 30_000 }).toEqual({ action: "cancel" });
     expect([await k.pending(asker), await k.pending(other)]).toEqual([[], []]);
-    const why = "asked the owner a question while this call ran and got no answer: calls of 2 sessions were in flight on this server, and nothing names the call such a request belongs to. If the result depends on it, run the call again when no other session is using asker.";
+    const why = "asked the owner a question while this call ran and got no answer: calls of 2 sessions were in flight on this server, and nothing names the call such a request belongs to. If the result depends on it, run the call again when no other call is using asker.";
     await expect.poll(async () => (await k.results(asker)).at(-1), { timeout: 30_000 }).toContain(`[keel] asker ${why}`);
     await expect.poll(async () => (await k.results(other)).at(-1), { timeout: 30_000 }).toContain(`[keel] asker ${why}`);
     await page.goto(`${k.at.d.url}/s/${asker}`);
@@ -290,13 +301,15 @@ test("a server's questions are bounded, and none is shown in a session that did 
 });
 
 // A card open when the daemon stops does not hold the drain. What the next
-// daemon does depends on the tool: one its server marks read-only runs again,
+// daemon does depends on the tool: one the owner marked as a read runs again,
 // so the card is back; any other had begun its work before it asked, so it
-// ends as a call the restart cut and is not run a second time.
+// ends as a call the restart cut and is not run a second time. A server's
+// own word that its tool only reads does not count.
 test("a server's question across a daemon restart", async ({ page }) => {
   const k = await setup("restart");
   try {
     const reader = await k.session("Reads after asking"), worker = await k.session("Works around its question");
+    expect((await k.call("/api/mcp/servers/asker/reads", { tools: ["look"] }, "PUT")).status).toBe(200);
     await k.send(reader, "asker__look");
     await k.send(worker, "second__work"); // a server of its own: one server's question is never guessed between two sessions
     await expect.poll(async () => [(await k.pending(reader)).length, (await k.pending(worker)).length], { timeout: 30_000 }).toEqual([1, 1]);
@@ -329,6 +342,18 @@ test("a server's question across a daemon restart", async ({ page }) => {
     await k.call(`/api/sessions/${reader}/questions/${again}`, { decline: true });
     await expect.poll(async () => (await k.results(reader)).at(-1), { timeout: 30_000 }).toContain('look: {"action":"decline"}');
     expect(JSON.parse(readFileSync(join(k.state, "mcp-asked.json"), "utf8"))).toEqual([]);
+
+    // The same tool on a server where only the server says it reads (its
+    // hint): the owner did not mark it, so it is not run a second time.
+    const claimer = await k.session("Its server says it only reads");
+    await k.send(claimer, "second__look");
+    await expect.poll(() => k.pending(claimer), { timeout: 30_000 }).toHaveLength(1);
+    const begun = () => k.side().filter((l) => l === "effect-before-ask").length;
+    const effects = begun();
+    await k.restart("SIGTERM");
+    await expect.poll(async () => (await k.results(claimer)).at(-1), { timeout: 60_000 }).toBe("Interrupted by a daemon restart while this tool ran. It may have partly run: check its effects before running it again.");
+    expect(await k.pending(claimer)).toEqual([]);
+    expect(begun()).toBe(effects); // its work was not begun a second time
     expect(await k.errors()).toEqual([]);
   } finally {
     await k.stop();

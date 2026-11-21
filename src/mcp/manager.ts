@@ -32,9 +32,14 @@ const DECLINES_MAX = 5;
 // The questions that wait behind the one on the card.
 const QUEUED_MAX = 5;
 type CallAsks = { asked: number; declined: number; queued: number; notes: Set<string>; readOnly: boolean };
+// The two bounds of one call. Declines are counted when the owner answers, so
+// that one is looked at again when a queued question's turn comes; the count
+// of questions is looked at once, before the question is counted (the
+// twentieth is still shown).
+const declinedOut = (server: string, c: CallAsks): string | undefined =>
+  c.declined >= DECLINES_MAX ? `${server} went on asking after the owner declined ${DECLINES_MAX} of its questions in this call.` : undefined;
 const overLimit = (server: string, c: CallAsks): string | undefined =>
-  c.declined >= DECLINES_MAX ? `${server} went on asking after the owner declined ${DECLINES_MAX} of its questions in this call.`
-    : c.asked >= QUESTIONS_MAX ? `${server} asked more than ${QUESTIONS_MAX} questions in this call.` : undefined;
+  declinedOut(server, c) ?? (c.asked >= QUESTIONS_MAX ? `${server} asked more than ${QUESTIONS_MAX} questions in this call.` : undefined);
 
 // A folder as the roots a server is told (2025-11-25 client/roots): one root,
 // a file URI of the real path, named by the folder.
@@ -771,7 +776,7 @@ export class McpManager {
         ? "Refused: the MCP server or tool changed before invocation. Look up the tool again." : undefined) : undefined;
     // A call a program made has no card of its own: its questions get no answer.
     const card = ctx.callId && !ctx.nestedIn ? `${ctx.sessionId}:${ctx.callId}` : undefined;
-    const call: CallAsks = { asked: 0, declined: 0, queued: 0, notes: new Set(), readOnly: tools?.find((t) => t.name === tool)?.annotations?.readOnlyHint === true };
+    const call: CallAsks = { asked: 0, declined: 0, queued: 0, notes: new Set(), readOnly: e ? (e.bundled ? e.bundled.reads(tool) : !!e.config.read_tools?.includes(tool)) : false };
     // What the model is told besides the result: what the server asked that got no answer, and why.
     const noted = (out: ToolOutput): ToolOutput => {
       if (!call.notes.size) return out;
@@ -782,8 +787,9 @@ export class McpManager {
     try {
       r = await client.callTool(tool, input, ctx.signal, (e?.config.tool_timeout_secs ?? 600) * 1000, meta, authorize, {
         session: ctx.sessionId,
-        ask: (q) => this.input(name, q, ctx, card, call),
-        dropped: (method, why) => call.notes.add(`${name} ${method === "roots/list" ? "asked for the session's folder" : "asked the owner a question"} while this call ran and got no answer: ${why}. If the result depends on it, run the call again when no other session is using ${name}.`),
+        // (By the name the session knows the server by: the card and the notes show it.)
+        ask: (q) => this.input(shown, q, ctx, card, call),
+        dropped: (method, why) => call.notes.add(`${shown} ${method === "roots/list" ? "asked for the session's folder" : "asked the owner a question"} while this call ran and got no answer: ${why}. If the result depends on it, run the call again when no other call is using ${shown}.`),
       });
     } catch (err) {
       this.callEnded(ctx.sessionId, card);
@@ -806,9 +812,10 @@ export class McpManager {
 
   // Calls whose question is open on a card now.
   private asking = new Set<string>();
-  // Calls of tools their server marks read-only (readOnlyHint) that have a
-  // card open, kept in a file. A daemon that stops or dies with such a card
-  // open runs the call again, so the server asks again and the card is back
+  // Calls of tools the owner marked as reads (read_tools; a server's own
+  // readOnlyHint is the server's word and does not count) that have a card
+  // open, kept in a file. A daemon that stops or dies with such a card open
+  // runs the call again, so the server asks again and the card is back
   // (callOutcome "waiting"): a call that only reads loses nothing by that.
   // Any other call that asked ends as a call a restart cut, which may have
   // partly run: the server had begun its work before it asked, and running
@@ -845,7 +852,7 @@ export class McpManager {
     call.asked++;
     call.queued++;
     // One card per call: a second question waits for the first.
-    const run = (this.queue.get(card) ?? Promise.resolve()).then(() => (overLimit(server, call) ? unasked(overLimit(server, call)!) : this.elicit(server, q.params, ctx, card, call))).finally(() => { call.queued--; });
+    const run = (this.queue.get(card) ?? Promise.resolve()).then(() => (declinedOut(server, call) ? unasked(declinedOut(server, call)!) : this.elicit(server, q.params, ctx, card, call))).finally(() => { call.queued--; });
     const tail = run.catch(() => {});
     this.queue.set(card, tail);
     void tail.then(() => { if (this.queue.get(card) === tail) this.queue.delete(card); });

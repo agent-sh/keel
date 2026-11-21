@@ -73,8 +73,14 @@ test("fields named like an object's own parts are fields like any other", () => 
 test("a field that looks like a secret is marked, by the words of its name", () => {
   for (const name of ["password", "Password", "db_password", "apiKey", "api_key", "API key", "access_token", "token", "client_secret", "privateKey", "key", "card_number", "creditCard", "cvv", "PIN", "otp", "Security code"]) expect([name, looksSecret(name)]).toEqual([name, true]);
   for (const name of ["user", "keyboard", "issue_key", "sort key", "monkey", "passenger", "tokenizer", "spin", "card", "secretary", "pinned", "author"]) expect([name, looksSecret(name)]).toEqual([name, false]);
-  const form = formOf({ message: "Sign in", requestedSchema: { type: "object", properties: { user: { type: "string" }, pw: { type: "string", title: "Password" } } } });
-  expect(form.questions.map((q) => !!q.secret)).toEqual([false, true]);
+  // Written as one word or split another way, in the plural, with a number; a code that proves who you are; what pays.
+  for (const name of ["passWord1", "pass_word", "tokens", "secrets", "passwords", "apiKeys", "mfa_code", "MFA", "totp", "2fa", "verification code", "recovery_code", "ssn", "social security number", "iban", "account_number", "routing no", "bearer"]) expect([name, looksSecret(name)]).toEqual([name, true]);
+  for (const name of ["passes", "status", "address", "code", "zip code", "country_code", "number", "phone number", "page_number", "class", "words", "bypass", "compass"]) expect([name, looksSecret(name)]).toEqual([name, false]);
+  // The ask can be in the description alone.
+  const form = formOf({ message: "Sign in", requestedSchema: { type: "object", properties: { user: { type: "string" }, pw: { type: "string", title: "Password" }, field1: { type: "string", title: "Value", description: "Enter your account password" } } } });
+  expect(form.questions.map((q) => !!q.secret)).toEqual([false, true, true]);
+  // The object replacement character draws nothing a reader can act on: gone with the rest.
+  expect(plain("a\uFFFCb", 10)).toBe("ab");
   expect([form.sensitive, form.notes]).toEqual([true, [MUST_NOT]]);
 });
 
