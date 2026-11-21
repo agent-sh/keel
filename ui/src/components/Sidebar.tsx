@@ -15,7 +15,7 @@ import { fitBands } from "../lib/rail-fit.ts";
 import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, cn, folderNames, when } from "../lib/utils.ts";
 import { AT_REST, branchOf, lastLine, LIST_TIER, useSessionState, useSessionStates, useWatches, watchLabel, type Watch } from "../lib/watch.ts";
-import { useWaitingSend } from "../lib/send-drafts.ts";
+import { useUnsent, useWaitingSend } from "../lib/send-drafts.ts";
 import { MachineSep, machineRuns, WherePip, whereWords } from "./Where.tsx";
 import { finished, ListFind, matches, order, setArrange, useArrange } from "./ListArrange.tsx";
 import { useAuto } from "../lib/automation.ts";
@@ -215,6 +215,11 @@ export function Group({ list: given, current, every, where }: { list: Session[];
   );
 }
 
+// What a message kept in the New box says on the New session button.
+const NEW_UNSENT = {
+  refused: { word: "not sent", line: "a first message was not sent", title: "A first message was not sent. Open New session to send it again or discard it." },
+  unconfirmed: { word: "unconfirmed", line: "a new session's start is unconfirmed", title: "Nobody confirmed that a new session was made. Open New session and check the list before sending again." },
+} as const;
 
 // The tab the index opens on (the folded rail's archive button asks for "archived").
 let openOn: "active" | "archived" = "active";
@@ -519,6 +524,7 @@ export function Sidebar({ open }: { open: boolean }) {
   const errors = useStore((s) => s.errors.filter((e) => !e.resolved_ts && !e.read_ts).length);
   const connected = useStore((s) => s.connected);
   const route = useUI((s) => s.route);
+  const newUnsent = useUnsent("new");
   const theme = useUI((s) => s.theme);
   const rail = useRail();
   const current = route.name === "session" ? route.id : null;
@@ -574,8 +580,11 @@ export function Sidebar({ open }: { open: boolean }) {
       <div className="k-rail-acts">
         {!open && toggle}
         {!open && <PaneCount />}
-        <button type="button" className="k-new-session k-act" data-testid="new-session" aria-label="New session" title="New session (Ctrl Shift O)" aria-current={route.name === "new" ? "page" : undefined} onClick={() => navigate({ name: "new" })}>
-          <Plus /><span className="k-act-label">New session</span>{open && <Kbd keys="mod+shift+o" className="ml-auto" />}
+        <button type="button" className="k-new-session k-act" data-testid="new-session" aria-label={newUnsent ? `New session, ${NEW_UNSENT[newUnsent].line}` : "New session"} title={newUnsent ? NEW_UNSENT[newUnsent].title : "New session (Ctrl Shift O)"} aria-current={route.name === "new" ? "page" : undefined} onClick={() => navigate({ name: "new" })}>
+          <Plus /><span className="k-act-label">New session</span>
+          {/* A first message kept in the New box, which nobody may be looking at: said here, in words when the list is open (in the shortcut's place). */}
+          {newUnsent && <span data-testid="new-unsent-mark" className="k-act-mark">{NEW_UNSENT[newUnsent].word}</span>}
+          {open && !newUnsent && <Kbd keys="mod+shift+o" className="ml-auto" />}
         </button>
         <button type="button" className="k-act" data-testid="open-palette" aria-label="Search and commands" title="Search and commands (Ctrl K)" onClick={() => setUI({ palette: true })}>
           <Search /><span className="k-act-label">Search and commands</span>{open && <Kbd keys="mod+k" className="ml-auto" />}

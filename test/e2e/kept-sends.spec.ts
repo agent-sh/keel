@@ -189,3 +189,44 @@ test("a kept image that could not be read is read again on reconnect", async ({ 
   await expect(saved(page).getByRole("button", { name: "Restore draft" })).toBeEnabled();
   await request.delete(`/api/sessions/${k.a}`);
 });
+
+// EXTRA-S16. A first message the daemon refused after the owner moved on is
+// kept in the New box, which nobody is looking at: the New session button
+// carries the mark, with the list open and folded, until the item is gone.
+test("the New session button marks a message kept in the New box", async ({ page, request }) => {
+  const elsewhere = (await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Elsewhere meanwhile" } })).json()).session.id as string;
+  const go = Promise.withResolvers<void>();
+  await page.route("**/api/sessions", async (r) => {
+    if (r.request().method() !== "POST") return r.fallback();
+    await go.promise;
+    await r.continue({ postData: JSON.stringify({ ...r.request().postDataJSON(), workspace: "/nonexistent/keel-e2e" }) });
+  });
+  await page.goto("/");
+  const box = page.getByTestId("new-composer");
+  const button = page.getByTestId("new-session");
+  const mark = button.getByTestId("new-unsent-mark");
+  await expect(mark).toHaveCount(0);
+  await box.getByTestId("composer").fill("Start in a folder that is gone.");
+  await box.getByTestId("composer").press("Enter");
+  // The owner moved on before the answer came.
+  await page.locator(`[data-testid="session-row"][data-session="${elsewhere}"]`).click();
+  await expect(page).toHaveURL(new RegExp(`/s/${elsewhere}`));
+  const refused = page.waitForResponse((r) => r.url().endsWith("/api/sessions") && r.request().method() === "POST" && r.status() === 400);
+  go.resolve();
+  await refused;
+  await expect(mark).toHaveText("not sent");
+  await expect(button).toHaveAccessibleName("New session, a first message was not sent");
+  await shoot(page, "kept-01-new-session-mark");
+  // Folded, the button keeps a mark of its own.
+  await page.getByRole("button", { name: "Fold the session list" }).click();
+  await expect(mark).toBeVisible();
+  await shoot(page, "kept-02-new-session-mark-folded");
+  await page.getByRole("button", { name: "Show the session list" }).click();
+  // The item is where the mark says, and discarding it clears the mark.
+  await button.click();
+  await expect(box.getByTestId("saved-draft")).toContainText("Start in a folder that is gone.");
+  await box.getByTestId("saved-draft").getByRole("button", { name: "Discard" }).click();
+  await expect(mark).toHaveCount(0);
+  await expect(button).toHaveAccessibleName("New session");
+  await request.delete(`/api/sessions/${elsewhere}`);
+});
