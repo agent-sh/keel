@@ -791,6 +791,38 @@ test("a queue held only by a move's own stop is let go when the move fails or is
   }
 });
 
+// A stop of the daemon: the drain waits for a move that runs (within its time,
+// through the engine's `draining` hook), and a move that ends while the daemon
+// drains keeps the queue release it owes for the next start.
+test("a drain waits for a running move, and a move that ends in it lets its queue go at the next start", async () => {
+  const { allHooks } = await import("../engine/hooks.ts");
+  const { Engine } = await import("../engine/turn.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const rig = await moveRig();
+  const engine = new Engine(rig.store, new Bus(), {} as any, { capture: (_s: string, e: unknown) => { throw e; } } as any, rig.dir);
+  allHooks().push({ draining: () => rig.moves.idle() });
+  try {
+    // The daemon is draining when the move ends: no turn may start, so the release stays owed.
+    (rig.moves as any).engine.isDraining = () => true;
+    rig.running = true;
+    rig.moves.start(rig.session(), { machine_id: "m1" });
+    let drained = false;
+    const drain = engine.settle(10_000).then(() => { drained = true; });
+    await Bun.sleep(5);
+    expect(drained).toBe(false); // the move still runs
+    await drain;
+    expect(rig.latest()).toMatchObject({ state: "done", settle: true });
+    expect(rig.released).toEqual([]);
+    // The next start: the release is done, once.
+    rig.boot();
+    await Bun.sleep(20);
+    expect(rig.released).toHaveLength(1);
+  } finally {
+    allHooks().pop();
+    rig.close();
+  }
+});
+
 // Each landing saves the folder's own state to a ref first. Only the newest
 // few are kept, on both sides, and none outlives the session.
 test("the refs a landing saves a folder's own state to are pruned, and go with the session", async () => {
