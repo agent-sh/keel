@@ -574,6 +574,24 @@ test("End follows the end of the active pane only", async ({ page, request }) =>
     expect(await top(b)).toBe(200);
     await expect(pane(b).getByTestId("jump-latest")).toBeVisible();
     await shoot(page, "layout-19-end-active-pane");
+
+    // Typed in the message box, End is the box's own key: the caret goes to the end of the
+    // line and the conversation stays where it is being read. Ctrl End still goes to its end.
+    await scroller(a).evaluate((el) => { el.scrollTop = 200; });
+    await expect(pane(a).getByTestId("jump-latest")).toBeVisible();
+    const box = pane(a).getByTestId("composer");
+    await box.fill("hello world");
+    await page.keyboard.press("Home");
+    expect(await box.evaluate((el: HTMLTextAreaElement) => el.selectionStart)).toBe(0);
+    await page.keyboard.press("End");
+    expect(await box.evaluate((el: HTMLTextAreaElement) => el.selectionStart)).toBe(11);
+    await page.waitForTimeout(400);
+    expect(await top(a)).toBe(200);
+    await expect(pane(a).getByTestId("jump-latest")).toBeVisible();
+    await page.keyboard.press("Control+End");
+    await expect(pane(a).getByTestId("jump-latest")).toHaveCount(0);
+    await expect.poll(() => fromEnd(a)).toBeLessThan(2);
+    expect(await top(b)).toBe(200);
   } finally { await drop(); }
 });
 
@@ -615,7 +633,7 @@ test("a pane off screen is shown without a glide under reduced motion", async ({
     const reduced = await asked(2);
     expect(reduced.length).toBeGreaterThan(0);
     expect(reduced).not.toContain("smooth");
-    await shoot(page, "layout-14-offscreen-pane-reduced-motion");
+    await shoot(page, "layout-20-offscreen-pane-reduced-motion");
 
     // Without that preference the same move glides.
     await page.emulateMedia({ reducedMotion: "no-preference" });

@@ -73,8 +73,10 @@ export function installKeymap() {
     for (const c of allCommands()) {
       if (!c.keys) continue;
       const inInput = typeof c.inInput === "function" ? c.inInput() : c.inInput;
-      if (typing && (typeof c.inInput === "function" ? !inInput : !inInput && !/mod|ctrl|meta|alt/.test(c.keys))) continue;
-      if (c.keys.split(" ").some((k) => matches(e, k))) {
+      if (typing && typeof c.inInput === "function" && !inInput) continue;
+      // Each of a command's keys is judged alone: of "end mod+end" only the second fires
+      // in a field, and plain End stays the field's (the caret goes to the line's end).
+      if (c.keys.split(" ").some((k) => (!typing || inInput || /mod|ctrl|meta|alt/.test(k)) && matches(e, k))) {
         e.preventDefault();
         c.run();
         return;
