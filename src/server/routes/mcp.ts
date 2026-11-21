@@ -1,4 +1,4 @@
-import type { RouteModule } from "../app.ts";
+import { registerSocket, type RouteModule } from "../app.ts";
 import { McpManager } from "../../mcp/manager.ts";
 import { installMcpTools } from "../../mcp/tools.ts";
 import { installChromeBridge } from "../../integrations/chrome.ts";
@@ -8,8 +8,9 @@ import { endpoint, importHome } from "../../mcp/sources.ts";
 import { access, connectorConfig, ghSignedIn, keelName, REGISTRY, searchRegistry, SUGGESTED } from "../../mcp/connectors.ts";
 import { catalogSources, catalogTools } from "../../tools/catalog.ts";
 import { score } from "../../mcp/tools.ts";
-import { presence } from "./permissions.ts";
+import { gate, presence } from "./permissions.ts";
 import { hookMcp } from "../../integrations/hooks.ts";
+import { confine, sandboxStatus } from "../../safety/sandbox.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -44,7 +45,36 @@ export const mcpRoutes: RouteModule = (deps) => {
   // A deleted or archived session lets go of what a bundled server held for it (tabs).
   (g as any).__keelMcpOff?.();
   // (And of the servers an editor passed with it.)
-  (g as any).__keelMcpOff = deps.bus.on((f) => { if (f.t === "session" && (f.session.archived || f.deleted)) m.releaseSession(f.session.id); });
+  (g as any).__keelMcpOff = deps.bus.on((f) => {
+    if (f.t === "session" && (f.session.archived || f.deleted)) m.releaseSession(f.session.id);
+    // The session's sandbox changed: a command an editor passed is started again inside the new one.
+    else if (f.t === "feature" && f.name === "perm" && f.session_id) m.sessionPermChanged(f.session_id);
+  });
+  // A command an editor passed runs where the session's own commands run:
+  // inside its sandbox when that is on. A sandbox this machine cannot give is
+  // not a reason to run the command outside one.
+  m.sessionSandbox = (sessionId, argv) => {
+    const s = deps.store.session(sessionId);
+    const p = gate?.perm(sessionId);
+    if (!s || !p || p.sandbox === "off") return { argv, as: "off" };
+    const st = sandboxStatus();
+    if (!st.available) return { refuse: `the session's commands run in a sandbox (${p.sandbox}) and this machine cannot give one (${st.reason}), so the editor's command is not started outside it` };
+    return { argv: confine(argv, p, s.workspace), as: `${p.sandbox}${p.network ? "" : ", no network"}` };
+  };
+  // An editor's own socket to the daemon (keel acp opens one): the servers it
+  // passed are held by it, and end when it closes, however the editor went.
+  // (Kept across a dev hot reload: the sockets stay open through it.)
+  const holders: Map<string, number> = ((globalThis as { __keelMcpHolders?: Map<string, number> }).__keelMcpHolders ??= new Map());
+  registerSocket("mcp-hold", {
+    open(ws) { const h = (ws.data as { holder: string }).holder; holders.set(h, (holders.get(h) ?? 0) + 1); ws.send(JSON.stringify({ t: "held", holder: h })); },
+    close(ws) {
+      const h = (ws.data as { holder: string }).holder;
+      const left = (holders.get(h) ?? 1) - 1;
+      if (left > 0) return void holders.set(h, left);
+      holders.delete(h);
+      (globalThis as { __keelMcp?: McpManager }).__keelMcp?.releaseHolder(h);
+    },
+  });
 
   const servers = () => json({ servers: m.list() });
   const known = (name: string) => (m.has(name) ? null : bad(`no MCP server named ${name}`, 404));
@@ -53,12 +83,22 @@ export const mcpRoutes: RouteModule = (deps) => {
   const needs = (req: Request) => (!presence || presence.allows(req, "mcp-command") ? null : json({ error: "this needs your passkey from a remote device", presence: { action: "mcp-command" } }, 428));
 
   return {
+    // GET /api/mcp/hold?holder=ID upgrades to a socket that holds the servers
+    // set with that `holder`: they end when it closes.
+    "/api/mcp/hold": {
+      GET: (req: Request, srv: Bun.Server<unknown>) => {
+        const holder = new URL(req.url).searchParams.get("holder") ?? "";
+        if (!/^[\w-]{8,80}$/.test(holder)) return bad("holder is 8 to 80 letters, digits, dashes or underscores");
+        return srv.upgrade(req, { data: { kind: "mcp-hold", holder } }) ? undefined : bad("websocket upgrade failed");
+      },
+    },
     // A session's MCP list: the owner's servers and the ones an editor passed
     // with this session (`session` on each). PUT sets the session's own, the
     // whole list each time, as ACP's session/new, load and resume give it:
-    // `servers` holds `{ name, command, args?, env? }` or `{ name, url, headers? }`.
-    // They are started for this session, offered to it alone, asked about as
-    // its permission mode says, and never written to the owner's file.
+    // `servers` holds `{ name, command, args?, env? }` or `{ name, url, headers? }`,
+    // and `holder` names the caller's hold socket (the servers end with it).
+    // They run with the session's permissions and nothing more (see
+    // McpManager.setSessionServers), and are never written to the owner's file.
     "/api/sessions/:id/mcp": {
       GET: (req: any) => (deps.store.session(req.params.id) ? json({ servers: m.list(req.params.id) }) : bad("no such session", 404)),
       PUT: async (req: any) => {
@@ -76,7 +116,10 @@ export const mcpRoutes: RouteModule = (deps) => {
         }));
         // A command runs a program as the owner: from a remote device that takes the passkey.
         if (list.some((x: { config: McpServerConfig }) => x.config.command)) { const guard = needs(req); if (guard) return guard; }
-        return json({ set: m.setSessionServers(s.id, list, s.workspace), servers: m.list(s.id).filter((x) => x.session) });
+        const holder = typeof b.holder === "string" && b.holder ? b.holder : undefined;
+        if (holder && list.length && !holders.has(holder)) return bad("no open hold socket has this holder (GET /api/mcp/hold?holder=ID first)", 409);
+        const remote = s.machine && s.machine !== "local" ? s.machine : undefined;
+        return json({ set: m.setSessionServers(s.id, list, { cwd: s.workspace, remote, holder }), servers: m.list(s.id).filter((x) => x.session) });
       },
     },
     "/api/mcp/servers": {

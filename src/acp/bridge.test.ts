@@ -266,3 +266,31 @@ test("the editor's MCP servers go to the daemon with the session, the whole list
   await call(f.bridge, f.out, "session/new", { cwd: "/w", mcpServers: [] });
   expect(puts().length).toBe(before);
 });
+
+test("the editor's servers are held by a socket of its own, and at its end the daemon is told before any socket closes", async () => {
+  const log: string[] = [];
+  const s = { id: "s", workspace: "/w", model: "p:alpha", head: null, updated: 1 };
+  const d = {
+    get: async (path: string) => (path === "/api/models" ? { models: [{ id: "p:alpha", name: "Alpha", provider: "p" }], default: "p:alpha" } : path.endsWith("/permissions") ? { perm: { mode: "ask" } } : { session: s, events: [], running: false }),
+    send: async (method: string, path: string, body?: any) => {
+      if (path.endsWith("/mcp")) { await Bun.sleep(5); log.push(`${method} mcp ${body.servers.length} ${body.holder === held ? "held" : "not held"}`); return { set: [] }; }
+      return path === "/api/sessions" ? { session: s } : {};
+    },
+    frames: async () => { log.push("frames open"); return () => void log.push("frames closed"); },
+    hold: async (holder: string) => { held = holder; log.push("hold open"); return () => void log.push("hold closed"); },
+  };
+  let held = "";
+  const out: any[] = [];
+  const bridge = new AcpBridge(d, (m) => out.push(m));
+  // A session with no servers opens no hold; the first list does, once, before it is sent.
+  await call(bridge, out, "session/new", { cwd: "/w", mcpServers: [] });
+  expect(log).toEqual(["frames open"]);
+  const one = [{ name: "fs", command: "srv", args: [], env: [] }];
+  await call(bridge, out, "session/new", { cwd: "/w", mcpServers: one });
+  await call(bridge, out, "session/load", { sessionId: "s", cwd: "/w", mcpServers: one });
+  expect(log.slice(1)).toEqual(["hold open", "PUT mcp 1 held", "PUT mcp 1 held"]);
+  expect(held).toMatch(/^acp-[0-9a-f-]{36}$/);
+  await bridge.close();
+  // The empty list names no holder: it holds nothing.
+  expect(log.slice(4)).toEqual(["PUT mcp 0 not held", "hold closed", "frames closed"]);
+});

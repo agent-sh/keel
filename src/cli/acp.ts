@@ -23,6 +23,14 @@ export function daemonApi(base: string): DaemonApi {
       if (!r.ok) throw Object.assign(new Error(b.error ?? `HTTP ${r.status}`), { code: -32602 });
       return b;
     },
+    // Open until this process ends: the daemon drops what it holds when it closes.
+    hold: (holder) =>
+      new Promise((resolve, reject) => {
+        const ws = new WebSocket(`${base.replace(/^http/, "ws")}/api/mcp/hold?holder=${encodeURIComponent(holder)}`, { headers: authHeaders() } as any);
+        ws.onmessage = () => resolve(() => ws.close());
+        ws.onerror = () => reject(new Error(`the Keel daemon at ${base} took no hold for the editor's MCP servers`));
+        ws.onclose = () => reject(new Error(`the Keel daemon at ${base} closed the hold for the editor's MCP servers`));
+      }),
     frames: (on) =>
       new Promise((resolve, reject) => {
         const ws = new WebSocket(base.replace(/^http/, "ws") + "/ws", { headers: authHeaders() } as any);

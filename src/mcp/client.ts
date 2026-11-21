@@ -26,7 +26,8 @@ export type McpCallResult = { content?: McpContent[]; structuredContent?: unknow
 
 export type Transport =
   | { kind: "stdio"; command: string; args: string[]; env: Record<string, string>; cwd?: string }
-  | { kind: "http"; url: string; headers: Record<string, string>; token?: () => Promise<string | undefined> };
+  // `pinned`: its headers go to this address only, so a redirect is an error (a server an editor passed).
+  | { kind: "http"; url: string; headers: Record<string, string>; token?: () => Promise<string | undefined>; pinned?: boolean };
 
 export class RpcError extends Error {
   constructor(readonly code: number, message: string, readonly data?: unknown) {
@@ -104,14 +105,21 @@ export class McpClient {
 
   // `era` skips the probe when an earlier connection to the same config
   // already found it (the spec lets a client cache the era per server).
-  static async connect(t: Transport, timeoutMs = 30_000, era?: "modern" | "legacy"): Promise<McpClient> {
+  // `signal`: nobody wants the connection any more (its server was dropped
+  // while it connected): the process ends now, not when the handshake gives up.
+  static async connect(t: Transport, timeoutMs = 30_000, era?: "modern" | "legacy", signal?: AbortSignal): Promise<McpClient> {
+    if (signal?.aborted) throw new Error("the server was dropped before it connected");
     const c = new McpClient(t, timeoutMs);
     if (t.kind === "stdio") c.spawn();
+    const dropped = () => c.close();
+    signal?.addEventListener("abort", dropped, { once: true });
     try {
       await c.handshake(era);
     } catch (e) {
       c.close();
       throw c.withStderr(e);
+    } finally {
+      signal?.removeEventListener("abort", dropped);
     }
     return c;
   }
@@ -278,6 +286,7 @@ export class McpClient {
       headers,
       body: JSON.stringify(msg),
       signal,
+      ...(t.pinned ? { redirect: "error" as const } : {}),
       // A request's own timer aborts it (rpc), so that timer is its one limit:
       // Bun would end a response that stays silent for five minutes, well
       // inside a long tool call's time.
@@ -385,7 +394,7 @@ export class McpClient {
           h.accept = "text/event-stream";
           if (st.id !== undefined) h["last-event-id"] = st.id;
           // Bun ends a response that stays silent for five minutes; this one is silent by nature.
-          const res = await fetch(url, { method: "GET", headers: h, signal: ac.signal, timeout: false } as RequestInit);
+          const res = await fetch(url, { method: "GET", headers: h, signal: ac.signal, timeout: false, ...((this.t as any).pinned ? { redirect: "error" } : {}) } as RequestInit);
           const stream = res.ok && (res.headers.get("content-type") ?? "").includes("text/event-stream");
           if (!stream) {
             void res.body?.cancel().catch(() => {});
@@ -531,7 +540,7 @@ export class McpClient {
       proc.kill("SIGTERM");
     } else if (this.sessionId && this.t.kind === "http") {
       // legacy HTTP session: say goodbye; failures do not matter
-      this.headers("", {}).then((h) => fetch((this.t as any).url, { method: "DELETE", headers: h })).catch(() => {});
+      this.headers("", {}).then((h) => fetch((this.t as any).url, { method: "DELETE", headers: h, ...((this.t as any).pinned ? { redirect: "error" as const } : {}) })).catch(() => {});
     }
   }
 }

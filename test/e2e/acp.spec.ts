@@ -37,6 +37,8 @@ class Editor {
   notify(method: string, params: unknown) { this.write({ jsonrpc: "2.0", method, params }); }
   kinds(sessionId: string) { return this.updates.filter((u) => u.sessionId === sessionId).map((u) => u.update.sessionUpdate); }
   close() { this.proc.stdin!.end(); }
+  // Gone without a word, as a crashed editor is.
+  kill() { this.proc.kill("SIGKILL"); }
 }
 
 // Feature: an editor drives Keel over the Agent Client Protocol. It makes a
@@ -125,21 +127,27 @@ test("acp", async ({ page, baseURL }) => {
 });
 
 // Feature: an editor passes its own MCP servers with the session. Keel says
-// which transports it takes, starts the server for that session only, the
-// model finds and calls its tool through the session's permission mode (the
-// editor is asked), the session's MCP list has it and the owner's list and
-// other sessions do not, and closing the session lets go of it.
+// which transports it takes and starts the server for that session only, with
+// the session's permissions and nothing more: its command gets what the
+// editor gave as it was given and none of the daemon's own settings, it runs
+// inside the session's sandbox when that is on, its tools are asked about as
+// the mode says, no other session and no list of the owner's has it, a server
+// of the owner's with its name wins the name, and it ends with the session or
+// with the editor, however the editor went.
 test("acp mcp servers", async ({ request, baseURL }) => {
   const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `acp-mcp-${Date.now()}`);
+  const outside = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `acp-mcp-outside-${Date.now()}`);
   mkdirSync(ws, { recursive: true });
-  const echo = join(import.meta.dirname, "fixtures/echo-mcp.ts");
+  mkdirSync(outside, { recursive: true });
+  const server = join(import.meta.dirname, "fixtures/editor-mcp.ts");
   const ed = new Editor(baseURL!);
   const init = await ed.call("initialize", { protocolVersion: 1, clientCapabilities: {} });
   // Streamable HTTP is spoken; the older SSE transport is not, so it is not offered.
   expect(init.agentCapabilities.mcpCapabilities).toEqual({ http: true, sse: false });
 
+  // What the editor gives names variables of the daemon: none of it is filled in.
   const s = await ed.call("session/new", { cwd: ws, mcpServers: [
-    { name: "editor-notes", command: "bun", args: [echo], env: [{ name: "EDITOR_NOTE", value: "1" }] },
+    { name: "editor-notes", command: "bun", args: [server, "${HOME}", "${KEEL_DEFAULT_MODEL:-none}"], env: [{ name: "EDITOR_NOTE", value: "1" }, { name: "FROM_DAEMON", value: "${KEEL_DEV_DIR}" }] },
     { type: "sse", name: "old-stream", url: "http://127.0.0.1:9/sse", headers: [] },
   ] });
   const id = s.sessionId as string;
@@ -148,33 +156,87 @@ test("acp mcp servers", async ({ request, baseURL }) => {
   // The one it cannot take is said to the editor, by name; the other connects.
   await expect.poll(() => ed.updates.some((u) => u.sessionId === id && /old-stream/.test(JSON.stringify(u.update)))).toBe(true);
   const list = async (sid: string) => ((await (await request.get(`/api/sessions/${sid}/mcp`)).json()).servers as any[]);
-  await expect.poll(async () => (await list(id)).find((x) => x.name === "editor-notes")?.state, { timeout: 30_000 }).toBe("ready");
-  expect((await list(id)).find((x) => x.name === "editor-notes")).toMatchObject({ session: id, transport: "stdio", tool_names: ["echo", "add"] });
+  const mine = async (sid = id) => (await list(sid)).filter((x) => x.session);
+  await expect.poll(async () => (await mine())[0]?.state, { timeout: 30_000 }).toBe("ready");
+  expect((await mine())[0]).toMatchObject({ name: "editor-notes", session: id, transport: "stdio", tool_names: ["echo", "started", "write"] });
   // Not the owner's server: their list and their file do not have it.
-  const owners = (await (await request.get("/api/mcp/servers")).json()).servers as any[];
-  expect(owners.some((x) => /editor-notes/.test(x.name))).toBe(false);
+  const owners = async () => (await (await request.get("/api/mcp/servers")).json()).servers as any[];
+  expect((await owners()).some((x) => /editor-notes/.test(x.name))).toBe(false);
 
-  // Its tool runs in this session, asked about as the mode says.
+  // Its tools run in this session, asked about as the mode says (also one the server calls a read).
   const asked: any[] = [];
   ed.onRequest = (m) => (asked.push(m), { outcome: { outcome: "selected", optionId: "once" } });
-  const call = `script:calls ${JSON.stringify([{ name: "mcp_call", input: { tool: "editor-notes__echo", arguments: { text: "from the editor" } } }])}`;
-  const r = await ed.call("session/prompt", { sessionId: id, prompt: [{ type: "text", text: call }] });
+  const calls = (...c: { tool: string; arguments?: unknown }[]) => `script:calls ${JSON.stringify(c.map((x) => ({ name: "mcp_call", input: { tool: x.tool, arguments: x.arguments ?? {} } })))}`;
+  const results = async (sid: string) => ((await (await request.get(`/api/sessions/${sid}/events`)).json()).events as any[]).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results).map((r) => (typeof r.content === "string" ? r.content : r.content.map((b: any) => b.text ?? "").join("")));
+  const r = await ed.call("session/prompt", { sessionId: id, prompt: [{ type: "text", text: calls({ tool: "editor-notes__echo", arguments: { text: "from the editor" } }, { tool: "editor-notes__started" }) }] });
   expect(r.stopReason).toBe("end_turn");
-  expect(asked.map((m) => m.method)).toEqual(["session/request_permission"]);
-  const events = async (sid: string) => JSON.stringify((await (await request.get(`/api/sessions/${sid}/events`)).json()).events.filter((e: any) => e.kind === "tool_result"));
-  expect(await events(id)).toContain("echo: from the editor");
+  expect(asked.map((m) => m.method)).toEqual(["session/request_permission", "session/request_permission"]);
+  const got = await results(id);
+  expect(got[0]).toContain("echo: from the editor");
+  // What the command was started with: the editor's values as written, and of
+  // the daemon's environment only what any program needs to run. No setting
+  // of the daemon or of a provider is among them.
+  const started = JSON.parse(got[1]!.slice(got[1]!.indexOf("{")));
+  expect(started.argv).toEqual(["${HOME}", "${KEEL_DEFAULT_MODEL:-none}"]);
+  expect([started.env.EDITOR_NOTE, started.env.FROM_DAEMON]).toEqual(["1", "${KEEL_DEV_DIR}"]);
+  expect(Object.keys(started.env).filter((k) => !/^(HOME|LOGNAME|PATH|SHELL|TERM|USER|LANG|LC_[A-Z_]+|TZ|TMPDIR|EDITOR_NOTE|FROM_DAEMON|_|PWD|SHLVL|OLDPWD)$/.test(k))).toEqual([]);
 
   // Another session does not have it: the same call finds no such tool there.
   const other = (await (await request.post("/api/sessions", { data: { model: HAIKU, workspace: ws } })).json()).session.id as string;
-  expect((await list(other)).some((x) => x.name === "editor-notes")).toBe(false);
+  expect(await mine(other)).toEqual([]);
   await request.put(`/api/sessions/${other}/permissions`, { data: { mode: "full-auto" } });
-  await request.post(`/api/sessions/${other}/messages`, { data: { text: call } });
-  await expect.poll(async () => await events(other), { timeout: 30_000 }).toContain("No tool named editor-notes__echo");
+  await request.post(`/api/sessions/${other}/messages`, { data: { text: calls({ tool: "editor-notes__echo", arguments: { text: "x" } }) } });
+  await expect.poll(async () => (await results(other)).join(" "), { timeout: 30_000 }).toContain("No tool named editor-notes__echo");
 
-  // Loading the session again with no servers, or closing it, ends the server.
+  // The owner adds a server of that name: the name is theirs, here too, and the editor's goes by another.
+  const echo = join(import.meta.dirname, "fixtures/echo-mcp.ts");
+  expect((await request.post("/api/mcp/servers", { data: { name: "editor-notes", command: "bun", args: [echo] } })).ok()).toBe(true);
+  try {
+    await expect.poll(async () => (await list(id)).filter((x) => /^editor-notes/.test(x.name)).map((x) => [x.name, !!x.session, x.state]), { timeout: 30_000 }).toEqual([["editor-notes", false, "ready"], ["editor-notes-editor", true, "ready"]]);
+    ed.onRequest = () => ({ outcome: { outcome: "selected", optionId: "once" } });
+    await ed.call("session/prompt", { sessionId: id, prompt: [{ type: "text", text: calls({ tool: "editor-notes__add", arguments: { a: 2, b: 3 } }, { tool: "editor-notes-editor__echo", arguments: { text: "still here" } }) }] });
+    expect((await results(id)).slice(-2)).toEqual([expect.stringContaining("5"), expect.stringContaining("echo: still here")]);
+  } finally {
+    await request.delete("/api/mcp/servers/editor-notes");
+  }
+
+  // The session's sandbox is turned on: the command is started again inside
+  // it, and cannot write where the session's own commands cannot.
+  const { sandbox } = await (await request.get("/api/permissions/settings")).json();
+  const put = await request.put(`/api/sessions/${id}/permissions`, { data: { sandbox: "read-only" } });
+  if (sandbox.available) {
+    expect(put.ok()).toBe(true);
+    await expect.poll(async () => (await mine())[0]?.state, { timeout: 30_000 }).toBe("ready");
+    const target = join(outside, "written-by-the-server.txt");
+    await ed.call("session/prompt", { sessionId: id, prompt: [{ type: "text", text: calls({ tool: "editor-notes-editor__write", arguments: { path: target } }) }] });
+    expect((await results(id)).at(-1)).toContain("not written");
+    expect(existsSync(target)).toBe(false);
+  } else {
+    // No sandbox on this machine: the session cannot be put in one, so the command stays as it was.
+    expect(put.status()).toBe(409);
+  }
+
+  // Closing the session ends its server.
   await ed.call("session/close", { sessionId: id });
-  await expect.poll(async () => (await list(id)).some((x) => x.name === "editor-notes")).toBe(false);
-  ed.close();
+  await expect.poll(async () => (await mine()).length).toBe(0);
+
+  // An editor that is killed takes its servers with it: no session of its own is left holding a process.
+  const marks = [1, 2, 3].map((n) => join(outside, `started-${n}`));
+  const ids: string[] = [];
+  for (const mark of marks) ids.push((await ed.call("session/new", { cwd: ws, mcpServers: [{ name: "held", command: "bun", args: [server, "--mark", mark], env: [] }] })).sessionId);
+  await expect.poll(async () => (await Promise.all(ids.map((x) => mine(x)))).map((l) => l[0]?.state), { timeout: 30_000 }).toEqual(["ready", "ready", "ready"]);
+  expect(marks.map((m) => existsSync(m))).toEqual([true, true, true]);
+  ed.kill();
+  await expect.poll(async () => (await Promise.all(ids.map((x) => mine(x)))).map((l) => l.length), { timeout: 15_000 }).toEqual([0, 0, 0]);
+
+  // And one that leaves in order does too, for every session it opened.
+  const ed2 = new Editor(baseURL!);
+  await ed2.call("initialize", { protocolVersion: 1, clientCapabilities: {} });
+  const again: string[] = [];
+  for (let n = 0; n < 3; n++) again.push((await ed2.call("session/new", { cwd: ws, mcpServers: [{ name: "held", command: "bun", args: [server], env: [] }] })).sessionId);
+  await expect.poll(async () => (await Promise.all(again.map((x) => mine(x)))).map((l) => l[0]?.state), { timeout: 30_000 }).toEqual(["ready", "ready", "ready"]);
+  ed2.close();
+  await expect.poll(async () => (await Promise.all(again.map((x) => mine(x)))).map((l) => l.length), { timeout: 15_000 }).toEqual([0, 0, 0]);
 });
 
 // Feature: Keel drives another ACP agent. Settings lists the agents of the ACP

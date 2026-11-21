@@ -58,7 +58,11 @@ export const registerCatalog = (s: CatalogSource) => void sources.set(s.name, s)
 export const unregisterCatalog = (name: string) => void sources.delete(name);
 // The sources a session is offered: every shared one and its own. With no
 // session named (the owner's lists), the shared ones.
-const offered = (session?: string) => [...sources.values()].filter((s) => !s.session || s.session === session);
+// The shared ones come first: a name both have is the shared server's.
+const offered = (session?: string) => {
+  const all = [...sources.values()];
+  return [...all.filter((s) => !s.session), ...(session ? all.filter((s) => s.session === session) : [])];
+};
 export const catalogSources = (session?: string) => offered(session);
 
 // What every source offers now, without waiting on a connection: the deferred

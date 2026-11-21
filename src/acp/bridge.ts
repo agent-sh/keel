@@ -173,6 +173,10 @@ export type DaemonApi = {
   get(path: string): Promise<Json>;
   send(method: string, path: string, body?: Json): Promise<Json>;
   upload?(name: string, type: string, bytes: Uint8Array): Promise<Json>;
+  // A socket of this editor's own to the daemon, under a name: what is set
+  // with that name as its `holder` ends when the socket closes, however this
+  // process went. Resolves to what closes it.
+  hold?(holder: string): Promise<() => void>;
   frames(on: (f: Json) => void): Promise<() => void>;
 };
 
@@ -246,7 +250,11 @@ export class AcpBridge {
   // alone, and the session's permission mode decides what their tools may do.
   // One Keel cannot take is said to the editor by name; the session opens
   // either way. A session the editor closes lets go of them.
+  // The daemon holds them for this editor (`hold`): when this process ends,
+  // however it ends, they end too.
   private served = new Set<string>();
+  private holder = `acp-${crypto.randomUUID()}`;
+  private holding?: Promise<() => void>;
   private async mcpServers(sessionId: string, given: unknown, fresh = false) {
     const list = Array.isArray(given) ? given : [];
     // A new session has none to drop; one opened again may hold an earlier editor's.
@@ -257,9 +265,11 @@ export class AcpBridge {
       : { name: m?.name, command: m?.command, args: m?.args, env: pairs(m?.env) }));
     let failed: string[];
     try {
-      const r = await this.daemon.send("PUT", `/api/sessions/${sessionId}/mcp`, { servers });
+      if (list.length && this.daemon.hold) await (this.holding ??= this.daemon.hold(this.holder));
+      const r = await this.daemon.send("PUT", `/api/sessions/${sessionId}/mcp`, { servers, ...(this.daemon.hold ? { holder: this.holder } : {}) });
       failed = (r.set ?? []).filter((x: Json) => x.error).map((x: Json) => `${x.name}: ${x.error}`);
     } catch (e) {
+      this.holding = undefined; // a hold that did not open is tried again with the next list
       failed = [`${list.map((m: Json) => m?.name).join(", ")}: ${(e as Error).message}`];
     }
     if (list.length) this.served.add(sessionId);
@@ -270,9 +280,13 @@ export class AcpBridge {
 
   // Resolves when the daemon was told what this editor held is let go.
   close(): Promise<unknown> {
-    this.stopFrames?.();
-    // The editor is gone: the servers it passed go with it (it passes them again when it loads the session).
-    const released = Promise.allSettled([...this.served].map((id) => this.daemon.send("PUT", `/api/sessions/${id}/mcp`, { servers: [] })));
+    // The editor is gone: the servers it passed go with it (it passes them
+    // again when it loads the session). The daemon is told first, and the
+    // sockets close after it answered: the frames socket's end is this process's.
+    const held = this.holding;
+    const released = Promise.allSettled([...this.served].map((id) => this.daemon.send("PUT", `/api/sessions/${id}/mcp`, { servers: [] })))
+      .then(() => held?.then((stop) => stop(), () => {}))
+      .finally(() => this.stopFrames?.());
     this.served.clear();
     for (const [id, l] of [...this.live]) for (const p of [...l.prompts]) if (this.take(id, p)) p.resolve({ stopReason: "cancelled" });
     return released;

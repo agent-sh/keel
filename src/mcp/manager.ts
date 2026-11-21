@@ -120,7 +120,17 @@ type Entry = {
   session?: string;
   label?: string;
   given?: string; // as the editor named it
+  // Whose it is while that one is connected: the editor's own socket to the
+  // daemon. When the socket closes, the server ends with it.
+  holder?: string;
+  // The session's sandbox the command was started in (its profile and network).
+  sandbox?: string;
+  // Ends a connection attempt under way when the server is dropped.
+  abort?: AbortController;
 };
+
+// What a session's own server is: the session, the name it knows it by, the editor's name for it, who holds it.
+type Own = { session: string; label: string; given: string; holder?: string };
 
 // A server an editor named, as a name Keel's tools can carry: the characters a
 // server name takes, and never one a shared server already has.
@@ -134,6 +144,25 @@ function sessionLabel(name: string, taken: (n: string) => boolean): string {
 // Credential-shaped variables stay out of tool servers' environments unless
 // the config names them; a server gets what it was configured with.
 const SECRET = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|BEARER|SESSION)|^(AWS_|ANTHROPIC_|OPENAI_|CLAUDE_CODE_|GEMINI_|GOOGLE_|AZURE_|KEEL_)/i;
+
+// What a command an editor passed inherits from the daemon: what the MCP
+// SDKs let a stdio server inherit (HOME, LOGNAME, PATH, SHELL, TERM, USER:
+// DEFAULT_INHERITED_ENV_VARS in modelcontextprotocol/python-sdk), the locale,
+// the time zone and the temp folder. Nothing the daemon was configured with:
+// no provider's key, address or setting, whatever its name.
+const INHERITED = /^(HOME|LOGNAME|PATH|SHELL|TERM|USER|LANG|LC_[A-Z_]+|TZ|TMPDIR)$/;
+// What the sandbox's own launcher needs to reach the user's service manager.
+const LAUNCHER = ["XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"];
+
+// The environment of a session's own command: the few inherited variables
+// and the editor's, each as given. Nothing in a value is expanded: `${NAME}`
+// stays those characters, so a server cannot be handed a daemon variable by naming it.
+export function sessionEnv(c: McpServerConfig, confined: boolean, from: Record<string, string | undefined> = process.env): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(from)) if (v !== undefined && (INHERITED.test(k) || (confined && LAUNCHER.includes(k)))) env[k] = v;
+  for (const [k, v] of Object.entries(c.env ?? {})) env[k] = String(v);
+  return env;
+}
 
 function serverEnv(c: McpServerConfig): Record<string, string> {
   const env: Record<string, string> = {};
@@ -236,37 +265,87 @@ export class McpManager {
     this.setSessionServers(session, []);
   }
 
-  // The servers an editor passed with a session: started for that session,
-  // offered to it alone, kept in memory only (never in the owner's file) and
-  // closed when the session is archived, deleted, closed by its editor or
-  // given another list. The whole list each time: one not named again goes,
-  // one named again unchanged keeps its connection. `cwd` is the session's
-  // folder, where a command starts.
-  setSessionServers(session: string, servers: { name: string; config: McpServerConfig }[], cwd?: string): { name: string; label?: string; error?: string }[] {
+  // How a session's own command is held to the session's sandbox: the argv
+  // that runs it confined and what it is confined as, or why it is not
+  // started at all. Set by whoever knows the session's permissions (the
+  // daemon's route); without it nothing is confined.
+  sessionSandbox?: (session: string, argv: string[]) => { argv: string[]; as: string } | { refuse: string };
+
+  // The servers an editor passed with a session. They run with the session's
+  // permissions and nothing more:
+  // - offered to that session alone, under a name no server of the owner has;
+  // - a command starts in the session's folder, inside the session's sandbox
+  //   when that is on, with an environment that holds none of the daemon's
+  //   own settings (sessionEnv), and nothing in what the editor gave is
+  //   expanded against the daemon's environment;
+  // - kept in memory only, never in the owner's file;
+  // - ended when the session is archived or deleted, when its editor closes
+  //   it or goes away (`holder`: the editor's socket), or by another list.
+  // The whole list each time: one not named again goes, one named again
+  // unchanged keeps its connection. `cwd` is the session's folder; `remote`
+  // names the machine the session's tools run on, when it is not this one.
+  setSessionServers(session: string, servers: { name: string; config: McpServerConfig }[], opts: { cwd?: string; remote?: string; holder?: string } = {}): { name: string; label?: string; error?: string }[] {
     const mine = () => [...this.entries.values()].filter((e) => e.session === session);
     const keep = new Set<string>();
     const out: { name: string; label?: string; error?: string }[] = [];
     for (const s of servers.slice(0, 32)) {
-      const config: McpServerConfig = s.config.command ? { ...s.config, cwd: s.config.cwd ?? cwd } : s.config;
+      // Only what an editor may give: nothing that reads the daemon's environment, keyring or sign-ins.
+      const c = s.config;
+      if (!!c.command === !!c.url) { out.push({ name: s.name, error: "give either command or url" }); continue; }
+      const config: McpServerConfig = c.command
+        ? { command: String(c.command), ...(c.args ? { args: c.args.map(String) } : {}), ...(c.env ? { env: c.env } : {}), ...(opts.cwd ? { cwd: opts.cwd } : {}) }
+        : { ...(c.url ? { url: String(c.url) } : {}), ...(c.headers ? { headers: c.headers } : {}), ...(c.transport ? { transport: c.transport } : {}) };
       const had = mine().find((e) => e.given === s.name && !keep.has(e.name) && same(e.config, config));
-      if (had) { keep.add(had.name); out.push({ name: s.name, label: had.label }); continue; }
+      if (had) { keep.add(had.name); had.holder = opts.holder; out.push({ name: s.name, label: had.label }); continue; }
       const label = sessionLabel(s.name, (n) => [...this.entries.values()].some((e) => (e.label ?? e.name) === n && (!e.session || e.session === session)));
       const bad = config.transport === "sse" ? "it uses the older SSE transport, which Keel does not speak: give its Streamable HTTP address"
-        // A session whose folder was deleted, or is on another machine: a command has nowhere to start.
+        // The session's tools run on another machine: the command would start on this one, outside what the session reaches.
+        : config.command && opts.remote ? `the session's tools run on another machine (${opts.remote}), and this command would start on this one`
+        // A session whose folder was deleted: a command has nowhere to start.
         : config.command && config.cwd && !existsSync(config.cwd) ? `the session's folder ${config.cwd} is not on this machine, so the command cannot start there`
         : validate(label, config);
       if (bad) { out.push({ name: s.name, error: bad }); continue; }
       const key = `${label}@${session}`;
-      const e = this.addEntry(key, config);
-      e.session = session;
-      e.label = label;
-      e.given = s.name;
+      this.addEntry(key, config, undefined, { session, label, given: s.name, holder: opts.holder });
       keep.add(key);
       out.push({ name: s.name, label });
       this.ensure(key).catch(() => {}); // its state says why it failed
     }
     for (const e of mine()) if (!keep.has(e.name)) this.drop(e.name);
     return out;
+  }
+
+  // The editor that passed them is gone (its socket closed): its servers end.
+  releaseHolder(holder: string) {
+    for (const e of [...this.entries.values()]) if (e.holder === holder) this.drop(e.name);
+  }
+
+  // The session's sandbox changed: a command started under the old one is
+  // started again under the new one.
+  sessionPermChanged(session: string) {
+    for (const e of [...this.entries.values()]) {
+      if (e.session !== session || !e.config.command || e.sandbox === undefined) continue;
+      const now = this.sessionSandbox?.(session, [e.config.command]);
+      if (now && "as" in now && now.as === e.sandbox) continue;
+      // The attempt under way, if any, is ended and is not this entry's any more.
+      e.abort?.abort();
+      e.abort = undefined;
+      e.connecting = undefined;
+      e.client?.close();
+      e.client = undefined;
+      e.tools = [];
+      e.state = "connecting";
+      this.ensure(e.name).catch(() => {});
+    }
+  }
+
+  // A shared server took a name a session's own server answers to: the
+  // session's is renamed, so the owner's server is the one that name means.
+  private unshadow(name: string) {
+    for (const e of this.entries.values()) {
+      if (!e.session || e.label !== name) continue;
+      e.label = sessionLabel(e.given ?? name, (n) => [...this.entries.values()].some((x) => x !== e && (x.label ?? x.name) === n && (!x.session || x.session === e.session)));
+    }
   }
 
   private readFile(): { cfg: McpConfigFile; text: string | null } {
@@ -364,19 +443,20 @@ export class McpManager {
     this.watchers.clear();
     clearTimeout(this.syncTimer);
     for (const e of this.entries.values()) {
+      e.abort?.abort(); // one still connecting ends with the manager
       e.client?.close();
       unregisterCatalog(e.name);
     }
     this.entries.clear();
   }
 
-  private addEntry(name: string, config: McpServerConfig, bundled?: BundledServer) {
-    const e: Entry = { name, config, state: config.enabled === false ? "disabled" : "connecting", tools: [], failures: 0, bundled, resourcesRev: 0, updates: {}, subscribed: new Set() };
+  private addEntry(name: string, config: McpServerConfig, bundled?: BundledServer, own?: Own) {
+    const e: Entry = { name, config, state: config.enabled === false ? "disabled" : "connecting", tools: [], failures: 0, bundled, resourcesRev: 0, updates: {}, subscribed: new Set(), ...own };
     this.entries.set(name, e);
+    if (!own) this.unshadow(name);
     registerCatalog({
       name,
-      // Read when asked: a session's own server is marked right after it is added.
-      get session() { return e.session; },
+      session: e.session,
       tools: async () => {
         // Phone control turned off leaves search, and a call still gets the plain reason.
         if (e.state === "disabled" && e.bundled?.live) return e.bundled.tools.map((t) => ({ ...this.catalogTool(e, t), hidden: true }));
@@ -419,6 +499,13 @@ export class McpManager {
 
   private transport(e: Entry): Transport {
     const c = e.config;
+    // A session's own server: every value as the editor gave it. Nothing is
+    // expanded against the daemon's environment, no header comes from it, and
+    // no sign-in of the owner's is sent along.
+    if (e.session) {
+      if (c.command) return { kind: "stdio", command: c.command, args: c.args ?? [], env: sessionEnv(c, false), cwd: c.cwd ?? this.workspace };
+      return { kind: "http", url: c.url!, headers: Object.fromEntries(Object.entries(c.headers ?? {}).map(([k, v]) => [k, String(v)])), pinned: true };
+    }
     if (c.command) {
       return { kind: "stdio", command: expand(c.command), args: (c.args ?? []).map((a) => expand(a)), env: serverEnv(c), cwd: c.cwd ? expand(c.cwd) : this.workspace };
     }
@@ -447,19 +534,31 @@ export class McpManager {
       e.state = "connecting";
       e.error = undefined;
       const t = this.transport(e);
+      const abort = (e.abort = new AbortController());
       // One connection for every session: a turn that happens to open it does
       // not own it, so what it fails with later is no turn's.
       e.connecting = detached(() => (async () => {
         if (e.config.transport === "sse") throw new Error("this server uses the older SSE transport, which Keel does not speak; give its Streamable HTTP address instead");
+        // A session's own command runs inside the session's sandbox, as its shell commands do.
+        if (e.session && t.kind === "stdio") {
+          const held = this.sessionSandbox?.(e.session, [t.command, ...t.args]);
+          // (Refused is a state of its own: a change of the session's sandbox tries again.)
+          e.sandbox = !held ? "off" : "refuse" in held ? "refused" : held.as;
+          if (held && "refuse" in held) throw new Error(held.refuse);
+          if (held && held.as !== "off") {
+            [t.command, ...t.args] = held.argv as [string, ...string[]];
+            t.env = sessionEnv(e.config, true);
+          }
+        }
         if (t.kind === "http" && e.config.headers_helper) {
           const h = await helperHeaders(expand(e.config.headers_helper));
           Object.assign(t.headers, h);
           // The helper's own Authorization wins over a stored sign-in.
           if (Object.keys(h).some((k) => k.toLowerCase() === "authorization")) t.token = undefined;
         }
-        const client = await McpClient.connect(t, (e.config.timeout_secs ?? 30) * 1000, e.era);
+        const client = await McpClient.connect(t, (e.config.timeout_secs ?? 30) * 1000, e.era, abort.signal);
         // Removed, turned off or replaced meanwhile: this client is nobody's.
-        const stale = () => this.entries.get(name) !== e || e.state === "disabled" || this.disposed;
+        const stale = () => this.entries.get(name) !== e || e.abort !== abort || e.state === "disabled" || this.disposed;
         if (stale()) {
           client.close();
           throw new Error(`${name} was changed while it connected`);
@@ -525,7 +624,8 @@ export class McpManager {
         return client;
       })()
         .catch((err) => {
-          if (this.entries.get(name) !== e) throw err;
+          // Dropped, or started again meanwhile: this attempt's end is not the server's state.
+          if (this.entries.get(name) !== e || e.abort !== abort) throw err;
           if (err instanceof AuthRequired) {
             e.state = "needs_auth";
             e.www = err.wwwAuthenticate;
@@ -537,7 +637,7 @@ export class McpManager {
           }
           throw err;
         })
-        .finally(() => { e.connecting = undefined; }));
+        .finally(() => { if (e.abort === abort) e.connecting = undefined; }));
     }
     if (!wait) return e.connecting;
     return Promise.race([
@@ -561,7 +661,7 @@ export class McpManager {
     try {
       client = await this.ensure(name);
     } catch (err) {
-      const msg = e?.state === "needs_auth" ? `${shown} needs sign-in: the owner signs in from the MCP servers panel.` : (err as Error).message;
+      const msg = e?.state === "needs_auth" ? (e.session ? `${shown} asks for a sign-in, which a server the editor passed cannot do here: the editor passes its credentials in the server's headers.` : `${shown} needs sign-in: the owner signs in from the MCP servers panel.`) : (err as Error).message;
       return { content: `MCP server ${shown} is not available: ${msg}`, is_error: true };
     }
     // Keep the same entry and listing across connection setup and (for HTTP)
@@ -667,6 +767,8 @@ export class McpManager {
     e.client = undefined;
     this.entries.delete(name);
     unregisterCatalog(name);
+    // One still connecting ends now: its process is not left to the handshake's own limit.
+    e.abort?.abort();
     if (c) c.retire();
   }
 
