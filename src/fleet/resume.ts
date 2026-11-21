@@ -36,8 +36,13 @@
 // moment the stop is sent the wait is "finishing": before it a cancel means no
 // stop, after it a cancel is refused and said to be finishing. While the stop
 // is out and unanswered neither is known: the wait still shows as waiting,
-// and a cancel waits for the answer, which says which of the two it is.
+// and a cancel waits for the answer, which says which of the two it is. A
+// stop that got no answer (the link failed) ended nothing as far as anyone
+// knows: the wait is waiting again and can be cancelled, and a cancelled wait
+// sends no stop when the link is back. If that stop did reach the machine,
+// its receipt says so at the next look and the copy is offered.
 // A wait has one timer at a time, whoever set it: one chain of looks.
+// A service that was stopped writes nothing more, whatever comes back to it.
 import type { Bus } from "../core/bus.ts";
 import { contains } from "../core/paths.ts";
 import type { ErrorTracker } from "../core/errors.ts";
@@ -120,6 +125,7 @@ export class Resumes {
   private busy = new Set<string>();
   // The stops that are out for a wait and not answered yet: whether each ended the original.
   private stops = new Map<string, Promise<boolean>>();
+  private ticking = new Set<string>();
   private timers = new Set<Timer>();
   private stopped = false;
 
@@ -290,10 +296,18 @@ export class Resumes {
     return true;
   }
 
+  // What was asked of the machine came back to a service that was stopped (the
+  // daemon going down, a reload that replaced it): nothing more is written
+  // here. What is stored says where it stands, and the next daemon goes on.
+  private live() {
+    if (this.stopped) throw new LinkError("the daemon is stopping");
+  }
+
   // The copy: a new session placed on that machine, or the copy made before
   // brought up to date (left as it is when it went on here).
   private async copy(m: MachineRow, harness: Harness, id: string, o: { model?: string; title?: string; mode?: "new" | "update" | "open" }) {
     const r = await this.fleet.handsJson<{ session: Found & { cwd_exists: boolean }; read: Read }>(m.id, `/api/fleet/hands/transcript?${this.q(harness, id)}&full=1`, { timeout: 120_000, idempotent: true });
+    this.live();
     const f = r.session;
     const prior = this.imports.links(harness, id, undefined, m.id)[0];
     const model = o.model || (prior && this.d.store.session(prior.session_id)?.model) || (await modelFor(this.d.providers, f));
@@ -312,6 +326,7 @@ export class Resumes {
       if ((e as any)?.status !== 409 || !prior || o.mode) throw e;
       out = await this.imports.import(f, { mode: "new", model, workspace, title: o.title, from: { machine: m.id, read: r.read } });
     }
+    this.live();
     if (out.action === "created" && workspace !== f.cwd) this.d.store.append(out.session.id, "note", { text: `Its folder ${f.cwd ?? "(none)"} is not inside the directory granted on ${m.name}; it goes on in ${workspace} there.` });
     if (out.action === "updated") for (const e of this.d.store.events(out.session.id, seq)) this.d.bus.emit({ t: "event", event: e });
     this.d.bus.emit({ t: "session", session: this.d.store.session(out.session.id)! });
@@ -372,14 +387,18 @@ export class Resumes {
         });
       } catch (e) {
         // No answer says nothing about the stop: the receipt stays, and the next look settles it.
+        // The wait is waiting again (it can be cancelled): nothing is known to have ended.
         this.stops.delete(k);
-        if (o.wait?.state === "finishing") this.emit(o.wait);
-        answer.resolve(true);
+        if (o.wait?.state === "finishing" && !this.stopped) { o.wait.state = "waiting"; this.saveWait(o.wait); }
+        answer.resolve(false);
+        this.live();
         if (!(e instanceof LinkError)) throw e;
         throw new ResumeError(502, `${m.name} did not answer the stop: ${e.message}. The original may have been stopped: look again, and finish the copy if it was.`, { link: true, maybe_stopped: true });
       }
       // An answer: nothing was ended, or it was and the copy is owed from here.
       this.stops.delete(k);
+      if (this.stopped) answer.resolve(!!ended.ended);
+      this.live(); // the receipt is as it was written before the stop left: the next daemon settles it
       if (!ended.ended || !ended.was_running) this.dropEnd(k);
       if (o.wait?.state === "finishing") {
         if (ended.ended) this.emit(o.wait);
@@ -405,7 +424,7 @@ export class Resumes {
     try {
       c = await this.copy(m, harness, id, { model: model ?? receipt?.model });
     } catch (e) {
-      if (!receipt) throw e;
+      if (!receipt || this.stopped) throw e;
       if (!(e instanceof LinkError) && !(e instanceof ResumeError) && (e as any)?.status !== 409) this.d.errors.capture("server", e, { at: "resume copy", machine: m.id });
       this.saveEnd(k, { ...receipt, error: e instanceof LinkError ? `${m.name} did not answer: ${e.message}` : (e as Error).message });
       throw new ResumeError(502, `The original on ${m.name} was stopped, but the copy did not finish: ${this.ends.get(k)!.error}. Finish the copy: nothing is stopped again.`, { stopped: true, link: e instanceof LinkError, pending: this.pendingOf(m.id, harness, id) });
@@ -422,6 +441,7 @@ export class Resumes {
       if (ended.jobs.some((j) => j.running)) text += "\nA job left running still does the original's work on that machine: look at it before starting it again.";
       if (ended.jobs.some((j) => !j.running)) text += "\nA job that ended with it did not finish: start it again if it is still needed.";
     }
+    this.live();
     // The note and the receipt's end are one write: the copy is told once.
     const told = this.d.store.atomic(c.session.id, () => {
       const e = (ended.was_running || c.gap) && !this.d.engine.isRunning(c.session.id) ? this.d.store.append(c.session.id, "note", { kind: "takeover", text, model: true }) : undefined;
@@ -516,7 +536,15 @@ export class Resumes {
     this.d.bus.emit({ t: "feature", name: "fleet_resume", data: { wait } });
   }
 
+  // One look at a time for a wait: a look asked for while one is out is dropped (the one out sets the next).
   private async tick(w: Waiting) {
+    const k = this.key(w.machine_id, w.harness, w.id);
+    if (this.ticking.has(k)) return;
+    this.ticking.add(k);
+    try { await this.lookNow(w); } finally { this.ticking.delete(k); }
+  }
+
+  private async lookNow(w: Waiting) {
     if (this.stopped || !open(w)) return;
     const k = this.key(w.machine_id, w.harness, w.id);
     // Past the deadline nothing is stopped. A stop already sent is not undone by it: its copy is still owed.

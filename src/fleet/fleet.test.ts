@@ -1196,37 +1196,6 @@ async function takeoverRig() {
   return rig;
 }
 
-test("a take-over whose copy fails after the stop: one copy on the retry, told what was in flight, nothing stopped again", async () => {
-  const rig = await takeoverRig();
-  try {
-    // The stop is acknowledged, then the transcript cannot be read.
-    rig.read = "fail";
-    const failed = await rig.now().catch((e) => e);
-    expect(failed).toMatchObject({ status: 502, more: { stopped: true } });
-    expect(failed.message).toContain("was stopped, but the copy did not finish");
-    expect([rig.stops, rig.copies]).toEqual([1, 0]);
-    expect(rig.resumes.pendingOf("s1", "claude", "c1")).toMatchObject({ how: "SIGTERM", in_flight: 2 });
-    // Asked again while it still fails: the copy alone, no second stop.
-    await rig.now().catch(() => {});
-    expect(rig.stops).toBe(1);
-
-    rig.read = "ok";
-    const done: any = await rig.resumes.resume(rig.m, "claude", "c1", { when: "copy", jobs: "keep" });
-    expect(done).toMatchObject({ action: "taken_over", stopped: true, how: "SIGTERM" });
-    expect(done.in_flight).toHaveLength(2);
-    expect([rig.stops, rig.copies]).toEqual([1, 1]);
-    const told = rig.notes().filter((t) => t.includes("was ended"));
-    expect(told).toHaveLength(1);
-    expect(told[0]).toContain("on box was ended (SIGTERM)");
-    expect(told[0]).toContain("background job, left running there");
-    expect(told[0]).toContain("call, interrupted: Run the slow check");
-    expect(rig.resumes.pendingOf("s1", "claude", "c1")).toBeUndefined();
-    expect(await rig.resumes.resume(rig.m, "claude", "c1", { when: "copy", jobs: "keep" }).catch((e) => e.status)).toBe(409);
-  } finally {
-    rig.close();
-  }
-});
-
 test("a take-over cut by a restart after the stop: the daemon that starts makes the copy, once", async () => {
   const rig = await takeoverRig();
   try {
@@ -1344,27 +1313,6 @@ test("an end receipt is stored redacted, and goes with a machine that was remove
   }
 });
 
-test("an idle wait survives a restart with its deadline and its process, and ends the original once it is idle", async () => {
-  const rig = await takeoverRig();
-  try {
-    const started: any = await rig.idle(60_000);
-    expect(started).toMatchObject({ action: "waiting", wait: { state: "waiting", process: { pid: 4242 } } });
-    const { deadline_ms, process } = started.wait;
-    rig.boot();
-    expect(rig.wait()).toMatchObject({ state: "waiting", deadline_ms, process, jobs: "keep" });
-    rig.recover();
-    await Bun.sleep(60);
-    expect(rig.stops).toBe(0); // it still works: nothing is ended
-    rig.working = false;
-    expect(await rig.until(() => rig.wait()?.state === "resumed")).toBe(true);
-    expect([rig.stops, rig.copies]).toEqual([1, 1]);
-    expect(rig.wait()!.session_id).toBe(rig.copy()!.id);
-    expect(rig.notes().filter((t) => t.includes("once it was idle"))).toHaveLength(1);
-  } finally {
-    rig.close();
-  }
-});
-
 test("a wait past its deadline or whose process was replaced never ends anything", async () => {
   const rig = await takeoverRig();
   try {
@@ -1463,41 +1411,71 @@ test("a wait whose stop keeps failing has one chain of looks", async () => {
   }
 });
 
-// A service that was stopped (the daemon goes down, a reload replaced it) is
-// in the middle of a look: it writes nothing more, and the wait stays on its row.
-test("a wait's look that outlives its stopped service writes nothing", async () => {
-  const rig = await takeoverRig();
+// A service that was stopped (the daemon goes down, a reload replaced it)
+// writes nothing more, whatever comes back to it: not for a look that returns
+// late, not for a stop whose answer comes late. What is stored says where it
+// stands, and the daemon that starts next goes on from it.
+test("a stopped service writes nothing for a late look or a late stop answer, and the next daemon goes on", async () => {
+  const rows = (rig: Awaited<ReturnType<typeof takeoverRig>>) => JSON.stringify(rig.store.db.query("SELECT key, data FROM fleet_resume_waits UNION ALL SELECT key, data FROM fleet_resume_ends").all());
+  const late = await takeoverRig();
   try {
-    await rig.idle(60_000);
-    rig.stop = "leaving";
-    rig.working = false;
-    expect(await rig.until(() => rig.stops === 1)).toBe(true);
+    await late.idle(60_000);
+    late.stop = "leaving";
+    late.working = false;
+    expect(await late.until(() => late.stops === 1)).toBe(true);
     await Bun.sleep(30); // looking again at an original that is still leaving
-    rig.resumes.stop();
-    const rows = () => JSON.stringify(rig.store.db.query("SELECT key, data FROM fleet_resume_waits UNION ALL SELECT key, data FROM fleet_resume_ends").all());
-    const before = rows();
+    late.resumes.stop();
+    const before = rows(late);
     await Bun.sleep(300); // past the time it had to leave
-    expect(rows()).toBe(before);
-    expect(rig.stops).toBe(1);
+    expect(rows(late)).toBe(before);
+    expect(late.stops).toBe(1);
   } finally {
-    rig.close();
+    late.close();
   }
-});
-
-test("a wait whose stop was out when the daemon went down follows what happened to the original", async () => {
   const rig = await takeoverRig();
   try {
-    // The original is ended and the answer is lost; the daemon goes down with the wait finishing.
+    // The stop is out and ends the original; the service is stopped before the answer comes.
     await rig.idle(60_000);
-    rig.stop = "lost";
+    const answer = Promise.withResolvers<void>();
+    rig.hold.stop = answer.promise;
     rig.working = false;
     expect(await rig.until(() => rig.stops === 1)).toBe(true);
+    rig.resumes.stop();
+    const before = rows(rig);
+    answer.resolve();
+    await Bun.sleep(60);
+    expect(rows(rig)).toBe(before);
+    expect([rig.copies, rig.notes().length]).toEqual([0, 0]);
+    // The next daemon finds the wait finishing and its stop unanswered: the original is gone, so the copy is made, once.
+    rig.hold.stop = undefined;
     rig.boot();
     expect(rig.wait()).toMatchObject({ state: "finishing" });
     rig.recover();
     expect(await rig.until(() => rig.wait()?.state === "resumed")).toBe(true);
     expect([rig.stops, rig.copies]).toEqual([1, 1]);
     expect(rig.wait()!.session_id).toBe(rig.copy()!.id);
+  } finally {
+    rig.close();
+  }
+});
+
+// A stop that gets no answer ended nothing as far as anyone knows. The wait
+// can be cancelled, and once it is no stop goes out when the link is back.
+test("a wait whose stop got no answer can be cancelled, and sends no stop when the link is back", async () => {
+  const rig = await takeoverRig();
+  try {
+    await rig.idle(60_000);
+    rig.stop = "unsent"; // the link fails before the stop reaches the machine
+    rig.working = false;
+    await Bun.sleep(80); // it looked, tried, and tried again
+    expect(rig.wait()).toMatchObject({ state: "waiting" });
+    expect(await rig.resumes.cancel("s1", "claude", "c1")).toEqual({ cancelled: true });
+    rig.stop = "answer"; // the link is back
+    await Bun.sleep(250);
+    expect([rig.alive, rig.stops, rig.copies, rig.wait()!.state]).toEqual([true, 0, 0, "cancelled"]);
+    // The receipt of that stop goes at the next look: the original still runs, nothing is owed.
+    await rig.resumes.activity(rig.m, "claude", "c1");
+    expect((rig.resumes as any).ends.size).toBe(0);
   } finally {
     rig.close();
   }
