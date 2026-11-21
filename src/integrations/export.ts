@@ -116,12 +116,14 @@ function renamed(data: any, to: (id: string) => string | undefined): any {
 
 // The Keel file: a header (with how many events follow, so a cut copy is
 // caught), then one event a line. Events carry refs local to the file (e1, e2,
-// ...), not the store's ids; an event that names another one of the branch
-// names it by its ref, and a name of an event outside the branch is left out.
+// ...), not the store's ids; an event that names another one of the file
+// names it by its ref, and a name of an event outside the file is left out.
 // With `blob` it is self-contained: each file the prompts name follows the
 // events once, as a line of its own (its sha256 id, its size, its bytes in
 // base64), however many prompts and names refer to it.
-export function toKeelJsonl(s: Session, events: StoredEvent[], opts: { blob?: (id: string) => Uint8Array | undefined } = {}): string {
+// With `tree` the events are the whole session, every branch: each line names
+// its parent's ref, and the header the ref of the head shown (`tree.head`).
+export function toKeelJsonl(s: Session, events: StoredEvent[], opts: { blob?: (id: string) => Uint8Array | undefined; tree?: { head: string | null } } = {}): string {
   const ref = new Map(events.map((e, i) => [e.id, `e${i + 1}`]));
   const files = new Map<string, { id: string; name: string; size: number }>();
   for (const e of events) if (e.kind === "user") for (const b of e.data.images ?? []) if (b.type === "attachment") files.set(b.id, { id: b.id, name: b.name, size: b.size });
@@ -130,14 +132,14 @@ export function toKeelJsonl(s: Session, events: StoredEvent[], opts: { blob?: (i
     const bytes = opts.blob(id);
     if (bytes) blobs.push({ blob: id, size: bytes.byteLength, data: Buffer.from(bytes).toString("base64") });
   }
-  const header = { keel_export: EXPORT_VERSION, events: events.length, blobs: opts.blob ? blobs.length : undefined, scope: "current branch", title: s.title, model: s.model, workspace: s.workspace, created: s.created, attachments: files.size ? [...files.values()] : undefined };
-  const line = (e: StoredEvent) => ({ ref: ref.get(e.id), kind: e.kind, data: renamed(e.data, (id) => ref.get(id)), ts: e.ts });
+  const header = { keel_export: EXPORT_VERSION, events: events.length, blobs: opts.blob ? blobs.length : undefined, scope: opts.tree ? "tree" : "current branch", head: opts.tree ? ref.get(opts.tree.head ?? "") ?? null : undefined, title: s.title, model: s.model, workspace: s.workspace, created: s.created, attachments: files.size ? [...files.values()] : undefined };
+  const line = (e: StoredEvent) => ({ ref: ref.get(e.id), parent: opts.tree ? ref.get(e.parent ?? "") ?? null : undefined, kind: e.kind, data: renamed(e.data, (id) => ref.get(id)), ts: e.ts });
   return toJsonl([header, ...events.map(line), ...blobs]);
 }
 
 // `blobs`: the bytes a self-contained file carries, by their sha256 id, each
 // checked against its id and size before the file is accepted.
-export type ParsedExport = { ok: true; header: any; events: { ref?: string; kind: any; data: any; ts?: number }[]; blobs: Map<string, Uint8Array>; notes: string[] } | { ok: false; error: string };
+export type ParsedExport = { ok: true; header: any; events: { ref?: string; parent?: string | null; kind: any; data: any; ts?: number }[]; blobs: Map<string, Uint8Array>; notes: string[] } | { ok: false; error: string };
 
 export function parseKeelJsonl(text: string): ParsedExport {
   const lines = text.split("\n");
@@ -166,6 +168,16 @@ export function parseKeelJsonl(text: string): ParsedExport {
   if (header.keel_export === 1) notes.push("A version 1 file says nothing of its length: whether it is complete cannot be checked.");
   else if (header.events !== events.length) return { ok: false, error: `incomplete export: expected ${header.events} events, found ${events.length}` };
   if (header.blobs !== undefined && header.blobs !== blobs.size) return { ok: false, error: `incomplete export: expected ${header.blobs} attached files, found ${blobs.size}` };
+  // A tree: every event has a ref of its own and a parent written before it, and the head is one of them.
+  if (header.scope === "tree") {
+    const seen = new Set<string>();
+    for (const [i, e] of events.entries()) {
+      if (typeof e.ref !== "string" || seen.has(e.ref)) return { ok: false, error: `the event on record ${i + 1} has no ref of its own, so the branches cannot be rebuilt` };
+      if (e.parent != null && !seen.has(e.parent)) return { ok: false, error: `the event ${e.ref} follows ${e.parent}, which the file does not hold before it` };
+      seen.add(e.ref);
+    }
+    if (header.head == null ? events.length > 0 : !seen.has(header.head)) return { ok: false, error: "the file does not say which of its branches is shown" };
+  }
   // Bytes no prompt names are not stored for a file's saying so.
   const named = new Set<string>();
   for (const e of events) if (e.kind === "user") for (const b of e.data?.images ?? []) if (b?.type === "attachment") named.add(b.id);
@@ -176,16 +188,19 @@ export function parseKeelJsonl(text: string): ParsedExport {
 // The events of a parsed Keel file as rows of a new session: new ids, and every
 // name of another event follows that event to its new id. A version 1 file
 // names a summary's covered event by its old id, which is kept as it is.
-export function rowsOf(parsed: Extract<ParsedExport, { ok: true }>, newId: () => string = () => Bun.randomUUIDv7()): { id: string; kind: EventKind; data: any; ts: number }[] {
+// A tree's rows name their parents and `head` is the branch shown; a branch's
+// rows are a chain whose last event is the head.
+export function rowsOf(parsed: Extract<ParsedExport, { ok: true }>, newId: () => string = () => Bun.randomUUIDv7()): { rows: { id: string; kind: EventKind; data: any; ts: number; parent?: string | null }[]; head?: string | null } {
   const ids = new Map<string, string>();
+  const tree = parsed.header.scope === "tree";
   const rows = parsed.events.map((e) => {
     const id = newId();
     if (e.ref) ids.set(e.ref, id);
-    return { id, kind: e.kind as EventKind, data: e.data, ts: Number.isFinite(e.ts) ? Number(e.ts) : Date.now() };
+    return { id, kind: e.kind as EventKind, data: e.data, ts: Number.isFinite(e.ts) ? Number(e.ts) : Date.now(), ...(tree ? { parent: e.parent == null ? null : ids.get(e.parent)! } : {}) };
   });
   const v1 = parsed.header.keel_export === 1;
   for (const r of rows) r.data = renamed(r.data, (ref) => ids.get(ref) ?? (v1 && ref === r.data.covered ? ref : undefined));
-  return rows;
+  return tree ? { rows, head: parsed.header.head == null ? null : ids.get(parsed.header.head)! } : { rows };
 }
 
 // Claude Code wants tool ids of its own shape: each distinct source id gets one

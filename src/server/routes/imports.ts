@@ -348,17 +348,21 @@ export const importRoutes: RouteModule = (deps) => {
         // The files the prompts name travel inside the Keel file when asked for.
         const withFiles = u.get("attachments") === "1";
         if (withFiles && format !== "jsonl") return bad("attached files travel in the Keel file: format=jsonl");
+        // The Keel file holds the branch shown, or every branch when asked for.
+        const scope = u.get("scope") ?? "branch";
+        if (scope !== "branch" && scope !== "tree") return bad(`unknown scope ${scope}`);
+        if (scope === "tree" && format !== "jsonl") return bad("every branch travels in the Keel file: format=jsonl");
         const all = store.events(s.id);
         const shown = events(s.id);
         const leaves = all.filter((e) => !all.some((x) => x.parent === e.id)).length;
         const otherBranches = Math.max(0, leaves - 1);
         if (format === "md") return new Response(redact(toMarkdown(s, shown, include, { otherBranches })), { headers: headers("text/markdown; charset=utf-8", "md") });
         if (format === "jsonl") {
-          // The Keel file is the whole branch, for another Keel to continue: there is no part to choose.
+          // The Keel file is whole, for another Keel to continue: there is no part to choose.
           if (include.size) return bad("the Keel file always holds every part of the branch; include applies to Markdown");
-          const evs = shown.map((e) => ({ ...e, data: redactDeep(e.data) }));
+          const evs = (scope === "tree" ? all : shown).map((e) => ({ ...e, data: redactDeep(e.data) }));
           const blob = (id: string) => { const p = attachmentPath(id); return p ? new Uint8Array(readFileSync(p)) : undefined; };
-          return new Response(toKeelJsonl({ ...s, title: redact(s.title) }, evs, withFiles ? { blob } : {}), { headers: headers("application/x-ndjson", "jsonl") });
+          return new Response(toKeelJsonl({ ...s, title: redact(s.title) }, evs, { ...(withFiles ? { blob } : {}), ...(scope === "tree" ? { tree: { head: s.head } } : {}) }), { headers: headers("application/x-ndjson", "jsonl") });
         }
         return bad(`unknown format ${format}`);
       },
@@ -391,7 +395,7 @@ export const importRoutes: RouteModule = (deps) => {
         const workspace = isDir(header.workspace) ? header.workspace : deps.workspace;
         if (header.workspace && workspace !== header.workspace) notes.push(`The folder ${header.workspace} is not on this machine: the session works in ${workspace}.`);
         // New ids; an event that names another one of the file names its copy.
-        const rows = rowsOf(parsed);
+        const { rows, head } = rowsOf(parsed);
         // The bytes a self-contained file carries (checked against their digests
         // when it was read) are stored once each, under the first name a prompt gives them.
         for (const r of rows) if (r.kind === "user") for (const b of r.data?.images ?? []) {
@@ -402,7 +406,7 @@ export const importRoutes: RouteModule = (deps) => {
         const missing = new Set<string>();
         for (const r of rows) if (r.kind === "user") for (const b of r.data?.images ?? []) if (b?.type === "attachment" && !attachmentPath(b.id)) missing.add(b.name);
         if (missing.size) notes.push(`${[...missing].join(", ")} ${missing.size === 1 ? "is" : "are"} not stored on this machine: the model is told ${missing.size === 1 ? "it is" : "they are"} missing.`);
-        const out = store.createWithEvents({ title: header.title, model, workspace }, rows);
+        const out = store.createWithEvents({ title: header.title, model, workspace }, rows, head);
         bus.emit({ t: "session", session: out });
         return json({ session: out, events_imported: rows.length, files_imported: parsed.blobs.size, model: { exported: header.model ?? null, used: model, reason }, notes }, 201);
       },

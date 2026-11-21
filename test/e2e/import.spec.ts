@@ -399,3 +399,73 @@ test("a clear in a Keel file is undone in its copy", async ({ page, request }) =
   await request.delete(`/api/sessions/${session.id}`);
   await request.delete(`/api/sessions/${made.session.id}`);
 });
+
+// The Keel file holds the branch shown unless every branch is asked for: then
+// the copy has the same tree under ids of its own, shows the branch that was
+// shown, and the other leaf is one step away.
+test("a whole-tree Keel file keeps both leaves and the branch shown", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const tag = Date.now().toString(36);
+  const { session } = await (await request.post("/api/sessions", { data: { model: SCRIPTED, title: `Tree ${tag}` } })).json();
+  await say(request, session.id, `Shared start ${tag}`);
+  const fork = (await (await request.get(`/api/sessions/${session.id}`)).json()).session.head as string;
+  await say(request, session.id, `Leaf alpha ${tag}`);
+  const alpha = (await (await request.get(`/api/sessions/${session.id}`)).json()).session.head as string;
+  // Back to the shared start, a second leaf from there; then the first leaf is shown again.
+  await request.post(`/api/sessions/${session.id}/head`, { data: { head_event_id: fork, leaf: false } });
+  await say(request, session.id, `Leaf beta ${tag}`);
+  await request.post(`/api/sessions/${session.id}/head`, { data: { head_event_id: alpha, leaf: false } });
+
+  // The shape of a tree without its ids: each event by its kind and words, under its parent's.
+  const shape = (evs: any[], head: string | null) => {
+    const by = new Map(evs.map((e) => [e.id, e]));
+    const name = (e: any) => `${e.kind}:${e.data.text ?? e.data.blocks?.map((b: any) => b.text ?? b.type).join("|") ?? e.data.reason ?? ""}`;
+    const path = (id: string | null): string => { const e = id ? by.get(id) : undefined; return e ? `${path(e.parent)}/${name(e)}` : ""; };
+    return { paths: evs.map((e) => path(e.id)).sort(), head: path(head), leaves: evs.filter((e) => !evs.some((x) => x.parent === e.id)).length };
+  };
+  const source = await (await request.get(`/api/sessions/${session.id}`)).json();
+  const want = shape(source.events, source.session.head);
+  expect(want.leaves).toBe(2);
+  expect(want.head).toContain(`Leaf alpha ${tag}`);
+
+  // The dialog: the branch file by default, every branch behind a switch.
+  await page.goto(`/s/${session.id}`);
+  await page.getByRole("button", { name: "Export or continue elsewhere" }).click();
+  const dialog = page.getByTestId("export-dialog");
+  const link = dialog.getByTestId("export-jsonl");
+  await expect(link).toHaveAttribute("href", `/api/sessions/${session.id}/export?format=jsonl`);
+  await expect(dialog.getByTestId("export-stays")).toHaveText("1 other branch stays in this session.");
+  await dialog.getByTestId("export-tree").click();
+  await expect(link).toHaveAttribute("href", `/api/sessions/${session.id}/export?format=jsonl&scope=tree`);
+  await expect(link).toContainText("every branch whole");
+  await expect(dialog.getByTestId("export-stays")).toHaveCount(0);
+  await shoot(page, "import-08-export-tree");
+  const treeFile = await (await request.get((await link.getAttribute("href"))!)).text();
+  await page.keyboard.press("Escape");
+
+  // The default file is the branch shown: one leaf in its copy.
+  const branchFile = await (await request.get(`/api/sessions/${session.id}/export?format=jsonl`)).text();
+  expect(JSON.parse(branchFile.split("\n")[0]!).scope).toBe("current branch");
+  expect(branchFile).not.toContain(`Leaf beta ${tag}`);
+  const post = async (file: string) => (await (await request.post("/api/sessions/import", { data: file, headers: { "content-type": "application/x-ndjson" } })).json());
+  const one = await post(branchFile);
+  expect(shape(await eventsOf(request, one.session.id), null).leaves).toBe(1);
+
+  const made = await post(treeFile);
+  const copy = await (await request.get(`/api/sessions/${made.session.id}`)).json();
+  expect(shape(copy.events, copy.session.head)).toEqual(want);
+  const sourceIds = new Set(source.events.map((e: any) => e.id));
+  expect(copy.events.some((e: any) => sourceIds.has(e.id) || sourceIds.has(e.parent))).toBe(false);
+  expect((await request.get(`/api/sessions/${session.id}/export?format=md&scope=tree`)).status()).toBe(400);
+
+  // In the copy the leaf that was shown is shown, and the other is one step away.
+  await page.goto(`/s/${made.session.id}`);
+  await expect(page.getByTestId("user-message").last()).toContainText(`Leaf alpha ${tag}`);
+  await expect(page.getByTestId("branch-pos")).toHaveText("1/2");
+  await page.getByRole("button", { name: "Next version" }).click();
+  await expect(page.getByTestId("branch-pos")).toHaveText("2/2");
+  await expect(page.getByTestId("user-message").last()).toContainText(`Leaf beta ${tag}`);
+  await page.getByRole("button", { name: "Previous version" }).click();
+  await expect(page.getByTestId("user-message").last()).toContainText(`Leaf alpha ${tag}`);
+  for (const id of [session.id, one.session.id, made.session.id]) await request.delete(`/api/sessions/${id}`);
+});

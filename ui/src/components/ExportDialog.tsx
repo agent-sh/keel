@@ -63,15 +63,16 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [withFiles, setWithFiles] = useState(false);
+  const [tree, setTree] = useState(false);
   // What the Keel file leaves behind: other branches, and messages still waiting to run.
   const all = useStore((st) => (session ? st.events[session.id] : undefined));
   const pending = useStore((st) => (session ? st.queues[session.id]?.queue.length ?? 0 : 0));
-  // The files the current branch's prompts name, each counted once.
+  // The files the prompts of what is exported name (the branch shown, or every branch), each counted once.
   const head = useStore((st) => (session ? st.sessions[session.id]?.head ?? session.head : null));
-  const files = new Set((all ? lineage(all, head) : []).flatMap((e) => (e.kind === "user" ? (e.data.images ?? []).filter((b: any) => b.type === "attachment").map((b: any) => b.id as string) : []))).size;
+  const files = new Set((all ? (tree ? all : lineage(all, head)) : []).flatMap((e) => (e.kind === "user" ? (e.data.images ?? []).filter((b: any) => b.type === "attachment").map((b: any) => b.id as string) : []))).size;
   const branches = all ? Math.max(0, all.filter((e) => !all.some((x) => x.parent === e.id)).length - 1) : 0;
   const stays = [
-    branches ? `${branches} other branch${branches === 1 ? "" : "es"}` : "",
+    branches && !tree ? `${branches} other branch${branches === 1 ? "" : "es"}` : "",
     pending ? `${pending} pending message${pending === 1 ? "" : "s"}` : "",
   ].filter(Boolean).join(" and ");
   useEffect(() => {
@@ -79,6 +80,7 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
     setErr("");
     setOrigin(null);
     setWithFiles(false);
+    setTree(false);
     if (session) fetch(`/api/sessions/${session.id}/origin`).then((r) => r.json()).then(setOrigin).catch(reportError);
   }, [session?.id]);
   if (!session) return null;
@@ -132,13 +134,18 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
               </div>
             )}
             <Option href={`${base}/export?format=md&include=tools`} icon={<FileDown />} title="Markdown" hint="To read or share: the current branch with its tool calls and results; images and files named, not included; secrets taken out." testid="export-md" />
-            <Option href={`${base}/export?format=jsonl${withFiles ? "&attachments=1" : ""}`} icon={<FileJson />} title="Keel file" hint="To continue in another Keel: the current branch whole, thinking and tool data included; secrets taken out, ids of calls kept, so it is not anonymous." testid="export-jsonl" />
+            <Option href={`${base}/export?format=jsonl${withFiles ? "&attachments=1" : ""}${tree ? "&scope=tree" : ""}`} icon={<FileJson />} title="Keel file" hint={`To continue in another Keel: ${tree ? "every branch" : "the current branch"} whole, thinking and tool data included; secrets taken out, ids of calls kept, so it is not anonymous.`} testid="export-jsonl" />
+            {branches > 0 && (
+              <Carry on={tree} onChange={setTree} testid="export-tree">
+                Put every branch inside the Keel file: the {branches === 1 ? "other branch comes" : `${branches} other branches come`} too, with the one shown now still the one shown.
+              </Carry>
+            )}
             {files > 0 && (
               <Carry on={withFiles} onChange={setWithFiles} testid="export-with-files">
                 Put the {files === 1 ? "attached file" : `${files} attached files`} inside the Keel file, so it opens whole on a machine that never had {files === 1 ? "it" : "them"}. Files go as they are: secrets in them stay.
               </Carry>
             )}
-            {stays && <p className="px-1 text-caption text-faint" data-testid="export-stays">{stays} stay{branches + pending === 1 ? "s" : ""} in this session.</p>}
+            {stays && <p className="px-1 text-caption text-faint" data-testid="export-stays">{stays} stay{(tree ? 0 : branches) + pending === 1 ? "s" : ""} in this session.</p>}
             <div className="pt-2 text-caption font-medium uppercase tracking-wide text-faint">Continue in another harness</div>
             <div className="grid grid-cols-2 gap-2">
               <Option icon={<Terminal />} title="Claude Code" hint="A new transcript in its store" onClick={() => to("claude_code")} testid="export-claude" busy={busy} />

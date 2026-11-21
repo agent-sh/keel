@@ -111,7 +111,7 @@ test("an event that names another one names its copy after a Keel file round tri
   expect(p.events[2]!.data).toEqual({ mode: "clear", undo_head: "e2" });
   expect(p.events[4]!.data).toEqual({ mode: "summary", summary: "S", covered: "e1", from_event: "e4" });
   let k = 0;
-  const rows = rowsOf(p, () => `new${++k}`);
+  const { rows } = rowsOf(p, () => `new${++k}`);
   expect(rows[2]!.data.undo_head).toBe("new2");
   expect(rows[4]!.data).toEqual({ mode: "summary", summary: "S", covered: "new1", from_event: "new4" });
   const text = JSON.stringify(rows);
@@ -119,7 +119,37 @@ test("an event that names another one names its copy after a Keel file round tri
   expect(text).not.toMatch(/"e\d+"/);
   // A version 1 file names a covered event by its old id: kept, as before.
   const v1 = parseKeelJsonl(JSON.stringify({ keel_export: 1 }) + "\n" + JSON.stringify({ kind: "compaction", data: { mode: "summary", covered: "old-id" } }) + "\n");
-  expect(v1.ok && rowsOf(v1)[0]!.data.covered).toBe("old-id");
+  expect(v1.ok && rowsOf(v1).rows[0]!.data.covered).toBe("old-id");
+});
+
+test("a whole-tree Keel file keeps every branch and the head shown; a tree that does not hold together is refused", () => {
+  const at = (id: string, parent: string | null, kind: string, data: any): StoredEvent => ({ id, session_id: s.id, seq: ++n, parent, kind: kind as any, data, ts: n });
+  const root = at("r", null, "user", { text: "root" });
+  const a = at("a", "r", "user", { text: "leaf a" });
+  const clear = at("c", "a", "compaction", { mode: "clear", undo_head: "a" });
+  const b = at("b", "r", "user", { text: "leaf b" });
+  const all = [root, a, clear, b];
+  const file = toKeelJsonl(s, all, { tree: { head: "c" } });
+  expect(JSON.parse(file.split("\n")[0]!)).toMatchObject({ scope: "tree", head: "e3", events: 4 });
+  const p = parseKeelJsonl(file);
+  if (!p.ok) throw new Error(p.error);
+  let k = 0;
+  const { rows, head } = rowsOf(p, () => `new${++k}`);
+  expect(rows.map((r) => [r.id, r.parent])).toEqual([["new1", null], ["new2", "new1"], ["new3", "new2"], ["new4", "new1"]]);
+  expect(head).toBe("new3");
+  expect(rows[2]!.data.undo_head).toBe("new2");
+  // The branch file is as it was: a chain with no parents, the last event the head.
+  const branch = parseKeelJsonl(toKeelJsonl(s, [root, a, clear]));
+  expect(branch.ok && branch.header.scope).toBe("current branch");
+  expect(branch.ok && rowsOf(branch)).toMatchObject({ rows: [{}, {}, {}] });
+  expect(branch.ok && "head" in rowsOf(branch)).toBe(false);
+  expect(branch.ok && branch.events.every((e) => !("parent" in e))).toBe(true);
+
+  const lines = file.split("\n").filter(Boolean);
+  const edit = (i: number, f: (o: any) => any) => lines.map((l, j) => (j === i ? JSON.stringify(f(JSON.parse(l))) : l)).join("\n") + "\n";
+  expect(parseKeelJsonl(edit(2, (o) => ({ ...o, parent: "e4" })))).toEqual({ ok: false, error: expect.stringContaining("does not hold before it") });
+  expect(parseKeelJsonl(edit(0, (o) => ({ ...o, head: "e9" })))).toEqual({ ok: false, error: expect.stringContaining("which of its branches is shown") });
+  expect(parseKeelJsonl(edit(4, (o) => ({ ...o, ref: "e1" })))).toEqual({ ok: false, error: expect.stringContaining("no ref of its own") });
 });
 
 test("a resume handoff carries the active context only", () => {

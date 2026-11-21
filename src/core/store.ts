@@ -335,8 +335,10 @@ export class Store {
   }
 
   // A new session with its events, all or nothing (an import): each event keeps
-  // the id and time it is given, chained in order; the last is the head.
-  createWithEvents(s: { title?: string; model: string; workspace: string }, events: { id: string; kind: EventKind; data: unknown; ts: number }[]): Session {
+  // the id and time it is given, chained in order with the last as the head.
+  // A tree gives each event its `parent` (an event given before it, or null)
+  // and names the `head` shown.
+  createWithEvents(s: { title?: string; model: string; workspace: string }, events: { id: string; kind: EventKind; data: unknown; ts: number; parent?: string | null }[], head?: string | null): Session {
     const tx = this.db.transaction(() => {
       const ses = this.createSession(s);
       let prev: string | null = null;
@@ -344,10 +346,10 @@ export class Store {
       for (const e of events) {
         this.db
           .query("INSERT INTO events (id, session_id, seq, parent, kind, data, ts) VALUES (?, ?, ?, ?, ?, ?, ?)")
-          .run(e.id, ses.id, ++seq, prev, e.kind, JSON.stringify(this.redact(ses.id, e.kind, e.data)), e.ts);
+          .run(e.id, ses.id, ++seq, e.parent !== undefined ? e.parent : prev, e.kind, JSON.stringify(this.redact(ses.id, e.kind, e.data)), e.ts);
         prev = e.id;
       }
-      this.db.query("UPDATE sessions SET head = ? WHERE id = ?").run(prev, ses.id);
+      this.db.query("UPDATE sessions SET head = ? WHERE id = ?").run(head !== undefined ? head : prev, ses.id);
       return ses.id;
     });
     const id = tx();
