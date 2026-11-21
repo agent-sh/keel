@@ -308,6 +308,13 @@ export class RecordIndex {
       }
       if (ok) for (const k of g.keys) out.set(k, g.words.length);
     }
+    // The words recalled nothing, though some records share two or more of
+    // them: the records sharing the most come (the newest first, as far as
+    // the budget goes), rather than none of the best matches.
+    if (!out.size) {
+      const most = Math.max(0, ...[...groups.values()].map((g) => g.words.length));
+      if (most >= 2) for (const g of groups.values()) if (g.words.length === most) for (const k of g.keys) out.set(k, most);
+    }
     return out;
   }
 
@@ -352,7 +359,9 @@ export class RecordIndex {
   // down to a group a turn can carry: the records that hold all of those
   // words fit the budget together. One word many records hold does not say
   // which of them is meant (that is a search, helper__memory_find); the same
-  // word next to another one that only a few of them also hold does.
+  // word next to another one that only a few of them also hold does. When
+  // that leaves nothing, the records sharing the most words (two or more)
+  // come, the newest first.
   recall(text: string, seen: Set<string>, budget: number): { records: MemoryRecord[]; hints: string[] } {
     const named = new Set<string>();
     const hintKeys = new Map<string, number>();

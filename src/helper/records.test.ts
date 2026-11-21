@@ -136,6 +136,9 @@ test("the indexed search and recall answer as a walk over every record does", ()
     const plain = all.filter((r) => r.kind !== "reference").map((r) => ({ r, has: new Set([...q].filter((w) => words(r).has(w))) }));
     const narrow = (has: Set<string>) => has.size > 0 && plain.filter((o) => [...has].every((w) => o.has.has(w))).reduce((n, o) => n + recallLine(o.r).length + 1, 0) <= budget;
     const sharedBy = new Map(plain.map((x) => [x.r.key, narrow(x.has) ? x.has.size : 0]));
+    // Nothing narrowed: the records sharing the most words (two or more).
+    const most = Math.max(0, ...plain.map((x) => x.has.size));
+    if (![...sharedBy.values()].some(Boolean) && most >= 2) for (const x of plain) if (x.has.size === most) sharedBy.set(x.r.key, most);
     const scored: { r: MemoryRecord; rank: number; hits: number }[] = [];
     for (const r of all) {
       if (seen.has(r.key)) continue;
@@ -213,6 +216,20 @@ test("recall by words: the record that holds the prompt's words comes first; one
   const roomy = keys("Did Dana say anything about that overdue invoice?", 40_000);
   expect(roomy[0]).toBe("fact.plumber");
   expect(roomy.length).toBe(77);
+  // The best matches are more than a turn carries and nothing else matched:
+  // the newest of them come, as far as the budget goes, rather than none.
+  const crowd = new RecordIndex([
+    ...Array.from({ length: 40 }, (_, i) => rec(`trip.school-${i}`, `The school trip in week ${i} needs the bus booked and the packed lunches ordered for everyone`, { updated: i })),
+    ...Array.from({ length: 40 }, (_, i) => rec(`club.school-${i}`, `The school chess club meets in room ${i} after the last lesson on Thursdays this term`, { updated: i })),
+  ]);
+  const newest = crowd.recall("Which school trip is next?", new Set(), 2000).records.map((r) => r.key);
+  expect(newest.length).toBeGreaterThan(10);
+  expect(newest.length).toBeLessThan(40);
+  expect(newest.slice(0, 3)).toEqual(["trip.school-39", "trip.school-38", "trip.school-37"]);
+  expect(newest.every((k) => k.startsWith("trip."))).toBe(true);
+  // One shared word alone still recalls nothing.
+  expect(crowd.recall("Anything about school?", new Set(), 2000).records).toEqual([]);
+
   // The largest posting is not read through: only the records the other words lead to.
   const many = new RecordIndex([
     ...Array.from({ length: 3000 }, (_, i) => rec(`note.n${i}`, `The deploy of service ${i} runs from the release branch`)),
