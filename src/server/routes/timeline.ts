@@ -40,6 +40,12 @@ export const timelineRoutes: RouteModule = ({ store, engine }) => {
     turnOf: (id) => engine.turnOf(id),
     statusOf: (id) => engine.statusOf(id),
     outputOf: (id) => engine.outputOf(id),
+    // What a waiting agent waits on: the wait due first (a timer at its wake time), else its oldest.
+    parkedOn: (id) => {
+      const rows = store.db.query<{ kind: string; spec: string }, [string]>("SELECT kind, spec FROM waits WHERE status = 'active' AND session_id = ? ORDER BY created").all(id);
+      const timers = rows.filter((w) => w.kind === "timer").map((w) => { try { return Number(JSON.parse(w.spec).at_ms) || 0; } catch { return 0; } }).filter(Boolean).sort((a, b) => a - b);
+      return timers.length ? { kind: "timer", until: timers[0] } : rows[0] ? { kind: rows[0].kind } : undefined;
+    },
     isHeld: (id) => engine.isHeld(id),
     owed: hasPending,
     questions: allPendingQuestions,

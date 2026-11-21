@@ -162,6 +162,10 @@ test("now: what waits on the owner first, then what runs, then what is waited on
   expect(nowLines({ ...quiet, turn: { id: "t1", ts: 1, steps: 0, status: { kind: "idle" } } }).lines[0]!.text).toBe("Running a turn started by the owner: step 1, between steps");
   expect(nowLines({ ...quiet, ts: 100_000, turn: { id: "t1", ts: 1, steps: 0, status: { kind: "model", since: 60_000, model: "m", connected: 60_000, quiet: 60_000 } } }).lines[0]!.text)
     .toBe("Running a turn started by the owner: step 1, the model is answering, no output for 40 s");
+  // A parked agent: what it waits for, and until when.
+  const parked = nowLines({ ...quiet, agents: [{ id: "a1", session_id: "c1", title: "Scout", status: "waiting", created: 40_000, wait: { kind: "timer", until: 100_000 + 42 * 60_000 } }, { id: "a2", session_id: "c2", title: "Other", status: "waiting", created: 40_000 }] });
+  expect(parked.lines.map((l) => l.text)).toEqual(['Agent "Scout" is waiting on a timer', 'Agent "Other" is waiting on a wake of its own']);
+  expect(timelineText({ session_id: "s", as_of: 100_000, now: parked, rows: [], next: null } as any).split("\n")[2]).toContain('Agent "Scout" is waiting on a timer, for 1 min, due in 42 min');
   // A call of the turn whose card is open has not started: the turn waits on the answer, it does not run the tool.
   const asking = nowLines({ ...quiet, turn: { id: "t1", ts: 1, steps: 1, status: { kind: "tool", since: 1, names: ["Bash"] } }, approvals: [{ id: "p1", tool: "Bash" }] });
   expect(asking.lines.map((l) => l.text)).toEqual(["Waits on the owner: approval for Bash", "Running a turn started by the owner: step 1, waiting for approval"]);

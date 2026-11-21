@@ -348,7 +348,8 @@ export type NowInput = {
   questions: { call_id: string; child_session?: string; child_title?: string }[];
   held?: { since?: number; note_id?: string } | null; // a cut turn that was not continued
   waits: { id: string; kind: string; created: number; deadline: number }[];
-  agents: { id: string; session_id: string; title: string; status: string; created: number }[];
+  // `wait`: what an agent that waits is waiting on, and for a timer when it is due.
+  agents: { id: string; session_id: string; title: string; status: string; created: number; wait?: { kind: string; until?: number } }[];
   queue: { queued: number; steers: number; held: boolean; owed: boolean };
   loops: { id: string; name: string; next_ms: number }[];
   last?: { ts: number; outcome: string } | null;
@@ -386,7 +387,9 @@ export function nowLines(n: NowInput): TimelineNow {
     add("turn", "turn", "live", `${head}: step ${n.turn.steps + (n.turn.status.kind === "model" || n.turn.status.kind === "retry" ? 1 : 0) || 1}, ${asking ? "waiting for approval" : DOING(n.turn.status, n.ts, n.turn.output)}`, { ts: n.turn.ts, open: true, turn_event: n.turn.id });
   } else if (n.starting) add("turn", "turn", "live", "Starting a turn", { open: true });
   for (const a of n.agents.slice(0, AGENTS_SHOWN)) {
-    add(`agent:${a.id}`, "agent", "live", `Agent ${title(a.title, "(untitled)")} ${a.status === "waiting" ? "is waiting on a wake of its own" : "is running"}`, { ts: a.created, open: true }, { agent_id: a.id, child_session: a.session_id });
+    // A parked agent says what it waits for; a timer's wake time makes the line say when it is due.
+    const parked = a.status === "waiting" ? `is waiting on ${a.wait ? waitWords(a.wait.kind) : "a wake of its own"}` : "is running";
+    add(`agent:${a.id}`, "agent", "live", `Agent ${title(a.title, "(untitled)")} ${parked}`, { ts: a.created, open: true, ...(a.status === "waiting" && a.wait?.until ? { until: a.wait.until } : {}) }, { agent_id: a.id, child_session: a.session_id });
   }
   if (n.agents.length > AGENTS_SHOWN) add("agents", "agent", "live", `${n.agents.length - AGENTS_SHOWN} more agents are running`, { open: true });
   for (const w of n.waits) add(`wait:${w.id}`, "wait", "plain", `Waits on ${waitWords(w.kind)}`, { ts: w.created, until: w.deadline, open: true }, { wait_id: w.id });

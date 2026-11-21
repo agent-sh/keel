@@ -1,7 +1,7 @@
 import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { shoot, SHOTS } from "./shots.ts";
+import { openPanel, shoot, SHOTS } from "./shots.ts";
 
 // Feature: the state of a session is one fact. The daemon works it out in one
 // place (what the session waits on, why, since when) and every surface reads
@@ -438,6 +438,44 @@ test("an agent that asks the owner is marked as asking in the tree, on its card 
   } finally {
     mkdirSync(WS, { recursive: true });
     writeFileSync(gate, "");
+    await drop(request, made);
+  }
+});
+
+test("the parent's Now line says what a parked agent waits for and until when", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const made: string[] = [];
+  try {
+    const parent = await start(request, "Roll out the new build");
+    made.push(parent);
+    const child = `Watch the deploy\n${script([{ name: "wait_for", input: { kind: "timer", seconds: 2520, note: "look at the canary" } }])}`;
+    await send(request, parent, script([{ name: "spawn_agent", input: { message: child, isolation: "none" } }]));
+    const agents = async () => (await (await request.get(`/api/sessions/${parent}/agents`)).json()).agents as { session_id: string; status: string }[];
+    await expect.poll(async () => (await agents())[0]?.status, { timeout: 30_000 }).toBe("waiting");
+    await expect.poll(async () => {
+      const d = await (await request.get(`/api/sessions/${parent}`)).json();
+      return !d.running && d.events.at(-1)?.kind === "turn_end";
+    }, { timeout: 30_000 }).toBe(true);
+
+    // The timeline's Now, as text: the agent, what it waits on, when that is due.
+    const now = (await (await request.get(`/api/sessions/${parent}/timeline?format=text&limit=1`)).text()).split("\n").filter((l) => l.startsWith("  "));
+    expect(now.join("\n")).toMatch(/Agent "Watch the deploy.*" is waiting on a timer, .*due in 4[12] min/);
+    expect(now.join("\n")).not.toContain("a wake of its own");
+    // The one state says the same: the parent waits, on its agent's timer, until then.
+    const st = await stateOf(request, parent) as { watch: string; why?: string; text?: string; until?: number };
+    expect(st).toMatchObject({ watch: "wait", why: "agent" });
+    expect(st.text).toMatch(/^Agent Watch the deploy.*: timer: look at the canary$/);
+    expect(st.until).toBeGreaterThan(Date.now() + 40 * 60_000);
+    await page.goto(`/s/${parent}`);
+    await expect(row(page, parent).getByTestId("row-state")).toHaveText("Waiting");
+    await expect(row(page, parent).getByTestId("row-time")).toHaveText(/^in 4[12]m$/);
+    // The panel's Now line.
+    await openPanel(page, "timeline");
+    await expect(page.getByTestId("side-panel")).toContainText(/is waiting on a timer/);
+    await expect(page.getByTestId("side-panel")).toContainText(/due in 4[12] min/);
+    await shoot(page, "session-state-09-parked-agent");
+  } finally {
     await drop(request, made);
   }
 });

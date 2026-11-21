@@ -74,6 +74,7 @@ export type Live = {
   turnOf?(id: string): string | undefined;
   statusOf?(id: string): TurnStatus;
   outputOf?(id: string): number | undefined; // when the reply being streamed last gave output
+  parkedOn?(id: string): { kind: string; until?: number } | undefined; // what a waiting agent's session waits on
   isHeld?(id: string): boolean;
   owed?(id: string): boolean; // reports and wakes waiting for the turn to end
   questions?(): { session_id: string; call_id: string; parent_id?: string }[];
@@ -561,7 +562,8 @@ export class Timeline {
       ? db.query<NowInput["loops"][number], [string, number]>("SELECT id, name, next_ms FROM loops WHERE session_id = ? AND enabled = 1 AND next_ms IS NOT NULL AND next_ms > ? ORDER BY next_ms LIMIT 3").all(sessionId, ts - 60_000)
       : [];
     return nowLines({
-      ts, turn, last, held, approvals, questions, waits, agents, loops,
+      ts, turn, last, held, approvals, questions, waits, loops,
+      agents: agents.map((a) => (a.status === "waiting" ? { ...a, wait: live.parkedOn?.(a.session_id) } : a)),
       // A turn the engine has taken up and not opened yet: its system prompt, its model, its first event.
       starting: !turn && !!live.isRunning?.(sessionId),
       queue: { queued: queued.find((r) => !r.steer)?.n ?? 0, steers: queued.find((r) => r.steer)?.n ?? 0, held: !!live.isHeld?.(sessionId), owed: !!live.owed?.(sessionId) },
