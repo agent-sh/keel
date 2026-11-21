@@ -3,93 +3,199 @@
 // risk, and whether a stored rule covers each one. Pure functions.
 
 // One simple command: its words with quotes removed, and whether it writes
-// through a redirection. `nested`: it runs inside a substitution, a subshell
-// or a group, so a `cd` in it does not say where the commands after it run.
-export type Simple = { words: string[]; text: string; redirects: boolean; nested?: true };
+// through a redirection. `nested`: it runs inside a substitution or a
+// subshell, so a `cd` in it does not say where the commands after it run.
+// `unknown`: the parser could not account for it, so it is never a read.
+// `heredoc`: a line of a here-document read as a script, for the risk rules
+// alone: it runs only if the command it feeds runs it, and that one is judged.
+// A redirect is kept wherever it stands: one after a group, a loop or a
+// conditional, or with no command at all, is a part with no words.
+// `dyn`: the words (by index) an expansion makes, so what they hold, and with
+// `splits` how many words they are, is not known from the text.
+export type Simple = { words: string[]; text: string; redirects: boolean; nested?: true; unknown?: true; heredoc?: true; dyn?: number[]; splits?: true };
 
 const OPS = ["&&", "||", "|&", ";;", ";", "|", "&", "\n"];
+// Leading words that are syntax, not commands.
+const CONTROL = /^(if|then|else|elif|fi|do|done|while|until|esac|\{|\}|!|time)$/;
+// What a redirect may write to without changing anything.
+const SINK = /^\/dev\/(null|stdout|stderr)$/;
+type Redirect = ">" | ">&" | "<" | "<&" | "<<<" | "<<" | "<<-";
 
 // Split on shell operators outside quotes. Command and process substitutions
-// ($(...), `...`, <(...), >(...)) are analysed as commands of their own.
+// ($(...), `...`, <(...), >(...)) are analysed as commands of their own. Null:
+// not a command line a shell would run (an open quote or substitution, a
+// redirect with no target). A line with text and no part comes back as one
+// unknown part, never as nothing.
 export function splitCommand(cmd: string): Simple[] | null {
+  const r = scan(cmd, 0, false);
+  if (!r) return null;
+  if (!r.parts.length && cmd.trim()) return [{ words: [], text: cmd.trim(), redirects: false, unknown: true }];
+  return r.parts;
+}
+
+// The commands from `start`: to the end of the text, or (`inner`) to the `)`
+// that closes the substitution they are in.
+function scan(cmd: string, start: number, inner: boolean): { parts: Simple[]; end: number } | null {
   const out: Simple[] = [];
   let words: string[] = [];
+  let dyn: number[] = [];
+  let splits = false;
   let word = "";
   let inWord = false;
+  let quoted = false; // the word has a quoted or escaped character
+  let made = false; // an expansion makes the word, or part of it
   let text = "";
   let redirects = false;
+  let unknown = false;
   let depth = 0;
+  let want: Redirect | null = null; // a redirect operator waiting for its target word
+  let bad = false;
+  let docs: { delim: string; tabs: boolean; quoted: boolean }[] = [];
+
+  const target = (kind: Redirect, w: string) => {
+    if (kind === ">") redirects ||= made || !SINK.test(w); // >, >>, >|, &>, &>> and <> (opened for writing too)
+    else if (kind === ">&") redirects ||= made || (!/^(\d+-?|-)$/.test(w) && !SINK.test(w)); // >&2 copies a descriptor; >&file writes it
+    else if (kind === "<") redirects ||= /^\/dev\/(tcp|udp)\//.test(w); // opens a connection
+    else if (kind === "<<" || kind === "<<-") docs.push({ delim: w, tabs: kind === "<<-", quoted });
+  };
   const flushWord = () => {
-    if (inWord) words.push(word);
+    if (!inWord) return;
+    if (want) { target(want, word); want = null; }
+    else {
+      if (made) dyn.push(words.length);
+      words.push(word);
+    }
     word = "";
     inWord = false;
+    quoted = false;
+    made = false;
   };
   const flushCmd = () => {
     flushWord();
-    // Leading control words (if, then, do, ...) and subshell parens are syntax, not commands.
-    // `for x in ...` and `case ... in` headers run nothing themselves.
+    if (want) { bad = true; want = null; }
+    // `for x in ...`, `select x in ...` and `case ... in` headers run nothing themselves.
     if (/^(for|select|case)$/.test(words[0] ?? "")) words = [];
-    while (words.length && /^(if|then|else|elif|fi|do|done|while|until|esac|\{|\}|!|time)$/.test(words[0]!)) words.shift();
-    if (words.length) out.push({ words, text: text.trim(), redirects, ...(depth > 0 ? { nested: true as const } : {}) });
+    let lead = 0;
+    while (lead < words.length && CONTROL.test(words[lead]!)) lead++;
+    words = words.slice(lead);
+    dyn = dyn.map((n) => n - lead).filter((n) => n >= 0 && n < words.length);
+    if (words.length || redirects || unknown)
+      out.push({
+        words, text: text.trim(), redirects,
+        ...(depth > 0 ? { nested: true as const } : {}), ...(unknown ? { unknown: true as const } : {}),
+        ...(dyn.length ? { dyn } : {}), ...(dyn.length && splits ? { splits: true as const } : {}),
+      });
     words = [];
+    dyn = [];
+    splits = false;
     text = "";
     redirects = false;
+    unknown = false;
   };
-  for (let i = 0; i < cmd.length; i++) {
+  // $( at j: the commands inside, and where its ) is.
+  const substitution = (j: number): number | null => {
+    const r = scan(cmd, j + 2, true);
+    if (!r) return null;
+    out.push(...nestedIn(r.parts));
+    return r.end;
+  };
+  // ` at j: the command between the backquotes, its own escapes removed.
+  const backquoted = (j: number, inDouble: boolean): number | null => {
+    let k = j + 1;
+    let code = "";
+    for (; k < cmd.length && cmd[k] !== "`"; k++) {
+      if (cmd[k] === "\\" && k + 1 < cmd.length && (/[`\\$]/.test(cmd[k + 1]!) || (inDouble && cmd[k + 1] === '"'))) k++;
+      code += cmd[k];
+    }
+    if (k >= cmd.length) return null;
+    const r = scan(code, 0, false);
+    if (!r) return null;
+    out.push(...nestedIn(r.parts));
+    return k;
+  };
+  // The here-documents opened on the line that ended before `from`: where the text after them starts.
+  const bodies = (from: number): number | null => {
+    let p = from;
+    for (const d of docs) {
+      const first = p;
+      let last = cmd.length;
+      for (;;) {
+        const nl = cmd.indexOf("\n", p);
+        const line = cmd.slice(p, nl < 0 ? cmd.length : nl);
+        const done = (d.tabs ? line.replace(/^\t+/, "") : line) === d.delim;
+        if (done) last = p;
+        p = nl < 0 ? cmd.length : nl + 1;
+        if (done || nl < 0) break;
+      }
+      // An unquoted delimiter: the shell runs the substitutions in the text.
+      if (!d.quoted) {
+        for (let k = first; k < last; k++) {
+          if (cmd[k] === "\\") { k++; continue; }
+          const end = cmd[k] === "$" && cmd[k + 1] === "(" ? substitution(k) : cmd[k] === "`" ? backquoted(k, false) : k;
+          if (end === null) return null;
+          k = Math.min(end, last);
+        }
+      }
+      const script = splitCommand(cmd.slice(first, last));
+      if (script) out.push(...script.map((s) => ({ ...s, nested: true as const, heredoc: true as const })));
+    }
+    docs = [];
+    return p;
+  };
+
+  for (let i = start; i < cmd.length; i++) {
     const c = cmd[i]!;
     if (c === "\\" && i + 1 < cmd.length) {
       if (cmd[i + 1] === "\n") { i++; continue; }
-      word += cmd[i + 1]; inWord = true; text += c + cmd[i + 1]; i++;
+      word += cmd[i + 1]; inWord = true; quoted = true; text += c + cmd[i + 1]; i++;
       continue;
     }
-    if (c === "'") {
-      const j = cmd.indexOf("'", i + 1);
-      if (j < 0) return null;
-      word += cmd.slice(i + 1, j); inWord = true; text += cmd.slice(i, j + 1); i = j;
+    if (c === "'" || (c === "$" && cmd[i + 1] === "'")) {
+      // '...' holds no escapes; $'...' does.
+      const ansi = c === "$";
+      let j = i + (ansi ? 2 : 1);
+      let lit = "";
+      for (; j < cmd.length && cmd[j] !== "'"; j++) {
+        if (ansi && cmd[j] === "\\" && j + 1 < cmd.length) j++;
+        lit += cmd[j];
+      }
+      if (j >= cmd.length) return null;
+      word += lit; inWord = true; quoted = true; text += cmd.slice(i, j + 1); i = j;
       continue;
     }
     if (c === '"') {
       let j = i + 1;
-      let inner = "";
+      let lit = "";
       for (; j < cmd.length && cmd[j] !== '"'; j++) {
-        if (cmd[j] === "\\" && j + 1 < cmd.length) { inner += cmd[j + 1]; j++; continue; }
-        if (cmd[j] === "$" && cmd[j + 1] === "(") {
-          const end = matchParen(cmd, j + 1);
-          if (end < 0) return null;
-          const sub = splitCommand(cmd.slice(j + 2, end));
-          if (!sub) return null;
-          out.push(...nestedIn(sub));
-          inner += "$(...)"; j = end; continue;
+        if (cmd[j] === "\\" && j + 1 < cmd.length) {
+          // Inside double quotes a backslash escapes only these.
+          if (cmd[j + 1] === "\n") j++;
+          else if (/[$`"\\]/.test(cmd[j + 1]!)) lit += cmd[++j];
+          else lit += cmd[j];
+          continue;
         }
-        if (cmd[j] === "`") {
-          const end = cmd.indexOf("`", j + 1);
-          if (end < 0) return null;
-          const sub = splitCommand(cmd.slice(j + 1, end));
-          if (!sub) return null;
-          out.push(...nestedIn(sub));
-          inner += "`...`"; j = end; continue;
+        if ((cmd[j] === "$" && cmd[j + 1] === "(") || cmd[j] === "`") {
+          const end = cmd[j] === "$" ? substitution(j) : backquoted(j, true);
+          if (end === null) return null;
+          lit += cmd[j] === "$" ? "$(...)" : "`...`";
+          j = end;
+          continue;
         }
-        inner += cmd[j];
+        lit += cmd[j];
       }
       if (j >= cmd.length) return null;
-      word += inner; inWord = true; text += cmd.slice(i, j + 1); i = j;
+      word += lit; inWord = true; quoted = true; text += cmd.slice(i, j + 1); i = j;
       continue;
     }
     if ((c === "$" || c === "<" || c === ">") && cmd[i + 1] === "(") {
-      const end = matchParen(cmd, i + 1);
-      if (end < 0) return null;
-      const sub = splitCommand(cmd.slice(i + 2, end));
-      if (!sub) return null;
-      out.push(...nestedIn(sub));
+      const end = substitution(i);
+      if (end === null) return null;
       word += "$(...)"; inWord = true; text += cmd.slice(i, end + 1); i = end;
       continue;
     }
     if (c === "`") {
-      const end = cmd.indexOf("`", i + 1);
-      if (end < 0) return null;
-      const sub = splitCommand(cmd.slice(i + 1, end));
-      if (!sub) return null;
-      out.push(...nestedIn(sub));
+      const end = backquoted(i, false);
+      if (end === null) return null;
       word += "`...`"; inWord = true; text += cmd.slice(i, end + 1); i = end;
       continue;
     }
@@ -98,33 +204,41 @@ export function splitCommand(cmd: string): Simple[] | null {
       i = nl < 0 ? cmd.length : nl - 1;
       continue;
     }
-    const op = OPS.find((o) => cmd.startsWith(o, i));
-    if (op && !(op === "&" && (cmd[i - 1] === ">" || cmd[i + 1] === ">"))) {
-      flushCmd();
-      i += op.length - 1;
+    if (c === ">" || c === "<" || (c === "&" && cmd[i + 1] === ">")) {
+      // A redirection: [n]>file, >>, >|, &>, &>>, >&n, >&file, <file, <&n, <>file, <<<word, <<[-]WORD.
+      // Digits right before it name the descriptor and are no word.
+      if (c !== "&" && inWord && !quoted && /^\d+$/.test(word)) { word = ""; inWord = false; }
+      else flushWord();
+      if (want) return null;
+      let j = i + 1;
+      if (c === "&") { j++; if (cmd[j] === ">") j++; want = ">"; }
+      else if (c === ">") {
+        if (cmd[j] === "&") { j++; want = ">&"; }
+        else { if (cmd[j] === ">" || cmd[j] === "|") j++; want = ">"; }
+      } else if (cmd[j] === "<" && cmd[j + 1] === "<") { j += 2; want = "<<<"; }
+      else if (cmd[j] === "<") { j++; if (cmd[j] === "-") { j++; want = "<<-"; } else want = "<<"; }
+      else if (cmd[j] === ">") { j++; want = ">"; }
+      else if (cmd[j] === "&") { j++; want = "<&"; }
+      else want = "<";
+      text += cmd.slice(i, j); i = j - 1;
       continue;
     }
-    if (c === "(" || c === ")" || c === "{" || c === "}") {
-      if (!inWord) { flushCmd(); depth = Math.max(0, depth + (c === "(" || c === "{" ? 1 : -1)); continue; }
-    }
-    if (c === ">" || c === "<") {
-      // A redirection: `>file`, `>> file`, `2>&1`, `&>file`, `<file`.
-      const fd = inWord && /^\d+$/.test(word) ? word : "";
-      if (fd) { word = ""; inWord = false; }
-      else flushWord();
-      let j = i + 1;
-      if (cmd[j] === ">" || cmd[j] === "|") j++;
-      if (cmd[j] === "&") {
-        j++;
-        while (j < cmd.length && /[\d-]/.test(cmd[j]!)) j++;
-        text += cmd.slice(i, j); i = j - 1;
-        continue;
+    const op = OPS.find((o) => cmd.startsWith(o, i));
+    if (op) {
+      flushCmd();
+      i += op.length - 1;
+      if (op === "\n" && docs.length) {
+        const next = bodies(i + 1);
+        if (next === null) return null;
+        i = next - 1;
       }
-      while (cmd[j] === " ") j++;
-      let target = "";
-      while (j < cmd.length && !/[\s;&|<>()]/.test(cmd[j]!)) target += cmd[j++];
-      if (c === ">" && !/^\/dev\/(null|stdout|stderr)$/.test(target.replace(/^["']|["']$/g, ""))) redirects = true;
-      text += cmd.slice(i, j); i = j - 1;
+      continue;
+    }
+    // Parentheses always end a word: a subshell, a function's (), a case pattern's ).
+    if (c === "(" || c === ")") {
+      flushCmd();
+      if (c === ")" && inner && depth === 0) return bad ? null : { parts: out, end: i };
+      depth = Math.max(0, depth + (c === "(" ? 1 : -1));
       continue;
     }
     if (c === " " || c === "\t") {
@@ -132,25 +246,36 @@ export function splitCommand(cmd: string): Simple[] | null {
       text += c;
       continue;
     }
+    // {a,b} and {1..3} become several words.
+    if (c === "{" && cmd[i - 1] !== "$" && braceExpands(cmd, i)) made = splits = true;
     word += c; inWord = true; text += c;
   }
   flushCmd();
-  return out;
+  return bad || inner ? null : { parts: out, end: cmd.length };
 }
 
 const nestedIn = (sub: Simple[]): Simple[] => sub.map((s) => ({ ...s, nested: true as const }));
 
-function matchParen(s: string, open: number): number {
+// Whether the { at i opens a brace expansion: its } in the same word, with a
+// comma or a `..` between, or with an expansion between (not known: taken as one).
+function braceExpands(cmd: string, i: number): boolean {
   let depth = 0;
-  let q: string | null = null;
-  for (let i = open; i < s.length; i++) {
-    const c = s[i];
-    if (q) { if (c === q) q = null; else if (c === "\\") i++; continue; }
-    if (c === "'" || c === '"') { q = c; continue; }
-    if (c === "(") depth++;
-    else if (c === ")" && --depth === 0) return i;
+  let list = false;
+  for (let j = i; j < cmd.length; j++) {
+    const c = cmd[j]!;
+    if (c === "\\") { j++; continue; }
+    if (c === "'") { j = cmd.indexOf("'", j + 1); if (j < 0) return true; continue; }
+    if (c === '"') {
+      for (j++; j < cmd.length && cmd[j] !== '"'; j++) if (cmd[j] === "\\") j++;
+      continue;
+    }
+    if (c === "$" || c === "`" || ((c === "<" || c === ">") && cmd[j + 1] === "(")) return true;
+    if (/[\s;&|<>()]/.test(c)) return false;
+    if (c === "{") depth++;
+    else if (c === "}") { if (--depth === 0) return list; }
+    else if (c === "," || (c === "." && cmd[j + 1] === ".")) list = true;
   }
-  return -1;
+  return false;
 }
 
 // Words after leading VAR=value assignments.
@@ -160,10 +285,11 @@ const body = (w: string[]) => {
   return { env: i > 0, words: w.slice(i) };
 };
 
+// Programs that only read, whatever their arguments are.
 const READ_PROGRAMS = new Set([
-  "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "rg", "fd", "pwd", "echo", "printf", "which", "type",
-  "file", "stat", "du", "df", "tree", "uniq", "cut", "tr", "diff", "cmp", "jq", "basename", "dirname", "realpath",
-  "readlink", "date", "whoami", "id", "uname", "true", "false", "test", "[", "cd", "nl", "column",
+  "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "pwd", "echo", "printf", "which", "type",
+  "stat", "du", "df", "cut", "tr", "diff", "cmp", "jq", "basename", "dirname", "realpath",
+  "readlink", "whoami", "id", "uname", "true", "false", "test", "[", "cd", "nl", "column",
   "sha256sum", "md5sum", "free", "uptime", "nproc", "lsof", "ps", "printenv",
 ]);
 const GIT_READ = new Set([
@@ -184,13 +310,33 @@ function uniqOperands(args: string[]): number {
   return n;
 }
 
+// date [OPTION]... [+FORMAT]: -s and --set set the clock, and so does an operand that is not a format.
+function dateSets(args: string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a.startsWith("--")) { if (a.length > 2 && "set".startsWith(a.slice(2).split("=")[0]!)) return true; continue; }
+    if (!a.startsWith("-") || a === "-") { if (!a.startsWith("+")) return true; continue; }
+    for (let k = 1; k < a.length; k++) {
+      if (a[k] === "s") return true;
+      if (a[k] === "I") break; // the rest is its format
+      if ("dfr".includes(a[k]!)) { if (k === a.length - 1) i++; break; } // takes a value: the rest, or the next argument
+    }
+  }
+  return false;
+}
+
 // A command that cannot change anything (files, processes, the network state).
 export function isReadOnly(s: Simple): boolean {
-  if (s.redirects) return false;
+  if (s.heredoc) return true;
+  if (s.unknown || s.redirects) return false;
   const { env, words } = body(s.words);
   if (env || !words.length) return !words.length && !env;
   const [prog, ...args] = words;
+  if (READ_PROGRAMS.has(prog!)) return true;
+  // The rest read or write by their arguments: one an expansion makes ({-delete,x}) is not known.
+  if (s.dyn) return false;
   if (prog === "env" || prog === "hostname") return args.length === 0; // `env CMD` runs CMD; `hostname X` sets it
+  if (prog === "date") return !dateSets(args);
   if (prog === "find") return !args.some((a) => /^-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/.test(a));
   if (prog === "sort") return !args.some((a) => /^-[a-zA-Z]*o/.test(a) || a.startsWith("--output") || a.startsWith("--compress-program"));
   // Flags that run another program or write a file.
@@ -217,9 +363,17 @@ export function isReadOnly(s: Simple): boolean {
     if (sub === "tag") return rest.length === 0 || rest[0] === "-l" || rest[0] === "--list";
     if (sub === "stash") return rest[0] === "list" || rest[0] === "show";
     if (sub === "config") return rest[0] === "--get" || rest[0] === "--list" || rest[0] === "-l";
+    // reflog expire, delete, drop and write change it; a bare ref name shows it, and is not told from a later subcommand.
+    if (sub === "reflog") return rest[0] === undefined || rest[0].startsWith("-") || /^(show|list|exists)$/.test(rest[0]);
     return !!sub && GIT_READ.has(sub);
   }
-  return READ_PROGRAMS.has(prog!);
+  return false;
+}
+
+// Whether a whole command line only reads. Not one the parser cannot split, and not an empty one.
+export function readOnlyCommand(command: string): boolean {
+  const parts = splitCommand(command);
+  return !!parts && parts.length > 0 && parts.every(isReadOnly);
 }
 
 // Why a command is dangerous enough that no standing answer may cover it,

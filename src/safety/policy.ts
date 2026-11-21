@@ -175,7 +175,8 @@ function decideShell(command: string, f: Facts, cwd = f.workspace): Decision {
   if (!open.length) return { allow: true };
   if (f.mode === "read-only") return { deny: `This session is read-only: only read-only commands run, and \`${open[0]!.text}\` is not one.` };
   if ((f.mode === "auto-edits" || f.mode === "auto") && f.sandboxed) return { allow: true, why: "sandboxed" };
-  return { ask: { risk: "low", suggest: [...new Set(open.map(suggestRule))].slice(0, 5).map((pattern) => ({ kind: "shell" as const, pattern })) } };
+  // A part with no command word (a redirect after a group, a loop or nothing) has no rule to suggest.
+  return { ask: { risk: "low", suggest: [...new Set(open.filter((p) => p.words.length).map(suggestRule))].slice(0, 5).map((pattern) => ({ kind: "shell" as const, pattern })) } };
 }
 
 // Driving another session. An allow rule for a tool does not cover another

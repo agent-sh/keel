@@ -228,3 +228,40 @@ test("permission card answers wrap on a narrow screen", async ({ page, request }
   expect(existsSync(join(ws, "beta.txt"))).toBe(false);
   await request.delete(`/api/sessions/${session.id}`);
 });
+
+// A redirect after a group, after a loop or with no command before it writes a
+// file like any other: a Read only session refuses it with the reason, and Ask
+// asks before it runs. Reads beside them still run.
+test("a write through a redirect on a group, a loop or nothing is never run as a read", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `perm-redirect-${Date.now()}`);
+  mkdirSync(ws, { recursive: true });
+  const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: "scripted:stand-in", title: "Redirects are writes" } })).json();
+  const run = (commands: string[]) => request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify(commands.map((command) => ({ name: "Bash", input: { command } })))}` } });
+
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "read-only", sandbox: "off" } });
+  await page.goto(`/s/${session.id}`);
+  await expect(page.getByTestId("permission-mode")).toHaveText("Read only");
+  await run(["ls > /dev/null 2>&1; { pwd; }", "> bare.txt", "{ echo a; echo b; } > grouped.txt", "echo x >&copied.txt", "for f in a b; do echo $f; done > looped.txt"]);
+  await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
+  // The last call's refusal reaches the model, and no file was written.
+  const told = page.getByText(/Done with 5 calls\. Last result: This session is read-only: only read-only commands run/);
+  await expect(told).toContainText("done > looped.txt");
+  await expect(told).toContainText("is not one.");
+  for (const f of ["bare.txt", "grouped.txt", "copied.txt", "looped.txt"]) expect(existsSync(join(ws, f)), f).toBe(false);
+  await expect(page.getByTestId("approval")).toHaveCount(0);
+  await shoot(page, "perm-10-redirect-refused");
+
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+  await run(["{ echo a; echo b; } > grouped.txt"]);
+  const card = page.getByTestId("approval");
+  await expect(card).toBeVisible({ timeout: 30_000 });
+  await expect(card.getByTestId("approval-summary")).toContainText("{ echo a; echo b; } > grouped.txt");
+  expect(existsSync(join(ws, "grouped.txt"))).toBe(false);
+  await shoot(page, "perm-11-redirect-asked");
+  await card.getByTestId("allow-once").click();
+  await expect.poll(() => existsSync(join(ws, "grouped.txt")), { timeout: 30_000 }).toBe(true);
+  await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 60_000 });
+  await request.delete(`/api/sessions/${session.id}`);
+});

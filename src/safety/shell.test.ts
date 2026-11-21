@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { highRisk, isReadOnly, matchRule, risksOf, splitCommand, suggestRule } from "./shell.ts";
+import { highRisk, isReadOnly, matchRule, readOnlyCommand, risksOf, splitCommand, suggestRule } from "./shell.ts";
 
 const split = (c: string) => splitCommand(c)!;
 const ro = (c: string) => split(c).every(isReadOnly);
@@ -11,6 +11,41 @@ test("splits on operators and finds commands inside substitutions", () => {
   expect(split("for f in a b; do cat $f; done").map((s) => s.words[0])).toEqual(["cat"]);
   expect(split("echo 'a && b'")).toHaveLength(1);
   expect(splitCommand("echo 'open")).toBeNull();
+});
+
+test("a redirect is kept wherever it stands", () => {
+  const shape = (c: string) => split(c).map((s) => [s.words.join(" "), s.redirects]);
+  expect(shape("> f")).toEqual([["", true]]);
+  expect(shape("{ echo a; echo b; } > f")).toEqual([["echo a", false], ["echo b", false], ["", true]]);
+  expect(shape("for x in 1 2; do echo $x; done > f")).toEqual([["echo $x", false], ["", true]]);
+  expect(shape("if true; then echo a; fi >> f")).toEqual([["true", false], ["echo a", false], ["", true]]);
+  expect(shape("(ls; pwd) > f")).toEqual([["ls", false], ["pwd", false], ["", true]]);
+  expect(shape("echo x >&f")).toEqual([["echo x", true]]);
+  expect(shape("echo x >&2")).toEqual([["echo x", false]]);
+  expect(shape("echo x 2>&1 >/dev/null")).toEqual([["echo x", false]]);
+  expect(shape("cat <>f")).toEqual([["cat", true]]);
+  expect(shape("cat <f")).toEqual([["cat", false]]);
+  expect(shape("echo x &> f")).toEqual([["echo x", true]]);
+  expect(shape("echo x > 'a b'")).toEqual([["echo x", true]]);
+  expect(shape("tee >(cat > f)")).toEqual([["cat", true], ["tee $(...)", false]]);
+  expect(shape("cat <<< 'a b'")).toEqual([["cat", false]]);
+  expect(splitCommand("echo >")).toBeNull();
+});
+
+test("a here-document is text: its substitutions run, its lines are seen by the risk rules only", () => {
+  expect(readOnlyCommand("cat <<'EOF'\nrm -rf x\nit's\nEOF")).toBe(true);
+  expect(readOnlyCommand("cat <<EOF\necho '$(touch f)'\nEOF")).toBe(false);
+  expect(readOnlyCommand("cat <<'EOF'\necho '$(touch f)'\nEOF")).toBe(true);
+  expect(readOnlyCommand("cat <<EOF\nhi\nEOF\ntouch f")).toBe(false);
+  expect(readOnlyCommand("bash <<EOF\nls\nEOF")).toBe(false);
+  expect(risksOf(split("bash <<EOF\ngit push --force origin main\nEOF"))).toEqual(["rewrites or deletes history on a remote"]);
+});
+
+test("a line with text and no part is unknown, not a read", () => {
+  for (const c of ["fi", "done", "# a comment", "{ }", "for x in a b"]) expect([c, readOnlyCommand(c)]).toEqual([c, false]);
+  expect(split("")).toEqual([]);
+  expect(readOnlyCommand("")).toBe(false);
+  expect(readOnlyCommand("echo 'open")).toBe(false);
 });
 
 test("read-only commands", () => {

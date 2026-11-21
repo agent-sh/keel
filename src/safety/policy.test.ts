@@ -88,3 +88,29 @@ test("a child never runs in a mode that asks less than its parent's", () => {
   expect(asksLess("full-auto", "auto")).toBe(true);
   expect(childMode("ask", "nonsense")).toBe("ask");
 });
+
+test("a command that writes is never run as a read: refused in Read only and Plan, asked in Ask", () => {
+  const sh = (command: string) => ({ kind: "shell" as const, command });
+  const writes = [
+    "> f", "{ echo a; } > f", "for x in 1; do echo a; done > f", "if true; then echo a; fi > f", "echo x >&f", "cat <>f",
+    "git reflog expire --expire=now --all", "git reflog delete HEAD@{1}", "date -s 2020-01-01",
+    // The same redirect after the other compound commands, and with no command before it.
+    "(echo a; echo b) > f", "while read l; do echo $l; done < in > f", "case x in x) echo a;; esac > f", "ls | { cat; } >> f", ">> f", "2> f", "&> f", ">| f",
+    "f() { echo a; } > f; f", "echo x &>>f", "cat <<EOF > f\nhi\nEOF", "cat <<EOF\n$(touch f)\nEOF", "fi", "# nothing but a comment",
+  ];
+  for (const c of writes) {
+    expect([c, kind(decide(sh(c), facts("read-only")))]).toEqual([c, "deny"]);
+    expect([c, kind(decide(sh(c), facts("plan")))]).toEqual([c, "deny"]);
+    expect([c, kind(decide(sh(c), facts("ask")))]).toEqual([c, "ask-low"]);
+  }
+  const reads = [
+    "ls 2>/dev/null", "cat a 2>&1 | head", "ls >&2", "ls 2>&-", "{ ls; pwd; }", "(cd sub && ls)", "for f in a b; do cat $f; done", "if [ -f a ]; then cat a; fi",
+    "git reflog", "git reflog show -n 5", "date +%s", "date -d yesterday +%F", "date -Iseconds", "cat < in.txt", "wc -l <<< hello", "cat <<'EOF'\nit's text, not a command\nEOF", "ls &> /dev/null",
+  ];
+  for (const c of reads) for (const m of ["read-only", "ask"] as const) expect([c, kind(decide(sh(c), facts(m)))]).toEqual([c, "allow"]);
+  // A redirect with no command word offers no rule: none could cover it.
+  const d = decide(sh("{ echo a; } > f"), facts("ask"));
+  expect("ask" in d && d.ask.suggest).toEqual([]);
+  expect(kind(decide(sh("echo a > f"), facts("ask", { rules: [rule("shell", "echo *")] })))).toBe("allow");
+  expect(kind(decide(sh("{ echo a; } > f"), facts("ask", { rules: [rule("shell", "echo *")] })))).toBe("ask-low");
+});
