@@ -58,7 +58,9 @@ test("session draft", async ({ page, request }) => {
   expect((await (await request.get(`/api/sessions/${a}/draft`)).json()).attachments).toHaveLength(0);
 
   // 5. Queue an image while a turn runs: it waits with its prompt and reaches the model.
-  await page.getByTestId("composer").fill("Run the Bash command `sleep 4` and then reply with the word slept.");
+  await page.getByTestId("composer").fill(HAIKU.startsWith("scripted:")
+    ? 'script:calls [{"name":"Bash","input":{"command":"sleep 4"}}]'
+    : "Run the Bash command `sleep 4` and then reply with the word slept.");
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("tool-call").last()).toBeVisible({ timeout: 60_000 });
   await request.post(`/api/sessions/${a}/draft`, { data: { images: [{ name: "second.png", mime: "image/png", data: PNG }], origin: "capture" } });
@@ -88,6 +90,82 @@ test("session draft", async ({ page, request }) => {
   await request.put("/api/permissions/settings", { data: { default_mode: prev } });
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
+});
+
+test("a refused send stays separate from the next draft", async ({ page, request }) => {
+  const mk = async (title: string) => (await (await request.post("/api/sessions", { data: { model: HAIKU, title } })).json()).session.id as string;
+  const a = await mk("Draft recovery");
+  const b = await mk("Other composer");
+  const messages = `/api/sessions/${a}/messages`;
+  const held = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const posts: { text: string; images: { data: string }[] }[] = [];
+  await page.route(messages, async (r) => {
+    posts.push(r.request().postDataJSON());
+    if (posts.length > 1) return r.fallback();
+    held.resolve();
+    await release.promise;
+    await r.fulfill({ status: 400, json: { error: "The daemon refused this message." } });
+  });
+  const attach = async (name: string) => {
+    expect((await request.post(`/api/sessions/${a}/draft`, { data: { images: [{ name, mime: "image/png", data: PNG }], origin: "capture" } })).ok()).toBe(true);
+    await expect(page.getByTestId("attachments").getByRole("img", { name })).toBeVisible();
+  };
+  const composer = page.getByTestId("composer");
+  const saved = page.getByTestId("saved-draft");
+  await page.goto(`/s/${a}`);
+  await composer.fill("Review the first screenshot.");
+  await attach("first.png");
+  await composer.press("Enter");
+  await held.promise;
+  await composer.fill("A separate note for later.");
+  await attach("next.png");
+
+  // The response arrives with the original composer unmounted.
+  const select = (id: string) => page.locator(`[data-testid="session-row"][data-session="${id}"]`).click();
+  await select(b);
+  await composer.fill("A draft in another session.");
+  const refused = page.waitForResponse((r) => r.url().endsWith(messages) && r.status() === 400);
+  release.resolve();
+  await refused;
+  await expect(saved).toHaveCount(0);
+  await expect(composer).toHaveValue("A draft in another session.");
+  await select(a);
+  await expect(saved).toContainText("Review the first screenshot.");
+  await expect(saved).toContainText("first.png");
+  await expect(composer).toHaveValue("A separate note for later.");
+  await expect(page.getByTestId("attachments").locator("img")).toHaveAttribute("alt", "next.png");
+  await shoot(page, "draft-03-rejected-send");
+
+  await saved.getByRole("button", { name: "Retry send" }).dblclick();
+  await expect(saved).toHaveCount(0);
+  await expect(composer).toHaveValue("A separate note for later.");
+  await expect(page.getByTestId("attachments").locator("img")).toHaveAttribute("alt", "next.png");
+  expect(posts.map((p) => p.text)).toEqual(["Review the first screenshot.", "Review the first screenshot."]);
+  expect(posts[1]?.images.map((i) => i.data)).toEqual([PNG]);
+  await expect(page.getByTestId("turn-end")).toHaveCount(1);
+
+  // Lose a response only after the real daemon has accepted the message.
+  await page.route(messages, async (r) => {
+    posts.push(r.request().postDataJSON());
+    expect((await r.fetch()).status()).toBe(201);
+    await r.abort("failed");
+  }, { times: 1 });
+  await composer.press("Enter");
+  await expect(saved).toContainText("Delivery unconfirmed");
+  await expect(saved.getByRole("button", { name: "Retry send" })).toHaveCount(0);
+  await shoot(page, "draft-04-unconfirmed-send");
+  await expect(composer).toHaveValue("");
+  await composer.fill("Keep this one too.");
+  await saved.getByRole("button", { name: "Restore draft" }).click();
+  await expect(composer).toHaveValue("A separate note for later.");
+  await expect(page.getByTestId("attachments").locator("img")).toHaveAttribute("alt", "next.png");
+  await expect(saved).toContainText("Keep this one too.");
+  expect(posts).toHaveLength(3);
+  const events = (await (await request.get(`/api/sessions/${a}`)).json()).events;
+  expect(events.filter((e: any) => e.kind === "user").map((e: any) => e.data.text)).toEqual([
+    "Review the first screenshot.", "A separate note for later.",
+  ]);
 });
 
 // The page's "taken" names the write it took: a newer write that lands while

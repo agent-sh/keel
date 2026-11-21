@@ -25,11 +25,21 @@ export async function fromServer(sid: string, f: DraftFile): Promise<Attachment 
   return { type: "image", media_type: f.mime as Attachment["media_type"], data: btoa(s), id: f.id, name: f.name, url, bytes: f.bytes };
 }
 
-export const keepImage = (sid: string, a: Attachment) =>
-  api(base(sid), { method: "POST", body: JSON.stringify({ images: [{ id: a.id, name: a.name, mime: a.media_type, data: a.data }], origin: "page" }) }).catch((e) => reportError(e, { at: "draft keep" }));
+// A drop can come from a remounted composer, before the original keep has
+// finished. Let that write land first, so it cannot bring the image back.
+const keeping = new Map<string, Promise<unknown>>();
+export const isKeeping = (id: string) => keeping.has(id);
+export function keepImage(sid: string, a: Attachment) {
+  const write = api(base(sid), { method: "POST", body: JSON.stringify({ images: [{ id: a.id, name: a.name, mime: a.media_type, data: a.data }], origin: "page" }) })
+    .catch((e) => reportError(e, { at: "draft keep" })).finally(() => keeping.delete(a.id));
+  keeping.set(a.id, write);
+  return write;
+}
 
-export const dropImage = (sid: string, id: string) =>
-  api(`${base(sid)}/files/${id}`, { method: "DELETE" }).catch(() => {}); // a file that was never kept is fine
+export const dropImage = async (sid: string, id: string) => {
+  await keeping.get(id);
+  await api(`${base(sid)}/files/${id}`, { method: "DELETE" }).catch(() => {}); // a file that was never kept is fine
+};
 
 export const clearDraft = (sid: string) => api(base(sid), { method: "DELETE" }).catch((e) => reportError(e, { at: "draft clear" }));
 
