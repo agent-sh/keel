@@ -101,8 +101,10 @@ const Row = memo(function Row({ n, sid, depth, fork, working, stop, onStop }: { 
 export function BranchTree({ session }: { session: Session }) {
   const data = use((s) => s.trees[session.id]);
   const editing = use((s) => s.editing);
-  const count = useStore((s) => s.events[session.id]?.length ?? 0);
-  useEffect(() => { tree.load(session.id).catch(reportError); }, [session.id, session.head, count]);
+  // Read again when the session grows (its newest event), not when the page
+  // reads an older part of it: the tree is the same then.
+  const newest = useStore((s) => s.events[session.id]?.at(-1)?.seq ?? 0);
+  useEffect(() => { tree.load(session.id).catch(reportError); }, [session.id, session.head, newest]);
   const kids = useMemo(() => {
     const m = new Map<string | null, TreeNode[]>();
     for (const n of data?.nodes ?? []) (m.get(n.parent_event_id) ?? m.set(n.parent_event_id, []).get(n.parent_event_id)!).push(n);

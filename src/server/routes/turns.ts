@@ -27,6 +27,15 @@ export const turnRoutes: RouteModule = (deps) => {
         return json(queueBody(req.params.id));
       },
     },
+    // The queued prompts written on a branch the session no longer shows, for a
+    // page that holds too little of the session to tell.
+    "/api/sessions/:id/queue/off-branch": {
+      GET: (req: any) => {
+        const s = sessionOr404(req.params.id);
+        if (!s) return bad("no such session", 404);
+        return json({ off: engine.queued(s.id).filter((q) => engine.offBranch(q)).map((q) => q.id) });
+      },
+    },
     "/api/sessions/:id/queue/resume": {
       POST: async (req: any) => {
         const s = sessionOr404(req.params.id);

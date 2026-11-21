@@ -15,7 +15,7 @@ import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { callsigns, listBounds, listWidth, panesMax, toggleList, useRail } from "../lib/rail.ts";
 import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, cn, folderNames, when } from "../lib/utils.ts";
-import { lastLine, useAgentCount, useAgentCounts, useWatch, useWatches, watchLabel, type Watch } from "../lib/watch.ts";
+import { branchOf, lastLine, useAgentCount, useAgentCounts, useWatch, useWatches, watchLabel, type Watch } from "../lib/watch.ts";
 import { MachineSep, machineRuns, WherePip, whereWords } from "./Where.tsx";
 import { finished, ListFind, matches, order, setArrange, useArrange } from "./ListArrange.tsx";
 import { useAuto } from "../lib/automation.ts";
@@ -294,7 +294,7 @@ function RailCard({ s: given, y, left }: { s: Session; y: number; left: number }
   const events = useStore((x) => x.events[s.id]);
   const approvals = useSafety((x) => x.approvals[s.id]?.length ?? 0);
   const unsent = useUnsent(s.id);
-  const line = lastLine(events, s.workspace);
+  const line = lastLine(branchOf(events, s.head), s.workspace);
   const top = Math.min(Math.max(y, 96), innerHeight - 96);
   return (
     <div className="k-rail-card" data-watch={w} style={{ top, left }} data-testid="rail-card" aria-hidden="true">

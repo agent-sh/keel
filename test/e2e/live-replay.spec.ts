@@ -233,17 +233,25 @@ test("a reconnect sends no transcript the page holds, only what it missed", asyn
     // A page loaded now comes to show the same. Its socket opens only once its
     // snapshot is on screen: the reply so far then comes by both, the replay's
     // at the snapshot's rev while the turn holds and nothing is emitted.
+    // It answers with the stored events the fresh page's socket replayed to it.
     const sameAsFresh = async () => {
       const p = await context.newPage();
+      const replayed: number[] = [];
       await p.routeWebSocket(/\/ws$/, async (ws) => {
         await expect(p.getByTestId("transcript")).toContainText(shared, { timeout: 30_000 });
-        ws.connectToServer();
+        const server = ws.connectToServer();
+        server.onMessage((m) => {
+          const f = JSON.parse(String(m));
+          if (f.t === "event" && f.event.session_id === id && f.rev === undefined) replayed.push(f.event.seq);
+          ws.send(m);
+        });
       });
       await p.goto(`${origin}/s/${id}`);
       await expect(p.getByTestId("sync-state")).toHaveCount(0, { timeout: 30_000 });
       const shown = await view(page);
       await expect.poll(() => view(p), { timeout: 10_000 }).toEqual(shown);
       await p.close();
+      return replayed;
     };
 
     // Both sessions are loaded in the page; the kept one is on screen.
@@ -325,10 +333,30 @@ test("a reconnect sends no transcript the page holds, only what it missed", asyn
     await expect(page.getByTestId("sync-state")).toHaveCount(0, { timeout: 15_000 });
     await expect(page.getByTestId("transcript")).not.toContainText(`Generated note ${NOTES} of`);
     await expect(page.getByTestId("transcript")).toContainText(`Generated note ${NOTES - 5} of`);
-    await sameAsFresh();
+    // The session's head is now not its newest event. A page loaded in that
+    // state, its socket opening after its snapshot, resumes from the session's
+    // newest seq: nothing is replayed to it and it shows the branch the head is on.
+    expect(await sameAsFresh()).toEqual([]);
     expect(seqs).toEqual([]);
     expect(got.filter((g) => g.id === id).map((g) => g.events)).toEqual([undefined]);
     await shoot(page, "live-replay-06-long-older-head");
+
+    // A third cut in that state, with nothing new: the open page too resumes
+    // from the session's newest seq, is sent no event and stays on its branch.
+    // The session is not taken for a failed one (its newest held event is not on its branch).
+    hold = new Promise<void>((r) => (release = r));
+    got.length = 0;
+    seqs = [];
+    cut!();
+    await expect(page.getByTestId("sync-state")).toHaveText("Reconnecting", { timeout: 10_000 });
+    release();
+    await expect(page.getByTestId("sync-state")).toHaveCount(0, { timeout: 15_000 });
+    expect(seqs).toEqual([]);
+    await expect(page.getByTestId("transcript")).not.toContainText(`Generated note ${NOTES} of`);
+    await expect(page.getByTestId("transcript")).toContainText(`Generated note ${NOTES - 5} of`);
+    expect(((await (await fetch(`${origin}/api/sessions/${id}?events=0`)).json()) as any).session.head).toBe(all.find((e) => e.seq === NOTES - 5)!.id);
+    await expect(page.getByTestId("station-word")).not.toHaveText(/Failed/);
+    expect(await sameAsFresh()).toEqual([]);
   } finally {
     d.proc.kill("SIGKILL");
     await exited(d.proc);

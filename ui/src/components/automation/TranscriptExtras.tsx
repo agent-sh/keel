@@ -12,7 +12,8 @@ import { Markdown } from "../Markdown.tsx";
 import { AgentStatus, agentWhy, IconButton, STATUS_LABEL, StopIcon } from "./bits.tsx";
 
 export const AGENT_TOOLS = new Set(["Agent", "spawn_agent"]);
-export const SYSTEM_INPUT = new Set(["task", "subagent", "wait", "loop", "steer", "harness", "wake", "goal", "failures"]);
+export { SYSTEM_INPUT } from "../../../../src/core/owner.ts";
+import { SYSTEM_INPUT } from "../../../../src/core/owner.ts";
 
 type Report = { id: string; title: string; status: AgentRecord["status"]; text: string; why?: string; key: string; task?: string };
 

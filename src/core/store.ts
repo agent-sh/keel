@@ -109,6 +109,13 @@ type Kept = {
   // first to the head. Walked once, it grows by each event appended at its
   // head, and is walked again only when the session shows another branch.
   line?: { head: string; events: readonly StoredEvent[] };
+  // The owner-side messages that share a parent with another (the versions of
+  // a prompt are among them), by that parent: for a reader that shows a part
+  // of a branch with the count of versions on each prompt. Made from the
+  // events without their bodies the first time it is asked for, and kept up
+  // by each message appended. It goes with the session, so it never holds
+  // less than the session does.
+  forks?: Map<string | null, StoredEvent[]>;
   // When it was last read or appended to.
   at: number;
   // Dropped from the store: an event of it still held reads its body from the table.
@@ -422,6 +429,15 @@ export class Store {
       // parent starts a branch, which is walked when it is asked for.
       // A new array: a reader that holds the branch as it was keeps it.
       k.line = k.line?.head === p ? { head: id, events: [...k.line.events, held] } : undefined;
+      // A message under a parent that already has several joins them. One under
+      // the newest event starts nothing (nothing else is stored there yet); one
+      // under any other event may be a second version: the map is made again
+      // when it is next asked for.
+      if (k.forks && kind === "user") {
+        const versions = k.forks.get(p);
+        if (versions) k.forks.set(p, [...versions, held]);
+        else if (p !== (k.all[at - 1]?.id ?? null)) k.forks = undefined;
+      }
       this.touch(session_id, k);
       this.trim(k, Math.floor(at / RUN));
     }
@@ -610,11 +626,35 @@ export class Store {
     return this.keep(session_id, this.db.query<Bare, [string]>("SELECT id, seq, parent, kind, ts FROM events WHERE session_id = ? ORDER BY seq").all(session_id));
   }
 
+  // The session's newest seq, on any branch (0: it has no event). What a
+  // reader that holds a part of the session resumes from.
+  lastSeq(session_id: string): number {
+    const k = this.kept.get(session_id);
+    if (k) return k.all.at(-1)?.seq ?? 0;
+    return this.db.query<{ n: number | null }, [string]>("SELECT MAX(seq) AS n FROM events WHERE session_id = ?").get(session_id)?.n ?? 0;
+  }
+
+  // The versions of the prompt stored under `parent` when it has several (the
+  // owner's prompts with that parent, in order, as versions() of
+  // src/core/tree.ts gives them); none for a prompt that is the only one.
+  // Only the bodies of the messages stored under that parent are read.
+  versions(session_id: string, parent: string | null): readonly StoredEvent[] {
+    const k = this.held(session_id);
+    if (!k.forks) {
+      const by = new Map<string | null, StoredEvent[]>();
+      for (const e of k.all) if (e.kind === "user") (by.get(e.parent) ?? by.set(e.parent, []).get(e.parent)!).push(e);
+      k.forks = new Map([...by].filter(([, list]) => list.length > 1));
+    }
+    return (k.forks.get(parent) ?? []).filter((e) => !e.data.origin);
+  }
+
   // Brings a session into memory without holding the loop: its events a few
   // thousand at a time, then their bodies while they fit, giving the loop back
   // in between. A reader that then asks for the whole session (the page
   // opening a long one) finds it there instead of reading it in one piece.
-  async warm(session_id: string): Promise<void> {
+  // `bodies: false`: the events alone, for a reader that takes a part of the
+  // session (it reads the bodies of that part, and no other).
+  async warm(session_id: string, bodies = true): Promise<void> {
     let k = this.kept.get(session_id);
     if (!k) {
       const rows: Bare[] = [];
@@ -628,6 +668,7 @@ export class Store {
       // Read by someone else meanwhile: theirs is the one kept.
       k = this.kept.get(session_id) ?? this.keep(session_id, rows);
     }
+    if (!bodies) return;
     let t0 = performance.now();
     for (let i = 0; i * RUN < k.all.length && !k.gone; i++) {
       if (k.runs[i]) continue;

@@ -8,7 +8,7 @@ import { lineage } from "../../../src/core/tree.ts";
 import { COMPACT_SHARE, contextTokens, setRatio } from "../../../src/engine/compact.ts";
 import type { QueueItem } from "../../../src/core/types.ts";
 import { isLive, useAuto } from "../lib/automation.ts";
-import { actions, reportError, useStore, type BuildState, type ContextInfo, failed, showArchivedRefusal } from "../lib/store.ts";
+import { actions, api, reportError, reportUnlessGone, useStore, type BuildState, type ContextInfo, failed, showArchivedRefusal } from "../lib/store.ts";
 import { switchSession } from "../lib/switch.ts";
 import { seedComposer } from "../lib/ui.ts";
 import { cn, fmtCost, fmtTokens, when } from "../lib/utils.ts";
@@ -118,8 +118,20 @@ export function QueuePanel({ sessionId }: { sessionId: string }) {
   // older than it (an older one may be on the branch further up).
   const branch = useMemo(() => {
     const line = all ? lineage(all, head) : [];
-    return { ids: new Set(line.map((e) => e.id)), from: line[0]?.seq ?? Infinity, whole: !line.length || line[0]!.parent === null };
+    return { ids: new Set(line.map((e) => e.id)), from: line[0]?.seq ?? Infinity, whole: !line.length || line[0]!.parent === null, seqs: new Map((all ?? []).map((e) => [e.id, e.seq])) };
   }, [all, head]);
+  // A prompt queued at an event the page does not hold cannot be told here
+  // (the event may be on the branch further up, or on another one): the
+  // daemon, which reads the whole branch, is asked which ones are off it.
+  const unsure = !!all && !branch.whole && !!q?.queue.some((x) => x.anchor && !branch.ids.has(x.anchor) && !branch.seqs.has(x.anchor));
+  const key = unsure ? `${head} ${q!.queue.map((x) => x.id).join(" ")}` : "";
+  const [told, setTold] = useState<{ key: string; off: Set<string> } | null>(null);
+  useEffect(() => {
+    if (!key) return;
+    let stop = false;
+    api<{ off: string[] }>(`/api/sessions/${sessionId}/queue/off-branch`).then((r) => { if (!stop) setTold({ key, off: new Set(r.off) }); }).catch((e) => reportUnlessGone(e, { at: "queue branch" }));
+    return () => { stop = true; };
+  }, [key, sessionId]);
   // Reports of this session's agents that wait for it: while it is paused they start no turn.
   const reports = useAuto((s) => Object.values(s.agents).filter((a) => a.parent_id === sessionId && a.handback && !isLive(a)).length);
   // A paused session with nothing queued still shows that it is paused when reports wait for it.
@@ -127,8 +139,9 @@ export function QueuePanel({ sessionId }: { sessionId: string }) {
   // Only known when the events are loaded; until then nothing is marked.
   const off = (x: QueueItem) => {
     if (!all || !x.anchor || branch.ids.has(x.anchor)) return false;
-    const at = all.find((e) => e.id === x.anchor);
-    return branch.whole || (!!at && at.seq > branch.from);
+    const at = branch.seqs.get(x.anchor);
+    if (branch.whole || at !== undefined) return branch.whole || at! > branch.from;
+    return told?.key === key && told.off.has(x.id);
   };
   const nextOff = !!q.queue.length && off(q.queue[0]!);
   return (

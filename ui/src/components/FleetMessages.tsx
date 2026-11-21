@@ -9,10 +9,10 @@ import { api, onFeature, reportError } from "../lib/store.ts";
 import { ago, cn, when } from "../lib/utils.ts";
 import { Markdown } from "./Markdown.tsx";
 
-const PREFIX = '<external_input source="peer_session"';
+import { isPeerMessage, PEER_PREFIX as PREFIX } from "../../../src/core/owner.ts";
+export { isPeerMessage };
 const unesc = (s: string) => s.replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 
-export const isPeerMessage = (e: StoredEvent) => e.kind === "user" && (e.data.kind === "peer" || String(e.data.text ?? "").startsWith(PREFIX));
 
 function parse(text: string) {
   const from = unesc(text.match(/from="([^"]*)"/)?.[1] ?? "another session");

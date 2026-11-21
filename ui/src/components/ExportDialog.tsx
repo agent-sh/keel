@@ -8,10 +8,8 @@ import { Switch } from "@base-ui/react/switch";
 import { Check, Copy, FileDown, FileJson, History, Terminal, X } from "lucide-react";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { KEEL_FILE_MAX, keelFileBytes, sizeText } from "../../../src/core/keel-file.ts";
-import { lineage } from "../../../src/core/tree.ts";
 import type { Session } from "../../../src/core/types.ts";
-import { reportError, failed, useStore } from "../lib/store.ts";
-import { useWholeEvents } from "../lib/whole.ts";
+import { api, reportError, reportUnlessGone, failed, useStore } from "../lib/store.ts";
 import { ago, cn } from "../lib/utils.ts";
 
 let current: Session | null = null;
@@ -58,6 +56,8 @@ function Carry({ on, onChange, testid, disabled, children }: { on: boolean; onCh
   );
 }
 
+type Carried = { sizes: number[]; json: number };
+
 function ExportDialog({ session, onClose }: { session: Session | null; onClose: () => void }) {
   const [origin, setOrigin] = useState<Origin | null>(null);
   const [written, setWritten] = useState<Written | null>(null);
@@ -67,22 +67,29 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
   const [withFiles, setWithFiles] = useState(false);
   const [tree, setTree] = useState(false);
   // What the Keel file leaves behind: other branches, and messages still waiting to run.
-  const all = useWholeEvents(session?.id);
+  // Counted by the daemon over the whole session (the page holds a part of it).
+  const [facts, setFacts] = useState<{ id: string; branches: number; shown: Carried; all: Carried } | null>(null);
   const pending = useStore((st) => (session ? st.queues[session.id]?.queue.length ?? 0 : 0));
   // The files the prompts of what is exported name (the branch shown, or every branch), each counted once.
   const head = useStore((st) => (session ? st.sessions[session.id]?.head ?? session.head : null));
+  useEffect(() => {
+    if (!session) return;
+    let stop = false;
+    const id = session.id;
+    api<{ branches: number; shown: Carried; all: Carried }>(`/api/sessions/${id}/branches`).then((r) => { if (!stop) setFacts({ id, ...r }); }).catch((e) => reportUnlessGone(e, { at: "export facts" }));
+    return () => { stop = true; };
+  }, [session?.id, head]);
+  const known = facts && facts.id === session?.id ? facts : null;
   // With them inside, the file must still be one another Keel takes: counted
   // here as the daemon counts it, so the switch is not offered for a file it would refuse.
   const carried = useMemo(() => {
-    const evs = all ? (tree ? all : lineage(all, head)) : [];
-    const sizes = new Map<string, number>();
-    for (const e of evs) if (e.kind === "user") for (const b of e.data.images ?? []) if (b.type === "attachment") sizes.set(b.id, b.size ?? 0);
-    const bytes = [...sizes.values()].reduce((a, b) => a + b, 0);
-    const whole = sizes.size ? keelFileBytes(new Blob([JSON.stringify(evs)]).size + 300 * sizes.size, [...sizes.values()]) : 0;
-    return { files: sizes.size, bytes, fits: whole <= KEEL_FILE_MAX };
-  }, [all, head, tree]);
+    const c = known ? (tree ? known.all : known.shown) : { sizes: [], json: 0 };
+    const bytes = c.sizes.reduce((a, b) => a + b, 0);
+    const whole = c.sizes.length ? keelFileBytes(c.json + 300 * c.sizes.length, c.sizes) : 0;
+    return { files: c.sizes.length, bytes, fits: whole <= KEEL_FILE_MAX };
+  }, [known, tree]);
   const files = carried.files;
-  const branches = all ? Math.max(0, all.filter((e) => !all.some((x) => x.parent === e.id)).length - 1) : 0;
+  const branches = known ? Math.max(0, known.branches - 1) : 0;
   const stays = [
     branches && !tree ? `${branches} other branch${branches === 1 ? "" : "es"}` : "",
     pending ? `${pending} pending message${pending === 1 ? "" : "s"}` : "",

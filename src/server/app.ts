@@ -3,7 +3,9 @@ import { join, resolve } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
-import { lineage, pageOf } from "../core/tree.ts";
+import { firstAt, lineage, pageOf, pageOfLine } from "../core/tree.ts";
+import { shownAsPrompt } from "../core/owner.ts";
+import type { StoredEvent } from "../core/types.ts";
 import type { Session } from "../core/types.ts";
 import type { Engine } from "../engine/turn.ts";
 import type { Providers } from "../providers/registry.ts";
@@ -19,6 +21,10 @@ import { fitted } from "../engine/image-fit.ts";
 import { bytesPerToken } from "../engine/compact.ts";
 import { KEEL_FILE_MAX } from "../core/keel-file.ts";
 import { inFlight, timed } from "../admin/stall.ts";
+
+// The seqs of the prompts of a branch, kept while the branch is the same array
+// (the store gives a new one when the branch grows or the head moves).
+const promptSeqs = new WeakMap<readonly StoredEvent[], number[]>();
 
 // A feature module adds its routes here instead of editing this file.
 export type RouteModule = (deps: Deps) => Record<string, any>;
@@ -208,15 +214,20 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           // reader that takes the older ones as it needs them.
           const q = new URL(req.url).searchParams;
           const bare = q.get("events") === "0";
+          const page = Number(q.get("page")) || 0;
           // A transcript that is not in memory is brought in a part at a time,
           // so a long one does not hold every other session while it is read.
-          // What is answered is read after that, in one piece.
-          if (!bare) await store.warm(req.params.id);
+          // What is answered is read after that, in one piece. A reader that
+          // asks for a part has the events brought in without their bodies.
+          if (!bare) await store.warm(req.params.id, page <= 0);
           const s = session(req.params.id);
           if (!s) return bad("no such session", 404);
-          const page = Number(q.get("page")) || 0;
-          const events = bare ? undefined : page > 0 ? pageOf(store.events(s.id), s.head, { limit: page })?.events ?? [] : store.events(s.id);
-          return json({ session: s, ...(events ? { events } : {}), running: engine.isRunning(s.id), bytes_per_token: bytesPerToken(s.model), queue: engine.queued(s.id), held: engine.isHeld(s.id), status: engine.statusOf(s.id), draft: live.draft(s.id), rev: bus.rev() });
+          const events = bare ? undefined : page > 0 ? pageOfLine(store.lineage(s.id), { limit: page }, (parent) => store.versions(s.id, parent), s.head, true).events : store.events(s.id);
+          // `seq`: the session's newest seq on any branch, which a reader that
+          // holds a part of the session resumes from (its own last event may
+          // be far below it: the branch shown is not always the newest).
+          // `paged`: the answer is a part, and the page routes give the rest.
+          return json({ session: s, ...(events ? { events } : {}), seq: store.lastSeq(s.id), ...(page > 0 && !bare ? { paged: true } : {}), running: engine.isRunning(s.id), bytes_per_token: bytesPerToken(s.model), queue: engine.queued(s.id), held: engine.isHeld(s.id), status: engine.statusOf(s.id), draft: live.draft(s.id), rev: bus.rev() });
         }),
         PATCH: wrap(async (req) => {
           const s = session(req.params.id);
@@ -284,56 +295,92 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       },
 
       // A part of one branch of the session (see pageOf): older or newer than
-      // a seq, or around an event, on the branch `head` ends (default: the session's).
+      // a seq, or around an event, on the branch `head` ends (default: the
+      // session's). The session's own branch is the one the store keeps: its
+      // edges are found by halving, and nothing else of the session is read.
       "/api/sessions/:id/page": {
         GET: wrap((req) => {
           const s = session(req.params.id);
           if (!s) return bad("no such session", 404);
           const q = new URL(req.url).searchParams;
           const num = (k: string) => (q.has(k) ? Number(q.get(k)) : undefined);
-          const page = pageOf(store.events(s.id), s.head, { limit: Math.min(Number(q.get("limit")) || 200, 2000), head: q.get("head") || undefined, before: num("before"), after: num("after"), around: q.get("around") || undefined });
+          const limit = Math.min(Number(q.get("limit")) || 200, 2000);
+          const head = q.get("head") || undefined, around = q.get("around") || undefined;
+          const ask = { limit, before: num("before"), after: num("after") };
+          const own = (at?: number) => json(pageOfLine(store.lineage(s.id), { ...ask, at }, (parent) => store.versions(s.id, parent), s.head, true));
+          if (around) {
+            const e = store.event(around);
+            if (!e || e.session_id !== s.id) return bad("no such event in this session", 404);
+            const line = store.lineage(s.id);
+            const at = firstAt(line, e.seq);
+            if (line[at]?.id === e.id) return own(at);
+          } else if (!head || head === s.head) return own();
+          const page = pageOf(store.events(s.id), s.head, { ...ask, head, around });
           return page ? json(page) : bad("no such event in this session", 404);
         }),
       },
 
-      // The owner-side messages of a branch outside the part a reader holds
-      // (older than `before`, newer than `after`, both seqs), each cut to what
-      // tells a prompt from a note: for counting the prompts of a whole branch.
+      // How many prompts of a branch (as the transcript shows them) lie
+      // outside the part a reader holds: older than `before`, newer than
+      // `after` (both seqs). Counted once per state of the session's branch.
       "/api/sessions/:id/users": {
         GET: wrap((req) => {
           const s = session(req.params.id);
           if (!s) return bad("no such session", 404);
           const q = new URL(req.url).searchParams;
-          const line = lineage(store.events(s.id), q.get("head") || s.head).filter((e) => e.kind === "user");
-          const stub = (e: (typeof line)[number]) => ({ id: e.id, seq: e.seq, kind: e.kind, data: { origin: e.data.origin, kind: e.data.kind, text: String(e.data.text ?? "").slice(0, 80) } });
-          const before = q.has("before") ? Number(q.get("before")) : -Infinity;
-          const after = q.has("after") ? Number(q.get("after")) : Infinity;
-          return json({ older: line.filter((e) => e.seq < before).map(stub), newer: line.filter((e) => e.seq > after).map(stub) });
+          const head = q.get("head") || s.head;
+          const line = head === s.head ? store.lineage(s.id) : lineage(store.events(s.id), head);
+          let seqs = promptSeqs.get(line);
+          if (!seqs) promptSeqs.set(line, (seqs = line.filter(shownAsPrompt).map((e) => e.seq)));
+          const below = (seq: number) => { let lo = 0, hi = seqs.length; while (lo < hi) { const mid = (lo + hi) >>> 1; if (seqs[mid]! >= seq) hi = mid; else lo = mid + 1; } return lo; };
+          return json({ before: q.has("before") ? below(Number(q.get("before"))) : 0, after: q.has("after") ? seqs.length - below(Number(q.get("after")) + 1) : 0, total: seqs.length });
         }),
       },
 
       // The newest call of one of the named tools on the session's branch whose
       // result was not an error, older than `before` (a seq): what a reader that
-      // holds only the branch's end needs of the rest (the plan in force).
+      // holds only the branch's end needs of the rest (the plan in force). One
+      // walk back from there, which ends at the call.
       "/api/sessions/:id/last-call": {
         GET: wrap((req) => {
           const s = session(req.params.id);
           if (!s) return bad("no such session", 404);
           const q = new URL(req.url).searchParams;
           const names = new Set((q.get("names") ?? "").split(",").filter(Boolean));
-          const before = Number(q.get("before")) || Infinity;
-          const line = lineage(store.events(s.id), s.head);
+          const line = store.lineage(s.id);
+          // A result is stored after its call: going back, the results come first.
           const ok = new Set<string>();
-          for (const e of line) if (e.kind === "tool_result") for (const r of e.data.results) if (!r.is_error) ok.add(r.tool_use_id);
-          for (let i = line.length - 1; i >= 0; i--) {
+          for (let i = (q.has("before") ? firstAt(line, Number(q.get("before"))) : line.length) - 1; i >= 0; i--) {
             const e = line[i]!;
-            if (e.kind !== "assistant" || e.seq >= before) continue;
+            if (e.kind === "tool_result") { for (const r of e.data.results) if (!r.is_error) ok.add(r.tool_use_id); continue; }
+            if (e.kind !== "assistant") continue;
             for (let k = e.data.blocks.length - 1; k >= 0; k--) {
               const b = e.data.blocks[k];
               if (b.type === "tool_use" && names.has(b.name) && ok.has(b.id)) return json({ call: { name: b.name, input: b.input, seq: e.seq } });
             }
           }
           return json({ call: null });
+        }),
+      },
+
+      // What an export leaves behind and what it would carry, counted here so
+      // the dialog needs no event: the session's branches, and for the branch
+      // shown and for every branch the sizes of the files its prompts name
+      // and the bytes of its events as JSON (measured only when files are
+      // named: it is what the size of a file with them inside is counted from).
+      "/api/sessions/:id/branches": {
+        GET: wrap((req) => {
+          const s = session(req.params.id);
+          if (!s) return bad("no such session", 404);
+          const all = store.events(s.id);
+          const parents = new Set<string>();
+          for (const e of all) if (e.parent) parents.add(e.parent);
+          const carried = (list: readonly StoredEvent[]) => {
+            const sizes = new Map<string, number>();
+            for (const e of list) if (e.kind === "user") for (const b of e.data.images ?? []) if (b.type === "attachment") sizes.set(b.id, b.size ?? 0);
+            return { sizes: [...sizes.values()], json: sizes.size ? Buffer.byteLength(JSON.stringify(list)) : 0 };
+          };
+          return json({ branches: all.filter((e) => !parents.has(e.id)).length, shown: carried(store.lineage(s.id)), all: carried(all) });
         }),
       },
 

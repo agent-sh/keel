@@ -17,7 +17,7 @@ import { byAttention, getStations, opened, shares, stations, target, useStations
 import { getState, useStore } from "../lib/store.ts";
 import { getUI, navigate, savePref, setUI, useUI } from "../lib/ui.ts";
 import { ago, scrollMotion, when } from "../lib/utils.ts";
-import { lastLine, useAgentCount, useAgentCounts, useWatch, watchLabel, type Watch } from "../lib/watch.ts";
+import { branchOf, lastLine, useAgentCount, useAgentCounts, useWatch, watchLabel, type Watch } from "../lib/watch.ts";
 import { MachineSep, machineRuns, whereWords } from "./Where.tsx";
 import { isPinned, pin as pinSession } from "../lib/sessops.ts";
 import { reportError } from "../lib/store.ts";
@@ -74,7 +74,7 @@ function Tool({ label, onClick, children, testid, on, move }: { label: string; o
 
 function StationHead({ s, w, helm, pinned }: { s: Session; w: Watch; helm: boolean; pinned: boolean }) {
   const events = useStore((x) => x.events[s.id]);
-  const start = useMemo(() => events?.findLast((e) => e.kind === "turn_start")?.ts, [events]);
+  const start = useMemo(() => branchOf(events, s.head)?.findLast((e) => e.kind === "turn_start")?.ts, [events, s.head]);
   const now = useNow(w === "work" && s.phase === "working");
   const focus = useStations((x) => x.focus);
   const panes = useStations((x) => x.count);
@@ -99,7 +99,7 @@ function StationHead({ s, w, helm, pinned }: { s: Session; w: Watch; helm: boole
           <Tool label="Close the session here (Alt W)" testid="station-close" onClick={() => closeStation(s.id)}><X /></Tool>
         </span>
       </div>
-      {!helm && <p className="k-station-line truncate">{lastLine(events, s.workspace) || " "}</p>}
+      {!helm && <p className="k-station-line truncate">{lastLine(branchOf(events, s.head), s.workspace) || " "}</p>}
       {pinned && <span className="k-pin-mark" aria-hidden="true" />}
     </header>
   );

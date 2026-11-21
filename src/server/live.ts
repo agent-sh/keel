@@ -76,6 +76,11 @@ export class Live {
       // stored seq, below the cursor, and the page reads the session whole.
       if (last === from && from > 0) last = Math.min(from, this.store.db.query<{ n: number | null }, [string]>("SELECT MAX(seq) AS n FROM events WHERE session_id = ?").get(id)?.n ?? 0);
       cursors[id] = last;
+      // The session as it is now, after its events: a replayed event carries
+      // no rev and moves no head (it may be of another branch than the one
+      // shown), so the row says where the head is.
+      const row = this.store.session(id);
+      if (row) ws.send(JSON.stringify({ ...this.bus.filter({ t: "session", session: row }), rev: this.bus.rev() }));
       const d = this.drafts.get(id);
       if (d) send(ws, { t: "draft", session_id: id, blocks: d, rev: this.bus.rev() });
       // Queue and status as they are now, so a page whose snapshot came just

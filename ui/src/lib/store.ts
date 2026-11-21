@@ -176,7 +176,7 @@ export const actions = {
     const log = draftLog.get(id) ?? { n: 0, frames: [] };
     log.n++;
     draftLog.set(id, log);
-    let r: { session: Session; events?: StoredEvent[]; queue: QueueItem[]; held: boolean; status?: TurnStatus; draft?: Record<number, DraftBlock>; rev?: number; bytes_per_token?: number };
+    let r: { session: Session; events?: StoredEvent[]; seq?: number; paged?: boolean; queue: QueueItem[]; held: boolean; status?: TurnStatus; draft?: Record<number, DraftBlock>; rev?: number; bytes_per_token?: number };
     try {
       r = await api(`/api/sessions/${id}${transcript ? `?page=${PAGE}` : "?events=0"}`);
       // The daemon's learned bytes a token for the session's model: the page's count of its context then agrees with the daemon's.
@@ -190,6 +190,17 @@ export const actions = {
     const early = loading.get(id) ?? [];
     loading.delete(id);
     const loc = localize(id, r.session, r.events);
+    if (loc.events) {
+      // A transcript answer accounts for every event up to the session's
+      // newest seq: the ones of the branch shown are in it, the rest the page
+      // does not hold by choice. (An answer without a transcript accounts for
+      // nothing: events below its seq may still be on their way by the socket.)
+      seen.set(id, Math.max(seen.get(id) ?? 0, r.seq ?? loc.events.at(-1)?.seq ?? 0, early.at(-1)?.seq ?? 0));
+      // A daemon without the page routes (a peer on an older build) answers
+      // with the whole session: it is kept whole and no part is asked for.
+      if (r.paged) paged.add(id);
+      else paged.delete(id);
+    }
     // Each mutable part is taken from the snapshot only when no newer live
     // frame set it while the request was out: a late snapshot never brings back
     // an old head, queue or retry countdown.
@@ -246,8 +257,11 @@ export const actions = {
     return r.session;
   },
   // `client_id` names the send: the daemon stores it once however often it is sent.
+  // A prompt this page sent (not one queued for later) is told to the session's
+  // views: a transcript reading an earlier part goes to the end for it.
   send: (id: string, text: string, opts: { images?: PromptBlock[]; mode?: "send" | "queue"; client_id?: string } = {}) =>
-    api(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ text, images: opts.images, mode: opts.mode, client_id: opts.client_id }) }),
+    api(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ text, images: opts.images, mode: opts.mode, client_id: opts.client_id }) })
+      .then((r) => { if (opts.mode !== "queue") dispatchEvent(new CustomEvent("keel:sent", { detail: id })); return r; }),
   edit: (id: string, eventId: string, text: string) =>
     api(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ text, edit_of: eventId }) }),
   answer: (id: string, callId: string, answers: Record<string, { picked: string[]; other?: string }>) =>
@@ -303,6 +317,7 @@ export const actions = {
     await api(`/api/sessions/${id}`, { method: "DELETE" });
     const { [id]: _, ...rest } = state.sessions;
     const { [id]: __, ...events } = state.events;
+    forgot(id);
     set({ sessions: rest, events });
   },
 };
@@ -312,6 +327,23 @@ export const actions = {
 export const PAGE = 200;
 const HELD = 6 * PAGE;
 const holds = (id: string, eventId: string) => !!state.events[id]?.findLast((e) => e.id === eventId);
+
+// The newest seq the page has seen of each session it holds: from a
+// snapshot (the session's newest, on any branch) and from every event frame.
+// It is the cursor a reconnect resumes from and what tells a replayed event
+// from a new one. The last event the page holds is not that: the page holds
+// the branch shown, which may end far below the session's newest event (an
+// older version of a prompt is shown, a rewind, an undone clear).
+const seen = new Map<string, number>();
+// Sessions the daemon answers in parts (see loadSession).
+const paged = new Set<string>();
+const forgot = (id: string) => { seen.delete(id); paged.delete(id); };
+// Whether the list (in seq order) holds an event with that seq.
+function holdsSeq(list: StoredEvent[], seq: number): boolean {
+  let lo = 0, hi = list.length;
+  while (lo < hi) { const mid = (lo + hi) >>> 1; if (list[mid]!.seq >= seq) hi = mid; else lo = mid + 1; }
+  return list[lo]?.seq === seq;
+}
 
 // A session's head that the page does not hold (another branch was shown from
 // another tab, a rewind, an undo): the end of that branch is read. Soon, not
@@ -349,6 +381,8 @@ export function forgetEvents(id: string, ids: string[]) {
 // running turn (its clock).
 export function trimmed(list: StoredEvent[], head: string | null): StoredEvent[] {
   const line = lineage(list, head);
+  // A head the page does not hold yet (its part is on its way): nothing is let go.
+  if (!line.length) return list;
   let k = Math.max(0, line.length - 2 * PAGE);
   for (let i = k; i > Math.max(0, k - PAGE); i--) if (line[i - 1]!.kind === "turn_end") { k = i; break; }
   if (k === 0 && line.length === list.length) return list;
@@ -486,6 +520,7 @@ export function apply(f: Frame) {
       // Its views unmount now instead of asking the daemon for a session it no longer has.
       const { [s.id]: _s, ...sessions } = state.sessions;
       const { [s.id]: _e, ...events } = state.events;
+      forgot(s.id);
       set({ sessions, events, gone: { ...state.gone, [s.id]: s.parent_id ?? state.sessions[s.id]?.parent_id ?? true } });
       forgetLegacyQuestions(s.id);
       dropSendDrafts(s.id);
@@ -504,12 +539,25 @@ export function apply(f: Frame) {
     if (cleared) state = { ...state, drafts: { ...state.drafts, [e.session_id]: {} } };
     const list = state.events[e.session_id];
     if (!list) { loading.get(e.session_id)?.push(e); if (cleared) set({}); return; } // not loaded; loading it later reads it from the store
-    if (list.length && list[list.length - 1]!.seq >= e.seq) { if (cleared) set({}); return; } // a replay of what is here
-    // The new event is the head of its session (the store appends at the head).
+    // Seen before: at or below the cursor (the page holds it, or chose not to).
+    const known = e.seq <= (seen.get(e.session_id) ?? 0);
+    if (!known) seen.set(e.session_id, e.seq);
+    // A live event is the head of its session (the store appends at the head).
+    // A replayed one (no rev) may be of any branch and moves no head: the
+    // session's row, sent after the replay, says where the head is.
     const s = state.sessions[e.session_id];
-    if (s && newer(`${s.id}:session`, f.rev)) state = { ...state, sessions: { ...state.sessions, [s.id]: { ...s, head: e.id } } };
+    const was = s?.head;
+    const moved = !known && !!s && f.rev !== undefined && newer(`${s.id}:session`, f.rev);
+    if (moved) state = { ...state, sessions: { ...state.sessions, [s!.id]: { ...s!, head: e.id } } };
+    // Held already: a replay of what is here, or an event a part read brought before its frame.
+    if (known || holdsSeq(list, e.seq)) { if (cleared || moved) set({}); return; }
     const next = [...list, e];
-    set({ events: { ...state.events, [e.session_id]: next.length > HELD && !keepers.get(e.session_id) ? trimmed(next, e.id) : next } });
+    const head = state.sessions[e.session_id]?.head ?? null;
+    set({ events: { ...state.events, [e.session_id]: next.length > HELD && paged.has(e.session_id) && !keepers.get(e.session_id) ? trimmed(next, head) : next } });
+    // A prompt that did not go on from the head (another version of an earlier
+    // prompt, made in another tab or from the command line): the part around it
+    // is read, which brings the versions it stands beside.
+    if (f.rev !== undefined && e.kind === "user" && !e.data.origin && e.parent !== was && paged.has(e.session_id)) actions.page(e.session_id, { around: e.id }).catch(reportUnlessGone);
   } else if (f.t === "delta") {
     // A whole draft taken at this rev or a later one (a snapshot that overtook this frame) holds it already.
     if (f.rev !== undefined && f.rev <= (revs.get(`${f.session_id}:draft`) ?? 0)) return;
@@ -553,7 +601,7 @@ export function mergeEvents(a: StoredEvent[], b: StoredEvent[]): StoredEvent[] {
   return [...by.values()].sort((x, y) => x.seq - y.seq);
 }
 
-// The live feed. On every (re)connect the page names the last seq it holds of
+// The live feed. On every (re)connect the page names the newest seq it has seen of
 // each loaded session; the daemon replays what came after, and the reply a
 // running turn has streamed so far, then sends live (see src/server/live.ts).
 // A ping every 20 s proves the socket still delivers; no pong in 10 s and it
@@ -594,7 +642,7 @@ export function connect() {
     retry = 500;
     downAt = null;
     const loaded = Object.entries(state.events);
-    const cursors = Object.fromEntries(loaded.filter(([id]) => !splitId(id)).map(([id, list]) => [id, list.at(-1)?.seq ?? 0]));
+    const cursors = Object.fromEntries(loaded.filter(([id]) => !splitId(id)).map(([id, list]) => [id, seen.get(id) ?? list.at(-1)?.seq ?? 0]));
     // A draft from before the drop may be stale (a retry restarts it, the reply
     // may have finished meanwhile): the replay sends the current one of each
     // loaded session, and a session opened later reads it from its snapshot.
@@ -620,6 +668,7 @@ export function connect() {
       if ((e as { status?: number }).status !== 404) return reportError(e, { at: "reconnect" });
       const { [id]: _, ...events } = state.events;
       const { [id]: __, ...sessions } = state.sessions;
+      forgot(id);
       set({ events, sessions, gone: { ...state.gone, [id]: state.sessions[id]?.parent_id ?? true } });
       forgetLegacyQuestions(id);
       dropSendDrafts(id);
@@ -642,7 +691,7 @@ export function connect() {
         // page's cursor: a restored backup): what the page holds is dropped
         // and the session is read whole, or its new events would be taken for old ones.
         const behind = (ends[id] ?? cursors[id]!) < cursors[id]!;
-        if (behind) { const { [id]: _, ...events } = state.events; set({ events }); }
+        if (behind) { const { [id]: _, ...events } = state.events; forgot(id); set({ events }); }
         return actions.loadSession(id, behind).catch(gone(id));
       }));
     }

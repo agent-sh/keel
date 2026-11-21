@@ -4,6 +4,7 @@ import { TurnNotes } from "./MemoryNote.tsx";
 import { createContext, memo, startTransition, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { lineage } from "../../../src/core/tree.ts";
 import type { AssistantBlock, AttachmentBlock, ImageBlock, PromptBlock, Session, StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
+import { shownAsPrompt } from "../../../src/core/owner.ts";
 import { rowActions } from "../lib/extend.ts";
 import { blockKey, buildRows, nextLineage, nextSiblings, rowProbe, type Built, type LineageOf, type Row, type SiblingsOf } from "../lib/rows.ts";
 import { actions, api, forgetEvents, getState, keepEvents, liveNow, reportError, useStore, type DraftBlock } from "../lib/store.ts";
@@ -546,7 +547,7 @@ const TAIL = 150; // events rendered first when a long session opens
 
 // A prompt of the owner's, as the transcript shows one (not a note of the
 // harness, a system input or another session's message).
-const isPrompt = (e: StoredEvent) => e.kind === "user" && e.data.origin !== "restart" && e.data.origin !== "harness" && !SYSTEM_INPUT.has(e.data.kind) && !isPeerMessage(e);
+const isPrompt = shownAsPrompt;
 
 // Who stopped a turn, as the footer says it (a child's turn records the same actor as its agent card).
 const STOP_BY: Record<string, string> = { owner: " by you", parent: " by the parent agent", parent_turn: " with the parent's turn", time_limit: ": its time limit passed", parent_archived: ": its parent session was archived" };
@@ -826,14 +827,38 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     }, (e) => { if ((e as { status?: number }).status !== 404) reportError(e); }); // 404: an event of another session
   }, [want, events]);
 
-  // A prompt sent while an earlier part is read goes to the end: so does the transcript.
-  const seen = useRef(0);
+  // A prompt this page sends while an earlier part is read goes to the end,
+  // and so does the transcript. Nothing else moves the reader: not an agent's
+  // report, a wake or a peer's message, and not a prompt from another tab.
   useEffect(() => {
-    const from = seen.current;
-    seen.current = all?.at(-1)?.seq ?? 0;
-    if (!from || !earlier || !all) return;
-    for (let i = all.length - 1; i >= 0 && all[i]!.seq > from; i--) if (all[i]!.kind === "user" && !all[i]!.data.origin) return toEnd();
-  }, [all]);
+    if (!earlier) return;
+    const onSent = (e: Event) => { if ((e as CustomEvent<string>).detail === sessionId) toEnd(); };
+    addEventListener("keel:sent", onSent);
+    return () => removeEventListener("keel:sent", onSent);
+  }, [earlier, sessionId]);
+
+  // The browser's own Find reaches what is in the page, and the page holds a
+  // part of a long session: on its key, a note says so and offers the search
+  // that reads the whole conversation.
+  const partial = more || !!reading?.end;
+  const [findNote, setFindNote] = useState(false);
+  useEffect(() => {
+    if (!partial) return setFindNote(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() !== "f" || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+      // In the pane with the keys, or the only one.
+      const at = document.activeElement?.closest("[data-station]");
+      if (at && at !== scroller.current?.closest("[data-station]")) return;
+      setFindNote(true);
+    };
+    addEventListener("keydown", onKey);
+    return () => removeEventListener("keydown", onKey);
+  }, [partial]);
+  useEffect(() => {
+    if (!findNote) return;
+    const t = setTimeout(() => setFindNote(false), 12_000);
+    return () => clearTimeout(t);
+  }, [findNote]);
 
   // A search hit opens the session at its message.
   // The request is checked when the frame runs, before anything moves: one
@@ -867,10 +892,11 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     return () => cancelAnimationFrame(raf);
   }, [focus, events]);
 
-  // A long session opens at its end: its newest events render first, from the
-  // turn they belong to, and the rest join in a transition right after (input
-  // and streaming keep the main thread meanwhile). Everything ends up mounted,
-  // so the browser's find and a jump to any event still work.
+  // A session opens at its end: the newest rows of the part held render
+  // first, and the rest of that part join in a transition right after (input
+  // and streaming keep the main thread meanwhile). What the page holds ends
+  // up mounted, so the browser's find reaches it; the parts not held are read
+  // on scroll, on a jump, or by the app's own search.
   const [whole, setWhole] = useState(false);
   useEffect(() => setWhole(false), [sessionId]);
   const blocks = built?.blocks ?? [];
@@ -1019,10 +1045,10 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           </TailContext.Provider>
           {built.pending.length > 0 && <div className="flex" data-testid="pending-notes"><TurnNotes notes={built.pending} working={session.phase === "working"} /></div>}
           {reading?.end && (
-            <div className="flex items-center justify-center gap-1 py-1 text-caption text-faint" data-testid="later-messages" data-pinned="1">
+            // Clear of the Latest pill, which floats over the foot of the view while a part is read.
+            <div className="mb-10 flex items-center justify-center gap-1 py-1 text-caption text-faint" data-testid="later-messages" data-pinned="1">
               <span>Later messages are not shown here.</span>
               <button type="button" data-testid="load-later" onClick={later} className="h-7 rounded-md px-2 font-medium text-accent-ink hover:bg-accent-soft">Load later messages</button>
-              {earlier && <button type="button" data-testid="window-latest" onClick={() => toEnd(true)} className="h-7 rounded-md px-2 font-medium text-accent-ink hover:bg-accent-soft">Latest</button>}
             </div>
           )}
           <Live sessionId={sessionId} working={session.phase === "working"} asking={asking} since={lastStart?.ts} elsewhere={previewing ? "branch" : earlier ? "earlier" : null} />
@@ -1034,7 +1060,13 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           <span className="flex items-center gap-1 border-l border-line pl-2 font-normal text-faint" data-testid="prompt-place-back"><Kbd keys="escape" /> message box</span>
         </div>
       )}
-      {away && (
+      {findNote && (
+        <div role="status" data-testid="find-note" className="absolute left-1/2 top-3 z-10 flex max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-2 rounded-lg border border-line bg-raised px-3 py-1.5 text-caption text-muted shadow-2 animate-pop">
+          <span>Find in page reaches only the messages loaded here.</span>
+          <button type="button" data-testid="find-note-search" onClick={() => { setFindNote(false); setUI({ palette: true }); }} className="h-7 shrink-0 rounded-md px-2 font-medium text-accent-ink hover:bg-accent-soft">Search the whole conversation</button>
+        </div>
+      )}
+      {(away || earlier) && (
         <button
           type="button"
           onClick={() => toEnd(true)}

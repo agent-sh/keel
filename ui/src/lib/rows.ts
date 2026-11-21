@@ -232,3 +232,14 @@ export function nextLineage(prev: LineageOf | undefined, all: StoredEvent[], hea
   if (!out.length && head && prev?.out.length && prev.all[0] === all[0]) return { all, head: prev.head, out: prev.out };
   return { all, head, out };
 }
+
+// A list of a whole session a view keeps for itself (lib/whole.ts), with the
+// events the page holds after its last one. What the page lets go of later
+// stays in the list.
+export function grown(list: StoredEvent[], held: StoredEvent[] | undefined): StoredEvent[] {
+  const last = list.at(-1)?.seq ?? 0;
+  if (!held?.length || held.at(-1)!.seq <= last) return list;
+  let from = held.length;
+  while (from > 0 && held[from - 1]!.seq > last) from--;
+  return [...list, ...held.slice(from)];
+}

@@ -188,6 +188,104 @@ test("after a socket that closed inside its replay the transcripts are read whol
   expect(await answer("/api/sessions/g?events=0", snapshot(row("g", "g-e4"), undefined, 700))).toBe(true);
 });
 
+// A session that shows an older branch: its head is not its newest event (an
+// older version of a prompt is shown, a rewind, an undone clear). The page
+// holds the branch shown, so its last event is far below the session's newest.
+// Events 1 to 4 are the branch shown; 5 to 12 another branch from event 2.
+const older = (id: string) => {
+  const ev = (seq: number, parent: number | null, kind: StoredEvent["kind"] = "note"): StoredEvent =>
+    ({ id: `${id}-e${seq}`, session_id: id, seq, parent: parent ? `${id}-e${parent}` : null, kind, data: { text: `event ${seq}` }, ts: seq });
+  return { ev, shown: [ev(1, null), ev(2, 1), ev(3, 2), ev(4, 3)], head: `${id}-e4` };
+};
+const paged = (s: Session, events: StoredEvent[], seq: number, rev: number) => ({ ...snapshot(s, events, rev), seq, paged: true });
+const openPaged = async (s: Session, events: StoredEvent[], seq: number, rev: number, before?: () => Promise<void>) => {
+  listed = [...listed.filter((x) => x.id !== s.id), s];
+  const p = actions.loadSession(s.id);
+  await settle();
+  await before?.();
+  expect(await answer(`/api/sessions/${s.id}?page=${PAGE}`, paged(s, events, seq, rev))).toBe(true);
+  await p;
+};
+const shownIds = (id: string) => getState().events[id]!.map((e) => e.seq);
+
+test("a session that shows an older branch resumes from the session's newest seq, not its own last event", async () => {
+  const { ev, shown, head } = older("h");
+  await openPaged(row("h", head), shown, 12, 900);
+  await reconnect();
+  // The cursor is what the snapshot said the session's newest seq is.
+  expect(sock.sent[0]).toEqual({ op: "resume", cursors: expect.objectContaining({ h: 12 }) });
+  // A daemon that replayed from the page's own last event (4) would send 5 to
+  // 12 here: they are of the other branch, below the cursor, and are not taken.
+  for (let n = 5; n <= 12; n++) await frame({ t: "event", event: ev(n, n === 5 ? 2 : n - 1) });
+  expect(shownIds("h")).toEqual([1, 2, 3, 4]);
+  expect(getState().sessions.h!.head).toBe(head);
+  await frame({ t: "replayed", cursors: { h: 12 } });
+  await rest();
+  await answer("/api/sessions/h?events=0", { ...snapshot(row("h", head), undefined, 910), seq: 12 });
+  expect(getState().sessions.h!.head).toBe(head);
+  expect(shownIds("h")).toEqual([1, 2, 3, 4]);
+});
+
+test("a replayed event moves no head; the session's row after the replay says where it is", async () => {
+  const { ev, shown, head } = older("i");
+  await openPaged(row("i", head), shown, 12, 920);
+  await reconnect();
+  expect(sock.sent[0].cursors.i).toBe(12);
+  // While the page was away the other branch grew by one event; the session still shows the older branch.
+  await frame({ t: "event", event: ev(13, 12) });
+  expect(getState().sessions.i!.head).toBe(head);
+  // The replay ends with the row as the daemon has it.
+  await frame({ t: "session", session: row("i", head, { rev: 3 }), rev: 930 } as Frame);
+  await frame({ t: "replayed", cursors: { i: 13 } });
+  await rest();
+  await answer("/api/sessions/i?events=0", { ...snapshot(row("i", head, { rev: 3 }), undefined, 935), seq: 13 });
+  expect(getState().sessions.i!.head).toBe(head);
+  // The next reconnect resumes after it, and a live event (it has a rev) is the new head.
+  await reconnect();
+  expect(sock.sent[0].cursors.i).toBe(13);
+  await frame({ t: "replayed", cursors: { i: 13 } });
+  await rest();
+  await answer("/api/sessions/i?events=0", { ...snapshot(row("i", head, { rev: 3 }), undefined, 940), seq: 13 });
+  await frame({ t: "event", event: ev(14, 4), rev: 950 } as Frame);
+  expect(getState().sessions.i!.head).toBe("i-e14");
+  expect(shownIds("i")).toEqual([1, 2, 3, 4, 13, 14]);
+});
+
+test("events that come before the snapshot lands count toward the cursor, whichever comes first", async () => {
+  const { ev, shown, head } = older("j");
+  // The socket is ahead of the snapshot: a live event of the branch shown arrives while the request is out.
+  await openPaged(row("j", head), shown, 12, 960, async () => { await frame({ t: "event", event: ev(13, 4), rev: 965 } as Frame); });
+  expect(shownIds("j")).toEqual([1, 2, 3, 4, 13]);
+  await reconnect();
+  expect(sock.sent[0].cursors.j).toBe(13);
+  await frame({ t: "replayed", cursors: { j: 13 } });
+  await rest();
+  await answer("/api/sessions/j?events=0", { ...snapshot(row("j", "j-e13"), undefined, 970), seq: 13 });
+  // A part read meanwhile may bring an event before its frame: the frame is then not added again.
+  const p = actions.page("j", { head: "j-e15" });
+  await settle();
+  await answer(`/api/sessions/j/page?limit=${PAGE}&head=j-e15`, { events: [ev(14, 13), ev(15, 14)], head: "j-e15", first: "j-e14", last: "j-e15", start: false, end: true, on_head: true });
+  await p;
+  await frame({ t: "event", event: ev(14, 13), rev: 980 } as Frame);
+  await frame({ t: "event", event: ev(15, 14), rev: 981 } as Frame);
+  expect(shownIds("j")).toEqual([1, 2, 3, 4, 13, 14, 15]);
+  expect(getState().sessions.j!.head).toBe("j-e15");
+});
+
+test("a session a daemon answers whole (no page routes) is kept whole", async () => {
+  // Fourteen hundred events from a daemon that sends no `paged`: more than a paged session holds.
+  const events = Array.from({ length: 1400 }, (_, i) => event("w", i + 1));
+  await open(row("w", "w-e1400"), events, 990);
+  await frame({ t: "event", event: event("w", 1401), rev: 995 } as Frame);
+  expect(getState().events.w!.length).toBe(1401);
+  // The same session answered in parts is cut back to its newest part.
+  const part = events.slice(-1300);
+  await openPaged(row("x", "x-e1400"), part.map((e) => ({ ...e, id: e.id.replace("w-", "x-"), session_id: "x", parent: e.parent?.replace("w-", "x-") ?? null })), 1400, 996);
+  await frame({ t: "event", event: event("x", 1401), rev: 997 } as Frame);
+  expect(getState().events.x!.length).toBeLessThan(700);
+  expect(getState().events.x!.at(-1)!.seq).toBe(1401);
+});
+
 test("a session that outgrew what the page holds keeps its newest part", () => {
   // Three hundred turns of five events, and a second version of an early prompt on a side branch.
   const list: StoredEvent[] = [];

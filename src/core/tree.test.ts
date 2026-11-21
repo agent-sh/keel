@@ -1,7 +1,7 @@
 // A page of a branch (pageOf): which events a reader that holds a session in
 // parts is given for each way of asking.
 import { expect, test } from "bun:test";
-import { lineage, pageOf } from "./tree.ts";
+import { firstAt, lineage, pageOf, pageOfLine } from "./tree.ts";
 import type { StoredEvent } from "./types.ts";
 
 const all: StoredEvent[] = [];
@@ -62,4 +62,21 @@ test("an event of another branch is shown on the branch that grew from it", () =
   expect(p.events.map((e) => e.id)).toContain(second.id); // the other version
   expect(pageOf(all, head, { limit: 8, around: "nope" })).toBeNull();
   expect(pageOf(all, head, { limit: 8, head: "nope" })).toBeNull();
+});
+
+test("a page of a branch already walked is the page of the whole session, found by halving", () => {
+  const versions = (parent: string | null) => all.filter((e) => e.kind === "user" && !e.data.origin && e.parent === parent);
+  const ids = (p: { events: StoredEvent[] } | null) => p!.events.map((e) => e.id);
+  const from = main[120]!.seq;
+  for (const ask of [{ limit: 10 }, { limit: 10, before: from }, { limit: 10, after: from }, { limit: 1000, before: from }, { limit: 7, after: 0 }, { limit: 10, before: 1 }]) {
+    const whole = pageOf(all, head, ask)!;
+    const part = pageOfLine(main, ask, versions, head, true);
+    expect(ids(part)).toEqual(ids(whole));
+    expect({ ...part, events: 0 }).toEqual({ ...whole, events: 0 });
+  }
+  const at = firstAt(main, second.seq);
+  expect(main[at]).toBe(second);
+  expect(ids(pageOfLine(main, { limit: 8, at }, versions, head, true))).toEqual(ids(pageOf(all, head, { limit: 8, around: second.id })));
+  // An event of another branch is not on the session's: its seq falls between two of the branch's.
+  expect(main[firstAt(main, first.seq)]?.id).not.toBe(first.id);
 });

@@ -56,36 +56,35 @@ export type Page = {
   end: boolean; // the page reaches the branch's end
   on_head: boolean; // the branch is the session's own
 };
-export function pageOf(events: StoredEvent[], sessionHead: string | null, ask: PageAsk): Page | null {
+
+// Where the events with a seq of at least `seq` start on a branch (a branch
+// is in seq order: a parent is stored before its child).
+export function firstAt(line: readonly StoredEvent[], seq: number): number {
+  let lo = 0, hi = line.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (line[mid]!.seq >= seq) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
+}
+
+// The page of a branch already walked (the daemon keeps the session's own):
+// its edges are found by halving on seq and nothing outside it is read.
+// `at`: the place of the event a page is asked around. `versions`: the
+// owner's prompts stored under a parent.
+export function pageOfLine(line: readonly StoredEvent[], ask: { limit: number; before?: number; after?: number; at?: number }, versions: (parent: string | null) => readonly StoredEvent[], head: string | null, on_head: boolean): Page {
   const limit = Math.max(1, Math.floor(ask.limit) || 1);
-  let head = ask.head ?? sessionHead;
-  let line: StoredEvent[];
   let a: number, b: number;
-  if (ask.around) {
-    const main = lineage(events, sessionHead);
-    let i = main.findIndex((e) => e.id === ask.around);
-    line = main;
-    head = sessionHead;
-    if (i < 0) {
-      if (!events.some((e) => e.id === ask.around)) return null;
-      head = leafOf(events, ask.around);
-      line = lineage(events, head);
-      i = line.findIndex((e) => e.id === ask.around);
-    }
-    a = Math.max(0, i - (limit >> 1));
+  if (ask.at !== undefined) {
+    a = Math.max(0, ask.at - (limit >> 1));
+    b = Math.min(line.length, a + limit);
+  } else if (ask.after !== undefined) {
+    a = firstAt(line, ask.after + 1);
     b = Math.min(line.length, a + limit);
   } else {
-    line = lineage(events, head);
-    if (head && !line.length) return null;
-    if (ask.after !== undefined) {
-      a = line.findIndex((e) => e.seq > ask.after!);
-      if (a < 0) a = line.length;
-      b = Math.min(line.length, a + limit);
-    } else {
-      b = ask.before === undefined ? line.length : line.findIndex((e) => e.seq >= ask.before!);
-      if (b < 0) b = line.length;
-      a = Math.max(0, b - limit);
-    }
+    b = ask.before === undefined ? line.length : firstAt(line, ask.before);
+    a = Math.max(0, b - limit);
   }
   if (ask.after === undefined) {
     for (let k = a; k >= Math.max(0, a - limit); k--) {
@@ -94,14 +93,46 @@ export function pageOf(events: StoredEvent[], sessionHead: string | null, ask: P
   }
   const part = line.slice(a, b);
   const out = new Map(part.map((e) => [e.id, e]));
-  const parents = new Set(part.filter((e) => e.kind === "user" && !e.data.origin).map((e) => e.parent));
-  if (parents.size) for (const e of events) if (e.kind === "user" && !e.data.origin && parents.has(e.parent)) out.set(e.id, e);
+  for (const e of part) if (e.kind === "user" && !e.data.origin) for (const v of versions(e.parent)) out.set(v.id, v);
   // The newest events of the branch come with the start of its last turn (the reader's clock of a running turn).
-  const start = ask.around || ask.before !== undefined || ask.after !== undefined ? undefined : line.findLast((e) => e.kind === "turn_start");
-  if (start) out.set(start.id, start);
+  if (ask.at === undefined && ask.before === undefined && ask.after === undefined) {
+    for (let k = line.length - 1; k >= 0; k--) if (line[k]!.kind === "turn_start") { out.set(line[k]!.id, line[k]!); break; }
+  }
   return {
-    events: [...out.values()].sort((x, y) => x.seq - y.seq),
+    events: out.size === part.length ? part : [...out.values()].sort((x, y) => x.seq - y.seq),
     head, first: part[0]?.id ?? null, last: part.at(-1)?.id ?? null,
-    start: a === 0, end: b === line.length, on_head: head === sessionHead,
+    start: a === 0, end: b === line.length, on_head,
   };
+}
+
+// The same from every event of a session, for a branch nobody keeps (another
+// branch than the session's, an event of one): the branch is walked here.
+export function pageOf(events: StoredEvent[], sessionHead: string | null, ask: PageAsk): Page | null {
+  let head = ask.head ?? sessionHead;
+  let line: StoredEvent[];
+  let at: number | undefined;
+  if (ask.around) {
+    line = lineage(events, sessionHead);
+    head = sessionHead;
+    at = line.findIndex((e) => e.id === ask.around);
+    if (at < 0) {
+      if (!events.some((e) => e.id === ask.around)) return null;
+      head = leafOf(events, ask.around);
+      line = lineage(events, head);
+      at = line.findIndex((e) => e.id === ask.around);
+    }
+  } else {
+    line = lineage(events, head);
+    if (head && !line.length) return null;
+  }
+  // The versions of the prompts, grouped once when a prompt asks for them.
+  let by: Map<string | null, StoredEvent[]> | undefined;
+  const versions = (parent: string | null) => {
+    if (!by) {
+      by = new Map();
+      for (const e of events) if (e.kind === "user" && !e.data.origin) (by.get(e.parent) ?? by.set(e.parent, []).get(e.parent)!).push(e);
+    }
+    return by.get(parent) ?? [];
+  };
+  return pageOfLine(line, { limit: ask.limit, before: ask.before, after: ask.after, at }, versions, head, head === sessionHead);
 }

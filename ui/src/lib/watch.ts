@@ -21,10 +21,35 @@ export function useAgentCounts(): Record<string, number> {
 export const useAgentCount = (id: string | undefined) =>
   useAuto((x) => { let n = 0; if (id) for (const a of Object.values(x.agents)) if (a.parent_id === id && agentLive(a)) n++; return n; });
 
+// The branch the session shows, from the events the page holds of it. The
+// held list also has the other versions of the branch's prompts (and, for a
+// session read whole, every other branch), so its last event is not always
+// the branch's: a session's word and its last line are read from the branch.
+// Walked back from the head once per state of the list.
+const branches = new WeakMap<StoredEvent[], { head: string | null; line: StoredEvent[] }>();
+export function branchOf(events: StoredEvent[] | undefined, head: string | null | undefined): StoredEvent[] | undefined {
+  if (!events) return undefined;
+  const had = branches.get(events);
+  if (had && had.head === (head ?? null)) return had.line;
+  const out: StoredEvent[] = [];
+  let want = head ?? null;
+  for (let i = events.length - 1; i >= 0 && want; i--) {
+    const e = events[i]!;
+    if (e.id !== want) continue;
+    out.push(e);
+    want = e.parent;
+  }
+  // A head the page does not hold yet (its part is on its way): the list as it is.
+  const line = !out.length || out.length === events.length ? events : out.reverse();
+  branches.set(events, { head: head ?? null, line });
+  return line;
+}
+
 // A message this browser keeps because it was not sent, or nobody confirmed
 // it, waits for the owner like a question does: the session needs them.
 export function useWatch(s: Session | undefined): Watch {
-  const events = useStore((x) => (s ? x.events[s.id] : undefined));
+  const held = useStore((x) => (s ? x.events[s.id] : undefined));
+  const events = branchOf(held, s?.head);
   const n = useSafety((x) => (s ? x.approvals[s.id]?.length ?? 0 : 0));
   const asking = useStore((x) => !!s && !!(x.questionCalls[s.id]?.length || x.questionChildren[s.id]?.length));
   const unsent = useUnsent(s?.id);
@@ -47,7 +72,7 @@ export function useWatches(list: Session[]): Record<string, Watch> {
   const agents = useAgentCounts();
   useShelfVersion();
   const out: Record<string, Watch> = {};
-  for (const s of list) out[s.id] = sharedWatch(s, events[s.id], { approvals: approvals[s.id]?.length, asking: !!(calls[s.id]?.length || children[s.id]?.length || unsentOf(s.id)), agents: agents[s.id] });
+  for (const s of list) out[s.id] = sharedWatch(s, branchOf(events[s.id], s.head), { approvals: approvals[s.id]?.length, asking: !!(calls[s.id]?.length || children[s.id]?.length || unsentOf(s.id)), agents: agents[s.id] });
   return out;
 }
 
