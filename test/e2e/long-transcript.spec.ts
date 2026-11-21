@@ -180,3 +180,88 @@ test("a long session opens with its newest part and reads the rest as asked", as
     rmSync(state, { recursive: true, force: true });
   }
 });
+
+// The reader's place (the row at the top of the view, kept there while the
+// transcript changes size above it) is found by halving over the rows where
+// they are: a scroll reaches a handful of them, however many are mounted, and
+// never walks or copies the list.
+test("the reader's place is found by halving and holds under the branch banner", async ({ page }) => {
+  const { state, ids: [id] } = seeded("anchor", 3000, "turns", "Anchored");
+  const d = await daemon(state);
+  try {
+    const all = ((await (await fetch(`${d.url}/api/sessions/${id}/events`)).json()) as any).events as { id: string; kind: string; data: any }[];
+    // How the transcript's rows are reached: one at a time by index, or all of them walked.
+    await page.addInitScript(() => {
+      const w = window as any;
+      w.__rows = { item: 0, walked: 0 };
+      const mine = (c: HTMLCollection) => c[0]?.parentElement?.getAttribute("data-testid") === "transcript";
+      const item = HTMLCollection.prototype.item;
+      HTMLCollection.prototype.item = function (i: number) { if (mine(this)) w.__rows.item++; return item.call(this, i); };
+      const walk = (HTMLCollection.prototype as any)[Symbol.iterator];
+      (HTMLCollection.prototype as any)[Symbol.iterator] = function () { if (mine(this)) w.__rows.walked++; return walk.call(this); };
+    });
+    await page.goto(`${d.url}/s/${id}`);
+    await expect(page.getByTestId("compacted")).toBeVisible({ timeout: 30_000 });
+    const transcript = page.getByTestId("transcript");
+    const scroller = transcript.locator("xpath=..");
+    const mounted = () => transcript.evaluate((el) => el.children.length);
+    // One scroll by the reader is one lookup: the rows it reached (the fewest of three scrolls).
+    const lookup = async () => {
+      const seen: { item: number; walked: number }[] = [];
+      for (let i = 0; i < 3; i++) {
+        await page.evaluate(() => Object.assign((window as any).__rows, { item: 0, walked: 0 }));
+        await scroller.evaluate((el) => new Promise<void>((done) => {
+          el.addEventListener("scroll", () => requestAnimationFrame(() => done()), { once: true });
+          el.scrollTop -= 240;
+        }));
+        seen.push(await page.evaluate(() => ({ ...(window as any).__rows })));
+      }
+      return seen.sort((x, y) => x.item - y.item)[0]!;
+    };
+    const few = await mounted();
+    const first = await lookup();
+    // Eight times the rows, read in by keyboard.
+    while ((await mounted()) < few * 8) {
+      const n = await mounted();
+      await page.getByTestId("load-earlier").focus();
+      await page.keyboard.press("Enter");
+      await expect.poll(mounted).toBeGreaterThan(n);
+    }
+    const many = await mounted();
+    const second = await lookup();
+    expect(first.walked + second.walked).toBe(0);
+    expect(first.item).toBeGreaterThan(0);
+    expect(first.item).toBeLessThanOrEqual(Math.ceil(Math.log2(few)) + 5);
+    expect(second.item).toBeLessThanOrEqual(Math.ceil(Math.log2(many)) + 5);
+    expect(second.item - first.item).toBeLessThanOrEqual(4); // three halvings more for eight times the rows
+
+    // Another branch read in place: the banner sticks above the rows, and the
+    // prompt read keeps its place when an earlier part comes in above it.
+    const side = all.find((e) => e.kind === "user" && String(e.data.text).includes("(first version)"))!;
+    await expect.poll(async () => ((await (await fetch(`${d.url}/api/search?q=${encodeURIComponent('"first version"')}`)).json()) as any).hits?.some((h: any) => h.event_id === side.id), { timeout: 60_000 }).toBe(true);
+    await page.keyboard.press("Control+k");
+    await page.getByTestId("palette-input").fill('"first version"');
+    await page.getByRole("option").filter({ has: page.locator("mark") }).first().click();
+    const prompt = page.locator(`#e-${side.id}`);
+    await expect(prompt).toBeInViewport({ timeout: 30_000 });
+    await expect(page.getByTestId("branch-preview")).toBeVisible();
+    let release = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    await page.route(`**/api/sessions/${id}/page?*`, async (route) => { await gate; await route.fallback(); });
+    await scroller.evaluate((el) => el.scrollTo({ top: 0 }));
+    await expect(page.getByTestId("load-earlier")).toHaveText("Loading earlier messages");
+    const top = page.locator(`#${await page.getByTestId("user-message").first().getAttribute("id")}`);
+    const before = (await top.boundingBox())!.y;
+    const n = await mounted();
+    release();
+    await expect.poll(mounted).toBeGreaterThan(n);
+    await expect.poll(async () => Math.abs((await top.boundingBox())!.y - before)).toBeLessThan(2);
+    expect(await page.getByTestId("user-message").first().getAttribute("id")).not.toBe(await top.getAttribute("id")); // rows came in above it
+    await expect(page.getByTestId("branch-preview")).toBeInViewport();
+    await shoot(page, "long-transcript-07-place-kept-under-the-banner");
+  } finally {
+    d.proc.kill("SIGTERM");
+    await exited(d.proc);
+    rmSync(state, { recursive: true, force: true });
+  }
+});

@@ -668,14 +668,16 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     anchor.current = null;
     if (!el || !c || stick.current) return;
     const top = el.getBoundingClientRect().top;
-    // Rows stack in order: the first whose bottom is below the top, by halving.
-    const over = (all: HTMLCollection) => {
-      const list = [...all].filter((x) => !(x as HTMLElement).dataset.pinned); // the sticky branch banner does not scroll
-      let lo = 0, hi = list.length;
-      while (lo < hi) { const mid = (lo + hi) >> 1; if (list[mid]!.getBoundingClientRect().bottom > top + 1) hi = mid; else lo = mid + 1; }
-      return list[lo];
-    };
-    const row = over(c.children);
+    // Rows stack in order: the first whose bottom is below the top, by halving
+    // over the rows where they are (no copy of the list: a long transcript is
+    // scrolled through many times a second). What leads them and is no row
+    // (the sticky branch banner, the button for earlier messages) is passed
+    // over; it marks itself `data-pinned`.
+    const rows = c.children;
+    let lo = 0, hi = rows.length;
+    while (lo < hi && lo < 3 && (rows.item(lo) as HTMLElement).dataset.pinned) lo++;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (rows.item(mid)!.getBoundingClientRect().bottom > top + 1) hi = mid; else lo = mid + 1; }
+    const row = rows.item(lo);
     if (!row) return;
     let part: Element = row;
     // Down to the deepest block crossing the top (a paragraph of a tall reply):
