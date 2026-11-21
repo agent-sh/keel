@@ -10,6 +10,7 @@ import { SessionMap } from "../../core/session-map.ts";
 import type { Session, StoredEvent } from "../../core/types.ts";
 import { LinkError } from "../../fleet/link.ts";
 import { addNotice, cleanTerm } from "../../tools/jobs.ts";
+import { commandOf } from "../../core/command.ts";
 import { jobOfCall, listJobs, logPath, ownerNote, ownerRun, readJobLog, stopOne, TAIL, type TermJob } from "../../tools/terminal.ts";
 import type { RouteModule } from "../app.ts";
 import { fleet } from "./fleet.ts";
@@ -28,18 +29,7 @@ export type TermEntry = {
 const textOf = (c: unknown): string =>
   typeof c === "string" ? c : Array.isArray(c) ? c.map((b: any) => (b?.type === "text" ? b.text : b?.type === "image" ? "[image]" : "")).join("\n") : "";
 
-// The command of a tool call, from its input's shape (every family's shell and
-// keel__run_on carry `command` or `cmd`).
-export function commandOf(input: any): string | null {
-  const c = input?.command ?? input?.cmd;
-  if (typeof c === "string" && c.trim()) return c;
-  if (Array.isArray(c) && c.length && c.every((x) => typeof x === "string")) {
-    const [sh = "", flag = "", script = ""] = c as string[];
-    if (c.length === 3 && /(^|\/)(ba|z)?sh$/.test(sh) && /^-l?c$/.test(flag)) return script;
-    return c.join(" ");
-  }
-  return null;
-}
+export { commandOf };
 
 const EXIT = /(?:exit(?:ed with)? code|Exit code:?|Process exited with code)\s*(-?\d+)/i;
 
