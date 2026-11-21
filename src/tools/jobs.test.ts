@@ -160,6 +160,17 @@ test("a command reaches the shell as written: its own braced variables and exit 
   expect(j.exitCode).toBe(7);
 });
 
+test("a session's command gets no pager, whichever tool starts it and with a terminal too", async () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? ".", "jobs-"));
+  const command = 'echo "$PAGER/$GIT_PAGER/$SYSTEMD_PAGER/$DPKG_PAGER/$MANPAGER"';
+  // The default environment, one a tool hands over, and a terminal: none may bring a pager back.
+  for (const o of [{}, { env: { ...(process.env as Record<string, string>), PAGER: "less", GIT_PAGER: "less" } }, { pty: true }]) {
+    const j = startJob({ sessionId: "s-pager", command, cwd: root, logDir: join(root, "spill/s-pager/jobs"), ...o });
+    expect(await waitJob(j, 10000)).toBe(true);
+    expect(takeUnread(j).trim()).toBe("cat/cat/cat/cat/cat");
+  }
+});
+
 test("a command does not get the daemon's own supervision settings", () => {
   const keep = { ...process.env };
   Object.assign(process.env, { KEEL_SUPERVISED: "systemd", KEEL_DRAIN_MS: "600000", KEEL_GH_BIN: "/x/gh" });

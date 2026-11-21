@@ -24,6 +24,8 @@ export type Look = (dir: string) => RepoFacts | null;
 // a session's own work, whatever the remote's default is.
 const PROTECTED = /^(main|master|trunk|develop|development|dev|default|stable|staging|production|prod|live|gh-pages|release|releases)$|^(release|releases|hotfix|production|prod|deploy)[/-]/;
 
+// A path without the slashes that end it. No pattern: one that tries every slash as a start takes the square of a long run of them.
+const unslashed = (p: string) => { let n = p.length; while (n > 0 && p[n - 1] === "/") n--; return p.slice(0, n); };
 const expand = (p: string, home: string) => (p === "~" ? home : p.startsWith("~/") ? home + p.slice(1) : p.replace(/^\$\{?HOME\}?(?=\/|$)/, home));
 const literal = (p: string) => !/[$`*?[\]{}]/.test(p) && !p.startsWith("~") || /^~(\/[^$`*?[\]{}]*)?$/.test(p);
 
@@ -170,7 +172,7 @@ export function preAllow(command: Simple[], cwd: string, home: string, look: Loo
 const ROOTS = ["/", "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib32", "/lib64", "/opt", "/proc", "/root", "/sbin", "/srv", "/sys", "/usr", "/var", "/Users", "/System", "/Library", "/Applications"];
 
 // Where a credential lives (private keys, tokens, cloud and registry logins, the keyring).
-const CRED_PATH = /(^|[\s'"=@:/])(?:~|\$\{?HOME\}?|\/home\/[^/\s]+|\/Users\/[^/\s]+|\/root)?\/?\.(?:ssh(?![^\s'"]*\.pub\b)(?:\/[^\s'"]*)?(?=$|[\s'"])|aws\/credentials|aws\/config|netrc|git-credentials|docker\/config\.json|kube\/config|config\/gh\/hosts\.yml|npmrc|pypirc|gnupg\b[^\s'"]*|config\/gcloud[^\s'"]*|azure[^\s'"]*|password-store[^\s'"]*)|\/etc\/(shadow|gshadow|sudoers)\b|\bid_(rsa|ed25519|ecdsa|dsa)\b(?!\.pub)/;
+const CRED_PATH = /(^|[\s'"=@:/])(?:~|\$\{?HOME\}?|\/home\/[^/\s]+|\/Users\/[^/\s]+|\/root)?\/?\.(?:ssh(?![^\s'"]{0,300}\.pub\b)(?:\/[^\s'"]*)?(?=$|[\s'"])|aws\/credentials|aws\/config|netrc|git-credentials|docker\/config\.json|kube\/config|config\/gh\/hosts\.yml|npmrc|pypirc|gnupg\b[^\s'"]*|config\/gcloud[^\s'"]*|azure[^\s'"]*|password-store[^\s'"]*)|\/etc\/(shadow|gshadow|sudoers)\b|\bid_(rsa|ed25519|ecdsa|dsa)\b(?!\.pub)/;
 const CRED_PROGRAM = /^(secret-tool|security|pass|gpg|keyring|op|bw|vault|aws-vault)$/;
 const KEY_USERS = new Set(["ssh", "scp", "sftp", "rsync", "ssh-add", "ssh-keygen", "ssh-copy-id", "git", "chmod", "chown", "ls", "stat", "test", "["]);
 const INTERPRETERS = /^(python3?|node|perl|ruby|bun|deno|php)$/;
@@ -195,7 +197,7 @@ export function neverAllowed(command: Simple[], cwd: string, home: string): stri
       const recursive = a.some((x) => /^-[a-zA-Z]*[rR]/.test(x) || x === "--recursive") || p === "shred";
       if (a.includes("--no-preserve-root")) return "deletes the root directory";
       for (const t of a.filter((x) => !x.startsWith("-"))) {
-        const e = expand(t.replace(/\/\*$/, "").replace(/\/+$/, "") || "/", home);
+        const e = expand(unslashed(t.endsWith("/*") ? t.slice(0, -2) : t) || "/", home);
         if (/[$`]/.test(e)) continue;
         const abs = isAbsolute(e) ? resolve(e) : dir ? resolve(dir, e) : null;
         if (recursive && abs && homeAndUp(abs)) return `deletes ${abs === home ? "the home directory" : abs} recursively`;
@@ -203,7 +205,7 @@ export function neverAllowed(command: Simple[], cwd: string, home: string): stri
     }
     if (p && (/^mkfs/.test(p) || p === "wipefs" || p === "fdisk" || p === "sfdisk" || p === "parted" || p === "sgdisk")) return "formats or repartitions a disk";
     if (p === "dd" && a.some((x) => /^of=\/dev\/(?!(null|stdout|stderr)$)/.test(x))) return "writes a raw device";
-    if ((p === "chmod" || p === "chown") && a.some((x) => /^-[a-zA-Z]*R/.test(x)) && a.some((x) => { const e = expand(x.replace(/\/+$/, "") || "/", home); return isAbsolute(e) && homeAndUp(resolve(e)); }))
+    if ((p === "chmod" || p === "chown") && a.some((x) => /^-[a-zA-Z]*R/.test(x)) && a.some((x) => { const e = expand(unslashed(x) || "/", home); return isAbsolute(e) && homeAndUp(resolve(e)); }))
       return "changes ownership or modes of a whole system or home tree";
     if (p && SENDERS.has(p)) sends = true;
     // Code given to an interpreter on the command line that talks to the network.
@@ -230,8 +232,13 @@ function sudoBody(args: string[]): string[] {
 export function neverAllowedText(command: string, home: string): string | null {
   const t = command.replace(/\\\n/g, " ");
   const h = home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  if (new RegExp(`(^|[;&|(\\s])(sudo\\s+)?rm\\s+(-[a-zA-Z]*[rR][a-zA-Z]*\\s+)+(-\\S+\\s+)*("|')?(/|/\\*|~/?|~/\\*|\\$\\{?HOME\\}?/?|${h}/?)("|')?(\\s|$|;|&)`).test(t)) return "deletes a root or home directory recursively";
+  // rm, its options, then a root or the home. The options are taken as words and looked at afterwards: a pattern
+  // that looked for the r inside them could match the same letters two ways, and take the square of a long word.
+  const rm = new RegExp(`(?:^|[;&|(\\s])(?:sudo\\s+)?rm\\s+((?:-\\S+\\s+)+)(?:"|')?(?:/|/\\*|~/?|~/\\*|\\$\\{?HOME\\}?/?|${h}/?)(?:"|')?(?:\\s|$|;|&)`, "g");
+  for (const m of t.matchAll(rm))
+    if (m[1]!.split(/\s+/).some((o) => o === "--recursive" || (/^-[a-zA-Z]+$/.test(o) && /[rR]/.test(o)))) return "deletes a root or home directory recursively";
   if (/(^|[;&|\s])(sudo\s+)?(mkfs[.\w]*|wipefs|fdisk|sfdisk|parted)\s/.test(t)) return "formats or repartitions a disk";
-  if (/(^|[;&|\s])dd\s[^;&|]*of=\/dev\/(?!(null|stdout|stderr)\b)/.test(t)) return "writes a raw device";
+  // dd with a device as its output, looked for in each command of the line apart.
+  for (const part of t.split(/[;&|]/)) if (/(^|\s)dd\s/.test(part) && /of=\/dev\/(?!(null|stdout|stderr)\b)/.test(part)) return "writes a raw device";
   return null;
 }

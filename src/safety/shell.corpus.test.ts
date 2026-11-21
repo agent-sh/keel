@@ -214,6 +214,14 @@ const CHANGES: string[] = [
   // A program that runs its operand on one system and prints on another; a device cache file; a replacement in the command's own name.
   "rustc x.rs", "cargo run", "arch -arm64 rm x", "arch rm x", "arch -x86_64 sh -c 'touch f'", "lsof -D b/tmp/dcache", "lsof -nD u", "echo touch | xargs -I ls ls out", "ls | xargs -I l ls -la",
   "ls | xargs --replace=cat cat", "read http_proxy <<< http://203.0.113.9; git log", "read histchars <<< x", "read -r auto_resume <<< 1",
+  // A name bound without an assignment word: a loop's variable, a descriptor's variable, a default that assigns.
+  "for PATH in .; do ls; done", "for PATH in .; do node --version; done", "select PATH in .; do ss -tuln; done", "for LD_LIBRARY_PATH in ./lib; do xxd a; done",
+  "for HOME in ./h; do zsh --version; done", "for http_proxy in x; do git log; done", "for IFS in /; do ls; done", "for histchars in x; do ls; done", ": {PATH}<a; ls", "ls {PATH}< a",
+  "exec {fd}<a", ": ${LD_PRELOAD:=./x.so}; ls", ": ${PATH:=.}; ls", 'echo "${HOME:=/tmp/x}"; ls', ": ${http_proxy=x}; git log", "while read PATH; do ls; done < a",
+  "for ((PATH=1;;)); do ls; done", "for PATH; do ls; done", "if true; then for PATH in .; do ls; done; fi", "for PATH in .\ndo ls; done", "mapfile -t PATH < a; ls", "getopts a PATH; ls",
+  "declare PATH=.; ls", "let PATH=1; ls", "coproc PATH { cat; }; ls", "local PATH=.; ls", "readonly PATH=.; ls", "typeset -x PATH=.; ls",
+  // A function named like a reader: its body is judged wherever it is defined, in a subshell or a pipeline too.
+  "(ls() { rm x; }); ls", "true | ls() { rm x; }; ls", "ls() { rm x; } | cat; ls", "cat() { touch f; } && cat a", "for f in a; do wc() { rm x; }; done; wc a",
 ];
 
 // Reads the rules could prove, as they are written every day.
@@ -286,7 +294,7 @@ const READS: string[] = [
   "zcat a.gz | head", "bzcat a.bz2", "xzcat a.xz", "gzip -dc a.gz | head", "gzip -l a.gz", "gzip -t a.gz", "gunzip -c a.gz", "zstdcat a.zst", "tar tf a.tar", "tar -tzf a.tgz",
   "tar tvf a.tar", "tar --list --file=a.tar", "tar -tf a.tar a", "unzip -l a.zip", "unzip -t a.zip", "zipinfo a.zip", "dpkg -l | head", "dpkg -L bash | head", "dpkg -s bash", "dpkg -S /bin/ls",
   "dpkg-query -W bash", "apt list --installed | head", "apt show bash", "apt-cache policy bash", "apt-cache search json",
-  "docker ps", "docker ps -a --format '{{.Names}}'", "docker images", "docker version", "docker info", "docker inspect x", "docker logs --tail 20 x", "docker image ls", "docker container ls -a",
+  "docker ps", "docker ps -a --format '{{.Names}}'", "docker images", "docker version", "docker inspect x", "docker logs --tail 20 x", "docker image ls", "docker container ls -a",
   "docker volume ls", "docker network ls", "docker system df", "docker --version", "docker top x -o pid", "docker logs -ft --since 1h x", "docker ps -aq --filter status=running",
   "docker inspect -f '{{.Id}}' x", "docker stats --no-stream --format '{{.Name}}'", "systemctl status sshd", "systemctl --user status x", "systemctl list-units | head",
   "systemctl list-units --type=service --state=running", "systemctl is-active sshd", "systemctl show sshd -p ActiveState", "systemctl cat sshd", "systemctl list-timers --all", "systemctl --version",
@@ -313,6 +321,9 @@ const READS: string[] = [
   "ss -tn src 127.0.0.1:8080", "ss --numeric --listening --tcp", "netstat -an", "netstat -rn", "netstat --numeric --tcp", "netstat -nlt", "lsof -i @127.0.0.1:80", "lsof -nP -iTCP -sTCP:LISTEN",
   "lsof -p 1", "lsof +D src", "who -a", "gzip -c a", "gzip -cd a.gz", "gzip -ck a", "gzip -c -- a", "gzip -tv a.gz", "gzip --stdout --best a", "gunzip -cf a.gz", "xxd -s -2 a", "xxd -c 8 -g 1 a",
   "xxd -- a", "xxd -r a.hex", "xxd -p -l 4 a", "git log -h", "git status -h", "ls | xargs -I{} cat {}", "pip_cache=x; echo $pip_cache",
+  // A loop over a plain name, a default into one, addresses the platform's own parser takes.
+  "for x in 1 2; do ss -tuln; done", "select x in a b; do echo $x; done", ": ${x:=1}; echo $x", "ss dst '[2001:db8::1]'", "ss src '[::ffff:10.0.0.1]:443'", "ip route get ::1",
+  "ip route get 10.0.0.1 from 10.0.0.2", "ip addr show to 10.0.0.0/8", "ip -6 route show to 2001:db8::/32", "ip route show to default", "lsof -n -i '@[::1]:80'", "lsof -nP -i TCP@10.0.0.1:443",
 ];
 
 // Reads the rules cannot prove: an expansion among the arguments of a program
@@ -338,7 +349,12 @@ const REACHES: string[] = [
   // A name where an address goes is sent to the name server; so is every address the tool prints unless it is told to print numbers.
   "ss dst example.com", "ss -a K", "ss p", "ss -F a", "ss --filter=a", "ss -r", "ss sport = :ssh", "ss dst 999.999.1.1", "ss -N x", "ss dst 10.0.0.1 or dst example.com", "ss -f inet dst a.example",
   "ss '( dst example.com )'", "netstat -g", "netstat -r", "netstat -a", "netstat -p -n", "netstat", "netstat -an tcp", "who --lookup", "who --loo", "lsof -i @example.com",
-  "lsof -n -i TCP@example.com:80", "lsof -i@[example.com]", "curl --version", "wget --version", "docker ps -H tcp://203.0.113.9", "docker --version --host x", "docker top x -H tcp://203.0.113.9", "docker inspect --output out x", "docker ps --forma=x", "docker images -o out",
+  "lsof -n -i TCP@example.com:80", "lsof -i@[example.com]", "curl --version", "wget --version",
+  // A word of hex digits, a short dotted number or a zone is not an address: the tool would ask the name server for it.
+  "ss dst '[deadbeef]'", "ss -n dst '[a1b2c3d4e5f6]'", "ss dst '[a:b]'", "ss state established dst '[fade]:80'", "ss dst 1.2.3", "ss dst '[fe80::1%eth0]'", "ss dst '[1.2.3.4]'", "ss dst 1.2.3.4.5",
+  "lsof -i '@[deadbeef]'", "lsof -i @1.2", "lsof -i '@[::1'", "ip route get deadbeef", "ip addr show to example.com", "ip route get 10.0.0.1 from example.com", "ip route show via fade",
+  // docker info runs the plugin files of the home folder; pip reads a configuration and Python's startup files that can make it write.
+  "docker info", "docker system info", "pip show pip", "pip freeze", "pip --version", "pip3 show -f pip", "pip freeze --local", "docker ps -H tcp://203.0.113.9", "docker --version --host x", "docker top x -H tcp://203.0.113.9", "docker inspect --output out x", "docker ps --forma=x", "docker images -o out",
   // A manual page or a pager: on a terminal it runs commands typed into it. With -w it is a browser.
   "git help log", "git help -a", "man ls", "less a", "more a", "git log --help", "git diff --help -w", "git var --help --web", "git stash list --help", "git branch --help", "git status --help",
   "git -C x log --help", "git cherry --help -w",
@@ -353,8 +369,7 @@ const REACHES: string[] = [
 // is the program itself, and asked about where it does not say (a shim installs what a project pins).
 const REAL: string[] = [
   "node --version", "node -v", "bun --version", "bun -v", "python3 --version", "python --version", "python3 -V", "uv --version", "ruby --version", "gcc --version", "g++ --version",
-  "cc --version", "clang --version", "clang++ --version", "make --version", "cmake --version", "cargo --version", "rustc -V", "pip show pip", "pip freeze", "pip --version", "pip3 show -f pip",
-  "pip freeze --local", "pip show -v pip setuptools", "node --version && bun --version", "python3 --version 2>&1",
+  "cc --version", "clang --version", "clang++ --version", "make --version", "cmake --version", "cargo --version", "rustc -V", "node --version && bun --version", "python3 --version 2>&1",
 ];
 
 test("a command that changes something is never read as a read", () => {

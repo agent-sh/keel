@@ -17,6 +17,17 @@
 //     only numbers are let through.
 // A read may never end (yes, sleep 1d, journalctl -f, vmstat 1): it runs until
 // the tool's timeout, as tail -f always did.
+//
+// Every pattern here is applied to words a model wrote, on the daemon's main
+// thread: none has two quantified parts that can match the same characters
+// (shell-linear.test.ts times each entry on words of 100,000 characters).
+import { isIPv4, isIPv6 } from "node:net";
+
+// Whether a text is an address in numbers, by the platform's own parsers: IPv4 with all four parts, or IPv6
+// without a zone. What is not one, a program may hand to the name server.
+export const numeric = (host: string) => isIPv4(host) || (isIPv6(host) && !host.includes("%"));
+// The same with a prefix length after a slash (10.0.0.0/8, 2001:db8::/32).
+const numericPrefix = (t: string) => { const [host, len, more] = t.split("/"); return more === undefined && numeric(host!) && (len === undefined || /^\d{1,3}$/.test(len)); };
 
 // How a program is judged:
 // - true: nothing it can be given writes, runs or sends (its options only
@@ -95,7 +106,8 @@ function tarLists(args: string[]): boolean {
 // After `--` every word is a file.
 const GZIP_FLAG = /^(-[cdfklnNqrtv1-9]+|--(stdout|to-stdout|list|test|decompress|uncompress|keep|force|verbose|quiet|no-name|name|recursive|fast|best))$/;
 function gzipKeeps(args: string[]): boolean {
-  if (!/^(-[cdfklnNqrtv1-9]*[clt][cdfklnNqrtv1-9]*|--(stdout|to-stdout|list|test))$/.test(args[0] ?? "")) return false;
+  const first = args[0] ?? "";
+  if (!(/^-[cdfklnNqrtv1-9]+$/.test(first) && /[clt]/.test(first)) && !/^--(stdout|to-stdout|list|test)$/.test(first)) return false;
   for (const a of args) {
     if (a === "--") return true;
     if (a.startsWith("-") && a !== "-" && !GZIP_FLAG.test(a)) return false;
@@ -106,12 +118,27 @@ function gzipKeeps(args: string[]): boolean {
 // ss(8): -K closes sockets, -D FILE writes a dump, -F FILE reads a filter, -r and any word of a filter that is
 // not a keyword or a number are looked up on the name server (ss dst NAME sends NAME there), -N enters another
 // network namespace. Let through: the options below, -f and -A with their value, and a filter made of the state
-// keywords, numeric addresses after src and dst, and numeric ports after sport and dport.
+// keywords, addresses in numbers after src and dst, and port numbers after sport and dport.
 const SS_FLAG = /^(-[HOnaloempTis460tudwxS]+|--(no-header|oneline|numeric|all|listening|options|extended|memory|processes|threads|info|summary|ipv4|ipv6|packet|tcp|udp|dccp|raw|unix|sctp|mptcp|version)|--(family|query)=[a-z0-9_,]+)$/;
 const SS_STATE = /^(all|connected|synchronized|bucket|big|established|syn-sent|syn-recv|fin-wait-1|fin-wait-2|time-wait|closed|close-wait|last-ack|listening|closing)$/;
-const OCTET = "(25[0-5]|2[0-4]\\d|1?\\d?\\d)";
-// An IPv4 address or prefix, an IPv6 one in brackets or `*`, with a port number; or a port number alone.
-const SS_ADDR = new RegExp(`^((${OCTET}(\\.${OCTET}){0,3}|\\[[0-9a-fA-F:]+\\]|\\*)(/\\d{1,3})?(:\\d{1,5})?|:\\d{1,5})$`);
+// What stands after src and dst: an IPv4 address, an IPv6 one in brackets or `*`, then a prefix length and a
+// port number; or a port number alone. The address itself is decided by `numeric`, never by a pattern here.
+function ssAddress(t: string): boolean {
+  let host = t;
+  let rest = "";
+  if (t.startsWith("[")) {
+    const close = t.indexOf("]");
+    if (close < 0) return false;
+    host = t.slice(1, close);
+    rest = t.slice(close + 1);
+    if (!isIPv6(host) || host.includes("%")) return false;
+  } else {
+    const cut = t.search(/[/:]/);
+    if (cut >= 0) { host = t.slice(0, cut); rest = t.slice(cut); }
+    if (host === "" ? !/^:\d{1,5}$/.test(rest) : host !== "*" && !isIPv4(host)) return false;
+  }
+  return /^(\/\d{1,3})?(:\d{1,5})?$/.test(rest);
+}
 function ssReads(args: string[]): boolean {
   let i = 0;
   for (; i < args.length && args[i]!.startsWith("-"); i++) {
@@ -124,7 +151,7 @@ function ssReads(args: string[]): boolean {
     const t = filter[k]!;
     if (/^(and|or|not|[()!&|]|&&|\|\|)$/.test(t)) continue;
     if (t === "state" || t === "exclude") { if (!SS_STATE.test(filter[++k] ?? "")) return false; }
-    else if (t === "src" || t === "dst") { if (!SS_ADDR.test(filter[++k] ?? "")) return false; }
+    else if (t === "src" || t === "dst") { if (!ssAddress(filter[++k] ?? "")) return false; }
     else if (t === "sport" || t === "dport") {
       if (/^(=|==|!=|eq|ne|neq|gt|ge|geq|lt|le|leq|[<>]=?)$/.test(filter[k + 1] ?? "")) k++;
       if (!/^:?\d{1,5}$/.test(filter[++k] ?? "")) return false;
@@ -138,7 +165,14 @@ function ssReads(args: string[]): boolean {
 // letters are read up to the first that takes a value; the rest of the word is that value.
 function lsofReads(args: string[]): boolean {
   for (const a of args) {
-    for (const m of a.matchAll(/@(\[[^\]]*\]|[^:]*)/g)) if (!SS_ADDR.test(m[1]!) || m[1] === "*") return false;
+    const at = a.indexOf("@");
+    if (at >= 0) {
+      // The host is what follows the @, up to the port; an IPv6 address stands in brackets.
+      const close = a.indexOf("]", at);
+      const bracketed = a[at + 1] === "[";
+      const host = bracketed ? a.slice(at + 2, close < 0 ? a.length : close) : a.slice(at + 1).split(":")[0]!;
+      if (bracketed ? !isIPv6(host) || host.includes("%") || close < 0 : !isIPv4(host)) return false;
+    }
     if (!a.startsWith("-")) continue;
     for (const c of a.slice(1)) {
       if (c === "D") return false;
@@ -146,16 +180,6 @@ function lsofReads(args: string[]): boolean {
     }
   }
   return true;
-}
-
-// pip(1): show and freeze read the environment; list asks the index for a newer pip and keeps the answer. optparse
-// takes cut-short options (pip show --local x is --local-log x and writes x), so each subcommand's own options
-// are matched whole.
-const PIP_FLAG: Record<string, RegExp> = { show: /^(-f|--files|-v|--verbose)$/, freeze: /^(-l|--local|--user|--all)$/ };
-function pipReads(args: string[]): boolean {
-  if (args.length === 1 && /^(--version|-V)$/.test(args[0]!)) return true;
-  const flag = Object.hasOwn(PIP_FLAG, args[0] ?? "") ? PIP_FLAG[args[0]!]! : null;
-  return !!flag && args.slice(1).every((a) => (a.startsWith("-") ? flag.test(a) : args[0] === "show"));
 }
 
 // ip(8): OBJECT with no command, or show, list, lst, get. Every object also
@@ -167,19 +191,25 @@ function ipShows(args: string[]): boolean {
     if (!/^-(4|6|0|br|brief|c|color|j|json|p|pretty|s|stats|statistics|d|details|o|oneline|h|human|human-readable|iec)$/.test(args[i]!)) return false;
     i++;
   }
-  const [object, command] = args.slice(i);
+  const [object, command, ...rest] = args.slice(i);
   if (!object || !/^(a|addr|address|l|link|r|ro|route|n|neigh|neighbor|neighbour|ru|rule|maddr|maddress)$/.test(object)) return false;
-  return command === undefined || /^(show|list|lst|sh)$/.test(command) || (command === "get" && /^r/.test(object));
+  if (command === undefined) return true;
+  if (!/^(show|list|lst|sh)$/.test(command) && !(command === "get" && /^r/.test(object))) return false;
+  // Where an address goes, an address in numbers. ip itself looks no name up; this keeps it so.
+  const address = (t: string | undefined) => t !== undefined && (/^(default|all|any)$/.test(t) || numericPrefix(t));
+  if (command === "get" && !address(rest[0])) return false;
+  return rest.every((t, k) => !/^(to|from|via|src|root|match|exact)$/.test(t) || address(rest[k + 1]));
 }
 
 // docker(1): the subcommands that list or print, each option matched whole: the ones below choose and format
 // what is printed, and none names a file. -H, --host, --context and --config choose another daemon and are
 // refused before the subcommand and after it. `docker top` hands what follows the container to ps. `docker
 // compose` is not here: loading a project can fetch what its file includes from a registry or a git remote.
-const DOCKER_SUB = /^(ps|images|version|info|inspect|logs|top|port|history|diff|stats)$/;
+// Nor is `docker info`: it runs every plugin file under ~/.docker/cli-plugins to describe it.
+const DOCKER_SUB = /^(ps|images|version|inspect|logs|top|port|history|diff|stats)$/;
 const DOCKER_GROUP: Record<string, RegExp> = {
   image: /^(ls|list|inspect|history)$/, container: /^(ls|list|ps|inspect|logs|top|port|diff|stats)$/, volume: /^(ls|list|inspect)$/,
-  network: /^(ls|list|inspect)$/, context: /^(ls|list|show|inspect)$/, system: /^(df|info)$/,
+  network: /^(ls|list|inspect)$/, context: /^(ls|list|show|inspect)$/, system: /^df$/,
 };
 const DOCKER_FLAG = /^(-[aflnqstv]+|--(all|latest|no-trunc|quiet|size|digests|tree|details|follow|timestamps|no-stream|human|verbose)|--(filter|format|last|since|tail|until|type)(=.*)?)$/;
 const dockerReads = (args: string[]) => {
@@ -228,7 +258,9 @@ function readsNames(args: string[]): boolean {
 // download or run the version a project pins), npm (every npm command writes
 // a log under ~/.npm), java (it writes hsperfdata under the temporary
 // folder), gh (it writes a device id under ~/.local/state on its first run),
-// curl (it opens a socket to the name server).
+// curl (it opens a socket to the name server), pip (a pip.conf can name a log
+// file and Python runs the startup files of the environment it finds, which
+// may be one inside the workspace).
 const version = (...flags: string[]) => (args: string[]) => args.length === 1 && flags.includes(args[0]!);
 
 export const READERS = new Map<string, Reader>([
@@ -315,7 +347,6 @@ export const SHIMMED = new Map<string, (args: string[]) => boolean>([
   ...["node", "bun"].map((p): [string, (args: string[]) => boolean] => [p, version("--version", "-v")]),
   ...["python", "python3", "uv", "cargo", "rustc"].map((p): [string, (args: string[]) => boolean] => [p, version("--version", "-V")]),
   ...["ruby", "gcc", "g++", "cc", "clang", "clang++", "make", "cmake"].map((p): [string, (args: string[]) => boolean] => [p, version("--version")]),
-  ["pip", pipReads], ["pip3", pipReads],
 ]);
 
 // The readers that are programs on disk (not shell builtins): what xargs and find -exec can run.

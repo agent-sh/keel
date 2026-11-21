@@ -15,8 +15,8 @@ import { preAllow } from "./autonomy.ts";
 import { lookRepo, repoContext } from "./repofacts.ts";
 import { confine } from "./sandbox.ts";
 import { detect, placeholdersIn, vault } from "./secrets.ts";
-import { realProgram } from "./shims.ts";
-import { readOnlyCommand, splitCommand } from "./shell.ts";
+import { realPrograms } from "./shims.ts";
+import { readOnlyCommand, shimmedPrograms, splitCommand } from "./shell.ts";
 import { report, watch, type Watch } from "./refwatch.ts";
 import { configDir } from "../providers/config.ts";
 import { artifactsDir, contains, realOf } from "../core/paths.ts";
@@ -381,13 +381,15 @@ export class Gate {
     return { workspace: realOf(session.workspace), scratch: session.machine ? [] : [realOf(artifactsDir(this.store.stateDir, root.id))] };
   }
 
-  private evaluate(session: Session, name: string, cls: CallClass, bind?: string): Decision {
+  // `real`: for a command that names a program a version manager may stand in for, whether each such name is
+  // the program itself here (see `shimmed`). Without it those forms ask.
+  private evaluate(session: Session, name: string, cls: CallClass, bind?: string, real?: (program: string) => boolean): Decision {
     const p = this.perm(session.id);
     const { workspace, scratch } = this.scope(session);
     const edit = cls.kind === "edit";
     let own: { home: string; config: string[]; land: (p: string) => string[] } | undefined;
     return decide(cls, {
-      mode: p.mode, workspace: edit ? workspace : session.workspace, sandboxed: this.sandboxed(session, p), rules: this.rules(session), tool: name, bind, scratch, real: session.machine ? undefined : realProgram,
+      mode: p.mode, workspace: edit ? workspace : session.workspace, sandboxed: this.sandboxed(session, p), rules: this.rules(session), tool: name, bind, scratch, real,
       // What Keel itself runs things from: a change there is the owner's alone
       // (on this machine's disk). With it, the scripts the owner's hooks and a
       // pinned repository's hooks run: no pin holds one outside .keel/. Read
@@ -397,6 +399,18 @@ export class Gate {
         land: (x: string) => [...new Set([x, join(realOf(dirname(x)), basename(x)), realOf(x)])],
       }) }),
     });
+  }
+
+  // What stands on this machine under the names of the programs a command's reading forms depend on (node
+  // --version reads where node is the program, and installs where it is a version manager's shim). Looked up
+  // once for the call, off the loop and within a deadline, and only for a line that names one. A session on
+  // another machine runs its commands there: what this machine holds says nothing.
+  private shimmed(session: Session, cls: CallClass): string[] {
+    return cls.kind === "shell" && !session.machine && cls.interpreter === undefined ? shimmedPrograms(cls.command) : [];
+  }
+  private async real(names: string[]): Promise<(program: string) => boolean> {
+    const found = await realPrograms(names);
+    return (program) => found.get(program) === true;
   }
 
   // Set by the hooks module: the files and folders the session's hooks run things from.
@@ -481,7 +495,9 @@ export class Gate {
     const cls = callClass(call, target);
     const mode = this.perm(session.id).mode;
     const dir = mode === "auto" ? localShellDir(session, call, target, cls) : undefined;
-    const d = this.evaluate(session, name, cls.kind === "shell" && dir ? { ...cls, cwd: dir.path } : cls, target?.source);
+    // Nothing is waited for unless the line names such a program.
+    const names = this.shimmed(session, cls);
+    const d = this.evaluate(session, name, cls.kind === "shell" && dir ? { ...cls, cwd: dir.path } : cls, target?.source, names.length ? await this.real(names) : undefined);
     // The call a restart cut while its card was open: that card again, settled
     // the way an open card is (the owner's answer, a grant or mode since, or waiting).
     const back = this.recovered(session.id, call, false) ?? (mode === "auto" ? this.recovered(session.id, call, true) : undefined);

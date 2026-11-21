@@ -29,6 +29,8 @@ export type Simple = { words: string[]; text: string; redirects: boolean; nested
 export type Made = { one: boolean; lead: string; subs: Simple[][]; vars: { name: string; at: number; len: number }[]; rest: boolean };
 
 const OPS = ["&&", "||", "|&", ";;", ";", "|", "&", "\n"];
+// A variable's name that neither the shell nor a program reads for itself: small letters, and not one of KEPT.
+const PLAIN = /^[a-z_][a-z0-9_]*$/;
 // Leading words that are syntax, not commands.
 const CONTROL = /^(if|then|else|elif|fi|do|done|while|until|esac|\{|\}|!|time)$/;
 // What a redirect may write to without changing anything.
@@ -112,7 +114,13 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean): { pa
     flushWord();
     if (want) { bad = true; want = null; }
     // `for x in ...`, `select x in ...` and `case ... in` headers run nothing themselves.
-    if (/^(for|select|case)$/.test(words[0] ?? "")) { words = []; flow = true; }
+    if (/^(for|select|case)$/.test(words[0] ?? "")) {
+      // A loop gives its variable each value in turn, as an assignment would: PATH, HOME or a name a program
+      // reads there changes what the body runs (for PATH in .; do ls; done runs ./ls). Only a plain name in small letters.
+      if (words[0] !== "case" && words[1] !== undefined && (!PLAIN.test(words[1]) || KEPT.test(words[1]) || dyn.includes(1))) unknown = true;
+      words = [];
+      flow = true;
+    }
     let lead = 0;
     while (lead < words.length && CONTROL.test(words[lead]!)) lead++;
     if (lead) flow = true;
@@ -170,7 +178,8 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean): { pa
       if (!inDouble) param++;
       if (!/^\$\{#?[A-Za-z_][A-Za-z0-9_]*(\}|:?[-=?+]|[#%\/^,]|\[(\d+|[@*])\]\}|:\d+(:\d+)?\})/.test(here)) unknown = true;
       // ${x:=y} and ${x=y} assign: from here on a variable may not hold what it was given.
-      if (/^\$\{[A-Za-z_][A-Za-z0-9_]*:?=/.test(here)) flow = true;
+      const given = /^\$\{([A-Za-z_][A-Za-z0-9_]*):?=/.exec(here)?.[1];
+      if (given !== undefined) { flow = true; if (!PLAIN.test(given) || KEPT.test(given)) unknown = true; }
     } else if (/[A-Za-z0-9_@*!=~^+-]/.test(n)) { // $=x, $~x, $^x and $+x are zsh's
       const name = /^\$([A-Za-z_][A-Za-z0-9_]*)/.exec(cmd.slice(j, j + 200));
       expands(at, !inDouble || n === "@" || n === "*");
@@ -311,6 +320,8 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean): { pa
       // A redirection: [n]>file, >>, >|, &>, &>>, >&n, >&file, <file, <&n, <>file, <<<word, <<[-]WORD.
       // Digits right before it name the descriptor and are no word.
       if (c !== "&" && inWord && !quoted && /^\d+$/.test(word)) { word = ""; inWord = false; }
+      // {name}<file opens the file and gives the variable the descriptor's number (: {PATH}<a makes PATH 10).
+      else if (c !== "&" && inWord && !quoted && word.length < 256 && /^\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(word)) { unknown = true; word = ""; inWord = false; made = false; cur = fresh(); }
       else flushWord();
       if (want) return null;
       let j = i + 1;
@@ -351,10 +362,12 @@ function scanIn(cmd: string, start: number, inner: boolean, flow: boolean): { pa
       continue;
     }
     // {a,b} and {1..3} become several words.
-    if (c === "{" && cmd[i - 1] !== "$" && braceExpands(cmd, i)) { expands(word.length, true); cur.rest = true; }
+    // Once a word is known to expand this way, its later braces say nothing more (and each look ahead costs up to its window).
+    if (c === "{" && cmd[i - 1] !== "$" && !(made && cur.open && cur.rest) && braceExpands(cmd, i)) { expands(word.length, true); cur.rest = true; }
     if (c === "}" && param) param--;
     // A glob that opens a word can expand to an option (a file named -o): not known from the text.
-    if ((c === "*" || c === "?" || c === "[") && !want && !words.every((w) => CONTROL.test(w)) && (word === "" || word.startsWith("-"))) { expands(word.length, true); cur.rest = true; }
+    // (Asked once for a word: the first test that can say no comes first, as this runs for every such character.)
+    if ((c === "*" || c === "?" || c === "[") && !want && !(made && cur.open && cur.rest) && (word === "" || word.startsWith("-")) && !words.every((w) => CONTROL.test(w))) { expands(word.length, true); cur.rest = true; }
     word += c; inWord = true; text += c;
   }
   flushCmd();
@@ -796,6 +809,14 @@ export function shimmedRead(s: Simple): string | null {
   return !env && reads?.(words.slice(1)) ? words[0]! : null;
 }
 
+// The programs of a line whose reading forms depend on what stands under their name, for the gate to look up
+// before it decides. The line is read only when it holds one of the names.
+const SHIM_NAMES = new RegExp(`(^|[^A-Za-z0-9_+-])(${[...SHIMMED.keys()].map((k) => k.replace(/[+]/g, "\\$&")).join("|")})([^A-Za-z0-9_+.-]|$)`);
+export function shimmedPrograms(command: string): string[] {
+  if (!SHIM_NAMES.test(command)) return [];
+  return [...new Set((splitCommand(command) ?? []).map(shimmedRead).filter((p): p is string => p !== null))];
+}
+
 // What the line's first commands give its variables, used where a later word reads them. A line that opens with
 // `name=value` assignments (ended by `;`, a newline or `&&`) runs them before anything else, so `$name` after them
 // is that value: a written-out one is put in its place, and the output of a substitution stands where the variable
@@ -949,8 +970,19 @@ export function matchRule(pattern: string, s: Simple): boolean {
     const pre = p.slice(0, -2);
     return cmd === pre || cmd.startsWith(pre + " ");
   }
-  const re = new RegExp("^" + p.split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$");
-  return re.test(cmd);
+  // Each `*` stands for any text on one line. The pieces between them are found left to right, each at its first
+  // place: no pattern is built from the rule, so a long command costs one pass.
+  const pieces = p.split("*");
+  const last = pieces.pop()!;
+  if (!cmd.startsWith(pieces[0]!)) return false;
+  let at = pieces[0]!.length;
+  for (const piece of pieces.slice(1)) {
+    const found = cmd.indexOf(piece, at);
+    if (found < 0 || cmd.slice(at, found).includes("\n")) return false;
+    at = found + piece.length;
+  }
+  const end = cmd.length - last.length;
+  return end >= at && cmd.endsWith(last) && !cmd.slice(at, end).includes("\n");
 }
 
 const MULTI = new Set(["git", "npm", "pnpm", "yarn", "bun", "bunx", "npx", "cargo", "go", "docker", "podman", "kubectl", "gh", "uv", "pip", "python", "python3", "make", "systemctl", "brew", "apt", "deno", "rustup", "terraform", "aws"]);

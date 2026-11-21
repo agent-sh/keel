@@ -166,6 +166,13 @@ test("rules match like Claude Code's", () => {
   expect(matchRule("npm test", s("npm test --watch"))).toBe(false);
   expect(matchRule("npm:*", s("npm run x"))).toBe(true);
   expect(matchRule("git * main", s("git push origin main"))).toBe(true);
+  // Several stars: each piece at its first place, the first at the start, the last at the end, none across a line.
+  expect(matchRule("git * origin * main", s("git push origin feature main"))).toBe(true);
+  expect(matchRule("git * origin * main", s("git push origin main"))).toBe(false);
+  expect(matchRule("git * main", s("git push origin main2"))).toBe(false);
+  expect(matchRule("git * main", s("hg push origin main"))).toBe(false);
+  expect(matchRule("a*a", s("a"))).toBe(false);
+  expect(matchRule("git * main", s("git commit -m 'x\ny' main"))).toBe(false);
   expect(suggestRule(s("bun test src/x.test.ts"))).toBe("bun test *");
   expect(suggestRule(s("./run.sh --fast"))).toBe("./run.sh *");
 });

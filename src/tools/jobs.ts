@@ -85,6 +85,10 @@ export function toolEnv(sessionId: string, extra: Record<string, string> = {}): 
   return { ...env, KEEL_SESSION: sessionId, ...extra };
 }
 
+// No pager for a command a session runs, whichever tool starts it: on a terminal a pager takes keys, and less runs
+// what is typed into it. git, systemd's tools, dpkg and man each name their own.
+const NO_PAGER = { PAGER: "cat", GIT_PAGER: "cat", SYSTEMD_PAGER: "cat", DPKG_PAGER: "cat", MANPAGER: "cat" };
+
 // Terminal output for a model: no escape sequences, carriage-return redraws
 // collapsed to the last frame of each line.
 export function cleanTerm(s: string): string {
@@ -139,7 +143,7 @@ export function startJob(o: StartOpts): Job {
   const box = jobScope();
   const extra = o.callId ? callEnvs.get(o.callId) : undefined;
   if (o.callId) callEnvs.delete(o.callId);
-  const env = { ...(o.env ?? toolEnv(o.sessionId)), ...extra };
+  const env = { ...(o.env ?? toolEnv(o.sessionId)), ...NO_PAGER, ...extra };
   // What is kept and shown is the command with placeholders: a value the
   // secret hook put in only reaches the process.
   const job = { id, num, sessionId: o.sessionId, command: conceal(o.command, o.sessionId), description: o.description && conceal(o.description, o.sessionId), cwd: o.cwd, pty: !!o.pty,

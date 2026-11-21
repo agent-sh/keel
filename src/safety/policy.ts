@@ -229,8 +229,9 @@ export const ownPath = (p: string, f: Pick<Facts, "workspace" | "scratch">) => (
 export type Facts = {
   mode: Mode; workspace: string; sandboxed: boolean; rules: Rule[]; tool: string; bind?: string; scratch?: string[]; home?: string; config?: string[];
   own?: () => { home: string; config: string[]; land: (p: string) => string[] };
-  // Whether a program's name on this machine is the program itself and not a version manager's shim (shims.ts).
-  // Without it the reading forms of such programs (node --version) are not reads.
+  // Whether a program's name on this machine is the program itself and not a version manager's shim (shims.ts):
+  // looked up by the gate before it decides, so this only reads the answer. Without it the reading forms of such
+  // programs (node --version) are not reads.
   real?: (program: string) => boolean;
 };
 
