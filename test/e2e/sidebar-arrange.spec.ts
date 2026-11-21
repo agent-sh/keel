@@ -1,3 +1,5 @@
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { expect, test } from "./isolate.ts";
 import { openPanel, shoot } from "./shots.ts";
 
@@ -14,6 +16,14 @@ import { openPanel, shoot } from "./shots.ts";
 // session comes back with that session only. The pane's top line moves
 // between state colours smoothly, and breathes while a turn works.
 const MODEL = "scripted:stand-in";
+// The spec's sessions run in a folder of their own: the list shows a folder's
+// newest rows at rest and folds the others, so in a folder other work fills
+// (the daemon's default one) the spec's own rows may not be in the page.
+const ownFolder = (name: string) => {
+  const dir = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `${name}-${Date.now().toString(36)}`);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+};
 test.use({ storageState: { cookies: [], origins: [] }, viewport: { width: 1700, height: 980 } });
 
 // What a test here started is stopped when it ends, passed or failed. A session that starts
@@ -35,8 +45,9 @@ test.afterEach(async ({ request }) => {
 
 test("panes on request, agents folded, the list filtered and arranged", async ({ page, request }) => {
   const tag = Date.now().toString(36);
+  const workspace = ownFolder("arrange");
   const mk = async (title: string, text = "Done.") => {
-    const s = (await (await request.post("/api/sessions", { data: { model: MODEL, title } })).json()).session;
+    const s = (await (await request.post("/api/sessions", { data: { model: MODEL, title, workspace } })).json()).session;
     started.push(s.id);
     await request.post(`/api/sessions/${s.id}/messages`, { data: { text } });
     await expect.poll(async () => (await (await request.get(`/api/sessions/${s.id}`)).json()).events.some((e: any) => e.kind === "turn_end" || e.kind === "error"), { timeout: 30_000 }).toBe(true);
@@ -191,7 +202,8 @@ test("panes on request, agents folded, the list filtered and arranged", async ({
 // session; an answer that a newer one overtook does not bring an old list back.
 test("the archive list is read again only when the archive changed", async ({ page, request }) => {
   const tag = Date.now().toString(36);
-  const mk = async (title: string) => (await (await request.post("/api/sessions", { data: { model: MODEL, title } })).json()).session.id as string;
+  const workspace = ownFolder("archive");
+  const mk = async (title: string) => (await (await request.post("/api/sessions", { data: { model: MODEL, title, workspace } })).json()).session.id as string;
   const patch = (id: string, data: unknown) => request.patch(`/api/sessions/${id}`, { data });
   const old = await mk(`Archived before the page ${tag}`);
   const next = await mk(`Archived while it is open ${tag}`);
