@@ -131,17 +131,18 @@ test("the indexed search and recall answer as a walk over every record does", ()
     }
     const named1 = [...new Set(named)];
     const q = wordSet(text);
-    // A word counts when the records holding it (reference data aside) all fit the budget.
+    // The words a record shares recall it when the records holding all of them (reference data aside) fit the budget together.
     const words = (r: MemoryRecord) => wordSet(`${r.value} ${r.aliases.join(" ")} ${r.key.replace(/[._-]+/g, " ")}`);
-    const broad = new Set([...q].filter((w) => all.filter((r) => r.kind !== "reference" && words(r).has(w)).reduce((n, r) => n + recallLine(r).length + 1, 0) > budget));
+    const plain = all.filter((r) => r.kind !== "reference").map((r) => ({ r, has: new Set([...q].filter((w) => words(r).has(w))) }));
+    const narrow = (has: Set<string>) => has.size > 0 && plain.filter((o) => [...has].every((w) => o.has.has(w))).reduce((n, o) => n + recallLine(o.r).length + 1, 0) <= budget;
+    const sharedBy = new Map(plain.map((x) => [x.r.key, narrow(x.has) ? x.has.size : 0]));
     const scored: { r: MemoryRecord; rank: number; hits: number }[] = [];
     for (const r of all) {
       if (seen.has(r.key)) continue;
       const at = named1.indexOf(r.key);
       if (at >= 0) { scored.push({ r, rank: 3, hits: named1.length - at }); continue; }
       if (r.kind === "reference") continue;
-      let hits = 0;
-      for (const w of words(r)) if (q.has(w) && !broad.has(w)) hits++;
+      const hits = sharedBy.get(r.key) ?? 0;
       if (hits) scored.push({ r, rank: 2, hits });
       else if (r.kind === "preference" || r.kind === "commitment") scored.push({ r, rank: 1, hits: 0 });
     }
@@ -186,30 +187,41 @@ test("the indexed search and recall answer as a walk over every record does", ()
   }
 });
 
-// A word many records hold says nothing about which of them a turn means; a
-// text that is not a request (a digest, a report) recalls by name only.
-test("recall: a word brings its records only when they all fit; other text recalls by name alone", () => {
-  const ix = new RecordIndex([
-    ...Array.from({ length: 300 }, (_, i) => rec(`fact.deploy-${i}`, `The deploy of service ${i} runs from the release branch`)),
+// A word many records hold does not say which of them a turn means. Next to
+// other words it still counts: the record holding them all is the one meant.
+test("recall by words: the record that holds the prompt's words comes first; one word most records share recalls nothing", () => {
+  // 75 records, each with one of three words that 25 of them share, and one record with all three.
+  const list = [
+    ...Array.from({ length: 25 }, (_, i) => rec(`mail.dana-${i}`, `Dana wrote about the school trip number ${i}, the bus and the packed lunches for the whole class`)),
+    ...Array.from({ length: 25 }, (_, i) => rec(`bill.overdue-${i}`, `The overdue library book number ${i} goes back to the branch near the station before the weekend`)),
+    ...Array.from({ length: 25 }, (_, i) => rec(`shop.invoice-${i}`, `An invoice from the hardware shop number ${i} for paint, brushes and the ladder that was returned`)),
+    rec("fact.plumber", "Dana said the overdue invoice from the plumber is paid on Friday", { updated: 1 }),
     rec("fact.staging", "The staging gateway is called halcyon"),
-    rec("person.dana-levi", "Dana is the accountant; invoices go to her", { kind: "person", aliases: ["dana"] }),
     rec("pref.replies", "Replies in short sentences", { kind: "preference" }),
+  ];
+  const ix = new RecordIndex(list);
+  const keys = (text: string, budget = 2000) => ix.recall(text, new Set(), budget).records.map((r) => r.key);
+  // Each word is in 26 records (over the budget alone); together they pick one.
+  expect(keys("Did Dana say anything about that overdue invoice?")).toEqual(["fact.plumber", "pref.replies"]);
+  // Two of them pick it too.
+  expect(keys("What about the overdue invoice?")).toEqual(["fact.plumber", "pref.replies"]);
+  // One alone: 26 records, no telling which.
+  expect(keys("Any invoice news?")).toEqual(["pref.replies"]);
+  // A word few records hold brings them, whatever common word stands next to it.
+  expect(keys("Is halcyon in an invoice?")).toEqual(["fact.staging", "pref.replies"]);
+  // With room for a whole group it comes, as before: the best match first.
+  const roomy = keys("Did Dana say anything about that overdue invoice?", 40_000);
+  expect(roomy[0]).toBe("fact.plumber");
+  expect(roomy.length).toBe(77);
+  // The largest posting is not read through: only the records the other words lead to.
+  const many = new RecordIndex([
+    ...Array.from({ length: 3000 }, (_, i) => rec(`note.n${i}`, `The deploy of service ${i} runs from the release branch`)),
+    ...Array.from({ length: 40 }, (_, i) => rec(`note.r${i}`, `The rollback of unit ${i} needs a review`)),
+    rec("fact.freeze", "No deploy after a rollback on Fridays"),
   ]);
-  const keys = (text: string, budget = 2000, other = "") => ix.recall(text, new Set(), budget, other).records.map((r) => r.key);
-  // "deploy" is in 300 records (far over the budget together); "halcyon" in one.
-  expect(keys("Check the deploy on halcyon")).toEqual(["fact.staging", "pref.replies"]);
-  // With room for all of them the word counts, as before.
-  expect(keys("Check the deploy on halcyon", 40_000).length).toBe(302);
-  // A named record is recalled whatever its words.
-  expect(keys("What about deploy-7?")).toEqual(["fact.deploy-7", "pref.replies"]);
-  // A digest that came with the prompt: by name only; standing ones still come.
-  expect(keys("", 2000, "Mail about invoices and halcyon from Dana")).toEqual(["person.dana-levi", "pref.replies"]);
-  expect(keys("What is new?", 2000, "A session finished the halcyon work")).toEqual(["pref.replies"]);
-  const before = ix.work.records;
-  ix.recall("Check the deploy and the release branch of the service", new Set(), 2000);
-  // Four words that 300 records hold: each posting is read only until it is
-  // over the budget (about 30 records), not to its end.
-  expect(ix.work.records - before).toBeLessThan(150);
+  const before = many.work.records;
+  expect(many.recall("Can I deploy after the rollback?", new Set(), 2000).records.map((r) => r.key)).toEqual(["fact.freeze"]);
+  expect(many.work.records - before).toBeLessThan(200);
 });
 
 test("candidates keep ids whole and runs of words", () => {

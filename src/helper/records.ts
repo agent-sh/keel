@@ -252,6 +252,65 @@ export class RecordIndex {
     return n;
   }
 
+  // The records the words recall, each with how many of the words it holds:
+  // those whose shared words are held together by a group that fits `budget`
+  // (see recall). A word whose own records fit brings them all. Words that
+  // more records hold than fit bring only the records that hold two or more
+  // of them, where the records holding all of those fit: every such record is
+  // in the postings of one of these words other than the largest, so the
+  // largest is never read through.
+  private sharing(words: Iterable<string>, budget: number): Map<string, number> {
+    const line = (k: string) => recallLine(this.byKey.get(k)!).length + 1;
+    const posts: Set<string>[] = [];
+    const fits: boolean[] = [];
+    for (const w of words) {
+      const keys = this.body.get(w);
+      if (!keys) continue;
+      let size = 0;
+      for (const k of keys) {
+        this.work.records++;
+        if ((size += line(k)) > budget) break;
+      }
+      posts.push(keys);
+      fits.push(size <= budget);
+    }
+    const out = new Map<string, number>();
+    if (!posts.length) return out;
+    const broad = posts.map((_, i) => i).filter((i) => !fits[i]);
+    const largest = broad.reduce((m, i) => (m < 0 || posts[i]!.size > posts[m]!.size ? i : m), -1);
+    // Each record met in the postings read, with the words it holds.
+    const held = new Map<string, number[]>();
+    for (let i = 0; i < posts.length; i++) {
+      if (i === largest) continue;
+      for (const k of posts[i]!) {
+        if (held.has(k)) continue;
+        this.work.records++;
+        held.set(k, posts.map((_, j) => j).filter((j) => posts[j]!.has(k)));
+      }
+    }
+    // The groups of records holding the same words, with what their lines take.
+    const groups = new Map<string, { words: number[]; size: number; keys: string[] }>();
+    for (const [k, ws] of held) {
+      const id = ws.join(",");
+      const g = groups.get(id) ?? groups.set(id, { words: ws, size: 0, keys: [] }).get(id)!;
+      g.size += line(k);
+      g.keys.push(k);
+    }
+    for (const g of groups.values()) {
+      let ok = g.words.some((i) => fits[i]);
+      if (!ok && g.words.length >= 2) {
+        // Only words that do not fit alone: the records holding all of them, together.
+        let size = 0;
+        for (const o of groups.values()) {
+          if (g.words.every((i) => o.words.includes(i)) && (size += o.size) > budget) break;
+        }
+        ok = size <= budget;
+      }
+      if (ok) for (const k of g.keys) out.set(k, g.words.length);
+    }
+    return out;
+  }
+
   // Exact key, then alias, topic and key prefix, then a word search over
   // keys, aliases, topics and values. Keys with previews, at most `limit`.
   find(query: string, limit = FIND_LIMIT): Found {
@@ -284,20 +343,20 @@ export class RecordIndex {
 
   // What a turn recalls: records whose key or alias the text names, then
   // (for records that are not imported reference data) those sharing words
-  // with it, then standing preferences and commitments; never one already
-  // seen since the last summary; within `budget` characters. Topics and
-  // namespaces the text names come back as one-line hints (how many records,
-  // how to look them up), never as their values.
-  // A word brings its records only when all of them fit the budget: a word
-  // that more records hold than a turn can carry does not say which of them
-  // is meant (that is a search, helper__memory_find), and its postings are
-  // not read past the budget.
-  // `other`: text that came with the prompt and is not a request (a digest, a
-  // report). It recalls the records it names, never by its words.
-  recall(text: string, seen: Set<string>, budget: number, other = ""): { records: MemoryRecord[]; hints: string[] } {
+  // with it, most shared words first, then standing preferences and
+  // commitments; never one already seen since the last summary; within
+  // `budget` characters. Topics and namespaces the text names come back as
+  // one-line hints (how many records, how to look them up), never as their
+  // values.
+  // Sharing words recalls a record when the words it shares narrow memory
+  // down to a group a turn can carry: the records that hold all of those
+  // words fit the budget together. One word many records hold does not say
+  // which of them is meant (that is a search, helper__memory_find); the same
+  // word next to another one that only a few of them also hold does.
+  recall(text: string, seen: Set<string>, budget: number): { records: MemoryRecord[]; hints: string[] } {
     const named = new Set<string>();
     const hintKeys = new Map<string, number>();
-    for (const c of candidates(other ? `${text}\n${other}` : text)) {
+    for (const c of candidates(text)) {
       const k = normKey(c);
       if (this.byKey.has(k)) named.add(k);
       for (const x of this.byAlias(c)) named.add(x);
@@ -315,20 +374,7 @@ export class RecordIndex {
       at++;
     }
     this.work.records += named.size;
-    // Sharing words: from the postings of the text's words that fit.
-    const shared = new Map<string, number>();
-    for (const w of wordSet(text)) {
-      const keys = this.body.get(w);
-      if (!keys) continue;
-      let size = 0;
-      for (const k of keys) {
-        this.work.records++;
-        size += recallLine(this.byKey.get(k)!).length + 1;
-        if (size > budget) break;
-      }
-      if (size > budget) continue;
-      for (const k of keys) shared.set(k, (shared.get(k) ?? 0) + 1);
-    }
+    const shared = this.sharing(wordSet(text), budget);
     for (const [key, hits] of shared) if (!seen.has(key) && !named.has(key)) push(key, 2, hits);
     // Standing: every preference and commitment not already in.
     for (const key of this.standing) if (!seen.has(key) && !named.has(key) && !shared.has(key)) push(key, 1, 0);

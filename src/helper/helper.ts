@@ -26,7 +26,7 @@ import { mailSource, type MailMsg, type MailSource } from "./mail.ts";
 import { Memory } from "./memory.ts";
 import { digestLines, levelOfAlert, nextWakeAt, spike, type DigestEvent, type Level } from "./policy.ts";
 import { recallLine, type MemoryRecord } from "./records.ts";
-import { asksMemory, memoryMeter, type MemoryMeter } from "../integrations/memory-meter.ts";
+import { memoryMeter, type MemoryMeter } from "../integrations/memory-meter.ts";
 
 export type HelperSettings = {
   on: boolean;
@@ -275,10 +275,7 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
 
   // The note a helper prompt gets: events not told yet, and the remembered
   // items it calls up that the context has not seen since its last summary.
-  // `asks`: the prompt is a request (the owner's words, a message). What the
-  // harness delivers (a digest, a report) and the events told with a prompt
-  // recall the records they name, never by their words.
-  private note(s: Session, events: StoredEvent[], prompt: string, asks = true): { text: string; recalled: MemoryRecord[]; hints: string[]; repeats: number; told: DigestEvent[] } | null {
+  private note(s: Session, events: StoredEvent[], prompt: string): { text: string; recalled: MemoryRecord[]; hints: string[]; repeats: number; told: DigestEvent[] } | null {
     const at = checkpointAt(events).at;
     // A record a note already carried is not sent again while it is as that
     // note had it. One changed since (by the owner, or by a tool) is: its new
@@ -294,8 +291,8 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
       for (const h of e.data?.helper?.hints ?? []) hinted.add(h);
     }
     const told = this.unfed();
-    const digest = told.map((e) => `${e.title} ${e.body}`).join("\n");
-    const found = this.records.index.recall(asks ? prompt : "", seen, RECALL_CHARS, asks ? digest : `${prompt}\n${digest}`);
+    const query = `${prompt}\n${told.map((e) => `${e.title} ${e.body}`).join("\n")}`;
+    const found = this.records.index.recall(query, seen, RECALL_CHARS);
     const items = found.records;
     const hints = found.hints.filter((h) => !hinted.has(h));
     const parts: string[] = [];
@@ -321,7 +318,7 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
         if (last?.kind !== "user" || h.done.has(last.id)) return req;
         h.done.add(last.id);
         const began = performance.now();
-        const n = h.note(s, events, String(last.data.text ?? ""), asksMemory(last.data));
+        const n = h.note(s, events, String(last.data.text ?? ""));
         const waitMs = performance.now() - began;
         const remembered = n ? /<remembered>\n[\s\S]*<\/remembered>/.exec(n.text)?.[0] : undefined;
         // Measured without content: what the block adds, and (at the turn's end) whether the reply named it.
