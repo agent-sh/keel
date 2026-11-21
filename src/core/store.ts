@@ -103,7 +103,7 @@ export function fingerprint(message: string): string {
 }
 
 // The session an error belongs to, from what its catcher put in the context.
-function sessionOf(ctx: any): string | undefined {
+export function sessionOf(ctx: any): string | undefined {
   if (!ctx || typeof ctx !== "object") return undefined;
   const v = ctx.session ?? ctx.session_id ?? ctx.sessionId;
   if (typeof v === "string") return v;
@@ -399,7 +399,9 @@ export class Store {
 
   // One row per kind of failure: the same source and message (numbers and ids
   // folded) bumps the row's count and time instead of adding one. A resolved
-  // or read row that happens again opens again, unread.
+  // or read row that happens again opens again, unread. The row's session,
+  // turn and span are this occurrence's, as its catcher gave them: a repeat
+  // that names none leaves none of an earlier one's behind.
   recordError(raw: Omit<ErrorRecord, "id" | "ts">): ErrorRecord {
     const ts = Date.now();
     // Kept like events: a secret in a failure's text is its placeholder.
@@ -407,22 +409,21 @@ export class Store {
     const fp = `${e.source}\u0000${fingerprint(e.message)}`;
     const session_id = e.session_id ?? sessionOf(e.context);
     const live = session_id ? this.session(session_id) : undefined;
-    const turn = live
-      ? this.db.query<{ id: string }, [string]>("SELECT id FROM events WHERE session_id = ? AND kind = 'turn_start' ORDER BY seq DESC LIMIT 1").get(live.id)
-      : null;
     const sid = live ? live.id : null;
+    // A turn is kept only as a turn_start of that session.
+    const turn = sid && e.turn_event && this.db.query("SELECT 1 FROM events WHERE id = ? AND session_id = ? AND kind = 'turn_start'").get(e.turn_event, sid) ? e.turn_event : null;
     const ctx = e.context ? JSON.stringify(e.context) : null;
     const row = this.db.query<{ id: string }, [string]>("SELECT id FROM errors WHERE fingerprint = ?").get(fp);
     if (row) {
       this.db
-        .query("UPDATE errors SET ts = ?, count = count + 1, message = ?, stack = ?, context = ?, session_id = COALESCE(?, session_id), turn_event = CASE WHEN ? IS NULL THEN turn_event ELSE ? END, span_id = ?, resolved_ts = NULL, read_ts = NULL WHERE id = ?")
-        .run(ts, e.message, e.stack ?? null, ctx, sid, sid, turn?.id ?? null, e.span_id ?? null, row.id);
+        .query("UPDATE errors SET ts = ?, count = count + 1, message = ?, stack = ?, context = ?, session_id = ?, turn_event = ?, span_id = ?, resolved_ts = NULL, read_ts = NULL WHERE id = ?")
+        .run(ts, e.message, e.stack ?? null, ctx, sid, turn, e.span_id ?? null, row.id);
       return this.error(row.id)!;
     }
     const id = Bun.randomUUIDv7();
     this.db
       .query("INSERT INTO errors (id, ts, first_ts, source, message, stack, context, fingerprint, session_id, turn_event, span_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(id, ts, ts, e.source, e.message, e.stack ?? null, ctx, fp, sid, turn?.id ?? null, e.span_id ?? null);
+      .run(id, ts, ts, e.source, e.message, e.stack ?? null, ctx, fp, sid, turn, e.span_id ?? null);
     return this.error(id)!;
   }
 

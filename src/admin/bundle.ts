@@ -28,10 +28,14 @@ export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { mark
   const sid = e?.session_id ?? o.session_id;
   const s = sid ? store.session(sid) : undefined;
   const events = s ? lineage(store.events(s.id), s.head) : [];
-  const turnEvent = e?.turn_event ?? o.turn_event ?? events.findLast((x) => x.kind === "turn_start")?.id;
-  const traceId = turnEvent ? traceIdOf(turnEvent) : undefined;
+  // An error's turn is the one it names, or none (a side request ran in no
+  // turn): the trace is then its span's own. Only a bundle asked for a session
+  // alone is about that session's newest turn.
+  const named = e?.span_id ? tracer.span(e.span_id) : undefined;
+  const turnEvent = e?.turn_event ?? o.turn_event ?? (e ? undefined : events.findLast((x) => x.kind === "turn_start")?.id);
+  const traceId = turnEvent ? traceIdOf(turnEvent) : named?.trace_id;
   const spans = traceId ? tracer.trace(traceId) : [];
-  const failing = (e?.span_id ? tracer.span(e.span_id) : undefined) ?? spans.findLast((x) => x.status === "error" && x.kind !== "turn");
+  const failing = named ?? spans.findLast((x) => x.status === "error" && x.kind !== "turn");
   const at = e?.ts ?? failing?.end_ms ?? Date.now();
   const out: string[] = [];
 
@@ -62,15 +66,15 @@ export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { mark
     if (turnEvent) {
       const t = store.event(turnEvent);
       out.push(`- Turn \`${turnEvent}\` started ${t ? iso(t.ts) : "(event gone)"}; trace id \`${traceId}\``);
-    }
+    } else if (e) out.push(`- In no turn${traceId ? `: a request of its own, trace id \`${traceId}\`` : ""}`);
   } else if (sid) out.push(`- Session \`${sid}\` (deleted since)`);
   else out.push("- Not tied to a session (a daemon or page failure).");
   if (e?.context?.url) out.push(`- Page: ${e.context.url}`);
   out.push("");
 
   if (spans.length) {
-    out.push("## Trace of the turn", "");
-    out.push("Offsets from the turn's start; `!` marks a failed span.", "");
+    out.push(turnEvent ? "## Trace of the turn" : "## Trace of the request", "");
+    out.push(`Offsets from the ${turnEvent ? "turn" : "request"}'s start; \`!\` marks a failed span.`, "");
     const t0 = spans[0]!.start_ms;
     const lines = spans.map((x) => {
       const mark = x.status === "error" ? "!" : x.status === "running" ? "~" : " ";

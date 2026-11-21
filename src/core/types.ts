@@ -181,8 +181,10 @@ export type SocketFrame =
 export type ClientFrame = { op: "resume"; cursors: Record<string, number> } | { op: "ping"; nonce?: number };
 
 // One kind of failure: `ts` is its last time, `count` how often it happened
-// since `first_ts`; `session_id` and `turn_event` (the turn_start event) are
-// where it last happened; `resolved_ts` is set when the owner marked it fixed.
+// since `first_ts`; `session_id`, `turn_event` (the turn_start event) and
+// `span_id` are where it last happened, each absent when that occurrence had
+// none (a side request runs in no turn, a daemon failure in no session);
+// `resolved_ts` is set when the owner marked it fixed.
 export type ErrorRecord = {
   id: string;
   ts: number;
@@ -190,7 +192,7 @@ export type ErrorRecord = {
   count?: number;
   session_id?: string;
   turn_event?: string;
-  // The exact model request (trace span) the last occurrence failed in.
+  // The exact model request or tool call (trace span) the last occurrence failed in.
   span_id?: string;
   resolved_ts?: number;
   // Set when the owner marked it read: it no longer counts in the badge. A new occurrence clears it.

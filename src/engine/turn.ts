@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { rootOf } from "../safety/trust.ts";
 import type { Bus } from "../core/bus.ts";
-import { errorSession, type ErrorTracker } from "../core/errors.ts";
+import { errorScope, type ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
 import { SessionMap } from "../core/session-map.ts";
 import { conceal } from "../core/conceal.ts";
@@ -496,7 +496,16 @@ export class Engine {
   }
 
   private start(id: string) {
-    errorSession.run(id, () => this.startTurn(id));
+    errorScope.run({ session: id }, () => this.startTurn(id));
+  }
+
+  // The turn's first event. What fails from here until the turn is over is
+  // captured as this turn's (src/core/errors.ts).
+  private openTurn(id: string, data: unknown) {
+    const ev = this.append(id, "turn_start", data);
+    const scope = errorScope.getStore();
+    if (scope?.session === id) scope.turn = ev.id;
+    return ev;
   }
 
   private startTurn(id: string) {
@@ -507,6 +516,7 @@ export class Engine {
     const starting = this.store.session(id);
     if (starting) for (const h of allHooks()) try { h.turnStart?.(starting); } catch (e) { this.errors.capture("server", e, { hook: "turnStart", session: id }); }
     const abort = new AbortController();
+    const scope = errorScope.getStore();
     const done = this.loop(id, abort.signal)
       .catch((e) => {
         if (abort.signal.aborted) return;
@@ -515,6 +525,8 @@ export class Engine {
         this.append(id, "error", { message: errorText(e), error_id: rec?.id });
       })
       .finally(() => {
+        // The turn is over: what it left running no longer fails in it.
+        if (scope) scope.turn = undefined;
         this.running.delete(id);
         this.status(id, { kind: "idle" });
         if (this.store.session(id)) this.setPhase(id, "idle");
@@ -729,7 +741,7 @@ export class Engine {
   private async external(id: string, session: Session, run: ExternalTurn, signal: AbortSignal) {
     this.setPhase(id, "working");
     const t0 = Date.now();
-    this.append(id, "turn_start", { model: session.model });
+    this.openTurn(id, { model: session.model });
     let reason = "end_turn";
     let usage: Usage = emptyUsage();
     try {
@@ -772,7 +784,7 @@ export class Engine {
     this.setPhase(id, "working");
     const t0 = Date.now();
     let usage: Usage = emptyUsage();
-    this.append(id, "turn_start", { model: session.model, effort: st.effort });
+    this.openTurn(id, { model: session.model, effort: st.effort });
     let reason = "end_turn";
     let cuts = 0;
     let fellBack = false;
@@ -977,9 +989,9 @@ export class Engine {
     // Measured from dispatch: a call that never ran (denied, stopped at its gate) has no row.
     let t0: number | undefined;
     let preparedInput = false;
-    const ran = (r: ToolResultBlock, outcome: "ok" | "error" | "interrupted") => {
+    const ran = (r: ToolResultBlock, outcome: "ok" | "error" | "interrupted", error?: Error) => {
       const ms = Date.now() - t0!;
-      this.measure((h) => h.toolRan?.(session, call, r, { ms, outcome }));
+      this.measure((h) => h.toolRan?.(session, call, r, { ms, outcome, error }));
       return r;
     };
     try {
@@ -1021,9 +1033,13 @@ export class Engine {
       ran(result, result.is_error ? "error" : "ok");
     } catch (e) {
       if (ctx.signal.aborted) return t0 === undefined ? interrupted() : ran(interrupted(), "interrupted");
-      this.errors.capture("tool", e, { tool: u.name, session: ctx.sessionId });
-      const failed: ToolResultBlock = { type: "tool_result", tool_use_id: u.id, content: `Tool failed: ${(e as Error).message}`, is_error: true };
-      return t0 === undefined ? failed : ran(failed, "error");
+      const err = e instanceof Error ? e : new Error(String(e));
+      const failed: ToolResultBlock = { type: "tool_result", tool_use_id: u.id, content: `Tool failed: ${err.message}`, is_error: true };
+      // Measured before it is captured: the call's span exists by then and has
+      // named itself on the error, so the error row and the span point at each other.
+      if (t0 !== undefined) ran(failed, "error", err);
+      this.errors.capture("tool", err, { tool: u.name, session: ctx.sessionId });
+      return failed;
     } finally {
       if (preparedInput && t0 === undefined) dropCallEnv(call.id);
       ctx.signal.removeEventListener("abort", onStop);

@@ -285,7 +285,7 @@ export class Tracer {
     const o = this.open.get(req);
     if (!o) return;
     this.open.delete(req);
-    if (err && typeof err === "object") Object.assign(err, { span_id: o.span, trace_id: o.trace });
+    if (err && typeof err === "object") try { Object.assign(err, { span_id: o.span, trace_id: o.trace }); } catch {}
     const e = err as any;
     const type = aborted ? "cancelled" : errorClass(err) ?? e?.kind ?? e?.name ?? "error";
     const prior = this.kept.get(req);
@@ -300,16 +300,22 @@ export class Tracer {
     });
   }
 
-  private tool(s: Session, callId: string, name: string, input: unknown, result: ToolResultBlock, ran: { ms: number; outcome: "ok" | "error" | "interrupted" }) {
+  private tool(s: Session, callId: string, name: string, input: unknown, result: ToolResultBlock, ran: { ms: number; outcome: "ok" | "error" | "interrupted"; error?: Error }) {
     const turn = this.turnOf(s, "turn");
     const parent = turn ? this.ensureTurn(s, turn) : null;
     const span = toolSpanId(s.id, callId);
+    const trace = parent?.trace ?? hex(16);
     const now = Date.now();
+    // What the tool threw names this span, as a failed request does, unless a
+    // request that failed inside the call already named its own (the closer cause).
+    const named = (ran.error as { span_id?: unknown } | undefined)?.span_id;
+    const inner = typeof named === "string" && this.store.db.query("SELECT 1 FROM spans WHERE span_id = ? AND kind = 'request' AND start_ms >= ?").get(named, now - ran.ms);
+    if (ran.error && !inner) try { Object.assign(ran.error, { span_id: span, trace_id: trace }); } catch {}
     const content = typeof result.content === "string" ? result.content : JSON.stringify(result.content);
     const inputJson = JSON.stringify(input ?? {});
     this.store.db.run(
       "INSERT OR REPLACE INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, error, error_type, attrs) VALUES (?, ?, ?, ?, 'tool', ?, ?, ?, ?, ?, ?, ?)",
-      [span, parent?.trace ?? hex(16), parent?.span ?? null, s.id, `execute_tool ${name}`, now - ran.ms, now, ran.outcome, ran.outcome === "error" ? conceal(content.slice(0, 1000), s.id) : null,
+      [span, trace, parent?.span ?? null, s.id, `execute_tool ${name}`, now - ran.ms, now, ran.outcome, ran.outcome === "error" ? conceal(content.slice(0, 1000), s.id) : null,
         ran.outcome === "error" ? "tool_error" : null,
         JSON.stringify({ tool: name, call_id: callId, input_keys: input && typeof input === "object" ? Object.keys(input) : [], input_bytes: Buffer.byteLength(inputJson), result_bytes: Buffer.byteLength(content), ...(turn ? { turn_event: turn.id } : {}) })],
     );

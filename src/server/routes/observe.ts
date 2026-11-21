@@ -54,6 +54,8 @@ export let tracer: Tracer | undefined;
 export const observeRoutes: RouteModule = ({ store, bus, engine, providers, errors, workspace }) => {
   installLogs(store.stateDir);
   const t = (tracer = new Tracer(store, bus, (id) => engine.isRunning(id)));
+  // An error that names a span is filed under that span's session and turn.
+  errors.spanOf = (id) => t.span(id);
   const src = (G.__keelSource ??= { v: source() }).v as ReturnType<typeof source>;
   const version = `${buildId()}${src?.commit ? ` (source ${src.commit})` : ""}`;
 
