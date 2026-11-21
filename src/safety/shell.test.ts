@@ -87,6 +87,20 @@ test("a variable the line's first words give a value is read as that value", () 
   expect(readOnlyCommand("base=$(git describe --tags); git diff $base")).toBe(false);
 });
 
+test("a line of many assignments is read in step with its length", () => {
+  // Past 64 leading assignments the variables are left as they are (they ask), and nothing is compared pair by pair.
+  const few = Array.from({ length: 60 }, (_, i) => `v${i}=x`).join("; ");
+  expect(readOnlyCommand(`${few}; sort $v0 $v59`)).toBe(true);
+  expect(readOnlyCommand(`${few}; v60=x; v61=x; v62=x; v63=x; v64=x; sort $v0`)).toBe(false);
+  const names = Array.from({ length: 5000 }, (_, i) => `v${i}`);
+  const lines = [names.map((v) => `${v}=x`).join("; ") + "; ls", names.map((v) => `${v}=x`).join(" ") + "; ls", "v=x; " + names.map((v) => `echo $${v}`).join("; "),
+    names.slice(0, 60).map((v) => `${v}=x`).join("; ") + "; " + names.map((v) => `sort $${v} $v0`).join("; ")];
+  const t0 = performance.now();
+  for (const line of lines) readOnlyCommand(line);
+  // Each took seconds when every part was compared with every name; a loaded machine still does all four well inside this.
+  expect(performance.now() - t0).toBeLessThan(1500);
+});
+
 test("an expansion among a reader's arguments is let through only where it cannot be an option", () => {
   for (const c of ["git diff $(git merge-base main HEAD)", "git log --oneline $(git rev-parse HEAD~3)..HEAD", 'git show "HEAD:$f"', "git log -1 -- $f", "rg foo -- $(git ls-files)", 'sort "./$f"',
     'find "$HOME/x" -name a', 'sed -n 1,5p -- "$f"', 'git -C "$dir" status', "echo $((1+2)) ${a[0]}", "x=5; echo $x"])

@@ -794,34 +794,44 @@ function byArguments(prog: string, args: string[]): boolean {
 // give the name another value.
 const ASSIGNS = /^(read|declare|typeset|local|export|readonly|unset|printf|mapfile|readarray|getopts|let|wait|coproc|builtin|command|eval|source|\.)$/;
 const WRITTEN = /^[A-Za-z0-9_.\/@:+,=%^-]+$/; // no blank, quote, glob or tilde: the same word quoted or not
+// A line that opens with more assignments than this is left as it is (its variables then ask): the work stays in step with the line's length.
+const MOST = 64;
 export function resolveVariables(parts: Simple[]): Simple[] {
-  const known = new Map<string, { text?: string; sub?: Simple[]; part: Simple }>();
+  // `at`: where the assignment stands among the parts. Only what runs after it reads its value.
+  const known = new Map<string, { text?: string; sub?: Simple[]; at: number }>();
   const dead = new Set<string>();
-  for (const p of parts) {
+  let seen = 0;
+  for (let at = 0; at < parts.length; at++) {
+    const p = parts[at]!;
     if (p.nested) continue; // the commands of a substitution in a value
     if (p.flow || p.unknown || p.redirects || p.heredoc || !p.words.length || !p.words.every((w) => /^[a-z_][a-z0-9_]*=/.test(w))) break;
     if (p.sep && p.sep !== "&&" && p.sep !== "||") break; // in a pipeline or the background it runs in a shell of its own
+    if ((seen += p.words.length) > MOST) return parts;
     let certain = true; // a substitution's failure is the assignment's: what follows `&&` may not run
     p.words.forEach((w, k) => {
       const name = w.slice(0, w.indexOf("="));
       const value = w.slice(name.length + 1);
       const m = p.how?.[p.dyn?.indexOf(k) ?? -1];
       if (known.has(name) || dead.has(name)) { known.delete(name); dead.add(name); }
-      else if (!m) { if (WRITTEN.test(value)) known.set(name, { text: value, part: p }); else dead.add(name); }
+      else if (!m) { if (WRITTEN.test(value)) known.set(name, { text: value, at }); else dead.add(name); }
       else {
         certain = false;
-        if ((value === "$(...)" || value === "`...`") && m.subs.length === 1 && !m.rest && !m.vars.length && prints(m.subs[0]!) === "hashes") known.set(name, { sub: m.subs[0]!, part: p });
+        if ((value === "$(...)" || value === "`...`") && m.subs.length === 1 && !m.rest && !m.vars.length && prints(m.subs[0]!) === "hashes") known.set(name, { sub: m.subs[0]!, at });
         else dead.add(name);
       }
     });
     if (p.sep === "||" || (p.sep === "&&" && !certain)) break;
   }
-  // Anything else on the line that could give a name a value takes the knowledge away.
-  for (const p of parts) {
+  // Anything else on the line that could give a name a value takes the knowledge away: one pass over its words.
+  for (let at = 0; at < parts.length && known.size; at++) {
+    const p = parts[at]!;
     const prog = body(p.words).words[0] ?? "";
-    for (const [name, k] of known) {
-      if (p !== k.part && p.words.some((w) => w.startsWith(name + "=") || w.startsWith(name + "+=") || w.startsWith(name + "["))) known.delete(name);
-      else if (ASSIGNS.test(prog) && (p.dyn || /^(eval|source|\.)$/.test(prog) || p.words.includes(name))) known.delete(name);
+    const names = ASSIGNS.test(prog);
+    if (names && (p.dyn || /^(eval|source|\.)$/.test(prog))) { known.clear(); break; }
+    for (const w of p.words) {
+      const given = /^([A-Za-z_][A-Za-z0-9_]*)(\+?=|\[)/.exec(w)?.[1];
+      if (given !== undefined && known.get(given)?.at !== at) known.delete(given);
+      if (names) known.delete(w);
     }
   }
   if (!known.size) return parts;
@@ -830,8 +840,8 @@ export function resolveVariables(parts: Simple[]): Simple[] {
     const words = [...p.words];
     const dyn: number[] = [];
     const how: Made[] = [];
-    // Only what runs after the assignment reads its value: a substitution in the assignment's own value runs before it.
-    const value = (name: string) => { const k = known.get(name); return k && parts.indexOf(k.part) < at ? k : undefined; };
+    // A substitution in the assignment's own value runs before the assignment.
+    const value = (name: string) => { const k = known.get(name); return k && k.at < at ? k : undefined; };
     p.dyn.forEach((n, k) => {
       const m = p.how![k]!;
       const mine = m.vars.map((v) => value(v.name));
