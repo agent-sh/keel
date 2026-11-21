@@ -7,6 +7,7 @@ import { composing } from "../lib/keys.ts";
 import { setOpenPlans } from "../lib/plans.ts";
 import { api, onFeature, reportUnlessGone, failed } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
+import { trayGauge } from "./Composer.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { Select } from "./Select.tsx";
 
@@ -82,7 +83,7 @@ function Plan({ c, first }: { c: Card; first: boolean }) {
     tray?.addEventListener("scroll", see, { passive: true });
     const sized = new ResizeObserver(see);
     sized.observe(el);
-    if (tray) sized.observe(tray);
+    if (tray) sized.observe(trayGauge(tray)!);
     return () => { el.removeEventListener("scroll", see); tray?.removeEventListener("scroll", see); sized.disconnect(); };
   }, [editing]);
   const [nudge, setNudge] = useState("");

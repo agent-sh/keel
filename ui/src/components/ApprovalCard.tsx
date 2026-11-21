@@ -12,6 +12,7 @@ import { failed, reportError } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { BlockedCards } from "./BlockedCards.tsx";
 import { Spelled } from "./Spelled.tsx";
+import { trayGauge } from "./Composer.tsx";
 import { SecretCards } from "./SecretCards.tsx";
 import { TrustCards } from "./TrustCards.tsx";
 import { PlanCards } from "./PlanCard.tsx";
@@ -173,7 +174,7 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
     const sized = new ResizeObserver(read);
     sized.observe(root);
     if (tray) {
-      sized.observe(tray);
+      sized.observe(trayGauge(tray)!);
       tray.addEventListener("scroll", read, { passive: true });
       tray.addEventListener("scrollend", ended);
       for (const h of hands) tray.addEventListener(h, hand, { capture: true, passive: true });
@@ -269,7 +270,7 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
       el.style.setProperty("--k-ask-bar", stays ? `${bar.offsetHeight}px` : "0px");
     };
     const sized = new ResizeObserver(fit);
-    for (const x of [bar, el, tray]) if (x) sized.observe(x);
+    for (const x of [bar, el, trayGauge(tray)]) if (x) sized.observe(x);
     fit();
     return () => sized.disconnect();
   }, [many]);

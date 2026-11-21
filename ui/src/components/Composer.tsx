@@ -993,10 +993,17 @@ function Tray({ children, asks }: { children: ReactNode; asks?: ReactNode }) {
         {children}
         <div ref={wait} className="k-asks" data-testid="composer-asks">{asks}</div>
       </div>
-      <div ref={gauge} aria-hidden="true" className="pointer-events-none invisible absolute inset-0" />
+      {/* (Whoever else watches the region's size watches this too: see trayGauge.) */}
+      <div ref={gauge} data-tray-gauge="" aria-hidden="true" className="pointer-events-none invisible absolute inset-0" />
     </div>
   );
 }
+// The element to watch for the size of the region above a message box: a child that fills
+// it, not the region itself. The transcript's observer changes this column's width from
+// inside its call, and an observer is told of that in the same pass only for an element
+// deeper than the transcript's own; one on the region is left undelivered, which the
+// browser reports as an error ("ResizeObserver loop completed with undelivered notifications").
+export const trayGauge = (tray: HTMLElement | null | undefined): HTMLElement | null => tray?.querySelector<HTMLElement>(":scope > [data-tray-gauge]") ?? tray ?? null;
 // Retry is the main action (filled), Restore the second (outlined), Discard the quiet one.
 const draftButton = "h-7 rounded-md px-2 font-medium disabled:opacity-40";
 
