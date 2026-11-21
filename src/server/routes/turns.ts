@@ -122,6 +122,8 @@ export const turnRoutes: RouteModule = (deps) => {
         const window = info?.context ?? 0;
         return json({
           context_window: window,
+          // The model's learned bytes a token: the page counts a context no reply has measured with it, as the daemon does.
+          bytes_per_token: bytesPerToken(s.model),
           // The listing gave no window: the number is the fallback compaction uses, not the model's.
           context_window_known: !!info && !info.context_assumed,
           context_used_tokens: t.used,

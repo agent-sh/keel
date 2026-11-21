@@ -8,6 +8,7 @@ import { apiPath, localize, splitId } from "./fleet-ids.ts";
 import { seedComposer } from "./ui.ts";
 import { servedUi } from "./hotui.ts";
 import { dropSendDrafts } from "./send-drafts.ts";
+import { setRatio } from "../../../src/engine/compact.ts";
 
 export type ProvidersReport = {
   providers: (ProviderStatus & { listing: { state: string; fetched_ms?: number; error?: string; models: number }; problem?: ProviderProblem })[];
@@ -170,9 +171,11 @@ export const actions = {
     const log = draftLog.get(id) ?? { n: 0, frames: [] };
     log.n++;
     draftLog.set(id, log);
-    let r: { session: Session; events?: StoredEvent[]; queue: QueueItem[]; held: boolean; status?: TurnStatus; draft?: Record<number, DraftBlock>; rev?: number };
+    let r: { session: Session; events?: StoredEvent[]; queue: QueueItem[]; held: boolean; status?: TurnStatus; draft?: Record<number, DraftBlock>; rev?: number; bytes_per_token?: number };
     try {
       r = await api(`/api/sessions/${id}${transcript ? "" : "?events=0"}`);
+      // The daemon's learned bytes a token for the session's model: the page's count of its context then agrees with the daemon's.
+      if (r.bytes_per_token) setRatio(r.session.model, r.bytes_per_token);
     } catch (e) {
       loading.delete(id);
       throw e;
@@ -283,6 +286,7 @@ export function onFeature(l: FeatureListener) {
 }
 export type ContextInfo = {
   context_window: number;
+  bytes_per_token?: number;
   context_used_tokens: number;
   compacts_at_tokens: number;
   zones: { key: string; bytes: number; estimated_tokens: number }[];

@@ -5,7 +5,7 @@ import { Popover } from "@base-ui/react/popover";
 import { ArrowUp, Check, ChevronDown, CornerDownRight, Gauge, GitBranch, Image as ImageIcon, Layers, ListPlus, Pencil, Play, RotateCcw, Send, Undo2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { lineage } from "../../../src/core/tree.ts";
-import { COMPACT_SHARE, contextTokens } from "../../../src/engine/compact.ts";
+import { COMPACT_SHARE, contextTokens, setRatio } from "../../../src/engine/compact.ts";
 import type { QueueItem } from "../../../src/core/types.ts";
 import { isLive, useAuto } from "../lib/automation.ts";
 import { actions, reportError, useStore, type ContextInfo, failed, showArchivedRefusal } from "../lib/store.ts";
@@ -183,12 +183,17 @@ export function ContextMeter({ sessionId }: { sessionId: string }) {
   // again on each committed event (not on streaming text); only the latest
   // answer is kept.
   const seq = useRef(0);
-  const reload = () => { const n = ++seq.current; return actions.context(sessionId).then((x) => { if (n === seq.current) setInfo(x); }); };
+  const reload = () => { const n = ++seq.current; return actions.context(sessionId).then((x) => { if (n !== seq.current) return; if (x.bytes_per_token && session) setRatio(session.model, x.bytes_per_token); setInfo(x); }); };
   useEffect(() => { if (open) reload().catch(reportError); }, [open, session?.head]);
   if (!session) return null;
   // No model row (the listing lacks it): counts and actions stay, without a share.
   const share = window_ ? Math.min(1, used / window_) : 0;
   const limit = session.settings.compact_at ?? (window_ ? Math.floor(window_ * COMPACT_SHARE) : 0);
+  // What the ring and its number show: how close the context is to where it
+  // compacts. That is its share of the window when the line is the usual share
+  // of it; with a line the owner set, the context is as full at that line as
+  // any other is at its own.
+  const fill = limit ? Math.min(1, (used / limit) * COMPACT_SHARE) : share;
   const windowText = !model ? "window unknown: the model is not in the current listing" : model.context_assumed ? `window unknown; ${fmtTokens(window_)} assumed for automatic compaction` : `${fmtTokens(window_)} window`;
   const usedText = est?.estimated ? `${fmtTokens(used)} tokens (${fmtTokens(est.measured)} measured, ~${fmtTokens(est.estimated)} estimated since)` : `${fmtTokens(used)} tokens`;
   const working = session.phase === "working";
@@ -213,8 +218,8 @@ export function ContextMeter({ sessionId }: { sessionId: string }) {
         title={`${usedText} in context; ${windowText}`}
         className="inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-caption text-muted tabular-nums hover:bg-hover hover:text-fg outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
       >
-        <Ring share={share} />
-        <span>{!window_ ? fmtTokens(used) : `${share < 0.01 && used ? "<1" : Math.round(share * 100)}%${model?.context_assumed ? "?" : ""}`}</span>
+        <Ring share={fill} />
+        <span>{!window_ ? fmtTokens(used) : `${fill < 0.01 && used ? "<1" : Math.round(fill * 100)}%${model?.context_assumed ? "?" : ""}`}</span>
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner side="top" align="end" sideOffset={8} className="z-50">
@@ -225,7 +230,7 @@ export function ContextMeter({ sessionId }: { sessionId: string }) {
             </p>
             {(!model || model.context_assumed) && <p className="mt-0.5 text-caption text-faint" data-testid="context-window-unknown">{windowText}</p>}
             <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-sunken">
-              <div className={cn("h-full rounded-full", share >= COMPACT_SHARE ? "bg-danger" : share >= 0.6 ? "bg-warn" : "bg-accent")} style={{ width: `${Math.max(1, share * 100)}%` }} />
+              <div className={cn("h-full rounded-full", fill >= COMPACT_SHARE ? "bg-danger" : fill >= 0.6 ? "bg-warn" : "bg-accent")} style={{ width: `${Math.max(1, share * 100)}%` }} />
             </div>
             {info && (
               <dl className="mt-3 grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 text-caption tabular-nums">
