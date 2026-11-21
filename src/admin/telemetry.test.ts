@@ -114,3 +114,65 @@ test("a cache break is a changed prefix only where a stored fingerprint differs"
   expect(changedBlocks([b("core", "1"), b("skills", "2"), b("place", "3")], [b("core", "1"), b("place", "3"), b("mcp", "4")])).toEqual(["mcp", "skills"]);
   expect(changedBlocks([b("core", "1")], [b("core", "1")])).toEqual([]);
 });
+
+// A budget is checked before every request. The spend it is held against is a
+// running total: equal to the ledger's sums after any run of requests, read
+// from the ledger once and not at each check.
+test("the running spend total equals the summed ledger after random requests", () => withStore(async (store) => {
+  const { Database } = await import("bun:sqlite");
+  const { spendOf } = await import("./telemetry-report.ts");
+  const s = store.createSession({ model: "p:main", workspace: "/" });
+  store.append(s.id, "user", { text: "Start" });
+  new PromptStore(store);
+  const t = new Telemetry(store, new Bus());
+  const hooks = allHooks().at(-1)!;
+  let rnd = 42;
+  const rand = () => ((rnd = (rnd * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+  const send = () => {
+    const req = { model: "m", system: "", messages: [], tools: [], signal: new AbortController().signal, purpose: rand() < 0.8 ? "turn" : "side", route: "p:main" } as any;
+    const sess = store.session(s.id)!;
+    hooks.requestSent!(sess, req);
+    const r = rand();
+    const usage = { input: Math.floor(rand() * 5000), output: Math.floor(rand() * 900), cache_read: 0, cache_write: 0, ...(r < 0.7 ? { cost: rand() * 0.3 } : r < 0.85 ? { unpriced: 1 } : {}) };
+    hooks.requestDone!(sess, req, { blocks: [], stop: "end_turn", usage } as any);
+  };
+  const limits = { daily_usd: null, monthly_usd: null };
+  const same = () => {
+    const have = t.spend(), want = spendOf(store.db, limits);
+    for (const k of ["day", "month"] as const) {
+      expect(have[k].since_ms).toBe(want[k].since_ms);
+      expect(have[k].usd).toBeCloseTo(want[k].usd, 9);
+      expect(have[k].unpriced_calls).toBe(want[k].unpriced_calls);
+    }
+    return have;
+  };
+  // Rows of earlier this month and of last month, written before the first check.
+  const day = new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()).getTime();
+  const old = store.db.query("INSERT INTO telemetry_calls (session_id, ts, model, cost, unpriced, outcome) VALUES (?, ?, 'p:main', ?, 0, 'ok')");
+  for (let n = 0; n < 40; n++) old.run(s.id, day - Math.floor(rand() * 50 * 86_400_000), rand());
+  t.spendChanged();
+  expect(same().month.usd).toBeGreaterThan(0);
+  // The sums are read from the ledger for the first check only.
+  let sums = 0;
+  const query = store.db.query.bind(store.db);
+  (store.db as any).query = (sql: string) => { if (sql.includes("SUM(cost)")) sums++; return query(sql); };
+  for (let n = 0; n < 300; n++) {
+    send();
+    if (n % 7 === 0) t.spend();
+  }
+  expect(sums).toBe(0);
+  (store.db as any).query = query;
+  expect(same().day.usd).toBeGreaterThan(0);
+  expect(store.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM telemetry_calls").get()!.n).toBe(340);
+  // A row written by another connection (another process) is seen at the next check.
+  const other = new Database(join(store.stateDir, "keel.db"));
+  other.run("INSERT INTO telemetry_calls (session_id, ts, model, cost, unpriced, outcome) VALUES (?, ?, 'p:main', 5, 0, 'ok')", [s.id, Date.now()]);
+  other.close();
+  const after = same();
+  expect(after.day.usd).toBeGreaterThan(5);
+  // The day turns: the day's sum starts again, the month's goes on.
+  const tomorrow = new Date(day + 30 * 3_600_000);
+  const next = t.spend(tomorrow), want = spendOf(store.db, limits, tomorrow);
+  expect(next.day.usd).toBe(want.day.usd);
+  expect(next.month.usd).toBeCloseTo(want.month.usd, 9);
+}));

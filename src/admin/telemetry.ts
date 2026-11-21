@@ -249,6 +249,7 @@ export class Telemetry {
         p.attempt, now - p.step0, p.text === undefined ? null : p.text - p.t0, p.compaction,
         x?.tools ?? null, x?.system ?? null, x?.n ?? null, x?.msgs ?? null, x?.kept ?? null, brk?.detail ?? null, p.cacheMs,
         tag?.exp_id ?? null, tag?.arm ?? null, p.toolset, u.speed ?? u.speed_asked ?? null, p.effort);
+    this.spent(p.t0, typeof u.cost === "number" ? u.cost : null, u.unpriced ? 1 : 0);
   }
 
   // A turn request that read less than half of what it and the last one of the
@@ -291,9 +292,44 @@ export class Telemetry {
     return !!this.store.db.query("SELECT 1 FROM events WHERE session_id = ? AND kind = 'compaction' AND ts > ? AND ts <= ? LIMIT 1").get(sessionId, a, b);
   }
 
-  // Priced spend since local midnight and since the first of the month.
+  // Priced spend since local midnight and since the first of the month. A
+  // budget is checked before every request, so the two sums are not read from
+  // the ledger each time: they are read once for the day (and again when
+  // another connection wrote to the database), and every request this daemon
+  // records after that is added to them (spent). Whatever else changes the
+  // ledger's rows of this month calls spendChanged.
+  private totals?: { day: number; month: number; version: number; sums: { usd: number; unpriced: number }[] };
+  private dataVersion(): number {
+    return this.store.db.query<{ data_version: number }, []>("PRAGMA data_version").get()!.data_version;
+  }
   spend(now = new Date()) {
-    return spendOf(this.store.db, this.limits(), now);
+    const limits = this.limits();
+    const day = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const month = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    const version = this.dataVersion();
+    let t = this.totals;
+    if (!t || t.day !== day || t.month !== month || t.version !== version) {
+      const s = spendOf(this.store.db, limits, now);
+      t = this.totals = { day, month, version, sums: [{ usd: s.day.usd, unpriced: s.day.unpriced_calls }, { usd: s.month.usd, unpriced: s.month.unpriced_calls }] };
+    }
+    return {
+      day: { since_ms: day, usd: t.sums[0]!.usd, unpriced_calls: t.sums[0]!.unpriced, limit_usd: limits.daily_usd },
+      month: { since_ms: month, usd: t.sums[1]!.usd, unpriced_calls: t.sums[1]!.unpriced, limit_usd: limits.monthly_usd },
+    };
+  }
+  // A request was recorded in the ledger with this start time, cost and unpriced mark.
+  private spent(ts: number, cost: number | null, unpriced: number) {
+    const t = this.totals;
+    if (!t) return;
+    for (const [i, since] of [t.day, t.month].entries()) {
+      if (ts < since) continue;
+      t.sums[i]!.usd += cost ?? 0;
+      t.sums[i]!.unpriced += unpriced;
+    }
+  }
+  // The ledger changed by another way than a recorded request: the sums are read again.
+  spendChanged() {
+    this.totals = undefined;
   }
 
   private limits(): Limits {
