@@ -353,3 +353,79 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     d.proc.kill("SIGKILL");
   }
 });
+
+// Feature: the timeline as a tool. A session with no shell reads the text form
+// of its own timeline, and of an agent it started, through
+// keel__session_timeline (since, only, limit, before); it is refused any other
+// session, and so is an agent asking for its parent's. Content-free like the route.
+test("a session reads its own timeline and its agents' through a tool, and no other session's", async ({ page }) => {
+  const state = join(ROOT, `timeline-tool-${Date.now()}`);
+  made.push(state);
+  for (const d of ["state", "work", "config", "home"]) mkdirSync(join(state, d), { recursive: true });
+  const d = await daemon(state);
+  const call = (path: string, body?: unknown, method = body === undefined ? "GET" : "POST") =>
+    fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json() as any);
+  try {
+    const open = async (title: string) => {
+      const { session } = await call("/api/sessions", { model: "scripted:stand-in", title });
+      await call(`/api/sessions/${session.id}/permissions`, { mode: "full-auto" }, "PUT");
+      return session.id as string;
+    };
+    const id = await open("Reads its own story");
+    const other = await open("Someone else's work");
+    const events = async (sid: string): Promise<StoredEvent[]> => (await call(`/api/sessions/${sid}`)).events;
+    const idle = (sid: string, ends: number) =>
+      expect.poll(async () => { const v = await call(`/api/sessions/${sid}`); return !v.running && (v.events as StoredEvent[]).filter((e) => e.kind === "turn_end").length; }, { timeout: 60_000 }).toBe(ends);
+    const results = async (sid: string) => (await events(sid)).flatMap((e) => (e.kind === "tool_result" ? (e.data.results as { content: string; is_error?: boolean }[]) : []));
+    const tool = (input: Record<string, unknown> = {}) => ({ name: "keel__session_timeline", input });
+    await call(`/api/sessions/${other}/messages`, { text: "timeline-prompt-marker script:slow" });
+    await idle(other, 1);
+
+    // The agent runs a command, reads its own timeline and asks for its parent's.
+    const task = `Scout the parser\n${script([{ name: "Bash", input: { command: "echo timeline-tool-marker" } }, tool(), tool({ session: id })])}`;
+    await call(`/api/sessions/${id}/messages`, { text: `timeline-prompt-marker ${script([{ name: "spawn_agent", input: { message: task, isolation: "none" } }])}` });
+    await idle(id, 2); // the spawn, then the agent's report
+    const agent = (await call(`/api/sessions/${id}/agents`)).agents[0] as { id: string; session_id: string };
+    const own = (await results(agent.session_id)).slice(1);
+    expect(own[0]!.is_error ?? false).toBe(false);
+    expect(own[0]!.content).toContain(`(${agent.session_id}), newest first`);
+    expect(own[0]!.content).toContain("Now: working.");
+    expect(own[1]).toMatchObject({ is_error: true, content: expect.stringContaining("NOT_YOURS") });
+
+    await call(`/api/sessions/${id}/messages`, {
+      text: script([tool(), tool({ session: agent.id, only: "turns", limit: 1 }), tool({ session: agent.session_id, since: "1h", only: "failures" }), tool({ since: "2099-01-01T00:00:00Z" }), tool({ session: other }), tool({ only: "nothing" }), tool({ limit: 0 })]),
+    });
+    await idle(id, 3);
+    const got = (await results(id)).slice(-7);
+    // Its own: what it does now and its turns, each with the id that opens its receipt.
+    expect(got[0]!.content).toContain(`Timeline of session "Reads its own story" (${id}), newest first.`);
+    expect(got[0]!.content).toContain("Now: working.");
+    expect(got[0]!.content).toMatch(/\n\d\d-\d\d \d\d:\d\d:\d\d {3}Owner prompt, 2 steps, \d+ m?s, \$[\d.]+ {2}\[turn=[0-9a-f-]{36}\]/);
+    expect(got[0]!.content).toMatch(/Agent .*Scout the parser/);
+    // Its agent's, by agent id and by session id, cut down by only, limit and since.
+    expect(got[1]!.content).toContain(`(${agent.session_id}), newest first`);
+    expect(got[1]!.content.split("\n").filter((l) => /^\d\d-\d\d /.test(l))).toHaveLength(1);
+    expect(got[2]!.content).toContain(`(${agent.session_id}), newest first`);
+    expect(got[2]!.content).toMatch(/Parent's task, 4 steps, 1 failed tool/); // the refused look at its parent
+    expect(got[3]!.content.split("\n").filter((l) => /^\d\d-\d\d /.test(l))).toHaveLength(0);
+    // The route gives the same text for the same page.
+    const route = await (await fetch(`${d.url}/api/sessions/${agent.session_id}/timeline?format=text&only=turns&limit=1`)).text();
+    expect(got[1]!.content.split("\n").slice(1)).toEqual(route.trimEnd().split("\n").slice(1));
+    // Another session is refused, and nothing of it is said; bad input reads as the route's.
+    expect(got[4]).toMatchObject({ is_error: true, content: expect.stringContaining("NOT_YOURS") });
+    expect(got[5]).toMatchObject({ is_error: true, content: "only is one of failures, turns, agents" });
+    expect(got[6]).toMatchObject({ is_error: true, content: expect.stringContaining("limit is a whole number") });
+    const said = got.map((r) => r.content).join("\n") + own.map((r) => r.content).join("\n");
+    for (const word of [...PRIVATE, "Someone else's work", other]) expect(said).not.toContain(word);
+    expect(got.slice(0, 4).every((r) => !r.is_error)).toBe(true);
+
+    await page.goto(`${d.url}/s/${id}`);
+    await expect(page.getByTestId("assistant-text").last()).toContainText("Done with 7 calls", { timeout: 30_000 });
+    await shoot(page, "timeline-tool-01-calls");
+    const errs = (await call("/api/errors?resolved=0")).errors as { context?: { at?: string } }[];
+    expect(errs.filter((e) => e.context?.at !== "listing")).toEqual([]);
+  } finally {
+    d.proc.kill("SIGKILL");
+    await exited(d.proc);
+  }
+});

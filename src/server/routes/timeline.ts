@@ -17,8 +17,11 @@
 // and titles, never a prompt, a tool's input or output or an error's message.
 import { ONLY, PAGE, PAGE_MAX, parseSince, Timeline, type Only } from "../../admin/timeline.ts";
 import { timelineText } from "../../admin/timeline-rows.ts";
+import * as agents from "../../automation/agents.ts";
 import { hasPending } from "../../automation/core.ts";
 import { allPendingQuestions } from "../../tools/interact.ts";
+import { registerShared } from "../../tools/registry.ts";
+import { fail, ok, type Tool } from "../../tools/types.ts";
 import type { RouteModule } from "../app.ts";
 
 const bad = (error: string, status = 400) => Response.json({ error }, { status });
@@ -32,6 +35,47 @@ export const timelineRoutes: RouteModule = ({ store, engine }) => {
     owed: hasPending,
     questions: allPendingQuestions,
   });
+  // The text form as a tool, for a session with no shell to ask the route:
+  // its own timeline, or that of an agent it started, and no other session's.
+  const SessionTimeline: Tool = {
+    name: "keel__session_timeline",
+    readOnly: true,
+    description:
+      "The timeline of this session or of an agent you started, a line a row, newest first: what it does now, its turns, agents, waits, approvals and failures. Ids, counts and durations only, no prompt or tool output: where an agent stands or what failed, without its transcript.",
+    input_schema: {
+      type: "object",
+      properties: {
+        session: { type: "string", description: "An agent you started (its id or session id). Omit for this session." },
+        since: { type: "string", description: "Nothing older: a span back from now (90s, 30m, 1h, 2d) or an ISO time." },
+        only: { type: "string", enum: ONLY },
+        limit: { type: "integer", description: `Rows, 1 to ${PAGE_MAX} (default ${PAGE}).` },
+        before: { type: "string", description: "The cursor an answer ended with, for older rows." },
+      },
+      additionalProperties: false,
+    },
+    async run(input, ctx) {
+      const want = String(input?.session ?? "").trim();
+      let id = ctx.sessionId;
+      if (want && want !== ctx.sessionId) {
+        const a = agents.get(want) ?? agents.byChild(want);
+        if (a?.parent_id !== ctx.sessionId) return fail("NOT_YOURS: this tool reads this session and the agents it started. Name one of your agents (its id or its session id), or leave session out.");
+        id = a.session_id;
+      }
+      const s = store.session(id);
+      if (!s) return fail("NOT_AVAILABLE: that session is not on this machine any more.");
+      const { limit, only } = input ?? {};
+      if (limit !== undefined && !(Number.isInteger(limit) && limit >= 1)) return fail(`limit is a whole number of rows from 1 up (${PAGE} by default, at most ${PAGE_MAX})`);
+      if (only !== undefined && !ONLY.includes(only)) return fail(`only is one of ${ONLY.join(", ")}`);
+      try {
+        const page = timeline.page(id, { before: input?.before ? String(input.before) : null, limit, only: only ?? null, since: input?.since ? parseSince(String(input.since)) : null });
+        return ok(timelineText(page, { title: s.title }));
+      } catch (e) {
+        return fail((e as Error).message);
+      }
+    },
+  };
+  registerShared(SessionTimeline);
+
   return {
     "/api/sessions/:id/timeline": {
       GET: (req: Request & { params: { id: string } }) => {
