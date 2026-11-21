@@ -136,17 +136,16 @@ function Picker({ list, open, label, testid = "panel-menu" }: { list: Panel[]; o
   );
 }
 
-// The header: the panels at hand, then the picker with all of them.
-export function PanelToggles({ session }: { session: Session }) {
+// The header's shortcuts: the panels at hand. They show while the row has room
+// for them; the chooser below holds every panel either way.
+export function PanelHand({ session }: { session: Session }) {
   useSyncExternalStore(panels.subscribe, panels.version);
   usePrefs();
   const open = useUI((s) => s.panel);
-  const list = visible(session);
-  if (!list.length) return null;
-  const hand = phone() ? [] : atHand(list, open);
+  if (phone()) return null;
   return (
     <>
-      {hand.map((p) => (
+      {atHand(visible(session), open).map((p) => (
         <button
           key={p.id}
           type="button"
@@ -160,9 +159,16 @@ export function PanelToggles({ session }: { session: Session }) {
           {p.icon}
         </button>
       ))}
-      <Picker list={list} open={open} />
     </>
   );
+}
+
+// The Panels chooser, with all of them: it never leaves the header.
+export function PanelsButton({ session }: { session: Session }) {
+  useSyncExternalStore(panels.subscribe, panels.version);
+  const open = useUI((s) => s.panel);
+  const list = visible(session);
+  return list.length ? <Picker list={list} open={open} /> : null;
 }
 
 // The panel of the helm. The bridge says which form it takes (rail.ts decides
