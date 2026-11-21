@@ -12,7 +12,7 @@
 // sources, wins; one from other sources (the binary moved on) is passed over.
 // Pages of every bundle still held keep their files: an open page that loads a
 // chunk after a swap still finds it.
-import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileRoute } from "./compress.ts";
 
@@ -52,6 +52,18 @@ export function checkManifest(m: any, api: string, have: Set<string>): UiManifes
   }
   if (m.api !== api) throw Object.assign(new Error(`this UI was built from other daemon sources (${m.api}, the daemon is ${api}): it needs a daemon restart onto a new binary`), { status: 409, code: "api_mismatch" });
   return { format: 1, version: m.version, api: m.api, files: m.files };
+}
+
+// A file written and synced, and a folder's entries synced (where the system syncs folders).
+function writeSynced(path: string, bytes: Uint8Array) {
+  const fd = openSync(path, "w");
+  try {
+    for (let at = 0; at < bytes.length; ) at += writeSync(fd, bytes, at);
+    fsyncSync(fd);
+  } finally { closeSync(fd); }
+}
+function syncDir(dir: string) {
+  try { const fd = openSync(dir, "r"); try { fsyncSync(fd); } finally { closeSync(fd); } } catch {}
 }
 
 type Held = { manifest: UiManifest; dir: string; page: (req: Request) => Response; files: Map<string, (req: Request) => Response> };
@@ -162,13 +174,19 @@ export class UiBundles {
     const stage = join(this.root, `.stage-${process.pid}-${++this.staged}`);
     let moved = false;
     try {
+      // Each file, then each folder, is on disk before the pointer names the bundle: after a
+      // power cut the pointer never leads to a folder of empty files.
+      const folders = new Set([stage]);
       for (const f of names) {
         mkdirSync(join(stage, f, ".."), { recursive: true });
-        writeFileSync(join(stage, f), data.get(f)!);
+        folders.add(join(stage, f, ".."));
+        writeSynced(join(stage, f), data.get(f)!);
       }
+      for (const d of folders) syncDir(d);
       const h = this.load(stage, m.version);
       rmSync(dir, { recursive: true, force: true }); // not kept (checked above): left by an install that was cut
       renameSync(stage, dir);
+      syncDir(this.root);
       moved = true;
       this.held.set(m.version, h);
       this.point({ current: m.version, previous: served });
@@ -193,6 +211,7 @@ export class UiBundles {
     const fd = openSync(`${f}.part`, "w");
     try { writeSync(fd, JSON.stringify(p)); fsyncSync(fd); } finally { closeSync(fd); }
     renameSync(`${f}.part`, f);
+    syncDir(this.root);
     this.ptr = p;
     this.active = p.current ? { source: "installed", version: String(p.current) } : { source: "embedded", version: this.embedded.version };
     // Two kept: what is served and the one before it.
