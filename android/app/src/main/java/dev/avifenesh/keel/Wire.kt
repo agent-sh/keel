@@ -50,32 +50,9 @@ object Wire {
     fun sendId(keptId: String, keptText: String, text: String, fresh: () -> String = { java.util.UUID.randomUUID().toString() }): String =
         if (keptId.isNotEmpty() && keptText == text) keptId else fresh()
 
-    /**
-     * A prompt as the daemon takes it (POST /v1/chats/:id/messages). mode: send,
-     * steer or queue. uploads: what the prompt carries, each already stored by
-     * /v1/upload and named by the id its answer gave.
-     */
-    fun sendBody(text: String, mode: String, clientId: String, uploads: List<Upload> = emptyList()): JSONObject {
-        val body = JSONObject().put("text", text).put("mode", mode).put("client_id", clientId)
-        if (uploads.isNotEmpty()) body.put("attachments", JSONArray().apply {
-            uploads.forEach { put(JSONObject().put("id", it.id).put("mime", it.mime).put("file_name", it.fileName)) }
-        })
-        return body
-    }
-
-    /**
-     * What a draft's send is known by: its words and the ids of what it
-     * carries. The same again is the same send (sendId); anything else is new.
-     */
-    fun sendKey(text: String, uploads: List<Upload>): String = (listOf(text) + uploads.map { it.id }).joinToString("\u0000")
-
-    /**
-     * Whether a draft may be sent. Every file picked for it must be stored on
-     * the daemon first: with one still uploading or failed nothing goes, so the
-     * words never arrive without what they are about.
-     */
-    fun sendable(text: String, picked: Int, uploads: List<Upload>): Boolean =
-        uploads.size == picked && (text.isNotBlank() || uploads.isNotEmpty())
+    /** A prompt as the daemon takes it (POST /v1/chats/:id/messages). mode: send, steer or queue. */
+    fun sendBody(text: String, mode: String, clientId: String): JSONObject =
+        JSONObject().put("text", text).put("mode", mode).put("client_id", clientId)
 
     /** A card's answer as the daemon takes it (POST /v1/approvals/:id). answers: by question id, one label or a list of them. */
     fun answerBody(choice: String, answers: Map<String, Any>?): JSONObject {
@@ -163,13 +140,6 @@ data class Attachment(val kind: String, val media: String, val mime: String, val
     }
 }
 
-/** A file stored for the next prompt: the answer of POST /v1/upload. kind "image" means the model sees it as one. */
-data class Upload(val id: String, val kind: String, val mime: String, val fileName: String, val size: Long) {
-    companion object {
-        fun of(o: JSONObject) = Upload(o.str("id"), o.str("kind", "file"), o.str("mime"), o.str("file_name"), o.optLong("size", 0))
-    }
-}
-
 data class Msg(
     val id: String, val chatId: String, val role: String, val kind: String, val content: String, val ts: Double,
     val model: String = "", val steps: List<Step> = emptyList(), val approvalId: String? = null, val outcome: String = "",
@@ -232,13 +202,15 @@ data class Unpaired(val revoked: Boolean, val note: String)
 /**
  * The outcome of asking the daemon to revoke this phone (DELETE /v1/devices/<id>)
  * before its keys are deleted here. Revoked: the daemon said ok, or refused the
- * request as unauthorized (it had revoked this phone already). Anything else,
- * no answer included, leaves the phone listed there: the keys are gone here
- * all the same, and the owner is told to revoke it on the computer.
+ * request with 401 "unauthorized" (it had revoked this phone already, so its
+ * token is unknown). Anything else, no answer included, leaves the phone
+ * listed there: a 401 for a bad signature (the phone's clock is off) too. The
+ * keys are gone here all the same, and the owner is told to revoke it on the
+ * computer.
  */
-fun unpaired(answer: JSONObject?, code: Int?, server: String): Unpaired {
+fun unpaired(answer: JSONObject?, code: Int?, error: String?, server: String): Unpaired {
     val name = server.ifBlank { "The daemon" }
-    return if (answer?.optBoolean("ok") == true || code == 401) Unpaired(true, "Unpaired. $name no longer accepts this phone.")
+    return if (answer?.optBoolean("ok") == true || (code == 401 && error == "unauthorized")) Unpaired(true, "Unpaired. $name no longer accepts this phone.")
     else Unpaired(false, "This phone's keys are deleted, but $name did not confirm that it revoked this phone, so it may still list it. On the computer, open Settings, then Phone, and revoke it there.")
 }
 
@@ -273,3 +245,92 @@ fun elapsed(secs: Double, now: Double = System.currentTimeMillis() / 1000.0): St
         else -> "${d / 3600}h %02dm".format((d % 3600) / 60)
     }
 }
+
+// --- the daemon's other answers, as values --------------------------------------
+// Every field the app reads of the daemon is read in this file or in Feed.kt,
+// and is named in the wire contract (ContractTest checks both).
+
+/** The daemon's refusal: `error` in the body of a failed request. */
+fun errorOf(body: String): String = runCatching { JSONObject(body).str("error") }.getOrDefault("")
+
+/** POST /v1/pair: the device the daemon made for this phone. */
+data class Paired(val token: String, val deviceId: String, val server: String) {
+    companion object {
+        fun of(o: JSONObject) = Paired(o.str("token"), o.str("device_id"), o.optJSONObject("server")?.str("name").orEmpty())
+    }
+}
+
+/** GET /v1/me: what Settings says of the machine and of this phone. */
+data class Me(val model: String, val device: String) {
+    companion object {
+        fun of(o: JSONObject) = Me(o.str("model"), o.optJSONObject("device")?.str("name").orEmpty())
+    }
+}
+
+/** GET /v1/push-config?app=<package>: this app's Firebase entry on the daemon, or the file the daemon looks for. */
+data class PushConfig(val enabled: Boolean, val missing: String, val apiKey: String, val appId: String, val projectId: String, val senderId: String) {
+    companion object {
+        fun of(o: JSONObject): PushConfig {
+            val c = o.optJSONObject("config") ?: JSONObject()
+            return PushConfig(o.optBoolean("enabled"), o.str("missing"), c.str("api_key"), c.str("app_id"), c.str("project_id"), c.str("sender_id"))
+        }
+    }
+}
+
+/** One push, as its data arrives: the kind, the session, the alert's words, the card it is about, the choices a notification offers, the id to confirm. */
+data class PushMsg(val kind: String, val chat: String?, val title: String, val body: String, val card: String?, val choices: List<String>, val id: String?) {
+    companion object {
+        fun of(d: Map<String, String>) = PushMsg(
+            kind = d["t"].orEmpty(), chat = d["c"]?.takeIf { it.isNotBlank() }, title = d["title"].orEmpty(), body = d["body"].orEmpty(),
+            card = d["aid"]?.takeIf { it.isNotBlank() },
+            choices = runCatching { JSONArray(d["opts"] ?: "[]").let { a -> (0 until a.length()).map { a.getString(it) } } }.getOrDefault(emptyList()),
+            id = d["n"]?.takeIf { it.isNotBlank() },
+        )
+    }
+}
+
+/** A running session on the Usage screen: every input token, cached or not, and the spend when it is priced. */
+data class PulseSession(val id: String, val title: String, val model: String, val tokensIn: Long, val tokensOut: Long, val cost: Double?)
+
+/** GET /v1/pulse: today's spend and turns, the week's bars, the open cards, the sessions. */
+data class Pulse(
+    val tz: String, val spendToday: Double?, val unpricedToday: Int, val runsToday: Int, val failuresToday: Int,
+    val week: List<Double>, val cards: List<Card>, val sessions: List<PulseSession>,
+) {
+    companion object {
+        fun of(o: JSONObject): Pulse {
+            fun objs(k: String) = o.optJSONArray(k)?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) } }.orEmpty()
+            return Pulse(
+                tz = o.str("tz"), spendToday = if (o.isNull("spend_today")) null else o.optDouble("spend_today"),
+                unpricedToday = o.optInt("spend_today_unpriced"), runsToday = o.optInt("runs_today"), failuresToday = o.optInt("failures_today"),
+                week = o.optJSONArray("spend_7d")?.let { a -> (0 until a.length()).map { a.optDouble(it, 0.0) } }.orEmpty(),
+                cards = objs("approvals").map(Card::of),
+                sessions = objs("live_sessions").map { s ->
+                    val u = s.optJSONObject("usage") ?: JSONObject()
+                    PulseSession(
+                        s.str("id"), s.str("title"), s.str("model"), u.optLong("input") + u.optLong("cache_read") + u.optLong("cache_write"),
+                        u.optLong("output"), if (u.isNull("cost")) null else u.optDouble("cost"),
+                    )
+                },
+            )
+        }
+    }
+}
+
+/** GET /v1/chats/:id/usage in a line: the model, the tokens in and out, the cached ones, the spend. */
+fun usageLine(o: JSONObject): String {
+    val s = o.optJSONObject("session") ?: return "No usage yet"
+    fun n(v: Long) = if (v >= 1_000_000) "%.1fM".format(v / 1e6) else if (v >= 1000) "%.1fk".format(v / 1e3) else "$v"
+    val cost = if (s.isNull("cost")) "not priced" else "$%.4f".format(s.optDouble("cost"))
+    return "${s.str("model")} · in ${n(s.optLong("prompt_tokens"))} · out ${n(s.optLong("output_tokens"))} · cached ${n(s.optLong("cache_read_tokens"))} · $cost"
+}
+
+/** The newest message held of a chat, by the daemon's clock: what a send is measured against. */
+fun newestTs(held: List<Msg>): Double = held.maxOfOrNull { it.ts } ?: 0.0
+
+/**
+ * Whether a send that got no answer here did reach the daemon: the owner's own
+ * words are held as a message newer than everything held when the send was
+ * made. That send is done, and the same words sent again are a new prompt.
+ */
+fun sendArrived(held: List<Msg>, text: String, after: Double): Boolean = held.any { it.mine && it.content == text && it.ts > after }

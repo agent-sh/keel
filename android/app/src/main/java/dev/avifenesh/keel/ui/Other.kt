@@ -41,14 +41,14 @@ import dev.avifenesh.keel.ApiError
 import dev.avifenesh.keel.BuildConfigLike
 import dev.avifenesh.keel.Hub
 import dev.avifenesh.keel.MainActivity
+import dev.avifenesh.keel.Me
 import dev.avifenesh.keel.Prefs
+import dev.avifenesh.keel.Pulse
 import dev.avifenesh.keel.Push
 import dev.avifenesh.keel.State
 import dev.avifenesh.keel.Ui
-import dev.avifenesh.keel.str
 import dev.avifenesh.keel.unpaired
 import kotlinx.coroutines.launch
-import org.json.JSONObject
 
 @Composable
 fun NeedsScreen(act: MainActivity) {
@@ -76,13 +76,13 @@ fun NeedsScreen(act: MainActivity) {
 @Composable
 fun UsageScreen() {
     val k = k()
-    var data by remember { mutableStateOf<JSONObject?>(null) }
+    var data by remember { mutableStateOf<Pulse?>(null) }
     var error by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     fun load() { scope.launch { runCatching { Hub.pulse() }.onSuccess { data = it; error = "" }.onFailure { error = it.message ?: "Not available" } } }
     LaunchedEffect(Unit) { load() }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        Head("Usage", sub = { Txt(data?.str("tz")?.let { "Days in $it" } ?: "From this machine's turns", T.meta, k.muted) }) {
+        Head("Usage", sub = { Txt(data?.tz?.takeIf { it.isNotBlank() }?.let { "Days in $it" } ?: "From this machine's turns", T.meta, k.muted) }) {
             IconBtn(Ic.RotateCw, "Refresh", { load() }, tint = k.muted, modifier = Modifier.semantics { contentDescription = "refresh" })
         }
         if (error.isNotBlank()) Notice(error, modifier = Modifier.padding(S.lg))
@@ -92,16 +92,15 @@ fun UsageScreen() {
                 Column(Modifier.padding(S.lg)) {
                     Txt("TODAY", T.label, k.muted)
                     Spacer(Modifier.height(6.dp))
-                    val spend = if (d.isNull("spend_today")) null else d.optDouble("spend_today")
-                    Txt(spend?.let { money(it) } ?: "Not priced", T.display.copy(fontSize = T.display.fontSize * 1.25f))
-                    val unpriced = d.optInt("spend_today_unpriced")
+                    Txt(d.spendToday?.let { money(it) } ?: "Not priced", T.display.copy(fontSize = T.display.fontSize * 1.25f))
+                    val unpriced = d.unpricedToday
                     if (unpriced > 0) Txt("$unpriced turn${if (unpriced == 1) "" else "s"} had no price", T.meta, k.faint)
                     Spacer(Modifier.height(S.lg))
                     Row {
-                        Stat("Turns", "${d.optInt("runs_today")}", k.fg, Modifier.weight(1f))
-                        val f = d.optInt("failures_today")
+                        Stat("Turns", "${d.runsToday}", k.fg, Modifier.weight(1f))
+                        val f = d.failuresToday
                         Stat("Failed runs", "$f", if (f > 0) k.fail else k.fg, Modifier.weight(1f))
-                        val w = d.optJSONArray("approvals")?.length() ?: 0
+                        val w = d.cards.size
                         Stat("Waiting", "$w", if (w > 0) k.need else k.fg, Modifier.weight(1f))
                     }
                 }
@@ -110,8 +109,7 @@ fun UsageScreen() {
                 Column(Modifier.padding(S.lg)) {
                     Txt("SEVEN DAYS", T.label, k.muted)
                     Spacer(Modifier.height(S.md))
-                    val a = d.optJSONArray("spend_7d")
-                    val v = (0 until (a?.length() ?: 0)).map { a!!.optDouble(it, 0.0) }
+                    val v = d.week
                     Bars(v)
                     Spacer(Modifier.height(8.dp))
                     Row(Modifier.fillMaxWidth()) {
@@ -122,19 +120,17 @@ fun UsageScreen() {
                     Txt("${money(v.sum())} this week", T.meta, k.muted)
                 }
             }
-            val sessions = d.optJSONArray("live_sessions")?.let { s -> (0 until s.length()).mapNotNull { s.optJSONObject(it) } }.orEmpty()
-                .filter { it.optJSONObject("usage") != null }.sortedByDescending { it.optJSONObject("usage")!!.optDouble("cost", 0.0) }.take(8)
+            val sessions = d.sessions.sortedByDescending { it.cost ?: 0.0 }.take(8)
             if (sessions.isNotEmpty()) Panel {
                 Column(Modifier.padding(vertical = S.sm)) {
                     Txt("SESSIONS BY SPEND", T.label, k.muted, Modifier.padding(horizontal = S.lg, vertical = S.sm))
                     for (s in sessions) {
-                        val u = s.getJSONObject("usage")
-                        Row(Modifier.fillMaxWidth().press({ Ui.open(s.str("id")) }).padding(horizontal = S.lg, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.fillMaxWidth().press({ Ui.open(s.id) }).padding(horizontal = S.lg, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Txt(s.str("title").ifBlank { "New chat" }, T.uiStrong, maxLines = 1)
-                                Txt("${s.str("model").substringAfter(':')} · ${tok(u.optLong("input") + u.optLong("cache_read") + u.optLong("cache_write"))} in · ${tok(u.optLong("output"))} out", T.meta, k.faint, maxLines = 1)
+                                Txt(s.title.ifBlank { "New chat" }, T.uiStrong, maxLines = 1)
+                                Txt("${s.model.substringAfter(':')} · ${tok(s.tokensIn)} in · ${tok(s.tokensOut)} out", T.meta, k.faint, maxLines = 1)
                             }
-                            Txt(if (u.isNull("cost") || !u.has("cost")) "n/p" else money(u.optDouble("cost")), T.meta, k.fg)
+                            Txt(s.cost?.let { money(it) } ?: "n/p", T.meta, k.fg)
                         }
                     }
                 }
@@ -176,7 +172,7 @@ fun SettingsScreen(act: MainActivity) {
     var confirm by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var note by remember { mutableStateOf("") }
-    var me by remember { mutableStateOf<JSONObject?>(null) }
+    var me by remember { mutableStateOf<Me?>(null) }
     LaunchedEffect(Unit) { me = runCatching { Hub.me() }.getOrNull() }
     val notifOn = Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(act, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
     Box(Modifier.fillMaxSize()) {
@@ -188,13 +184,13 @@ fun SettingsScreen(act: MainActivity) {
                         Txt("MACHINE", T.label, k.muted)
                         Kv("Name", Prefs.server ?: "Keel")
                         Kv("Address", Prefs.base.orEmpty(), mono = true)
-                        me?.str("model")?.takeIf { it.isNotBlank() }?.let { Kv("Default model", it, mono = true) }
+                        me?.model?.takeIf { it.isNotBlank() }?.let { Kv("Default model", it, mono = true) }
                     }
                 }
                 Panel {
                     Column(Modifier.padding(S.lg), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Txt("THIS PHONE", T.label, k.muted)
-                        me?.optJSONObject("device")?.let { Kv("Paired as", it.str("name")) }
+                        me?.device?.takeIf { it.isNotBlank() }?.let { Kv("Paired as", it) }
                         Kv("Device", Prefs.deviceId?.take(12).orEmpty(), mono = true)
                         if (Prefs.noLock) Notice("This phone has no screen lock, so approvals are once only and sessions that run unasked cannot be prompted from it. Set a screen lock, then pair again.", k.work)
                         else Txt("Approvals ask for your fingerprint or screen lock, and the daemon checks that signature.", T.small, k.muted)
@@ -252,7 +248,8 @@ fun SettingsScreen(act: MainActivity) {
                     // keys here, and the pairing screen says the daemon did not confirm.
                     val server = Prefs.server.orEmpty()
                     val r = runCatching { Api.delete("/v1/devices/${Prefs.deviceId}") }
-                    act.unpaired(unpaired(r.getOrNull(), (r.exceptionOrNull() as? ApiError)?.code, server))
+                    val refused = r.exceptionOrNull() as? ApiError
+                    act.unpaired(unpaired(r.getOrNull(), refused?.code, refused?.message, server))
                 }
             },
         )

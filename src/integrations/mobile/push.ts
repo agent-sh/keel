@@ -120,6 +120,11 @@ async function accessToken(a: Account): Promise<string> {
 // handler knows: approval, finished, failed, test, ...
 export type PushMessage = { kind: string; session_id?: string | null; high: boolean; data: Record<string, string> };
 
+// The data of one push as the app gets it: `t` the kind, `c` the session, `s`
+// the place in the event sequence, `n` the push's id (the app confirms it),
+// then what the message carries (title, body, aid, opts).
+export const pushData = (msg: PushMessage, seq: number, id: string): Record<string, string> => ({ t: msg.kind, c: msg.session_id ?? "", s: String(seq), n: id, ...msg.data });
+
 // Sends to every paired device with a push token, or to one. Each attempt is
 // recorded and returned; a throw means nothing could be tried.
 export async function send(mobile: MobileStore, seq: number, msg: PushMessage, deviceId?: string): Promise<PushRecord[]> {
@@ -132,7 +137,7 @@ export async function send(mobile: MobileStore, seq: number, msg: PushMessage, d
   const out: PushRecord[] = [];
   for (const t of targets) {
     const id = `push_${crypto.getRandomValues(new Uint8Array(8)).toHex()}`;
-    const data = { t: msg.kind, c: msg.session_id ?? "", s: String(seq), n: id, ...msg.data };
+    const data = pushData(msg, seq, id);
     // Fifteen minutes: an alert is stale after that and the app syncs when it
     // opens. Only the live status collapses; alerts are each their own news.
     const android: any = { priority: msg.high ? "HIGH" : "NORMAL", ttl: "900s" };

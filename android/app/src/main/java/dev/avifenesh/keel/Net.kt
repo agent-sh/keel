@@ -175,7 +175,7 @@ object Api {
         val o = client.newCall(req).awaitBody { resp ->
             val t = resp.body.string()
             if (!resp.isSuccessful) {
-                val m = runCatching { JSONObject(t).optString("error") }.getOrNull().orEmpty()
+                val m = errorOf(t)
                 throw ApiError(resp.code, m.ifBlank { if (resp.code == 401) "Not authorized (HTTP 401)" else "HTTP ${resp.code}" })
             }
             if (t.isBlank()) JSONObject() else JSONObject(t)
@@ -196,14 +196,14 @@ object Api {
         val body = JSONObject().put("code", link.code).put("device_name", "${Build.MANUFACTURER} ${Build.MODEL}")
             .put("pub", Keys.pub(Keys.REQ)).put("apub", Keys.pub(Keys.APR)).put("lock", !Prefs.noLock)
         val req = Request.Builder().url(link.base + "/v1/pair").post(body.toString().toRequestBody(JSON)).build()
-        val o = exec(req, plain)
-        val token = o.optString("token").takeIf { it.isNotBlank() } ?: throw ApiError(0, "The daemon sent no token")
-        val device = o.optString("device_id").takeIf { it.isNotBlank() } ?: throw ApiError(0, "The daemon sent no device id")
+        val p = Paired.of(exec(req, plain))
+        if (p.token.isBlank()) throw ApiError(0, "The daemon sent no token")
+        if (p.deviceId.isBlank()) throw ApiError(0, "The daemon sent no device id")
         generation++
         Prefs.base = link.base
-        Prefs.deviceId = device
-        Prefs.server = o.optJSONObject("server")?.optString("name")?.takeIf { it.isNotBlank() } ?: link.name
+        Prefs.deviceId = p.deviceId
+        Prefs.server = p.server.ifBlank { link.name }
         Prefs.fcmToken = null; Prefs.pushState = null; Prefs.notified = null
-        Prefs.token = token
+        Prefs.token = p.token
     }
 }

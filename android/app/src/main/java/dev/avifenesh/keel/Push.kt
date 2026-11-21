@@ -113,18 +113,13 @@ class NotifyReceiver : BroadcastReceiver() {
 class PushService : FirebaseMessagingService() {
     override fun onMessageReceived(message: RemoteMessage) {
         if (!Prefs.paired) return
-        val d = message.data
-        val kind = d["t"].orEmpty()
-        val chat = d["c"]?.takeIf { it.isNotBlank() }
-        when (kind) {
-            "withdraw" -> chat?.let { Notify.cancelChat(this, it) }
+        val m = PushMsg.of(message.data)
+        when (m.kind) {
+            "withdraw" -> m.chat?.let { Notify.cancelChat(this, it) }
             "live" -> {}
-            else -> {
-                val opts = runCatching { JSONArray(d["opts"] ?: "[]").let { a -> (0 until a.length()).map { a.getString(it) } } }.getOrDefault(emptyList())
-                Notify.post(this, kind, chat, d["title"].orEmpty(), d["body"].orEmpty(), d["aid"]?.takeIf { it.isNotBlank() }, opts)
-            }
+            else -> Notify.post(this, m.kind, m.chat, m.title, m.body, m.card, m.choices)
         }
-        d["n"]?.takeIf { it.isNotBlank() }?.let { id -> Hub.scope.launch { runCatching { Api.post("/v1/push/ack", JSONObject().put("id", id)) } } }
+        m.id?.let { id -> Hub.scope.launch { runCatching { Api.post("/v1/push/ack", JSONObject().put("id", id)) } } }
     }
 
     override fun onNewToken(token: String) { if (Prefs.paired) Hub.scope.launch { runCatching { Push.refresh(applicationContext) } } }
@@ -146,15 +141,13 @@ object Push {
     suspend fun refresh(c: Context): Boolean {
         if (!Prefs.paired) return false
         if (!available(c)) { set("off:This phone has no Google Play services. Keel checks for what needs you every 15 minutes."); return false }
-        val o = Api.get("/v1/push-config?app=${c.packageName}")
-        if (!o.optBoolean("enabled")) {
-            val missing = o.str("missing")
-            set("off:Push is not set up on the daemon for this app${if (missing.isNotBlank()) " (it looks for $missing)" else ""}. Keel checks for what needs you every 15 minutes.")
+        val cfg = PushConfig.of(Api.get("/v1/push-config?app=${c.packageName}"))
+        if (!cfg.enabled) {
+            set("off:Push is not set up on the daemon for this app${if (cfg.missing.isNotBlank()) " (it looks for ${cfg.missing})" else ""}. Keel checks for what needs you every 15 minutes.")
             return false
         }
-        val j = o.getJSONObject("config")
-        val options = FirebaseOptions.Builder().setApiKey(j.getString("api_key")).setApplicationId(j.getString("app_id"))
-            .setProjectId(j.getString("project_id")).setGcmSenderId(j.getString("sender_id")).build()
+        val options = FirebaseOptions.Builder().setApiKey(cfg.apiKey).setApplicationId(cfg.appId)
+            .setProjectId(cfg.projectId).setGcmSenderId(cfg.senderId).build()
         val app = FirebaseApp.getApps(c).firstOrNull { it.name == FirebaseApp.DEFAULT_APP_NAME } ?: FirebaseApp.initializeApp(c, options)
         if (app.options != options) { set("off:The daemon's push project changed. Restart Keel to use it."); return false }
         FirebaseMessaging.getInstance().isAutoInitEnabled = true
@@ -183,10 +176,10 @@ object Push {
 class CheckWorker(c: Context, p: WorkerParameters) : CoroutineWorker(c, p) {
     override suspend fun doWork(): Result {
         if (!Prefs.paired || Prefs.pushState == "on") return Result.success()
-        val o = runCatching { Api.get("/v1/pulse") }.getOrElse { return Result.retry() }
+        val pulse = runCatching { Hub.pulse() }.getOrElse { return Result.retry() }
         val seen = Prefs.notified.orEmpty().split('\n').filter { it.isNotBlank() }.toMutableSet()
-        val open = o.optJSONArray("approvals")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map(Card::of) }.orEmpty().filter { it.pending }
-        val titles = o.optJSONArray("live_sessions")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) }.associate { it.str("id") to it.str("title") } }.orEmpty()
+        val open = pulse.cards.filter { it.pending }
+        val titles = pulse.sessions.associate { it.id to it.title }
         for (card in open) if (card.id !in seen) {
             val title = titles[card.chatId]?.takeIf { it.isNotBlank() } ?: "A session"
             Notify.post(applicationContext, "approval", card.chatId, if (card.question) "$title asks" else "$title needs your approval",

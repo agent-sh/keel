@@ -38,6 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -52,8 +53,9 @@ import dev.avifenesh.keel.Ui
 import dev.avifenesh.keel.Wire
 import dev.avifenesh.keel.earlierAfter
 import dev.avifenesh.keel.elapsed
+import dev.avifenesh.keel.newestTs
+import dev.avifenesh.keel.sendArrived
 import dev.avifenesh.keel.stateOf
-import dev.avifenesh.keel.str
 import kotlinx.coroutines.launch
 
 @Composable
@@ -102,7 +104,7 @@ fun SessionScreen(act: MainActivity, id: String) {
         }, lead = { IconBtn(Ic.ArrowLeft, "Back", { Ui.route.value = Route.Tabs(0) }) }) {
             IconBtn(Ic.ChartColumn, "Session usage", {
                 if (usage != null) usage = null
-                else scope.launch { usage = runCatching { usageLine(Hub.usage(id)) }.getOrElse { "Usage not available: ${it.message}" } }
+                else scope.launch { usage = runCatching { Hub.usage(id) }.getOrElse { "Usage not available: ${it.message}" } }
             }, tint = if (usage != null) k.fg else k.muted)
         }
         Rule()
@@ -126,7 +128,7 @@ fun SessionScreen(act: MainActivity, id: String) {
                         Notice(
                             if (way == Earlier.RELOAD) "This conversation shows another branch now, so the earlier messages here are no longer its own. Reload it to read on."
                             else "The earlier messages did not load: $why",
-                            modifier = Modifier.semantics { contentDescription = "earlier-failed" },
+                            modifier = Modifier.testTag("earlier-failed"),
                         )
                     }
                     val label = when { earlierBusy -> "Loading"; earlierFail?.first == Earlier.RELOAD -> "Reload the conversation"; earlierFail != null -> "Try again"; else -> "Earlier messages" }
@@ -137,13 +139,6 @@ fun SessionScreen(act: MainActivity, id: String) {
         }
         Composer(id, isWorking, chat?.archived == true) { error = it }
     }
-}
-
-private fun usageLine(o: org.json.JSONObject): String {
-    val s = o.optJSONObject("session") ?: return "No usage yet"
-    fun n(v: Long) = if (v >= 1_000_000) "%.1fM".format(v / 1e6) else if (v >= 1000) "%.1fk".format(v / 1e3) else "$v"
-    val cost = if (s.isNull("cost")) "not priced" else "$%.4f".format(s.optDouble("cost"))
-    return "${s.str("model")} · in ${n(s.optLong("prompt_tokens"))} · out ${n(s.optLong("output_tokens"))} · cached ${n(s.optLong("cache_read_tokens"))} · $cost"
 }
 
 @Composable
@@ -167,6 +162,8 @@ private fun MsgView(act: MainActivity, m: Msg, card: dev.avifenesh.keel.Card?) {
                 Box(Modifier.clip(shape).background(k.inkSoft).padding(horizontal = 14.dp, vertical = 10.dp).semantics { contentDescription = "mine-${m.content.take(40)}" }) {
                     Txt(m.content, T.body, k.fg)
                 }
+                // What the prompt carried, by name: a photo it was sent with, a file.
+                for (a in m.attachments) Txt(if (a.image) "Photo (${a.mime.substringAfter('/')})" else a.fileName.ifBlank { "File" }, T.meta, k.faint, Modifier.padding(top = 4.dp), maxLines = 1)
             }
         }
         else -> Column(Modifier.fillMaxWidth().padding(horizontal = S.lg, vertical = 8.dp).semantics { contentDescription = "agent-${m.content.take(40)}" }) {
@@ -210,9 +207,19 @@ private fun Composer(id: String, working: Boolean, archived: Boolean, onError: (
     // so sending them again after a lost answer makes no second prompt.
     var keptId by rememberSaveable(id) { mutableStateOf("") }
     var keptText by rememberSaveable(id) { mutableStateOf("") }
+    // The newest message held when the send was first made (the daemon's clock).
+    var keptAfter by rememberSaveable(id) { mutableStateOf(0.0) }
+    val held = Hub.msgs.collectAsState().value[id].orEmpty()
+    // The send got no answer here, but its message came with the stream: it is done. The words
+    // leave the box, and the same words sent again are a new prompt, not a retry of this one.
+    val arrived = keptId.isNotEmpty() && !busy && sendArrived(held, keptText, keptAfter)
+    LaunchedEffect(arrived) {
+        if (arrived) { if (text.trim() == keptText) text = ""; keptId = ""; keptText = ""; onError("") }
+    }
     fun send() {
         val t = text.trim(); if (t.isEmpty()) return
         val cid = Wire.sendId(keptId, keptText, t)
+        if (cid != keptId) keptAfter = newestTs(held)
         keptId = cid; keptText = t
         busy = true
         scope.launch {

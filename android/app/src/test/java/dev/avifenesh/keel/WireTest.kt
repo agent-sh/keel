@@ -22,21 +22,6 @@ class WireTest {
         assertEquals(listOf("ship it", "steer", "id-1"), listOf(body.getString("text"), body.getString("mode"), body.getString("client_id")))
     }
 
-    @Test fun aDraftGoesOnlyWithEverythingItCarries() {
-        val photo = Upload("a1", "image", "image/png", "photo.png", 70)
-        // One of two picked files is not stored yet (still uploading, or its upload failed): nothing is sent.
-        assertEquals(false, Wire.sendable("look at these", picked = 2, uploads = listOf(photo)))
-        assertEquals(true, Wire.sendable("look at these", picked = 1, uploads = listOf(photo)))
-        // A photo may go without words; nothing at all may not.
-        assertEquals(true, Wire.sendable("", picked = 1, uploads = listOf(photo)))
-        assertEquals(false, Wire.sendable("  ", picked = 0, uploads = emptyList()))
-        // The send's id stays with the same words and files, and changes with either.
-        val key = Wire.sendKey("look", listOf(photo))
-        assertEquals("kept", Wire.sendId("kept", key, Wire.sendKey("look", listOf(photo))) { "fresh" })
-        assertEquals("fresh", Wire.sendId("kept", key, Wire.sendKey("look", emptyList())) { "fresh" })
-        assertEquals("fresh", Wire.sendId("kept", key, Wire.sendKey("look", listOf(photo.copy(id = "b2")))) { "fresh" })
-    }
-
     @Test fun aFailedReadOfEarlierMessagesOffersTheRightWayOn() {
         // The cursor is no longer on the shown branch: the same page cannot be read again.
         assertEquals(Earlier.RELOAD, earlierAfter(409))
@@ -46,13 +31,18 @@ class WireTest {
     }
 
     @Test fun unpairingSaysWhetherTheDaemonRevokedThePhone() {
-        // Online: the daemon confirms. A daemon that had revoked the phone already refuses it as unauthorized.
-        assertEquals(Unpaired(true, "Unpaired. desk no longer accepts this phone."), unpaired(JSONObject().put("ok", true), null, "desk"))
-        assertEquals(true, unpaired(null, 401, "desk").revoked)
-        // Offline (no answer, no HTTP code), an error from the daemon, or an answer that does not confirm: local only.
-        for (local in listOf(unpaired(null, null, "desk"), unpaired(null, 503, "desk"), unpaired(JSONObject().put("ok", false), null, "desk"))) {
-            assertEquals(false, local.revoked)
-            assertEquals(true, local.note.contains("did not confirm") && local.note.contains("Settings, then Phone"))
+        // Online: the daemon confirms. A daemon that had revoked the phone already no longer knows its token.
+        assertEquals(Unpaired(true, "Unpaired. desk no longer accepts this phone."), unpaired(JSONObject().put("ok", true), null, null, "desk"))
+        assertEquals(true, unpaired(null, 401, "unauthorized", "desk").revoked)
+        // Offline (no answer, no HTTP code), an error from the daemon, an answer that does not confirm, and a 401
+        // for another reason (the phone's clock is off, so its signature is refused): local only.
+        val local = listOf(
+            unpaired(null, null, null, "desk"), unpaired(null, 503, "HTTP 503", "desk"), unpaired(JSONObject().put("ok", false), null, null, "desk"),
+            unpaired(null, 401, "bad signature", "desk"), unpaired(null, 401, "Not authorized (HTTP 401)", "desk"),
+        )
+        for (u in local) {
+            assertEquals(false, u.revoked)
+            assertEquals(true, u.note.contains("did not confirm") && u.note.contains("Settings, then Phone"))
         }
     }
 

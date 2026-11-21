@@ -42,6 +42,8 @@ object Hub {
     val note = MutableStateFlow("")
     private var live: Job? = null
     private var catching: Job? = null
+    // Why this app closed the stream itself (a frame it could not apply): shown while it reconnects.
+    @Volatile private var broke: String? = null
     private val kick = Channel<Unit>(Channel.CONFLATED)
 
     fun start() {
@@ -64,13 +66,14 @@ object Hub {
         var wait = 500L
         while (scope.isActive && Prefs.paired) {
             if (conn.value != Conn.LIVE) conn.value = if (synced.value) Conn.RETRYING else Conn.CONNECTING
+            broke = null
             try {
                 stream { wait = 500L }
             } catch (e: CancellationException) { throw e } catch (e: ApiError) {
                 if (e.code == 401) { conn.value = Conn.REVOKED; note.value = "This phone is no longer paired with the daemon."; return }
                 note.value = e.message ?: "The daemon refused the request"
             } catch (e: Exception) {
-                note.value = e.message ?: e.javaClass.simpleName
+                note.value = broke ?: e.message ?: e.javaClass.simpleName
             } finally {
                 catching?.cancel()
                 feed.closed()
@@ -86,10 +89,12 @@ object Hub {
         val src = EventSources.createFactory(Api.sse).newEventSource(req, object : EventSourceListener() {
             override fun onOpen(eventSource: EventSource, response: Response) { conn.value = Conn.LIVE; opened() }
             override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
-                val e = runCatching { JSONObject(data) }.getOrNull() ?: return
-                val ask = runCatching { feed.frame(e) }.getOrDefault(false)
-                if (e.optJSONObject("sync") != null) note.value = ""
-                if (ask) catchUp(eventSource)
+                when (val step = feed.take(data)) {
+                    is Took.Applied -> if (step.synced) note.value = ""
+                    is Took.CatchUp -> catchUp(eventSource)
+                    // What the frame carried was not applied: the stream ends here and the next one opens from the cursor.
+                    is Took.Broken -> { broke = step.reason; note.value = step.reason; eventSource.cancel() }
+                }
             }
             override fun onClosed(eventSource: EventSource) { if (k.isActive) k.resume(Unit) }
             override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
@@ -106,10 +111,13 @@ object Hub {
     private fun catchUp(src: EventSource) {
         catching = scope.launch {
             try {
+                var step: Took
                 do {
                     do { val more = feed.sync(Api.get("/v1/sync?since=${feed.cursor}")) } while (more)
                     note.value = ""
-                } while (feed.end())
+                    step = feed.end()
+                } while (step is Took.CatchUp)
+                if (step is Took.Broken) { broke = step.reason; note.value = step.reason; src.cancel() }
             } catch (e: CancellationException) { throw e } catch (e: Exception) {
                 note.value = e.message ?: e.javaClass.simpleName
                 src.cancel()
@@ -120,16 +128,17 @@ object Hub {
     // --- actions -------------------------------------------------------------------
 
     suspend fun open(chat: String) {
-        val o = Api.get("/v1/chats/${Uri.encode(chat)}/messages?paged=1&limit=150")
-        feed.page(chat, o)
+        // A branch picked on the computer while the page is on its way makes the page one of the branch that was left.
+        val asked = feed.generation(chat)
+        feed.page(chat, Api.get("/v1/chats/${Uri.encode(chat)}/messages?paged=1&limit=150"), asked)
         runCatching { Api.post("/v1/chats/${Uri.encode(chat)}/read") }
         chats.update { m -> m[chat]?.let { m + (chat to it.copy(unread = 0)) } ?: m }
     }
 
     suspend fun loadOlder(chat: String) {
         val before = older.value[chat] ?: return
-        val o = Api.get("/v1/chats/${Uri.encode(chat)}/messages?paged=1&limit=150&before=${Uri.encode(before)}")
-        feed.olderPage(chat, o)
+        val asked = feed.generation(chat)
+        feed.olderPage(chat, Api.get("/v1/chats/${Uri.encode(chat)}/messages?paged=1&limit=150&before=${Uri.encode(before)}"), asked)
     }
 
     /** mode: send, steer or queue. clientId names the send: a retry under it stores no second prompt. */
@@ -140,16 +149,14 @@ object Hub {
     suspend fun stopTurn(chat: String) { Api.post("/v1/chats/${Uri.encode(chat)}/stop") }
 
     suspend fun newChat(): String {
-        val c = Chat.of(Api.post("/v1/chats", JSONObject()).getJSONObject("chat"))
-        chats.update { it + (c.id to c) }
-        return c.id
+        return feed.created(Api.post("/v1/chats", JSONObject())).id
     }
 
     suspend fun resolve(aid: String, body: JSONObject, headers: Map<String, String>): Card? {
         return feed.resolved(Api.post("/v1/approvals/${Uri.encode(aid)}", body, headers))
     }
 
-    suspend fun me(): JSONObject = Api.get("/v1/me")
-    suspend fun pulse(): JSONObject = Api.get("/v1/pulse")
-    suspend fun usage(chat: String): JSONObject = Api.get("/v1/chats/${Uri.encode(chat)}/usage")
+    suspend fun me(): Me = Me.of(Api.get("/v1/me"))
+    suspend fun pulse(): Pulse = Pulse.of(Api.get("/v1/pulse"))
+    suspend fun usage(chat: String): String = usageLine(Api.get("/v1/chats/${Uri.encode(chat)}/usage"))
 }

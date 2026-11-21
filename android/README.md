@@ -52,10 +52,14 @@ Check again. Pushes carry ids and one line of text, not the conversation.
 
 `src/integrations/mobile/contract/wire.json` is the wire between the daemon and
 the app, written once: the bytes that are signed, the fields the app reads of
-every answer and stream frame, and the bodies the app sends, each with
-examples. The daemon's tests (`src/integrations/mobile/v1.test.ts`) and the
-app's unit tests (`ContractTest.kt`, which reads the same file) both check it,
-with no phone, push service or model. A change to the wire starts in that file.
+every answer, stream frame and push, and the bodies the app sends, each with
+examples. It is checked in both directions, with no phone, push service or
+model. The daemon's tests (`src/integrations/mobile/v1.test.ts`) send every
+listed field under its name and type. The app's unit tests (`ContractTest.kt`,
+which reads the same file) have a reader for every listed field, and read the
+app's own sources: the daemon's answers are read as JSON in `Wire.kt` and
+`Feed.kt` only, and a field read there that no shape names fails the build's
+tests. A change to the wire starts in that file.
 
 ## Build
 

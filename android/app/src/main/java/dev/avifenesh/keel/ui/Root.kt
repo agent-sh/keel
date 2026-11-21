@@ -37,6 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
@@ -153,7 +154,7 @@ fun PairScreen(act: MainActivity) {
         // How the unpairing that led here ended: confirmed by the daemon, or only done on this phone.
         Ui.unpaired.value?.let { u ->
             Spacer(Modifier.height(S.lg))
-            Notice(u.note, color = if (u.revoked) k.muted else k.danger, modifier = Modifier.semantics { contentDescription = if (u.revoked) "unpaired-confirmed" else "unpaired-local-only" })
+            Notice(u.note, color = if (u.revoked) k.muted else k.danger, modifier = Modifier.testTag(if (u.revoked) "unpaired-confirmed" else "unpaired-local-only"))
         }
         Spacer(Modifier.height(S.xxl))
         if (link != null) {

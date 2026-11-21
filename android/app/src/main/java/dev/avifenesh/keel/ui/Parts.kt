@@ -46,7 +46,9 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
@@ -201,10 +203,15 @@ fun Mark(size: Dp = 40.dp, modifier: Modifier = Modifier) {
 }
 
 /** A message that something did not work, with what to do. */
+/**
+ * A notice. A screen reader says its words when it appears (a polite live
+ * region); a test finds it by a testTag on `modifier`, never by a content
+ * description, which would be read in place of the words.
+ */
 @Composable
 fun Notice(text: String, color: Color = k().danger, modifier: Modifier = Modifier) {
     val k = k()
-    Row(modifier.fillMaxWidth().clip(RoundedCornerShape(S.r)).background(if (color == k.danger) k.dangerSoft else k.sunken).padding(12.dp), verticalAlignment = Alignment.Top) {
+    Row(modifier.semantics { liveRegion = LiveRegionMode.Polite }.fillMaxWidth().clip(RoundedCornerShape(S.r)).background(if (color == k.danger) k.dangerSoft else k.sunken).padding(12.dp), verticalAlignment = Alignment.Top) {
         Box(Modifier.padding(top = 5.dp)) { Box(Modifier.size(8.dp).clip(RoundedCornerShape(2.dp)).background(color)) }
         Spacer(Modifier.width(10.dp))
         Txt(text, T.small, if (color == k.danger) k.fg else k.muted)

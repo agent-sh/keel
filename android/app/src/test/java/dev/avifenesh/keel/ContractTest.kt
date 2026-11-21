@@ -45,10 +45,9 @@ class ContractTest {
     // --- what the app sends --------------------------------------------------------
 
     @Test fun theAppSendsTheBodiesOfTheContract() {
-        for (send in examples("send")) {
-            // What a prompt carries is named by its upload's answer: here, the contract's own.
-            val uploads = if (send.has("attachments")) examples("upload").map(Upload::of) else emptyList()
-            assertEquals(canon(send), canon(Wire.sendBody(send.getString("text"), send.getString("mode"), send.getString("client_id"), uploads)))
+        // The app sends words only; a prompt that names uploads is the daemon's side of the contract until the app attaches.
+        for (send in examples("send").filter { !it.has("attachments") }) {
+            assertEquals(canon(send), canon(Wire.sendBody(send.getString("text"), send.getString("mode"), send.getString("client_id"))))
         }
         for (answer in examples("answer")) {
             assertEquals(canon(answer), canon(Wire.answerBody(answer.getString("choice"), answer.optJSONObject("answers")?.let(::answersOf))))
@@ -79,17 +78,27 @@ class ContractTest {
         "message" to { o -> Msg.of(o).toString() },
         "step" to { o -> Msg.of(JSONObject().put("meta", JSONObject().put("steps", JSONArray().put(o)))).steps.toString() },
         "attachment" to { o -> Msg.of(JSONObject().put("meta", JSONObject().put("attachments", JSONArray().put(o)))).attachments.toString() },
-        "upload" to { o -> Upload.of(o).toString() },
         "card" to { o -> Card.of(o).toString() },
         "question" to { o -> Card.of(JSONObject().put("questions", JSONArray().put(o))).questions.toString() },
         "picked" to { o -> Card.of(JSONObject().put("answers", JSONObject().put("q", o))).answers.toString() },
-        "sync" to { o -> state(stale().also { it.sync(o) }) },
+        "sync" to { o -> stale().let { f -> val more = f.sync(o); state(f) + " more=$more" } },
         "reset" to { o -> state(level().also { it.sync(copy(examples("sync")[1]).put("reset", JSONArray().put(o))) }) },
         "working_row" to { o -> framed(copy(examples("seq").first()).put("working", JSONArray().put(o))) },
         "draft" to { o -> state(Feed().also { it.sync(copy(examples("sync").first()).put("drafts", JSONArray().put(o))) }) },
         "page" to { o -> state(Feed().also { it.page("s-1", o) }) },
         "receipt" to { o -> state(level().also { it.sent(o) }) },
         "resolved" to { o -> state(level().also { it.resolved(o) }) },
+        "created" to { o -> runCatching { state(level().also { it.created(o) }) }.getOrElse { "no session was made" } },
+        "pulse" to { o -> Pulse.of(o).toString() },
+        "pulse_session" to { o -> Pulse.of(JSONObject().put("live_sessions", JSONArray().put(o))).sessions.toString() },
+        "usage" to ::usageLine,
+        "usage_session" to { o -> usageLine(JSONObject().put("session", o)) },
+        "me" to { o -> Me.of(o).toString() },
+        "push_config" to { o -> PushConfig.of(o).toString() },
+        "paired" to { o -> Paired.of(o).toString() },
+        "revoked" to { o -> unpaired(o, null, null, "desk").toString() },
+        "error" to { o -> errorOf(o.toString()) },
+        "push" to { o -> PushMsg.of(o.keys().asSequence().associateWith { k -> o.get(k).toString() }).toString() },
         "hello" to { o -> state(Feed().also { it.frame(o) }) },
         "message_frame" to ::framed, "chat_frame" to ::framed, "chat_reset" to ::framed, "chat_removed" to ::framed,
         "working" to ::framed, "delta" to ::framed, "approval" to ::framed, "seq" to ::framed,
@@ -110,11 +119,38 @@ class ContractTest {
 
     @Test fun theAppReadsEveryFieldOfTheContractUnderItsName() {
         // Every shape the daemon sends has a reader here; `send` and `answer` are what the app sends.
-        assertEquals(fields.keys().asSequence().toSet() - setOf("send", "answer", "upload_ref"), reads.keys)
+        // `send` and `answer` are what the app sends; `upload` and `upload_ref` wait for the app to attach files.
+        assertEquals(fields.keys().asSequence().toSet() - setOf("send", "answer", "upload", "upload_ref"), reads.keys)
         for ((shape, read) in reads) for (path in fields.getJSONObject(shape).keys()) {
             // Without the field, the app must make something else of at least one example that has it.
             val read1 = examples(shape).any { ex -> has(ex, path) && read(copy(ex)) != read(without(ex, path)) }
             assertTrue("$shape.$path is in the contract, but the app reads nothing under that name", read1)
+        }
+    }
+
+    // --- the other direction: the app reads nothing the contract does not name -----------
+
+    /** A JSON read with the field's name written out, and a read of a push's data. */
+    private val jsonRead = Regex("""\.(?:str|optString|optJSONObject|optJSONArray|optBoolean|optInt|optLong|optDouble|isNull|has)\(\s*"([^"]+)"""")
+    // A JSON get takes the name alone (a preference read takes a default beside it).
+    private val jsonGet = Regex("""\.(?:getString|getJSONObject|getJSONArray|getBoolean|getInt|getLong|getDouble)\(\s*"([^"]+)"\s*\)""")
+    private val pushRead = Regex("""\bd\["([^"]+)"\]""")
+
+    @Test fun theAppReadsNoFieldTheContractDoesNotName() {
+        // Every name the contract gives a field, at any depth of any shape.
+        val named = fields.keys().asSequence().flatMap { shape -> fields.getJSONObject(shape).keys().asSequence().flatMap { it.split('.') } }.toSet()
+        // The app's sources (the test runs in the app module's folder).
+        val sources = java.io.File("src/main/java").walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()
+        assertTrue("the app's sources were not found from ${java.io.File(".").absolutePath}", sources.any { it.name == "Wire.kt" } && sources.any { it.name == "Feed.kt" })
+        for (file in sources) {
+            val text = file.readText()
+            val read = (jsonRead.findAll(text) + jsonGet.findAll(text) + pushRead.findAll(text)).map { it.groupValues[1] }.toSet()
+            if (file.name == "Wire.kt" || file.name == "Feed.kt") {
+                assertEquals("${file.name} reads fields of the daemon's that no shape of the contract names", emptySet<String>(), read - named)
+            } else {
+                // Elsewhere nothing of the daemon's is read as JSON: a screen takes the values Wire.kt and Feed.kt made.
+                assertEquals("${file.name} reads JSON fields itself; the daemon's answers are read in Wire.kt and Feed.kt", emptySet<String>(), read)
+            }
         }
     }
 

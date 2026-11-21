@@ -3,7 +3,7 @@
 // shapes no browser e2e reaches; the app's own reading of them is cited per test.
 import { afterAll, describe, expect, jest, setSystemTime, test } from "bun:test";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../../core/bus.ts";
@@ -17,8 +17,13 @@ import wire from "./contract/wire.json";
 import { answersText, approvalMessage, canonicalMessage, sha256Hex } from "./sig.ts";
 import { MobileStore } from "./store.ts";
 import { mobileApi } from "./v1.ts";
+import { pushData, testMessage } from "./push.ts";
+import { alertPush } from "../../server/routes/mobile.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "keel-mobile-"));
+// The daemon's config folder is this run's own: what a route reads there (the push files) is what a test put there.
+process.env.KEEL_CONFIG_DIR = join(dir, "config");
+mkdirSync(process.env.KEEL_CONFIG_DIR);
 const store = new Store(dir);
 const bus = new Bus();
 setDeps({ store, bus, errors: { capture() {} } } as any);
@@ -613,6 +618,7 @@ describe("the wire contract", () => {
     sync: [["chats", "chat"], ["messages", "message"], ["approvals", "card"], ["working", "working_row"], ["drafts", "draft"], ["reset", "reset"]],
     message: [["meta.steps", "step"], ["meta.attachments", "attachment"]], send: [["attachments", "upload_ref"]], card: [["questions", "question"], ["answers", "picked"]],
     page: [["messages", "message"]], receipt: [["message", "message"]], resolved: [["approval", "card"]],
+    pulse: [["approvals", "card"], ["live_sessions", "pulse_session"]], usage: [["session", "usage_session"]], created: [["chat", "chat"]],
     hello: [["sync", "sync"]], message_frame: [["message", "message"], ["chat", "chat"]], chat_frame: [["chat", "chat"]],
     chat_reset: [["messages", "message"], ["chat", "chat"]], approval: [["approval", "card"]], seq: [["working", "working_row"]],
   };
@@ -687,6 +693,35 @@ describe("the wire contract", () => {
     const photo = await upload("photo.png", "image/png", PNG), notes = await upload("notes.txt", "text/plain", new TextEncoder().encode("hello notes\n"));
     take("upload", photo);
     take("receipt", (await call("POST", `/v1/chats/${failed.id}/messages`, { text: "look", attachments: [photo, notes] })).body);
+
+    // The other answers the app reads: usage, the machine, push, pairing, a refusal.
+    store.updateSession(s.id, { usage: { input: 300, output: 15, cache_read: 50, cache_write: 4, cost: 0.02 } as any });
+    take("pulse", (await call("GET", "/v1/pulse")).body);
+    take("usage", (await call("GET", `/v1/chats/${s.id}/usage`)).body);
+    take("me", (await call("GET", "/v1/me")).body);
+    take("created", (await call("POST", "/v1/chats", {})).body);
+    take("error", (await call("POST", `/v1/chats/${s.id}/messages`, { text: "" })).body);
+    // Push for this app: off while the daemon lacks the app's entry (it says which file), on with it.
+    writeFileSync(join(process.env.KEEL_CONFIG_DIR!, "fcm-service-account.json"), "{}");
+    take("push_config", (await call("GET", "/v1/push-config?app=dev.avifenesh.keel")).body);
+    writeFileSync(join(process.env.KEEL_CONFIG_DIR!, "google-services.json"), JSON.stringify({
+      project_info: { project_number: "123456789", project_id: "phone-push" },
+      client: [{ client_info: { mobilesdk_app_id: "1:123456789:android:bbb", android_client_info: { package_name: "dev.avifenesh.keel" } }, api_key: [{ current_key: "key-k" }] }],
+    }));
+    take("push_config", (await call("GET", "/v1/push-config?app=dev.avifenesh.keel")).body);
+    // A push for an approval, as its data leaves for the phone.
+    take("push", pushData(alertPush({ id: "al1", ts: Date.now(), kind: "approval", session_id: s.id, title: "Fix the build needs your approval", body: "rm -rf build", read: false, data: { approval_id: "apr_9" }, channels: [] } as any), mobile.globalSeq(), "push_1"));
+    take("push", pushData(testMessage(), mobile.globalSeq(), "push_2"));
+    // A phone pairs, then unpairs.
+    const k3 = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    const pairReq: any = new Request("http://x/v1/pair", { method: "POST", body: JSON.stringify({ code: mobile.createPairCode(600), device_name: "p", pub: k3.publicKey.export({ type: "spki", format: "der" }).toString("base64"), apub, lock: true }) });
+    const paired = await ((await routes["/v1/pair"].POST(pairReq, { requestIP: () => ({ address: "10.0.0.7" }) })) as Response).json();
+    take("paired", paired);
+    const ts3 = String(Math.floor(Date.now() / 1000));
+    const gone: any = new Request(`http://x/v1/devices/${paired.device_id}`, { method: "DELETE", headers: { authorization: `Bearer ${paired.token}`, "x-hm-ts": ts3,
+      "x-hm-sig": sign("sha256", Buffer.from(`DELETE\n/v1/devices/${paired.device_id}\n${ts3}\n${sha256Hex("")}`), { key: k3.privateKey, dsaEncoding: "der" }).toString("base64") } });
+    gone.params = { did: paired.device_id };
+    take("revoked", await ((await routes["/v1/devices/:did"].DELETE(gone, {})) as Response).json());
 
     // The stream: its first frame, then one of each kind.
     jest.useFakeTimers();

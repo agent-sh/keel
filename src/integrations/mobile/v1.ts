@@ -773,7 +773,7 @@ export function mobileApi(ctx: MobileCtx) {
         await providers.resolve(model);
         const s = store.createSession({ model, workspace: ctx.workspace, title: typeof b.title === "string" && b.title !== "New chat" ? b.title.slice(0, 200) : "" });
         bus.emit({ t: "session", session: s });
-        return json({ chat: chatOf(s, 0, { preview: null }) });
+        return json({ chat: chatFull(s) });
       })),
     },
     "/v1/chats/:cid": {
