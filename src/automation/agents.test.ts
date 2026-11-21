@@ -9,7 +9,7 @@ import { registerHooks } from "../engine/hooks.ts";
 import { Engine, toMessages } from "../engine/turn.ts";
 import * as activity from "./activity.ts";
 import * as agents from "./agents.ts";
-import { dropPending, flush, setDeps } from "./core.ts";
+import { dropPending, flush, isPending, setDeps } from "./core.ts";
 import { ackStoredWaits, automationTools, waitAckHooks } from "./tools.ts";
 import * as waits from "./waits.ts";
 
@@ -639,15 +639,55 @@ test("repeat parks of one agent wake the parent once and then ride its next inpu
   const w6 = park(c);
   flush(p.id);
   expect(p.to()).toHaveLength(4);
+  // The hold ends (the owner's next turn): the park the parent was never told of wakes it now.
   held.delete(p.id);
+  agents.onTurnEnd(p.id, "end_turn");
+  flush(p.id);
+  expect(p.to()).toHaveLength(5);
+  expect(p.to()[4]).toContain(`Agent ${c.id} parked on timer wait ${w6.id}`);
   resume(w5);
   end(a, "end_turn", "second of A");
   await settled();
   flush(p.id);
-  expect(p.to()).toHaveLength(5);
-  expect(p.to()[4]).toContain("second of A");
-  expect(p.to()[4]).toContain(`Agent ${c.id} parked on timer wait ${w6.id}`);
+  expect(p.to()).toHaveLength(6);
+  expect(p.to()[5]).toContain("second of A");
+  expect(p.to()[5]).not.toContain("parked on");
   waits.cancel(w6.id);
+});
+
+// A report owed at a start to a parent whose cut turn the engine is about to
+// continue waits for that turn to end, as a wait's wake does: its own turn
+// never takes the continuation's place.
+test("a report owed at a start waits for the parent's cut turn to end", async () => {
+  const p = parentOf("cut parent");
+  busy.add(p.id);
+  const a = await p.start();
+  end(a, "end_turn", "report over the restart");
+  await settled();
+  store.append(p.id, "turn_end", { reason: "restart" }); // the daemon stopped: the parent's turn was parked
+  busy.delete(p.id);
+  dropPending(p.id); // a new process
+  agents.recover();
+  await Bun.sleep(400); // past the wait that lets a burst arrive together
+  expect(p.to()).toEqual([]);
+  flush(p.id); // the continued turn ended
+  expect(p.to().filter((t) => t.includes("report over the restart"))).toHaveLength(1);
+});
+
+// A deleted parent's agents went with it: nothing rides to it and nothing stays owed.
+test("a deleted parent's riding report and owed row go with it", async () => {
+  const p = parentOf("deleted parent");
+  const a = await p.start();
+  held.add(p.id);
+  end(a, "end_turn", "report to nobody");
+  await settled();
+  const owedRows = () => store.db.query<{ n: number }, [string]>("SELECT count(*) AS n FROM agent_owed WHERE parent_id = ?").get(p.id)!.n;
+  const rides = () => isPending(p.id, (m) => m.kind === "subagent");
+  expect([owedRows(), rides()]).toEqual([1, true]);
+  store.deleteSession(p.id);
+  agents.onSessionDeleted(p.id);
+  expect([owedRows(), rides()]).toEqual([0, false]);
+  held.delete(p.id);
 });
 
 // A daemon stopped while an agent waited for the first one's prompt cache,

@@ -799,12 +799,14 @@ const isReport = (reportId: string) => (m: Record<string, unknown>) => m.kind ==
 // wait that fires, a goal or loop that goes on), so a coordinator the owner
 // stopped once still hears from its agents. When the hold ends it goes as an
 // input of its own (releaseOwed). A wait_agent still returns it.
-function sendOwed(o: Pick<Owed, "report_id" | "agent_id" | "block" | "status">, parentId: string) {
+// `boot`: sent at a start. A parent whose cut turn the engine is about to
+// continue gets it when that turn ends, not ahead of it, as a wait's wake does.
+function sendOwed(o: Pick<Owed, "report_id" | "agent_id" | "block" | "status">, parentId: string, boot = false) {
   if (isPending(parentId, isReport(o.report_id))) return; // already on its way
   const meta = { kind: "subagent", agent_id: o.agent_id, report_id: o.report_id, status: o.status };
   const text = `${HANDBACK_PREFACE}\n${o.block}`;
   const go = (ride: boolean) => deliver(parentId, text, meta, {
-    ride, coalesceMs: 300,
+    ride, ...(boot && waits.cutTurn(parentId) ? { hold: true } : { coalesceMs: 300 }),
     refresh: (parts) => {
       // Lined up to start a turn, and the owner stopped the parent since: it rides instead.
       if (!ride && D().engine.isHeld(parentId)) return void go(true);
@@ -831,6 +833,19 @@ export function releaseOwed(parentId: string) {
   const rows = owedOf(parentId);
   for (const o of rows) if (rode.has(o.report_id)) sendOwed(o, parentId);
   sendAllOwed(rows);
+  // A park line that rode only for the hold wakes the parent now; one the
+  // parent was told of in this task goes on riding.
+  for (const m of takeRiding(parentId, (m) => m.kind === "harness" && m.status === "waiting")) {
+    const a = get(String(m.agent_id));
+    if (a) tellPark(a, !toldOfPark(a));
+  }
+}
+
+// A deleted session's agents went with it: nothing rides to it or waits for
+// it, and no report stays owed to it.
+export function onSessionDeleted(sessionId: string) {
+  dropPending(sessionId);
+  D().store.db.query("DELETE FROM agent_owed WHERE parent_id = ?").run(sessionId);
 }
 
 // The session's queue changed. A hold that ended with no turn (the owner
@@ -1247,12 +1262,12 @@ export function recover() {
     // No turn to continue (its task was stored and never started): start it.
     if (!waits.cutTurn(a.session_id)) deliver(a.session_id, "[harness] The daemon restarted while you worked. Continue your task from where you stopped, then report.", { kind: "harness", agent_id: a.id });
   }
-  sendAllOwed(D().store.db.query<Owed, []>("SELECT * FROM agent_owed ORDER BY created, rowid").all());
+  sendAllOwed(D().store.db.query<Owed, []>("SELECT * FROM agent_owed ORDER BY created, rowid").all(), true);
 }
 
 // Every report still owed goes out, oldest first, unless a stored wait result
 // already holds it. A parent that is archived gets them when it is restored.
-function sendAllOwed(rows: Owed[]) {
+function sendAllOwed(rows: Owed[], boot = false) {
   for (const o of rows) {
     const a = get(o.agent_id);
     const parent = D().store.session(o.parent_id);
@@ -1261,7 +1276,7 @@ function sendAllOwed(rows: Owed[]) {
     // Lined up or riding already: nothing to do, and the parent's history is not read for it.
     if (isPending(o.parent_id, isReport(o.report_id))) continue;
     if (waitHolds(a, o.report_id)) { settle(a.id, o.report_id); continue; }
-    sendOwed(o, o.parent_id);
+    sendOwed(o, o.parent_id, boot);
   }
 }
 
