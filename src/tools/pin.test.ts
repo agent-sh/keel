@@ -21,8 +21,13 @@ test("a pinned schema is servable while the build takes every input it describes
   expect(accepts(obj({ ...pin.properties, path: { type: "number" } }, ["path"]), pin)).toBe(false);
   // A keyword this does not weigh: not offered when it differs.
   expect(accepts(obj({ ...pin.properties, n: { type: "integer", minimum: 1 } }, ["path"]), pin)).toBe(false);
-  // Closed where it was open: the declared properties decide.
+  // Closed where nothing was said: the declared properties decide.
   expect(accepts({ ...pin, additionalProperties: false }, pin)).toBe(true);
+  // Closed where the pinned definition offered a map: its inputs are refused now.
+  const env = (extra: unknown) => obj({ env: { type: "object", additionalProperties: extra } });
+  expect(accepts(env(false), env({ type: "string" }))).toBe(false);
+  expect(accepts(env(false), env(true))).toBe(false);
+  expect(accepts(env({ type: "string" }), env({ type: "string", description: "A value" }))).toBe(true);
   // Nested: an array's items follow the same rule.
   expect(accepts(obj({ list: { type: "array", items: obj({ a: { type: "string" }, b: { type: "string" } }) } }), obj({ list: { type: "array", items: obj({ a: { type: "string" } }) } }))).toBe(true);
   expect(accepts(obj({ list: { type: "array", items: obj({ b: { type: "string" } }) } }), obj({ list: { type: "array", items: obj({ a: { type: "string" } }) } }))).toBe(false);
@@ -38,6 +43,8 @@ test("a merged list sends the pinned definitions and runs the build's tools", as
   // The reworded tool and the one new to the prompt wait; the call runs the build's implementation.
   expect(m.waiting).toEqual(["Read", "Plan"]);
   expect((await m.tools[0]!.run({}, {} as any)).content).toBe("Read: Reads a file, in parts.");
+  // The gate reads the build's own schema, never the pinned one.
+  expect(m.tools[0]!.built).toBe(now[0]!.input_schema);
   expect(m.pin).toBeUndefined();
   // The same tools in another order are another prefix.
   expect(mergeTools(pinned, [now[1]!, tool("Read", "Reads a file.")]).waiting).toEqual(["order"]);

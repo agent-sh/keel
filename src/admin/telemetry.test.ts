@@ -88,6 +88,8 @@ test("a cache break is a changed prefix only where a stored fingerprint differs"
   expect(breakCause({ ...gap, gapMs: 780_000, lifeMs: 3_600_000, diff: [] })).toBe("provider_miss");
   expect(breakCause({ ...gap, gapMs: 3_600_000, lifeMs: null, diff: [] })).toBe("provider_miss");
   expect(breakCause({ ...gap, gapMs: 3_600_000, diff: ["system"] })).toBe("prefix_changed");
+  // The build's tools and prompt taken because the cache had expired: an expiry, though the prefix differs.
+  expect(breakCause({ ...gap, gapMs: 3_600_000, diff: ["tools", "system (core)"], tookExpired: true })).toBe("expired");
   expect(breakCause({ ...gap, gapMs: 1_000, diff: null })).toBe("prefix_changed");
   const b = (name: string, hash: string) => ({ name, hash, bytes: 1 });
   expect(changedBlocks([b("core", "1"), b("skills", "2"), b("place", "3")], [b("core", "1"), b("place", "3"), b("mcp", "4")])).toEqual(["mcp", "skills"]);

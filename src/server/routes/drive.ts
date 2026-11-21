@@ -24,10 +24,13 @@ export const driveRoutes: RouteModule = (deps: Deps) => {
   drive.onList.push((sessions) => deps.bus.emit({ t: "feature", name: "outside", data: { sessions, at: Date.now() } }));
   registerCatalog({ name: "keel", tools: async () => driveTools(drive, deps.store, deps.providers) });
   registerHooks({
-    system: () =>
-      drive.configured()
+    // Whether the owner set an agent view is their side of the block (hooks.ts SystemBlock).
+    system: () => ({
+      name: "The owner's sessions of other harnesses", data: drive.configured() ? "on" : "",
+      text: drive.configured()
         ? "The owner's sessions of other harnesses (Claude Code, Codex, agy) can be listed, read and messaged: search_tools \"sessions\" finds keel__sessions_all, keel__session_read, keel__session_message, keel__session_answer, keel__session_model and keel__session_resume. Read a session before acting on it; never answer its prompts or message it unless the task asks for that."
         : "",
+    }),
   });
 
   const id = (req: any) => decodeURIComponent(req.params.id);

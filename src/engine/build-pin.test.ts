@@ -10,6 +10,7 @@ import { URGENT } from "../core/build.ts";
 import { Store } from "../core/store.ts";
 import type { StoredEvent } from "../core/types.ts";
 import type { Tool } from "../tools/types.ts";
+import { loadSettings, patchSettings } from "../admin/settings.ts";
 import { adoptionBetween, BuildPins, coldReason } from "./build-pin.ts";
 import { blocksOf } from "./prompt-store.ts";
 
@@ -111,7 +112,7 @@ test("the owner's side of the prompt, an urgent block, the session's own tools a
   expect(pins.due(s, { ...at, own: '[["helper__mail"],[]]' }, v1, never)).toBe("the session's tool set changed");
   // The owner asks: due at the next request, whatever the cache holds.
   expect(pins.ask(s.id)).toBe(true);
-  expect(pins.waits(s.id)).toBe("asked");
+  expect(pins.waits(s.id)).toBe("now");
   expect(pins.due(s, at, v1, never)).toBe("the owner asked");
 }));
 
@@ -124,4 +125,101 @@ test("a subagent on this machine starts on its parent's pinned list", () => with
   // On another model it has no prefix of the parent's to read: this build's list.
   const other = { ...store.createSession({ model: "p:n", workspace: "/" }), parent_id: s.id };
   expect(pins.tools(other, { ...at, model: "p:n" }, v2).map((t) => t.description)).toEqual(["Reads, in parts."]);
+}));
+
+test("a project's instructions edited are the owner's change, also when the session was told to render again", () => withPins((pins, _store, s) => {
+  const kept = blocks("one");
+  pins.prompt(s.id, undefined, kept, [], false);
+  pins.tools(s, at, [tool("Read", "Reads.")]);
+  expect(pins.prompt(s.id, kept, blocks("one", "rules, edited"), ["instruction files"], true)).toBe(true);
+  expect(pins.due(s, at, [tool("Read", "Reads.")], never)).toBe("the owner's side changed (instruction files)");
+  // Only the words differ on a session that moved: it moved.
+  pins.tools(s, at, [tool("Read", "Reads.")]);
+  expect(pins.prompt(s.id, kept, blocks("two"), ["core"], true)).toBe(true);
+  expect(pins.due(s, at, [tool("Read", "Reads.")], never)).toBe("the session moved");
+}));
+
+test("a prompt taken before a restart still brings the tools along after it", () => withPins((pins, store, s) => {
+  const v1 = [tool("Read", "Reads.")], v2 = [tool("Read", "Reads, in parts.")];
+  const kept = blocks("one");
+  pins.prompt(s.id, undefined, kept, [], false);
+  pins.tools(s, at, v1);
+  // The prompt is taken (the owner's files changed) and the daemon stops before the session's own step.
+  expect(pins.prompt(s.id, kept, blocks("one", "rules, edited"), ["instruction files"], false)).toBe(true);
+  const next = new BuildPins(store);
+  expect(next.waits(s.id)).toBe("now");
+  expect(next.due(s, at, v2, never)).toBe("the owner's side changed (instruction files)");
+  expect(next.tools(s, at, v2).map((t) => t.description)).toEqual(["Reads, in parts."]);
+  expect(next.state(s.id).adoptions[0]).toMatchObject({ blocks: ["instruction files"], tools: ["Read"] });
+  expect(next.waits(s.id)).toBeUndefined();
+}));
+
+test("a session behind for longer than the owner allows takes the build's, and 0 turns that off", () => withPins((pins, store, s) => {
+  const v1 = [tool("Read", "Reads.")], v2 = [tool("Read", "Reads, in parts.")];
+  pins.prompt(s.id, undefined, blocks("one"), [], false);
+  pins.tools(s, at, v1);
+  pins.tools(s, at, v2);
+  const since = pins.state(s.id).behind_since!;
+  expect(since).toBeGreaterThan(0);
+  // Warm and behind for an hour: it waits, and the state says when it will not.
+  expect(pins.due(s, at, v2, never)).toBeUndefined();
+  expect(pins.state(s.id).takes_at).toBe(since + 24 * 3_600_000);
+  // Behind since two days ago.
+  store.db.run("UPDATE session_pins SET stale = ? WHERE session_id = ?", [Date.now() - 48 * 3_600_000, s.id]);
+  expect(pins.waits(s.id)).toBe("now");
+  expect(pins.due(s, at, v2, never)).toBe("its tools and prompt were more than 24 hours behind");
+  loadSettings(store.stateDir, () => {});
+  expect(patchSettings({ build_pin: { max_age_hours: 0 } }).ok).toBe(true);
+  try {
+    expect(pins.due(s, at, v2, never)).toBeUndefined();
+    expect(pins.state(s.id).takes_at).toBeNull();
+  } finally { patchSettings({ build_pin: { max_age_hours: 24 } }); }
+  pins.begin(s.id, pins.due(s, at, v2, never));
+  expect(pins.tools(s, at, v2).map((t) => t.description)).toEqual(["Reads, in parts."]);
+  pins.end(s.id);
+  expect(pins.state(s.id)).toMatchObject({ behind_since: null, adoptions: [{ reason: "its tools and prompt were more than 24 hours behind", tools: ["Read"] }] });
+}));
+
+test("a tool an adopted build took away is remembered, and a pin whose list is missing is no pin", () => withPins((pins, store, s) => {
+  pins.prompt(s.id, undefined, blocks("one"), [], false);
+  pins.tools(s, at, [tool("Read", "Reads."), tool("Plan", "Plans.")]);
+  expect(pins.tools(s, at, [tool("Read", "Reads.")]).map((t) => t.name)).toEqual(["Read"]);
+  expect([pins.removed(s.id, "Plan"), pins.removed(s.id, "Read"), pins.removed(s.id, "Nope")]).toEqual([true, false, false]);
+  // On another model the list is another family's: nothing was taken away.
+  pins.tools(s, { ...at, model: "p:n" }, [tool("shell", "Runs.")]);
+  expect(pins.removed(s.id, "Read")).toBe(false);
+  store.db.run("DELETE FROM pinned_tools");
+  const next = new BuildPins(store);
+  expect(next.state(s.id).pinned).toBeNull();
+  expect(next.tools(s, at, [tool("Read", "Reads, in parts.")]).map((t) => t.description)).toEqual(["Reads, in parts."]);
+}));
+
+test("a deferred tool the conversation loaded keeps its definition until it takes another input", () => withPins((pins, _store, s) => {
+  const cat = (name: string, description: string, schema: Record<string, unknown> = { type: "object", properties: { text: { type: "string" } } }) =>
+    ({ ...tool(name, description), input_schema: schema, defer: true, catalog: name }) as Tool;
+  const names = new Set(["mcp__echo__echo"]);
+  const v1 = [tool("Read", "Reads."), cat("mcp__echo__echo", "Echo."), cat("mcp__echo__add", "Add.")];
+  expect(pins.loaded(s.id, v1, names).map((t) => t.description)).toEqual(["Reads.", "Echo.", "Add."]);
+  // Reworded: the loaded one keeps its words, the one never loaded follows.
+  const v2 = [tool("Read", "Reads."), cat("mcp__echo__echo", "Echo, reworded."), cat("mcp__echo__add", "Add, reworded.")];
+  const sent = pins.loaded(s.id, v2, names);
+  expect(sent.map((t) => t.description)).toEqual(["Reads.", "Echo.", "Add, reworded."]);
+  // Another input: the new definition, kept from here.
+  const v3 = [cat("mcp__echo__echo", "Echo, again.", { type: "object", properties: { words: { type: "string" } }, required: ["words"] })];
+  expect(pins.loaded(s.id, v3, names)[0]!.description).toBe("Echo, again.");
+  expect(pins.loaded(s.id, [cat("mcp__echo__echo", "Echo, once more.", v3[0]!.input_schema)], names)[0]!.description).toBe("Echo, again.");
+  // The history no longer references it (a compaction): forgotten, so a later load takes the words of then.
+  pins.loaded(s.id, v2, new Set());
+  expect(pins.loaded(s.id, v2, names)[1]!.description).toBe("Echo, reworded.");
+}));
+
+test("the open sessions behind are listed, and all can be asked at once", () => withPins((pins, store, s) => {
+  const v1 = [tool("Read", "Reads.")], v2 = [tool("Read", "Reads, in parts.")];
+  const other = store.createSession({ model: "p:m", workspace: "/" });
+  for (const x of [s, other]) { pins.prompt(x.id, undefined, blocks("one"), [], false); pins.tools(x, at, v1); }
+  pins.tools(s, at, v2);
+  expect(pins.open()).toEqual({ behind: [s.id], unknown: [], asked: 0 });
+  expect(pins.askAll()).toBe(1);
+  expect(pins.open()).toEqual({ behind: [], unknown: [], asked: 1 });
+  expect([pins.waits(s.id), pins.waits(other.id)]).toEqual(["now", undefined]);
 }));

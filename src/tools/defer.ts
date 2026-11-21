@@ -10,6 +10,7 @@
 // Families and wires without this (GPT on Responses, Gemini, Claude through a
 // route that refuses it) keep the provider-neutral pair search_tools/mcp_call
 // and every built-in eager.
+import { testBuild } from "../core/build.ts";
 import type { Message } from "../core/types.ts";
 import { catalogReady, catalogTools, judgedOf, score, stale, type CatalogTool, type Judged } from "./catalog.ts";
 import { fail, type Tool, type ToolOutput } from "./types.ts";
@@ -57,7 +58,8 @@ export function nativeName(t: Pick<CatalogTool, "qualified" | "mcp">): string {
   return `${raw.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 55)}_${h}`;
 }
 
-type Deferred = Tool & { catalog?: string };
+// `left`: a stand-in for a tool the catalog no longer has.
+type Deferred = Tool & { catalog?: string; left?: true };
 
 // What the gate judged for a call, as mcp_call keeps it: a server reloaded
 // while the card waited makes the answer one for another tool.
@@ -73,8 +75,10 @@ function namespaceOf(t: CatalogTool, name: string): string | undefined {
 
 function wrap(t: CatalogTool): Deferred {
   const name = nativeName(t);
+  // The stand-in build of the upgrade e2e rewords catalog tools too (src/core/build.ts).
+  const as = testBuild?.tools?.[name];
   return {
-    name, description: t.description, input_schema: t.input_schema, defer: true, readOnly: !!t.readOnly, catalog: t.qualified, namespace: namespaceOf(t, name),
+    name, description: as?.description ?? t.description, input_schema: as?.input_schema ?? t.input_schema, defer: true, readOnly: !!t.readOnly, catalog: t.qualified, namespace: namespaceOf(t, name),
     // Judged and granted as the catalog tool, the name mcp_call uses too.
     async target(input) {
       const j = judgedOf(t);
@@ -96,7 +100,7 @@ function wrap(t: CatalogTool): Deferred {
 // A tool named by a tool_reference earlier in the conversation that the
 // catalog no longer has: still declared, so the request stays valid.
 const gone = (name: string): Deferred => ({
-  name, description: "No longer available.", input_schema: { type: "object", properties: {} }, defer: true, readOnly: true, catalog: name,
+  name, description: "No longer available.", input_schema: { type: "object", properties: {} }, defer: true, readOnly: true, catalog: name, left: true,
   run: async () => fail(`${name} is no longer available (its server was removed or is not connected).`),
 });
 

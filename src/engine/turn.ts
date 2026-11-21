@@ -21,7 +21,7 @@ import { asksOwner, registerPinnedDeferred, sessionToolsKey, toolsFor } from "..
 import { allPendingQuestions } from "../tools/interact.ts";
 import { APPROVAL_CUT, QUESTION_CUT, RESTART_CUT, STOPPED_BEFORE, STOPPED_WHILE, stopKind } from "../core/stops.ts";
 import { dropCallEnv } from "../tools/jobs.ts";
-import { isDeferError, loadsNatively, refuseDefer, withCatalog } from "../tools/defer.ts";
+import { isDeferError, loadsNatively, referenced, refuseDefer, withCatalog } from "../tools/defer.ts";
 import { allHooks, type ExternalTurn, type SystemBlock, type ToolAuthorization, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, type Material } from "./reader.ts";
@@ -876,6 +876,26 @@ export class Engine {
     return this.pins.state(id);
   }
 
+  // What taking this build's tools and prompt in every open session would
+  // cost: the sessions known to be behind, each with the context its next
+  // request would write to the cache again (`warm`: a cache still holds it;
+  // a cold one is written again anyway), and how many were not compared yet.
+  async buildPins() {
+    const { behind, unknown, asked } = this.pins.open();
+    const sessions = await Promise.all(behind.map(async (id) => {
+      const s = this.store.session(id)!;
+      const events = this.lineage(id);
+      const warm = await this.providers.resolve(s.model).then((r) => !this.coldWhy(id, r.provider, r.info, events), () => false);
+      return { id, title: s.title, tokens: contextTokens(events, s.model).used, warm };
+    }));
+    return { build: this.pins.state("").build, sessions, tokens: sessions.reduce((n, s) => n + (s.warm ? s.tokens : 0), 0), unknown: unknown.length, asked };
+  }
+
+  // Every open session takes this build's tools and prompt at its next request.
+  adoptAllBuilds() {
+    return { asked: this.pins.askAll() };
+  }
+
   // The owner asks for this build's tools and prompt now: an idle session
   // takes them at once, a running turn at its next request. Either way the
   // next request writes the session's context to the cache again.
@@ -1001,7 +1021,11 @@ export class Engine {
     const counted = fit ? { messages: fit.base ?? messages, tools: toolsBytes(st.tools) } : undefined;
     // Built once: a retry sends the same request, byte for byte (the hooks run
     // once, so a note a hook stored is in every attempt).
-    if (st.native && purpose !== "reader") st.tools = await withCatalog(st.tools, st.info.family, messages, (e, c) => this.errors.capture("server", e, c));
+    if (st.native && purpose !== "reader") {
+      st.tools = await withCatalog(st.tools, st.info.family, messages, (e, c) => this.errors.capture("server", e, c));
+      // A deferred tool the conversation loaded keeps the definition it was loaded with (src/engine/build-pin.ts).
+      if (st.info.id === session.model) st.tools = this.pins.loaded(id, st.tools, referenced(messages));
+    }
     let req: ProviderRequest = { model: st.info.model, system: st.system, systemSplit: st.systemSplit, messages, tools: st.tools, effort: st.effort, maxTokens: st.info.output, signal, sessionKey: id, purpose, route: st.info.id , dropThinking: this.store.session(id)?.settings.drop_thinking || undefined };
     // A reader's request carries no conversation for the hooks to add to.
     if (purpose === "reader") req.cache = false;
@@ -1371,9 +1395,9 @@ export class Engine {
           this.prepare(id, st);
         }
         // A context no warm cache holds any more (just compacted or cleared, expired),
-        // or the owner's request: this build's tools and prompt from this request on.
+        // the owner's request, or a pin past its age: this build's tools and prompt from this request on.
         const waits = st.info.id === session.model ? this.pins.waits(id) : undefined;
-        if (waits === "asked" || (waits && this.coldWhy(id, st.provider, st.info, events))) st = await this.step(session, session.model);
+        if (waits === "now" || (waits && this.coldWhy(id, st.provider, st.info, events))) st = await this.step(session, session.model);
         if (await this.tellSwitch(id, events, st)) events = this.lineage(id);
         const messages = toMessages(events);
         let res: ProviderResult;
@@ -1511,7 +1535,8 @@ export class Engine {
     });
     if (ctx.signal.aborted) return interrupted();
     const tool = tools.find((t) => t.name === u.name);
-    if (!tool) return { type: "tool_result", tool_use_id: u.id, content: `No tool named ${u.name}.`, is_error: true };
+    // A tool an upgrade took away while the session ran says so: the model called it before.
+    if (!tool) return { type: "tool_result", tool_use_id: u.id, content: this.pins.removed(session.id, u.name) ? `${u.name} was removed by an upgrade of Keel and is no longer available. Use the tools you have now.` : `No tool named ${u.name}.`, is_error: true };
     const callTool = (name: string, input: any, id: string): Promise<ToolResultBlock> => {
       // Nested calls have no question card of their own, and the program can
       // exit without awaiting its calls. Ask in a top-level call instead.

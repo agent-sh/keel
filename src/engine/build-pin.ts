@@ -27,16 +27,38 @@
 // Deferred tools and every MCP or catalog tool are not part of the cached
 // prefix; they follow the build and the servers per request, as before.
 //
+// A deferred tool the conversation already loaded is in the prefix from its
+// reference on (the provider puts its definition there), so its definition is
+// kept too, per session (session_loaded), while the tool still takes it.
+//
+// A pin does not grow old without bound: a session that stays warm and never
+// compacts (a loop every few minutes, the helper's conversation) takes the
+// running build's once it has been behind for build_pin.max_age_hours (24 by
+// default, 0 for never), so a change nobody marked urgent still reaches every
+// session, at one cache write per session per period.
+//
 // Each adoption is recorded with its reason, and the pin row says what waits,
-// so the owner sees which build a session's prefix is from.
+// so the owner sees which build a session's prefix is from. A session row is
+// small; the tool list it points at (24 to 36 kB as measured, 62 tools on the
+// Anthropic wire) is shared by the sessions of one build, family and wire.
+import { registerSettings, settings } from "../admin/settings.ts";
 import { buildId, URGENT } from "../core/build.ts";
 import { SessionMap } from "../core/session-map.ts";
 import type { Store } from "../core/store.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
-import { changedTools, mergeTools, pinOf, type PinnedTool } from "../tools/pin.ts";
+import { changedTools, mergeTools, pinOf, servable, type PinnedTool } from "../tools/pin.ts";
 import type { Tool } from "../tools/types.ts";
 import { checkpointAt, lastWarm } from "./compact.ts";
 import { ownChanges, urgentBlock, type PromptBlock } from "./prompt-store.ts";
+
+// The reason of an adoption at a cache that had surely expired: its break is an expiry (src/admin/telemetry.ts).
+export const EXPIRED = "the cache expired";
+
+// The longest a session stays behind the running build, in hours; 0: no limit.
+registerSettings("build_pin", { max_age_hours: 24 }, (v) =>
+  typeof v.max_age_hours === "number" && Number.isFinite(v.max_age_hours) && v.max_age_hours >= 0 ? undefined : "max_age_hours is a number of hours, or 0 for no limit");
+const maxAgeMs = () => Number(settings().build_pin?.max_age_hours ?? 0) * 3_600_000;
+const agedWhy = () => `its tools and prompt were more than ${settings().build_pin.max_age_hours} hours behind`;
 
 // Why no warm cache holds this context on `model`, or undefined when one may:
 // a reply of the model after the last checkpoint used the cache (or a summary
@@ -44,7 +66,7 @@ import { ownChanges, urgentBlock, type PromptBlock } from "./prompt-store.ts";
 // its route may keep a prefix (retention().max in cachewarn.ts).
 export function coldReason(lineage: readonly StoredEvent[], model: string, keepMs: number, now: number, preparedMs = 0): string | undefined {
   const warm = lastWarm(lineage, model, preparedMs);
-  if (warm) return now - warm > keepMs ? "the cache expired" : undefined;
+  if (warm) return now - warm > keepMs ? EXPIRED : undefined;
   const cp = checkpointAt(lineage).at;
   let reply: StoredEvent | undefined;
   for (let i = lineage.length - 1; i > cp && !reply; i--) if (lineage[i]!.kind === "assistant") reply = lineage[i];
@@ -65,18 +87,30 @@ export type PinState = {
   // a daemon start).
   waiting: Waiting;
   known: boolean;
+  // Since when the session is behind, and when it takes the build's by age (absent: no limit, or not behind).
+  behind_since: number | null;
+  takes_at: number | null;
   asked: boolean;
   adoptions: Adoption[];
 };
 
 // `own`: the session's own part of its tool list when it was pinned (registry.ts sessionToolsKey).
-type Row = { build: string | null; ts: number; model: string; native: boolean; own: string; list: string; waiting: Waiting; checked: string | null; asked: boolean };
+// `stale`: since when something of the running build waits. `took`: a prompt
+// taken whose tools have not followed yet (the reason and the blocks), kept
+// in the row so a daemon restart in between does not lose it.
+// `gone`: tools an adoption on the same model took away, so a call to one says why.
+type Row = {
+  build: string | null; ts: number; model: string; native: boolean; own: string; list: string; waiting: Waiting;
+  checked: string | null; asked: boolean; stale: number | null; took: { why: string; blocks: string[] } | null; gone: string[];
+};
 
 const SCHEMA = `CREATE TABLE IF NOT EXISTS session_pins (
   session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
   build TEXT, ts INTEGER NOT NULL, model TEXT NOT NULL, native INTEGER NOT NULL, own TEXT NOT NULL, list TEXT NOT NULL,
-  waiting TEXT NOT NULL, checked TEXT, asked INTEGER NOT NULL DEFAULT 0);
+  waiting TEXT NOT NULL, checked TEXT, asked INTEGER NOT NULL DEFAULT 0, stale INTEGER, took TEXT, gone TEXT NOT NULL DEFAULT '[]');
 CREATE TABLE IF NOT EXISTS pinned_tools (hash TEXT PRIMARY KEY, tools TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS session_loaded (
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, name TEXT NOT NULL, def TEXT NOT NULL, PRIMARY KEY (session_id, name));
 CREATE TABLE IF NOT EXISTS build_adoptions (
   id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   ts INTEGER NOT NULL, reason TEXT NOT NULL, from_build TEXT, to_build TEXT NOT NULL, blocks TEXT NOT NULL, tools TEXT NOT NULL);
@@ -95,8 +129,6 @@ const otherList = (row: Row, to: Variant): string | undefined =>
 export class BuildPins {
   // The reason the step in hand takes this build's, set before its prompt is read.
   private why = new Map<string, string>();
-  // A prompt taken up whose tools have not followed yet: the reason and the blocks.
-  private took = new Map<string, { why: string; blocks: string[] }>();
   // The blocks of each session's prompt that wait, as this run compared them
   // (a session that dropped out reads them back from its row).
   private blocks = new SessionMap<string[]>(256);
@@ -105,22 +137,28 @@ export class BuildPins {
 
   constructor(private store: Store) {
     store.migrate(SCHEMA);
+    // A table made before these columns existed.
+    for (const [col, type] of [["stale", "INTEGER"], ["took", "TEXT"], ["gone", "TEXT NOT NULL DEFAULT '[]'"]] as const)
+      if (!store.columnExists("session_pins", col)) store.db.exec(`ALTER TABLE session_pins ADD COLUMN ${col} ${type}`);
     store.db.run("DELETE FROM pinned_tools WHERE hash NOT IN (SELECT list FROM session_pins)");
   }
 
+  // A row whose list is missing is no pin: the session is pinned again from the running build.
   private row(id: string): Row | undefined {
     const r = this.store.db
-      .query<{ build: string | null; ts: number; model: string; native: number; own: string; list: string; waiting: string; checked: string | null; asked: number }, [string]>(
-        "SELECT build, ts, model, native, own, list, waiting, checked, asked FROM session_pins WHERE session_id = ?")
+      .query<{ build: string | null; ts: number; model: string; native: number; own: string; list: string; waiting: string; checked: string | null; asked: number; stale: number | null; took: string | null; gone: string }, [string]>(
+        "SELECT build, ts, model, native, own, list, waiting, checked, asked, stale, took, gone FROM session_pins WHERE session_id = ?")
       .get(id);
-    return r ? { ...r, native: !!r.native, waiting: JSON.parse(r.waiting), asked: !!r.asked } : undefined;
+    if (!r || !this.list(r.list)) return undefined;
+    return { ...r, native: !!r.native, waiting: JSON.parse(r.waiting), asked: !!r.asked, took: r.took ? JSON.parse(r.took) : null, gone: JSON.parse(r.gone) };
   }
 
-  private list(hash: string): PinnedTool[] {
+  private list(hash: string): PinnedTool[] | undefined {
     let l = this.lists.get(hash);
     if (!l) {
       const r = this.store.db.query<{ tools: string }, [string]>("SELECT tools FROM pinned_tools WHERE hash = ?").get(hash);
-      l = r ? (JSON.parse(r.tools) as PinnedTool[]) : [];
+      if (!r) return undefined;
+      l = JSON.parse(r.tools) as PinnedTool[];
       if (this.lists.size >= 32) this.lists.delete(this.lists.keys().next().value!);
       this.lists.set(hash, l);
     }
@@ -130,18 +168,27 @@ export class BuildPins {
   // Written only when something changed: a step that finds its pin as it was writes nothing.
   private save(id: string, was: Row | undefined, now: Omit<Row, "list"> & { tools: PinnedTool[] }) {
     const text = JSON.stringify(now.tools);
-    const list = Bun.hash(text).toString(36);
     const { tools: _, ...rest } = now;
-    if (was && JSON.stringify({ ...rest, list }) === JSON.stringify({ build: was.build, ts: was.ts, model: was.model, native: was.native, own: was.own, waiting: was.waiting, checked: was.checked, asked: was.asked, list: was.list })) return;
+    const next: Row = { ...rest, list: Bun.hash(text).toString(36) };
+    const flat = (r: Row) => JSON.stringify([r.build, r.ts, r.model, r.native, r.own, r.list, r.waiting, r.checked, r.asked, r.stale, r.took, r.gone]);
+    if (was && flat(was) === flat(next)) return;
     this.store.db.transaction(() => {
-      this.store.db.query("INSERT OR IGNORE INTO pinned_tools (hash, tools) VALUES (?, ?)").run(list, text);
+      this.store.db.query("INSERT OR IGNORE INTO pinned_tools (hash, tools) VALUES (?, ?)").run(next.list, text);
       this.store.db
-        .query(`INSERT INTO session_pins (session_id, build, ts, model, native, own, list, waiting, checked, asked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        .query(`INSERT INTO session_pins (session_id, build, ts, model, native, own, list, waiting, checked, asked, stale, took, gone) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(session_id) DO UPDATE SET build = excluded.build, ts = excluded.ts, model = excluded.model, native = excluded.native,
-                  own = excluded.own, list = excluded.list, waiting = excluded.waiting, checked = excluded.checked, asked = excluded.asked`)
-        .run(id, now.build, now.ts, now.model, now.native ? 1 : 0, now.own, list, JSON.stringify(now.waiting), now.checked, now.asked ? 1 : 0);
+                  own = excluded.own, list = excluded.list, waiting = excluded.waiting, checked = excluded.checked, asked = excluded.asked,
+                  stale = excluded.stale, took = excluded.took, gone = excluded.gone`)
+        .run(id, next.build, next.ts, next.model, next.native ? 1 : 0, next.own, next.list, JSON.stringify(next.waiting), next.checked, next.asked ? 1 : 0,
+          next.stale, next.took ? JSON.stringify(next.took) : null, JSON.stringify(next.gone));
     })();
-    this.lists.set(list, now.tools);
+    this.lists.set(next.list, now.tools);
+  }
+
+  // The session has been behind the running build for longer than the owner allows.
+  private aged(row: Row, now = Date.now()): boolean {
+    const max = maxAgeMs();
+    return max > 0 && row.stale !== null && now - row.stale > max;
   }
 
   // Why a request of the session on `model` takes this build's tools and
@@ -149,15 +196,15 @@ export class BuildPins {
   // build. `cold`: asked only when something waits, or the session was not
   // compared in this run yet.
   due(session: Session, to: Variant, current: Tool[], cold: () => string | undefined): string | undefined {
-    const took = this.took.get(session.id);
-    if (took) return took.why;
     const row = this.row(session.id);
     if (!row) return undefined;
+    if (row.took) return row.took.why;
     if (row.asked) return "the owner asked";
     const other = otherList(row, to);
     if (other) return other;
-    const m = mergeTools(this.list(row.list), current, URGENT.tools);
+    const m = mergeTools(this.list(row.list)!, current, URGENT.tools);
     if (m.urgent) return m.urgent;
+    if (this.aged(row)) return agedWhy();
     const blocks = this.blocks.get(session.id);
     return m.waiting.length || !blocks || blocks.length ? cold() : undefined;
   }
@@ -170,20 +217,21 @@ export class BuildPins {
     this.why.delete(id);
   }
 
-  // A turn that is running asks before each request: the owner asked, or
-  // something waits (then the caller checks whether the cache is cold).
-  waits(id: string): "asked" | "behind" | undefined {
+  // A turn that is running asks before each request: this build's are due
+  // now (the owner asked, a prompt was taken, the age passed), or something
+  // waits (then the caller checks whether the cache is cold).
+  waits(id: string): "now" | "behind" | undefined {
     const row = this.row(id);
     if (!row) return undefined;
-    if (row.asked || this.took.has(id)) return "asked";
+    if (row.asked || row.took || this.aged(row)) return "now";
     return row.waiting.blocks.length || row.waiting.tools.length ? "behind" : undefined;
   }
 
   // The session's prompt was rendered again (`made`) and compared with the
   // kept one (`changed`: the blocks that differ). True when the new render is
-  // taken: there is no kept one, the step in hand has a reason, the session
-  // moved, a changed block is urgent, or the change is the owner's or the
-  // machine's own (the data a block renders, not the build's words).
+  // taken: there is no kept one, the step in hand has a reason, a changed
+  // block is urgent, the change is the owner's or the machine's own (the
+  // data a block renders, not the build's words), or the session moved.
   // Otherwise the kept prompt stays and the changed blocks wait.
   prompt(id: string, kept: PromptBlock[] | undefined, made: PromptBlock[], changed: string[], moved: boolean): boolean {
     if (!kept || !changed.length) {
@@ -192,14 +240,15 @@ export class BuildPins {
     }
     const urgent = urgentBlock(kept, changed);
     const own = ownChanges(kept, made, changed);
-    const why = this.why.get(id) ?? this.took.get(id)?.why
-      ?? (moved ? "the session moved" : urgent ? `the ${urgent} block has an urgent change` : own.length ? `the owner's side changed (${own.join(", ")})` : undefined);
+    const why = this.why.get(id) ?? this.row(id)?.took?.why
+      ?? (urgent ? `the ${urgent} block has an urgent change` : own.length ? `the owner's side changed (${own.join(", ")})` : moved ? "the session moved" : undefined);
     if (!why) {
       this.blocks.set(id, changed);
       return false;
     }
     this.blocks.set(id, []);
-    this.took.set(id, { why, blocks: changed });
+    // Kept in the row until the tools follow (a session with no pin yet takes the build's list anyway).
+    this.store.db.query("UPDATE session_pins SET took = ? WHERE session_id = ?").run(JSON.stringify({ why, blocks: changed }), id);
     return true;
   }
 
@@ -209,8 +258,8 @@ export class BuildPins {
   tools(session: Session, to: Variant, current: Tool[]): Tool[] {
     const { model, native, own } = to;
     const id = session.id, build = buildId();
-    const took = this.took.get(id);
     const row = this.row(id);
+    const took = row?.took;
     // A subagent on this machine has no prompt of its own to compare: it runs on its parent's.
     if (session.parent_id && !session.machine) this.blocks.set(id, []);
     const blocks = this.blocks.get(id) ?? (row?.checked === build ? row.waiting.blocks : []);
@@ -220,31 +269,63 @@ export class BuildPins {
     const parent = !row && session.parent_id && !session.machine ? this.row(session.parent_id) : undefined;
     const base = row ?? (parent && !otherList(parent, to) ? parent : undefined);
     const from = base ? this.list(base.list) : undefined;
-    if (row) reason ??= otherList(row, to);
+    if (row) reason ??= otherList(row, to) ?? (this.aged(row) ? agedWhy() : undefined);
     if (from && !reason) {
       const m = mergeTools(from, current, URGENT.tools);
       if (!m.urgent) {
         const waiting = { blocks, tools: m.waiting };
+        const behind = m.waiting.length + blocks.length > 0;
         // Nothing of this build is missing: the session is on it.
-        const on = !m.waiting.length && !blocks.length ? build : base!.build;
-        this.save(id, row, { build: on, ts: row && on === row.build ? row.ts : Date.now(), model, native, own, tools: m.pin ?? from, waiting, checked: build, asked: !!row?.asked });
+        const on = behind ? base!.build : build;
+        this.save(id, row, {
+          build: on, ts: row && on === row.build ? row.ts : Date.now(), model, native, own, tools: m.pin ?? from, waiting, checked: build,
+          asked: !!row?.asked, stale: behind ? row?.stale ?? Date.now() : null, took: null, gone: row?.gone ?? [],
+        });
         return m.tools;
       }
       reason = m.urgent;
     }
     const pin = current.map((t) => pinOf(t, URGENT.tools[t.name]));
     const tools = from ? changedTools(from, pin) : [];
-    this.took.delete(id);
     if (row && (took?.blocks.length || tools.length)) {
       this.store.db
         .query("INSERT INTO build_adoptions (session_id, ts, reason, from_build, to_build, blocks, tools) VALUES (?, ?, ?, ?, ?, ?, ?)")
         .run(id, Date.now(), reason ?? "a new context", row.build, build, JSON.stringify(took?.blocks ?? []), JSON.stringify(tools));
     }
+    // The definitions the conversation loaded are this build's from here.
+    this.store.db.query("DELETE FROM session_loaded WHERE session_id = ?").run(id);
+    // Tools the build took away on the same model: a call to one says so (removed).
+    const names = new Set(pin.map((t) => t.name));
+    const gone = row && !otherList(row, to) ? [...new Set([...row.gone, ...from!.filter((t) => !names.has(t.name)).map((t) => t.name)])].filter((n) => !names.has(n)).slice(-64) : [];
     // A prompt that still waits (it could not be rendered again) keeps the label of the build it is from.
     const on = blocks.length ? row?.build ?? null : build;
     const same = !!row && on === row.build && !tools.length && !took?.blocks.length;
-    this.save(id, row, { build: on, ts: same ? row.ts : Date.now(), model, native, own, tools: pin, waiting: { blocks, tools: [] }, checked: build, asked: false });
+    this.save(id, row, {
+      build: on, ts: same ? row.ts : Date.now(), model, native, own, tools: pin, waiting: { blocks, tools: [] }, checked: build,
+      asked: false, stale: blocks.length ? row?.stale ?? Date.now() : null, took: null, gone,
+    });
     return current;
+  }
+
+  // The deferred tools of a request that the conversation already loaded
+  // (`names`: the tools its history references): each keeps the definition it
+  // was loaded with while the tool still takes it, since the provider puts the
+  // definition at the reference and a changed one rewrites the cache from
+  // there. One that takes another input now gets the new definition; one the
+  // history no longer references (a compaction took it) is forgotten.
+  loaded(id: string, tools: Tool[], names: Set<string>): Tool[] {
+    const rows = this.store.db.query<{ name: string; def: string }, [string]>("SELECT name, def FROM session_loaded WHERE session_id = ?").all(id);
+    if (!names.size && !rows.length) return tools;
+    const kept = new Map(rows.map((r) => [r.name, JSON.parse(r.def) as PinnedTool]));
+    for (const n of kept.keys()) if (!names.has(n)) this.store.db.query("DELETE FROM session_loaded WHERE session_id = ? AND name = ?").run(id, n);
+    return tools.map((t) => {
+      // A built-in the list defers is pinned with the list; a stand-in for a tool that left has nothing to keep.
+      if (!t.defer || !names.has(t.name) || !(t as { catalog?: string }).catalog || (t as { left?: boolean }).left) return t;
+      const was = kept.get(t.name);
+      if (was && servable(was, t)) return { ...t, description: was.description, input_schema: was.input_schema, built: t.input_schema };
+      this.store.db.query("INSERT INTO session_loaded (session_id, name, def) VALUES (?, ?, ?) ON CONFLICT(session_id, name) DO UPDATE SET def = excluded.def").run(id, t.name, JSON.stringify(pinOf(t)));
+      return t;
+    });
   }
 
   // The built-ins the session's list defers, by name: its tool search finds
@@ -252,12 +333,44 @@ export class BuildPins {
   // search while the session's list defers it).
   deferred(id: string): string[] | undefined {
     const row = this.row(id);
-    return row?.native ? this.list(row.list).filter((t) => t.defer).map((t) => t.name) : undefined;
+    return row?.native ? this.list(row.list)!.filter((t) => t.defer).map((t) => t.name) : undefined;
+  }
+
+  // Whether a tool the session no longer has was taken away by a build it adopted.
+  removed(id: string, name: string): boolean {
+    return !!this.row(id)?.gone.includes(name);
   }
 
   // The owner asked for this build's tools and prompt: the session's next request takes them.
   ask(id: string): boolean {
     return this.store.db.query("UPDATE session_pins SET asked = 1 WHERE session_id = ?").run(id).changes > 0;
+  }
+
+  // The same for every open session that is behind or not compared yet; how many were asked.
+  askAll(): number {
+    const { behind, unknown } = this.open();
+    for (const id of [...behind, ...unknown]) this.ask(id);
+    return behind.length + unknown.length;
+  }
+
+  // The open sessions that may carry an earlier build's tools or prompt:
+  // `behind` those known to (compared by this build), `unknown` those not
+  // compared since this build started, and `asked` how many of either the
+  // owner already asked (they take the build's at their next request).
+  open(): { behind: string[]; unknown: string[]; asked: number } {
+    const build = buildId();
+    const rows = this.store.db
+      .query<{ id: string; waiting: string; checked: string | null; asked: number }, []>("SELECT p.session_id AS id, p.waiting, p.checked, p.asked FROM session_pins p JOIN sessions s ON s.id = p.session_id WHERE s.archived = 0")
+      .all();
+    const behind: string[] = [], unknown: string[] = [];
+    let asked = 0;
+    for (const r of rows) {
+      const w = JSON.parse(r.waiting) as Waiting;
+      const list = r.checked !== build ? unknown : w.blocks.length || w.tools.length ? behind : undefined;
+      if (list && r.asked) asked++;
+      else list?.push(r.id);
+    }
+    return { behind, unknown, asked };
   }
 
   adoptions(id: string, limit = 5): Adoption[] {
@@ -271,11 +384,14 @@ export class BuildPins {
   state(id: string): PinState {
     const row = this.row(id);
     const build = buildId();
+    const max = maxAgeMs();
     return {
       build,
       pinned: row ? { build: row.build, since: row.ts } : null,
       waiting: row?.waiting ?? { blocks: [], tools: [] },
       known: !row || row.checked === build,
+      behind_since: row?.stale ?? null,
+      takes_at: row?.stale && max > 0 ? row.stale + max : null,
       asked: !!row?.asked,
       adoptions: this.adoptions(id),
     };

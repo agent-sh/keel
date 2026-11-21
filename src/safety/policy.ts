@@ -60,7 +60,7 @@ const onlyOwner = (why: string): Decision => ({ ask: { risk: "high", why, sugges
 // What a call does. The tool's own definition says which kind of call it is
 // (its read flag and its kind); the input only supplies the command or the
 // paths of that kind, so no key a model puts in a call changes how it is judged.
-export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKind; input_schema?: any }, input: any, cwd: string): CallClass {
+export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKind; input_schema?: any; built?: any }, input: any, cwd: string): CallClass {
   if (tool.readOnly) return { kind: "read" };
   switch (tool.kind) {
     case "control":
@@ -69,7 +69,8 @@ export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKin
       const cmd = shellText(input);
       if (cmd === null) return { kind: "other" }; // a monitor of a socket: judged by the tool's name
       // A tool that offers it (Codex's exec_command) can ask to run outside the sandbox.
-      const escalate = !!tool.input_schema?.properties?.sandbox_permissions && input?.sandbox_permissions === "require_escalated";
+      // Read from the running build's schema: a session may carry an older definition (Tool.built).
+      const escalate = !!(tool.built ?? tool.input_schema)?.properties?.sandbox_permissions && input?.sandbox_permissions === "require_escalated";
       return { kind: "shell", command: cmd, escalate: escalate || undefined, cwd };
     }
     case "edit": {

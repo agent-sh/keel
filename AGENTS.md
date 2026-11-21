@@ -28,6 +28,17 @@ under `~/.cache/keel-work/bun/research/`.
   read in parts by cheaper reader models and compiled into one answer
   (`src/engine/reader.ts`, `src/engine/readers.ts`), and idle compaction before a long context's cache
   expires (`src/engine/compact.ts`).
+- A change to a tool or a prompt block reaches a live session late by design
+  (its tools and prompt are pinned, see above): when its cache is cold, or
+  after `build_pin.max_age_hours` (24 by default). Mark it urgent in `URGENT`
+  (`src/core/build.ts`), by the tool's or the block's name, when waiting that
+  long would be wrong. Exactly two kinds of change need the mark: a safety
+  instruction (what the model must or must not do with the owner's machine,
+  data or accounts), and any change of what a tool does under an unchanged
+  input schema (the model would keep the old description of the new
+  behaviour). A removed tool or a changed input needs none: the pinned
+  definition is not offered. Rewording, a new optional parameter and a new
+  tool need none either.
 - A request counted over the model's window is never sent: the context is
   compacted first. A context no provider has counted yet (an imported history)
   is counted from its bytes at the model's own bytes a token, learned from what

@@ -79,11 +79,12 @@ export const artifactRoutes: RouteModule = ({ store, bus, errors }) => {
   const pending = new Map<string, { paths: string[]; existed: Set<string> }>();
   const commanded = new Set<string>(); // sessions whose turn ran a command
   registerHooks({
+    // The folder is the owner's side of the block (hooks.ts SystemBlock): a changed path is taken at the next daemon start.
     sessionSystem: (s) => {
-      if (s.machine) return "";
+      if (s.machine) return { name: "Artifacts", text: "", data: "" };
       const dir = dirOf(s);
       try { mkdirSync(dir, { recursive: true }); } catch (e) { errors.capture("server", e, { at: "artifacts folder", session: s.id }); }
-      return `Artifacts: files you make for the owner to look at (a report, a chart, an HTML page, a summary in markdown) go in ${dir}/, unless they name a place. They see them, with what you created or changed in their folders, in the session's Artifacts.`;
+      return { name: "Artifacts", data: dir, text: `Artifacts: files you make for the owner to look at (a report, a chart, an HTML page, a summary in markdown) go in ${dir}/, unless they name a place. They see them, with what you created or changed in their folders, in the session's Artifacts.` };
     },
     beforeTool: (s, call) => {
       if (s.machine) return;

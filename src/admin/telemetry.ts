@@ -8,7 +8,7 @@ import { SessionMap } from "../core/session-map.ts";
 import { lineage } from "../core/tree.ts";
 import { registerHooks } from "../engine/hooks.ts";
 import { promptOf } from "../engine/prompt-store.ts";
-import { adoptionBetween } from "../engine/build-pin.ts";
+import { adoptionBetween, EXPIRED } from "../engine/build-pin.ts";
 import { errorText } from "../engine/retry.ts";
 import type { ProviderRequest } from "../providers/types.ts";
 import { errorClass } from "./classes.ts";
@@ -267,7 +267,7 @@ export class Telemetry {
     const took = adoptionBetween(this.store, sessionId, prev.ts, ts);
     const parts = (diff ?? []).map((d) => (d === "tools" && took?.tools.length ? `tools (${took.tools.slice(0, 8).join(", ")}${took.tools.length > 8 ? `, ${took.tools.length - 8} more` : ""})` : d));
     if (took) parts.push(`build ${took.to_build} taken: ${took.reason}`);
-    return { cause: breakCause({ gapMs: ts - prev.ts, lifeMs: prev.cache_ms, modelChanged: prev.model !== model, compacted, diff }), detail: parts.length ? parts.join("; ") : null };
+    return { cause: breakCause({ gapMs: ts - prev.ts, lifeMs: prev.cache_ms, modelChanged: prev.model !== model, compacted, diff, tookExpired: took?.reason === EXPIRED }), detail: parts.length ? parts.join("; ") : null };
   }
 
   private compactedBetween(sessionId: string, a: number, b: number) {
@@ -576,9 +576,13 @@ function classCounts(list: CallRow[]): Record<string, number> {
 // the clock says; with none recorded, a gap past the lifetime the last request
 // asked for (`lifeMs`) is an expiry, and a miss inside it, or on a route that
 // states no lifetime, is the provider's.
-export function breakCause(b: { gapMs: number; lifeMs?: number | null; modelChanged: boolean; compacted: boolean; diff?: string[] | null }): (typeof BREAK_CAUSES)[number] {
+// `tookExpired`: the session took the running build's tools and prompt at this
+// request because its cache had expired (src/engine/build-pin.ts): the prefix
+// differs only because nothing was left to keep, so the break is an expiry.
+export function breakCause(b: { gapMs: number; lifeMs?: number | null; modelChanged: boolean; compacted: boolean; diff?: string[] | null; tookExpired?: boolean }): (typeof BREAK_CAUSES)[number] {
   if (b.modelChanged) return "model_switch";
   if (b.compacted) return "compaction";
+  if (b.tookExpired) return "expired";
   if (b.diff?.length) return "prefix_changed";
   if (b.lifeMs && b.gapMs > b.lifeMs) return "expired";
   return b.diff ? "provider_miss" : "prefix_changed";

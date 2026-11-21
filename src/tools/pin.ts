@@ -55,7 +55,9 @@ export function accepts(cur: unknown, pin: unknown): boolean {
     } else if (k === "items") {
       if (cur.items !== undefined && !accepts(cur.items, pin.items ?? {})) return false;
     } else if (k === "additionalProperties") {
-      // Closed now where it was open: the declared properties are checked above, and a model sends no others.
+      // Closed now where nothing was said: the declared properties are checked above, and a model sends no others.
+      // Closed where the pinned definition offered a map (any key, or keys of one schema): its inputs are refused now.
+      if (cur.additionalProperties === false && (pin.additionalProperties === true || isObj(pin.additionalProperties))) return false;
       if (isObj(cur.additionalProperties) && pin.additionalProperties !== false && !accepts(cur.additionalProperties, pin.additionalProperties)) return false;
     } else return false;
   }
@@ -114,7 +116,8 @@ export function mergeTools(pinned: PinnedTool[], current: Tool[], marks: Record<
     pin.push(p);
     const { mark: _, ...spec } = p;
     // The spec fields come from the pin alone: a flag the build set since is not carried over.
-    tools.push({ ...c, freeform: undefined, defer: undefined, namespace: undefined, search: undefined, ...spec });
+    // `built`: the build's own schema, for the gate.
+    tools.push({ ...c, freeform: undefined, defer: undefined, namespace: undefined, search: undefined, ...spec, built: c.input_schema });
     if (sent(p) !== sent(c)) waiting.push(p.name);
   }
   const had = new Set(pinned.map((p) => p.name));

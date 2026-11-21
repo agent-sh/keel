@@ -83,6 +83,10 @@ export type Tool = ToolSpec & {
   // source. `shape` is the tool's name, description, schema and read flag as
   // judged: a remembered refusal or retry is for that shape on that source.
   target?(input: any): Promise<{ name: string; readOnly: boolean; input: any; cls?: CallClass; source?: string; shape?: string } | null>;
+  // The running build's own input schema, when the definition a request
+  // carries is one the session was sent before (src/tools/pin.ts): what the
+  // permission gate reads, never the pinned one.
+  built?: Record<string, unknown>;
   // A shared tool offered only to these families (default: every family).
   families?: string[];
   // It only waits on the owner's answer (a question, a plan to approve): a

@@ -29,10 +29,14 @@ export function buildId(): string {
   return createHash("sha256").update(parts.join("|")).digest("hex").slice(0, 12);
 }
 
-// A change a live session must not wait for: a safety rule, or the fix of an
-// instruction that does harm. A session keeps the tools and system prompt it
-// was last sent until its cache is cold, so a reworded description or prompt
-// block reaches it late by design. The build that makes a change of this kind
+// A change a live session must not wait for. A session keeps the tools and
+// system prompt it was last sent until its cache is cold (or the pin's age
+// passes, build_pin.max_age_hours), so a reworded description or prompt block
+// reaches it late by design. Two kinds of change need a mark: a safety
+// instruction, and any change of what a tool does under an unchanged input
+// schema (the session would keep the old description of the new behaviour;
+// the compatibility check in src/tools/pin.ts reads schemas only). A removed
+// tool or a changed input needs none. The build that makes such a change
 // gives the tool (by its name) or the prompt block (by its name in the kept
 // prompt: "core", "instruction files", a feature block's first words) a mark
 // here, any new text. A session whose pinned copy carries another mark, or
