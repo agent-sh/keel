@@ -66,7 +66,8 @@ test("home: the sessions' state, what needs you, and a place to start", async ({
     await expect(page.getByTestId("home-attention").getByTestId("home-session").first()).toHaveAttribute("data-watch", "need");
     // A failure has its row, its word and its action.
     await expect(row(page, failed.id)).toHaveAttribute("data-watch", "fail");
-    await expect(row(page, failed.id).getByTestId("home-kind")).toHaveText("Failed");
+    // A failure says its class, in the daemon's word for it.
+    await expect(row(page, failed.id).getByTestId("home-kind")).toHaveText("Failed: billing");
     await expect(row(page, failed.id)).toContainText("credit balance");
     await expect(row(page, failed.id).getByTestId("home-see")).toHaveText("Open");
     // One action leads the screen.
@@ -416,10 +417,12 @@ test("home: a waiting plan, secret and agent's request are counted and have a ro
     await expect(row(page, plan.id)).toContainText("Retry policy");
     await expect(row(page, plan.id).getByTestId("home-review")).toHaveText("Review");
     await expect(row(page, secret.id).getByTestId("home-kind")).toHaveText("Secret");
-    await expect(row(page, secret.id)).toContainText("The model asks for SPEC_TOKEN");
+    await expect(row(page, secret.id)).toContainText("SPEC_TOKEN");
     for (const s of [plan, secret]) await expect(row(page, s.id)).toHaveAttribute("data-watch", "need");
     const need = Number((await page.getByTestId("home-count-need").innerText()).match(/\d+/)![0]);
     expect(need).toBeGreaterThanOrEqual(2);
+    // The headline counts what the tab's title counts: the things that wait.
+    await expect(page).toHaveTitle(new RegExp(`^\\(${need}\\) `));
     // An agent's request, where the scripted agent asked one: the parent's row says whose it is and offers Review only.
     const agent = row(page, parent.id);
     if (await agent.getByTestId("home-kind").filter({ hasText: "Agent's command" }).count()) {
@@ -514,6 +517,8 @@ test("home: every way to a waiting session lands on the list of requests", async
     await expect(row(page, parent.id).getByTestId("home-allow")).toHaveCount(0);
     await expect(row(page, parent.id).getByTestId("home-review")).toBeEnabled();
     await row(page, parent.id).getByTestId("home-review").click();
+    // The request waits in the agent's own session: that is the one the row opens.
+    await expect(page).toHaveURL(new RegExp(`/s/${kid}`));
     await expect(page.getByTestId("approval").first()).toBeVisible();
     at = await enters();
     expect(at).toBe("approvals");
@@ -522,5 +527,53 @@ test("home: every way to a waiting session lands on the list of requests", async
   } finally {
     await drop(request, ids);
     console.log(`\nPATH-TABLE-HOME\n${table.join("\n")}\nPATH-TABLE-HOME-END`);
+  }
+});
+
+// The headline and the rows read the state the daemon serves: a session that
+// waits on a timer is Waiting (it goes on by itself, so it has no row at a
+// desk), and a turn the model declined is news under its own word until its
+// session was shown.
+test("home: waiting and declined sessions, from the served state", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  const timer = await make(request, "Home: check the deploy later");
+  await request.put(`/api/sessions/${timer.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+  await request.post(`/api/sessions/${timer.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "wait_for", input: { kind: "timer", seconds: 900, note: "check the deploy" } }])}` } });
+  const declined = await make(request, "Home: a turn the model declines", "script:refuse");
+  try {
+    for (const s of [timer, declined]) await expect.poll(() => ended(request, s.id), { timeout: 60_000 }).toBe(true);
+    await page.goto("/");
+    const watch = page.getByTestId("home-watch");
+    await expect(watch.getByTestId("home-count-wait")).toContainText(/\d+ waiting/, { timeout: 30_000 });
+    await expect(watch.getByTestId("home-count-declined")).toContainText(/\d+ declined/);
+    const r = row(page, declined.id);
+    await expect(r).toHaveAttribute("data-watch", "declined");
+    await expect(r.getByTestId("home-kind")).toHaveText("Declined");
+    await expect(r).toContainText("The model declined the turn");
+    // What waits on a timer needs nothing: no row among what needs the owner.
+    await expect(page.getByTestId("home-attention").locator(`[data-session="${timer.id}"]`)).toHaveCount(0);
+    await shoot(page, "home-11-waiting-declined");
+    // A phone has no rail: it is listed with the working ones, with what it waits on and when that is due.
+    await page.setViewportSize({ width: 390, height: 844 });
+    const waits = page.getByTestId("home-working").locator(`[data-session="${timer.id}"]`);
+    await expect(waits.getByTestId("home-kind")).toHaveText("Waiting");
+    await expect(waits).toContainText("check the deploy");
+    // Listed once: Recent leaves out what the list above it holds.
+    await expect(page.locator(`[data-testid="recent-session"][data-session="${timer.id}"]`)).toBeHidden();
+    await shoot(page, "home-12-waiting-phone");
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    // Shown, the declined turn is no longer news.
+    const before = Number((await watch.getByTestId("home-count-declined").innerText()).match(/\d+/)![0]);
+    await expect(r.getByTestId("home-see")).toBeEnabled();
+    await r.getByTestId("home-see").click();
+    await expect(page).toHaveURL(new RegExp(`/s/${declined.id}`));
+    await page.waitForTimeout(500);
+    await page.goto("/");
+    await expect(page.getByTestId("home-watch")).toBeVisible();
+    await expect(row(page, declined.id)).toHaveCount(0);
+    if (before > 1) await expect(watch.getByTestId("home-count-declined")).toContainText(`${before - 1} declined`);
+    else await expect(watch.getByTestId("home-count-declined")).toHaveCount(0);
+  } finally {
+    await drop(request, [timer.id, declined.id]);
   }
 });

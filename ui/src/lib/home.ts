@@ -1,32 +1,43 @@
 // What the home screen says of the sessions: the headline's counts and the
-// rows under it, from each session's state and whether the owner has looked
-// at a failure since it happened.
-import type { Watch } from "../../../src/core/watch.ts";
+// rows under it, from the state the daemon serves of each session
+// (src/core/watch.ts) and whether the owner has looked at a failure since it
+// happened.
+import { askThing, failWord, whyText, type SessionState, type Watch } from "../../../src/core/watch.ts";
 import { plainAscii } from "./hidden-chars.ts";
 
 export type Row = { id: string; w: Watch };
-export type Part = { w: "need" | "resume" | "fail" | "work"; ids: string[] };
+// The headline's parts. `wait` is every session that goes on by itself: one
+// that waits on something it set up, and one a restart cut that Keel resumes.
+export type Part = { w: "need" | "fail" | "declined" | "work" | "wait" | "stop"; ids: string[]; n: number };
 
 // How a count reads in the headline.
 export const say = (w: Part["w"], n: number) =>
   w === "need" ? `${n} ${n === 1 ? "needs" : "need"} you`
-  : w === "resume" ? `${n} ${n === 1 ? "waits" : "wait"} to resume`
   : w === "fail" ? `${n} failed`
+  : w === "declined" ? `${n} declined`
+  : w === "wait" ? `${n} waiting`
+  : w === "stop" ? `${n} stopped`
   : `${n} working`;
 
-// `list` is in order of attention. A failed session counts until the owner
-// has looked at it (`unseen` holds the ones with an unread failure): after
-// that it is a failed session among the recent ones, not news. A turn a
-// restart cut and held waits on the owner, so it is counted and listed too:
-// the headline never says nothing needs them while a row does.
-export function watchSummary(list: Row[], unseen: ReadonlySet<string>): { head: Part[]; attention: Row[]; working: Row[] } {
-  const of = (w: Watch) => list.filter((r) => r.w === w);
-  const failed = of("fail").filter((r) => unseen.has(r.id));
-  const groups: [Part["w"], Row[]][] = [["need", of("need")], ["resume", of("resume")], ["fail", failed], ["work", of("work")]];
+// `list` is in order of attention.
+// - What needs the owner is counted by the things that wait, as the tab's
+//   title counts them: a session with three requests is three.
+// - A failed or declined session counts until the owner has looked at it
+//   (`unseen`): after that it is a failed session in the list, not news.
+// - A stopped session counts when it stopped by itself or holds prompts for
+//   the owner (the daemon says why); one the owner stopped is at rest.
+// The headline never says nothing needs them while a row does.
+type Told = { id: string; st: SessionState };
+export function watchSummary(list: Told[], unseen: ReadonlySet<string>): { head: Part[]; attention: Row[]; working: Row[] } {
+  const of = (...w: Watch[]) => list.filter((r) => w.includes(r.st.watch));
+  const news = (w: Watch) => of(w).filter((r) => unseen.has(r.id));
+  const stopped = of("stop").filter((r) => !!r.st.why);
+  const groups: [Part["w"], Told[]][] = [["need", of("need")], ["fail", news("fail")], ["declined", news("declined")], ["work", of("work")], ["wait", of("wait", "resume")], ["stop", stopped]];
+  const rows = (g: Told[]): Row[] => g.map((r) => ({ id: r.id, w: r.st.watch }));
   return {
-    head: groups.filter(([, rows]) => rows.length).map(([w, rows]) => ({ w, ids: rows.map((r) => r.id) })),
-    attention: [...of("need"), ...of("resume"), ...failed],
-    working: of("work"),
+    head: groups.filter(([, g]) => g.length).map(([w, g]) => ({ w, ids: g.map((r) => r.id), n: w === "need" ? g.reduce((n, r) => n + (r.st.asks ?? 1), 0) : g.length })),
+    attention: rows([...of("need"), ...news("fail"), ...news("declined"), ...stopped]),
+    working: rows([...of("work"), ...of("wait", "resume")]),
   };
 }
 
@@ -34,20 +45,22 @@ export function watchSummary(list: Row[], unseen: ReadonlySet<string>): { head: 
 // headline counts is never pushed off the screen by the ones before it: each
 // state present keeps its first row. `more` is what did not fit, by state, so
 // the line under the rows says what the headline says.
-export function pickRows(rows: Row[], most: number): { shown: Row[]; more: Part[] } {
+type More = { w: Part["w"]; ids: string[] };
+export function pickRows(rows: Row[], most: number): { shown: Row[]; more: More[] } {
   if (rows.length <= most) return { shown: rows, more: [] };
   const keep = new Set<string>();
   for (const r of rows) if (keep.size < most && !rows.some((x) => keep.has(x.id) && x.w === r.w)) keep.add(r.id);
   for (const r of rows) if (keep.size < most) keep.add(r.id);
   const hidden = rows.filter((r) => !keep.has(r.id));
-  const order: Part["w"][] = ["need", "resume", "fail", "work"];
+  const order: Part["w"][] = ["need", "fail", "declined", "stop", "work", "wait"];
+  const part = (w: Watch) => (w === "resume" ? "wait" : w);
   return {
     shown: rows.filter((r) => keep.has(r.id)),
-    more: order.map((w) => ({ w, ids: hidden.filter((r) => r.w === w).map((r) => r.id) })).filter((p) => p.ids.length),
+    more: order.map((w) => ({ w, ids: hidden.filter((r) => part(r.w) === w).map((r) => r.id) })).filter((p) => p.ids.length),
   };
 }
 // "3 more: 2 need you, 1 failed".
-export const sayMore = (more: Part[]) => `${more.reduce((n, p) => n + p.ids.length, 0)} more: ${more.map((p) => say(p.w, p.ids.length)).join(", ")}`;
+export const sayMore = (more: More[]) => `${more.reduce((n, p) => n + p.ids.length, 0)} more: ${more.map((p) => say(p.w, p.ids.length)).join(", ")}`;
 
 // ---- An approval answered from a home row.
 // The rule the approval card is held to: an approval is given only for what
@@ -68,21 +81,23 @@ export function wholeCommand(a: { kind: string; risk: string; summary: string; i
 }
 
 // What a row is, in a word: the kind of thing that waits, not the state again
-// (the headline, the mark and the list's own heading say the state).
-// `agent`: the request is one of the session's agents', answered on the session's page.
-export function rowKind(w: Watch, o: { approval?: { kind: string }; agent?: boolean; asking?: boolean; plan?: boolean; secret?: boolean }): string {
-  if (w === "fail") return "Failed";
-  if (w === "resume") return "Held after a restart";
-  if (w === "work") return "Working";
-  const what = o.approval ? (o.approval.kind === "shell" ? "Command" : o.approval.kind === "edit" ? "Edit" : "Tool call") : "";
-  if (what) return o.agent ? `Agent's ${what.toLowerCase()}` : what;
-  return o.plan ? "Plan" : o.secret ? "Secret" : o.asking ? "Question" : "Not sent";
+// (the headline, the mark and the list's own heading say the state). It comes
+// from the daemon's reason (`why`). `card`: the kind of the approval card,
+// where the page holds it (a command, an edit, another call). A request of one
+// of the session's agents says whose it is; a failure says its class.
+const ASKED: Record<string, string> = { question: "Question", plan: "Plan", secret: "Secret", resume: "Held after a restart", unsent: "Not sent", owner: "Your answer" };
+const CARD: Record<string, string> = { shell: "Command", edit: "Edit" };
+export function rowKind(st: Pick<SessionState, "watch" | "why" | "cls" | "child">, card?: string): string {
+  if (st.watch === "need") {
+    const what = st.why === "approval" ? (card ? CARD[card] ?? "Tool call" : "Approval") : ASKED[st.why ?? ""] ?? "Waits for you";
+    return st.child ? `Agent's ${what.toLowerCase()}` : what;
+  }
+  if (st.watch === "fail") return failWord(st.cls) ? `Failed: ${failWord(st.cls)}` : "Failed";
+  return st.watch === "declined" ? "Declined" : st.watch === "stop" ? "Stopped" : st.watch === "work" ? "Working" : st.watch === "wait" ? "Waiting" : st.watch === "resume" ? "Waiting to resume" : "";
 }
 
-// A session counts as needing the owner when the page's watch says so, and also when it waits on
-// something the watch does not read yet: a plan it presented, a secret it asked for, a request of
-// one of its agents. (The watch calls those "working".)
-export const needs = (w: Watch, o: { plan?: boolean; secret?: boolean; agent?: boolean }): Watch => (w === "work" && (o.plan || o.secret || o.agent) ? "need" : w);
+// A row's line: what the daemon says the state stands on, without the words the row's kind already says.
+export const rowLine = (st: SessionState, now = Date.now()): string => askThing({ ...st, text: whyText(st, now) });
 
 // ---- Failures the owner has looked at.
 // A failure is news until its session was shown on some device or its next
@@ -95,4 +110,6 @@ type Failing = { id: string; settings: { failed_ms?: number | null; fail_seen_ms
 // (the daemon made no mark of it) has a stamp of its own, which the session's activity does not move.
 export const failStamp = (s: Pick<Failing, "settings">) => s.settings.failed_ms ?? -1;
 export const failUnseen = (s: Pick<Failing, "settings">) => s.settings.fail_seen_ms !== failStamp(s);
-export const unseenFailures = (list: Failing[], w: Record<string, Watch>) => new Set(list.filter((s) => w[s.id] === "fail" && failUnseen(s)).map((s) => s.id));
+// (A turn the model declined is a failure under its own word: news the same way.)
+export const isFailure = (w: Watch | undefined) => w === "fail" || w === "declined";
+export const unseenFailures = (list: Failing[], w: Record<string, Watch>) => new Set(list.filter((s) => isFailure(w[s.id]) && failUnseen(s)).map((s) => s.id));

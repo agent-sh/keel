@@ -5,7 +5,7 @@
 // Each waiting thing is counted once: an agent's question is its parent's
 // to answer and is in the parent's state, so only top-level sessions are read.
 import { useEffect, useMemo, useSyncExternalStore } from "react";
-import { failStamp, failUnseen } from "../lib/home.ts";
+import { failStamp, failUnseen, isFailure } from "../lib/home.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
 import type { Session } from "../../../src/core/types.ts";
 import { useSessionStates, type Watch } from "../lib/watch.ts";
@@ -73,11 +73,11 @@ export function Attention() {
   return null;
 }
 
-// A failed session in a pane that is on screen, in a tab that is visible: the owner has seen that
-// failure, and the daemon is told so (every device then stops counting it). The pane says whether
+// A failed session (or one whose turn the model declined) in a pane that is on screen, in a tab
+// that is visible: the owner has seen that failure, and the daemon is told so (every device then stops counting it). The pane says whether
 // it is in view: any pane of a desk, the one page a phone shows. A hidden tab shows nothing.
 export function useSeenFailure(s: Session, w: Watch, inView: boolean) {
   const visible = useSyncExternalStore(onVisible, () => document.visibilityState === "visible");
-  const at = inView && visible && w === "fail" && failUnseen(s) ? failStamp(s) : null;
+  const at = inView && visible && isFailure(w) && failUnseen(s) ? failStamp(s) : null;
   useEffect(() => { if (at !== null) actions.patch(s.id, { fail_seen: at } as never).catch(reportError); }, [s.id, at]);
 }

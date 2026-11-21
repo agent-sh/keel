@@ -488,7 +488,8 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-home-count .k-mark { width: 0.6875rem; height: 0.6875rem; }
 .k-home-count[data-watch="need"] { color: var(--st-need); }
 .k-home-count[data-watch="work"] { color: var(--st-work-ink); }
-.k-home-count[data-watch="fail"] { color: var(--st-fail); }
+.k-home-count:is([data-watch="fail"], [data-watch="declined"]) { color: var(--st-fail); }
+.k-home-count[data-watch="wait"] { color: var(--st-wait-ink); }
 .k-home-count:hover { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 0.22em; }
 .k-home-count:focus-visible { outline: 2px solid var(--ring); outline-offset: 0.1875rem; }
 .k-home-sec { margin-top: 1.875rem; }
@@ -510,7 +511,8 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-home-row-word { flex-shrink: 0; padding: 0.125rem 0; font-weight: 600; color: var(--muted); }
 .k-home-row[data-watch="need"] .k-home-row-word { color: var(--st-need); }
 .k-home-row[data-watch="work"] .k-home-row-word { color: var(--st-work-ink); }
-.k-home-row[data-watch="fail"] .k-home-row-word { color: var(--st-fail); }
+.k-home-row:is([data-watch="fail"], [data-watch="declined"]) .k-home-row-word { color: var(--st-fail); }
+.k-home-row:is([data-watch="wait"], [data-watch="resume"]) .k-home-row-word { color: var(--st-wait-ink); }
 /* A request the gate rates high risk says so beside its kind. */
 .k-home-row-risk { flex-shrink: 0; padding: 0.125rem 0.375rem; border-radius: 0.1875rem; background: var(--danger-soft); font-weight: 600; color: var(--danger); }
 .k-home-row-line { flex: 1 1 8rem; min-width: 0; padding: 0.125rem 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; color: var(--muted); }
@@ -535,7 +537,8 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-home-recent-word { flex-shrink: 0; font-weight: 700; font-size: var(--text-micro); line-height: 1.1875rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); }
 .k-home-recent[data-watch="need"] .k-home-recent-word { color: var(--st-need); }
 .k-home-recent[data-watch="work"] .k-home-recent-word { color: var(--st-work-ink); }
-.k-home-recent[data-watch="fail"] .k-home-recent-word { color: var(--st-fail); }
+.k-home-recent:is([data-watch="fail"], [data-watch="declined"]) .k-home-recent-word { color: var(--st-fail); }
+.k-home-recent:is([data-watch="wait"], [data-watch="resume"]) .k-home-recent-word { color: var(--st-wait-ink); }
 
 /* ---------- Components in the Bridge language ---------- */
 .prose-keel { font-size: var(--text-read); line-height: 1.65; }

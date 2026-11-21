@@ -128,6 +128,8 @@ export const marksRoutes: RouteModule = ({ store, bus }) => {
     // Also a turn closed at this start before this module listened (a cut turn's restart end).
     { const r = lastEnd(s.id); if (r && r !== s.settings.last_end) store.mergeSettings(s.id, { last_end: r }); }
     const at = s.settings.failed_ms ?? failedAt(s.id);
+    // A declined turn from before the mark counts as seen (a new one is marked unseen as it ends).
+    if (!at && s.settings.fail_seen_ms === undefined && (s.settings.last_end ?? lastEnd(s.id)) === "refusal") store.mergeSettings(s.id, { fail_seen_ms: NO_FAIL_MARK });
     if (!at) continue;
     if (!s.settings.failed_ms) store.mergeSettings(s.id, { failed_ms: at });
     // Whether the owner has looked at a failure is kept with it (fail_seen_ms), so every device agrees.
@@ -148,7 +150,8 @@ export const marksRoutes: RouteModule = ({ store, bus }) => {
       const same = kind === "turn_end" && !!had?.failed_ms && ts - had.failed_ms < 5000;
       store.mergeSettings(id, { ...(same ? {} : { failed_ms: ts, fail_seen_ms: 0 }), ...(kind === "turn_end" ? { last_end: "error" } : {}) });
     }
-    else if (kind === "turn_end" && data.reason) store.mergeSettings(id, { last_end: String(data.reason) });
+    // A turn the model declined is a failure under its own word: news until some device shows it.
+    else if (kind === "turn_end" && data.reason) store.mergeSettings(id, { last_end: String(data.reason), ...(data.reason === "refusal" ? { fail_seen_ms: 0 } : {}) });
     else return;
     emit(id);
   });

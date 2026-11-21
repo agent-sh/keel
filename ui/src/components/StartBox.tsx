@@ -14,6 +14,7 @@ import { WatchHeadline, WatchLists, openWaiting, useAttended } from "./HomeWatch
 import { ProjectPicker, startProject } from "./ProjectPicker.tsx";
 import { MachineBlocked, MachinePicker, RemoteFolderPicker, useNewMachine } from "./Fleet.tsx";
 import { fleet, useFleet } from "../lib/fleet.ts";
+import { isFailure } from "../lib/home.ts";
 import { useRail, useWidth } from "../lib/rail.ts";
 import { createInWorktree, isGitFolder, useStartInWorktree } from "../lib/worktree.ts";
 
@@ -57,7 +58,7 @@ export function StartBox({ only }: { only?: boolean } = {}) {
   const live = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id && !attended.has(s.id)).sort((a, b) => b.updated - a.updated), [sessions, attended]);
   const watches = useWatches(live);
   // The six newest, and any failed session older than those: a red mark in the list has its row here, whatever its age.
-  const recent = useMemo(() => [...live.slice(0, 6), ...live.slice(6).filter((s) => watches[s.id] === "fail").slice(0, 3)], [live, watches]);
+  const recent = useMemo(() => [...live.slice(0, 6), ...live.slice(6).filter((s) => isFailure(watches[s.id])).slice(0, 3)], [live, watches]);
   const agents = useAgentCounts();
   // Auto is shown as where it would place the session now: a folder of this
   // machine when it stays here, the other machine's directory when it goes.
@@ -136,8 +137,8 @@ export function StartBox({ only }: { only?: boolean } = {}) {
                     data-testid="recent-session"
                     data-session={s.id}
                     data-watch={watches[s.id] ?? "idle"}
-                    // A phone lists the working ones above; a desk has them here, with their state.
-                    className={cn("k-home-recent group flex h-10 items-center gap-3 border-b border-line text-left text-ui text-muted last:border-0 hover:text-fg", watches[s.id] === "work" && "max-md:hidden")}
+                    // A phone lists the working and the waiting ones above; a desk has them here, with their state.
+                    className={cn("k-home-recent group flex h-10 items-center gap-3 border-b border-line text-left text-ui text-muted last:border-0 hover:text-fg", ["work", "wait", "resume"].includes(watches[s.id] ?? "") && "max-md:hidden")}
                   >
                     <span className="grid w-4 place-items-center"><Mark w={watches[s.id] ?? "idle"} /></span>
                     <span dir="auto" className="min-w-0 flex-1 truncate text-left">{s.title || "New session"}</span>

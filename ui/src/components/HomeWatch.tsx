@@ -9,11 +9,11 @@
 // some device has shown it or its next turn started; after that it is a
 // failed session in the list. A state the headline counts always has a row.
 //
-// Where a row's facts come from is one function (`useFact`): today what the
-// page already holds (the approval, the live status, the inbox, events of a
-// session that was opened; the home screen reads no transcript). When the
-// daemon serves each session's state, that function is the one place to read
-// it from.
+// What a session needs, why, and in whose session it waits is the state the
+// daemon serves (lib/watch.ts): the headline counts it, a row's kind comes
+// from its reason and a row's line is its text. The page adds only the card
+// of an approval it holds, to show a command whole and say its kind and risk.
+// The home screen reads no transcript.
 //
 // An approval is given from a row only for what the owner could read, by a
 // press they meant, as on the approval card (lib/approvals.ts):
@@ -33,65 +33,47 @@
 // - Deny opens the card's own denial, the keyboard in its reason field.
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { plainLine } from "../../../src/core/plain.ts";
 import { READ_MS, SETTLE_MS, settled, stand, type Stand } from "../lib/approvals.ts";
-import { focusApproval, useAuto, type Alert } from "../lib/automation.ts";
-import { needs, pickRows, rowKind, say, sayMore, unseenFailures, watchSummary, wholeCommand } from "../lib/home.ts";
+import { focusApproval } from "../lib/automation.ts";
+import { pickRows, rowKind, rowLine, say, sayMore, unseenFailures, watchSummary, wholeCommand } from "../lib/home.ts";
 import { getSafety, safety, useSafety, type Approval } from "../lib/safety.ts";
-import { useSecrets } from "../lib/secrets.ts";
-import { unsentOf } from "../lib/send-drafts.ts";
-import { actions, getState, reportError, useStore } from "../lib/store.ts";
+import { actions, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
-import { look, usePlans } from "../lib/waits.ts";
 import { ago, cn, when } from "../lib/utils.ts";
-import { lastLine, type Watch } from "../lib/watch.ts";
+import { WATCH_RANK, useSessionStates, type SessionState, type Watch } from "../lib/watch.ts";
 import { usePress } from "./ApprovalCard.tsx";
-import { Mark, folderOf, useLive } from "./Mark.tsx";
+import { Mark, folderOf } from "./Mark.tsx";
 
-const FAILS = new Set<Alert["kind"]>(["failed", "limit", "loop_failed"]);
 const MOST = { attention: 6, working: 4 };
 
-// The request of one of a session's agents that waits, if any: it is answered on the session's own page.
-function agentAsk(id: string, sessions: Record<string, Session>, approvals: Record<string, Approval[]>): Approval | undefined {
-  for (const [sid, list] of Object.entries(approvals)) {
-    if (sid === id || !list.length) continue;
-    for (let s = sessions[sid], hops = 0; s?.parent_id && hops < 8; s = sessions[s.parent_id], hops++) if (s.parent_id === id) return list[0];
-  }
-  return undefined;
-}
-
-// Opens a session from the home screen. With a request waiting there, the card is asked for its
-// list of requests, never for an answer: whatever the owner pressed here showed the request in
-// short, or not at all. Every way from this screen to a session goes through here.
-export function openWaiting(id: string) {
-  const { sessions } = getState(), { approvals } = getSafety();
-  const first = approvals[id]?.[0] ?? agentAsk(id, sessions, approvals);
-  navigate({ name: "session", id });
+// Opens a session from the home screen: the session itself, or the agent's
+// session its first request waits in (`child`). With an approval waiting
+// there, the card is asked for its list of requests, never for an answer:
+// whatever the owner pressed here showed the request in short, or not at all.
+// Every way from this screen to a session goes through here.
+export function openWaiting(id: string, child?: string) {
+  const to = child ?? id;
+  const first = getSafety().approvals[to]?.[0];
+  navigate({ name: "session", id: to });
   if (first) focusApproval(first.id, "card");
 }
 
 export function useHome() {
-  const { ranked, watches } = useLive();
   const sessions = useStore((x) => x.sessions);
-  const approvals = useSafety((x) => x.approvals);
-  const plans = usePlans((x) => x.plans);
-  const asks = useSecrets((x) => x.requests);
-  // A turn that waits on a plan or a secret reads as at work: what waits in those sessions is asked for once.
-  const atWork = ranked.filter((s) => !s.parent_id && s.phase === "working").map((s) => s.id).join();
-  useEffect(() => { if (atWork) look(atWork.split(",")); }, [atWork]);
+  const own = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id), [sessions]);
+  const states = useSessionStates(own);
   return useMemo(() => {
-    const own = ranked.filter((s) => !s.parent_id);
-    const w = Object.fromEntries(own.map((s) => [s.id, needs(watches[s.id]!, { plan: !!plans[s.id]?.length, secret: !!asks[s.id]?.length, agent: !!agentAsk(s.id, sessions, approvals) })])) as Record<string, Watch>;
-    // Where the watch says a session is at work and something waits in it, it stands with the ones that need the owner.
-    const sum = watchSummary(own.map((s) => ({ id: s.id, w: w[s.id]! })), unseenFailures(own, w));
-    return { ...sum, all: own, byId: Object.fromEntries(own.map((s) => [s.id, s])) as Record<string, Session>, watches: w };
-  }, [ranked, watches, sessions, approvals, plans, asks]);
+    const watches = Object.fromEntries(own.map((s) => [s.id, states[s.id]!.watch])) as Record<string, Watch>;
+    const ranked = [...own].sort((a, b) => WATCH_RANK[watches[a.id]!] - WATCH_RANK[watches[b.id]!] || b.updated - a.updated);
+    const sum = watchSummary(ranked.map((s) => ({ id: s.id, st: states[s.id]! })), unseenFailures(own, watches));
+    return { ...sum, all: own, byId: Object.fromEntries(own.map((s) => [s.id, s])) as Record<string, Session>, states };
+  }, [own, states]);
 }
 
 // The headline: each state with sessions in it, as a count that opens the
 // first of them. With nothing to say, it says so in as many words.
 export function WatchHeadline() {
-  const { head, all, byId } = useHome();
+  const { head, all, byId, states } = useHome();
   const loaded = useStore((s) => s.loaded.sessions);
   if (!head.length) {
     return (
@@ -103,45 +85,25 @@ export function WatchHeadline() {
   return (
     <h1 className="k-home-state" data-testid="home-watch">
       {head.map((p) => (
-        <button key={p.w} type="button" className="k-home-count" data-watch={p.w} data-testid={`home-count-${p.w}`} title={`Open ${byId[p.ids[0]!]?.title || "the session"}`} onClick={() => openWaiting(p.ids[0]!)}>
-          <Mark w={p.w} />{say(p.w, p.ids.length)}
+        <button key={p.w} type="button" className="k-home-count" data-watch={p.w} data-testid={`home-count-${p.w}`} title={`Open ${byId[p.ids[0]!]?.title || "the session"}`} onClick={() => openWaiting(p.ids[0]!, states[p.ids[0]!]?.child)}>
+          <Mark w={p.w} />{say(p.w, p.n)}
         </button>
       ))}
     </h1>
   );
 }
 
-// What one row says, and what its answer is about. The one place a row's facts are read.
-// `agent`: the request is one of the session's agents' (its card is on the session's page).
-type Fact = { approval?: Approval; agent?: boolean; kind: string; line: string; whole: string | null; risk?: string };
-function useFact(s: Session, w: Watch): Fact {
-  const own = useSafety((x) => x.approvals[s.id]?.[0]);
-  const all = useSafety((x) => x.approvals);
-  const sessions = useStore((x) => x.sessions);
-  const theirs = useMemo(() => (own ? undefined : agentAsk(s.id, sessions, all)), [own, s.id, sessions, all]);
-  const approval = own ?? theirs;
-  const plan = usePlans((x) => x.plans[s.id]?.[0]);
-  const secret = useSecrets((x) => x.requests[s.id]?.[0]);
-  const asking = useStore((x) => !!(x.questionCalls[s.id]?.length || x.questionChildren[s.id]?.length));
-  const events = useStore((x) => x.events[s.id]);
-  const status = useStore((x) => x.status[s.id]);
-  const alert = useAuto((x) => x.alerts.find((a) => a.session_id === s.id && (w === "need" ? a.kind === "question" : w === "fail" && FAILS.has(a.kind))));
-  // An agent's request is read on its card: only the session's own command is answered from a row.
-  const whole = w === "need" && own ? wholeCommand(own) : null;
-  // One line of what it waits for or is doing. A question reads the same on every device: its
-  // own words from the inbox, never a line that depends on whether this page loaded the session.
-  const line = w === "need"
-    ? (approval ? `${approval.kind === "shell" ? "" : `${approval.tool}: `}${approval.summary}`
-      : plan ? plan.title || plainLine(plan.plan)
-      : secret ? `The model asks for ${secret.name}${secret.purpose ? `: ${secret.purpose}` : ""}`
-      : asking ? (alert ? plainLine(alert.body) : "") : unsentOf(s.id) ? "A message you wrote here was not sent." : events ? lastLine(events, s.workspace) : "")
-    : w === "work" && status && status.kind !== "idle"
-    ? (status.kind === "tool" ? `Running ${status.names.join(", ")}` : status.kind === "compacting" ? "Compacting the context" : status.kind === "retry" ? `Trying again: ${status.message}` : "Waiting on the model")
-    : events ? lastLine(events, s.workspace) : alert ? alert.body.split("\n")[0]!.trim() : "";
+// What one row says, and what its answer is about: the served state, and the
+// card of the approval it stands on where the page holds it (the session's
+// own, or its agent's). Only the session's own command is answered from a row.
+type Fact = { approval?: Approval; kind: string; line: string; whole: string | null; risk?: string };
+function useFact(s: Session, st: SessionState): Fact {
+  const asked = st.watch === "need" && st.why === "approval";
+  const approval = useSafety((x) => (asked ? x.approvals[st.child ?? s.id]?.[0] : undefined));
   return {
-    approval: w === "need" ? approval : undefined, agent: w === "need" && !!theirs,
-    kind: rowKind(w, { approval, agent: !!theirs, asking, plan: !!plan, secret: !!secret }), line, whole,
-    risk: w === "need" && approval?.risk === "high" ? (approval.why ? `High risk: ${approval.why}` : "High risk") : undefined,
+    approval, kind: rowKind(st, approval?.kind), line: rowLine(st),
+    whole: asked && !st.child ? wholeCommand(approval) : null,
+    risk: approval?.risk === "high" ? (approval.why ? `High risk: ${approval.why}` : "High risk") : undefined,
   };
 }
 
@@ -208,8 +170,9 @@ function Held({ id, stands, lead, quiet, busy, onAct, onRefused, testid, title, 
   );
 }
 
-function Row({ s, w, lead, stands }: { s: Session; w: Watch; lead: boolean; stands: Stands }) {
-  const f = useFact(s, w);
+function Row({ s, st, lead, stands }: { s: Session; st: SessionState; lead: boolean; stands: Stands }) {
+  const w = st.watch;
+  const f = useFact(s, st);
   const a = f.approval;
   const [busy, setBusy] = useState(false);
   // What the row says back: why a press did nothing, or what the daemon said to an answer.
@@ -218,8 +181,10 @@ function Row({ s, w, lead, stands }: { s: Session; w: Watch; lead: boolean; stan
   useEffect(() => setNote(null), [a?.id]);
   useEffect(() => { if (!note || note.review) return; const t = setTimeout(() => setNote(null), 4000); return () => clearTimeout(t); }, [note]);
   // The card is where a request is read: the keyboard lands on the list of requests, on no answer.
-  const open = () => openWaiting(s.id);
+  const open = () => openWaiting(s.id, st.child);
   const deny = () => { navigate({ name: "session", id: s.id }); if (a) focusApproval(a.id, "deny"); };
+  // A turn a restart cut that Keel did not resume: the row resumes it.
+  const held = w === "need" && st.why === "resume";
   const notYet = () => setNote({ text: "Not yet: it moved or arrived a moment ago. Press again." });
   const allow = async () => {
     if (!a || busy) return;
@@ -259,9 +224,9 @@ function Row({ s, w, lead, stands }: { s: Session; w: Watch; lead: boolean; stan
               <Held id={`${s.id}:${a!.id}:deny`} stands={stands} quiet busy={busy} testid="home-deny" title="Opens its card, where a denial takes your reason" onAct={deny} onRefused={notYet}>Deny…</Held>
             </>
           )}
-          {w === "need" && !here && <Held id={`${s.id}:${a?.id ?? f.kind}:review`} stands={stands} lead={lead} testid="home-review" onAct={open} onRefused={notYet}>{a || f.kind === "Plan" ? "Review" : f.kind === "Question" ? "Answer" : "Open"}</Held>}
-          {w === "resume" && <Held id={`${s.id}:resume`} stands={stands} lead={lead} testid="home-resume" onAct={() => void actions.resume(s.id).catch(reportError)} onRefused={notYet}>Resume</Held>}
-          {w === "fail" && <Held id={`${s.id}:open`} stands={stands} lead={lead} testid="home-see" onAct={open} onRefused={notYet}>Open</Held>}
+          {w === "need" && !here && !held && <Held id={`${s.id}:${a?.id ?? st.why}:review`} stands={stands} lead={lead} testid="home-review" onAct={open} onRefused={notYet}>{st.why === "approval" || st.why === "plan" ? "Review" : st.why === "question" || st.why === "owner" ? "Answer" : "Open"}</Held>}
+          {held && <Held id={`${s.id}:resume`} stands={stands} lead={lead} testid="home-resume" onAct={() => void actions.resume(s.id).catch(reportError)} onRefused={notYet}>Resume</Held>}
+          {(w === "fail" || w === "declined" || w === "stop") && <Held id={`${s.id}:open`} stands={stands} lead={lead} testid="home-see" onAct={open} onRefused={notYet}>Open</Held>}
         </span>
       </div>
       {a?.notice && <p className="k-home-row-note" data-testid="home-notice">{a.notice}</p>}
@@ -271,7 +236,7 @@ function Row({ s, w, lead, stands }: { s: Session; w: Watch; lead: boolean; stan
 }
 
 function List({ title, rows, most, testid, className }: { title: string; rows: { id: string; w: Watch }[]; most: number; testid: string; className?: string }) {
-  const { byId } = useHome();
+  const { byId, states } = useHome();
   const root = useRef<HTMLElement>(null);
   const stands = useStands(root);
   const { shown, more } = useMemo(() => pickRows(rows, most), [rows, most]);
@@ -281,10 +246,10 @@ function List({ title, rows, most, testid, className }: { title: string; rows: {
     <section ref={root} className={className} data-testid={testid}>
       <h2 className="k-pane-empty-word">{title}</h2>
       <div className="k-home-list">
-        {shown.map((r, i) => byId[r.id] && <Row key={r.id} s={byId[r.id]!} w={r.w} lead={i === 0} stands={stands} />)}
+        {shown.map((r, i) => byId[r.id] && states[r.id] && <Row key={r.id} s={byId[r.id]!} st={states[r.id]!} lead={i === 0} stands={stands} />)}
       </div>
       {/* What did not fit, in the headline's own words, so the two counts read as one. */}
-      {next && <button type="button" className="k-home-more" data-testid="home-more" onClick={() => openWaiting(next)}>{sayMore(more)}</button>}
+      {next && <button type="button" className="k-home-more" data-testid="home-more" onClick={() => openWaiting(next, states[next]?.child)}>{sayMore(more)}</button>}
     </section>
   );
 }
@@ -297,7 +262,7 @@ export function WatchLists({ className }: { className?: string }) {
   return (
     <div className={className} data-testid="home-lists">
       <List title="Needs you" rows={attention} most={MOST.attention} testid="home-attention" className="k-home-sec" />
-      <List title="Working" rows={working} most={MOST.working} testid="home-working" className="k-home-sec md:hidden" />
+      <List title={working.every((r) => r.w === "work") ? "Working" : "Working and waiting"} rows={working} most={MOST.working} testid="home-working" className="k-home-sec md:hidden" />
     </div>
   );
 }

@@ -129,16 +129,31 @@ export const oneLine = (t: unknown, max = 160) => {
 
 // Why a session needs the owner, in one form for every kind: what is asked
 // of them, then the thing itself.
+// What stands before the thing itself, by kind. A reader that says the kind in
+// its own place (a row with a kind word) shows the text without it (`askThing`).
+export const ASK_LEAD: Partial<Record<AskKind, string>> = { approval: "Approve ", question: "Question: ", plan: "Plan to approve: ", secret: "Secret to give: " };
 export function askText(a: Ask): string {
   const t = oneLine(a.text);
   const said =
-    a.kind === "approval" ? (t ? `Approve ${t}` : "An approval waits")
-    : a.kind === "question" ? (t ? `Question: ${t}` : "A question waits")
-    : a.kind === "plan" ? (t ? `Plan to approve: ${t}` : "Plan to approve")
-    : a.kind === "secret" ? (t ? `Secret to give: ${t}` : "A secret is asked for")
+    a.kind === "approval" ? (t ? `${ASK_LEAD.approval}${t}` : "An approval waits")
+    : a.kind === "question" ? (t ? `${ASK_LEAD.question}${t}` : "A question waits")
+    : a.kind === "plan" ? (t ? `${ASK_LEAD.plan}${t}` : "Plan to approve")
+    : a.kind === "secret" ? (t ? `${ASK_LEAD.secret}${t}` : "A secret is asked for")
     : a.kind === "resume" ? "Resume the turn a restart cut"
     : t || "A message was not sent";
   return a.child ? `Agent ${oneLine(a.agent, 40) || "of this session"}: ${said}` : said;
+}
+
+// The thing a session's first ask is about, without the words that say its kind:
+// "Bash: rm -rf dist" of "Approve Bash: rm -rf dist", "Scout: Bash: ls" of
+// "Agent Scout: Approve Bash: ls". Any other text is given as it is.
+export function askThing(st: Pick<SessionState, "watch" | "why" | "text" | "child">): string {
+  const t = st.text ?? "";
+  const lead = st.watch === "need" ? ASK_LEAD[st.why as AskKind] : undefined;
+  if (!lead) return t;
+  if (t.startsWith(lead)) return t.slice(lead.length);
+  const at = st.child && t.startsWith("Agent ") ? t.indexOf(`: ${lead}`) : -1;
+  return at > 0 ? `${t.slice(6, at)}: ${t.slice(at + 2 + lead.length)}` : t;
 }
 
 // What a wait is on, by its kind.
