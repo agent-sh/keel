@@ -31,23 +31,30 @@ function xaiSchema(s: any): any {
 
 const dataUrl = (b: { media_type: string; data: string }) => `data:${b.media_type};base64,${b.data}`;
 
-// What the Responses API refuses in a replayed history, each with its source:
-// the API's own answer, or its description (openai/openai-openapi, openapi.yaml,
-// read 2026-11-21).
+// What the Responses API refuses in a replayed history. Each rule names its
+// source: an answer of the API with where it is quoted, or the API's
+// description (openai/openai-openapi, openapi.yaml, read 2026-11-21).
 export const RESPONSES_RULES: WireRules = {
-  // The API's answers: "No tool call found for function call output with
-  // call_id ..." and "No tool output found for function call ..." (the second
-  // quoted in openai/openai-agents-python issue 673).
-  // Neither says where the output has to be: they are matched by call id.
+  // An answer this product received: "No tool call found for function call
+  // output with call_id ...". For a call with no output, from the body of
+  // openai/openai-agents-python issue 673: "No tool output found for function
+  // call call_***." Neither says where the output has to be: they are matched
+  // by call id.
   pairs: "any",
-  // A replayed call's name. The API's answers: "Invalid 'input[N].name': string
-  // does not match pattern. Expected a string that matches the pattern
-  // '^[a-zA-Z0-9_-]+$'" (openai/codex issue 10563) and "Invalid 'input[N].name':
-  // empty string". The length is a function's own: FunctionToolParam.name,
-  // `maxLength: 128, minLength: 1, pattern: ^[a-zA-Z0-9_-]+$`.
-  name: { max: 128, bad: /[^a-zA-Z0-9_-]/g },
+  // A replayed call's name. The newest answer, from the comment of 2026-10-22
+  // on openai/codex issue 10563: "Invalid 'input[394].name': string does not
+  // match pattern. Expected a string that matches the pattern
+  // '^[a-zA-Z0-9_.-]+\z'." (The issue's body, of 2026-02-03, has the pattern
+  // without the dot; the wider one is taken.) For an empty name, from the
+  // comment of 2026-05-04 on NousResearch/hermes-agent issue 11411: "Invalid
+  // 'input[7].name': empty string. Expected a string with minimum length 1,
+  // but got an empty string instead." The length is a declared function's
+  // (FunctionToolParam.name: "maxLength: 128"), taken for a call that names
+  // one: nothing longer can be declared.
+  name: { max: 128, bad: /[^a-zA-Z0-9_.-]/g },
 };
-// A declared function's name (FunctionToolParam.name, above).
+// A declared function's name, openapi.yaml, FunctionToolParam.name:
+// "maxLength: 128, minLength: 1, pattern: ^[a-zA-Z0-9_-]+$".
 export const FUNCTION_NAME = /^[a-zA-Z0-9_-]{1,128}$/;
 
 // Freeform tools (a grammar, raw text in and out: apply_patch, exec) go as

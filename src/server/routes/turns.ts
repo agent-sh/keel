@@ -206,7 +206,7 @@ export const turnRoutes: RouteModule = (deps) => {
           for (let n = 2; titles.has(title); n++) title = `${base} ${n})`;
         }
         // The copy keeps the settings, not the source's pin or done mark.
-        const { pinned_ms: _p, done_ms: _d, ...settings } = s.settings;
+        const { pinned_ms: _p, done_ms: _d, repairs: _r, ...settings } = s.settings; // (its repairs are recorded as its own)
         const f = store.createSession({ title, model: s.model, workspace: s.workspace, settings });
         store.copyEvents(f.id, copy);
         // Queued prompts are the source's work, not history: they stay there, and the fork says so.

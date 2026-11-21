@@ -22,11 +22,14 @@ import { wire } from "./wiretap.ts";
 export type WireRules = {
   // Every result answers a call, once, and every call is answered: "next"
   // where a call's results must be in the message right after it, "any" where
-  // the wire only matches them by id, wherever they come after the call.
-  pairs?: "next" | "any";
+  // the wire only matches them by id, wherever they come after the call,
+  // "count" where the wire only asks that the message after a call's holds as
+  // many results as there were calls.
+  pairs?: "next" | "any" | "count";
   // Results come before the other blocks of their message.
   resultsFirst?: boolean;
-  // No two calls of a request share an id.
+  // No two calls of one assistant message share an id. (The same id in two
+  // messages, each call answered in its place, is not refused.)
   distinctIds?: boolean;
   // A call's name: at most `max` characters, at least one, none of `bad`.
   name?: { max: number; bad?: RegExp };
@@ -34,7 +37,8 @@ export type WireRules = {
   objectInput?: boolean;
   // An image is labelled as the format its bytes are.
   imageByBytes?: boolean;
-  // A text block of a user message or of a result is not empty.
+  // A text block of a user message holds more than whitespace, and one of a
+  // result's content is not empty.
   textNotEmpty?: boolean;
 };
 
@@ -66,7 +70,7 @@ export const REPAIRS = {
   tool_name: "a tool call's name the wire does not take (another family's or a made-up tool) was made to fit",
   tool_input: "a tool call's input that is not an object was wrapped in one",
   image_type: "an image labelled as another format than its bytes are was labelled by its bytes",
-  empty_text: "an empty text block was left out",
+  empty_text: "an empty text block (in a user message, a blank one too) was left out",
 } as const;
 export type RepairKind = keyof typeof REPAIRS;
 // `message`: the index of the message in the request's history; `call`: the
@@ -178,6 +182,7 @@ export function project(messages: Message[], o: ProjectOpts): Message[] {
     return { ...b, media_type: type };
   };
   const emptyText = (x: { type: string; text?: string }) => !!rules.textNotEmpty && x.type === "text" && !x.text;
+  const blankText = (x: { type: string; text?: string }) => !!rules.textNotEmpty && x.type === "text" && !x.text?.trim();
   // `from`: where each message of `out` came from in `messages`.
   const out: Message[] = [];
   const from: number[] = [];
@@ -209,7 +214,7 @@ export function project(messages: Message[], o: ProjectOpts): Message[] {
       const content: UserBlock[] = [];
       for (const b of m.content) {
         if (b.type === "text") {
-          if (emptyText(b)) fixed("empty_text", at);
+          if (blankText(b)) fixed("empty_text", at);
           else content.push(b);
         } else if (b.type === "image") content.push(image(b, at));
         else if (b.type !== "tool_result") content.push(b);
@@ -262,9 +267,8 @@ function loose(r: ToolResultBlock): UserBlock[] {
 // A message that is already as the wire takes it is returned as it is, the
 // same object.
 function pair(messages: Message[], from: number[], rules: WireRules, fixed: (kind: RepairKind, message: number, call?: string) => void): Message[] {
-  const next = rules.pairs === "next";
+  const next = rules.pairs === "next" || rules.pairs === "count";
   const out: Message[] = [];
-  const used = new Set<string>();
   const called = new Set<string>();
   // The calls no result has answered yet, as their results name them (`was`)
   // and as they are sent (`id`): those of the assistant message before, or
@@ -277,6 +281,7 @@ function pair(messages: Message[], from: number[], rules: WireRules, fixed: (kin
     if (m.role === "assistant") {
       // (Two assistant messages are never side by side here: they were merged.)
       if (next) open = [];
+      const used = new Set<string>(); // the ids of this message's calls
       let content: AssistantBlock[] | undefined;
       m.content.forEach((b, k) => {
         if (b.type !== "tool_use") return;
@@ -293,6 +298,12 @@ function pair(messages: Message[], from: number[], rules: WireRules, fixed: (kin
       });
       if (content) changed = true;
       out.push(content ? { role: "assistant", content } : m);
+      return;
+    }
+    // As many results as calls is all this wire asks.
+    if (rules.pairs === "count" && m.content.filter((b) => b.type === "tool_result").length === open.length) {
+      open = [];
+      out.push(m);
       return;
     }
     const results: ToolResultBlock[] = [];
@@ -321,8 +332,10 @@ function pair(messages: Message[], from: number[], rules: WireRules, fixed: (kin
     const content = [...missing.map(noResult), ...results, ...rest];
     if (content.length) out.push({ role: "user", content });
   });
-  // Calls nothing answered by the end (a request built from a turn cut after its call).
-  if (open.length && rules.pairs) {
+  // Calls nothing answered by the end (a request built from a turn cut after
+  // its call). Where the wire only counts the results of the message after a
+  // call's, there is no such message to count: left as it is stored.
+  if (open.length && rules.pairs && rules.pairs !== "count") {
     changed = true;
     for (const c of open) fixed("call_without_result", from[from.length - 1]!, c.id);
     const last = out.at(-1);

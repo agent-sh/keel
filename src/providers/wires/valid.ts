@@ -7,7 +7,6 @@
 // checked on it. Nothing here is sent anywhere, and nothing is about a model.
 import { imageType } from "../project.ts";
 import { ANTHROPIC_RULES, TOOL_NAME } from "./anthropic.ts";
-import { CHAT_RULES, FUNCTION_NAME as CHAT_NAME } from "./chat.ts";
 import { FUNCTION_NAME as GEMINI_NAME, GEMINI_RULES } from "./gemini.ts";
 import { FUNCTION_NAME as RESPONSES_NAME, RESERVED_NAMESPACES, RESPONSES_RULES, type ResponsesDialect } from "./responses.ts";
 
@@ -41,7 +40,6 @@ export function anthropicProblems(body: any): string[] {
     declared.add(t.name);
     if (!isObject(t.input_schema)) say("tools", `${t.name} has no input_schema object`);
   }
-  const ids = new Set<string>();
   let marks = (body.system ?? []).filter((b: any) => b?.cache_control).length + tools.filter((t) => t.cache_control).length;
   const image = (at: string, b: any) => {
     if (b.source?.type !== "base64") return;
@@ -56,20 +54,22 @@ export function anthropicProblems(body: any): string[] {
     // "Each `tool_result` block must have a corresponding `tool_use` block in the previous message".
     const calls: string[] = prev?.role === "assistant" ? prev.content.filter((b: any) => b.type === "tool_use").map((b: any) => b.id) : [];
     const answered = new Set<string>();
+    const ids = new Set<string>(); // the ids of this message's calls
     let other = false;
     m.content.forEach((b: any, k: number) => {
       const at = `messages.${i}.content.${k}`;
       if (b.cache_control) marks++;
       if (b.type === "text") {
-        if (typeof b.text !== "string" || !b.text) say(at, "an empty text block");
+        // "text content blocks must be non-empty"; in a user message, "must contain non-whitespace text".
+        if (typeof b.text !== "string" || !(m.role === "user" ? b.text.trim() : b.text)) say(at, "an empty text block");
       } else if (b.type === "image") image(at, b);
       else if (b.type === "thinking") {
         if (!b.signature) say(at, "thinking without a signature");
       } else if (b.type === "tool_use") {
         if (m.role !== "assistant") say(at, "a tool_use in a user message");
         if (!ID.test(String(b.id))) say(at, `the call id ${JSON.stringify(b.id)}`);
-        // "`tool_use` ids must be unique".
-        if (ids.has(b.id)) say(at, `the call id ${b.id} is used twice`);
+        // "`tool_use` ids must be unique": within one assistant message.
+        if (ids.has(b.id)) say(at, `the call id ${b.id} is used twice in one message`);
         ids.add(b.id);
         if (!nameFits(b.name, ANTHROPIC_RULES.name!)) say(at, `the tool name ${JSON.stringify(b.name)}`);
         // "tool_use.input: Input should be a valid dictionary".
@@ -151,11 +151,11 @@ export function responsesProblems(body: any, dialect: ResponsesDialect = "openai
   return out;
 }
 
-// OpenAI-compatible Chat Completions.
+// OpenAI-compatible Chat Completions: the pairing of calls and tool messages
+// (no rule for a name is established for the servers that speak this wire).
 export function chatProblems(body: any): string[] {
   const out: string[] = [];
   const say = (at: string, what: string) => void out.push(`${at}: ${what}`);
-  for (const t of body.tools ?? []) if (!CHAT_NAME.test(String(t.function?.name))) say("tools", `the function name ${JSON.stringify(t.function?.name)}`);
   const messages: any[] = body.messages ?? [];
   let open: string[] = [];
   messages.forEach((m, i) => {
@@ -172,7 +172,6 @@ export function chatProblems(body: any): string[] {
     open = [];
     if (m.role !== "assistant") return;
     for (const c of m.tool_calls ?? []) {
-      if (!nameFits(c.function?.name, CHAT_RULES.name!)) say(at, `the function name ${JSON.stringify(c.function?.name)}`);
       // ChatCompletionMessageToolCall.function.arguments: a string.
       if (typeof c.function?.arguments !== "string") say(at, "arguments that are not a string");
       open.push(c.id);
@@ -196,7 +195,6 @@ export function geminiProblems(body: any): string[] {
     const prev = contents[i - 1];
     const calls = prev?.role === "model" ? count(prev, "functionCall") : 0;
     if (c.role === "user" && count(c, "functionResponse") !== calls) say(at, `${count(c, "functionResponse")} function responses for ${calls} function calls`);
-    if (c.role === "model" && count(c, "functionCall") && contents[i + 1]?.role !== "user") say(at, `no function responses for ${count(c, "functionCall")} function calls`);
     for (const p of c.parts ?? []) {
       if (!p.functionCall) continue;
       if (!nameFits(p.functionCall.name, GEMINI_RULES.name!)) say(at, `the function name ${JSON.stringify(p.functionCall.name)}`);

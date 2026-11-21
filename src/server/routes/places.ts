@@ -126,7 +126,7 @@ export const placesRoutes: RouteModule = ({ store, bus, engine, workspace }) => 
     let title = b.title ? base : `${base})`;
     for (let n = 2; !b.title && titles.has(title); n++) title = `${base} ${n})`;
     // Marks belong to the source: the copy keeps its tags and settings, not its pin or done.
-    const { pinned_ms: _p, done_ms: _d, ...settings } = s.settings;
+    const { pinned_ms: _p, done_ms: _d, repairs: _r, ...settings } = s.settings; // (its repairs are recorded as its own)
     const c = store.createSession({ title, model: s.model, workspace: cwd, settings });
     try {
       if (b.worktree) {

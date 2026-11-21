@@ -15,39 +15,57 @@ import { parseArgs, parseJson, type WireCodec, type WireCtx, type WireParser } f
 export const CACHE_TTL: "5m" | "1h" = "1h";
 const CACHE: { type: "ephemeral"; ttl: "5m" | "1h" } = { type: "ephemeral", ttl: CACHE_TTL };
 
-// What the Messages API refuses in a replayed history, each with its source
-// (the documentation at platform.claude.com/docs, or the API's own answer).
+// What the Messages API refuses in a replayed history. Each rule names its
+// source: a page of the documentation (platform.claude.com/docs/en), the API
+// reference there (api/messages/create), or an answer of the API with where it
+// is quoted.
 export const ANTHROPIC_RULES: WireRules = {
-  // "Tool result blocks must immediately follow their corresponding tool use
-  // blocks in the message history" (agents-and-tools/tool-use/handle-tool-calls).
-  // The API's answers: "unexpected `tool_use_id` found in `tool_result` blocks
-  // [...] Each `tool_result` block must have a corresponding `tool_use` block in
-  // the previous message", "tool_use ids were found without tool_result blocks
-  // immediately after".
+  // agents-and-tools/tool-use/handle-tool-calls, "Important formatting
+  // requirements": "Tool result blocks must immediately follow their
+  // corresponding tool use blocks in the message history." The same page names
+  // the answer "tool_use ids were found without tool_result blocks immediately
+  // after". An answer this product received for a result with no call:
+  // "unexpected `tool_use_id` found in `tool_result` blocks [...]. Each
+  // `tool_result` block must have a corresponding `tool_use` block in the
+  // previous message".
   pairs: "next",
-  // "the tool_result blocks must come FIRST in the content array. Any text must
-  // come AFTER all tool results" (same page).
+  // Same section: "In the user message containing tool results, the
+  // `tool_result` blocks must come FIRST in the content array. Any text must
+  // come AFTER all tool results."
   resultsFirst: true,
-  // "`tool_use` ids must be unique" (the API's answer, quoted in
-  // anthropics/claude-code issue 21206).
+  // Two calls of one assistant message with one id. The answer, as quoted in
+  // the comment of 2026-02-23 on anthropics/claude-code issue 21206:
+  // "messages.7.content.1:
+  // `tool_use` ids must be unique". Its scope is one message, from the body of
+  // antra-tess/membrane pull request 54 (a live call per shape, 2026-10-11):
+  // "one id in two turns, each answered in place, returned 200; two calls with
+  // one id in one assistant message returned 400 (`tool_use` ids must be
+  // unique)". Bedrock InvokeModel answers the same for one message (the body
+  // of maximhq/bifrost issue 9540).
   distinctIds: true,
-  // A replayed call's name: `minLength: 1, maxLength: 200` and no pattern
-  // (api/messages/create, ToolUseBlockParam.name). A declared tool's name is
-  // narrower, TOOL_NAME below.
+  // API reference, ToolUseBlockParam: "`name: string`, minLength: 1,
+  // maxLength: 200", with no pattern. A declared tool's name is narrower,
+  // TOOL_NAME below.
   name: { max: 200 },
-  // `input: map[unknown]` (same reference); the API's answer to anything else:
-  // "tool_use.input: Input should be a valid dictionary".
+  // API reference, ToolUseBlockParam: "`input: map[unknown]`". The answer to
+  // anything else, from the body of RightNow-AI/openfang issue 774:
+  // "messages.3.content.1.tool_use.input: Input should be a valid dictionary".
   objectInput: true,
-  // The API's answer: "The image was specified using the image/jpeg media type,
-  // but the image appears to be a image/png image".
+  // An answer this product received: "The image was specified using the
+  // image/jpeg media type, but the image appears to be a image/png image".
   imageByBytes: true,
-  // `text: string, minLength: 1` (same reference, TextBlockParam, which a tool
-  // result's content holds too); the API's answer: "text content blocks must be
-  // non-empty" (anthropics/anthropic-sdk-python issue 461).
+  // API reference, TextBlockParam (a tool result's content holds it too):
+  // "`text: string`, minLength: 1". The answer, from the first comment on
+  // anthropics/anthropic-sdk-python issue 461: "messages: text content blocks
+  // must be non-empty". For a blank block of a user message, from the body of
+  // pydantic/pydantic-ai issue 11124 (probed 2026-10-23): "400 `messages: text
+  // content blocks must contain non-whitespace text`. A whitespace-only
+  // `TextPart(' ')` in an assistant turn was accepted." Nothing shows a blank
+  // block refused inside a result, so only an empty one is left out there.
   textNotEmpty: true,
 };
-// A declared tool's name: "Must match the regex `^[a-zA-Z0-9_-]{1,128}$`"
-// (agents-and-tools/tool-use/define-tools).
+// A declared tool's name, agents-and-tools/tool-use/define-tools, the table of
+// a tool's fields: "Must match the regex `^[a-zA-Z0-9_-]{1,128}$`."
 export const TOOL_NAME = /^[a-zA-Z0-9_-]{1,128}$/;
 
 // (The projection labels an image by its bytes, src/providers/project.ts.)

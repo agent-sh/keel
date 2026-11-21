@@ -20,24 +20,19 @@ export type ChatOpts = {
 
 const dataUrl = (b: { media_type: string; data: string }) => `data:${b.media_type};base64,${b.data}`;
 
-// What Chat Completions refuses in a replayed history, each with its source:
-// the API's own answer, or its description (openai/openai-openapi, openapi.yaml,
-// read 2026-11-21). The servers that speak this wire follow it.
+// What Chat Completions refuses in a replayed history, with its source. This
+// wire is spoken by local servers and compatible hosts, each with its own
+// checks, so only what one of them documents is repaired. A call's name is
+// not: the 64 characters of `[a-zA-Z0-9_-]` are one provider's rule, and a
+// server here may check only that a name is there. A server that does hold a
+// name to a rule answers as it did before.
 export const CHAT_RULES: WireRules = {
-  // The API's answers: "messages with role 'tool' must be a response to a
-  // preceeding message with 'tool_calls'" and "An assistant message with
-  // 'tool_calls' must be followed by tool messages responding to each
-  // 'tool_call_id'".
+  // Alibaba Cloud Model Studio, Error codes, under 400 InvalidParameter:
+  // 'messages with role "tool" must be a response to a preceeding message with
+  // "tool_calls"' and 'An assistant message with "tool_calls" must be followed
+  // by tool messages responding to each "tool_call_id"'.
   pairs: "next",
-  // FunctionObject.name: "Must be a-z, A-Z, 0-9, or contain underscores and
-  // dashes, with a maximum length of 64". A replayed call's name is held to
-  // it: "Invalid 'messages[N].tool_calls[0].function.name': string does not
-  // match pattern" and "string too long. Expected a string with maximum
-  // length 64" (the API's answers).
-  name: { max: 64, bad: /[^a-zA-Z0-9_-]/g },
 };
-// A declared function's name (FunctionObject.name, above).
-export const FUNCTION_NAME = /^[a-zA-Z0-9_-]{1,64}$/;
 
 export function chatBody(req: ProviderRequest, ctx: WireCtx, o: ChatOpts = {}, systemPrefix?: string) {
   const messages: any[] = [];

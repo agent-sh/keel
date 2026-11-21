@@ -17,26 +17,30 @@ export type GeminiOpts = {
 
 const SENTINEL = "skip_thought_signature_validator";
 
-// What generateContent refuses in a replayed history, each with its source:
-// the API's own answer, or its description (the v1beta discovery document,
+// What generateContent refuses in a replayed history. Each rule names its
+// source: an answer of the API with where it is quoted, or the API's
+// description (the v1beta discovery document,
 // generativelanguage.googleapis.com/$discovery/rest?version=v1beta, revision
 // 20261120). A call id used by two calls is not among them: a server that
 // sends no ids left the same id on the same call in several steps, and those
 // histories are sent as they are stored.
 export const GEMINI_RULES: WireRules = {
-  // The API's answer: "Please ensure that the number of function response
-  // parts is equal to the number of function call parts of the function call
-  // turn."
-  pairs: "next",
-  // FunctionCall.name: "Must be a-z, A-Z, 0-9, or contain underscores and
-  // dashes, with a maximum length of 128"; FunctionDeclaration.name takes
-  // colons and dots too, so a call may name such a function.
+  // The answer, from the body of google-gemini/gemini-cli issue 6460: "Please
+  // ensure that the number of function response parts is equal to the number
+  // of function call parts of the function call turn." It speaks of their
+  // number only, so a turn that holds as many is sent as it is stored.
+  pairs: "count",
+  // Discovery document, FunctionCall.name: "Required. The name of the function
+  // to call. Must be a-z, A-Z, 0-9, or contain underscores and dashes, with a
+  // maximum length of 128." FunctionDeclaration.name: "Must be a-z, A-Z, 0-9,
+  // or contain underscores, colons, dots, and dashes, with a maximum length of
+  // 128." A call may name such a function, so the wider set is taken.
   name: { max: 128, bad: /[^a-zA-Z0-9_.:-]/g },
-  // FunctionCall.args: `type: object`, "The function parameters and values in
-  // JSON object format".
+  // Discovery document, FunctionCall.args: "type: object", "Optional. The
+  // function parameters and values in JSON object format."
   objectInput: true,
 };
-// A declared function's name (FunctionDeclaration.name, above).
+// A declared function's name (FunctionDeclaration.name, quoted above).
 export const FUNCTION_NAME = /^[a-zA-Z0-9_.:-]{1,128}$/;
 
 export function geminiBody(req: ProviderRequest, ctx: WireCtx, o: GeminiOpts = {}, systemPrefix?: string) {

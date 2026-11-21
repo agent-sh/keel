@@ -11,7 +11,8 @@
 // a stop while a tool runs, ToolSearch loading a deferred tool, a compaction,
 // a crash and the start after it, and a move through the four families and
 // back. Its Gemini server sends call ids the way the reader made them for a
-// server that sends none: the same call in two steps has one id.
+// server that sends none: the same call in two steps has one id. No wire
+// refuses that, so no body of this session differs from the golden.
 //
 // The golden covers the conversation a body carries. The tool list and the
 // system prompt are left out of the hash: they are the caller's, not the
@@ -304,36 +305,32 @@ test("each wire's request for a history it takes as stored is the bytes it was b
   const golden = await Bun.file(GOLDEN).json();
   // The same session as when the golden was captured.
   expect({ requests: requests.length, events: line.length, kinds: line.map((e) => e.kind[0]).join("") }).toEqual({ requests: golden.requests, events: golden.events, kinds: golden.kinds });
+  // It holds what it is here for: one call id on calls of several steps.
+  const ids = line.flatMap((e) => (e.kind === "assistant" ? e.data.blocks : [])).flatMap((b: any) => (b.type === "tool_use" ? [b.id] : []));
+  expect(ids.length - new Set(ids).size).toBeGreaterThanOrEqual(2);
+
   const { anthropicProblems, chatProblems, geminiProblems, responsesProblems } = await import("./valid.ts");
   const check: Record<string, (b: any) => string[]> = {
     anthropic: anthropicProblems, "responses-codex": (b) => responsesProblems(b, "codex"), "responses-openai": (b) => responsesProblems(b, "openai"), "responses-xai": (b) => responsesProblems(b, "xai"),
     chat: chatProblems, "chat-plain": chatProblems, gemini: geminiProblems, "gemini-plain": geminiProblems,
   };
-  // With nothing repaired the projection is the earlier one, byte for byte,
-  // wherever the wire takes the stored form. (Where it does not, the earlier
-  // projection's request was refused, and a reply's thinking written after a
-  // repaired request is bound to the repaired bytes, not to those.)
+  const text = (body: any) => { const { tools: _t, system: _s, instructions: _i, systemInstruction: _g, ...rest } = body; return JSON.stringify(rest); };
   const stored = bodies({});
-  const off: string[] = [];
-  stored.forEach((b, i) => { if (hashOf(b.body, run.id) !== golden.wires[b.wire][i % requests.length] && !check[b.wire]!(b.body).length) off.push(`${b.wire}, ${b.key}`); });
-  expect(off.slice(0, 8)).toEqual([]);
-  // With the wire's repairs a body differs only where the wire refuses the
-  // stored form, and then it passes the wire's rules.
-  const refused = new Map<string, number>();
-  const changed: string[] = [];
+  const failed: string[] = [];
   bodies(undefined).forEach((b, i) => {
+    const want = golden.wires[b.wire][i % requests.length];
+    // With nothing repaired the projection is the earlier one, byte for byte.
+    if (hashOf(stored[i]!.body, run.id) !== want) failed.push(`${b.wire}, ${b.key}: the body with nothing repaired is not the golden's (what the engine writes changed, or the projection did): ${text(stored[i]!.body).slice(0, 200)}`);
+    // With the wire's repairs it is still that body: this session holds nothing a wire refuses.
+    else if (hashOf(b.body, run.id) !== want) {
+      const was = text(stored[i]!.body), now = text(b.body);
+      let at = 0;
+      while (at < was.length && was[at] === now[at]) at++;
+      failed.push(`${b.wire}, ${b.key}: a repair changed a body the wire takes as stored, at byte ${at}:\n  stored: ${was.slice(Math.max(0, at - 80), at + 120)}\n  sent:   ${now.slice(Math.max(0, at - 80), at + 120)}`);
+    }
     const bad = check[b.wire]!(b.body);
-    if (bad.length) changed.push(`${b.wire}, ${b.key}: still refused: ${bad[0]}`);
-    if (hashOf(b.body, run.id) === golden.wires[b.wire][i % requests.length]) return;
-    const why = check[b.wire]!(stored[i]!.body).map((p) => p.replace(/^[^:]*: /, "").replace(/call_\w+/, "<id>"));
-    if (!why.length) changed.push(`${b.wire}, ${b.key}: changed, and the wire takes the stored form`);
-    for (const w of new Set(why)) refused.set(`${b.wire}: ${w}`, (refused.get(`${b.wire}: ${w}`) ?? 0) + 1);
+    if (bad.length) failed.push(`${b.wire}, ${b.key}: the wire refuses it: ${bad[0]}`);
   });
-  expect(changed.slice(0, 8)).toEqual([]);
-  // The one form this session holds that a wire refuses: the Gemini ids two
-  // calls share, once the history is sent to the Anthropic wire ("`tool_use`
-  // ids must be unique"). Every other body, on every wire, is unchanged.
-  expect([...refused.keys()]).toEqual(["anthropic: the call id <id> is used twice"]);
-  expect(refused.get("anthropic: the call id <id> is used twice")).toBeGreaterThan(5);
-  console.log(`identity: ${stored.length} bodies on ${Object.keys(WIRES).length} wires, ${stored.length - [...refused.values()].reduce((a, b) => a + b, 0)} as before, ${[...refused].map(([k, v]) => `${v} repaired (${k})`).join(", ")}`);
+  if (failed.length) throw new Error(`${failed.length} of ${stored.length} bodies differ. The first:\n${failed.slice(0, 4).join("\n")}`);
+  console.log(`identity: ${stored.length} bodies on ${Object.keys(WIRES).length} wires, all as before the repairs`);
 }, 120_000);
