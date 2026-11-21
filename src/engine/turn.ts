@@ -17,8 +17,9 @@ import { configDir } from "../providers/config.ts";
 import type { ModelInfo, Provider, ProviderRequest, ProviderResult } from "../providers/types.ts";
 import { asksOwner, toolsFor } from "../tools/registry.ts";
 import { allPendingQuestions } from "../tools/interact.ts";
+import { dropCallEnv } from "../tools/jobs.ts";
 import { isDeferError, loadsNatively, refuseDefer, withCatalog } from "../tools/defer.ts";
-import { allHooks, type ExternalTurn, type ToolCall } from "./hooks.ts";
+import { allHooks, type ExternalTurn, type ToolAuthorization, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, type Material } from "./reader.ts";
 import { readMaterial, type ReaderHost, type ReadOutcome } from "./readers.ts";
@@ -974,12 +975,14 @@ export class Engine {
     let result: ToolResultBlock;
     // Measured from dispatch: a call that never ran (denied, stopped at its gate) has no row.
     let t0: number | undefined;
+    let preparedInput = false;
     const ran = (r: ToolResultBlock, outcome: "ok" | "error" | "interrupted") => {
       const ms = Date.now() - t0!;
       this.measure((h) => h.toolRan?.(session, call, r, { ms, outcome }));
       return r;
     };
     try {
+      const authorizations: ToolAuthorization[] = [];
       for (const h of allHooks()) {
         if (!h.beforeTool) continue;
         const gate = Promise.resolve(h.beforeTool(session, call));
@@ -990,9 +993,19 @@ export class Engine {
         if ("deny" in g) return { type: "tool_result", tool_use_id: u.id, content: g.deny, is_error: true };
         if (g.input !== undefined) call.input = g.input;
         if (g.ctx) call.ctx = { ...call.ctx, ...g.ctx };
+        if (g.authorization) authorizations.push(g.authorization);
+      }
+      for (const a of authorizations) if (a.refresh) {
+        const refresh = a.refresh(call);
+        refresh.catch(() => {});
+        await Promise.race([refresh, stopped]);
+        if (ctx.signal.aborted) return interrupted();
       }
       let input = call.input;
+      preparedInput = true;
       for (const h of allHooks()) { const x = h.execInput?.(session, call); if (x !== undefined) input = x; }
+      for (const a of authorizations) if (!a.valid(call, input))
+        return { type: "tool_result", tool_use_id: u.id, content: a.deny, is_error: true };
       // A dispatch set by a hook runs the call elsewhere (another machine's hands).
       t0 = Date.now();
       const run = call.ctx.dispatch ? call.ctx.dispatch(tool, input, call.ctx) : tool.run(input, call.ctx);
@@ -1009,6 +1022,7 @@ export class Engine {
       const failed: ToolResultBlock = { type: "tool_result", tool_use_id: u.id, content: `Tool failed: ${(e as Error).message}`, is_error: true };
       return t0 === undefined ? failed : ran(failed, "error");
     } finally {
+      if (preparedInput && t0 === undefined) dropCallEnv(call.id);
       ctx.signal.removeEventListener("abort", onStop);
     }
     // A hook that throws at once is caught like one that rejects.

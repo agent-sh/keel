@@ -9,7 +9,7 @@ import { basename, dirname, join } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
-import type { ToolCall, ToolGate } from "../engine/hooks.ts";
+import type { ToolAuthorization, ToolCall, ToolGate } from "../engine/hooks.ts";
 import { preAllow } from "./autonomy.ts";
 import { lookRepo, repoContext } from "./repofacts.ts";
 import { confine } from "./sandbox.ts";
@@ -68,7 +68,9 @@ CREATE INDEX IF NOT EXISTS perm_blocked_session ON perm_blocked(session_id, crea
 // What the judge is asked (reviewer mode's calls, and full auto's high-risk
 // ones with `high`: why the rules flagged it and the facts of where it lands),
 // and what it answers.
-export type ReviewAsk = { session: Session; tool: string; kind: string; summary: string; input: any; mode?: "auto"; cwd?: string; high?: { why: string; facts?: string } };
+export const REVIEW_SUMMARY_LIMIT = 4000;
+export const REVIEW_INPUT_LIMIT = 2000;
+export type ReviewAsk = { session: Session; tool: string; kind: string; summary: string; input: any; mode?: "auto"; cwd?: string; interpreter?: string; high?: { why: string; facts?: string } };
 export type Verdict = { allow: boolean; risk: string; reason: string; model: string; ms?: number } | { unavailable: string };
 // A call refused without the owner (the judge's refusal, a judge that could
 // not answer, a repeat); the owner can let one retry of it through.
@@ -87,7 +89,8 @@ export const STREAK = 3;
 
 type Waiter = { resolve: (d: { allow: true } | { deny: string }) => void; call: ToolCall; cls: CallClass; session: Session; name: string; once?: boolean; bind?: string };
 type Target = Awaited<ReturnType<NonNullable<ToolCall["tool"]["target"]>>>;
-type AutoReview = { ask: Ask; cwd?: string; input: unknown; valid: () => Promise<boolean> };
+type AutoReview = { ask: Ask; cwd?: string; input: unknown; interpreter?: string; valid: () => Promise<boolean> };
+type CheckResult = { deny: string } | { cls: CallClass; authorization?: ToolAuthorization };
 const interruptedApproval = "The earlier approval cannot be used under Auto. Check the prior outcome before proposing the action again.";
 const changedReview = { deny: "Refused: authorization or the action changed while permission was pending. Check the current permissions before proposing it again." };
 
@@ -113,10 +116,10 @@ export class Gate {
   private allowedCalls = new Set<string>();
   private retries = new Set<string>(); // session + call key: one retry the owner let through
   private streak = new Map<string, number>(); // refusals in a row in the session's turn
-  private reviewing = new Set<{ id: string; invalid: boolean }>();
+  private reviewVersion = 0;
 
-  private invalidateReview(id?: string) {
-    for (const r of this.reviewing) if (id === undefined || id === r.id) r.invalid = true;
+  private invalidateReview() {
+    this.reviewVersion++;
   }
   // Cards a restart left open, by session and call: nothing waits on them
   // until the continued turn runs the call again (park, reattach).
@@ -220,7 +223,7 @@ export class Gate {
     const prev = this.perm(sessionId);
     const next = { ...prev, ...patch };
     if (prev.mode !== next.mode) this.streak.delete(sessionId);
-    if (prev.mode !== next.mode || prev.sandbox !== next.sandbox || prev.network !== next.network) this.invalidateReview(sessionId);
+    if (prev.mode !== next.mode || prev.sandbox !== next.sandbox || prev.network !== next.network) this.invalidateReview();
     this.store.db
       .query("INSERT INTO perm_sessions (session_id, mode, sandbox, network) VALUES (?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET mode = excluded.mode, sandbox = excluded.sandbox, network = excluded.network")
       .run(sessionId, next.mode, next.sandbox, next.network ? 1 : 0);
@@ -253,7 +256,7 @@ export class Gate {
     const rule: Rule = { id: crypto.randomUUID(), kind, pattern: pattern.trim(), scope: this.scopeOf(session.workspace), lifetime, session_id: lifetime === "session" ? session.id : null, created: Date.now(), bind: bind ?? null };
     this.store.db.query("INSERT INTO perm_rules (id, kind, pattern, scope, lifetime, session_id, created, bind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run(rule.id, rule.kind, rule.pattern, rule.scope, rule.lifetime, rule.session_id ?? null, rule.created, rule.bind ?? null);
-    this.invalidateReview(lifetime === "session" ? session.id : undefined);
+    this.invalidateReview();
     this.bus.emit({ t: "feature", name: "grants", data: { changed: true } });
     return rule;
   }
@@ -277,7 +280,7 @@ export class Gate {
     this.revoked.delete(id);
     this.store.db.query("INSERT INTO perm_rules (id, kind, pattern, scope, lifetime, session_id, created, bind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run(r.id, r.kind, r.pattern, r.scope, r.lifetime, r.session_id ?? null, r.created, r.bind ?? null);
-    this.invalidateReview(r.lifetime === "session" ? r.session_id ?? undefined : undefined);
+    this.invalidateReview();
     this.bus.emit({ t: "feature", name: "grants", data: { changed: true } });
     return r;
   }
@@ -287,7 +290,7 @@ export class Gate {
     if (was) this.revoked.set(id, was);
     const n = this.store.db.query("DELETE FROM perm_rules WHERE id = ?").run(id).changes;
     if (n) {
-      this.invalidateReview(was?.lifetime === "session" ? was.session_id ?? undefined : undefined);
+      this.invalidateReview();
       this.bus.emit({ t: "feature", name: "grants", data: { changed: true } });
     }
     return n > 0;
@@ -340,14 +343,23 @@ export class Gate {
     const r = await this.check(session, call);
     if ("deny" in r) return r;
     const p = this.perm(session.id);
-    if (r.cls.kind === "shell" && r.cls.escalate) return;
-    if (this.sandboxed(session, p) && p.sandbox !== "off")
-      return { ctx: { wrapSpawn: (argv) => confine(argv, p, session.workspace, call.ctx.spillDir), confined: { sandbox: p.sandbox, network: p.network } } };
+    const ctx: Partial<ToolCall["ctx"]> | undefined =
+      !(r.cls.kind === "shell" && r.cls.escalate) && this.sandboxed(session, p) && p.sandbox !== "off"
+        ? { wrapSpawn: (argv) => confine(argv, p, session.workspace, call.ctx.spillDir), confined: { sandbox: p.sandbox, network: p.network } }
+        : undefined;
+    if (!r.authorization) return ctx ? { ctx } : undefined;
+    const auth = r.authorization;
+    const wrap = ctx?.wrapSpawn ?? call.ctx.wrapSpawn;
+    const confined = JSON.stringify(ctx?.confined ?? call.ctx.confined);
+    return { ctx, authorization: {
+      ...auth,
+      valid: (now, input) => now.ctx.wrapSpawn === wrap && JSON.stringify(now.ctx.confined) === confined && auth.valid(now, input),
+    } };
   }
 
   // A dispatcher (mcp_call) is judged as the tool it runs: its own read flag,
   // and grants for that tool alone. Returns the class it judged.
-  async check(session: Session, call: ToolCall): Promise<{ deny: string } | { cls: CallClass }> {
+  async check(session: Session, call: ToolCall): Promise<CheckResult> {
     if (call.tool.confirm) return (await this.askOnce(session, call, call.tool.name, call.tool.confirm.why, call.tool.confirm.shown(call.input))) ?? { cls: { kind: "other" } };
     const target = call.tool.target ? await call.tool.target(call.input) : null;
     const name = target?.name ?? call.tool.name;
@@ -357,7 +369,7 @@ export class Gate {
     const d = this.evaluate(session, name, cls.kind === "shell" && dir ? { ...cls, cwd: dir.path } : cls, target?.source);
     // The call a restart cut while its card was open: that card again, settled
     // the way an open card is (the owner's answer, a grant or mode since, or waiting).
-    const back = this.unpark(session.id, call.id, false);
+    const back = this.unpark(session.id, call.id, false) ?? (mode === "auto" ? this.unpark(session.id, call.id, true) : undefined);
     if (back) {
       // Do not authorize a recovered non-hook card under the new mode. A
       // saved answer is not evidence about the current binding or landing.
@@ -376,12 +388,21 @@ export class Gate {
       }
       return (await this.wait({ ...back, ...settled }, session, call, name, cls)) ?? { cls };
     }
-    if ("allow" in d) return { cls };
     if ("deny" in d) return { deny: d.deny };
+    const checkShell = mode === "auto" && (cls.kind === "shell" || !!call.tool.autoShell) && !("ask" in d && d.ask.ownerOnly);
+    const shell = checkShell ? call.tool.autoShell?.(call.input ?? {}) : undefined;
+    if (checkShell && (cls.kind !== "shell" || !shell || shell.command !== cls.command || !dir))
+      return { deny: 'Refused: Auto cannot verify this shell invocation. Use a supported local non-login Bash command (for exec_command, shell: "bash" and login: false), or use Ask.' };
+    if ("allow" in d) return { cls, ...(mode === "auto" ? { authorization: this.autoAuthorization(session, call, target, cls, false).authorization } : {}) };
     if (cls.kind === "control") return { cls };
     const summary = cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : cls.kind === "drive" ? cls.shown : JSON.stringify((target ? target.input : call.input) ?? {}).slice(0, 400);
     const key = keyOf(name, target, cls, call, summary);
-    if (mode === "auto") return this.checkAuto(session, call, target, cls, name, summary, d.ask);
+    if (mode === "auto") {
+      const input = shell ? shell.options : target ? target.input : call.input;
+      if (!d.ask.ownerOnly && (summary.length > REVIEW_SUMMARY_LIMIT || JSON.stringify(input ?? {}).length > REVIEW_INPUT_LIMIT))
+        return { deny: "Refused: the complete action does not fit in Auto review. Break it into smaller actions or use Ask for owner approval." };
+      return this.checkAuto(session, call, target, cls, name, summary, d.ask, input, dir?.path, shell?.interpreter);
+    }
     // Full auto: nothing waits on the owner. What would ask is high risk; it
     // goes to the rules, then the judge, and is run or refused at once.
     if (mode === "full-auto") return this.alone(session, call, name, cls, summary, key, d.ask.why);
@@ -401,36 +422,47 @@ export class Gate {
     return (await this.card(session, call, name, cls, summary, { ...d.ask, notice, bind: target?.source })) ?? { cls };
   }
 
-  private async checkAuto(session: Session, call: ToolCall, target: Target, cls: CallClass, name: string, summary: string, ask: Ask): Promise<{ deny: string } | { cls: CallClass }> {
-    const dir = localShellDir(session, call, target, cls);
-    if (!ask.ownerOnly && cls.kind === "shell" && !dir) return { deny: "Refused: Auto cannot verify this command's working directory." };
-    const inFlight = { id: session.id, invalid: false };
-    const signature = (t: Target, c: CallClass) => {
+  private autoAuthorization(session: Session, call: ToolCall, target: Target, cls: CallClass, exactDispatch: boolean) {
+    const revision = this.reviewVersion;
+    const originalInput = JSON.stringify(call.input);
+    const { tool, ctx: { dispatch, signal, cwd, sessionId, spillDir } } = call;
+    const signature = (current: ToolCall, t: Target, c: CallClass) => {
       const p = this.perm(session.id);
       const stored = this.store.session(session.id);
       return JSON.stringify([p, this.sandboxed(session, p), stored?.archived, stored?.machine, stored?.workspace, realOf(session.workspace),
-        c, localShellDir(session, call, t, c), t?.name, t?.source, t?.shape, t?.input, call.input]);
+        c, localShellDir(session, current, t, c), t?.name, t?.source, t?.shape, t?.input, current.input]);
     };
-    const before = signature(target, cls);
-    const active = () => !inFlight.invalid && !call.ctx.signal.aborted;
+    const before = signature(call, target, cls);
+    let currentTarget = target;
+    const active = () => revision === this.reviewVersion && !signal.aborted;
+    const authorization: ToolAuthorization = {
+      deny: changedReview.deny,
+      refresh: tool.target ? async (now) => {
+        if (active() && now.tool === tool && JSON.stringify(now.input) === originalInput) currentTarget = await tool.target!(now.input);
+      } : undefined,
+      valid: (now, input) => active() && now.tool === tool && now.ctx.signal === signal && now.ctx.cwd === cwd &&
+        now.ctx.sessionId === sessionId && now.ctx.spillDir === spillDir &&
+        (!exactDispatch || now.ctx.dispatch === dispatch) && JSON.stringify(input) === originalInput &&
+        before === signature(now, currentTarget, callClass(now, currentTarget)),
+    };
+    return { authorization, before };
+  }
+
+  private async checkAuto(session: Session, call: ToolCall, target: Target, cls: CallClass, name: string, summary: string, ask: Ask, input: unknown, cwd?: string, interpreter?: string): Promise<CheckResult> {
+    const { authorization, before } = this.autoAuthorization(session, call, target, cls, !ask.ownerOnly);
     const valid = async () => {
-      if (!active()) return false;
-      const now = call.tool.target ? await call.tool.target(call.input) : null;
-      return active() && before === signature(now, callClass(call, now));
+      await authorization.refresh?.(call);
+      return authorization.valid(call, call.input);
     };
-    this.reviewing.add(inFlight);
-    try {
-      if (ask.ownerOnly) {
-        const deny = await this.card(session, call, name, cls, summary, { ...ask, bind: target?.source, autoOwner: true });
-        return deny ?? (await valid() ? { cls } : changedReview);
-      }
-      // Auto refusals and one-off retries are separate from Full auto's
-      // existing decisions, and tied to the input, binding and resolved cwd.
-      const key = new Bun.CryptoHasher("sha256").update(`auto\0${before}`).digest("hex").slice(0, 32);
-      return await this.alone(session, call, name, cls, summary, key, ask.why ?? "no safe default or standing grant covers it", { ask, cwd: dir?.path, input: target ? target.input : call.input, valid });
-    } finally {
-      this.reviewing.delete(inFlight);
+    if (ask.ownerOnly) {
+      const deny = await this.card(session, call, name, cls, summary, { ...ask, bind: target?.source, autoOwner: true });
+      return deny ?? (await valid() ? { cls, authorization } : changedReview);
     }
+    // Auto refusals and one-off retries are separate from Full auto's
+    // existing decisions, and tied to the input, binding and resolved cwd.
+    const key = new Bun.CryptoHasher("sha256").update(`auto\0${before}`).digest("hex").slice(0, 32);
+    const r = await this.alone(session, call, name, cls, summary, key, ask.why ?? "no safe default or standing grant covers it", { ask, cwd, interpreter, input, valid });
+    return "deny" in r ? r : { cls, authorization };
   }
 
   // A new turn: the run of refusals starts over.
@@ -479,7 +511,7 @@ export class Gate {
     }
     const high = !auto || auto.ask.risk === "high";
     const facts = high && cls.kind === "shell" ? repoContext(cls.command, auto?.cwd ?? cls.cwd ?? session.workspace, homedir(), session) : undefined;
-    const v = await this.judge({ session, tool: name, kind: cls.kind, summary, input: clip(auto ? auto.input : call.input), mode: auto && "auto", cwd: auto?.cwd, high: high ? { why, facts } : undefined });
+    const v = await this.judge({ session, tool: name, kind: cls.kind, summary, input: auto ? auto.input : clip(call.input), mode: auto && "auto", cwd: auto?.cwd, interpreter: auto?.interpreter, high: high ? { why, facts } : undefined });
     if (auto && !await auto.valid()) return changedReview;
     if ("unavailable" in v) {
       const b = this.block({ ...base, calls: [call.id], reason: `The judge could not review it: ${v.unavailable}`, risk: "unknown", model: "", key, by: "unavailable" });

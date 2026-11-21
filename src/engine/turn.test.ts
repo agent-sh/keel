@@ -354,6 +354,43 @@ test("a settled tool call leaves no abort listener on the turn's signal", async 
   }
 });
 
+test("an Auto approval is checked again after hooks and with the executed input", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Gate } = await import("../safety/gate.ts");
+  const { Engine } = await import("./turn.ts");
+  const { registerHooks } = await import("./hooks.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "auto-dispatch-"));
+  const store = new Store(dir), bus = new Bus();
+  const s = store.createSession({ model: "fixture:m", workspace: dir });
+  const engine = new Engine(store, bus, {} as any, { capture: (_s: string, e: unknown) => ({ message: String(e) }) } as any, dir);
+  const gate = new Gate(store, bus);
+  let judgments = 0, runs = 0;
+  gate.judge = async () => (judgments++, { allow: true, risk: "low", reason: "fixture", model: "m" });
+  registerHooks({ beforeTool: (session, c) => session.id === s.id ? gate.beforeTool(s, c) : undefined });
+  registerHooks({
+    async beforeTool(session, c) {
+      if (session.id !== s.id || c.id !== "policy") return;
+      await Promise.resolve();
+      gate.setPerm(s.id, { mode: "read-only" });
+    },
+    execInput: (session, c) => session.id === s.id && c.id === "input" ? { note: "changed" } : undefined,
+  });
+  const tool = { name: "fixture_note", description: "", input_schema: { type: "object" }, readOnly: false,
+    run: async () => (runs++, { content: "ran" }) };
+  const ctx = { sessionId: s.id, cwd: dir, signal: new AbortController().signal, spillDir: dir, seen: new Map() };
+  for (const id of ["policy", "input", "unchanged"]) {
+    gate.setPerm(s.id, { mode: "auto" });
+    const r = await (engine as any).runTool(s, [tool], { type: "tool_use", id, name: tool.name, input: { note: "original" } }, ctx);
+    if (id === "unchanged") expect(r.content).toBe("ran");
+    else expect(r.content).toContain("changed while permission was pending");
+  }
+  expect(judgments).toBe(3);
+  expect(runs).toBe(1);
+});
+
 test("continuations cut in a row count only while none finished a step", () => {
   let n = 0;
   const e = (kind: string, data: any = {}) => ({ id: `e${++n}`, kind, data }) as unknown as StoredEvent;

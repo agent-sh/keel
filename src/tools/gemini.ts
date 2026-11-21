@@ -19,6 +19,7 @@ const run_shell_command: Tool = {
   readOnly: false,
   kind: "shell",
   cwdOf: (ctx, input) => input?.dir_path ? abs(input.dir_path, ctx) : shellCwd(ctx),
+  autoShell: ({ command, ...options }) => typeof command === "string" ? { command, interpreter: "bash -c", options } : undefined,
   description:
     "Executes a given shell command as `bash -c <command>`. Set is_background for servers and watchers; " +
     "a command still running after 5 minutes moves to the background. The result gives Output, Exit Code and " +

@@ -22,6 +22,7 @@ const Bash: Tool = {
   readOnly: false,
   kind: "shell",
   cwdOf: shellCwd,
+  autoShell: ({ command, ...options }) => typeof command === "string" ? { command, interpreter: "bash -c", options } : undefined,
   description:
     "Run a bash command and return its output (stdout and stderr together). The working directory carries over " +
     "between calls when you cd inside the project; environment variables do not. Default timeout 120000 ms, " +

@@ -64,6 +64,9 @@ export type Tool = ToolSpec & {
   // Where a call's relative paths resolve, when not the session's folder
   // (apply_patch: the shell's current directory).
   cwdOf?(ctx: ToolContext, input: any): string;
+  // The effective command Auto can judge, or undefined for an unsupported
+  // invocation (custom interpreter, login startup, intercepted commands).
+  autoShell?(input: any): { command: string; interpreter: string; options?: unknown } | undefined;
   // A dispatcher (mcp_call) names the tool it will run, so the permission gate
   // judges and grants that tool, not the dispatcher.
   // `cls`, when given, is what the call does (a drive tool judges its target).

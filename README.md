@@ -19,10 +19,12 @@ Amazon Bedrock. Models come from each provider's own listing.
 
 **Auto** keeps Keel's existing read permissions. In-scope edits, read-only
 or confined commands, and standing grants run without review. The configured
-judge reviews other ordinary calls and flagged
-high-risk calls. A refusal or unavailable judge does not open an approval
-card. In Auto, explicit sandbox escalation and other owner-only actions
-still ask. **Full auto** runs ordinary work without review and retains its
+judge reviews other ordinary calls and flagged high-risk calls.
+A refusal or unavailable judge does not open an approval
+card. Auto also refuses actions it cannot review in full, including
+unsupported shell invocations such as login shells. Explicit sandbox
+escalation and other owner-only actions still ask. **Full auto** runs
+ordinary work without review and retains its
 nonblocking high-risk checks. Tools that explicitly require confirmation
 still ask in both modes.
 **Auto edits** still asks about ordinary work outside its safe defaults.

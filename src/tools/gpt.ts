@@ -56,6 +56,8 @@ const exec_command: Tool = {
   readOnly: false,
   kind: "shell",
   cwdOf: execCwd,
+  autoShell: ({ cmd, ...options }) => typeof cmd === "string" && options.shell === "bash" && options.login === false && !extractShellApplyPatch(cmd)
+    ? { command: cmd, interpreter: "bash -c", options } : undefined,
   description: "Runs a command in a PTY, returning output or a session ID for ongoing interaction.",
   input_schema: obj({
     cmd: { type: "string", description: "Shell command to execute." },

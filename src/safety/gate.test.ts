@@ -8,7 +8,8 @@ import { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import type { ToolCall } from "../engine/hooks.ts";
 import type { Tool } from "../tools/types.ts";
-import { Gate, landing } from "./gate.ts";
+import { Gate, landing, type ReviewAsk } from "./gate.ts";
+import { gptTools } from "../tools/gpt.ts";
 import { classify, decide, type Mode } from "./policy.ts";
 
 const kind = (d: ReturnType<typeof decide>) => ("allow" in d ? "allow" : "deny" in d ? "deny" : `ask-${d.ask.risk}`);
@@ -67,7 +68,7 @@ test("Auto discards pending permission when policy or cwd changes and does not t
   const a = mkdtempSync(join(session.workspace, "first-"));
   const b = mkdtempSync(join(session.workspace, "second-"));
   let cwd = a;
-  const tool = { ...bash, cwdOf: () => cwd };
+  const tool: Tool = { ...bash, cwdOf: () => cwd, autoShell: ({ command }) => ({ command, interpreter: "bash -c" }) };
   const command = "printf marker > scratch.txt";
   const run = () => g.check(session, call(tool, { command }));
   const pending = async (alter: () => void) => {
@@ -96,6 +97,25 @@ test("Auto discards pending permission when policy or cwd changes and does not t
   expect(await run()).toHaveProperty("deny");
   cwd = a;
   expect(await run()).toHaveProperty("cls");
+});
+
+test("Auto sends the whole supported invocation, not a clipped or different command", async () => {
+  const { g, session, call } = scratchGate();
+  g.setSandboxCheck(() => false);
+  g.setPerm(session.id, { mode: "auto", sandbox: "off" });
+  const exec = gptTools.find((t) => t.name === "exec_command")!;
+  const requests: ReviewAsk[] = [];
+  g.judge = async (a) => (requests.push(a), { allow: true, risk: "low", reason: "fixture", model: "m" });
+  const cmd = "printf marker > scratch.txt";
+  const allowed = { cmd, shell: "bash", login: false };
+  for (const input of [ { cmd }, { cmd: "pwd", shell: "bash", login: true }, { ...allowed, shell: "sh" },
+    { ...allowed, cmd: `printf '${"x".repeat(4000)}' > scratch.txt` }, { ...allowed, description: "x".repeat(2001) } ]) {
+    expect(await g.check(session, call(exec, input))).toHaveProperty("deny");
+  }
+  expect(requests).toEqual([]);
+  expect(await g.check(session, call(exec, allowed))).toHaveProperty("cls");
+  expect(requests).toMatchObject([{ summary: cmd, interpreter: "bash -c", input: { shell: "bash", login: false } }]);
+  expect(g.approvals()).toEqual([]);
 });
 
 test("Auto does not reuse a parked approval or let it create a standing grant", async () => {

@@ -8,7 +8,14 @@ export type ToolCall = { id: string; tool: Tool; input: any; ctx: ToolContext };
 // What a beforeTool hook may answer: refuse the call (the reason is the tool
 // result the model sees), or run it with a changed input or context (a
 // sandbox sets ctx.wrapSpawn). Nothing means "no opinion".
-export type ToolGate = void | { deny: string } | { input?: any; ctx?: Partial<ToolContext> };
+// A permission that must still hold at dispatch. Refresh any asynchronous
+// target after earlier hooks, then check synchronously with the executed input.
+export type ToolAuthorization = {
+  refresh?(call: ToolCall): Promise<void>;
+  valid(call: ToolCall, input: any): boolean;
+  deny: string;
+};
+export type ToolGate = void | { deny: string } | { input?: any; ctx?: Partial<ToolContext>; authorization?: ToolAuthorization };
 
 // Points where feature modules join the turn loop without editing it.
 export type TurnHooks = {
