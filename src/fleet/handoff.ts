@@ -134,9 +134,19 @@ export class Handoffs {
       if (this.moving.has(id)) continue;
       const m = this.moves(id);
       if (m.last?.state === "running") this.closeCut(id, m, m.last);
-      // After the start has closed the turns the last daemon left open.
-      if (m.last?.settle) setTimeout(() => this.settle(id), 0);
     }
+    // After the start has closed the turns the last daemon left open.
+    if (this.owed().length) setTimeout(() => this.settleOwed(), 0);
+  }
+
+  private owed(): string[] {
+    return this.store.db.query<{ session_id: string }, []>("SELECT session_id FROM fleet_moves WHERE json_extract(data, '$.last.settle') = 1").all().map((r) => r.session_id);
+  }
+
+  // The queues that moves still owe a release: at a start, and when a drain
+  // that held them back is called off.
+  settleOwed() {
+    for (const id of this.owed()) if (!this.moving.has(id)) this.settle(id);
   }
 
   // A move the daemon went down in the middle of. The switch is one write, so

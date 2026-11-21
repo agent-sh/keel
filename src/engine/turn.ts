@@ -1842,6 +1842,7 @@ export class Engine {
   // the prompts that waited in a queue meanwhile.
   undrain() {
     this.draining = false;
+    for (const h of allHooks()) try { h.drainOff?.(); } catch (e) { this.errors.capture("server", e, { hook: "drainOff" }); }
     for (const { session_id } of this.store.db.query<{ session_id: string }, []>("SELECT DISTINCT session_id FROM queue").all()) this.next(session_id);
     // The drain stopped the summaries being prepared and let the idle timers
     // pass unused: idle sessions get their timer again, as after a start.

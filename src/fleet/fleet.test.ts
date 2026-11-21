@@ -667,11 +667,14 @@ async function moveRig(setup?: (home: string, dir: string) => string | void) {
 // The first move to a machine makes a repository there, then sends the state.
 // Cut between the two, the next move finds a repository with no commit at the
 // place: it is the one to use. Nothing of the bundle stays on either side.
-test("a first move cut before its state arrived there is made again, and leaves no bundle", async () => {
-  for (const cut of [
-    (path: string, script: string) => path.endsWith("/exec") && script.includes("init -q"), // the new repository is made, the answer lost
-    (path: string) => path.endsWith("/put"), // the bundle is there, the answer lost
-  ]) {
+// Cut after the state arrived, the next move sends nothing again: an
+// unchanged folder gives the same snapshot commit.
+test("a first move cut before or after its state arrived there is made again, and leaves no bundle", async () => {
+  for (const [cut, transfer] of [
+    [(path: string, script: string) => path.endsWith("/exec") && script.includes("init -q"), "done"], // the new repository is made, the answer lost
+    [(path: string) => path.endsWith("/put"), "done"], // the bundle is there, the answer lost
+    [(path: string, script: string) => path.endsWith("/exec") && script.includes("worktree add"), "skipped"], // it all arrived
+  ] as const) {
     const rig = await moveRig();
     try {
       const before = rig.look(rig.home);
@@ -682,6 +685,7 @@ test("a first move cut before its state arrived there is made again, and leaves 
       expect(rig.latest()).toMatchObject({ state: "failed", interrupted: true });
       const again = await rig.moved("m1");
       expect(again).toMatchObject({ state: "done" });
+      expect(again.steps.find((st) => st.name === "transfer")!.state).toBe(transfer);
       expect(rig.worktrees()).toHaveLength(1);
       expect(rig.look(rig.session().workspace)).toEqual(before);
       expect(rig.bundles()).toEqual([]);
@@ -735,27 +739,6 @@ test("a move cut after the folder took the state is not left stale by the next m
 // A move longer than the time between two restarts: what it sent stays sent
 // (an unchanged folder gives the same snapshot again), and a stop of the
 // daemon has the running moves to wait for.
-test("a move made again does not send again what arrived, and a stop can wait for a move", async () => {
-  const rig = await moveRig();
-  try {
-    rig.cut = (path, script) => (path.endsWith("/exec") && script.includes("worktree add") ? "after" : undefined);
-    rig.moves.start(rig.session(), { machine_id: "m1" });
-    await rig.reached.promise;
-    const sent = rig.git(rig.home, "rev-parse", `refs/keel/handoff/${rig.session().id}`);
-    rig.boot();
-    let ended = false;
-    rig.moves.start(rig.session(), { machine_id: "m1" });
-    const idle = rig.moves.idle().then(() => { ended = true; });
-    expect(ended).toBe(false);
-    await idle;
-    expect(rig.latest()).toMatchObject({ state: "done" });
-    expect(rig.latest().steps.find((s) => s.name === "transfer")!.state).toBe("skipped");
-    expect(rig.git(rig.home, "rev-parse", `refs/keel/handoff/${rig.session().id}`)).toBe(sent);
-  } finally {
-    rig.close();
-  }
-});
-
 // A move stops the running turn, and that stop holds the queue. The hold is
 // the move's own: a move that fails or is cut lets it go, so the retry does
 // not find a held queue and take it for the owner's.
@@ -794,13 +777,14 @@ test("a queue held only by a move's own stop is let go when the move fails or is
 // A stop of the daemon: the drain waits for a move that runs (within its time,
 // through the engine's `draining` hook), and a move that ends while the daemon
 // drains keeps the queue release it owes for the next start.
-test("a drain waits for a running move, and a move that ends in it lets its queue go at the next start", async () => {
+test("a drain waits for a running move, and a move that ends in it lets its queue go when the drain is off", async () => {
   const { allHooks } = await import("../engine/hooks.ts");
   const { Engine } = await import("../engine/turn.ts");
   const { Bus } = await import("../core/bus.ts");
   const rig = await moveRig();
-  const engine = new Engine(rig.store, new Bus(), {} as any, { capture: (_s: string, e: unknown) => { throw e; } } as any, rig.dir);
-  allHooks().push({ draining: () => rig.moves.idle() });
+  // No model is reachable here: what the engine does for idle sessions after a drain is off finds none, and says so to nobody.
+  const engine = new Engine(rig.store, new Bus(), { resolve: async () => { throw new Error("no provider here"); } } as any, { capture: () => ({}) } as any, rig.dir);
+  allHooks().push({ draining: () => rig.moves.idle(), drainOff: () => rig.moves.settleOwed() });
   try {
     // The daemon is draining when the move ends: no turn may start, so the release stays owed.
     (rig.moves as any).engine.isDraining = () => true;
@@ -813,7 +797,10 @@ test("a drain waits for a running move, and a move that ends in it lets its queu
     await drain;
     expect(rig.latest()).toMatchObject({ state: "done", settle: true });
     expect(rig.released).toEqual([]);
-    // The next start: the release is done, once.
+    // The drain is called off: the release is done then, once, and nothing is left for the next start.
+    (rig.moves as any).engine.isDraining = () => false;
+    engine.undrain();
+    expect(rig.released).toHaveLength(1);
     rig.boot();
     await Bun.sleep(20);
     expect(rig.released).toHaveLength(1);

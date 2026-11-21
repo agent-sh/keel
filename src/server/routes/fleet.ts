@@ -112,6 +112,8 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     },
     // A stop of the daemon waits for the moves that run, within its drain time.
     draining: () => moves.idle(),
+    // A move that ended while the daemon drained kept its queue release: done now that the drain is off.
+    drainOff: () => moves.settleOwed(),
     beforeTool(s, call) {
       if (WORKSPACE_TOOLS.has(call.tool.name) && moves.isMoving(s.id)) return { deny: "The session is moving to another place; its tools run again when the move ends." };
       if (!s.machine || !WORKSPACE_TOOLS.has(call.tool.name)) return;

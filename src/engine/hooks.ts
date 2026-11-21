@@ -85,6 +85,8 @@ export type TurnHooks = {
   // Work that is not a turn and that a stop should not cut (a session moving
   // to another machine): the drain waits for it too, within its time.
   draining?: () => Promise<unknown> | undefined;
+  // A drain was called off: what waited for the daemon to stop goes on.
+  drainOff?: () => void;
   // Before a compaction summarises the history (a memory tool reads it whole first).
   beforeCompact?: (s: Session) => void | Promise<void>;
   // What a summary of this session keeps above all, when the owner named nothing
