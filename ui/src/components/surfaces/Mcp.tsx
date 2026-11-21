@@ -86,10 +86,10 @@ function ServerReader({ s, act }: { s: McpServerState; act: Act }) {
       <div className="k-reader-body">
         {offered(s) && s.tool_names.length > 0 && (s.bundled ? (
           <div>
-            <div className="k-sub">Tools</div>
+            <div className="k-sub k-label">Tools</div>
             <div className="flex flex-wrap gap-1">{s.tool_names.map((t) => <span key={t} className="k-chip font-mono">{t}</span>)}</div>
           </div>
-        ) : <div><div className="k-sub">Tools: which ones count as reads</div><ToolReads s={s} base={base} act={act} /></div>)}
+        ) : <div><div className="k-sub k-label">Tools: which ones count as reads</div><ToolReads s={s} base={base} act={act} /></div>)}
         {s.state === "ready" && (s.resources || s.prompts) && <ServerContents s={s} base={base} />}
         {!offered(s) && !s.error && <p className="text-caption text-faint">Its tools show once it connects.</p>}
       </div>
@@ -243,7 +243,7 @@ function ServerContents({ s, base }: { s: McpServerState; base: string }) {
         {err && <div className="text-micro text-danger">{err}</div>}
         {s.resources && (
           <div>
-            <div className="text-micro font-medium text-faint">Resources</div>
+            <div className="k-label">Resources</div>
             {lists === null ? <div className="text-micro text-faint">Loading</div>
               : !lists.resources.items.length && !lists.templates.items.length && !lists.resources.error && !lists.templates.error ? <div className="text-micro text-faint">None</div> : (
                 <>
@@ -251,7 +251,7 @@ function ServerContents({ s, base }: { s: McpServerState; base: string }) {
                   {/* Under a heading of their own: a failure that ends the resources is not read as theirs. */}
                   {(lists.templates.items.length > 0 || lists.templates.error || lists.templates.next !== undefined) && (
                     <>
-                      <div className="mt-1.5 text-micro font-medium text-faint">Templates</div>
+                      <div className="mt-1.5 k-label">Templates</div>
                       <ul className="mt-1 space-y-0.5">{half("templates", "templates", lists.templates)}</ul>
                     </>
                   )}
@@ -261,7 +261,7 @@ function ServerContents({ s, base }: { s: McpServerState; base: string }) {
         )}
         {s.prompts && (
           <div>
-            <div className="text-micro font-medium text-faint">Prompts</div>
+            <div className="k-label">Prompts</div>
             {prompts === null ? <div className="text-micro text-faint">Loading</div> : prompts.length === 0 ? <div className="text-micro text-faint">None</div> : (
               <ul className="mt-1 space-y-2">
                 {prompts.map((p) => <PromptForm key={p.name} p={p} base={base} onShown={(messages) => setShown({ title: p.name, messages })} />)}
@@ -289,7 +289,7 @@ function ServerContents({ s, base }: { s: McpServerState; base: string }) {
               ))}
               {shown.messages?.map((m, i) => (
                 <div key={i} data-testid="mcp-prompt-message" data-role={m.role}>
-                  <div className="text-micro font-medium text-faint">{m.role}{m.type !== "text" ? ` · ${m.type}` : ""}</div>
+                  <div className="k-label">{m.role}{m.type !== "text" ? ` · ${m.type}` : ""}</div>
                   <pre className="whitespace-pre-wrap break-words font-mono text-micro text-fg">{m.text}</pre>
                 </div>
               ))}

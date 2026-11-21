@@ -60,7 +60,7 @@ export function TurnNotes({ notes, working }: { notes: StoredEvent[]; working: b
               <Popover.Portal>
                 <Popover.Positioner sideOffset={6} align="start" className="z-50 outline-none">
                   <Popover.Popup className="k-note-pop">
-                    <p className="k-note-pop-head">{from}{hooks.length ? `, ${hooks.join(", ")}` : ""}</p>
+                    <p className="k-note-pop-head k-label">{from}{hooks.length ? `, ${hooks.join(", ")}` : ""}</p>
                     <pre className="whitespace-pre-wrap break-words font-mono text-micro leading-relaxed text-muted" data-testid="memory-text">{body}</pre>
                   </Popover.Popup>
                 </Popover.Positioner>

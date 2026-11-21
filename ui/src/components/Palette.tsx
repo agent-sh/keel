@@ -193,7 +193,7 @@ export function Palette() {
             {entries.map((e, i) => (
               <div key={e.key}>
                 {(i === 0 || entries[i - 1]!.group !== e.group) && (
-                  <div className="px-2.5 pb-1 pt-2.5 text-micro font-medium text-faint first:pt-1">{e.group}</div>
+                  <div className="px-2.5 pb-1 pt-2.5 k-label first:pt-1">{e.group}</div>
                 )}
                 <div
                   role="option"

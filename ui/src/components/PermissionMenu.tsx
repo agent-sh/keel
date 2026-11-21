@@ -57,7 +57,7 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
         <Popover.Portal>
           <Popover.Positioner align="end" sideOffset={6} className="z-50">
             <Popover.Popup className="max-h-[var(--available-height)] w-[min(22rem,calc(100vw-1.5rem))] origin-[var(--transform-origin)] overflow-y-auto rounded-lg border border-line bg-raised p-1.5 shadow-2 transition-[scale,opacity] duration-150 data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0">
-              <Popover.Title className="px-2 pt-1 pb-1.5 text-micro font-medium text-faint">Permissions</Popover.Title>
+              <Popover.Title className="px-2 pt-1 pb-1.5 k-label">Permissions</Popover.Title>
               <RadioGroup value={perm.mode} onValueChange={(v) => set({ mode: v as SessionPerm["mode"] })} className="flex flex-col">
                 {modes.map((m) => (
                   // The whole row is the radio: its mark is drawn inside it.

@@ -129,7 +129,7 @@ export function Connect({ onDone }: { onDone: Done }) {
   };
   return (
     <div data-testid="mcp-connect">
-      <div className="k-sub">Apps, through their makers' own servers</div>
+      <div className="k-sub k-label">Apps, through their makers' own servers</div>
       {cards ? cards.map((c) => <ConnectorCard key={c.id} c={c} redirect={redirect} onDone={done} />) : <p className="text-caption text-faint">Asking each server what it needs to sign in.</p>}
       <div className="k-sub mt-5">Any other, from the MCP registry</div>
       <form onSubmit={search} className="k-form" data-testid="mcp-registry-search"><div className="flex items-center gap-2">

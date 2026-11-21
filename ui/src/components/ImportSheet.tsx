@@ -119,7 +119,7 @@ function PreviewPane({ row, from, resume, intent, onIntent, onDone }: { row: Row
                 {p.notes.map((n) => <li key={n} className="text-caption text-muted">{n}</li>)}
               </ul>
             )}
-            <div className="mt-5 text-caption font-medium uppercase tracking-wide text-faint">Last messages</div>
+            <div className="mt-5 k-label">Last messages</div>
             <div className="mt-2 space-y-2">
               {p.tail.map((m, i) => (
                 <div key={i} className={cn("rounded-lg px-3 py-2 text-ui", m.role === "user" ? "ml-10 bg-accent-soft" : "mr-10 border border-line bg-raised")}>
@@ -129,7 +129,7 @@ function PreviewPane({ row, from, resume, intent, onIntent, onDone }: { row: Row
             </div>
             {p.links.length > 1 && (
               <>
-                <div className="mt-5 text-caption font-medium uppercase tracking-wide text-faint">{p.links.length} copies here</div>
+                <div className="mt-5 k-label">{p.links.length} copies here</div>
                 <div className="mt-2 divide-y divide-line rounded-lg border border-line" data-testid="import-copies">
                   {p.links.map((l) => (
                     <button key={l.session_id} type="button" onClick={() => open(l.session_id)} data-testid="import-copy" data-id={l.session_id} className="flex w-full items-center gap-3 px-3 py-2 text-left text-ui hover:bg-hover">
@@ -199,7 +199,7 @@ function Running({ onDone }: { onDone: () => void }) {
   };
   return (
     <div className="border-b border-line" data-testid="import-running">
-      <div className="px-3 pt-2 pb-1 text-micro font-medium uppercase tracking-wide text-faint">Running now</div>
+      <div className="px-3 pt-2 pb-1 k-label">Running now</div>
       {why && (
         <div className="flex items-center gap-2 px-3 pb-2 text-caption text-muted" data-testid="import-running-unlisted">
           <span className="size-1.5 shrink-0 rounded-full bg-warn" />
@@ -473,7 +473,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
               )}
               <div className="min-h-0 flex-1 overflow-y-auto" data-testid="import-list">
                 {rows?.map((r) => (
-                  <div key={r.path + r.id} className={cn("border-b border-line/60 transition-colors", sel?.id === r.id ? "bg-accent-soft" : "hover:bg-hover")}>
+                  <div key={r.path + r.id} className={cn("border-b border-line/60 transition-colors", sel?.id === r.id ? "k-picked" : "hover:bg-hover")}>
                     <button
                       type="button"
                       data-testid="import-row"

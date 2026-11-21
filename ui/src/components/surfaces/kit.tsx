@@ -35,7 +35,7 @@ export function FolderLine({ tally, global }: { tally?: { n: number; label: stri
   const [f, set] = useFolder();
   return (
     <div className="k-folder" data-testid="toolkit-folder">
-      {global ? <span className="k-folder-label">{global}</span> : <><span className="k-folder-label">Seen from</span><WorkspacePicker value={f} onChange={set} /></>}
+      {global ? <span className="k-folder-label k-label">{global}</span> : <><span className="k-folder-label k-label">Seen from</span><WorkspacePicker value={f} onChange={set} /></>}
       {tally && (
         <div className="k-tally" data-testid="toolkit-tally">
           {tally.map((t) => <div key={t.label} data-tone={t.tone}><b>{t.n}</b><span>{t.label}</span></div>)}
@@ -82,7 +82,7 @@ export function Ledger({ groups, selected, onSelect, add, children, testid, empt
                 data-name={e.name}
                 data-mark={e.mark}
                 data-off={e.mark === "off" || undefined}
-                className="k-entry"
+                className={selected === e.id ? "k-entry k-picked" : "k-entry"}
                 {...e.data}
                 onClick={() => onSelect(e.id)}
               >
@@ -95,7 +95,7 @@ export function Ledger({ groups, selected, onSelect, add, children, testid, empt
           </div>
         ))}
         {add?.map((a) => (
-          <button key={a.id} type="button" data-add className="k-entry" aria-current={selected === a.id} data-testid={`toolkit-add-${a.id}`} onClick={() => onSelect(a.id)}>
+          <button key={a.id} type="button" data-add className={selected === a.id ? "k-entry k-picked" : "k-entry"} aria-current={selected === a.id} data-testid={`toolkit-add-${a.id}`} onClick={() => onSelect(a.id)}>
             <Plus /><span className="k-entry-name">{a.label}</span>
           </button>
         ))}

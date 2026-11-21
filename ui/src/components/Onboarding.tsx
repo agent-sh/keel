@@ -68,7 +68,7 @@ const STARTERS = [
 export function FirstSteps() {
   return (
     <section className="k-first-steps mt-8" data-testid="first-steps" aria-labelledby="first-title">
-      <h2 id="first-title" className="mb-2 text-caption font-medium text-faint">To start, pick one or write your own</h2>
+      <h2 id="first-title" className="mb-2 k-label">To start, pick one or write your own</h2>
       <div className="flex flex-wrap gap-2">
         {STARTERS.map((s) => (
           <button

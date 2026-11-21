@@ -27,7 +27,7 @@ export function ShortcutList() {
     <div className="grid gap-x-10 gap-y-6 sm:grid-cols-2">
       {groups.map((g) => (
         <section key={g}>
-          <h3 className="mb-1.5 text-caption font-medium text-faint">{g}</h3>
+          <h3 className="mb-1.5 k-label">{g}</h3>
           {rows.filter((r) => r[0] === g).map(([, label, keys]) => (
             <div key={label} data-testid="shortcut-row" className="flex min-h-8 items-center justify-between gap-4 border-b border-line/70 py-1 text-ui last:border-0">
               <span className="min-w-0">{label}</span>

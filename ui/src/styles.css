@@ -357,6 +357,19 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
   textarea, input { font-size: max(16px, 1rem) !important; }
 }
 
+/* ---------- The picked row of a list ----------
+   The one of a list that is shown beside it (a section, a loop, a trace, a
+   toolkit entry, a panel): set into its surface as a well, in ink, with an ink
+   bar at its leading edge. It reads on the page, on a raised panel and in a
+   popup, in both themes. */
+.k-picked, .k-picked:hover { position: relative; background: var(--sunken); color: var(--fg); }
+.k-picked::before { content: ""; position: absolute; inset: 0.1875rem auto 0.1875rem 0; width: 0.1875rem; border-radius: 0 2px 2px 0; background: var(--fg); }
+
+/* ---------- A section's label ----------
+   The quiet name over a group of rows in a menu, a list, a panel or a page.
+   Only state words are upper case; a label is not. */
+.k-label { font-size: var(--text-micro); font-weight: 600; line-height: 1.35; color: var(--faint); }
+
 /* ---------- A link among words ----------
    A button that reads as a link in a sentence or a caption: it takes the press
    over a full control's height and leaves the line where it was. */

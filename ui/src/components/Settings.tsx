@@ -204,7 +204,7 @@ export function Settings({ section }: { section: string }) {
           <button ref={jump} type="button" className="k-settings-jump" data-testid="settings-jump" aria-expanded={open} aria-controls="settings-sections" onClick={() => (open ? close() : setOpen(true))}>
             <span className="k-settings-jump-icon" aria-hidden>{cur.icon}</span>
             <span className="min-w-0 flex-1">
-              <span className="k-settings-jump-group">{groupOf(cur.id)}</span>
+              <span className="k-settings-jump-group k-label">{groupOf(cur.id)}</span>
               <span className="k-settings-jump-label">{cur.label}</span>
             </span>
             <span className="k-settings-jump-hint">{open ? "Close" : "All sections"}</span>
@@ -218,7 +218,7 @@ export function Settings({ section }: { section: string }) {
             <div ref={list} className="k-settings-nav">
               {shown.map((s, i) => (
                 <Fragment key={s.id}>
-                  {groupOf(s.id) !== groupOf(shown[i - 1]?.id) && <h3 className="k-settings-group">{groupOf(s.id)}</h3>}
+                  {groupOf(s.id) !== groupOf(shown[i - 1]?.id) && <h3 className="k-settings-group k-label">{groupOf(s.id)}</h3>}
                   <button
                     type="button"
                     onClick={() => go(s.id)}
@@ -226,7 +226,7 @@ export function Settings({ section }: { section: string }) {
                     data-section={s.id}
                     className={cn(
                       "flex shrink-0 items-center gap-2 rounded-md px-2.5 text-ui text-muted hover:bg-hover hover:text-fg",
-                      s.id === cur.id && "bg-raised text-fg shadow-1 hover:bg-raised",
+                      s.id === cur.id && "k-picked",
                     )}
                   >
                     <span className={s.id === cur.id ? "text-accent" : "text-faint"}>{s.icon}</span>

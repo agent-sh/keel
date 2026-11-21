@@ -122,7 +122,7 @@ function Starts({ setup, pick, chosen }: { setup: Setup | null; pick: (t: Templa
       data-testid="provider-start"
       data-start={t.id}
       onClick={() => (had ? openAddProvider(had) : pick(t))}
-      className={cn("flex w-full items-baseline gap-2 rounded-md px-2.5 py-1.5 text-left hover:bg-hover", chosen === t.id && "bg-hover")}
+      className={cn("flex w-full items-baseline gap-2 rounded-md px-2.5 py-1.5 text-left hover:bg-hover", chosen === t.id && "k-picked")}
     >
       <span className="truncate text-ui text-fg">{t.label}</span>
       <span className="ml-auto shrink-0 truncate text-micro text-faint">{had ? (found ? `set up as ${had}: edit` : "set up: edit") : extra ?? (t.base_url ? t.base_url.replace(/^https?:\/\//, "") : "address in its docs")}</span>
@@ -134,7 +134,7 @@ function Starts({ setup, pick, chosen }: { setup: Setup | null; pick: (t: Templa
     try { setScan({ busy: false, found: (await api<any>("/api/providers/scan", { method: "POST", body: "{}" })).found }); }
     catch (e) { failed(e, { at: "scan" }); setScan({ busy: false, found: [] }); }
   };
-  const head = (t: string) => <div className="px-2.5 pt-4 pb-1 text-micro font-medium uppercase tracking-wide text-faint first:pt-1">{t}</div>;
+  const head = (t: string) => <div className="px-2.5 pt-4 pb-1 k-label first:pt-1">{t}</div>;
   return (
     <div className="flex min-h-0 flex-col overflow-y-auto border-r border-line bg-sunken p-2" data-testid="provider-starts">
       {head("Compatible endpoint")}

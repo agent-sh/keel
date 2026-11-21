@@ -164,7 +164,7 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
               </Carry>
             ))}
             {stays && <p className="px-1 text-caption text-faint" data-testid="export-stays">{stays} stay{(tree ? 0 : branches) + pending === 1 ? "s" : ""} in this session.</p>}
-            <div className="pt-2 text-caption font-medium uppercase tracking-wide text-faint">Continue in another harness</div>
+            <div className="pt-2 k-label">Continue in another harness</div>
             <div className="grid grid-cols-2 gap-2">
               <Option icon={<Terminal />} title="Claude Code" hint="A new transcript in its store" onClick={() => to("claude_code")} testid="export-claude" busy={busy} />
               <Option icon={<Terminal />} title="Codex" hint="A new rollout in its store" onClick={() => to("codex")} testid="export-codex" busy={busy} />

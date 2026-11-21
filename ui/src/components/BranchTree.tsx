@@ -161,7 +161,7 @@ export function BranchTree({ session }: { session: Session }) {
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {data.labels.length > 0 && (
           <section className="mb-3 border-b border-line pb-3" data-testid="labels">
-            <p className="px-3 pb-1 text-micro font-medium uppercase tracking-wide text-faint">Labels</p>
+            <p className="px-3 pb-1 k-label">Labels</p>
             {data.labels.map((l) => {
               const node = data.nodes.find((n) => n.event_id === l.event_id);
               return (

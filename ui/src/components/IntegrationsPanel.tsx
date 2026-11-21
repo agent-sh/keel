@@ -24,7 +24,7 @@ function Items({ label, items, tone }: { label: string; items: Item[]; tone: str
   if (!items.length) return null;
   return (
     <div className="border-b border-line py-3 last:border-0">
-      <div className="mb-1.5 flex items-center gap-2 text-caption font-medium uppercase tracking-wide text-faint">
+      <div className="mb-1.5 flex items-center gap-2 k-label">
         <span className={cn("size-1.5 rounded-full", tone)} />
         {label}
         <span className="tabular-nums">{items.length}</span>

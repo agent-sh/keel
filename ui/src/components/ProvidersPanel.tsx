@@ -154,7 +154,7 @@ export function ProvidersSettings() {
   const rows = report?.providers ?? [];
   const ready = rows.filter((p) => p.available);
   const idle = rows.filter((p) => !p.available);
-  const heading = (t: string) => <h3 className="mt-6 mb-2 text-micro font-medium uppercase tracking-wide text-faint">{t}</h3>;
+  const heading = (t: string) => <h3 className="mt-6 mb-2 k-label">{t}</h3>;
 
   return (
     <div data-testid="providers-panel">

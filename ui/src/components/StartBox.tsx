@@ -111,7 +111,7 @@ export function StartBox() {
           {firstRun && <FirstSteps />}
           {recent.length > 0 && !autoThere && (
             <section className="mt-10">
-              <h2 className="mb-2 text-caption font-medium text-faint">Recent in {workspace.split("/").pop()}</h2>
+              <h2 className="mb-2 k-label">Recent in {workspace.split("/").pop()}</h2>
               <div className="flex flex-col">
                 {machineRuns(recent).map((run, ri, runs) => (<Fragment key={run.machine ?? "local"}>{runs.length > 1 && <MachineSep machine={run.machine} count={run.list.length} />}{run.list.map((s) => (
                   <button

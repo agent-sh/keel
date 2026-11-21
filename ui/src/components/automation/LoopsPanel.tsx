@@ -23,7 +23,7 @@ function CopyLine({ label, value, testid }: { label: string; value: string; test
   const line = useRef<HTMLDivElement>(null);
   return (
     <div>
-      <p className="text-micro font-medium text-muted">{label}</p>
+      <p className="k-label">{label}</p>
       <div ref={line} className="mt-0.5 flex items-start gap-1.5">
         <code data-testid={testid} className="min-w-0 flex-1 break-all rounded-md bg-code px-2 py-1 font-mono text-micro">{value}</code>
         <IconButton title={`Copy ${label.toLowerCase()}`} onClick={() => copyOrSay(value, line.current?.querySelector("button")).then((ok) => { if (ok) setDone(true); })}>
@@ -222,7 +222,7 @@ export function LoopsPanel({ open, onOpenChange }: { open: boolean; onOpenChange
                     data-testid="loop-item"
                     onClick={() => setSel(l.id)}
                     onKeyDown={(e) => e.key === "Enter" && setSel(l.id)}
-                    className={cn("group flex cursor-default items-center gap-2 rounded-lg px-2.5 py-2 outline-none hover:bg-hover", current?.id === l.id && "bg-sunken")}
+                    className={cn("group flex cursor-default items-center gap-2 rounded-lg px-2.5 py-2 outline-none hover:bg-hover", current?.id === l.id && "k-picked")}
                   >
                     <span className={cn("size-2 shrink-0 rounded-full", l.last_status === "running" ? "bg-brass animate-pulse-dot" : l.enabled ? (l.last_status === "failed" ? "bg-danger" : "bg-ok") : "bg-line-strong")} />
                     <div className="min-w-0 flex-1">

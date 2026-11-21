@@ -47,7 +47,7 @@ export function WorkspacePicker({ value, onChange }: { value: string; onChange: 
           <Popover.Popup className={cn(popupClass, "w-[min(26rem,calc(100vw-1.5rem))] p-0")} data-testid="workspace-popup">
             {!browse ? (
               <div className="p-1">
-                <div className="flex items-center gap-1.5 px-2.5 pb-1 pt-2 text-micro font-medium text-faint"><History className="size-3" /> Recent folders</div>
+                <div className="flex items-center gap-1.5 px-2.5 pb-1 pt-2 k-label"><History className="size-3" /> Recent folders</div>
                 {(info?.recent.length ? info.recent : info ? [{ name: info.default.split("/").pop()!, path: info.default, is_git: false, last: 0 }] : []).map((r) => (
                   <button key={r.path} type="button" onClick={() => pick(r.path)} className={cn("flex h-10 w-full items-center gap-2.5 rounded-md px-2.5 text-left hover:bg-hover", r.path === shown && "bg-hover")}>
                     {r.is_git ? <FolderGit2 className="size-4 shrink-0 text-accent" /> : <Folder className="size-4 shrink-0 text-faint" />}
@@ -59,7 +59,7 @@ export function WorkspacePicker({ value, onChange }: { value: string; onChange: 
                 ))}
                 {repoList.length > 0 && (
                   <>
-                    <div className="flex items-center gap-1.5 px-2.5 pb-1 pt-2 text-micro font-medium text-faint"><FolderGit2 className="size-3" /> Repositories</div>
+                    <div className="flex items-center gap-1.5 px-2.5 pb-1 pt-2 k-label"><FolderGit2 className="size-3" /> Repositories</div>
                     <div className="max-h-56 overflow-y-auto" data-testid="repo-list">
                       {repoList.map((r) => (
                         <button key={r.path} type="button" onClick={() => pick(r.path)} className={cn("flex h-8 w-full items-center gap-2.5 rounded-md px-2.5 text-left hover:bg-hover", r.path === shown && "bg-hover")}>

@@ -137,7 +137,7 @@ export function ArtifactBrowser({ list, testid, withSession }: { list: Listed[] 
                 <li key={key(a)}>
                   <button type="button" data-testid="artifact-row" data-path={a.path} data-kind={a.kind} aria-current={cur === a || undefined}
                     onClick={() => { setPicked(key(a)); if (one) { left.current = rows.current?.scrollTop ?? 0; setReading(true); } }}
-                    className={cn("flex w-full items-center focus-visible:-outline-offset-2 gap-2.5 px-3 text-left text-ui hover:bg-hover", one ? "h-11" : "h-9", cur === a ? "bg-hover text-fg" : "text-muted", !a.exists && "line-through opacity-60")}>
+                    className={cn("flex w-full items-center focus-visible:-outline-offset-2 gap-2.5 px-3 text-left text-ui hover:bg-hover", one ? "h-11" : "h-9", cur === a ? "k-picked" : "text-muted", !a.exists && "line-through opacity-60")}>
                     <Icon className="size-4 shrink-0 text-faint" />
                     <span className="min-w-0 flex-1 truncate"><span className="text-fg">{a.name}</span> <span className="text-caption text-faint">{[withSession && a.session_title, where(a)].filter(Boolean).join(" · ")}</span></span>
                     <span className={cn("rounded-xs px-1.5 text-micro", a.created ? "bg-accent-soft text-accent-ink" : "bg-sunken text-muted")}>{a.created ? "new" : "changed"}</span>

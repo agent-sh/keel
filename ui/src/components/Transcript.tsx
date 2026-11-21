@@ -113,9 +113,9 @@ function UserMessage({ e, s, vs }: { e: StoredEvent; s: Session; vs: StoredEvent
   if (editing) return <EditPrompt e={e} s={s} onDone={() => setEditing(false)} />;
   return (
     <div id={`e-${e.id}`} className="k-user-message group/user row-cv flex scroll-mt-6 flex-col items-end gap-1.5 rounded-lg animate-in" data-testid="user-message" data-event-id={e.id}>
-      {origin === "steer" && <span className="text-micro font-medium text-faint" data-testid="origin-steer">Steered into the turn</span>}
-      {e.data.edited_from === "steer" && <span className="text-micro font-medium text-faint" data-testid="origin-edited-steer">An edited steer, sent as a new turn</span>}
-      {origin === "queued" && <span className="text-micro font-medium text-faint" data-testid="origin-queued">From the queue</span>}
+      {origin === "steer" && <span className="k-label" data-testid="origin-steer">Steered into the turn</span>}
+      {e.data.edited_from === "steer" && <span className="k-label" data-testid="origin-edited-steer">An edited steer, sent as a new turn</span>}
+      {origin === "queued" && <span className="k-label" data-testid="origin-queued">From the queue</span>}
       {e.data.images?.length > 0 && <Images blocks={e.data.images} />}
       {text && (
         <div className="k-user-words relative max-w-[min(85%,40rem)] rounded-xl rounded-br-sm bg-accent-soft px-4 py-2.5 text-read leading-relaxed text-fg">

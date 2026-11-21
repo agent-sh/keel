@@ -15,7 +15,7 @@ import { SessionOrganize } from "./SessionOrganize.tsx";
 export function Section({ title, children, testid }: { title: string; children: React.ReactNode; testid?: string }) {
   return (
     <section className="rounded-lg border border-line bg-raised px-3 py-2" data-testid={testid}>
-      <h3 className="pb-1 text-caption font-medium uppercase tracking-wide text-faint">{title}</h3>
+      <h3 className="pb-1 k-label">{title}</h3>
       {children}
     </section>
   );

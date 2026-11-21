@@ -106,9 +106,9 @@ function Picker({ list, open, label, testid = "panel-menu" }: { list: Panel[]; o
               {shown.map(({ g, items }) => {
                 return (
                   <section key={g}>
-                    <h3 className="k-picker-group">{g}</h3>
+                    <h3 className="k-picker-group k-label">{g}</h3>
                     {items.map((p) => (
-                      <div key={p.id} className="k-picker-row" aria-current={open === p.id ? "true" : undefined}>
+                      <div key={p.id} className={open === p.id ? "k-picker-row k-picked" : "k-picker-row"} aria-current={open === p.id ? "true" : undefined}>
                         <button type="button" className="k-picker-pick" data-testid={`panel-pick-${p.id}`} onClick={() => pick(p.id)}>
                           {p.icon}<span>{p.label}</span>
                         </button>

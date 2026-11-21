@@ -61,7 +61,7 @@ export default function Plugins() {
               {p.stderr_tail && <pre className="k-issue">{p.stderr_tail}</pre>}
               {p.violations.count > 0 && <p className="k-issue" data-tone="quiet">{p.violations.count} protocol violations, the last: {p.violations.last}</p>}
               <div>
-                <div className="k-sub">Providers it adds</div>
+                <div className="k-sub k-label">Providers it adds</div>
                 {p.providers.map((x) => (
                   <div key={x.id} className="flex items-baseline gap-3 border-b border-line py-2 text-ui last:border-0">
                     <span className="font-medium">{x.label ?? x.id}</span>
@@ -72,7 +72,7 @@ export default function Plugins() {
                 {!p.providers.length && <p className="text-caption text-faint">None yet: it has not answered its handshake.</p>}
               </div>
               <div>
-                <div className="k-sub">Protocol check</div>
+                <div className="k-sub k-label">Protocol check</div>
                 <p className="text-caption text-muted">Runs it once more against a scratch vendor with fake keys, as <code className="font-mono">keel plugin check {p.id}</code> does.</p>
                 <PluginCheck id={p.id} />
               </div>

@@ -24,7 +24,7 @@ export function PeerMessage({ e }: { e: StoredEvent }) {
   const { from, body } = parse(String(e.data.text ?? ""));
   return (
     <div id={`e-${e.id}`} className="flex flex-col gap-1.5 animate-in" data-testid="peer-message" data-event-id={e.id}>
-      <div className="flex items-center gap-1.5 text-micro font-medium text-faint">
+      <div className="flex items-center gap-1.5 k-label">
         <MessageSquareShare className="size-3.5 text-accent" />
         From <span className="text-muted">{from}</span>
         <span className="font-normal" title={when(e.ts)}>· {ago(e.ts)}</span>

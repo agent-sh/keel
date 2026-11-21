@@ -107,7 +107,7 @@ export function MachineChip({ session }: { session: Session }) {
             </div>
             {dests.length > 0 && (
               <div className="p-1.5">
-                <div className="flex items-center px-2 pb-1.5 pt-1 text-micro font-medium text-faint">
+                <div className="flex items-center px-2 pb-1.5 pt-1 k-label">
                   Move it to
                   <Seg className="ml-auto" label="What travels" value={carry} onChange={setCarry} options={[{ value: "git", label: "with its git state" }, { value: "none", label: "place only" }]} />
                 </div>
@@ -125,7 +125,7 @@ export function MachineChip({ session }: { session: Session }) {
             )}
             {later.length > 0 && (
               <div className="border-t border-line p-1.5" data-testid="move-later">
-                <div className="px-2 pb-1 pt-1 text-micro font-medium text-faint">After it is back here</div>
+                <div className="px-2 pb-1 pt-1 k-label">After it is back here</div>
                 {later.map((m) => (
                   <div key={m.id} data-testid="move-unavailable" data-machine={m.id} data-offline={m.state === "offline" || undefined} aria-disabled="true" className="flex h-11 items-center gap-2.5 px-2.5 text-faint">
                     <Server className="size-4 shrink-0" />
@@ -218,7 +218,7 @@ export function MachinePicker() {
       <Popover.Portal>
         <Popover.Positioner sideOffset={6} align="start" className="z-50">
           <Popover.Popup className={cn(popupClass, "w-80")} data-testid="machine-popup">
-            <div className="px-2.5 pb-1 pt-2 text-micro font-medium text-faint">Where its tools run</div>
+            <div className="px-2.5 pb-1 pt-2 k-label">Where its tools run</div>
             {[
               { id: "", name: local?.name ?? "This machine", sub: "this machine", state: "ready" },
               ...usable.map((m) => ({ id: m.id, name: m.name, sub: m.workspace_root!, state: m.state })),
@@ -337,7 +337,7 @@ export function RemoteFolderPicker({ machine, value, onChange }: { machine: stri
               !err && <p className="k-empty px-3 py-4" data-testid="remote-reading">Reading the folders on {m?.name}.</p>
             ) : !browse ? (
               <div className="p-1">
-                <div className="flex items-center gap-1.5 px-2.5 pb-1 pt-2 text-micro font-medium text-faint"><History className="size-3" /> Recent on {m?.name}</div>
+                <div className="flex items-center gap-1.5 px-2.5 pb-1 pt-2 k-label"><History className="size-3" /> Recent on {m?.name}</div>
                 {recent.map((p) => (
                   <button key={p} type="button" onClick={() => pick(p)} className={cn("flex h-10 w-full items-center gap-2.5 rounded-md px-2.5 text-left hover:bg-hover", p === shown && "bg-hover")}>
                     <Folder className="size-4 shrink-0 text-faint" />

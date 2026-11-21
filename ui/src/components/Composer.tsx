@@ -584,7 +584,7 @@ function SessionComposer({
           data-testid={menu.kind === "slash" ? "slash-menu" : "mention-menu"}
           className="absolute inset-x-0 bottom-[calc(100%+8px)] z-30 max-h-72 overflow-y-auto rounded-lg border border-line bg-raised p-1 shadow-3 animate-pop"
         >
-          <div id={`${listId}-name`} className="px-2 pb-1 pt-1.5 text-micro font-medium text-faint">{menu.kind === "slash" ? "Commands" : `Files in ${workspace?.split("/").pop()}`}</div>
+          <div id={`${listId}-name`} className="px-2 pb-1 pt-1.5 k-label">{menu.kind === "slash" ? "Commands" : `Files in ${workspace?.split("/").pop()}`}</div>
           <div role="listbox" id={listId} aria-labelledby={`${listId}-name`}>
             {options.map((o, i) => (
               <div
