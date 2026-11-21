@@ -11,6 +11,8 @@ import { ago, cn, when } from "../lib/utils.ts";
 
 const tone = (s: Span["status"]) => ({ ok: "bg-ok", error: "bg-danger", running: "bg-accent", interrupted: "bg-line-strong" })[s];
 const btn = "flex h-7 items-center gap-1.5 rounded-md border border-line px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50";
+// The picked row of a list: lifted off the panel, with an ink bar at its edge. Read at a glance in both themes.
+const picked = "relative bg-raised hover:bg-raised before:absolute before:inset-y-1 before:left-0 before:w-0.5 before:rounded-full before:bg-accent";
 const label = (s: Span) => (s.kind === "turn" ? `${s.attrs.parent_session ? "Subagent turn" : "Turn"} on ${String(s.attrs.model ?? "").split(":").pop()}` : s.kind === "tool" ? s.attrs.tool : s.attrs.replay_of ? `Replay on ${s.attrs.route}` : s.attrs.model);
 
 export function TracesPanel({ session }: { session: Session }) {
@@ -19,6 +21,8 @@ export function TracesPanel({ session }: { session: Session }) {
   const [open, setOpen] = useState<string | null>(focus?.trace ?? null);
   // The span to pick in the open trace, when something asked for one (an error's own span).
   const [span, setSpan] = useState<string | null>(focus?.span ?? null);
+  // Counts the times a span was asked for: asking for the same one again picks it again.
+  const [asks, setAsks] = useState(0);
   const show = (trace: string, pick: string | null = null) => { setOpen(trace); setSpan(pick); };
   const ends = useStore((s) => (s.events[session.id] ?? []).filter((e) => e.kind === "turn_end" || e.kind === "error").length);
 
@@ -32,6 +36,7 @@ export function TracesPanel({ session }: { session: Session }) {
   useEffect(() => {
     if (!focus) return;
     show(focus.trace, focus.span);
+    setAsks((n) => n + 1);
     traceFocus.set(null);
     // A trace made since the list was read (a side question's request) is not on it yet.
     if (list) load();
@@ -55,7 +60,7 @@ export function TracesPanel({ session }: { session: Session }) {
             onClick={() => show(t.trace_id)}
             data-testid="trace-row"
             aria-current={open === t.trace_id}
-            className={cn("flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-ui hover:bg-hover", open === t.trace_id && "bg-sunken")}
+            className={cn("flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-ui hover:bg-hover", open === t.trace_id && picked)}
           >
             <span className={cn("size-2 shrink-0 rounded-full", tone(t.status))} />
             <span className="w-16 shrink-0 text-caption tabular-nums text-faint" title={when(t.start_ms)}>{ago(t.start_ms)}</span>
@@ -64,7 +69,7 @@ export function TracesPanel({ session }: { session: Session }) {
           </button>
         ))}
       </div>
-      {open && <Trace key={`${open} ${span ?? ""}`} id={open} span={span} onOpen={show} />}
+      {open && <Trace key={`${open} ${span ?? ""} ${asks}`} id={open} span={span} onOpen={show} />}
     </div>
   );
 }
@@ -90,18 +95,30 @@ function tree(spans: Span[]): { s: Span; depth: number }[] {
 function Trace({ id, span, onOpen }: { id: string; span: string | null; onOpen: (trace: string) => void }) {
   const [spans, setSpans] = useState<Span[] | null>(null);
   const [sel, setSel] = useState<string | null>(span);
+  // Spans are kept for a while: a trace opened from an old error may be gone.
+  const [gone, setGone] = useState(false);
   const asked = useRef<HTMLButtonElement>(null);
+  const detail = useRef<HTMLDivElement>(null);
   const load = useCallback(() => {
     api<{ spans: Span[] }>(`/api/debug/traces/${id}`).then((r) => {
       setSpans(r.spans);
       setSel((s) => (s && r.spans.some((x) => x.span_id === s) ? s : (r.spans.find((x) => x.status === "error" && x.kind !== "turn") ?? r.spans[0])?.span_id ?? null));
-    }).catch((e) => reportError(e, { at: "trace" }));
+    }).catch((e) => (e?.status === 404 ? setGone(true) : reportError(e, { at: "trace" })));
   }, [id]);
   useEffect(load, [load]);
-  // In a long trace the span that was asked for may sit below the fold.
+  // In a long trace the span that was asked for may sit below the fold, and
+  // its detail under every row: the row first, then the detail, which wins
+  // when the two do not fit together (the row stays marked above it).
   const loaded = !!spans;
-  useEffect(() => { if (loaded) asked.current?.scrollIntoView({ block: "nearest" }); }, [loaded]);
+  useEffect(() => {
+    if (!loaded || !asked.current) return;
+    asked.current.scrollIntoView({ block: "nearest" });
+    detail.current?.scrollIntoView({ block: "nearest" });
+  }, [loaded]);
+  if (gone) return <p className="px-4 py-10 text-center text-ui text-faint" data-testid="trace-gone">This trace is no longer kept.</p>;
   if (!spans) return null;
+  // A retried request: every request row then says which attempt it is.
+  const retried = spans.some((s) => s.kind === "request" && s.attrs.attempt > 1);
   const t0 = Math.min(...spans.map((s) => s.start_ms));
   const total = Math.max(1, Math.max(...spans.map((s) => (s.end_ms ?? Date.now()))) - t0);
   const pick = spans.find((s) => s.span_id === sel);
@@ -120,10 +137,13 @@ function Trace({ id, span, onOpen }: { id: string; span: string | null; onOpen: 
             data-status={s.status}
             data-kind={s.kind}
             data-depth={depth}
-            className={cn("grid grid-cols-[minmax(0,11rem)_1fr_4.5rem] items-center gap-2 rounded-sm px-2 py-1 text-left text-caption hover:bg-hover", sel === s.span_id && "bg-sunken")}
+            className={cn("grid grid-cols-[minmax(0,11rem)_1fr_4.5rem] items-center gap-2 rounded-sm px-2 py-1 text-left text-caption hover:bg-hover", sel === s.span_id && picked)}
           >
-            <span className={cn("truncate", depth ? "text-muted" : "font-medium", s.kind === "turn" && depth > 0 && "text-fg", s.status === "error" && "text-danger")} style={{ paddingLeft: `${depth * 0.75}rem` }}>{label(s)}</span>
-            <span className="relative h-2.5 rounded-xs bg-sunken">
+            <span className={cn("flex min-w-0 items-baseline gap-1.5", depth ? "text-muted" : "font-medium", s.kind === "turn" && depth > 0 && "text-fg", s.status === "error" && "text-danger")} style={{ paddingLeft: `${depth * 0.75}rem` }}>
+              <span className="truncate">{label(s)}</span>
+              {retried && s.kind === "request" && s.attrs.attempt && <span className="shrink-0 font-normal tabular-nums text-faint" data-testid="span-attempt">attempt {s.attrs.attempt}</span>}
+            </span>
+            <span className={cn("relative h-2.5 rounded-xs", sel === s.span_id ? "bg-panel" : "bg-sunken")}>
               <span
                 className={cn("absolute inset-y-0 rounded-xs", tone(s.status), s.kind === "turn" && "opacity-40")}
                 style={{ left: `${((s.start_ms - t0) / total) * 100}%`, width: `max(2px, ${(spanMs(s) / total) * 100}%)` }}
@@ -133,7 +153,7 @@ function Trace({ id, span, onOpen }: { id: string; span: string | null; onOpen: 
           </button>
         ))}
       </div>
-      {pick && <Detail s={pick} onReplayed={load} onOpen={onOpen} />}
+      <div ref={detail}>{pick && <Detail s={pick} onReplayed={load} onOpen={onOpen} />}</div>
     </div>
   );
 }

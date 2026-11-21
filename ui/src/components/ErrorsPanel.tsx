@@ -1,6 +1,6 @@
 import { Dialog } from "@base-ui/react/dialog";
 import { Activity, Check, CheckCheck, ClipboardCopy, CornerDownRight, RotateCcw, Wrench, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { copyBundle, fixThis, openTrace, type Span, traceOfTurn } from "../lib/observe.ts";
 import type { ErrorRecord } from "../../../src/core/types.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
@@ -24,6 +24,7 @@ function Row({ e }: { e: ErrorRecord }) {
   const session = useStore((s) => (e.session_id ? s.sessions[e.session_id] : undefined));
   // The span this failure names, once asked for: kept, or gone (null: spans are pruned after a while).
   const [got, setGot] = useState<{ id: string; span: Span | null }>();
+  const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [fixing, setFixing] = useState(false);
   const n = e.count ?? 1;
@@ -33,26 +34,29 @@ function Row({ e }: { e: ErrorRecord }) {
   const find = async () => {
     const id = e.span_id;
     if (!id || named !== undefined) return named ?? null;
-    const span = await api<{ span: Span }>(`/api/debug/spans/${id}`).then((r) => r.span).catch(() => null);
+    // Only a 404 says the span is gone. Any other failure is reported and asked again next time.
+    const span = await api<{ span: Span }>(`/api/debug/spans/${id}`).then((r) => r.span).catch((err) => { if (err?.status === 404) return null; throw err; });
     setGot({ id, span });
     return span;
   };
-  const expand = (open: boolean) => { if (open) void find(); };
+  // Asked when the row opens, and again when a new occurrence names another span while it is open.
+  useEffect(() => { if (open) find().catch((err) => reportError(err, { at: "error span" })); }, [open, e.span_id]);
   // The trace opens on the span that failed, in whatever trace holds it: a
   // request outside any turn (a side question) has a trace of its own. A
   // failure with no span, or whose span is gone, opens its turn's trace.
+  const toSpan = !!e.span_id && named !== null;
   const trace = async () => {
     const s = await find();
     if (s) openTrace(s.session_id, s.trace_id, s.span_id);
     else if (e.turn_event) openTrace(e.session_id!, traceOfTurn(e.turn_event));
   };
-  const open = () => {
+  const goTo = () => {
     if (e.turn_event) setUI({ focusEvent: e.turn_event });
     setUI({ errors: false });
     navigate({ name: "session", id: e.session_id! });
   };
   return (
-    <details className="group rounded-md px-3 py-2 hover:bg-hover" data-testid="error-row" data-read={unread ? undefined : "1"} onToggle={(ev) => expand((ev.currentTarget as HTMLDetailsElement).open)}>
+    <details className="group rounded-md px-3 py-2 hover:bg-hover" data-testid="error-row" data-read={unread ? undefined : "1"} onToggle={(ev) => setOpen((ev.currentTarget as HTMLDetailsElement).open)}>
       <summary className="flex cursor-default list-none items-baseline gap-2.5 text-ui">
         <span className="rounded-xs bg-danger-soft px-1.5 py-px text-micro font-medium text-danger">{e.source}</span>
         <span className={cn("min-w-0 flex-1 truncate", unread ? "font-medium text-fg" : "text-muted")}>{e.message}</span>
@@ -107,7 +111,7 @@ function Row({ e }: { e: ErrorRecord }) {
             <button
               type="button"
               className={tool}
-              title={e.span_id ? "Opens the trace at the request or tool call that failed" : "Opens the trace of the turn it failed in"}
+              title={toSpan ? "Opens the trace at the request or tool call that failed" : e.span_id ? "Opens the trace of the turn it failed in: the span that failed is no longer kept" : "Opens the trace of the turn it failed in"}
               onClick={() => trace().catch(reportError)}
               data-testid="error-trace"
             >
@@ -115,7 +119,7 @@ function Row({ e }: { e: ErrorRecord }) {
             </button>
           )}
           {e.session_id && (
-            <button type="button" onClick={open} className="flex h-7 max-w-80 items-center gap-1.5 rounded-md border border-line px-2 text-caption text-muted hover:bg-hover hover:text-fg" data-testid="error-session">
+            <button type="button" onClick={goTo} className="flex h-7 max-w-80 items-center gap-1.5 rounded-md border border-line px-2 text-caption text-muted hover:bg-hover hover:text-fg" data-testid="error-session">
               <CornerDownRight className="size-3.5 shrink-0" />
               <span className="truncate">{n > 1 ? "Last in " : ""}{session?.title || (n > 1 ? "its session" : "Open the session")}</span>
               {e.turn_event && <span className="shrink-0 text-faint">at its turn</span>}

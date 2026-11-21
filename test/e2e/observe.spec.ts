@@ -209,6 +209,7 @@ test("an error opens the exact span that failed", async ({ page, request }) => {
 
   let row = await openRow();
   await expect(row.getByTestId("error-wire")).toContainText("attempt 2");
+  await expect(row.getByTestId("error-trace")).toHaveAttribute("title", "Opens the trace at the request or tool call that failed");
   await row.getByTestId("error-trace").click();
   await openPanel(page, "traces");
   const view = page.getByTestId("trace-view");
@@ -217,11 +218,32 @@ test("an error opens the exact span that failed", async ({ page, request }) => {
   await expect(view.getByTestId("span-row")).toHaveCount(4);
   await expect(detail).toContainText(attempts[1].span_id);
   await expect(detail).not.toContainText(attempts[0].span_id);
+  await expect(detail).toBeInViewport();
+  // One row is picked, the third, and it says which attempt it is. It is lifted
+  // off the panel: no other row has its background.
   await expect(picked).toHaveCount(1);
-  expect(await view.getByTestId("span-row").evaluateAll((rows) => rows.findIndex((r) => r.getAttribute("aria-current") === "true"))).toBe(2);
+  await expect(picked).toContainText("attempt 2");
+  await expect(view.getByTestId("span-attempt")).toHaveText(["attempt 1", "attempt 2", "attempt 3"]);
+  await page.mouse.move(0, 0);
+  const grounds = await view.getByTestId("span-row").evaluateAll((rows) => rows.map((r) => getComputedStyle(r).backgroundColor));
+  expect(grounds.findIndex((g) => g !== grounds[0])).toBe(2);
+  expect(new Set(grounds).size).toBe(2);
+  // And it carries the ink bar at its edge.
+  expect(await picked.evaluate((r) => { const bar = getComputedStyle(r, "::before"); return [bar.content !== "none", bar.position, bar.backgroundColor !== "rgba(0, 0, 0, 0)"]; })).toEqual([true, "absolute", true]);
   await shoot(page, "observe-09-exact-attempt");
 
-  // The same failure in a side question: counted on the same row, in no turn.
+  // Another row is picked by hand; the error's Trace asked again picks its span again.
+  await view.getByTestId("span-row").nth(1).click();
+  await expect(detail).toContainText(attempts[0].span_id);
+  row = await openRow();
+  await row.getByTestId("error-trace").click();
+  await expect(detail).toContainText(attempts[1].span_id);
+  await expect(picked).toContainText("attempt 2");
+
+  // The same failure in a side question, while the row is open: counted on the
+  // same row, in no turn, and the row's wire line follows to the new span.
+  row = await openRow();
+  await expect(row.getByTestId("error-wire")).toBeVisible();
   expect((await request.post(`/api/sessions/${session.id}/side`, { data: { question: "What happened?" } })).status()).toBe(201);
   const aside = await overloaded();
   expect([aside.id, aside.count, aside.session_id, aside.turn_event]).toEqual([err.id, err.count + 2, session.id, undefined]);
@@ -232,13 +254,29 @@ test("an error opens the exact span that failed", async ({ page, request }) => {
   for (const part of ["In no turn: a request of its own", "## Trace of the request", `[span ${aside.span_id}]`]) expect(md).toContain(part);
   expect(md).not.toContain("## Trace of the turn");
 
-  row = await openRow();
   await expect(row.getByTestId("error-session")).not.toContainText("at its turn");
+  await expect(row.getByTestId("error-wire")).toBeVisible();
   await row.getByTestId("error-trace").click();
-  await expect(page.locator('[data-testid="trace-row"][aria-current="true"]')).toContainText("529 overloaded");
+  const current = page.locator('[data-testid="trace-row"][aria-current="true"]');
+  await expect(current).toHaveCount(1);
+  await expect(current).toContainText("529 overloaded");
   await expect(view.getByTestId("span-row")).toHaveCount(1);
   await expect(picked).toHaveCount(1);
+  await expect(picked).toContainText("attempt 2");
   await expect(detail).toContainText(aside.span_id);
   await expect(detail).toContainText("Attempt");
   await shoot(page, "observe-10-standalone-span");
+
+  // A trace that is no longer kept (spans are pruned after a while) says so,
+  // and is not reported as a failure of the page.
+  const client = async () => (await (await request.get("/api/errors")).json()).errors.filter((e: any) => e.source === "client").reduce((n: number, e: any) => n + (e.count ?? 1), 0);
+  const before = await client();
+  const turnTrace = turn.id.replace(/-/g, "");
+  await page.route(`**/api/debug/traces/${turnTrace}`, (r) => r.fulfill({ status: 404, json: { error: "no such trace" } }));
+  await page.getByTestId("trace-row").filter({ hasText: "Turn on stand-in" }).first().click();
+  await expect(page.getByTestId("trace-gone")).toHaveText("This trace is no longer kept.");
+  await expect(view).toHaveCount(0);
+  await shoot(page, "observe-11-trace-gone");
+  await page.unroute(`**/api/debug/traces/${turnTrace}`);
+  expect(await client()).toBe(before);
 });
