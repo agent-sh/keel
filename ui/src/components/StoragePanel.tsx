@@ -118,7 +118,9 @@ export function StoragePanel() {
   const [due, setDue] = useState<Due | null>(null);
   const [kept, setKept] = useState<string | null>(null);
   const [proposed, setProposed] = useState<Proposed | null>(null);
-  const loadDue = useCallback(() => api<{ due: Due; proposed?: Proposed }>("/api/storage/retention").then((x) => (setDue(x.due), setProposed(x.proposed ?? null))).catch(reportError), []);
+  // The retention as the daemon acts on it, and the values in settings.json it does not take for one.
+  const [acted, setActed] = useState<{ spill_days: number; usage_days: number; invalid: { name: string; value: unknown }[] } | null>(null);
+  const loadDue = useCallback(() => api<{ settings: { spill_days: number; usage_days: number }; invalid?: { name: string; value: unknown }[]; due: Due; proposed?: Proposed }>("/api/storage/retention").then((x) => (setDue(x.due), setProposed(x.proposed ?? null), setActed({ ...x.settings, invalid: x.invalid ?? [] }))).catch(reportError), []);
   useEffect(() => { loadDue(); }, [loadDue]);
 
   const load = useCallback((refresh = false) => {
@@ -258,11 +260,17 @@ export function StoragePanel() {
       {settings && (
         <Card>
           <SettingRow label="Keep spilled output" hint="Long tool output, command logs and fetched pages go this long after their session was last used. A pinned session and one that is working keep theirs. Empty is never.">
-            <DaysField label="Keep spilled output for days" testid="retention-spill" value={settings.retention.spill_days || null} onSave={(v) => patch({ retention: { spill_days: v ?? 0 } }).then(loadDue)} />
+            <DaysField label="Keep spilled output for days" testid="retention-spill" value={(acted ? acted.spill_days : settings.retention.spill_days) || null} onSave={(v) => patch({ retention: { spill_days: v ?? 0 } }).then(loadDue)} />
           </SettingRow>
           <SettingRow label="Keep usage records" hint="One record per model call and tool call: cost by day, latency, cache. The running month is always kept, and each session keeps its own totals. Empty is never.">
-            <DaysField label="Keep usage records for days" testid="retention-usage" value={settings.retention.usage_days || null} onSave={(v) => patch({ retention: { usage_days: v ?? 0 } }).then(loadDue)} />
+            <DaysField label="Keep usage records for days" testid="retention-usage" value={(acted ? acted.usage_days : settings.retention.usage_days) || null} onSave={(v) => patch({ retention: { usage_days: v ?? 0 } }).then(loadDue)} />
           </SettingRow>
+          {/* A value written into the file by hand that is not a number of days: read as never, and said. */}
+          {!!acted?.invalid.length && (
+            <div className="py-4 text-ui text-warn" data-testid="retention-invalid">
+              settings.json holds {acted.invalid.map((i) => `${i.name}: ${JSON.stringify(i.value)}`).join(" and ")}, which is not a whole number of days. It is read as never: nothing is removed for it until you set it here.
+            </div>
+          )}
           {/* Nothing set: nothing is ever removed. The page proposes a retention and says what it would list. */}
           {proposed && (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2 py-4">

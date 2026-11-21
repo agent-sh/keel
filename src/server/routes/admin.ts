@@ -28,7 +28,7 @@ import { restartNeedsEye, restartSummary, restartTurnLine } from "../../admin/li
 import * as activity from "../../automation/activity.ts";
 import { loadSettings, onSettings, patchSettings, resetSettings, settings, settingsUnreadable } from "../../admin/settings.ts";
 import { Storage } from "../../admin/storage.ts";
-import { PROPOSED, Retention } from "../../admin/retention.ts";
+import { PROPOSED, Retention, retentionOf } from "../../admin/retention.ts";
 import { configDir } from "../../providers/config.ts";
 import type { RouteModule } from "../app.ts";
 import { resources } from "./resources.ts";
@@ -182,10 +182,11 @@ export const adminRoutes: RouteModule = (deps) => {
     // settings allow.
     "/api/storage/retention": {
       GET: async () => {
-        const now = settings().retention;
+        // As it is acted on: a value in settings.json that is not a retention is never, and named.
+        const { invalid, ...now } = retentionOf();
         // Nothing set yet: nothing is removed, and the page shows what the proposed retention would list.
         const unset = !now.spill_days && !now.usage_days;
-        return json({ settings: now, due: await retention.due(), ...(unset ? { proposed: { ...PROPOSED, due: await retention.due(Date.now(), PROPOSED) } } : {}) });
+        return json({ settings: now, ...(invalid.length ? { invalid } : {}), due: await retention.due(), ...(unset ? { proposed: { ...PROPOSED, due: await retention.due(Date.now(), PROPOSED) } } : {}) });
       },
       POST: async (req: Request) => {
         const b = (await body(req)) ?? {};

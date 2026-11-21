@@ -6,6 +6,13 @@
 // first (`due`), shown in Settings, and removed by the owner's click or by
 // the daily cleanup, which names its time a day ahead.
 //
+// A setting is read through one guard wherever it is used (`retentionOf`):
+// only a whole number of days of at least 1 removes anything. Whatever else a
+// hand-edited settings.json holds (-1, 0.5, true, "30") is never, and is
+// reported once in Errors by the setting's name. The day's notice holds for
+// such an edit too: the values the notice was last given for are kept in the
+// state, and a start that reads others puts the next cleanup a day out.
+//
 // Spilled output goes by its session's last use, not by the file's age: a
 // session used yesterday keeps every file it has. A session with a running
 // turn or a live command, and a pinned one, keep theirs whatever their age.
@@ -40,6 +47,17 @@ registerSettings(
 // a month can be set beside the same month a year before.
 export const PROPOSED = { spill_days: 30, usage_days: 365 } as const;
 
+// A retention in days as it is acted on: a whole number of at least 1, else 0 (never).
+export const daysOf = (v: unknown): number => (Number.isInteger(v) && (v as number) >= 1 ? (v as number) : 0);
+const KEYS = ["spill_days", "usage_days"] as const;
+export type Days = { spill_days: number; usage_days: number };
+// The owner's retention as it is acted on, and which settings hold a value
+// that is neither a retention nor never (0, or the key left out).
+export function retentionOf(raw: Record<string, unknown> = settings().retention): Days & { invalid: { name: string; value: unknown }[] } {
+  const invalid = KEYS.filter((k) => raw[k] !== undefined && raw[k] !== null && raw[k] !== 0 && !daysOf(raw[k])).map((k) => ({ name: `retention.${k}`, value: raw[k] }));
+  return { spill_days: daysOf(raw.spill_days), usage_days: daysOf(raw.usage_days), invalid };
+}
+
 const TABLES = ["telemetry_calls", "telemetry_tools"] as const;
 // Rows removed per step: a step is a few milliseconds (each row also updates
 // the usage rollup), and the loop turns between two.
@@ -65,16 +83,42 @@ export class Retention {
 
   constructor(private store: Store, private engine: Pick<Engine, "isRunning">, private errors: Pick<ErrorTracker, "capture">) {
     store.db.run("CREATE TABLE IF NOT EXISTS admin_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-    // A changed setting is seen for a day before the cleanup acts on it.
-    let was = JSON.stringify(settings().retention);
-    this.stop = onSettings((s) => {
-      const now = JSON.stringify(s.retention);
-      if (now !== was) this.setNext(Date.now() + DAY);
-      was = now;
-    });
+    // A changed setting is seen for a day before the cleanup acts on it:
+    // one saved on the page, and one found in the file at a start.
+    this.noticed();
+    this.stop = onSettings(() => void this.noticed());
   }
   // Ends its watch of the settings (a hot reload makes a new one).
   readonly stop: () => void;
+
+  // The retention as it is acted on now. A value that is not one is reported, once a value.
+  private reported = new Set<string>();
+  private now(): Days {
+    const r = retentionOf();
+    for (const bad of r.invalid) {
+      const said = `${bad.name}=${JSON.stringify(bad.value)}`;
+      if (this.reported.has(said)) continue;
+      this.reported.add(said);
+      this.errors.capture("server", new Error(`settings.json: ${bad.name} is ${JSON.stringify(bad.value)}, which is not a whole number of days of at least 1 (0 is never). It is read as never: nothing is removed for it until it is set.`), { at: "retention settings", setting: bad.name });
+    }
+    return { spill_days: r.spill_days, usage_days: r.usage_days };
+  }
+
+  // The day's notice. The values it was last given for are kept in the state
+  // (`retention_noticed`; none yet: never, the default). When the retention
+  // read now is another one, however it was changed, the next cleanup is a day
+  // from now, and the page lists what it will remove until then.
+  private noticed(at = Date.now()): Days {
+    const cur = this.now();
+    const r = this.store.db.query<{ value: string }, []>("SELECT value FROM admin_meta WHERE key = 'retention_noticed'").get();
+    let was: Days = { spill_days: 0, usage_days: 0 };
+    try { if (r) was = retentionOf(JSON.parse(r.value)); } catch {} // not ours: as if none
+    if (was.spill_days !== cur.spill_days || was.usage_days !== cur.usage_days) {
+      this.setNext(at + DAY);
+      this.store.db.run("INSERT INTO admin_meta (key, value) VALUES ('retention_noticed', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [JSON.stringify(cur)]);
+    }
+    return cur;
+  }
 
   private get spillRoot() { return join(this.store.stateDir, "spill"); }
 
@@ -135,8 +179,8 @@ export class Retention {
   }
 
   // What is past the settings now, or past `as` (what the page proposes).
-  async due(now = Date.now(), as?: { spill_days: number; usage_days: number }): Promise<Due> {
-    const s = as ?? settings().retention;
+  async due(now = Date.now(), as?: Days): Promise<Due> {
+    const s = as ? { spill_days: daysOf(as.spill_days), usage_days: daysOf(as.usage_days) } : this.now();
     const spillCut = s.spill_days ? now - s.spill_days * DAY : null;
     const usageCut = s.usage_days ? Math.min(now - s.usage_days * DAY, monthStart(now)) : null;
     const spill = spillCut === null ? undefined : await this.spillBefore(spillCut);
@@ -160,7 +204,7 @@ export class Retention {
   }
 
   private async removeNow(cut: Cut, now: number): Promise<Removed> {
-    const s = settings().retention;
+    const s = this.now();
     const within = (asked: number | null | undefined, latest: number | null) => (typeof asked === "number" && latest !== null ? Math.min(asked, latest) : null);
     const spillCut = within(cut.spill_before_ms, s.spill_days ? now - s.spill_days * DAY : null);
     const usageCut = within(cut.usage_before_ms, s.usage_days ? Math.min(now - s.usage_days * DAY, monthStart(now)) : null);
@@ -209,9 +253,9 @@ export class Retention {
 
   // The daily cleanup: once its time has come, what is past the settings goes, and the next one is a day later.
   async tick(now = Date.now()): Promise<Removed | undefined> {
+    const s = this.noticed(now); // a retention not seen for a day yet: its day starts here
     if (now < this.next()) return;
     this.setNext(now + DAY);
-    const s = settings().retention;
     if (!s.spill_days && !s.usage_days) return;
     return this.remove({ spill_before_ms: s.spill_days ? now - s.spill_days * DAY : null, usage_before_ms: s.usage_days ? now - s.usage_days * DAY : null }, now);
   }

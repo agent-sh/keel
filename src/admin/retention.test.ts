@@ -10,7 +10,7 @@ import { Store } from "../core/store.ts";
 import { ensureRollup } from "../server/routes/usage.ts";
 import { readFile } from "../tools/files.ts";
 import { removedNote } from "../tools/spill.ts";
-import { PROPOSED, Retention } from "./retention.ts";
+import { PROPOSED, Retention, retentionOf } from "./retention.ts";
 import { loadSettings, patchSettings, settings } from "./settings.ts";
 import { Telemetry } from "./telemetry.ts";
 
@@ -114,6 +114,124 @@ test("nothing goes until a retention is set; then what a listing named, by its s
     expect(patchSettings({ retention: { spill_days: -1 } }).ok).toBe(false);
     ret.stop();
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// settings.json is the owner's file: a value written into it by hand is read
+// at the next start, with no save to check it and no settings event. One
+// that is not a whole number of days must remove nothing, and a valid one
+// gets the same day's notice as one saved on the page.
+test("a retention edited into settings.json by hand: a value that is not days removes nothing and is named once; a valid one waits its day", async () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-retention-"));
+  try {
+    setSystemTime(new Date(2026, 5, 20, 12));
+    const now = Date.now();
+    // A state folder as a daemon finds it at a start: the file as it was edited, old output, old records, and a cleanup time long past.
+    const world = (name: string, retention: unknown) => {
+      const dir = join(root, name);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "settings.json"), JSON.stringify({ retention }));
+      const store = new Store(dir);
+      const errs: string[] = [];
+      loadSettings(store.stateDir, (e) => errs.push((e as Error).message));
+      new Telemetry(store, new Bus());
+      ensureRollup(store.db);
+      const session = (usedDaysAgo: number) => {
+        const s = store.createSession({ model: "p:m", workspace: root, title: `idle ${usedDaysAgo} days` });
+        store.db.run("UPDATE sessions SET updated = ? WHERE id = ?", [now - usedDaysAgo * DAY, s.id]);
+        const p = join(dir, "spill", s.id, "1-bash.txt");
+        mkdirSync(join(p, ".."), { recursive: true });
+        writeFileSync(p, "x".repeat(1000));
+        utimesSync(p, (now - usedDaysAgo * DAY) / 1000, (now - usedDaysAgo * DAY) / 1000);
+        return { id: s.id, file: p };
+      };
+      const minute = store.createSession({ model: "p:m", workspace: root, title: "idle a minute" });
+      const fresh = join(dir, "spill", minute.id, "1-bash.txt");
+      mkdirSync(join(fresh, ".."), { recursive: true });
+      writeFileSync(fresh, "new");
+      utimesSync(fresh, (now - 60_000) / 1000, (now - 60_000) / 1000);
+      store.db.run("UPDATE sessions SET updated = ? WHERE id = ?", [now - 60_000, minute.id]);
+      const three = session(3), hundred = session(100);
+      const call = store.db.query("INSERT INTO telemetry_calls (session_id, ts, model, outcome, cost, input, output) VALUES (?, ?, 'p:m', 'ok', 0.5, 10, 1)");
+      const tool = store.db.query("INSERT INTO telemetry_tools (session_id, ts, tool, ms, is_error) VALUES (?, ?, 'Bash', 5, 0)");
+      store.db.transaction(() => { for (let i = 0; i < 500; i++) { call.run(three.id, now - Math.floor((i / 500) * 200 * DAY)); tool.run(three.id, now - Math.floor((i / 500) * 200 * DAY)); } })();
+      // The clock of a daemon that was down past its cleanup time.
+      store.db.run("CREATE TABLE IF NOT EXISTS admin_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+      store.db.run("INSERT INTO admin_meta (key, value) VALUES ('retention_next_ms', ?)", [String(now - DAY)]);
+      const ret = new Retention(store, { isRunning: () => false } as any, { capture: (_s: string, e: unknown) => (errs.push((e as Error).message), {} as any) });
+      const rows = () => [store.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM telemetry_calls").get()!.n, store.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM telemetry_tools").get()!.n];
+      return { store, ret, errs, rows, files: [fresh, three.file, hundred.file], ids: [minute.id, three.id, hundred.id] };
+    };
+
+    // Not a whole number of days of at least 1: never. Nothing is listed, nothing goes at the start's cleanup, at
+    // a later one, or when a removal is posted for everything; and the setting is named in Errors once.
+    for (const [label, val, named] of [["minus-one", -1, "-1"], ["half", 0.5, "0.5"], ["true", true, "true"], ["string", "30", "\"30\""], ["list", [30], "[30]"]] as const) {
+      const w = world(label, { spill_days: val, usage_days: val });
+      expect(retentionOf()).toMatchObject({ spill_days: 0, usage_days: 0, invalid: [{ name: "retention.spill_days", value: val }, { name: "retention.usage_days", value: val }] });
+      expect(await w.ret.tick(now)).toBeUndefined();
+      expect(await w.ret.tick(now + 40 * DAY)).toBeUndefined();
+      expect(await w.ret.due(now)).toMatchObject({ spill: { before_ms: null, files: 0, session_ids: [] }, usage: { before_ms: null, calls: 0, tools: 0 } });
+      expect(await w.ret.remove({ spill_before_ms: now, usage_before_ms: now, sessions: w.ids }, now)).toEqual({ spill_files: 0, spill_bytes: 0, usage_calls: 0, usage_tools: 0 });
+      expect([w.files.map((f) => existsSync(f)), w.rows()]).toEqual([[true, true, true], [500, 500]]);
+      expect(w.errs).toEqual([
+        `settings.json: retention.spill_days is ${named}, which is not a whole number of days of at least 1 (0 is never). It is read as never: nothing is removed for it until it is set.`,
+        `settings.json: retention.usage_days is ${named}, which is not a whole number of days of at least 1 (0 is never). It is read as never: nothing is removed for it until it is set.`,
+      ]);
+      w.ret.stop();
+      w.store.db.close();
+    }
+    // Never, written three ways: nothing goes and nothing is reported.
+    for (const [label, val] of [["null", null], ["zero", 0], ["absent", undefined]] as const) {
+      const w = world(label, val === undefined ? {} : { spill_days: val, usage_days: val });
+      expect(retentionOf().invalid).toEqual([]);
+      expect(await w.ret.tick(now)).toBeUndefined();
+      expect([w.files.map((f) => existsSync(f)), w.rows(), w.errs]).toEqual([[true, true, true], [500, 500], []]);
+      w.ret.stop();
+      w.store.db.close();
+    }
+    // One setting valid, one not: the valid one is acted on, the other is never.
+    {
+      const w = world("mixed", { spill_days: 30, usage_days: -1 });
+      expect(retentionOf()).toMatchObject({ spill_days: 30, usage_days: 0, invalid: [{ name: "retention.usage_days", value: -1 }] });
+      expect((await w.ret.due(now)).usage).toMatchObject({ before_ms: null, calls: 0 });
+      w.ret.stop();
+      w.store.db.close();
+    }
+
+    // A valid retention written into the file while the daemon was down, its cleanup time long past: the
+    // start's cleanup removes nothing, the next one is a day out, and the page lists what it will remove.
+    const w = world("valid", { spill_days: 30, usage_days: 90 });
+    expect(w.ret.next()).toBe(now + DAY);
+    expect(await w.ret.tick(now)).toBeUndefined();
+    expect([w.files.map((f) => existsSync(f)), w.rows(), w.errs]).toEqual([[true, true, true], [500, 500], []]);
+    const due = await w.ret.due(now);
+    expect(due).toMatchObject({ next_ms: now + DAY, spill: { files: 1, sessions: 1, session_ids: [w.ids[2]!] }, usage: { before_ms: now - 90 * DAY } });
+    expect(due.usage.calls).toBeGreaterThan(200);
+    // A restart within that day does not start the day again, and does not act either.
+    w.ret.stop();
+    const again = new Retention(w.store, { isRunning: () => false } as any, { capture: () => ({}) as any });
+    expect(again.next()).toBe(now + DAY);
+    expect(await again.tick(now + DAY - 1)).toBeUndefined();
+    // A day later: what the page lists then (the same file, and the records a day older), and nothing of a session used since.
+    const then = await again.due(now + DAY);
+    expect(then.usage.calls).toBeGreaterThanOrEqual(due.usage.calls);
+    expect(await again.tick(now + DAY)).toEqual({ spill_files: 1, spill_bytes: 1000, usage_calls: then.usage.calls, usage_tools: then.usage.tools });
+    expect(w.files.map((f) => existsSync(f))).toEqual([true, true, false]);
+    // Edited again while it was down (shorter): a day's notice once more.
+    again.stop();
+    writeFileSync(join(w.store.stateDir, "settings.json"), JSON.stringify({ retention: { spill_days: 1, usage_days: 90 } }));
+    loadSettings(w.store.stateDir, () => {});
+    setSystemTime(new Date(now + 5 * DAY));
+    const third = new Retention(w.store, { isRunning: () => false } as any, { capture: () => ({}) as any });
+    expect(third.next()).toBe(now + 6 * DAY);
+    expect(await third.tick()).toBeUndefined();
+    expect(existsSync(w.files[1]!)).toBe(true);
+    expect((await third.due()).spill).toMatchObject({ files: 2, sessions: 2 });
+    third.stop();
+    w.store.db.close();
+  } finally {
+    loadSettings(join(root, "none"), () => {});
     rmSync(root, { recursive: true, force: true });
   }
 });
