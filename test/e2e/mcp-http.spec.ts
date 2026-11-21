@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import type { APIRequestContext } from "@playwright/test";
+import type { APIRequestContext } from "./isolate.ts";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
