@@ -2,8 +2,8 @@
 // session's provider and family that holds the text, never a dearer one.
 import { expect, test } from "bun:test";
 import type { ModelInfo } from "../providers/types.ts";
-import { checkAnswer, checkedNote, chunkChars, chunkMaterial, materialCap, NOTHING, partRef, pickReader, READ_CHUNK_CHARS, READER_OUTPUT, readerChoices, READERS_AT_ONCE } from "./reader.ts";
-import { coverageNote, readBudget, readMaterial, type ReaderHost } from "./readers.ts";
+import { checkAnswer, checkedNote, chunkChars, chunkMaterial, materialCap, NOTHING, partBlock, partRef, pickReader, READ_CHUNK_CHARS, READER_OUTPUT, readerChoices, READERS_AT_ONCE } from "./reader.ts";
+import { coverageNote, readBudget, readMaterial, readSource, type ReaderHost } from "./readers.ts";
 
 const m = (id: string, input: number | undefined, o: Partial<ModelInfo> = {}): ModelInfo => ({
   id: `p:${id}`, provider: "p", model: id, name: id, family: "claude", context: 200_000, output: 8_000, efforts: [],
@@ -127,10 +127,10 @@ test("a failed reader hands its part to the next choice; the findings are compil
 // reader does with a compile request.
 const wide = m("wide", 0.1, { context: 60_000, output: 8_000 });
 const listed = (model: ModelInfo, prompt: string) => Math.ceil(prompt.length / 2.5) + Math.min(model.output, READER_OUTPUT) <= model.context;
-function fanIn(compile: "merge" | "fail") {
+function fanIn(compile: "merge" | "fail", atOnce = "4") {
   const asked: { model: ModelInfo; prompt: string; compile: boolean }[] = [];
   const h: ReaderHost = {
-    models: async () => [big, wide], current: async () => big, capture: () => {}, env: { KEEL_READER_MODEL: "p:wide", KEEL_READERS_AT_ONCE: "4" },
+    models: async () => [big, wide], current: async () => big, capture: () => {}, env: { KEEL_READER_MODEL: "p:wide", KEEL_READERS_AT_ONCE: atOnce },
     ask: async (model, prompt) => {
       const isCompile = prompt.startsWith("Readers each");
       asked.push({ model, prompt, compile: isCompile });
@@ -163,13 +163,14 @@ test("findings no reader could compile come back as a bounded preview, every par
   expect(o.compiled).toBe(false);
   const all = 12 * (`"EVIDENCE-1 is here" (f1.log:7)\n`.length + 25 * 800);
   expect(o.text.length).toBeLessThan(all / 4);
-  expect(o.text.length).toBeLessThanOrEqual(34_000);
+  expect(o.text.length).toBeLessThanOrEqual(30_000);
   for (let k = 1; k <= 12; k++) expect(o.text).toContain(`"EVIDENCE-${k} is here" (f${k}.log:7)`);
   expect(o.uncompiled).toMatchObject({ whole: 0, cut: 12, left: 0 });
   expect(o.uncompiled!.findings.length).toBeGreaterThan(all);
   const note = coverageNote(o, 12, undefined, "/state/spill/readers/findings.md");
   expect(note).toContain("could not be compiled");
-  expect(note).toContain("the start of 12");
+  expect(note).toContain("the start of the findings of 12 parts, in part order");
+  expect(note).toContain("Keel checked the preview against the files");
   expect(note).toContain("/state/spill/readers/findings.md");
 });
 
@@ -308,4 +309,63 @@ test("the budget a job gathers to is the cap of the reader that reads it, not th
   expect(readerChoices([big, own, cheap], big, 50_000, h.env).map((x) => x.id)).toEqual(["p:own", "p:cheap", "p:big"]);
   expect(await readBudget(h)).toBe(materialCap(big, own));
   expect(await readBudget(h)).toBe(200_000 * 5 * 2.5);
+});
+
+test("a page whose findings no reader could compile comes back with every part's findings, not a silent preview", async () => {
+  const { h } = fanIn("fail");
+  const page = Array.from({ length: 5 }, () => lines(3_500)).join("\n");
+  const a = await readSource(h, "https://docs.example/page", page, "where is the evidence?", new AbortController().signal);
+  expect(a.compiled).toBe(false);
+  const parts = [...a.text.matchAll(/^Findings of part (\d+) /gm)].length;
+  expect(parts).toBeGreaterThan(3);
+  // Each reader reported about 20,000 characters: all of it is there for the caller to spill.
+  expect(a.text.length).toBeGreaterThan(parts * 20_000);
+  expect(a.text).not.toContain("characters:\n");
+});
+
+test("findings one request to the reader holds are compiled in one request, though they are more than one part", async () => {
+  const roomy = m("roomy", 5, { context: 400_000 });
+  const compiles: number[] = [];
+  const h: ReaderHost = {
+    models: async () => [roomy], current: async () => roomy, capture: () => {},
+    ask: async (_m, prompt) => {
+      const usage = { input: 1000, output: 20, cache_read: 0, cache_write: 0 };
+      if (!prompt.startsWith("Readers each")) return { text: `"EVIDENCE-${/part (\d+) of/.exec(prompt)![1]} is here"\n${"More of the same finding. ".repeat(575)}`, usage };
+      compiles.push(prompt.length);
+      return { text: "compiled answer", usage };
+    },
+  };
+  const o = await readMaterial(h, Array.from({ length: 8 }, (_, i) => ({ source: `f${i + 1}.log`, text: lines(3_500) })), "where is the evidence?", new AbortController().signal);
+  expect(o.parts.length).toBe(8);
+  expect(o.compiled).toBe(true);
+  // About 115,000 characters of findings: more than one part, far under the reader's window.
+  expect(compiles.length).toBe(1);
+  expect(compiles[0]).toBeGreaterThan(READ_CHUNK_CHARS);
+  expect(o.text).toBe("compiled answer");
+});
+
+test("a part is sized with the wrapper a reader gets around each file, so a reader bound by its window is sent its own parts", async () => {
+  // Many small files with long paths: the wrapper is most of what is sent.
+  const files = Array.from({ length: 1_150 }, (_, i) => ({ source: `packages/some-long-package-name/src/components/widgets/file-number-${String(i).padStart(4, "0")}.ts`, text: `export const value${i} = ${i};\n` }));
+  for (const c of chunkMaterial(files, 53_000)) {
+    expect(c.chars).toBeLessThanOrEqual(53_000);
+    expect(c.parts.map(partBlock).join("\n").length).toBeLessThanOrEqual(c.chars);
+  }
+  const narrow = m("narrow", 5, { context: 32_000 });
+  let sent = 0;
+  const o = await readMaterial({
+    models: async () => [narrow], current: async () => narrow, capture: () => {},
+    ask: async () => { sent++; return { text: NOTHING, usage: { input: 1000, output: 20, cache_read: 0, cache_write: 0 } }; },
+  }, files.slice(0, 600), "which file sets value 7?", new AbortController().signal);
+  expect(o.unread).toEqual([]);
+  expect(sent).toBe(o.parts.length);
+  expect(o.parts.length).toBeGreaterThan(1);
+});
+
+test("once a group of findings fails to merge, the groups after it are not sent", async () => {
+  const { h, asked, items } = fanIn("fail", "1");
+  const o = await readMaterial(h, items, "where is the evidence?", new AbortController().signal);
+  expect(o.compiled).toBe(false);
+  // The first group, by each of the two choices; not the two groups after it.
+  expect(asked.filter((a) => a.compile).map((a) => a.model.id)).toEqual(["p:wide", "p:big"]);
 });

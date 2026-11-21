@@ -13,7 +13,7 @@ import { bytesPerToken } from "./compact.ts";
 import { registerSettings, settings } from "../admin/settings.ts";
 import { OUTPUT_CAP } from "../tools/spill.ts";
 import {
-  checkAnswer, checkedNote, chunkChars, chunkMaterial, compilePrompt, type Checked, type Finding, findingsPreview, findingsSize, groupFindings, holds,
+  checkAnswer, checkedNote, chunkChars, chunkMaterial, compilePrompt, type Checked, type Finding, findingsPreview, fitsOne, groupFindings, holds,
   materialCap, NOTHING, partPrompt, partRef, READ_CHUNK_CHARS, readersAtOnce, readerChoices, readRate, type Chunk, type Material,
 } from "./reader.ts";
 
@@ -101,7 +101,7 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
     room -= m.text.length;
   }
   // What one request holds besides the question: a part, or a group of findings.
-  const perRequest = Math.max(4_000, chunkChars(first) - question.length);
+  const perRequest = chunkChars(first, question.length);
   const chunks = chunkMaterial(kept, perRequest);
   const parts: PartState[] = chunks.map((c, i) => ({ k: i + 1, covers: c.parts.map(partRef).join(", "), chars: c.chars, state: "waiting" }));
   let usage = emptyUsage();
@@ -117,9 +117,11 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
   // One request, through the choices in order; the failure of each is captured once.
   const ask = async (prompt: string, what: Record<string, unknown>, onModel?: (m: ModelInfo) => void): Promise<{ text: string; model: ModelInfo; input: number } | { error: string }> => {
     let last = "no reader model";
+    let sent = false;
     for (const m of choices) {
       if (signal.aborted) throw Object.assign(new Error("interrupted"), { name: "AbortError" });
       if (!holds(m, prompt)) { last = `${m.name}: the request is over its window (${m.context} tokens)`; continue; }
+      sent = true;
       onModel?.(m);
       try {
         const r = await host.ask(m, prompt, signal);
@@ -135,6 +137,8 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
         host.capture(e, { at: "reader", model: m.id, ...what });
       }
     }
+    // No choice was asked: nothing above captured it.
+    if (!sent) host.capture(new Error(last), { at: "reader", ...what });
     return { error: last };
   };
 
@@ -167,24 +171,36 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
   // In part order, whichever failed first, and before the material past the cap, which follows every part.
   unread.unshift(...parts.filter((p) => p.state === "unread").map((p) => `${p.covers} (every reader failed; last: ${p.error})`));
 
-  // The findings compiled into one answer. One request when it holds them all
-  // (as much as one part: what the readers' windows were sized for); else
-  // neighbours are merged group by group, stage by stage, until one request
-  // holds what is left. Every stage has fewer findings than the one before.
+  // The findings compiled into one answer.
   const compile = async (): Promise<{ text: string } | { error: string }> => {
     const none = parts.filter((p) => p.state === "nothing").map((p) => p.covers);
+    // The request that writes the answer. The parts that held nothing are
+    // named while the request holds the names, else counted.
+    const answer = (items: Finding[]) => {
+      const named = compilePrompt(question, items, none);
+      return fitsOne(first, named) ? named : compilePrompt(question, items, [`${none.length} other parts`]);
+    };
+    // One request while the reader's window holds every finding, below its first price tier.
+    let error: string | undefined;
+    const one = answer(found);
+    if (fitsOne(first, one)) {
+      const r = await ask(one, { part: "compile" });
+      if (!("error" in r)) return r;
+      error = r.error;
+    }
+    // It does not, or that request failed: neighbours are merged group by
+    // group, stage by stage, until one request holds what is left. Every stage
+    // has fewer findings than the one before.
     let items: Finding[] = found;
     for (let stage = 1; ; stage++) {
       const groups = groupFindings(items, perRequest);
-      if (groups.length === 1) {
-        // The parts that held nothing are named while the names fit, else counted.
-        const names = none.join(", ").length <= perRequest - findingsSize(items) ? none : [`${none.length} other parts`];
-        return ask(compilePrompt(question, items, names), { part: "compile" });
-      }
-      if (groups.length === items.length) return { error: `the findings are too long to merge in one request to ${first.name}` };
+      if (groups.length === 1 && stage > 1) return ask(answer(items), { part: "compile" });
+      if (groups.length === 1 || groups.length === items.length) return { error: error ?? `the findings are too long to merge in one request to ${first.name}` };
       const merged: Finding[] = new Array(groups.length);
       let failed: string | undefined;
       await sideBySide(groups.length, async (i) => {
+        // One group failed: the rest are not sent.
+        if (failed) return;
         const g = groups[i]!;
         if (g.length === 1) { merged[i] = g[0]!; return; }
         const r = await ask(compilePrompt(question, g, [], { k: i + 1, n: groups.length }), { part: `compile stage ${stage}, group ${i + 1}/${groups.length}` });
@@ -225,6 +241,17 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
   };
 }
 
+// One source read for a request (a fetched page): the readers' answer, or,
+// when no reader could compile the findings of its parts, every part's
+// findings as they are (`compiled` false), for the caller to spill. Throws
+// when no reader read it or a part of it went unread (each failure is
+// captured once).
+export async function readSource(host: ReaderHost, source: string, text: string, prompt: string, signal: AbortSignal): Promise<{ text: string; model: string; usage: Usage; compiled: boolean }> {
+  const o = await readMaterial(host, [{ source, text }], prompt, signal);
+  if (!o.text || o.unread.length) throw new Error(`no reader read ${source}: ${o.unread.join("; ") || "no answer"}`);
+  return { text: o.uncompiled?.findings ?? o.text, model: o.models.join(" and "), usage: o.usage, compiled: !o.uncompiled };
+}
+
 // The line the working model reads under the answer: who read what, what went
 // unread, where the material is; and, when the findings were not compiled,
 // what of them the text above shows and where all of them are (`findings`).
@@ -237,12 +264,13 @@ export function coverageNote(o: ReadOutcome, sources: number, saved?: string, fi
     `${saved ? ` Fetched pages are saved under ${saved}.` : ""}]`];
   if (o.uncompiled) {
     const u = o.uncompiled;
-    const shown = [u.whole ? `the findings of ${u.whole} part${u.whole === 1 ? "" : "s"} whole` : "", u.cut ? `the start of ${u.cut}` : ""].filter(Boolean).join(" and ");
+    const shown = [u.whole ? `the findings of ${u.whole} part${u.whole === 1 ? "" : "s"} whole` : "",
+      u.cut ? `the start of the findings of ${u.cut} ${u.whole ? "more" : `part${u.cut === 1 ? "" : "s"}`}` : ""].filter(Boolean).join(" and ");
     lines.push(`[The readers' findings could not be compiled into one answer (${u.error}). The text above is a preview, not an answer: ${shown}, in part order` +
       `${u.left ? `; the findings of the last ${u.left} part${u.left === 1 ? " are" : "s are"} not in it` : ""}.` +
       `${findings ? ` Every part's findings are saved whole, in part order, to ${findings}: Read or search it before relying on what the preview leaves out.` : ""}]`);
   }
-  const checked = o.checked ? checkedNote(o.checked) : "";
+  const checked = o.checked ? checkedNote(o.checked, o.uncompiled ? "preview" : "answer") : "";
   if (checked) lines.push(checked);
   if (o.unread.length) lines.push(`[Not read, so not covered by this answer:\n- ${o.unread.join("\n- ")}]`);
   return lines.join("\n");

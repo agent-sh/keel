@@ -205,7 +205,9 @@ export async function fetchFor(url: string, prompt: string, ctx: Pick<ToolContex
   await Bun.write(path, r.text);
   try {
     const a = await ctx.read(url, r.text, ask);
-    return { text: `${a.text}\n\n[${a.model} read the page (${r.text.length} chars) for this request. The whole page is saved to ${path}; Read or Grep it when this does not answer.]` };
+    // Findings no reader could compile come back as they are, spilled when long.
+    const how = a.compiled === false ? " in parts; their findings could not be compiled into one answer and follow as they are" : "";
+    return { text: `${await spill(a.text, ctx.spillDir, "webfetch-findings")}\n\n[${a.model} read the page (${r.text.length} chars) for this request${how}. The whole page is saved to ${path}; Read or Grep it when this does not answer.]` };
   } catch (e) {
     if (ctx.signal.aborted) throw e;
     return { text: `[No reader could read the page for this request (${String((e as Error).message ?? e).slice(0, 300)}); the page follows as it is.]\n\n${await spill(r.text, ctx.spillDir, "webfetch")}` };

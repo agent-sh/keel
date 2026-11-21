@@ -22,7 +22,7 @@ import { isDeferError, loadsNatively, refuseDefer, withCatalog } from "../tools/
 import { allHooks, type ExternalTurn, type ToolAuthorization, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, type Material } from "./reader.ts";
-import { readBudget, readMaterial, type ReaderHost, type ReadOutcome } from "./readers.ts";
+import { readBudget, readMaterial, readSource, type ReaderHost, type ReadOutcome } from "./readers.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
 import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, utf8Bytes, IDLE_MARGIN_MS, idleMinTokens, checkpointData, lastWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
 import { effectiveEffort, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
@@ -1386,10 +1386,8 @@ export class Engine {
   // Long content read by the session's reader models (src/engine/readers.ts)
   // with the working model's request; the answer goes back as the tool's result.
   // Throws when no reader could read it (each failure is captured once).
-  async read(id: string, source: string, text: string, prompt: string, signal: AbortSignal): Promise<{ text: string; model: string; usage: Usage }> {
-    const o = await this.readMaterial(id, [{ source, text }], prompt, signal);
-    if (!o.text || o.unread.length) throw new Error(`no reader read ${source}: ${o.unread.join("; ") || "no answer"}`);
-    return { text: o.text, model: o.models.join(" and "), usage: o.usage };
+  async read(id: string, source: string, text: string, prompt: string, signal: AbortSignal): Promise<{ text: string; model: string; usage: Usage; compiled: boolean }> {
+    return readSource(this.readerHost(id), source, text, prompt, signal);
   }
 
   // One reading job for the session: no conversation and no cache go with it,

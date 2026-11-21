@@ -90,13 +90,20 @@ export const pickReader = (...a: Parameters<typeof readerChoices>): ModelInfo =>
 export const holds = (m: ModelInfo, prompt: string): boolean =>
   Math.ceil(prompt.length / bytesPerToken(m.id)) + Math.min(m.output || READER_OUTPUT, READER_OUTPUT) <= m.context;
 
+const firstTier = (m: ModelInfo) => m.price?.tiers?.map((t) => t.above).sort((a, b) => a - b)[0] ?? Infinity;
+
+// Whether one request to `m` holds `prompt` in its window and below its first
+// price tier.
+export const fitsOne = (m: ModelInfo, prompt: string): boolean => holds(m, prompt) && Math.ceil(prompt.length / bytesPerToken(m.id)) <= firstTier(m);
+
 // Characters of material one request to `reader` takes: its window less the
 // prompt and the answer, below its first price tier (a prompt above it is
-// billed whole at the dearer rate), and at most READ_CHUNK_CHARS.
-export function chunkChars(reader: ModelInfo): number {
-  const tier = reader.price?.tiers?.map((t) => t.above).sort((a, b) => a - b)[0] ?? Infinity;
-  const tokens = Math.min(reader.context - PROMPT_TOKENS - Math.min(reader.output || READER_OUTPUT, READER_OUTPUT), tier - PROMPT_TOKENS);
-  return Math.max(4_000, Math.min(READ_CHUNK_CHARS, Math.floor(tokens * bytesPerToken(reader.id))));
+// billed whole at the dearer rate), and at most READ_CHUNK_CHARS. `extra`
+// (the question's length) comes off what the window allows, not off
+// READ_CHUNK_CHARS: where that cap binds, parts are the same for any question.
+export function chunkChars(reader: ModelInfo, extra = 0): number {
+  const tokens = Math.min(reader.context - PROMPT_TOKENS - Math.min(reader.output || READER_OUTPUT, READER_OUTPUT), firstTier(reader) - PROMPT_TOKENS);
+  return Math.max(4_000, Math.min(READ_CHUNK_CHARS, Math.floor(tokens * bytesPerToken(reader.id)) - extra));
 }
 
 // The most material one job reads: what the working model would pay to fill
@@ -119,7 +126,9 @@ export type Material = { source: string; text: string; label?: string };
 export type Part = { source: string; label?: string; from: number; to: number; total: number; body: string; chars: number };
 export type Chunk = { parts: Part[]; chars: number };
 
-const HEADER = 80;
+// What partBlock puts around a part's lines, at its longest (every number as
+// long as the source's last line's), and the newline between two blocks.
+const wrapSize = (m: Material, total: number) => partBlock({ source: m.source, label: m.label, from: total, to: total, total, body: "", chars: 0 }).length + 1;
 // A line longer than this is cut into pieces under the same number, so one
 // minified line cannot outgrow a part.
 const PIECE = 4_000;
@@ -137,12 +146,12 @@ function rowsOf(text: string): string[][] {
 const rowSize = (r: string[]) => r.reduce((k, y) => k + y.length + 1, 0);
 
 // The material split into chunks of at most `maxChars` (numbered lines plus
-// headers), balanced: as many chunks as the total needs, each about the same
+// the wrapper around each file, as a reader is sent them), balanced: as many chunks as the total needs, each about the same
 // size. A source that fits stays whole in one chunk; a longer one is split at
 // line boundaries and its parts say which lines they hold.
 export function chunkMaterial(items: Material[], maxChars: number): Chunk[] {
-  const all = items.map((m) => ({ m, rows: rowsOf(m.text) })).filter((x) => x.m.text.length > 0);
-  const sizes = all.map((x) => x.rows.reduce((n, r) => n + rowSize(r), 0) + HEADER);
+  const all = items.map((m) => ({ m, rows: rowsOf(m.text) })).filter((x) => x.m.text.length > 0).map((x) => ({ ...x, wrap: wrapSize(x.m, x.rows.length) }));
+  const sizes = all.map((x) => x.rows.reduce((n, r) => n + rowSize(r), 0) + x.wrap);
   const total = sizes.reduce((a, b) => a + b, 0);
   const target = Math.ceil(total / Math.max(1, Math.ceil(total / maxChars)));
   const chunks: Chunk[] = [];
@@ -154,9 +163,9 @@ export function chunkMaterial(items: Material[], maxChars: number): Chunk[] {
     const chars = lines.reduce((k, x, j) => k + x.reduce((q, y) => q + y.length, 0) - x.length * (String(from + j + 1).length + 1), 0)
       + n - (from + n === r.length && !m.text.endsWith("\n") ? 1 : 0);
     cur.parts.push({ source: m.source, label: m.label, from: from + 1, to: from + n, total: r.length, body: lines.flat().join("\n"), chars });
-    cur.chars += lines.reduce((k, x) => k + rowSize(x), 0) + HEADER;
+    cur.chars += lines.reduce((k, x) => k + rowSize(x), 0) + wrapSize(m, r.length);
   };
-  all.forEach(({ m, rows }, idx) => {
+  all.forEach(({ m, rows, wrap }, idx) => {
     const whole = sizes[idx]!;
     if (whole <= maxChars) {
       if (cur.chars + whole > maxChars) close();
@@ -171,8 +180,8 @@ export function chunkMaterial(items: Material[], maxChars: number): Chunk[] {
     for (let j = rows.length - 1; j >= 0; j--) left[j] = left[j + 1]! + rowSize(rows[j]!);
     let i = 0;
     while (i < rows.length) {
-      if (cur.chars + left[i]! + HEADER <= maxChars) { put(m, rows, i, rows.length - i); break; }
-      const room = target - cur.chars - HEADER;
+      if (cur.chars + left[i]! + wrap <= maxChars) { put(m, rows, i, rows.length - i); break; }
+      const room = target - cur.chars - wrap;
       let n = 0, used = 0;
       while (i + n < rows.length && (n === 0 || used + rowSize(rows[i + n]!) <= room)) {
         if (n === 0 && cur.parts.length && rowSize(rows[i]!) > room) break;
@@ -215,9 +224,13 @@ export function partPrompt(chunk: Chunk, question: string, k: number, n: number)
 }
 
 export type Finding = { covers: string; text: string };
-const findingBlock = (f: Finding, i: number) => `<findings reader="${i + 1}" read="${f.covers}">\n${f.text}\n</findings>`;
+// What a part covers, short: past two sources, the first, the last and how many.
+const coversShort = (covers: string) => {
+  const refs = covers.split(", ");
+  return refs.length <= 2 ? covers : `${refs[0]} to ${refs.at(-1)}, ${refs.length} sources`;
+};
+const findingBlock = (f: Finding, i: number) => `<findings reader="${i + 1}" read="${coversShort(f.covers)}">\n${f.text}\n</findings>`;
 const findingSize = (f: Finding) => findingBlock(f, 999).length + 1;
-export const findingsSize = (fs: Finding[]) => fs.reduce((n, f) => n + findingSize(f), 0);
 
 // Findings in order, grouped so each group's blocks stay within `maxChars`
 // (what one request to the reader holds). A finding longer than that is a
@@ -262,7 +275,6 @@ export function compilePrompt(question: string, findings: Finding[], nothing: st
 // reference and a sentence around them. Fewer parts are shown before each
 // gets less.
 const PREVIEW_PART = 400;
-const PREVIEW_HEAD = 160;
 
 // Findings no reader could compile, as the working model gets them: each
 // part's findings from their start (a reader puts what bears most on the
@@ -270,9 +282,21 @@ const PREVIEW_HEAD = 160;
 // findings are whole and leave their room to the long ones. `whole`, `cut`
 // and `left` count the parts shown whole, shown in part, and not shown.
 export function findingsPreview(found: (Finding & { k: number })[], cap: number): { text: string; whole: number; cut: number; left: number } {
-  const shown = found.slice(0, Math.max(1, Math.floor(cap / (PREVIEW_PART + PREVIEW_HEAD))));
+  const head = (f: Finding & { k: number }, cutAt?: number) =>
+    `Findings of part ${f.k} (${coversShort(f.covers)})${cutAt === undefined ? "" : `, the first ${cutAt} of ${f.text.length} characters`}:\n`;
+  // A heading at its longest, and the blank line between two parts.
+  const around = (f: Finding & { k: number }) => head(f, f.text.length).length + 2;
+  // As many parts, from the first, as leave each its heading and PREVIEW_PART of its findings.
+  const shown: (Finding & { k: number })[] = [];
+  let used = 0;
+  for (const f of found) {
+    const need = around(f) + Math.min(f.text.length, PREVIEW_PART);
+    if (shown.length && used + need > cap) break;
+    used += need;
+    shown.push(f);
+  }
   const take = new Map<number, number>();
-  let room = cap - shown.length * PREVIEW_HEAD, n = shown.length;
+  let room = Math.max(0, cap - shown.reduce((n, f) => n + around(f), 0)), n = shown.length;
   for (const f of [...shown].sort((a, b) => a.text.length - b.text.length)) {
     const t = Math.min(f.text.length, Math.floor(room / n--));
     take.set(f.k, t);
@@ -281,10 +305,9 @@ export function findingsPreview(found: (Finding & { k: number })[], cap: number)
   let cut = 0;
   const blocks = shown.map((f) => {
     const t = take.get(f.k)!;
-    const covers = f.covers.length > 100 ? `${f.covers.slice(0, 100)}...` : f.covers;
-    if (t >= f.text.length) return `Findings of part ${f.k} (${covers}):\n${f.text}`;
+    if (t >= f.text.length) return head(f) + f.text;
     cut++;
-    return `Findings of part ${f.k} (${covers}), the first ${t} of ${f.text.length} characters:\n${f.text.slice(0, t)}`;
+    return head(f, t) + f.text.slice(0, t);
   });
   return { text: blocks.join("\n\n"), whole: shown.length - cut, cut, left: found.length - shown.length };
 }
@@ -382,7 +405,7 @@ export function checkAnswer(answer: string, items: Material[], read?: Span[]): C
 // The line under an answer that says what the check found. Only a quote found
 // word for word on the lines cited for it is called that; a looser match is
 // counted apart.
-export function checkedNote(c: Checked): string {
+export function checkedNote(c: Checked, what = "answer"): string {
   if (!c.quotes && !c.refs) return "";
   const parts: string[] = [];
   if (c.quotes) {
@@ -393,5 +416,5 @@ export function checkedNote(c: Checked): string {
   }
   if (c.refs) parts.push(`${c.valid} of ${c.refs} path:line references name lines the readers read` + (c.ambiguous ? `; ${c.ambiguous} name${c.ambiguous === 1 ? "s" : ""} a path that more than one file ends with` : ""));
   const miss = c.missing.length ? `\nNot found in what the readers read, so treat as unconfirmed:\n- "${c.missing.join('"\n- "')}"` : "";
-  return `[Keel checked the answer against the files: ${parts.join("; ")}.${miss}]`;
+  return `[Keel checked the ${what} against the files: ${parts.join("; ")}.${miss}]`;
 }

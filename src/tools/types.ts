@@ -39,7 +39,8 @@ export type ToolContext = {
   callTool?: (name: string, input: any, id: string) => Promise<ToolResultBlock>;
   // Set by the engine: long content read by the session's reader model with a
   // request; resolves to the reader's answer (src/engine/reader.ts).
-  read?: (source: string, text: string, prompt: string) => Promise<{ text: string; model: string }>;
+  // `compiled` false: the text is every part's findings, not one answer.
+  read?: (source: string, text: string, prompt: string) => Promise<{ text: string; model: string; compiled?: boolean }>;
   // Set by the engine: one reading job over many sources, split across reader
   // models and compiled into one answer (src/engine/readers.ts).
   readMaterial?: (items: Material[], question: string, callId?: string) => Promise<ReadOutcome>;

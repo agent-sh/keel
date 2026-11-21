@@ -147,7 +147,7 @@ test("when the findings cannot be compiled the working model gets a bounded prev
     expect(text).toContain(`"EVIDENCE-${k} is here"`);
     expect(saved).toContain(`"EVIDENCE-${k} is here"`);
   }
-  expect(text).toContain(`the start of ${parts}`);
+  expect(text).toContain(`the start of the findings of ${parts} parts`);
   expect(text).toContain("could not be compiled");
   expect((out.shown as any).readers.compiled).toBe(false);
 });
