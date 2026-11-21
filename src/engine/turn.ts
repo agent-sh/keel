@@ -247,9 +247,12 @@ const MIN_PART_BYTES = 2_000;
 const SUMMARY_ROOM_BYTES = (st: Step) => Math.floor(Math.min(st.info.output, st.info.context / 4) * bytesPerToken(st.info.id));
 
 // A summary cut at the output limit, or one too long to go with the next part
-// of a transcript, is asked for again this many times in one compaction. Then
+// of a transcript, is asked for again this many times: each request of a
+// compaction (the one summary, or each part) has that many of its own. Then
 // the compaction fails and nothing is checkpointed: the branch stays as it was.
 const SUMMARY_RETRIES = 2;
+// What the owner can do when a summary cannot be written whole.
+const SUMMARY_REMEDIES = "compact with a focus that asks for less, continue on a model that writes longer replies, or clear the context";
 
 type Step = { provider: Provider; info: ModelInfo; tools: Tool[]; system: string; systemSplit: number; effort?: string; native?: boolean };
 
@@ -1122,7 +1125,8 @@ export class Engine {
         // A history with no reply of its own yet (one long first message) is
         // summarized only when it cannot be sent as it is.
         // (The prompts that opened a turn with no reply yet are not summarized: they follow the summary whole.)
-        if ((used >= limit || over) && !summaryFailed && (over || events.some((e) => e.kind === "assistant")) && worthSummarizing(summarizable(events))) {
+        // (A context whose summary could not be written whole is not tried again while it still fits.)
+        if ((used >= limit || over) && !summaryFailed && (over || (events.some((e) => e.kind === "assistant") && !this.summaryGaveUp(id, events, st))) && worthSummarizing(summarizable(events))) {
           // A summary prepared ahead swaps in at once; else the turn waits for one.
           // One that fails while the context still fits is said, and the turn goes on whole.
           if (!this.applyPrepared(id, events)) await this.compactNow(id, { auto: true, trigger: "threshold", signal, step: st }).catch((e) => {
@@ -1338,6 +1342,28 @@ export class Engine {
     return result;
   }
 
+  // Sessions whose summary could not be written whole (cut at the output limit
+  // each time, or too long to carry between the parts of a transcript), with
+  // the context it was tried on: the last checkpoint and the model. Each try
+  // reads the whole context, and the same context ends the same way, so no
+  // summary is asked for by itself (ahead, while idle, at the compaction line)
+  // until a checkpoint lands or the session is on another model. At the
+  // window, where a turn cannot go on without one, the turn ends with that
+  // error, which names what the owner can do.
+  private gaveUp = new SessionMap<{ at: string; error: Error }>(256);
+  private gaveUpAt(events: readonly StoredEvent[], st: Step): string {
+    const cp = checkpointAt(events).at;
+    return `${cp < 0 ? "" : events[cp]!.id}|${st.info.id}`;
+  }
+  private summaryGaveUp(id: string, events: readonly StoredEvent[], st: Step): Error | undefined {
+    const g = this.gaveUp.get(id);
+    return g && g.at === this.gaveUpAt(events, st) ? g.error : undefined;
+  }
+  private giveUp(id: string, events: readonly StoredEvent[], st: Step, e: unknown) {
+    const code = (e as any)?.code;
+    if (code === "summary_truncated" || code === "summary_too_long") this.gaveUp.set(id, { at: this.gaveUpAt(events, st), error: e as Error });
+  }
+
   // Summaries being written ahead. Each can be stopped, and names the event it covers up to.
   private preparing = new Map<string, { abort: AbortController; covered: string }>();
   private idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -1409,7 +1435,7 @@ export class Engine {
     if (this.draining || (current && !current.abort.signal.aborted)) return;
     const events = this.lineage(id);
     const covered = events.findLast((e) => e.kind !== "turn_start" && e.kind !== "turn_end");
-    if (!covered || !worthSummarizing(events)) return;
+    if (!covered || !worthSummarizing(events) || this.summaryGaveUp(id, events, st)) return;
     const have = this.store.db.query<{ covered: string; data: string }, [string]>("SELECT covered, data FROM prepared_summaries WHERE session_id = ?").get(id);
     if (have && preparedHolds(events, have.covered, idle, JSON.parse(have.data))) return;
     const abort = new AbortController();
@@ -1426,7 +1452,11 @@ export class Engine {
         if (abort.signal.aborted || !this.preparationHolds(id, covered.id, data)) return;
         this.store.db.run("INSERT OR REPLACE INTO prepared_summaries (session_id, covered, data, ts) VALUES (?, ?, ?, ?)", [id, covered.id, JSON.stringify(data), Date.now()]);
       })
-      .catch((e) => { if (!abort.signal.aborted) this.errors.capture("provider", e, { session: id, at: "preparing a summary" }); })
+      .catch((e) => {
+        if (abort.signal.aborted) return;
+        this.giveUp(id, events, st, e);
+        this.errors.capture("provider", e, { session: id, at: "preparing a summary" });
+      })
       .finally(() => { if (this.preparing.get(id)?.abort === abort) this.preparing.delete(id); });
   }
 
@@ -1521,17 +1551,20 @@ export class Engine {
   private async summarize(id: string, st: Step, session: Session, events: readonly StoredEvent[], signal: AbortSignal, focus?: string): Promise<{ summary: string; usage: Usage; parts?: number; clipped?: number }> {
     focus ??= allHooks().map((h) => h.compactFocus?.(session)).find(Boolean);
     let usage = emptyUsage();
-    let retries = SUMMARY_RETRIES;
     const one = async (ask: Message[], fit: Fit): Promise<string> => {
-      for (;;) {
+      for (let retries = SUMMARY_RETRIES; ; ) {
         const res = await this.call(id, st, ask, signal, new Map(), session, true, "summary", fit); // the summary is not a reply
         usage = addUsage(usage, res.usage);
         this.store.addUsage(id, res.usage);
         if (res.stop === "refusal") return "";
+        // The request and its reply together passed the window: asking for a
+        // shorter reply to the same request ends the same way. The history is
+        // read as a transcript instead (in smaller parts, when it already is one).
+        if (res.stop === "model_context_window_exceeded") throw Object.assign(new Error(`the summary request filled ${st.info.name}'s window before the summary was written`), { kind: "context", filled: true });
         // Cut at the output limit, its end (where the work stands, the next
         // step) is missing: it is never kept. Asked again, shorter.
-        if (res.stop !== "max_tokens" && res.stop !== "model_context_window_exceeded") return res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n").trim();
-        if (retries-- <= 0) throw Object.assign(new Error(`the summary was cut at ${st.info.name}'s output limit (${st.info.output} tokens) each time it was asked for, so nothing was kept`), { status: 409, code: "summary_truncated" });
+        if (res.stop !== "max_tokens") return res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n").trim();
+        if (retries-- <= 0) throw Object.assign(new Error(`the summary was cut at ${st.info.name}'s output limit (${st.info.output} tokens) each time it was asked for, so nothing was kept: ${SUMMARY_REMEDIES}`), { status: 409, code: "summary_truncated" });
         const note = shorterPrompt(st.info.output);
         const last = ask.at(-1)!;
         if (!(last.content as any[]).some((b) => b.type === "text" && b.text === note)) ask = [...ask.slice(0, -1), { ...last, content: [...last.content, { type: "text", text: note }] } as Message];
@@ -1545,7 +1578,8 @@ export class Engine {
       } catch (e) {
         if (signal.aborted || (e as any)?.kind !== "context") throw e;
         over = e;
-        if (!(e as any).unsent) this.refused(st, events);
+        // Refused by the provider as over its window: its count of this context was higher than Keel's.
+        if (!(e as any).unsent && !(e as any).filled) this.refused(st, events);
       }
     }
     // What one request can hold of the transcript: the compaction share of
@@ -1575,12 +1609,12 @@ export class Engine {
           // a part is asked for again within what does, a bounded number of times.
           let left = budget - words - utf8Bytes(summary);
           const most = budget - words - MIN_PART_BYTES;
-          while (left < MIN_PART_BYTES && retries-- > 0 && utf8Bytes(summary) + words <= budget) {
+          for (let retries = SUMMARY_RETRIES; left < MIN_PART_BYTES && retries-- > 0 && utf8Bytes(summary) + words <= budget; ) {
             summary = await one(text(condensePrompt(summary, most)), alone);
             if (!summary) return { summary, usage };
             left = budget - words - utf8Bytes(summary);
           }
-          if (left < MIN_PART_BYTES) throw Object.assign(new Error(`the summary of the transcript's earlier parts is too long to go with the next part (${utf8Bytes(summary)} bytes, ${most} fit), so nothing was kept`), { status: 409, code: "summary_too_long" });
+          if (left < MIN_PART_BYTES) throw Object.assign(new Error(`the summary of the transcript's earlier parts is too long to go with the next part (${utf8Bytes(summary)} bytes, ${most} fit), so nothing was kept: ${SUMMARY_REMEDIES}`), { status: 409, code: "summary_too_long" });;
           // The rest of the transcript, cut again for the room this summary leaves.
           if (utf8Bytes(parts[k + 1]!) > left) parts = [...parts.slice(0, k + 1), ...recut(parts.slice(k + 1).join(""), left)];
         }
@@ -1610,13 +1644,16 @@ export class Engine {
       if (tokens >= st.info.context) throw Object.assign(new Error(`The prompt this turn answers is about ${tokens} tokens (${opening.reduce((n, e) => n + (e.kind === "user" ? utf8Bytes(String(e.data.text ?? "")) : 0), 0)} bytes), more than ${st.info.name}'s window of ${st.info.context} tokens, so it cannot be sent whole: shorten it, or continue on a model with a larger window.`), { status: 409, code: "context_over_window" });
     }
     const before = this.used(events, st);
+    // Not asked again by itself for a context whose summary could not be written whole; the owner's own request is.
+    const gaveUp = opts.auto ? this.summaryGaveUp(id, events, st) : undefined;
+    if (gaveUp) throw gaveUp;
     for (const h of allHooks()) await Promise.resolve().then(() => h.beforeCompact?.(session)).catch((e) => this.errors.capture("server", e, { hook: "beforeCompact", session: id }));
     this.status(id, { kind: "compacting", auto: !!opts.auto });
     const own = new AbortController();
     const signal = opts.signal ?? own.signal;
     const t0 = Date.now();
     try {
-      const res = await this.summarize(id, st, session, upto, signal, opts.focus);
+      const res = await this.summarize(id, st, session, upto, signal, opts.focus).catch((e) => { this.giveUp(id, events, st, e); throw e; });
       const u: Usage = res.usage;
       const summary = res.summary;
       if (!summary) throw Object.assign(new Error("the model wrote no summary"), { status: 409 });

@@ -116,46 +116,60 @@ test("what a hook adds counts: the turn compacts to fit and goes on; what cannot
 const lastText = (req: any): string => (req.messages.at(-1).content as any[]).filter((b) => b.type === "text").map((b) => b.text).join("\n");
 const text = (t: string, stop = "end_turn") => ({ blocks: [{ type: "text", text: t }], stop });
 
-test("a summary cut at the output limit never becomes a checkpoint", async () => {
-  let cutFirst = 0;
+// Inside a turn, a summary that is cut at the output limit each time is said
+// once and the turn goes on with the history whole. The same context is not
+// summarized again by itself, on a later step or turn: each try reads all of
+// it. Once a checkpoint lands, summaries are written as before.
+test("a summary cut each time is asked for once per context, not on every step", async () => {
+  let cut = true, turns = 0;
+  const r = rig((req) => {
+    if (req.purpose === "summary") return cut ? text("Goal: a summary the limit cut in the middle of a", "max_tokens") : text("WHOLE-SUMMARY");
+    // The first three requests of the turn call a tool, so the turn takes four steps.
+    return ++turns <= 3 ? { blocks: [{ type: "tool_use", id: `t${turns}`, name: "none", input: {} }], stop: "tool_use" } : undefined;
+  });
+  const id = r.session(SMALL.id);
+  r.store.updateSession(id, { settings: { compact_at: 2_000 } });
+  r.store.append(id, "user", { text: "read it" });
+  r.store.append(id, "assistant", { blocks: [{ type: "text", text: words(15_000) }], model: SMALL.id, stop: "end_turn", usage: { input: 10, cache_read: 100, cache_write: 0, output: 6_000 } });
+  r.engine.send(id, "go on");
+  await r.idle(id);
+  r.engine.send(id, "and again");
+  await r.idle(id);
+  const events = r.store.events(id);
+  // One request and its two shorter retries, in two turns of five steps.
+  expect(r.sent.filter((s) => s.purpose === "summary")).toHaveLength(3);
+  expect(r.sent.filter((s) => s.purpose === "turn")).toHaveLength(5);
+  expect(events.filter((e) => e.kind === "compaction")).toEqual([]);
+  const said = events.filter((e) => e.kind === "note" && e.data.kind === "compaction_failed");
+  expect(said).toHaveLength(1);
+  expect(said[0]!.data.text).toContain("compact with a focus that asks for less, continue on a model that writes longer replies, or clear the context");
+  expect(events.filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).toEqual(["end_turn", "end_turn"]);
+  // The owner's own request is still tried; its checkpoint lets summaries be prepared again.
+  cut = false;
+  expect((await r.engine.compactNow(id)).data.summary).toBe("WHOLE-SUMMARY");
+  r.sent.length = 0;
+  r.store.append(id, "assistant", { blocks: [{ type: "text", text: words(15_000) }], model: SMALL.id, stop: "end_turn", usage: { input: 10, cache_read: 100, cache_write: 0, output: 6_000 } });
+  r.engine.send(id, "once more");
+  await r.idle(id);
+  expect(r.sent.filter((s) => s.purpose === "summary")).toHaveLength(1);
+  expect(r.store.events(id).filter((e) => e.kind === "compaction")).toHaveLength(2);
+});
+
+// A summary request whose reply stopped because request and reply together
+// passed the window is not asked for again shorter: the history is read as a
+// transcript in parts instead.
+test("a summary that filled the window is written from the transcript", async () => {
   const r = rig((req) => {
     if (req.purpose !== "summary") return undefined;
-    if (lastText(req).includes("Keep above all: always")) return text("Goal: a summary the limit cut in the middle of a", "max_tokens");
-    // Cut once: the request that says so is answered whole.
-    if (lastText(req).includes("was cut at the output limit")) return text("WHOLE-SUMMARY");
-    return cutFirst++ ? text("WHOLE-SUMMARY") : text("Goal: cut in the middle of a", "max_tokens");
+    return req.messages.length > 1 ? text("Goal: the window ended he", "model_context_window_exceeded") : text("FROM-THE-TRANSCRIPT");
   });
-  const history = (id: string) => {
-    r.store.append(id, "user", { text: "read it" });
-    r.store.append(id, "assistant", { blocks: [{ type: "text", text: words(15_000) }], model: SMALL.id, stop: "end_turn", usage: { input: 10, cache_read: 100, cache_write: 0, output: 6_000 } });
-  };
-  // Every attempt is cut: asked a bounded number of times, then nothing is stored.
-  const a = r.session(SMALL.id);
-  history(a);
-  const head = r.store.session(a)!.head;
-  await expect(r.engine.compactNow(a, { focus: "always" })).rejects.toMatchObject({ code: "summary_truncated", status: 409 });
-  expect(r.sent.map((s) => s.purpose)).toEqual(["summary", "summary", "summary"]);
-  expect(r.store.events(a).filter((e) => e.kind === "compaction")).toEqual([]);
-  expect(r.store.session(a)!.head).toBe(head);
-  // Cut once: the second answer, written whole, is the checkpoint.
-  r.sent.length = 0;
-  const b = r.session(SMALL.id);
-  history(b);
-  const cp = await r.engine.compactNow(b);
-  expect(cp.data.summary).toBe("WHOLE-SUMMARY");
-  expect(r.sent).toHaveLength(2);
-  // Inside a turn whose context still fits: said, and the turn goes on with the history whole.
-  r.sent.length = 0;
-  const c = r.session(SMALL.id);
-  r.store.updateSession(c, { settings: { compact_at: 2_000 } });
-  history(c);
-  registerHooks({ compactFocus: (s) => (s.id === c ? "always" : undefined) });
-  r.engine.send(c, "go on");
-  await r.idle(c);
-  const events = r.store.events(c);
-  expect(events.filter((e) => e.kind === "compaction")).toEqual([]);
-  expect(events.find((e) => e.kind === "note" && e.data.kind === "compaction_failed")?.data.text).toContain("output limit");
-  expect(events.findLast((e) => e.kind === "turn_end")?.data.reason).toBe("end_turn");
+  const id = r.session(SMALL.id);
+  r.store.append(id, "user", { text: "read it" });
+  r.store.append(id, "assistant", { blocks: [{ type: "text", text: words(15_000) }], model: SMALL.id, stop: "end_turn", usage: { input: 10, cache_read: 100, cache_write: 0, output: 6_000 } });
+  const cp = await r.engine.compactNow(id);
+  expect(cp.data.summary).toBe("FROM-THE-TRANSCRIPT");
+  // One request on the session's own messages, then one message a part.
+  expect(r.sent.map((s) => s.messages.length)).toEqual([3, ...Array(cp.data.parts).fill(1)]);
 });
 
 // A history read as a transcript in parts. The summary of the parts so far
@@ -190,6 +204,19 @@ test("a long summary of the earlier parts and the next part fit the request budg
   expect(lastText({ messages: r2.sent[1]!.messages })).toContain("too long to go with the next part");
   expect(r2.sent.filter((s) => s.refused)).toEqual([]);
   expect(Math.max(...r2.sent.map((s) => s.tokens))).toBeLessThanOrEqual(budget);
+
+  // Each part has its own retries: a cut on three different parts is three second requests, and the summary is kept.
+  const cutOnce = new Set<number>();
+  const r4 = rig((req) => {
+    const k = partOf(req);
+    if (req.purpose !== "summary" || k > 3 || cutOnce.has(k)) return undefined;
+    cutOnce.add(k);
+    return text("cut in the middle of a", "max_tokens");
+  });
+  const d = imported(r4);
+  const whole = await r4.engine.compactNow(d);
+  expect(whole.data.summary).toBe("SUMMARY");
+  expect(r4.sent).toHaveLength(whole.data.parts + 3);
 
   // One that stays too long: a bounded number of requests, then the branch is left as it was.
   const r3 = rig((req) => (req.purpose === "summary" ? text(long(37_000)) : undefined));
