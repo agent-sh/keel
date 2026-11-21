@@ -24,7 +24,7 @@ const until = async (ok: () => boolean | Promise<boolean>, what: string, ms = 30
 };
 
 test("a session the server ended fails the call once, and the next call runs on a new session", async () => {
-  const s = startLegacyMcp({ declineGet: true });
+  const s = startLegacyMcp({ get: "decline" });
   const errors: unknown[] = [];
   const m = manager({ legacy: { url: s.url } }, errors);
   try {
@@ -66,57 +66,69 @@ test("a session the server ended fails the call once, and the next call runs on 
   }
 });
 
-test("updates arrive on the GET stream, a server that declines it still answers, and a replaced connection closes its stream", async () => {
-  const s = startLegacyMcp(), plain = startLegacyMcp({ declineGet: true });
-  const m = manager({ legacy: { url: s.url }, plain: { url: plain.url } });
-  const row = () => m.list().find((x) => x.name === "legacy")!;
+test("a cut stream is opened again from its last event, a ping on it is answered, and a server without a stream still answers", async () => {
+  const s = startLegacyMcp(), plain = startLegacyMcp({ get: "decline" });
+  const c = await McpClient.connect({ kind: "http", url: s.url, headers: {} }, 5000, "legacy");
+  const p = await McpClient.connect({ kind: "http", url: plain.url, headers: {} }, 5000, "legacy");
   try {
-    await m.ensure("legacy");
     await until(async () => (await s.stats()).streams_open === 1, "the GET stream");
-    // Reading subscribes; from here no request is in flight, so an update can only come on the stream.
-    await m.readResource("legacy", "legacy://one");
-    const rev = row().resources_rev;
-    expect((await s.control({ emit: "resources/updated" })).sent).toBe(1);
-    await until(() => row().resource_updates["legacy://one"] === 1, "the resource update");
-    await s.control({ emit: "resources/list_changed" });
-    await until(() => row().resources_rev === rev + 1, "the resource list change");
-    await s.control({ emit: "tools/list_changed" });
-    await until(() => row().tool_names.includes("late"), "the tool list change");
-
-    // A stream the server cut is opened again from the last event it sent, after the wait it named.
+    // The server may ask whether the client is there (2025-11-25 Ping: an empty result, promptly).
+    await s.control({ emit: "ping" });
+    await until(async () => (await s.stats()).responses.length === 1, "the answer to the ping");
+    expect((await s.stats()).responses).toEqual([{ id: "ping-1", result: {} }]);
+    // Cut by the server: opened again with the ID of the last event it carried.
     await s.control({ drop_stream: true });
     await until(async () => (await s.stats()).streams_opened === 2, "the stream again");
-    let st = await s.stats();
-    expect(st.last_event_ids).toEqual([null, "4"]);
+    const st = await s.stats();
+    expect(st.last_event_ids).toEqual([null, "2"]);
     expect(st.streams_closed).toBe(0);
-    await s.control({ emit: "resources/updated" });
-    await until(() => row().resource_updates["legacy://one"] === 2, "an update on the new stream");
-
-    // A reconnect replaces the connection: the client closes the old stream itself.
-    await m.reconnect("legacy");
-    await until(async () => (await s.stats()).streams_closed === 1, "the old stream closed");
-    await until(async () => (await s.stats()).streams_open === 1, "the new connection's stream");
-    st = await s.stats();
-    expect(st.streams_opened).toBe(3);
-    expect(st.last_event_ids[2]).toBeNull();
 
     // 405: the server offers no stream. Requests work, and it is not asked again.
-    await m.ensure("plain");
-    expect((await m.call("plain", "echo", { text: "a" }, ctx())).content).toBe("echo: a");
+    expect((await p.callTool("echo", { text: "a" })).content).toEqual([{ type: "text", text: "echo: a" }]);
     await Bun.sleep(200);
-    const p = await plain.stats();
-    expect(p.gets_declined).toBe(1);
-    expect(p.streams_opened).toBe(0);
+    const ps = await plain.stats();
+    expect(ps.gets_declined).toBe(1);
+    expect(ps.gets).toBe(1);
   } finally {
-    m.dispose();
-    await until(async () => (await s.stats()).streams_open === 0, "the stream closed with the manager");
+    c.close();
+    p.close();
+    await until(async () => (await s.stats()).streams_open === 0, "the stream closed with the client");
     s.stop();
     plain.stop();
   }
 });
 
+test("a server cannot make the stream reconnect without pause, and a wait leaves no listener", async () => {
+  // Abort listeners added and removed from JS (the wait between two streams adds one).
+  let left = 0;
+  const add = AbortSignal.prototype.addEventListener, remove = AbortSignal.prototype.removeEventListener;
+  AbortSignal.prototype.addEventListener = function (this: AbortSignal, ...a: any[]) { if (a[0] === "abort") left++; return (add as any).apply(this, a); } as any;
+  AbortSignal.prototype.removeEventListener = function (this: AbortSignal, ...a: any[]) { if (a[0] === "abort") left--; return (remove as any).apply(this, a); } as any;
+  const s = startLegacyMcp({ get: "retry0" }), flood = startLegacyMcp({ get: "flood" });
+  const c = await McpClient.connect({ kind: "http", url: s.url, headers: {} }, 5000, "legacy");
+  const f = await McpClient.connect({ kind: "http", url: flood.url, headers: {} }, 5000, "legacy");
+  try {
+    const before = left;
+    await Bun.sleep(1300);
+    // `retry: 0` and a closed stream, over and over: the backoff is the floor (one GET, a second, then the next after 1.5 s).
+    expect((await s.stats()).gets).toBe(2);
+    expect(left - before).toBeLessThanOrEqual(1); // the wait now running
+    // An event that never ends is not read without limit: the stream is closed and not asked for again.
+    const fs = await flood.stats();
+    expect(fs.streams_closed).toBe(1);
+    expect(fs.gets).toBe(1);
+  } finally {
+    AbortSignal.prototype.addEventListener = add;
+    AbortSignal.prototype.removeEventListener = remove;
+    c.close();
+    f.close();
+    s.stop();
+    flood.stop();
+  }
+});
+
 test("a request that times out aborts its POST and leaves nothing waiting", async () => {
-  const s = startLegacyMcp({ declineGet: true });
+  const s = startLegacyMcp({ get: "decline" });
   const c = await McpClient.connect({ kind: "http", url: s.url, headers: {} }, 5000, "legacy");
   try {
     // Count what the request leaves on the caller's signal.

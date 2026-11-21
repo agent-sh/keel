@@ -53,12 +53,20 @@ export class SessionExpired extends Error {
 }
 
 // What an SSE stream said besides its messages: the last event ID, the wait
-// the server asked for before a reconnect, and how many events came.
-type SseState = { id?: string; retry?: number; events: number };
+// the server asked for before a reconnect, and how many messages it carried.
+type SseState = { id?: string; retry?: number; messages: number };
+
+// The most one event of the standalone stream may hold. It carries
+// notifications (a method and a URI) and requests Keel refuses: an event
+// past a megabyte is nothing Keel reads, and a stream with no line end at
+// all would otherwise be kept in memory whole.
+const STREAM_EVENT_MAX = 1 << 20;
+class StreamOverrun extends Error {}
 
 const pause = (ms: number, signal: AbortSignal) => new Promise<void>((res) => {
-  const t = setTimeout(res, ms);
-  signal.addEventListener("abort", () => { clearTimeout(t); res(); }, { once: true });
+  const end = () => { clearTimeout(t); signal.removeEventListener("abort", end); res(); };
+  const t = setTimeout(end, ms);
+  signal.addEventListener("abort", end, { once: true });
 });
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
@@ -209,6 +217,8 @@ export class McpClient {
       else p.resolve(msg.result);
       return;
     }
+    // The server asks whether the client is there (2025-11-25 Ping: an empty result, promptly).
+    if (msg.method === "ping" && msg.id !== undefined) return this.write({ jsonrpc: "2.0", id: msg.id, result: {} });
     if (msg.method && msg.id !== undefined) {
       // Server-to-client requests (legacy roots/sampling/elicitation): we
       // offer none of those capabilities, so say so.
@@ -310,26 +320,33 @@ export class McpClient {
     const dec = new TextDecoder();
     let buf = "";
     let data: string[] = [];
+    let held = 0; // the bytes of the event being read
     const value = (line: string, name: string) => line.slice(name.length + 1).replace(/^ /, "");
+    // An event with no JSON in it (the priming event, a comment) is no message.
+    const event = () => {
+      if (!data.length) return;
+      let msg: unknown;
+      try { msg = JSON.parse(data.join("\n")); } catch { return; } finally { data = []; held = 0; }
+      if (st) st.messages++;
+      try { this.dispatch(msg); } catch {} // as before: a message that cannot be handled does not end the stream
+    };
     for await (const chunk of chunks(res.body!)) {
       buf += dec.decode(chunk, { stream: true });
       let nl: number;
       while ((nl = buf.indexOf("\n")) >= 0) {
         const line = buf.slice(0, nl).replace(/\r$/, "");
         buf = buf.slice(nl + 1);
-        if (line === "") {
-          if (data.length) {
-            try { this.dispatch(JSON.parse(data.join("\n"))); } catch {}
-          }
-          data = [];
-        } else if (line.startsWith("data:")) {
+        if (line === "") event();
+        else if (line.startsWith("data:")) {
           data.push(value(line, "data"));
-          if (st) st.events++;
+          held += line.length;
         } else if (st && line.startsWith("id:")) st.id = value(line, "id");
         else if (st && line.startsWith("retry:") && /^\d+$/.test(value(line, "retry"))) st.retry = Number(value(line, "retry"));
       }
+      // A request's stream ends with its timer; the standalone one has this bound.
+      if (st && held + buf.length > STREAM_EVENT_MAX) throw new StreamOverrun();
     }
-    if (data.length) try { this.dispatch(JSON.parse(data.join("\n"))); } catch {}
+    event();
   }
 
   // ---- the standalone stream (legacy HTTP) ----
@@ -342,11 +359,13 @@ export class McpClient {
   // without it, and it is not asked again.
   //
   // A stream that ended is opened again from the last event it carried
-  // (Resumability and Redelivery), after the wait the server named (`retry`),
-  // else after a second, growing 1.5 times to 30 s while streams end with
-  // nothing on them. Two failures to open in a row end it (the delays and
-  // the count are the reference SDK's). A session that ended is found by the
-  // next request, not here.
+  // (Resumability and Redelivery), after a second, growing 1.5 times to 30 s
+  // while streams end with no message on them, or after the wait the server
+  // named (`retry`) when that is longer: a server cannot ask to be polled
+  // faster than the backoff. Three failures to open in a row end it: the
+  // first and two retries (the delays and the count are the reference
+  // SDK's). So does an event past the bound. A session that ended is found
+  // by the next request, not here.
   private stream?: AbortController;
   private listen() {
     const c = this.capabilities;
@@ -354,11 +373,11 @@ export class McpClient {
     if (!c.tools?.listChanged && !c.resources?.listChanged && !c.resources?.subscribe) return;
     const url = this.t.url;
     const ac = (this.stream = new AbortController());
-    const st: SseState = { events: 0 };
+    const st: SseState = { messages: 0 };
     void (async () => {
-      let failed = 0, quiet = 0;
+      let failed = 0, quiet = 0, overrun = false;
       while (!ac.signal.aborted) {
-        const before = st.events;
+        const before = st.messages;
         try {
           const h = await this.headers("", {});
           delete h["content-type"];
@@ -374,14 +393,13 @@ export class McpClient {
             throw new Error(`HTTP ${res.status}`);
           }
           failed = 0;
-          await this.readSse(res, st).catch(() => {}); // a cut stream is an ended one
+          await this.readSse(res, st).catch((e) => { overrun = e instanceof StreamOverrun; }); // a cut stream is an ended one
         } catch {
           if (++failed > 2) return;
         }
-        if (ac.signal.aborted) return;
-        const wait = st.retry ?? Math.min(30_000, 1000 * 1.5 ** quiet);
-        quiet = st.events > before ? 0 : quiet + 1;
-        await pause(wait, ac.signal);
+        if (ac.signal.aborted || overrun) return;
+        quiet = st.messages > before ? 0 : quiet + 1;
+        await pause(Math.max(st.retry ?? 0, Math.min(30_000, 1000 * 1.5 ** Math.max(0, quiet - 1))), ac.signal);
       }
     })();
   }

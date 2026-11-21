@@ -12,6 +12,8 @@ export type LegacyStats = {
   calls: { tool: string; session: string | null; status: number }[]; // every tools/call POST that arrived
   cursors: (string | null)[];                                     // the cursor of every resources/list
   streams_opened: number;
+  gets: number;                                                   // every GET, whatever it was answered
+  responses: { id: unknown; result?: unknown; error?: unknown }[]; // what the client answered to the server's own requests
   streams_closed: number;                                         // GET streams the client closed
   last_event_ids: (string | null)[];                              // the Last-Event-ID of every GET
   gets_declined: number;
@@ -20,11 +22,14 @@ export type LegacyStats = {
   deletes: number;
 };
 
-export function startLegacyMcp(opt: { declineGet?: boolean } = {}) {
-  const stats: LegacyStats = { initializes: 0, sessions: [], calls: [], cursors: [], streams_opened: 0, streams_closed: 0, last_event_ids: [], gets_declined: 0, aborted: 0, cancelled: [], deletes: 0 };
+// `get`: what a GET is answered. "stream" holds one open; "decline" is 405;
+// "retry0" names a zero wait and closes at once (a server that would be
+// polled without pause); "flood" sends a megabyte and a half with no line end.
+export function startLegacyMcp(opt: { get?: "stream" | "decline" | "retry0" | "flood" } = {}) {
+  const stats: LegacyStats = { initializes: 0, sessions: [], calls: [], cursors: [], gets: 0, responses: [], streams_opened: 0, streams_closed: 0, last_event_ids: [], gets_declined: 0, aborted: 0, cancelled: [], deletes: 0 };
   const live = new Set<string>();
   const streams = new Map<string, ReadableStreamDefaultController<Uint8Array>>();
-  let declineGet = !!opt.declineGet;
+  let get = opt.get ?? "stream";
   let failPage = false;
   let extra = false;   // a third resource, there after a list change
   let version = 1;     // the body of legacy://one
@@ -60,27 +65,34 @@ export function startLegacyMcp(opt: { declineGet?: boolean } = {}) {
       if (url.pathname === "/control") {
         const b = (await req.json()) as any;
         if (b.expire) { for (const sid of [...live]) end(sid); live.clear(); }
-        if (b.decline_get !== undefined) declineGet = !!b.decline_get;
+        if (b.get) get = b.get;
         if (b.fail_page) failPage = true;
         if (b.drop_stream) for (const sid of [...streams.keys()]) end(sid);
         let sent = 0;
         if (b.emit === "resources/updated") { version++; sent = emit("notifications/resources/updated", { uri: b.uri ?? "legacy://one" }); }
         else if (b.emit === "resources/list_changed") { extra = true; sent = emit("notifications/resources/list_changed"); }
         else if (b.emit === "tools/list_changed") { extra = true; sent = emit("notifications/tools/list_changed"); }
+        else if (b.emit === "ping") {
+          for (const c of streams.values()) { c.enqueue(enc.encode(`id: ${++eventId}\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: "ping-1", method: "ping" })}\n\n`)); sent++; }
+        }
         return Response.json({ ok: true, sent });
       }
       if (url.pathname !== "/mcp") return new Response("not found", { status: 404 });
       const sid = req.headers.get("mcp-session-id");
 
       if (req.method === "GET") {
+        stats.gets++;
         stats.last_event_ids.push(req.headers.get("last-event-id"));
-        if (declineGet) { stats.gets_declined++; return new Response(null, { status: 405, headers: { allow: "POST, DELETE" } }); }
+        if (get === "decline") { stats.gets_declined++; return new Response(null, { status: 405, headers: { allow: "POST, DELETE" } }); }
         if (!sid) return rpcError(null, -32000, "Bad Request: no session", 400);
         if (!live.has(sid)) return rpcError(null, -32001, "Session not found", 404);
+        const sse = { headers: { "content-type": "text/event-stream", "cache-control": "no-store" } };
+        if (get === "retry0") return new Response("retry: 0\n\n", sse);
         stats.streams_opened++;
         let mine: ReadableStreamDefaultController<Uint8Array>;
         const gone = () => { if (streams.get(sid) === mine) streams.delete(sid); stats.streams_closed++; };
         req.signal.addEventListener("abort", gone, { once: true });
+        if (get === "flood") return new Response(new ReadableStream<Uint8Array>({ start(c) { mine = c; c.enqueue(enc.encode("data: " + "x".repeat(1_500_000))); } }), sse);
         return new Response(new ReadableStream<Uint8Array>({
           start(c) {
             mine = c;
@@ -88,7 +100,7 @@ export function startLegacyMcp(opt: { declineGet?: boolean } = {}) {
             streams.set(sid, c);
             c.enqueue(enc.encode(`id: ${++eventId}\nretry: 50\ndata:\n\n`)); // the priming event: come back 50 ms after a cut
           },
-        }), { headers: { "content-type": "text/event-stream", "cache-control": "no-store" } });
+        }), sse);
       }
       if (req.method === "DELETE") {
         stats.deletes++;
@@ -112,8 +124,9 @@ export function startLegacyMcp(opt: { declineGet?: boolean } = {}) {
       if (m.method === "tools/call") stats.calls.push({ tool: String(m.params?.name), session: sid, status: !sid ? 400 : known ? 200 : 404 });
       if (!sid) return rpcError(m.id, -32000, "Bad Request: no session", 400);
       if (!known) return rpcError(null, -32001, "Session not found", 404);
-      if (m.id === undefined) {
+      if (m.id === undefined || !m.method) {
         if (m.method === "notifications/cancelled") stats.cancelled.push(m.params?.requestId);
+        if (!m.method) stats.responses.push({ id: m.id, result: m.result, error: m.error });
         return new Response(null, { status: 202 });
       }
       const reply = (result: unknown) => Response.json({ jsonrpc: "2.0", id: m.id, result });
@@ -156,4 +169,4 @@ export function startLegacyMcp(opt: { declineGet?: boolean } = {}) {
   };
 }
 
-if (import.meta.main) console.log(String(startLegacyMcp({ declineGet: process.argv.includes("--decline-get") }).port));
+if (import.meta.main) console.log(String(startLegacyMcp().port));
