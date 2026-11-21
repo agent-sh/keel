@@ -747,6 +747,41 @@ test("a move made again does not send again what arrived, and a stop can wait fo
   }
 });
 
+// A move stops the running turn, and that stop holds the queue. The hold is
+// the move's own: a move that fails or is cut lets it go, so the retry does
+// not find a held queue and take it for the owner's.
+test("a queue held only by a move's own stop is let go when the move fails or is cut", async () => {
+  const cut = await moveRig();
+  try {
+    cut.running = true;
+    cut.cut = (path, script) => (path.endsWith("/exec") && script.includes("worktree add") ? "after" : undefined);
+    cut.moves.start(cut.session(), { machine_id: "m1" });
+    await cut.reached.promise;
+    expect([cut.held, cut.latest().held]).toEqual([true, undefined]);
+    cut.boot();
+    await Bun.sleep(20);
+    expect([cut.held, cut.released.length]).toEqual([false, 1]);
+    const again = await cut.moved("m1");
+    expect(again).toMatchObject({ state: "done" });
+    expect(again.held).toBeUndefined();
+  } finally {
+    cut.close();
+  }
+  const failed = await moveRig();
+  try {
+    failed.running = true;
+    failed.cut = (path) => { if (path.endsWith("/put")) throw new Error("no room there"); return undefined; };
+    expect(await failed.moved("m1")).toMatchObject({ state: "failed" });
+    expect([failed.held, failed.released.length]).toEqual([false, 1]);
+    // The owner's own hold is another matter: it stays through a failed move too.
+    failed.held = true;
+    expect(await failed.moved("m1")).toMatchObject({ state: "failed", held: true });
+    expect([failed.held, failed.released.length]).toEqual([true, 1]);
+  } finally {
+    failed.close();
+  }
+});
+
 // Each landing saves the folder's own state to a ref first. Only the newest
 // few are kept, on both sides, and none outlives the session.
 test("the refs a landing saves a folder's own state to are pruned, and go with the session", async () => {

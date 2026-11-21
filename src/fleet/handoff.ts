@@ -42,6 +42,8 @@ export type Handoff = {
   // The switch is stored; the session's queue is still to be let go on.
   settle?: boolean;
   // The owner held the session's queue before the move: it stays held after it.
+  // Without it, a hold found after the move is the move's own (it stopped the
+  // running turn) and is let go when the move ends, however it ends.
   held?: boolean;
 };
 // `away`: the worktree the session has on a machine. `making`: one about to be
@@ -115,6 +117,8 @@ export class Handoffs {
       h.summary = `Moved from ${h.from.machine} to ${h.to.machine}: now in ${s.workspace}. The daemon restarted as the move ended.`;
       if (!h.held) h.settle = true;
     } else {
+      // The cut move had stopped the turn: that hold is not the owner's, and goes.
+      if (!h.held && ["running", "done"].includes(h.steps.find((st) => st.name === "interrupt")!.state)) h.settle = true;
       for (const st of h.steps) {
         if (st.state === "running") { st.state = "failed"; st.detail = "cut by a daemon restart"; }
         else if (st.state === "pending") st.state = "skipped";
@@ -141,10 +145,10 @@ export class Handoffs {
     this.bus.emit({ t: "feature", name: "handoff_progress", session_id: id, data: h });
   }
 
-  // The last thing a finished move does: the queue it stopped goes on. Its own
-  // step, marked on the receipt, so a daemon that went down after the switch
-  // was stored still does it. Never for a queue the owner held before the
-  // move: that one waits for the owner as it did.
+  // The last thing a move does, finished, failed or cut: the queue it stopped
+  // goes on. Its own step, marked on the receipt, so a daemon that went down
+  // after the switch was stored still does it. Never for a queue the owner
+  // held before the move: that one waits for the owner as it did.
   private settle(id: string) {
     const m = this.moves(id);
     if (!m.last?.settle) return;
@@ -474,7 +478,11 @@ ${GIT} update-index -q --refresh >/dev/null || true`, "apply");
         return void (await this.cleanup(sid).catch(() => {}));
       }
       this.note(sid, `The move to ${h.to.machine} failed; the session stays on ${h.from.machine}. ${h.error}`);
+      // The turn this move stopped stays stopped; the queue behind it is not the move's to keep held.
+      const stopped = !h.held && h.steps.find((st) => st.name === "interrupt")!.state === "done";
+      if (stopped) h.settle = true;
       this.record(h);
+      if (stopped) { this.settle(sid); delete h.settle; }
     }
   }
 
