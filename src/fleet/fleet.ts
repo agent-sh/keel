@@ -20,7 +20,8 @@ export type DaemonLink = { state: "linked" | "offline" | "connecting" | "none"; 
 
 type Questions = Extract<Frame, { t: "questions" }>;
 // `states`: each of that daemon's sessions' state as it tells it (src/core/watch.ts), kept current by its frames.
-type Relay = { abort: AbortController; sessions: Map<string, Session>; states: Map<string, SessionState>; questions?: Questions; live: boolean; stale: boolean; retry: number; retryAt?: number; timer?: Timer };
+// `statesRev`: that daemon's bus rev the states reflect (its snapshot's, then its newest state frame's).
+type Relay = { abort: AbortController; sessions: Map<string, Session>; states: Map<string, SessionState>; statesRev?: number; questions?: Questions; live: boolean; stale: boolean; retry: number; retryAt?: number; timer?: Timer };
 type Tunnel = { proc: Bun.Subprocess; port: number };
 type Queue = { running: number; waiting: { resolve: () => void; reject: (e: Error) => void }[] };
 
@@ -432,7 +433,7 @@ export class Fleet {
 
   private openRelay(id: string, prev?: Relay) {
     if (this.stopped) return; // a check that ended after a hot reload replaced this fleet opens nothing
-    const relay: Relay = { abort: new AbortController(), sessions: prev?.sessions ?? new Map(), states: prev?.states ?? new Map(), live: false, stale: !!prev?.sessions.size, retry: prev?.retry ?? 0 };
+    const relay: Relay = { abort: new AbortController(), sessions: prev?.sessions ?? new Map(), states: prev?.states ?? new Map(), statesRev: prev?.statesRev, live: false, stale: !!prev?.sessions.size, retry: prev?.retry ?? 0 };
     this.relays.set(id, relay);
     let opened = 0;
     const lost = (reason: string) => {
@@ -507,19 +508,23 @@ export class Fleet {
       this.bus.emit({ t: "feature", name: "fleet_sessions", data: { machine: id } });
       return;
     }
-    if (f.t === "states") relay.states = new Map(Object.entries((f.states ?? {}) as Record<string, SessionState>));
+    if (f.t === "states") {
+      relay.states = new Map(Object.entries((f.states ?? {}) as Record<string, SessionState>));
+      relay.statesRev = typeof f.rev === "number" ? f.rev : undefined;
+    }
     if (f.t === "session") {
       if (f.session.archived) relay.sessions.delete(f.session.id);
       else relay.sessions.set(f.session.id, f.session);
     }
     if (f.t === "feature" && f.name === "state" && f.session_id) {
       if (f.data) relay.states.set(f.session_id, f.data as SessionState); else relay.states.delete(f.session_id);
+      if (typeof f.rev === "number") relay.statesRev = Math.max(relay.statesRev ?? 0, f.rev);
     }
     if (f.t === "questions") relay.questions = f;
     this.bus.emit({ t: "feature", name: "fleet_frame", data: { machine: id, frame: f as Frame } });
   }
 
-  remoteSessions(id: string): { sessions: Session[]; states?: Record<string, SessionState>; questions?: Questions; stale: boolean; retry_at_ms?: number } {
+  remoteSessions(id: string): { sessions: Session[]; states?: Record<string, SessionState>; states_rev?: number; questions?: Questions; stale: boolean; retry_at_ms?: number } {
     const row = this.row(id);
     if (row && this.isSsh(row)) return { sessions: [], stale: false }; // its sessions are this daemon's
     const r = this.relays.get(id);
@@ -528,7 +533,7 @@ export class Fleet {
       if (m?.link_key) this.ensureRelay(id); // nobody opened it yet: in the background
       return { sessions: [], stale: true };
     }
-    return { sessions: [...r.sessions.values()].sort((a, b) => b.updated - a.updated), states: Object.fromEntries(r.states), questions: r.questions, stale: r.stale || !r.live, retry_at_ms: r.retryAt };
+    return { sessions: [...r.sessions.values()].sort((a, b) => b.updated - a.updated), states: Object.fromEntries(r.states), states_rev: r.statesRev, questions: r.questions, stale: r.stale || !r.live, retry_at_ms: r.retryAt };
   }
 
   emitMachines() {

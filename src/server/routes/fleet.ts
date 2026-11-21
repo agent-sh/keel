@@ -230,7 +230,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       if ((!m.link_key && m.state === "unknown") || f.isSsh(m)) continue; // an ssh machine has no sessions of its own
       const r = f.remoteSessions(m.id);
       const v = f.view(m);
-      machines.push({ id: m.id, name: m.name, state: v.daemon.state === "linked" ? m.state : "offline", sessions: r.sessions, states: r.states, questions: showQuestions ? r.questions : undefined, reason: v.daemon.reason ?? m.reason ?? undefined, colour: m.colour ?? undefined, stale: r.stale || undefined, retry_at_ms: r.retry_at_ms });
+      machines.push({ id: m.id, name: m.name, state: v.daemon.state === "linked" ? m.state : "offline", sessions: r.sessions, states: r.states, states_rev: r.states_rev, questions: showQuestions ? r.questions : undefined, reason: v.daemon.reason ?? m.reason ?? undefined, colour: m.colour ?? undefined, stale: r.stale || undefined, retry_at_ms: r.retry_at_ms });
       if (!r.stale) for (const s of r.sessions) recents.push({ machine_id: m.id, machine: m.name, session_id: s.id, title: s.title, phase: s.phase, updated_ms: s.updated, failed: s.phase === "error" });
     }
     recents.sort((a, b) => b.updated_ms - a.updated_ms);
@@ -666,7 +666,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         }, {
           last: enc.encode(": stalled\n\n"),
           // The sessions, then each one's state (src/core/watch.ts) and the questions that wait: what the other daemon's pages show at once.
-          open: [frame({ t: "snapshot", sessions: store.sessions() }), frame({ t: "states", states: board?.all() ?? {} }), frame({ t: "questions", pending: allPendingQuestions(), rev: bus.rev() })],
+          open: [frame({ t: "snapshot", sessions: store.sessions() }), frame({ t: "states", states: board?.all() ?? {}, rev: bus.rev() }), frame({ t: "questions", pending: allPendingQuestions(), rev: bus.rev() })],
         });
         mine.feeds.add(feed);
         const send = (x: unknown) => feed.send(frame(x));

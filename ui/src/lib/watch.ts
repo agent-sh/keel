@@ -49,11 +49,21 @@ export async function loadStates() {
   for (const [id, st] of Object.entries(r.states)) next[id] = newer(`${id}:state`, r.rev, true) || !told[id] ? st : told[id]!;
   setTold(next);
 }
-// The states of another machine's sessions, as its daemon told them with the relay's snapshot.
-export function tellRemote(machine: string, states: Record<string, SessionState>) {
+// The states of another machine's sessions, as its daemon told them: with the relay's snapshot,
+// and with every list of that machine's sessions this daemon serves. `rev`: that daemon's bus rev
+// the states reflect. A list can come back after a newer frame of one of its sessions (the list
+// was read first): per session the newer of the two is kept, and a session the list leaves out is
+// dropped only when the list is the newer word on it.
+export function tellRemote(machine: string, states: Record<string, SessionState>, rev?: number) {
   const next: Record<string, SessionState> = {};
-  for (const [id, st] of Object.entries(told)) if (splitId(id)?.machine !== machine) next[id] = st;
-  for (const [id, st] of Object.entries(states)) next[remoteId(machine, id)] = st.child ? { ...st, child: remoteId(machine, st.child) } : st;
+  const theirs = new Set(Object.keys(states).map((id) => remoteId(machine, id)));
+  for (const [id, st] of Object.entries(told)) {
+    if (splitId(id)?.machine !== machine || (!theirs.has(id) && !newer(`${id}:state`, rev, true))) next[id] = st;
+  }
+  for (const [id, st] of Object.entries(states)) {
+    const rid = remoteId(machine, id);
+    next[rid] = newer(`${rid}:state`, rev, true) || !told[rid] ? (st.child ? { ...st, child: remoteId(machine, st.child) } : st) : told[rid]!;
+  }
   setTold(next);
 }
 onFeature({

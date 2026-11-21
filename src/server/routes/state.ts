@@ -31,11 +31,17 @@ const SWEEP_MS = 5000;
 const STEP_MS = 600;
 
 export class StateBoard {
+  // What the listeners were last told of each session, as sent. Only a telling writes it: a read
+  // of every state (a page's snapshot, a peer's relay opening, the command line) tells its caller
+  // and no listener, so it must not make a change look told.
   private last = new Map<string, string>();
   private dirty = new Set<string>();
   private timer: ReturnType<typeof setTimeout> | undefined;
+  private due = 0; // when the pending telling runs
   private asking = new Set<string>();
   private sent = new Map<string, { at: number; watch: string }>();
+  // Sessions seen not at rest (told so, or read so by a snapshot): looked at again by the sweep.
+  private live = new Set<string>();
 
   constructor(private deps: Pick<Deps, "store" | "bus" | "engine">) {}
 
@@ -56,7 +62,7 @@ export class StateBoard {
     for (const s of this.deps.store.sessions()) {
       const st = this.read(s.id, l)!;
       out[s.id] = st;
-      this.last.set(s.id, JSON.stringify(st));
+      this.note(s.id, st);
     }
     return out;
   }
@@ -75,13 +81,28 @@ export class StateBoard {
     return out.sort((a, b) => b.elapsed_ms - a.elapsed_ms);
   }
 
+  // A session not at rest goes on by itself or ends with no frame to say so: the sweep reads it again.
+  private note(id: string, st: SessionState) {
+    if (st.watch === "need" || st.watch === "work" || st.watch === "wait") this.live.add(id); else this.live.delete(id);
+  }
+
+  // The telling runs after `ms`, or sooner when one is already due sooner.
+  private arm(ms: number) {
+    const at = Date.now() + ms;
+    if (this.timer && this.due <= at) return;
+    clearTimeout(this.timer);
+    this.due = at;
+    this.timer = setTimeout(() => this.flush(), ms);
+  }
+
   // The session and the sessions above it: an agent's card is its parent's too.
+  // (A change is told within the settle time also while a step change waits out its own, longer, time.)
   touch(id: string | undefined | null) {
     for (let n = 0; id && n < 32; n++) {
       this.dirty.add(id);
       id = this.deps.store.session(id)?.parent_id;
     }
-    this.timer ??= setTimeout(() => this.flush(), SETTLE_MS);
+    this.arm(SETTLE_MS);
   }
 
   flush() {
@@ -96,6 +117,7 @@ export class StateBoard {
     for (const id of ids) {
       const st = this.read(id, l);
       if (!st) { this.gone(id); continue; }
+      this.note(id, st);
       const now = JSON.stringify(st);
       if (this.last.get(id) === now) continue;
       // One step after another inside a working turn: told when the last telling is old enough.
@@ -109,7 +131,7 @@ export class StateBoard {
       this.sent.set(id, { at, watch: st.watch });
       this.deps.bus.emit({ t: "feature", name: "state", session_id: id, data: st });
     }
-    if (this.dirty.size) this.timer ??= setTimeout(() => this.flush(), Math.max(SETTLE_MS, again));
+    if (this.dirty.size) this.arm(Math.max(SETTLE_MS, again));
   }
 
   onFrame(f: Frame) {
@@ -132,15 +154,13 @@ export class StateBoard {
   private gone(id: string) {
     this.dirty.delete(id);
     this.sent.delete(id);
+    this.live.delete(id);
     if (this.last.delete(id)) this.deps.bus.emit({ t: "feature", name: "state", session_id: id, data: null });
   }
 
   // Sessions that are not at rest are read again: what ended without a frame shows within the sweep.
   sweep() {
-    for (const [id, st] of this.last) {
-      const w = (JSON.parse(st) as SessionState).watch;
-      if (w === "need" || w === "work" || w === "wait") this.touch(id);
-    }
+    for (const id of this.live) this.touch(id);
   }
 }
 
