@@ -755,10 +755,17 @@ function handback(a: AgentRecord, grouped = false) {
 }
 
 // Queued per report: a later task's report is queued too, after the earlier one.
+// A parent held after the owner's Stop starts no turn for a report: it stays
+// owed, also when it was lined up while the stopped turn ran, and goes after
+// the owner's next turn (onTurnEnd). A wait_agent still returns it.
 function sendOwed(o: Pick<Owed, "report_id" | "agent_id" | "block" | "status">, parentId: string, still = "") {
   if (isPending(parentId, (m) => m.kind === "subagent" && m.report_id === o.report_id)) return; // already on its way
-  deliver(parentId, `${HANDBACK_PREFACE}\n${o.block}${still}`, { kind: "subagent", agent_id: o.agent_id, report_id: o.report_id, status: o.status }, {
+  const held = () => D().engine.isHeld(parentId);
+  if (held()) return;
+  const input = { text: `${HANDBACK_PREFACE}\n${o.block}${still}`, meta: { kind: "subagent", agent_id: o.agent_id, report_id: o.report_id, status: o.status } };
+  deliver(parentId, input.text, input.meta, {
     coalesceMs: 300,
+    refresh: () => (held() ? undefined : input),
     // Sending this report settles this report only, never a newer one.
     onSent: () => settle(o.agent_id, o.report_id),
   });
@@ -776,6 +783,8 @@ const INCOMPLETE = new Set(["refusal", "max_tokens", "max_steps"]);
 // Turn-end of any session: settle the agent whose session it is, unless more
 // work is already lined up for it (a queued message, a wait).
 export function onTurnEnd(sessionId: string, reason: string) {
+  // Reports held back while the owner had stopped this session go now, after the owner's next turn.
+  sendAllOwed(owedOf(sessionId));
   const a = byChild(sessionId);
   if (!a || (isEnded(a) && !stopping.has(a.id))) return;
   // Parked for a daemon stop: the agent has not ended. The next daemon

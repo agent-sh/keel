@@ -38,9 +38,10 @@ const store = new Store(join(dir, "state"));
 const busy = new Set<string>();
 const sends: { id: string; text: string }[] = [];
 const interrupted: { id: string; by?: string }[] = [];
+const held = new Set<string>(); // sessions whose queue is held after the owner's Stop
 const engine = {
   isRunning: (id: string) => busy.has(id),
-  isHeld: () => false,
+  isHeld: (id: string) => held.has(id),
   send: (id: string, text: string, o: any) => (sends.push({ id, text }), { event: store.append(id, "user", { text, ...o?.meta }) }),
   interrupt: async (id: string, by?: string) => { interrupted.push({ id, by }); busy.delete(id); agents.onTurnEnd(id, "interrupted"); },
   lineage: (id: string) => lineage(store.events(id), store.session(id)?.head ?? null),
@@ -542,4 +543,46 @@ test("a blocking agent another actor stopped first owes its stopped parent no re
   }
   expect(agents.get(b.id)).toMatchObject({ status: "stopped", stopped_by: "owner", handback: false });
   expect(store.db.query<{ n: number }, [string]>("SELECT count(*) AS n FROM agent_owed WHERE agent_id = ?").get(b.id)!.n).toBe(0);
+});
+
+// A parent with a warm cache of its own, so one test's agents and reports are its own.
+const parentOf = (title: string) => {
+  const p = store.createSession({ model: parent.model, workspace: dir, title });
+  store.append(p.id, "assistant", { blocks: [] });
+  return { ...p, to: () => sends.filter((x) => x.id === p.id).map((x) => x.text), start: (o: Partial<agents.SpawnInput> = {}) => agents.spawn(p.id, { prompt: "do it", isolation: "none", background: true, ...o }) };
+};
+
+// The owner stopped the parent's turn: its queue is held and nothing starts by
+// itself. A report stays owed and goes after the owner's next turn; a wait
+// still returns it.
+test("a report does not restart a parent held after the owner's Stop", async () => {
+  const p = parentOf("held parent");
+  const a = await p.start();
+  held.add(p.id);
+  end(a, "end_turn", "report held A");
+  await Bun.sleep(400); // past the wait that lets a burst arrive together
+  expect(p.to()).toEqual([]);
+  // A report lined up while the turn ran is not sent at the stop either.
+  held.delete(p.id);
+  busy.add(p.id);
+  const b = await p.start();
+  end(b, "end_turn", "report held B");
+  await settled();
+  held.add(p.id);
+  busy.delete(p.id);
+  flush(p.id);
+  expect(p.to()).toEqual([]);
+  // Nor by the next daemon: the hold is kept over a restart.
+  dropPending(p.id);
+  agents.recover();
+  flush(p.id);
+  expect(p.to()).toEqual([]);
+  expect((await agents.waitAll(p.id, [a.id], 1000))[0]).toMatchObject({ status: "completed", result: "report held A" });
+  // The owner writes: that turn's end is when both reports go, each once.
+  held.delete(p.id);
+  agents.onTurnEnd(p.id, "end_turn");
+  flush(p.id);
+  const got = p.to().join("\n");
+  expect([got.split("report held A").length - 1, got.split("report held B").length - 1]).toEqual([1, 1]);
+  expect([agents.get(a.id)!.handback, agents.get(b.id)!.handback]).toEqual([false, false]);
 });
