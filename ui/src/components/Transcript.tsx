@@ -1,11 +1,12 @@
 import { CopyButton } from "./CopyButton.tsx";
 import { ArrowDown, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Copy, FileText, GitBranch, ImageOff, Layers, Pencil, Play, RotateCcw, RotateCw, ShieldAlert } from "lucide-react";
 import { TurnNotes } from "./MemoryNote.tsx";
-import { Fragment, startTransition, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { createContext, memo, startTransition, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { leafOf, lineage } from "../../../src/core/tree.ts";
 import type { AssistantBlock, AttachmentBlock, ImageBlock, PromptBlock, Session, StoredEvent, ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { rowActions } from "../lib/extend.ts";
-import { actions, liveNow, reportError, useStore, type DraftBlock } from "../lib/store.ts";
+import { blockKey, buildRows, nextLineage, nextSiblings, rowProbe, type Built, type LineageOf, type Row, type SiblingsOf } from "../lib/rows.ts";
+import { actions, getState, liveNow, reportError, useStore, type DraftBlock } from "../lib/store.ts";
 import { useSafety } from "../lib/safety.ts";
 import { getUI, navigate, seedComposer, setUI, useUI } from "../lib/ui.ts";
 import { announce } from "../lib/announce.ts";
@@ -42,12 +43,62 @@ function ActionButton({ label, onClick, children, testid }: { label: string; onC
   );
 }
 
-function Extra({ on, e, s }: { on: "user" | "assistant"; e: StoredEvent; s: Session }) {
+// What a finished row reads of its session while the transcript goes on: the
+// session, and which turn is the last one. Rows are memo components that get
+// only their own content as props; each reads what it shows of the rest here
+// with a selector, so a new event renders the rows it changes and no other.
+// The session is replaced only when something other than its head, last
+// activity and revision changed (those move with every event; no row shows them).
+type Tail = { session: Session; lastEnd?: string; last?: string }; // `last`: the newest event shown
+const MOVING = new Set(["head", "updated", "rev"]);
+const sameSession = (a: Session, b: Session) => {
+  if (a === b) return true;
+  for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) if (!MOVING.has(k) && (a as any)[k] !== (b as any)[k]) return false;
+  return true;
+};
+function tailStore() {
+  let st: Tail | null = null;
+  let images: string | undefined;
+  let dirty = false;
+  const subs = new Set<() => void>();
+  return {
+    get: () => st!,
+    // Called while the transcript renders: rows rendered in the same pass read it at once.
+    put(session: Session, lastEnd?: string, last?: string) {
+      if (st && st.lastEnd === lastEnd && st.last === last && sameSession(st.session, session)) return;
+      st = { session, lastEnd, last };
+      dirty = true;
+    },
+    // After the commit: rows that did not render ask their selector again.
+    flush() {
+      if (!dirty) return;
+      dirty = false;
+      subs.forEach((f) => f());
+    },
+    subscribe: (f: () => void) => { subs.add(f); return () => void subs.delete(f); },
+    // The newest note about images left out (it alone offers to send them again).
+    lastImages: () => images,
+    setImages(id: string | undefined) { if (id !== images) { images = id; dirty = true; } },
+  };
+}
+const TailContext = createContext<ReturnType<typeof tailStore>>(null!);
+function useTail<T>(sel: (t: Tail) => T): T {
+  const store = useContext(TailContext);
+  return useSyncExternalStore(store.subscribe, () => sel(store.get()));
+}
+const isWorking = (t: Tail) => t.session.phase === "working";
+
+function Extra({ on, e }: { on: "user" | "assistant"; e: StoredEvent }) {
   useSyncExternalStore(rowActions.subscribe, rowActions.version);
+  const store = useContext(TailContext);
+  // The actions this row offers, as their ids: a session change that offers the same ones renders nothing.
+  const shown = useTail((t) => rowActions.all().filter((a) => a.on === on && (!a.when || a.when(e, t.session))).map((a) => a.id).join(" "));
+  const ids = new Set(shown.split(" "));
+  const s = store.get().session;
   return (
     <>
-      {rowActions.all().filter((a) => a.on === on && (!a.when || a.when(e, s))).map((a) => (
-        <ActionButton key={a.id} label={a.label} testid={`rowaction-${a.id}`} onClick={() => a.run(e, s)}>{typeof a.icon === "function" ? a.icon(e, s) : a.icon}</ActionButton>
+      {rowActions.all().filter((a) => a.on === on && ids.has(a.id)).map((a) => (
+        <ActionButton key={a.id} label={a.label} testid={`rowaction-${a.id}`} onClick={() => a.run(e, getState().sessions[s.id] ?? s)}>{typeof a.icon === "function" ? a.icon(e, s) : a.icon}</ActionButton>
       ))}
     </>
   );
@@ -101,16 +152,17 @@ function Images({ blocks }: { blocks: PromptBlock[] }) {
 
 // Edit-and-resend makes a new version of the prompt (a sibling in the event
 // tree); the arrows move between versions, each its own branch.
-function UserMessage({ e, s, vs }: { e: StoredEvent; s: Session; vs: StoredEvent[] }) {
+function UserMessage({ e, sid, vs }: { e: StoredEvent; sid: string; vs: StoredEvent[] }) {
   const text: string = e.data.text ?? "";
   const long = text.length > 1400 || text.split("\n").length > 18;
   const [full, setFull] = useState(false);
   const [editing, setEditing] = useState(false);
   const at = vs.findIndex((v) => v.id === e.id);
-  const working = s.phase === "working";
+  // Only a prompt with versions shows the turn's state (its arrows wait for the turn).
+  const working = useTail((t) => vs.length > 1 && isWorking(t));
   const origin: string | undefined = e.data.origin;
-  const pick = (i: number) => actions.setHead(s.id, vs[i]!.id).catch(reportError);
-  if (editing) return <EditPrompt e={e} s={s} onDone={() => setEditing(false)} />;
+  const pick = (i: number) => actions.setHead(sid, vs[i]!.id).catch(reportError);
+  if (editing) return <EditPrompt e={e} sid={sid} onDone={() => setEditing(false)} />;
   return (
     <div id={`e-${e.id}`} className="k-user-message group/user row-cv flex scroll-mt-6 flex-col items-end gap-1.5 rounded-lg animate-in" data-testid="user-message" data-event-id={e.id}>
       {origin === "steer" && <span className="k-label" data-testid="origin-steer">Steered into the turn</span>}
@@ -131,7 +183,7 @@ function UserMessage({ e, s, vs }: { e: StoredEvent; s: Session; vs: StoredEvent
         <span className="flex items-center opacity-0 transition-opacity group-hover/user:opacity-100 focus-within:opacity-100 max-md:opacity-100">
           <CopyButton text={() => text} label="Copy the message" testid="copy-message" className="size-7" />
           <ActionButton label="Edit and send as a new version" testid="edit-message" onClick={() => setEditing(true)}><Pencil className="size-3.5" /></ActionButton>
-          <Extra on="user" e={e} s={s} />
+          <Extra on="user" e={e} />
         </span>
         {vs.length > 1 && (
           <span className="flex items-center text-caption tabular-nums text-faint" data-testid="branch-nav">
@@ -151,13 +203,14 @@ function UserMessage({ e, s, vs }: { e: StoredEvent; s: Session; vs: StoredEvent
 
 // The new version keeps the prompt's attachments, in their order: they are
 // shown here before Send, and only the words change.
-function EditPrompt({ e, s, onDone }: { e: StoredEvent; s: Session; onDone: () => void }) {
+function EditPrompt({ e, sid, onDone }: { e: StoredEvent; sid: string; onDone: () => void }) {
+  const working = useTail(isWorking);
   const raw: string = e.data.text ?? "";
   const [text, setText] = useState<string>(raw);
   const blocks: PromptBlock[] = e.data.images ?? [];
   const n = blocks.length;
   const ok = !!text.trim() || n > 0;
-  const send = () => ok && actions.edit(s.id, e.id, text.trim()).then(onDone, reportError);
+  const send = () => ok && actions.edit(sid, e.id, text.trim()).then(onDone, reportError);
   return (
     <div className="flex justify-end animate-in" data-event-id={e.id}>
       <div className="w-[min(85%,40rem)] rounded-xl border border-line-strong bg-raised p-2 shadow-2">
@@ -182,7 +235,7 @@ function EditPrompt({ e, s, onDone }: { e: StoredEvent; s: Session; onDone: () =
         />
         <div className="flex items-center justify-end gap-1.5 pt-1">
           <span className="mr-auto pl-2 text-caption text-faint" data-testid="edit-note">
-            {s.phase === "working" ? "Stops the turn, then sends this as a new version." : "Sends as a new version; the current one stays as a branch."}
+            {working ? "Stops the turn, then sends this as a new version." : "Sends as a new version; the current one stays as a branch."}
             {n > 0 && ` The ${n === 1 ? "attachment goes" : `${n} attachments go`} with it as before.`}
           </span>
           <button type="button" onClick={onDone} className="h-7 rounded-md px-2.5 text-ui text-muted hover:bg-hover">Cancel</button>
@@ -196,7 +249,8 @@ function EditPrompt({ e, s, onDone }: { e: StoredEvent; s: Session; onDone: () =
 }
 
 // A declined reply: what the provider said, and a way on with another model.
-function Refusal({ e, s, handled }: { e: StoredEvent; s: Session; handled?: boolean }) {
+function Refusal({ e, sid, handled }: { e: StoredEvent; sid: string; handled?: boolean }) {
+  const model = useTail((t) => t.session.model);
   const [pick, setPick] = useState("");
   const [keep, setKeep] = useState(false);
   const d = e.data.stop_details ?? {};
@@ -209,17 +263,17 @@ function Refusal({ e, s, handled }: { e: StoredEvent; s: Session; handled?: bool
       {d.explanation && <p className="mt-1 text-muted">{d.explanation}</p>}
       <p className="mt-1 text-muted">Its partial reply is left out of the context.{handled ? " The fallback model took the request." : " Another model can take the same request."}</p>
       {!handled && <div className="mt-2 flex items-center gap-2">
-        <div className="rounded-md border border-line"><ModelPicker value={pick || s.model} onChange={setPick} /></div>
+        <div className="rounded-md border border-line"><ModelPicker value={pick || model} onChange={setPick} /></div>
         <button
           type="button"
-          disabled={!pick || pick === s.model}
+          disabled={!pick || pick === model}
           onClick={() =>
             // The picker's switch (with its cache warning): Cancel leaves the model and does not resume.
-            switchSession(s.id, { model: pick })
+            switchSession(sid, { model: pick })
               .then(async (ok) => {
                 if (!ok) return;
-                if (keep) await actions.patch(s.id, { settings: { fallback: pick } });
-                await actions.resume(s.id);
+                if (keep) await actions.patch(sid, { settings: { fallback: pick } });
+                await actions.resume(sid);
               })
               .catch(reportError)}
           className="h-8 rounded-md bg-accent px-3 font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40"
@@ -246,13 +300,13 @@ function Divider({ children, testid }: { children: ReactNode; testid?: string })
 }
 
 // A context checkpoint: a summary (expandable) or a clear (undo while it is the head).
-function Checkpoint({ e, s, undoable }: { e: StoredEvent; s: Session; undoable?: boolean }) {
+function Checkpoint({ e, sid, undoable }: { e: StoredEvent; sid: string; undoable?: boolean }) {
   if (e.data.mode === "clear") {
     return (
       <Divider testid="cleared">
         <span className="flex items-center gap-1.5"><RotateCcw className="size-3.5" /> Context cleared. The model starts fresh from here.</span>
         {undoable && e.data.undo_head && (
-          <button type="button" data-testid="undo-clear" className="rounded-sm px-1.5 py-0.5 font-medium text-accent-ink hover:bg-accent-soft" onClick={() => actions.setHead(s.id, e.data.undo_head, false, false).catch(reportError)}>
+          <button type="button" data-testid="undo-clear" className="rounded-sm px-1.5 py-0.5 font-medium text-accent-ink hover:bg-accent-soft" onClick={() => actions.setHead(sid, e.data.undo_head, false, false).catch(reportError)}>
             Undo
           </button>
         )}
@@ -285,13 +339,15 @@ function Checkpoint({ e, s, undoable }: { e: StoredEvent; s: Session; undoable?:
 // the turn went on. Where it left images out, the newest such note offers to
 // send them again (the session's images_out is cleared; a provider that
 // refuses them again has them left out again).
-function ImagesNote({ e, s, last }: { e: StoredEvent; s: Session; last: boolean }) {
-  const out = s.settings.images_out?.length ?? 0;
+function ImagesNote({ e, sid }: { e: StoredEvent; sid: string }) {
+  const store = useContext(TailContext);
+  const out = useTail((t) => t.session.settings.images_out?.length ?? 0);
+  const last = useSyncExternalStore(store.subscribe, () => store.lastImages() === e.id);
   return (
     <Divider testid="images-note">
       <span className="flex items-center gap-1.5"><ImageOff className="size-3.5 shrink-0" /> {e.data.text}</span>
       {last && e.data.left_out > 0 && (out > 0 ? (
-        <button type="button" data-testid="images-restore" className="shrink-0 whitespace-nowrap rounded-sm px-1.5 py-0.5 font-medium text-accent-ink hover:bg-accent-soft" onClick={() => actions.patch(s.id, { settings: { images_out: null } }).catch(reportError)}>
+        <button type="button" data-testid="images-restore" className="shrink-0 whitespace-nowrap rounded-sm px-1.5 py-0.5 font-medium text-accent-ink hover:bg-accent-soft" onClick={() => actions.patch(sid, { settings: { images_out: null } }).catch(reportError)}>
           Send them again
         </button>
       ) : <span data-testid="images-restored" className="shrink-0 whitespace-nowrap text-muted">Sending them again</span>)}
@@ -338,14 +394,16 @@ function Status({ sessionId }: { sessionId: string }) {
   );
 }
 
-function AssistantBlocks({ blocks, results, s }: { blocks: AssistantBlock[]; results: Map<string, ToolResultBlock>; s: Session }) {
+function AssistantBlocks({ blocks, results, sid }: { blocks: AssistantBlock[]; results: (ToolResultBlock | undefined)[]; sid: string }) {
+  const remote = useTail((t) => !!t.session.machine);
+  const cwd = useTail((t) => t.session.workspace);
   return (
     <>
       {blocks.map((b, i) => {
-        if (b.type === "text") return b.text.trim() ? <div key={i} data-testid="assistant-text"><Markdown text={b.text} sessionId={s.machine ? undefined : s.id} /></div> : null;
+        if (b.type === "text") return b.text.trim() ? <div key={i} data-testid="assistant-text"><Markdown text={b.text} sessionId={remote ? undefined : sid} /></div> : null;
         // A thought may carry only opaque state for replay (an encrypted item): nothing to show.
         if (b.type === "thinking") return b.thinking.trim() ? <Thinking key={i} text={b.thinking} /> : null;
-        if (b.type === "tool_use") return <ToolCall key={b.id} use={b} result={results.get(b.id)} sessionId={s.id} cwd={s.workspace} />;
+        if (b.type === "tool_use") return <ToolCall key={b.id} use={b} result={results[i]} sessionId={sid} cwd={cwd} />;
         return null;
       })}
     </>
@@ -395,20 +453,23 @@ const REASONS: Record<string, string> = { interrupted: "Stopped", max_tokens: "C
 // way on (try again, the fix), and a turn with no reply has nothing to copy,
 // mark or rate: the footer keeps only what applies.
 // `times`: how many restarts in a row this footer stands for.
-function TurnFooter({ e, reply, prompt, s, last, notes = [], boxed = false, times = 1 }: { e: StoredEvent; reply: string; prompt?: StoredEvent; s: Session; last: boolean; notes?: StoredEvent[]; boxed?: boolean; times?: number }) {
+function TurnFooter({ e, reply, prompt, sid, notes, boxed = false, times = 1 }: { e: StoredEvent; reply: string[]; prompt?: StoredEvent; sid: string; notes: StoredEvent[]; boxed?: boolean; times?: number }) {
+  const last = useTail((t) => t.lastEnd === e.id);
+  // The turn's state shows on the last footer (its actions) and on a restart chip.
+  const working = useTail((t) => (last || notes.some((n) => n.kind === "user")) && isWorking(t));
   const u = e.data.usage;
   const input = u ? u.input + u.cache_read + u.cache_write : 0;
   const cached = u && input ? Math.round((100 * u.cache_read) / input) : 0;
   return (
     <div className="k-turn-foot group/foot -mt-1 flex h-7 items-center gap-0.5" data-quiet={!last || undefined}>
-      {reply && <CopyButton text={() => reply} label="Copy the reply" testid="copy-reply" className="size-7" />}
-      {prompt && last && s.phase !== "working" && (
-        <ActionButton label="Answer again (a new version; this one stays a branch)" testid="retry" onClick={() => actions.edit(s.id, prompt.id, prompt.data.text).catch(reportError)}>
+      {reply.length > 0 && <CopyButton text={() => reply.join("\n\n")} label="Copy the reply" testid="copy-reply" className="size-7" />}
+      {prompt && last && !working && (
+        <ActionButton label="Answer again (a new version; this one stays a branch)" testid="retry" onClick={() => actions.edit(sid, prompt.id, prompt.data.text).catch(reportError)}>
           <RotateCcw className="size-3.5" />
         </ActionButton>
       )}
-      {!(boxed && !reply) && <Extra on="assistant" e={e} s={s} />}
-      <TurnNotes notes={notes} working={s.phase === "working"} />
+      {!(boxed && !reply.length) && <Extra on="assistant" e={e} />}
+      <TurnNotes notes={notes} working={working} />
       <span className="k-turn-end ml-2 flex gap-3 text-micro tabular-nums text-faint select-none" data-testid="turn-end">
         {REASONS[e.data.reason] && <span className={e.data.reason === "error" ? "text-st-fail" : "text-warn"} data-testid="turn-reason">{REASONS[e.data.reason]}{STOP_BY[e.data.stopped_by] ?? ""}{times > 1 ? `, ${times} times` : ""}</span>}
         <span>{(e.data.ms / 1000).toFixed(1)}s</span>
@@ -416,8 +477,8 @@ function TurnFooter({ e, reply, prompt, s, last, notes = [], boxed = false, time
         {u && <span>{fmtTokens(u.output)} out</span>}
         {u?.cost !== undefined && !u.unpriced ? <span data-testid="turn-cost">{fmtCost(u.cost)}</span> : u?.unpriced ? <span>cost unknown</span> : null}
       </span>
-      {last && s.phase !== "working" && REASONS[e.data.reason] && !boxed && (
-        <button type="button" data-testid="resume" onClick={() => actions.resume(s.id).catch(reportError)} className="ml-2 flex h-6 items-center gap-1 rounded-sm px-1.5 text-caption font-medium text-accent-ink hover:bg-accent-soft">
+      {last && !working && REASONS[e.data.reason] && !boxed && (
+        <button type="button" data-testid="resume" onClick={() => actions.resume(sid).catch(reportError)} className="ml-2 flex h-6 items-center gap-1 rounded-sm px-1.5 text-caption font-medium text-accent-ink hover:bg-accent-soft">
           <Play className="size-3" /> Continue
         </button>
       )}
@@ -482,6 +543,75 @@ const isPrompt = (e: StoredEvent) => e.kind === "user" && e.data.origin !== "res
 // Who stopped a turn, as the footer says it (a child's turn records the same actor as its agent card).
 const STOP_BY: Record<string, string> = { owner: " by you", parent: " by the parent agent", parent_turn: " with the parent's turn", time_limit: ": its time limit passed", parent_archived: ": its parent session was archived" };
 
+const isInput = (e: StoredEvent) => SYSTEM_INPUT.has(e.data.kind) || isPeerMessage(e);
+
+// One row. Its props are its own content (the row object stays the same while
+// that does not change), so a reply streaming or an event added below renders
+// nothing here.
+const TranscriptRow = memo(function TranscriptRow({ row, sid }: { row: Row; sid: string }) {
+  rowProbe.rendered?.(row.id);
+  const e = row.e;
+  switch (row.kind) {
+    case "harness":
+      return <p id={`e-${e.id}`} data-event-id={e.id} className="scroll-mt-6 rounded-md text-center text-caption text-faint" data-testid="harness-note">{String(e.data.text).replace(/^\[harness\]\s*/, "")}</p>;
+    case "input":
+      return <div id={`e-${e.id}`} data-event-id={e.id} className="scroll-mt-6 rounded-lg">{SYSTEM_INPUT.has(e.data.kind) ? <InputNotice e={e} /> : <PeerMessage e={e} />}</div>;
+    case "user":
+      return <UserMessage e={e} sid={sid} vs={row.vs!} />;
+    case "checkpoint":
+      return <Checkpoint e={e} sid={sid} undoable={row.undoable} />;
+    case "refusal":
+      return <Refusal e={e} sid={sid} handled={row.handled} />;
+    case "assistant":
+      return <div id={`e-${e.id}`} className="row-cv flex flex-col gap-3 rounded-lg" data-event-id={e.id}><AssistantBlocks blocks={e.data.blocks} results={row.results!} sid={sid} /></div>;
+    case "error":
+      return <Failure e={e} after={row.after} />;
+    case "images":
+      return <ImagesNote e={e} sid={sid} />;
+    case "fork":
+      return <ForkNote e={e} />;
+    case "peer_refused":
+      return <RefusedNote e={e} />;
+    case "model": {
+      // A model switch: who made it and when, inline where it took effect.
+      const at = clock(e.ts);
+      return <Divider testid="model-note"><span>{e.data.text} <span className="text-faint">{e.data.by === "cli" ? "From keel run" : "By you"}, {at}</span></span></Divider>;
+    }
+    case "note": {
+      // A note for the model (a background job ended) reads short here: no tags, no log path.
+      const text = e.data.short ? e.data.short : e.data.skill ? `Loaded the ${e.data.skill} skill` : e.data.mcp_prompt ? `Loaded the ${e.data.mcp_prompt} prompt` : e.data.kind === "skill_mode" ? (e.data.skill_mode ? `Skill mode: ${e.data.skill_mode}` : "Skill mode off") : e.data.model ? String(e.data.text).replace(/<\/?system-reminder>/g, "").replace(/\. Output: \S+/g, ".").trim() : e.data.text;
+      return <Divider testid="note"><span>{text}</span></Divider>;
+    }
+    case "end":
+      // A restart the next restart's footer stands for.
+      if (row.folded) return null;
+      // A failed turn says what failed first, then its footer.
+      return (
+        <>
+          {row.failures?.map((f) => <Failure key={f.id} e={f} end={e.id} />)}
+          <TurnFooter e={e} reply={row.reply!} prompt={row.prompt} sid={sid} notes={row.notes!} boxed={!!row.failures?.length} times={row.times} />
+        </>
+      );
+  }
+});
+
+// The box of a failed turn (TurnFailure.tsx). It offers the way on while the
+// failure is where the session stands: above the last footer (`end`), or by
+// itself right after the last turn's end or as the newest event, and no turn runs.
+function Failure({ e, end, after }: { e: StoredEvent; end?: string; after?: string }) {
+  const s = useTail((t) => t.session);
+  const live = useTail((t) => !isWorking(t) && (end ? t.lastEnd === end : (after !== undefined && after === t.lastEnd) || t.last === e.id));
+  return <TurnFailure e={e} s={s} live={live} />;
+}
+
+// A run of rows (see rows.ts): one that did not change is not walked again.
+const RowBlock = memo(function RowBlock({ rows, sid }: { rows: Row[]; sid: string }) {
+  return <>{rows.map((r) => <TranscriptRow key={r.id} row={r} sid={sid} />)}</>;
+});
+
+const TAIL_BLOCKS = 6; // blocks of rows rendered first when a long session opens
+const NONE: StoredEvent[] = [];
+
 export function Transcript({ sessionId }: { sessionId: string }) {
   const all = useStore((s) => s.events[sessionId]);
   const session = useStore((s) => s.sessions[sessionId])!;
@@ -493,7 +623,16 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     return leafOf(all, preview);
   }, [all, preview, session.head]);
   const previewing = shownHead !== session.head;
-  const events = useMemo(() => (all ? lineage(all, shownHead) : undefined), [all, shownHead]);
+  // The branch shown, its prompts' versions and its rows, each from the one
+  // before: an event added at the end is read alone (see rows.ts).
+  const line = useRef<LineageOf | undefined>(undefined);
+  const sibs = useRef<SiblingsOf | undefined>(undefined);
+  const rows = useRef<Built | undefined>(undefined);
+  const events = all ? (line.current = nextLineage(line.current, all, shownHead)).out : undefined;
+  const siblings = (sibs.current = nextSiblings(sibs.current, all ?? NONE)).map;
+  const built = events ? (rows.current = buildRows(rows.current, events, siblings, previewing, isInput)) : undefined;
+  const tail = useMemo(tailStore, []);
+  useLayoutEffect(() => tail.flush());
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -528,20 +667,6 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     }
     anchor.current = { el: part, top: part.getBoundingClientRect().top - top };
   };
-
-  // The versions of each prompt (see versions() in tree.ts), grouped once per change of the list.
-  const siblings = useMemo(() => {
-    const m = new Map<string | null, StoredEvent[]>();
-    for (const e of all ?? []) if (e.kind === "user" && !e.data.origin) (m.get(e.parent) ?? m.set(e.parent, []).get(e.parent)!).push(e);
-    return m;
-  }, [all]);
-
-  const results = useMemo(() => {
-    const m = new Map<string, ToolResultBlock>();
-    // A call's `shown` (the owner's answers to a question) rides with its result, for the card only.
-    for (const e of events ?? []) if (e.kind === "tool_result") for (const r of e.data.results) m.set(r.tool_use_id, e.data.shown?.[r.tool_use_id] ? { ...r, shown: e.data.shown[r.tool_use_id] } as ToolResultBlock : r);
-    return m;
-  }, [events]);
 
   const toEnd = (smooth = false) => {
     const el = scroller.current;
@@ -620,17 +745,14 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   // so the browser's find and a jump to any event still work.
   const [whole, setWhole] = useState(false);
   useEffect(() => setWhole(false), [sessionId]);
-  const cut = useMemo(() => {
-    if (!events || events.length <= TAIL) return 0;
-    for (let i = events.length - TAIL; i > 0; i--) if (events[i]!.kind === "user" && !events[i]!.data.origin) return i;
-    return 0;
-  }, [events]);
-  const from = whole || (focus && events?.findIndex((e) => e.id === focus)! < cut) ? 0 : cut;
+  const blocks = built?.blocks ?? [];
+  const cut = Math.max(0, blocks.length - TAIL_BLOCKS);
+  const from = whole || (focus && (built?.at.get(focus) ?? 0) < cut) ? 0 : cut;
   useEffect(() => {
     if (from === 0) return;
     const t = setTimeout(() => startTransition(() => setWhole(true)), 0);
     return () => clearTimeout(t);
-  }, [from]);
+  }, [from > 0]);
 
   // Previous and Next prompt (the commands of builtins.ts, for the pane with
   // the keys): the keyboard moves through the owner's prompts on the branch
@@ -689,17 +811,10 @@ export function Transcript({ sessionId }: { sessionId: string }) {
 
   // A question card waiting on the owner says so itself; no "Working" under it.
   const asking = useStore((s) => !!s.questionCalls[sessionId]?.length);
-  if (!events) return <div className="flex-1" />;
-  const lastStart = [...events].reverse().find((e) => e.kind === "turn_start");
-
-  // Per turn: the prompt that started it and the text of its replies, for the footer's actions.
-  let prompt: StoredEvent | undefined;
-  let reply: string[] = [];
-  let notes: StoredEvent[] = []; // harness notes of the turn, shown on its footer
-  const boxed = new Set<string>(); // failures shown above their turn's footer
-  let cuts = 0; // restart footers folded into the next one
-  const lastEnd = [...events].reverse().find((e) => e.kind === "turn_end")?.id;
-  const lastImages = events.findLast((e) => e.kind === "note" && e.data.kind === "images")?.id;
+  if (!events || !built) return <div className="flex-1" />;
+  const lastStart = events.findLast((e) => e.kind === "turn_start");
+  tail.setImages(events.findLast((e) => e.kind === "note" && e.data.kind === "images")?.id);
+  tail.put(session, events.findLast((e) => e.kind === "turn_end")?.id, events.at(-1)?.id);
 
   return (
     // A strip of the conversation stays above a tall stack of cards and a long
@@ -738,73 +853,10 @@ export function Transcript({ sessionId }: { sessionId: string }) {
             </div>
           )}
           {events.length === 0 && session.phase !== "working" && <p className="k-empty py-4">No messages yet.</p>}
-          {events.slice(from).map((e, i) => {
-            const idx = from + i;
-            if (e.kind === "user") {
-              // Folded into the turn's notes (the footer); the cut itself shows on the footer.
-              if (e.data.origin === "restart") { notes.push(e); return null; }
-              if (e.data.origin === "harness") {
-                return <p key={e.id} id={`e-${e.id}`} data-event-id={e.id} className="scroll-mt-6 rounded-md text-center text-caption text-faint" data-testid="harness-note">{String(e.data.text).replace(/^\[harness\]\s*/, "")}</p>;
-              }
-              prompt = e;
-              reply = [];
-              if (SYSTEM_INPUT.has(e.data.kind) || isPeerMessage(e)) {
-                return <div key={e.id} id={`e-${e.id}`} data-event-id={e.id} className="scroll-mt-6 rounded-lg">{SYSTEM_INPUT.has(e.data.kind) ? <InputNotice e={e} /> : <PeerMessage e={e} />}</div>;
-              }
-              return <UserMessage key={e.id} e={e} s={session} vs={siblings.get(e.parent) ?? []} />;
-            }
-            // A clear is undone while nothing the model reads came after it (a note of the page may have).
-            if (e.kind === "compaction") return <Checkpoint key={e.id} e={e} s={session} undoable={!previewing && events.slice(idx + 1).every((x) => x.kind === "note" && !x.data.model)} />;
-            if (e.kind === "assistant" && e.data.stop === "refusal") return <Refusal key={e.id} e={e} s={session} handled={events[idx + 1]?.kind === "note" && events[idx + 1]!.data.kind === "fallback"} />;
-            if (e.kind === "assistant") {
-              for (const b of e.data.blocks) if (b.type === "text" && b.text.trim()) reply.push(b.text);
-              return <div key={e.id} id={`e-${e.id}`} className="row-cv flex flex-col gap-3 rounded-lg" data-event-id={e.id}><AssistantBlocks blocks={e.data.blocks} results={results} s={session} /></div>;
-            }
-            // The failure of a turn is shown where the turn ended, above its footer (below).
-            if (e.kind === "error") return boxed.has(e.id) ? null : <TurnFailure key={e.id} e={e} s={session} live={session.phase !== "working" && (events[idx - 1]?.id === lastEnd || idx === events.length - 1)} />;
-            // Memory and hook notes fold into the turn's notes on its footer: quiet at six stations.
-            if (e.kind === "note" && (e.data.hook || e.data.memory)) { notes.push(e); return null; }
-            if (e.kind === "note" && e.data.kind === "summary") return <Checkpoint key={e.id} e={e} s={session} />;
-            if (e.kind === "note" && e.data.kind === "fork") return <ForkNote key={e.id} e={e} />;
-            if (e.kind === "note" && e.data.kind === "peer_refused") return <RefusedNote key={e.id} e={e} />;
-            if (e.kind === "note" && e.data.kind === "images") return <ImagesNote key={e.id} e={e} s={session} last={e.id === lastImages} />;
-            // What the new model is told after a switch: the switch note above already says it.
-            if (e.kind === "note" && e.data.kind === "model_told") return null;
-            // A model switch: who made it and when, inline where it took effect.
-            if (e.kind === "note" && e.data.kind === "model") {
-              const at = clock(e.ts);
-              return <Divider key={e.id} testid="model-note"><span>{e.data.text} <span className="text-faint">{e.data.by === "cli" ? "From keel run" : "By you"}, {at}</span></span></Divider>;
-            }
-            if (e.kind === "note") {
-              // A note for the model (a background job ended) reads short here: no tags, no log path.
-              const text = e.data.short ? e.data.short : e.data.skill ? `Loaded the ${e.data.skill} skill` : e.data.mcp_prompt ? `Loaded the ${e.data.mcp_prompt} prompt` : e.data.kind === "skill_mode" ? (e.data.skill_mode ? `Skill mode: ${e.data.skill_mode}` : "Skill mode off") : e.data.model ? String(e.data.text).replace(/<\/?system-reminder>/g, "").replace(/\. Output: \S+/g, ".").trim() : e.data.text;
-              return <Divider key={e.id} testid="note"><span>{text}</span></Divider>;
-            }
-            if (e.kind === "turn_end") {
-              // Restarts in a row with nothing said between (a card that waits through them) are one footer, with their count.
-              if (e.data.reason === "restart") {
-                let k = idx + 1;
-                while (events[k] && (events[k]!.kind === "turn_start" || events[k]!.kind === "tool_result" || (events[k]!.kind === "user" && events[k]!.data.origin === "restart"))) k++;
-                if (events[k]?.kind === "turn_end" && events[k]!.data.reason === "restart") { cuts++; return null; }
-              }
-              const times = cuts + 1;
-              cuts = 0;
-              const r = reply.join("\n\n");
-              const mine = notes;
-              notes = [];
-              // A failed turn says what failed first, then its footer; the failure follows the turn's end in the record.
-              const failures: StoredEvent[] = [];
-              if (e.data.reason === "error") for (let k = idx + 1; events[k]?.kind === "error"; k++) { failures.push(events[k]!); boxed.add(events[k]!.id); }
-              return (
-                <Fragment key={e.id}>
-                  {failures.map((f) => <TurnFailure key={f.id} e={f} s={session} live={e.id === lastEnd && session.phase !== "working"} />)}
-                  <TurnFooter e={e} reply={r} prompt={prompt} s={session} last={e.id === lastEnd} notes={mine} boxed={failures.length > 0} times={times} />
-                </Fragment>
-              );
-            }
-            return null;
-          })}
-          {notes.length > 0 && <div className="flex" data-testid="pending-notes"><TurnNotes notes={notes} working={session.phase === "working"} /></div>}
+          <TailContext.Provider value={tail}>
+            {(from ? blocks.slice(from) : blocks).map((rows) => <RowBlock key={blockKey(rows)} rows={rows} sid={sessionId} />)}
+          </TailContext.Provider>
+          {built.pending.length > 0 && <div className="flex" data-testid="pending-notes"><TurnNotes notes={built.pending} working={session.phase === "working"} /></div>}
           <Live sessionId={sessionId} working={session.phase === "working"} asking={asking} since={lastStart?.ts} previewing={previewing} />
         </div>
       </div>
