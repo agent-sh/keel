@@ -81,7 +81,8 @@ test("the owner's hooks file is read once and again when it changes", async () =
     const file = (say: string) => JSON.stringify({ hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: `echo ${say}` }] }] } });
     const h = new Hooks(new Store(scratch("keel-hooks-state-")));
     // A file is kept once its last change is this old (two seconds in the daemon).
-    h.racyMs = 15;
+    // Long at first: "just written" below must hold however long the hook's own command took to run.
+    h.racyMs = 60_000;
     const settle = () => Bun.sleep(40);
     const session = { id: "s", workspace: dir, model: "x:y" } as any;
     const said = async () => (await h.run("UserPromptSubmit", session, { prompt: "p" })).context;
@@ -92,6 +93,7 @@ test("the owner's hooks file is read once and again when it changes", async () =
     expect(await said()).toEqual(["one"]);
     // Just written: read again. Then unchanged: the same parsed groups serve every event.
     expect(owner()!.groups).not.toBe(owner()!.groups);
+    h.racyMs = 15;
     await settle();
     const kept = owner()!.groups;
     for (let n = 0; n < 5; n++) expect(owner()!.groups).toBe(kept);
