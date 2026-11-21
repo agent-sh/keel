@@ -64,9 +64,12 @@ under `~/.cache/keel-work/bun/research/`.
 - The loop is never held by a read over a whole table. A report over the
   ledger, a ranked search or a sum over every event runs on the read thread
   (`src/server/reads.ts`: a read-only connection of its own, tasks in
-  `src/server/read-tasks.ts`); a session's parsed events are kept while a turn
-  runs in it, within a byte budget, and given back two minutes after it idles
-  (`src/core/store.ts`).
+  `src/server/read-tasks.ts`). A session's events are kept without their
+  bodies while a turn runs in it; a body is read with its run of events when a
+  reader asks for it, and the whole is held to a memory budget and given back
+  two minutes after the session idles (`src/core/store.ts`). A route that
+  answers with a whole session brings it in first, a part at a time
+  (`store.warm`).
 - Every failure is captured once in the `errors` table (`ErrorTracker.capture`)
   and shown live in the UI's Errors panel. Browser errors post to `/api/errors`.
 - A session is told what went wrong in its scope without asking: failures of its

@@ -50,8 +50,8 @@ test("a cursor read parses only the events after the cursor, and finds them in m
   const warm = cold.events(id, cursor);
   expect(parse).toHaveBeenCalledTimes(0);
   parse.mockRestore();
-  expect(warm).toEqual(tail);
   expect(looked).toBeLessThanOrEqual(10 + Math.ceil(Math.log2(N)) + 1);
+  expect(warm).toEqual(tail);
 
   // Cursor zero is the whole session, as a list of the caller's own; past the end is nothing.
   const whole = cold.events(id, 0);
@@ -68,17 +68,23 @@ test("a cursor read parses only the events after the cursor, and finds them in m
   expect(new Store(dir).events(id, N).map((e) => e.id)).toEqual([more.id]);
 });
 
-test("a step of a working session parses nothing again, however many other sessions work", () => {
+// Reads of a session's events from the table: its events without bodies, and the bodies of a run.
+function tableReads(store: Store) {
+  const reads: string[] = [];
+  const db = store.db as any;
+  const real = db.query.bind(db);
+  db.query = (sql: string) => { if (/FROM events WHERE session_id = \? (ORDER|AND seq)/.test(sql)) reads.push(sql); return real(sql); };
+  return { reads, stop: () => { db.query = real; } };
+}
+
+test("a step of a working session reads nothing again, however many other sessions work", () => {
   const store = new Store(scratch());
   // Twelve sessions with a history, each in a turn.
   const ids = Array.from({ length: 12 }, () => long(store, 200).id);
   for (const id of ids) store.updateSession(id, { phase: "working" });
   for (const id of ids) store.lineage(id);
   const parse = spyOn(JSON, "parse");
-  const reads: string[] = [];
-  const db = store.db as any;
-  const real = db.query.bind(db);
-  db.query = (sql: string) => { if (/FROM events WHERE session_id = \? (ORDER|AND seq)/.test(sql)) reads.push(sql); return real(sql); };
+  const { reads, stop } = tableReads(store);
   try {
     // Three rounds of one step each: the branch is read, a reply and a result are appended, it is read again.
     for (let round = 0; round < 3; round++) {
@@ -92,68 +98,137 @@ test("a step of a working session parses nothing again, however many other sessi
         expect(store.events(id, a.seq).map((e) => e.id)).toEqual([b.id]);
       }
     }
-    // Nothing of a session was read from the table, and only the appended events were parsed (their own round trip).
+    // Nothing of a session was read from the table, and at most the appended events were parsed (their own round trip).
     expect(reads).toEqual([]);
-    expect(parse).toHaveBeenCalledTimes(3 * 12 * 2);
+    expect(parse.mock.calls.length).toBeLessThanOrEqual(3 * 12 * 2);
+    // What a request reads, the bodies at the branch's end, is read once a session (the run they are in and the one before it at most), then held.
+    for (const id of ids) expect(store.lineage(id).slice(-10).map((e) => e.kind + JSON.stringify(e.data).length).length).toBe(10);
+    expect(reads.length).toBeGreaterThan(0);
+    expect(reads.length).toBeLessThanOrEqual(2 * 12);
+    reads.length = 0;
+    parse.mockClear();
+    for (const id of ids) expect(store.lineage(id).slice(-10).map((e) => JSON.stringify(e.data)).length).toBe(10);
+    expect([reads, parse.mock.calls.length]).toEqual([[], 0]);
   } finally {
-    db.query = real;
+    stop();
     parse.mockRestore();
   }
   expect(store.keptEvents().sessions).toBe(12);
   // What is held is what the table holds.
   const cold = new Store(store.stateDir);
   for (const id of ids) expect(store.lineage(id)).toEqual(cold.lineage(id));
+  for (const id of ids) expect(JSON.stringify(store.events(id))).toBe(JSON.stringify(cold.events(id)));
 });
 
-test("kept events are bounded by their bytes: idle sessions go first, and an idle session unread for a while goes by itself", () => {
+test("kept events are bounded by the memory they take: idle sessions go first, then the bodies read longest ago, and an idle session unread for a while goes by itself", () => {
   const dir = scratch();
   const seed = new Store(dir);
   const text = "x".repeat(1000);
   const make = () => {
     const s = seed.createSession({ model: "m", workspace: "/" });
-    for (let i = 0; i < 300; i++) seed.append(s.id, "user", { text });
+    seed.db.transaction(() => { for (let i = 0; i < 320; i++) seed.append(s.id, "user", { text, i }); })();
     return s.id;
   };
-  const [a, w, b, c] = [make(), make(), make(), make()];
+  const [a, w, v, c] = [make(), make(), make(), make()];
   seed.updateSession(w, { phase: "working" });
-  // Room for two of the four (each is a little over 300 kB of stored events).
+  seed.updateSession(v, { phase: "working" });
+  // Each session's bodies are charged about 0.8 MB (320 kB of stored text at two and a half times), its events alone about 80 kB.
   const kept = process.env.KEEL_EVENTS_MEMORY_MB;
-  process.env.KEEL_EVENTS_MEMORY_MB = "0.7";
+  process.env.KEEL_EVENTS_MEMORY_MB = "1.2";
   let store: Store;
   try { store = new Store(dir); } finally { if (kept === undefined) delete process.env.KEEL_EVENTS_MEMORY_MB; else process.env.KEEL_EVENTS_MEMORY_MB = kept; }
   const held = () => [...((store as any).kept as Map<string, unknown>).keys()];
+  const runs = (id: string) => ((store as any).kept.get(id).runs as unknown[]).filter(Boolean).length;
+  const bodies = (id: string) => store.lineage(id).map((e) => (e.data as { i: number }).i);
+  const within = () => expect(store.keptEvents().bytes).toBeLessThanOrEqual(store.keptEvents().budget);
+  const want = Array.from({ length: 320 }, (_, i) => i);
+
+  // A session's events cost little until their bodies are read.
   store.lineage(w);
   store.lineage(a);
   expect(held()).toEqual([w, a]);
-  // A third does not fit: the idle one goes, though the working one was read before it.
-  store.lineage(b);
-  expect(held()).toEqual([w, b]);
-  store.lineage(c);
-  expect(held()).toEqual([w, c]);
-  expect(store.keptEvents().bytes).toBeLessThanOrEqual(store.keptEvents().budget);
-  // An append counts: the working session grows past the budget with the idle one, which goes.
-  for (let i = 0; i < 100; i++) store.append(w, "user", { text });
+  expect(store.keptEvents().bytes).toBe(2 * 320 * 256);
+  expect([runs(w), runs(a)]).toEqual([0, 0]);
+  expect(bodies(a)).toEqual(want);
+  expect(runs(a)).toBe(5);
+  // The working session's bodies do not fit beside the idle one's: the idle session goes, whole.
+  expect(bodies(w)).toEqual(want);
   expect(held()).toEqual([w]);
-  expect(store.lineage(w).length).toBe(400);
-  // Only working sessions left and over the budget: the one in hand stays, the other goes.
-  store.updateSession(a, { phase: "working" });
-  store.lineage(a);
-  expect(held()).toEqual([a]);
-  store.updateSession(a, { phase: "idle" });
-  // Unread for the idle time: an idle session goes, a working one stays.
-  store.updateSession(w, { phase: "idle" });
-  store.updateSession(b, { phase: "working" });
-  store.lineage(b);
-  expect(held()).toEqual([a, b]);
+  expect(runs(w)).toBe(5);
+  within();
+  // Two working sessions that do not fit together: both stay, and the bodies read longest ago go.
+  expect(bodies(v)).toEqual(want);
+  expect(held()).toEqual([w, v]);
+  expect(runs(v)).toBeGreaterThanOrEqual(4);
+  expect(runs(w)).toBeLessThan(5);
+  within();
+  // The first runs of the one read before went first; reading its end again reads nothing from the table.
+  const { reads, stop } = tableReads(store);
+  try {
+    expect(store.lineage(v).slice(-64).map((e) => (e.data as { i: number }).i)).toEqual(want.slice(-64));
+    expect(reads).toEqual([]);
+    // And what went is read again when asked for, a run at a time.
+    expect(bodies(w)).toEqual(want);
+    expect(reads.length).toBeGreaterThan(0);
+    expect(reads.length).toBeLessThanOrEqual(5);
+  } finally { stop(); }
+  expect(held()).toEqual([v, w]);
+  within();
+  // An append counts: a body joins the run it falls in, or starts one.
+  for (let i = 320; i < 400; i++) store.append(w, "user", { text, i });
+  expect(bodies(w)).toEqual([...want, ...Array.from({ length: 80 }, (_, i) => 320 + i)]);
+  expect(held()).toEqual([v, w]);
+  within();
+  // An event handed out before its session was dropped still reads its body, from the table.
+  const old = store.lineage(c);
+  expect(held()).toEqual([v, w, c]);
+  store.updateSession(c, { phase: "working" });
   for (const k of ((store as any).kept as Map<string, { at: number }>).values()) k.at -= IDLE_KEPT_MS;
+  store.updateSession(c, { phase: "idle" });
+  // Unread for the idle time: an idle session goes, the working ones stay.
   (store as any).sweep();
-  expect(held()).toEqual([b]);
-  // A deleted session is not kept, and with nothing kept nothing is checked.
-  store.deleteSession(b);
-  expect(store.keptEvents()).toEqual({ sessions: 0, bytes: 0, budget: 0.7e6 });
+  expect(held()).toEqual([v, w]);
+  expect(old.map((e) => (e.data as { i: number }).i)).toEqual(want);
+  expect(held()).toEqual([v, w]);
+  // A deleted session is not kept, and what was handed out of it says its events are gone.
+  const gone = store.lineage(v);
+  store.deleteSession(v);
+  store.deleteSession(w);
+  expect(() => gone[0]!.data).toThrow(/not stored/);
+  expect(store.keptEvents()).toEqual({ sessions: 0, bytes: 0, budget: 1.2e6 });
   expect((store as any).sweeper).toBeUndefined();
-  // What was dropped reads the same again.
-  expect(store.lineage(c).length).toBe(300);
+});
+
+test("a long session is brought into memory in parts, with the loop free in between", async () => {
+  const dir = scratch();
+  const seed = new Store(dir);
+  const s = seed.createSession({ model: "m", workspace: "/" });
+  seed.db.transaction(() => { for (let i = 0; i < 9000; i++) seed.append(s.id, "user", { text: "y".repeat(400), i }); })();
+  const store = new Store(dir);
+  // Turns of the loop while it is read in: its 9,000 events come in three parts, so the loop is given back twice at least.
+  let turns = 0, counting = true;
+  const turn = () => { if (counting) { turns++; setImmediate(turn); } };
+  setImmediate(turn);
+  const before = store.keptEvents().sessions;
+  const warming = store.warm(s.id);
+  // Written while it is read in: part of what is kept at the end.
+  await new Promise((r) => setImmediate(r));
+  const late = store.append(s.id, "user", { text: "late", i: 9000 });
+  await warming;
+  counting = false;
+  expect(before).toBe(0);
+  expect(turns).toBeGreaterThanOrEqual(2);
+  // Everything is there: the whole session is read with nothing more taken from the table.
+  const { reads, stop } = tableReads(store);
+  try {
+    const all = store.events(s.id);
+    expect(all.length).toBe(9001);
+    expect(all.at(-1)!.id).toBe(late.id);
+    expect(all.map((e) => (e.data as { i: number }).i)).toEqual(Array.from({ length: 9001 }, (_, i) => i));
+    expect(reads).toEqual([]);
+  } finally { stop(); }
+  // Warming a session already there reads nothing either.
+  await store.warm(s.id);
 });
 
 test("the sessions a restart cut are found from their last event, with no session read", () => {

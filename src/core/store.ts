@@ -78,11 +78,28 @@ function firstAfter(events: readonly StoredEvent[], afterSeq: number): number {
   return lo;
 }
 
-// The parsed events of one session, as kept in memory.
+// An event without its body: what a lineage is walked by.
+type Bare = { id: string; seq: number; parent: string | null; kind: string; ts: number };
+// The bodies of one run of consecutive events of a session, parsed.
+type Run = { data: unknown[]; bytes: number; used: number };
+// Bodies are read and given back by runs of this many events.
+const RUN = 64;
+
+// The events of one session, as kept in memory. Every event is there, without
+// its body; `data` reads the body from the run it is in, which is read from the
+// table and parsed when a reader first asks for it and may be given back when
+// memory is short. So a long session costs what its events' ids cost until
+// someone reads what was said, and then only for the part that is read.
 type Kept = {
+  id: string;
   // Every event, all branches, in seq order.
   all: StoredEvent[];
-  // The bytes of their stored JSON (the parsed objects take about 1.2 times that).
+  // The seq of the first event when the seqs have no gap (an event's place is
+  // then its seq less this), else -1 and a place is searched for.
+  first: number;
+  // The bodies read so far, by run.
+  runs: (Run | undefined)[];
+  // What it is charged against the budget: its events and the runs it holds.
   bytes: number;
   // The branch the session shows, as it was last read: its events from the
   // first to the head. Walked once, it grows by each event appended at its
@@ -90,21 +107,36 @@ type Kept = {
   line?: { head: string; events: readonly StoredEvent[] };
   // When it was last read or appended to.
   at: number;
+  // Dropped from the store: an event of it still held reads its body from the table.
+  gone?: boolean;
+  // The getter every event of the session shares.
+  body: (this: StoredEvent) => unknown;
 };
 
-// How many bytes of stored events are kept parsed at most: a thirty-second of
-// the machine's memory, between 64 MB and 512 MB (KEEL_EVENTS_MEMORY_MB sets
-// another). The bound is on bytes because sessions differ a thousand times in
-// size: a count keeps too little of many small working sessions and too much
-// of a few huge ones.
+// What a kept event costs in memory, measured on generated sessions of 30,000
+// events with every body read: resident memory grew by 2.4 to 2.5 times the
+// characters of the stored JSON (the parsed objects, their strings, and what
+// a parse leaves behind), and an event without its body takes about a quarter
+// of a kilobyte.
+const BODY_COST = 2.5;
+const BARE_COST = 256;
+
+// How much memory kept events may take: a thirty-second of the memory this
+// process may use (the machine's, or its control group's limit when that is
+// lower), between 64 MB and 512 MB; KEEL_EVENTS_MEMORY_MB sets another. The
+// bound is on memory, not on a count of sessions, because sessions differ a
+// thousand times in size.
 export function eventsBudget(): number {
   const set = Number(process.env.KEEL_EVENTS_MEMORY_MB);
   if (Number.isFinite(set) && set > 0) return set * 1e6;
-  return Math.min(512e6, Math.max(64e6, totalmem() / 32));
+  const limit = Number((process as { constrainedMemory?: () => number }).constrainedMemory?.()) || Infinity;
+  return Math.min(512e6, Math.max(64e6, Math.min(totalmem(), limit) / 32));
 }
 // A session no turn runs in gives its events back after this long unread:
-// the next read parses them again, once.
+// the next read brings them back, once.
 export const IDLE_KEPT_MS = 120_000;
+
+const pause = () => new Promise<void>((r) => setImmediate(r));
 
 type SessionRow = Omit<Session, "archived" | "usage" | "settings"> & { archived: number; usage: string; settings: string };
 
@@ -158,17 +190,21 @@ export class Store {
   // Sessions whose turn was open, or owed to a prompt just accepted, when the
   // last daemon stopped.
   bootWorking: string[] = [];
-  // The parsed events of the sessions in use. A turn reads its whole session
-  // before each model call and the page and routes read it too; events never
-  // change once written, so each is parsed once and an appended event joins
-  // what is held. A session a turn runs in stays while the whole is within
-  // the byte budget, however many others work; idle sessions go first, the
-  // longest unread first, and an idle session unread for IDLE_KEPT_MS goes
-  // by itself, so a daemon at rest holds none.
+  // The events of the sessions in use. A turn reads its session before each
+  // model call and the page and routes read it too; events never change once
+  // written, so each is read once and an appended event joins what is held.
+  // What is held is charged in memory against a budget. When it is passed,
+  // idle sessions go first, the longest unread first; then the bodies read
+  // longest ago, whoever they belong to, so a session a turn runs in keeps its
+  // place in memory (its events, and the bodies its requests read) however
+  // long it is and however many others work. An idle session unread for
+  // IDLE_KEPT_MS goes by itself, so a daemon at rest holds none.
   private kept = new Map<string, Kept>();
   private keptBytes = 0;
   private budget = eventsBudget();
   private sweeper: ReturnType<typeof setInterval> | undefined;
+  // Counts body reads: a run's `used` is the count when it was last read.
+  private tick = 0;
 
   constructor(readonly stateDir: string) {
     mkdirSync(stateDir, { recursive: true });
@@ -353,17 +389,30 @@ export class Store {
     const ev: StoredEvent = { id, session_id, seq: n, parent: p, kind, data, ts };
     const k = this.kept.get(session_id);
     if (k) {
-      // The cached copy is what a read from the table would give (a JSON round trip).
-      const held = deepFreeze({ ...ev, data: JSON.parse(text) });
+      const at = k.all.length;
+      if (at === 0) k.first = n;
+      else if (k.first >= 0 && n !== k.first + at) k.first = -1;
+      const held = this.bare(k, { id, seq: n, parent: p, kind, ts });
       k.all.push(held);
-      k.bytes += text.length;
-      this.keptBytes += text.length;
+      this.charge(k, BARE_COST);
+      // Its body joins the run it falls in when that run is in memory (or
+      // starts one); else it is read with its run when someone asks.
+      // The kept copy is what a read from the table would give (a JSON round trip).
+      const run = at % RUN === 0 ? (k.runs[at / RUN] = { data: [], bytes: 0, used: ++this.tick }) : k.runs[Math.floor(at / RUN)];
+      if (run && run.data.length === at % RUN) {
+        run.data.push(deepFreeze(JSON.parse(text)));
+        run.bytes += text.length * BODY_COST;
+        run.used = ++this.tick;
+        this.charge(k, text.length * BODY_COST);
+      } else if (run) {
+        this.drop(k, Math.floor(at / RUN));
+      }
       // The branch that ended at its parent now ends at it. An event on another
       // parent starts a branch, which is walked when it is asked for.
       // A new array: a reader that holds the branch as it was keeps it.
       k.line = k.line?.head === p ? { head: id, events: [...k.line.events, held] } : undefined;
       this.touch(session_id, k);
-      this.trim(session_id);
+      this.trim(k, Math.floor(at / RUN));
     }
     return ev;
   }
@@ -372,8 +421,15 @@ export class Store {
     const k = this.kept.get(session_id);
     if (!k) return;
     this.keptBytes -= k.bytes;
+    k.gone = true;
+    k.runs = [];
     this.kept.delete(session_id);
     if (!this.kept.size) this.rest();
+  }
+
+  private charge(k: Kept, bytes: number) {
+    k.bytes += bytes;
+    this.keptBytes += bytes;
   }
 
   // Read or written now: the last in line to go.
@@ -387,16 +443,84 @@ export class Store {
     return new Set(this.db.query<{ id: string }, []>("SELECT id FROM sessions WHERE phase = 'working'").all().map((r) => r.id));
   }
 
-  // Back within the byte budget: idle sessions go first, the longest unread
-  // first, then working ones the same way. The session in hand stays.
-  private trim(keep: string) {
+  // An event of a kept session: its body is read through the session's runs.
+  private bare(k: Kept, r: Bare): StoredEvent {
+    const e = { id: r.id, session_id: k.id, seq: r.seq, parent: r.parent ?? null, kind: r.kind as EventKind } as StoredEvent;
+    Object.defineProperty(e, "data", { enumerable: true, get: k.body });
+    e.ts = r.ts;
+    return Object.freeze(e);
+  }
+
+  // The body of the event with this seq, from its run.
+  private bodyOf(k: Kept, seq: number): unknown {
+    let at = k.first >= 0 ? seq - k.first : firstAfter(k.all, seq - 1);
+    if (k.all[at]?.seq !== seq) at = firstAfter(k.all, seq - 1);
+    const i = Math.floor(at / RUN);
+    const run = k.runs[i] ?? this.read(k, i);
+    run.used = ++this.tick;
+    return run.data[at % RUN];
+  }
+
+  // Reads and parses the bodies of one run, and keeps them with the session,
+  // charged. For a session dropped since the event was handed out, the one
+  // run read last stays with what was handed out and is charged to no one.
+  private read(k: Kept, i: number): Run {
+    const end = Math.min(k.all.length, (i + 1) * RUN);
+    const rows = this.db
+      .query<{ data: string }, [string, number, number]>("SELECT data FROM events WHERE session_id = ? AND seq >= ? AND seq <= ? ORDER BY seq")
+      .all(k.id, k.all[i * RUN]!.seq, k.all[end - 1]!.seq);
+    if (rows.length !== end - i * RUN) {
+      // What is held is not what the table holds (the session was deleted, or
+      // a write was undone outside atomic): it is read again from the table.
+      this.forget(k.id);
+      throw new Error(`events ${k.all[i * RUN]!.seq} to ${k.all[end - 1]!.seq} of session ${k.id} are not stored as they were read`);
+    }
+    const run: Run = { data: [], bytes: 0, used: ++this.tick };
+    for (const r of rows) {
+      run.data.push(deepFreeze(JSON.parse(r.data)));
+      run.bytes += r.data.length * BODY_COST;
+    }
+    if (k.gone) {
+      k.runs = [];
+      k.runs[i] = run;
+      return run;
+    }
+    k.runs[i] = run;
+    this.charge(k, run.bytes);
+    this.trim(k, i);
+    return run;
+  }
+
+  private drop(k: Kept, i: number) {
+    const run = k.runs[i];
+    if (!run) return;
+    k.runs[i] = undefined;
+    this.charge(k, -run.bytes);
+  }
+
+  // Back within the budget, with a tenth to spare so the next reads do not
+  // each come back here. Idle sessions go first, the longest unread first;
+  // then bodies, the run read longest ago first, whoever it belongs to; and
+  // only when events without bodies alone pass the budget, working sessions.
+  // The session and the run in hand stay.
+  private trim(keep?: Kept, keepRun = -1) {
     if (this.keptBytes <= this.budget) return;
+    const target = this.budget * 0.9;
     const working = this.working();
-    for (const busy of [false, true]) {
-      for (const id of [...this.kept.keys()]) {
-        if (this.keptBytes <= this.budget) return;
-        if (id !== keep && working.has(id) === busy) this.forget(id);
-      }
+    for (const [id, k] of [...this.kept]) {
+      if (this.keptBytes <= target) return;
+      if (k !== keep && !working.has(id)) this.forget(id);
+    }
+    const runs: { k: Kept; i: number; used: number }[] = [];
+    for (const k of this.kept.values()) k.runs.forEach((r, i) => { if (r && !(k === keep && i === keepRun)) runs.push({ k, i, used: r.used }); });
+    runs.sort((a, b) => a.used - b.used);
+    for (const r of runs) {
+      if (this.keptBytes <= target) return;
+      this.drop(r.k, r.i);
+    }
+    for (const [id, k] of [...this.kept]) {
+      if (this.keptBytes <= this.budget) return;
+      if (k !== keep) this.forget(id);
     }
   }
 
@@ -424,35 +548,71 @@ export class Store {
     this.sweeper = undefined;
   }
 
-  // What is kept parsed: for the resources report and tests.
+  // How many sessions are kept and what they are charged, in bytes of memory,
+  // against the budget (the resources report shows it).
   keptEvents(): { sessions: number; bytes: number; budget: number } {
     return { sessions: this.kept.size, bytes: this.keptBytes, budget: this.budget };
   }
 
-  // The session's parsed events, all branches, as kept: not a copy.
-  private held(session_id: string): Kept {
-    let k = this.kept.get(session_id);
-    if (k) {
-      this.touch(session_id, k);
-      return k;
+  // A session's events as kept, from their rows without bodies.
+  private keep(session_id: string, rows: Bare[]): Kept {
+    const store = this;
+    const k: Kept = {
+      id: session_id, all: [], first: rows[0]?.seq ?? -1, runs: [], bytes: 0, at: Date.now(),
+      body(this: StoredEvent) { return store.bodyOf(k, this.seq); },
+    };
+    for (let i = 0; i < rows.length; i++) {
+      if (k.first >= 0 && rows[i]!.seq !== k.first + i) k.first = -1;
+      k.all.push(this.bare(k, rows[i]!));
     }
-    let bytes = 0;
-    const all = this.db
-      .query<EventRow, [string]>("SELECT * FROM events WHERE session_id = ? ORDER BY seq")
-      .all(session_id)
-      .map((r) => {
-        bytes += r.data.length;
-        return deepFreeze(rowToEvent(r));
-      });
-    k = { all, bytes, at: Date.now() };
     this.kept.set(session_id, k);
-    this.keptBytes += bytes;
+    this.charge(k, rows.length * BARE_COST);
     if (!this.sweeper) {
       this.sweeper = setInterval(() => this.sweep(), IDLE_KEPT_MS / 4);
       this.sweeper.unref?.();
     }
-    this.trim(session_id);
+    this.trim(k);
     return k;
+  }
+
+  // The session's events, all branches, as kept: not a copy.
+  private held(session_id: string): Kept {
+    const k = this.kept.get(session_id);
+    if (k) {
+      this.touch(session_id, k);
+      return k;
+    }
+    return this.keep(session_id, this.db.query<Bare, [string]>("SELECT id, seq, parent, kind, ts FROM events WHERE session_id = ? ORDER BY seq").all(session_id));
+  }
+
+  // Brings a session into memory without holding the loop: its events a few
+  // thousand at a time, then their bodies while they fit, giving the loop back
+  // in between. A reader that then asks for the whole session (the page
+  // opening a long one) finds it there instead of reading it in one piece.
+  async warm(session_id: string): Promise<void> {
+    let k = this.kept.get(session_id);
+    if (!k) {
+      const rows: Bare[] = [];
+      const page = this.db.query<Bare, [string, number]>("SELECT id, seq, parent, kind, ts FROM events WHERE session_id = ? AND seq > ? ORDER BY seq LIMIT 4096");
+      for (;;) {
+        const part = page.all(session_id, rows.at(-1)?.seq ?? 0);
+        for (const r of part) rows.push(r);
+        if (part.length < 4096) break;
+        await pause();
+      }
+      // Read by someone else meanwhile: theirs is the one kept.
+      k = this.kept.get(session_id) ?? this.keep(session_id, rows);
+    }
+    let t0 = performance.now();
+    for (let i = 0; i * RUN < k.all.length && !k.gone; i++) {
+      if (k.runs[i]) continue;
+      if (this.keptBytes >= this.budget * 0.9) break;
+      this.read(k, i);
+      if (performance.now() - t0 < 4) continue;
+      await pause();
+      t0 = performance.now();
+    }
+    if (!k.gone) this.touch(session_id, k);
   }
 
   // The branch the session shows (the events from the first to its head),
