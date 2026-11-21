@@ -158,11 +158,22 @@ test("mixed attachments keep their order and need no caption", async ({ page, re
   await expect(preview).toHaveAttribute("aria-expanded", "true");
   await expect(preview).toBeFocused();
   await expect.poll(height).toBeGreaterThan(small + 200);
+  // Its ring is outside the image, like any other control's, and whole: the
+  // strip above the image changes with the focus. The pointer says which way the size goes.
+  await expect(preview).toHaveCSS("outline-offset", "2px");
+  await expect(preview).toHaveCSS("cursor", "zoom-out");
+  const above = async () => { const r = (await preview.boundingBox())!; return (await page.screenshot({ clip: { x: r.x + 20, y: r.y - 4, width: r.width - 40, height: 3 } })).toString("base64"); };
+  const ringed = await above();
+  await preview.evaluate((b: HTMLElement) => b.blur());
+  expect(await above()).not.toBe(ringed);
+  await preview.focus();
+  expect(await above()).toBe(ringed);
   await shoot(page, "attach-06-image-larger-by-keyboard");
   await page.keyboard.press("Space");
   await expect(preview).toHaveAttribute("aria-expanded", "false");
   await expect(preview).toBeFocused();
   await expect.poll(height).toBe(small);
+  await expect(preview).toHaveCSS("cursor", "zoom-in");
   expect(await row.locator('[data-testid="message-file"], [data-testid="message-image"]').evaluateAll((els) => els.map((el) => (el.tagName === "IMG" ? "image" : el.textContent!.replace(/\d+ KB$/, "").trim())))).toEqual(stored);
   // No caption, no bubble; a caption that reads like a placeholder is the owner's and shows.
   await expect(row.locator(".bg-accent-soft")).toHaveCount(0);

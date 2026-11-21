@@ -80,7 +80,7 @@ function Images({ blocks }: { blocks: PromptBlock[] }) {
             aria-expanded={big === i}
             title={big === i ? "Show it smaller" : "Show it larger"}
             onClick={() => setBig(big === i ? null : i)}
-            className={cn("k-ring-in block max-w-full rounded-lg", big === i ? "cursor-zoom-out" : "cursor-zoom-in")}
+            className="k-image-toggle block max-w-full"
           >
             <img
               src={`data:${im.media_type};base64,${im.data}`}
