@@ -46,9 +46,13 @@ CREATE INDEX IF NOT EXISTS errors_session ON errors(session_id, ts);
 // notes after a cut turn's end): more than this many is not a shape a turn has.
 const NEAR = 256;
 // What one page spends walking up the branch from the session's head (see
-// onBranch): a few hundred events at a time, until this long has passed.
-const WALK_PART = 500;
+// onBranch): this much time in the walk's own statements, whatever else the
+// page reads, a few dozen events a statement so that one statement over large
+// events on a cold file stays short.
+const WALK_PART = 64;
 const WALK_MS = 20;
+// How long a text form goes on reading to place its turns before it says which are not placed (see settled).
+const SETTLE_MS = 2000;
 // What a mark's data may give: a few named fields, never its text.
 const PICK = `CASE WHEN kind IN ('turn_start', 'turn_end') THEN data ELSE json_object(
   'kind', data ->> '$.kind', 'from', data ->> '$.from', 'to', data ->> '$.to', 'mode', data ->> '$.mode', 'auto', data ->> '$.auto',
@@ -78,14 +82,18 @@ type MarkRow = { id: string; ts: number; seq: number; kind: string; parent: stri
 type Cursor = { ts: number; id: string };
 const TOP: Cursor = { ts: Number.MAX_SAFE_INTEGER, id: "\uffff" };
 // The branch shown, walked from its head only as far down as a page asked.
-type Line = { head: string; top: number; low: { id: string; seq: number; parent: string | null }; turns: Set<string>; done: boolean };
-const LINES_KEPT = 16;
+// `behind`: its last walk stopped for time, short of the turn it was asked about.
+type Line = { head: string; top: number; low: { id: string; seq: number; parent: string | null }; turns: Set<string>; done: boolean; behind?: boolean };
+// Walks kept, the most recently read last. One that is still on its way (it
+// stopped for time, short of what it was asked) is the last to go: dropped, a
+// long session starts over and never gets there.
+const LINES_KEPT = 256;
 type ErrorLite = Pick<ErrorRecord, "id" | "ts" | "source" | "message" | "count" | "turn_event" | "span_id" | "resolved_ts">;
 // What every part of one page reads the same: looked up once, when first asked.
 type Ctx = {
   look: Lookups; told: Set<string>;
   head(): string | null; byTurn(): Map<string, string>;
-  walk: { until: number }; // when this page stops walking up the branch
+  walk: { left: number; unplaced: number }; // the walk time this page has left (ms), and the turns it could not place
   causes(): { classes: Set<string>; links: Map<string, ErrorLite> } | null;
 };
 const once = <T>(f: () => T) => { let got: { v: T } | undefined; return () => (got ??= { v: f() }).v; };
@@ -152,16 +160,32 @@ export class Timeline {
       if (!(got.length > want || taken < part.length)) break;
       if (rows.length === limit || scanned >= SCAN_MAX) { next = `${at.ts}:${at.id}`; break; }
     }
-    return { session_id: sessionId, as_of, ...(now ? { now } : {}), rows, next, ...(opts.only === "failures" ? { scanned } : {}) };
+    // A turn the branch walk has not reached says so, and the page too: read again and it is placed.
+    const partial = rows.some((r) => r.turn?.branch === "unknown");
+    return { session_id: sessionId, as_of, ...(now ? { now } : {}), rows, next, ...(opts.only === "failures" ? { scanned } : {}), ...(partial ? { partial: true as const } : {}) };
   }
 
   private ctx(sessionId: string, told: Set<string>): Ctx {
     return {
-      look: this.lookups(), told, walk: { until: performance.now() + WALK_MS },
+      look: this.lookups(), told, walk: { left: WALK_MS, unplaced: 0 },
       head: once(() => this.store.db.query<{ head: string | null }, [string]>("SELECT head FROM sessions WHERE id = ?").get(sessionId)?.head ?? null),
       byTurn: once(() => this.errorsByTurn(sessionId)),
       causes: once(() => this.causes(sessionId)),
     };
+  }
+
+  // The same page, read until every turn of it is placed on a branch or `ms`
+  // has passed: a bounded piece of the walk a read, with the event loop free
+  // between reads. For a text that is read once and whole (a model's tool, the
+  // command): a page asks again by itself (`partial`).
+  async settled(sessionId: string, opts: PageOpts = {}, ms = SETTLE_MS): Promise<TimelinePage> {
+    const until = performance.now() + ms;
+    let page = this.page(sessionId, opts);
+    while (page.partial && performance.now() < until) {
+      await new Promise<void>((r) => setImmediate(r));
+      page = this.page(sessionId, opts);
+    }
+    return page;
   }
 
   // The sources, each already newest first, as one list.
@@ -295,7 +319,7 @@ export class Timeline {
       ...this.counts(sessionId, m, f.end, end, f.nextSeq),
       compactions: f.compactions,
       error_id: ctx.byTurn().get(m.id) ?? f.errorId,
-      other_branch: !this.onBranch(sessionId, ctx.head(), m, ctx.walk),
+      branch: this.onBranch(sessionId, ctx.head(), m, ctx.walk),
     });
   }
 
@@ -303,11 +327,11 @@ export class Timeline {
   // session's head. The branch is walked from the head down only as far as
   // the oldest turn asked about, and kept: the next page goes on from there,
   // and a head that moved on along the same branch adds its few new events.
-  // One page walks for a bounded time (`budget`): a turn the walk has not
-  // reached yet is not said to be off the branch, and the next page (or the
-  // page's next refresh) goes on from where this one stopped.
-  private onBranch(sessionId: string, head: string | null, turn: { id: string; seq: number }, budget: { until: number }): boolean {
-    if (!head) return true;
+  // One page walks for a bounded time (`budget`, spent in the walk's own
+  // statements): a turn the walk has not reached yet is "unknown", said as
+  // such in its row, and the next read goes on from where this one stopped.
+  private onBranch(sessionId: string, head: string | null, turn: { id: string; seq: number }, budget: { left: number }): "on" | "other" | "unknown" {
+    if (!head) return "on";
     // From the lowest event walked, up its parents, in one statement: until an
     // event at or under `to`, the end of the chain, or `max` events.
     const climb = this.store.db.query<{ id: string; seq: number; parent: string | null; kind: string; n: number; last: number }, [string, number, string | null, number, number, string]>(
@@ -317,8 +341,10 @@ export class Timeline {
            WHERE up.seq > ?4 AND up.n < ?5 AND +e.session_id = ?6 AND +e.seq < up.seq)
        SELECT * FROM (SELECT id, seq, parent, kind, n, MAX(n) OVER () AS last FROM up) WHERE n > 0 AND (kind = 'turn_start' OR n = last)`);
     const walk = (c: Line, to: number) => {
-      while (!c.done && c.low.seq > to && performance.now() < budget.until) {
+      while (!c.done && c.low.seq > to && budget.left > 0) {
+        const t0 = performance.now();
         const got = climb.all(c.low.id, c.low.seq, c.low.parent, to, WALK_PART, sessionId);
+        budget.left -= performance.now() - t0;
         const last = got.at(-1);
         for (const e of got) if (e.kind === "turn_start") c.turns.add(e.id);
         if (last) c.low = { id: last.id, seq: last.seq, parent: last.parent };
@@ -330,7 +356,7 @@ export class Timeline {
     let c = this.lines.get(sessionId);
     if (!c || c.head !== head) {
       const h = one.get(head);
-      if (!h || h.session_id !== sessionId) return true;
+      if (!h || h.session_id !== sessionId) return "on";
       const fresh: Line = { head, top: h.seq, low: h, turns: new Set(h.kind === "turn_start" ? [h.id] : []), done: false };
       const old = c;
       if (old) {
@@ -343,12 +369,18 @@ export class Timeline {
         }
       }
       c = fresh;
-      this.lines.delete(sessionId);
-      this.lines.set(sessionId, c);
-      if (this.lines.size > LINES_KEPT) this.lines.delete(this.lines.keys().next().value!);
     }
     walk(c, turn.seq);
-    return c.turns.has(turn.id) || (!c.done && c.low.seq > turn.seq);
+    c.behind = !c.done && c.low.seq > turn.seq;
+    // Read last, kept longest; over the count, a walk that got where it was asked goes before one still on its way.
+    this.lines.delete(sessionId);
+    this.lines.set(sessionId, c);
+    if (this.lines.size > LINES_KEPT) {
+      let out = this.lines.keys().next().value!;
+      for (const [id, l] of this.lines) if (!l.behind && id !== sessionId) { out = id; break; }
+      this.lines.delete(out);
+    }
+    return c.turns.has(turn.id) ? "on" : c.behind ? "unknown" : "other";
   }
 
   // The turn a mark belongs to: the newest turn_start before it, when that

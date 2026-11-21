@@ -10,10 +10,10 @@ export type { TimelineKind, TimelineNow, TimelinePage, TimelineRow, Tone } from 
 export type Receipt = NonNullable<ReturnType<typeof turnReceipt>>;
 export type Only = "" | "failures" | "turns" | "agents";
 export const PAGE = 50;
-export { mergeSince, refreshFrom, type Held } from "./timeline-merge.ts";
+export { mergePlaced, mergeSince, refreshFrom, unplacedFrom, type Held } from "./timeline-merge.ts";
 
-export const fetchTimeline = (sessionId: string, o: { only?: Only; before?: string | null; since?: number; now?: boolean } = {}) =>
-  api<TimelinePage>(`/api/sessions/${sessionId}/timeline?limit=${PAGE}${o.only ? `&only=${o.only}` : ""}${o.before ? `&before=${encodeURIComponent(o.before)}` : ""}${o.since ? `&since=${Math.floor(o.since)}` : ""}${o.now === false ? "&now=0" : ""}`);
+export const fetchTimeline = (sessionId: string, o: { only?: Only; before?: string | null; since?: number; now?: boolean; limit?: number } = {}) =>
+  api<TimelinePage>(`/api/sessions/${sessionId}/timeline?limit=${o.limit ?? PAGE}${o.only ? `&only=${o.only}` : ""}${o.before ? `&before=${encodeURIComponent(o.before)}` : ""}${o.since ? `&since=${Math.floor(o.since)}` : ""}${o.now === false ? "&now=0" : ""}`);
 export const fetchReceipt = (turnEvent: string) => api<Receipt>(`/api/debug/turns/${turnEvent}/receipt`);
 
 // The turn the Timeline panel shows when it opens next.

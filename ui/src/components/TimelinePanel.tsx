@@ -17,7 +17,7 @@ import { openSession, useAuto } from "../lib/automation.ts";
 import { copyBundle, openTrace, traceOfTurn } from "../lib/observe.ts";
 import { reportError, useStore } from "../lib/store.ts";
 import {
-  fetchReceipt, fetchTimeline, keepView, mergeSince, refreshFrom, timelineFocus, viewOf,
+  fetchReceipt, fetchTimeline, keepView, mergePlaced, mergeSince, refreshFrom, timelineFocus, unplacedFrom, viewOf,
   type Held, type Only, type Receipt, type TimelineKind, type TimelineNow, type TimelineRow,
 } from "../lib/timeline.ts";
 import { savePref, setUI } from "../lib/ui.ts";
@@ -202,6 +202,28 @@ function Panel({ session }: { session: Session }) {
     return () => { document.removeEventListener("visibilitychange", shown); if (timer.current) clearTimeout(timer.current); };
   }, []);
 
+  // A turn the daemon had not placed on a branch yet (a long session is walked
+  // a bounded piece a read) is asked for again until it is: each read goes on
+  // from where the last stopped. Bounded, so a session that never settles is
+  // left as it says ("branch not placed yet").
+  const placing = useRef(0);
+  useEffect(() => { placing.current = 0; }, [id, only]);
+  useEffect(() => {
+    const from = unplacedFrom(list);
+    if (!from || placing.current >= 200) return;
+    const g = gen.current;
+    const t = setTimeout(() => {
+      placing.current++;
+      fetchTimeline(id, { only: "turns", before: from, now: false, limit: 200 }).then((p) => {
+        if (g !== gen.current || !held.current.list) return;
+        const next = mergePlaced(held.current.list, p);
+        held.current.list = next;
+        setList(next);
+      }).catch((e) => reportError(e, { at: "timeline branch" }));
+    }, 120);
+    return () => clearTimeout(t);
+  }, [list, id]);
+
   // Another view asked for a turn's receipt (an Activity row).
   useEffect(() => {
     if (!focus) return;
@@ -336,7 +358,7 @@ function Panel({ session }: { session: Session }) {
                     <span className="font-medium">{label}</span><span className="h-px flex-1 bg-line" />
                   </div>
                 )}
-                <div role="listitem" className={cn("relative", isOpen && "bg-raised shadow-1")} data-testid="timeline-row" data-kind={r.kind} data-sub={r.sub} data-tone={r.tone} data-id={r.id} data-turn={t} data-branch={aside ? "other" : undefined}>
+                <div role="listitem" className={cn("relative", isOpen && "bg-raised shadow-1")} data-testid="timeline-row" data-kind={r.kind} data-sub={r.sub} data-tone={r.tone} data-id={r.id} data-turn={t} data-branch={r.turn?.branch}>
                   {/* The course line: up to what happened later in the same turn, down to the turn's start. */}
                   {up && <span aria-hidden className={cn("pointer-events-none absolute left-[5.5rem] top-0 w-px -translate-x-1/2 bg-line-strong", turn ? "h-[0.5rem]" : "h-[0.3125rem]")} />}
                   {down && <span aria-hidden className="pointer-events-none absolute bottom-0 left-[5.5rem] top-[1.4375rem] w-px -translate-x-1/2 bg-line-strong" />}

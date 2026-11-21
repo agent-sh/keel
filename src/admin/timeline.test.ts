@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../core/store.ts";
 import { Timeline } from "./timeline.ts";
-import { markRow, NOTE_MARKS } from "./timeline-rows.ts";
+import { markRow, NOTE_MARKS, timelineText } from "./timeline-rows.ts";
 
 const setup = () => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "timeline-"));
@@ -58,7 +58,7 @@ test("a turn is read whole however many notes lie inside it and around it", () =
   }
 });
 
-test("a turn the branch walk has not reached is not called off the branch, and the next read goes on", () => {
+test("a turn the branch walk has not reached says so, never that it is on the branch, and reading on places it", async () => {
   const f = setup();
   try {
     let left = "", kept = "";
@@ -67,15 +67,61 @@ test("a turn the branch walk has not reached is not called off the branch, and t
       const fork = f.store.session(f.id)!.head!;
       left = f.turn();
       f.add("user", { text: "again" }, fork);
-      for (let i = 0; i < 30_000; i++) f.add("note", { text: `n ${i}` });
+      for (let i = 0; i < 60_000; i++) f.add("note", { text: `n ${i}` });
     })();
     const tl = new Timeline(f.store);
-    const branch = (id: string) => tl.page(f.id).rows.find((r) => r.id === id)!.turn!.branch;
-    // Read until the walk from the head has passed both turns: a bounded part a read.
-    let reads = 0;
-    while (branch(left) !== "other" && ++reads < 200) expect(branch(kept)).toBeUndefined();
-    expect(branch(left)).toBe("other");
-    expect(branch(kept)).toBeUndefined();
+    const read = () => { const p = tl.page(f.id); const of = (id: string) => p.rows.find((r) => r.id === id)!; return { p, left: of(left), kept: of(kept) }; };
+    // The first read walks a bounded piece from the head: neither turn is reached, and both say so.
+    const first = read();
+    expect(first.p.partial).toBe(true);
+    expect([first.left.turn!.branch, first.kept.turn!.branch]).toEqual(["unknown", "unknown"]);
+    expect(first.left.text).toBe("Owner prompt, 1 step, branch not placed yet");
+    expect(timelineText(first.p).split("\n").at(-1)).toBe('2 of these turns are not placed on a branch yet (marked "branch not placed yet"): this session is long and the read stopped part way. The same read again goes on.');
+    // Read on: the turn left behind is never shown as on the branch, on any read.
+    let reads = 1;
+    for (let r = read(); r.p.partial && reads < 500; r = read(), reads++) {
+      expect(r.left.turn!.branch).toBe("unknown");
+      expect(["unknown", undefined]).toContain(r.kept.turn!.branch);
+    }
+    const last = read();
+    expect(last.p.partial).toBeUndefined();
+    expect([last.left.turn!.branch, last.kept.turn!.branch]).toEqual(["other", undefined]);
+    expect(last.left.text).toBe("Owner prompt, 1 step, on a branch not shown");
+
+    // The text form's read goes on by itself until the turns are placed; with no time for it, it says what is not.
+    const fresh = new Timeline(f.store);
+    expect((await fresh.settled(f.id, {}, 0)).partial).toBe(true);
+    const whole = await new Timeline(f.store).settled(f.id);
+    expect(whole.partial).toBeUndefined();
+    expect(whole.rows.find((r) => r.id === left)!.turn!.branch).toBe("other");
+  } finally {
+    f.close();
+  }
+});
+
+test("a walk still on its way outlives two hundred other sessions read meanwhile", () => {
+  const f = setup();
+  try {
+    let turn = "";
+    const others: string[] = [];
+    f.store.db.transaction(() => {
+      turn = f.turn();
+      for (let i = 0; i < 60_000; i++) f.add("note", { text: `n ${i}` });
+      for (let i = 0; i < 300; i++) {
+        const s = f.store.createSession({ model: "fixture:m", workspace: f.store.stateDir });
+        f.store.append(s.id, "user", { text: "go" });
+        f.store.append(s.id, "turn_start", { model: "fixture:m" });
+        f.store.append(s.id, "turn_end", { reason: "end_turn", ms: 1 });
+        others.push(s.id);
+      }
+    })();
+    const tl = new Timeline(f.store);
+    const placed = () => tl.page(f.id).rows.find((r) => r.id === turn)!.turn!.branch !== "unknown";
+    // Between two reads of the long session every other session is read: its walk goes on, and ends.
+    let rounds = 0;
+    while (!placed() && ++rounds < 100) for (const id of others) tl.page(id);
+    expect(placed()).toBe(true);
+    expect(rounds).toBeLessThan(100);
   } finally {
     f.close();
   }

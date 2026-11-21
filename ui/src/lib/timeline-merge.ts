@@ -32,3 +32,18 @@ export function mergeSince(cur: Held, fresh: TimelinePage, since: number, asOf: 
   const older = (r: TimelineRow) => r.ts < at.ts || (r.ts === at.ts && r.id < at.id);
   return { ...cur, rows: [...fresh.rows, ...cur.rows.filter((r) => older(r) && !have.has(r.id))] };
 }
+
+// Turns a read could not place on a branch yet (a long session is walked a
+// bounded piece a read): where to read again, from just above the newest of
+// them down, turns only. Null: every turn held is placed.
+export function unplacedFrom(cur: Held | null): string | null {
+  const top = cur?.rows.find((r) => r.turn?.branch === "unknown");
+  return top ? `${top.ts + 1}:` : null;
+}
+
+// What that read answers, over what is held: a turn it names takes its place
+// in the list, as it is now (placed, or still not); nothing is added or dropped.
+export function mergePlaced(cur: Held, fresh: TimelinePage): Held {
+  const again = new Map(fresh.rows.filter((r) => r.kind === "turn").map((r) => [r.id, r]));
+  return { ...cur, rows: cur.rows.map((r) => (r.turn?.branch === "unknown" ? again.get(r.id) ?? r : r)) };
+}

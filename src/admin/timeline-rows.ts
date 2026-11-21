@@ -21,8 +21,9 @@ export type Refs = {
 export type TurnFacts = {
   origin: string; queued?: true; outcome: string; reason?: string; model?: string;
   // `steps`: the replies the model gave. `failed_tools`: calls that ran and failed. `denied_tools`: calls a gate
-  // refused before they ran (not failures). `branch`: "other" when the turn is not on the branch shown.
-  steps: number; tools: number; failed_tools: number; denied_tools?: number; compactions?: number; branch?: "other";
+  // refused before they ran (not failures). `branch`: "other" when the turn is not on the branch shown,
+  // "unknown" when the read that made the row had not walked that far up the branch yet (see `partial`).
+  steps: number; tools: number; failed_tools: number; denied_tools?: number; compactions?: number; branch?: "other" | "unknown";
   input?: number; output?: number; cache_read?: number; cost?: number;
 };
 export type TimelineRow = {
@@ -43,7 +44,8 @@ export type TimelineRow = {
 export type TimelineNow = { state: "working" | "owner" | "waiting" | "idle"; lines: TimelineRow[] };
 // `as_of`: when it was read (the daemon's clock). `scanned`: how many rows a
 // filtered page read to find its rows, when it stopped at its bound.
-export type TimelinePage = { session_id: string; as_of: number; now?: TimelineNow; rows: TimelineRow[]; next: string | null; scanned?: number };
+// `partial`: a turn of the page is not placed on a branch yet (`turn.branch` "unknown"): the same read again goes on and places it.
+export type TimelinePage = { session_id: string; as_of: number; now?: TimelineNow; rows: TimelineRow[]; next: string | null; scanned?: number; partial?: true };
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n === 0 ? "no" : n} ${n === 1 ? one : many}`;
 const clean = <T extends object>(o: T): T => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== null && v !== "")) as T;
@@ -119,7 +121,8 @@ export type TurnInput = {
   denied_tools?: number;
   compactions?: number;
   error_id?: string;
-  other_branch?: boolean;
+  // Whether it is on the branch shown: "unknown" until the walk from the session's head has reached it.
+  branch?: "on" | "other" | "unknown";
   // What woke it, told in its own row instead of a row of its own: the wait
   // that fired, or the agent whose report it is.
   wake?: { kind?: string; ms?: number } | null;
@@ -153,7 +156,8 @@ export function turnRow(t: TurnInput): TimelineRow {
   if (bad) text += `, ${bad}`;
   // A call the owner, a rule or the judge refused is a decision, not a failure.
   if (t.denied_tools) text += `, ${plural(t.denied_tools, "denied call")}`;
-  if (t.other_branch) text += ", on a branch not shown";
+  if (t.branch === "other") text += ", on a branch not shown";
+  else if (t.branch === "unknown") text += ", branch not placed yet";
   const u = t.usage;
   const took = t.end && outcome !== "unstarted" ? t.end.ms ?? (t.end.ts !== undefined ? t.end.ts - t.start.ts : undefined) : undefined;
   return clean({
@@ -165,7 +169,7 @@ export function turnRow(t: TurnInput): TimelineRow {
     ...refs({ error_id: t.error_id, queue_id: str(t.opener?.queue_id), wait_id: str(t.opener?.wait_id), agent_id: str(t.opener?.agent_id), loop_id: str(t.opener?.loop_id), run_id: str(t.opener?.run_id), from_session: str(t.opener?.from), child_session: who.key === "subagent" ? t.agent?.session_id : undefined }),
     turn: clean({
       origin: who.key, queued: who.queued || who.key === "queued" ? (true as const) : undefined, outcome, reason: t.end?.reason, model: t.start.model,
-      steps: t.steps, tools: t.tools, failed_tools: t.failed_tools, denied_tools: t.denied_tools || undefined, compactions: t.compactions || undefined, branch: t.other_branch ? ("other" as const) : undefined,
+      steps: t.steps, tools: t.tools, failed_tools: t.failed_tools, denied_tools: t.denied_tools || undefined, compactions: t.compactions || undefined, branch: t.branch === "other" || t.branch === "unknown" ? t.branch : undefined,
       input: u?.input, output: u?.output, cache_read: u?.cache_read, cost: u?.cost ?? undefined,
     }),
   });
@@ -423,6 +427,8 @@ export function timelineText(p: TimelinePage, opts: { title?: string; ids?: bool
     out.push(`${stamp(r.ts)} ${r.tone === "failed" ? "!" : r.tone === "owner" ? "?" : " "} ${r.text}${took}${cost}${opts.ids === false ? "" : idsOf(r)}`);
   }
   if (p.next) out.push(`Older rows: before=${p.next}`);
+  // Said plainly, so a row without "on a branch not shown" is not taken for a row on the branch.
+  if (p.partial) out.push(`${p.rows.filter((r) => r.turn?.branch === "unknown").length} of these turns are not placed on a branch yet (marked "branch not placed yet"): this session is long and the read stopped part way. The same read again goes on.`);
   return out.join("\n");
 }
 function idsOf(r: TimelineRow): string {

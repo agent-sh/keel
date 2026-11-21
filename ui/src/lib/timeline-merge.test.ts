@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { nowLines, type TimelineRow } from "../../../src/admin/timeline-rows.ts";
-import { mergeSince, refreshFrom } from "./timeline-merge.ts";
+import { mergePlaced, mergeSince, refreshFrom, unplacedFrom } from "./timeline-merge.ts";
 
 const quiet = { ts: 100_000, approvals: [], questions: [], waits: [], agents: [], loops: [], queue: { queued: 0, steers: 0, held: false, owed: false } };
 // The panel's live refresh: it asks only for what can have changed, and joins it to what it holds.
@@ -42,3 +42,20 @@ test("a full refresh keeps the older pages the panel holds, and reads once", () 
   const flood = { session_id: "s", as_of: 3_000, rows: rows(400, 350), next: "3510:r351" };
   expect(mergeSince(held, flood, 100, 2_000)).toEqual({ rows: flood.rows, next: "3510:r351" });
 });
+
+// A long session's turns are placed on a branch a piece a read: the panel asks again for the ones that are not.
+test("turns not placed on a branch yet are asked for again from the newest of them, and only they change", () => {
+  const turn = (id: string, ts: number, branch?: "other" | "unknown"): TimelineRow => r(id, ts, { kind: "turn", sub: "ok", turn: { origin: "owner", outcome: "ok", steps: 1, tools: 0, failed_tools: 0, ...(branch ? { branch } : {}) } });
+  const held = { rows: [turn("t5", 500), r("w", 450), turn("t4", 400, "unknown"), turn("t3", 300, "unknown"), turn("t2", 200, "other")], next: "200:t2" };
+  expect(unplacedFrom(null)).toBeNull();
+  expect(unplacedFrom({ rows: [turn("t5", 500)], next: null })).toBeNull();
+  // From just above the newest unplaced turn: the cursor takes every row at or before its time.
+  expect(unplacedFrom(held)).toBe("401:");
+  // The answer places one, leaves one unknown, and names turns the list does not hold: only the unplaced rows move.
+  const fresh = { session_id: "s", as_of: 9_000, rows: [turn("t4", 400), turn("t3", 300, "unknown"), turn("t2", 200), turn("t1", 100)], next: null };
+  const next = mergePlaced(held, fresh);
+  expect(next.rows.map((x) => [x.id, x.turn?.branch])).toEqual([["t5", undefined], ["w", undefined], ["t4", undefined], ["t3", "unknown"], ["t2", "other"]]);
+  expect(next.next).toBe("200:t2");
+  expect(unplacedFrom(next)).toBe("301:");
+});
+

@@ -482,3 +482,59 @@ test("the timeline of a session of forty thousand notes opens at once and the da
     await exited(d.proc);
   }
 });
+
+// Feature: a long session's turns are placed on a branch a bounded piece a
+// read. A turn the walk from the session's head has not reached says so
+// ("branch not placed yet", and the page is `partial`), never that it is on
+// the branch shown; the panel asks again by itself until it is placed, and the
+// text form (the command, a model's tool) reads on before it answers.
+test("a turn far up a long session says its branch is not placed yet, and is placed without the owner asking", async ({ page }) => {
+  const state = join(ROOT, `timeline-branch-${Date.now()}`);
+  made.push(state);
+  for (const d of ["state", "work", "config", "home"]) mkdirSync(join(state, d), { recursive: true });
+  const seeded = JSON.parse(execFileSync("bun", [join(import.meta.dirname, "fixtures/long-branch.ts"), join(state, "state"), join(state, "work"), "60000"],
+    { encoding: "utf8", env: { ...process.env, KEEL_CONFIG_DIR: join(state, "config") } })) as { session: string; kept: string; left: string };
+  const d = await daemon(state);
+  try {
+    // The first read walks its piece from the head and stops well short of the first turns: they say so, and the page does.
+    const first = await (await fetch(`${d.url}/api/sessions/${seeded.session}/timeline`)).json() as TimelinePage;
+    const rowOf = (p: TimelinePage, id: string) => p.rows.find((r) => r.id === id)!;
+    expect(first.partial).toBe(true);
+    expect(rowOf(first, seeded.left)).toMatchObject({ text: "Owner prompt, 1 step, branch not placed yet", turn: { branch: "unknown" } });
+    expect(rowOf(first, seeded.kept).turn!.branch).toBe("unknown");
+    // The text form reads on by itself: placed when it answers, with no word of turns not placed.
+    const text = await (await fetch(`${d.url}/api/sessions/${seeded.session}/timeline?format=text&only=turns`)).text();
+    expect(text).toContain("Owner prompt, 1 step, on a branch not shown");
+    expect(text).not.toContain("not placed");
+    expect(text.split("\n").filter((l) => l.includes("Owner prompt, 1 step")).map((l) => l.includes("on a branch not shown"))).toEqual([false, true, false]);
+
+    // A daemon that has not walked it yet, and the page: the row is placed without a click.
+    d.proc.kill("SIGKILL");
+    await exited(d.proc);
+    const again = await daemon(state);
+    d.proc = again.proc; d.url = again.url;
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    const reads: boolean[] = [];
+    page.on("response", async (r) => { if (/\/timeline\?/.test(r.url())) reads.push(!!(await r.json().catch(() => ({}))).partial); });
+    await page.goto(`${d.url}/s/${seeded.session}`);
+    await page.getByTestId("panel-menu").click();
+    await page.getByTestId("panel-search").fill("timeline");
+    await page.getByTestId("panel-pick-timeline").click();
+    const panel = page.getByTestId("timeline-panel");
+    const left = panel.locator(`[data-testid="timeline-row"][data-id="${seeded.left}"]`);
+    await expect(left).toHaveAttribute("data-branch", "other", { timeout: 20_000 });
+    await expect(left).toContainText("on a branch not shown");
+    await expect(panel.getByTestId("timeline-row").filter({ hasText: "not placed yet" })).toHaveCount(0);
+    // It took more than one read, and the reads stopped once every turn was placed.
+    expect(reads[0]).toBe(true);
+    expect(reads.at(-1)).toBe(false);
+    const n = reads.length;
+    await page.waitForTimeout(1_000);
+    expect(reads.length).toBe(n);
+    await shoot(page, "timeline-06-branch-placed");
+  } finally {
+    d.proc.kill("SIGKILL");
+    await exited(d.proc);
+  }
+});
+

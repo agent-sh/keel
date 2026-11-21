@@ -2,7 +2,11 @@
 // it waits on and what went wrong, from one place.
 //
 // GET /api/sessions/:id/timeline?before=&limit=&only=&since=&now=&format=
-//   -> { session_id, as_of, now: { state, lines }, rows, next, scanned? }
+//   -> { session_id, as_of, now: { state, lines }, rows, next, scanned?, partial? }
+//   partial: a turn of the page is not placed on a branch yet (its row says
+//   so, `turn.branch` "unknown"): a long session is walked a bounded piece a
+//   read, and the same read again goes on. format=text reads on by itself for
+//   up to two seconds and then says which turns are not placed.
 //   rows are newest first; `next` is the cursor of the following page (`before`),
 //   null at the end. limit: 1 to 200, 50 by default. only: failures | turns |
 //   agents. since: a span back from now (90s, 30m, 1h, 2d), epoch milliseconds
@@ -92,7 +96,8 @@ export const timelineRoutes: RouteModule = ({ store, engine }) => {
       if (limit !== undefined && !(Number.isInteger(limit) && limit >= 1)) return fail(`limit is a whole number of rows from 1 up (${PAGE} by default, at most ${PAGE_MAX})`);
       if (only !== undefined && !ONLY.includes(only)) return fail(`only is one of ${ONLY.join(", ")}`);
       try {
-        const page = timeline.page(id, { before: input?.before ? String(input.before) : null, limit, only: only ?? null, since: input?.since ? parseSince(String(input.since)) : null });
+        // Read until its turns are placed on a branch (a long session's first read is not): a model reads this once.
+        const page = await timeline.settled(id, { before: input?.before ? String(input.before) : null, limit, only: only ?? null, since: input?.since ? parseSince(String(input.since)) : null });
         return ok(timelineText(page, { title: s.title }));
       } catch (e) {
         return fail((e as Error).message);
@@ -103,7 +108,7 @@ export const timelineRoutes: RouteModule = ({ store, engine }) => {
 
   return {
     "/api/sessions/:id/timeline": {
-      GET: (req: Request & { params: { id: string } }) => {
+      GET: async (req: Request & { params: { id: string } }) => {
         const s = sessionRef(store, req.params.id);
         const q = new URL(req.url).searchParams;
         const limit = q.get("limit");
@@ -111,10 +116,13 @@ export const timelineRoutes: RouteModule = ({ store, engine }) => {
         const only = q.get("only");
         if (only && !ONLY.includes(only as Only)) return bad(`only is one of ${ONLY.join(", ")}`);
         const since = q.get("since");
-        const page = timeline.page(s.id, {
+        const opts = {
           before: q.get("before"), limit: limit === null ? undefined : Number(limit), only: (only as Only) || null,
           since: since ? parseSince(since) : null, now: q.get("now") !== "0",
-        });
+        };
+        // The text form is read once and whole, so it is read until its turns
+        // are placed on a branch; the page's form says `partial` and the page asks again.
+        const page = q.get("format") === "text" ? await timeline.settled(s.id, opts) : timeline.page(s.id, opts);
         const headers = { "cache-control": "no-store" };
         if (q.get("format") === "text") return new Response(timelineText(page, { title: s.title, ids: q.get("ids") !== "0" }) + "\n", { headers: { ...headers, "content-type": "text/plain; charset=utf-8" } });
         return Response.json(page, { headers });

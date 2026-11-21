@@ -47,7 +47,10 @@ test("a turn's sentence leads with who started it, then how it ended and what it
   expect(row({ kind: "subagent", agent_id: "g1", status: "completed" }, { reason: "end_turn" }, 1, { agent: { title: "Check the parser", session_id: "c1" } }))
     .toMatchObject({ text: 'Agent report from "Check the parser", 1 step', refs: { agent_id: "g1", child_session: "c1" } });
   // A turn on a branch the session does not show says so.
-  expect(row({}, { reason: "end_turn" }, 2, { other_branch: true })).toMatchObject({ text: "Owner prompt, 2 steps, on a branch not shown", turn: { branch: "other" } });
+  // Not yet placed on a branch is said too, and is not the same as on the branch shown.
+  expect(row({}, { reason: "end_turn" }, 2, { branch: "unknown" })).toMatchObject({ text: "Owner prompt, 2 steps, branch not placed yet", turn: { branch: "unknown" } });
+  expect(row({}, { reason: "end_turn" }, 2, { branch: "on" }).turn!.branch).toBeUndefined();
+  expect(row({}, { reason: "end_turn" }, 2, { branch: "other" })).toMatchObject({ text: "Owner prompt, 2 steps, on a branch not shown", turn: { branch: "other" } });
 });
 
 test("what a turn spent is what its rollup says, over all its requests", () => {
