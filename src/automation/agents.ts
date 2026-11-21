@@ -1019,6 +1019,14 @@ export function stop(id: string, by: StopBy = "parent"): AgentRecord | undefined
 // A message to an agent: steers a running one (after its current turn, or at
 // once with interrupt), or continues a finished one with its context.
 export async function send(id: string, message: string, interrupt = false): Promise<AgentRecord> {
+  // Another message is making this finished agent ready (its slot held, its
+  // worktree made again): this one waits for that, then steers the agent it
+  // started, instead of asking for a second slot.
+  const ahead = restarting.get(id);
+  if (ahead) {
+    await ahead;
+    return send(id, message, interrupt);
+  }
   let a = get(id);
   if (!a) throw new Error(`no agent ${id}`);
   const { engine, store } = D();
@@ -1028,10 +1036,20 @@ export async function send(id: string, message: string, interrupt = false): Prom
   // with no await between the check and the reservation: a spawn in that time
   // is refused, instead of taking the slot and leaving the worktree made for nothing.
   let release: (() => void) | undefined;
+  let ready: (() => void) | undefined;
   if (isEnded(a)) {
     needSlot(a.parent_id);
     release = reserve(a.parent_id);
+    restarting.set(id, new Promise<void>((r) => (ready = r)));
   }
+  // The slot goes back, and a message that waited for this one goes on.
+  const free = () => {
+    release?.();
+    if (!ready) return;
+    restarting.delete(id);
+    ready();
+    ready = undefined;
+  };
   try {
     // A finished work agent whose empty worktree went gets a fresh one at the same place.
     if (a.machine && remote) await remote.revive(a);
@@ -1043,7 +1061,7 @@ export async function send(id: string, message: string, interrupt = false): Prom
     // running. Steering it now would start a turn its record says is done.
     const ending = settling.get(id);
     if (ending) {
-      release?.();
+      free();
       await ending;
       return send(id, message, interrupt);
     }
@@ -1063,9 +1081,10 @@ export async function send(id: string, message: string, interrupt = false): Prom
     deliver(a.session_id, text, { kind: "steer", agent_id: id });
     return get(id)!;
   } finally {
-    release?.();
+    free();
   }
 }
+const restarting = new Map<string, Promise<void>>(); // finished agents a message is making ready
 
 // Returns as soon as one of the agents has a final status (with every other
 // one already final), or at the timeout, as Codex's wait_agent does. A result

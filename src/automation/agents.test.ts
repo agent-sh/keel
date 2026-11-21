@@ -739,4 +739,18 @@ test("a message that restarts a finished agent holds its slot while its worktree
   // The slot is the running agent's now, not held twice: at a limit of two there is room for one more.
   agents.setLimit(p.id, 2);
   expect((await agents.spawn(p.id, { prompt: "second", isolation: "none", background: true })).status).toBe("running");
+
+  // Two messages at once to a finished agent, at the limit less one: the first
+  // makes it ready, the second waits for that and steers it. Neither is refused.
+  const q = store.createSession({ model: "m:x", workspace: repo, title: "two messages" });
+  store.append(q.id, "assistant", { blocks: [] });
+  agents.setLimit(q.id, 1);
+  const b = await agents.spawn(q.id, { prompt: "do it", isolation: "worktree", background: true });
+  end(b, "end_turn", "nothing to change");
+  for (let i = 0; i < 100 && agents.get(b.id)!.status !== "completed"; i++) await Bun.sleep(20);
+  sends.length = 0;
+  const both = await Promise.allSettled([agents.send(b.id, "first message"), agents.send(b.id, "second message")]);
+  expect(both.map((r) => r.status)).toEqual(["fulfilled", "fulfilled"]);
+  expect(agents.get(b.id)!.status).toBe("running");
+  expect(sends.filter((x) => x.id === b.session_id).map((x) => x.text.split("\n").at(-1))).toEqual(["first message", "second message"]);
 });
