@@ -27,7 +27,8 @@ export type Goal = {
   token_budget?: number | null; max_turns?: number | null; tokens_used: number; turns: number; idle_turns: number;
   started_ms: number; updated_ms: number; last_verdict?: string | null; last_reason?: string | null; judge_model?: string | null; judged_by?: string | null;
   verifier_model?: string | null; // the verifier's model when not the judge's (another family is a second opinion)
-  rev?: number; // a new goal or a changed objective: a check of the old one never decides this one
+  id?: string; // this goal's own id: a goal cleared and set again is another goal
+  rev?: number; // a changed objective: a check of the old one never decides this one
   // The independent check of a "met" (verify.ts): its child session, while it
   // runs and after; what it saw; met only once it agreed.
   verifier_session?: string | null; verifying?: boolean; evidence?: string[] | null; verified?: boolean;
@@ -76,6 +77,16 @@ function save(g: Goal): Goal {
   return g;
 }
 const active = (g?: Goal) => g?.status === "pursuing";
+// What a check is tied to: one goal (its id) with one objective (its rev). A
+// goal cleared and set again starts at rev 1 again, so the rev alone is not it.
+const instance = (g?: Goal) => (g ? `${g.id ?? ""}:${g.rev ?? 0}` : "");
+
+// A verification of a goal that is gone or changed has no one to answer: its verifier stops.
+function dropVerifier(g?: Goal) {
+  if (!g?.verifying || !g.verifier_session) return;
+  const a = agents.byChild(g.verifier_session);
+  if (a && !agents.isEnded(a)) agents.stop(a.id, "parent");
+}
 const open = (g?: Goal) => !!g && g.status !== "achieved" && g.status !== "impossible";
 
 const checkBudget = (n: unknown, what: string) => {
@@ -98,8 +109,9 @@ export async function set(sessionId: string, input: { objective: string; token_b
   if (input.judge_model) await D().providers.resolve(input.judge_model);
   if (input.verifier_model) await D().providers.resolve(input.verifier_model);
   const now = Date.now();
+  dropVerifier(cur);
   const g = save({
-    session_id: sessionId, objective, status: "pursuing", token_budget: checkBudget(input.token_budget, "token_budget"), max_turns: checkBudget(input.max_turns, "max_turns"),
+    id: Bun.randomUUIDv7(), session_id: sessionId, objective, status: "pursuing", token_budget: checkBudget(input.token_budget, "token_budget"), max_turns: checkBudget(input.max_turns, "max_turns"),
     tokens_used: 0, turns: 0, idle_turns: 0, started_ms: now, updated_ms: now, judge_model: input.judge_model ?? null, verifier_model: input.verifier_model ?? null, rev: (cur?.rev ?? 0) + 1,
   });
   activity.record("turn", "goal", sessionId, `Goal set: ${objective.slice(0, 200)}`);
@@ -119,7 +131,12 @@ export async function patch(sessionId: string, p: { status?: "paused" | "pursuin
   if (p.objective !== undefined) {
     const o = String(p.objective).trim();
     if (!o || o.length > OBJECTIVE_MAX) throw new Error(`the objective is 1 to ${OBJECTIVE_MAX} characters`);
-    if (o !== g.objective) g.rev = (g.rev ?? 0) + 1;
+    if (o !== g.objective) {
+      // The check under way judged the old objective: it decides nothing here.
+      dropVerifier(g);
+      g.rev = (g.rev ?? 0) + 1;
+      g.verifying = false;
+    }
     g.objective = o;
   }
   if (p.token_budget !== undefined) g.token_budget = checkBudget(p.token_budget, "token_budget");
@@ -143,7 +160,9 @@ export async function patch(sessionId: string, p: { status?: "paused" | "pursuin
 }
 
 export function clear(sessionId: string): boolean {
-  const had = !!get(sessionId);
+  const cur = get(sessionId);
+  const had = !!cur;
+  dropVerifier(cur);
   db().query("DELETE FROM goals WHERE session_id = ?").run(sessionId);
   if (had) { emit("goal", { session_id: sessionId, cleared: true }); activity.record("turn", "goal", sessionId, "Goal cleared"); }
   return had;
@@ -176,6 +195,8 @@ function turnFacts(sessionId: string): { tokens: number; tools: boolean } {
   return { tokens: sum(evs[end]!.data.usage), tools };
 }
 
+// The checks under way, each by its session and goal instance: a check of a
+// goal that was cleared or replaced never holds back the check of the goal there now.
 const judging = new Set<string>();
 
 // After a restart: a verification the daemon was waiting on has no waiter any
@@ -196,8 +217,11 @@ export function recover() {
 // work is lined up (an agent's report, a wait), as Claude Code defers it.
 export async function afterTurn(sessionId: string, reason: string, opts: { judge?: boolean; recheck?: boolean } = {}) {
   const g = get(sessionId);
-  if (!active(g) || judging.has(sessionId)) return;
-  const rev = g!.rev ?? 0;
+  if (!active(g)) return;
+  const mine = instance(g);
+  const ours = (x?: Goal) => !!x && instance(x) === mine;
+  const key = `${sessionId} ${mine}`;
+  if (judging.has(key)) return;
   if (!opts.recheck) {
     const facts = turnFacts(sessionId);
     g!.turns++;
@@ -207,7 +231,7 @@ export async function afterTurn(sessionId: string, reason: string, opts: { judge
   if (reason === "error" || reason === "max_tokens") return void save({ ...g!, status: "paused", status_reason: reason === "error" ? "a turn failed: fix it, then resume" : "a reply hit the output limit" });
   if (reason === "interrupted") return void save({ ...g!, status: "paused", status_reason: "the turn was stopped" });
   if (opts.judge === false) return void save(g!);
-  judging.add(sessionId);
+  judging.add(key);
   try {
     const s = D().store.session(sessionId);
     if (!s || s.archived) return void save({ ...g!, status: "paused", status_reason: "the session is archived" });
@@ -217,7 +241,7 @@ export async function afterTurn(sessionId: string, reason: string, opts: { judge
     const got = extractJson(text);
     const v = "error" in got || check(VERDICT_SCHEMA, got.value) ? { verdict: "not_met", reason: `the judge gave no verdict: ${text.slice(0, 200)}` } : (got.value as { verdict: string; reason: string });
     const now = get(sessionId);
-    if (!active(now) || (now!.rev ?? 0) !== rev) return; // paused, cleared or replaced while it judged
+    if (!active(now) || !ours(now)) return; // paused, cleared or replaced while it judged
     const u = res.usage as any;
     const judgeTokens = (u.input ?? 0) + (u.output ?? 0) + (u.cache_read ?? 0) + (u.cache_write ?? 0);
     let next: Goal = { ...now!, turns: g!.turns, tokens_used: g!.tokens_used + judgeTokens, idle_turns: g!.idle_turns, last_verdict: v.verdict, last_reason: v.reason, judged_by: res.model_id, evidence: null };
@@ -225,9 +249,10 @@ export async function afterTurn(sessionId: string, reason: string, opts: { judge
     if (v.verdict === "met") {
       // Met by the judge: the verifier checks the work before it counts.
       save({ ...next, verifying: true, evidence: null });
-      const out = await verify(sessionId, now!, v.reason, (child) => { const c = get(sessionId); if (c && (c.rev ?? 0) === rev) save({ ...c, verifier_session: child }); });
+      const out = await verify(sessionId, now!, v.reason, (child) => { const c = get(sessionId); if (ours(c)) save({ ...c!, verifier_session: child }); });
       const after = get(sessionId);
-      if (!active(after) || (after!.rev ?? 0) !== rev) return void (after && save({ ...after, verifying: false })); // paused, cleared or replaced meanwhile
+      if (!ours(after)) return; // cleared or replaced meanwhile: the goal there now is not this check's to touch
+      if (!active(after)) return void save({ ...after!, verifying: false }); // paused meanwhile
       next = { ...after!, verifying: false, verifier_session: out.child_id, tokens_used: after!.tokens_used + out.tokens };
       if ("error" in out.result) return void save({ ...next, status: "paused", status_reason: `the judge said met; ${out.result.error}. Resume to try again.` });
       const r = out.result;
@@ -245,9 +270,9 @@ export async function afterTurn(sessionId: string, reason: string, opts: { judge
   } catch (e) {
     capture(e, { at: "goal check", session: sessionId });
     const now = get(sessionId);
-    if (now && (now.rev ?? 0) === rev) save({ ...now, status: "paused", status_reason: `the judge could not answer: ${(e as Error).message}` });
+    if (ours(now)) save({ ...now!, verifying: false, status: "paused", status_reason: `the judge could not answer: ${(e as Error).message}` });
   } finally {
-    judging.delete(sessionId);
+    judging.delete(key);
   }
 }
 

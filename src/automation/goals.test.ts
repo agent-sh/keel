@@ -7,23 +7,52 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
+import { allHooks } from "../engine/hooks.ts";
 import { setDeps } from "./core.ts";
 import * as activity from "./activity.ts";
+import * as agents from "./agents.ts";
 import * as goals from "./goals.ts";
+import * as waits from "./waits.ts";
 
 const store = new Store(mkdtempSync(join(tmpdir(), "keel-goals-")));
 let running = false;
+// The scripted judge: each request waits for its answer; `verdict` answers the newest.
+const asked: ((text: string) => void)[] = [];
 let verdict: (text: string) => void = () => {};
+// The scripted verifier: its child session's turn runs until `verifierSays` ends it.
+const live = new Set<string>();
 const engine = {
-  isRunning: () => running,
-  send: (id: string, text: string, o: any) => ({ event: store.append(id, "user", { text, ...o?.meta }) }),
-  ask: () => new Promise((res) => (verdict = (text) => res({ blocks: [{ type: "text", text }], usage: { input: 1, output: 1 }, model_id: "m" }))),
+  isRunning: (id: string) => running || live.has(id),
+  interrupt: async () => {},
+  send: (id: string, text: string, o: any) => {
+    if (store.session(id)?.parent_id) live.add(id);
+    return { event: store.append(id, "user", { text, ...o?.meta }) };
+  },
+  ask: () => new Promise((res) => asked.push((verdict = (text) => res({ blocks: [{ type: "text", text }], usage: { input: 1, output: 1 }, model_id: "m" })))),
 };
-setDeps({ store, bus: new Bus(), errors: { capture() {} }, engine } as any);
+setDeps({ store, bus: new Bus(), errors: { capture() {} }, engine, providers: { resolve: async (id: string) => ({ info: { id } }) } } as any);
 activity.migrate();
+agents.migrate();
+waits.migrate();
 goals.migrate();
 const session = () => store.createSession({ model: "m", workspace: "/", title: "t" });
 const usage = (n: number) => ({ input: n, output: 0, cache_read: 0, cache_write: 0 });
+const turn = (id: string, tokens: number) => {
+  store.append(id, "turn_start", {});
+  store.append(id, "assistant", { blocks: [{ type: "tool_use", id: "t1", name: "Bash", input: {} }], usage: usage(tokens) });
+  store.append(id, "tool_result", { results: [] });
+  store.append(id, "turn_end", { reason: "end_turn", usage: usage(tokens) });
+};
+const until = async <T>(f: () => T): Promise<NonNullable<T>> => {
+  for (let i = 0; i < 500; i++) { const v = f(); if (v) return v; await Bun.sleep(2); }
+  throw new Error("it never happened");
+};
+const verifierSays = (child: string, text: string) => {
+  store.append(child, "assistant", { blocks: [{ type: "text", text }], usage: usage(3) });
+  live.delete(child);
+  for (const h of allHooks()) h.turnEnd?.(store.session(child)!, "end_turn");
+};
+const said = (id: string, goal: string) => store.events(id).filter((e) => e.kind === "user" && e.data.kind === "goal" && e.data.goal === goal);
 
 test("two plan items of the same text are two rows, and ticking one off saves", () => {
   const s = session();
@@ -88,6 +117,51 @@ test("a check of a goal that was replaced meanwhile decides nothing about the ne
   await judged;
   expect(goals.get(s.id)).toMatchObject({ objective: "Verify B", status: "pursuing", tokens_used: 0 });
   expect(goals.get(s.id)!.last_verdict ?? null).toBeNull();
+});
+
+test("a goal set after another was cleared gets its own check, never the old goal's verdict", async () => {
+  const s = session();
+  await goals.set(s.id, { objective: "Verify A" });
+  turn(s.id, 5);
+  const checkA = goals.afterTurn(s.id, "end_turn");
+  const answerA = verdict;
+  goals.clear(s.id);
+  await goals.set(s.id, { objective: "Verify B" });
+  turn(s.id, 7);
+  const before = asked.length;
+  const checkB = goals.afterTurn(s.id, "end_turn");
+  expect(asked.length).toBe(before + 1); // B's turn is judged while A's judge is still out
+  verdict('{"verdict": "not_met", "reason": "B has no test run"}');
+  await checkB;
+  answerA('{"verdict": "met", "reason": "A passed"}');
+  await checkA;
+  expect(goals.get(s.id)).toMatchObject({ objective: "Verify B", status: "pursuing", turns: 1, tokens_used: 9, last_verdict: "not_met", last_reason: "B has no test run" });
+  expect(goals.get(s.id)!.verifying ?? false).toBe(false);
+  expect(said(s.id, "continue").map((e) => e.data.text)).toEqual([expect.stringContaining("B has no test run")]);
+});
+
+test("a late verifier of a cleared goal leaves the new goal's verification alone", async () => {
+  const s = session();
+  await goals.set(s.id, { objective: "Verify A" });
+  turn(s.id, 5);
+  const checkA = goals.afterTurn(s.id, "end_turn");
+  verdict('{"verdict": "met", "reason": "A looks done"}');
+  const childA = await until(() => goals.get(s.id)?.verifier_session);
+  goals.clear(s.id);
+  await goals.set(s.id, { objective: "Verify B" });
+  turn(s.id, 7);
+  const checkB = goals.afterTurn(s.id, "end_turn");
+  verdict('{"verdict": "met", "reason": "B looks done"}');
+  const childB = await until(() => goals.get(s.id)?.verifier_session);
+  expect(childB).not.toBe(childA);
+  verifierSays(childA, '{"verdict": "not_met", "reason": "A is not done", "evidence": ["a.txt is missing"]}');
+  await checkA;
+  expect(goals.get(s.id)).toMatchObject({ objective: "Verify B", status: "pursuing", verifying: true, verifier_session: childB });
+  expect(said(s.id, "continue")).toHaveLength(0);
+  verifierSays(childB, '{"verdict": "met", "reason": "B holds", "evidence": ["b.txt:1 reads done"]}');
+  await checkB;
+  expect(goals.get(s.id)).toMatchObject({ objective: "Verify B", status: "achieved", verified: true, verifying: false, evidence: ["b.txt:1 reads done"] });
+  expect(said(s.id, "continue")).toHaveLength(0);
 });
 
 test("a paused goal is not resumed in an archived session", async () => {
