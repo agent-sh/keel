@@ -8,6 +8,7 @@ import { Composer } from "./Composer.tsx";
 import { SessionHeader, SidebarButton } from "./SessionHeader.tsx";
 import { openPanel, SidePanel, usePanelSheet } from "./SidePanel.tsx";
 import { LiveSourceBanner } from "./TakeOver.tsx";
+import { TranscriptLoading } from "./TranscriptLoading.tsx";
 import { switchSession } from "../lib/switch.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
@@ -40,6 +41,7 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
   const [unreached, setUnreached] = useState<string | null>(null);
   const connected = useStore((s) => s.connected);
   const gone = useStore((s) => s.gone[id]);
+  const loaded = useStore((s) => !!s.events[id]);
   useEffect(() => {
     setMissing(null);
     if (unreached === id && !connected) return;
@@ -84,7 +86,8 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
       {header ?? <SessionHeader session={session} />}
       <div className="relative flex min-h-0 flex-1">
         <div className="k-session flex min-w-0 flex-1 flex-col" inert={covered}>
-          <Boundary><Suspense fallback={<div className="flex-1" />}><Transcript sessionId={session.id} /></Suspense></Boundary>
+          {/* Until the conversation is here (its events, and the chunk that draws them), the pane says it is loading. */}
+          <Boundary><Suspense fallback={<TranscriptLoading />}>{loaded ? <Transcript sessionId={session.id} /> : <TranscriptLoading unreached={unreached === id} />}</Suspense></Boundary>
           {/* The stack is one height budget (Composer's Tray): the cards above the box scroll, the box stays. */}
           <div className="k-compose flex min-h-0 flex-col pr-[var(--sbw,0px)]">
             <div className="k-compose-in mx-auto flex min-h-0 w-full max-w-[48rem] flex-col px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6 md:pb-5">

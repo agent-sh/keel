@@ -48,3 +48,30 @@ test("chat with tools", async ({ page, request }) => {
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });
+
+// A session whose conversation is still on its way says so, in the shape of
+// what is coming, instead of an empty pane that reads as an empty session.
+test("a session that is loading shows that it is loading", async ({ page, request }) => {
+  test.skip(!(await (await request.get("/api/models")).json()).models.some((m: { id: string }) => m.id === "scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const mk = async (title: string) => (await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title } })).json()).session.id as string;
+  const slow = await mk("Slow to load");
+  const other = await mk("Open first");
+  try {
+    expect((await request.post(`/api/sessions/${slow}/messages`, { data: { text: "A prompt in the slow session." } })).ok()).toBe(true);
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${slow}`)).json()).events.some((e: any) => e.kind === "turn_end"), { timeout: 15_000 }).toBe(true);
+    await page.goto(`/s/${other}`);
+    await expect(page.getByTestId("composer")).toBeVisible();
+    // The conversation takes 2.5 s to come.
+    await page.route(`**/api/sessions/${slow}`, async (r) => { await new Promise((done) => setTimeout(done, 2_500)); await r.fallback(); });
+    await page.locator(`[data-testid="session-row"][data-session="${slow}"]`).click();
+    const loading = page.getByTestId("transcript-loading");
+    await expect(loading).toBeVisible({ timeout: 1_500 });
+    await expect(loading).toContainText("Loading the conversation");
+    await expect(page.getByTestId("user-message")).toHaveCount(0);
+    await shoot(page, "05-loading-session");
+    await expect(page.getByTestId("user-message")).toContainText("A prompt in the slow session.", { timeout: 15_000 });
+    await expect(loading).toHaveCount(0);
+  } finally {
+    for (const id of [slow, other]) await request.delete(`/api/sessions/${id}`);
+  }
+});
