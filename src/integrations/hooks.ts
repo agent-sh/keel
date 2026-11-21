@@ -76,17 +76,29 @@ export function coveredFiles(root: string, groups: Partial<Record<HookEvent, Gro
 
 // The digest a pin holds: hooks.json alone when its commands run no file of
 // .keel/, else with each covered file's path and content.
-function pinDigest(text: string, root: string, files: string[]): string {
-  if (!files.length) return sha(text);
+// `bodies`: each covered file's bytes as last read with their hash. Every
+// file is read at every call; one whose bytes are the same is not decoded and
+// hashed again. What is kept is replaced by what this call read.
+type Bodies = Map<string, { bytes: Buffer; sha: string }>;
+const BODY_MAX = 256 * 1024;
+function pinDigest(text: string, root: string, files: string[], bodies?: Bodies): string {
+  if (!files.length) { bodies?.clear(); return sha(text); }
   const h = new Bun.CryptoHasher("sha256").update(text);
+  const read: Bodies = new Map();
   for (const f of files) {
     let body = "\u0000missing";
-    try { body = sha(readFileSync(f, "utf8")); } catch {}
+    try {
+      const bytes = readFileSync(f);
+      const was = bodies?.get(f);
+      body = was && was.bytes.equals(bytes) ? was.sha : sha(bytes.toString("utf8"));
+      if (bytes.length <= BODY_MAX) read.set(f, { bytes, sha: body });
+    } catch {}
     // A link is pinned with where it points too, so retargeting it unpins.
     let link = "";
     try { if (lstatSync(f).isSymbolicLink()) link = `\u0000link\u0000${readlinkSync(f)}`; } catch {}
     h.update(`\u0000${relative(root, f)}${link}\u0000${body}`);
   }
+  if (bodies) { bodies.clear(); for (const [f, v] of read) bodies.set(f, v); }
   return h.digest("hex");
 }
 
@@ -96,6 +108,37 @@ export const linksOut = (root: string, files: string[]) => {
   const dirs = [".keel", ".claude"].map((d) => realOf(join(root, d)));
   return files.filter((f) => { try { return lstatSync(f).isSymbolicLink() && !dirs.some((d) => contains(d, realOf(f))); } catch { return false; } });
 };
+
+// What names a path's content on disk without reading it: its inode, kind,
+// size and change times, and for a link also where it points and the same of
+// what it lands on. A write, a replacement, a retargeted link or a file that
+// came or went changes it; the change time cannot be set back. `newest`
+// takes the latest of those times, in milliseconds. It does not see a change
+// made through a shared memory mapping after the page was first written (the
+// kernel stamps the file at the first write to a page, not at later ones), so
+// nothing that guards what runs is decided by it: only the owner's own file
+// is kept by its mark.
+function diskMark(path: string, newest: { ms: number }): string {
+  const of = (st: { ino: bigint; mode: bigint; size: bigint; mtimeNs: bigint; ctimeNs: bigint }) => {
+    const ms = Number((st.ctimeNs > st.mtimeNs ? st.ctimeNs : st.mtimeNs) / 1_000_000n);
+    if (ms > newest.ms) newest.ms = ms;
+    return `${st.ino}.${st.mode}.${st.size}.${st.mtimeNs}.${st.ctimeNs}`;
+  };
+  try {
+    const l = lstatSync(path, { bigint: true });
+    if (!l.isSymbolicLink()) return of(l);
+    let to = "dangling";
+    try { to = of(statSync(path, { bigint: true })); } catch {}
+    return `${of(l)}>${readlinkSync(path)}>${to}`;
+  } catch {
+    return "missing";
+  }
+}
+
+// A file changed this recently is read again at the next event whatever its
+// mark says: a second write within the clock's step of the first would leave
+// the same times.
+const RACY_MS = 2_000;
 
 // A repository's pins are kept for its git common dir (a worktree's are its
 // main checkout's), else for the folder.
@@ -163,57 +206,73 @@ export class Hooks {
     return this.store.db.query<{ sha256: string }, [string]>("SELECT sha256 FROM hook_pins WHERE root = ?").get(pinKey(root))?.sha256;
   }
 
-  // The owner's file as last read, with what named that content on disk: its
-  // inode, size and change times. Every hook event asks for the sources, and
-  // a file that did not change is not read, parsed and hashed again: one stat
-  // says so. The stat is taken before the read, so a write in between shows
-  // at the next event. Only the owner's own file is kept this way: it has no
-  // pin to check. A repository's file is read and its digest made at every
-  // event, as before: its pin is held against the content of that moment.
+  // The owner's file as last read, with the mark (diskMark) that named that
+  // content on disk. Every hook event asks for the sources, and a file that
+  // did not change is not read, parsed and hashed again: one stat says so.
+  // The mark is taken before the read, so a write in between shows at the
+  // next event. Only the owner's own file is kept this way: it always runs,
+  // so no trust check rests on the read.
   private owner?: { path: string; mark: string; source: Omit<Source, "root"> };
 
   private ownerSource(root: string): Source | undefined {
     const path = ownerHooksPath();
-    let mark: string;
-    try {
-      const st = statSync(path, { bigint: true });
-      mark = `${st.ino} ${st.size} ${st.mtimeNs} ${st.ctimeNs}`;
-    } catch {
+    const newest = { ms: 0 };
+    const t0 = Date.now();
+    const mark = diskMark(path, newest);
+    if (mark === "missing") {
       this.owner = undefined;
       if (!existsSync(path)) return undefined;
-      mark = "";
-    }
-    if (mark && this.owner?.path === path && this.owner.mark === mark) return { ...this.owner.source, root };
+    } else if (this.owner?.path === path && this.owner.mark === mark) return { ...this.owner.source, root };
+    this.owner = undefined;
     let text = "";
-    try { text = readFileSync(path, "utf8"); } catch (e) { this.owner = undefined; return { path, scope: "owner", root, text: "", sha256: "", active: false, events: {}, problems: [(e as Error).message], covers: [], groups: {} }; }
+    try { text = readFileSync(path, "utf8"); } catch (e) { return { path, scope: "owner", root, text: "", sha256: "", active: false, events: {}, problems: [(e as Error).message], covers: [], groups: {} }; }
     const { groups, problems } = parseHooks(text);
     const events = Object.fromEntries(Object.entries(groups).map(([e, g]) => [e, g!.reduce((n, x) => n + x.hooks.length, 0)]));
     const source = { path, scope: "owner" as const, text: text.slice(0, 20_000), sha256: sha(text), active: true, events, problems, covers: [], groups };
-    this.owner = mark ? { path, mark, source } : undefined;
+    // Kept only when its last change is old enough to tell from a later one (the time taken before the read).
+    if (mark !== "missing" && t0 - newest.ms > this.racyMs) this.owner = { path, mark, source };
     return { ...source, root };
   }
 
-  sources(cwd: string): Source[] {
-    const out: Source[] = [];
-    const root = projectRoot(cwd);
-    const owner = this.ownerSource(root);
-    if (owner) out.push(owner);
-    const path = join(root, ".keel", "hooks.json");
-    if (!existsSync(path)) return out;
-    let text = "";
-    try { text = readFileSync(path, "utf8"); } catch (e) { out.push({ path, scope: "project", root, text: "", sha256: "", active: false, events: {}, problems: [(e as Error).message], covers: [], groups: {} }); return out; }
-    const { groups, problems } = parseHooks(text);
-    const files = coveredFiles(root, groups);
-    const digest = pinDigest(text, root, files);
-    let active = true;
+  racyMs = RACY_MS;
+
+  // A repository's file. Its pin is a trust check, so the decision is taken
+  // from nothing an earlier event read: at every event the file, the list of
+  // what it covers and every covered file are read, and the digest held
+  // against the pin is of what is on disk then. Two things are spared, and
+  // the decision rests on neither. A file with no pin runs nothing whatever
+  // it holds, so an event (`run`) reads none of it; the listing and the pin
+  // still read it all. And what was last read is kept to compare with: a
+  // hooks.json with the same text is not parsed again, and a covered file
+  // with the same bytes is not hashed again.
+  private projects = new Map<string, { text: string; groups: Source["groups"]; problems: string[]; bodies: Bodies }>();
+
+  private projectSource(root: string, run: boolean): Source | undefined {
     const pin = this.pinned(root);
+    if (run && !pin) return undefined;
+    const path = join(root, ".keel", "hooks.json");
+    if (!existsSync(path)) { this.projects.delete(root); return undefined; }
+    let text = "";
+    try { text = readFileSync(path, "utf8"); } catch (e) { return { path, scope: "project", root, text: "", sha256: "", active: false, events: {}, problems: [(e as Error).message], covers: [], groups: {} }; }
+    let kept = this.projects.get(root);
+    if (kept?.text !== text) this.projects.set(root, (kept = { text, ...parseHooks(text), bodies: new Map() }));
+    const { groups } = kept;
+    const problems = [...kept.problems];
+    const files = coveredFiles(root, groups);
+    const digest = pinDigest(text, root, files, kept.bodies);
+    let active = true;
     if (!pin) { active = false; problems.unshift("not pinned: the owner reads the file and pins it before it runs"); }
     else if (pin !== digest) { active = false; problems.unshift(`changed since it was pinned${files.length ? " (the file or a script it runs)" : ""}: pin it again to run it`); }
     const links = linksOut(root, files);
     if (links.length) { active = false; problems.unshift(`${links.map((f) => relative(root, f)).join(", ")} ${links.length > 1 ? "are links" : "is a link"} out of .keel/: the pin cannot hold what ${links.length > 1 ? "they run" : "it runs"}`); }
     const events = Object.fromEntries(Object.entries(groups).map(([e, g]) => [e, g!.reduce((n, x) => n + x.hooks.length, 0)]));
-    out.push({ path, scope: "project", root, text: text.slice(0, 20_000), sha256: digest, active, events, problems, covers: files.map((f) => relative(root, f)), groups });
-    return out;
+    return { path, scope: "project", root, text: text.slice(0, 20_000), sha256: digest, active, events, problems, covers: files.map((f) => relative(root, f)), groups };
+  }
+
+  // `run`: for an event, which needs only what can run (a file with no pin is left out unread).
+  sources(cwd: string, run = false): Source[] {
+    const root = projectRoot(cwd);
+    return [this.ownerSource(root), this.projectSource(root, run)].filter((s) => s !== undefined);
   }
 
   pin(cwd: string, digest: string): string | null {
@@ -227,7 +286,7 @@ export class Hooks {
   // Every active handler of an event that matches, run at the same time.
   async run(event: HookEvent, s: Session, payload: Record<string, unknown>, match?: string[]): Promise<HookResult> {
     const handlers: Handler[] = [];
-    for (const src of this.sources(s.workspace)) {
+    for (const src of this.sources(s.workspace, true)) {
       if (!src.active) continue;
       for (const g of src.groups[event] ?? []) {
         if (match && g.matcher && g.matcher !== "*" && !match.some((n) => new RegExp(`^(?:${g.matcher})$`).test(n))) continue;
