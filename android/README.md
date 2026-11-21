@@ -46,6 +46,15 @@ project that has an Android app registered for `dev.avifenesh.keel`:
 The app registers its push token on its next start, or from Settings, then
 Check again. Pushes carry ids and one line of text, not the conversation.
 
+## The wire
+
+`src/integrations/mobile/contract/wire.json` is the wire between the daemon and
+the app, written once: the bytes that are signed, the fields the app reads of
+every answer and stream frame, and the bodies the app sends, each with
+examples. The daemon's tests (`src/integrations/mobile/v1.test.ts`) and the
+app's unit tests (`ContractTest.kt`, which reads the same file) both check it,
+with no phone, push service or model. A change to the wire starts in that file.
+
 ## Build
 
 JDK 21 and the Android SDK (platform 37).

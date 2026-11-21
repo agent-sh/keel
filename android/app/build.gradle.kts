@@ -69,6 +69,8 @@ android {
     buildFeatures { compose = true }
     packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
     lint { checkReleaseBuilds = true; abortOnError = true; warningsAsErrors = false }
+    // The wire contract the daemon's tests check too (ContractTest reads /wire.json).
+    sourceSets.getByName("test").resources.srcDir("../../src/integrations/mobile/contract")
 }
 
 dependencies {

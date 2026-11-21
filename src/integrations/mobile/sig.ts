@@ -49,6 +49,10 @@ export function approvalMessage(aid: string, choice: string, ts: string, v2: boo
   return v2 ? `approve2\n${aid}\n${choice}\n${sha256Hex(answer.trim())}\n${ts}` : `approve\n${aid}\n${choice}\n${ts}`;
 }
 
+// The answer text of a question card answered by question id: the [id, value]
+// pairs in id order, as JSON. The approval signature covers its hash.
+export const answersText = (byId: Record<string, unknown>) => JSON.stringify(Object.keys(byId).sort().map((k) => [k, byId[k]]));
+
 export const revokeMessage = (deviceId: string, ts: string) => `revoke\n${deviceId}\n${ts}`;
 
 export function tsWithinSkew(ts: string, nowSecs: number): number | null {

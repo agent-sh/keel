@@ -158,11 +158,14 @@ class Feed {
     }
 
     /**
-     * A chat's newest page, read whole (opening it): it replaces what is held
-     * for the chat. What arrived live after the page's newest message stays,
-     * unless the page marks it as not on the shown branch.
+     * A chat's newest page, read whole (GET /v1/chats/:id/messages?paged=1,
+     * opening it): it replaces what is held for the chat. What arrived live
+     * after the page's newest message stays, unless the page marks it as not
+     * on the shown branch.
      */
-    @Synchronized fun page(chat: String, list: List<Msg>, olderId: String?) {
+    @Synchronized fun page(chat: String, o: JSONObject) {
+        val list = objs(o.optJSONArray("messages") ?: JSONArray()).map(Msg::of)
+        val olderId = o.str("older").takeIf { it.isNotBlank() }
         val shown = list.filter { it.kind != "deleted" }
         val gone = list.filter { it.kind == "deleted" }.map { it.id }.toSet()
         val newest = shown.maxOfOrNull { it.ts } ?: Double.NEGATIVE_INFINITY
@@ -177,6 +180,18 @@ class Feed {
         msgs.update { it + (chat to list.filter { m -> m.kind != "deleted" }.sortedBy { m -> m.ts }) }
         older.update { it + (chat to olderId) }
     }
+
+    /** The page before the oldest one held (the same request with `before`). */
+    @Synchronized fun olderPage(chat: String, o: JSONObject) {
+        mergeMsgs(objs(o.optJSONArray("messages") ?: JSONArray()).map(Msg::of))
+        older.update { it + (chat to o.str("older").takeIf { s -> s.isNotBlank() }) }
+    }
+
+    /** The daemon's answer to a prompt: the message it stored, or the one a retried send already was. */
+    fun sent(o: JSONObject) { o.optJSONObject("message")?.let { mergeMsgs(listOf(Msg.of(it))) } }
+
+    /** The daemon's answer to a card: the card as it stands now. */
+    fun resolved(o: JSONObject): Card? = o.optJSONObject("approval")?.let(Card::of)?.also { mergeCards(listOf(it)) }
 
     /** A card that closed stays closed: an older frame that still calls it pending changes nothing. */
     @Synchronized fun mergeCards(list: List<Card>, replacePending: Boolean = false) {

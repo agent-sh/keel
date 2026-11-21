@@ -17,7 +17,7 @@ import { sessionState } from "../../automation/state.ts";
 import { lineage } from "../../core/tree.ts";
 import * as push from "./push.ts";
 import {
-  approvalMessage, canonicalMessage, checkAndClaim, loadSpki, PairLimiter, REPLAY_VERSION, requestSource, revokeMessage, sha256Hex,
+  answersText, approvalMessage, canonicalMessage, checkAndClaim, loadSpki, PairLimiter, REPLAY_VERSION, requestSource, revokeMessage, sha256Hex,
 } from "./sig.ts";
 import type { Device, MobileStore, SendRecord } from "./store.ts";
 import { fitted } from "../../engine/image-fit.ts";
@@ -412,7 +412,7 @@ export function mobileApi(ctx: MobileCtx) {
     // Answers by question id ({ id: "label" | ["labels"] }), or one `answer`
     // for a card of one question. The signature covers what is answered.
     const byId: Record<string, unknown> | null = b.answers && typeof b.answers === "object" && !Array.isArray(b.answers) ? b.answers : null;
-    const text = byId ? JSON.stringify(Object.keys(byId).sort().map((k) => [k, byId[k]])) : typeof b.answer === "string" ? b.answer.trim() : "";
+    const text = byId ? answersText(byId) : typeof b.answer === "string" ? b.answer.trim() : "";
     if (choice !== "deny") {
       const v2 = req.headers.get("x-hm-asig-v")?.trim() === "2";
       if (!(await approvalSigned(req, dev, approvalMessage(aid, choice, req.headers.get("x-hm-ts") ?? "", v2, text), "approval")))

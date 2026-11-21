@@ -1,7 +1,7 @@
 // The phone API's contract with the unchanged Hermes app: what its sync,
 // chat, run and usage answers carry, and what its push health says. These are
 // shapes no browser e2e reaches; the app's own reading of them is cited per test.
-import { afterAll, describe, expect, setSystemTime, test } from "bun:test";
+import { afterAll, describe, expect, jest, setSystemTime, test } from "bun:test";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,7 +13,8 @@ import * as agents from "../../automation/agents.ts";
 import * as alerts from "../../automation/alerts.ts";
 import { setAttachmentsRoot } from "../../engine/attachments.ts";
 import { ask } from "../../tools/interact.ts";
-import { sha256Hex } from "./sig.ts";
+import wire from "./contract/wire.json";
+import { answersText, approvalMessage, canonicalMessage, sha256Hex } from "./sig.ts";
 import { MobileStore } from "./store.ts";
 import { mobileApi } from "./v1.ts";
 
@@ -601,6 +602,144 @@ describe("branches", () => {
     store.append(s.id, "user", { text: "base, edited" }, null);
     const edited = (await call("GET", `/v1/sync?since=${at}`)).body;
     expect([edited.reset.map((r: any) => r.chat_id), texts(edited.messages, s.id)]).toEqual([[s.id], ["base, edited"]]);
+  });
+});
+
+// contract/wire.json is the wire written once: the bytes that are signed, and
+// per shape the fields the app reads with examples. Here the daemon is held to
+// it; the app's build holds the app to the same file (ContractTest.kt).
+describe("the wire contract", () => {
+  const fields = wire.fields as Record<string, Record<string, string>>;
+  const typeOf = (v: unknown) => (v === null ? "null" : Array.isArray(v) ? "array" : typeof v);
+  const at = (o: any, path: string) => path.split(".").reduce((x, k) => (x && typeof x === "object" ? x[k] : undefined), o);
+  // The shapes inside a shape: where they are and what they are.
+  const PARTS: Record<string, [string, string][]> = {
+    sync: [["chats", "chat"], ["messages", "message"], ["approvals", "card"], ["working", "working_row"], ["drafts", "draft"], ["reset", "reset"]],
+    message: [["meta.steps", "step"]], card: [["questions", "question"], ["answers", "picked"]],
+    page: [["messages", "message"]], receipt: [["message", "message"]], resolved: [["approval", "card"]],
+    hello: [["sync", "sync"]], message_frame: [["message", "message"], ["chat", "chat"]], chat_frame: [["chat", "chat"]],
+    chat_reset: [["messages", "message"], ["chat", "chat"]], approval: [["approval", "card"]], seq: [["working", "working_row"]],
+  };
+  // What a value breaks of its shape's fields, the shapes inside it included; `seen` collects the fields it has.
+  function broken(shape: string, v: any, seen = new Set<string>(), out: string[] = []) {
+    for (const [path, decl] of Object.entries(fields[shape]!)) {
+      const got = at(v, path);
+      if (got === undefined) { if (!decl.endsWith("?")) out.push(`${shape}.${path} is missing`); continue; }
+      if (!decl.replace("?", "").split("|").includes(typeOf(got))) out.push(`${shape}.${path} is ${typeOf(got)}, not ${decl}`);
+      else seen.add(`${shape}.${path}`);
+    }
+    for (const [path, part] of PARTS[shape] ?? []) {
+      const x = at(v, path);
+      for (const c of Array.isArray(x) ? x : x && typeof x === "object" ? (part === "picked" ? Object.values(x) : [x]) : []) broken(part, c, seen, out);
+    }
+    return out;
+  }
+  const approve = (aid: string, body: any) => {
+    const ts = String(Math.floor(Date.now() / 1000));
+    const text = body.answers ? answersText(body.answers) : "";
+    const asig = sign("sha256", Buffer.from(approvalMessage(aid, body.choice, ts, true, text)), { key: akey.privateKey, dsaEncoding: "der" }).toString("base64");
+    return call("POST", `/v1/approvals/${aid}`, body, body.choice === "deny" ? {} : { "x-hm-asig": asig, "x-hm-asig-v": "2" });
+  };
+  const QUESTIONS = { questions: [{ id: "build", question: "Build type?", options: [{ label: "Debug" }, { label: "Release" }] }, { id: "checks", question: "Which checks?", multiSelect: true, options: [{ label: "Unit" }, { label: "Integration" }] }] };
+  const asks = (sid: string, callId: string) => {
+    const e = store.append(sid, "assistant", { blocks: [{ type: "tool_use", id: callId, name: "AskUserQuestion", input: QUESTIONS }] });
+    let got: any;
+    ask({ callId, sessionId: sid, signal: new AbortController().signal } as any).then((a) => (got = a));
+    return { event: e, answer: () => got };
+  };
+
+  test("both sides sign the same bytes", () => {
+    for (const r of wire.signing.request) {
+      expect(sha256Hex(r.body)).toBe(r.body_sha256);
+      expect(new TextDecoder().decode(canonicalMessage(r.method, r.path + (r.query === null ? "" : `?${r.query}`), r.ts, r.body))).toBe(r.canonical);
+    }
+    for (const a of wire.signing.approval) {
+      expect(a.answers ? answersText(a.answers) : "").toBe(a.answers_text);
+      expect(approvalMessage(a.id, a.choice, a.ts, true, a.answers_text)).toBe(a.message);
+    }
+  });
+
+  test("the examples are of their shapes", () => {
+    for (const [shape, list] of Object.entries(wire.examples)) for (const ex of list) expect(broken(shape, ex)).toEqual([]);
+    expect(Object.keys(wire.examples).sort()).toEqual(Object.keys(fields).sort());
+  });
+
+  test("what the daemon sends has every field the app reads, under its name and type", async () => {
+    const seen = new Set<string>();
+    const bad: string[] = [];
+    const take = (shape: string, v: any) => void broken(shape, v, seen, bad);
+    const parent = session("Parent");
+    const s = session("Fix the build");
+    if (!store.columnExists("sessions", "parent_id")) store.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT");
+    store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(parent.id, s.id);
+    const base = store.append(s.id, "user", { text: "Why does the build fail?" });
+    const left = store.append(s.id, "assistant", { blocks: [{ type: "text", text: "left behind" }] }, base.id);
+    store.append(s.id, "assistant", { blocks: [{ type: "text", text: "Looking." }, { type: "tool_use", id: "t1", name: "Bash", input: { command: "bun test" } }], model: "fx:saved" }, base.id);
+    store.append(s.id, "turn_end", { reason: "interrupted" });
+    store.append(s.id, "user", { text: '<subagent_result agent_id="ag2" title="Child" status="done">\nstatus ok\n</subagent_result>', kind: "subagent", agent_id: "ag2" });
+    const failed = session("Failed");
+    store.append(failed.id, "error", { message: "HTTP 402: no credit" });
+    const q = asks(s.id, "call-w");
+    running.add(parent.id);
+    bus.emit({ t: "delta", session_id: parent.id, kind: "text", index: 0, text: "Looking at the" } as any);
+
+    // Answers to requests.
+    take("sync", (await call("GET", "/v1/sync?since=0")).body);
+    take("page", (await call("GET", `/v1/chats/${s.id}/messages?paged=1&limit=3`)).body);
+    take("receipt", (await call("POST", `/v1/chats/${parent.id}/messages`, { ...wire.examples.send[0], client_id: "contract-receipt" })).body);
+
+    // The stream: its first frame, then one of each kind.
+    jest.useFakeTimers();
+    const st = await openStream(mobile.globalSeq());
+    try {
+      const ev = store.append(s.id, "assistant", { blocks: [{ type: "text", text: "Fixed." }], model: "fx:saved" });
+      bus.emit({ t: "event", event: ev } as any);
+      bus.emit({ t: "session", session: store.session(s.id)! } as any);
+      bus.emit({ t: "delta", session_id: parent.id, kind: "text", index: 0, text: " build" } as any);
+      take("resolved", (await approve("q-call-w", { choice: "once", answers: { build: "Debug", checks: ["Unit", "by hand"] } })).body);
+      const res = store.append(s.id, "tool_result", { results: [{ type: "tool_result", tool_use_id: "call-w", content: "answered" }] });
+      bus.emit({ t: "event", event: res } as any);
+      bus.emit({ t: "session", session: store.updateSession(s.id, { head: left.id }) } as any);
+      bus.emit({ t: "session", session: failed, deleted: true } as any);
+      jest.advanceTimersByTime(15_000);
+    } finally {
+      jest.useRealTimers();
+    }
+    await st.read((f) => f.some((x) => x.type === "seq"));
+    await st.close();
+    const SHAPE: Record<string, string> = { message: "message_frame", chat: "chat_frame" };
+    for (const f of st.frames) take(SHAPE[f.type] ?? f.type, f);
+    expect(new Set(st.frames.map((f) => f.type))).toEqual(new Set(["hello", "message", "chat", "working", "delta", "approval", "chat_reset", "chat_removed", "seq"]));
+
+    // Catch-ups that say more than events: a branch that changed, a cursor that cannot be caught up from.
+    take("sync", (await call("GET", `/v1/sync?since=${st.frames[0].cursor}`)).body);
+    take("sync", (await call("GET", `/v1/sync?since=${mobile.globalSeq() + 9}`)).body);
+    running.delete(parent.id);
+
+    expect(bad).toEqual([]);
+    // Every field the app reads was sent at least once here, so a renamed optional field fails too.
+    const sent = Object.entries(fields).filter(([shape]) => shape !== "send" && shape !== "answer").flatMap(([shape, f]) => Object.keys(f).map((k) => `${shape}.${k}`));
+    expect(sent.filter((k) => !seen.has(k))).toEqual([]);
+    expect(q.answer()).toEqual({ build: { picked: ["Debug"] }, checks: { picked: ["Unit"], other: "by hand" } });
+  });
+
+  test("the daemon takes what the app sends", async () => {
+    const s = session();
+    sent.length = 0;
+    const [send] = wire.examples.send;
+    for (const [name, type] of Object.entries(fields.send!)) expect(typeOf((send as any)[name])).toBe(type);
+    const first = (await call("POST", `/v1/chats/${s.id}/messages`, send)).body;
+    expect(first.message).toMatchObject({ content: send!.text, kind: "queued" });
+    expect((await call("POST", `/v1/chats/${s.id}/messages`, send)).body).toMatchObject({ replayed: true, message: { id: first.message.id } });
+    expect(sent).toHaveLength(1);
+    // A card answered by question id, and one dismissed.
+    const [answer, dismiss] = wire.examples.answer;
+    const a = asks(s.id, "call-x"), b = asks(s.id, "call-y");
+    expect((await approve("q-call-x", answer)).status).toBe(200);
+    expect((await approve("q-call-y", dismiss)).status).toBe(200);
+    await Bun.sleep(0);
+    expect(a.answer()).toEqual({ build: { picked: ["Debug"] }, checks: { picked: ["Unit", "Integration"] } });
+    expect(b.answer().build.picked).toEqual([]);
   });
 });
 

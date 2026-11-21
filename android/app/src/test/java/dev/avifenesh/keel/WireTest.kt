@@ -7,32 +7,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
-// The expected strings are what the daemon computes (src/integrations/mobile/sig.ts
-// and the approve route), printed by bun from the same inputs.
+// Pure logic of the app. What it shares with the daemon (signed bytes, shapes) is in ContractTest.
 class WireTest {
-    @Test fun canonicalMatchesTheDaemon() {
-        val body = """{"text":"hi"}""".toByteArray()
-        assertEquals(
-            "POST\n/v1/chats/a/messages?x=1\n1795195000\ne7b995efa755c5ff3b84d2188b58cb4ae916a59470eb3761df8a814f11763500",
-            Wire.canonical("post", "/v1/chats/a/messages", "x=1", "1795195000", Wire.sha256Hex(body)),
-        )
-        assertEquals("GET\n/v1/sync\n1\n${Wire.sha256Hex(ByteArray(0))}", Wire.canonical("GET", "/v1/sync", null, "1", Wire.sha256Hex(ByteArray(0))))
-    }
-
-    @Test fun answersAreHashedAsTheDaemonWritesThem() {
-        val answers = linkedMapOf<String, Any>("b" to "say \"hi\"\n\tok\u0001", "a" to listOf("Yes", "Não / sí"), "10" to "x")
-        val text = Wire.answersText(answers)
-        assertEquals("""[["10","x"],["a",["Yes","Não / sí"]],["b","say \"hi\"\n\tok\u0001"]]""", text)
-        assertEquals(
-            "approve2\nq-call_1\nonce\n62bd08ee1cee77adf08e0dcb3dccc81c5afa0496c758a4eac4d540470ad4baa2\n1795195000",
-            Wire.approvalMessage("q-call_1", "once", "1795195000", text),
-        )
-        assertEquals(
-            "approve2\napr_9\nsession\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n1795195000",
-            Wire.approvalMessage("apr_9", "session", "1795195000", ""),
-        )
-    }
-
     @Test fun aSendKeepsItsIdForTheSameWords() {
         var n = 0
         val fresh = { "id-${++n}" }
@@ -66,14 +42,6 @@ class WireTest {
         assertEquals(State.STOPPED, stateOf(chat("stopped"), false, false))
         assertEquals(State.DONE, stateOf(chat("done"), false, false))
         assertEquals(State.IDLE, stateOf(Chat.of(JSONObject().put("id", "c")), false, false))
-    }
-
-    @Test fun cardsReadTheDaemonsShape() {
-        val c = Card.of(JSONObject("""{"id":"q-1","chat_id":"s","kind":"question","command":"Pick","actions":[["Answer","once","primary"],["Dismiss","deny","danger"]],
-            "state":"approved","questions":[{"id":"0","question":"Which?","options":["A","B"],"multi":true}],"answers":{"0":{"picked":["A"],"other":"C"}}}"""))
-        assertEquals(listOf(Act("Answer", "once", "primary"), Act("Dismiss", "deny", "danger")), c.actions)
-        assertEquals(listOf("A", "C"), c.answers["0"])
-        assertEquals(true, c.questions.single().multi)
     }
 
     @Test fun markdownBlocks() {

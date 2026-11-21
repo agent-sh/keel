@@ -13,16 +13,11 @@ import androidx.fragment.app.FragmentActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
-import org.json.JSONObject
 
 object Approvals {
     /** done(null): applied; done(""): the owner cancelled the prompt; done(text): what went wrong. */
     fun run(act: FragmentActivity, aid: String, choice: String, summary: String, answers: Map<String, Any>?, done: (String?) -> Unit) {
-        val body = JSONObject().put("choice", choice)
-        if (answers != null && choice != "deny") body.put("answers", JSONObject().apply {
-            answers.forEach { (k, v) -> put(k, if (v is List<*>) JSONArray(v) else v.toString()) }
-        })
+        val body = Wire.answerBody(choice, answers)
         fun submit(headers: Map<String, String>) {
             Hub.scope.launch {
                 val r = runCatching { Hub.resolve(aid, body, headers) }

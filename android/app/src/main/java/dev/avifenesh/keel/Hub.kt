@@ -20,7 +20,6 @@ import okhttp3.Response
 import okhttp3.sse.EventSource
 import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
-import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -118,13 +117,11 @@ object Hub {
         }
     }
 
-    private fun objs(a: JSONArray) = (0 until a.length()).mapNotNull { a.optJSONObject(it) }
-
     // --- actions -------------------------------------------------------------------
 
     suspend fun open(chat: String) {
         val o = Api.get("/v1/chats/${Uri.encode(chat)}/messages?paged=1&limit=150")
-        feed.page(chat, objs(o.optJSONArray("messages") ?: JSONArray()).map(Msg::of), o.str("older").takeIf { s -> s.isNotBlank() })
+        feed.page(chat, o)
         runCatching { Api.post("/v1/chats/${Uri.encode(chat)}/read") }
         chats.update { m -> m[chat]?.let { m + (chat to it.copy(unread = 0)) } ?: m }
     }
@@ -132,14 +129,12 @@ object Hub {
     suspend fun loadOlder(chat: String) {
         val before = older.value[chat] ?: return
         val o = Api.get("/v1/chats/${Uri.encode(chat)}/messages?paged=1&limit=150&before=${Uri.encode(before)}")
-        feed.mergeMsgs(objs(o.optJSONArray("messages") ?: JSONArray()).map(Msg::of))
-        older.update { it + (chat to o.str("older").takeIf { s -> s.isNotBlank() }) }
+        feed.olderPage(chat, o)
     }
 
     /** mode: send, steer or queue. clientId names the send: a retry under it stores no second prompt. */
     suspend fun send(chat: String, text: String, mode: String, clientId: String) {
-        val o = Api.post("/v1/chats/${Uri.encode(chat)}/messages", Wire.sendBody(text, mode, clientId))
-        o.optJSONObject("message")?.let { feed.mergeMsgs(listOf(Msg.of(it))) }
+        feed.sent(Api.post("/v1/chats/${Uri.encode(chat)}/messages", Wire.sendBody(text, mode, clientId)))
     }
 
     suspend fun stopTurn(chat: String) { Api.post("/v1/chats/${Uri.encode(chat)}/stop") }
@@ -151,8 +146,7 @@ object Hub {
     }
 
     suspend fun resolve(aid: String, body: JSONObject, headers: Map<String, String>): Card? {
-        val o = Api.post("/v1/approvals/${Uri.encode(aid)}", body, headers)
-        return o.optJSONObject("approval")?.let(Card::of)?.also { feed.mergeCards(listOf(it)) }
+        return feed.resolved(Api.post("/v1/approvals/${Uri.encode(aid)}", body, headers))
     }
 
     suspend fun me(): JSONObject = Api.get("/v1/me")

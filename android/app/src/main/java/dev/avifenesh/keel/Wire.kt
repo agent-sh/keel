@@ -54,6 +54,15 @@ object Wire {
     fun sendBody(text: String, mode: String, clientId: String): JSONObject =
         JSONObject().put("text", text).put("mode", mode).put("client_id", clientId)
 
+    /** A card's answer as the daemon takes it (POST /v1/approvals/:id). answers: by question id, one label or a list of them. */
+    fun answerBody(choice: String, answers: Map<String, Any>?): JSONObject {
+        val body = JSONObject().put("choice", choice)
+        if (answers != null && choice != "deny") body.put("answers", JSONObject().apply {
+            answers.forEach { (k, v) -> put(k, if (v is List<*>) JSONArray(v) else v.toString()) }
+        })
+        return body
+    }
+
     data class PairLink(val base: String, val code: String, val name: String)
 
     /**

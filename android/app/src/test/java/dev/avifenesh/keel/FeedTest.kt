@@ -89,7 +89,7 @@ class FeedTest {
         val f = level()
         // The page was read, then a message arrived live before the page was applied.
         f.frame(message(11, msg("m9", 9.0), cursor = 11))
-        f.page("c1", listOf(msg("m0", 0.5), msg("m1", 1.0), msg("other", 0.7, kind = "deleted")).map(Msg::of), "m0")
+        f.page("c1", JSONObject().put("older", "m0").put("messages", JSONArray(listOf(msg("m0", 0.5), msg("m1", 1.0), msg("other", 0.7, kind = "deleted")))))
         assertEquals(listOf("m0", "m1", "m9"), ids(f))
         assertEquals("m0", f.older.value["c1"])
     }
