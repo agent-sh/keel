@@ -656,7 +656,9 @@ export class Engine {
     if (this.running.has(id)) throw Object.assign(new Error("a turn is running"), { status: 409 });
     this.release(id);
     // A turn that sent nothing has nothing to continue from: its prompt is asked again as it stands.
-    if (!this.unanswered(id)) this.accept(id, { text: "[harness] The previous turn was stopped before it finished. Continue where it left off.", origin: "harness" });
+    // Otherwise said as what happened: a turn that failed was not stopped.
+    const failed = this.lineage(id).findLast((e) => e.kind === "turn_end")?.data.reason === "error";
+    if (!this.unanswered(id)) this.accept(id, { text: failed ? "[harness] The previous turn failed before it finished. Try again, and continue where it left off." : "[harness] The previous turn was stopped before it finished. Continue where it left off.", origin: "harness" });
     this.start(id);
     this.emitQueue(id);
   }

@@ -150,3 +150,70 @@ test("retries, continuation, refusal and compaction as the owner sees them", asy
   for (const e of mine) expect(e.source).toBe("provider");
   expect(errors.filter((e: any) => e.session_id === s2.id)).toEqual([]);
 });
+
+// Feature: the box a failed turn leaves. It comes before the turn's footer,
+// leads with what failed in plain words, gives the provider's words with the
+// address in them as a link, and offers what fits as labelled buttons: the
+// page that fixes it, trying again, another model. A turn with no reply has
+// nothing to copy, mark or rate, so its footer offers none of that; only the
+// failure the session stopped on has buttons.
+test("a failure box leads with plain words, links its address and offers what fits", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes(STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Out of credit" } })).json();
+  try {
+    await page.goto(`/s/${session.id}`);
+    await send(page, "script:billing please summarize", 1);
+    const box = page.getByTestId("turn-error");
+    await expect(box).toHaveCount(1);
+    await expect(box.getByTestId("failure-lead")).toHaveText("The provider's account is out of credit or over its quota.");
+    await expect(box.getByTestId("failure-words")).toContainText("Scripted: your credit balance is too low to make this request. Add credits at https://example.com/billing.");
+    await expect(box.getByTestId("failure-words")).not.toContainText("HTTP 402:");
+    await expect(box.getByTestId("failure-status")).toHaveText("HTTP 402");
+    const link = box.getByTestId("failure-url");
+    await expect(link).toHaveAttribute("href", "https://example.com/billing");
+    await expect(link).toHaveAttribute("target", "_blank");
+    const fix = box.getByTestId("failure-fix");
+    await expect(fix).toHaveText("Open billing");
+    await expect(fix).toHaveAttribute("href", "https://example.com/billing");
+    await expect(box.getByTestId("try-again")).toHaveText("Try again");
+    await expect(box.getByTestId("failure-switch")).toHaveText("Switch model");
+
+    // The failure first, then the footer, which offers only what applies to a turn with no reply.
+    const foot = page.getByTestId("turn-end").last().locator("xpath=..");
+    expect((await box.boundingBox())!.y).toBeLessThan((await foot.boundingBox())!.y);
+    await expect(foot.getByTestId("turn-reason")).toHaveText("Failed");
+    await expect(foot.locator('[data-testid^="rowaction-"]')).toHaveCount(0);
+    await expect(foot.getByTestId("copy-reply")).toHaveCount(0);
+    await expect(foot.getByTestId("resume")).toHaveCount(0);
+    await expect(foot.getByTestId("retry")).toHaveCount(1);
+    await shoot(page, "failures-08-billing-box");
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await expect(box.getByTestId("try-again")).toBeVisible();
+    await shoot(page, "failures-09-billing-box-narrow");
+    await page.setViewportSize({ width: 1920, height: 1040 });
+
+    // Try again says what happened (the turn failed, it was not stopped); the new failure has the buttons, the old one none.
+    await box.getByTestId("try-again").click();
+    await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 30_000 });
+    await expect(page.getByTestId("harness-note").last()).toHaveText("The previous turn failed before it finished. Try again, and continue where it left off.");
+    await expect(box).toHaveCount(2);
+    await expect(page.getByTestId("failure-actions")).toHaveCount(1);
+    await expect(box.last().getByTestId("failure-actions")).toHaveCount(1);
+
+    // Another model takes the same request.
+    await box.last().getByTestId("failure-switch").click();
+    const pick = box.last().getByTestId("failure-models");
+    await pick.getByTestId("model-picker").click();
+    await page.getByPlaceholder("Search models").fill("Scripted backup");
+    await page.getByRole("option", { name: /Scripted backup/ }).first().click();
+    await pick.getByRole("button", { name: "Try on it" }).click();
+    const confirm = page.getByTestId("confirm").getByRole("button", { name: "Switch" });
+    await Promise.race([confirm.click(), expect(page.getByTestId("turn-end")).toHaveCount(3, { timeout: 30_000 })]).catch(() => {});
+    await expect(page.getByTestId("assistant-text").last()).toHaveText("The backup model took the request.", { timeout: 30_000 });
+    await expect(page.getByTestId("failure-actions")).toHaveCount(0);
+  } finally {
+    await request.delete(`/api/sessions/${session.id}`);
+  }
+});
