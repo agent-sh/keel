@@ -766,10 +766,14 @@ test("a row the owner scrolled to acts as the scroll ends, a list that changed m
     await page.mouse.wheel(0, 320);
     // The scroll has ended when the region has stood for a moment.
     await expect.poll(() => page.evaluate(() => { const w = window as unknown as { scrolled: number }; return w.scrolled > 0 && performance.now() - w.scrolled > 250; })).toBe(true);
-    const reached = (await whole()).filter((x) => !before.includes(x));
-    expect(reached.length).toBeGreaterThan(0);
+    const came = (await whole()).filter((x) => !before.includes(x));
+    expect(came.length).toBeGreaterThan(0);
     // A row that came into view by that scroll can be pressed well inside the second it would wait otherwise.
-    await expect(card.and(page.locator(`[data-approval-id="${reached[0]}"]`))).toHaveAttribute("data-live", "true");
+    // (The one taken is a row the page itself shows whole: the region's own bar lies over the edge of
+    // what this test measures, and how many rows fit changes with the height of the pane's header.)
+    const pressable = () => card.and(page.locator("[data-live]")).evaluateAll((els, ids) => els.map((el) => (el as HTMLElement).dataset.approvalId!).find((x) => ids.includes(x)) ?? null, came);
+    await expect.poll(pressable).not.toBeNull();
+    const reached = [(await pressable())!];
     const waited = await page.evaluate((x) => { const w = window as unknown as { scrolled: number; could: Record<string, number> }; return w.could[x!]! - w.scrolled; }, reached[0]);
     expect(waited).toBeLessThan(600);
     await card.and(page.locator(`[data-approval-id="${reached[0]}"]`)).getByTestId("allow-once").click();
