@@ -3,6 +3,7 @@ import { Check, CircleDot, ExternalLink, Flag, Pause, Play, Trash2, X } from "lu
 import { useEffect, useState } from "react";
 import type { Session } from "../../../../src/core/types.ts";
 import { auto, openSession, useAuto, type Goal, type Task } from "../../lib/automation.ts";
+import { remoteId, splitId } from "../../lib/fleet-ids.ts";
 import { reportError, failed, useStore } from "../../lib/store.ts";
 import { cn, fmtTokens } from "../../lib/utils.ts";
 import { ModelPicker } from "../ModelPicker.tsx";
@@ -128,6 +129,19 @@ function TaskRow({ t, sid }: { t: Task; sid: string }) {
   const [conflict, setConflict] = useState<{ mine: string; theirs?: string } | null>(null);
   const act = (p: Promise<unknown>) => p.catch(reportError);
   const done = t.status === "completed" || t.status === "cancelled";
+  // Its own session was deleted, by the daemon's word: what the tasks answer
+  // listed as gone, or a delete this page was told of. A session the page
+  // merely does not list (an archived one) is still the row's link.
+  const from = splitId(sid);
+  const dest = t.dest_session ? (from ? remoteId(from.machine, t.dest_session) : t.dest_session) : null;
+  const listedGone = useAuto((s) => !!t.dest_session && !!s.goneDests[t.dest_session]);
+  const destGone = useStore((s) => !!dest && !!s.gone[dest]) || listedGone;
+  const linked = !!dest && !destGone;
+  const [starting, setStarting] = useState(false);
+  const start = () => {
+    setStarting(true);
+    auto.startTask(sid, t.id).then((r) => openSession(r.session_id)).catch(reportError).finally(() => setStarting(false));
+  };
   const begin = () => { setText(t.text); setBase(t.text); setConflict(null); setEditing(true); };
   // A rename the daemon refused (the row changed meanwhile) is the owner's
   // choice, not an error: the chooser opens with the daemon's text and the draft kept.
@@ -173,16 +187,22 @@ function TaskRow({ t, sid }: { t: Task; sid: string }) {
           <span data-testid="task-text" onDoubleClick={begin} className={cn("min-w-0 flex-1 text-ui", done && "text-faint line-through", t.status === "in_progress" && "font-medium")}>{t.text}</span>
         )}
         {t.by === "owner" && <span className="mt-0.5 shrink-0 rounded bg-panel px-1 text-micro text-faint">you</span>}
-        <span className={cn("shrink-0 items-center", t.dest_session ? "flex" : "hidden group-hover:flex")}>
-          {t.dest_session ? (
-            <IconButton title="Open its session" onClick={() => openSession(t.dest_session!)} testid="task-open"><ExternalLink className="size-3.5" /></IconButton>
-          ) : !done && (
-            <IconButton title="Do it in a session of its own" onClick={() => auto.startTask(sid, t.id).then((r) => openSession(r.session_id)).catch(reportError)} testid="task-start"><ExternalLink className="size-3.5" /></IconButton>
+        <span className={cn("shrink-0 items-center", linked ? "flex" : "hidden group-hover:flex")}>
+          {linked ? (
+            <IconButton title="Open its session" onClick={() => openSession(dest!)} testid="task-open"><ExternalLink className="size-3.5" /></IconButton>
+          ) : !done && !destGone && (
+            <IconButton title="Do it in a session of its own" onClick={start} testid="task-start"><ExternalLink className="size-3.5" /></IconButton>
           )}
           <IconButton title="Remove" danger onClick={() => act(auto.removeTask(sid, t.id))} testid="task-remove"><Trash2 className="size-3.5" /></IconButton>
         </span>
       </div>
       {editing && t.text !== base && <p className="mt-1 pl-6 text-caption text-warn" data-testid="task-changed">Changed meanwhile: it now reads "{t.text}".</p>}
+      {destGone && (
+        <div className="mt-1 flex flex-wrap items-center gap-2 pl-6 text-caption" data-testid="task-dest-gone">
+          <span className="text-muted">Its session was deleted.</span>
+          {!done && <button type="button" disabled={starting} className={cn(button, "disabled:opacity-40")} onClick={start} data-testid="task-restart">Start it again</button>}
+        </div>
+      )}
       {conflict !== null && (
         <div className="mt-1 flex flex-wrap items-center gap-2 pl-6 text-caption" data-testid="task-conflict">
           <span className="text-warn">It was changed to "{theirs}" while you edited.</span>

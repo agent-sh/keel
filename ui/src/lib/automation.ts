@@ -32,11 +32,12 @@ type State = {
   lastActivity: Activity | null; // the row that bumped it
   goals: Record<string, Goal | null>; // by session, once loaded
   tasks: Record<string, Task[]>;
+  goneDests: Record<string, true>; // task destinations their daemon said it no longer has
 };
 
 type Unread = { total: number; sessions: Record<string, number>; children: Record<string, number>; fresh: Record<string, number>; rev: number };
 const NO_UNREAD: Unread = { total: 0, sessions: {}, children: {}, fresh: {}, rev: 0 };
-let state: State = { agents: {}, waits: {}, loops: {}, alerts: [], unread: NO_UNREAD, rev: 0, settings: null, channels: [], snoozes: {}, activityTick: 0, lastActivity: null, goals: {}, tasks: {} };
+let state: State = { agents: {}, waits: {}, loops: {}, alerts: [], unread: NO_UNREAD, rev: 0, settings: null, channels: [], snoozes: {}, activityTick: 0, lastActivity: null, goals: {}, tasks: {}, goneDests: {} };
 const subs = new Set<() => void>();
 const set = (p: Partial<State>) => {
   state = { ...state, ...p };
@@ -153,8 +154,9 @@ export const auto = {
   },
   activitySessions: () => api<{ sessions: { session_id: string; last: number }[] }>("/api/activity/sessions"),
   async loadSessionPlan(sid: string) {
-    const [g, t] = await Promise.all([api<{ goal: Goal | null; rev?: number }>(`/api/sessions/${sid}/goal`), api<{ tasks: Task[]; rev?: number }>(`/api/sessions/${sid}/tasks`)]);
+    const [g, t] = await Promise.all([api<{ goal: Goal | null; rev?: number }>(`/api/sessions/${sid}/goal`), api<{ tasks: Task[]; gone?: string[]; rev?: number }>(`/api/sessions/${sid}/tasks`)]);
     set({
+      goneDests: t.gone?.length ? { ...state.goneDests, ...Object.fromEntries(t.gone.map((id) => [id, true as const])) } : state.goneDests,
       goals: newer(`goal:${sid}`, g.rev, true) ? { ...state.goals, [sid]: g.goal } : state.goals,
       tasks: newer(`tasks:${sid}`, t.rev, true) ? { ...state.tasks, [sid]: t.tasks } : state.tasks,
     });

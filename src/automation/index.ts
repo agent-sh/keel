@@ -492,7 +492,13 @@ export const automationRoutes: RouteModule = (deps) => {
       DELETE: (req: any) => (session(req.params.id) ? json({ ok: true, cleared: goals.clear(req.params.id) }) : bad("no such session", 404)),
     },
     "/api/sessions/:id/tasks": {
-      GET: (req: any) => (session(req.params.id) ? json({ tasks: goals.tasks(req.params.id), rev: deps.bus.rev() }) : bad("no such session", 404)),
+      // gone: the destinations of its rows that the daemon no longer has (deleted), so
+      // a page offers no dead link and never takes one it merely does not list for deleted.
+      GET: (req: any) => {
+        if (!session(req.params.id)) return bad("no such session", 404);
+        const tasks = goals.tasks(req.params.id);
+        return json({ tasks, gone: tasks.flatMap((t) => (t.dest_session && !session(t.dest_session) ? [t.dest_session] : [])), rev: deps.bus.rev() });
+      },
       POST: (req: any) => attempt(async () => {
         if (!session(req.params.id)) return bad("no such session", 404);
         return json({ task: goals.addTask(req.params.id, String((await body(req)).text ?? "")) }, 201);
