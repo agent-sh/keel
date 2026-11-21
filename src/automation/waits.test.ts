@@ -1,26 +1,43 @@
 // Log waits read on from a durable cursor (a restart, a rotated file, a line
 // longer than one read), a monitor matches whole lines, and a cancel says what
-// it did. What a restart does cannot be reached from the page.
+// it did. A wake a wait owes survives a daemon that stops at any point between
+// reading the match and storing the wake. What a restart does cannot be
+// reached from the page.
 import { expect, setSystemTime, test } from "bun:test";
 import { appendFileSync, mkdtempSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
-import { setDeps } from "./core.ts";
+import { dropPending, flush, setDeps } from "./core.ts";
 import * as activity from "./activity.ts";
 import * as waits from "./waits.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "keel-waits-"));
 const sent: string[] = [];
 const store = new Store(join(dir, "state"));
-setDeps({ store, bus: new Bus(), errors: { capture() {} }, engine: { isRunning: () => false, send: (_: string, text: string) => (sent.push(text), { event: { seq: 1 } }) } } as any);
+const busy = new Set<string>(); // sessions with a turn running
+const faults: { afterAppend?: boolean } = {};
+const engine = {
+  isRunning: (id: string) => busy.has(id),
+  send: (id: string, text: string, o: any) => {
+    sent.push(text);
+    const event = store.append(id, "user", { text, ...o?.meta });
+    if (faults.afterAppend) throw new Error("the daemon stopped here");
+    return { event };
+  },
+};
+setDeps({ store, bus: new Bus(), errors: { capture() {} }, engine } as any);
 waits.migrate();
 activity.migrate();
 const s = store.createSession({ model: "m", workspace: dir, title: "t" });
 const log = (name: string, text = "") => (writeFileSync(join(dir, name), text), join(dir, name));
 const wait = (path: string) => waits.create(s.id, waits.normalize({ kind: "log", path, match: "^READY$" }, dir), { timeout_seconds: 60 });
 const status = (id: string) => waits.get(id)!.status;
+// The wakes of a wait stored in the session's transcript.
+const wakes = (id: string) => store.events(s.id).filter((e) => e.kind === "user" && String(e.data.text).includes(`<wait_fired id="${id}"`)).map((e) => String(e.data.text));
+// A new daemon: what was only in memory is gone, and it recovers from the store.
+const restart = () => { busy.clear(); dropPending(s.id); waits.recover(); flush(s.id); };
 
 test("a line written while the daemon was down still wakes the wait; one written before it never does", async () => {
   const p = log("restart.log", "OLD\nREADY\n");
@@ -100,4 +117,60 @@ test("a process wait ends when its pid comes to name another process", async () 
     Object.assign(waits.procfs, real);
     setSystemTime();
   }
+});
+
+test("a daemon that stops after reading the matching line still wakes the session, once", async () => {
+  const p = log("gap-read.log");
+  const w = wait(p);
+  appendFileSync(p, "noise\nREADY\n");
+  // The line is read and the daemon is gone before the wait is settled.
+  const query = store.db.query.bind(store.db);
+  (store.db as any).query = (sql: string) => { if (sql.startsWith("UPDATE waits SET status")) throw new Error("the daemon stopped here"); return query(sql); };
+  try { await waits.tick(); } finally { (store.db as any).query = query; }
+  expect(status(w.id)).toBe("active");
+  restart();
+  await waits.tick();
+  restart(); // and a restart after it fired changes nothing
+  expect(status(w.id)).toBe("fired");
+  expect(wakes(w.id)).toHaveLength(1);
+  expect(wakes(w.id)[0]).toContain("READY");
+});
+
+test("a wake settled while the session was busy is sent after a restart, once", async () => {
+  const p = log("gap-busy.log");
+  const w = wait(p);
+  appendFileSync(p, "READY\n");
+  busy.add(s.id); // the wake waits in memory for the turn to end
+  await waits.tick();
+  expect(status(w.id)).toBe("fired");
+  expect(wakes(w.id)).toHaveLength(0);
+  restart();
+  restart();
+  expect(wakes(w.id)).toHaveLength(1);
+  expect(wakes(w.id)[0]).toContain("READY");
+});
+
+test("a wake stored before the daemon stopped is not sent again", async () => {
+  const p = log("gap-ack.log");
+  const w = wait(p);
+  appendFileSync(p, "READY\n");
+  faults.afterAppend = true; // stored in the transcript, never acknowledged
+  try { await waits.tick(); } finally { faults.afterAppend = false; }
+  expect(wakes(w.id)).toHaveLength(1);
+  restart();
+  restart();
+  expect(wakes(w.id)).toHaveLength(1);
+  expect(wakes(w.id)[0]).toContain("READY");
+});
+
+test("a cancelled wait sends no wake, before or after a restart", async () => {
+  const p = log("gap-cancel.log");
+  const w = wait(p);
+  appendFileSync(p, "READY\n");
+  expect(waits.cancel(w.id)).toBe("cancelled");
+  await waits.tick();
+  restart();
+  await waits.tick();
+  expect(status(w.id)).toBe("cancelled");
+  expect(wakes(w.id)).toHaveLength(0);
 });

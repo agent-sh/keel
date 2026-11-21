@@ -1,6 +1,6 @@
 import { existsSync, openSync, readSync, closeSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { D, attr, capture, deliver, emit, inert } from "./core.ts";
+import { D, attr, capture, deliver, emit, inert, isPending } from "./core.ts";
 import * as activity from "./activity.ts";
 import { pumpText, readText } from "../core/proc.ts";
 
@@ -70,11 +70,15 @@ CREATE TABLE IF NOT EXISTS waits (
   state TEXT
 );
 CREATE INDEX IF NOT EXISTS waits_status ON waits(status, session_id);`);
+  // 1 while the wait's last wake (fired, timed out, ended) is owed to its
+  // session: set in the statement that settles it, cleared when the wake is
+  // stored in the transcript. A restart sends what is still owed.
+  if (!D().store.columnExists("waits", "wake")) D().store.migrate("ALTER TABLE waits ADD COLUMN wake INTEGER NOT NULL DEFAULT 0");
 }
 
-type Row = Omit<WaitRecord, "spec" | "tail"> & { spec: string; state: string | null };
+type Row = Omit<WaitRecord, "spec" | "tail"> & { spec: string; state: string | null; wake: number };
 const toRec = (r: Row): WaitRecord => {
-  const { state, ...rest } = r;
+  const { state, wake: _, ...rest } = r;
   return { ...rest, spec: JSON.parse(r.spec), tail: state ? JSON.parse(state).tail : undefined };
 };
 
@@ -251,7 +255,7 @@ export function create(sessionId: string, spec: WaitSpec, opts: { timeout_second
   return get(rec.id)!;
 }
 
-function settle(id: string, status: WaitRecord["status"], outcome: string, wake = true): boolean {
+function settle(id: string, status: WaitRecord["status"], outcome: string, wake = true, coalesceMs?: number): boolean {
   const w = get(id);
   if (!w || w.status !== "active") return false;
   const st = live.get(id);
@@ -260,16 +264,33 @@ function settle(id: string, status: WaitRecord["status"], outcome: string, wake 
   }
   if (st?.ws) try { st.ws.close(1000); } catch {}
   live.delete(id);
-  // The status changes only from active, in the same statement that reads it.
-  if (!D().store.db.query("UPDATE waits SET status = ?, outcome = ?, ended = ? WHERE id = ? AND status = 'active'").run(status, outcome.slice(0, 4000), Date.now(), id).changes) return false;
+  // The status changes only from active, in the same statement that reads it,
+  // and the same statement records that the wake is owed.
+  if (!D().store.db.query("UPDATE waits SET status = ?, outcome = ?, ended = ?, wake = ? WHERE id = ? AND status = 'active'").run(status, outcome.slice(0, 4000), Date.now(), wake ? 1 : 0, id).changes) return false;
   const rec = get(id)!;
   emit("wait", rec);
   activity.record("wait", status, w.session_id, `Wait ${w.kind}${w.note ? ` "${w.note}"` : ""} ${status}: ${outcome.split("\n")[0]!.slice(0, 200)}`, { wait_id: id });
-  if (wake) {
-    const body = `${w.note ? w.note + "\n" : ""}${outcome}`;
-    deliver(w.session_id, `<wait_fired id="${w.id}" kind="${w.kind}" outcome="${status}">\n${inert(body, "wait_fired")}\n</wait_fired>`, { kind: "wait", wait_id: w.id, outcome: status });
-  }
+  if (wake) sendWake(rec, coalesceMs);
   return true;
+}
+
+// The wake of a settled wait, from its row: the same text now or after a
+// restart. It stays owed until it is stored in the session's transcript.
+const wakeSent = (id: string) => void D().store.db.query("UPDATE waits SET wake = 0 WHERE id = ?").run(id);
+function sendWake(w: WaitRecord, coalesceMs?: number) {
+  const body = `${w.note ? w.note + "\n" : ""}${w.outcome ?? ""}`;
+  const text = `<wait_fired id="${w.id}" kind="${w.kind}" outcome="${w.status}">\n${inert(body, "wait_fired")}\n</wait_fired>`;
+  // An archived session runs no waits: nothing is owed to it.
+  if (!deliver(w.session_id, text, { kind: "wait", wait_id: w.id, outcome: w.status }, { coalesceMs, onSent: () => wakeSent(w.id) })) wakeSent(w.id);
+}
+
+// Whether the wake already reached the session: stored as a prompt (alone or
+// as one part of a grouped one), or queued in the store for its next turn.
+function wakeStored(w: WaitRecord): boolean {
+  const is = (m: any) => m?.wait_id === w.id && m?.outcome === w.status;
+  const holds = (m: any) => is(m) || (Array.isArray(m?.parts) && m.parts.some(is));
+  const rows = D().store.db.query<{ data: string }, [string, string]>("SELECT data FROM events WHERE session_id = ? AND kind = 'user' AND instr(data, ?) > 0").all(w.session_id, w.id);
+  return rows.some((r) => holds(JSON.parse(r.data))) || D().store.queue(w.session_id).some((q) => holds(q.meta));
 }
 
 // What a cancel did: "cancelled" (it stopped the wait before it ended), or the
@@ -293,6 +314,8 @@ export function cancelText(id: string, r: ReturnType<typeof cancel>): string {
 
 export function cancelForSession(sessionId: string) {
   for (const w of list(sessionId, 0)) if (w.status === "active") settle(w.id, "cancelled", "Cancelled with its session.", false);
+  // A stopped or archived session gets no wake of an earlier wait either.
+  D().store.db.query("UPDATE waits SET wake = 0 WHERE session_id = ? AND wake = 1").run(sessionId);
 }
 
 function setError(id: string, msg: string | null) {
@@ -353,11 +376,14 @@ async function probe(w: WaitRecord): Promise<string | undefined> {
           return undefined;
         }
         const text = buf.subarray(from, cut).toString("utf8");
-        st.offset! += cut + 1;
-        saveCursor(w.id, cursor(st));
         const re = new RegExp(s.match);
         const hit = text.split(/\r?\n/).find((l) => re.test(l));
-        return hit !== undefined ? `Matched in ${s.path}:\n${hit.slice(0, DISPLAY)}` : undefined;
+        // The cursor does not pass a matching line: settling the wait is what
+        // consumes it, so a daemon that stops in between reads the line again.
+        if (hit !== undefined) return `Matched in ${s.path}:\n${hit.slice(0, DISPLAY)}`;
+        st.offset! += cut + 1;
+        saveCursor(w.id, cursor(st));
+        return undefined;
       } finally {
         closeSync(fd);
       }
@@ -583,9 +609,20 @@ export async function tick() {
   }
 }
 
+// A wake sent at start waits this long: the engine first closes the turns the
+// last daemon left open, and a wake never lands inside one.
+const BOOT_COALESCE = 300;
+
 // At start: monitors died with the last daemon (stop their process groups if
-// they are still the same processes); other waits keep going.
+// they are still the same processes); other waits keep going. A wake the last
+// daemon owed (settled, not yet in the transcript) is sent now, once.
 export function recover() {
+  const owed = D().store.db.query<Row, []>("SELECT * FROM waits WHERE wake = 1 AND status != 'active' ORDER BY ended, created").all().map(toRec);
+  for (const w of owed) {
+    if (isPending(w.session_id, (m) => m.wait_id === w.id && m.outcome === w.status)) continue; // already on its way
+    if (wakeStored(w)) wakeSent(w.id);
+    else sendWake(w, BOOT_COALESCE);
+  }
   for (const w of list(undefined, 0)) {
     if (w.status !== "active") continue;
     if (w.kind === "log") {
@@ -601,7 +638,7 @@ export function recover() {
     if (st.pgid && st.start && startTime(st.pgid) === st.start) {
       try { process.kill(-st.pgid, "SIGTERM"); } catch {}
     }
-    settle(w.id, "ended", "The daemon restarted and stopped this monitor. Start it again if it is still needed.");
+    settle(w.id, "ended", "The daemon restarted and stopped this monitor. Start it again if it is still needed.", true, BOOT_COALESCE);
   }
 }
 
