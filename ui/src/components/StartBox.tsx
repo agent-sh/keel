@@ -38,6 +38,7 @@ export function StartBox() {
   const { id: machine, blocked } = useNewMachine();
   // An ssh machine's folder, kept per machine (its granted directory until one is picked).
   const sshMachine = useFleet((s) => s.machines.find((m) => m.id === machine && m.transport === "ssh"));
+  const pickedName = useFleet((s) => s.machines.find((m) => m.id === machine)?.name);
   const [remoteDir, setRemoteDir] = useState("");
   useEffect(() => { setRemoteDir(sshMachine ? localStorage.getItem(`keel.remoteFolder.${sshMachine.id}`) ?? "" : ""); }, [sshMachine?.id]);
   const pickRemote = (p: string) => { setRemoteDir(p); if (sshMachine) localStorage.setItem(`keel.remoteFolder.${sshMachine.id}`, p); };
@@ -64,7 +65,7 @@ export function StartBox() {
       <div className="flex flex-1 flex-col items-center overflow-y-auto px-4 pb-[max(1rem,env(safe-area-inset-bottom))] md:px-6">
         <div className="mt-auto w-full max-w-[46rem] pb-[8vh] pt-6 md:mb-auto md:mt-[18vh] md:pb-0 md:pt-0">
           <h1 className="mb-1.5 text-display font-semibold tracking-[-0.025em] text-fg">What should we work on?</h1>
-          <p className="mb-6 text-base text-muted">{autoThere ? `Keel works on ${place!.machine}, in its granted directory.` : `Keel works in the folder below${machine && machine !== "auto" ? `, on ${sshMachine?.name ?? "the machine you picked"}` : ""}.`} Paste screenshots, mention files with @, and steer while it runs.</p>
+          <p className="mb-6 text-base text-muted">{autoThere ? `Keel works on ${place!.machine}, in its granted directory.` : sshMachine ? `Keel works in the folder below, on ${sshMachine.name}.` : machine && machine !== "auto" ? `Keel works on ${pickedName ?? "the machine you picked"}, in its granted directory.` : "Keel works in the folder below."} Paste screenshots, mention files with @, and steer while it runs.</p>
           <div className="mb-2.5 flex flex-wrap items-center gap-2">
             <MachinePicker />
             {(!machine || (machine === "auto" && !autoThere)) && <WorkspacePicker value={workspace} onChange={(p) => savePref("newWorkspace", p)} />}
@@ -88,7 +89,7 @@ export function StartBox() {
               onModel={(id) => setUI({ newModel: id })}
               workspace={workspace}
               autoFocus
-              hold={blocked ? `Not sent: ${blocked.name} ${blocked.why}.` : undefined}
+              hold={blocked ? "Not sent: the note above the box says why." : undefined}
               onSend={async (t, images) => {
                 const s = machine
                   ? await fleet.createOn(machine, t, model || undefined, images, autoThere ? undefined : workspace || undefined, machine === "auto" ? place?.machine_id : undefined, sshMachine ? remoteDir || undefined : undefined)

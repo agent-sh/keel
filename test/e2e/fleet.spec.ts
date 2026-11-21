@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
-import { peerProblem } from "./peer.ts";
-import { createHash, createHmac, randomUUID } from "node:crypto";
-import { createServer, type Server } from "node:http";
+import { peerProblem, standInDaemon } from "./peer.ts";
+import { createHash } from "node:crypto";
+import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -319,35 +319,6 @@ test("fleet machines: an edited daemon port is checked like a new one", async ({
   }
 });
 
-// A stand-in for another machine's daemon that the spec can take offline and
-// bring back: it pairs, proves its answers, says it is idle and holds a relay
-// stream with no sessions. Nothing runs there.
-function standInDaemon(name: string) {
-  const daemon_id = randomUUID(), key = randomUUID();
-  let server: Server | undefined, port = 0;
-  const open = () => new Promise<void>((resolve, reject) => {
-    server = createServer((req, res) => {
-      req.resume();
-      res.setHeader("content-type", "application/json");
-      const path = (req.url ?? "").split("?")[0];
-      if (path === "/api/fleet/pair") return res.end(JSON.stringify({ daemon_id, key }));
-      res.setHeader("x-keel-proof", createHmac("sha256", key).update(`${req.headers["x-keel-nonce"]}|${daemon_id}`).digest("hex"));
-      if (path === "/api/fleet/identity") return res.end(JSON.stringify({ daemon_id, server_name: name, version: "stand-in" }));
-      if (path === "/api/fleet/facts") return res.end(JSON.stringify({ hostname: name, os: "linux", arch: "x64", cpus: 8, load1: 0, mem_total_mb: 16000, tools: [], sandbox: false, keel_version: "stand-in" }));
-      if (path === "/api/fleet/stream") {
-        res.writeHead(200, { "content-type": "text/event-stream" });
-        res.write(`data: ${JSON.stringify({ t: "snapshot", sessions: [] })}\n\n`);
-        const ping = setInterval(() => res.write(": ping\n\n"), 5000);
-        return void res.on("close", () => clearInterval(ping));
-      }
-      res.writeHead(404).end("{}");
-    });
-    server.once("error", reject).listen(port, "127.0.0.1", () => { port = (server!.address() as AddressInfo).port; resolve(); });
-  });
-  const close = () => new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
-  return { open, close, url: () => `http://127.0.0.1:${port}` };
-}
-
 // The start box with a machine picked that stops answering before the send:
 // nothing is sent and no session starts on this machine in its place. The
 // blocked state names the machine and the draft stays, through asking again
@@ -386,8 +357,12 @@ test("fleet start: a picked machine that went offline never becomes a local star
     await page.waitForTimeout(1000);
     expect(await sessions(), "a session started although the picked machine is offline").toEqual(before);
     await page.getByTestId("composer").press("Enter");
-    await expect(page.getByTestId("composer-notice")).toContainText(`Not sent: ${name} is offline.`);
+    await expect(page.getByTestId("composer-notice")).toContainText("Not sent");
+    // Which machine and why is said once, in the line above the box; the picker keeps the pick and marks it.
     await expect(page.getByTestId("machine-blocked")).toContainText(`${name} is offline`);
+    await expect(page.getByTestId("machine-picker")).toHaveAttribute("data-blocked", "true");
+    await expect(page.getByTestId("machine-picker")).not.toContainText("offline");
+    await expect(page.getByText(`Keel works on ${name}, in its granted directory.`)).toBeVisible();
     await expect(page.getByTestId("machine-blocked")).toContainText("nothing starts on this machine instead");
     await expect(page.getByTestId("machine-picker")).toContainText(name);
     await expect(page.getByTestId("composer")).toHaveValue(draft);
@@ -414,8 +389,58 @@ test("fleet start: a picked machine that went offline never becomes a local star
     expect(made).toHaveLength(1);
     expect((await (await request.get(`/api/sessions/${made[0]}`)).json()).session.machine ?? null).toBeNull();
   } finally {
+    await page.goto("about:blank"); // the page is on the session made here: it is not asked about once that is deleted
     for (const id of (await sessions()).filter((id) => !before.includes(id))) await request.delete(`/api/sessions/${id}`);
     await request.delete(`/api/fleet/machines/${machine}`);
     await box.close().catch(() => {});
+  }
+});
+
+// Auto picked on an earlier visit, and a send before the page has the rules:
+// the pick still goes to the daemon as Auto. It is never read as "this machine".
+test("fleet start: Auto picked before the rules have loaded never starts here", async ({ page, request }) => {
+  const peerWhy = await peerProblem(request, PEER);
+  test.skip(!!peerWhy, peerWhy ?? "");
+  const model = ((await (await request.get("/api/models")).json()).models as { provider: string; context: number; id: string; name: string }[])
+    .filter((m) => m.provider === "scripted").sort((a, b) => b.context - a.context)[0];
+  test.skip(!model, "the daemon runs without the scripted provider");
+  mkdirSync(ROOT, { recursive: true });
+  let { machines } = await (await request.get("/api/fleet/machines")).json();
+  let peer = machines.find((m: any) => m.daemon_url === PEER);
+  if (!peer) {
+    const r = await (await request.post("/api/fleet/machines", { data: { name: "devbox", daemon_url: PEER, workspace_root: ROOT } })).json();
+    peer = r.machines.find((m: any) => m.id === r.id);
+  }
+  const prevRules = (await (await request.get("/api/fleet/placement")).json()).rules;
+  await request.post("/api/fleet/placement", { data: { rules: [{ when: { kind: "session" }, machine: peer.id, note: "sessions go to the other machine" }] } });
+  const sessions = async () => ((await (await request.get("/api/sessions")).json()).sessions as { id: string }[]).map((s) => s.id).sort();
+  const before = await sessions();
+  const loaded = Promise.withResolvers<void>();
+  try {
+    await page.addInitScript(() => localStorage.setItem("keel.newMachine", "auto"));
+    // The page's fleet listing (machines, pairings and rules, read together) waits.
+    await page.route("**/api/fleet/placement", async (route) => { if (route.request().method() === "GET") await loaded.promise; await route.continue(); });
+    await page.goto("/");
+    await page.getByTestId("model-picker").click();
+    await page.getByPlaceholder("Search models").fill(model!.name);
+    await page.getByRole("option").first().click();
+    await page.getByTestId("composer").fill("Count the files in this folder.");
+    const asked = page.waitForRequest((r) => r.method() === "POST" && /^\/api\/(fleet\/)?sessions$/.test(new URL(r.url()).pathname));
+    await page.getByTestId("composer").press("Enter");
+    const req = await asked;
+    expect(new URL(req.url()).pathname).toBe("/api/fleet/sessions");
+    expect(req.postDataJSON().machine).toBe("auto");
+    // The daemon places it by the rule: on the other machine, or (with a folder
+    // of this machine named) it says where Auto would put it. Never here.
+    const answer = await (await req.response())!.json();
+    if (answer.error) expect(answer.error).toContain(`Auto places this on ${peer.name}`);
+    else expect(answer.session.machine).toBe(peer.id);
+    loaded.resolve();
+    for (const id of (await sessions()).filter((id) => !before.includes(id))) expect((await (await request.get(`/api/sessions/${id}`)).json()).session.machine).toBe(peer.id);
+  } finally {
+    loaded.resolve();
+    await page.goto("about:blank");
+    for (const id of (await sessions()).filter((id) => !before.includes(id))) await request.delete(`/api/sessions/${id}`);
+    await request.post("/api/fleet/placement", { data: { rules: prevRules } });
   }
 });

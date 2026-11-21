@@ -190,18 +190,20 @@ export function MachinePicker() {
   const pick = useNewMachine();
   if (!usable.length && !rules.length && !pick.blocked) return null;
   const cur = chosen === "auto" && rules.length ? { id: "auto", name: "Auto", workspace_root: "placement rules" }
-    : pick.blocked ? { id: pick.id, name: pick.blocked.machine ? pick.blocked.name : "Removed machine", workspace_root: pick.blocked.machine ? pick.blocked.why.replace(/^(is|has) /, "") : "not in the fleet" }
+    : pick.blocked ? { id: pick.id, name: pick.blocked.machine ? pick.blocked.name : "Removed machine", workspace_root: "" }
     : usable.find((m) => m.id === chosen);
   const local = machines.find((m) => m.source === "local");
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger
         data-testid="machine-picker"
+        data-blocked={pick.blocked ? "true" : undefined}
+        title={pick.blocked ? `${pick.blocked.name} ${pick.blocked.why}` : undefined}
         className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-raised px-2.5 text-ui text-muted shadow-1 hover:text-fg data-popup-open:text-fg"
       >
         {pick.blocked ? <CloudOff className="size-3.5 text-brass" /> : cur ? <Server className="size-3.5 text-accent" /> : <Cpu className="size-3.5 text-accent" />}
         <span className="font-medium text-fg">{cur?.name ?? local?.name ?? "This machine"}</span>
-        {cur && <span className={cn("hidden truncate font-mono text-micro sm:inline", pick.blocked ? "text-brass" : "text-faint")}>{cur.workspace_root}</span>}
+        {cur?.workspace_root && <span className="hidden truncate font-mono text-micro text-faint sm:inline">{cur.workspace_root}</span>}
         <ChevronDown className="size-3.5 opacity-60" />
       </Popover.Trigger>
       <Popover.Portal>
@@ -246,9 +248,10 @@ export function useNewMachine(): NewMachine {
   const chosen = useFleet((s) => s.newMachine);
   const rules = useFleet((s) => s.rules.length);
   if (!chosen) return { id: "" };
-  if (chosen === "auto") return { id: rules ? "auto" : "" };
+  // Before the first listing nothing is known (no machine, no rule): the pick
+  // goes to the daemon as it is, and the daemon answers for it.
+  if (chosen === "auto") return { id: rules || !machines.length ? "auto" : "" };
   const m = machines.find((x) => x.id === chosen);
-  // Before the first listing nothing is known about it: the daemon answers for the pick.
   if (!m) return machines.length ? { id: chosen, blocked: { name: "The machine you picked", why: "is no longer in the fleet" } } : { id: chosen };
   if (!m.workspace_root) return { id: chosen, blocked: { machine: m.id, name: m.name, why: "has no granted directory" } };
   if (m.state === "offline") return { id: chosen, blocked: { machine: m.id, name: m.name, why: "is offline" } };
