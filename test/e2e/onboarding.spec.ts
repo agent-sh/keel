@@ -34,7 +34,8 @@ test("first run", async ({ page, request }) => {
   await expect(page.getByTestId("composer")).toHaveValue(/Explain how this project is laid out/);
   await shoot(page, "onboard-03-starters");
 
-  // With real sessions, none of it shows.
+  // With real sessions, none of it shows (one of this test's own: the daemon may hold no other).
+  expect((await request.post("/api/sessions", { data: { title: "A session there already" } })).status()).toBe(201);
   await page.unroute("**/api/sessions");
   await page.reload();
   await expect(page.getByTestId("new-composer")).toBeVisible();

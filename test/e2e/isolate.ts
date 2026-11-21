@@ -4,6 +4,14 @@
 // snooze, worktree and outside-agent settings) and puts back whatever a test
 // left changed, passed or failed. One failing spec never changes the next
 // one's daemon. A restoration the daemon refuses fails the test.
+//
+// The sessions a test made go with it too, whatever it left of them (a turn
+// still running, a failed one, one that waits on an approval). They are the
+// daemon's state like the settings: the session list folds a folder's rows
+// at rest behind "N more" once enough others stand before them, so a later
+// spec's own row was not in the page; and a turn left running was counted by
+// a spec that counts what runs. Specs run one at a time, so a session that
+// was not there when a test began is that test's.
 import { test as base, type APIRequestContext } from "@playwright/test";
 
 export * from "@playwright/test";
@@ -64,7 +72,25 @@ export async function restore(request: Api, before: Snapshot): Promise<void> {
   if (failed.length) throw new Error(`The daemon's settings were not put back after this test: ${failed.join("; ")}`);
 }
 
-export const test = base.extend<{ daemonSettings: void }>({
+async function sessionIds(request: APIRequestContext) {
+  const ids = new Set<string>();
+  for (const q of ["", "?archived=1"]) {
+    const r = await request.get(`/api/sessions${q}`, { timeout: 10_000 }).catch(() => null);
+    if (r?.ok()) for (const s of ((await r.json()).sessions ?? []) as { id: string }[]) ids.add(s.id);
+  }
+  return ids;
+}
+
+export const test = base.extend<{ daemonSettings: void; ownSessions: void }>({
+  ownSessions: [
+    async ({ request }, use) => {
+      const before = await sessionIds(request);
+      await use();
+      // (A session's agents go with it; one a test deleted itself answers 404.)
+      for (const id of await sessionIds(request)) if (!before.has(id)) await request.delete(`/api/sessions/${id}?stop_shells=1`, { timeout: 30_000 }).catch((e) => console.warn(`could not remove session ${id}: ${e}`));
+    },
+    { auto: true },
+  ],
   daemonSettings: [
     async ({ request }, use) => {
       const before = await read(request);
