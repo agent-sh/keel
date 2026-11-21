@@ -122,7 +122,8 @@ export function bundleRoutes(bundle: Bun.HTMLBundle, pages: string[], onError: (
   const routes: Record<string, (req: Request) => Response> = {};
   for (const f of bundle.files) {
     if (f.path === bundle.index) continue;
-    routes[f.path.slice(root.length)] = fileRoute(f.path, f.headers["content-type"], f.headers.etag, IMMUTABLE, onError);
+    // The binary's page names the address of each file (scripts/build.ts); Bun's own bundle serves it at its path.
+    routes[(f as { route?: string }).route ?? f.path.slice(root.length)] = fileRoute(f.path, f.headers["content-type"], f.headers.etag, IMMUTABLE, onError);
   }
   const html = bundle.files.find((f) => f.path === bundle.index);
   const text = stampPage(readFileSync(bundle.index, "utf8"));

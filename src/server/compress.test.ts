@@ -93,6 +93,10 @@ test("a built bundle is served precompressed, with per-coding ETags and 304s", a
   // The tiny page is served as it is.
   expect(await routes["/s/:id"]!(req("gzip")).text()).toContain("<!doctype html>");
 
+  // The binary's page names where each file is served (scripts/build.ts embeds them under other names).
+  const named = bundleRoutes({ index: join(dir, "index.html"), files: [file("index.html", "text/html"), { ...file("chunk-a.js", "text/javascript"), route: "/_ui/chunk-a.js" }] } as any, ["/"], (e) => { throw e; })!;
+  expect(Object.keys(named).sort()).toEqual(["/", "/_ui/chunk-a.js"]);
+
   expect(bundleRoutes({ index: join(dir, "index.html") }, ["/"], () => {})).toBeUndefined();
   rmSync(dir, { recursive: true });
 });
