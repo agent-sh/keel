@@ -16,6 +16,12 @@ let saying = false;
 
 function place() {
   if (!tip) return;
+  // The control went away under its tip (a row removed, a menu closed): words
+  // that were said move to the free place, a control's own tip goes with it.
+  if (host && !host.isConnected) {
+    if (!saying) return hide();
+    host = null;
+  }
   // No control to stand at: under the top of the page (the stylesheet places it).
   if (saying && !host) { tip.dataset.free = ""; tip.style.transform = ""; return; }
   delete tip.dataset.free;
@@ -87,6 +93,8 @@ export function tipNow(el: Element, ms: number) {
 export function tipSay(el: Element | null | undefined, text: string, ms: number) {
   hide();
   host = el?.isConnected ? el : null;
+  // Its own title steps aside while the words show, or the browser would draw it beside them.
+  if (host) take(host);
   saying = pinned = true;
   tip ??= Object.assign(document.createElement("div"), { className: "k-tip" });
   tip.setAttribute("role", "tooltip");
