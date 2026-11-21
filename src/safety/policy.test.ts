@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { asksLess, childMode, classify, decide, shellText, type Facts, type Mode, type Rule } from "./policy.ts";
+import { asksLess, childMode, classify, decide, MODES, shellText, type Facts, type Mode, type Rule } from "./policy.ts";
 
 const ws = "/w/repo";
 const rule = (kind: Rule["kind"], pattern: string): Rule => ({ id: pattern, kind, pattern, scope: ws, lifetime: "always", created: 0 });
@@ -95,6 +95,32 @@ test("a child never runs in a mode that asks less than its parent's", () => {
   expect(asksLess("auto", "auto-edits")).toBe(true); // remote presence check
   expect(asksLess("full-auto", "auto")).toBe(true);
   expect(childMode("ask", "nonsense")).toBe("ask");
+});
+
+// The menu shows a mode by its summary alone. What a mode lets run without
+// the owner must be in those words: a summary that says "ask" for a call
+// that runs is a promise the gate does not keep.
+test("a mode's summary names what runs without asking", () => {
+  const said = (id: Mode) => MODES.find((m) => m.id === id)!.summary.toLowerCase();
+  const sh = (command: string) => ({ kind: "shell" as const, command });
+  const edit = (p: string) => ({ kind: "edit" as const, paths: [p] });
+  // Ask: a read-only command and a granted one run.
+  expect(kind(decide(sh("git status"), facts("ask")))).toBe("allow");
+  expect(kind(decide(sh("npm test"), facts("ask", { rules: [rule("shell", "npm test *")] })))).toBe("allow");
+  expect(said("ask")).toContain("reads run");
+  expect(said("ask")).toContain("unless granted");
+  // Auto edits: a command runs unasked when it is read-only or the sandbox is on; an edit outside the folder asks.
+  expect(kind(decide(sh("npm test"), facts("auto-edits", { sandboxed: true })))).toBe("allow");
+  expect(kind(decide(sh("git status"), facts("auto-edits")))).toBe("allow");
+  expect(kind(decide(sh("npm test"), facts("auto-edits")))).toBe("ask-low");
+  expect(kind(decide(edit("/elsewhere/a.ts"), facts("auto-edits")))).toBe("ask-low");
+  for (const word of ["folder edits run", "read-only", "sandboxed"]) expect(said("auto-edits")).toContain(word);
+  // Read only: a read-only command runs, anything else is refused, nothing asks.
+  expect(kind(decide(sh("git status"), facts("read-only")))).toBe("allow");
+  expect(kind(decide(sh("npm test"), facts("read-only")))).toBe("deny");
+  expect(said("read-only")).toContain("read-only commands");
+  // No summary of a mode where a model or nobody decides says the owner is asked for ordinary work.
+  for (const id of ["auto", "full-auto", "read-only", "plan"] as Mode[]) expect(said(id)).not.toMatch(/\bask/);
 });
 
 test("a command that writes is never run as a read: refused in Read only and Plan, asked in Ask", () => {

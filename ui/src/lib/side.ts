@@ -83,7 +83,7 @@ const open = () => savePref("panel", "side");
 
 panels.add({
   id: "side",
-  label: "Aside",
+  label: "Side questions",
   icon: createElement(MessageCircleQuestion, { className: "size-4" }),
   order: 30,
   component: lazy(() => import("../components/SideQuestions.tsx").then((m) => ({ default: m.SideQuestions }))),

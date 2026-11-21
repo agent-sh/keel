@@ -65,5 +65,7 @@ export const headerActions = registry<HeaderAction>();
 
 // Tabs of the side panel next to the conversation. The header shows a toggle
 // for each; `component` gets the open session.
-export type Panel = { id: string; label: string; icon: ReactNode; keys?: string; order?: number; when?: (s: Session) => boolean; component: ComponentType<{ session: Session }> };
+// `group` and `hint` place and describe it in the Panels picker (SidePanel.tsx
+// knows the built-in ones by id).
+export type Panel = { id: string; label: string; icon: ReactNode; keys?: string; order?: number; group?: string; hint?: string; when?: (s: Session) => boolean; component: ComponentType<{ session: Session }> };
 export const panels = registry<Panel>();

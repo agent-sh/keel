@@ -3,7 +3,7 @@ import { Popover } from "@base-ui/react/popover";
 import { Switch } from "@base-ui/react/switch";
 import { ChevronDown, Shield, ShieldCheck, ShieldOff, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { safety, useSafety, type SessionPerm } from "../lib/safety.ts";
+import { safety, useSafety, type ModeGroup, type ModeInfo, type SessionPerm } from "../lib/safety.ts";
 import { reportError } from "../lib/store.ts";
 import { useUI } from "../lib/ui.ts";
 import { ago, cn } from "../lib/utils.ts";
@@ -11,14 +11,26 @@ import { Seg } from "./Seg.tsx";
 
 const PROFILES: { id: SessionPerm["sandbox"]; name: string; hint: string }[] = [
   { id: "off", name: "Off", hint: "Commands run as you" },
-  { id: "workspace-write", name: "Workspace", hint: "Write only the workspace" },
+  { id: "workspace-write", name: "Folder", hint: "Write only the folder" },
   { id: "read-only", name: "Read only", hint: "Write nothing" },
 ];
+
+// Within a group, the modes from asking most to asking least.
+const ORDER = ["ask", "auto-edits", "reviewer", "auto", "full-auto", "read-only", "plan"];
+function grouped(modes: ModeInfo[], groups: ModeGroup[]): { name: string; modes: ModeInfo[] }[] {
+  const rank = (m: ModeInfo) => { const i = ORDER.indexOf(m.id); return i < 0 ? ORDER.length : i; };
+  const sorted = [...modes].sort((a, b) => rank(a) - rank(b));
+  const out = groups.map((g) => ({ name: g.name, modes: sorted.filter((m) => m.group === g.id) }));
+  // A mode whose group this page does not know is still listed.
+  const rest = sorted.filter((m) => !groups.some((g) => g.id === m.group));
+  return [...out, ...(rest.length ? [{ name: "Other", modes: rest }] : [])].filter((g) => g.modes.length);
+}
 
 // The session's permission mode and sandbox, in the session header.
 export function PermissionMenu({ sessionId }: { sessionId: string }) {
   const perm = useSafety((s) => s.perms[sessionId]);
   const modes = useSafety((s) => s.modes);
+  const groups = useSafety((s) => s.modeGroups);
   const sandbox = useSafety((s) => s.sandbox);
   const [grantsOpen, setGrantsOpen] = useState(false);
   // /permissions with no mode opens this menu.
@@ -56,29 +68,38 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
           <Popover.Positioner align="end" sideOffset={6} className="z-50">
             <Popover.Popup className="max-h-[var(--available-height)] w-[min(22rem,calc(100vw-1.5rem))] origin-[var(--transform-origin)] overflow-y-auto rounded-lg border border-line bg-raised p-1.5 shadow-2 transition-[scale,opacity] duration-150 data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0">
               <Popover.Title className="px-2 pt-1 pb-1.5 k-label">Permissions</Popover.Title>
-              {/* Nothing here changes on an arrow key: the arrows move the focus, and Space, Enter or a click chooses. */}
+              {/* Grouped by who decides; within a group, from asking most to asking least. Each row says
+                  what runs and what asks; the whole description shows for the mode in use.
+                  Nothing here changes on an arrow key: the arrows move the focus, and Space, Enter or a click chooses. */}
               <Seg
                 rows
                 manual
                 label="Permission mode"
                 value={perm.mode}
                 onChange={(mode) => set({ mode })}
-                options={modes.map((m) => ({
+                options={grouped(modes, groups).flatMap((g) => g.modes.map((m, i) => ({
                   value: m.id,
                   testid: `mode-${m.id}`,
-                  className: "group/mode flex cursor-default gap-2.5 rounded-lg px-2 py-1.5 text-left outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring aria-checked:bg-accent-soft/60",
+                  name: `${g.name}: ${m.name}: ${m.summary ?? m.description}`,
+                  title: m.id === perm.mode ? undefined : m.description,
+                  // The same heading as the Panels picker beside it.
+                  before: i === 0 ? <div className="k-picker-group k-label" data-testid="mode-group">{g.name}</div> : undefined,
+                  className: "group/mode flex w-full cursor-default gap-2.5 rounded-lg px-2 py-1.5 text-left outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring aria-checked:bg-accent-soft/60",
                   label: (
                     <>
                       <span aria-hidden className="mt-0.5 grid size-4 shrink-0 place-items-center rounded-full border border-line-strong group-aria-checked/mode:border-accent">
                         <span className="hidden size-2 rounded-full bg-accent group-aria-checked/mode:block" />
                       </span>
-                      <span className="min-w-0">
-                        <span className="block text-ui font-medium">{m.name}</span>
-                        <span className="block text-caption leading-snug text-muted">{m.description}</span>
+                      <span className="min-w-0 flex-1" data-testid="mode-row" data-mode={m.id}>
+                        <span className="flex flex-wrap items-baseline gap-x-2">
+                          <span className="text-ui font-medium">{m.name}</span>
+                          <span className="text-caption text-muted" data-testid="mode-summary">{m.summary}</span>
+                        </span>
+                        {m.id === perm.mode && <span className="mt-0.5 block text-caption leading-snug text-faint" data-testid="mode-description">{m.description}</span>}
                       </span>
                     </>
                   ),
-                }))}
+                })))}
               />
               <div className="mx-2 my-1.5 h-px bg-line" />
               <div className="px-2 py-1">

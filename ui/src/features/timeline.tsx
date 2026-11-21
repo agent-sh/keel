@@ -12,7 +12,7 @@ panels.add({
   label: "Timeline",
   icon: <Route className="size-4" />,
   order: 58,
-  group: "Work",
+  group: "History",
   component: lazy(() => import("../components/TimelinePanel.tsx")),
 } as Panel & { group: string });
 

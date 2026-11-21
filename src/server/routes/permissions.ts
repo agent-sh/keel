@@ -3,7 +3,7 @@
 import { deliver } from "../../automation/core.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { Gate, type SandboxProfile } from "../../safety/gate.ts";
-import { asksLess, isMode, MODES } from "../../safety/policy.ts";
+import { asksLess, isMode, MODE_GROUPS, MODES } from "../../safety/policy.ts";
 import { makeJudge } from "../../safety/judge.ts";
 import { isLocal, Presence } from "../../safety/presence.ts";
 import { sandboxStatus } from "../../safety/sandbox.ts";
@@ -46,7 +46,7 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
     }
   };
   const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}) as any;
-  const settings = () => ({ default_mode: g.defaultMode(), default_sandbox: g.defaultSandbox(), reviewer_model: g.setting("reviewer_model") ?? null, reviewer_policy: g.setting("reviewer_policy") ?? "", modes: MODES, sandbox: sandboxStatus() });
+  const settings = () => ({ default_mode: g.defaultMode(), default_sandbox: g.defaultSandbox(), reviewer_model: g.setting("reviewer_model") ?? null, reviewer_policy: g.setting("reviewer_policy") ?? "", modes: MODES, mode_groups: MODE_GROUPS, sandbox: sandboxStatus() });
 
   return {
     "/api/permissions/settings": {

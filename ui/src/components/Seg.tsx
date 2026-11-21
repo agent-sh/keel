@@ -27,6 +27,9 @@ export type SegOption<T> = {
   disabled?: boolean;
   className?: string;
   style?: CSSProperties;
+  // A line that stands over this option and starts a group of them (rows sorted by kind). It is
+  // not an option: the arrows pass it, and it is not read as one.
+  before?: ReactNode;
 };
 
 // The id of a tab, for the panel it shows to name it (aria-labelledby).
@@ -60,7 +63,9 @@ export function Seg<T extends string | number>({ value, options, onChange, label
   const at = options.findIndex((o) => o.value === value);
   // The one Tab stop: the chosen option, else the first that can be chosen.
   const stop = at >= 0 && !options[at]!.disabled ? at : options.findIndex((o) => !o.disabled);
-  const button = (i: number) => track.current?.children[i] as HTMLElement | undefined;
+  // The options, in order: a group's line stands among them and is not one.
+  const buttons = () => [...(track.current?.querySelectorAll<HTMLElement>(":scope > [data-seg]") ?? [])];
+  const button = (i: number) => buttons()[i];
 
   const first = useRef(true);
   useLayoutEffect(() => {
@@ -79,7 +84,7 @@ export function Seg<T extends string | number>({ value, options, onChange, label
     if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
     const open = options.map((o, i) => (o.disabled ? -1 : i)).filter((i) => i >= 0);
     if (!open.length) return;
-    const from = open.indexOf((e.target as HTMLElement).closest("[data-seg]") ? [...track.current!.children].indexOf((e.target as HTMLElement).closest("[data-seg]")!) : stop);
+    const from = open.indexOf((e.target as HTMLElement).closest("[data-seg]") ? buttons().indexOf((e.target as HTMLElement).closest<HTMLElement>("[data-seg]")!) : stop);
     // Tabs lie in a row and rows stand in a column; a choice on a track is a radio group and takes both.
     const across = !rows, down = rows || !tabs;
     const step = (across && e.key === "ArrowRight") || (down && e.key === "ArrowDown") ? 1 : (across && e.key === "ArrowLeft") || (down && e.key === "ArrowUp") ? -1 : 0;
@@ -95,7 +100,8 @@ export function Seg<T extends string | number>({ value, options, onChange, label
   const tabs = kind === "tabs";
   return (
     <div ref={track} role={tabs ? "tablist" : "radiogroup"} aria-label={label} aria-orientation={rows ? "vertical" : tabs ? "horizontal" : undefined} title={title} data-testid={testid} data-fill={fill || undefined} data-wrap={wrap || undefined} className={cn(rows ? "flex flex-col" : "k-seg", className)} onKeyDown={keys}>
-      {options.map((o, i) => (
+      {options.map((o, i) => [
+        o.before && <div key={`before ${String(o.value)}`} role="presentation">{o.before}</div>,
         <button
           key={String(o.value)}
           type="button"
@@ -112,8 +118,8 @@ export function Seg<T extends string | number>({ value, options, onChange, label
           onClick={() => { if (again || o.value !== value) onChange(o.value); }}
         >
           {o.label}
-        </button>
-      ))}
+        </button>,
+      ])}
     </div>
   );
 }

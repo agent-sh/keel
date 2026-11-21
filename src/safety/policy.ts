@@ -7,14 +7,25 @@ import { isReadOnly, matchRule, risksOf, splitCommand, suggestRule } from "./she
 import { contains } from "../core/paths.ts";
 import type { ToolKind } from "../tools/types.ts";
 
+// Who decides what a mode lets run: the owner, a model, or nobody because
+// nothing changes. A menu groups the modes by it, in this order.
+export const MODE_GROUPS = [
+  { id: "you", name: "You decide" },
+  { id: "model", name: "A model decides" },
+  { id: "none", name: "Nothing changes" },
+] as const;
+// `summary` is what runs and what asks in a few words, for a list read at a
+// glance; `description` is the whole of it. A summary never promises more
+// asking than the mode does: what runs without the owner is named in it
+// (policy.test.ts holds each one against `decide`).
 export const MODES = [
-  { id: "ask", name: "Ask", description: "Reads run. Edits, commands and other tools ask first unless a grant covers them." },
-  { id: "auto-edits", name: "Auto edits", description: "Edits inside the workspace run. Commands ask, except read-only ones and sandboxed ones." },
-  { id: "auto", name: "Auto", description: "Reads, workspace edits, read-only or sandboxed commands, and standing grants run as usual. The judge reviews other calls and refuses them if it cannot approve. Actions requiring your consent still ask." },
-  { id: "full-auto", name: "Full auto", description: "Ordinary calls run without review. Flagged calls go to the safety rules and judge model. Refusals are listed for you to let one retry through. Tools that explicitly require your confirmation still ask." },
-  { id: "read-only", name: "Read only", description: "Reads and read-only commands run. Everything else is refused." },
-  { id: "plan", name: "Plan", description: "Reads and read-only commands run. The model plans, and you approve the plan before anything changes." },
-  { id: "reviewer", name: "Reviewer", description: "A reviewer model decides what would ask. High-risk actions and anything it cannot judge still ask you." },
+  { id: "ask", name: "Ask", group: "you", summary: "Reads run; changes ask unless granted", description: "Reads run. Edits, commands and other tools ask first unless a grant covers them." },
+  { id: "auto-edits", name: "Auto edits", group: "you", summary: "Folder edits run; commands ask unless read-only or sandboxed", description: "Edits inside the folder run. Commands ask, except read-only ones and sandboxed ones." },
+  { id: "auto", name: "Auto", group: "model", summary: "A judge reviews what no rule covers", description: "Reads, edits inside the folder, read-only or sandboxed commands, and standing grants run as usual. The judge reviews other calls and refuses them if it cannot approve. Actions requiring your consent still ask." },
+  { id: "full-auto", name: "Full auto", group: "model", summary: "Runs; only flagged calls are judged", description: "Ordinary calls run without review. Flagged calls go to the safety rules and judge model. Refusals are listed for you to let one retry through. Tools that explicitly require your confirmation still ask." },
+  { id: "read-only", name: "Read only", group: "none", summary: "Reads and read-only commands; the rest is refused", description: "Reads and read-only commands run. Everything else is refused." },
+  { id: "plan", name: "Plan", group: "none", summary: "Plans first; you approve the plan", description: "Reads and read-only commands run. The model plans, and you approve the plan before anything changes." },
+  { id: "reviewer", name: "Reviewer", group: "model", summary: "A reviewer model answers; high risk asks you", description: "A reviewer model decides what would ask. High-risk actions and anything it cannot judge still ask you." },
 ] as const;
 export type Mode = (typeof MODES)[number]["id"];
 export const isMode = (m: unknown): m is Mode => MODES.some((x) => x.id === m);

@@ -14,14 +14,27 @@ import { cn } from "../lib/utils.ts";
 
 const visible = (s: Session) => panels.all().filter((p) => !p.when || p.when(s)).sort((a, b) => (a.order ?? 50) - (b.order ?? 50));
 
-// Groups by what a panel is for. A panel may name its own group; others fall in by id.
+// Groups by what the owner is after: the work itself, what happened, how the
+// session is set up, and what runs beside it. A panel may name its own group
+// and hint; the ones this file knows fall in by id.
 const GROUP_OF: Record<string, string> = {
-  changes: "Work", files: "Work", review: "Work", tree: "Work", preview: "Work", tasks: "Work", checkpoints: "Work",
-  side: "Context", usage: "Context", profile: "Context", trust: "Context", memory: "Context",
-  elsewhere: "Reach", fleet: "Reach", mcp: "Reach", loops: "Reach", machines: "Reach", inbox: "Reach", phone: "Reach",
+  files: "Work", artifacts: "Work", changes: "Work", review: "Work", terminal: "Work", preview: "Work", tasks: "Work", checkpoints: "Work",
+  timeline: "History", tree: "History", traces: "History", usage: "History",
+  session: "Setup", profile: "Setup", trust: "Setup", memory: "Setup",
+  side: "Beside", helper: "Beside", elsewhere: "Beside", fleet: "Beside", mcp: "Beside", loops: "Beside", machines: "Beside", inbox: "Beside", phone: "Beside",
 };
-const GROUPS = ["Work", "Context", "Reach", "More"];
-const groupOf = (p: Panel) => (p as Panel & { group?: string }).group ?? GROUP_OF[p.id] ?? "More";
+const GROUPS = ["Work", "History", "Setup", "Beside", "More"];
+// What each panel is, in a few words beside its name: a one-word name is
+// found by what it does. The search matches these words too.
+const HINT_OF: Record<string, string> = {
+  files: "the folder's files", artifacts: "what this session made", changes: "its edits, turn by turn", review: "the branch's diff, with comments",
+  terminal: "a shell in its folder", preview: "the dev servers it runs", tasks: "its task list and goal", checkpoints: "states to go back to",
+  timeline: "what it did, newest first", tree: "forks of this conversation", traces: "each turn's requests and calls", usage: "what it cost and why",
+  session: "pin, tags, step budget", profile: "model, speed, tools, instructions", trust: "project files it may load", memory: "what it remembers",
+  side: "ask without adding to it", helper: "what the helper keeps", elsewhere: "sessions in other agent tools",
+};
+const groupOf = (p: Panel) => p.group ?? GROUP_OF[p.id] ?? "More";
+const hintOf = (p: Panel) => p.hint ?? HINT_OF[p.id] ?? "";
 
 // Use counts and the ones kept at hand on purpose; both stay in this browser.
 const read = <T,>(k: string, d: T): T => { try { const v = localStorage.getItem(k); return v ? (JSON.parse(v) as T) : d; } catch { return d; } };
@@ -64,7 +77,7 @@ function registerPanelCommands() {
   const key = all.map((p) => p.id).join();
   if (key === registered) return;
   registered = key;
-  registerCommand(...all.map((p) => ({ id: `panel.${p.id}`, label: `Open the ${p.label} panel`, group: "Panels", words: `panel ${groupOf(p)}`, run: () => openPanel(p.id), when: () => getUI().route.name === "session" })));
+  registerCommand(...all.map((p) => ({ id: `panel.${p.id}`, label: `Open the ${p.label} panel`, group: "Panels", words: `panel ${groupOf(p)} ${hintOf(p)}`, run: () => openPanel(p.id), when: () => getUI().route.name === "session" })));
 }
 panels.subscribe(registerPanelCommands);
 registerPanelCommands();
@@ -76,7 +89,8 @@ function Picker({ list, open, label, testid = "panel-menu" }: { list: Panel[]; o
   // The matches as the list shows them, group by group: Enter takes the one at the top.
   const shown = useMemo(() => {
     const w = q.trim().toLowerCase();
-    const hits = list.filter((p) => !w || `${p.label} ${groupOf(p)} ${p.id}`.toLowerCase().includes(w));
+    // A name, group or id matches from its first letters typed; what a panel does matches from three.
+    const hits = list.filter((p) => !w || `${p.label} ${groupOf(p)} ${p.id}`.toLowerCase().includes(w) || (w.length >= 3 && hintOf(p).toLowerCase().includes(w)));
     const place = (p: Panel) => (GROUPS.includes(groupOf(p)) ? groupOf(p) : "More"); // a group the picker does not know is listed under More
     return GROUPS.map((g) => ({ g, items: hits.filter((p) => place(p) === g) })).filter((x) => x.items.length);
   }, [list, q]);
@@ -110,7 +124,7 @@ function Picker({ list, open, label, testid = "panel-menu" }: { list: Panel[]; o
                     {items.map((p) => (
                       <div key={p.id} className={open === p.id ? "k-picker-row k-picked" : "k-picker-row"} aria-current={open === p.id ? "true" : undefined}>
                         <button type="button" className="k-picker-pick" data-testid={`panel-pick-${p.id}`} onClick={() => pick(p.id)}>
-                          {p.icon}<span>{p.label}</span>
+                          {p.icon}<span>{p.label}</span><span className="k-picker-hint" data-testid="panel-hint">{hintOf(p)}</span>
                         </button>
                         <button
                           type="button"
