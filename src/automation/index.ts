@@ -186,7 +186,7 @@ function init(deps: Deps) {
       // Before anything of this start is delivered to a session: the turn the
       // last daemon left open there is closed (after the gate's hooks, which
       // say what became of a cut call, were registered above this module).
-      deps.engine.closeCut(deps.store.bootWorking);
+      try { deps.engine.closeCut(deps.store.bootWorking); } catch (e) { capture(e, { at: "recover", step: "close" }); }
       waits.recover();
       loops.recover();
       agents.recover();

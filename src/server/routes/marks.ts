@@ -93,7 +93,8 @@ export const marksRoutes: RouteModule = ({ store, bus }) => {
   const lastEnd = (id: string) =>
     store.db.query<{ reason: string | null }, [string]>("SELECT json_extract(data, '$.reason') AS reason FROM events WHERE session_id = ? AND kind = 'turn_end' ORDER BY seq DESC LIMIT 1").get(id)?.reason ?? null;
   for (const s of [...store.sessions(), ...store.sessions({ archived: true })]) {
-    if (!s.settings.last_end) { const r = lastEnd(s.id); if (r) store.mergeSettings(s.id, { last_end: r }); }
+    // Also a turn closed at this start before this module listened (a cut turn's restart end).
+    { const r = lastEnd(s.id); if (r && r !== s.settings.last_end) store.mergeSettings(s.id, { last_end: r }); }
     if (s.settings.failed_ms) continue;
     const at = failedAt(s.id);
     if (at) store.mergeSettings(s.id, { failed_ms: at });

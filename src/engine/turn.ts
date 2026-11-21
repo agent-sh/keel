@@ -396,7 +396,7 @@ export class Engine {
   async interrupt(id: string, by?: string) {
     const r = this.running.get(id);
     if (!r) return;
-    if (by) this.stoppedBy.set(id, by);
+    if (by && !this.stoppedEarly.has(id)) this.stoppedBy.set(id, by);
     this.hold(id);
     // Stopped while its provider and system prompt are still set up: the turn
     // is closed as stopped here, at once and in one write, not when the setup
@@ -1404,6 +1404,20 @@ export class Engine {
     for (const id of openAtBoot) {
       const session = this.store.session(id);
       if (!session || session.phase !== "working" || this.running.has(id)) continue;
+      try {
+        this.closeOne(id, session);
+      } catch (e) {
+        // One session that cannot be read must not stop the others: its mark
+        // is taken off without acting, and it is left as it was found.
+        this.errors.capture("server", e, { at: "recover", session: id });
+        this.store.bootSettled(id);
+        this.emitSession(id);
+      }
+    }
+  }
+
+  private closeOne(id: string, session: Session) {
+    {
       const line = this.lineage(id);
       const lastStart = line.findLastIndex((e) => e.kind === "turn_start");
       const lastEnd = line.findLastIndex((e) => e.kind === "turn_end");

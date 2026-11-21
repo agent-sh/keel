@@ -320,3 +320,25 @@ test("a daemon killed right after a stop during setup does not run the prompt at
   await engine.idle(sid);
   expect(requests.map((r) => r.filter((t) => t === SENT.text).length)).toEqual([1]);
 }, 30_000);
+
+// One session whose history cannot be read (a stored reply without blocks)
+// must not stop the start for the others, nor leave their marks behind.
+test("a session recovery cannot read is set aside and the others are still recovered", async () => {
+  const dir = scratch("bad-session");
+  const a = rig(dir);
+  const bad = a.session();
+  a.store.append(bad.id, "user", { text: "unreadable" });
+  a.store.append(bad.id, "turn_start", { model: bad.model });
+  a.store.append(bad.id, "assistant", {} as any);
+  a.store.updateSession(bad.id, { phase: "working" });
+  const good = a.session();
+  a.store.append(good.id, "user", { text: "owed a turn" });
+  a.store.updateSession(good.id, { phase: "working" });
+
+  const { store, engine, requests } = rig(dir);
+  await engine.recover(store.bootWorking, noRecover);
+  await engine.idle(good.id);
+  expect(requests.map((r) => r.filter((t) => t === "owed a turn").length)).toEqual([1]);
+  expect([store.session(bad.id)!.phase, store.session(good.id)!.phase]).toEqual(["idle", "idle"]);
+  expect(store.events(bad.id).map((e) => e.kind)).toEqual(["user", "turn_start", "assistant"]);
+});
