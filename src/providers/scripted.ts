@@ -10,6 +10,7 @@
 // was sent before, so a retry sees the next step of the same scenario.
 import { appendFileSync, existsSync } from "node:fs";
 import type { Message } from "../core/types.ts";
+import { imageSize } from "../engine/images.ts";
 import { classify, ProviderError } from "./http.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } from "./types.ts";
 
@@ -102,6 +103,41 @@ export class ScriptedProvider implements Provider {
       if (f) return reply(`- "${f[3]}" (${f[1]}:${f[2]})\n- "${f[4]}" (${f[1]}:${Number(f[2]) + 4})`);
     }
 
+    // The owner's newest prompt: the newest user text that is neither a harness
+    // note nor a tagged context block (in a summary: the last owner words it kept).
+    const own = (m: Message) => (m.content as any[]).filter((b) => b.type === "text").map((b) => {
+      const kept = [...String(b.text).matchAll(/<message>\n([\s\S]*?)\n<\/message>/g)].at(-1)?.[1];
+      return kept ?? (/^(\[harness\]|<)/.test(b.text) ? "" : b.text);
+    }).filter(Boolean).at(-1);
+    const owner = [...msgs].reverse().filter((m) => m.role === "user").map(own).find((t) => t !== undefined) ?? "";
+    // Refusals over images. The word is in the owner's newest prompt, or in a
+    // compaction's focus (so the summary request is the one refused):
+    //   script:image-limit N  a request with an image over N px a side is
+    //                         refused, stating N as the Anthropic wire does
+    //   script:image-bad      one with an image that does not decode in full
+    //                         is refused, naming no image
+    //   script:image-none     one with any image is refused, naming no image
+    //   script:image-large    one with any image gets a 413 the first time
+    //   script:image-always   every request is refused in an image's words
+    // Each of them, and script:images, replies with the sizes of the images
+    // the request carried, how many were left out as notes, and how often
+    // that same request was sent.
+    const pics = (msgs as any[]).flatMap((m) => (m.role !== "user" ? [] : m.content.flatMap((b: any) => (b.type === "image" ? [b] : b.type === "tool_result" && Array.isArray(b.content) ? b.content.filter((c: any) => c.type === "image") : []))));
+    const rule = (req.purpose === "summary" ? lastText : owner).match(/script:image-(limit|bad|none|large|always)(?:\s+(\d+))?/);
+    if (rule && (pics.length || rule[1] === "always")) {
+      const refuse = (message: string, status = 400) => classify("Scripted", status, new Headers(), JSON.stringify({ type: "error", error: { type: status === 413 ? "request_too_large" : "invalid_request_error", message } }));
+      const at = "messages.0.content.0.image.source.base64.data";
+      const limit = Number(rule[2] ?? 0);
+      if (rule[1] === "limit" && pics.some((b) => { const z = imageSize(b.data); return !z || z.w > limit || z.h > limit; })) throw refuse(`${at}: At least one of the image dimensions exceed max allowed size for many-image requests: ${limit} pixels`);
+      if (rule[1] === "none" || rule[1] === "always") throw refuse(`${at}: Could not process image`);
+      if (rule[1] === "large" && attempt === 0) throw refuse("Request exceeds the maximum size", 413);
+      if (rule[1] === "bad") {
+        for (const b of pics) {
+          try { await new Bun.Image(Buffer.from(b.data, "base64")).resize(1, 1).png().bytes(); } catch { throw refuse(`${at}: Could not process image`); }
+        }
+      }
+    }
+
     // A history read as a transcript in parts: the summary names the part it reached.
     const part = lastText.match(/^\[harness\] The context is being compacted, .* in (\d+) parts, oldest first; this is part (\d+)\./);
     if (part) return reply(`Goal: the owner is checking a history longer than the window. State: read part ${part[2]} of ${part[1]} of the transcript${lastText.includes("<summary>") ? ", after the summary of the parts before it" : ""}.`);
@@ -113,13 +149,6 @@ export class ScriptedProvider implements Provider {
     }
     if (req.model === "stand-in-backup") return reply("The backup model took the request.");
 
-    // The owner's newest prompt: the newest user text that is neither a harness
-    // note nor a tagged context block (in a summary: the last owner words it kept).
-    const own = (m: Message) => (m.content as any[]).filter((b) => b.type === "text").map((b) => {
-      const kept = [...String(b.text).matchAll(/<message>\n([\s\S]*?)\n<\/message>/g)].at(-1)?.[1];
-      return kept ?? (/^(\[harness\]|<)/.test(b.text) ? "" : b.text);
-    }).filter(Boolean).at(-1);
-    const owner = [...msgs].reverse().filter((m) => m.role === "user").map(own).find((t) => t !== undefined) ?? "";
     const scenario = owner.match(/script:([a-z-]+)/)?.[1] ?? "";
     const compacted = msgs.some((m) => textOf(m).startsWith("[harness] This conversation was compacted"));
 
@@ -250,6 +279,10 @@ export class ScriptedProvider implements Provider {
         return reply(`Growing. ${"dolor sit amet ".repeat(280)}`.trim());
       case "fill":
         return reply(`Filling the context. ${"lorem ipsum dolor sit amet ".repeat(1_100)}`.trim());
+      case "images": case "image-limit": case "image-bad": case "image-none": case "image-large": {
+        const left = (msgs as any[]).flatMap((m) => (m.role !== "user" ? [] : m.content.flatMap((b: any) => (b.type === "tool_result" && Array.isArray(b.content) ? b.content : [b])))).filter((b: any) => b.type === "text" && String(b.text).startsWith("[Image left out")).length;
+        return reply(`Images: ${pics.map((b) => { const z = imageSize(b.data); return z ? `${z.w}x${z.h}` : "unreadable"; }).join(", ") || "none"}. Left out: ${left}. Attempt ${attempt + 1}.`);
+      }
       default:
         return reply(compacted ? "Scripted reply, after a compaction." : "Scripted reply.");
     }

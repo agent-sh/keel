@@ -28,7 +28,7 @@ import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE
 import { effectiveEffort, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { withoutImages } from "./images.ts";
-import { damagedImages, fitForWire, fitToolImages, imageKeys } from "./image-fit.ts";
+import { anyOver, damagedImages, fitForWire, fitToolImages, imageKeys } from "./image-fit.ts";
 import { imageLimits, imageRefusal, requestTooLarge } from "../providers/image-limits.ts";
 import { resolveAttachments } from "./attachments.ts";
 import { RETRY, RETRY_WAIT_MAX_MS, RetryTooLong, backoffMs, errorText, retryable, sleep } from "./retry.ts";
@@ -761,7 +761,10 @@ export class Engine {
     const set = this.store.session(id)?.settings;
     let limits = imageLimits(st.info.family, set?.image_edge);
     let out = new Set(set?.images_out ?? []);
-    req.messages = await fitForWire(whole, limits, out);
+    // Shown while copies are made: after a restart a history with many large
+    // images takes seconds before its first request is sent.
+    const preparing = quiet ? undefined : () => this.status(id, { kind: "model", since: Date.now(), model: st.info.name, preparing: "images" });
+    req.messages = await fitForWire(whole, limits, out, preparing);
     // What an image refusal changed for this request; kept for the session once it passes.
     let fixed: { cause: unknown; edge?: number; out?: string[] } | undefined;
     let resent = false;
@@ -824,11 +827,16 @@ export class Engine {
         const refusal = held.length ? imageRefusal(e) ?? (large ? {} : null) : null;
         if (refusal) {
           const left = held.filter((k) => !out.has(k));
-          if (!left.length) throw Object.assign(new Error(`The provider refused the request over an image, and again with every image of this session left out: compact the session or go on in a new one. (${errorText(e).slice(0, 110)})`), { cause: e, kind: "invalid", status: (e as any)?.status });
-          if (!fixed && refusal.edge && !(limits.edge && limits.edge <= refusal.edge)) {
+          // Refused again with no image of the session in the request: it was
+          // not over an image. The first refusal is the turn's error and
+          // nothing is kept.
+          if (!left.length) throw fixed?.cause ?? e;
+          if (!fixed && refusal.edge && !(limits.edge && limits.edge <= refusal.edge) && anyOver(req.messages, refusal.edge)) {
             fixed = { cause: e, edge: refusal.edge };
             limits = imageLimits(st.info.family, refusal.edge);
           } else {
+            // A stated limit that did not make the request pass is not kept.
+            if (fixed?.edge) { fixed.edge = undefined; limits = imageLimits(st.info.family, set?.image_edge); }
             // The refusal names no image. The ones that do not decode in full
             // (a file cut short passes the header read it was stored on) go
             // first; all of them only when none is damaged, or when the
@@ -838,7 +846,7 @@ export class Engine {
             fixed = { cause: fixed?.cause ?? e, edge: fixed?.edge, out: [...(fixed?.out ?? []), ...drop] };
             out = new Set([...out, ...drop]);
           }
-          req = { ...req, messages: await fitForWire(whole, limits, out) };
+          req = { ...req, messages: await fitForWire(whole, limits, out, preparing) };
           continue;
         }
         if (!retryable(e) || attempt + 1 >= RETRY.max) throw e;
@@ -1236,7 +1244,7 @@ export class Engine {
       const out = await Promise.race([run, stopped]);
       if (!out) return ran(interrupted(), "interrupted");
       // An image enters the history within what every provider takes.
-      result = { type: "tool_result", tool_use_id: u.id, content: await fitToolImages(out.content, ctx.spillDir), is_error: out.is_error || undefined };
+      result = { type: "tool_result", tool_use_id: u.id, content: await fitToolImages(out.content, ctx.spillDir, !!runCtx.dispatch), is_error: out.is_error || undefined };
       if (out.shown !== undefined) this.shown.set(u.id, out.shown);
       ran(result, result.is_error ? "error" : "ok");
     } catch (e) {

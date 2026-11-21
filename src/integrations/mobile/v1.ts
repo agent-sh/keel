@@ -20,7 +20,7 @@ import {
   approvalMessage, canonicalMessage, checkAndClaim, loadSpki, PairLimiter, REPLAY_VERSION, requestSource, revokeMessage,
 } from "./sig.ts";
 import type { Device, MobileStore } from "./store.ts";
-import { fitPromptImages } from "../../engine/image-fit.ts";
+import { fitted } from "../../engine/image-fit.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const err = (error: string, status: number) => json({ error }, status);
@@ -691,7 +691,7 @@ export function mobileApi(ctx: MobileCtx) {
           return err("This phone has no screen lock, so it can only prompt chats where every tool call asks", 403);
         // While a turn runs: steer (the default) joins it, queue waits for it.
         const mode = b.mode === "queue" ? "queue" : b.mode === "steer" ? "steer" : "send";
-        const r: any = engine.send(s.id, text, { mode, images: await fitPromptImages(images) });
+        const r: any = await fitted(s.id, images, (fit) => engine.send(s.id, text, { mode, images: fit }));
         if (r.event) return json({ message: toMsg(r.event, mobile.gseqOf(r.event.id)) });
         return json({ message: { id: r.queued.id, chat_id: s.id, role: "user", kind: r.steer ? "steer" : "queued", content: text, meta: {}, ts: secs(Date.now()), seq: 0 } });
       })),

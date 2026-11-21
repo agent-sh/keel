@@ -14,7 +14,7 @@ import { speedOffer } from "../providers/registry.ts";
 import { carrySettings, commitSwitch } from "./switch.ts";
 import { bundleRoutes, compressJson } from "./compress.ts";
 import { daemonApi, embeddedBuilt, stamp, UiBundles } from "./ui-bundle.ts";
-import { fitPromptImages } from "../engine/image-fit.ts";
+import { fitted } from "../engine/image-fit.ts";
 import { KEEL_FILE_MAX } from "../core/keel-file.ts";
 
 // A feature module adds its routes here instead of editing this file.
@@ -175,7 +175,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           }
           s = store.session(s.id)!;
           bus.emit({ t: "session", session: s });
-          if (body.text || body.images?.length) engine.send(s.id, String(body.text ?? "").trim(), { images: await fitPromptImages(body.images) });
+          if (body.text || body.images?.length) await fitted(s.id, body.images, (images) => engine.send(s.id, String(body.text ?? "").trim(), { images }));
           return json({ session: store.session(s.id) }, 201);
         }),
       },
@@ -272,7 +272,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           if (!text && !(body.edit_of ? store.event(String(body.edit_of))?.data.images?.length : body.images?.length)) return bad("text cannot be empty");
           if (body.mode && !["send", "steer", "queue"].includes(body.mode)) return bad(`unknown mode ${body.mode}`);
           if (body.edit_of) return json(await engine.edit(s.id, String(body.edit_of), text), 201);
-          return json(engine.send(s.id, text, { mode: body.mode, images: await fitPromptImages(body.images) }), 201);
+          return json(await fitted(s.id, body.images, (images) => engine.send(s.id, text, { mode: body.mode, images })), 201);
         }),
       },
 

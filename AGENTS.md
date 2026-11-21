@@ -35,7 +35,9 @@ under `~/.cache/keel-work/bun/research/`.
   its reason and source), scaled down when it is larger; a larger one already
   in a history is sent as a scaled copy, the same bytes each request
   (`src/engine/image-fit.ts`); a request the provider still refuses over an
-  image is sent again with the images at the limit it stated, else left out.
+  image is sent again with the images at the limit it stated, else without
+  the damaged ones, else without any, and the owner can have them sent again.
+  Decodes are four at a time across the process.
 - Every failure is captured once in the `errors` table (`ErrorTracker.capture`)
   and shown live in the UI's Errors panel. Browser errors post to `/api/errors`.
 - A session is told what went wrong in its scope without asking: failures of its

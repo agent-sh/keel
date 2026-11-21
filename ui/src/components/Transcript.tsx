@@ -290,10 +290,10 @@ function ImagesNote({ e, s, last }: { e: StoredEvent; s: Session; last: boolean 
     <Divider testid="images-note">
       <span className="flex items-center gap-1.5"><ImageOff className="size-3.5 shrink-0" /> {e.data.text}</span>
       {last && e.data.left_out > 0 && (out > 0 ? (
-        <button type="button" data-testid="images-restore" className="shrink-0 rounded-sm px-1.5 py-0.5 font-medium text-accent-ink hover:bg-accent-soft" onClick={() => actions.patch(s.id, { settings: { images_out: null } }).catch(reportError)}>
+        <button type="button" data-testid="images-restore" className="shrink-0 whitespace-nowrap rounded-sm px-1.5 py-0.5 font-medium text-accent-ink hover:bg-accent-soft" onClick={() => actions.patch(s.id, { settings: { images_out: null } }).catch(reportError)}>
           Send them again
         </button>
-      ) : <span data-testid="images-restored">Sent again from the next request.</span>)}
+      ) : <span data-testid="images-restored" className="shrink-0 whitespace-nowrap text-muted">Sending them again</span>)}
     </Divider>
   );
 }
@@ -375,7 +375,7 @@ function Working({ since, sessionId }: { since?: number; sessionId: string }) {
   useEffect(() => { const t = setInterval(() => tick((n) => n + 1), 1000); return () => clearInterval(t); }, []);
   const from = st?.kind === "model" || st?.kind === "tool" ? st.since : since;
   const s = from ? Math.max(0, Math.round((Date.now() - from) / 1000)) : 0;
-  const what = approving ? "Waiting for your approval" : st?.kind === "model" ? (st.connected ? `Connected to ${st.model}, no output yet` : `Waiting on ${st.model}`) : st?.kind === "tool" ? `Running ${st.names.join(", ")}` : "Working";
+  const what = approving ? "Waiting for your approval" : st?.kind === "model" ? (st.preparing === "images" ? `Scaling images for ${st.model}` : st.connected ? `Connected to ${st.model}, no output yet` : `Waiting on ${st.model}`) : st?.kind === "tool" ? `Running ${st.names.join(", ")}` : "Working";
   return (
     <div className="flex items-center gap-2.5 py-1 text-ui text-muted" data-testid="working">
       <span className="flex gap-1">

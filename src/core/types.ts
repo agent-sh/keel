@@ -217,5 +217,7 @@ export type TurnStatus =
   // Waiting on the model's first output of this request (`connected`: when the
   // provider answered; bytes since then, a keep-alive say, are not output), or
   // on tools to finish.
-  | { kind: "model"; since: number; model: string; connected?: number }
+  // `preparing`: the request is not sent yet; images of the history are being
+  // scaled for it (src/engine/image-fit.ts).
+  | { kind: "model"; since: number; model: string; connected?: number; preparing?: "images" }
   | { kind: "tool"; since: number; names: string[] };

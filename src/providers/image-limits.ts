@@ -42,7 +42,10 @@ const WIRE: Record<Family, ImageLimits> = {
   // An image over 30,000 patches of 32 px is rejected, not resized; 512 MB a
   // request, so no per-image byte limit.
   // https://platform.openai.com/docs/guides/images-vision
-  gpt: { patches: { px: 32, max: 30_000 }, formats: ["image/png", "image/jpeg", "image/gif", "image/webp"] },
+  // Only a GIF that is not animated is read, and telling the two apart means
+  // reading its frames: a GIF from before they were stored as PNG is sent as
+  // PNG (its first frame).
+  gpt: { patches: { px: 32, max: 30_000 }, formats: ["image/png", "image/jpeg", "image/webp"] },
   // No dimension limit is documented (large images are tiled); 20 MB of inline
   // data a request is a request limit, not an image's. No GIF.
   // https://ai.google.dev/gemini-api/docs/image-understanding
@@ -84,19 +87,32 @@ export const within = (w: number, h: number, l: Pick<ImageLimits, "edge" | "patc
 // A provider's refusal of a request for one of its images: a size or count
 // limit, a format it does not read, bytes it could not decode, a model that
 // takes no images. `edge`: the pixel limit it stated, when it stated one.
-// Matched on the message, since every provider sends these as a plain 400.
+// Matched on the message, since every provider sends these as a plain 400. A
+// wrong match costs one more request and nothing else: the engine keeps
+// nothing unless the request then passes, and throws the first error if not.
 const IMAGE = /\bimages?\b|image_url|input_image|inline_?data/i;
-const FAULT = /exceed|too (large|big|many|small)|maximum|max allowed|limit|invalid|unsupported|not support|could ?n[o']t|cannot|can't|unable|failed|not (a )?valid|malformed|corrupt|decode|process/i;
+const FAULT = /exceed|too (large|big|many|small)|maximum|max allowed|limit|invalid|unsupported|not support|could ?n[o']t|cannot|can't|unable|failed|valid|match|should be|missing|malformed|corrupt|decode|process/i;
 // Refusals over how much is asked, not over an image: the window, a rate or a
-// quota (a 413 that reports tokens a minute is one of these).
-const NOT_IMAGE = /context.{0,20}(length|window)|too many tokens|prompt is too long|rate.?limit|quota|\b[tr]pm\b|(tokens|requests) per (minute|day)|per.minute/i;
+// quota (a 413 that reports tokens a minute is one of these). And refusals
+// that only name something with "image" in it: a tool, its schema, image
+// generation, a usage policy, the pages of a PDF.
+const NOT_IMAGE = /context.{0,20}(length|window)|too many tokens|prompt is too long|rate.?limit|quota|\b[tr]pm\b|(tokens|requests) per (minute|day)|per.minute|schema|function|hosted tool|tools?\.\d|image.?generation|usage polic|flagged|\bpdf\b|\bpages\b/i;
+// The smallest pixel limit a refusal is believed to state: 512 px, the
+// smallest size a provider documents for reading an image at all (OpenAI's low
+// detail fits an image within 512 x 512). A smaller number beside "px" in a
+// refusal is something else (a thumbnail size, the image's own size), and
+// taking it as the limit would send every later image at that size.
+export const EDGE_FLOOR = 512;
 export function imageRefusal(e: unknown): { edge?: number } | null {
   const err = e as any;
   if (!err) return null;
-  if (typeof err.kind === "string" ? err.kind !== "invalid" : ![0, 400, 413, 422].includes(Number(err.status ?? err.statusCode ?? 0))) return null;
+  // A driver's invalid request, or a plain 400, 413 or 422. An error with
+  // neither is not a provider's answer.
+  if (typeof err.kind === "string" ? err.kind !== "invalid" : ![400, 413, 422].includes(Number(err.status ?? err.statusCode ?? 0))) return null;
   const msg = String(err.message ?? "");
   if (!IMAGE.test(msg) || !FAULT.test(msg) || NOT_IMAGE.test(msg)) return null;
-  const px = [...msg.matchAll(/(\d{3,5})\s*(?:px|pixels)/gi)].map((m) => Number(m[1]));
+  // "3000 pixels", not the second half of a size ("1900x1000 pixels").
+  const px = [...msg.matchAll(/(?<![\dx×*])(\d{3,5})\s*(?:px|pixels)/gi)].map((m) => Number(m[1])).filter((n) => n >= EDGE_FLOOR);
   return px.length ? { edge: Math.min(...px) } : {};
 }
 
@@ -112,5 +128,5 @@ export function requestTooLarge(e: unknown): boolean {
   if (!err || (typeof err.kind === "string" && err.kind !== "invalid")) return false;
   const msg = String(err.message ?? "");
   if (NOT_IMAGE.test(msg)) return false;
-  return Number(err.status ?? err.statusCode ?? 0) === 413 || /request_too_large|request (entity |body |payload |size )?(is )?too large|payload too large|request size exceed/i.test(msg);
+  return Number(err.status ?? err.statusCode ?? 0) === 413 || /request_too_large|request (entity |body |payload |size )?(is )?too large|payload too large|(request|payload) size exceed/i.test(msg);
 }

@@ -25,20 +25,26 @@ Bun.Image.backend = "bun";
 type Size = { w: number; h: number };
 export type Fitted =
   | { block: ImageBlock; from?: Size & { type: string }; to?: Size } // `from`: the block was made again
-  | { refused: string };
+  | { refused: string; fix: string }; // why not, and what to do with its file
 
 const EXT: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif", "image/bmp": "bmp" };
 const MB = (n: number) => `${(n / 1048576).toFixed(n < 10 * 1048576 ? 1 : 0)} MB`;
 
-function why(e: unknown): string {
+const CONVERT = "convert it to PNG or JPEG with a tool and read the copy";
+const SCALE = "scale it down with a tool (for example magick) and read the copy";
+function why(e: unknown, size?: Size): { refused: string; fix: string } {
   switch ((e as any)?.code) {
-    case "ERR_IMAGE_UNKNOWN_FORMAT": return "it is not a PNG, JPEG, WebP, GIF or BMP image";
-    case "ERR_IMAGE_FORMAT_UNSUPPORTED": return "its format (HEIC, AVIF or TIFF) cannot be decoded on this machine";
-    case "ERR_IMAGE_TOO_MANY_PIXELS": return "it is larger than 8000 x 8000 px";
-    case "ERR_IMAGE_DECODE_FAILED": return "its data is damaged or cut short";
-    default: return `it could not be decoded (${String((e as Error)?.message ?? e).slice(0, 120)})`;
+    case "ERR_IMAGE_UNKNOWN_FORMAT": return { refused: "it is not a PNG, JPEG, WebP, GIF or BMP image", fix: CONVERT };
+    case "ERR_IMAGE_FORMAT_UNSUPPORTED": return { refused: "its format (HEIC, AVIF or TIFF) cannot be decoded on this machine", fix: CONVERT };
+    case "ERR_IMAGE_TOO_MANY_PIXELS": return { refused: `it is ${size ? `${size.w}x${size.h}, ` : ""}more than the 64 megapixels decoded here`, fix: SCALE };
+    case "ERR_IMAGE_DECODE_FAILED": return { refused: "its data is damaged or cut short", fix: "write the file again, or convert it with a tool, and read that" };
+    default: return { refused: `it could not be decoded (${String((e as Error)?.message ?? e).slice(0, 120)})`, fix: CONVERT };
   }
 }
+
+// An animated WebP: the extended header's animation flag. Bun's decoder reads
+// still images only.
+const animatedWebp = (b: Buffer) => b.length > 20 && b.toString("latin1", 0, 4) === "RIFF" && b.toString("latin1", 8, 16) === "WEBPVP8X" && (b[20]! & 0x02) !== 0;
 
 // At most four images are decoded at once in the whole process, whoever asks
 // (a dozen sessions building their first request after a restart, tool
@@ -72,9 +78,11 @@ export async function fitImage(b: ImageBlock, l: ImageLimits): Promise<Fitted> {
   if (size && sniffed && within(size.w, size.h, l) && l.formats.includes(sniffed) && !heavy(b.data)) return { block: b.media_type === sniffed ? b : { type: "image", media_type: sniffed, data: b.data } };
   return decoding(async () => {
     const bytes = Buffer.from(b.data, "base64");
+    // Within the limits it passed above as it is; here it would have to be made again.
+    if (animatedWebp(bytes)) return { refused: "it is an animated WebP, which cannot be scaled here", fix: "save one frame as PNG with a tool and read that" };
     const open = () => new Bun.Image(bytes, { maxPixels: DECODE_PIXELS });
     let meta: Bun.Image.Metadata;
-    try { meta = await open().metadata(); } catch (e) { return { refused: why(e) }; }
+    try { meta = await open().metadata(); } catch (e) { return why(e, size); }
     const type = `image/${meta.format}`;
     let { w, h } = fitSize(meta.width, meta.height, l);
     if (w === meta.width && h === meta.height && l.formats.includes(type) && !heavy(b.data)) return { block: b.media_type === type ? b : { type: "image", media_type: type, data: b.data } };
@@ -88,9 +96,9 @@ export async function fitImage(b: ImageBlock, l: ImageLimits): Promise<Fitted> {
         else { w = Math.max(1, Math.round(w * 0.75)); h = Math.max(1, Math.round(h * 0.75)); }
       }
     } catch (e) {
-      return { refused: why(e) };
+      return why(e, size);
     }
-    return { refused: `it is over ${MB(l.base64!)} of base64 even scaled down` };
+    return { refused: `it is over ${MB(l.base64!)} of base64 even scaled down`, fix: SCALE };
   });
 }
 
@@ -113,19 +121,27 @@ type ToolBlock = TextBlock | ImageBlock | ToolRefBlock;
 
 // A tool's result before it is stored: each image within STORE, with one line
 // after a changed image that says what was done and where the original is.
-export async function fitToolImages(content: string | ToolBlock[], dir: string): Promise<string | ToolBlock[]> {
+// `remote`: the session's tools run on another machine, which cannot read a
+// copy kept here (the file a tool read there is named as it is).
+export async function fitToolImages(content: string | ToolBlock[], dir: string, remote = false): Promise<string | ToolBlock[]> {
   if (typeof content === "string" || !content.some((b) => b.type === "image")) return content;
   const out: ToolBlock[] = [];
   for (const b of content) {
     if (b.type !== "image") { out.push(b); continue; }
     const { path, ...img } = b;
     const f = await fitImage(img, STORE);
+    // Where its bytes are: the file it was read from, else a copy kept here.
+    // A copy that cannot be written does not fail the call.
+    const at = async (is: string) => {
+      if (path) return `${is} at ${path}`;
+      try { return `${is} at ${await keep(img, dir)}${remote ? " on the machine Keel runs on" : ""}`; } catch (e) { return `${is} not kept (${String((e as Error).message ?? e).slice(0, 100)})`; }
+    };
     if ("refused" in f) {
-      out.push({ type: "text", text: `[Image left out: ${f.refused}. It is at ${path ?? (await keep(img, dir))}; convert it to PNG or JPEG with a tool and read the copy.]` });
+      out.push({ type: "text", text: `[Image left out: ${f.refused}. ${await at("It is")}; ${f.fix}.]` });
       continue;
     }
     out.push(f.block);
-    if (f.from) out.push({ type: "text", text: `[Image ${changed(f)}; the original is at ${path ?? (await keep(img, dir))}.]` });
+    if (f.from) out.push({ type: "text", text: `[Image ${changed(f)}; ${await at("the original is")}.]` });
   }
   return out;
 }
@@ -152,6 +168,18 @@ export async function fitPromptImages(blocks: unknown): Promise<any[]> {
   return out;
 }
 
+// A session's prompts are fitted and handed on one at a time, in the order
+// they came: a prompt with a large image takes a moment to scale and must not
+// land behind the words sent just after it.
+const lines = new Map<string, Promise<unknown>>();
+export function fitted<T>(session: string, images: unknown, send: (images: any[]) => T): Promise<T> {
+  const run = (lines.get(session) ?? Promise.resolve()).then(async () => send(await fitPromptImages(images)));
+  const tail = run.catch(() => {});
+  lines.set(session, tail);
+  void tail.then(() => { if (lines.get(session) === tail) lines.delete(session); });
+  return run;
+}
+
 // ---- the wire ----
 
 // An image's identity: a hash of its base64 and its length.
@@ -175,6 +203,10 @@ const copies = new Map<string, ImageBlock | TextBlock | "same">();
 let held = 0;
 const cost = (v: ImageBlock | TextBlock | "same") => (v === "same" ? 0 : v.type === "image" ? v.data.length : v.text.length);
 function remember(key: string, v: ImageBlock | TextBlock | "same") {
+  // Two requests can make the same copy at once: the one already kept is
+  // counted once.
+  const old = copies.get(key);
+  if (old) { held -= cost(old); copies.delete(key); }
   copies.set(key, v);
   held += cost(v);
   for (const [k, old] of copies) {
@@ -186,6 +218,9 @@ function remember(key: string, v: ImageBlock | TextBlock | "same") {
 
 // The same image read again is the same image and stays out; a copy made with
 // a tool (a crop, a conversion) is a new one.
+// What the copies kept come to (for the storage view and the tests).
+export const copiesHeld = () => ({ copies: copies.size, bytes: held });
+
 export const LEFT_OUT = "[Image left out: the provider refused a request over this session's images, so the ones sent until then are no longer sent. If it is needed, make a smaller copy of its file with a tool and read that.]";
 
 async function wireCopy(b: ImageBlock, l: ImageLimits, sig: string): Promise<ImageBlock | TextBlock> {
@@ -205,6 +240,9 @@ async function wireCopy(b: ImageBlock, l: ImageLimits, sig: string): Promise<Ima
 const images = (messages: Message[]): ImageBlock[] =>
   messages.flatMap((m) => (m.role !== "user" ? [] : m.content.flatMap((b): ImageBlock[] =>
     b.type === "image" ? [b] : b.type === "tool_result" && Array.isArray(b.content) ? b.content.filter((c): c is ImageBlock => c.type === "image") : [])));
+
+// Whether a request carries an image with a side over `edge` px.
+export const anyOver = (messages: Message[], edge: number) => images(messages).some((b) => { const z = imageSize(b.data); return !z || z.w > edge || z.h > edge; });
 
 // The identities of the images a request would carry.
 export const imageKeys = (messages: Message[]): string[] => [...new Set(images(messages).map((b) => imageKey(b.data)))];
@@ -233,8 +271,9 @@ export async function damagedImages(messages: Message[], skip: ReadonlySet<strin
 // The messages as a request to a host with limits `l` carries them: an image
 // over a limit as its scaled copy, one that cannot be scaled as a note, and
 // the ones in `out` (left out after a refusal) as a note. The same array when
-// nothing changes.
-export async function fitForWire(messages: Message[], l: ImageLimits, out?: ReadonlySet<string>): Promise<Message[]> {
+// nothing changes. `working` is called once when a copy has to be made or
+// looked up (the first request after a restart makes them all again).
+export async function fitForWire(messages: Message[], l: ImageLimits, out?: ReadonlySet<string>, working?: () => void): Promise<Message[]> {
   const all = images(messages);
   if (!all.length) return messages;
   const sig = `${l.edge ?? ""},${l.patches ? `${l.patches.px}:${l.patches.max}` : ""},${l.base64 ?? ""},${l.formats.join("+")}`;
@@ -246,6 +285,7 @@ export async function fitForWire(messages: Message[], l: ImageLimits, out?: Read
     if (size && type && within(size.w, size.h, l) && l.formats.includes(type) && !(l.base64 && b.data.length > l.base64)) continue;
     slow.push(b);
   }
+  if (slow.length) working?.();
   // All asked at once: fitImage decodes four at a time across the process.
   await Promise.all(slow.map(async (b) => {
     const r = await wireCopy(b, l, sig);

@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { folderUse, inUse as folderInUse } from "../inuse.ts";
 import { GitError, Worktrees } from "../../worktree/manager.ts";
 import type { Deps, RouteModule } from "../app.ts";
-import { fitPromptImages } from "../../engine/image-fit.ts";
+import { fitted } from "../../engine/image-fit.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -64,7 +64,7 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
           const next = store.updateSession(s.id, { workspace: cwd });
           bus.emit({ t: "session", session: next });
           // Images alone are a message too, as in the plain create.
-          if (b.text || b.images?.length) engine.send(s.id, String(b.text ?? "").trim(), { images: await fitPromptImages(b.images) });
+          if (b.text || b.images?.length) await fitted(s.id, b.images, (images) => engine.send(s.id, String(b.text ?? "").trim(), { images }));
           return json({ session: store.session(s.id), worktree: await wts.status(wts.get(s.id)!) }, 201);
         } catch (e) {
           store.deleteSession(s.id);
