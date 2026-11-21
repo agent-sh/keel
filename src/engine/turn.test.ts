@@ -427,13 +427,21 @@ test("an idle preparation made obsolete while it is written is stopped and store
     expect(store.events(d.id).find((e) => e.kind === "compaction")?.data).toMatchObject({ trigger: "idle", summary: "SUMMARY-OF-IT" });
     expect(rows(d.id)).toEqual([]);
 
-    // The daemon drains: the held work is stopped, and a drain called off starts none by itself.
+    // The daemon drains: the held work is stopped. A drain that is called off
+    // starts the idle preparation it stopped again.
     const e = await idleSession();
     await engine.settle(0);
     expect(e.request.signal.aborted).toBe(true);
     await settled();
     expect(rows(e.id)).toEqual([]);
+    arrived = Promise.withResolvers<void>();
     engine.undrain();
+    await arrived.promise;
+    const again = held.findLast((h) => h.session === e.id)!;
+    expect(again).not.toBe(e.request);
+    again.go();
+    await settled();
+    expect(rows(e.id)).toHaveLength(1);
     expect(failures).toEqual([]);
   } finally {
     setSystemTime();

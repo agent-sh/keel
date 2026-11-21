@@ -1719,6 +1719,9 @@ export class Engine {
   undrain() {
     this.draining = false;
     for (const { session_id } of this.store.db.query<{ session_id: string }, []>("SELECT DISTINCT session_id FROM queue").all()) this.next(session_id);
+    // The drain stopped the summaries being prepared and let the idle timers
+    // pass unused: idle sessions get their timer again, as after a start.
+    void this.resumeIdle();
   }
 
   // At startup: a turn the last daemon left open (a crash, a kill) is closed
