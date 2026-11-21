@@ -1,6 +1,7 @@
 // Adding an endpoint by hand: the starting points (local servers, the
-// catalog's providers), the connection test with errors that say what to fix,
-// and the scan of this machine for a running local server.
+// catalog's providers), the connection test with errors that say what to fix
+// (finding the models is one action, asking a model for a word another), and
+// the scan of this machine for a running local server.
 import type { CatalogProvider } from "./catalog.ts";
 import { ID_RE, type EndpointConfig } from "./config.ts";
 import { shown } from "./creds.ts";
@@ -131,8 +132,9 @@ const failureOf = (e: unknown): Failure => {
 // Where the key comes from, in words.
 const keyWhere = (c: EndpointConfig) => [c.key_env && `$${c.key_env}`, c.key_cred && `keyring entry ${c.key_cred}`].filter(Boolean).join(" or ") || undefined;
 
-// A raw GET of the listing, keeping what explain() reads (status, code, content type).
-async function getListing(p: EndpointProvider): Promise<{ ok: true } | { ok: false; f: Failure }> {
+// A raw GET of the listing's first page, keeping what explain() reads (status,
+// code, content type) and the page itself, which is read once.
+async function getListing(p: EndpointProvider): Promise<{ ok: true; first: any } | { ok: false; f: Failure }> {
   let a: Awaited<ReturnType<EndpointProvider["auth"]>>;
   try { a = await p.auth(); } catch (e) { return { ok: false, f: failureOf(e) }; }
   try {
@@ -145,14 +147,18 @@ async function getListing(p: EndpointProvider): Promise<{ ok: true } | { ok: fal
       for (const s of a.secrets) if (s) message = String(message).split(s).join("<redacted>");
       return { ok: false, f: { status: r.status, message: String(message), contentType: ct, body: body.slice(0, 200) } };
     }
-    try { JSON.parse(body); } catch { return { ok: false, f: { status: r.status, message: "not JSON", contentType: ct, body: body.slice(0, 200) } }; }
-    return { ok: true };
+    try { return { ok: true, first: JSON.parse(body) }; } catch { return { ok: false, f: { status: r.status, message: "not JSON", contentType: ct, body: body.slice(0, 200) } }; }
   } catch (e) {
     return { ok: false, f: failureOf(e) };
   }
 }
 
-export async function testEndpoint(cfg: EndpointConfig, o: { pastedKey?: string; model?: string } = {}): Promise<TestResult> {
+// Finds the endpoint's models: the address, the key, the listing. No model is
+// asked anything unless `model` names one: that request costs tokens, so it is
+// the owner's own action. `only: "model"` asks the model without listing again.
+// `section`: the catalog section's models, for an endpoint that has no listing
+// (listing = false), the same list the saved endpoint offers.
+export async function testEndpoint(cfg: EndpointConfig, o: { pastedKey?: string; model?: string; only?: "model"; section?: (cfg: EndpointConfig) => ListedModel[] } = {}): Promise<TestResult> {
   const steps: TestStep[] = [];
   const done = (extra: Partial<TestResult> = {}): TestResult => ({ ok: steps.every((s) => s.ok), steps, models: [], ...extra });
   const wire = cfg.wire ?? "chat_completions";
@@ -186,42 +192,54 @@ export async function testEndpoint(cfg: EndpointConfig, o: { pastedKey?: string;
     }
   }
 
-  // The listing, with /v1 tried when the base URL lacks a version.
   const ctx = { url: p.listUrl, wire, keyless: p.keyless, keyWhere: keyWhere(cfg), step: "listing" as const };
   let t = Date.now();
-  let got = await getListing(p);
   let provider = p;
   let suggest: TestResult["suggest"];
-  const wrongPath = (f: Failure) => f.status === 404 || /html/.test(f.contentType ?? "") || f.message === "not JSON";
-  if (!got.ok && (wire === "chat_completions" || wire === "openai_responses") && !versioned(p.base) && wrongPath(got.f)) {
-    // The API under /v1: what it answers there (a listing, or a refused key) is the real state.
-    const alt = new EndpointProvider({ ...cfg, id: cfg.id || "draft", base_url: `${p.base}/v1` }, o.pastedKey);
-    const again = await getListing(alt);
-    if (again.ok || !wrongPath(again.f)) { got = again; provider = alt; suggest = { base_url: alt.base }; ctx.url = alt.listUrl; }
-  }
   let models: ListedModel[] = [];
-  if (got.ok) {
-    try { models = await provider.list(); } catch (e) { got = { ok: false, f: failureOf(e) }; }
-  }
-  if (!got.ok) {
-    if (cfg.models?.length) {
-      steps.push({ id: "listing", ok: true, detail: `no listing (${explain(got.f, ctx).problem}); the ${cfg.models.length} models named by hand are offered`, ms: Date.now() - t });
-      models = cfg.models.map((model) => ({ model }));
-    } else {
-      const x = explain(got.f, ctx);
-      steps.push({ id: "listing", ok: false, detail: ctx.url, ...x, ms: Date.now() - t });
-      return done();
-    }
-  } else {
+  if (o.only === "model") {
+    // The model alone: its listing was read by the test before this one.
+  } else if (cfg.listing === false) {
+    // No listing is asked for: the catalog section names the models, as it does once saved.
+    models = o.section?.(cfg) ?? [];
     steps.push({
       id: "listing", ok: models.length > 0, ms: Date.now() - t,
-      detail: `${models.length} chat model${models.length === 1 ? "" : "s"}${provider.server ? ` on ${provider.server}` : ""}${suggest ? ` at ${suggest.base_url}` : ""}`,
-      ...(models.length ? {} : { problem: "The listing has no chat models.", fix: "Load a model on the server, or name the models by hand." }),
+      detail: `${models.length} model${models.length === 1 ? "" : "s"} of the catalog section ${cfg.catalog || "(none named)"}; the endpoint's own listing is not asked for`,
+      ...(models.length ? {} : { problem: cfg.catalog ? `The catalog section ${cfg.catalog} names no models.` : "No catalog section is named.", fix: "Name the models.dev section that lists this endpoint's models, or take out listing = false so the endpoint is asked." }),
     });
+  } else {
+    // The listing, with /v1 tried when the base URL lacks a version.
+    let got = await getListing(p);
+    const wrongPath = (f: Failure) => f.status === 404 || /html/.test(f.contentType ?? "") || f.message === "not JSON";
+    if (!got.ok && (wire === "chat_completions" || wire === "openai_responses") && !versioned(p.base) && wrongPath(got.f)) {
+      // The API under /v1: what it answers there (a listing, or a refused key) is the real state.
+      const alt = new EndpointProvider({ ...cfg, id: cfg.id || "draft", base_url: `${p.base}/v1` }, o.pastedKey);
+      const again = await getListing(alt);
+      if (again.ok || !wrongPath(again.f)) { got = again; provider = alt; suggest = { base_url: alt.base }; ctx.url = alt.listUrl; }
+    }
+    if (got.ok) {
+      try { models = await provider.list(got.first); } catch (e) { got = { ok: false, f: failureOf(e) }; }
+    }
+    if (!got.ok) {
+      if (cfg.models?.length) {
+        steps.push({ id: "listing", ok: true, detail: `no listing (${explain(got.f, ctx).problem}); the ${cfg.models.length} models named by hand are offered`, ms: Date.now() - t });
+        models = cfg.models.map((model) => ({ model }));
+      } else {
+        const x = explain(got.f, ctx);
+        steps.push({ id: "listing", ok: false, detail: ctx.url, ...x, ms: Date.now() - t });
+        return done();
+      }
+    } else {
+      steps.push({
+        id: "listing", ok: models.length > 0, ms: Date.now() - t,
+        detail: `${models.length} chat model${models.length === 1 ? "" : "s"}${provider.server ? ` on ${provider.server}` : ""}${suggest ? ` at ${suggest.base_url}` : ""}`,
+        ...(models.length ? {} : { problem: "The listing has no chat models.", fix: "Load a model on the server, or name the models by hand." }),
+      });
+    }
   }
 
-  // One short request to a model.
-  const model = o.model && models.some((m) => m.model === o.model) ? o.model : o.model ?? models[0]?.model;
+  // One short request to a model, when the owner named one.
+  const model = o.model;
   if (model) {
     // A few tokens prove the address, the key and the model; a thinking
     // model may spend them all thinking, which still counts as an answer.

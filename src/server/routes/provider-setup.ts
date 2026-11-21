@@ -58,8 +58,9 @@ export const providerSetupRoutes: RouteModule = ({ providers, errors }) => {
       },
     },
 
-    // { config, key?, model? } tests a draft (a typed key is used for this test
-    // only); { id, model? } tests a saved endpoint.
+    // { config, key? } finds a draft's models (a typed key is used for this test
+    // only); { id } a saved endpoint's. No model is asked anything unless `model`
+    // names one; with only = "model" that model is asked and nothing is listed.
     "/api/providers/test": {
       POST: async (req: Request) => {
         const b = (await req.json().catch(() => null)) as any;
@@ -69,8 +70,12 @@ export const providerSetupRoutes: RouteModule = ({ providers, errors }) => {
         else if (b.id) cfg = endpoints().find((e) => e.id === b.id);
         if (!cfg) return bad(b.id ? `no endpoint ${b.id}` : "give config or id", b.id ? 404 : 400);
         const key = typeof b.key === "string" && b.key.trim() ? b.key.trim() : undefined;
+        const model = typeof b.model === "string" && b.model.trim() ? b.model.trim() : undefined;
+        if (b.only !== undefined && b.only !== "model") return bad(`only is "model" or absent`);
+        if (b.only === "model" && !model) return bad("name the model to ask");
         try {
-          return json(await testEndpoint(cfg, { pastedKey: key, model: typeof b.model === "string" ? b.model : undefined }));
+          if (cfg.listing === false) await providers.catalog.load();
+          return json(await testEndpoint(cfg, { pastedKey: key, model, only: b.only, section: (c) => providers.sectionModels(new EndpointProvider({ ...c, id: c.id || "draft" })) }));
         } catch (e) {
           capture(e, { at: "testing an endpoint", provider: cfg.id });
           return bad(`the test itself failed: ${(e as Error).message}`, 500);

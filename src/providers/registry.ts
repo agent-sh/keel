@@ -204,7 +204,7 @@ export class Providers {
       this.started.set(p.id, seq);
       const identity = p.identity?.();
       try {
-        const models = p instanceof EndpointProvider && p.cfg.listing === false ? this.fromSection(p) : await p.list();
+        const models = p instanceof EndpointProvider && p.cfg.listing === false ? this.sectionModels(p) : await p.list();
         if ((this.applied.get(p.id) ?? 0) > seq) return;
         this.applied.set(p.id, seq);
         this.listings.set(p.id, { state: "ok", fetched: Date.now(), models, identity });
@@ -236,9 +236,10 @@ export class Providers {
     try { this.persist(); } catch (e) { this.capture(e, { at: "saving model-listings.json" }); }
   }
 
-  // An endpoint without a listing offers the models of its catalog section.
-  private fromSection(p: EndpointProvider): ListedModel[] {
-    return this.catalog.section(p.cfg.catalog!).filter((c) => c.tools !== false).map((c) => ({
+  // An endpoint without a listing offers the models of its catalog section
+  // (a draft's connection test shows the same list).
+  sectionModels(p: EndpointProvider): ListedModel[] {
+    return this.catalog.section(p.cfg.catalog ?? "").filter((c) => c.tools !== false).map((c) => ({
       model: c.id, family: familyOf(c.id), billing: p.cfg.billing === "subscription" ? { kind: "subscription", plan: p.label } : { kind: "per_token" },
     }));
   }

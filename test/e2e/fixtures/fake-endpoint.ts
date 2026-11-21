@@ -3,7 +3,8 @@
 // lists one model the way vLLM does, and streams answers that show what the
 // probe looks for: a tool call when given tools, the color of an image, and
 // cached tokens when a long prompt comes again. A second model takes no tools
-// (it answers in text when given some); every chat request is recorded.
+// (it answers in text when given some); every chat request is recorded, and
+// every listing it answered is counted.
 import { createServer, type Server } from "node:http";
 
 export const FAKE_KEY = "lab-e2e-key-not-real";
@@ -11,9 +12,10 @@ export const FAKE_MODEL = "lab-coder";
 export const FAKE_TEXT_MODEL = "lab-chat";
 export type FakeRequest = { model: string; tools: number };
 
-export function startFake(): Promise<{ url: string; server: Server; requests: FakeRequest[] }> {
+export function startFake(): Promise<{ url: string; server: Server; requests: FakeRequest[]; listings: { n: number } }> {
   const seen = new Set<string>();
   const requests: FakeRequest[] = [];
+  const listings = { n: 0 };
   const server = createServer((req, res) => {
     let body = "";
     req.on("data", (c) => (body += c));
@@ -28,6 +30,7 @@ export function startFake(): Promise<{ url: string; server: Server; requests: Fa
         return res.end(JSON.stringify({ error: { message: "missing or wrong API key" } }));
       }
       if (path === "/v1/models") {
+        listings.n++;
         res.writeHead(200, { "content-type": "application/json" });
         return res.end(JSON.stringify({ object: "list", data: [FAKE_MODEL, FAKE_TEXT_MODEL].map((id) => ({ id, object: "model", owned_by: "vllm", max_model_len: 32768 })) }));
       }
@@ -58,6 +61,6 @@ export function startFake(): Promise<{ url: string; server: Server; requests: Fa
   });
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => {
     const a = server.address() as { port: number };
-    resolve({ url: `http://127.0.0.1:${a.port}`, server, requests });
+    resolve({ url: `http://127.0.0.1:${a.port}`, server, requests, listings });
   }));
 }

@@ -8,8 +8,10 @@ import { shoot, choose } from "./shots.ts";
 
 // Feature: adding a provider by hand in Settings > Providers. A stand-in
 // OpenAI-compatible server that wants a key and keeps its API under /v1: the
-// test says what to fix at each step (a key, then the /v1), the key typed in
-// goes to the keyring and never into the endpoint file, the probe finds what
+// test says what to fix at each step (a key, then the /v1), finding the models
+// asks no model anything and reads the listing once, asking a model is an
+// action of its own, the key typed in goes to the keyring and never into the
+// endpoint file, the probe finds what
 // the model can do, a price set by hand prices it, and a session runs a turn
 // on it. Removing it takes its file and its saved key.
 test("add an OpenAI-compatible endpoint, test it, probe it, price it, use it", async ({ page, request }) => {
@@ -48,11 +50,23 @@ test("add an OpenAI-compatible endpoint, test it, probe it, price it, use it", a
     await expect(dlg.getByTestId("provider-use-suggest")).toBeVisible();
     await dlg.getByTestId("provider-use-suggest").click();
     await expect(dlg.getByTestId("provider-base-url")).toHaveValue(`${fake.url}/v1`);
+    const listed = fake.listings.n;
     await dlg.getByTestId("provider-test-run").click();
-    await expect(dlg.locator('[data-testid="provider-test-step"][data-ok="false"]')).toHaveCount(0);
-    await expect(dlg.locator('[data-testid="provider-test-step"][data-step="model"]')).toContainText(`${FAKE_MODEL} answered "OK"`);
     await expect(listing).toContainText("on vLLM");
+    await expect(dlg.locator('[data-testid="provider-test-step"][data-ok="false"]')).toHaveCount(0);
+    // The models were found with one read of the listing and no request to a model.
+    const asked = dlg.locator('[data-testid="provider-test-step"][data-step="model"]');
+    await expect(asked).toHaveCount(0);
+    expect(fake.listings.n).toBe(listed + 1);
+    expect(fake.requests).toEqual([]);
     await shoot(page, "add-provider-03-passed");
+    // Asking the model picked is the owner's own action.
+    await expect(dlg.getByTestId("provider-test-model")).toHaveAttribute("data-value", FAKE_MODEL);
+    await dlg.getByTestId("provider-test-model-run").click();
+    await expect(asked).toContainText(`${FAKE_MODEL} answered "OK"`);
+    expect(fake.requests).toEqual([{ model: FAKE_MODEL, tools: 0 }]);
+    expect(fake.listings.n).toBe(listed + 1);
+    await shoot(page, "add-provider-03-model-asked");
     await dlg.getByTestId("provider-save").click();
     await expect(dlg).toHaveCount(0);
 
@@ -217,5 +231,37 @@ test("a listing in pages is read to its end, and one that never ends is an error
   } finally {
     for (const id of ids) await request.delete(`/api/providers/endpoints/${id}`);
     for (const f of [...fakes, loop]) f.server.close();
+  }
+});
+
+// An endpoint saved with listing = false has no /models to ask: its catalog
+// section names its models. Its connection test offers the same models as the
+// saved endpoint does, and never asks the server for a listing.
+test("an endpoint with no listing offers its catalog section's models, tested or saved", async ({ page, request }) => {
+  const fake = await startFake();
+  const id = "lab-nolist-e2e";
+  try {
+    await request.delete(`/api/providers/endpoints/${id}`);
+    const setup = await (await request.get("/api/providers/setup")).json();
+    const section = setup.hosted.find((t: any) => t.models > 0).catalog as string;
+    const config = { label: "Lab no listing", base_url: `${fake.url}/v1`, auth: "none", catalog: section, listing: false };
+    const draft = await (await request.post("/api/providers/test", { data: { config: { id, ...config } } })).json();
+    expect(draft.steps.map((s: any) => [s.id, s.ok])).toEqual([["address", true], ["key", true], ["listing", true]]);
+    expect(draft.models.length).toBeGreaterThan(0);
+    const saved = await (await request.put(`/api/providers/endpoints/${id}`, { data: { config } })).json();
+    expect(draft.models.map((m: any) => m.model)).toEqual(saved.listing.models.map((m: any) => m.model));
+
+    await page.goto("/settings/providers");
+    await page.locator(`[data-testid="provider-row"][data-provider="${id}"]`).getByTestId("provider-edit").click();
+    const dlg = page.getByTestId("add-provider");
+    await dlg.getByTestId("provider-test-run").click();
+    await expect(dlg.locator('[data-testid="provider-test-step"][data-step="listing"]')).toContainText(`${draft.models.length} models of the catalog section ${section}`);
+    await expect(dlg.getByTestId("provider-test-model")).toHaveAttribute("data-value", draft.models[0].model);
+    await shoot(page, "add-provider-10-no-listing");
+    expect(fake.listings.n).toBe(0);
+    expect(fake.requests).toEqual([]);
+  } finally {
+    await request.delete(`/api/providers/endpoints/${id}`);
+    fake.server.close();
   }
 });

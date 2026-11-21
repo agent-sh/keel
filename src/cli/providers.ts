@@ -17,8 +17,9 @@ keel providers add ID --base-url URL [options]
     --billing per_token|subscription|free
     --label TEXT           the name shown
     --no-test              save without testing first
-keel providers test ID|--base-url URL [--wire W] [--key-env VAR] [--model M]
-                                         reach it, list its models, ask one model for a word
+keel providers test ID|--base-url URL [--wire W] [--key-env VAR] [--catalog SECTION] [--model M]
+                                         reach it and list its models; no model is asked anything
+                                         unless --model names one (that request costs tokens)
 keel providers probe PROVIDER:MODEL [--only tools,images,reasoning,caching]
                                          ask a model what it can do (a few short requests)
 keel providers scan                      find Ollama, vLLM, SGLang, llama.cpp, MLX, LM Studio here
@@ -82,7 +83,7 @@ export const providers = command("providers", USAGE, {
       if (!key) return usageError("providers", "--key-stdin read nothing: pipe the key in (for example from a password manager)", USAGE);
     }
     if (!v["no-test"]) {
-      const t = await c.post<any>("/api/providers/test", { config, key, model: v.model?.[0] });
+      const t = await c.post<any>("/api/providers/test", { config, key });
       if (!v.json) printTest(t);
       if (t.suggest?.base_url) config.base_url = t.suggest.base_url;
       const listed = t.steps.find((s: any) => s.id === "listing")?.ok;

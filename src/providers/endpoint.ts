@@ -174,15 +174,18 @@ export class EndpointProvider implements Provider {
     }
   }
 
-  async list(): Promise<ListedModel[]> {
+  // `first`: the listing's first page when the caller read it already (the
+  // connection test keeps what a failed read says), so it is not asked for twice.
+  async list(first?: any): Promise<ListedModel[]> {
     const a = await this.auth();
-    let first: any;
-    try {
-      first = await getJson(this.label, this.listUrl, a.headers, a.secrets);
-    } catch (e) {
-      // An endpoint with no listing offers the models its configuration names.
-      if (this.cfg.models?.length) return this.cfg.models.map((model) => ({ model, family: familyOf(model), billing: this.billing }));
-      throw e;
+    if (first === undefined) {
+      try {
+        first = await getJson(this.label, this.listUrl, a.headers, a.secrets);
+      } catch (e) {
+        // An endpoint with no listing offers the models its configuration names.
+        if (this.cfg.models?.length) return this.cfg.models.map((model) => ({ model, family: familyOf(model), billing: this.billing }));
+        throw e;
+      }
     }
     const rows = await this.rows(first, a);
     if (this.wire === "gemini_generate_content") {

@@ -1,8 +1,9 @@
 // Adding (or editing) a provider by hand: pick a starting point (a local
 // server, a blank compatible endpoint, one of the catalog's hosted providers,
 // a plan sign-in), fill in the address and where the key is, test the
-// connection, save. A typed key goes to the system keyring; the endpoint file
-// only names it.
+// connection (the address, the key, the models it offers), save. Asking one of
+// its models for a word is a second action of its own: it costs tokens. A typed
+// key goes to the system keyring; the endpoint file only names it.
 import { Dialog } from "@base-ui/react/dialog";
 import { Check, CircleAlert, KeyRound, Loader2, Plus, Radar, Search, Server, Sparkles, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
@@ -196,7 +197,7 @@ function AddProvider({ edit }: { edit?: string }) {
   const [chosen, setChosen] = useState<string>();
   const [test, setTest] = useState<TestResult | null>(null);
   const [model, setModel] = useState("");
-  const [busy, setBusy] = useState<"" | "test" | "save" | "remove">("");
+  const [busy, setBusy] = useState<"" | "test" | "model" | "save" | "remove">("");
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -219,10 +220,23 @@ function AddProvider({ edit }: { edit?: string }) {
     if (!form) return;
     setBusy("test"); setError("");
     try {
-      const r = await api<TestResult>("/api/providers/test", { method: "POST", body: JSON.stringify({ config: toConfig(form, kept), key: form.key === "keyring" ? form.secret || undefined : undefined, model: model || undefined }) });
+      const r = await api<TestResult>("/api/providers/test", { method: "POST", body: JSON.stringify({ config: toConfig(form, kept), key: form.key === "keyring" ? form.secret || undefined : undefined }) });
       setTest(r);
-      if (!model && r.models[0]) setModel(r.models[0].model);
+      if (r.models[0] && !r.models.some((m) => m.model === model)) setModel(r.models[0].model);
     } catch (e) { setError(failed(e, { at: "testing a provider" })); } finally { setBusy(""); }
+  };
+
+  // One short request to the model picked: its step joins the steps the connection test left.
+  const testModel = async () => {
+    if (!form || !test || !model) return;
+    setBusy("model"); setError("");
+    try {
+      const r = await api<TestResult>("/api/providers/test", { method: "POST", body: JSON.stringify({ config: toConfig(form, kept), key: form.key === "keyring" ? form.secret || undefined : undefined, model, only: "model" }) });
+      const asked = r.steps.filter((s) => s.id === "model");
+      // The address or the key failed this time: what it said replaces the earlier steps.
+      const steps = asked.length ? [...test.steps.filter((s) => s.id !== "model"), ...asked] : r.steps;
+      setTest({ ...test, steps, ok: steps.every((s) => s.ok) });
+    } catch (e) { setError(failed(e, { at: "testing a model" })); } finally { setBusy(""); }
   };
 
   const save = async () => {
@@ -335,14 +349,19 @@ function AddProvider({ edit }: { edit?: string }) {
               {test && <Steps r={test} onUse={(u) => set({ base_url: u })} />}
               {error && <p className="text-ui text-danger" data-testid="provider-error">{error}</p>}
               <div className="sticky bottom-0 -mx-6 flex items-center gap-2 border-t border-line bg-bg px-6 py-3">
-                {test?.models.length ? (
-                  <Select className={cn(field, "w-64")} data-testid="provider-test-model" value={model} onChange={(e) => setModel(e.target.value)} aria-label="Model to test">
-                    {test.models.slice(0, 500).map((m) => <option key={m.model} value={m.model}>{m.name ?? m.model}</option>)}
-                  </Select>
-                ) : null}
                 <button type="submit" data-testid="provider-test-run" disabled={!!busy || !form.base_url} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50">
                   {busy === "test" && <Loader2 className="size-3.5 animate-spin" />} Test connection
                 </button>
+                {test?.models.length ? (
+                  <div className="flex items-center" data-testid="provider-test-model-group">
+                    <Select className={cn(field, "w-56 rounded-r-none")} data-testid="provider-test-model" value={model} onChange={(e) => setModel(e.target.value)} aria-label="Model to ask">
+                      {test.models.slice(0, 500).map((m) => <option key={m.model} value={m.model}>{m.name ?? m.model}</option>)}
+                    </Select>
+                    <button type="button" data-testid="provider-test-model-run" onClick={testModel} disabled={!!busy || !model} title="Sends one short request to this model" className="-ml-px inline-flex h-8 shrink-0 items-center gap-1.5 rounded-r-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50">
+                      {busy === "model" && <Loader2 className="size-3.5 animate-spin" />} Ask it
+                    </button>
+                  </div>
+                ) : null}
                 {edit && <button type="button" data-testid="provider-remove" onClick={remove} disabled={!!busy} className="h-8 rounded-md px-3 text-ui text-danger hover:bg-hover disabled:opacity-50">Remove</button>}
                 <button type="button" data-testid="provider-save" onClick={save} disabled={!!busy || !form.id || !form.base_url} className="ml-auto inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-50">
                   {busy === "save" && <Loader2 className="size-3.5 animate-spin" />} {!test || test.ok ? "Save" : "Save anyway"}
