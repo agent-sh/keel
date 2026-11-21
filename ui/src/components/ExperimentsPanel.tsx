@@ -16,7 +16,7 @@ type Arm = { name: string; weight?: number; tools_off?: string[]; settings?: Rec
 type Decision = { winner: string | null; verdict: "won" | "inconclusive" | "regression"; text: string; remove: string; ts: number };
 export type Experiment = {
   id: string; name: string; hypothesis: string; mode: "offline" | "live"; template?: string; arms: Arm[]; primary: Metric;
-  guards: { metric: Metric; mde: number; relative?: boolean }[]; stop: { sessions_per_arm?: number | null; alpha?: number; window_min?: number; reps?: number; tasks?: string[]; model?: string };
+  guards: { metric: Metric; mde: number; relative?: boolean }[]; stop: { sessions_per_arm?: number | null; alpha?: number; window_min?: number; turns?: number; reps?: number; tasks?: string[]; model?: string };
   state: "draft" | "running" | "stopped"; created_ms: number; started_ms?: number; stopped_ms?: number; stop_reason?: string; decision?: Decision;
   sessions: { arm: string; n: number }[]; runs: number;
 };
@@ -28,7 +28,8 @@ type Report = {
   guards: { arm: string; metric: Metric; lr: number; reject: boolean; diff: number; worse: boolean; n: [number, number] }[];
   threshold?: number; // the evidence a guard needs: 1 / alpha
   // Live: the evidence the stop rule reads (the average over the tests) and the families it read.
-  guard?: { evidence: number; threshold: number; tests: number; window_min: number; fixed: number; pending: number };
+  guard?: { evidence: number; threshold: number; tests: number; window_min: number; turns: number; fixed: number; pending: number };
+  judged?: boolean; // live: false until every arm has the families per arm set in advance (no winner is read before)
   decision: Decision;
   final_ms?: number; // a stopped experiment: when its report was frozen
 };
@@ -197,8 +198,8 @@ function Detail({ id, metrics, onChange }: { id: string; metrics: Record<Metric,
         {error && <p className="mt-2 text-caption text-danger" role="alert">{error}</p>}
         <dl className="mt-3 grid grid-cols-[9rem_minmax(0,1fr)] gap-x-3 gap-y-1 text-caption">
           <dt className="text-faint">Judged by</dt><dd>{metrics[e.primary]?.label} ({metrics[e.primary]?.better} is better)</dd>
-          <dt className="text-faint">Guards</dt><dd>{e.guards.length ? e.guards.map((g) => `${metrics[g.metric]?.label} may not get worse by ${g.relative ? `${Math.round(g.mde * 100)}%` : metrics[g.metric]!.unit === "share" ? `${Math.round(g.mde * 100)} points` : fmtMetric(metrics[g.metric]!.unit, g.mde)}`).join("; ") : "none"}</dd>
-          <dt className="text-faint">Stop rule</dt><dd>{e.mode === "live" ? `a guard regression (sequential evidence, at most ${Number((alpha * 100).toFixed(2))}% false stops over all guards, arms and looks)${e.stop.sessions_per_arm ? `, or ${e.stop.sessions_per_arm} session families per arm` : ", or the owner"}` : `${e.stop.reps ?? 3} repetitions per task and arm`}</dd>
+          <dt className="text-faint">Guards</dt><dd data-testid="experiment-guard-list">{e.guards.length ? `stop on evidence of any worsening of ${e.guards.map((g) => `${metrics[g.metric]?.label} (tuned to find ${g.relative ? `${Math.round(g.mde * 100)}%` : metrics[g.metric]!.unit === "share" ? `${Math.round(g.mde * 100)} points` : fmtMetric(metrics[g.metric]!.unit, g.mde)} fastest)`).join("; ")}` : "none"}</dd>
+          <dt className="text-faint">Stop rule</dt><dd>{e.mode === "live" ? `a guard regression (sequential evidence, at most ${Number((alpha * 100).toFixed(2))}% false stops over all guards, arms and looks)${e.stop.sessions_per_arm ? `, or ${e.stop.sessions_per_arm} session families per arm, where the winner is read` : ", or the owner (no sample size is set, so no winner is named)"}` : `${e.stop.reps ?? 3} repetitions per task and arm`}</dd>
           {e.mode === "offline" && <><dt className="text-faint">Run it</dt><dd><code className="block w-fit max-w-full select-all break-all rounded-sm bg-sunken px-1.5 py-0.5 font-mono text-micro" data-testid="experiment-command">{runCmd}</code></dd></>}
           {e.stop_reason && <><dt className="text-faint">Stopped</dt><dd data-testid="experiment-stop-reason">{e.stop_reason}{e.stopped_ms ? `, ${ago(e.stopped_ms)}` : ""}</dd></>}
         </dl>
@@ -229,9 +230,11 @@ function Detail({ id, metrics, onChange }: { id: string; metrics: Record<Metric,
                         <td key={a.name} className="px-4 py-1.5 text-right tabular-nums text-muted">
                           {f ? (
                             <span className="inline-flex items-center gap-2">
-                              {f.diff.significant
-                                ? <span className={cn("rounded-sm px-1 text-micro font-medium", f.better ? "bg-sunken text-ok" : "bg-danger-soft text-danger")}>{f.better ? "better" : "worse"}</span>
-                                : <span className="text-micro text-faint">no difference</span>}
+                              {r.judged === false
+                                ? <span className="text-micro text-faint" data-testid="effect-open">not judged yet</span>
+                                : f.diff.significant
+                                  ? <span className={cn("rounded-sm px-1 text-micro font-medium", f.better ? "bg-sunken text-ok" : "bg-danger-soft text-danger")}>{f.better ? "better" : "worse"}</span>
+                                  : <span className="text-micro text-faint">no difference</span>}
                               {iv(info.unit, f.diff, true)}
                             </span>
                           ) : <span className="text-faint">none</span>}
@@ -249,7 +252,7 @@ function Detail({ id, metrics, onChange }: { id: string; metrics: Record<Metric,
             {r.guard ? (
               <p>
                 Guard evidence that an arm is worse: <span className="font-medium tabular-nums text-fg" data-testid="guard-evidence">{fmtEvidence(r.guard.evidence)}</span>, the average over {r.guard.tests} {r.guard.tests === 1 ? "test" : "tests"}; it stops the experiment at <span data-testid="guard-threshold">{stopsAt}</span>.
-                {" "}{r.guard.fixed} session {r.guard.fixed === 1 ? "family" : "families"} read, each once, {fmtWindow(r.guard.window_min)} after it started{r.guard.pending ? `; ${r.guard.pending} still inside ${r.guard.pending === 1 ? "its" : "their"} window` : ""}.
+                {" "}{r.guard.fixed} session {r.guard.fixed === 1 ? "family" : "families"} read, each once, after its first {r.guard.turns === 1 ? "turn" : `${r.guard.turns} turns`} or {fmtWindow(r.guard.window_min)}, whichever came first{r.guard.pending ? `; ${r.guard.pending} not read yet` : ""}.
               </p>
             ) : <p>Guards, read once over the runs (likelihood ratio; a guard is worse at <span data-testid="guard-threshold">{stopsAt}</span>):</p>}
             <p className="tabular-nums">{r.guards.map((g) => `${g.arm}, ${metrics[g.metric]?.label}: ${fmtEvidence(g.lr)}${g.worse ? " worse" : ""}`).join("; ")}</p>

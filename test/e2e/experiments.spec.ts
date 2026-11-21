@@ -35,9 +35,12 @@ test("experiments: create, run live, stop and decide; an offline report", async 
   await expect(detail).toContainText(`Effort ${tag}`);
   await expect(detail.getByTestId("experiment-state")).toHaveText("draft");
 
-  // A short guard window (three seconds from a family's first turn), so the guards read these sessions.
-  const id = (await (await request.get("/api/experiments")).json()).experiments.find((e: any) => e.name === `Effort ${tag}`).id;
-  expect((await request.patch(`/api/experiments/${id}`, { data: { stop: { sessions_per_arm: null, window_min: 0.05 } } })).ok()).toBe(true);
+  // The template set its sample size (session families per arm) in advance. A short guard window (three
+  // seconds from a family's first turn), so the guards read these one-turn sessions.
+  const made0 = (await (await request.get("/api/experiments")).json()).experiments.find((e: any) => e.name === `Effort ${tag}`);
+  const id = made0.id, cap = made0.stop.sessions_per_arm;
+  expect(cap).toBeGreaterThan(6);
+  expect((await request.patch(`/api/experiments/${id}`, { data: { stop: { sessions_per_arm: cap, window_min: 0.05 } } })).ok()).toBe(true);
   await detail.getByTestId("experiment-start").click();
   await expect(detail.getByTestId("experiment-state")).toHaveText("running");
 
@@ -75,7 +78,13 @@ test("experiments: create, run live, stop and decide; an offline report", async 
   // The counts are of session families (a session with its subagents), and say so.
   await expect(detail.getByTestId("experiment-report")).toContainText(/n=\d+, \d+ famil/);
   await expect(panel.getByTestId("experiment-item").filter({ hasText: `Effort ${tag}` })).toContainText(`${made.length} families`);
-  await expect(detail.getByTestId("experiment-guards")).toContainText(`${made.length} session families read, each once, 3 s after it started`);
+  await expect(detail.getByTestId("experiment-guards")).toContainText(`${made.length} session families read, each once, after its first 2 turns or 3 s, whichever came first`);
+  // What a guard does, in its own words: any worsening is evidence, the size only tunes it.
+  await expect(detail.getByTestId("experiment-guard-list")).toHaveText("stop on evidence of any worsening of ended in an error (tuned to find 10 points fastest); replies rated down (tuned to find 10 points fastest)");
+  // No winner before the sample size set in advance: the page says where it stands and judges no difference.
+  await expect(detail.getByTestId("experiment-decision")).toContainText(`No winner yet: cost per turn is judged once, when every arm has ${cap} session families`);
+  await expect(detail.getByTestId("effect-open").first()).toHaveText("not judged yet");
+  await expect(detail.getByText("better", { exact: true }).or(detail.getByText("worse", { exact: true }))).toHaveCount(0);
   // The default alpha: the guards stop at 20.
   await expect(detail.getByTestId("guard-threshold")).toHaveText("20");
   await shoot(page, "experiments-02-live-running");
@@ -85,6 +94,9 @@ test("experiments: create, run live, stop and decide; an offline report", async 
   await detail.getByTestId("experiment-stop").click();
   await expect(detail.getByTestId("experiment-state")).toHaveText("stopped");
   await expect(detail.getByTestId("experiment-decision")).toContainText("Decision");
+  // Stopped by the owner before its sample size: it ends without a winner.
+  await expect(detail.getByTestId("experiment-decision")).toContainText("inconclusive");
+  await expect(detail.getByTestId("experiment-decision")).toContainText(`No winner: it stopped before the ${cap} session families per arm it set`);
   await expect(detail.getByTestId("experiment-stop-reason")).toContainText("stopped by the owner");
   // A session made after the stop is in no arm.
   const after = (await (await request.post("/api/sessions", { data: { model: STAND_IN, title: `exp ${tag} after`, text: "Say hello." } })).json()).session;

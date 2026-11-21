@@ -101,6 +101,18 @@ describe("guards and alerts", () => {
     expect(up.evidence).toBeGreaterThan(20);
     expect(down.evidence).toBeLessThan(1);
   });
+  test("a label bet makes none on values that do not vary, and no bet loses more than half the stake", () => {
+    // Equal values that are not exact in floating point: no variance, so no bet, at any label chance.
+    for (const p of [0.5, 0.25]) for (const v of [0.7, 1 / 3, 1234.567]) {
+      const b = labelBet(p, (m) => 0.25 * Math.abs(m));
+      for (let i = 0; i < 6; i++) expect(b.add(v, i % 2 === 0)).toBe(1);
+    }
+    // Mostly equal values (a variance far below the shift squared), then one on the side the bet was against.
+    const b = labelBet(0.5, () => 0.1);
+    let before = 1;
+    for (let i = 0; i < 30; i++) before = b.add(0, i % 2 === 0);
+    expect(b.add(1, false) / before).toBeGreaterThanOrEqual(0.5);
+  });
   test("XmR limits come from the moving range and need a baseline", () => {
     expect(xmr([1, 2, 3])).toBeNull();
     const l = xmr([10, 12, 11, 13, 10, 12])!;

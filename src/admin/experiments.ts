@@ -18,30 +18,53 @@
 // Live guards stop the experiment on sequential evidence that is valid at
 // every look:
 // - One observation per family, read once. A family's guard observation is
-//   the mean of the metric over its turns that ended within its window:
-//   `stop.window_min` minutes from its assignment (a day by default, the
-//   cycle sessions are used in, so the observation holds the family's cold
-//   start and its returns after pauses alike). It is fixed at the first
-//   look after the window closes, stored, and never revised: later turns
-//   and later ratings stay out of the guards (the report still counts
-//   them). Looks that reread a growing per-session mean are the within-unit
-//   peeking that inflates sequential tests on open-ended metrics; a fixed
-//   window per unit is the cohort metric that avoids it.
+//   the mean of the metric over its first `stop.turns` turns to end (2 by
+//   default), or, when fewer have ended by then, over the turns that ended
+//   within its window: `stop.window_min` minutes from its assignment (a day
+//   by default, the cycle sessions are used in). It is fixed at the first
+//   look after that turn ended or the window closed, whichever came first,
+//   stored, and never revised: later turns and later ratings stay out of
+//   the guards (the report still counts them). Which turns it holds
+//   follows from the family's own turns, not from when anyone looked.
+//   Looks that reread a growing per-session mean are the within-unit
+//   peeking that inflates sequential tests on open-ended metrics; an
+//   observation fixed once per unit avoids it.
+// - Why two turns: the first pays for the cold start, and the second is
+//   the first to run on what the first left (the cache, the history), so
+//   two is the smallest count that is not the cold start alone, and a
+//   rating given to the first reply before the second ends is in it. More
+//   turns would make each observation steadier and every family slower to
+//   fix, and an arm that breaks turns is found by reading many families
+//   early: with a day's window alone no guard could stop anything in the
+//   first day. What only shows later in a family (a long context, a return
+//   after a pause) the guards do not see; the report's intervals do.
 // - Each enabled arm is tested against the control on each guard by
 //   labelBet (stats.ts): observations enter in the order they were fixed,
-//   and the bet is on which of the two arms each one came from. The effect
-//   of concern (`mde`, or `mde` times the pooled level when `relative`)
-//   only shapes the bet.
+//   and the bet is on which of the two arms each one came from. Any
+//   worsening is evidence. `mde` (or `mde` times the pooled level when
+//   `relative`) is the size the bets are tuned to find fastest, not an
+//   amount that is tolerated.
 // - The false-stop rule: the experiment stops when the average evidence
-//   over all its tests (arms times guards) reaches 1 / alpha. Each test is
-//   a martingale under "no arm differs from the control on any guard" in
-//   the one order the families were fixed in, so their average is one too
-//   (e-values merge by averaging), and the chance that a null experiment
-//   is ever stopped by a guard is at most alpha (0.05 unless `stop.alpha`
-//   says otherwise), over all arms, guards and looks together. The stop
-//   names the test with the most evidence.
+//   over all its tests (arms times guards) reaches 1 / alpha. The null is
+//   "no arm changes anything about a family": not its observation, not
+//   whether it has one, not when it is fixed. Then the arm of each family
+//   is a draw by the weights that nothing observed predicts, in whatever
+//   order the observations were fixed (the order may depend on what the
+//   families did, since that does not depend on their arms). So each test
+//   is a martingale in that one order, their average is one too (e-values
+//   merge by averaging), and the chance that such an experiment is ever
+//   stopped by a guard is at most alpha (0.05 unless `stop.alpha` says
+//   otherwise), over all arms, guards and looks together. The stop names
+//   the test with the most evidence.
 // Offline guards are read once over the uploaded runs (mSPRT, each test at
 // alpha): the run set is fixed in advance, so no look is repeated.
+//
+// A live winner on the primary metric is read once too. Its interval is for
+// a sample size set in advance (`stop.sessions_per_arm`, session families
+// per arm): read at a moment picked from the data, it has no stated error
+// rate. So a live experiment names a winner only once every arm that gets
+// sessions has that many families (it stops itself there), and one stopped
+// sooner, or with no size set, ends without a winner.
 //
 // An offline run is uploaded under a receipt, a name the runner gives it
 // once and keeps on disk. Uploading a receipt again with the same payload
@@ -97,12 +120,23 @@ export function withToolText(req: ProviderRequest, arm: Arm | undefined): Provid
   if (!text || req.purpose === "reader") return req;
   return { ...req, tools: req.tools.map((t) => (typeof text[t.name] === "string" ? { ...t, description: text[t.name]! } : t)) };
 }
-// `mde`: the smallest change worth stopping for, in the metric's unit (or a
-// share of the control's mean when `relative`). It sets the mSPRT mixture.
+// A guard stops on evidence of any worsening of its metric: no amount is
+// tolerated. `mde` is the size of worsening its test is tuned to find
+// fastest, in the metric's unit (or a share of the pooled level when
+// `relative`): it sizes the live bets and sets the offline mSPRT mixture.
 export type Guard = { metric: Metric; mde: number; relative?: boolean };
-// `window_min`: live, the minutes after its assignment over which a family's guard observation is read.
-export type Stop = { sessions_per_arm?: number | null; alpha?: number; window_min?: number; reps?: number; tasks?: string[]; model?: string };
+// Live: `sessions_per_arm`, the session families per arm the winner is read
+// at; a family's guard observation is read over its first `turns` turns, or
+// over `window_min` minutes from its assignment when fewer have ended.
+export type Stop = { sessions_per_arm?: number | null; alpha?: number; window_min?: number; turns?: number; reps?: number; tasks?: string[]; model?: string };
 export const WINDOW_MIN = 24 * 60;
+export const TURNS = 2;
+// The sample size a live template sets in advance: 64 session families per
+// arm tell apart a difference of half a standard deviation of the family
+// values with 80% power at 5%, two-sided (Lehr's rule, n = 16 / d squared,
+// at d = 0.5). A starting point, edited before the start to fit the
+// difference worth acting on.
+export const FAMILIES_PER_ARM = 64;
 // The chance a guard stops an experiment whose arms do not differ, unless `stop.alpha` names another.
 export const ALPHA = 0.05;
 export type Decision = { winner: string | null; verdict: "won" | "inconclusive" | "regression"; text: string; remove: string; ts: number };
@@ -176,28 +210,28 @@ export const TEMPLATES: { id: string; label: string; make: () => Omit<Experiment
     make: () => ({ name: "Cache lifetime", mode: "live", template: "cache_life",
       hypothesis: "Asking for the long cache lifetime lowers cost per turn: the reads it saves after pauses outweigh its dearer writes.",
       arms: [{ name: "long", cache_life: "long" }, { name: "short", cache_life: "short" }], primary: "cost_usd",
-      guards: [{ metric: "cost_usd", mde: 0.25, relative: true }, { metric: "error", mde: 0.1 }], stop: { sessions_per_arm: null } }),
+      guards: [{ metric: "cost_usd", mde: 0.25, relative: true }, { metric: "error", mde: 0.1 }], stop: { sessions_per_arm: FAMILIES_PER_ARM } }),
   },
   {
     id: "prompt", label: "System prompt variant",
     make: () => ({ name: "System prompt variant", mode: "live", template: "prompt",
       hypothesis: "An added instruction changes outcomes without raising cost or errors.",
       arms: [{ name: "current" }, { name: "variant", system_append: "" }], primary: "thumbs_down",
-      guards: [{ metric: "error", mde: 0.1 }, { metric: "cost_usd", mde: 0.25, relative: true }], stop: { sessions_per_arm: null } }),
+      guards: [{ metric: "error", mde: 0.1 }, { metric: "cost_usd", mde: 0.25, relative: true }], stop: { sessions_per_arm: FAMILIES_PER_ARM } }),
   },
   {
     id: "effort", label: "Effort level",
     make: () => ({ name: "Effort level", mode: "live", template: "effort",
       hypothesis: "A lower effort cuts cost per turn without more errors or replies rated down.",
       arms: [{ name: "default" }, { name: "low", settings: { effort: "low" } }], primary: "cost_usd",
-      guards: [{ metric: "error", mde: 0.1 }, { metric: "thumbs_down", mde: 0.1 }], stop: { sessions_per_arm: null } }),
+      guards: [{ metric: "error", mde: 0.1 }, { metric: "thumbs_down", mde: 0.1 }], stop: { sessions_per_arm: FAMILIES_PER_ARM } }),
   },
   {
     id: "speed", label: "Speed tier",
     make: () => ({ name: "Speed tier", mode: "live", template: "speed",
       hypothesis: "A faster tier shortens turns enough to be worth its price.",
       arms: [{ name: "standard" }, { name: "fast", settings: { speed: "" } }], primary: "ms",
-      guards: [{ metric: "cost_usd", mde: 0.5, relative: true }, { metric: "error", mde: 0.1 }], stop: { sessions_per_arm: null } }),
+      guards: [{ metric: "cost_usd", mde: 0.5, relative: true }, { metric: "error", mde: 0.1 }], stop: { sessions_per_arm: FAMILIES_PER_ARM } }),
   },
 ];
 
@@ -224,12 +258,14 @@ export function validate(e: Partial<Experiment>): void {
   if (!e.primary || !(e.primary in METRICS)) throw bad(`primary is one of ${Object.keys(METRICS).join(", ")}`);
   for (const g of e.guards ?? []) {
     if (!(g.metric in METRICS)) throw bad(`guard metric ${g.metric} is unknown`);
-    if (!(g.mde > 0)) throw bad(`guard ${g.metric}: mde, the smallest change worth stopping for, is above 0`);
+    if (!(g.mde > 0)) throw bad(`guard ${g.metric}: mde, the size of worsening the guard is tuned to find fastest, is above 0`);
   }
   const alpha = e.stop?.alpha;
   if (alpha !== undefined && !(typeof alpha === "number" && alpha > 0 && alpha < 1)) throw bad("alpha, the chance a guard stops an experiment whose arms do not differ, is a number above 0 and below 1");
   const w = e.stop?.window_min;
   if (w !== undefined && !(typeof w === "number" && w > 0 && Number.isFinite(w))) throw bad("window_min, the minutes a family's guard observation is read over, is above 0");
+  const k = e.stop?.turns;
+  if (k !== undefined && !(Number.isInteger(k) && k >= 1)) throw bad("turns, the first turns of a family its guard observation is read over, is a whole number of 1 or more");
   const n = e.stop?.sessions_per_arm;
   if (n !== undefined && n !== null && !(Number.isInteger(n) && n >= 2)) throw bad("sessions_per_arm, the session families per arm, is a whole number of 2 or more, or null");
 }
@@ -243,14 +279,42 @@ export type Effect = { arm: string; metric: Metric; diff: Interval & { significa
 // control's and the arm's), `diff` the arm's mean minus the control's over them.
 export type GuardTest = { arm: string; metric: Metric; lr: number; reject: boolean; diff: number; worse: boolean; n: [number, number] };
 // Live: the evidence the stop rule reads (the average over `tests`), what it
-// stops at, and the families read and still inside their window.
-export type GuardState = { evidence: number; threshold: number; tests: number; window_min: number; fixed: number; pending: number };
+// stops at, and the families read and still open (not read yet).
+export type GuardState = { evidence: number; threshold: number; tests: number; window_min: number; turns: number; fixed: number; pending: number };
 // `final_ms`: when the experiment stopped and this report was frozen.
 // `threshold`: the evidence a guard needs, 1 / alpha (live: the average over the tests).
-export type Report = { mode: Experiment["mode"]; unit: string; arms: ArmReport[]; effects: Effect[]; guards: GuardTest[]; threshold: number; guard?: GuardState; decision: Decision; final_ms?: number };
+// `judged`: the primary metric's winner can be read (offline: always; live:
+// every arm that gets sessions has the families per arm set in advance).
+export type Report = { mode: Experiment["mode"]; unit: string; arms: ArmReport[]; effects: Effect[]; guards: GuardTest[]; threshold: number; judged: boolean; guard?: GuardState; decision: Decision; final_ms?: number };
 // A family's fixed guard observation: its mean of each metric over its window.
 export type Obs = { arm: string; m: Partial<Record<Metric, number>> };
 export type Live = { obs: Obs[]; pending: number };
+// A family's turn as its guard observation reads it: when it ended and its metric values.
+export type FamilyTurn = { end: number; m: Partial<Record<Metric, number>> };
+
+// A family's guard observation by `now`, or null while it is still open:
+// the mean of each metric over its first `k` turns to end, or over the turns
+// that ended within `windowMs` of its assignment when fewer than `k` did.
+// `at` is when it became fixed. The same turns give the same answer at every
+// later `now`, so it does not matter when the look came.
+export function familyObs(turns: FamilyTurn[], assigned: number, now: number, k: number, windowMs: number): { at: number; turns: number; m: Partial<Record<Metric, number>> } | null {
+  const close = assigned + windowMs;
+  const read = turns.filter((t) => t.end <= close && t.end <= now).sort((a, b) => a.end - b.end).slice(0, k);
+  const full = read.length >= k;
+  if (!full && now < close) return null;
+  const m: Partial<Record<Metric, number>> = {};
+  for (const key of Object.keys(METRICS) as Metric[]) {
+    const vs = read.map((t) => t.m[key]).filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+    if (vs.length) m[key] = vs.reduce((a, v) => a + v, 0) / vs.length;
+  }
+  return { at: full ? read.at(-1)!.end : close, turns: read.length, m };
+}
+
+// Whether a live experiment has the sample size it set in advance: every arm that gets sessions has that many families.
+const capReached = (e: Experiment, arms: ArmReport[]) => {
+  const n = e.stop.sessions_per_arm;
+  return !!n && e.arms.every((a) => !((a.weight ?? 1) > 0) || (arms.find((x) => x.arm === a.name)?.clusters ?? 0) >= n);
+};
 // What a stopped experiment is read from.
 export type Final = { report: Report; sessions: { arm: string; n: number }[]; runs: number };
 
@@ -279,8 +343,9 @@ export function report(e: Experiment, rows: Row[], live?: Live): Report {
   }
   const seq = e.mode === "live" ? liveGuards(e, live?.obs ?? []) : undefined;
   const guards = seq?.guards ?? guardTests(e, rows);
-  const guard = seq && { evidence: seq.evidence, threshold: seq.threshold, tests: seq.tests, window_min: e.stop.window_min ?? WINDOW_MIN, fixed: live?.obs.length ?? 0, pending: live?.pending ?? 0 };
-  return { mode: e.mode, unit: e.mode === "live" ? "turn (resampled by session family)" : "run (resampled within task)", arms, effects, guards, threshold: 1 / (e.stop.alpha ?? ALPHA), ...(guard ? { guard } : {}), decision: decide(e, effects, guards) };
+  const guard = seq && { evidence: seq.evidence, threshold: seq.threshold, tests: seq.tests, window_min: e.stop.window_min ?? WINDOW_MIN, turns: e.stop.turns ?? TURNS, fixed: live?.obs.length ?? 0, pending: live?.pending ?? 0 };
+  const judged = e.mode === "offline" || capReached(e, arms);
+  return { mode: e.mode, unit: e.mode === "live" ? "turn (resampled by session family)" : "run (resampled within task)", arms, effects, guards, threshold: 1 / (e.stop.alpha ?? ALPHA), judged, ...(guard ? { guard } : {}), decision: decide(e, effects, guards, arms) };
 }
 
 // Live guards over the fixed family observations, in the order they were
@@ -355,8 +420,9 @@ function describe(a: Arm): string {
 // The arm that is significantly better on the primary metric with no guard
 // significantly worse wins; a guard regression loses its arm; the control
 // wins when every arm compared with it is significantly worse; otherwise the
-// result is inconclusive and the current path (the control) stays.
-export function decide(e: Experiment, effects: Effect[], guards: Report["guards"]): Decision {
+// result is inconclusive and the current path (the control) stays. A live
+// experiment has no winner before the sample size it set in advance.
+export function decide(e: Experiment, effects: Effect[], guards: Report["guards"], arms: ArmReport[]): Decision {
   const control = e.arms[0]!;
   const ts = Date.now();
   const hurt = guards.find((g) => g.worse);
@@ -365,6 +431,17 @@ export function decide(e: Experiment, effects: Effect[], guards: Report["guards"
     return { winner: control.name, verdict: "regression", ts,
       text: `${hurt.arm} made ${METRICS[hurt.metric].label} worse (${e.mode === "live" ? "sequential evidence" : "likelihood ratio"} ${hurt.lr >= 1000 ? "above 1000" : hurt.lr.toFixed(1)}): ${control.name} stays.`,
       remove: `Drop arm ${hurt.arm} (${describe(a)}).` };
+  }
+  if (e.mode === "live" && !capReached(e, arms)) {
+    const n = e.stop.sessions_per_arm;
+    const have = e.arms.filter((a) => (a.weight ?? 1) > 0).map((a) => `${a.name} ${arms.find((x) => x.arm === a.name)?.clusters ?? 0}`).join(", ");
+    return { winner: null, verdict: "inconclusive", ts,
+      text: n && e.state === "stopped"
+        ? `No winner: it stopped before the ${n} session families per arm it set (it had: ${have}). The interval of ${METRICS[e.primary].label} is for that sample size; read at a moment picked from the data, it has no stated error rate.`
+        : n
+        ? `No winner yet: ${METRICS[e.primary].label} is judged once, when every arm has ${n} session families (now: ${have}). Its interval is for a sample size set in advance; read sooner, at a moment picked from the data, it has no stated error rate.`
+        : `No winner is named: this experiment set no sample size in advance (stop.sessions_per_arm), and an interval read at a moment picked from the data has no stated error rate. The intervals describe the data so far (session families: ${have}).`,
+      remove: "Nothing proven: the variant does not ship, and the current path stays." };
   }
   const primary = effects.filter((f) => f.metric === e.primary && f.better === true && !guards.some((g) => g.arm === f.arm && g.worse));
   const best = primary.sort((x, y) => Math.abs(y.diff.estimate) - Math.abs(x.diff.estimate))[0];
@@ -485,7 +562,7 @@ export class Experiments {
     if (e.state !== "running") throw Object.assign(new Error(`it is ${e.state}`), { status: 409 });
     const stopped_ms = Date.now();
     this.fix(e, stopped_ms);
-    const r = { ...report(e, this.rows(e, stopped_ms), this.live(e)), final_ms: stopped_ms };
+    const r = { ...report({ ...e, state: "stopped" }, this.rows(e, stopped_ms), this.live(e)), final_ms: stopped_ms };
     const out = this.store.db.transaction(() => {
       this.freeze(e, { report: r, sessions: this.sessions(e), runs: this.runs(e) });
       return this.save({ ...e, state: "stopped", stopped_ms, stop_reason: reason, decision: r.decision });
@@ -609,30 +686,28 @@ export class Experiments {
     return report(e, this.rows(e, now), this.live(e));
   }
 
-  // Fixes the guard observation of every family of a running live experiment
-  // whose window has closed by `now`, oldest assignment first: the mean of
-  // each metric over its turns that ended inside the window. A row is written
-  // once and never updated; a family with no turn in its window has none to read.
+  // Fixes the guard observation of every open family of a running live
+  // experiment that can be read by `now` (familyObs), in the order they
+  // became fixed. A row is written once and never updated; a family with no
+  // turn in its window has none to read.
   private fix(e: Experiment, now: number) {
     if (e.mode !== "live" || e.state !== "running") return;
-    const db = this.store.db, window = (e.stop.window_min ?? WINDOW_MIN) * 60_000;
-    const due = db.query<{ root: string; arm: string; ts: number }, [string, number, number]>(
-      `SELECT x.session_id AS root, x.arm, x.ts FROM experiment_sessions x WHERE x.exp_id = ? AND x.root = x.session_id AND x.ts + ? <= ?
-       AND NOT EXISTS (SELECT 1 FROM experiment_obs o WHERE o.exp_id = x.exp_id AND o.root = x.session_id) ORDER BY x.ts, x.session_id`).all(e.id, window, now);
-    for (const f of due) {
-      const turns = db.query<any, [string, string, number, number]>(
-        `SELECT t.* FROM telemetry_turns t JOIN experiment_sessions x ON x.session_id = t.session_id
-         WHERE x.exp_id = ? AND x.root = ? AND t.ts >= ? AND t.ts + COALESCE(t.ms, 0) <= ?`).all(e.id, f.root, e.started_ms ?? 0, f.ts + window).map(turnMetrics);
-      const m: Partial<Record<Metric, number>> = {};
-      for (const k of Object.keys(METRICS) as Metric[]) {
-        const vs = turns.map((t) => t[k]).filter((v): v is number => typeof v === "number" && Number.isFinite(v));
-        if (vs.length) m[k] = vs.reduce((a, v) => a + v, 0) / vs.length;
-      }
-      db.query("INSERT OR IGNORE INTO experiment_obs (exp_id, root, arm, ts, turns, metrics) VALUES (?, ?, ?, ?, ?, ?)").run(e.id, f.root, f.arm, now, turns.length, JSON.stringify(m));
-    }
+    const db = this.store.db, window = (e.stop.window_min ?? WINDOW_MIN) * 60_000, k = e.stop.turns ?? TURNS;
+    const open = db.query<{ root: string; arm: string; ts: number }, [string]>(
+      `SELECT x.session_id AS root, x.arm, x.ts FROM experiment_sessions x WHERE x.exp_id = ? AND x.root = x.session_id
+       AND NOT EXISTS (SELECT 1 FROM experiment_obs o WHERE o.exp_id = x.exp_id AND o.root = x.session_id) ORDER BY x.ts, x.session_id`).all(e.id);
+    const turns = db.query<any, [string, string, number]>(
+      `SELECT t.* FROM telemetry_turns t JOIN experiment_sessions x ON x.session_id = t.session_id
+       WHERE x.exp_id = ? AND x.root = ? AND t.ts >= ? ORDER BY t.ts + COALESCE(t.ms, 0), t.id`);
+    const due = open.flatMap((f) => {
+      const o = familyObs(turns.all(e.id, f.root, e.started_ms ?? 0).map((t) => ({ end: t.ts + (t.ms ?? 0), m: turnMetrics(t) })), f.ts, now, k, window);
+      return o ? [{ ...f, ...o }] : [];
+    }).sort((a, b) => a.at - b.at);
+    const add = db.query("INSERT OR IGNORE INTO experiment_obs (exp_id, root, arm, ts, turns, metrics) VALUES (?, ?, ?, ?, ?, ?)");
+    for (const f of due) add.run(e.id, f.root, f.arm, f.at, f.turns, JSON.stringify(f.m));
   }
 
-  // The fixed guard observations in the order they were fixed, and the families still inside their window.
+  // The fixed guard observations in the order they were fixed, and the families still open.
   private live(e: Experiment): Live | undefined {
     if (e.mode !== "live") return undefined;
     const db = this.store.db;
@@ -654,8 +729,11 @@ export class Experiments {
   // for, in every arm that gets sessions (session families with a turn, so
   // a subagent adds none).
   check(sessionId: string, now = Date.now()) {
+    // The session's own experiment while that one runs; else the running one
+    // (a session of an earlier, stopped experiment is any other session to it).
     const tag = armOf(this.store, sessionId);
-    const e = tag ? this.get(tag.exp_id) : this.running();
+    const own = tag && this.get(tag.exp_id);
+    const e = own?.state === "running" ? own : this.running();
     if (!e || e.state !== "running" || e.mode !== "live") return;
     this.fix(e, now);
     const hurt = liveGuards(e, this.live(e)!.obs).guards.find((g) => g.worse);

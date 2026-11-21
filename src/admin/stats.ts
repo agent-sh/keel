@@ -198,38 +198,58 @@ export function diffInterval(a: Unit[], b: Unit[], o: BootOpts = {}): Interval &
 // predictor says how likely the label is true given x: the posterior under
 // "the true-labelled run higher by delta", with the two groups normal about
 // the pooled mean with the pooled variance (both label-free, so the current
-// x may enter them). The stake is multiplied by predicted / prior chance of
-// the label that came. Its expectation under the null is exactly
+// x may enter them), mixed half and half with the prior chance p. The stake
+// is multiplied by predicted / prior chance of the label that came. Its
+// expectation under the null is exactly
 // p * (g / p) + (1 - p) * ((1 - g) / (1 - p)) = 1 for any g, so the normal
-// shape only decides how fast evidence grows under a real shift, never the
-// validity. The evidence is the average stake over a fixed grid of deltas
-// (a mixture, as in the mSPRT, one-sided): tau, the smallest shift of
-// concern, and its doublings up to 128 times it, so a shift near tau and a
-// breakage far beyond it both have a bettor sized for them, at a cost of at
-// most a factor of eight in evidence. `tau` may depend on the pooled mean
-// (a shift of concern stated as a share of the level).
+// shape and the mixing only decide how fast evidence grows under a real
+// shift, never the validity.
+//
+// The half kept on the prior means no bet loses more than half its stake.
+// Without it, a guard whose values are mostly equal (errors: most families
+// have none) has a variance far below delta squared, every bettor stakes
+// nearly everything on each observation, and one family on the other side
+// leaves evidence that cannot come back.
+//
+// The evidence is the average stake over a fixed grid of deltas (a mixture,
+// as in the mSPRT, one-sided): tau, the shift the bets are sized for, and
+// its doublings up to 128 times it, so a shift near tau and a breakage far
+// beyond it both have a bettor sized for them, at a cost of at most a factor
+// of eight in evidence. Any shift upward is evidence: tau sets which size is
+// found fastest, not an amount that is tolerated. `tau` may depend on the
+// pooled mean (a shift stated as a share of the level).
 export const BET_SIZES = [1, 2, 4, 8, 16, 32, 64, 128];
+export const BET_KEEP = 0.5; // the share of each prediction that is the prior chance
 const BET_CAP = 1e12; // keeps the evidence a finite JSON number
-const logSigmoid = (z: number) => (z >= 0 ? -Math.log1p(Math.exp(-z)) : z - Math.log1p(Math.exp(z)));
+const sigmoid = (z: number) => (z >= 0 ? 1 / (1 + Math.exp(-z)) : Math.exp(z) / (1 + Math.exp(z)));
 export function labelBet(p: number, tau: (pooledMean: number) => number) {
   if (!(p > 0 && p < 1)) throw new Error("the label chance is strictly between 0 and 1");
   const nodes = BET_SIZES;
   const stakes = nodes.map(() => 0); // log of each delta's stake
-  const lp = Math.log(p), lq = Math.log(1 - p);
-  let n = 0, sum = 0, squares = 0, evidence = 1;
+  const logit = Math.log(p) - Math.log(1 - p);
+  // The pooled mean and the sum of squared deviations, updated in place
+  // (Welford): equal values give a variance of exactly 0, where the
+  // difference of two large sums would leave a rounding remainder.
+  let n = 0, mu = 0, dev = 0, squares = 0, evidence = 1;
   return {
     // The evidence after this observation.
     add(x: number, label: boolean): number {
-      n++; sum += x; squares += x * x;
-      const mu = sum / n, v = n > 1 ? (squares - n * mu * mu) / (n - 1) : 0;
+      if (!Number.isFinite(x)) return evidence;
+      n++;
+      const before = x - mu;
+      mu += before / n;
+      dev += before * (x - mu);
+      squares += x * x;
+      const v = n > 1 ? dev / (n - 1) : 0;
       const t = tau(mu);
-      if (!(v > 0) || !(t > 0) || !Number.isFinite(x)) return evidence;
+      // No bet on values that do not vary beyond rounding.
+      if (!(v > 1e-12 * (squares / n)) || !(t > 0)) return evidence;
       const a = x - mu;
       for (let j = 0; j < nodes.length; j++) {
         const d = nodes[j]! * t;
         // Log odds that the label is true: groups at mu + (1 - p) d and mu - p d.
-        const z = lp - lq + (2 * a * d + (2 * p - 1) * d * d) / (2 * v);
-        stakes[j] = stakes[j]! + (label ? logSigmoid(z) - lp : logSigmoid(-z) - lq);
+        const g = BET_KEEP * p + (1 - BET_KEEP) * sigmoid(logit + (2 * a * d + (2 * p - 1) * d * d) / (2 * v));
+        stakes[j] = stakes[j]! + Math.log(label ? g / p : (1 - g) / (1 - p));
       }
       const top = Math.max(...stakes);
       evidence = Math.min(BET_CAP, (Math.exp(top) * stakes.reduce((acc, w) => acc + Math.exp(w - top), 0)) / nodes.length);
