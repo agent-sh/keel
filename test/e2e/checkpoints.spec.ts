@@ -24,11 +24,14 @@ test("checkpoints and rewind", async ({ page, request }) => {
   execFileSync("git", ["init", "-q"], { cwd: ws });
   const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
-  const say = (text: string) => request.post(`/api/sessions/${session.id}/messages`, { data: { text } });
+  // One command a turn: a real model is asked for it in words, the scripted stand-in is handed the call.
+  const run = (command: string) => request.post(`/api/sessions/${session.id}/messages`, {
+    data: { text: HAIKU.startsWith("scripted:") ? `script:calls ${JSON.stringify([{ name: "Bash", input: { command } }])}` : `Run exactly this one Bash command and nothing else: ${command}\nThen reply ok.` },
+  });
 
-  await say("Run exactly this one Bash command and nothing else: echo two >> a.txt && echo new > b.txt && sed -i '1s/.*/FIRST/;30s/.*/LAST/' long.txt\nThen reply ok.");
+  await run("echo two >> a.txt && echo new > b.txt && sed -i '1s/.*/FIRST/;30s/.*/LAST/' long.txt");
   await turnsDone(request, session.id, 1);
-  await say("Run exactly this one Bash command and nothing else: echo three >> a.txt\nThen reply ok.");
+  await run("echo three >> a.txt");
   await turnsDone(request, session.id, 2);
   appendFileSync(join(ws, "keep.txt"), "owner edit\n"); // the owner, outside the session
   expect(readFileSync(join(ws, "a.txt"), "utf8")).toBe("one\ntwo\nthree\n");

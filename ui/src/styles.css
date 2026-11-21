@@ -238,6 +238,31 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 /* A diff line under the keyboard has one ring, on the row; its comment button draws none over the line number. */
 .k-diff-line:has([data-line]:focus-visible) { outline: 2px solid var(--ring); outline-offset: -2px; }
 [data-line]:focus-visible { outline: none; }
+/* A diff's lines. The gutter (both numbers and the comment mark) stays at the left edge while a
+   long line pans under it, so it paints the row's tint over the block's own surface. What is not
+   code (a hunk's head, a comment, the comment form) keeps the width on screen. */
+.k-diff-body { container-type: inline-size; isolation: isolate; }
+.k-diff-line { --k-diff-tint: transparent; background: var(--k-diff-tint); }
+.k-diff-line[data-kind="add"] { --k-diff-tint: color-mix(in oklab, var(--ok) 10%, transparent); }
+.k-diff-line[data-kind="del"] { --k-diff-tint: color-mix(in oklab, var(--danger-soft) 70%, transparent); }
+.k-diff-line[data-kind="hunk"] { --k-diff-tint: color-mix(in oklab, var(--accent-soft) 40%, transparent); color: var(--faint); }
+.k-diff-line[data-lit] { --k-diff-tint: color-mix(in oklab, var(--accent-soft) 60%, transparent); outline: 1px solid var(--accent); outline-offset: -1px; }
+.k-diff-gutter { position: sticky; left: 0; z-index: 1; width: 1%; background: linear-gradient(var(--k-diff-tint), var(--k-diff-tint)), var(--raised); box-shadow: inset -1px 0 0 var(--line); }
+.k-diff-no { flex: none; box-sizing: content-box; width: calc(var(--k-diff-digits, 3) * 1ch); padding: 0 0.5rem; text-align: right; }
+/* The gutter covers its part of the row's ring, so it draws that part itself. */
+.k-diff-line:has([data-line]:focus-visible) .k-diff-gutter { box-shadow: inset 2px 0 0 var(--ring), inset 0 2px 0 var(--ring), inset 0 -2px 0 var(--ring); }
+.k-diff-line[data-lit] .k-diff-gutter { box-shadow: inset 1px 0 0 var(--accent), inset 0 1px 0 var(--accent), inset 0 -1px 0 var(--accent); }
+.k-diff-wide { position: sticky; left: 0; width: 100cqw; }
+[data-line][data-open] { opacity: 1; }
+/* Nothing hovers on a touch screen: every line shows its comment mark, quiet, in a place of its
+   own beside the number, and the rows of a diff that has marks are tall enough to tap one. */
+@media (hover: none) {
+  table[data-marks] .k-diff-line > td { line-height: 1.9; }
+  .k-diff-no:has(> [data-line]) { padding-right: 2.25rem; }
+  .k-diff-no > [data-line] { right: 0.125rem; width: 2rem; height: 100%; opacity: 1; background: transparent; color: var(--muted); }
+  .k-diff-no > [data-line] svg { width: 0.875rem; height: 0.875rem; }
+  .k-diff-no > [data-line]:active, .k-diff-no > [data-line][data-open] { background: var(--accent); color: var(--accent-fg); }
+}
 /* An icon in a state color is a mark, not a word: it keeps the fill where its words take the ink. */
 svg.text-warn { color: var(--warn); }
 button { cursor: default; }

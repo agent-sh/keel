@@ -1,5 +1,5 @@
 import { ChevronRight, MessageSquarePlus, Undo2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { parsePatch, type FilePatch, type PatchLine } from "../../../src/safety/patch.ts";
 import { cn } from "../lib/utils.ts";
 
@@ -30,7 +30,10 @@ const lineName = (path: string, l: PatchLine) => `${path}, ${l.kind === "del" ? 
 // `onComment` turns line numbers into "add a comment" targets (one Tab stop a
 // file; Up and Down move between lines, Page Down and Page Up to the first
 // changed line of the next or the previous hunk); `onHunk`
-// puts a revert button on each hunk. `truncated`/`partial` say the patch was
+// puts a revert button on each hunk. A long line pans under its numbers: the
+// gutter (both numbers and the comment mark) stays at the left edge, and what
+// is not code (a hunk's head, a comment, the comment form) keeps the width on
+// screen. Where nothing hovers, the comment mark of every line is shown. `truncated`/`partial` say the patch was
 // cut to fit; `loadFile` fetches one file's whole diff in its place.
 export type HunkRef = { path: string; index: number; header: string; body: string };
 export function DiffView({
@@ -91,6 +94,8 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk }: {
   // in a ref and moved between the two buttons by the table's one focus handler.
   const visited = useRef<string | null>(null);
   const rows = p?.lines.filter((l) => l.kind !== "hunk") ?? [];
+  // Both number columns are as wide as the file's longest number, so they line up down the rows.
+  const digits = Math.max(2, String(rows.reduce((m, l) => Math.max(m, l.old ?? 0, l.new ?? 0), 0)).length);
   const stop = visited.current && rows.some((l) => lineKey(l) === visited.current) ? visited.current : lineKey(rows.find((l) => l.kind !== "ctx") ?? rows[0] ?? { kind: "ctx", text: "" });
   const focusLine = (key: string) => body.current?.querySelector<HTMLElement>(`[data-line="${key}"]`)?.focus();
   const onFocusLine = (e: FocusEvent<HTMLTableElement>) => {
@@ -166,7 +171,7 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk }: {
         {actions?.(f)}
       </header>
       {open && (
-        <div ref={body} className="overflow-x-auto font-mono text-caption leading-[1.6]">
+        <div ref={body} className="k-diff-body overflow-x-auto font-mono text-caption leading-[1.6]">
           {mode && <p className="border-b border-line px-3 py-1.5 font-sans text-caption text-muted" data-testid="diff-mode">{mode}</p>}
           {cut === "omitted" ? (
             <p className="px-3 py-2 font-sans text-faint" data-testid="diff-omitted">Left out of this preview: the whole diff is over its size limit.{loadButton}</p>
@@ -175,7 +180,7 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk }: {
           ) : !p || !p.lines.length ? (
             !mode && <p className="px-3 py-2 text-faint">No text change shown.</p>
           ) : (
-            <table className="w-full border-collapse" onKeyDown={onComment ? onKeys : undefined} onFocus={onComment ? onFocusLine : undefined} onClick={onComment ? onClickLine : undefined}>
+            <table className="w-full border-collapse" data-marks={onComment ? "" : undefined} style={{ "--k-diff-digits": digits } as CSSProperties} onKeyDown={onComment ? onKeys : undefined} onFocus={onComment ? onFocusLine : undefined} onClick={onComment ? onClickLine : undefined}>
               <tbody>
                 {p.lines.map((l, i) => {
                   if (l.kind === "hunk") hunks++;
@@ -186,65 +191,77 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk }: {
                   const here = l.kind === "hunk" ? [] : comments?.filter((c) => c.side === side && c.line === lineNo) ?? [];
                   const lit = flash && l.kind !== "del" && l.kind !== "hunk" && l.new! >= flash.line && l.new! <= flash.end;
                   return [
-                    <tr key={i} data-new={l.kind !== "del" && l.kind !== "hunk" ? l.new : undefined} data-old={l.kind === "del" ? l.old : undefined}
-                      className={cn(
-                        "k-diff-line group/line",
-                        l.kind === "add" && "bg-ok/10",
-                        l.kind === "del" && "bg-danger-soft/70",
-                        l.kind === "hunk" && "bg-accent-soft/40 text-faint",
-                        lit && "outline outline-1 -outline-offset-1 outline-accent bg-accent-soft/60",
-                      )}>
-                      <td className="w-10 select-none px-2 text-right text-faint/80 tabular-nums">{l.kind === "hunk" ? "" : l.old ?? ""}</td>
-                      <td className="relative w-10 select-none px-2 text-right text-faint/80 tabular-nums">
-                        {l.kind === "hunk" ? "" : l.new ?? ""}
-                        {onComment && l.kind !== "hunk" && (
-                          <button
-                            type="button"
-                            data-testid="comment-line"
-                            data-line={key}
-                            data-hunk={hunkIndex}
-                            data-changed={l.kind !== "ctx" ? "" : undefined}
-                            tabIndex={key === stop ? 0 : -1}
-                            aria-label={`Comment on ${lineName(f.path, l)}`}
-                            className="absolute -right-[0.9rem] top-0 grid size-[1.2rem] place-items-center rounded bg-accent text-accent-fg opacity-0 group-hover/line:opacity-100 focus-visible:opacity-100"
-                          >
-                            <MessageSquarePlus className="size-3" />
-                          </button>
-                        )}
-                      </td>
-                      <td className="w-4 select-none pl-2 text-faint">{l.kind === "add" ? "+" : l.kind === "del" ? "-" : ""}</td>
-                      <td className="whitespace-pre pr-4">
-                        {l.text}
-                        {l.noEol && <span className="ml-2 select-none rounded bg-sunken px-1 font-sans text-micro text-muted" data-testid="no-eol">no newline at end of file</span>}
-                        {onHunk && l.kind === "hunk" && (
-                          <button data-testid="revert-hunk" onClick={() => onHunk({ path: f.path, index: hunkIndex, header: l.text, body: l.body ?? "" })}
-                            className="float-right ml-3 rounded px-1.5 font-sans text-micro text-muted hover:bg-hover hover:text-fg">Revert hunk</button>
-                        )}
-                      </td>
+                    <tr key={i} data-kind={l.kind} data-lit={lit ? "" : undefined} data-new={l.kind !== "del" && l.kind !== "hunk" ? l.new : undefined} data-old={l.kind === "del" ? l.old : undefined} className="k-diff-line group/line">
+                      {l.kind === "hunk" ? (
+                        <td colSpan={3} className="p-0">
+                          <div className="k-diff-wide flex items-center gap-3 pl-3 pr-2">
+                            <span className="min-w-0 flex-1 truncate">{l.text}</span>
+                            {onHunk && (
+                              <button data-testid="revert-hunk" onClick={() => onHunk({ path: f.path, index: hunkIndex, header: l.text, body: l.body ?? "" })}
+                                className="shrink-0 rounded px-1.5 font-sans text-micro text-muted hover:bg-hover hover:text-fg">Revert hunk</button>
+                            )}
+                          </div>
+                        </td>
+                      ) : (
+                        <>
+                          <td className="k-diff-gutter select-none p-0 text-faint/80 tabular-nums">
+                            <span className="flex">
+                              <span className="k-diff-no">{l.old ?? ""}</span>
+                              <span className="k-diff-no relative">
+                                {l.new ?? ""}
+                                {onComment && (
+                                  <button
+                                    type="button"
+                                    data-testid="comment-line"
+                                    data-line={key}
+                                    data-hunk={hunkIndex}
+                                    data-changed={l.kind !== "ctx" ? "" : undefined}
+                                    data-open={drafts[key] !== undefined ? "" : undefined}
+                                    tabIndex={key === stop ? 0 : -1}
+                                    aria-label={`Comment on ${lineName(f.path, l)}`}
+                                    className="absolute -right-[0.9rem] top-0 grid size-[1.2rem] place-items-center rounded bg-accent text-accent-fg opacity-0 group-hover/line:opacity-100 focus-visible:opacity-100"
+                                  >
+                                    <MessageSquarePlus className="size-3" />
+                                  </button>
+                                )}
+                              </span>
+                            </span>
+                          </td>
+                          <td className="w-4 select-none pl-2 text-faint">{l.kind === "add" ? "+" : l.kind === "del" ? "-" : ""}</td>
+                          <td className="whitespace-pre pr-4">
+                            {l.text}
+                            {l.noEol && <span className="ml-2 select-none rounded bg-sunken px-1 font-sans text-micro text-muted" data-testid="no-eol">no newline at end of file</span>}
+                          </td>
+                        </>
+                      )}
                     </tr>,
                     ...here.map((c) => (
                       <tr key={`${i}-c${c.id}`}>
-                        <td colSpan={4} className="px-3 py-1.5">
-                          <div className="rounded-lg border border-accent/40 bg-accent-soft/40 px-3 py-1.5 font-sans text-caption" data-testid="line-comment" data-side={c.side}>{c.text}</div>
+                        <td colSpan={3} className="p-0">
+                          <div className="k-diff-wide px-3 py-1.5">
+                            <div className="rounded-lg border border-accent/40 bg-accent-soft/40 px-3 py-1.5 font-sans text-caption" data-testid="line-comment" data-side={c.side}>{c.text}</div>
+                          </div>
                         </td>
                       </tr>
                     )),
                     drafts[key] !== undefined && l.kind !== "hunk" ? (
                       <tr key={`${i}-draft`}>
-                        <td colSpan={4} className="px-3 py-1.5">
+                        <td colSpan={3} className="p-0">
                           {/* Added or discarded, the keyboard is back on the line's comment button. */}
-                          <CommentForm l={l} side={side} text={drafts[key]!} label={`Comment on ${lineName(f.path, l)}`}
-                            onText={(t) => setDrafts((d) => ({ ...d, [key]: t }))}
-                            onClose={() => { focusLine(key); setDrafts(({ [key]: _, ...d }) => d); }}
-                            onAdd={(t) => { focusLine(key); onComment?.({ path: f.path, side, line: lineNo, text: t, quote: l.text }); setDrafts(({ [key]: _, ...d }) => d); }}
-                          />
+                          <div className="k-diff-wide px-3 py-1.5">
+                            <CommentForm l={l} side={side} text={drafts[key]!} label={`Comment on ${lineName(f.path, l)}`}
+                              onText={(t) => setDrafts((d) => ({ ...d, [key]: t }))}
+                              onClose={() => { focusLine(key); setDrafts(({ [key]: _, ...d }) => d); }}
+                              onAdd={(t) => { focusLine(key); onComment?.({ path: f.path, side, line: lineNo, text: t, quote: l.text }); setDrafts(({ [key]: _, ...d }) => d); }}
+                            />
+                          </div>
                         </td>
                       </tr>
                     ) : null,
                   ];
                 })}
                 {cut === "partial" && (
-                  <tr><td colSpan={4} className="border-t border-line px-3 py-1.5 font-sans text-caption text-warn" data-testid="diff-partial">The rest of this file's diff is cut to fit.{loadButton}</td></tr>
+                  <tr><td colSpan={3} className="border-t border-line p-0 font-sans text-caption text-warn" data-testid="diff-partial"><div className="k-diff-wide px-3 py-1.5">The rest of this file's diff is cut to fit.{loadButton}</div></td></tr>
                 )}
               </tbody>
             </table>
@@ -257,7 +274,7 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk }: {
 
 function CommentForm({ l, side, text, label, onText, onClose, onAdd }: { l: PatchLine; side: "old" | "new"; text: string; label: string; onText: (t: string) => void; onClose: () => void; onAdd: (t: string) => void }) {
   return (
-    <form className="flex items-center gap-2 font-sans" onSubmit={(e) => { e.preventDefault(); if (text.trim()) onAdd(text.trim()); else onClose(); }}>
+    <form className="flex flex-wrap items-center gap-2 font-sans" onSubmit={(e) => { e.preventDefault(); if (text.trim()) onAdd(text.trim()); else onClose(); }}>
       {side === "old" && <span className="shrink-0 rounded bg-danger-soft px-1.5 text-micro text-danger" title={`Removed line ${l.old}`}>removed line</span>}
       <input
         autoFocus
@@ -267,10 +284,12 @@ function CommentForm({ l, side, text, label, onText, onClose, onAdd }: { l: Patc
         onChange={(e) => onText(e.target.value)}
         onKeyDown={(e) => { if (e.key === "Escape" && !text.trim()) onClose(); }}
         placeholder={side === "old" ? "What about this removed line?" : "What should change here?"}
-        className="h-8 min-w-0 flex-1 rounded-lg border border-line bg-bg px-3 text-caption outline-none focus:border-line-strong"
+        className="h-8 min-w-[10rem] flex-1 rounded-lg border border-line bg-bg px-3 text-caption outline-none focus:border-line-strong"
       />
-      <button type="submit" data-testid="comment-add" className="h-8 rounded-lg bg-accent px-3 text-caption font-medium text-accent-fg">Add</button>
-      <button type="button" data-testid="comment-discard" onClick={onClose} className="h-8 rounded-lg px-2 text-caption text-muted hover:bg-hover">Discard</button>
+      <span className="ml-auto flex shrink-0 gap-2">
+        <button type="submit" data-testid="comment-add" className="h-8 rounded-lg bg-accent px-3 text-caption font-medium text-accent-fg">Add</button>
+        <button type="button" data-testid="comment-discard" onClick={onClose} className="h-8 rounded-lg px-2 text-caption text-muted hover:bg-hover">Discard</button>
+      </span>
     </form>
   );
 }

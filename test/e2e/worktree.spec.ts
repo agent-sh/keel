@@ -233,3 +233,95 @@ test("line comments on a diff by keyboard", async ({ page, request }) => {
   ]);
   await request.delete(`/api/sessions/${session.id}`);
 });
+
+// Line comments on a touch screen, where nothing hovers: every line shows its
+// comment mark, a long line pans under its numbers and its mark, the first tap
+// opens the form of that line and side, and the form stays on screen however
+// far the line is panned.
+test.describe("line comments by touch", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test("a long diff line pans under its numbers and its comment mark", async ({ page, request }) => {
+    const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+    test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+    const repo = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `wt-touch-${Date.now()}`);
+    mkdirSync(repo, { recursive: true });
+    git(repo, "init", "-q", "-b", "main");
+    const lines = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`);
+    writeFileSync(join(repo, "notes.md"), lines.join("\n") + "\n");
+    git(repo, "add", "-A");
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
+    const long = `const retryPolicy = { attempts: 5, backoff: "exponential", ceiling: 30_000, jitter: true, retryOn: [408, 429, 500, 502, 503, 504], idempotentOnly: true }; // END-OF-LINE`;
+    lines[2] = long;
+    writeFileSync(join(repo, "notes.md"), lines.join("\n") + "\n");
+    const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", workspace: repo } })).json();
+
+    await page.goto(`/s/${session.id}`);
+    expect(await page.evaluate(() => matchMedia("(hover: none)").matches)).toBe(true);
+    await openPanel(page, "review");
+    const file = page.getByTestId("branch-review").getByTestId("diff-file").filter({ hasText: "notes.md" });
+    const line = (name: string) => file.getByRole("button", { name: `Comment on notes.md, ${name}`, exact: true });
+    const added = file.locator('tr[data-new="3"]'), removed = file.locator('tr[data-old="3"]');
+    const onScreen = async (l: ReturnType<typeof file.locator>) => { const b = (await l.boundingBox())!; return b.x >= 0 && b.x + b.width <= 390 && b.width > 0; };
+    await expect(added).toContainText("END-OF-LINE");
+
+    // Every line's mark shows before anything is touched, beside its number.
+    for (const name of ["old line 3 (removed)", "new line 3 (added)", "new line 4"]) {
+      expect(await line(name).evaluate((b) => getComputedStyle(b).opacity)).toBe("1");
+      expect(await onScreen(line(name))).toBe(true);
+    }
+    expect(await line("new line 3 (added)").evaluate((b) => {
+      const digits = document.createRange();
+      digits.selectNodeContents(b.parentElement!.firstChild!);
+      return b.getBoundingClientRect().left >= digits.getBoundingClientRect().right - 0.5;
+    })).toBe(true);
+    expect(await page.getByTestId("review-keys").innerText()).toBe("Tap the mark beside a line's number to comment on it.");
+    // The taller rows are for diffs with marks: a line here is tall enough to tap.
+    expect((await added.boundingBox())!.height).toBeGreaterThanOrEqual(24);
+    await shoot(page, "wt-07-touch-marks");
+
+    // Panned to the end of the long line: its number and its mark are still at the left edge.
+    const scroller = file.locator(".k-diff-body");
+    const number = added.locator(".k-diff-no").last();
+    const before = (await number.boundingBox())!.x;
+    await scroller.evaluate((el) => { el.scrollLeft = el.scrollWidth; });
+    expect(await scroller.evaluate((el) => el.scrollLeft)).toBeGreaterThan(200);
+    expect(Math.abs((await number.boundingBox())!.x - before)).toBeLessThan(1);
+    await expect(number).toHaveText("3");
+    expect(await onScreen(number)).toBe(true);
+    expect(await onScreen(line("new line 3 (added)"))).toBe(true);
+    // The end of the line is in view beside them, not under them.
+    const end = await added.evaluate((tr) => { const r = document.createRange(); r.selectNodeContents(tr.lastElementChild!); return r.getBoundingClientRect().right; });
+    expect(end).toBeLessThanOrEqual(390);
+    expect(end).toBeGreaterThan((await line("new line 3 (added)").boundingBox())!.x + 30);
+
+    // The first tap opens the form of that line, whole on screen though the line is panned.
+    await line("new line 3 (added)").tap();
+    const box = page.getByTestId("comment-input");
+    await expect(box).toHaveCount(1);
+    await expect(box).toHaveAccessibleName("Comment on notes.md, new line 3 (added)");
+    expect(await onScreen(box)).toBe(true);
+    expect(await onScreen(page.getByTestId("comment-add"))).toBe(true);
+    expect(await onScreen(page.getByTestId("comment-discard"))).toBe(true);
+    await box.fill("Name the unit of the ceiling.");
+    await shoot(page, "wt-08-touch-panned-form");
+    await page.getByTestId("comment-add").tap();
+    await expect(file.getByTestId("line-comment")).toHaveText("Name the unit of the ceiling.");
+    expect(await onScreen(file.getByTestId("line-comment"))).toBe(true);
+    // The removed line's own mark opens the old side's form.
+    await line("old line 3 (removed)").tap();
+    await expect(box).toHaveAccessibleName("Comment on notes.md, old line 3 (removed)");
+    await expect(removed.locator("xpath=following-sibling::tr[1]")).toContainText("removed line");
+    await box.fill("Keep the old wording.");
+    await page.getByTestId("comment-add").tap();
+    await expect(file.locator('[data-testid="line-comment"][data-side="old"]')).toHaveText("Keep the old wording.");
+    await shoot(page, "wt-09-touch-comments");
+
+    // Each note is on the side and the line it was made on.
+    const draft = await page.evaluate((id) => JSON.parse(localStorage.getItem(`keel.review-draft.${id}`)!), session.id);
+    expect(draft.comments.map((c: any) => [c.path, c.side, c.line, c.quote, c.text])).toEqual([
+      ["notes.md", "new", 3, long, "Name the unit of the ceiling."],
+      ["notes.md", "old", 3, "line 3", "Keep the old wording."],
+    ]);
+    await request.delete(`/api/sessions/${session.id}`);
+  });
+});

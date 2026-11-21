@@ -134,7 +134,10 @@ export function BranchReview({ session }: { session: Session }) {
             {b.commits} commit{b.commits === 1 ? "" : "s"}, {b.files.length} file{b.files.length === 1 ? "" : "s"}
             {b.truncated && <span className="text-warn" data-testid="branch-truncated"> · diff cut at 400 KB</span>}
           </p>
-          <p className="text-caption text-faint" data-testid="review-keys">Hover or Tab to a line to comment. Arrows move, Page Up/Down jump hunks.</p>
+          <p className="text-caption text-faint" data-testid="review-keys">
+            <span className="[@media(hover:none)]:hidden">Hover or Tab to a line to comment. Arrows move, Page Up/Down jump hunks.</span>
+            <span className="hidden [@media(hover:none)]:inline">Tap the mark beside a line's number to comment on it.</span>
+          </p>
         </div>
         {refresh}
       </div>
@@ -170,20 +173,20 @@ export function BranchReview({ session }: { session: Session }) {
             ))}
           </ul>
         )}
-        <div className="flex items-end gap-2">
+        <div className="flex flex-wrap items-end justify-end gap-2">
           <textarea
             value={note}
             onChange={(e) => setNote(e.target.value)}
             rows={1}
             placeholder="Overall note for the model (optional)"
             data-testid="review-note"
-            className="min-h-8 flex-1 resize-none rounded-lg border border-line bg-bg px-2.5 py-1.5 text-ui outline-none focus:border-line-strong"
+            className="min-h-8 min-w-[14rem] flex-1 resize-none rounded-lg border border-line bg-bg px-2.5 py-1.5 text-ui outline-none focus:border-line-strong"
           />
           <button
             data-testid="review-send"
             disabled={busy || (!comments.length && !note.trim())}
             onClick={send}
-            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40"
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40"
           >
             <Send className="size-3.5" /> Send {comments.length ? `${comments.length} comment${comments.length === 1 ? "" : "s"}` : "note"} to the model
           </button>
