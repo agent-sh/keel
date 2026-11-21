@@ -346,12 +346,14 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-station[data-watch="need"] .k-band { background-color: var(--st-need); height: 0.4375rem; }
 .k-station[data-watch="fail"] .k-band { background-color: var(--st-fail); height: 0.375rem; }
 .k-station[data-watch="done"] .k-band { background-color: color-mix(in oklab, var(--st-done) 80%, var(--line)); }
-.k-station[data-watch="work"] .k-band { background-color: color-mix(in oklab, var(--st-work) 70%, var(--line)); animation: k-breathe 3.2s ease-in-out infinite; }
+/* Working: the band breathes between a dim and the full color. The full color
+   is a layer over the dim one and only its opacity moves, which the browser
+   animates off the main thread: a color animated in place made every working
+   pane restyle and repaint on every frame of the screen. */
+.k-station[data-watch="work"] .k-band { background-color: color-mix(in oklab, var(--st-work) 40%, var(--line)); }
+.k-station[data-watch="work"] .k-band::after { content: ""; position: absolute; inset: 0; background-color: var(--st-work); opacity: 0.5; will-change: opacity; animation: k-breathe 3.2s ease-in-out infinite; }
+@keyframes k-breathe { 0%, 100% { opacity: 0; } 50% { opacity: 1; } }
 .k-station[data-watch="wait"] .k-band { background-color: color-mix(in oklab, var(--st-wait) 75%, var(--line)); }
-@keyframes k-breathe {
-  0%, 100% { background-color: color-mix(in oklab, var(--st-work) 40%, var(--line)); }
-  50% { background-color: var(--st-work); }
-}
 /* The header's working line: the same breath, in opacity. */
 .k-wake-line { position: absolute; inset: auto 0 -1px; height: 2px; pointer-events: none; background: var(--brass); animation: k-breathe-o 3.2s ease-in-out infinite; }
 @keyframes k-breathe-o { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }

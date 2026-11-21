@@ -17,7 +17,7 @@ import { byAttention, getStations, opened, shares, stations, target, useStations
 import { getState, useStore } from "../lib/store.ts";
 import { getUI, navigate, savePref, setUI, useUI } from "../lib/ui.ts";
 import { ago, scrollMotion, when } from "../lib/utils.ts";
-import { lastLine, useAgentCount, useAgentCounts, useSessionState, useWatch, watchLabel, type Watch } from "../lib/watch.ts";
+import { branchOf, lastLine, useAgentCount, useAgentCounts, useSessionState, useWatch, watchLabel, type Watch } from "../lib/watch.ts";
 import { MachineSep, machineRuns, whereWords } from "./Where.tsx";
 import { isPinned, pin as pinSession } from "../lib/sessops.ts";
 import { reportError } from "../lib/store.ts";
@@ -78,6 +78,7 @@ function StationHead({ s, w, helm, pinned }: { s: Session; w: Watch; helm: boole
   // One clock for one state: the band shows what the row shows (the step's time, the ask's, the wait's).
   const now = useNow(timed(st));
   const focus = useStations((x) => x.focus);
+  const panes = useStations((x) => x.count);
   const agents = st.agents;
   return (
     <header className="k-station-head" data-testid="station-head" draggable={!focus} onDragStart={dragSession(s.id)} title={focus ? undefined : "Drag onto another pane to trade places"}>

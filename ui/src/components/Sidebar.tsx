@@ -4,7 +4,7 @@
 // it is a column of marks, each a session's state and a short code of its
 // title, banded by what it needs from you. A card beside the entry under the
 // pointer or the focus says the rest. On a phone the list is a drawer.
-import { Archive, ArchiveRestore, Bug, Columns2, Folder, Moon, PanelLeftClose, PanelLeftOpen, Pin, Plus, Search, Settings, Sparkles, Sun, SunMoon, Tag } from "lucide-react";
+import { Archive, ArchiveRestore, Bug, Columns2, Folder, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, Plus, Search, Settings, Sparkles, Sun, SunMoon, Tag } from "lucide-react";
 import { createContext, Fragment, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { machineName, useFleet } from "../lib/fleet.ts";
@@ -14,7 +14,7 @@ import { callsigns, listBounds, listWidth, panesMax, toggleList, useRail } from 
 import { fitBands } from "../lib/rail-fit.ts";
 import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, cn, folderNames, when } from "../lib/utils.ts";
-import { AT_REST, lastLine, LIST_TIER, useSessionState, useSessionStates, useWatches, watchLabel, type Watch } from "../lib/watch.ts";
+import { AT_REST, branchOf, lastLine, LIST_TIER, useSessionState, useSessionStates, useWatches, watchLabel, type Watch } from "../lib/watch.ts";
 import { useWaitingSend } from "../lib/send-drafts.ts";
 import { MachineSep, machineRuns, WherePip, whereWords } from "./Where.tsx";
 import { finished, ListFind, matches, order, setArrange, useArrange } from "./ListArrange.tsx";
@@ -350,7 +350,7 @@ function RailCard({ s: given, y, left, row }: { s: Session; y: number; left: num
   const now = useNow(timed(st));
   const unread = useAuto((x) => x.unread.sessions[s.id] ?? 0);
   const events = useStore((x) => x.events[s.id]);
-  const line = lastLine(events, s.workspace);
+  const line = lastLine(branchOf(events, s.head), s.workspace);
   const why = whyText(st, now);
   const top = Math.min(Math.max(y, 96), innerHeight - 96);
   // Beside a list row the card adds what the row has no room for and repeats nothing of it:
