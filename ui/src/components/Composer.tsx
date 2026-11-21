@@ -289,31 +289,59 @@ function SessionComposer({
     return () => document.removeEventListener("pointerdown", away, true);
   }, [tapped]);
   const rest = narrow && !!session && !tapped && !text && !images.length && !working && !notice && synced;
+  const fit = () => {
+    setShort(low());
+    const el = ref.current;
+    if (!el) return;
+    const box = el.parentElement!;
+    // The text is measured with the box held at the height it has: measured in a box left
+    // free, a draft of several lines is one row high for that moment, the conversation
+    // above takes the room, the browser moves its scroll up to fit, and it stays there
+    // (a reply that streams then brings it back down, at every key).
+    box.style.height = `${box.getBoundingClientRect().height}px`;
+    box.style.flex = "none";
+    el.style.minHeight = "";
+    el.style.height = "auto";
+    const h = Math.min(el.scrollHeight, Math.round(innerHeight * 0.4));
+    el.style.height = `${h}px`;
+    // What the pane's height cannot take from it: two lines of a draft that has them (one
+    // of an empty box, whose hint may wrap), and from the box: those lines with what is
+    // above and under them (the attachments, the tools), so the tools never leave the box.
+    const cs = getComputedStyle(el);
+    const least = Math.min(h, Math.ceil((el.value ? 2 : 1) * parseFloat(cs.lineHeight) + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)));
+    el.style.minHeight = `${least}px`;
+    box.style.height = box.style.flex = "";
+    // In parts of a pixel, as they are laid out: whole pixels add up to more than the box is
+    // high at a text size that makes its rows fractional, and the box would grow by the rest.
+    let under = 0;
+    // (What lies over the box, like the resting box's tools button, takes no room under the text.)
+    for (let x = el.nextElementSibling as HTMLElement | null; x; x = x.nextElementSibling as HTMLElement | null) if (getComputedStyle(x).position !== "absolute") under += x.getBoundingClientRect().height;
+    const above = el.getBoundingClientRect().top - box.getBoundingClientRect().top;
+    box.style.minHeight = `${above + least + under + parseFloat(getComputedStyle(box).borderBottomWidth)}px`;
+  };
+  const fitNow = useRef(fit);
+  fitNow.current = fit;
   useEffect(() => {
-    const fit = () => {
-      setShort(low());
-      const el = ref.current;
-      if (!el) return;
-      el.style.minHeight = "";
-      el.style.height = "auto";
-      const h = Math.min(el.scrollHeight, Math.round(innerHeight * 0.4));
-      el.style.height = `${h}px`;
-      // What the pane's height cannot take from it: two lines of a draft that has them (one
-      // of an empty box, whose hint may wrap), and from the box: those lines with what is
-      // above and under them (the attachments, the tools), so the tools never leave the box.
-      const cs = getComputedStyle(el);
-      const least = Math.min(h, Math.ceil((el.value ? 2 : 1) * parseFloat(cs.lineHeight) + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)));
-      el.style.minHeight = `${least}px`;
-      const box = el.parentElement!;
-      let under = 0;
-      // (What lies over the box, like the resting box's tools button, takes no room under the text.)
-      for (let x = el.nextElementSibling as HTMLElement | null; x; x = x.nextElementSibling as HTMLElement | null) if (getComputedStyle(x).position !== "absolute") under += x.offsetHeight;
-      box.style.minHeight = `${el.offsetTop + least + under + box.offsetHeight - box.clientHeight}px`;
-    };
     fit();
     addEventListener("resize", fit);
     return () => removeEventListener("resize", fit);
   }, [text, scale, short, images.length, notice, synced, info, working, rest]);
+  // A pane made wider or narrower (its divider, the list, a side panel) wraps the draft and
+  // the tools anew with no resize of the window: measured again then, a frame later (a size
+  // written inside the observer's own call would loop it), not at the next key.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    let frame = 0, width = el.clientWidth;
+    const ro = new ResizeObserver(() => {
+      if (el.clientWidth === width) return;
+      width = el.clientWidth;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => fitNow.current());
+    });
+    ro.observe(el);
+    return () => { ro.disconnect(); cancelAnimationFrame(frame); };
+  }, []);
 
   useEffect(() => {
     if (!notice) return;

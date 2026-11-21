@@ -795,6 +795,9 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       remember();
     });
     ro.observe(c);
+    // The view's own height too: the message box under it grows with a draft, and a transcript
+    // that follows its end keeps the end in view (its last lines would go under the box).
+    if (scroller.current) ro.observe(scroller.current);
     // End is for the pane worked in: the command names its session.
     const onEnd = (e: Event) => { if ((e as CustomEvent<string>).detail === sessionId) toEnd(true); };
     addEventListener("keel:end", onEnd);
