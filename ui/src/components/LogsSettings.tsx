@@ -32,7 +32,7 @@ function Exporter() {
       <div className="flex flex-col gap-3 border-b border-line py-4">
         <div>
           <div className="text-base font-medium">Send traces</div>
-          <div className="mt-0.5 text-ui text-muted">Each turn, model request and tool call as OpenTelemetry spans with the GenAI names (OTLP/HTTP JSON) to Phoenix, Langfuse, Jaeger or any collector. Shapes, timings, tokens and failure classes only: never prompts, replies or tool input. Empty uses OTEL_EXPORTER_OTLP_ENDPOINT when the daemon has it.</div>
+          <div className="mt-0.5 text-ui text-muted">Each turn, model request and tool call as OpenTelemetry spans with the GenAI names (OTLP/HTTP JSON) to Phoenix, Langfuse, Jaeger or any collector. Shapes, timings, tokens and failure classes only: never prompts, replies or tool input. Empty uses OTEL_EXPORTER_OTLP_ENDPOINT when the daemon has it. Spans still waiting for a collector are dropped when another one is set or the export is turned off.</div>
         </div>
         <form className="flex min-w-0 items-center gap-2" onSubmit={(e) => { e.preventDefault(); save(value.trim() || null).catch(reportError); }}>
           <input
