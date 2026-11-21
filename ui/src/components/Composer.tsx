@@ -27,6 +27,8 @@ type Option = { key: string; label: ReactNode; detail?: string; disabled?: boole
 const draftKey = (id?: string) => `keel.draft.${id ?? "new"}`;
 // The key that queues a message for after the running turn, as this platform names it.
 const queueKeys = keyLabel(QUEUE_KEYS).join(" ");
+// A desk-sized window: focus may go to the message box by itself there.
+const DESK = matchMedia("(min-width: 768px)");
 // A window lower than this many rem is short: the toolbar keeps to one row.
 const SHORT_REM = 28;
 
@@ -66,9 +68,12 @@ type ComposerProps = {
   autoFocus?: boolean;
   // The station that has the keys (several message boxes can be on screen): only it answers Alt+M.
   focus?: boolean;
-  // The session's cards that wait above the box (its plan and jobs, requests,
-  // held messages): they scroll with the queue and the kept messages.
+  // The session's cards above the box (its plan and jobs, held messages):
+  // they scroll with the queue and the kept messages.
   above?: ReactNode;
+  // What waits on the owner's answer (requests of the session and of its
+  // agents): shown last, nearest the box, and kept in view.
+  asks?: ReactNode;
 };
 
 export function Composer(props: ComposerProps) {
@@ -76,7 +81,7 @@ export function Composer(props: ComposerProps) {
 }
 
 function SessionComposer({
-  session, onSend, onQueue, onStop, onEscape, stopLabel = "Stop the turn", working, model, onModel, workspace, autoFocus, focus = true, hold, above,
+  session, onSend, onQueue, onStop, onEscape, stopLabel = "Stop the turn", working, model, onModel, workspace, autoFocus, focus = true, hold, above, asks,
 }: ComposerProps) {
   const sid = session?.id;
   const key = draftKey(sid);
@@ -245,14 +250,21 @@ function SessionComposer({
       el.style.height = "auto";
       const h = Math.min(el.scrollHeight, Math.round(innerHeight * 0.4));
       el.style.height = `${h}px`;
-      // What the pane's height cannot take from it: two lines of a draft that has them.
+      // What the pane's height cannot take from it: two lines of a draft that has them (one
+      // of an empty box, whose hint may wrap), and from the box: those lines with what is
+      // above and under them (the attachments, the tools), so the tools never leave the box.
       const cs = getComputedStyle(el);
-      el.style.minHeight = `${Math.min(h, Math.ceil(2 * parseFloat(cs.lineHeight) + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)))}px`;
+      const least = Math.min(h, Math.ceil((el.value ? 2 : 1) * parseFloat(cs.lineHeight) + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)));
+      el.style.minHeight = `${least}px`;
+      const box = el.parentElement!;
+      let under = 0;
+      for (let x = el.nextElementSibling as HTMLElement | null; x; x = x.nextElementSibling as HTMLElement | null) under += x.offsetHeight;
+      box.style.minHeight = `${el.offsetTop + least + under + box.offsetHeight - box.clientHeight}px`;
     };
     fit();
     addEventListener("resize", fit);
     return () => removeEventListener("resize", fit);
-  }, [text, scale, short]);
+  }, [text, scale, short, images.length, notice, synced, info, working]);
 
   useEffect(() => {
     if (!notice) return;
@@ -498,14 +510,15 @@ function SessionComposer({
 
   const open = menu && options.length > 0;
   const canSend = !!text.trim() || images.length > 0;
-  // What the box says about itself; in a one-row toolbar it leads, whole, and the tools scroll after it.
+  // What the box says about itself: among the tools, or on a line of its own
+  // above a one-row toolbar. Cut where the room ends, whole in its tip.
   const status = notice
-    ? <span className={cn("ml-1 text-caption text-warn animate-in", short ? "shrink-0 whitespace-nowrap" : "min-w-0 truncate")} role="status" data-testid="composer-notice">{notice}</span>
-    : !synced ? <span className={cn("ml-1 text-caption text-faint", short ? "shrink-0 whitespace-nowrap" : "truncate")} role="status" data-testid="sync-state">{connected ? "Catching up" : "Reconnecting"}</span> : null;
+    ? <span className={cn("min-w-0 truncate text-caption text-warn animate-in", short ? "block shrink-0 px-4 pb-1" : "ml-1")} title={notice} role="status" data-testid="composer-notice">{notice}</span>
+    : !synced ? <span className={cn("truncate text-caption text-faint", short ? "block shrink-0 px-4 pb-1" : "ml-1")} role="status" data-testid="sync-state">{connected ? "Catching up" : "Reconnecting"}</span> : null;
 
   return (
     <>
-    <Tray>
+    <Tray asks={asks}>
       {above}
       {sid && <QueuePanel sessionId={sid} />}
       {saved.some(shown) && (
@@ -535,7 +548,7 @@ function SessionComposer({
     </Tray>
     <div
       className={cn(
-        "relative flex min-h-0 flex-col rounded-xl border bg-raised shadow-2 transition-[border-color,box-shadow] duration-150",
+        "k-box relative flex min-h-0 flex-col rounded-xl border bg-raised shadow-2 transition-[border-color,box-shadow] duration-150",
         "border-line-strong/70 focus-within:border-line-strong focus-within:shadow-[var(--shadow-2),0_0_0_3px_var(--accent-soft)]",
         dragging && "border-accent shadow-[var(--shadow-2),0_0_0_3px_var(--accent-soft)]",
       )}
@@ -584,7 +597,7 @@ function SessionComposer({
 
       <p role="status" className="sr-only" data-testid="saved-status">{said}</p>
       {images.length > 0 && (
-        <div className="flex min-h-[4.75rem] shrink-[99] flex-wrap gap-2 overflow-y-auto px-3 pt-3" data-testid="attachments">
+        <div className="flex max-h-[9.25rem] shrink-0 flex-wrap gap-2 overflow-y-auto px-3 pt-3" data-testid="attachments">
           {images.map((a) => (
             <div key={a.id} className="group/att relative size-16 overflow-hidden rounded-md border border-line bg-sunken animate-pop" title={`${a.name}, ${Math.round(a.bytes / 1024)} KB`}>
               {a.file ? (
@@ -656,9 +669,9 @@ function SessionComposer({
         className="block max-h-[40vh] w-full resize-none bg-transparent px-4 pt-3.5 pb-1.5 text-read leading-relaxed outline-none placeholder:text-faint"
       />
       {/* The tools wrap onto more rows in a narrow box. In a short window they keep one row: the ones on the left scroll sideways, Send and Stop stay. */}
+      {short && status}
       <div className={cn("flex shrink-0 items-center gap-x-0.5 gap-y-1 px-2 pb-2", !short && "flex-wrap")} data-short={short || undefined} data-testid="composer-tools">
         <div className={short ? "-my-1 flex min-w-0 flex-1 items-center gap-x-0.5 overflow-x-auto py-1 pr-4 [mask-image:linear-gradient(to_left,transparent,#000_1rem)] [scrollbar-width:none]" : "contents"}>
-          {short && status}
           <span className={cn("flex items-center gap-x-0.5", short ? "shrink-0" : "min-w-0 max-w-full [&>[data-testid=model-picker]]:min-w-0")}>
             <button
               type="button"
@@ -700,7 +713,9 @@ function SessionComposer({
             <button
               type="button"
               data-testid="stop"
-              onClick={onStop}
+              // The button goes away with the turn: the focus goes to the box, not to nowhere
+              // (not on a phone, where that would raise the keyboard).
+              onClick={() => { onStop?.(); if (DESK.matches) ref.current?.focus(); }}
               title={onEscape ? stopLabel : `${stopLabel} (Esc)`}
               aria-label={stopLabel}
               className={cn("grid h-8 place-items-center rounded-full border border-line-strong text-fg hover:bg-hover", onEscape ? "flex gap-1.5 px-3 text-caption font-medium" : "size-8")}
@@ -730,37 +745,71 @@ function SessionComposer({
   );
 }
 
-// What waits above the box: the session's cards, the queue and the messages
-// kept after a send that did not go. The pane's height is one budget: the box
-// under this keeps its place with its buttons, and this region takes what is
-// left and scrolls. It follows its end, where the cards nearest the box are,
-// until it is scrolled; a card that arrives out of view is brought into it.
-function Tray({ children }: { children: ReactNode }) {
+// The cards of the region above the box, by their test ids, at any depth.
+const CARDS = ["approval", "plan-card", "secret-request", "trust-card", "blocked", "held-message", "saved-draft", "queue-item", "dock-job", "live-source"].map((t) => `[data-testid="${t}"]`).join(",");
+
+// What waits above the box: the session's cards, the queue, the messages kept
+// after a send that did not go, and last, nearest the box, what waits on the
+// owner's answer (`asks`). The pane's height is one budget: the box under this
+// keeps its place with its buttons, and this region takes what is left and
+// scrolls. It rests at its end, or, when what waits on the owner does not fit
+// whole, at the oldest of those, until it is scrolled. A card that arrives out
+// of view is brought into it, and whatever holds the focus here is in view:
+// Enter never answers a card that is not shown.
+function Tray({ children, asks }: { children: ReactNode; asks?: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
+  const wait = useRef<HTMLDivElement>(null);
   const gauge = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const pad = () => parseFloat(getComputedStyle(ref.current!).paddingTop);
+  const home = () => {
+    const el = ref.current!;
+    const w = wait.current!;
+    const end = el.scrollHeight - el.clientHeight;
+    return w.offsetHeight ? Math.max(0, Math.min(end, w.offsetTop - pad())) : end;
+  };
   const mark = () => {
     const el = ref.current;
     if (!el) return;
-    const down = el.scrollHeight - el.scrollTop - el.clientHeight;
-    stick.current = down < 4;
+    stick.current = Math.abs(el.scrollTop - home()) < 4;
     // Where cards are scrolled out of view, that edge fades (styles.css).
-    el.dataset.more = [el.scrollTop > 1 && "up", down > 1 && "down"].filter(Boolean).join(" ");
+    el.dataset.more = [el.scrollTop > 1 && "up", el.scrollHeight - el.scrollTop - el.clientHeight > 1 && "down"].filter(Boolean).join(" ");
+  };
+  // Into the region's view: whole when it fits, else from its top.
+  const show = (t: Element) => {
+    const el = ref.current!;
+    const r = t.getBoundingClientRect();
+    const box = el.getBoundingClientRect();
+    if (r.top >= box.top && r.bottom <= box.bottom) return;
+    // A whole pixel past the edge: a part of one would leave its last line cut.
+    el.scrollTop += r.height > box.height || r.top < box.top ? Math.floor(r.top - box.top - pad()) : Math.ceil(r.bottom - box.bottom) + 1;
+  };
+  // What holds the focus here stays in view: its card, and the control itself first.
+  const keepFocus = () => {
+    const a = document.activeElement;
+    if (!a || !ref.current?.contains(a)) return false;
+    const card = a.closest(CARDS);
+    if (card) show(card);
+    show(a);
+    return true;
   };
   useLayoutEffect(() => {
     const el = ref.current!;
     const c = inner.current!;
+    const w = wait.current!;
     let raf = 0;
     const settle = () => {
       // The cards keep as much as they need up to three tenths of the pane; a
       // long draft gives way to them down to its two lines, then they scroll.
+      // While something waits on the owner the draft gives way first (styles.css).
       const pane = el.closest<HTMLElement>(".k-session");
-      el.style.minHeight = pane && c.offsetHeight ? `${Math.min(Math.ceil(c.offsetHeight + parseFloat(getComputedStyle(el).paddingTop)), Math.round(pane.clientHeight * 0.3))}px` : "";
+      el.style.minHeight = pane && c.offsetHeight ? `${Math.min(Math.ceil(c.offsetHeight + pad()), Math.round(pane.clientHeight * 0.3))}px` : "";
+      el.toggleAttribute("data-asking", w.offsetHeight > 0);
       // The scroll bar sits in the column's side padding: the cards keep the box's edges.
       const bar = el.offsetWidth - el.clientWidth;
       el.style.marginRight = bar ? `calc(-0.25rem - ${bar}px)` : "";
-      if (stick.current) el.scrollTop = el.scrollHeight;
+      if (!keepFocus() && stick.current) el.scrollTop = home();
       mark();
     };
     // Sizes are written a frame later: a write inside the observer's own call would loop it.
@@ -773,15 +822,20 @@ function Tray({ children }: { children: ReactNode }) {
     ro.observe(c);
     addEventListener("resize", later);
     const mo = new MutationObserver((list) => {
-      if (el.contains(document.activeElement)) return; // in use: nothing moves under the hand
-      const card = list.flatMap((m) => [...m.addedNodes]).filter((n): n is HTMLElement => n instanceof HTMLElement && (n.parentElement === c || n.parentElement?.parentElement === c)).at(-1);
-      if (!card) return;
+      const added = list.flatMap((m) => [...m.addedNodes]).filter((n): n is HTMLElement => n instanceof HTMLElement);
+      // New cards, at any depth: the node added is one, or holds one. A node added inside a
+      // card that is already there (a list a control of the card opens) is not a new card,
+      // and moves nothing.
+      const cards = [...new Set(added.map((n) => (n.matches(CARDS) ? n : n.querySelector<HTMLElement>(CARDS))).filter((x): x is HTMLElement => !!x))];
+      if (!cards.length) return;
+      const held = cards.find((card) => card.contains(document.activeElement));
+      if (!held && el.contains(document.activeElement)) return; // in use on another card: nothing moves under the hand
       requestAnimationFrame(() => requestAnimationFrame(() => {
-        if (!card.isConnected) return;
-        const r = card.getBoundingClientRect();
-        const box = el.getBoundingClientRect();
-        if (r.top >= box.top && r.bottom <= box.bottom) return;
-        el.scrollTop += r.height > box.height || r.top < box.top ? r.top - box.top : r.bottom - box.bottom;
+        if (keepFocus()) return mark();
+        // A new request for the owner: the region goes to the oldest one waiting. Any other
+        // new card is shown, unless a request waits: then the region stays on that.
+        if (cards.some((card) => w.contains(card))) el.scrollTop = home();
+        else if (!w.offsetHeight && cards.at(-1)!.isConnected) show(cards.at(-1)!);
         mark();
       }));
     });
@@ -790,8 +844,17 @@ function Tray({ children }: { children: ReactNode }) {
     return () => { cancelAnimationFrame(raf); ro.disconnect(); mo.disconnect(); removeEventListener("resize", later); };
   }, []);
   return (
-    <div ref={ref} data-testid="composer-tray" onScroll={mark} className="k-tray relative -mx-1 min-h-0 shrink-[99] overflow-y-auto px-1 pt-1">
-      <div ref={inner}>{children}</div>
+    <div
+      ref={ref}
+      data-testid="composer-tray"
+      onScroll={mark}
+      onFocus={() => requestAnimationFrame(() => { if (keepFocus()) mark(); })}
+      className="k-tray relative -mx-1 min-h-0 shrink-[99] overflow-y-auto px-1 pt-1"
+    >
+      <div ref={inner}>
+        {children}
+        <div ref={wait} data-testid="composer-asks">{asks}</div>
+      </div>
       <div ref={gauge} aria-hidden="true" className="pointer-events-none invisible absolute inset-0" />
     </div>
   );

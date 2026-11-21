@@ -107,6 +107,10 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
                     <LiveSourceBanner sessionId={session.id} />
                     <Suspense fallback={null}><HeldMessages sessionId={session.id} /></Suspense>
                     <Suspense fallback={null}><SessionDock sessionId={session.id} /></Suspense>
+                  </>
+                }
+                asks={
+                  <>
                     <Suspense fallback={null}><Approvals sessionId={session.id} /></Suspense>
                     <ChildApprovals parentId={session.id} />
                   </>

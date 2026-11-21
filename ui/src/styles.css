@@ -395,6 +395,11 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .k-tray[data-more="up"] { mask-image: linear-gradient(to bottom, transparent, #000 1.25rem); }
 .k-tray[data-more="down"] { mask-image: linear-gradient(to top, transparent, #000 1.25rem); }
 .k-tray[data-more="up down"] { mask-image: linear-gradient(to bottom, transparent, #000 1.25rem, #000 calc(100% - 1.25rem), transparent); }
+/* No fade over the control that holds the keyboard. */
+.k-tray:focus-within { mask-image: none; }
+/* While something there waits on the owner's answer, a long draft gives way before the cards do. */
+.k-tray[data-asking] { flex-shrink: 1; }
+.k-tray[data-asking] + .k-box { flex-shrink: 100000; }
 
 /* A message reached from search glows once. */
 .flash { animation: flash 1.6s var(--ease-out); }

@@ -112,8 +112,33 @@ test("a small window keeps the message box on screen under a full stack", async 
     const box = pane.getByTestId("composer");
     await expect(pane.getByTestId("approval")).toHaveCount(3);
     await expect(pane.getByTestId("saved-draft")).toHaveCount(2);
+    // The oldest request took the focus (the box is empty): the control Enter would press is
+    // in the part of the region that shows, not above or below it.
+    const tray = pane.getByTestId("composer-tray");
+    const focusShown = () => page.evaluate(() => {
+      const a = document.activeElement as HTMLElement | null;
+      const view = a?.closest('[data-testid="composer-tray"]')?.getBoundingClientRect();
+      if (!a || !view) return null;
+      const r = a.getBoundingClientRect();
+      return { testid: a.dataset.testid, shown: r.top >= view.top - 0.5 && r.bottom <= view.bottom + 0.5 && r.height > 0 };
+    });
+    await expect(pane.getByTestId("approval").first().getByTestId("allow-once")).toBeFocused();
+    expect(await tray.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(0);
+    await expect.poll(focusShown).toEqual({ testid: "allow-once", shown: true });
+    // The next request by Tab, and the last one's Allow: each is shown when it has the focus.
+    await pane.getByTestId("approval").last().getByTestId("allow-once").focus();
+    await expect.poll(focusShown).toEqual({ testid: "allow-once", shown: true });
+    await shoot(page, "composer-stack-390x600-focused-request");
     await pane.getByTestId("dock-plan").click();
     await expect(pane.getByTestId("session-dock").getByText("Send it for review")).toBeVisible();
+    // What the box says about itself has a line of its own over the one-row tools, cut where the room ends and whole in its tip.
+    await request.post(`/api/sessions/${id}/draft`, { data: { text: "A note from elsewhere.", origin: "the capture tool on another desk" } });
+    const notice = pane.getByTestId("composer-notice");
+    await expect(notice).toBeInViewport({ ratio: 1 });
+    await expect(notice).toHaveAttribute("title", "Text added from the capture tool on another desk.");
+    // (Once it has come in: it slides a few pixels as it appears.)
+    await expect.poll(() => notice.evaluate((el) => { const tools = el.parentElement!.querySelector('[data-testid="composer-tools"]')!.getBoundingClientRect(); const r = el.getBoundingClientRect(); return r.bottom <= tools.top + 1 && r.left >= el.parentElement!.getBoundingClientRect().left; })).toBe(true);
+    await shoot(page, "composer-stack-390x600-notice");
     const draft = Array.from({ length: 40 }, (_, i) => `Line ${i + 1} of a long draft that wraps on a narrow screen.`).join("\n");
     await box.fill(draft);
 
@@ -151,7 +176,7 @@ test("a small window keeps the message box on screen under a full stack", async 
     // By keyboard too: Shift Tab from the box walks back through the cards' controls.
     await box.focus();
     await page.keyboard.press("Shift+Tab");
-    await expect(page.locator(":focus")).toBeInViewport({ ratio: 1 });
+    await expect.poll(async () => (await focusShown())?.shown).toBe(true);
     await controls();
     await shoot(page, "composer-stack-390x600-scrolled");
 
@@ -163,7 +188,54 @@ test("a small window keeps the message box on screen under a full stack", async 
     await page.setViewportSize({ width: 390, height: 600 });
     await expect(box).toHaveValue(draft);
     await controls();
+
+    // At the default text size, with the long draft still in the box: what waits on the owner
+    // is what the region shows. The oldest request is whole on screen with its buttons, on a
+    // desk and on a phone, and the draft has given way to it.
+    await page.evaluate(() => localStorage.setItem("keel.textScale", "1"));
+    for (const [width, height, name] of [[1920, 1040, "composer-stack-1920-requests"], [390, 844, "composer-stack-390x844-requests"]] as const) {
+      await page.setViewportSize({ width, height });
+      await page.reload();
+      await expect(pane.getByTestId("approval")).toHaveCount(3);
+      await expect(box).toHaveValue(draft);
+      const oldest = pane.getByTestId("approval").first();
+      await expect(oldest).toBeInViewport({ ratio: 1 });
+      for (const t of ["approval-summary", "allow-once", "allow-always", "deny"]) await onScreen(oldest.getByTestId(t));
+      await controls();
+      await shoot(page, name);
+    }
     expect(await errors()).toBe(errorsBefore);
+  } finally { await request.delete(`/api/sessions/${id}`); }
+});
+
+// The keyboard is never left on nothing: the last request answered from the keys, and Stop
+// pressed with the pointer, both hand the focus to the message box.
+test("the focus goes to the message box when a request or Stop goes away", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models as { id: string; provider: string; context: number }[];
+  const model = models.filter((m) => m.provider === "scripted").sort((a, b) => b.context - a.context)[0];
+  test.skip(!model, "requires a scripted scratch daemon");
+  const { session } = await (await request.post("/api/sessions", { data: { title: "Focus handoff", model: model!.id } })).json();
+  const id = session.id as string;
+  try {
+    await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "ask" } });
+    await page.goto(`/s/${id}`);
+    const pane = page.getByTestId("station").and(page.locator(`[data-station="${id}"]`));
+    const box = pane.getByTestId("composer");
+    await expect(box).toBeFocused();
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "echo one > one.txt" } }])}` } });
+    // The request takes the focus (the box is empty); Enter allows it; the card and its list go.
+    await expect(pane.getByTestId("allow-once")).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(pane.getByTestId("approval")).toHaveCount(0);
+    await expect(box).toBeFocused();
+    await expect(pane.getByTestId("turn-end")).toHaveCount(1, { timeout: 30_000 });
+    // Stop by the pointer: the button goes with the turn, the focus is in the box.
+    await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "full-auto" } });
+    await box.fill("script:long-tool");
+    await page.keyboard.press("Enter");
+    await pane.getByTestId("stop").click();
+    await expect(pane.getByTestId("stop")).toHaveCount(0);
+    await expect(box).toBeFocused();
   } finally { await request.delete(`/api/sessions/${id}`); }
 });
 

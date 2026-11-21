@@ -73,14 +73,24 @@ function Card({ a, first, asker, list }: { a: Approval; first: boolean; asker?: 
     if (first && mayTakeFocus()) once.current?.focus({ preventScroll: true });
   }, [first]);
   // A card that held focus and goes away hands it to its list's label, never
-  // to another card's Allow.
+  // to another card's Allow. The last card takes the list with it: the focus
+  // goes to the pane's message box (at a desk; on a phone that raises the keyboard).
+  // (An answer disables the card's buttons, and the browser then takes the
+  // focus off the one pressed: `held` remembers that the card had it.)
+  const held = useRef(false);
   useLayoutEffect(() => () => {
-    if (!root.current?.contains(document.activeElement)) return;
+    const a = document.activeElement;
+    if (!root.current?.contains(a) && !(held.current && (!a || a === document.body))) return;
     const to = list.current;
-    queueMicrotask(() => { if (to?.isConnected) to.focus({ preventScroll: true }); });
+    const box = root.current?.closest(".k-session")?.querySelector<HTMLElement>('[data-testid="composer"]');
+    queueMicrotask(() => {
+      if (to?.isConnected) to.focus({ preventScroll: true });
+      else if (matchMedia("(min-width: 768px)").matches) box?.focus({ preventScroll: true });
+    });
   }, []);
 
   const answer = async (body: { choice: string; reason?: string; rules?: Suggest[] }) => {
+    held.current = !!root.current?.contains(document.activeElement);
     setBusy(true);
     setErr("");
     try {
