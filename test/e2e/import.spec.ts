@@ -71,6 +71,11 @@ test("import and export", async ({ page, request }) => {
   await expect(preview.getByTestId("import-counts")).toContainText("1prompts");
   await expect(preview).toContainText("not carried: signatures");
   await expect(preview).toContainText("The fruit is quince.");
+  // The owner's words read in the preview as they do in the conversation: the same block, behind its rule.
+  const owner = preview.getByTestId("import-preview-owner").first();
+  await expect(owner).toBeVisible();
+  // (Asked until it holds: the sheet's styles may land a moment after its first rows.)
+  await expect.poll(() => owner.evaluate((el) => { const block = el.closest(".k-owner-words"); const c = block && getComputedStyle(block); return { block: !!block, rule: c?.borderLeftStyle, tinted: !!c && c.backgroundColor !== "rgba(0, 0, 0, 0)" }; })).toEqual({ block: true, rule: "solid", tinted: true });
   await shoot(page, "import-01-preview");
 
   // Import, then a model goes on with the copy.

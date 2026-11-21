@@ -16,6 +16,7 @@ import { noteRows, OriginalStrip, ResumeCard, useStopped, type Intent, type Orig
 import { ago, cn } from "../lib/utils.ts";
 import { Select } from "./Select.tsx";
 import { Seg, tabId } from "./Seg.tsx";
+import { OwnerWords } from "./Words.tsx";
 
 // `original`, `wait`: on a machine reached over ssh, what the harness that still runs it does, and a resume waiting for it.
 type Row = Found & { imported?: { session_id: string; synced_ms: number; grew: boolean; went_on?: boolean }; original?: Original; wait?: Wait };
@@ -122,9 +123,10 @@ function PreviewPane({ row, from, resume, intent, onIntent, onDone }: { row: Row
             <div className="mt-5 k-label">Last messages</div>
             <div className="mt-2 space-y-2">
               {p.tail.map((m, i) => (
-                <div key={i} className={cn("rounded-lg px-3 py-2 text-ui", m.role === "user" ? "ml-10 bg-accent-soft" : "mr-10 border border-line bg-raised")}>
-                  <p className="line-clamp-6 whitespace-pre-wrap break-words">{m.text}</p>
-                </div>
+                // The same two voices as the conversation: the owner's words behind their rule, the reply plain.
+                m.role === "user"
+                  ? <OwnerWords key={i} className="k-owner-small"><p className="line-clamp-6 whitespace-pre-wrap break-words" data-testid="import-preview-owner">{m.text}</p></OwnerWords>
+                  : <p key={i} className="line-clamp-6 whitespace-pre-wrap break-words text-ui text-muted">{m.text}</p>
               ))}
             </div>
             {p.links.length > 1 && (
