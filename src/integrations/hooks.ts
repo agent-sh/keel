@@ -146,8 +146,14 @@ const pinKeys = new Map<string, string>();
 export function pinKey(root: string): string {
   const hit = pinKeys.get(root);
   if (hit) return hit;
-  const r = Bun.spawnSync(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root, stdout: "pipe", stderr: "ignore" });
-  const out = r.success ? r.stdout.toString().trim() : "";
+  // A folder that is not on this machine (a session whose folder is on another
+  // one, or one removed since): the spawn itself throws there. It has no
+  // repository here, so its key is the folder.
+  let out = "";
+  try {
+    const r = Bun.spawnSync(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root, stdout: "pipe", stderr: "ignore" });
+    if (r.success) out = r.stdout.toString().trim();
+  } catch {}
   const key = out ? (out.endsWith("/.git") ? dirname(out) : out) : root;
   pinKeys.set(root, key);
   return key;

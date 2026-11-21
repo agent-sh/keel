@@ -3,7 +3,7 @@ import { chmodSync, cpSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFil
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { Store } from "../core/store.ts";
-import { coveredFiles, Hooks, namesOf, parseHooks } from "./hooks.ts";
+import { coveredFiles, Hooks, namesOf, parseHooks, pinKey } from "./hooks.ts";
 
 // Every folder a test makes is removed when the file's tests are over.
 const made: string[] = [];
@@ -220,4 +220,10 @@ test("a pinned repository file is decided from what is on disk at each event, wh
   store.db.run("DELETE FROM hook_pins");
   expect(project().problems[0]).toStartWith("not pinned");
   expect(await said()).toEqual([]);
+});
+
+// A session whose folder is on another machine has no such folder here.
+test("a folder that is not on this machine is its own pin key, and asking does not throw", () => {
+  const gone = join(tmpdir(), `keel-hooks-gone-${process.pid}-${Date.now()}`);
+  expect(pinKey(gone)).toBe(gone);
 });
