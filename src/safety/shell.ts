@@ -1,6 +1,7 @@
 // Shell command analysis for the permission gate: split a command line into
 // the simple commands it runs, decide which are read-only, which are high
 // risk, and whether a stored rule covers each one. Pure functions.
+import { READERS, anyArguments, denied, long, xargsCommand } from "./shell-reads.ts";
 
 // One simple command: its words with quotes removed, and whether it writes
 // through a redirection. `nested`: it runs inside a substitution or a
@@ -356,6 +357,7 @@ const READ_PROGRAMS = new Set([
 const GIT_READ = new Set([
   "status", "log", "diff", "show", "rev-parse", "ls-files", "ls-tree", "blame", "grep", "describe", "shortlog",
   "cat-file", "merge-base", "rev-list", "reflog", "whatchanged", "name-rev", "for-each-ref", "check-ignore",
+  "show-ref", "show-branch", "diff-index", "diff-tree", "diff-files", "count-objects", "var", "version", "cherry", "check-attr",
 ]);
 
 // uniq [OPTION]... [INPUT [OUTPUT]]: its operands, past the options that take a value.
@@ -385,13 +387,6 @@ function dateSets(args: string[]): boolean {
   }
   return false;
 }
-
-// A GNU long option, which may be cut short as far as it stays one option: --out is --output.
-const long = (a: string, ...names: string[]) => {
-  if (!a.startsWith("--") || a.length < 3) return false;
-  const given = a.slice(2).split("=")[0]!;
-  return names.some((n) => n.startsWith(given));
-};
 
 // Whether a sed script only prints. Its `w` and `W` commands and the `w` flag
 // of `s` write a file, the `e` command and flag run a program; a command this
@@ -525,9 +520,29 @@ function testReadOnly(prog: string, args: string[], dyn: number[], splits: boole
 
 const GIT_VALUE = /^(-C|--git-dir|--work-tree|--namespace|--super-prefix|--attr-source)$/; // their value is the next word
 const GIT_FLAG = /^(-P|--no-pager|--no-replace-objects|--no-lazy-fetch|--no-optional-locks|--no-advice|--bare|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--(git-dir|work-tree|namespace|attr-source)=.*)$/;
-const GIT_TAG_LIST = /^(-l|--list|-n\d*|-i|--ignore-case|--sort=.+|--format=.+|--color(=.+)?|--no-color|--column(=.+)?|--no-column)$/;
+// Listing options of git tag and git branch. The ones in GIT_LISTS turn the command into a listing, so a name after them is a pattern, not a tag or branch to make.
+const GIT_LISTS = /^(--list|--(contains|no-contains|merged|no-merged|points-at)(=.+)?)$/;
+const GIT_TAG_LIST = /^(-l|--list|-n\d*|-i|--ignore-case|--sort=.+|--format=.+|--color(=.+)?|--no-color|--column(=.+)?|--no-column|--(contains|no-contains|merged|no-merged|points-at)(=.+)?)$/;
+const GIT_BRANCH_LIST = /^(-a|-r|-v|-vv|-i|--all|--remotes|--verbose|--list|--show-current|--ignore-case|--omit-empty|--no-color|--no-column|--no-abbrev|--(color|column|abbrev|format|sort|contains|no-contains|merged|no-merged|points-at)(=.+)?)$/;
+// git config: the options that only choose where to read and how to print. --file, --blob, -e, --add, --unset, --replace-all and the section commands are not among them.
+const GIT_CONFIG_FLAG = /^(--get|--get-all|--get-regexp|--get-urlmatch|--list|-l|--global|--local|--system|--worktree|--show-origin|--show-scope|--name-only|-z|--null|--bool|--int|--bool-or-int|--path|--expiry-date|--includes|--no-includes|--type=\w+|--default=.*)$/;
+
+// git config reads when it lists, gets by an option, or is given one name (a name has a dot; a second operand is the value to set).
+function gitConfigReads(rest: string[]): boolean {
+  if (!rest.every((a) => !a.startsWith("-") || GIT_CONFIG_FLAG.test(a))) return false;
+  const names = rest.filter((a) => !a.startsWith("-"));
+  if (rest.some((a) => a === "--list" || a === "-l")) return names.length === 0;
+  if (rest.includes("--get-urlmatch")) return names.length === 2;
+  if (rest.some((a) => /^--get(-all|-regexp)?$/.test(a))) return names.length === 1 || names.length === 2;
+  if (names[0] === "list") return names.length === 1;
+  if (names[0] === "get") return names.length === 2;
+  return names.length === 1 && names[0]!.includes(".");
+}
 
 function gitReadOnly(args: string[]): boolean {
+  // git --version, and the usage text of git --help and git help with no topic (a topic opens its manual page in a pager).
+  if (/^(--version|-v)$/.test(args[0] ?? "")) return args.slice(1).every((a) => a === "--build-options");
+  if (args.length === 1 && /^(--help|-h|help)$/.test(args[0]!)) return true;
   let i = 0;
   while (i < args.length && args[i]!.startsWith("-")) {
     if (GIT_VALUE.test(args[i]!)) i += 2;
@@ -539,14 +554,48 @@ function gitReadOnly(args: string[]): boolean {
   if (rest.some((a) => a.startsWith("--output") || a === "--ext-diff")) return false;
   // git grep -O / --open-files-in-pager runs the pager it names on the hits.
   if (sub === "grep" && rest.some((a) => /^-[a-zA-Z0-9]*O/.test(a) || long(a, "open-files-in-pager") || a.startsWith("--open-files-in-pager"))) return false;
-  if (sub === "branch") return rest.every((a) => /^(-a|-r|-v|-vv|--list|--all|--show-current|--contains|--merged|--no-merged)$/.test(a) || !a.startsWith("-") && rest.includes("--list"));
-  if (sub === "remote") return rest.length === 0 || (rest.length === 1 && rest[0] === "-v") || rest[0] === "get-url";
-  if (sub === "tag") return rest.every((a) => (a.startsWith("-") ? GIT_TAG_LIST.test(a) : rest.includes("-l") || rest.includes("--list")));
+  if (sub === "branch") return rest.every((a) => (a.startsWith("-") ? GIT_BRANCH_LIST.test(a) : rest.some((x) => GIT_LISTS.test(x))));
+  // remote show, update and prune ask the remote; add, remove, rename and set-url change the configuration.
+  if (sub === "remote") return rest.every((a) => /^(-v|-vv|--verbose)$/.test(a)) || rest[0] === "get-url";
+  if (sub === "tag") return rest.every((a) => (a.startsWith("-") ? GIT_TAG_LIST.test(a) : rest.some((x) => x === "-l" || GIT_LISTS.test(x))));
   if (sub === "stash") return rest[0] === "list" || rest[0] === "show";
-  if (sub === "config") return /^(--get|--list|-l)$/.test(rest[0] ?? "") && !rest.some((a) => /^(-e|--edit|--add|--unset|--unset-all|--replace-all|--rename-section|--remove-section)$/.test(a));
+  if (sub === "config") return gitConfigReads(rest);
   // reflog expire, delete, drop and write change it; a bare ref name shows it, and is not told from a later subcommand.
   if (sub === "reflog") return rest[0] === undefined || rest[0].startsWith("-") || /^(show|list|exists)$/.test(rest[0]);
+  // symbolic-ref NAME prints it; a second operand, -d and -m change it.
+  if (sub === "symbolic-ref") return rest.filter((a) => !a.startsWith("-")).length === 1 && rest.every((a) => !a.startsWith("-") || /^(--short|-q|--quiet|--no-recurse)$/.test(a));
+  // worktree add, remove, move, prune, lock and repair change things; submodule update, init, add and sync too; notes add, edit, remove and merge too.
+  if (sub === "worktree") return rest[0] === "list" && rest.slice(1).every((a) => /^(--porcelain|-v|--verbose|-z)$/.test(a));
+  if (sub === "submodule") return rest.length === 0 || rest[0] === "status";
+  if (sub === "notes") return rest.length === 0 || rest[0] === "list" || rest[0] === "show";
   return !!sub && GIT_READ.has(sub);
+}
+
+// Programs that are files on disk and read whatever their arguments are: what xargs and find -exec may run.
+const runsAsReader = (prog: string | undefined) => !!prog && ((READ_PROGRAMS.has(prog) && prog !== "cd" && prog !== "type") || anyArguments(prog));
+
+// find: -delete removes, -fprint, -fprint0, -fprintf and -fls write a file, -ok and -okdir ask on the terminal and then run.
+// -exec and -execdir run a program on what was found: a read only when that program reads whatever its arguments are.
+function findReadOnly(args: string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (/^-(ok|okdir|delete|fprint|fprint0|fprintf|fls)$/.test(a)) return false;
+    if (a !== "-exec" && a !== "-execdir") continue;
+    if (!runsAsReader(args[i + 1])) return false;
+    // The command ends at `;`, or at a `+` right after `{}`.
+    let end = i + 2;
+    while (end < args.length && args[end] !== ";" && !(args[end] === "+" && args[end - 1] === "{}")) end++;
+    if (end >= args.length) return false;
+    i = end;
+  }
+  return true;
+}
+
+// [[ ... ]]: no word is split and no expansion is read as an operator there, so its operands may be anything.
+// -v and -R evaluate a subscript, and the arithmetic comparisons evaluate both sides: either runs a substitution a value holds.
+function condReadOnly(args: string[], dyn: number[]): boolean {
+  if (args.at(-1) !== "]]" || dyn.includes(args.length)) return false;
+  return !args.some((w, k) => !dyn.includes(k + 1) && /^-(v|R|eq|ne|lt|le|gt|ge)$/.test(w));
 }
 
 // A command that cannot change anything (files, processes, the network state).
@@ -554,27 +603,37 @@ export function isReadOnly(s: Simple): boolean {
   if (s.heredoc) return true;
   if (s.unknown || s.redirects) return false;
   const { env, words } = body(s.words);
-  if (env || !words.length) return !words.length && !env;
+  if (!words.length) return !env;
   const [prog, ...args] = words;
-  const dyn = s.dyn ?? [];
+  const lead = s.words.length - words.length;
+  // An assignment before a command changes what that command runs with. `IFS= read` only says how read splits its line.
+  if (env && !(prog === "read" && s.words.slice(0, lead).every((w) => w.startsWith("IFS=")))) return false;
+  const dyn = (s.dyn ?? []).filter((n) => n >= lead).map((n) => n - lead);
   if (dyn.includes(0)) return false; // the program's name is made by an expansion
-  if (READ_PROGRAMS.has(prog!)) return true;
+  const reader = READERS.get(prog!);
+  if (READ_PROGRAMS.has(prog!) || reader === true) return true;
   // Builtins that evaluate one of their words.
   if (prog === "test" || prog === "[") return testReadOnly(prog, args, dyn, !!s.splits);
+  if (prog === "[[") return condReadOnly(args, dyn);
   // printf -v NAME (or -vNAME) assigns, and a subscript in the name is evaluated. Its first word is an option or the format.
   if (prog === "printf") return !dyn.includes(1) && (!args[0]?.startsWith("-") || args[0] === "--");
+  // command -v and -V say what a name is; without them command runs it. Nothing after takes that back.
+  if (prog === "command") return !dyn.includes(1) && /^-[pvV]*[vV][pvV]*$/.test(args[0] ?? "");
   // The rest read or write by their arguments: one an expansion makes ($(echo -delete), {-delete,x}) is not known.
   if (dyn.length) return false;
+  if (reader) return typeof reader === "function" ? reader(args) : !denied(reader, args);
   if (prog === "env" || prog === "hostname") return args.length === 0; // `env CMD` runs CMD; `hostname X` sets it
   if (prog === "date") return !dateSets(args);
-  if (prog === "find") return !args.some((a) => /^-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/.test(a));
+  if (prog === "find") return findReadOnly(args);
+  // xargs runs a program on words it reads: a read when that program reads whatever its arguments are (echo when none is named).
+  if (prog === "xargs") { const run = xargsCommand(args); return !!run && (run.length === 0 || runsAsReader(run[0])); }
   // Flags that write a file or run another program.
   if (prog === "sort") return !args.some((a) => /^-[a-zA-Z0-9]*o/.test(a) || long(a, "output", "compress-program"));
   if (prog === "rg") return !args.some((a) => /^--(pre|hostname-bin)(=|$)/.test(a));
   if (prog === "fd") return !args.some((a) => /^-[a-zA-Z0-9]*[xX]/.test(a) || /^--exec(-batch)?(=|$)/.test(a));
   if (prog === "tree") return !args.some((a) => /^-[a-zA-Z0-9]*[oR]/.test(a) || a.startsWith("--output")); // -R writes 00Tree.html in each folder
   if (prog === "uniq") return uniqOperands(args) <= 1 && !args.some((a) => /[*?[]/.test(a)); // a second operand is the file it writes
-  if (prog === "file") return !args.some((a) => /^-[a-zA-Z0-9]*C/.test(a) || long(a, "compile"));
+  if (prog === "file") return !args.some((a) => /^-[a-zA-Z0-9]*[Cp]/.test(a) || long(a, "compile", "preserve-date")); // -p sets the file's times back after reading it
   if (prog === "sed") return sedReadOnly(args);
   if (prog === "awk" || prog === "gawk" || prog === "mawk" || prog === "nawk") return awkReadOnly(args);
   if (prog === "git") return gitReadOnly(args);

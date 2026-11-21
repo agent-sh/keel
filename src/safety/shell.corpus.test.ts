@@ -4,6 +4,8 @@
 // session means read as a read.
 import { expect, test } from "bun:test";
 import { decide, type Mode } from "./policy.ts";
+import { isReadOnly, splitCommand } from "./shell.ts";
+import { READERS } from "./shell-reads.ts";
 
 const verdict = (command: string, mode: Mode) => {
   const d = decide({ kind: "shell", command, cwd: "/w" }, { mode, workspace: "/w", sandboxed: false, rules: [], tool: "Bash", home: "/h" });
@@ -42,7 +44,7 @@ const CHANGES: string[] = [
   "cp a b", "cp -r a b", "rm f", "rm -rf d", "rmdir d", "mkdir d", "mkdir -p a/b", "mkfifo p", "mktemp", "mktemp -d", "shred f", "unlink f", "patch -p1 < x.diff",
   "tar xf a.tar", "tar czf a.tgz d", "unzip a.zip", "zip a.zip f", "gzip f", "gunzip f.gz", "split -l 10 f", "csplit f 10", "jq . f | sponge f",
   "sort -o out in", "sort in -o out", "sort --output=out in", "sort --out=out in", "sort -no out in", "sort --compress-program=sh in", "sort --compress=sh in",
-  "uniq in out", "uniq -c in out", "uniq -f 1 in out", "uniq *", "tree -o out", "tree -R -L 1 -H .", "file -C -m magic", "file --comp -m magic",
+  "uniq in out", "uniq -c in out", "uniq -f 1 in out", "uniq *", "tree -o out", "tree -R -L 1 -H .", "file -C -m magic", "file --comp -m magic", "file -p a", "file -pb a", "file --preserve-date a", "file --pres a",
   "rg --pre ./x foo", "rg --pre=sh foo", "rg --hostname-bin ./x foo", "fd -x rm", "fd -X rm", "fd --exec rm {}", "fd --exec-batch rm", "fd -e tmp -x rm",
   // find, sed, perl, awk.
   "find . -delete", "find . -name '*.o' -delete", "find . -exec rm {} \\;", "find . -exec rm {} +", "find . -execdir touch x \\;", "find . -ok rm {} \\;",
@@ -147,6 +149,39 @@ const CHANGES: string[] = [
   "sort *.txt", "find ?delete", "git diff *", "git log -1 *", "sed -n p *", "tree *", "file *",
   // /dev/stdout is the job's own log file, and opening it for writing empties it.
   "echo a > /dev/stdout", "ls 2> /dev/stderr",
+  // The writing forms of the programs on the allow-list of readers (shell-reads.ts), program by program.
+  "git config --add a.b c", "git config unset a.b", "git config edit", "git config -e", "git config --unset-all a.b", "git config --rename-section a b",
+  "git config --remove-section a", "git config --replace-all a.b c", "git config a.b ''", "git branch x --no-track", "git branch -c a b", "git branch --edit-description",
+  "git branch -u origin/x", "git branch --unset-upstream", "git remote -v add o url", "git tag v2 HEAD", "git tag -s v1", "git symbolic-ref -m x HEAD refs/heads/y",
+  "git symbolic-ref -d refs/x", "git worktree lock x", "git worktree move a b", "git worktree repair", "git submodule add url", "git submodule init", "git submodule sync",
+  "git submodule foreach 'rm x'", "git submodule deinit x", "git notes edit", "git notes remove", "git notes append -m x", "git notes prune", "git notes merge x",
+  "command -p rm x", "command -- rm x", "[[ -v 'a[$(touch f)]' ]]", "[[ 'a[$(touch f)]' -eq 0 ]]", "for x in 'a[$(touch f)]'; do [[ $x -eq 0 ]]; done", "[[ -R 'a[$(touch f)]' ]]",
+  "history -c", "history -d 1", "history -a f", "history -s x", "history -r f", "jobs -x rm x", "ulimit -n 1024", "umask 000", "set +B", "alias x=y",
+  "read 'a[$(touch f)]' <<< x", "read -d -d 'a[$(touch f)]' <<< x", "read -a 'a[$(touch f)]' <<< x", "IFS=, read 'a[$(touch f)]' <<< x",
+  "read PATH <<< /tmp/evil; ls", "read -r IFS <<< /; ls", "sleep 0 & wait -p 'a[$(touch f)]' -n",
+  "ls | xargs -n1 sh -c 'rm x'", "ls | xargs sed -i s/a/b/", "ls | xargs sort -o out", "ls | xargs -I{} cp {} {}.bak", "ls | xargs env rm", "ls | xargs -a list touch",
+  "ls | xargs -P4 -n1 tee out", "find . -exec sed -i s/a/b/ {} +", "find . -exec sh -c 'rm x' \\;", "find . -exec echo {} + -delete", "find . -exec echo + \\; -delete",
+  "find . -exec cat {} \\; -fprint out", "find . -execdir sort -o out {} \\;", "find . -exec env rm {} \\;", "find . -exec tee out \\;", "find . -exec cat {} \\; -exec rm {} \\;",
+  "shuf -o out a", "shuf a -o out", "shuf --output=out a", "shuf --out=out a", "shuf -n1 -oout a", "base64 -o out a", "base64 --output=out a", "base32 -o out a", "basenc --base64 -o out a",
+  "xxd a out", "xxd -r a.hex out", "xxd -l 8 a out", "xxd -c8 a out", "ss -K dst 10.0.0.1", "ss --kill", "ss -D out", "ss --diag=out", "dmesg -C", "dmesg -c", "dmesg --clear",
+  "dmesg -n 1", "dmesg -D", "lspci -q", "lspci -vQ", "ip addr add 10.0.0.1/24 dev eth0", "ip link s eth0 down", "ip route del default", "ip addr flush dev eth0", "ip netns exec x rm f",
+  "ip -batch cmds", "ip neigh flush all", "ip route add 10.0.0.0/8 via 10.0.0.1", "ip a a 10.0.0.1/24 dev eth0", "ip -force -batch cmds", "mount -a", "mount -o remount,rw /",
+  "getent hosts example.com", "tput reset", "tput clear", "tput init", "stty sane", "stty -echo", "stty -F /dev/ttyS0 9600", "sysctl a=b", "sysctl -p", "sysctl --system",
+  "sysctl -p /etc/x.conf", "sysctl -f x", "nvidia-smi -r", "nvidia-smi -pm 1", "nvidia-smi -c 3", "nvidia-smi -pl 200", "nvidia-smi -f out", "nvidia-smi --gom=0", "nvidia-smi -q -f out",
+  "gzip -Sc a", "gzip -d a.gz", "gzip -k a", "gunzip -S .gz a.gz", "gzip --best a", "zstdcat -o out a.zst", "zstdcat --rm a.zst", "zstdcat --output-dir-flat=d a.zst",
+  "tar tf a.tar --to-command=sh", "tar tf a.tar --checkpoint=1 --checkpoint-action=exec='touch f'", "tar tf a.tar --use-compress-program='sh -c \"touch f\"'", "tar -tf a.tar -I 'touch f'",
+  "tar tf host:a.tar", "tar tf a.tar --index-file=out", "tar -tf a.tar --rsh-command=./x", "tar tfF a.tar ./x", "tar rf a.tar b", "tar uf a.tar b", "tar --delete -f a.tar a",
+  "tar -tfz a.tar", "tar --file=host:a.tar -t", "unzip -o a.zip", "unzip -q a.zip", "unzip a.zip -d out", "unzip -n a.zip", "unzip -u a.zip",
+  "dpkg -r x", "dpkg -P x", "dpkg --configure -a", "dpkg --unpack x.deb", "dpkg --set-selections", "apt remove x", "apt update", "apt upgrade", "apt autoremove", "apt-cache gencaches",
+  "pip uninstall x", "pip download x", "pip cache purge", "pip config set a b", "pip3 install x", "docker exec x rm f", "docker stop x", "docker kill x", "docker rmi x", "docker pull x", "docker push x",
+  "docker -H tcp://203.0.113.9 ps", "docker --context other ps", "docker system prune", "docker image rm x", "docker container rm x", "docker volume rm x", "docker network create x",
+  "docker compose up", "docker compose down", "docker cp a x:/a", "docker start x", "docker restart x", "docker login", "docker context use x", "docker image prune", "podman rm x", "podman run x",
+  "systemctl start x", "systemctl disable x", "systemctl daemon-reload", "systemctl -H host status x", "systemctl -M c status x", "systemctl set-default x", "systemctl mask x",
+  "systemctl kill x", "systemctl reboot", "systemctl -t status restart x", "systemctl edit x", "systemctl set-environment A=b", "systemctl reset-failed", "systemctl isolate x",
+  "systemctl status x -H host", "systemctl --root=/x enable y", "journalctl --rotate", "journalctl --vacuum-time=1d", "journalctl --vacuum-size=1M", "journalctl --flush", "journalctl --sync",
+  "journalctl --cursor-file=out -n1", "journalctl --setup-keys", "journalctl --update-catalog", "journalctl --relinquish-var", "journalctl -M c",
+  "bun x.ts", "uv run x", "deno run x.ts", "ruby x.rb", "java -jar x.jar", "gcc x.c", "gcc -o out x.c", "g++ x.cc", "cc x.c", "clang x.c", "clang++ x.cc", "cmake .", "cmake --build .",
+  "gh pr merge 1", "gh repo delete x", "zsh x.sh", "openssl genrsa -out k 2048", "openssl enc -in a -out b", "wget -V https://x.example/f", "curl -V -o f https://x.example", "make -v install",
 ];
 
 // Reads the rules could prove, as they are written every day.
@@ -197,6 +232,35 @@ const READS: string[] = [
   '[ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] && echo same', 'echo "$(grep -c case a) uses of case"', 'test -z "$(ls -A)"', 'for f in a b; do [ -f "$f" ] && wc -l "$f"; done',
   "[ $? -eq 0 ] && echo ok", "time ls", "! ls nothing", "ls &", "echo a\\ b", "echo 'it'\\''s'", 'echo "a > b"', "echo 'a > b'", "grep '>' a", "echo a \\> b",
   'git log --format="%h > %s"', "echo ${HOME}", "echo ${x:-none}", 'echo "${PWD##*/}"',
+  // The allow-list of readers (shell-reads.ts), program by program.
+  "git config user.name", "git config --get-regexp alias", "git config get user.name", "git config list", "git config --global --get user.email", "git config --show-origin --list",
+  "git branch --contains HEAD", "git branch --merged main", "git branch -r --no-merged main", "git branch --points-at HEAD", "git branch --sort=-committerdate --format='%(refname:short)'",
+  "git remote -vv", "git show-ref", "git show-ref --heads", "git show-branch", "git diff-index HEAD", "git diff-tree HEAD", "git diff-files", "git worktree list", "git worktree list --porcelain",
+  "git submodule status", "git submodule", "git notes list", "git notes show", "git version", "git --version", "git --help", "git help", "git count-objects -v", "git var -l", "git cherry main",
+  "git check-attr -a a", "git symbolic-ref --short HEAD", "git symbolic-ref refs/remotes/origin/HEAD", "git tag --contains HEAD", "git tag -n --points-at HEAD",
+  "command -v node", "command -v git || echo missing", "command -V ls", 'command -v "$tool"', "[[ -f README.md ]] && echo yes", "[[ -d src ]]", "[[ -n $x ]]", '[[ "$a" == "$b" ]] && echo same',
+  "[[ $x == *.ts ]]", "[[ ! -e a ]] || echo none", '[[ -z "$(git status --porcelain)" ]] && echo clean', "[[ $x =~ ^v[0-9]+ ]]", "history | tail", "history 20", ":", "exit 0", "wait", "help cd",
+  "dirs", "pushd src", "popd", "jobs", "jobs -l", "ulimit -a", "ulimit -n", "umask", "umask -S", "set | head", "alias", 'while read l; do echo "$l"; done < a', "cat a | while read l; do echo $l; done",
+  'ls | while read f; do echo "$f"; done', 'while IFS= read -r line; do echo "$line"; done < a', "find . -print0 | while IFS= read -r -d '' f; do echo \"$f\"; done", "for i in $(seq 3); do echo $i; done",
+  "find . -name '*.ts' | xargs wc -l", "find . -name '*.ts' | xargs grep -l foo", "git ls-files | xargs wc -l", "ls | xargs -n1 echo", "ls | xargs", "find . -print0 | xargs -0 ls -la",
+  "git ls-files | xargs -I{} head -1 {}", "find . -type f -exec wc -l {} +", "find . -type f -exec grep -l foo {} \\;", "find . -name '*.md' -execdir head -1 {} \\;",
+  "seq 1 5", "sleep 1", "tac a", "rev a", "paste a b", "comm -12 a b", "join a b", "fold -w 80 a", "expand a", "unexpand a", "fmt -w 72 a", "pr -n a", "od -c a | head", "hexdump -C a | head", "hd a",
+  "xxd a | head", "xxd -l 16 a", "strings a | head", "expr 1 + 2", "numfmt --to=iec 1024", "factor 12", "tsort a", "yes | head -3", "look alp a", "echo '1+2' | bc", "shuf a", "shuf -n 1 a",
+  "base64 a", "base64 -d a", "base32 a", "basenc --base64 a", "sha1sum a", "sha224sum a", "sha384sum a", "sha512sum a", "b2sum a", "cksum a", "sum a", "shasum -a 256 a",
+  "arch", "groups", "users", "who", "w", "logname", "tty", "getconf PAGE_SIZE", "locale", "locale -a", "whereis ls", "lscpu", "lsblk", "lsblk -f", "lsusb", "lspci", "lsmem", "lsns", "lsmod",
+  "lsattr a", "namei -l a", "findmnt", "netstat -tlnp", "pgrep node", "pgrep -fl bun", "pidof bash", "pstree -p", "pwdx 1", "vmstat 1 2", "iostat", "mpstat", "ss -tlnp", "ss -s", "dmesg | tail",
+  "dmesg -T | tail", "ip addr", "ip a", "ip -br a", "ip route", "ip route get 1.1.1.1", "ip -4 addr show dev eth0", "ip link show", "ip neigh", "mount | head", "getent passwd root",
+  "getent group sudo", "tput cols", "stty size", "sysctl -a", "sysctl kernel.ostype", "nvidia-smi", "nvidia-smi -L", "nvidia-smi --query-gpu=name,memory.used --format=csv",
+  "zcat a.gz | head", "bzcat a.bz2", "xzcat a.xz", "gzip -dc a.gz | head", "gzip -l a.gz", "gzip -t a.gz", "gunzip -c a.gz", "zstdcat a.zst", "tar tf a.tar", "tar -tzf a.tgz",
+  "tar tvf a.tar", "tar --list --file=a.tar", "tar -tf a.tar a", "unzip -l a.zip", "unzip -t a.zip", "zipinfo a.zip", "dpkg -l | head", "dpkg -L bash | head", "dpkg -s bash", "dpkg -S /bin/ls",
+  "dpkg-query -W bash", "apt list --installed | head", "apt show bash", "apt-cache policy bash", "apt-cache search json", "pip show pip", "pip freeze", "pip --version", "pip3 show -f pip",
+  "docker ps", "docker ps -a --format '{{.Names}}'", "docker images", "docker version", "docker info", "docker inspect x", "docker logs --tail 20 x", "docker image ls", "docker container ls -a",
+  "docker volume ls", "docker network ls", "docker system df", "docker --version", "systemctl status sshd", "systemctl --user status x", "systemctl list-units | head",
+  "systemctl list-units --type=service --state=running", "systemctl is-active sshd", "systemctl show sshd -p ActiveState", "systemctl cat sshd", "systemctl list-timers --all", "systemctl --version",
+  "journalctl -n 20", "journalctl -u sshd -n 50 --no-pager", "journalctl --user -u x --since=today", "journalctl -xe", "journalctl -b -1 -p err", "journalctl -fu sshd",
+  "node --version", "node -v", "bun --version", "python3 --version", "python --version", "python3 -V", "uv --version", "ruby --version", "gcc --version",
+  "g++ --version", "cc --version", "clang --version", "clang++ --version", "make --version", "cmake --version", "bash --version", "zsh --version", "curl --version", "wget --version",
+  "openssl version", "ssh -V",
 ];
 
 // Reads the rules cannot prove: an expansion among the arguments of a program
@@ -206,6 +270,21 @@ const UNPROVEN: string[] = [
   "git diff $(git merge-base main HEAD)", "git log $(git describe --tags --abbrev=0)..HEAD", 'find "$HOME/x" -name a', "rg foo $(git ls-files)",
   "for f in a b; do git log -1 -- $f; done", 'sed -n "${a},${b}p" f', "sort $f", "git show {a,b}", "echo $((1+2))", "echo ${a[0]}",
   "echo hi >& $fd", "find . $X", 'find . "$X"', "git reflog main",
+];
+
+// Reads that still ask, by design: they reach another machine, open a pager
+// that takes keys on a terminal, or keep a log or a cache of their own. A
+// standing answer (allow always) covers the ones the owner wants.
+const REACHES: string[] = [
+  // The network: the remote, a registry, a cluster, a name server.
+  "git ls-remote origin", "git remote show origin", "git fetch --dry-run", "npm view left-pad version", "kubectl get pods", "docker search x", "pip list", "docker compose ps",
+  // A manual page or a pager: on a terminal it runs commands typed into it.
+  "git help log", "git help -a", "man ls", "less a", "more a",
+  // A shim that installs the toolchain a project pins, a tool that writes a log or a settings folder on every run, a script that evaluates its arguments.
+  "cargo --version", "rustc --version", "go version", "go env GOPATH", "pnpm --version", "yarn --version", "npm ls", "npm ls --depth=0", "npm --version", "top -bn1",
+  "java -version", "gh --version", "podman ps", "zgrep foo a.gz",
+  // An assignment in front changes what the program runs with (LD_PRELOAD loads code into env).
+  "FOO=1 env", "IFS=: ls",
 ];
 
 test("a command that changes something is never read as a read", () => {
@@ -226,4 +305,19 @@ test("ordinary reads stay reads", () => {
 test("a read the rules cannot prove asks", () => {
   expect(UNPROVEN.filter((c) => verdict(c, "ask") !== "asks")).toEqual([]);
   expect(UNPROVEN.filter((c) => verdict(c, "read-only") !== "refused")).toEqual([]);
+});
+
+test("a read that reaches out, pages or logs still asks", () => {
+  expect(REACHES.filter((c) => verdict(c, "ask") !== "asks")).toEqual([]);
+  expect(REACHES.filter((c) => verdict(c, "read-only") !== "refused")).toEqual([]);
+});
+
+// The first word of each simple command of the rows, with whether that command alone is read as a read.
+const judged = (rows: string[]) => rows.flatMap((c) => (splitCommand(c) ?? []).map((p) => ({ prog: p.words[0], read: isReadOnly(p) })));
+
+test("every program on the allow-list has a reading row, and its writing forms have rows that ask", () => {
+  const reads = new Set(judged(READS).filter((p) => p.read).map((p) => p.prog));
+  const asks = new Set(judged([...CHANGES, ...REACHES]).filter((p) => !p.read).map((p) => p.prog));
+  expect([...READERS.keys()].filter((p) => !reads.has(p))).toEqual([]);
+  expect([...READERS].filter(([p, how]) => how !== true && !asks.has(p)).map(([p]) => p)).toEqual([]);
 });

@@ -96,9 +96,10 @@ const exec_command: Tool = {
     if (sp) return runPatch(sp.patch, sp.cd ? resolve(cwd, sp.cd) : cwd, ctx);
     const shell = execShell(input);
     const t0 = Date.now();
+    // No pager: on a terminal one takes keys, and less runs what is typed into it. git, systemctl, journalctl and dpkg each name their own.
     const job = startJob({
       sessionId: ctx.sessionId, command: cmd, cwd, logDir: logDir(ctx), pty: !!input.tty,
-      argv: [shell, input.login === false ? "-c" : "-lc", cmd], env: toolEnv(ctx.sessionId, { PAGER: "cat", GIT_PAGER: "cat" }), wrap: ctx.wrapSpawn, callId: ctx.callId,
+      argv: [shell, input.login === false ? "-c" : "-lc", cmd], env: toolEnv(ctx.sessionId, { PAGER: "cat", GIT_PAGER: "cat", SYSTEMD_PAGER: "cat", DPKG_PAGER: "cat" }), wrap: ctx.wrapSpawn, callId: ctx.callId,
     });
     await waitJob(job, clamp(input.yield_time_ms, 10_000, 250, 30_000), ctx.signal);
     return ok(execResult(job, t0, clamp(input.max_output_tokens, 10_000, 100, MAX_TOKENS)));
