@@ -55,6 +55,7 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   errors.installGlobal();
   const providers = new Providers(stateDir, { capture: (source, e, ctx) => errors.capture(source, e, ctx) });
   const engine = new Engine(store, bus, providers, errors, join(stateDir, "spill"));
+  engine.wentDown = life?.before?.down_ms;
   // Before any module: the turns this start finds cut are recorded whoever closes them.
   const restarts = life ? new Restarts(store, life) : undefined;
   const g = globalThis as { __keelEngine?: Engine; __keelStopDiagnostics?: () => void };

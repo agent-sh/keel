@@ -22,7 +22,7 @@ import { allPendingQuestions } from "../tools/interact.ts";
 import { APPROVAL_CUT, QUESTION_CUT, RESTART_CUT, STOPPED_BEFORE, STOPPED_WHILE, stopKind } from "../core/stops.ts";
 import { dropCallEnv } from "../tools/jobs.ts";
 import { isDeferError, loadsNatively, referenced, refuseDefer, withCatalog } from "../tools/defer.ts";
-import { allHooks, type ExternalTurn, type SystemBlock, type ToolAuthorization, type ToolCall } from "./hooks.ts";
+import { allHooks, type CutState, type CutTurn, type ExternalTurn, type SystemBlock, type ToolAuthorization, type ToolCall } from "./hooks.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, type Material } from "./reader.ts";
 import { readBudget, readMaterial, readSource, type ReaderHost, type ReadOutcome } from "./readers.ts";
@@ -322,6 +322,11 @@ export class Engine {
   // Sessions whose queue a stop holds: stored, so the hold (and its Resume)
   // outlives a daemon restart; only an action that releases it clears it.
   private held: Set<string>;
+  // When the last daemon went down, as far as the start knows (its last sign
+  // of life): a turn it was running ran until then, not until this start.
+  wentDown?: number;
+  // The turns this start closed as cut (closeCut), by session, until recover tells of them.
+  private cutAtBoot = new Map<string, CutTurn>();
   // Queued prompts a Send now has taken and not yet appended.
   private sending = new Set<string>();
   // Who asked a running turn to stop (the owner, the parent agent), kept on its turn_end.
@@ -2083,8 +2088,25 @@ export class Engine {
   // the cutTurn hook) may say otherwise.
   async recover(openAtBoot: string[], waitModel: (model: string) => Promise<void>) {
     this.closeCut(openAtBoot);
+    // Every module is up by now: the turns this start closed are told of
+    // first, whoever goes on with them.
+    for (const [id, cut] of this.cutAtBoot) {
+      const s = this.store.session(id);
+      if (s) this.tellCut(s, cut);
+    }
     this.rearmContinues();
     return this.continueCut(waitModel);
+  }
+
+  // The record of a cut turn (who is told is not the engine's business): a
+  // hook that fails never stops the recovery.
+  private told = new Set<string>();
+  private tellCut(s: Session, cut: CutTurn, state?: CutState, why?: string) {
+    if (!state && this.told.has(cut.end_event)) return;
+    this.told.add(cut.end_event);
+    for (const h of allHooks()) {
+      try { if (state) h.turnCutSettled?.(s, cut, state, why); else h.turnCut?.(s, cut); } catch (e) { this.errors.capture("server", e, { hook: state ? "turnCutSettled" : "turnCut", session: s.id }); }
+    }
   }
 
   // The closing half of recover, on its own so a start can run it before
@@ -2124,13 +2146,18 @@ export class Engine {
           // A call whose card is still open is left for the continued turn (owedCalls).
           const cut = line.slice(lastStart).flatMap((e) => (e.kind === "assistant" ? e.data.blocks.filter((b: any) => b.type === "tool_use" && !results.has(b.id) && !waitsOnOwner(id, b)) : []));
           if (cut.length) closing.push(this.store.append(id, "tool_result", { results: cut.map((u: any) => ({ type: "tool_result", tool_use_id: u.id, content: cutText(id, u), is_error: true })) }));
-          closing.push(this.store.append(id, "turn_end", { reason: "restart", usage: emptyUsage(), ms: Date.now() - line[lastStart]!.ts, crashed: true }));
+          // It ran until the daemon went down (its last sign of life, or the
+          // turn's own last event when that is later), not until this start.
+          const down = Math.min(Date.now(), Math.max(this.wentDown ?? 0, line.at(-1)!.ts));
+          closing.push(this.store.append(id, "turn_end", { reason: "restart", usage: emptyUsage(), ms: Math.max(0, down - line[lastStart]!.ts), crashed: true, down_ms: down }));
         } else if (owedTurn(line.slice(lastEnd + 1))) {
           closing.push(this.store.append(id, "turn_start", { model: session.model }));
           closing.push(this.store.append(id, "turn_end", { reason: "restart", usage: emptyUsage(), ms: 0, crashed: true, unstarted: true }));
         }
         this.store.bootSettled(id);
       });
+      const end = closing.at(-1);
+      if (end) this.cutAtBoot.set(id, cutOf(id, this.lineage(id), end));
       for (const e of closing) this.emitEvent(e);
       this.emitSession(id);
     }
@@ -2147,9 +2174,13 @@ export class Engine {
       const line = this.lineage(s.id);
       const end = line.at(-1);
       if (s.archived || end?.kind !== "turn_end" || end.data.reason !== "restart") return;
+      // A turn a stop parked is found here; one this start closed was told of already.
+      const cut = this.cutAtBoot.get(s.id)?.end_event === end.id ? this.cutAtBoot.get(s.id)! : cutOf(s.id, line, end);
+      this.tellCut(s, cut);
       const held = (text: string) => {
         this.append(s.id, "note", { kind: "restart", text });
         for (const h of allHooks()) try { h.cutTurnHeld?.(s, text); } catch (e) { this.errors.capture("server", e, { hook: "cutTurnHeld", session: s.id }); }
+        this.tellCut(s, cut, "held", text);
       };
       // A turn that waits on the owner's card is waiting, not stalled.
       const owed = owedCalls(s.id, line).length;
@@ -2173,7 +2204,7 @@ export class Engine {
       try {
         // Checked again right before starting: the owner may have moved on, archived or sent meanwhile.
         const now = this.store.session(s.id);
-        if (!now || now.archived || this.running.has(s.id) || this.lineage(s.id).at(-1)?.id !== end.id) return;
+        if (!now || now.archived || this.running.has(s.id) || this.lineage(s.id).at(-1)?.id !== end.id) return this.tellCut(s, cut, "moved");
         // And its owner is asked again: an agent stopped while its turn waited
         // for its model or a slot (its goal cleared or replaced, its parent's
         // turn stopped) is not continued, as if the stop had come first.
@@ -2182,6 +2213,7 @@ export class Engine {
         this.acceptRestart(s.id);
         this.start(s.id);
         this.emitQueue(s.id);
+        this.tellCut(s, cut, "continued");
         // Held until the turn ends or its first steps had time to run: a turn that
         // then waits on the owner (an approval) does not hold back the others.
         if (!cards) await Promise.race([this.running.get(s.id)?.done, Bun.sleep(RESUME_HOLD_MS), ...(owed ? [this.untilOnOwner(s.id, RESUME_HOLD_MS)] : [])]);
@@ -2289,6 +2321,31 @@ export class Engine {
   }
 }
 
+
+// A cut turn as the record tells it, read off the branch it ends: the step it
+// was on, the calls that were running (their results say a restart cut them)
+// and the ones that wait on the owner (an approval, a question or a plan
+// card, left open for the continued turn). `end`: the turn_end that closed it.
+function cutOf(session: string, line: readonly StoredEvent[], end: StoredEvent): CutTurn {
+  const at = line.findIndex((e) => e.id === end.id);
+  const startAt = line.findLastIndex((e, i) => i < at && e.kind === "turn_start");
+  const turn = line.slice(Math.max(startAt, 0), at < 0 ? line.length : at);
+  const calls = new Map<string, string>(turn.flatMap((e) => (e.kind === "assistant" ? e.data.blocks.filter((b: any) => b.type === "tool_use").map((b: any) => [b.id, b.name] as [string, string]) : [])));
+  const results = turn.flatMap((e) => (e.kind === "tool_result" ? e.data.results : []));
+  const done = new Set(results.map((r: any) => r.tool_use_id));
+  const tools = results.filter((r: any) => stopKind(r.content) === "cut").map((r: any) => calls.get(r.tool_use_id) ?? "a tool");
+  const waiting = [...calls].filter(([id, name]) => !done.has(id) && waitsOnOwner(session, { id, name })).length;
+  const steps = turn.filter((e) => e.kind === "assistant").length;
+  const start = line[startAt];
+  const ran = typeof end.data.ms === "number" ? end.data.ms : 0;
+  return {
+    turn_event: start?.id ?? end.id, end_event: end.id, started_ms: start?.ts ?? end.ts, ran_ms: ran,
+    down_ms: typeof end.data.down_ms === "number" ? end.data.down_ms : end.data.crashed ? (start?.ts ?? end.ts) + ran : end.ts,
+    crashed: !!end.data.crashed, unstarted: !!end.data.unstarted,
+    // A call that was running or waited is of the step the model had given; else the model was on the next one.
+    step: tools.length || waiting ? steps : steps + 1, tools, waiting,
+  };
+}
 
 // What follows a session's last ended turn when a prompt was accepted and the
 // daemon went down before its turn started: the prompt, and no turn after it.
