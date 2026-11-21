@@ -472,3 +472,24 @@ test("a learned ratio is written when it has moved by a hundredth, and at once a
   next.keepRatio("ctx:probe", 3.05);
   expect(written()).toBe(3.04);
 });
+
+// A start no longer builds a request for each session used in the last hour,
+// so the build panel compares those with this build when it is asked.
+test("the build panel compares the sessions used in the last hour when it is asked", async () => {
+  const r = rig();
+  const recent = r.session(BIG.id), old = r.session(BIG.id);
+  for (const id of [recent, old]) {
+    r.store.append(id, "user", { text: "hello" });
+    await (r.engine as any).step(r.store.session(id), BIG.id);
+  }
+  // Both were last compared by another build; one was not used for two hours.
+  r.store.db.run("UPDATE session_pins SET checked = 'an-earlier-build'");
+  r.store.db.run("UPDATE sessions SET updated = ? WHERE id = ?", [Date.now() - 2 * 3_600_000, old]);
+  const next = new Engine(r.store, new Bus(), (r.engine as any).providers, (r.engine as any).errors, join(r.dir, "spill")) as any;
+  expect(next.pins.open().unknown.sort()).toEqual([recent, old].sort());
+  await next.resumeIdle();
+  expect(next.pins.open().unknown).toHaveLength(2);
+  expect((await next.buildPins()).unknown).toBe(1);
+  expect(next.pins.open().unknown).toEqual([old]);
+  expect(r.failures).toEqual([]);
+});

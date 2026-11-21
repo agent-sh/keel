@@ -891,6 +891,18 @@ export class Engine {
   // request would write to the cache again (`warm`: a cache still holds it;
   // a cold one is written again anyway), and how many were not compared yet.
   async buildPins() {
+    // A start builds no request for the sessions used in the last hour any
+    // more (resumeIdle), so this build has not compared them yet: they are
+    // compared here, when the owner asks, one at a time with the loop given
+    // back between two. Older sessions stay counted as not compared until
+    // their next request, as before.
+    const since = Date.now() - 60 * 60_000;
+    for (const id of this.pins.open().unknown) {
+      const s = this.store.session(id);
+      if (!s || s.updated <= since || this.running.has(id)) continue;
+      try { await this.step(s, s.model); } catch (e) { this.errors.capture("provider", e, { session: id, at: "comparing a session with this build" }); }
+      await new Promise<void>((r) => setImmediate(r));
+    }
     const { behind, unknown, asked } = this.pins.open();
     const sessions = await Promise.all(behind.map(async (id) => {
       const s = this.store.session(id)!;
