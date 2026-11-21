@@ -13,7 +13,7 @@ import { keelDb, keelSessions, readKeel } from "./keel.ts";
 import { agyHome, agySessions, readAgy } from "./agy.ts";
 import { hermesDb, hermesPending, hermesSessions, readHermes } from "./hermes.ts";
 import type { Found, Harness, Read } from "./types.ts";
-import { offered, page, type ListQuery } from "./offer.ts";
+import { haystack, keyHash, kindsOf, offered, order, pageLimit, readCursor, select, wordsOf, writeCursor, type ListQuery } from "./offer.ts";
 import * as perm from "../../server/routes/permissions.ts";
 
 export const HARNESSES: { harness: Harness; label: string; store: () => string; resume?: string }[] = [
@@ -35,6 +35,19 @@ CREATE TABLE IF NOT EXISTS import_live (session_id TEXT PRIMARY KEY, drive_id TE
 // The version of what the readers record for a file: a row an older reader
 // wrote is read again, so a field added later (such as the model) fills in.
 const READER_V = 2;
+
+// What a listing filters, orders and counts by, kept beside each file's
+// serialized row so a page is found in SQL and only its rows are decoded:
+// the source's id, its kind and folder, the sort values, the text the search
+// reads (lower case), whether another machine is offered it, and its key's
+// hash (what a cursor sums). All of them come from the row by `columns`.
+const COLUMNS = ["sid TEXT", "kind TEXT", "cwd TEXT", "title TEXT", "updated_ms REAL", "size_bytes REAL", "hay TEXT", "offered INTEGER", "kh INTEGER"] as const;
+const columns = (f: Found | null): (string | number | null)[] =>
+  f ? [f.id, f.kind, f.cwd ?? null, f.title, f.updated_ms, f.size_bytes, haystack(f), offered(f) ? 1 : 0, keyHash(f)] : [null, null, null, null, null, null, null, null, null];
+const isIndexed = (h?: Harness): h is "claude" | "codex" => h === "claude" || h === "codex";
+
+// A row of the index as a listing orders it, before it is decoded.
+type IndexKey = { rowid: number; path: string; harness: Harness; id: string; updated_ms: number; size_bytes: number; title: string };
 
 export type Link = { session_id: string; harness: Harness; source_id: string; source_path: string; items: number; source_size: number; source_mtime: number; imported_ms: number; synced_ms: number; digest: string | null };
 
@@ -79,11 +92,26 @@ export class Imports {
   private agyCache: { at: number; rows: Found[] } | null = null;
   private hermesCache: { at: number; rows: Found[] } | null = null;
   complete = false;
+  // How many serialized rows of the index were decoded: a page costs its rows, a lookup one.
+  decodes = 0;
 
   constructor(private store: Store) {
     store.migrate(SCHEMA);
     if (!store.columnExists("import_links", "digest")) store.db.exec("ALTER TABLE import_links ADD COLUMN digest TEXT");
     if (!store.columnExists("import_index", "v")) store.db.exec("ALTER TABLE import_index ADD COLUMN v INTEGER NOT NULL DEFAULT 0");
+    for (const c of COLUMNS) if (!store.columnExists("import_index", c.split(" ")[0]!)) store.db.exec(`ALTER TABLE import_index ADD COLUMN ${c}`);
+    store.db.exec("CREATE INDEX IF NOT EXISTS import_index_sid ON import_index(harness, sid)");
+    // An index written before these columns: filled once from the rows it holds, no file is read again.
+    const old = store.db.query<{ path: string; found: string }, []>("SELECT path, found FROM import_index WHERE found IS NOT NULL AND kh IS NULL").all();
+    if (old.length) {
+      const set = store.db.query(`UPDATE import_index SET ${COLUMNS.map((c) => `${c.split(" ")[0]} = ?`).join(", ")} WHERE path = ?`);
+      store.db.transaction(() => { for (const r of old) set.run(...columns(JSON.parse(r.found)), r.path); })();
+    }
+  }
+
+  private decode(found: string): Found {
+    this.decodes++;
+    return JSON.parse(found);
   }
 
   // Walk the file stores; read only new or changed files. Yields to the event
@@ -94,7 +122,6 @@ export class Imports {
       const db = this.store.db;
       const known = new Map(db.query<{ path: string; size: number; mtime: number; v: number }, []>("SELECT path, size, mtime, v FROM import_index").all().map((r) => [r.path, r]));
       const seen = new Set<string>();
-      const put = this.put();
       let n = 0;
       let walked = 0;
       for (const [harness, files, found] of [["claude", claudeFiles(), claudeFound], ["codex", codexFiles(), codexFound]] as const) {
@@ -107,7 +134,7 @@ export class Imports {
           if (k && k.size === f.size && k.mtime === mtime && k.v === READER_V) continue;
           let row: Found | null = null;
           try { row = found(f.path, f.size, f.mtime); } catch {}
-          put.run(f.path, harness, f.size, mtime, row ? JSON.stringify(row) : null);
+          this.record(f.path, harness, f.size, mtime, row);
           if (++n % 200 === 0) await new Promise((r) => setTimeout(r, 0));
         }
       }
@@ -127,10 +154,14 @@ export class Imports {
     return this.building;
   }
 
-  private put() {
-    return this.store.db.query<unknown, [string, string, number, number, string | null]>(
-      `INSERT INTO import_index (path, harness, size, mtime, found, v) VALUES (?, ?, ?, ?, ?, ${READER_V}) ON CONFLICT(path) DO UPDATE SET size = excluded.size, mtime = excluded.mtime, found = excluded.found, v = excluded.v`,
-    );
+  // One file's row of the index: what its reader found (null when it holds no
+  // conversation), with the columns a listing reads.
+  record(path: string, harness: "claude" | "codex", size: number, mtime: number, row: Found | null) {
+    const names = COLUMNS.map((c) => c.split(" ")[0]!);
+    this.store.db
+      .query(`INSERT INTO import_index (path, harness, size, mtime, found, v, ${names.join(", ")}) VALUES (?, ?, ?, ?, ?, ${READER_V}, ${names.map(() => "?").join(", ")})
+        ON CONFLICT(path) DO UPDATE SET size = excluded.size, mtime = excluded.mtime, found = excluded.found, v = excluded.v, ${names.map((c) => `${c} = excluded.${c}`).join(", ")}`)
+      .run(path, harness, size, mtime, row ? JSON.stringify(row) : null, ...columns(row));
   }
 
   // One file's row as it is now: a file that changed since the last walk (a
@@ -141,10 +172,10 @@ export class Imports {
     try { st = statSync(path); } catch { return undefined; }
     const mtime = Math.round(st.mtimeMs);
     const k = this.store.db.query<{ size: number; mtime: number; v: number; found: string | null }, [string]>("SELECT size, mtime, v, found FROM import_index WHERE path = ?").get(path);
-    if (k && k.size === st.size && k.mtime === mtime && k.v === READER_V) return k.found ? JSON.parse(k.found) : undefined;
+    if (k && k.size === st.size && k.mtime === mtime && k.v === READER_V) return k.found ? this.decode(k.found) : undefined;
     let row: Found | null = null;
     try { row = (harness === "claude" ? claudeFound : codexFound)(path, st.size, st.mtimeMs); } catch {}
-    this.put().run(path, harness, st.size, mtime, row ? JSON.stringify(row) : null);
+    this.record(path, harness, st.size, mtime, row);
     return row ?? undefined;
   }
 
@@ -192,28 +223,38 @@ export class Imports {
     return rows;
   }
 
-  all(harness?: Harness): Found[] {
+  // The sessions of the stores that list themselves (the Rust Keel, Antigravity, Hermes): few, read whole.
+  private side(harness?: Harness): Found[] {
     const out: Found[] = [];
-    if (!harness || (harness !== "keel" && harness !== "agy" && harness !== "hermes")) {
-      const rows = harness
-        ? this.store.db.query<{ found: string }, [string]>("SELECT found FROM import_index WHERE found IS NOT NULL AND harness = ?").all(harness)
-        : this.store.db.query<{ found: string }, []>("SELECT found FROM import_index WHERE found IS NOT NULL").all();
-      for (const r of rows) out.push(JSON.parse(r.found));
-    }
     if (!harness || harness === "keel") out.push(...this.keel());
     if (!harness || harness === "agy") out.push(...this.agy());
     if (!harness || harness === "hermes") out.push(...this.hermes());
     return out;
   }
 
+  // Every session, the whole index decoded: for a caller that needs them all
+  // (a port of a store). A listing and a lookup read the index's columns instead.
+  all(harness?: Harness): Found[] {
+    const out: Found[] = [];
+    if (!harness || isIndexed(harness)) {
+      const rows = harness
+        ? this.store.db.query<{ found: string }, [string]>("SELECT found FROM import_index WHERE found IS NOT NULL AND harness = ?").all(harness)
+        : this.store.db.query<{ found: string }, []>("SELECT found FROM import_index WHERE found IS NOT NULL").all();
+      for (const r of rows) out.push(this.decode(r.found));
+    }
+    out.push(...this.side(harness));
+    return out;
+  }
+
   harnesses() {
-    const all = this.all();
+    const counted = new Map(this.store.db.query<{ harness: string; total: number; interactive: number }, []>("SELECT harness, COUNT(*) AS total, COALESCE(SUM(kind = 'interactive'), 0) AS interactive FROM import_index WHERE found IS NOT NULL GROUP BY harness").all().map((r) => [r.harness, r]));
+    const side = this.side();
     return HARNESSES.map((h) => {
-      const mine = all.filter((f) => f.harness === h.harness);
+      const mine = side.filter((f) => f.harness === h.harness);
       const store = h.store();
       return {
         harness: h.harness, label: h.label, store, installed: existsSync(store),
-        total: mine.length, interactive: mine.filter((f) => f.kind === "interactive").length,
+        total: (counted.get(h.harness)?.total ?? 0) + mine.length, interactive: (counted.get(h.harness)?.interactive ?? 0) + mine.filter((f) => f.kind === "interactive").length,
       };
     });
   }
@@ -221,15 +262,91 @@ export class Imports {
   // One page of the list. `offered`: only what this machine gives another
   // one (never a transcript under a credentials folder or name), left out
   // before the rows are counted and cut into pages.
+  // The same rows, order, total and cursors as `page` of offer.ts over every
+  // session, found without decoding the index: its columns filter, order and
+  // count in SQL, the few sessions of the other stores are merged in by the
+  // same order, and only the rows of the page are decoded.
   list(q: ListQuery & { offered?: boolean }, max = 500) {
-    const all = this.all(q.harness);
-    const p = page(q.offered ? all.filter(offered) : all, q, { max, scope: q.offered ? "offered" : "" });
-    return { ...p, sessions: p.sessions.map((f) => ({ ...f, imported: this.importedAs(f) })), index: { complete: this.complete, building: !!this.building } };
+    const db = this.store.db;
+    const scope = q.offered ? "offered" : "";
+    const limit = pageLimit(q, max);
+    const c = readCursor(q, scope);
+    const sort = q.sort ?? "updated";
+    const cmp = order(sort);
+    const side = select(q.offered ? this.side(q.harness).filter(offered) : this.side(q.harness), q);
+    const index = { complete: this.complete, building: !!this.building };
+
+    const where = ["found IS NOT NULL"];
+    const args: (string | number)[] = [];
+    if (q.harness) { where.push("harness = ?"); args.push(q.harness); }
+    const kinds = kindsOf(q.show);
+    if (kinds) { where.push(`kind IN (${kinds.map(() => "?").join(", ")})`); args.push(...kinds); }
+    if (q.cwd) { where.push("cwd = ?"); args.push(q.cwd); }
+    for (const w of wordsOf(q.q)) { where.push("instr(hay, ?) > 0"); args.push(w); }
+    if (q.offered) where.push("offered = 1");
+    const W = where.join(" AND ");
+    const KEY = "rowid, path, harness, sid AS id, updated_ms, size_bytes, title";
+    const indexed = !q.harness || isIndexed(q.harness);
+
+    // The keys of the page (and how many rows there are, and what lies at or
+    // before the cursor), from the index's columns.
+    let keys: IndexKey[] = [];
+    let total = 0, before = 0, sum = 0, after = 0;
+    if (indexed && sort === "title") {
+      // A title orders by the locale's rules, which SQLite does not know: the
+      // matching rows' keys are ordered here. Their serialized rows stay undecoded.
+      const all = db.query<IndexKey & { kh: number }, any[]>(`SELECT ${KEY}, kh FROM import_index WHERE ${W}`).all(...args).sort(cmp);
+      total = all.length;
+      let at = 0;
+      if (c) { let lo = 0, hi = all.length; while (lo < hi) { const mid = (lo + hi) >>> 1; if (cmp(all[mid]!, c.row) > 0) hi = mid; else lo = mid + 1; } at = lo; }
+      for (let i = 0; i < at; i++) sum += all[i]!.kh;
+      before = at;
+      after = total - at;
+      keys = all.slice(at, at + limit);
+    } else if (indexed) {
+      const col = sort === "size" ? "size_bytes" : "updated_ms";
+      total = db.query<{ n: number }, any[]>(`SELECT COUNT(*) AS n FROM import_index WHERE ${W}`).get(...args)!.n;
+      // After the cursor's row: a lower sort value, or the same one and a later path (then harness and id).
+      const AFTER = `(${col} < ? OR (${col} = ? AND (path > ? OR (path = ? AND (harness > ? OR (harness = ? AND sid > ?))))))`;
+      const v = c ? (sort === "size" ? c.row.size_bytes : c.row.updated_ms) : 0;
+      const at = c ? [v, v, c.row.path, c.row.path, c.row.harness, c.row.harness, c.row.id] : [];
+      if (c) {
+        const b = db.query<{ n: number; s: number }, any[]>(`SELECT COUNT(*) AS n, COALESCE(SUM(kh), 0) AS s FROM import_index WHERE ${W} AND NOT ${AFTER}`).get(...args, ...at)!;
+        before = b.n;
+        sum = b.s;
+      }
+      after = total - before;
+      keys = db.query<IndexKey, any[]>(`SELECT ${KEY} FROM import_index WHERE ${W}${c ? ` AND ${AFTER}` : ""} ORDER BY ${col} DESC, path, harness, sid LIMIT ?`).all(...args, ...at, limit);
+    }
+
+    // The other stores' sessions take their places by the same order.
+    const sideAfter = c ? side.filter((f) => cmp(f, c.row) > 0) : side;
+    for (const f of side) if (!sideAfter.includes(f)) sum += keyHash(f);
+    before += side.length - sideAfter.length;
+    total += side.length;
+    const merged = [...keys.map((k) => ({ k, f: undefined as Found | undefined })), ...sideAfter.map((f) => ({ k: f as IndexKey | Found, f }))].sort((a, b) => cmp(a.k, b.k)).slice(0, limit);
+    const more = after + sideAfter.length > merged.length;
+    // The rows up to the cursor are the ones the pages before gave, or the page says so.
+    const changed = !!c && (before !== c.seen || sum !== c.sum);
+    for (const m of merged) sum += keyHash(m.k);
+
+    // Only now are the page's rows decoded.
+    const take = merged.flatMap((m) => (m.f ? [] : [(m.k as IndexKey).rowid]));
+    const found = new Map(take.length ? db.query<{ rowid: number; found: string }, any[]>(`SELECT rowid, found FROM import_index WHERE rowid IN (${take.map(() => "?").join(", ")})`).all(...take).map((r) => [r.rowid, r.found]) : []);
+    const sessions = merged.flatMap((m) => { const f = m.f ?? (found.has((m.k as IndexKey).rowid) ? this.decode(found.get((m.k as IndexKey).rowid)!) : undefined); return f ? [{ ...f, imported: this.importedAs(f) }] : []; });
+    return {
+      sessions, total,
+      ...(more && merged.length ? { next_cursor: writeCursor(q, merged.at(-1)!.k, before + merged.length, sum, scope) } : {}),
+      ...(changed ? { changed: true as const } : {}),
+      index,
+    };
   }
 
   find(harness: Harness, id: string): Found | undefined {
-    const f = this.all(harness).find((f) => f.id === id);
-    return f && (f.harness === "claude" || f.harness === "codex") ? this.current(f.path, f.harness) ?? f : f;
+    if (!isIndexed(harness)) return this.side(harness).find((f) => f.id === id);
+    // The one row, by its harness and id: no other row is decoded.
+    const hit = this.store.db.query<{ path: string; found: string }, [string, string]>("SELECT path, found FROM import_index WHERE harness = ? AND sid = ? AND found IS NOT NULL ORDER BY rowid LIMIT 1").get(harness, id);
+    return hit ? this.current(hit.path, harness) ?? this.decode(hit.found) : undefined;
   }
 
   // A transcript named by its path (the drive list knows sessions by their file).
@@ -238,7 +355,7 @@ export class Imports {
   byPath(path: string, harness?: Harness): Found | undefined {
     const hit = this.store.db.query<{ harness: string; found: string | null }, [string]>("SELECT harness, found FROM import_index WHERE path = ?").get(path);
     if (hit?.found) return !harness || hit.harness === harness ? this.current(path, hit.harness as "claude" | "codex") : undefined;
-    if (harness === "agy" || path.endsWith("/.system_generated/logs/transcript_full.jsonl")) return this.all("agy").find((f) => f.path === path);
+    if (harness === "agy" || path.endsWith("/.system_generated/logs/transcript_full.jsonl")) return this.side("agy").find((f) => f.path === path);
     let st;
     try { st = statSync(path); } catch { return undefined; }
     const h = harness ?? (/\/rollout-[^/]*\.jsonl$/.test(path) ? "codex" : path.endsWith(".jsonl") ? "claude" : undefined);

@@ -6,7 +6,9 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../../core/store.ts";
+import { offered, page, type ListQuery } from "./offer.ts";
 import { Imports } from "./service.ts";
+import type { Found } from "./types.ts";
 
 const root = mkdtempSync(join(tmpdir(), "keel-import-service-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -109,3 +111,81 @@ test("a turn that starts while the original is read stops the update: local read
   expect(held(far.session.id)).toBe(n2);
   expect(imports.link(far.session.id)).toEqual(link);
 });
+
+// ---- the index: a page and a lookup read its columns, not every serialized row.
+
+const TITLES = ["Zebra crossing", "apple pie", "Apple Pie", "école straße", "ÉCOLE", "שלום עולם", "תיקון באג", "😀 party", "naïve résumé", "", "resume", "Résumé", "a b", "A-b", "１２３ wide"];
+function generated(n: number): Found[] {
+  const rows: Found[] = [];
+  for (let i = 0; i < n; i++) {
+    const hidden = i % 23 === 9;
+    rows.push({
+      harness: i % 4 ? "claude" : "codex", id: `gen-${i}`, path: `/idx/${hidden ? "secrets/" : ""}d${i % 31}/${i % 2 ? "é" : "z"}${String(i).padStart(6, "0")}.jsonl`,
+      cwd: i % 29 ? `/work/p${i % 13}` : undefined, title: `${TITLES[i % TITLES.length]} ${i % 97}`, first_prompt: i % 5 ? `Fix the ÇA VA parser ${i}` : undefined, last_prompt: i % 7 ? `בדיקה ${i % 50}` : undefined,
+      updated_ms: 1_700_000_000_000 + (i % 400) * 1000, size_bytes: 500 + (i % 61), kind: i % 10 === 3 ? "subagent" : i % 10 === 6 ? "headless" : "interactive", model: "m",
+    });
+  }
+  return rows;
+}
+
+test("the index pages, counts and looks up like a pass over every session, and decodes only what it returns", () => {
+  const dir = join(root, `index-${++n}`);
+  mkdirSync(dir, { recursive: true });
+  const store = new Store(join(dir, "state"));
+  let imports = new Imports(store);
+  const rows = generated(10_400);
+  store.db.transaction(() => { for (const f of rows) imports.record(f.path, f.harness as "claude" | "codex", f.size_bytes, f.updated_ms, f); })();
+  // A file with no conversation in it has a row and is never listed.
+  imports.record("/idx/empty.jsonl", "claude", 1, 1, null);
+  // The stores that list themselves: a few sessions, placed among the indexed ones by the same order.
+  const side: Found[] = Array.from({ length: 40 }, (_, i) => ({ harness: "keel", id: `keel-${i}`, path: `/idx/keel.db#keel-${i}`, cwd: `/work/p${i % 13}`, title: `${TITLES[i % TITLES.length]} keel`, updated_ms: 1_700_000_000_000 + i * 9_000, size_bytes: 500 + i, kind: "interactive" }));
+  const stub = (im: Imports) => { (im as any).keel = () => side; };
+  stub(imports);
+  const everything = [...rows, ...side];
+
+  // Every page of a listing, from the index and from a pass over every session.
+  const both = (q: ListQuery & { offered?: boolean }, max = 500, pages = 4) => {
+    const ref = q.offered ? everything.filter(offered) : everything;
+    let cursor: string | undefined;
+    for (let i = 0; i < pages; i++) {
+      const want = page(ref, { ...q, cursor }, { max, scope: q.offered ? "offered" : "" });
+      const d0 = imports.decodes;
+      const got = imports.list({ ...q, cursor }, max);
+      expect(got.sessions.map(({ imported: _, ...f }) => f)).toEqual(want.sessions);
+      expect([got.total, got.next_cursor, got.changed]).toEqual([want.total, want.next_cursor, want.changed]);
+      // Only the page's own rows of the index were decoded.
+      expect(imports.decodes - d0).toBe(want.sessions.filter((f) => f.harness !== "keel").length);
+      if (!(cursor = want.next_cursor)) break;
+    }
+  };
+  for (const q of [
+    {}, { limit: 7 }, { sort: "size" as const, limit: 120 }, { sort: "title" as const, limit: 150 }, { sort: "title" as const, q: "résumé" },
+    { q: "שלום" }, { q: "ÉCOLE Straße" }, { q: "ça va 12" }, { q: "😀" }, { q: "gen-1040" }, { q: "no such words anywhere" },
+    { show: "all" }, { show: "subagents" }, { show: "headless", sort: "size" as const }, { harness: "codex" as const, limit: 500 }, { harness: "keel" as const, limit: 15 },
+    { cwd: "/work/p3" }, { cwd: "/work/p3", q: "apple", show: "all", sort: "title" as const }, { offered: true, limit: 200 }, { offered: true, q: "pie", sort: "size" as const },
+  ]) both(q, (q as any).offered ? 200 : 500);
+  // A whole listing, page by page: every row once.
+  let cursor: string | undefined, seen = 0;
+  do { const r = imports.list({ limit: 500, cursor }); seen += r.sessions.length; cursor = r.next_cursor; } while (cursor);
+  expect(seen).toBe(everything.filter((f) => f.kind === "interactive").length);
+
+  // The counts per harness, with no row decoded.
+  let d0 = imports.decodes;
+  const counts = Object.fromEntries(imports.harnesses().map((h) => [h.harness, [h.total, h.interactive]]));
+  for (const h of ["claude", "codex", "keel"]) expect(counts[h]).toEqual([everything.filter((f) => f.harness === h).length, everything.filter((f) => f.harness === h && f.kind === "interactive").length]);
+  expect(imports.decodes).toBe(d0);
+  // One session by its harness and id: its row alone.
+  d0 = imports.decodes;
+  expect(imports.find("codex", "gen-8000")).toEqual(rows[8000]!);
+  expect(imports.find("claude", "gen-8000")).toBeUndefined();
+  expect(imports.find("keel", "keel-7")).toEqual(side[7]!);
+  expect(imports.decodes - d0).toBe(1);
+
+  // An index written before the columns existed is filled from its rows when the daemon starts.
+  store.db.exec("UPDATE import_index SET sid = NULL, kind = NULL, cwd = NULL, title = NULL, updated_ms = NULL, size_bytes = NULL, hay = NULL, offered = NULL, kh = NULL");
+  expect(imports.list({}).total).toBe(side.length);
+  imports = new Imports(store);
+  stub(imports);
+  both({ q: "שלום", sort: "title" });
+  both({ offered: true, limit: 200 });
+}, 60_000); // ten thousand rows written and read many ways: a busy machine takes its time

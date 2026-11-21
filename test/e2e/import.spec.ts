@@ -444,3 +444,62 @@ test("a whole-tree Keel file keeps both leaves and the branch shown", async ({ p
   await expect(page.getByTestId("user-message").last()).toContainText(`Leaf alpha ${tag}`);
   for (const id of [session.id, one.session.id, made.session.id]) await request.delete(`/api/sessions/${id}`);
 });
+
+// The sheet lists the sessions of every store and imports from each: the
+// list comes from the index's columns (a page, a search, a harness tab), the
+// copy from the file. No model is called.
+test("the import sheet lists every harness and imports from each", async ({ page, request }) => {
+  const first = await (await request.get("/api/import/sessions?limit=1")).json();
+  const store = (h: string) => first.harnesses.find((x: any) => x.harness === h)?.store as string;
+  test.skip(!store("claude").includes("keel-work"), "needs scratch import stores (KEEL_IMPORT_*)");
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const tag = String(Date.now());
+  const cwd = join(SCRATCH, `mixed-${tag}`);
+  mkdirSync(cwd, { recursive: true });
+  execFileSync("bun", [join(import.meta.dirname, "fixtures/import-stores.ts"), store("claude"), store("codex"), store("keel"), cwd, tag], { encoding: "utf8" });
+
+  // One search across the stores: the three sessions of this run, newest first, and a subagent only when asked for.
+  const list = async (q: string) => (await (await request.get(`/api/import/sessions?${q}`)).json());
+  const mixed = await list(`q=${tag}&refresh=1`);
+  expect(mixed.sessions.map((s: any) => s.harness).sort()).toEqual(["claude", "codex", "keel"]);
+  expect(mixed.sessions.map((s: any) => s.updated_ms)).toEqual([...mixed.sessions.map((s: any) => s.updated_ms)].sort((a: number, b: number) => b - a));
+  expect(mixed.total).toBe(3);
+  expect((await list(`q=${tag}&show=subagents`)).total).toBe(4);
+  // Page by page, one row a page: the same three, once each; the cursor of another search is refused.
+  const paged: string[] = [];
+  for (let cursor: string | undefined, i = 0; i < 5; i++) {
+    const r = await list(`q=${tag}&limit=1${cursor ? `&cursor=${cursor}` : ""}`);
+    paged.push(...r.sessions.map((s: any) => s.id));
+    if (!(cursor = r.next_cursor)) break;
+    if (i === 0) expect((await request.get(`/api/import/sessions?q=other&cursor=${cursor}`)).status()).toBe(400);
+  }
+  expect(paged).toEqual(mixed.sessions.map((s: any) => s.id));
+  const byId = await (await request.get(`/api/import/preview?harness=codex&id=${mixed.sessions.find((s: any) => s.harness === "codex").id}`)).json();
+  expect(byId.session.title).toContain("Pick a code word");
+
+  await page.goto("/");
+  const sheet = page.getByTestId("import-sheet");
+  const rows = sheet.getByTestId("import-row");
+  const made: string[] = [];
+  for (const [tab, row, text] of [["claude", "Name the quince fixture", "The fruit is quince."], ["codex", "Pick a code word", "The code word is bramble."], ["keel", "Harbour Kythira", "The harbour is Kythira."]] as const) {
+    await page.keyboard.press("Control+k");
+    await page.getByTestId("palette-input").fill("Import sessions");
+    await expect(page.getByRole("option", { name: "Import sessions" })).toBeVisible();
+    await page.keyboard.press("Enter");
+    await expect(sheet).toBeVisible();
+    await page.getByTestId(`import-tab-${tab}`).click();
+    await page.getByTestId("import-search").fill(tag);
+    await expect(rows).toHaveCount(1, { timeout: 20_000 });
+    await expect(rows.first()).toContainText(row);
+    await rows.first().click();
+    await expect(page.getByTestId("import-preview")).toContainText(text);
+    await page.getByTestId("import-go").click();
+    await expect(page).toHaveURL(/\/s\//);
+    await expect(page.getByTestId("assistant-text").last()).toContainText(text);
+    made.push(page.url().split("/s/")[1]!);
+  }
+  // Each is now listed as imported, found again by its harness and id.
+  const after = await list(`q=${tag}`);
+  expect(after.sessions.map((s: any) => s.imported?.session_id).sort()).toEqual([...made].sort());
+  for (const id of made) await request.delete(`/api/sessions/${id}`);
+});
