@@ -340,7 +340,18 @@ export class Telemetry {
   private overBudget(): string | undefined {
     const b = settings().budget;
     if (!b.daily_usd && !b.monthly_usd) return undefined;
-    const s = this.spend();
+    let s = this.spend();
+    // The running sums are plain additions and the ledger's SUM is a
+    // compensated one, so the two can differ in their last digits: ten
+    // requests of ten cents add up to a hair under a dollar here and to a
+    // dollar there. A sum that stands this close to its limit, on either
+    // side, is read from the ledger again, which then decides as it did when
+    // every check read it: a budget is never a request late, or early.
+    const close = (usd: number, limit: unknown) => typeof limit === "number" && limit > 0 && Math.abs(usd - limit) < 1e-6;
+    if (close(s.day.usd, b.daily_usd) || close(s.month.usd, b.monthly_usd)) {
+      this.totals = undefined;
+      s = this.spend();
+    }
     // Cents, or two significant digits below a cent: a limit is never shown as $0.00.
     const usd = (v: number) => "$" + (v >= 0.01 || v === 0 ? v.toFixed(2) : v.toLocaleString("en-US", { maximumSignificantDigits: 2 }));
     if (b.daily_usd && s.day.usd >= b.daily_usd) return `The daily spend limit of ${usd(b.daily_usd)} is reached (${usd(s.day.usd)} today). Raise it in Settings > Usage to go on.`;

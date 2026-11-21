@@ -176,3 +176,42 @@ test("the running spend total equals the summed ledger after random requests", (
   expect(next.day.usd).toBe(want.day.usd);
   expect(next.month.usd).toBeCloseTo(want.month.usd, 9);
 }));
+
+// The running total is a plain sum and the ledger's is a compensated one: at
+// a limit that equal costs add up to exactly, the two differ in the last
+// digit. The request refused is the one the ledger's own sum refuses.
+test("a budget is refused at the request the ledger's sum says, also when costs add up to it exactly", () => withStore(async (store) => {
+  const { loadSettings, patchSettings } = await import("./settings.ts");
+  const { spendOf } = await import("./telemetry-report.ts");
+  loadSettings(store.stateDir, () => {});
+  const s = store.createSession({ model: "p:main", workspace: "/" });
+  store.append(s.id, "user", { text: "Start" });
+  new PromptStore(store);
+  const t = new Telemetry(store, new Bus());
+  const hooks = allHooks().at(-1)!;
+  const send = (cost: number) => {
+    const req = { model: "m", system: "", messages: [], tools: [], signal: new AbortController().signal, purpose: "turn", route: "p:main" } as any;
+    const sess = store.session(s.id)!;
+    hooks.requestSent!(sess, req);
+    hooks.requestDone!(sess, req, { blocks: [], stop: "end_turn", usage: { input: 10, output: 5, cache_read: 0, cache_write: 0, cost } } as any);
+  };
+  try {
+    for (const [cost, limit, key] of [[0.1, 1, "daily_usd"], [0.01, 0.1, "daily_usd"], [0.0125, 0.1, "monthly_usd"], [1.1, 11, "daily_usd"], [0.3, 0.9, "monthly_usd"], [0.07, 0.7, "daily_usd"]] as const) {
+      store.db.run("DELETE FROM telemetry_calls");
+      t.spendChanged();
+      expect(patchSettings({ budget: { daily_usd: null, monthly_usd: null, [key]: limit } }).ok).toBe(true);
+      let refused = 0, ledger = 0;
+      for (let n = 1; n <= 40 && !refused; n++) {
+        // What every check did before the running total: the ledger's sum against the limit.
+        const sums = spendOf(store.db, { daily_usd: null, monthly_usd: null });
+        if (!ledger && (key === "daily_usd" ? sums.day.usd : sums.month.usd) >= limit) ledger = n;
+        if ((t as any).overBudget()) refused = n;
+        else send(cost);
+      }
+      expect([cost, limit, refused]).toEqual([cost, limit, ledger]);
+      expect(refused).toBeGreaterThan(1);
+    }
+  } finally {
+    patchSettings({ budget: { daily_usd: null, monthly_usd: null } });
+  }
+}));
