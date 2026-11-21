@@ -77,55 +77,107 @@ const LOOPBACK_IP = /^(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|::1|::ffff:127\.\d{1,3}\.\
 const peers = new WeakMap<Request, { loopback: boolean }>();
 export const peerIsRemote = (req: Request) => peers.get(req)?.loopback === false;
 
-// The uid holding the other end of a loopback connection, from the kernel's
-// socket table; undefined where there is none (not Linux), null when the
-// connection is not in it. The kernel writes the whole table for each read,
-// which costs milliseconds on a machine with thousands of sockets, so the
-// table is read off the loop (one read at a time, shared by the connections
-// that arrive while it runs) and searched for the one line, and an answer is
-// kept for a second per client port. Only a new client port waits for a read;
-// what the loop does for it is the search.
+// Who holds the other end of a loopback connection, from the kernel's socket
+// table. A connection is its two addresses and its two ports: the kernel lets
+// two connections share both ports when an address differs (a second one from
+// 127.0.0.2 on the port one from 127.0.0.1 uses), so the line is matched on
+// all four, and so is the answer that is kept. The answer is the uid, or:
+//   "unlisted"    the connection is not in the table
+//   "shared"      lines of more than one account match (the daemon listens on
+//                 every address, so which one the client reached is not known)
+//   "unreadable"  Linux, and neither table can be read
+//   undefined     there is no such table (not Linux)
+// The kernel writes the whole table for each read, which costs milliseconds on
+// a machine with thousands of sockets, so the table is read off the loop, one
+// read at a time, and searched for the one line. A connection is answered only
+// by a read that started after its request arrived: the ones that arrive
+// while a read runs share the read that follows it. An answer is kept for a
+// second; what the loop does for a new connection is the search.
 export type Tables = (string | null)[];
+export type End = { address: string; port: number };
+export type Owner = number | "unlisted" | "shared" | "unreadable" | undefined;
 const readTables = (): Promise<Tables> => Promise.all(["/proc/net/tcp", "/proc/net/tcp6"].map((t) => readFile(t, "utf8").catch(() => null)));
 
-export function uidLookup(read: () => Promise<Tables> = readTables, now: () => number = Date.now) {
-  const cache = new Map<string, { uid: number | null; at: number }>();
-  let reading: Promise<Tables> | undefined;
-  const table = () => (reading ??= read().finally(() => (reading = undefined)));
-  const hex = (p: number) => p.toString(16).toUpperCase().padStart(4, "0");
-  // The line whose local end is the client's port and whose remote end is ours:
-  // its eighth field is the uid.
-  const find = (tables: Tables, peerPort: number, serverPort: number): number | null | undefined => {
-    if (tables.every((t) => t === null)) return undefined;
-    const line = new RegExp(`^\\s*\\d+: [0-9A-F]+:${hex(peerPort)} [0-9A-F]+:${hex(serverPort)} (?:\\S+\\s+){4}(\\d+)`, "m");
-    for (const t of tables) {
-      const m = t === null ? null : line.exec(t);
-      if (m) return Number(m[1]);
+// The 16 bytes of an IPv6 address, or the 4 of an IPv4 one; null when it is neither.
+function addressBytes(address: string): number[] | null {
+  const v4 = (t: string) => {
+    const p = t.split(".").map(Number);
+    return p.length === 4 && p.every((n) => Number.isInteger(n) && n >= 0 && n <= 255) ? p : null;
+  };
+  if (!address.includes(":")) return v4(address);
+  const [head = "", tail, more] = address.replace(/^\[|\]$/g, "").split("::");
+  if (more !== undefined) return null;
+  const words = (t: string): number[] | null => {
+    const out: number[] = [];
+    for (const [i, w] of (t ? t.split(":") : []).entries()) {
+      const last = i === t.split(":").length - 1 && w.includes(".") ? v4(w) : null;
+      if (last) { out.push(...last); continue; }
+      if (!/^[0-9a-f]{1,4}$/i.test(w)) return null;
+      const n = parseInt(w, 16);
+      out.push(n >> 8, n & 255);
     }
-    return null;
+    return out;
   };
-  const keep = (k: string, uid: number | null | undefined) => {
-    if (uid === undefined) return uid;
-    if (cache.size > 4096) cache.clear();
-    cache.set(k, { uid, at: now() });
-    return uid;
+  const a = words(head), z = tail === undefined ? [] : words(tail);
+  if (!a || !z || a.length + z.length > 16 || (tail === undefined && a.length !== 16)) return null;
+  return [...a, ...Array(16 - a.length - z.length).fill(0), ...z];
+}
+
+// An address as the table writes it, in each table that can list it: an IPv4
+// address is in the IPv4 table and, as its mapped form, in the IPv6 one. The
+// kernel prints each 32-bit word of an address in the machine's byte order.
+export function tableAddresses(address: string): string[] {
+  const b = addressBytes(address);
+  if (!b) return [];
+  const word = (x: number[]) => [...x].reverse().map((n) => n.toString(16).toUpperCase().padStart(2, "0")).join("");
+  const v6 = (x: number[]) => [0, 4, 8, 12].map((i) => word(x.slice(i, i + 4))).join("");
+  if (b.length === 4) return [word(b), v6([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, ...b])];
+  const mapped = b.slice(0, 10).every((n) => n === 0) && b[10] === 255 && b[11] === 255;
+  return mapped ? [word(b.slice(12)), v6(b)] : [v6(b)];
+}
+
+export function uidLookup(read: () => Promise<Tables> = readTables, now: () => number = Date.now, linux = process.platform === "linux") {
+  const cache = new Map<string, { owner: Exclude<Owner, undefined>; at: number }>();
+  // The read under way, and the one that starts when it ends.
+  let reading: Promise<Tables> | undefined;
+  let next: Promise<Tables> | undefined;
+  const start = () => (reading = read().finally(() => (reading = undefined)));
+  const fresh = (): Promise<Tables> => {
+    if (!reading) return start();
+    const after = () => { next = undefined; return start(); };
+    return (next ??= reading.then(after, after));
   };
-  return (peerPort: number, serverPort: number): number | null | undefined | Promise<number | null | undefined> => {
-    const k = `${peerPort}:${serverPort}`;
+  const hex = (p: number) => p.toString(16).toUpperCase().padStart(4, "0");
+  // The lines whose local end is the client's address and port and whose
+  // remote end is ours: the eighth field is the uid. `server.address` is the
+  // address the daemon listens on; with none (it listens on every address)
+  // any remote address matches.
+  const find = (tables: Tables, peer: End, server: { address?: string; port: number }): Owner => {
+    if (tables.every((t) => t === null)) return linux ? "unreadable" : undefined;
+    const from = tableAddresses(peer.address), to = server.address ? tableAddresses(server.address) : [];
+    if (!from.length || (server.address && !to.length)) return "unlisted";
+    const line = new RegExp(`^\\s*\\d+: (?:${from.join("|")}):${hex(peer.port)} ${to.length ? `(?:${to.join("|")})` : "[0-9A-F]+"}:${hex(server.port)} (?:\\S+\\s+){4}(\\d+)`, "gm");
+    const uids = new Set<number>();
+    for (const t of tables) if (t !== null) for (const m of t.matchAll(line)) uids.add(Number(m[1]));
+    return uids.size === 0 ? "unlisted" : uids.size === 1 ? [...uids][0]! : "shared";
+  };
+  return (peer: End, server: { address?: string; port: number }): Owner | Promise<Owner> => {
+    const k = `${peer.address} ${peer.port} ${server.address ?? "*"} ${server.port}`;
     const hit = cache.get(k);
-    if (hit && now() - hit.at < 1000) return hit.uid;
-    return (async () => {
-      // A read already under way may have started before this connection was
-      // made: when it does not list it, one that starts now does.
-      if (reading) {
-        const uid = find(await reading, peerPort, serverPort);
-        if (typeof uid === "number") return keep(k, uid);
-      }
-      return keep(k, find(await table(), peerPort, serverPort));
-    })();
+    if (hit && now() - hit.at < 1000) return hit.owner;
+    return fresh().then((tables) => {
+      const owner = find(tables, peer, server);
+      if (owner === undefined) return owner;
+      if (cache.size > 4096) cache.clear();
+      cache.set(k, { owner, at: now() });
+      return owner;
+    });
   };
 }
 const peerUid = uidLookup();
+// The address the daemon listens on, when it is one address (not every address, not a name).
+const WILDCARD = /^(0\.0\.0\.0|::|\[::\]|)$/;
+const boundAddress = (hostname: string | undefined) => (hostname && !WILDCARD.test(hostname) && tableAddresses(hostname).length ? hostname : undefined);
 
 let token = "";
 // The access token, made once per state folder with mode 0600.
@@ -164,14 +216,16 @@ export function callerCheck(req: Request, srv: Bun.Server<unknown> | undefined):
   if (forwarded(req)) return answer("a request through a proxy or tunnel");
   if (ip && !loopback) return answer(`a request from ${ip.address}`);
   if (!ip || !srv?.port) return answer(null);
-  const owner = (uid: number | null | undefined) => {
+  const owner = (who: Owner) => {
     const me = process.getuid?.();
-    if (uid === null) return answer("a connection the kernel does not list");
-    if (uid !== undefined && me !== undefined && uid !== me && uid !== 0) return answer(`a process of another account (uid ${uid})`);
+    if (who === "unlisted") return answer("a connection the kernel does not list");
+    if (who === "shared") return answer("a connection whose address and port more than one account holds");
+    if (who === "unreadable") return answer("a connection whose owner cannot be read (the kernel's socket table is not readable)");
+    if (who !== undefined && me !== undefined && who !== me && who !== 0) return answer(`a process of another account (uid ${who})`);
     return answer(null);
   };
-  const uid = peerUid(ip.port, srv.port);
-  return uid instanceof Promise ? uid.then(owner) : owner(uid);
+  const who = peerUid({ address: ip.address, port: ip.port }, { address: boundAddress(srv.hostname), port: srv.port });
+  return who instanceof Promise ? who.then(owner) : owner(who);
 }
 
 // The portal proxies a session's own dev server under a capability key in its
