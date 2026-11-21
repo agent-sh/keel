@@ -61,6 +61,7 @@ async function onMachine(input: any, prompt: unknown) {
 
 const Agent: Tool = {
   name: "Agent",
+  resultCap: agents.RESULT_CAP, // a report is cut to this by the agents' own code, never in its middle by the engine's smaller cap
   families: CLAUDE,
   readOnly: true,
   description:
@@ -184,6 +185,7 @@ const send_input: Tool = {
 
 const wait_agent: Tool = {
   name: "wait_agent",
+  resultCap: agents.RESULT_CAP, // a report is cut to this by the agents' own code, never in its middle by the engine's smaller cap
   families: OTHERS,
   readOnly: true,
   description: "Wait for agents to reach a final status and return their final messages. Returns as soon as any target is final (with every other one already final); timed_out is true only when none is. Results returned here are not delivered again. Call it sparingly, only when your next step is blocked on the result.",

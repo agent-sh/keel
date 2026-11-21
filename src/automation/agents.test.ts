@@ -853,3 +853,19 @@ test("a report is said once: an earlier round a later one repeats is left out, a
   agents.onTurnEnd(d.session_id, "max_steps");
   expect(await result(d)).toContain(`(No final answer. Before its last tool call it wrote:)\n${thinking}`);
 });
+
+// A blocking agent's report comes back through the engine's result cap: the
+// tools that return one name the agents' own cap, so a report under it (36,000
+// characters, a JSON one included) arrives whole and not as a head, a tail
+// and a path.
+test("an agent's report under the agents' cap passes the engine's result cap whole", async () => {
+  const { automationTools } = await import("./tools.ts");
+  const { capResult, OUTPUT_CAP } = await import("../tools/spill.ts");
+  const report = JSON.stringify({ findings: "f".repeat(36_000) });
+  for (const name of ["Agent", "wait_agent"]) {
+    const tool = automationTools.find((t) => t.name === name)!;
+    expect(tool.resultCap).toBe(agents.RESULT_CAP);
+    expect(await capResult(report, tool.resultCap ?? OUTPUT_CAP, undefined, name)).toBe(report);
+  }
+  expect(await capResult(report, OUTPUT_CAP, undefined, "Bash")).not.toBe(report);
+});

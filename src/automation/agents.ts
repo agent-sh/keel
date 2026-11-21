@@ -86,7 +86,11 @@ export type AgentDef = {
 // A value that is not a whole number of at least 1 would mean no limit (NaN) or no agents (0).
 const envLimit = Number(process.env.KEEL_MAX_SUBAGENTS);
 const MAX_LIVE = Number.isSafeInteger(envLimit) && envLimit >= 1 ? envLimit : 8;
-const RESULT_CAP = 40_000;
+// The most characters of an agent's report that go back to its parent: past
+// it the report keeps its start and its end. The tools that return a report
+// name this as their result cap, so a report within it arrives whole (a
+// report in JSON still parses).
+export const RESULT_CAP = 40_000;
 
 const BUILTIN: AgentDef[] = [
   {

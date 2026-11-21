@@ -51,20 +51,27 @@ test("a result past the cap is cut through the spill, whatever its shape", async
     expect(await capResult(long, Infinity, dir, "Read")).toBe(long);
     expect(readdirSync(dir)).toHaveLength(1);
 
-    // Blocks: the long text is cut, the image and the short text are the same objects.
+    // Blocks: the texts are cut as one, where the first stood; the image is the same object.
     const image = { type: "image", media_type: "image/png", data: "iVBORw0KGgo=" }, short = { type: "text", text: "captured" };
     const blocks = (await capResult([short, { type: "text", text: long }, image], OUTPUT_CAP, dir, "mcp")) as any[];
-    expect([blocks[0], blocks[2]]).toEqual([short, image]);
-    expect(blocks[1].text.length).toBeLessThanOrEqual(OUTPUT_CAP);
-    expect(blocks[1].text).toContain("saved to ");
+    expect(blocks.map((b) => b.type)).toEqual(["text", "image"]);
+    expect(blocks[1]).toBe(image);
+    expect(blocks[0].text.length).toBeLessThanOrEqual(OUTPUT_CAP);
+    expect(blocks[0].text.startsWith("captured\nsrc/file.ts:0:")).toBe(true);
+    expect(blocks[0].text).toContain("saved to ");
     const same = [short, image];
     expect(await capResult(same, OUTPUT_CAP, dir, "mcp")).toBe(same);
+    // The cap is for the whole result: three texts each under it are one text within it, the image kept.
+    const three = (await capResult([{ type: "text", text: "a".repeat(31_000) }, image, { type: "text", text: "b".repeat(31_000) }, { type: "text", text: "c".repeat(31_000) }], OUTPUT_CAP, dir, "mcp")) as any[];
+    expect(three.map((b) => b.type)).toEqual(["text", "image"]);
+    expect(three[0].text.length).toBeLessThanOrEqual(OUTPUT_CAP);
+    expect([three[0].text.startsWith("aaaa"), three[0].text.endsWith("cccc"), three[0].text.includes("saved to ")]).toEqual([true, true, true]);
 
     // Run on another machine: nothing is saved here, and the result says the middle is gone.
     const far = (await capResult(long, OUTPUT_CAP, undefined, "Grep")) as string;
     expect(far.length).toBeLessThanOrEqual(OUTPUT_CAP);
     expect(far).toContain("chars cut and not kept");
-    expect(readdirSync(dir)).toHaveLength(2);
+    expect(readdirSync(dir)).toHaveLength(3);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

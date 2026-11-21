@@ -51,8 +51,15 @@ export async function capResult<B extends { type: string }>(content: string | B[
     return `${head}\n\n[... ${text.length - head.length - tail.length} chars cut and not kept: narrow the call to see them ...]\n\n${tail}`;
   };
   if (typeof content === "string") return hold(content);
-  if (!content.some((b) => b.type === "text" && ((b as unknown as { text: string }).text?.length ?? 0) > cap)) return content;
-  return Promise.all(content.map(async (b) => (b.type === "text" ? { ...b, text: await hold((b as unknown as { text: string }).text ?? "") } : b)));
+  // Blocks: the cap is for all the text of the result, not for each block.
+  // Past it the texts become one, cut through the spill, where the first of
+  // them stood; what is not text (an image, a tool reference) stays.
+  const textOf = (b: B) => (b.type === "text" ? ((b as unknown as { text: string }).text ?? "") : undefined);
+  const texts = content.map(textOf).filter((t): t is string => t !== undefined);
+  if (texts.reduce((n, t) => n + t.length, 0) <= cap) return content;
+  const one = await hold(texts.join("\n"));
+  const first = content.findIndex((b) => b.type === "text");
+  return content.flatMap((b, i) => (b.type !== "text" ? [b] : i === first ? [{ ...b, text: one }] : []));
 }
 
 // --- Spilled output the storage retention removed (src/admin/retention.ts) ---
