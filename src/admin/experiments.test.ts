@@ -45,11 +45,11 @@ function daemon() {
 const closed = () => Date.now() + (WINDOW_MIN + 1) * 60_000;
 let turnNo = 0;
 // One ended turn of a session, as the turn rollup records it.
-function turn(store: Store, sessionId: string, v: { cost?: number; outcome?: string; ts?: number; rating?: number } = {}) {
+function turn(store: Store, sessionId: string, v: { cost?: number; outcome?: string; ts?: number; ms?: number; rating?: number } = {}) {
   const tag = armOf(store, sessionId);
   const id = `turn-${++turnNo}`;
-  store.db.query("INSERT INTO telemetry_turns (session_id, turn_event, ts, ms, reason, outcome, requests, input, output, cost, exp_id, arm, rating) VALUES (?, ?, ?, 1000, 'end_turn', ?, 1, 100, 10, ?, ?, ?, ?)")
-    .run(sessionId, id, v.ts ?? Date.now(), v.outcome ?? "ok", v.cost ?? 0.01, tag?.exp_id ?? null, tag?.arm ?? null, v.rating ?? null);
+  store.db.query("INSERT INTO telemetry_turns (session_id, turn_event, ts, ms, reason, outcome, requests, input, output, cost, exp_id, arm, rating) VALUES (?, ?, ?, ?, 'end_turn', ?, 1, 100, 10, ?, ?, ?, ?)")
+    .run(sessionId, id, v.ts ?? Date.now(), v.ms ?? 1000, v.outcome ?? "ok", v.cost ?? 0.01, tag?.exp_id ?? null, tag?.arm ?? null, v.rating ?? null);
   return id;
 }
 // A new top-level session that the experiment puts in `arm`, assigned.
@@ -477,4 +477,28 @@ test("the control wins only when every arm compared with it lost", () => {
   // Live: an arm with weight 0 is not compared, so the one enabled loser is every arm.
   const live = { ...e, mode: "live", arms: [e.arms[0]!, e.arms[1]!, { ...e.arms[2]!, weight: 0 }] } as Experiment;
   expect(report(live, [...runs("current", 0.01), ...runs("dear", 0.02)]).decision).toMatchObject({ verdict: "won", winner: "current" });
+});
+
+test("an experiment stopped before reports were kept is frozen without guards it never read", () => {
+  const d = daemon();
+  try {
+    let { store, x } = d.open();
+    const e = x.start(x.create({ template: "effort", name: "legacy" }).id);
+    const families = ["default", "low", "default", "low"].map((arm) => root(store, x, e, arm));
+    for (const s of families) turn(store, s, { ms: 0 });
+    const stopped = x.stop(e.id);
+    // As an older build left it: the decision with the experiment, no report and no observations kept.
+    store.db.exec("DELETE FROM experiment_reports; DELETE FROM experiment_obs");
+    // A turn that started before the stop and ended after it.
+    turn(store, families[1]!, { ts: stopped.stopped_ms!, ms: 60_000, outcome: "error" });
+
+    const r = x.report(x.get(e.id)!);
+    expect(r.decision).toEqual(stopped.decision!);
+    expect(r.final_ms).toBe(stopped.stopped_ms);
+    expect(r.arms.map((a) => [a.arm, a.units])).toEqual([["default", 2], ["low", 2]]);
+    // No guard evidence is shown: what the guards read at the stop was not kept.
+    expect([r.guards, r.guard]).toEqual([[], undefined]);
+    ({ store, x } = d.open());
+    expect(x.report(x.get(e.id)!)).toEqual(r);
+  } finally { d.close(); }
 });

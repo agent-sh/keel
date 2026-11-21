@@ -562,14 +562,17 @@ export class Experiments {
   }
 
   // A stopped experiment's frozen evidence. One stopped before reports were
-  // kept is frozen at its first read, from the turns up to its stop.
+  // kept is frozen at its first read: from the turns that had ended by its
+  // stop, under the decision it was stopped with. A live one's guards are
+  // left out of that copy, since what they read then was not kept and what
+  // would be computed now is not what stopped it.
   final(e: Experiment): Final | undefined {
     if (e.state !== "stopped") return undefined;
     const q = this.store.db.query<{ data: string }, [string]>("SELECT data FROM experiment_reports WHERE exp_id = ?");
     const kept = q.get(e.id);
     if (kept) return JSON.parse(kept.data);
-    const r = report(e, this.rows(e, e.stopped_ms), this.live(e));
-    this.freeze(e, { report: { ...r, decision: e.decision ?? r.decision, final_ms: e.stopped_ms }, sessions: this.sessions(e), runs: this.runs(e) });
+    const { guard: _unread, ...r } = report(e, this.rows(e, e.stopped_ms, true));
+    this.freeze(e, { report: { ...r, ...(e.mode === "live" ? { guards: [] } : {}), decision: e.decision ?? r.decision, final_ms: e.stopped_ms }, sessions: this.sessions(e), runs: this.runs(e) });
     return JSON.parse(q.get(e.id)!.data);
   }
 
@@ -583,15 +586,18 @@ export class Experiments {
     return { ...e, sessions: f?.sessions ?? this.sessions(e), runs: f?.runs ?? this.runs(e) };
   }
 
-  rows(e: Experiment, until = Date.now()): Row[] {
+  // `ended`: only turns that had ended by `until` (a read after the fact;
+  // at the moment itself every stored turn has ended).
+  rows(e: Experiment, until = Date.now(), ended = false): Row[] {
     if (e.mode === "offline") {
       return this.store.db.query<{ id: number; arm: string; task: string | null; metrics: string }, [string]>("SELECT id, arm, task, metrics FROM experiment_runs WHERE exp_id = ?").all(e.id)
         .map((r) => ({ arm: r.arm, cluster: `run-${r.id}`, stratum: r.task ?? undefined, m: JSON.parse(r.metrics) }));
     }
     // Turns of the experiment's sessions while it ran, each in its family's
     // cluster and arm (the assignment, not the row's own tag).
+    const by = ended ? "t.ts + COALESCE(t.ms, 0)" : "t.ts";
     return this.store.db.query<any, [string, number, number]>(
-      `SELECT t.*, x.arm AS family_arm, x.root AS family FROM telemetry_turns t JOIN experiment_sessions x ON x.session_id = t.session_id WHERE x.exp_id = ? AND t.ts >= ? AND t.ts <= ?`).all(e.id, e.started_ms ?? 0, until)
+      `SELECT t.*, x.arm AS family_arm, x.root AS family FROM telemetry_turns t JOIN experiment_sessions x ON x.session_id = t.session_id WHERE x.exp_id = ? AND t.ts >= ? AND ${by} <= ?`).all(e.id, e.started_ms ?? 0, until)
       .map((t) => ({ arm: t.family_arm, cluster: t.family, m: turnMetrics(t) }));
   }
 
