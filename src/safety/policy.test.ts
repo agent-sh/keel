@@ -49,8 +49,8 @@ test("modes", () => {
 
 test("leaving the sandbox asks once in every mode", () => {
   const esc = { kind: "shell" as const, command: "npm test", escalate: true };
-  for (const mode of ["auto", "full-auto"] as const)
-    expect(decide(esc, facts(mode, { sandboxed: true }))).toMatchObject({ ask: { risk: "high", ownerOnly: true } });
+  expect(decide(esc, facts("auto"))).toMatchObject({ ask: { risk: "high", ownerOnly: true } });
+  expect(kind(decide(esc, facts("full-auto", { sandboxed: true })))).toBe("ask-high");
   expect(kind(decide(esc, facts("read-only", { sandboxed: true })))).toBe("deny");
   expect(kind(decide(esc, facts("full-auto", { sandboxed: false })))).toBe("allow");
 });
@@ -63,7 +63,7 @@ test("Auto allows confined work and grants, but neither covers flagged or owner-
   expect(decide({ kind: "edit", paths: [`${ws}/.envrc`] }, auto)).toMatchObject({ ask: { ownerOnly: true } });
   const read = (path: string) => classify(tool("Read", undefined, true, { properties: { file_path: { type: "string" } } }), { file_path: path }, ws);
   expect(decide(read("scratch.txt"), auto)).toEqual({ allow: true });
-  expect(decide(read("../scratch.txt"), auto)).toMatchObject({ ask: { risk: "low" } });
+  expect(decide(read("../scratch.txt"), auto)).toEqual({ allow: true });
   expect(decide(read("../scratch.txt"), { ...auto, mode: "full-auto" })).toEqual({ allow: true });
 });
 

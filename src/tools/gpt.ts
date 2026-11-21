@@ -49,10 +49,13 @@ async function runPatch(text: string, base: string, ctx: ToolContext) {
   }
 }
 
+const execCwd = (ctx: ToolContext, input: any) => input?.workdir ? resolve(shellCwd(ctx), input.workdir) : shellCwd(ctx);
+
 const exec_command: Tool = {
   name: "exec_command",
   readOnly: false,
   kind: "shell",
+  cwdOf: execCwd,
   description: "Runs a command in a PTY, returning output or a session ID for ongoing interaction.",
   input_schema: obj({
     cmd: { type: "string", description: "Shell command to execute." },
@@ -69,7 +72,7 @@ const exec_command: Tool = {
   async run(input, ctx) {
     const cmd = String(input.cmd ?? "");
     if (!cmd.trim()) return fail("exec_command failed: cmd is empty");
-    const cwd = input.workdir ? resolve(shellCwd(ctx), input.workdir) : shellCwd(ctx);
+    const cwd = execCwd(ctx, input);
     const gone = goneCwd(ctx, cwd);
     if (gone) return fail(`exec_command failed: ${gone}`);
     // Models trained on Codex often send apply_patch through the shell.
@@ -179,7 +182,6 @@ const request_user_input: Tool = {
 const view_image: Tool = {
   name: "view_image",
   readOnly: true,
-  cwdOf: shellCwd,
   description: "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.",
   input_schema: obj({ path: { type: "string", description: "Local filesystem path to an image file." } }, ["path"]),
   async run(input, ctx) {

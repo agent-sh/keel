@@ -38,7 +38,7 @@ export function SafetySettings({ children }: { children?: ReactNode }) {
             {modes.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
           </Select>
         </SettingRow>
-        <SettingRow label="Judge model" hint="Reviews uncovered and high-risk calls in Auto, flagged calls the safety rules did not settle in Full auto, and ordinary approvals in Reviewer. It cannot approve owner-only actions. Unset, your small models answer first, then the session's own model.">
+        <SettingRow label="Judge model" hint="Reviews uncovered and flagged calls in Auto, flagged calls the safety rules did not settle in Full auto, and ordinary approvals in Reviewer. Auto sends owner-only actions to you, not to the judge. Unset, your small models answer first, then the session's own model.">
           <div className="flex items-center gap-2" data-testid="reviewer-model">
             {perm?.reviewer_model ? <ModelPicker value={perm.reviewer_model} onChange={(m) => putPerm({ reviewer_model: m })} compact /> : <><span className="text-caption text-faint">your small models</span><ModelPicker value="" onChange={(m) => putPerm({ reviewer_model: m })} compact /></>}
             {perm?.reviewer_model && <button className="text-caption text-faint hover:text-fg" onClick={() => putPerm({ reviewer_model: null })}>Reset</button>}

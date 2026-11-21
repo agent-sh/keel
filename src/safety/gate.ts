@@ -1,9 +1,9 @@
 // The permission gate: every tool call passes its session's mode and the
-// standing answers; what they do not settle goes to the judge or to an
-// owner card. Cards, grants and modes are stored. A card a restart left
+// standing answers; what they do not settle becomes an approval card the
+// turn waits on. Cards, grants and modes are stored. A card a restart left
 // open (a crash, a kill, a stop) stays open: the continued turn runs its call
 // again and waits on the same card, and an answer given before that is kept.
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { Bus } from "../core/bus.ts";
@@ -22,11 +22,11 @@ import { classify, decide, isMode, type Ask, type CallClass, type Decision, type
 // workspace that points out of it, or into .git, is judged as the place it
 // names, and a link named like a file the repository runs (.envrc) stays that.
 export const landing = (c: CallClass): CallClass =>
-  (c.kind === "edit" || c.kind === "read") && c.paths
-    ? { ...c, paths: [...new Set(c.paths.flatMap((p) => [join(realOf(dirname(p)), basename(p)), realOf(p)]))] } : c;
+  c.kind === "edit" ? { kind: "edit", paths: [...new Set(c.paths.flatMap((p) => [join(realOf(dirname(p)), basename(p)), realOf(p)]))] } : c;
 
 // What a call does, its relative paths resolved where the tool resolves them.
-export const classifyCall = (call: ToolCall): CallClass => classify(call.tool, call.input, call.tool.cwdOf?.(call.ctx) ?? call.ctx.cwd);
+const cwdOf = (call: ToolCall) => call.tool.cwdOf?.(call.ctx, call.input);
+export const classifyCall = (call: ToolCall): CallClass => classify(call.tool, call.input, cwdOf(call) ?? call.ctx.cwd);
 
 export type SandboxProfile = "off" | "workspace-write" | "read-only";
 export type SessionPerm = { session_id: string; mode: Mode; sandbox: SandboxProfile; network: boolean };
@@ -43,8 +43,8 @@ export type Approval = {
   why?: string;         // why only "once" is offered
   notice?: string;      // why the owner is asked (the reviewer could not judge it)
   suggest: Suggest[];   // the grant "allow always" would store
-  once?: boolean;       // only the owner answers it
-  ownerOnly?: true;     // a policy decision, rather than a hook's one-call card
+  once?: boolean;       // only the owner answers it (a hook asked)
+  autoOwner?: true;     // Auto only: no judge, rule change or recovery grants this card
   bind?: string;        // the source a tool grant is for
   state: "pending" | "allowed" | "denied" | "cancelled";
   choice?: "once" | "session" | "always" | "deny";
@@ -68,7 +68,7 @@ CREATE INDEX IF NOT EXISTS perm_blocked_session ON perm_blocked(session_id, crea
 // What the judge is asked (reviewer mode's calls, and full auto's high-risk
 // ones with `high`: why the rules flagged it and the facts of where it lands),
 // and what it answers.
-export type ReviewAsk = { session: Session; tool: string; kind: string; summary: string; input: any; mode?: "auto"; high?: { why: string; facts?: string } };
+export type ReviewAsk = { session: Session; tool: string; kind: string; summary: string; input: any; mode?: "auto"; cwd?: string; high?: { why: string; facts?: string } };
 export type Verdict = { allow: boolean; risk: string; reason: string; model: string; ms?: number } | { unavailable: string };
 // A call refused without the owner (the judge's refusal, a judge that could
 // not answer, a repeat); the owner can let one retry of it through.
@@ -85,25 +85,39 @@ export type Judged = { session_id: string; call_id: string; tool: string; summar
 // stops the turn after 3): the work goes on, the loop of retries does not.
 export const STREAK = 3;
 
+type Waiter = { resolve: (d: { allow: true } | { deny: string }) => void; call: ToolCall; cls: CallClass; session: Session; name: string; once?: boolean; bind?: string };
 type Target = Awaited<ReturnType<NonNullable<ToolCall["tool"]["target"]>>>;
-type Action = { cls: CallClass; name: string; target: Target };
-type CardAnswer = { allow: true; owner?: true } | { deny: string };
-type Waiter = Action & { resolve: (d: CardAnswer) => void; call: ToolCall; session: Session; bind?: string };
-const actionOf = (call: ToolCall, target: Target): Action => ({
-  name: target?.name ?? call.tool.name,
-  cls: landing(target ? (target.cls ?? (target.readOnly ? { kind: "read" } : { kind: "other" })) : classifyCall(call)),
-  target,
-});
-const autoReview = (mode: Mode, ask: Ask): mode is "auto" | "full-auto" => !ask.ownerOnly && (mode === "auto" || mode === "full-auto");
-const reviewChanged = { deny: "Refused: authorization changed during review. This call did not run; recheck the current permissions before proposing it again." };
+type AutoReview = { ask: Ask; cwd?: string; input: unknown; valid: () => Promise<boolean> };
+const interruptedApproval = "The earlier approval cannot be used under Auto. Check the prior outcome before proposing the action again.";
+const changedReview = { deny: "Refused: authorization or the action changed while permission was pending. Check the current permissions before proposing it again." };
+
+function callClass(call: ToolCall, target: Target): CallClass {
+  const cls = target ? target.cls ?? (target.readOnly ? { kind: "read" } : { kind: "other" }) : classifyCall(call);
+  return landing(cls.kind === "shell" && !cls.cwd ? { ...cls, cwd: cwdOf(call) } : cls);
+}
+
+// Auto reviews shell calls only when the actual starting directory is known.
+// A retry is not transferable to a different directory or replacement inode.
+function localShellDir(session: Session, call: ToolCall, target: Target, cls: CallClass) {
+  if (cls.kind !== "shell" || session.machine || (!target?.cls && !call.tool.cwdOf) || !cls.cwd) return;
+  try {
+    const path = realpathSync(cls.cwd);
+    const st = statSync(path, { bigint: true });
+    if (st.isDirectory()) return { path, identity: `${st.dev}:${st.ino}` };
+  } catch {}
+}
 
 export class Gate {
   private waiting = new Map<string, Waiter>();
   private roots = new Map<string, string>();
   private allowedCalls = new Set<string>();
   private retries = new Set<string>(); // session + call key: one retry the owner let through
-  private streak = new Map<string, number>(); // refusals in a row in an automatic review mode
-  private reviews = new Set<{ session: Session; changed: boolean }>();
+  private streak = new Map<string, number>(); // refusals in a row in the session's turn
+  private reviewing = new Set<{ id: string; invalid: boolean }>();
+
+  private invalidateReview(id?: string) {
+    for (const r of this.reviewing) if (id === undefined || id === r.id) r.invalid = true;
+  }
   // Cards a restart left open, by session and call: nothing waits on them
   // until the continued turn runs the call again (park, reattach).
   private parked = new Map<string, string>();
@@ -142,7 +156,7 @@ export class Gate {
   }
 
   setSandboxCheck(f: (s: Session, p: SessionPerm) => boolean) {
-    this.invalidateReviews();
+    this.invalidateReview();
     this.sandboxed = f;
   }
 
@@ -153,7 +167,10 @@ export class Gate {
     return isMode(v) ? v : isMode(env) ? env : "ask";
   }
   setDefaultMode(m: Mode) {
-    if (m !== this.defaultMode()) this.invalidateReviews();
+    if (m !== this.defaultMode()) {
+      this.invalidateReview();
+      this.streak.clear();
+    }
     this.store.db.query("INSERT INTO perm_settings (key, value) VALUES ('default_mode', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(m);
   }
   defaultSandbox(): SandboxProfile {
@@ -161,7 +178,7 @@ export class Gate {
     return v === "workspace-write" || v === "read-only" ? v : "off";
   }
   setDefaultSandbox(p: SandboxProfile) {
-    if (p !== this.defaultSandbox()) this.invalidateReviews();
+    if (p !== this.defaultSandbox()) this.invalidateReview();
     this.store.db.query("INSERT INTO perm_settings (key, value) VALUES ('default_sandbox', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(p);
   }
 
@@ -169,7 +186,7 @@ export class Gate {
     return this.store.db.query<{ value: string }, [string]>("SELECT value FROM perm_settings WHERE key = ?").get(key)?.value;
   }
   setSetting(key: string, value: string | null) {
-    if (["reviewer_model", "reviewer_policy"].includes(key) && (value || undefined) !== this.setting(key)) this.invalidateReviews();
+    if ((key === "reviewer_model" || key === "reviewer_policy") && (value || undefined) !== this.setting(key)) this.invalidateReview();
     if (value) this.store.db.query("INSERT INTO perm_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
     else this.store.db.query("DELETE FROM perm_settings WHERE key = ?").run(key);
   }
@@ -202,7 +219,8 @@ export class Gate {
   setPerm(sessionId: string, patch: Partial<Omit<SessionPerm, "session_id">>): SessionPerm {
     const prev = this.perm(sessionId);
     const next = { ...prev, ...patch };
-    if (prev.mode !== next.mode || prev.sandbox !== next.sandbox || prev.network !== next.network) this.invalidateReviews((s) => s.id === sessionId);
+    if (prev.mode !== next.mode) this.streak.delete(sessionId);
+    if (prev.mode !== next.mode || prev.sandbox !== next.sandbox || prev.network !== next.network) this.invalidateReview(sessionId);
     this.store.db
       .query("INSERT INTO perm_sessions (session_id, mode, sandbox, network) VALUES (?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET mode = excluded.mode, sandbox = excluded.sandbox, network = excluded.network")
       .run(sessionId, next.mode, next.sandbox, next.network ? 1 : 0);
@@ -228,18 +246,14 @@ export class Gate {
   rules(session?: Session): Rule[] {
     const all = this.store.db.query<Rule, []>("SELECT * FROM perm_rules ORDER BY created").all();
     if (!session) return all;
-    return all.filter((r) => this.applies(r, session));
-  }
-
-  private applies(r: Pick<Rule, "lifetime" | "scope" | "session_id">, s: Session) {
-    return r.lifetime === "session" ? r.session_id === s.id : contains(r.scope, s.workspace) || contains(r.scope, this.scopeOf(s.workspace));
+    return all.filter((r) => (r.lifetime === "session" ? r.session_id === session.id : contains(r.scope, session.workspace) || contains(r.scope, this.scopeOf(session.workspace))));
   }
 
   addRule(session: Session, kind: RuleKind, pattern: string, lifetime: "always" | "session", bind?: string): Rule {
     const rule: Rule = { id: crypto.randomUUID(), kind, pattern: pattern.trim(), scope: this.scopeOf(session.workspace), lifetime, session_id: lifetime === "session" ? session.id : null, created: Date.now(), bind: bind ?? null };
     this.store.db.query("INSERT INTO perm_rules (id, kind, pattern, scope, lifetime, session_id, created, bind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run(rule.id, rule.kind, rule.pattern, rule.scope, rule.lifetime, rule.session_id ?? null, rule.created, rule.bind ?? null);
-    this.invalidateReviews((s) => this.applies(rule, s));
+    this.invalidateReview(lifetime === "session" ? session.id : undefined);
     this.bus.emit({ t: "feature", name: "grants", data: { changed: true } });
     return rule;
   }
@@ -251,7 +265,7 @@ export class Gate {
   addStanding(kind: RuleKind, pattern: string, scope: string): void {
     if (this.hasStanding(kind, pattern, scope)) return;
     this.store.db.query("INSERT INTO perm_rules (id, kind, pattern, scope, lifetime, session_id, created) VALUES (?, ?, ?, ?, 'always', NULL, ?)").run(crypto.randomUUID(), kind, pattern.trim(), scope, Date.now());
-    this.invalidateReviews((s) => this.applies({ lifetime: "always", scope }, s));
+    this.invalidateReview();
     this.bus.emit({ t: "feature", name: "grants", data: { changed: true } });
   }
 
@@ -263,7 +277,7 @@ export class Gate {
     this.revoked.delete(id);
     this.store.db.query("INSERT INTO perm_rules (id, kind, pattern, scope, lifetime, session_id, created, bind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run(r.id, r.kind, r.pattern, r.scope, r.lifetime, r.session_id ?? null, r.created, r.bind ?? null);
-    this.invalidateReviews((s) => this.applies(r, s));
+    this.invalidateReview(r.lifetime === "session" ? r.session_id ?? undefined : undefined);
     this.bus.emit({ t: "feature", name: "grants", data: { changed: true } });
     return r;
   }
@@ -272,8 +286,8 @@ export class Gate {
     const was = this.store.db.query<Rule, [string]>("SELECT * FROM perm_rules WHERE id = ?").get(id);
     if (was) this.revoked.set(id, was);
     const n = this.store.db.query("DELETE FROM perm_rules WHERE id = ?").run(id).changes;
-    if (n && was) {
-      this.invalidateReviews((s) => this.applies(was, s));
+    if (n) {
+      this.invalidateReview(was?.lifetime === "session" ? was.session_id ?? undefined : undefined);
       this.bus.emit({ t: "feature", name: "grants", data: { changed: true } });
     }
     return n > 0;
@@ -309,46 +323,13 @@ export class Gate {
     this.bus.emit({ t: "feature", name: "approval", session_id: a.session_id, data: a });
   }
 
-  private evaluate(session: Session, name: string, cls: CallClass, bind?: string, spillDir?: string): Decision {
+  private evaluate(session: Session, name: string, cls: CallClass, bind?: string): Decision {
     const p = this.perm(session.id);
     // Edits are judged where they land (links resolved), so the workspace is too.
     let root = session;
     for (let n = 0; root.parent_id && !root.machine && n < 32; n++) root = this.store.session(root.parent_id) ?? root;
     const scratch = session.machine ? [] : [realOf(artifactsDir(this.store.stateDir, root.id))];
-    if (cls.kind === "read" && spillDir) scratch.push(realOf(spillDir));
-    const workspace = cls.kind === "edit" || (cls.kind === "read" && cls.paths) ? realOf(session.workspace) : session.workspace;
-    return decide(cls, { mode: p.mode, workspace, sandboxed: this.sandboxed(session, p), rules: this.rules(session), tool: name, bind, scratch });
-  }
-
-  private invalidateReviews(which: (s: Session) => boolean = () => true) {
-    for (const r of this.reviews) if (which(r.session)) r.changed = true;
-  }
-
-  // A verdict is for the action and policy that were sent, not a later tool
-  // binding, target, symlink landing, permission mode, or sandbox.
-  private async review(a: ReviewAsk, call: ToolCall, action: Action): Promise<Verdict | null> {
-    const s = a.session;
-    const inFlight = { session: s, changed: false };
-    const p = this.perm(s.id);
-    const confined = this.sandboxed(s, p);
-    const scope = () => {
-      const stored = this.store.session(s.id);
-      return JSON.stringify([stored?.workspace, stored?.machine, stored?.archived, realOf(action.cls.kind === "shell" ? action.cls.cwd ?? s.workspace : s.workspace)]);
-    };
-    const checkedScope = scope();
-    const signature = ({ name, cls, target }: Action) => JSON.stringify([name, cls, target?.source, target?.shape, target?.input ?? call.input]);
-    const before = signature(action);
-    this.reviews.add(inFlight);
-    try {
-      const v = await this.judge(a);
-      if (inFlight.changed || call.ctx.signal.aborted) return null;
-      const target = call.tool.target ? await call.tool.target(call.input) : null;
-      if (inFlight.changed || call.ctx.signal.aborted || this.sandboxed(s, this.perm(s.id)) !== confined ||
-          scope() !== checkedScope || signature(actionOf(call, target)) !== before) return null;
-      return v;
-    } finally {
-      this.reviews.delete(inFlight);
-    }
+    return decide(cls, { mode: p.mode, workspace: cls.kind === "edit" ? realOf(session.workspace) : session.workspace, sandboxed: this.sandboxed(session, p), rules: this.rules(session), tool: name, bind, scratch });
   }
 
   // The beforeTool hook: the gate first; a call it lets through runs confined
@@ -369,42 +350,47 @@ export class Gate {
   async check(session: Session, call: ToolCall): Promise<{ deny: string } | { cls: CallClass }> {
     if (call.tool.confirm) return (await this.askOnce(session, call, call.tool.name, call.tool.confirm.why, call.tool.confirm.shown(call.input))) ?? { cls: { kind: "other" } };
     const target = call.tool.target ? await call.tool.target(call.input) : null;
-    const action = actionOf(call, target);
-    const { name, cls } = action;
-    const d = this.evaluate(session, name, cls, target?.source, call.ctx.spillDir);
+    const name = target?.name ?? call.tool.name;
+    const cls = callClass(call, target);
     const mode = this.perm(session.id).mode;
+    const dir = mode === "auto" ? localShellDir(session, call, target, cls) : undefined;
+    const d = this.evaluate(session, name, cls.kind === "shell" && dir ? { ...cls, cwd: dir.path } : cls, target?.source);
     // The call a restart cut while its card was open: that card again, settled
     // the way an open card is (the owner's answer, a grant or mode since, or waiting).
     const back = this.unpark(session.id, call.id, false);
     if (back) {
-      if (back.state === "allowed" && "ask" in d && d.ask.ownerOnly && back.risk !== "high") return reviewChanged;
-      const settled: Partial<Approval> | undefined = back.state !== "pending" ? undefined
-        : "deny" in d ? { state: "denied", reason: d.deny }
-        : "allow" in d && !back.once ? { state: "allowed", choice: "once", reason: "settled by a grant or a mode change" } : undefined;
-      if (settled) this.finish(back, settled);
-      if (back.state === "pending" && "ask" in d && !back.once) {
-        if (autoReview(mode, d.ask)) {
-          this.finish(back, { state: "cancelled", reason: `sent to automatic review in ${mode}` });
-          return this.alone(session, call, action, back.summary, mode, d.ask);
-        }
-        if (d.ask.ownerOnly) Object.assign(back, ownerOnlyCard(d.ask));
+      // Do not authorize a recovered non-hook card under the new mode. A
+      // saved answer is not evidence about the current binding or landing.
+      if (mode === "auto" || back.autoOwner) {
+        const deny = "deny" in d ? d.deny : interruptedApproval;
+        if (back.state === "pending") this.finish(back, { state: "denied", reason: deny });
+        return { deny };
       }
-      return (await this.wait({ ...back, ...settled }, session, call, action)) ?? { cls };
+      const settled: Partial<Approval> | undefined = back.state !== "pending" ? undefined
+        : "allow" in d ? { state: "allowed", choice: "once", reason: "settled by a grant or a mode change" } : "deny" in d ? { state: "denied", reason: d.deny } : undefined;
+      if (settled) this.finish(back, settled);
+      // Now in full auto: the card closes and the call is settled without the owner.
+      if (!settled && back.state === "pending" && "ask" in d && !back.once && this.perm(session.id).mode === "full-auto") {
+        this.finish(back, { state: "cancelled", reason: "settled without the owner in full auto" });
+        return this.alone(session, call, name, cls, back.summary, keyOf(name, target, cls, call, back.summary), d.ask.why);
+      }
+      return (await this.wait({ ...back, ...settled }, session, call, name, cls)) ?? { cls };
     }
     if ("allow" in d) return { cls };
     if ("deny" in d) return { deny: d.deny };
     if (cls.kind === "control") return { cls };
-    const input = target ? target.input : call.input;
-    const summary = cls.kind === "shell" ? cls.command : cls.kind === "edit" || (cls.kind === "read" && cls.paths) ? cls.paths!.join("\n") : cls.kind === "drive" ? cls.shown : JSON.stringify(input ?? {}).slice(0, 400);
+    const summary = cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : cls.kind === "drive" ? cls.shown : JSON.stringify((target ? target.input : call.input) ?? {}).slice(0, 400);
     const key = keyOf(name, target, cls, call, summary);
-    if (autoReview(mode, d.ask)) return this.alone(session, call, action, summary, mode, d.ask);
+    if (mode === "auto") return this.checkAuto(session, call, target, cls, name, summary, d.ask);
+    // Full auto: nothing waits on the owner. What would ask is high risk; it
+    // goes to the rules, then the judge, and is run or refused at once.
+    if (mode === "full-auto") return this.alone(session, call, name, cls, summary, key, d.ask.why);
     let notice: string | undefined;
     // Reviewer mode: what would ask goes to the reviewer first; a high-risk
     // action, and anything it cannot judge, still goes to the owner.
-    if (mode === "reviewer" && d.ask.risk === "low" && !d.ask.ownerOnly) {
+    if (mode === "reviewer" && d.ask.risk === "low") {
       if (this.retries.delete(`${session.id}\u0000${key}`)) return { cls };
-      const v = await this.review({ session, tool: name, kind: cls.kind, summary, input: clip(call.input) }, call, action);
-      if (!v) return reviewChanged;
+      const v = await this.judge({ session, tool: name, kind: cls.kind, summary, input: clip(call.input) });
       if ("unavailable" in v) notice = `Reviewer unavailable: ${v.unavailable}. The owner answers this one.`;
       else if (v.allow) return { cls };
       else {
@@ -412,7 +398,39 @@ export class Gate {
         return { deny: `The reviewer refused this call (risk ${v.risk}): ${v.reason.replace(/[.\s]+$/, "")}. Do not retry it as it is: take another way, or ask the owner, who can let one retry through.` };
       }
     }
-    return (await this.card(session, call, action, summary, { ...d.ask, notice, bind: target?.source })) ?? { cls };
+    return (await this.card(session, call, name, cls, summary, { ...d.ask, notice, bind: target?.source })) ?? { cls };
+  }
+
+  private async checkAuto(session: Session, call: ToolCall, target: Target, cls: CallClass, name: string, summary: string, ask: Ask): Promise<{ deny: string } | { cls: CallClass }> {
+    const dir = localShellDir(session, call, target, cls);
+    if (!ask.ownerOnly && cls.kind === "shell" && !dir) return { deny: "Refused: Auto cannot verify this command's working directory." };
+    const inFlight = { id: session.id, invalid: false };
+    const signature = (t: Target, c: CallClass) => {
+      const p = this.perm(session.id);
+      const stored = this.store.session(session.id);
+      return JSON.stringify([p, this.sandboxed(session, p), stored?.archived, stored?.machine, stored?.workspace, realOf(session.workspace),
+        c, localShellDir(session, call, t, c), t?.name, t?.source, t?.shape, t?.input, call.input]);
+    };
+    const before = signature(target, cls);
+    const active = () => !inFlight.invalid && !call.ctx.signal.aborted;
+    const valid = async () => {
+      if (!active()) return false;
+      const now = call.tool.target ? await call.tool.target(call.input) : null;
+      return active() && before === signature(now, callClass(call, now));
+    };
+    this.reviewing.add(inFlight);
+    try {
+      if (ask.ownerOnly) {
+        const deny = await this.card(session, call, name, cls, summary, { ...ask, bind: target?.source, autoOwner: true });
+        return deny ?? (await valid() ? { cls } : changedReview);
+      }
+      // Auto refusals and one-off retries are separate from Full auto's
+      // existing decisions, and tied to the input, binding and resolved cwd.
+      const key = new Bun.CryptoHasher("sha256").update(`auto\0${before}`).digest("hex").slice(0, 32);
+      return await this.alone(session, call, name, cls, summary, key, ask.why ?? "no safe default or standing grant covers it", { ask, cwd: dir?.path, input: target ? target.input : call.input, valid });
+    } finally {
+      this.reviewing.delete(inFlight);
+    }
   }
 
   // A new turn: the run of refusals starts over.
@@ -420,22 +438,23 @@ export class Gate {
     this.streak.delete(sessionId);
   }
 
-  // Automatic review fails closed. Full auto retains its high-risk rules,
-  // remembered refusals and exact one-time retries. Auto reviews ordinary
-  // uncovered calls as well, and does not use Full auto's high-risk shortcuts.
-  private async alone(session: Session, call: ToolCall, action: Action, summary: string, mode: "auto" | "full-auto", ask: Ask): Promise<{ deny: string } | { cls: CallClass }> {
-    const { name, cls, target } = action;
-    const key = mode === "full-auto" ? keyOf(name, target, cls, call, summary)
-      : keyOf(name, target, cls, call, summary, [mode, cls, call.input]);
-    const high = ask.risk === "high";
-    const why = ask.why ?? "no safe default or standing grant covers it";
+  // Full auto's high-risk call, settled without the owner: a retry the owner
+  // let through runs; the rules allow what stays on the session's own,
+  // recoverable work; a call refused before is refused again with its reason;
+  // after STREAK refusals in a row the turn's other high-risk calls are refused
+  // unreviewed; else the judge decides, and a judge that cannot answer refuses.
+  private async alone(session: Session, call: ToolCall, name: string, cls: CallClass, summary: string, key: string, why = "it is high risk", auto?: AutoReview): Promise<{ deny: string } | { cls: CallClass }> {
     const base = { session_id: session.id, tool: name, summary: summary.slice(0, 2000) };
     const ran = (outcome: Judged["outcome"], reason: string, more: Partial<Judged> = {}) => {
       if (outcome === "rule" || outcome === "judge" || outcome === "retry") this.streak.delete(session.id);
       this.bus.emit({ t: "feature", name: "judged", session_id: session.id, data: this.redactAny({ ...base, call_id: call.id, outcome, reason, ...more }) });
     };
-    if (this.retries.delete(`${session.id}\u0000${key}`)) return ran("retry", "the owner let one retry through"), { cls };
-    if (mode === "full-auto" && cls.kind === "shell" && !cls.escalate) {
+    const retry = `${session.id}\u0000${key}`;
+    if (this.retries.has(retry)) {
+      if (auto && !await auto.valid()) return changedReview;
+      if (this.retries.delete(retry)) return ran("retry", "the owner let one retry through"), { cls };
+    }
+    if (!auto && cls.kind === "shell" && !cls.escalate) {
       const parts = splitCommand(cls.command);
       const rule = parts ? preAllow(parts, cls.cwd ?? session.workspace, homedir(), lookRepo) : null;
       if (rule) return ran("rule", rule), { cls };
@@ -454,13 +473,14 @@ export class Gate {
       return refuse(b, "repeat", `Refused again: this exact call was already refused in this session (${reasonOf(prev.reason)}). Do not retry it or work around it. Take a safer way, or finish the rest and tell the owner what you could not do; the owner can let one retry through.`);
     }
     if ((this.streak.get(session.id) ?? 0) >= STREAK) {
-      const calls = mode === "full-auto" ? "high-risk calls" : "calls needing review";
+      const calls = auto ? "calls needing review" : "high-risk calls";
       const b = this.block({ ...base, calls: [call.id], reason: `${STREAK} ${calls} in a row were refused in this turn, so this one was refused without review`, risk: "unknown", model: "", key, by: "streak" });
       return refuse(b, "streak", `Refused without review: ${STREAK} ${calls} in a row were refused in this turn. Stop trying these actions now: finish what you can without them, then report to the owner what was refused and why you needed it.`);
     }
-    const facts = high && cls.kind === "shell" ? repoContext(cls.command, cls.cwd ?? session.workspace, homedir(), session) : undefined;
-    const v = await this.review({ session, tool: name, kind: cls.kind, summary, input: clip(mode === "auto" && target ? target.input : call.input), mode: mode === "auto" ? mode : undefined, high: high ? { why, facts } : undefined }, call, action);
-    if (!v) return reviewChanged;
+    const high = !auto || auto.ask.risk === "high";
+    const facts = high && cls.kind === "shell" ? repoContext(cls.command, auto?.cwd ?? cls.cwd ?? session.workspace, homedir(), session) : undefined;
+    const v = await this.judge({ session, tool: name, kind: cls.kind, summary, input: clip(auto ? auto.input : call.input), mode: auto && "auto", cwd: auto?.cwd, high: high ? { why, facts } : undefined });
+    if (auto && !await auto.valid()) return changedReview;
     if ("unavailable" in v) {
       const b = this.block({ ...base, calls: [call.id], reason: `The judge could not review it: ${v.unavailable}`, risk: "unknown", model: "", key, by: "unavailable" });
       return refuse(b, "unavailable", `Refused: this ${high ? "high-risk " : ""}call (${why}) needs the judge's review, and the judge could not give one (${reasonOf(v.unavailable)}). That is not proof it is unsafe. Take another way if there is one, or go on with the rest and report it; the owner can let one retry through.`);
@@ -486,7 +506,7 @@ export class Gate {
     const c = landing(classifyCall(call));
     const cls: CallClass = c.kind === "read" || c.kind === "control" ? { kind: "other" } : c;
     const summary = shown ?? (cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : cls.kind === "drive" ? cls.shown : JSON.stringify(call.input ?? {}).slice(0, 400));
-    return this.card(session, call, { name, cls, target: null }, summary, { risk: "high", why, suggest: [] }, true);
+    return this.card(session, call, name, cls, summary, { risk: "high", why, suggest: [] }, true);
   }
 
   // Calls the owner allowed on a card (the protected-path sweep leaves their work alone).
@@ -494,42 +514,39 @@ export class Gate {
     return !!callId && this.allowedCalls.has(callId);
   }
 
-  private async card(session: Session, call: ToolCall, action: Action, summary: string,
-    ask: Ask & { notice?: string; bind?: string }, hookCard = false): Promise<{ deny: string } | void> {
-    const a: Approval = this.unpark(session.id, call.id, hookCard) ?? {
-      id: crypto.randomUUID(), session_id: session.id, call_id: call.id, tool: action.name, kind: action.cls.kind as Approval["kind"],
+  private async card(session: Session, call: ToolCall, name: string, cls: CallClass, summary: string,
+    ask: { risk: "high" | "low"; why?: string; suggest: Suggest[]; notice?: string; bind?: string; autoOwner?: true }, once = false): Promise<{ deny: string } | void> {
+    const a: Approval = this.unpark(session.id, call.id, once) ?? {
+      id: crypto.randomUUID(), session_id: session.id, call_id: call.id, tool: name, kind: cls.kind as Approval["kind"],
       summary, notice: ask.notice,
       input: clip(call.input), risk: ask.risk, why: ask.why, suggest: ask.suggest, state: "pending", created: Date.now(),
-      once: hookCard || ask.ownerOnly || undefined, ownerOnly: ask.ownerOnly, bind: ask.bind,
+      once: once || undefined, bind: ask.bind, autoOwner: ask.autoOwner,
     };
-    return this.wait(a, session, call, action);
+    return this.wait(a, session, call, name, cls);
   }
 
-  // Only the hook that asked for a one-call card can reattach it.
-  private unpark(sessionId: string, callId: string, hookCard: boolean): Approval | undefined {
+  // A parked card of this call (a one-call card only for askOnce), taken back.
+  private unpark(sessionId: string, callId: string, once: boolean): Approval | undefined {
     const key = callKey(sessionId, callId);
     const a = this.parked.has(key) ? this.approval(this.parked.get(key)!) : undefined;
-    if (!a || (!!a.once && !a.ownerOnly) !== hookCard) return undefined;
+    if (!a || !!a.once !== once) return undefined;
     this.parked.delete(key);
     return a;
   }
 
   // The turn waits on the card: shown (again, after a restart) until it is
   // answered; a card answered while nothing waited on it settles at once.
-  private async wait(a: Approval, session: Session, call: ToolCall, action: Action): Promise<{ deny: string } | void> {
+  private async wait(a: Approval, session: Session, call: ToolCall, name: string, cls: CallClass): Promise<{ deny: string } | void> {
     if (a.state === "denied") return { deny: a.choice === "deny" ? ownerDenial(a.reason) : a.reason ?? ownerDenial() };
     if (a.state === "cancelled") return { deny: "The turn was stopped before the owner answered." };
-    if (a.state === "allowed") {
-      if (!a.reason) this.allowedCalls.add(call.id);
-      return;
-    }
+    if (a.state === "allowed") return void this.allowedCalls.add(call.id);
     this.save(a);
     const signal = call.ctx.signal;
     // The turn's signal is shared by all its calls: the listener goes when
     // the card is answered, so answered cards do not pile up on it.
     let onAbort = () => {};
-    const out = await new Promise<CardAnswer>((resolve) => {
-      this.waiting.set(a.id, { ...action, resolve, call, session, bind: a.bind });
+    const out = await new Promise<{ allow: true } | { deny: string }>((resolve) => {
+      this.waiting.set(a.id, { resolve, call, cls, session, name, once: a.once, bind: a.bind });
       onAbort = () => {
         if (!this.waiting.delete(a.id)) return;
         // Parked for a stop: the card stays open for the next daemon.
@@ -541,7 +558,7 @@ export class Gate {
       else signal.addEventListener("abort", onAbort, { once: true });
     }).finally(() => signal.removeEventListener("abort", onAbort));
     if ("deny" in out) return out;
-    if (out.owner) this.allowedCalls.add(call.id);
+    this.allowedCalls.add(call.id);
     if (this.allowedCalls.size > 2000) this.allowedCalls.delete(this.allowedCalls.values().next().value!);
   }
 
@@ -555,6 +572,10 @@ export class Gate {
     const session = w?.session ?? (parked ? this.store.session(sessionId) : undefined);
     // A closed card says how it ended; an open one nothing waits on can no longer be answered.
     if (a.state !== "pending" || !session) return { error: closedWhy(a), status: 409, approval: a };
+    // Do not turn a parked or pre-Auto card into a standing grant under Auto.
+    const auto = this.perm(sessionId).mode === "auto";
+    if (c.choice !== "deny" && !a.once && (auto || a.autoOwner) && (parked || !auto || !a.autoOwner))
+      return { error: interruptedApproval, status: 409, approval: a };
     if ((c.choice === "session" || c.choice === "always") && a.risk === "high")
       return { error: `this card covers its one call only (${a.why}): answer once or deny`, status: 400 };
     if (c.choice === "deny") {
@@ -569,7 +590,7 @@ export class Gate {
       for (const r of rules) this.addRule(session, r.kind, r.pattern, c.choice, a.suggest.find((x) => x.kind === r.kind && x.pattern === r.pattern?.trim())?.bind ?? (r.kind === "tool" ? w?.bind ?? a.bind : undefined));
     }
     this.finish(a, { state: "allowed", choice: c.choice });
-    w?.resolve({ allow: true, owner: true });
+    w?.resolve({ allow: true });
     // A new grant may settle other open cards it covers.
     if (c.choice !== "once") this.recheck(() => true);
     return { ok: true };
@@ -583,39 +604,40 @@ export class Gate {
   // After a mode or grant change: open cards that are now settled resolve.
   private recheck(which: (w: Waiter) => boolean) {
     for (const [id, w] of [...this.waiting]) {
+      if (w.once || !which(w)) continue; // a one-call card only the owner answers
+      const d = this.evaluate(w.session, w.name, w.cls, w.bind);
       const a = this.approval(id);
-      if (!a || (a.once && !a.ownerOnly) || !which(w)) continue;
-      const d = this.evaluate(w.session, w.name, w.cls, w.bind, w.call.ctx.spillDir);
-      if ("allow" in d && !a.once) {
+      if (!a) continue;
+      const mode = this.perm(w.session.id).mode;
+      if (mode === "auto" || a.autoOwner) {
+        if (mode === "auto" && a.autoOwner && !("deny" in d)) continue;
+        const deny = "deny" in d ? d.deny : interruptedApproval;
+        this.finish(a, { state: "denied", reason: deny });
+        w.resolve({ deny });
+        continue;
+      }
+      if ("allow" in d) {
         this.finish(a, { state: "allowed", choice: "once", reason: "settled by a grant or a mode change" });
         w.resolve({ allow: true });
       } else if ("deny" in d) {
         this.finish(a, { state: "denied", reason: d.deny });
         w.resolve({ deny: d.deny });
-      } else if ("ask" in d && !a.once) {
-        if (d.ask.ownerOnly) {
-          this.save({ ...a, ...ownerOnlyCard(d.ask) });
-          continue;
-        }
-        const mode = this.perm(w.session.id).mode;
-        if (autoReview(mode, d.ask)) {
-          this.finish(a, { state: "cancelled", reason: `sent to automatic review in ${mode}` });
-          void this.alone(w.session, w.call, w, a.summary, mode, d.ask).then(
-            (r) => w.resolve("deny" in r ? r : { allow: true }),
-            () => w.resolve({ deny: "Refused: automatic review could not finish." }),
-          );
-        }
+      } else if (mode === "full-auto") {
+        // The session went to full auto with a card open: the card closes, and
+        // the call is settled the way full auto settles it.
+        this.finish(a, { state: "cancelled", reason: "settled without the owner in full auto" });
+        const key = keyOf(w.name, w.bind ? { source: w.bind } : null, w.cls, w.call, a.summary);
+        void this.alone(w.session, w.call, w.name, w.cls, a.summary, key, a.why).then((r) => w.resolve("deny" in r ? r : { allow: true }));
       }
     }
   }
 }
 
 const callKey = (sessionId: string, callId: string) => `${sessionId}\u0000${callId}`;
-const ownerOnlyCard = (ask: Ask): Partial<Approval> => ({ once: true, ownerOnly: true, risk: "high", why: ask.why, suggest: [] });
 
 // A refused call as judged: its tool on that source in that shape, and its input.
-const keyOf = (name: string, target: Target, cls: CallClass, call: ToolCall, summary: string, scope?: unknown) =>
-  new Bun.CryptoHasher("sha256").update(JSON.stringify([name, target?.source ?? null, target?.shape ?? null, cls.kind === "other" ? JSON.stringify(call.input ?? {}) : summary, ...(scope ? [scope] : [])])).digest("hex").slice(0, 32);
+const keyOf = (name: string, target: { source?: string; shape?: string } | null, cls: CallClass, call: ToolCall, summary: string) =>
+  new Bun.CryptoHasher("sha256").update(JSON.stringify([name, target?.source ?? null, target?.shape ?? null, cls.kind === "other" ? JSON.stringify(call.input ?? {}) : summary])).digest("hex").slice(0, 32);
 
 const reasonOf = (r: string) => r.replace(/[.\s]+$/, "");
 

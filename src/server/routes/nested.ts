@@ -9,7 +9,7 @@ export const nestedRoutes: RouteModule = ({ store, errors }) => {
   registerHooks({
     afterTool(s, call, result) {
       try {
-        const blocks = nestedFor(store, s, call.tool, call.input, call.tool.cwdOf?.(call.ctx));
+        const blocks = nestedFor(store, s, call.tool, call.input, call.tool.cwdOf?.(call.ctx, call.input));
         if (!blocks.length) return;
         const text = blocks.join("\n\n");
         if (typeof result.content === "string") result.content = result.content ? `${result.content}\n\n${text}` : text;

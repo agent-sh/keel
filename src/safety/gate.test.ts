@@ -50,56 +50,74 @@ test("confinement follows the class the gate judged, not an input field", async 
   // A shell tool that offers no escalation runs confined whatever its input says.
   const plain = await g.beforeTool(session, call(bash, { command: "npm test", sandbox_permissions: "require_escalated" }));
   expect(plain && "ctx" in plain && typeof plain.ctx?.wrapSpawn).toBe("function");
-  // Leaving an enabled sandbox is owner-only even in automatic modes.
-  let judged = 0;
-  g.judge = async () => (judged++, { allow: true, risk: "high", reason: "fixture", model: "m" });
-  const asked = g.beforeTool(session, call(runCode, { code: "1", sandbox_permissions: "require_escalated" }));
-  await Bun.sleep(0);
-  const [card] = g.approvals({ session: "s1", pending: true });
-  expect(card).toMatchObject({ risk: "high", once: true, suggest: [] });
-  g.setPerm("s1", { mode: "auto" });
-  expect(g.approval(card!.id)?.state).toBe("pending");
-  expect(g.resolve(card!.id, "s1", { choice: "always" })).toHaveProperty("error");
-  expect(g.resolve(card!.id, "s1", { choice: "once" })).toEqual({ ok: true });
-  expect(await asked).toBeUndefined();
-  expect(judged).toBe(0);
+  // A program that asks to leave the sandbox goes to the judge in full auto,
+  // never to a card: with no judge to answer it is refused at once.
+  const asked = await g.beforeTool(session, call(runCode, { code: "1", sandbox_permissions: "require_escalated" }));
+  expect(g.approvals({ session: "s1", pending: true })).toEqual([]);
+  expect(asked).toHaveProperty("deny");
+  // The judge allows it: it runs outside the sandbox.
+  g.judge = async () => ({ allow: true, risk: "high", reason: "the owner asked for it", model: "m" });
+  expect(await g.beforeTool(session, call(runCode, { code: "1", sandbox_permissions: "require_escalated" }))).toBeUndefined();
 });
 
-test("an automatic verdict cannot survive a policy or target change during review", async () => {
+test("Auto discards pending permission when policy or cwd changes and does not transfer a retry", async () => {
   const { g, session, call } = scratchGate();
-  g.setPerm("s1", { mode: "auto", sandbox: "off" });
-  let nowOwnerOnly = false;
-  const drive: Tool = { ...bash, name: "fixture_send", target: async (input) => ({
-    name: "fixture_send", readOnly: false, input, cls: {
-      kind: "drive", target: "t", resource: "fixture_send:t", shown: "scratch note", owner: nowOwnerOnly ? "fixture now requires the owner" : undefined,
-    },
-  }) };
-  const run = async (change: () => void) => {
-    const started = Promise.withResolvers<void>();
+  g.setSandboxCheck(() => false);
+  g.setPerm(session.id, { mode: "auto", sandbox: "off" });
+  const a = mkdtempSync(join(session.workspace, "first-"));
+  const b = mkdtempSync(join(session.workspace, "second-"));
+  let cwd = a;
+  const tool = { ...bash, cwdOf: () => cwd };
+  const command = "printf marker > scratch.txt";
+  const run = () => g.check(session, call(tool, { command }));
+  const pending = async (alter: () => void) => {
+    cwd = a;
+    const sent = Promise.withResolvers<string | undefined>();
     const reply = Promise.withResolvers<Awaited<ReturnType<typeof g.judge>>>();
-    g.judge = () => { started.resolve(); return reply.promise; };
-    const pending = g.beforeTool(session, call(drive, {}));
-    await started.promise;
-    change();
+    g.judge = (r) => { sent.resolve(r.cwd); return reply.promise; };
+    const checked = run();
+    expect(await sent.promise).toBe(realOf(a));
+    alter();
     reply.resolve({ allow: true, risk: "low", reason: "fixture", model: "m" });
-    const result = await pending;
-    expect(result && "deny" in result ? result.deny : "").toContain("authorization changed");
-    expect(g.approvals({ session: "s1" })).toEqual([]);
+    expect(await checked).toHaveProperty("deny");
   };
-  await run(() => {
-    g.setPerm("s1", { mode: "read-only" });
-    g.setPerm("s1", { mode: "auto" }); // even if changed back before the judge returned
+  await pending(() => {
+    g.setPerm(session.id, { mode: "read-only" });
+    g.setPerm(session.id, { mode: "auto" });
   });
-  await run(() => { nowOwnerOnly = true; });
-  let judged = false;
-  g.judge = async () => (judged = true, { allow: true, risk: "low", reason: "fixture", model: "m" });
-  const owner = g.beforeTool(session, call(drive, {}));
-  await Bun.sleep(0);
-  const [card] = g.approvals({ session: "s1", pending: true });
-  expect(card).toMatchObject({ risk: "high", once: true });
-  g.resolve(card!.id, "s1", { choice: "deny" });
-  expect(await owner).toHaveProperty("deny");
-  expect(judged).toBe(false);
+  await pending(() => { cwd = b; });
+  expect(g.approvals()).toEqual([]);
+
+  cwd = a;
+  g.judge = async () => ({ allow: false, risk: "low", reason: "fixture", model: "m" });
+  expect(await run()).toHaveProperty("deny");
+  g.allowRetry(session.id, g.blocked(session.id)[0]!.id);
+  cwd = b;
+  expect(await run()).toHaveProperty("deny");
+  cwd = a;
+  expect(await run()).toHaveProperty("cls");
+});
+
+test("Auto does not reuse a parked approval or let it create a standing grant", async () => {
+  const store = new Store(mkdtempSync(join(tmpdir(), "keel-gate-")));
+  const g = new Gate(store, new Bus());
+  const session = store.createSession({ workspace: store.stateDir, model: "fixture:m" });
+  const stop = new AbortController();
+  const call: ToolCall = {
+    id: "parked", tool: bash, input: { command: "printf marker > scratch.txt" },
+    ctx: { sessionId: session.id, cwd: session.workspace, signal: stop.signal, spillDir: session.workspace, seen: new Map() },
+  };
+  g.setPerm(session.id, { mode: "ask", sandbox: "off" });
+  const checking = g.check(session, call);
+  const [a] = g.approvals({ pending: true });
+  g.park(session.id);
+  stop.abort();
+  await checking;
+  g.setPerm(session.id, { mode: "auto" });
+  expect(g.resolve(a!.id, session.id, { choice: "always" })).toHaveProperty("status", 409);
+  expect(g.rules()).toEqual([]);
+  const resumed = await g.check(session, { ...call, ctx: { ...call.ctx, signal: new AbortController().signal } });
+  expect("deny" in resumed ? resumed.deny : "").toContain("Check the prior outcome");
 });
 
 test("full auto: a refused call is refused again without review, and a run of refusals stops the judging", async () => {

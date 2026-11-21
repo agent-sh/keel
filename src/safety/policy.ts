@@ -10,8 +10,8 @@ import type { ToolKind } from "../tools/types.ts";
 export const MODES = [
   { id: "ask", name: "Ask", description: "Reads run. Edits, commands and other tools ask first unless a grant covers them." },
   { id: "auto-edits", name: "Auto edits", description: "Edits inside the workspace run. Commands ask, except read-only ones and sandboxed ones." },
-  { id: "auto", name: "Auto", description: "In-scope file reads and edits, safe commands and standing grants run. Other calls go to the judge model and are refused if it cannot approve them. Actions only you can allow still ask." },
-  { id: "full-auto", name: "Full auto", description: "Ordinary calls run without review. A flagged high-risk call goes to the safety rules and the judge model. Refusals are listed for you to let one retry through. Actions only you can allow still ask." },
+  { id: "auto", name: "Auto", description: "Reads, workspace edits, read-only or sandboxed commands, and standing grants run as usual. The judge reviews other calls and refuses them if it cannot approve. Actions requiring your consent still ask." },
+  { id: "full-auto", name: "Full auto", description: "Ordinary calls run without review. Flagged calls go to the safety rules and judge model. Refusals are listed for you to let one retry through. Tools that explicitly require your confirmation still ask." },
   { id: "read-only", name: "Read only", description: "Reads and read-only commands run. Everything else is refused." },
   { id: "plan", name: "Plan", description: "Reads and read-only commands run. The model plans, and you approve the plan before anything changes." },
   { id: "reviewer", name: "Reviewer", description: "A reviewer model decides what would ask. High-risk actions and anything it cannot judge still ask you." },
@@ -35,7 +35,7 @@ export type Rule = { id: string; kind: RuleKind; pattern: string; scope: string;
 export type Suggest = { kind: RuleKind; pattern: string; bind?: string };
 
 export type CallClass =
-  | { kind: "read"; paths?: string[] }
+  | { kind: "read" }
   | { kind: "shell"; command: string; escalate?: boolean; cwd?: string }
   | { kind: "control" } // input to, or the stop of, a process an allowed call started
   | { kind: "edit"; paths: string[] }
@@ -61,12 +61,7 @@ const onlyOwner = (why: string): Decision => ({ ask: { risk: "high", why, sugges
 // (its read flag and its kind); the input only supplies the command or the
 // paths of that kind, so no key a model puts in a call changes how it is judged.
 export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKind; input_schema?: any }, input: any, cwd: string): CallClass {
-  if (tool.readOnly) {
-    // Only the local file tools declare these path fields; an arbitrary input
-    // field must not change how a call is judged.
-    const path = ["file_path", "dir_path", "path"].find((k) => tool.input_schema?.properties?.[k]?.type === "string");
-    return path ? { kind: "read", paths: [resolve(cwd, typeof input?.[path] === "string" ? input[path] : ".")] } : { kind: "read" };
-  }
+  if (tool.readOnly) return { kind: "read" };
   switch (tool.kind) {
     case "control":
       return { kind: "control" };
@@ -107,24 +102,21 @@ export const RUNS_LATER = /^(?:.*\/)?(?:\.git\/(?:hooks\/|config$)|\.envrc$|\.mc
 export type Facts = { mode: Mode; workspace: string; sandboxed: boolean; rules: Rule[]; tool: string; bind?: string; scratch?: string[]; home?: string };
 
 export function decide(c: CallClass, f: Facts): Decision {
-  if (c.kind === "control") return { allow: true };
-  if (c.kind === "read") {
-    if (f.mode !== "auto" || !c.paths?.some((p) => !contains(f.workspace, p) && !f.scratch?.some((d) => contains(d, p)))) return { allow: true };
-    return toolGrant(f, f.tool, "the read is outside the workspace");
-  }
+  if (c.kind === "read" || c.kind === "control") return { allow: true };
   // Plan mode holds like read-only, and says how to go on.
   if (f.mode === "plan") {
     const d = decide(c, { ...f, mode: "read-only" });
     return "deny" in d ? { deny: `${d.deny.replace("This session is read-only", "This session is in plan mode")} Present your plan with the plan tool (ExitPlanMode or present_plan); the owner approves it before anything changes.` } : d;
   }
   if (c.kind === "shell") {
-    // Leaving the owner's sandbox is the owner's call in every mode, one call at a time.
-    if (c.escalate && f.sandboxed) {
+    // Escalation is one-call consent in Auto, even if the sandbox is off.
+    // Other modes keep their existing handling of escalation requests.
+    if (c.escalate && (f.sandboxed || f.mode === "auto")) {
       if (f.mode === "read-only") return { deny: "This session is read-only: commands cannot leave the sandbox." };
       const inner = decideShell(c.command, f, c.cwd);
       if ("deny" in inner) return inner;
       const why = ["the command asks to run outside the sandbox", "ask" in inner ? inner.ask.why : undefined].filter(Boolean).join("; and ");
-      return onlyOwner(why);
+      return f.mode === "auto" ? onlyOwner(why) : { ask: { risk: "high", why, suggest: [] } };
     }
     return decideShell(c.command, f, c.cwd);
   }
@@ -149,12 +141,9 @@ export function decide(c: CallClass, f: Facts): Decision {
   }
   if (f.mode === "full-auto") return { allow: true };
   if (f.mode === "read-only") return { deny: `This session is read-only: ${f.tool} can change things, so it does not run here.` };
-  return toolGrant(f, (c.kind === "other" && c.grant) || f.tool);
-}
-
-function toolGrant(f: Facts, grant: string, why?: string): Decision {
+  const grant = (c.kind === "other" && c.grant) || f.tool;
   if (f.rules.some((r) => r.kind === "tool" && r.pattern === grant && (!r.bind || r.bind === f.bind))) return { allow: true };
-  return { ask: { risk: "low", ...(why ? { why } : {}), suggest: [{ kind: "tool", pattern: grant, ...(f.bind ? { bind: f.bind } : {}) }] } };
+  return { ask: { risk: "low", suggest: [{ kind: "tool", pattern: grant, ...(f.bind ? { bind: f.bind } : {}) }] } };
 }
 
 // Never allowed on its own: in modes with a judge it is refused, whatever a

@@ -7,7 +7,7 @@ import { notFound } from "./missing.ts";
 import { abs, editFile, globFiles, guardOverwrite, mtime, numbered, readFile, ripgrep, writeFile } from "./files.ts";
 import { answerText, ask, type Question } from "./interact.ts";
 import { jobsOf, running, waitJob } from "./jobs.ts";
-import { headTail, runShell } from "./shell.ts";
+import { headTail, runShell, shellCwd } from "./shell.ts";
 import { skillTool } from "./skills.ts";
 import { fail, ok, type Tool } from "./types.ts";
 import { fetchFor, webSearch } from "./web.ts";
@@ -18,6 +18,7 @@ const run_shell_command: Tool = {
   name: "run_shell_command",
   readOnly: false,
   kind: "shell",
+  cwdOf: (ctx, input) => input?.dir_path ? abs(input.dir_path, ctx) : shellCwd(ctx),
   description:
     "Executes a given shell command as `bash -c <command>`. Set is_background for servers and watchers; " +
     "a command still running after 5 minutes moves to the background. The result gives Output, Exit Code and " +

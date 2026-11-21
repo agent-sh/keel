@@ -212,6 +212,7 @@ export function runCodeTool(rec: CodeRecorder): Tool {
       additionalProperties: false,
     },
     readOnly: false,
+    cwdOf: (ctx) => ctx.cwd,
     // The gate judges the program as the command it is; one that asks to run
     // outside the sandbox gets the card a shell command's escalation gets.
     async target(input) {

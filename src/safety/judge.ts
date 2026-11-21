@@ -77,6 +77,7 @@ export function judgePrompt(a: ReviewAsk, asked: { owner: string[]; task?: strin
   const system = policy?.trim() ? `${base}\n\nThe owner's own policy, which wins over the guidance above:\n${policy.trim()}` : base;
   const text = [
     `Session folder: ${a.session.workspace}`,
+    a.cwd ? `Command starting directory: ${a.cwd}` : "",
     a.high ? `Session started: ${new Date(a.session.created).toISOString()}` : "",
     `The owner's recent messages (oldest first):\n${asked.owner.join("\n") || "(none)"}`,
     asked.task ? `This session is a subagent. The task its parent session gave it (delegated by the agent the owner works with, not the owner's own words):\n${asked.task}` : "",

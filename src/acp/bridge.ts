@@ -23,7 +23,7 @@ const MODES = [
   { id: "ask", name: "Ask", description: "Reads run; edits, commands and other tools ask first." },
   { id: "auto-edits", name: "Auto edits", description: "Edits in the folder run; commands ask." },
   { id: "auto", name: "Auto", description: "Safe work runs; uncovered calls go to the judge. Owner-only actions still ask." },
-  { id: "full-auto", name: "Full auto", description: "Ordinary calls run without review. High-risk calls are checked; owner-only actions still ask." },
+  { id: "full-auto", name: "Full auto", description: "Ordinary calls run without review. Flagged calls are checked without waiting." },
   { id: "read-only", name: "Read only", description: "Nothing changes." },
 ];
 

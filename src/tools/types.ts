@@ -63,7 +63,7 @@ export type Tool = ToolSpec & {
   peer?: boolean;
   // Where a call's relative paths resolve, when not the session's folder
   // (apply_patch: the shell's current directory).
-  cwdOf?(ctx: ToolContext): string;
+  cwdOf?(ctx: ToolContext, input: any): string;
   // A dispatcher (mcp_call) names the tool it will run, so the permission gate
   // judges and grants that tool, not the dispatcher.
   // `cls`, when given, is what the call does (a drive tool judges its target).

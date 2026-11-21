@@ -3,7 +3,7 @@
 import { abs, editFile, globFiles, guardOverwrite, mtime, readFile, ripgrep, writeFile } from "./files.ts";
 import { answerText, ask, type Question } from "./interact.ts";
 import { findJob, jobsOf, running, stopJob } from "./jobs.ts";
-import { headTail, runShell } from "./shell.ts";
+import { headTail, runShell, shellCwd } from "./shell.ts";
 import { skillTool } from "./skills.ts";
 import { fail, ok, type Tool } from "./types.ts";
 import { fetchFor, webSearch } from "./web.ts";
@@ -21,6 +21,7 @@ const Bash: Tool = {
   name: "Bash",
   readOnly: false,
   kind: "shell",
+  cwdOf: shellCwd,
   description:
     "Run a bash command and return its output (stdout and stderr together). The working directory carries over " +
     "between calls when you cd inside the project; environment variables do not. Default timeout 120000 ms, " +

@@ -81,5 +81,5 @@ test("Auto reviews uncovered work while Full auto reviews only flagged calls", a
   await card.getByTestId("allow-once").click();
   await turnsDone(4);
   expect(readFileSync(join(work, ".envrc"), "utf8")).toBe("# Inert approval fixture\n");
-  expect(await cards()).toMatchObject([{ risk: "high", once: true, state: "allowed" }]);
+  expect(await cards()).toMatchObject([{ risk: "high", autoOwner: true, state: "allowed" }]);
 });

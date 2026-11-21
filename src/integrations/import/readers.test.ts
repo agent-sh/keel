@@ -65,6 +65,12 @@ test("a Claude Code import names the model of the latest reply, also past a long
     expect(claudeFound(p, 0, 0)?.perm_mode).toBe(mode);
     expect((await readClaude(p)).found.perm_mode).toBe(mode);
   }
+  write([...recs.slice(0, 3),
+    { ...base, type: "user", uuid: "latest", parentUuid: "a1", permissionMode: "auto", message: { role: "user", content: "active branch" } },
+    { ...recs[3], isSidechain: true },
+    reply("active-reply", "latest", "global.anthropic.claude-sonnet-5-5"),
+  ]);
+  expect((await readClaude(p)).found.perm_mode).toBe("auto");
   // Only the first reply, beyond the head the listing samples: still named.
   write([...recs.slice(0, 3), { ...base, type: "user", uuid: "u3", parentUuid: "a1", message: { role: "user", content: "tail " + pad + pad } }]);
   expect(claudeFound(p, 0, 0)?.model).toBe("claude-opus-5-5");

@@ -65,8 +65,9 @@ const commandText = (t: string) => {
 const modelOf = (r: any): string | undefined => (r?.type === "assistant" && typeof r.message?.model === "string" && r.message.model !== "<synthetic>" ? r.message.model : undefined);
 
 // Claude Code's permission modes as Keel's (recorded on each prompt).
-const PERM = new Map<string, Found["perm_mode"]>([["default", "ask"], ["acceptEdits", "auto-edits"], ["auto", "auto"], ["bypassPermissions", "full-auto"], ["plan", "plan"]]);
-const permOf = (r: any): Found["perm_mode"] => (r?.type === "user" && typeof r.permissionMode === "string" ? PERM.get(r.permissionMode) : undefined);
+const PERM = new Map<string, Found["perm_mode"]>([["default", "ask"], ["acceptEdits", "auto-edits"], ["auto", "auto"], ["bypassPermissions", "full-auto"], ["plan", "plan"], ["dontAsk", "read-only"]]);
+const permOf = (r: any): Found["perm_mode"] =>
+  r?.type === "user" && typeof r.permissionMode === "string" && r.permissionMode ? PERM.get(r.permissionMode) ?? "ask" : undefined;
 
 export function claudeFound(path: string, size: number, mtime: number): Found | null {
   const { head, tail } = headTail(path, 48 * 1024);
@@ -143,6 +144,9 @@ export async function readClaude(path: string): Promise<Read> {
   }
   chain.reverse();
   found.model = chain.map(modelOf).findLast(Boolean) ?? found.model;
+  // The fast listing samples the file, not its active branch. Only this
+  // branch's recorded mode can set the new session's permissions.
+  found.perm_mode = chain.map(permOf).findLast(Boolean);
   const b = new Builder();
   const notes: string[] = [];
   let lastMsg: string | undefined;
