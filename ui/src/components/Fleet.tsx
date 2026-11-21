@@ -2,7 +2,7 @@
 // run on (header chip, tool row badge), and the machine a new session starts on.
 import { Popover } from "@base-ui/react/popover";
 import { ArrowRight, Check, ChevronDown, ChevronLeft, CloudOff, Cpu, Folder, FolderGit2, History, RefreshCw, Server, Wand2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { splitId } from "../lib/fleet-ids.ts";
 import { fleet, machineName, setNewMachine, useFleet, type RemoteDirs } from "../lib/fleet.ts";
@@ -304,10 +304,18 @@ export function RemoteFolderPicker({ machine, value, onChange }: { machine: stri
   const recent = [...new Set(Object.values(sessions).filter((s) => s.machine === machine && !s.archived).sort((a, b) => b.updated - a.updated).map((s) => s.workspace))].slice(0, 5);
   const home = m?.facts?.home;
   const rel = (p: string) => (home && p.startsWith(home) ? `~${p.slice(home.length)}` : p);
-  const go = (path?: string) => { setErr(""); fleet.dirs(machine, path).then(setBrowse).catch((e) => setErr(failed(e, { at: "RemoteFolderPicker" }))); };
-  const pick = (p: string) => { onChange(p); setOpen(false); setBrowse(null); };
+  // Answers come back in any order: only the one to the newest question is
+  // shown, and closing the popup (or picking) leaves no question open.
+  const asked = useRef(0);
+  const go = (path?: string) => {
+    const mine = ++asked.current;
+    setErr("");
+    fleet.dirs(machine, path).then((r) => { if (mine === asked.current) setBrowse(r); }, (e) => { if (mine === asked.current) setErr(failed(e, { at: "RemoteFolderPicker" })); });
+  };
+  const close = () => { asked.current++; setBrowse(null); setErr(""); };
+  const pick = (p: string) => { onChange(p); setOpen(false); close(); };
   return (
-    <Popover.Root open={open} onOpenChange={(o) => { setOpen(o); if (o && !recent.length) go(shown); if (!o) setBrowse(null); }}>
+    <Popover.Root open={open} onOpenChange={(o) => { setOpen(o); if (o && !recent.length) go(shown); if (!o) close(); }}>
       <Popover.Trigger data-testid="remote-folder-picker" title={`${shown} on ${m?.name ?? machine}`} className="inline-flex h-8 max-w-full items-center gap-1.5 rounded-md border border-line bg-raised px-2.5 text-ui text-muted shadow-1 hover:text-fg data-popup-open:text-fg">
         <Folder className="size-3.5 shrink-0 text-accent" />
         <span className="truncate font-medium text-fg">{shown.split("/").pop() || "Folder"}</span>
