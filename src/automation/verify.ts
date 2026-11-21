@@ -22,13 +22,21 @@ export type Verdict = { verdict: "met" | "not_met"; reason: string; evidence: st
 const SCHEMA = { type: "object", required: ["verdict", "reason"], properties: { verdict: { enum: ["met", "not_met"] }, reason: { type: "string" }, evidence: { type: "array", items: { type: "string" } } } };
 const WAIT_MS = Number(process.env.KEEL_VERIFY_TIMEOUT_MS ?? 15 * 60_000);
 
-// The verifier's answer, from its last reply. A reply that is not the JSON asked for is no verdict.
-export function parseVerdict(text: string): Verdict | { error: string } {
+// The verifier's answer, from its last reply. A reply that is not the JSON
+// asked for is no verdict, and neither is a met that names nothing it saw
+// (`unproven`): met is a claim until evidence comes with it. A not met needs
+// none: its reason says what is missing.
+export function parseVerdict(text: string): Verdict | { error: string; unproven?: true } {
   const got = extractJson(text);
   if ("error" in got || check(SCHEMA, got.value)) return { error: `the verifier gave no verdict: ${text.slice(0, 200) || "(no reply)"}` };
   const v = got.value as Verdict;
-  return { verdict: v.verdict, reason: String(v.reason).slice(0, 2000), evidence: (Array.isArray(v.evidence) ? v.evidence : []).map((e) => String(e).slice(0, 400)).slice(0, 12) };
+  const evidence = (Array.isArray(v.evidence) ? v.evidence : []).map((e) => String(e).trim().slice(0, 400)).filter(Boolean).slice(0, 12);
+  if (v.verdict === "met" && !evidence.length) return { error: "the verifier said met and named no evidence it saw", unproven: true };
+  return { verdict: v.verdict, reason: String(v.reason).slice(0, 2000), evidence };
 }
+
+const EVIDENCE =
+  'Your verdict was "met" with no evidence, and met counts only with what you saw. Reply again with only the JSON: the same verdict with "evidence" listing each check (file:line, command and its result), or "not_met" with what is missing.';
 
 export const task = (o: { objective: string; claim: string; judged: string; commands: string[]; cwd: string }) =>
   [
@@ -100,14 +108,23 @@ export async function verify(sessionId: string, g: { objective: string; started_
   bus.emit({ t: "session", session: store.session(child.id)! });
   onChild?.(child.id);
   const t = trail(sessionId, g.started_ms);
-  const ended = new Promise<string>((resolve) => {
-    const timer = setTimeout(() => { waiting.delete(child.id); engine.interrupt(child.id).catch(() => {}); resolve("timeout"); }, WAIT_MS);
-    waiting.set(child.id, (reason) => { clearTimeout(timer); waiting.delete(child.id); resolve(reason); });
-  });
-  engine.send(child.id, task({ objective: g.objective, claim: t.claim, judged, commands: t.commands, cwd: s.workspace }), { meta: { kind: "verify_goal" } });
-  const reason = await ended;
+  // One turn of the verifier: its answer, or why it gave none.
+  const turn = async (text: string): Promise<Verdict | { error: string; unproven?: true }> => {
+    const ended = new Promise<string>((resolve) => {
+      const timer = setTimeout(() => { waiting.delete(child.id); engine.interrupt(child.id).catch(() => {}); resolve("timeout"); }, WAIT_MS);
+      waiting.set(child.id, (reason) => { clearTimeout(timer); waiting.delete(child.id); resolve(reason); });
+    });
+    engine.send(child.id, text, { meta: { kind: "verify_goal" } });
+    const reason = await ended;
+    return reason === "end_turn" ? parseVerdict(lastText(child.id)) : { error: reason === "timeout" ? `the verifier ran past ${Math.round(WAIT_MS / 60_000)} minutes` : `the verifier's turn ended: ${reason}` };
+  };
+  let result = await turn(task({ objective: g.objective, claim: t.claim, judged, commands: t.commands, cwd: s.workspace }));
+  if ("unproven" in result) {
+    // Asked once for what it saw, in its own context (what it read is cached there).
+    await engine.idle(child.id);
+    result = await turn(EVIDENCE);
+  }
   const u = store.session(child.id)?.usage as any;
   const tokens = (u?.input ?? 0) + (u?.output ?? 0) + (u?.cache_read ?? 0) + (u?.cache_write ?? 0);
-  const result = reason === "end_turn" ? parseVerdict(lastText(child.id)) : { error: reason === "timeout" ? `the verifier ran past ${Math.round(WAIT_MS / 60_000)} minutes` : `the verifier's turn ended: ${reason}` };
   return { result, child_id: child.id, tokens };
 }

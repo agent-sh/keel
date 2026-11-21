@@ -91,7 +91,8 @@ const instance = (g?: Goal) => (g ? `${g.id ?? ""}:${g.rev ?? 0}` : "");
 function dropVerifier(g?: Goal) {
   if (!g?.verifying || !g.verifier_session) return;
   const a = agents.byChild(g.verifier_session);
-  if (a && !agents.isEnded(a)) agents.stop(a.id, "parent");
+  // Its record ends with its first answer; a turn asked of it after that still runs.
+  if (a && (!agents.isEnded(a) || D().engine.isRunning(a.session_id))) agents.stop(a.id, "parent");
 }
 const open = (g?: Goal) => !!g && g.status !== "achieved" && g.status !== "impossible";
 

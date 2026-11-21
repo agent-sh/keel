@@ -12,6 +12,7 @@ import { setDeps } from "./core.ts";
 import * as activity from "./activity.ts";
 import * as agents from "./agents.ts";
 import * as goals from "./goals.ts";
+import { parseVerdict } from "./verify.ts";
 import * as waits from "./waits.ts";
 
 let store!: Store;
@@ -24,6 +25,7 @@ const live = new Set<string>();
 const engine = {
   isRunning: (id: string) => running || live.has(id),
   interrupt: async () => {},
+  idle: async () => {},
   send: (id: string, text: string, o: any) => {
     if (store.session(id)?.parent_id) live.add(id);
     return { event: store.append(id, "user", { text, ...o?.meta }) };
@@ -167,6 +169,50 @@ test("a late verifier of a cleared goal leaves the new goal's verification alone
   await checkB;
   expect(goals.get(s.id)).toMatchObject({ objective: "Verify B", status: "achieved", verified: true, verifying: false, evidence: ["b.txt:1 reads done"] });
   expect(said(s.id, "continue")).toHaveLength(0);
+});
+
+// A goal whose judge said met, up to its verifier's child session.
+async function judgedMet(objective: string) {
+  const s = session();
+  await goals.set(s.id, { objective });
+  turn(s.id, 5);
+  const check = goals.afterTurn(s.id, "end_turn");
+  verdict('{"verdict": "met", "reason": "it looks done"}');
+  const child = await until(() => goals.get(s.id)?.verifier_session);
+  await until(() => live.has(child));
+  return { id: s.id, child, check };
+}
+
+test("a verifier's met counts only with evidence it names", async () => {
+  expect(parseVerdict('{"verdict": "met", "reason": "all good"}')).toHaveProperty("error");
+  expect(parseVerdict('{"verdict": "met", "reason": "all good", "evidence": []}')).toHaveProperty("error");
+  expect(parseVerdict('{"verdict": "met", "reason": "all good", "evidence": ["  ", ""]}')).toHaveProperty("error");
+  expect(parseVerdict('{"verdict": "met", "reason": "all good", "evidence": [" bun test: 4 pass ", ""]}')).toEqual({ verdict: "met", reason: "all good", evidence: ["bun test: 4 pass"] });
+  expect(parseVerdict('{"verdict": "not_met", "reason": "no test was run, so there is nothing to cite"}')).toEqual({ verdict: "not_met", reason: "no test was run, so there is nothing to cite", evidence: [] });
+
+  // A bare met is asked for its evidence once, in the verifier's own context; still bare, the goal is not achieved.
+  for (const bare of ['{"verdict": "met", "reason": "all good"}', '{"verdict": "met", "reason": "all good", "evidence": []}', '{"verdict": "met", "reason": "all good", "evidence": ["   "]}']) {
+    const g = await judgedMet("ship it");
+    verifierSays(g.child, bare);
+    await until(() => live.has(g.child));
+    verifierSays(g.child, bare);
+    await g.check;
+    expect(goals.get(g.id)).toMatchObject({ status: "paused", status_reason: expect.stringContaining("no evidence"), verifying: false });
+    expect(goals.get(g.id)!.verified ?? false).toBe(false);
+  }
+
+  const second = await judgedMet("ship it");
+  verifierSays(second.child, '{"verdict": "met", "reason": "all good"}');
+  await until(() => live.has(second.child));
+  verifierSays(second.child, '{"verdict": "met", "reason": "the suite passes", "evidence": ["bun test: 4 pass, 0 fail"]}');
+  await second.check;
+  expect(goals.get(second.id)).toMatchObject({ status: "achieved", verified: true, evidence: ["bun test: 4 pass, 0 fail"] });
+
+  const missing = await judgedMet("ship it");
+  verifierSays(missing.child, '{"verdict": "not_met", "reason": "no test was run, so there is nothing to cite"}');
+  await missing.check;
+  expect(goals.get(missing.id)).toMatchObject({ status: "pursuing", last_verdict: "not_met" });
+  expect(said(missing.id, "continue").map((e) => e.data.text)).toEqual([expect.stringContaining("nothing to cite")]);
 });
 
 test("a paused goal is not resumed in an archived session", async () => {
