@@ -86,13 +86,13 @@ export function startLegacyMcp(opt: { declineGet?: boolean } = {}) {
             mine = c;
             end(sid); // one stream per session: a new one replaces the old
             streams.set(sid, c);
-            c.enqueue(enc.encode(`id: ${++eventId}\ndata:\n\n`)); // the priming event
+            c.enqueue(enc.encode(`id: ${++eventId}\nretry: 50\ndata:\n\n`)); // the priming event: come back 50 ms after a cut
           },
         }), { headers: { "content-type": "text/event-stream", "cache-control": "no-store" } });
       }
       if (req.method === "DELETE") {
         stats.deletes++;
-        if (sid) { end(sid); live.delete(sid); }
+        if (sid) live.delete(sid); // its stream is left for the client to close
         return new Response(null, { status: 200 });
       }
 

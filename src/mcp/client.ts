@@ -52,6 +52,15 @@ export class SessionExpired extends Error {
   }
 }
 
+// What an SSE stream said besides its messages: the last event ID, the wait
+// the server asked for before a reconnect, and how many events came.
+type SseState = { id?: string; retry?: number; events: number };
+
+const pause = (ms: number, signal: AbortSignal) => new Promise<void>((res) => {
+  const t = setTimeout(res, ms);
+  signal.addEventListener("abort", () => { clearTimeout(t); res(); }, { once: true });
+});
+
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
 
 export class McpClient {
@@ -123,6 +132,7 @@ export class McpClient {
     this.instructions = r?.instructions;
     this.serverInfo = r?.serverInfo;
     await this.notify("notifications/initialized", {});
+    this.listen();
   }
 
   private async probe() {
@@ -179,6 +189,7 @@ export class McpClient {
     if (this.closed) return;
     this.closed = true;
     this.closedWhy = why;
+    this.stream?.abort();
     this.closeHook?.(why);
   }
 
@@ -291,10 +302,11 @@ export class McpClient {
     if (text.trim()) this.dispatch(JSON.parse(text));
   }
 
-  private async readSse(res: Response) {
+  private async readSse(res: Response, st?: SseState) {
     const dec = new TextDecoder();
     let buf = "";
     let data: string[] = [];
+    const value = (line: string, name: string) => line.slice(name.length + 1).replace(/^ /, "");
     for await (const chunk of chunks(res.body!)) {
       buf += dec.decode(chunk, { stream: true });
       let nl: number;
@@ -306,10 +318,68 @@ export class McpClient {
             try { this.dispatch(JSON.parse(data.join("\n"))); } catch {}
           }
           data = [];
-        } else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+        } else if (line.startsWith("data:")) {
+          data.push(value(line, "data"));
+          if (st) st.events++;
+        } else if (st && line.startsWith("id:")) st.id = value(line, "id");
+        else if (st && line.startsWith("retry:") && /^\d+$/.test(value(line, "retry"))) st.retry = Number(value(line, "retry"));
       }
     }
     if (data.length) try { this.dispatch(JSON.parse(data.join("\n"))); } catch {}
+  }
+
+  // ---- the standalone stream (legacy HTTP) ----
+
+  // A legacy server may send messages outside any request: a list changed,
+  // a resource was updated. They come on an SSE stream the client opens with
+  // GET (2025-11-25 transports, Listening for Messages from the Server). It
+  // is opened for a server that says it sends what Keel listens to. A server
+  // that answers 405, or anything but a stream, offers none: requests go on
+  // without it, and it is not asked again.
+  //
+  // A stream that ended is opened again from the last event it carried
+  // (Resumability and Redelivery), after the wait the server named (`retry`),
+  // else after a second, growing 1.5 times to 30 s while streams end with
+  // nothing on them. Two failures to open in a row end it (the delays and
+  // the count are the reference SDK's). A session that ended is found by the
+  // next request, not here.
+  private stream?: AbortController;
+  private listen() {
+    const c = this.capabilities;
+    if (this.t.kind !== "http" || this.era !== "legacy" || this.closed || this.stream) return;
+    if (!c.tools?.listChanged && !c.resources?.listChanged && !c.resources?.subscribe) return;
+    const url = this.t.url;
+    const ac = (this.stream = new AbortController());
+    const st: SseState = { events: 0 };
+    void (async () => {
+      let failed = 0, quiet = 0;
+      while (!ac.signal.aborted) {
+        const before = st.events;
+        try {
+          const h = await this.headers("", {});
+          delete h["content-type"];
+          delete h["mcp-method"];
+          h.accept = "text/event-stream";
+          if (st.id !== undefined) h["last-event-id"] = st.id;
+          // Bun ends a response that stays silent for five minutes; this one is silent by nature.
+          const res = await fetch(url, { method: "GET", headers: h, signal: ac.signal, timeout: false } as RequestInit);
+          const stream = res.ok && (res.headers.get("content-type") ?? "").includes("text/event-stream");
+          if (!stream) {
+            void res.body?.cancel().catch(() => {});
+            if (res.status < 500) return;
+            throw new Error(`HTTP ${res.status}`);
+          }
+          failed = 0;
+          await this.readSse(res, st).catch(() => {}); // a cut stream is an ended one
+        } catch {
+          if (++failed > 2) return;
+        }
+        if (ac.signal.aborted) return;
+        const wait = st.retry ?? Math.min(30_000, 1000 * 1.5 ** quiet);
+        quiet = st.events > before ? 0 : quiet + 1;
+        await pause(wait, ac.signal);
+      }
+    })();
   }
 
   // ---- requests ----
@@ -406,6 +476,7 @@ export class McpClient {
 
   close() {
     this.failAll(new Error("the connection is closed"));
+    this.stream?.abort();
     if (this.closed) return;
     this.closed = true;
     if (this.proc) {

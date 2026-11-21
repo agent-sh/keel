@@ -14,7 +14,7 @@ const manager = (servers: Record<string, any>, errors: unknown[] = []) => {
   return m;
 };
 const ctx = (extra: Record<string, unknown> = {}) => ({ sessionId: "fixture", cwd: "/", signal: new AbortController().signal, seen: new Map(), spillDir: dir(), ...extra }) as any;
-const until = async (ok: () => boolean | Promise<boolean>, what: string, ms = 5000) => {
+const until = async (ok: () => boolean | Promise<boolean>, what: string, ms = 3000) => {
   const end = Date.now() + ms;
   while (!(await ok())) {
     if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
@@ -62,5 +62,54 @@ test("a session the server ended fails the call once, and the next call runs on 
   } finally {
     m.dispose();
     s.stop();
+  }
+});
+
+test("updates arrive on the GET stream, a server that declines it still answers, and a replaced connection closes its stream", async () => {
+  const s = startLegacyMcp(), plain = startLegacyMcp({ declineGet: true });
+  const m = manager({ legacy: { url: s.url }, plain: { url: plain.url } });
+  const row = () => m.list().find((x) => x.name === "legacy")!;
+  try {
+    await m.ensure("legacy");
+    await until(async () => (await s.stats()).streams_open === 1, "the GET stream");
+    // Reading subscribes; from here no request is in flight, so an update can only come on the stream.
+    await m.readResource("legacy", "legacy://one");
+    const rev = row().resources_rev;
+    expect((await s.control({ emit: "resources/updated" })).sent).toBe(1);
+    await until(() => row().resource_updates["legacy://one"] === 1, "the resource update");
+    await s.control({ emit: "resources/list_changed" });
+    await until(() => row().resources_rev === rev + 1, "the resource list change");
+    await s.control({ emit: "tools/list_changed" });
+    await until(() => row().tool_names.includes("late"), "the tool list change");
+
+    // A stream the server cut is opened again from the last event it sent, after the wait it named.
+    await s.control({ drop_stream: true });
+    await until(async () => (await s.stats()).streams_opened === 2, "the stream again");
+    let st = await s.stats();
+    expect(st.last_event_ids).toEqual([null, "4"]);
+    expect(st.streams_closed).toBe(0);
+    await s.control({ emit: "resources/updated" });
+    await until(() => row().resource_updates["legacy://one"] === 2, "an update on the new stream");
+
+    // A reconnect replaces the connection: the client closes the old stream itself.
+    await m.reconnect("legacy");
+    await until(async () => (await s.stats()).streams_closed === 1, "the old stream closed");
+    await until(async () => (await s.stats()).streams_open === 1, "the new connection's stream");
+    st = await s.stats();
+    expect(st.streams_opened).toBe(3);
+    expect(st.last_event_ids[2]).toBeNull();
+
+    // 405: the server offers no stream. Requests work, and it is not asked again.
+    await m.ensure("plain");
+    expect((await m.call("plain", "echo", { text: "a" }, ctx())).content).toBe("echo: a");
+    await Bun.sleep(200);
+    const p = await plain.stats();
+    expect(p.gets_declined).toBe(1);
+    expect(p.streams_opened).toBe(0);
+  } finally {
+    m.dispose();
+    await until(async () => (await s.stats()).streams_open === 0, "the stream closed with the manager");
+    s.stop();
+    plain.stop();
   }
 });

@@ -71,3 +71,43 @@ test("mcp http: a session the server ended", async ({ page, request }) => {
     await s.stop();
   }
 });
+
+// What the server sends on its own, with no request open: a changed tool
+// list, a changed resource list, a changed resource. They come on the stream
+// Keel holds open with GET; the panel lists again and marks an open body.
+test("mcp http: updates the server sends on its own", async ({ page, request }) => {
+  const s = await standIn(request, "legacy");
+  try {
+    await expect.poll(async () => (await s.stats()).streams_open).toBe(1);
+    await page.goto("/");
+    await page.getByTestId("composer").fill("/mcp");
+    await page.keyboard.press("Enter");
+    const panel = page.getByTestId("mcp-panel");
+    await panel.locator('[data-testid="mcp-entry"]').filter({ hasText: "legacy" }).first().click();
+    const row = panel.locator('[data-testid="mcp-server"][data-name="legacy"]');
+    await expect(row.getByTestId("mcp-tool-count")).toHaveText("2 tools");
+    await row.getByTestId("mcp-contents-toggle").click();
+    await expect(row.getByTestId("mcp-resource")).toHaveText(["legacy://one", "legacy://two"]);
+    await row.getByTestId("mcp-resource").filter({ hasText: "legacy://one" }).click();
+    await expect(row.getByTestId("mcp-content-text")).toContainText("legacy://one version 1");
+    await expect(row.getByTestId("mcp-resource-stale")).toHaveCount(0);
+
+    expect((await s.control({ emit: "tools/list_changed" })).sent).toBe(1);
+    await expect(row.getByTestId("mcp-tool-count")).toHaveText("3 tools");
+    await s.control({ emit: "resources/list_changed" });
+    await expect(row.getByTestId("mcp-resource")).toHaveText(["legacy://one", "legacy://two", "legacy://three"]);
+    await s.control({ emit: "resources/updated" });
+    await expect(row.getByTestId("mcp-resource-stale")).toBeVisible();
+    await shoot(page, "mcp-http-02-updates");
+    await row.getByTestId("mcp-resource-stale").click();
+    await expect(row.getByTestId("mcp-content-text")).toContainText("legacy://one version 2");
+    await expect(row.getByTestId("mcp-resource-stale")).toHaveCount(0);
+
+    // Reconnect replaces the connection: one stream stays open, the old one closed by Keel.
+    await row.getByTestId("mcp-reconnect").click();
+    await expect.poll(async () => (await s.stats()).streams_closed).toBe(1);
+    await expect.poll(async () => (await s.stats()).streams_open).toBe(1);
+  } finally {
+    await s.stop();
+  }
+});
