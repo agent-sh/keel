@@ -229,11 +229,12 @@ function AddProvider({ edit }: { edit?: string }) {
   };
 
   // One short request to the model picked: its step joins the steps the connection test left.
+  // It goes to the address the connection test answered at (the /v1 it found), where the listing came from.
   const testModel = async () => {
     if (!form || !test || !model) return;
     setBusy("model"); setError("");
     try {
-      const r = await api<TestResult>("/api/providers/test", { method: "POST", body: JSON.stringify({ config: toConfig(form, kept), key: form.key === "keyring" ? form.secret || undefined : undefined, model, only: "model" }) });
+      const r = await api<TestResult>("/api/providers/test", { method: "POST", body: JSON.stringify({ config: { ...toConfig(form, kept), ...(test.suggest ? { base_url: test.suggest.base_url } : {}) }, key: form.key === "keyring" ? form.secret || undefined : undefined, model, only: "model" }) });
       const asked = r.steps.filter((s) => s.id === "model");
       // The address or the key failed this time: what it said replaces the earlier steps.
       const steps = asked.length ? [...test.steps.filter((s) => s.id !== "model"), ...asked] : r.steps;

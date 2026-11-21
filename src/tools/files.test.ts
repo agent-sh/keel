@@ -123,7 +123,7 @@ test("a ranged read of a large file reads up to its page and no further, and can
   // The default first page: cut by its size, it says where to go on without counting the file's lines.
   const page = await reading(() => readFile(p, ctx, { limit: 2000 }));
   expect(page.r.partial).toBe(true);
-  expect(String(page.r.content)).toMatch(/\n\nPARTIAL view: lines 1-(\d+)\. Continue with offset \d+\.$/);
+  expect(String(page.r.content)).toMatch(/\n\nPARTIAL view: lines 1-(\d+), ending \d+% into the file's [\d.]+ (KB|MB)\. Continue with offset \d+\.$/);
   expect(page.read).toBeLessThan(1024 * 1024);
   // A range in the middle reads up to it, not the half after it.
   const mid = await reading(() => readFile(p, ctx, { offset: N / 2 + 1, limit: 1 }));

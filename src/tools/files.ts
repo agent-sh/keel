@@ -86,11 +86,13 @@ export async function lineRange(p: string, o: { offset?: number; limit?: number;
     return line <= end;
   };
   const fh = await open(p, "r");
+  let bytes = 0; // the file's size when the read began
   const buf = new Uint8Array(CHUNK);
   let pos = 0;
   let ended = false;
   let stopped = false;
   try {
+    bytes = (await fh.stat()).size;
     let dec: TextDecoder | undefined;
     scan: for (;;) {
       if (o.signal?.aborted) { stopped = true; break; }
@@ -121,7 +123,9 @@ export async function lineRange(p: string, o: { offset?: number; limit?: number;
   const total = ended ? line - 1 : undefined;
   let body = out.join("\n");
   // Cut by its size before the range's end: where to go on, without the line count a whole read would take.
-  if (cut) body += `\n\nPARTIAL view: lines ${start}-${last}. Continue with offset ${last + 1}.`;
+  // The file's scale is said by bytes instead: how far into it the page ends.
+  const share = bytes > 0 ? `, ending ${Math.min(99, Math.max(1, Math.round((pos / bytes) * 100)))}% into the file's ${bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.round(bytes / 1024)} KB`}` : "";
+  if (cut) body += `\n\nPARTIAL view: lines ${start}-${last}${share}. Continue with offset ${last + 1}.`;
   return { body, partial: cut, total, past: total !== undefined && start > total, stopped, bytes: pos };
 }
 
