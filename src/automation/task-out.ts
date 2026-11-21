@@ -18,7 +18,7 @@ export function start(sourceId: string, taskId: string): { status: number; body:
   const prompt = (to: string) => engine.send(to, `${t.text}\n\n(A task taken from the session "${s.title || "untitled"}".)`, { meta: { kind: "task_start", from_session: s.id, task_id: t.id } });
   if (t.dest_session && store.session(t.dest_session)) {
     // Linked by a daemon that stopped before the prompt, when these were separate writes: it gets it now.
-    const prompted = store.events(t.dest_session).some((e) => e.kind === "user" && e.data.kind === "task_start" && e.data.task_id === t.id);
+    const prompted = store.db.query("SELECT 1 FROM events WHERE session_id = ? AND kind = 'user' AND json_extract(data, '$.kind') = 'task_start' AND json_extract(data, '$.task_id') = ? LIMIT 1").get(t.dest_session, t.id);
     if (!prompted) prompt(t.dest_session);
     return { status: 200, body: { session_id: t.dest_session, existing: true } };
   }

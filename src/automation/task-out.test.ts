@@ -11,6 +11,7 @@ import { setDeps } from "./core.ts";
 import * as activity from "./activity.ts";
 import * as goals from "./goals.ts";
 import * as taskOut from "./task-out.ts";
+import * as renames from "./task-renames.ts";
 
 const store = new Store(mkdtempSync(join(tmpdir(), "keel-task-out-")));
 store.migrate("ALTER TABLE sessions ADD COLUMN machine TEXT"); // the fleet adds it in the daemon
@@ -83,10 +84,17 @@ test("a linked destination that never got its prompt gets it on the retry, once"
   expect(left(s.id, task.id)).toEqual({ dests: [dest.id], link: dest.id, prompts: 1 });
 });
 
-test("a task cancelled before any launch is claimed is not started", () => {
+// Only a launch links a row to a session. A destination named in an edit of
+// the row (the panel's PATCH passes its body on) is not taken: the task's
+// words are never sent into a session the daemon did not make for it.
+test("an edit of the row cannot name its destination", () => {
   reset();
   const { s, task } = source();
-  goals.editTask(s.id, task.id, { status: "cancelled" });
-  expect(taskOut.start(s.id, task.id)).toMatchObject({ status: 409, body: { status: "cancelled" } });
-  expect(left(s.id, task.id)).toEqual({ dests: [], link: null, prompts: 0 });
+  const other = store.createSession({ model: "m", workspace: "/", title: "Someone else's session" });
+  renames.edit(s.id, task.id, { status: "in_progress", dest_session: other.id } as any);
+  expect(goals.tasks(s.id)[0]).toMatchObject({ status: "in_progress", dest_session: null });
+  const r = taskOut.start(s.id, task.id);
+  expect(r.status).toBe(201);
+  expect(r.body.session_id).not.toBe(other.id);
+  expect(store.events(other.id)).toEqual([]);
 });

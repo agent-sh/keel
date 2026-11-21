@@ -13,10 +13,12 @@ import type { Task, TaskStatus } from "./goals.ts";
 type Renamed = { from: string; to: string; pos: number }; // from: the words the model's plan still has
 const renames = new Map<string, Map<string, Renamed>>(); // session -> task id
 
-// The owner's edit of a row (the panel's PATCH), with a change of its words remembered.
-export function edit(sessionId: string, id: string, p: { text?: string; status?: TaskStatus; was?: string; dest_session?: string }): Task {
+// The owner's edit of a row (the panel's PATCH), with a change of its words
+// remembered. Its words and its status only: the session a row was taken into
+// is set by the launch alone (task-out.ts), never named by a request.
+export function edit(sessionId: string, id: string, p: { text?: string; status?: TaskStatus; was?: string }): Task {
   const before = goals.tasks(sessionId).find((t) => t.id === id);
-  const after = goals.editTask(sessionId, id, p);
+  const after = goals.editTask(sessionId, id, { text: p.text, status: p.status, was: p.was });
   if (before && after.text !== before.text) {
     const mine = renames.get(sessionId) ?? renames.set(sessionId, new Map()).get(sessionId)!;
     mine.set(id, { from: mine.get(id)?.from ?? before.text, to: after.text, pos: before.pos });

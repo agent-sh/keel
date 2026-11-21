@@ -23,7 +23,7 @@ test("a row renamed while an older plan is in flight keeps its id, status and de
   const s = session();
   renames.fromPlan(s.id, "update_plan", plan(["Run migration", "pending"], ["Docs", "pending"]));
   const [a, b] = goals.tasks(s.id);
-  renames.edit(s.id, a!.id, { status: "in_progress", dest_session: "dest-1" });
+  goals.editTask(s.id, a!.id, { status: "in_progress", dest_session: "dest-1" }); // taken into a session of its own
   renames.edit(s.id, a!.id, { text: "Run the migration on staging", was: "Run migration" });
   // The plan written before the rename: it still says the old words.
   renames.fromPlan(s.id, "update_plan", plan(["Run migration", "completed"], ["Docs", "completed"]));
