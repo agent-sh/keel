@@ -196,6 +196,7 @@ export class Resumes {
       const w = this.waits.get(k);
       if (w?.state === "waiting") this.look(w, this.poll);
     } catch (e) {
+      if (this.stopped) return;
       const link = e instanceof LinkError || (e instanceof ResumeError && e.more.link === true);
       if (link && n + 1 < RECOVER_TRIES) return void this.later(() => void this.recoverOne(k, n + 1), RECOVER_MS);
       if (link) this.d.errors.capture("server", e, { at: "resume copy owed", machine: r.machine_id });
@@ -236,7 +237,10 @@ export class Resumes {
 
   private async settle(m: MachineRow, r: EndReceipt): Promise<EndReceipt | undefined> {
     for (;;) {
-      const out = this.settled(r, await this.activity(m, r.harness, r.id));
+      const seen = await this.activity(m, r.harness, r.id);
+      // Stopped meanwhile (the daemon goes down, or a reload replaced this): nothing more is written.
+      if (this.stopped) throw new LinkError("the daemon is stopping");
+      const out = this.settled(r, seen);
       if (out !== "leaving") return out;
       await Bun.sleep(Math.min(1000, this.poll));
     }
@@ -516,7 +520,7 @@ export class Resumes {
   }
 
   private async tick(w: Waiting) {
-    if (!open(w)) return;
+    if (this.stopped || !open(w)) return;
     const k = this.key(w.machine_id, w.harness, w.id);
     // Past the deadline nothing is stopped. A stop already sent is not undone by it: its copy is still owed.
     const expired = () => (this.ends.has(k)
@@ -527,7 +531,7 @@ export class Resumes {
     if (!m?.workspace_root) return this.end(w, "failed", { error: "the machine is no longer enabled with a granted directory" });
     try {
       const seen = await this.activity(m, w.harness, w.id);
-      if (!open(w)) return;
+      if (this.stopped || !open(w)) return;
       // Only the process the owner was shown is ever ended for this wait.
       if (seen.process && (w.process?.pid !== seen.process.pid || w.process?.started_ms !== seen.process.started_ms)) return this.end(w, "failed", { error: "Another process runs this session now. Review it again." });
       const changed = w.last?.state !== seen.state || w.last?.why !== seen.why;
@@ -545,6 +549,7 @@ export class Resumes {
       }
       if (changed && open(w)) this.emit(w);
     } catch (e) {
+      if (this.stopped) return; // the wait is on its row: the next daemon goes on with it
       // A machine that does not answer is asked again until the deadline; anything else ends the wait.
       if (!(e instanceof LinkError) && !(e instanceof ResumeError && e.more.link === true)) {
         if (!(e instanceof ResumeError)) this.d.errors.capture("server", e, { at: "resume wait", machine: w.machine_id });
@@ -553,7 +558,7 @@ export class Resumes {
       w.last = { state: "active", why: `${m.name} did not answer: ${(e as Error).message}`, checked_ms: Date.now() };
       this.emit(w);
     }
-    if (!open(w)) return; // cancelled while the checks ran
+    if (this.stopped || !open(w)) return; // cancelled while the checks ran
     if (Date.now() >= w.deadline_ms) return expired();
     this.look(w, Math.min(this.poll, Math.max(100, w.deadline_ms - Date.now())));
   }

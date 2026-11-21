@@ -1397,6 +1397,27 @@ test("a wait whose stop keeps failing has one chain of looks", async () => {
   }
 });
 
+// A service that was stopped (the daemon goes down, a reload replaced it) is
+// in the middle of a look: it writes nothing more, and the wait stays on its row.
+test("a wait's look that outlives its stopped service writes nothing", async () => {
+  const rig = await takeoverRig();
+  try {
+    await rig.idle(60_000);
+    rig.stop = "leaving";
+    rig.working = false;
+    expect(await rig.until(() => rig.stops === 1)).toBe(true);
+    await Bun.sleep(30); // looking again at an original that is still leaving
+    rig.resumes.stop();
+    const rows = () => JSON.stringify(rig.store.db.query("SELECT key, data FROM fleet_resume_waits UNION ALL SELECT key, data FROM fleet_resume_ends").all());
+    const before = rows();
+    await Bun.sleep(300); // past the time it had to leave
+    expect(rows()).toBe(before);
+    expect(rig.stops).toBe(1);
+  } finally {
+    rig.close();
+  }
+});
+
 test("a wait whose stop was out when the daemon went down follows what happened to the original", async () => {
   const rig = await takeoverRig();
   try {
