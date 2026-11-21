@@ -1,11 +1,14 @@
 import { expect, test } from "./isolate.ts";
 import { shoot } from "./shots.ts";
 
-// Feature: answers that come late, twice or not at all. Two places in the
+// Feature: answers that come late, twice or not at all. Three places in the
 // workbench asked the daemon without minding when the answer came: the phone
-// pairing code (every click made a new code) and the folder browser of an ssh
-// machine (an old answer replaced a newer one, also after the popup closed).
+// pairing code (every click made a new code), the folder browser of an ssh
+// machine (an old answer replaced a newer one, also after the popup closed)
+// and the machine badge on a tool row (a failed read was never made again).
 // The requests are held or failed in the browser; the daemon is the real one.
+
+const MODEL = "scripted:stand-in";
 
 test("clicking for a pairing code again while one is on its way asks once", async ({ page }) => {
   let asked = 0;
@@ -92,4 +95,38 @@ test("a late folder listing never replaces the newest one, nor a popup opened ag
   await page.waitForTimeout(300);
   await expect(popup).not.toContainText("beta/alpha");
   await expect(popup).toContainText("~/work");
+});
+
+test("a machine badge whose read failed is read again when the session is opened again", async ({ page, request }) => {
+  const ids = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!ids.includes(MODEL), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: MODEL, title: "Badge read" } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+  const calls = [{ name: "Bash", input: { command: "echo one" } }, { name: "Bash", input: { command: "echo two" } }];
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify(calls)}` } });
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).running, { timeout: 60_000 }).toBe(false);
+  const events = (await (await request.get(`/api/sessions/${session.id}`)).json()).events;
+  const callIds = events.filter((e: any) => e.kind === "assistant").flatMap((e: any) => e.data.blocks.filter((b: any) => b.type === "tool_use").map((b: any) => b.id));
+  expect(callIds).toHaveLength(2);
+
+  // The first read of where the calls ran fails; later ones say both ran on devbox.
+  let reads = 0;
+  await page.route(`**/api/sessions/${session.id}/fleet`, async (route) => {
+    reads++;
+    if (reads === 1) return route.fulfill({ status: 500, json: { error: "the fleet store is busy" } });
+    await route.fulfill({ json: { steps: Object.fromEntries(callIds.map((id: string) => [id, { machine: "m1", name: "devbox" }])) } });
+  });
+  await page.goto(`/s/${session.id}`);
+  await expect(page.locator('[data-tool="Bash"]')).toHaveCount(2);
+  await expect.poll(() => reads).toBe(1);
+  await expect(page.getByTestId("tool-machine")).toHaveCount(0);
+  // The start box, then this session again in the same page: the read is made again, once for both rows.
+  await page.getByTestId("new-session").click();
+  await expect(page.locator('[data-tool="Bash"]')).toHaveCount(0);
+  await page.locator(`[data-testid="session-row"][data-session="${session.id}"]`).click();
+  await expect(page.locator('[data-tool="Bash"]')).toHaveCount(2);
+  await expect(page.getByTestId("tool-machine")).toHaveCount(2);
+  await expect(page.getByTestId("tool-machine").first()).toHaveText("devbox");
+  expect(reads).toBe(2);
+  await shoot(page, "answer-order-03-badge-after-retry");
 });

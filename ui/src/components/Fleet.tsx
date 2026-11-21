@@ -167,10 +167,8 @@ export function MachineChip({ session }: { session: Session }) {
 export function MachineBadge({ sessionId, callId }: { sessionId?: string; callId: string }) {
   const step = useFleet((s) => (sessionId ? s.steps[sessionId]?.[callId] : undefined));
   useEffect(() => {
-    if (sessionId && !splitId(sessionId) && !(sessionId in fleet.loadedSteps)) {
-      fleet.loadedSteps[sessionId] = true;
-      fleet.loadSteps(sessionId).catch(reportError);
-    }
+    // The rows of one session share one read; only the row that started it reports its failure.
+    if (sessionId && !(sessionId in fleet.stepsAsked)) fleet.ensureSteps(sessionId).catch(reportError);
   }, [sessionId]);
   if (!step) return null;
   return (

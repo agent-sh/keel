@@ -58,7 +58,17 @@ export function setNewMachine(id: string) {
 }
 
 export const fleet = {
-  loadedSteps: {} as Record<string, boolean>,
+  // Which machine each tool call of a session ran on, read once per session:
+  // every tool row asks, one request answers them all. A read that failed is
+  // forgotten, so the next row that asks (the session opened again) reads again.
+  stepsAsked: {} as Record<string, Promise<void>>,
+  ensureSteps(sessionId: string): Promise<void> {
+    if (splitId(sessionId)) return Promise.resolve();
+    return (this.stepsAsked[sessionId] ??= this.loadSteps(sessionId).catch((e) => {
+      delete this.stepsAsked[sessionId];
+      throw e;
+    }));
+  },
   async loadMachines() {
     const [m, p, r] = await Promise.all([
       api<{ machines: Machine[] }>("/api/fleet/machines"),
