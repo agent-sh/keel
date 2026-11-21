@@ -878,7 +878,7 @@ function Tray({ children, asks }: { children: ReactNode; asks?: ReactNode }) {
     >
       <div ref={inner}>
         {children}
-        <div ref={wait} data-testid="composer-asks">{asks}</div>
+        <div ref={wait} className="k-asks" data-testid="composer-asks">{asks}</div>
       </div>
       <div ref={gauge} aria-hidden="true" className="pointer-events-none invisible absolute inset-0" />
     </div>
