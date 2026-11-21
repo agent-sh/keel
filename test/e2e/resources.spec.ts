@@ -1,4 +1,6 @@
 import { expect, test } from "./isolate.ts";
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { HAIKU, ask, shoot } from "./shots.ts";
 
 // Feature: Settings > Resources shows the daemon and the processes it started,
@@ -16,18 +18,19 @@ test("resources view", async ({ page, request }) => {
     const r = await (await request.get(`/api/resources?session_id=${s.id}&refresh=1`)).json();
     return r.processes.some((p: any) => p.command.includes(cmd) && p.kind === "tool");
   }, { timeout: 120_000 }).toBe(true);
-  // The orphan part needs a cgroup per job: a daemon with no systemd user session to
-  // ask for one (a clean environment, a container) keeps jobs as process groups.
+  // The orphan part needs a cgroup per job, which takes a systemd user manager. Whether
+  // there is one is asked here, of this run's own environment (the daemon of a run
+  // shares it), never of the daemon: with a manager, a job without a cgroup fails.
   const orphan = `sleep ${1000 + Math.floor(Math.random() * 800)}`;
-  const jobs = (await (await request.get(`/api/resources?session_id=${s.id}&refresh=1`)).json()).jobs as any[];
-  if (jobs.some((j) => j.contain === "cgroup")) {
+  const manager = spawnSync("systemctl", ["--user", "show", "-p", "ControlGroup", "--value", "app.slice"], { encoding: "utf8" });
+  if (existsSync("/sys/fs/cgroup/cgroup.controllers") && manager.status === 0 && manager.stdout.trim().startsWith("/")) {
     await request.post(`/api/sessions/${s.id}/terminal/run`, { data: { command: `(setsid ${orphan} &); sleep 900` } });
     await expect.poll(async () => {
       const r = await (await request.get(`/api/resources?session_id=${s.id}&refresh=1`)).json();
       const p = r.processes.find((x: any) => x.name === "sleep" && x.command === orphan);
       return !!p && r.jobs.some((j: any) => j.contain === "cgroup" && j.pids.includes(p.pid) && j.memory_bytes > 0);
     }, { timeout: 20_000 }).toBe(true);
-  } else test.info().annotations.push({ type: "not checked", description: "an orphaned descendant counted from the job's cgroup: this daemon has no cgroup per job" });
+  } else test.info().annotations.push({ type: "not checked", description: "an orphaned descendant counted from the job's cgroup: this run has no systemd user manager to give a job one" });
 
   await page.goto("/settings/resources");
   const panel = page.getByTestId("resources-panel");

@@ -166,16 +166,19 @@ test("mixed attachments keep their order and need no caption", async ({ page, re
   await expect(preview).toHaveCSS("outline-offset", "2px");
   await expect(preview).toHaveCSS("cursor", "zoom-out");
   const above = async () => { const r = (await preview.boundingBox())!; return (await page.screenshot({ clip: { x: r.x + 20, y: r.y - 4, width: r.width - 40, height: 3 } })).toString("base64"); };
-  const ringed = await above();
+  // The strip is read once it holds still (the image has just grown), and each change of focus is given the time to paint.
+  const still = async () => { let a = await above(); for (let i = 0; i < 20; i++) { await page.waitForTimeout(50); const b = await above(); if (a === b) break; a = b; } return a; };
+  const ringed = await still();
   await preview.evaluate((b: HTMLElement) => b.blur());
-  expect(await above()).not.toBe(ringed);
+  await expect.poll(above).not.toBe(ringed);
   await preview.focus();
-  expect(await above()).toBe(ringed);
+  await expect.poll(above).toBe(ringed);
   await shoot(page, "attach-06-image-larger-by-keyboard");
   await page.keyboard.press("Space");
   await expect(preview).toHaveAttribute("aria-expanded", "false");
   await expect(preview).toBeFocused();
-  await expect.poll(height).toBe(small);
+  // Back at its small size, to within half a pixel: the box is measured in fractions of one.
+  await expect.poll(async () => Math.abs((await height()) - small)).toBeLessThan(0.5);
   await expect(preview).toHaveCSS("cursor", "zoom-in");
   expect(await row.locator('[data-testid="message-file"], [data-testid="message-image"]').evaluateAll((els) => els.map((el) => (el.tagName === "IMG" ? "image" : el.textContent!.replace(/\d+ KB$/, "").trim())))).toEqual(stored);
   // No caption, no bubble; a caption that reads like a placeholder is the owner's and shows.

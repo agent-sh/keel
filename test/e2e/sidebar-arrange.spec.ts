@@ -16,10 +16,28 @@ import { openPanel, shoot } from "./shots.ts";
 const MODEL = "scripted:stand-in";
 test.use({ storageState: { cookies: [], origins: [] }, viewport: { width: 1700, height: 980 } });
 
+// What a test here started is stopped when it ends, passed or failed. A session that starts
+// agents goes with them: one agent runs a 30 s command on, and its report starts the parent on
+// another. The other sessions are interrupted: one of them runs the same command for the working
+// line. A later spec that counts the running turns would see any of them.
+const started: string[] = [];
+let withAgents: string | undefined;
+test.afterEach(async ({ request }) => {
+  const parent = withAgents, mine = started.splice(0);
+  withAgents = undefined;
+  const sessions = (await (await request.get("/api/sessions")).json()).sessions as { id: string; parent_id?: string | null }[];
+  const family = parent ? [...sessions.filter((s) => s.parent_id === parent).map((s) => s.id), parent] : [];
+  for (const id of mine) if (!family.includes(id)) await request.post(`/api/sessions/${id}/interrupt`).catch(() => {});
+  for (const id of family) await request.delete(`/api/sessions/${id}`);
+  const all = [...mine, ...family];
+  await expect.poll(async () => (await (await request.get("/api/daemon")).json()).running.filter((id: string) => all.includes(id)), { timeout: 15_000 }).toEqual([]);
+});
+
 test("panes on request, agents folded, the list filtered and arranged", async ({ page, request }) => {
   const tag = Date.now().toString(36);
   const mk = async (title: string, text = "Done.") => {
     const s = (await (await request.post("/api/sessions", { data: { model: MODEL, title } })).json()).session;
+    started.push(s.id);
     await request.post(`/api/sessions/${s.id}/messages`, { data: { text } });
     await expect.poll(async () => (await (await request.get(`/api/sessions/${s.id}`)).json()).events.some((e: any) => e.kind === "turn_end" || e.kind === "error"), { timeout: 30_000 }).toBe(true);
     return s.id as string;
@@ -76,6 +94,7 @@ test("panes on request, agents folded, the list filtered and arranged", async ({
 
   // Agents: a session that starts two shows them folded to a count.
   const parent = await mk(`Audit the dependency tree ${tag}`, "Hold on.");
+  withAgents = parent;
   await request.put(`/api/sessions/${parent}/permissions`, { data: { mode: "full-auto" } });
   const spawn = (message: string) => ({ name: "spawn_agent", input: { message, isolation: "none" } });
   await request.post(`/api/sessions/${parent}/messages`, { data: { text: `script:batch ${JSON.stringify([spawn("script:long-tool"), spawn("Say ok.")])}` } });

@@ -24,8 +24,15 @@ export const HAIKU = process.env.KEEL_TEST_MODEL ?? "bedrock:global.anthropic.cl
 // real model for.
 export const SCRIPTED = HAIKU.startsWith("scripted:");
 export const ask = (real: string, scripted: string) => (SCRIPTED ? scripted : real);
-// The stand-in's words for "run this one shell command".
-export const scriptBash = (command: string) => `script:calls ${JSON.stringify([{ name: "Bash", input: { command } }])}`;
+// Picks a model in the open page's model picker by its exact id (the run's model unless named).
+export async function pickModel(page: Page, id = HAIKU) {
+  await page.getByTestId("model-picker").click();
+  await page.getByPlaceholder("Search models").fill(id);
+  await page.locator('[data-group="exact"] [data-testid="model-option"]').click();
+}
+// The stand-in's words for "run this one shell command", made `afterMs` into the turn when given
+// (a real model takes a moment before its first call; the stand-in makes it at once).
+export const scriptBash = (command: string, afterMs?: number) => `script:calls ${JSON.stringify([{ name: "Bash", input: { command }, ...(afterMs ? { after_ms: afterMs } : {}) }])}`;
 
 // Opens a side panel of the session on screen: from the header when it is at
 // hand, else from the Panels picker. Nothing happens when it is already open.

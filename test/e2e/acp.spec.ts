@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, openPanel, shoot, SCRIPTED } from "./shots.ts";
+import { ask, HAIKU, openPanel, scriptBash, shoot } from "./shots.ts";
 
 // An editor's end of ACP: `keel acp` on stdio, JSON-RPC one message a line.
 class Editor {
@@ -46,8 +46,10 @@ class Editor {
 // and mode, prompts, answers the gate's approval as a permission request, sees
 // the tool call and the reply stream, and the same session is in the
 // workbench. Loading it replays the history; cancel ends a turn as cancelled.
-test("acp", async ({ page, baseURL }) => {
-  test.skip(SCRIPTED, "needs a real model: the editor's plain prompts ask it to run a command, ask a question and sleep");
+// The stand-in's words for "ask me to pick a color": its reply ends with the tool's result, which names the answer.
+const pickColor = `script:calls ${JSON.stringify([{ name: "AskUserQuestion", input: { questions: [{ header: "Color", question: "Which color do you pick?", options: [{ label: "Red" }, { label: "Blue" }], multiSelect: false }] } }])}`;
+
+test("acp", async ({ page, request, baseURL }) => {
   const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `acp-${Date.now()}`);
   mkdirSync(ws, { recursive: true });
   const ed = new Editor(baseURL!);
@@ -69,7 +71,7 @@ test("acp", async ({ page, baseURL }) => {
     asked.push(m);
     return { outcome: { outcome: "selected", optionId: "once" } };
   };
-  const r = await ed.call("session/prompt", { sessionId: id, prompt: [{ type: "text", text: "Run exactly this Bash command and nothing else: touch acp.txt. Then reply with one word: done." }] });
+  const r = await ed.call("session/prompt", { sessionId: id, prompt: [{ type: "text", text: ask("Run exactly this Bash command and nothing else: touch acp.txt. Then reply with one word: done.", scriptBash("touch acp.txt")) }] });
   expect(r.stopReason).toBe("end_turn");
   expect(asked.map((m) => m.method)).toEqual(["session/request_permission"]);
   expect(asked[0].params.toolCall.kind).toBe("execute");
@@ -82,7 +84,10 @@ test("acp", async ({ page, baseURL }) => {
   expect(ed.updates.filter((u) => u.update.sessionUpdate === "tool_call_update" && u.sessionId === id).map((u) => u.update.status)).toEqual(["in_progress", "completed"]);
   // The context and cost as the turn left them, before its answer.
   const usage = ed.updates.filter((u) => u.sessionId === id && u.update.sessionUpdate === "usage_update").at(-1)?.update;
-  expect(usage.size).toBeGreaterThan(100_000);
+  // The size is the model's window, as its listing has it.
+  const window = (await (await request.get("/api/models")).json()).models.find((m: any) => m.id === HAIKU).context as number;
+  expect(window).toBeGreaterThan(10_000);
+  expect(usage.size).toBe(window);
   expect(usage.used).toBeGreaterThan(0);
   expect(usage.cost.currency).toBe("USD");
 
@@ -110,7 +115,7 @@ test("acp", async ({ page, baseURL }) => {
 
   // A question card is the editor's elicitation form; its answer reaches the card.
   ed.onRequest = (m) => (m.method === "elicitation/create" ? (asked.push(m), { action: "accept", content: { [Object.keys(m.params.requestedSchema.properties)[0]!]: "Blue" } }) : { outcome: { outcome: "selected", optionId: "once" } });
-  const q = await ed.call("session/prompt", { sessionId: id, prompt: [{ type: "text", text: "Use the AskUserQuestion tool once to ask me to pick a color, with exactly the options Red and Blue. Then reply with only the color I picked." }] });
+  const q = await ed.call("session/prompt", { sessionId: id, prompt: [{ type: "text", text: ask("Use the AskUserQuestion tool once to ask me to pick a color, with exactly the options Red and Blue. Then reply with only the color I picked.", pickColor) }] });
   expect(q.stopReason).toBe("end_turn");
   const form = asked.find((m) => m.method === "elicitation/create");
   expect(form.params.mode).toBe("form");
@@ -120,7 +125,7 @@ test("acp", async ({ page, baseURL }) => {
   // Cancel: the turn ends as cancelled.
   await ed.call("session/set_mode", { sessionId: id, modeId: "full-auto" });
   const before = ed.updates.length;
-  const turn = ed.call("session/prompt", { sessionId: id, prompt: [{ type: "text", text: "Run exactly this Bash command: sleep 30. Then reply: slept." }] });
+  const turn = ed.call("session/prompt", { sessionId: id, prompt: [{ type: "text", text: ask("Run exactly this Bash command: sleep 30. Then reply: slept.", scriptBash("sleep 30")) }] });
   await expect.poll(() => ed.updates.slice(before).some((u) => u.update.sessionUpdate === "tool_call"), { timeout: 60_000 }).toBe(true);
   ed.notify("session/cancel", { sessionId: id });
   expect((await turn).stopReason).toBe("cancelled");

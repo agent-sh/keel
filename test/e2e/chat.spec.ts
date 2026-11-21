@@ -63,8 +63,8 @@ test("a session that is loading shows that it is loading", async ({ page, reques
     await expect.poll(async () => (await (await request.get(`/api/sessions/${slow}`)).json()).events.some((e: any) => e.kind === "turn_end"), { timeout: 15_000 }).toBe(true);
     await page.goto(`/s/${other}`);
     await expect(page.getByTestId("composer")).toBeVisible();
-    // The conversation takes 2.5 s to come.
-    await page.route(`**/api/sessions/${slow}`, async (r) => { await new Promise((done) => setTimeout(done, 2_500)); await r.fallback(); });
+    // The conversation takes 2.5 s to come (the page asks for it in pages: the address has a query).
+    await page.route(new RegExp(`/api/sessions/${slow}(\\?|$)`), async (r) => { await new Promise((done) => setTimeout(done, 2_500)); await r.fallback(); });
     await page.locator(`[data-testid="session-row"][data-session="${slow}"]`).click();
     const loading = page.getByTestId("transcript-loading");
     await expect(loading).toBeVisible({ timeout: 1_500 });

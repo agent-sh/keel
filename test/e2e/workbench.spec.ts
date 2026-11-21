@@ -1,20 +1,40 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { cpSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { expect, test, type APIRequestContext } from "./isolate.ts";
-import { openPanel, shoot } from "./shots.ts";
+import { ask, openPanel, pickModel, shoot } from "./shots.ts";
 
 test.use({ permissions: ["clipboard-read", "clipboard-write"] });
 
 // Feature: the workbench shell. Folder picker, palette, shortcuts, settings,
 // slash commands, @-mentions, a pasted image sent to the model, a highlighted
 // code block with its copy button, and the phone layout with its drawer.
-// The folder routes read inside the daemon's home and workspace only: a daemon with
-// a throwaway home (scripts/smoke.sh) cannot browse the repository these tests open.
-const reach = async (request: APIRequestContext) => process.cwd().startsWith(`${(await (await request.get("/api/workspaces")).json()).home}/`);
-const OUTSIDE = "the repository is outside the daemon's home in this run: its folders cannot be browsed";
+// The folder these tests open: a small repository inside the daemon's home, made of this
+// repository's instructions, stylesheet and some sources. The folder routes read inside
+// the daemon's home and workspace only, and a scratch daemon's home is a folder of its
+// own, where this repository is not.
+let made: string | undefined;
+async function repo(request: APIRequestContext): Promise<string> {
+  if (made) return made;
+  const home = (await (await request.get("/api/workspaces")).json()).home as string;
+  const dir = join(home, ".cache/keel-work/bun/e2e-ws", `workbench-${Date.now().toString(36)}`);
+  const sources = (folder: string) => readdirSync(folder).filter((f) => /\.tsx?$/.test(f) && !f.includes(".test.")).slice(0, 16).map((f) => `${folder}/${f}`);
+  // Every file at the top (the @ list of an empty word shows the top level, and has to be longer than its popup), and some below.
+  const top = readdirSync(".", { withFileTypes: true }).filter((e) => e.isFile() && !e.name.startsWith(".")).map((e) => e.name);
+  for (const rel of [...top, "ui/src/styles.css", "scripts/dev.sh", "docs/backup-and-restore.md", "android/README.md", "test/e2e/shots.ts", ...sources("src/core"), ...sources("ui/src/components")]) {
+    mkdirSync(dirname(join(dir, rel)), { recursive: true });
+    cpSync(rel, join(dir, rel));
+  }
+  const git = (...args: string[]) => execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", ...args]);
+  git("init", "-q", "-b", "main");
+  git("add", "-A");
+  git("commit", "-qm", "init");
+  return (made = dir);
+}
+test.afterAll(() => { if (made) rmSync(made, { recursive: true, force: true }); });
 
 test("workbench", async ({ page, request }) => {
-  test.skip(!(await reach(request)), OUTSIDE);
+  const folder = await repo(request);
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   await page.goto("/");
   await expect(page.getByTestId("home-watch")).toBeVisible();
@@ -23,17 +43,18 @@ test("workbench", async ({ page, request }) => {
   // Folder picker: browse to this repository by typing its path.
   await page.getByTestId("workspace-picker").click();
   await expect(page.getByTestId("workspace-popup")).toBeVisible();
-  await page.getByPlaceholder("Type a path, Enter to open it").fill(process.cwd());
+  await page.getByPlaceholder("Type a path, Enter to open it").fill(folder);
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("use-folder")).toBeVisible();
   await shoot(page, "wb-02-folder-browse");
   await page.getByTestId("use-folder").click();
-  await expect(page.getByTestId("workspace-picker")).toContainText(process.cwd().split("/").pop()!);
+  await expect(page.getByTestId("workspace-picker")).toContainText(basename(folder));
 
   // Palette and shortcut sheet.
   await page.keyboard.press("Control+k");
   await expect(page.getByTestId("palette")).toBeVisible();
-  await page.getByTestId("palette-input").fill("shortcuts");
+  // The action by its whole name: a session another spec left under a title with "shortcuts" in it is not what Enter opens.
+  await page.getByTestId("palette-input").fill("keyboard shortcuts");
   await shoot(page, "wb-03-palette");
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("shortcuts")).toBeVisible();
@@ -66,9 +87,7 @@ test("workbench", async ({ page, request }) => {
   await expect(box).toHaveValue("Look at @AGENTS.md ");
 
   // A pasted picture: a red square drawn in the page.
-  await page.getByTestId("model-picker").click();
-  await page.getByPlaceholder("Search models").fill("haiku 5.5");
-  await page.getByRole("option").first().click();
+  await pickModel(page);
   await box.fill("");
   await box.focus();
   await page.evaluate(async () => {
@@ -82,7 +101,7 @@ test("workbench", async ({ page, request }) => {
     document.querySelector("[data-testid=composer]")!.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
   });
   await expect(page.getByTestId("attachments").locator("img")).toHaveCount(1);
-  await box.fill("What color is this square? Answer in one word, then a fenced python code block that prints that word.");
+  await box.fill(ask("What color is this square? Answer in one word, then a fenced python code block that prints that word.", 'script:say red\\n```python\\nprint("red")\\n```'));
   await shoot(page, "wb-08-attached");
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/\/s\//);
@@ -192,8 +211,7 @@ test("the reading line holds when content above it grows", async ({ page, reques
 test("the side panel sits beside the conversation when the pane has room, else lies over it", async ({ page, request }) => {
   const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
   test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
-  test.skip(!(await reach(request)), OUTSIDE);
-  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Panel layout", workspace: process.cwd() } })).json();
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Panel layout", workspace: await repo(request) } })).json();
   try {
     const phase = async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).session.phase;
     await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
@@ -320,12 +338,11 @@ test("the side panel sits beside the conversation when the pane has room, else l
 // result, and on a touch screen it shows before the row is tapped. Either way
 // one press puts the path in the message box without opening the file.
 const mentionSession = async (request: import("@playwright/test").APIRequestContext) =>
-  (await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", workspace: process.cwd(), title: `Mention a file ${Date.now().toString(36)}` } })).json()).session;
+  (await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", workspace: await repo(request), title: `Mention a file ${Date.now().toString(36)}` } })).json()).session;
 
 test("a file result's Mention by keyboard", async ({ page, request }) => {
   const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
   test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
-  test.skip(!(await reach(request)), OUTSIDE);
   const s = await mentionSession(request);
   await page.goto(`/s/${s.id}`);
   await openPanel(page, "files");
@@ -483,7 +500,6 @@ test.describe("on a touch screen", () => {
   test("a file result's Mention shows before a tap", async ({ page, request }) => {
     const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
     test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
-    test.skip(!(await reach(request)), OUTSIDE);
     const s = await mentionSession(request);
     await page.goto(`/s/${s.id}`);
     expect(await page.evaluate(() => matchMedia("(hover: none)").matches)).toBe(true);
@@ -511,8 +527,7 @@ test.describe("on a touch screen", () => {
 test("the message box names its suggestions and the active one", async ({ page, request }) => {
   const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
   test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
-  test.skip(!(await reach(request)), OUTSIDE);
-  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Suggestions", workspace: process.cwd() } })).json();
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Suggestions", workspace: await repo(request) } })).json();
   try {
     await page.goto(`/s/${session.id}`);
     const box = page.getByTestId("composer");

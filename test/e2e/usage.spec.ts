@@ -45,7 +45,17 @@ test("usage dashboard", async ({ page, request }) => {
   await expect(panel.getByTestId("tile-step")).not.toContainText("none;");
   await expect(panel.getByTestId("cache-breaks")).not.toBeEmpty();
 
-  // The readout under the pointer lists every series at that bucket.
+  // The readout under the pointer lists every series at that bucket. A plot takes two buckets
+  // (one alone reads as a value): a daemon that measured in one bucket only gets it in the one before too.
+  await page.route(/\/api\/telemetry\?/, async (route) => {
+    const body = await (await route.fetch()).json();
+    const filled = (body.series as any[]).filter((p) => p.calls > 0);
+    if (filled.length === 1) {
+      const before = { ...filled[0], t_ms: filled[0].t_ms - body.bucket_ms };
+      body.series = [...(body.series as any[]).filter((p) => p.t_ms !== before.t_ms), before].sort((x, y) => x.t_ms - y.t_ms);
+    }
+    await route.fulfill({ json: body });
+  });
   await page.getByRole("radio", { name: "Day" }).click();
   const chart = panel.getByTestId("chart-latency").locator("svg");
   const box = (await chart.boundingBox())!;

@@ -23,7 +23,7 @@ test("turn status is announced once per change", async ({ page, request }) => {
     (window as any).said = [];
     new MutationObserver(() => (window as any).said.push(el.textContent)).observe(el, { childList: true, characterData: true, subtree: true });
   });
-  await page.getByTestId("composer").fill(ask("Run exactly this Bash command and nothing else: touch status.txt. Then reply with the word ok.", scriptBash("touch status.txt")));
+  await page.getByTestId("composer").fill(ask("Run exactly this Bash command and nothing else: touch status.txt. Then reply with the word ok.", scriptBash("touch status.txt", 1000)));
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("approval")).toBeVisible({ timeout: 60_000 });
   await page.waitForTimeout(2500); // the visible clock ticks meanwhile
@@ -55,7 +55,8 @@ test("a pending question is announced once", async ({ page, request }) => {
       (window as any).said = [];
       new MutationObserver(() => (window as any).said.push(el.textContent)).observe(el, { childList: true, characterData: true, subtree: true });
     });
-    const ask = { name: "AskUserQuestion", input: { questions: [{ header: "Color", question: "Which color should I use?", options: [{ label: "Teal" }, { label: "Amber" }], multiSelect: false }] } };
+    // The question comes a second into the turn (a real model takes a moment): "Working." is said first.
+    const ask = { name: "AskUserQuestion", after_ms: 1000, input: { questions: [{ header: "Color", question: "Which color should I use?", options: [{ label: "Teal" }, { label: "Amber" }], multiSelect: false }] } };
     await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([ask])}`);
     await page.keyboard.press("Enter");
     const card = page.getByTestId("question");

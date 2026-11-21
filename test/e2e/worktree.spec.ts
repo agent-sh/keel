@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot, openPanel, tabInto, SCRIPTED } from "./shots.ts";
+import { HAIKU, shoot, openPanel, tabInto, ask, scriptBash, pickModel } from "./shots.ts";
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" });
 
@@ -11,7 +11,6 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd,
 // back to the model as a message; park removes the folder and keeps the work,
 // restore brings it back; the main checkout never changes.
 test("worktree session and branch review", async ({ page, request }) => {
-  test.skip(SCRIPTED, "starts its session on a Haiku picked by name in the model picker");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   // This spec needs the gate to ask: set it, whatever an earlier spec left behind.
   const prevMode = (await (await request.get("/api/permissions/settings")).json()).default_mode;
@@ -29,16 +28,13 @@ test("worktree session and branch review", async ({ page, request }) => {
     void model;
   }, [repo, HAIKU]);
   await page.goto("/");
-  await page.getByTestId("model-picker").click();
-  await page.getByPlaceholder("Search models").fill("haiku 5.5");
-  await page.getByRole("option").first().click();
+  await pickModel(page);
   await page.getByTestId("start-in-worktree").click();
   await expect(page.getByTestId("start-in-worktree")).toHaveAttribute("aria-checked", "true");
   await shoot(page, "wt-01-start");
 
-  await page.getByTestId("composer").fill(
-    "Run exactly this one Bash command and nothing else: sed -i 's/first line/the first line/' notes.md && echo 'second line' >> notes.md && git add notes.md && git -c user.name=k -c user.email=k@k commit -qm 'Add a line'\nThen reply ok.",
-  );
+  const command = "sed -i 's/first line/the first line/' notes.md && echo 'second line' >> notes.md && git add notes.md && git -c user.name=k -c user.email=k@k commit -qm 'Add a line'";
+  await page.getByTestId("composer").fill(ask(`Run exactly this one Bash command and nothing else: ${command}\nThen reply ok.`, scriptBash(command)));
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/\/s\//);
   const id = page.url().split("/s/")[1]!;
@@ -104,7 +100,8 @@ test("worktree session and branch review", async ({ page, request }) => {
   const sent = page.getByTestId("user-message").last();
   await expect(sent).toContainText("notes.md:4: Say this line in Hebrew instead.");
   await expect(sent).toContainText("notes.md, removed line 3 (old file): Keep the old wording.");
-  await page.getByTestId("stop").click().catch(() => {});
+  // The turn the feedback started is stopped when it still runs (a scripted reply has ended by now).
+  await page.getByTestId("stop").click({ timeout: 3_000 }).catch(() => {});
   await expect.poll(async () => (await (await request.get(`/api/sessions/${id}`)).json()).running, { timeout: 60_000 }).toBe(false);
 
   // Park: the folder goes, the work stays on a ref; restore brings it back.

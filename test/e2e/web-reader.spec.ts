@@ -1,18 +1,16 @@
 import { expect, test } from "./isolate.ts";
-import { shoot, SCRIPTED } from "./shots.ts";
+import { shoot, SCRIPTED, pickModel } from "./shots.ts";
 
 // Feature: the reader. WebFetch on a long page hands the page and the
 // model's prompt to the session's reader model; the working model gets the
 // answer and the path of the whole page, not the page.
 test("web reader: a long page is read for the prompt, the page saved whole", async ({ page, request }) => {
-  test.skip(SCRIPTED, "starts its session on a Haiku picked by name in the model picker, and the readers are models");
+  test.skip(SCRIPTED, "needs a real model and the public network: a reader model has to answer from a page WebFetch brings from the web");
   const prev = (await (await request.get("/api/permissions/settings")).json()).default_mode;
   await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
   try {
     await page.goto("/");
-    await page.getByTestId("model-picker").click();
-    await page.getByPlaceholder("Search models").fill("haiku 5.5");
-    await page.getByRole("option").first().click();
+    await pickModel(page);
     await page.getByTestId("composer").fill(
       "Call WebFetch once on https://platform.claude.com/docs/en/build-with-claude/compaction-on-demand with the prompt " +
       "\"Which beta header does on-demand compaction need?\". Then reply with only that header.",

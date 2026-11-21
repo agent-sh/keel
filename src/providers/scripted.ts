@@ -228,7 +228,11 @@ export class ScriptedProvider implements Provider {
         }
         const done = msgs.slice(at + 1).filter((m) => m.role === "assistant").length;
         const next = calls[done];
-        if (next) return reply(`Step ${done + 1} of ${calls.length}.`, "tool_use", [{ type: "tool_use", id: `call-${msgs.length}-${done}`, name: String(next.name), input: next.input ?? {} }]);
+        if (next) {
+          // `after_ms` on a call: the model takes that long before it makes it, as a real one does (at most 10 s).
+          if (typeof next.after_ms === "number") await Bun.sleep(Math.max(0, Math.min(next.after_ms, 10_000)));
+          return reply(`Step ${done + 1} of ${calls.length}.`, "tool_use", [{ type: "tool_use", id: `call-${msgs.length}-${done}`, name: String(next.name), input: next.input ?? {} }]);
+        }
         const lastResult = (last?.content as any[] | undefined)?.find((b) => b.type === "tool_result");
         const said = typeof lastResult?.content === "string" ? lastResult.content : (lastResult?.content as any[] | undefined)?.map((b: any) => b.text ?? "").join("\n") ?? "";
         return reply(`Done with ${calls.length} call${calls.length === 1 ? "" : "s"}.${said ? ` Last result: ${said.slice(0, 300)}` : ""}`);
@@ -387,8 +391,8 @@ export class ScriptedProvider implements Provider {
         // for about ten seconds, for a spec that cuts the page's socket meanwhile.
         return paced(Array.from({ length: 400 }, (_, i) => numberWords(i + 1)).join(", "), 32, 30);
       case "say":
-        // `script:say <words>`: the reply is those words.
-        return reply(owner.match(/script:say[ \t]+([^\n]+)/)?.[1]?.trim() ?? "");
+        // `script:say <words>`: the reply is those words, a written \n a line break.
+        return reply((owner.match(/script:say[ \t]+([^\n]+)/)?.[1]?.trim() ?? "").replaceAll("\\n", "\n"));
       case "find": {
         // `script:find <word> ...`: for each word, the line of the request that
         // holds it outside the owner's typed prompts (the system prompt, a
@@ -452,7 +456,7 @@ function numberWords(n: number): string {
 }
 
 // The JSON list that follows `script:calls` (or `word`) in a text.
-function callsAfter(text: string, word = "script:calls"): { name: unknown; input?: unknown }[] {
+function callsAfter(text: string, word = "script:calls"): { name: unknown; input?: unknown; after_ms?: unknown }[] {
   const i = text.indexOf(word);
   const start = text.indexOf("[", i);
   if (i < 0 || start < 0) return [];

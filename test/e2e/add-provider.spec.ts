@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { expect, test } from "./isolate.ts";
 import { FAKE_KEY, FAKE_MODEL, FAKE_TEXT_MODEL, startFake } from "./fixtures/fake-endpoint.ts";
 import { PAGE_ONE, PAGE_TWO, startPaged } from "./fixtures/paged-endpoint.ts";
-import { shoot, choose, SCRIPTED } from "./shots.ts";
+import { shoot, choose } from "./shots.ts";
 
 // Feature: adding a provider by hand in Settings > Providers. A stand-in
 // OpenAI-compatible server that wants a key and keeps its API under /v1: the
@@ -15,7 +15,8 @@ import { shoot, choose, SCRIPTED } from "./shots.ts";
 // the model can do, a price set by hand prices it, and a session runs a turn
 // on it. Removing it takes its file and its saved key.
 test("add an OpenAI-compatible endpoint, test it, probe it, price it, use it", async ({ page, request }) => {
-  test.skip(SCRIPTED, "needs the models.dev catalog for the hosted starting points, and a scripted run may have no network");
+  const need = await (await request.get("/api/providers/setup")).json();
+  test.skip(!need.hosted.some((t: any) => t.id === "openrouter"), "needs the models.dev catalog (its hosted starting points), and this daemon has none: no network");
   const fake = await startFake();
   const id = "lab-e2e";
   try {

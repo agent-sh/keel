@@ -1,6 +1,6 @@
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../core/store.ts";
 import { summarizeChecks, Worktrees } from "./manager.ts";
@@ -40,6 +40,42 @@ test("a worktree folder removed with git is not an empty branch", async () => {
     expect(r.branch_deleted).toBe(false);
     expect(g(repo, "rev-list", "--count", `main..${wt.branch}`)).toBe("1");
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Parking keeps the working state as a commit on a ref of Keel's own. It is
+// made under Keel's name: a machine with no git identity (a fresh home, a
+// container) parks and restores a worktree like any other.
+test("a worktree parks and comes back where git has no identity to commit under", async () => {
+  const root = join(process.env.HOME!, ".cache/keel-work/bun/unit", `wt-park-${process.pid}`);
+  const repo = join(root, "repo");
+  mkdirSync(repo, { recursive: true });
+  const g = (cwd: string, ...a: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd, encoding: "utf8" }).trim();
+  // No configured identity, and none guessed from the machine's name.
+  const none: Record<string, string | undefined> = {
+    GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "user.useConfigOnly", GIT_CONFIG_VALUE_0: "true",
+    GIT_AUTHOR_NAME: undefined, GIT_AUTHOR_EMAIL: undefined, GIT_COMMITTER_NAME: undefined, GIT_COMMITTER_EMAIL: undefined, EMAIL: undefined,
+  };
+  const before = Object.fromEntries(Object.keys(none).map((k) => [k, process.env[k]]));
+  try {
+    g(repo, "init", "-q", "-b", "main");
+    writeFileSync(join(repo, "a"), "a\n");
+    g(repo, "add", "-A");
+    g(repo, "commit", "-qm", "init");
+    const wts = new Worktrees(new Store(join(root, "state")), join(root, "wts"));
+    const { wt } = await wts.create("s1", repo, "work", undefined);
+    wts.adopt("s1", wt);
+    writeFileSync(join(wt.path, "todo.md"), "not committed\n");
+    for (const [k, v] of Object.entries(none)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    const parked = await wts.park(wts.get("s1")!);
+    expect(parked.state).toBe("parked");
+    expect(existsSync(wt.path)).toBe(false);
+    const back = await wts.restore(parked);
+    expect(back.state).toBe("active");
+    expect(readFileSync(join(wt.path, "todo.md"), "utf8")).toBe("not committed\n");
+  } finally {
+    for (const [k, v] of Object.entries(before)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
     rmSync(root, { recursive: true, force: true });
   }
 });
