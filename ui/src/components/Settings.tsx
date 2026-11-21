@@ -196,9 +196,9 @@ export function Settings({ section }: { section: string }) {
       </header>
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         <nav className="shrink-0 border-line p-3 md:w-60 md:overflow-y-auto md:border-r md:p-4" aria-label="Settings sections">
-          <label className="mb-3 flex h-8 items-center gap-2 rounded-md border border-line bg-raised px-2.5 text-ui">
-            <Search className="size-3.5 text-faint" />
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find a setting" className="w-full bg-transparent outline-none placeholder:text-faint" />
+          <label className="mb-3 flex h-8 items-center gap-2 rounded-md border border-line bg-raised px-2.5 text-ui focus-within:border-transparent focus-within:ring-2 focus-within:ring-ring">
+            <Search className="size-3.5 shrink-0 text-faint" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} aria-label="Find a setting" placeholder="Find a setting" className="w-full min-w-0 bg-transparent outline-none placeholder:text-faint" />
           </label>
           <div className="k-settings-nav flex gap-1 overflow-x-auto md:flex-col md:gap-px">
             {shown.map((s, i) => (

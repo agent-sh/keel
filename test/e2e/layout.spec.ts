@@ -352,3 +352,41 @@ test("text size choices fit a small phone", async ({ page }) => {
   expect((await sizes.boundingBox())!.width).toBeLessThan(260);
   await shoot(page, "layout-11-text-size-wide");
 });
+
+// Settings search under the keyboard: Tab reaches "Find a setting" and the
+// field shows it in the focus color of each theme, and it keeps its name once
+// something is typed in it.
+test("settings search shows keyboard focus", async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await page.goto("/settings/general");
+  const field = page.getByPlaceholder("Find a setting");
+  await page.getByRole("button", { name: "Back" }).focus();
+  await page.keyboard.press("Tab");
+  await expect(field).toBeFocused();
+  // What marks the field (its box), read with the theme's ring color beside it.
+  const mark = () => field.evaluate((el) => {
+    const probe = document.createElement("span");
+    probe.style.color = "var(--ring)";
+    document.body.append(probe);
+    const ring = getComputedStyle(probe).color;
+    probe.remove();
+    const box = el.closest("label")!;
+    const s = getComputedStyle(box);
+    return { ring, shown: `${s.boxShadow} ${s.outlineStyle === "none" ? "" : s.outlineColor}` };
+  });
+  const rings: string[] = [];
+  for (const dark of [false, true]) {
+    await page.evaluate((d) => document.documentElement.classList.toggle("dark", d), dark);
+    const m = await mark();
+    expect(m.shown).toContain(m.ring);
+    rings.push(m.ring);
+  }
+  expect(rings[0]).not.toBe(rings[1]);
+  await shoot(page, "layout-12-settings-search-focus");
+  await field.fill("usage");
+  await expect(page.getByRole("textbox", { name: "Find a setting" })).toHaveValue("usage");
+  await expect(page.getByRole("navigation", { name: "Settings sections" }).getByRole("button")).toHaveText(["Usage"]);
+  // Away from the field the mark goes.
+  await page.keyboard.press("Tab");
+  expect((await mark()).shown).not.toContain((await mark()).ring);
+});
