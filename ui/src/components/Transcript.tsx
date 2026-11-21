@@ -541,7 +541,9 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   // A search hit opens the session at its message.
   // The request is checked when the frame runs, before anything moves: one
   // cleared or replaced meanwhile scrolls nothing. The row becomes the
-  // keyboard's place too, so the next Tab reaches its actions.
+  // keyboard's place too, so the next Tab reaches its actions; a jump asked
+  // from a list that stays beside the transcript (the branch tree) leaves the
+  // keyboard on that list.
   const focus = useUI((s) => s.focusEvent);
   useEffect(() => {
     if (!focus || !events?.some((e) => e.id === focus)) return;
@@ -559,8 +561,10 @@ export function Transcript({ sessionId }: { sessionId: string }) {
         sc.scrollTop += r.top - box.top - Math.max(0, (box.height - r.height) / 2);
       }
       remember();
-      el.tabIndex = -1;
-      el.focus({ preventScroll: true });
+      if (!document.activeElement?.closest("[data-jump-keeps-focus]")) {
+        el.tabIndex = -1;
+        el.focus({ preventScroll: true });
+      }
       el.classList.add("flash");
       setTimeout(() => el.classList.remove("flash"), 1600);
     });

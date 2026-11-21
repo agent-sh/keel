@@ -1,5 +1,6 @@
 import { expect, test } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import type { APIRequestContext, Page } from "@playwright/test";
+import { shoot, tabInto } from "./shots.ts";
 
 // Feature: the Branches panel shows every branch of a session (edits and
 // "answer again" split it), marks the one shown and shows another on a click;
@@ -7,13 +8,12 @@ import { shoot } from "./shots.ts";
 // scripted stand-in: the replies do not matter here, only the tree.
 const STAND_IN = "scripted:stand-in";
 
-test("branch tree and labels", async ({ page, request }) => {
-  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
-  test.skip(!models.includes(STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+// A session whose second prompt has three versions (an edit, then that edit
+// answered again), with the Branches panel open on the third.
+async function forked(page: Page, request: APIRequestContext, tag: string) {
   const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN } })).json();
   await page.goto(`/s/${session.id}`);
   const composer = page.getByTestId("composer");
-  const tag = `zt${Date.now().toString(36)}`; // search finds this run's words only
   for (const [i, t] of ["Plan the parser", "Write the tokenizer"].entries()) {
     await composer.fill(t);
     await composer.press("Enter");
@@ -28,9 +28,19 @@ test("branch tree and labels", async ({ page, request }) => {
   await expect(page.getByTestId("turn-end")).toHaveCount(2);
   await page.getByTestId("retry").click();
   await expect(page.getByTestId("branch-pos")).toHaveText("3/3");
+  await expect(page.getByTestId("turn-end")).toHaveCount(2);
 
   await composer.fill("/tree");
   await composer.press("Enter");
+  return session as { id: string };
+}
+
+test("branch tree and labels", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes(STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const tag = `zt${Date.now().toString(36)}`; // search finds this run's words only
+  const session = await forked(page, request, tag);
+  const composer = page.getByTestId("composer");
   const panel = page.getByTestId("branch-tree");
   await expect(panel).toContainText("4 prompts, split in 1 place");
   const nodes = panel.getByTestId("tree-node");
@@ -86,4 +96,82 @@ test("branch tree and labels", async ({ page, request }) => {
   const t = await (await request.get(`/api/sessions/${session.id}/tree`)).json();
   expect(t.labels.map((l: any) => l.label)).toEqual(["first tokenizer"]);
   expect((await request.post(`/api/sessions/${session.id}/events/${t.nodes[0].event_id}/label`, { data: { label: "x".repeat(201) } })).status()).toBe(400);
+});
+
+// The rows are one tree for the keyboard: one Tab stop, the arrows reach both
+// sides of a split and say which rows are the branch shown and how deep they
+// sit; Enter or Space shows a branch; naming a row (F2) is its own action and
+// gives the focus back to the row, on whatever branch is shown.
+test("branches by keyboard", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes(STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const session = await forked(page, request, `kb${Date.now().toString(36)}`);
+  const panel = page.getByTestId("branch-tree");
+  const rows = panel.getByTestId("tree-node");
+  await expect(rows).toHaveCount(4);
+  const pos = page.getByTestId("branch-pos");
+  const key = (k: string) => page.keyboard.press(k);
+
+  // One Tab stop: the newest prompt of the branch shown. The next Tab is out of the tree.
+  const list = panel.getByRole("tree", { name: "Branches" });
+  await expect(list.locator('[role="treeitem"][tabindex="0"]')).toHaveCount(1);
+  await tabInto(page, list);
+  await expect(rows.nth(3)).toBeFocused();
+  await expect(rows.nth(3)).toHaveAttribute("aria-current", "true");
+  await expect(rows.nth(3)).toHaveAttribute("aria-level", "2");
+  await key("Tab");
+  await expect(list.locator(":focus")).toHaveCount(0);
+  await key("Shift+Tab");
+  await expect(rows.nth(3)).toBeFocused();
+
+  // Up through the other sides of the split, Left to the split itself, Right back under it.
+  await key("ArrowUp");
+  await expect(rows.nth(2)).toBeFocused();
+  await expect(rows.nth(2)).not.toHaveAttribute("aria-current", /./);
+  await expect(rows.nth(2)).toHaveAttribute("aria-level", "2");
+  await key("ArrowLeft");
+  await expect(rows.nth(0)).toBeFocused();
+  await expect(rows.nth(0)).toHaveAttribute("aria-current", "true");
+  await expect(rows.nth(0)).toHaveAttribute("aria-level", "1");
+  await key("ArrowRight");
+  await expect(rows.nth(1)).toBeFocused();
+  await key("End");
+  await expect(rows.nth(3)).toBeFocused();
+  await key("Home");
+  await key("ArrowDown");
+  await expect(rows.nth(1)).toBeFocused();
+  // Moving shows nothing; Enter and Space show the row's branch, and the focus stays.
+  await expect(pos).toHaveText("3/3");
+  await key("Enter");
+  await expect(pos).toHaveText("1/3");
+  await expect(rows.nth(1)).toHaveAttribute("aria-current", "true");
+  await expect(rows.nth(1)).toBeFocused();
+  await key("ArrowDown");
+  await key("Space");
+  await expect(pos).toHaveText("2/3");
+  await expect(rows.nth(2)).toBeFocused();
+  await shoot(page, "tree-03-row-by-keyboard");
+
+  // Naming a row of another branch: saved with Enter, the focus is back on
+  // the row and the branch shown is the same one.
+  await key("ArrowUp");
+  await key("F2");
+  const box = panel.getByTestId("label-input");
+  await expect(box).toBeFocused();
+  await page.keyboard.type("first try");
+  await key("Enter");
+  await expect(rows.nth(1).getByTestId("label-chip")).toHaveText("first try");
+  await expect(rows.nth(1)).toBeFocused();
+  await expect(pos).toHaveText("2/3");
+  // Cancelled with Escape: the same, and the label is as it was.
+  await key("F2");
+  await expect(rows.nth(1).getByTestId("label-input")).toBeFocused();
+  await page.keyboard.type(" again");
+  await key("Escape");
+  await expect(panel.getByTestId("label-input")).toHaveCount(0);
+  await expect(rows.nth(1)).toBeFocused();
+  await expect(rows.nth(1).getByTestId("label-chip")).toHaveText("first try");
+  await expect(pos).toHaveText("2/3");
+  expect((await (await request.get(`/api/sessions/${session.id}/tree`)).json()).labels.map((l: any) => l.label)).toEqual(["first try"]);
+  await request.delete(`/api/sessions/${session.id}`);
 });
