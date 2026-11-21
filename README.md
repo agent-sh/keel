@@ -15,6 +15,17 @@ Providers are found from the environment: `ANTHROPIC_API_KEY` for the Anthropic
 API; `AWS_BEARER_TOKEN_BEDROCK`, AWS keys or `ANTHROPIC_BEDROCK_BASE_URL` for
 Amazon Bedrock. Models come from each provider's own listing.
 
+## Turn receipts
+
+`GET /api/debug/turns/<turn_start event id>/receipt` joins the turn's input and
+queue IDs, model attempt spans, tool spans and result events, and the terminal
+event and reason. The Traces API lists the turn ID as `attrs.turn_event`. A
+receipt follows its own branch, even after the session switches branches. It
+contains metadata only: no prompts, replies, tool arguments or output, error
+messages, or wire data. An `end` of `null` means no terminal event was
+recorded. A null span ID means the span is not available, not that the tool
+was necessarily skipped.
+
 ## Auto and Full auto
 
 **Auto** keeps Keel's existing read permissions. In-scope edits, read-only

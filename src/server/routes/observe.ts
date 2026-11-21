@@ -9,6 +9,7 @@
 // GET  /api/debug/traces?session_id=&limit=     a session's traces (their root spans), newest first
 //                                               (limit: a whole number from 1, 50 by default, at most 200)
 // GET  /api/debug/traces/:id                    { spans } of one trace, in start order
+// GET  /api/debug/turns/:id/receipt             metadata only, keyed by the turn_start event id
 // GET  /api/debug/spans/:id                     { span }
 // POST /api/debug/spans/:id/replay { route? }   sends a failed request again (to its own route or another)
 //                                               -> { span, ok, error?, text?, stop? }; a refusal is ok: false with stop "refusal"
@@ -20,6 +21,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { buildBundle } from "../../admin/bundle.ts";
 import { installLogs, LEVELS, logDir, logLines, onLog } from "../../admin/logs.ts";
+import { turnReceipt } from "../../admin/receipt.ts";
 import { endpointOf, headerRefError, headerSourceOf, OtlpExporter } from "../../admin/otlp.ts";
 import { key } from "../../providers/creds.ts";
 import { onSettings, registerSettings, settings } from "../../admin/settings.ts";
@@ -141,6 +143,15 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
       GET: (req: Request & { params: { id: string } }) => {
         const spans = t.trace(req.params.id);
         return spans.length ? json({ spans }) : json({ error: "no such trace" }, 404);
+      },
+    },
+    "/api/debug/turns/:id/receipt": {
+      GET: (req: Request & { params: { id: string } }) => {
+        const receipt = turnReceipt(store, t, req.params.id);
+        return Response.json(receipt ?? { error: "no such turn" }, {
+          status: receipt ? 200 : 404,
+          headers: { "cache-control": "no-store" },
+        });
       },
     },
     "/api/debug/spans/:id": {
