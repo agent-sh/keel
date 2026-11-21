@@ -41,6 +41,10 @@ test("a bundle asked from a span is about that span and the branch its turn ran 
 
     const md = bundle({ turn_event: original.turn, span_id: original.span });
     expect(md).toContain(`Asked from the span \`${original.span}\``);
+    // The way to the trace is a route the reader can call, not a blanked one.
+    expect(md).toContain(`- This trace as JSON: \`GET /api/debug/traces/${original.turn.replace(/-/g, "")}\``);
+    expect(md).toContain(`- The full session: \`GET /api/sessions/${s.id}/events\``);
+    expect(md).not.toContain("GET /[redacted]");
     expect(failing(md)).toContain(`span \`${original.span}\``);
     expect(failing(md)).toContain("the original request was refused");
     expect(md).toContain("this turn is on the branch it left");

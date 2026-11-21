@@ -150,6 +150,12 @@ export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { mark
     out.push(logs.length ? fence(logs.map((l) => `${new Date(l.ts).toISOString().slice(11, 23)} ${l.level.toUpperCase().padEnd(5)} ${whose(l)}${clip(l.text, 800)}`).join("\n")) : "No lines in that window.", "");
   }
 
+  // Where to look further is the daemon's own words and ids, added after the
+  // redaction: a route with a trace id in it is a long run of letters, digits
+  // and slashes, which reads as a key and was blanked ("GET /[redacted]").
+  // A session reading about itself gets none of it: no other session's
+  // errors, no path of the daemon's, no way to send a request again.
+  const more: string[] = [];
   if (!o.own) {
     const others = store.errors(20, { resolved: false }).filter((x) => x.id !== e?.id).slice(0, 6);
     if (others.length) {
@@ -158,16 +164,16 @@ export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { mark
       out.push("");
     }
 
-    out.push("## Looking further", "");
-    out.push(`- Daemon log files: ${logDir() ?? "(not installed)"} (one per day, \`keel-YYYY-MM-DD.log\`)`);
-    out.push(`- Database: ${o.daemon.state_dir}/keel.db (SQLite). Tables: \`errors\`, \`spans\` (trace_id, kind, attrs JSON), \`events\` (session_id, kind, data JSON), \`telemetry_calls\`.`);
-    if (traceId) out.push(`- This trace as JSON: \`GET /api/debug/traces/${traceId}\``);
-    if (failing?.replayable) out.push(`- Send the failed request again: \`POST /api/debug/spans/${failing.span_id}/replay\` with \`{"route": "provider:model"}\` to try another model`);
-    if (s) out.push(`- The full session: \`GET /api/sessions/${s.id}/events\``);
-    out.push("- Keel's source is a Bun and TypeScript daemon: provider HTTP in `src/providers/http.ts`, the turn loop in `src/engine/turn.ts`, error capture in `src/core/errors.ts`, routes in `src/server/routes/`, the UI in `ui/src/`.");
+    more.push("## Looking further", "");
+    more.push(`- Daemon log files: ${logDir() ?? "(not installed)"} (one per day, \`keel-YYYY-MM-DD.log\`)`);
+    more.push(`- Database: ${o.daemon.state_dir}/keel.db (SQLite). Tables: \`errors\`, \`spans\` (trace_id, kind, attrs JSON), \`events\` (session_id, kind, data JSON), \`telemetry_calls\`.`);
+    if (traceId) more.push(`- This trace as JSON: \`GET /api/debug/traces/${traceId}\``);
+    if (failing?.replayable) more.push(`- Send the failed request again: \`POST /api/debug/spans/${failing.span_id}/replay\` with \`{"route": "provider:model"}\` to try another model`);
+    if (s) more.push(`- The full session: \`GET /api/sessions/${s.id}/events\``);
+    more.push("- Keel's source is a Bun and TypeScript daemon: provider HTTP in `src/providers/http.ts`, the turn loop in `src/engine/turn.ts`, error capture in `src/core/errors.ts`, routes in `src/server/routes/`, the UI in `ui/src/`.");
   }
 
-  const md = String(redact(out.join("\n"))).split(homedir()).join("~");
+  const md = `${String(redact(out.join("\n")))}${more.length ? `\n${more.join("\n")}` : ""}`.split(homedir()).join("~");
   return { markdown: md + "\n", title, trace_id: traceId };
 }
 
