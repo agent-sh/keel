@@ -12,7 +12,7 @@ import { ChevronLeft, ChevronRight, ListTree, Maximize2, Minimize2, PanelsTopLef
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, Fragment } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { registerCommand } from "../lib/keys.ts";
-import { paneMin, panesMax, usePanelSide, useWidth } from "../lib/rail.ts";
+import { callsigns, paneMin, panesMax, usePanelSide, useWidth } from "../lib/rail.ts";
 import { byAttention, getStations, opened, shares, stations, target, useStations } from "../lib/stations.ts";
 import { getState, useStore } from "../lib/store.ts";
 import { getUI, navigate, savePref, setUI, useUI } from "../lib/ui.ts";
@@ -249,6 +249,9 @@ function PhoneDock({ list, helm }: { list: Session[]; helm: string | null }) {
   const agents = useAgentCounts();
   const fresh = useUI((s) => s.route.name === "new");
   const need = list.filter((s) => watches[s.id] === "need").length;
+  // Each mark carries the session's short code, the one the folded rail gives it.
+  const sessions = useStore((x) => x.sessions);
+  const codes = useMemo(() => callsigns(Object.values(sessions).filter((s) => !s.archived && !s.settings.helper)), [sessions]);
   return (
     <nav className="k-dock" aria-label="Stations">
       <button type="button" className="k-dock-btn" aria-label="All sessions" onClick={() => savePref("sidebar", true)}><ListTree /></button>
@@ -257,11 +260,12 @@ function PhoneDock({ list, helm }: { list: Session[]; helm: string | null }) {
           <li key={s.id}>
             <button type="button" className="k-dock-mark" data-watch={watches[s.id]} aria-current={helm === s.id ? "page" : undefined} aria-label={`${s.title || "New session"}, ${watchLabel(watches[s.id]!, agents[s.id])}${whereWords(s)}`} onClick={() => navigate({ name: "session", id: s.id })}>
               <Mark w={watches[s.id]!} />
+              <span className="k-dock-code" data-testid="dock-code" aria-hidden="true">{codes[s.id]}</span>
             </button>
           </li>
         ))}
       </ol>
-      {need > 0 && <span className="k-dock-need" aria-live="polite">{need} need you</span>}
+      {need > 0 && <span className="k-dock-need" data-testid="dock-need" aria-live="polite">{need} {need === 1 ? "needs" : "need"} you</span>}
       <button type="button" className="k-dock-btn" aria-label="New session" aria-current={fresh ? "page" : undefined} onClick={() => navigate({ name: "new" })}><Plus /></button>
     </nav>
   );

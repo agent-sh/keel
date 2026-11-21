@@ -469,6 +469,35 @@ test("the tab title counts each waiting thing once", async ({ page, request }) =
   }
 });
 
+test("the phone strip says how many need the owner in plain words, and its marks carry names", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const made: string[] = [];
+  try {
+    const quiet = await start(request, "Explain the build script");
+    const asks = await start(request, "Clean the build output", "ask");
+    made.push(quiet, asks);
+    await send(request, quiet, "Say hello.");
+    await send(request, asks, script([{ name: "Bash", input: { command: "rm -rf dist" } }]));
+    await expect.poll(async () => (await stateOf(request, asks))?.watch, { timeout: 30_000 }).toBe("need");
+    const needing = Object.values((await (await request.get("/api/state")).json()).states as Record<string, { watch: string }>).filter((s) => s.watch === "need").length;
+    test.skip(needing !== 1, "other sessions on this daemon need the owner too");
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`/s/${quiet}`);
+    const dock = page.locator(".k-dock");
+    await expect(dock.getByTestId("dock-need")).toHaveText("1 needs you");
+    // Every mark has the session's short code beside its state.
+    const marks = dock.locator(".k-dock-mark");
+    await expect(marks).toHaveCount(2);
+    await expect(dock.locator('.k-dock-mark[data-watch="need"]').getByTestId("dock-code")).toHaveText("CB");
+    await expect(dock.locator(".k-dock-mark[aria-current]").getByTestId("dock-code")).toHaveText("EB");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await shoot(page, "session-state-10-phone-strip");
+  } finally {
+    await drop(request, made);
+  }
+});
+
 test("the parent's Now line says what a parked agent waits for and until when", async ({ page, request }) => {
   test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
   await page.setViewportSize({ width: 1920, height: 1040 });

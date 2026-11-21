@@ -525,7 +525,11 @@ html[data-resizing] iframe { pointer-events: none; }
   .k-dock-btn svg { width: 1.1875rem; height: 1.1875rem; }
   .k-dock-btn[aria-current] { color: var(--fg); background: var(--raised); }
   .k-dock-list { flex: 1; min-width: 0; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }
-  .k-dock-mark { position: relative; display: grid; place-items: center; width: 2.25rem; height: 2.75rem; border-radius: 0.3125rem; }
+  /* A mark and the session's short code under it: no two read alike. */
+  .k-dock-mark { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.25rem; width: 2.5rem; height: 2.75rem; padding-bottom: 0.25rem; border-radius: 0.3125rem; }
+  .k-dock-mark .k-mark { width: 0.5625rem; height: 0.5625rem; }
+  .k-dock-code { font: 700 0.6562rem/1 var(--font-inst); font-stretch: 75%; letter-spacing: 0.03em; color: var(--muted); }
+  .k-dock-mark[aria-current] .k-dock-code, .k-dock-mark[data-watch="need"] .k-dock-code { color: var(--fg); }
   .k-dock-mark[aria-current] { background: var(--raised); }
   .k-dock-mark[aria-current]::after { content: ""; position: absolute; left: 0.5rem; right: 0.5rem; bottom: 0.25rem; height: 0.1875rem; border-radius: 2px; background: var(--fg); }
   .k-dock-need { flex-shrink: 0; padding: 0 0.5rem; border-radius: 0.625rem; font-weight: 700; font-size: var(--text-micro); line-height: 1.5rem; color: var(--accent-fg); background: var(--st-need); }
