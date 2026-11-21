@@ -139,3 +139,105 @@ test("search commands, outputs, files and archived titles", async ({ page, reque
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });
+
+// Previous prompt and Next prompt (Alt Up and Alt Down, also in the palette
+// and the shortcut sheet) move the keyboard through the prompts of the branch
+// on screen, one at a time, back to one that was not among the rows rendered
+// first. The branch and the draft stay as they were, and each end says so.
+test("previous and next prompt walk the conversation by keyboard", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in-strict"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  test.setTimeout(240_000);
+  const errors = async () => ((await (await request.get("/api/errors")).json()).errors as { count?: number }[]).reduce((n, e) => n + (e.count ?? 1), 0);
+  const errorsBefore = await errors();
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in-strict", title: "Many prompts" } })).json();
+  const id = session.id as string;
+  const state = async () => (await (await request.get(`/api/sessions/${id}`)).json()) as { session: { head: string; phase: string }; events: any[] };
+  const send = async (data: Record<string, unknown>) => {
+    await request.post(`/api/sessions/${id}/messages`, { data });
+    await expect.poll(async () => (await state()).session.phase, { timeout: 30_000 }).toBe("idle");
+  };
+  try {
+    const N = 44;
+    for (let i = 1; i <= N; i++) await send({ text: `Question ${i}: what comes after ${i}?` });
+    // The last prompt gets a second version: the first stays as a branch that is not on screen.
+    const before = await state();
+    const lastPrompt = before.events.filter((e) => e.kind === "user").at(-1);
+    await send({ text: `Question ${N}, asked again.`, edit_of: lastPrompt.id });
+    const { session: s, events } = await state();
+    const byId = new Map(events.map((e) => [e.id, e]));
+    const branch: any[] = [];
+    for (let e = byId.get(s.head); e; e = byId.get(e.parent)) branch.unshift(e);
+    const prompts = branch.filter((e) => e.kind === "user" && !e.data.origin).map((e) => e.id as string);
+    expect(prompts).toHaveLength(N);
+    expect(prompts).not.toContain(lastPrompt.id);
+    // The first prompts are before the rows a long transcript renders first.
+    expect(branch.length).toBeGreaterThan(150 + 8);
+
+    const writes: string[] = [];
+    // What would change the conversation: a message, or a move to another branch.
+    page.on("request", (r) => { if (r.method() !== "GET" && /\/api\/sessions\/[^/]+\/(messages|head)$/.test(r.url())) writes.push(`${r.method()} ${r.url()}`); });
+    await page.goto(`/s/${id}`);
+    const box = page.getByTestId("composer");
+    await box.fill("A draft that stays where it is.");
+    await expect(page.getByTestId("user-message").last()).toContainText("asked again");
+    const on = () => page.evaluate(() => document.activeElement?.getAttribute("data-event-id") ?? "");
+    const place = page.getByTestId("prompt-place");
+    const said = page.getByTestId("announce-status");
+    // The prompt with the keys is whole on screen, under the top of the conversation.
+    const shown = async (at: number) => {
+      await expect.poll(on).toBe(prompts[at]);
+      const row = page.locator(`[data-testid="user-message"][data-event-id="${prompts[at]}"]`);
+      await expect(row).toBeFocused();
+      await expect(row).toBeInViewport({ ratio: 1 });
+      await expect(row).toContainText(at === N - 1 ? "asked again" : `Question ${at + 1}:`);
+    };
+
+    // From the message box: back to the newest prompt, then one more.
+    await page.keyboard.press("Alt+ArrowUp");
+    await shown(N - 1);
+    await expect(place).toHaveText(`Prompt ${N} of ${N}`);
+    await expect(said).toHaveText(`Prompt ${N} of ${N}`);
+    await page.keyboard.press("Alt+ArrowUp");
+    await shown(N - 2);
+    await expect(place).toHaveText(`Prompt ${N - 1} of ${N}`);
+    await shoot(page, "search-04-prompt-step");
+    // Forward again, and the end says it is the end.
+    await page.keyboard.press("Alt+ArrowDown");
+    await shown(N - 1);
+    await page.keyboard.press("Alt+ArrowDown");
+    await shown(N - 1);
+    await expect(place).toHaveText("This is the last prompt.");
+    await expect(said).toHaveText(`This is the last prompt. Prompt ${N} of ${N}.`);
+    await shoot(page, "search-05-prompt-last");
+    // Every prompt in turn, back to the first.
+    for (let at = N - 2; at >= 0; at--) {
+      await page.keyboard.press("Alt+ArrowUp");
+      await shown(at);
+    }
+    await page.keyboard.press("Alt+ArrowUp");
+    await shown(0);
+    await expect(place).toHaveText("This is the first prompt.");
+    await expect(said).toHaveText(`This is the first prompt. Prompt 1 of ${N}.`);
+    await shoot(page, "search-06-prompt-first");
+    // Tab goes on to the prompt's own actions.
+    await page.keyboard.press("Tab");
+    await expect(page.locator(`[data-event-id="${prompts[0]}"]`).getByTestId("copy-message")).toBeFocused();
+
+    // Nothing but the view moved: the same branch, the same draft, nothing written.
+    expect((await state()).session.head).toBe(s.head);
+    await expect(box).toHaveValue("A draft that stays where it is.");
+    await expect(page.getByTestId("branch-preview")).toHaveCount(0);
+    expect(writes).toEqual([]);
+
+    // The two actions are found by name, with their keys.
+    await page.keyboard.press("Control+k");
+    await page.getByTestId("palette-input").fill("prompt");
+    const options = page.getByTestId("palette").getByRole("option");
+    await expect(options.filter({ hasText: "Previous prompt" }).locator("kbd")).toHaveText(["Alt", "↑"]);
+    await expect(options.filter({ hasText: "Next prompt" }).locator("kbd")).toHaveText(["Alt", "↓"]);
+    await shoot(page, "search-07-prompt-commands");
+    await page.keyboard.press("Escape");
+    expect(await errors()).toBe(errorsBefore);
+  } finally { await request.delete(`/api/sessions/${id}`); }
+});

@@ -87,6 +87,9 @@ registerCommand(
   { id: "archive", label: "Archive this session", group: "Session", when: () => !!current(), run: () => { actions.patch(current()!.id, { archived: true }).catch(reportError); navigate({ name: "new" }); } },
   { id: "copy-link", label: "Copy a link to this session", group: "Session", when: () => !!current(), run: () => void copyOrSay(location.href) },
   { id: "end", label: "Go to the end and follow", group: "Session", keys: "end mod+end", when: () => !!current(), run: () => dispatchEvent(new Event("keel:end")) },
+  // The transcript of the pane with the keys moves to the prompt before or after the one it is on.
+  { id: "prev-prompt", label: "Previous prompt", group: "Conversation", keys: "alt+arrowup", inInput: true, words: "message question earlier jump back", when: () => !!current(), run: () => dispatchEvent(new CustomEvent("keel:prompt", { detail: { session: current()!.id, dir: -1 } })) },
+  { id: "next-prompt", label: "Next prompt", group: "Conversation", keys: "alt+arrowdown", inInput: true, words: "message question later jump forward", when: () => !!current(), run: () => dispatchEvent(new CustomEvent("keel:prompt", { detail: { session: current()!.id, dir: 1 } })) },
   { id: "settings", label: "Settings", group: "General", keys: "mod+,", inInput: true, words: "preferences options", run: () => navigate({ name: "settings", section: "general" }) },
   { id: "errors", label: "Show recorded errors", group: "General", words: "failures bugs log", run: () => setUI({ errors: true }) },
   { id: "theme-light", label: "Theme: light", group: "View", words: "appearance", run: () => setTheme("light") },

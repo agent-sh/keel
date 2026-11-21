@@ -8,6 +8,7 @@ import { rowActions } from "../lib/extend.ts";
 import { actions, reportError, useStore, type DraftBlock } from "../lib/store.ts";
 import { useSafety } from "../lib/safety.ts";
 import { getUI, navigate, seedComposer, setUI, useUI } from "../lib/ui.ts";
+import { announce } from "../lib/announce.ts";
 import { cn, fmtCost, fmtTokens, fmtWait } from "../lib/utils.ts";
 import { Markdown } from "./Markdown.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
@@ -446,6 +447,10 @@ function Live({ sessionId, working, asking, since, previewing }: { sessionId: st
 
 const TAIL = 150; // events rendered first when a long session opens
 
+// A prompt of the owner's, as the transcript shows one (not a note of the
+// harness, a system input or another session's message).
+const isPrompt = (e: StoredEvent) => e.kind === "user" && e.data.origin !== "restart" && e.data.origin !== "harness" && !SYSTEM_INPUT.has(e.data.kind) && !isPeerMessage(e);
+
 // Who stopped a turn, as the footer says it (a child's turn records the same actor as its agent card).
 const STOP_BY: Record<string, string> = { owner: " by you", parent: " by the parent agent", parent_turn: " with the parent's turn", time_limit: ": its time limit passed", parent_archived: ": its parent session was archived" };
 
@@ -598,6 +603,60 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     return () => clearTimeout(t);
   }, [from]);
 
+  // Previous and Next prompt (the commands of builtins.ts, for the pane with
+  // the keys): the keyboard moves through the owner's prompts on the branch
+  // shown, from the one it is on, else from the one nearest above the middle
+  // of the view (the newest, while the view follows the end). The prompt is brought under the top of the view and takes
+  // the focus, so Tab goes on to its actions. Nothing else changes: not the
+  // branch, not the draft. Each move says where it is, and the ends say so.
+  const [at, setAt] = useState<{ id: string; n: number; text: string } | null>(null);
+  useEffect(() => {
+    const onPrompt = (ev: Event) => {
+      const { session: target, dir } = (ev as CustomEvent<{ session: string; dir: 1 | -1 }>).detail;
+      const sc = scroller.current;
+      if (target !== sessionId || !events || !sc) return;
+      const prompts = events.filter(isPrompt);
+      if (!prompts.length) return announce("This conversation has no prompts yet.");
+      const row = (e: StoredEvent) => document.getElementById(`e-${e.id}`);
+      const on = document.activeElement?.closest<HTMLElement>("[data-event-id]")?.dataset.eventId;
+      let i = prompts.findIndex((e) => e.id === on);
+      if (i < 0) {
+        // Not on a prompt: the last one that starts above the middle of the view, or anywhere in
+        // it while the view follows the end (rows not rendered yet are above it).
+        const line = sc.getBoundingClientRect().top + sc.clientHeight / (stick.current ? 1 : 2);
+        const above = prompts.findLastIndex((e) => { const el = row(e); return !el || el.getBoundingClientRect().top < line; });
+        i = dir < 0 ? above + 1 : above;
+      }
+      const to = Math.min(prompts.length - 1, Math.max(0, i + dir));
+      const edge = to === i ? (dir < 0 ? "This is the first prompt." : "This is the last prompt.") : "";
+      const text = edge || `Prompt ${to + 1} of ${prompts.length}`;
+      announce(edge ? `${edge} Prompt ${to + 1} of ${prompts.length}.` : text);
+      setWhole(true); // a prompt before the rows rendered first is rendered now
+      setAt((cur) => ({ id: prompts[to]!.id, n: (cur?.n ?? 0) + 1, text }));
+    };
+    addEventListener("keel:prompt", onPrompt);
+    return () => removeEventListener("keel:prompt", onPrompt);
+  }, [events, sessionId]);
+  useEffect(() => {
+    if (!at) return;
+    const raf = requestAnimationFrame(() => {
+      const el = document.getElementById(`e-${at.id}`);
+      const sc = scroller.current;
+      if (!el || !sc) return;
+      stick.current = false;
+      const pinned = content.current?.querySelector<HTMLElement>("[data-pinned]")?.offsetHeight ?? 0;
+      sc.scrollTop += el.getBoundingClientRect().top - sc.getBoundingClientRect().top - parseFloat(getComputedStyle(el).scrollMarginTop) - pinned;
+      remember();
+      el.tabIndex = -1;
+      el.focus({ preventScroll: true });
+      el.classList.remove("flash");
+      void el.offsetWidth; // the glow starts again on a second press at an end
+      el.classList.add("flash");
+    });
+    const t = setTimeout(() => setAt((cur) => (cur === at ? null : cur)), 1800);
+    return () => { cancelAnimationFrame(raf); clearTimeout(t); };
+  }, [at]);
+
   // A question card waiting on the owner says so itself; no "Working" under it.
   const asking = useStore((s) => !!s.questionCalls[sessionId]?.length);
   if (!events) return <div className="flex-1" />;
@@ -695,6 +754,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           <Live sessionId={sessionId} working={session.phase === "working"} asking={asking} since={lastStart?.ts} previewing={previewing} />
         </div>
       </div>
+      {at && <div aria-hidden="true" data-testid="prompt-place" className={cn("pointer-events-none absolute left-1/2 z-10 flex h-7 -translate-x-1/2 items-center whitespace-nowrap rounded-full border border-line bg-raised px-3 text-caption font-medium tabular-nums text-muted shadow-2 animate-pop", away ? "bottom-[3.25rem]" : "bottom-3")}>{at.text}</div>}
       {away && (
         <button
           type="button"
