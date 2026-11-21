@@ -7,6 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { McpClient, RpcError } from "./client.ts";
 import { McpManager } from "./manager.ts";
+import { installMcpTools } from "./tools.ts";
+import { catalogTools } from "../tools/catalog.ts";
 
 // A client whose requests go to `answer` (no process, no socket).
 function fake(answer: (method: string, params: any) => Promise<any> | any, caps: Record<string, any> = { tools: {} }) {
@@ -70,30 +72,19 @@ test("the two halves of a resource listing stand alone", async () => {
   m.dispose();
 });
 
-test("a continuation that failed keeps its rows and the cursor it failed at", async () => {
-  const m = manager({});
-  let fail = true;
-  const client = fake((method, p) => {
-    if (method === "resources/templates/list") return { resourceTemplates: [{ uriTemplate: "t/{x}" }] };
-    if (p.cursor === undefined) return { resources: [{ uri: "a" }], nextCursor: "c2" };
-    if (fail) { fail = false; return Promise.reject(new RpcError(-32603, "not ready")); }
-    return { resources: [{ uri: "b" }] };
-  }, { resources: {} });
-  (m as any).entries.set("f", { name: "f", config: {}, state: "ready", client, tools: [], failures: 0, resourcesRev: 0, updates: {}, subscribed: new Set() });
-  const first = await m.resources("f");
-  expect(first.resources).toEqual({ items: [{ uri: "a" }], next: "c2", error: "not ready" });
-  expect(first.templates.items.length).toBe(1);
-  // Asking again from that cursor sends the same cursor, for that list alone.
-  const again = await m.resources("f", undefined, { list: "resources", cursor: first.resources.next! });
-  expect(again.resources.items).toEqual([{ uri: "b" }]);
-  expect(again.resources.next).toBeUndefined();
-  expect(again.resources.error).toBeUndefined();
-  expect(again.templates).toEqual({ items: [] });
-  expect(client.calls.filter(([method]) => method === "resources/list").map(([, p]) => p)).toEqual([{}, { cursor: "c2" }, { cursor: "c2" }]);
-  // A tool list that breaks midway is a failure, never a short list.
+// The rows a failed page keeps and the cursor a retry sends are the e2e's
+// (test/e2e/mcp-http.spec.ts); these are the parts it does not reach.
+test("a tool list that breaks midway is a failure, and the model is told which page failed", async () => {
   const tools = fake((_m, p) => (p.cursor === undefined ? { tools: [{ name: "a" }], nextCursor: "x" } : Promise.reject(new Error("down"))));
   await expect(tools.listTools()).rejects.toThrow("down");
-  m.dispose();
+  // A cursor is its connection's: on a closed one the failure is thrown, with nothing to go on from.
+  const closed = fake((_m, p) => { if (p.cursor === undefined) return { resources: [{ uri: "a" }], nextCursor: "c2" }; (closed as any).closed = true; throw new Error("gone"); });
+  await expect(closed.listResources()).rejects.toThrow("gone");
+  // list_resources: a page that failed is not "cut at 50 pages"; a list the bound stopped is.
+  installMcpTools({ configured: () => [], resources: async () => ({ resources: { items: [{ uri: "a" }], next: "c2", error: "not ready" }, templates: { items: [{ uriTemplate: "t/{x}" }], next: "c9" } }) } as any);
+  const list = (await catalogTools()).find((t) => t.qualified === "mcp__list_resources")!;
+  const said = String((await list.run({ server: "f" }, {} as any)).content).split("\n");
+  expect(said.slice(2)).toEqual(["(listing more resources failed after 1: not ready)", "(the templates were cut at 50 pages: more may exist)"]);
 });
 
 test("a server removed during its first tool list is closed, and its waiter fails", async () => {

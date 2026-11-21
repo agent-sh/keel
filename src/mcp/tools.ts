@@ -151,9 +151,11 @@ function builtins(m: McpManager): CatalogTool[] {
         const r = await m.resources(i.server);
         const all = [...r.resources.items, ...r.templates.items];
         const lines = all.map((x: any) => `${x.uri ?? x.uriTemplate}  ${x.name ?? ""}${x.description ? `: ${oneLine(x.description, 100)}` : ""}`);
-        if (r.resources.error) lines.push(`(listing the resources failed: ${r.resources.error})`);
-        if (r.templates.error) lines.push(`(listing the templates failed: ${r.templates.error})`);
-        if (r.resources.next || r.templates.next) lines.push("(the list was cut at 50 pages: more may exist)");
+        // A page that failed after others says so; only a list the bound stopped was cut.
+        for (const [what, h] of [["resources", r.resources], ["templates", r.templates]] as const) {
+          if (h.error) lines.push(h.items.length ? `(listing more ${what} failed after ${h.items.length}: ${h.error})` : `(listing the ${what} failed: ${h.error})`);
+          else if (h.next !== undefined) lines.push(`(the ${what} were cut at 50 pages: more may exist)`);
+        }
         return lines.length ? lines.join("\n") : `${i.server} lists no resources.`;
       })),
     t("read_resource", "Read one resource of an MCP server as text.", { server: { type: "string" }, uri: { type: "string" } }, ["server", "uri"],

@@ -246,10 +246,16 @@ function ServerContents({ s, base }: { s: McpServerState; base: string }) {
             <div className="text-micro font-medium text-faint">Resources</div>
             {lists === null ? <div className="text-micro text-faint">Loading</div>
               : !lists.resources.items.length && !lists.templates.items.length && !lists.resources.error && !lists.templates.error ? <div className="text-micro text-faint">None</div> : (
-                <ul className="mt-1 space-y-0.5">
-                  {half("resources", "resources", lists.resources)}
-                  {half("templates", "templates", lists.templates)}
-                </ul>
+                <>
+                  <ul className="mt-1 space-y-0.5">{half("resources", "resources", lists.resources)}</ul>
+                  {/* Under a heading of their own: a failure that ends the resources is not read as theirs. */}
+                  {(lists.templates.items.length > 0 || lists.templates.error || lists.templates.next !== undefined) && (
+                    <>
+                      <div className="mt-1.5 text-micro font-medium text-faint">Templates</div>
+                      <ul className="mt-1 space-y-0.5">{half("templates", "templates", lists.templates)}</ul>
+                    </>
+                  )}
+                </>
               )}
           </div>
         )}
