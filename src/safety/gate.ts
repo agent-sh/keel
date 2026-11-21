@@ -15,6 +15,7 @@ import { preAllow } from "./autonomy.ts";
 import { lookRepo, repoContext } from "./repofacts.ts";
 import { confine } from "./sandbox.ts";
 import { detect, placeholdersIn, vault } from "./secrets.ts";
+import { realProgram } from "./shims.ts";
 import { readOnlyCommand, splitCommand } from "./shell.ts";
 import { report, watch, type Watch } from "./refwatch.ts";
 import { configDir } from "../providers/config.ts";
@@ -386,7 +387,7 @@ export class Gate {
     const edit = cls.kind === "edit";
     let own: { home: string; config: string[]; land: (p: string) => string[] } | undefined;
     return decide(cls, {
-      mode: p.mode, workspace: edit ? workspace : session.workspace, sandboxed: this.sandboxed(session, p), rules: this.rules(session), tool: name, bind, scratch,
+      mode: p.mode, workspace: edit ? workspace : session.workspace, sandboxed: this.sandboxed(session, p), rules: this.rules(session), tool: name, bind, scratch, real: session.machine ? undefined : realProgram,
       // What Keel itself runs things from: a change there is the owner's alone
       // (on this machine's disk). With it, the scripts the owner's hooks and a
       // pinned repository's hooks run: no pin holds one outside .keel/. Read

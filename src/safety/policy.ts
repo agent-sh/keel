@@ -3,7 +3,7 @@
 import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { neverAllowed, neverAllowedText } from "./autonomy.ts";
-import { isReadOnly, matchRule, readForm, resolveVariables, risksOf, splitCommand, suggestRule, type Simple } from "./shell.ts";
+import { isReadOnly, matchRule, readForm, resolveVariables, risksOf, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
 import { contains } from "../core/paths.ts";
 import type { ToolKind } from "../tools/types.ts";
 import { extractShellApplyPatch, patchTargetPaths } from "../tools/v4a.ts";
@@ -229,6 +229,9 @@ export const ownPath = (p: string, f: Pick<Facts, "workspace" | "scratch">) => (
 export type Facts = {
   mode: Mode; workspace: string; sandboxed: boolean; rules: Rule[]; tool: string; bind?: string; scratch?: string[]; home?: string; config?: string[];
   own?: () => { home: string; config: string[]; land: (p: string) => string[] };
+  // Whether a program's name on this machine is the program itself and not a version manager's shim (shims.ts).
+  // Without it the reading forms of such programs (node --version) are not reads.
+  real?: (program: string) => boolean;
 };
 
 export function decide(c: CallClass, f: Facts): Decision {
@@ -313,14 +316,15 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
   if (f.mode === "full-auto") return { allow: true };
   const shellRules = f.rules.filter((r) => r.kind === "shell");
   // A variable the line's first words give a value is read as that value.
-  const open = resolveVariables(parts).filter((p) => (interpreter !== undefined || !isReadOnly(p)) && !shellRules.some((r) => matchRule(r.pattern, p)));
+  const reads = (p: Simple) => { if (isReadOnly(p)) return true; const program = f.real && shimmedRead(p); return !!program && f.real!(program); };
+  const open = resolveVariables(parts).filter((p) => (interpreter !== undefined || !reads(p)) && !shellRules.some((r) => matchRule(r.pattern, p)));
   if (!open.length) return { allow: true };
   // The form that would be read as a read, when an expansion among the arguments is all that keeps it from being one.
   const form = interpreter === undefined ? readForm(open[0]!) : null;
   if (f.mode === "read-only") {
     const p = open[0]!;
     // Say what would make it a read, when that is all it lacks.
-    const why = isReadOnly(p) ? ` It runs in ${interpreter}, and only a command bash runs is read as a read: run it with bash.`
+    const why = reads(p) ? ` It runs in ${interpreter}, and only a command bash runs is read as a read: run it with bash.`
       : form ? ` One of its arguments comes from an expansion ($(...), a variable, {a,b}, a glob), which could add an option that writes: ${form}.`
       : p.unknown && isReadOnly({ ...p, unknown: undefined }) ? " The rules cannot follow what the shell evaluates in it (arithmetic, a subscript, a sliced or indirect variable, a case inside a substitution): write it plainly."
       : "";

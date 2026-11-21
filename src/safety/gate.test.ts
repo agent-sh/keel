@@ -47,6 +47,30 @@ const scratchGate = () => {
 const bash: Tool = { name: "Bash", readOnly: false, kind: "shell", description: "", input_schema: { type: "object", properties: { command: {} } }, run: async () => ({ content: "" }) };
 const runCode: Tool = { ...bash, name: "run_code", kind: undefined, target: async (input) => ({ name: "run_code", readOnly: false, input, cls: { kind: "shell", command: "bun program.js", escalate: input?.sandbox_permissions === "require_escalated" || undefined } }) };
 
+test("a version query is a read where the program on the PATH is itself, and not where it is a shim", async () => {
+  const { g, session, call } = scratchGate();
+  g.setSandboxCheck(() => false);
+  g.setPerm(session.id, { mode: "read-only", sandbox: "off" });
+  const bin = mkdtempSync(join(tmpdir(), "keel-bin-"));
+  const shim = mkdtempSync(join(tmpdir(), "keel-shim-"));
+  writeFileSync(join(bin, "node"), "\x7fELF", { mode: 0o755 });
+  writeFileSync(join(shim, "volta-shim"), "\x7fELF", { mode: 0o755 });
+  symlinkSync(join(shim, "volta-shim"), join(shim, "node"));
+  const before = { PATH: process.env.PATH, HOME: process.env.HOME };
+  try {
+    process.env.HOME = mkdtempSync(join(tmpdir(), "keel-home-"));
+    process.env.PATH = bin;
+    expect(await g.check(session, call(bash, { command: "node --version" }))).not.toHaveProperty("deny");
+    // The writing forms of the same program are refused as ever.
+    expect(await g.check(session, call(bash, { command: "node x.js" }))).toHaveProperty("deny");
+    process.env.PATH = `${shim}:${bin}`;
+    expect(await g.check(session, call(bash, { command: "node --version" }))).toHaveProperty("deny");
+    // A session on another machine runs its commands there: what this machine holds says nothing.
+    process.env.PATH = bin;
+    expect(await g.check({ ...session, machine: "m1" } as Session, call(bash, { command: "node --version" }))).toHaveProperty("deny");
+  } finally { Object.assign(process.env, before); }
+});
+
 test("confinement follows the class the gate judged, not an input field", async () => {
   const { g, session, call } = scratchGate();
   g.setPerm("s1", { mode: "full-auto", sandbox: "workspace-write" });

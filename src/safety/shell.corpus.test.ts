@@ -4,11 +4,11 @@
 // session means read as a read.
 import { expect, test } from "bun:test";
 import { decide, type Mode } from "./policy.ts";
-import { isReadOnly, splitCommand } from "./shell.ts";
-import { READERS } from "./shell-reads.ts";
+import { isReadOnly, shimmedRead, splitCommand } from "./shell.ts";
+import { READERS, SHIMMED } from "./shell-reads.ts";
 
-const verdict = (command: string, mode: Mode) => {
-  const d = decide({ kind: "shell", command, cwd: "/w" }, { mode, workspace: "/w", sandboxed: false, rules: [], tool: "Bash", home: "/h" });
+const verdict = (command: string, mode: Mode, real?: (program: string) => boolean) => {
+  const d = decide({ kind: "shell", command, cwd: "/w" }, { mode, workspace: "/w", sandboxed: false, rules: [], tool: "Bash", home: "/h", real });
   return "allow" in d ? "runs" : "deny" in d ? "refused" : "asks";
 };
 
@@ -285,7 +285,7 @@ const READS: string[] = [
   "getent group sudo", "tput cols", "stty size", "sysctl -a", "sysctl kernel.ostype", "nvidia-smi", "nvidia-smi -L", "nvidia-smi --query-gpu=name,memory.used --format=csv",
   "zcat a.gz | head", "bzcat a.bz2", "xzcat a.xz", "gzip -dc a.gz | head", "gzip -l a.gz", "gzip -t a.gz", "gunzip -c a.gz", "zstdcat a.zst", "tar tf a.tar", "tar -tzf a.tgz",
   "tar tvf a.tar", "tar --list --file=a.tar", "tar -tf a.tar a", "unzip -l a.zip", "unzip -t a.zip", "zipinfo a.zip", "dpkg -l | head", "dpkg -L bash | head", "dpkg -s bash", "dpkg -S /bin/ls",
-  "dpkg-query -W bash", "apt list --installed | head", "apt show bash", "apt-cache policy bash", "apt-cache search json", "pip show pip", "pip freeze", "pip --version", "pip3 show -f pip", "pip freeze --local", "pip show -v pip setuptools",
+  "dpkg-query -W bash", "apt list --installed | head", "apt show bash", "apt-cache policy bash", "apt-cache search json",
   "docker ps", "docker ps -a --format '{{.Names}}'", "docker images", "docker version", "docker info", "docker inspect x", "docker logs --tail 20 x", "docker image ls", "docker container ls -a",
   "docker volume ls", "docker network ls", "docker system df", "docker --version", "docker top x -o pid", "docker logs -ft --since 1h x", "docker ps -aq --filter status=running",
   "docker inspect -f '{{.Id}}' x", "docker stats --no-stream --format '{{.Name}}'", "systemctl status sshd", "systemctl --user status x", "systemctl list-units | head",
@@ -344,10 +344,17 @@ const REACHES: string[] = [
   "git -C x log --help", "git cherry --help -w",
   // A shim that installs the toolchain a project pins, a tool that writes a log or a settings folder on every run, a script that evaluates its arguments.
   "go version", "go env GOPATH", "pnpm --version", "yarn --version", "npm ls", "npm ls --depth=0", "npm --version", "top -bn1",
-  "java -version", "gh --version", "podman ps", "zgrep foo a.gz", "node --version", "node -v", "bun --version", "python3 --version", "python --version", "uv --version",
-  "ruby --version", "gcc --version", "clang --version", "make --version", "cmake --version", "cargo --version", "rustc --version",
+  "java -version", "gh --version", "podman ps", "zgrep foo a.gz",
   // An assignment in front changes what the program runs with (LD_PRELOAD loads code into env).
   "FOO=1 env", "IFS=: ls",
+];
+
+// Reading forms of programs a version manager may stand in for: reads on a machine where the gate says the name
+// is the program itself, and asked about where it does not say (a shim installs what a project pins).
+const REAL: string[] = [
+  "node --version", "node -v", "bun --version", "bun -v", "python3 --version", "python --version", "python3 -V", "uv --version", "ruby --version", "gcc --version", "g++ --version",
+  "cc --version", "clang --version", "clang++ --version", "make --version", "cmake --version", "cargo --version", "rustc -V", "pip show pip", "pip freeze", "pip --version", "pip3 show -f pip",
+  "pip freeze --local", "pip show -v pip setuptools", "node --version && bun --version", "python3 --version 2>&1",
 ];
 
 test("a command that changes something is never read as a read", () => {
@@ -356,6 +363,20 @@ test("a command that changes something is never read as a read", () => {
   expect(CHANGES.filter((c) => verdict(c, "read-only") !== "refused")).toEqual([]);
   expect(CHANGES.filter((c) => verdict(c, "plan") !== "refused")).toEqual([]);
   expect(CHANGES.filter((c) => verdict(c, "ask") !== "asks")).toEqual([]);
+  // Nor on a machine where every program is itself.
+  expect(CHANGES.filter((c) => verdict(c, "ask", () => true) !== "asks")).toEqual([]);
+  expect(CHANGES.filter((c) => verdict(c, "read-only", () => true) !== "refused")).toEqual([]);
+});
+
+test("a program a version manager may stand in for reads only where it is itself", () => {
+  expect(REAL.filter((c) => verdict(c, "ask", () => true) !== "runs")).toEqual([]);
+  expect(REAL.filter((c) => verdict(c, "read-only", () => true) !== "runs")).toEqual([]);
+  expect(REAL.filter((c) => verdict(c, "ask", () => false) !== "asks")).toEqual([]);
+  expect(REAL.filter((c) => verdict(c, "ask") !== "asks")).toEqual([]);
+  expect(REAL.filter((c) => verdict(c, "read-only") !== "refused")).toEqual([]);
+  // Only the program the line names is asked about.
+  expect(verdict("node --version", "ask", (program) => program === "node")).toBe("runs");
+  expect(verdict("node --version && bun --version", "ask", (program) => program === "node")).toBe("asks");
 });
 
 test("ordinary reads stay reads", () => {
@@ -373,6 +394,7 @@ test("a read the rules cannot prove asks", () => {
 test("a read that reaches out, pages or logs still asks", () => {
   expect(REACHES.filter((c) => verdict(c, "ask") !== "asks")).toEqual([]);
   expect(REACHES.filter((c) => verdict(c, "read-only") !== "refused")).toEqual([]);
+  expect(REACHES.filter((c) => verdict(c, "ask", () => true) !== "asks")).toEqual([]);
 });
 
 // The first word of each simple command of the rows, with whether that command alone is read as a read.
@@ -383,4 +405,8 @@ test("every program on the allow-list has a reading row, and its writing forms h
   const asks = new Set(judged([...CHANGES, ...REACHES]).filter((p) => !p.read).map((p) => p.prog));
   expect([...READERS.keys()].filter((p) => !reads.has(p))).toEqual([]);
   expect([...READERS].filter(([p, how]) => how !== true && !asks.has(p)).map(([p]) => p)).toEqual([]);
+  // The same for the programs that read only where they are themselves.
+  const real = new Set(REAL.flatMap((c) => (splitCommand(c) ?? []).map(shimmedRead)));
+  const refused = new Set(CHANGES.flatMap((c) => (splitCommand(c) ?? []).filter((p) => !shimmedRead(p)).map((p) => p.words[0])));
+  expect([...SHIMMED.keys()].filter((p) => !real.has(p) || !refused.has(p))).toEqual([]);
 });

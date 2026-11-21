@@ -1,7 +1,7 @@
 // Shell command analysis for the permission gate: split a command line into
 // the simple commands it runs, decide which are read-only, which are high
 // risk, and whether a stored rule covers each one. Pure functions.
-import { ENDS, KEPT, READERS, anyArguments, denied, long, xargsCommand } from "./shell-reads.ts";
+import { ENDS, KEPT, READERS, SHIMMED, anyArguments, denied, long, xargsCommand } from "./shell-reads.ts";
 
 // One simple command: its words with quotes removed, and whether it writes
 // through a redirection. `nested`: it runs inside a substitution or a
@@ -785,6 +785,15 @@ function byArguments(prog: string, args: string[]): boolean {
   if (prog === "awk" || prog === "gawk" || prog === "mawk" || prog === "nawk") return awkReadOnly(args);
   if (prog === "git") return gitReadOnly(args);
   return false;
+}
+
+// A reading form of a program a version manager may stand in for (node --version, pip show x): the program's
+// name, for the gate to say whether it is the program itself on this machine. null: not such a form.
+export function shimmedRead(s: Simple): string | null {
+  if (s.heredoc || s.unknown || s.redirects || s.dyn) return null;
+  const { env, words } = body(s.words);
+  const reads = words[0] === undefined ? undefined : SHIMMED.get(words[0]);
+  return !env && reads?.(words.slice(1)) ? words[0]! : null;
 }
 
 // What the line's first commands give its variables, used where a later word reads them. A line that opens with

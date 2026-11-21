@@ -228,9 +228,7 @@ function readsNames(args: string[]): boolean {
 // download or run the version a project pins), npm (every npm command writes
 // a log under ~/.npm), java (it writes hsperfdata under the temporary
 // folder), gh (it writes a device id under ~/.local/state on its first run),
-// curl (it opens a socket to the name server); node, bun, python, ruby, uv, cargo
-// and the compilers (a version manager's shim under their name installs the
-// version a project pins).
+// curl (it opens a socket to the name server).
 const version = (...flags: string[]) => (args: string[]) => args.length === 1 && flags.includes(args[0]!);
 
 export const READERS = new Map<string, Reader>([
@@ -303,12 +301,21 @@ export const READERS = new Map<string, Reader>([
   // Run as root they refresh the package cache under /var/cache/apt, as apt-get does.
   ["apt", (a) => /^(list|show|search|policy|depends|rdepends)$/.test(a[0] ?? "") && a.slice(1).every((x) => !x.startsWith("-") || /^(--installed|--upgradable|--upgradeable|--all-versions|--manual-installed|--names-only|--full|-a)$/.test(x))],
   ["apt-cache", first(/^(show|search|policy|depends|rdepends|showpkg|showsrc|pkgnames|madison|stats)$/)],
-  ["pip", pipReads], ["pip3", pipReads],
   ["docker", dockerReads],
   ["systemctl", systemctlReads],
   ["journalctl", journalctlReads],
 
   ["bash", version("--version")], ["zsh", version("--version")], ["openssl", version("version")], ["ssh", version("-V")],
+]);
+
+// Programs a version manager may stand in for (volta, mise, asdf, rustup, pyenv): a shim of theirs installs the
+// version a project pins the first time it runs, whatever it is asked. Their reading forms are reads only on a
+// machine where the name is the program itself (see shims.ts), which the gate says; the rules alone never do.
+export const SHIMMED = new Map<string, (args: string[]) => boolean>([
+  ...["node", "bun"].map((p): [string, (args: string[]) => boolean] => [p, version("--version", "-v")]),
+  ...["python", "python3", "uv", "cargo", "rustc"].map((p): [string, (args: string[]) => boolean] => [p, version("--version", "-V")]),
+  ...["ruby", "gcc", "g++", "cc", "clang", "clang++", "make", "cmake"].map((p): [string, (args: string[]) => boolean] => [p, version("--version")]),
+  ["pip", pipReads], ["pip3", pipReads],
 ]);
 
 // The readers that are programs on disk (not shell builtins): what xargs and find -exec can run.
