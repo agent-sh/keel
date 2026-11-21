@@ -6,7 +6,8 @@ import { copyOrSay } from "../lib/copy.ts";
 import { Dialog } from "@base-ui/react/dialog";
 import { Switch } from "@base-ui/react/switch";
 import { Check, Copy, FileDown, FileJson, History, Terminal, X } from "lucide-react";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { KEEL_FILE_MAX, keelFileBytes, sizeText } from "../../../src/core/keel-file.ts";
 import { lineage } from "../../../src/core/tree.ts";
 import type { Session } from "../../../src/core/types.ts";
 import { reportError, failed, useStore } from "../lib/store.ts";
@@ -45,10 +46,10 @@ function Option({ icon, title, hint, onClick, href, testid, busy }: { icon: Reac
 }
 
 // What the Keel file can carry besides the branch's events: off unless asked for.
-function Carry({ on, onChange, testid, children }: { on: boolean; onChange: (v: boolean) => void; testid: string; children: React.ReactNode }) {
+function Carry({ on, onChange, testid, disabled, children }: { on: boolean; onChange: (v: boolean) => void; testid: string; disabled?: boolean; children: React.ReactNode }) {
   return (
-    <label className="flex cursor-pointer items-center gap-2.5 px-1 text-caption text-muted">
-      <Switch.Root checked={on} onCheckedChange={onChange} data-testid={testid} className="relative flex h-4 w-7 shrink-0 rounded-full bg-line-strong p-0.5 transition-colors data-checked:bg-accent">
+    <label className={cn("flex items-center gap-2.5 px-1 text-caption text-muted", disabled ? "cursor-not-allowed" : "cursor-pointer")}>
+      <Switch.Root checked={on} onCheckedChange={onChange} disabled={disabled} data-testid={testid} className="relative flex h-4 w-7 shrink-0 rounded-full bg-line-strong p-0.5 transition-colors data-checked:bg-accent data-disabled:opacity-50">
         <Switch.Thumb className="size-3 rounded-full bg-raised transition-transform data-checked:translate-x-3" />
       </Switch.Root>
       <span>{children}</span>
@@ -69,7 +70,17 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
   const pending = useStore((st) => (session ? st.queues[session.id]?.queue.length ?? 0 : 0));
   // The files the prompts of what is exported name (the branch shown, or every branch), each counted once.
   const head = useStore((st) => (session ? st.sessions[session.id]?.head ?? session.head : null));
-  const files = new Set((all ? (tree ? all : lineage(all, head)) : []).flatMap((e) => (e.kind === "user" ? (e.data.images ?? []).filter((b: any) => b.type === "attachment").map((b: any) => b.id as string) : []))).size;
+  // With them inside, the file must still be one another Keel takes: counted
+  // here as the daemon counts it, so the switch is not offered for a file it would refuse.
+  const carried = useMemo(() => {
+    const evs = all ? (tree ? all : lineage(all, head)) : [];
+    const sizes = new Map<string, number>();
+    for (const e of evs) if (e.kind === "user") for (const b of e.data.images ?? []) if (b.type === "attachment") sizes.set(b.id, b.size ?? 0);
+    const bytes = [...sizes.values()].reduce((a, b) => a + b, 0);
+    const whole = sizes.size ? keelFileBytes(new Blob([JSON.stringify(evs)]).size + 300 * sizes.size, [...sizes.values()]) : 0;
+    return { files: sizes.size, bytes, fits: whole <= KEEL_FILE_MAX };
+  }, [all, head, tree]);
+  const files = carried.files;
   const branches = all ? Math.max(0, all.filter((e) => !all.some((x) => x.parent === e.id)).length - 1) : 0;
   const stays = [
     branches && !tree ? `${branches} other branch${branches === 1 ? "" : "es"}` : "",
@@ -143,11 +154,15 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
                 Put every branch inside the Keel file: the {branches === 1 ? "other branch comes" : `${branches} other branches come`} too, with the one shown now still the one shown.
               </Carry>
             )}
-            {files > 0 && (
+            {files > 0 && (carried.fits ? (
               <Carry on={withFiles} onChange={setWithFiles} testid="export-with-files">
-                Put the {files === 1 ? "attached file" : `${files} attached files`} inside the Keel file, so it opens whole on a machine that never had {files === 1 ? "it" : "them"}. Files go as they are: secrets in them stay.
+                Put the {files === 1 ? "attached file" : `${files} attached files`} ({sizeText(carried.bytes)}) inside the Keel file, so it opens whole on a machine that never had {files === 1 ? "it" : "them"}: import it there from Import sessions, or with keel import file. Files go as they are: secrets in them stay.
               </Carry>
-            )}
+            ) : (
+              <Carry on={false} onChange={() => {}} disabled testid="export-with-files">
+                The {files === 1 ? "attached file is" : `${files} attached files are`} {sizeText(carried.bytes)} in all: with {files === 1 ? "it" : "them"} inside, the Keel file would be larger than another Keel takes ({sizeText(KEEL_FILE_MAX)}). {files === 1 ? "It stays" : "They stay"} named in the file, not included.
+              </Carry>
+            ))}
             {stays && <p className="px-1 text-caption text-faint" data-testid="export-stays">{stays} stay{(tree ? 0 : branches) + pending === 1 ? "s" : ""} in this session.</p>}
             <div className="pt-2 text-caption font-medium uppercase tracking-wide text-faint">Continue in another harness</div>
             <div className="grid grid-cols-2 gap-2">

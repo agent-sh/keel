@@ -4,8 +4,9 @@
 // brought up to date with what its source gained.
 import { Dialog } from "@base-ui/react/dialog";
 import { Switch } from "@base-ui/react/switch";
-import { ArrowDownToLine, FolderOpen, History, RefreshCw, Search, X } from "lucide-react";
+import { ArrowDownToLine, FileUp, FolderOpen, History, RefreshCw, Search, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { KEEL_FILE_MAX, sizeText } from "../../../src/core/keel-file.ts";
 import type { Found, Harness } from "../../../src/integrations/import/types.ts";
 import { useFleet } from "../lib/fleet.ts";
 import { api, reportError, failed } from "../lib/store.ts";
@@ -233,6 +234,24 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
   const seq = useRef(0);
   const shown = useRef(0); // how many rows the list holds
   const [bulk, setBulk] = useState("");
+  // A Keel file (a session exported from another Keel) picked from disk: sent
+  // as it is. It opens at once; what the import had to change (another model,
+  // another folder, a file that did not travel) is said first.
+  const pick = useRef<HTMLInputElement>(null);
+  type KeelFile = { state: "sending"; name: string } | { state: "failed"; name: string; error: string } | { state: "done"; name: string; id: string; title: string; events: number; files: number; notes: string[] };
+  const [keelFile, setKeelFile] = useState<KeelFile | null>(null);
+  const openSession = (id: string) => { setKeelFile(null); onOpenChange(false); navigate({ name: "session", id }); };
+  const importKeelFile = async (file: File) => {
+    setKeelFile({ state: "sending", name: file.name });
+    try {
+      if (file.size > KEEL_FILE_MAX) throw new Error(`it is ${sizeText(file.size)}, and a Keel file can be at most ${sizeText(KEEL_FILE_MAX)}`);
+      const r = await api<{ session: { id: string; title: string }; events_imported: number; files_imported: number; notes: string[] }>("/api/sessions/import", { method: "POST", headers: { "content-type": "application/x-ndjson" }, body: file });
+      if (!r.notes.length) return openSession(r.session.id);
+      setKeelFile({ state: "done", name: file.name, id: r.session.id, title: r.session.title, events: r.events_imported, files: r.files_imported, notes: r.notes });
+    } catch (e) {
+      setKeelFile({ state: "failed", name: file.name, error: (e as { status?: number }).status === 413 ? `it is larger than a Keel file can be (${sizeText(KEEL_FILE_MAX)})` : failed(e, { at: "ImportSheet keel file" }) });
+    }
+  };
   // The filter the shown rows and count came from.
   const [shownFor, setShownFor] = useState<{ q: string; all: boolean }>({ q: "", all: false });
   const [from, setFrom] = useState("");
@@ -370,8 +389,13 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
                 </button>
               ))}
             </div>
+            <input ref={pick} type="file" accept=".jsonl,application/x-ndjson,application/jsonl" hidden data-testid="import-keel-file-input" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) void importKeelFile(f); }} />
+            <button type="button" data-testid="import-keel-file" title="A session exported from another Keel as a Keel file" disabled={keelFile?.state === "sending"} onClick={() => pick.current?.click()} className="ml-auto flex h-7 items-center gap-1.5 rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50">
+              <FileUp className="size-3.5" />
+              Import a Keel file
+            </button>
             {linked.length > 0 && (
-              <label className="ml-auto flex items-center gap-1.5 text-caption text-faint">
+              <label className="flex items-center gap-1.5 text-caption text-faint">
                 On
                 <Select data-testid="import-from" value={from} onChange={(e) => setFrom(e.target.value)} className="h-7 rounded-md border border-line bg-raised px-1.5 text-caption text-fg outline-none focus-visible:border-accent">
                   <option value="">this machine</option>
@@ -379,11 +403,28 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
                 </Select>
               </label>
             )}
-            <button type="button" title="Read the stores again" onClick={() => load(undefined, true)} className={cn(!linked.length && "ml-auto", "grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg")}>
+            <button type="button" title="Read the stores again" onClick={() => load(undefined, true)} className="grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg">
               <RefreshCw className={cn("size-3.5", building && "animate-spin")} />
             </button>
             <Dialog.Close className="grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg"><X className="size-4" /></Dialog.Close>
           </div>
+          {keelFile && (
+            <div data-testid="import-keel-result" data-state={keelFile.state} className={cn("flex items-start gap-3 border-b border-line px-4 py-2.5 text-caption", keelFile.state === "failed" ? "bg-danger-soft text-danger" : "bg-panel text-muted")}>
+              <FileUp className="mt-0.5 size-4 shrink-0" />
+              <div className="min-w-0 flex-1 space-y-0.5">
+                {keelFile.state === "sending" && <p>Importing {keelFile.name}</p>}
+                {keelFile.state === "failed" && <p>{keelFile.name} was not imported: {keelFile.error}</p>}
+                {keelFile.state === "done" && (
+                  <>
+                    <p className="text-fg">Imported “{keelFile.title || "Session"}” from {keelFile.name}: {keelFile.events} event{keelFile.events === 1 ? "" : "s"}{keelFile.files ? ` and ${keelFile.files} attached file${keelFile.files === 1 ? "" : "s"}` : ""}.</p>
+                    {keelFile.notes.map((n) => <p key={n} data-testid="import-keel-note">{n}</p>)}
+                  </>
+                )}
+              </div>
+              {keelFile.state === "done" && <button type="button" data-testid="import-keel-open" onClick={() => openSession(keelFile.id)} className="h-6 shrink-0 rounded-md bg-accent px-2 font-medium text-accent-fg hover:opacity-90">Open</button>}
+              {keelFile.state !== "sending" && <button type="button" aria-label="Dismiss" onClick={() => setKeelFile(null)} className="grid size-6 shrink-0 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg"><X className="size-3.5" /></button>}
+            </div>
+          )}
           <div className="flex min-h-0 flex-1">
             <div className="flex w-[26rem] shrink-0 flex-col border-r border-line">
               <div className="flex items-center gap-2 border-b border-line px-3 py-2">

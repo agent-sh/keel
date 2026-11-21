@@ -5,13 +5,14 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import type { RouteModule } from "../app.ts";
 import { lineage } from "../../core/tree.ts";
 import { sharedDrive } from "../../drive/drive.ts";
-import { exportTo, parseKeelJsonl, redact, redactDeep, rowsOf, toKeelJsonl, toMarkdown } from "../../integrations/export.ts";
+import { exportTo, KeelFileTooLarge, parseKeelJsonl, redact, redactDeep, rowsOf, toKeelJsonl, toMarkdown } from "../../integrations/export.ts";
+import { KEEL_FILE_MAX } from "../../core/keel-file.ts";
 import { HARNESSES, modelFor as pickModel, sharedImports, sourceMachine, WENT_ON } from "../../integrations/import/service.ts";
 import { cursorGiven, CursorError, offered, scrub, tail } from "../../integrations/import/offer.ts";
 import type { Found, Harness, Read } from "../../integrations/import/types.ts";
 import { callerOf, LinkError, proven } from "../../fleet/link.ts";
 import { contains } from "../../core/paths.ts";
-import { attachmentPath, saveAttachment } from "../../engine/attachments.ts";
+import { attachmentPath, dropAttachment, saveAttachment } from "../../engine/attachments.ts";
 import { fleet } from "./fleet.ts";
 import { takeover } from "./takeover.ts";
 import { grantedMachine, resumes } from "./resume.ts";
@@ -389,7 +390,16 @@ export const importRoutes: RouteModule = (deps) => {
           if (include.size) return bad("the Keel file always holds every part of the branch; include applies to Markdown");
           const evs = (scope === "tree" ? all : shown).map((e) => ({ ...e, data: redactDeep(e.data) }));
           const blob = (id: string) => { const p = attachmentPath(id); return p ? new Uint8Array(readFileSync(p)) : undefined; };
-          return new Response(toKeelJsonl({ ...s, title: redact(s.title) }, evs, { ...(withFiles ? { blob } : {}), ...(scope === "tree" ? { tree: { head: s.head } } : {}) }), { headers: headers("application/x-ndjson", "jsonl") });
+          const size = (id: string) => { const p = attachmentPath(id); return p ? statSync(p).size : undefined; };
+          // A file another Keel would not take is refused before a stored file is read, with what it would weigh.
+          let file;
+          try {
+            file = toKeelJsonl({ ...s, title: redact(s.title) }, evs, { max: KEEL_FILE_MAX, ...(withFiles ? { blob, size } : {}), ...(scope === "tree" ? { tree: { head: s.head } } : {}) });
+          } catch (e) {
+            if (e instanceof KeelFileTooLarge) return json({ error: e.message, bytes: e.bytes, files_bytes: e.files_bytes, max: e.max }, 413);
+            throw e;
+          }
+          return new Response(file, { headers: headers("application/x-ndjson", "jsonl") });
         }
         return bad(`unknown format ${format}`);
       },
@@ -423,17 +433,29 @@ export const importRoutes: RouteModule = (deps) => {
         if (header.workspace && workspace !== header.workspace) notes.push(`The folder ${header.workspace} is not on this machine: the session works in ${workspace}.`);
         // New ids; an event that names another one of the file names its copy.
         const { rows, head } = rowsOf(parsed);
-        // The bytes a self-contained file carries (checked against their digests
-        // when it was read) are stored once each, under the first name a prompt gives them.
-        for (const r of rows) if (r.kind === "user") for (const b of r.data?.images ?? []) {
-          const bytes = b?.type === "attachment" && !attachmentPath(b.id) ? parsed.blobs.get(b.id) : undefined;
-          if (bytes) saveAttachment(bytes, b.name, b.media_type, b.charset);
+        // The session and its events first, then the bytes a self-contained
+        // file carries (checked against their digests when it was read), stored
+        // once each under the first name a prompt gives them. One step: when
+        // any of it fails, the session and what was stored for it are removed.
+        let out;
+        const stored: string[] = [];
+        try {
+          out = store.createWithEvents({ title: typeof header.title === "string" ? header.title : "", model, workspace }, rows, head);
+          for (const r of rows) if (r.kind === "user") for (const b of r.data?.images ?? []) {
+            const bytes = b?.type === "attachment" && !attachmentPath(b.id) ? parsed.blobs.get(b.id) : undefined;
+            if (!bytes) continue;
+            stored.push(b.id);
+            saveAttachment(bytes, b.name, b.media_type ?? "", b.charset);
+          }
+        } catch (e) {
+          if (out) store.deleteSession(out.id);
+          for (const id of stored) dropAttachment(id);
+          throw e;
         }
         // Files the prompts name and this machine does not hold.
         const missing = new Set<string>();
         for (const r of rows) if (r.kind === "user") for (const b of r.data?.images ?? []) if (b?.type === "attachment" && !attachmentPath(b.id)) missing.add(b.name);
         if (missing.size) notes.push(`${[...missing].join(", ")} ${missing.size === 1 ? "is" : "are"} not stored on this machine: the model is told ${missing.size === 1 ? "it is" : "they are"} missing.`);
-        const out = store.createWithEvents({ title: header.title, model, workspace }, rows, head);
         bus.emit({ t: "session", session: out });
         return json({ session: out, events_imported: rows.length, files_imported: parsed.blobs.size, model: { exported: header.model ?? null, used: model, reason }, notes }, 201);
       },

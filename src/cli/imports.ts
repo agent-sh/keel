@@ -1,14 +1,16 @@
 // keel import: sessions of other harnesses (Claude Code, Codex, the Rust
 // Keel) from a terminal, over the daemon's import routes.
+import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { KEEL_FILE_MAX, sizeText } from "../core/keel-file.ts";
 import { ago, ApiError, type Client, command, EXIT, line, printJson, usageError } from "./client.ts";
 
 const home = homedir();
 const tilde = (p?: string) => (p ? (p.startsWith(home) ? "~" + p.slice(home.length) : p) : "");
 const size = (b: number) => (b < 1 << 20 ? `${Math.round(b / 1024)}K` : `${(b / (1 << 20)).toFixed(1)}M`);
 
-const USAGE = `keel import <list|harnesses|folders|preview|run|batch|index> [options]
+const USAGE = `keel import <list|harnesses|folders|preview|run|batch|file|index> [options]
   Sessions of other harnesses on this machine: list them, look at one, continue one in Keel.
 
   list [-q TEXT] [--harness H] [--cwd DIR] [--show subagents,headless,all] [--sort updated|size|title]
@@ -18,6 +20,8 @@ const USAGE = `keel import <list|harnesses|folders|preview|run|batch|index> [opt
   preview HARNESS ID | preview --path FILE     what an import would bring
   run HARNESS ID | run --path FILE [--mode new|update|open] [-m MODEL] [--cwd DIR] [--title T]
   batch HARNESS:ID... [--mode new|update|open] [-m MODEL]   one line per source; exit 1 when one failed
+  file PATH                                    a Keel file (a session exported from another Keel,
+                                               with its attached files when it carries them) as a new session
   index [status|refresh|rebuild]               the index the list reads
 
   Harnesses: claude, codex, keel, agy, hermes. Every subcommand takes --json.`;
@@ -135,6 +139,18 @@ export const importCmd = command("import", USAGE, {
       if (v.json) printJson(r);
       else for (const x of r.results) console.log(x.ok ? `${x.action} ${x.harness}:${x.id} -> ${x.session_id}` : `failed ${x.harness ?? ""}:${x.id ?? x.path}: ${line(x.error)}`);
       return r.counts.failed ? 1 : EXIT.ok;
+    }
+    case "file": {
+      if (!rest[0]) return usageError("import", "file takes the path of a Keel file", USAGE);
+      const path = resolve(rest[0]);
+      if (!existsSync(path) || !statSync(path).isFile()) throw new ApiError(`${path} is not a file`, 404);
+      const bytes = statSync(path).size;
+      if (bytes > KEEL_FILE_MAX) throw new ApiError(`${path} is ${sizeText(bytes)}: a Keel file can be at most ${sizeText(KEEL_FILE_MAX)}`, 413);
+      const r = await c.call<any>("POST", "/api/sessions/import", undefined, { body: Bun.file(path), type: "application/x-ndjson" });
+      if (v.json) return (printJson(r), EXIT.ok);
+      console.log(`created ${r.session.id}  (${r.events_imported} events${r.files_imported ? `, ${r.files_imported} attached files` : ""})\nopen ${c.url(r.session.id)}`);
+      for (const note of r.notes) console.error(`note ${line(note)}`);
+      return EXIT.ok;
     }
     case "index": {
       const action = rest[0] ?? "status";

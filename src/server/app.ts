@@ -15,6 +15,7 @@ import { carrySettings, commitSwitch } from "./switch.ts";
 import { bundleRoutes, compressJson } from "./compress.ts";
 import { daemonApi, embeddedBuilt, stamp, UiBundles } from "./ui-bundle.ts";
 import { fitPromptImages } from "../engine/image-fit.ts";
+import { KEEL_FILE_MAX } from "../core/keel-file.ts";
 
 // A feature module adds its routes here instead of editing this file.
 export type RouteModule = (deps: Deps) => Record<string, any>;
@@ -291,6 +292,10 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
     hostname: opts.hostname,
     port: opts.port,
     idleTimeout: IDLE_S,
+    // The largest body a request may carry: Bun's own default, said here so an
+    // upgrade cannot move it. A Keel file with its attached files is the
+    // largest thing sent; the export refuses to write one over it.
+    maxRequestBodySize: KEEL_FILE_MAX,
     reusePort: false, // one daemon per port (Bun 1.4 binds a taken port anyway: start.ts checks first)
     development: opts.development ? { hmr: true, console: true } : false,
     fetch(req: Request, srv: Bun.Server<undefined>) {

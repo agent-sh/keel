@@ -297,7 +297,7 @@ test("a Keel file carries its attached files to an empty Keel", async ({ page, r
   const link = dialog.getByTestId("export-jsonl");
   await expect(link).toHaveAttribute("href", `/api/sessions/${session.id}/export?format=jsonl`);
   await expect(dialog.getByTestId("export-with-files")).toBeVisible();
-  await expect(dialog).toContainText("Put the attached file inside the Keel file");
+  await expect(dialog).toContainText("Put the attached file (1 KB) inside the Keel file");
   await dialog.getByTestId("export-with-files").click();
   await expect(link).toHaveAttribute("href", `/api/sessions/${session.id}/export?format=jsonl&attachments=1`);
   await shoot(page, "import-07-export-with-files");
@@ -313,26 +313,65 @@ test("a Keel file carries its attached files to an empty Keel", async ({ page, r
   const other = await emptyKeel(join(SCRATCH, `empty-${tag}`));
   try {
     const post = (body: string) => fetch(`${other.url}/api/sessions/import`, { method: "POST", headers: { "content-type": "application/x-ndjson" }, body });
-    // A file whose bytes are not what it says is refused whole: no session, nothing stored.
+    const held = async () => ({
+      files: existsSync(join(other.state, "attachments")) ? readdirSync(join(other.state, "attachments")) : [],
+      sessions: (((await (await fetch(`${other.url}/api/sessions`)).json()) as any).sessions as any[]).length,
+    });
+    // A file that cannot be imported is refused whole, as the sender's mistake:
+    // no session, nothing stored. Its bytes are not what it says; an event has
+    // no data beside a sound file; a file is named as a folder.
     const lines = whole.split("\n");
     const at = lines.findIndex((l) => l.startsWith('{"blob"'));
-    const bad = JSON.parse(lines[at]!);
-    const flipped = Buffer.from(bad.data, "base64"); flipped[0]! ^= 1;
-    const refused = await post([...lines.slice(0, at), JSON.stringify({ ...bad, data: flipped.toString("base64") }), ...lines.slice(at + 1)].join("\n"));
-    expect(refused.status).toBe(400);
-    expect((await refused.json() as any).error).toContain("do not match its digest");
-    expect(existsSync(join(other.state, "attachments")) ? readdirSync(join(other.state, "attachments")) : []).toEqual([]);
-    expect(((await (await fetch(`${other.url}/api/sessions`)).json()) as any).sessions).toEqual([]);
+    const blob = JSON.parse(lines[at]!);
+    const flipped = Buffer.from(blob.data, "base64"); flipped[0]! ^= 1;
+    const damaged = [...lines.slice(0, at), JSON.stringify({ ...blob, data: flipped.toString("base64") }), ...lines.slice(at + 1)].join("\n");
+    const edited = (f: (e: any) => any) => lines.map((l, i) => (i === 1 ? JSON.stringify(f(JSON.parse(l))) : l)).join("\n");
+    for (const [file, words] of [
+      [damaged, "do not match its digest"],
+      [edited(({ data: _, ...e }) => e), "has no data"],
+      [edited((e) => ({ ...e, data: { ...e.data, images: e.data.images.map((b: any) => ({ ...b, name: ".." })) } })), "without a usable name"],
+      [edited((e) => ({ ...e, data: { ...e.data, images: "budget" } })), "does not list what it carries"],
+    ] as const) {
+      const refused = await post(file);
+      expect([refused.status, ((await refused.json()) as any).error]).toEqual([400, expect.stringContaining(words)]);
+      expect(await held()).toEqual({ files: [], sessions: 0 });
+    }
 
-    // The ordinary file names what is missing there; the whole one brings it.
-    const bare = (await (await post(plain)).json()) as any;
-    expect(bare.notes.join(" ")).toContain("not stored on this machine");
-    const made = await post(whole);
-    expect(made.status).toBe(201);
-    const got = (await made.json()) as any;
-    expect(got.files_imported).toBe(1);
-    expect(got.notes.join(" ")).not.toContain("not stored on this machine");
-    const refs = ((await (await fetch(`${other.url}/api/sessions/${got.session.id}`)).json()) as any).events.filter((e: any) => e.kind === "user").flatMap((e: any) => e.data.images);
+    // In that Keel's own import sheet: a damaged file says why it was not imported.
+    const asFile = (name: string, text: string) => ({ name, mimeType: "application/x-ndjson", buffer: Buffer.from(text) });
+    await page.goto(`${other.url}/`);
+    const openSheet = async () => {
+      await page.keyboard.press("Control+k");
+      await page.getByTestId("palette-input").fill("Import sessions");
+      await expect(page.getByRole("option", { name: "Import sessions" })).toBeVisible();
+      await page.keyboard.press("Enter");
+      await expect(page.getByTestId("import-sheet")).toBeVisible();
+    };
+    await openSheet();
+    await expect(page.getByTestId("import-keel-file")).toBeVisible();
+    const result = page.getByTestId("import-keel-result");
+    await page.getByTestId("import-keel-file-input").setInputFiles(asFile("damaged.jsonl", damaged));
+    await expect(result).toHaveAttribute("data-state", "failed");
+    await expect(result).toContainText("damaged.jsonl was not imported");
+    await expect(result).toContainText("do not match its digest");
+    await shoot(page, "import-12-keel-file-refused");
+    expect(await held()).toEqual({ files: [], sessions: 0 });
+    // The ordinary file is imported, and what did not travel with it is said before it opens.
+    await page.getByTestId("import-keel-file-input").setInputFiles(asFile("plain.jsonl", plain));
+    await expect(result).toHaveAttribute("data-state", "done");
+    await expect(result.getByTestId("import-keel-note")).toContainText("not stored on this machine");
+    await shoot(page, "import-13-keel-file-imported");
+    await result.getByTestId("import-keel-open").click();
+    await expect(page).toHaveURL(/\/s\//);
+    await expect(page.getByTestId("user-message")).toHaveCount(2);
+
+    // From a terminal, the file with its attached files inside: nothing is missing.
+    const path = join(SCRATCH, `empty-${tag}`, "whole.jsonl");
+    writeFileSync(path, whole);
+    const cli = JSON.parse(execFileSync("bun", ["src/main.ts", "import", "file", path, "--url", other.url, "--json"], { encoding: "utf8", env: { ...process.env, KEEL_CONFIG_DIR: join(SCRATCH, `empty-${tag}`, "config"), KEEL_STATE_DIR: join(SCRATCH, `empty-${tag}`, "cli-state") } }));
+    expect(cli.files_imported).toBe(1);
+    expect(cli.notes.join(" ")).not.toContain("not stored on this machine");
+    const refs = ((await (await fetch(`${other.url}/api/sessions/${cli.session.id}`)).json()) as any).events.filter((e: any) => e.kind === "user").flatMap((e: any) => e.data.images);
     expect(refs.map((r: any) => r.name)).toEqual([`budget-${tag}.bin`, `דוח-${tag}.bin`]);
     for (const r of refs) {
       const dl = await fetch(`${other.url}/api/attachments/${r.id}?name=${encodeURIComponent(r.name)}&type=${encodeURIComponent(r.media_type)}`);
@@ -342,6 +381,12 @@ test("a Keel file carries its attached files to an empty Keel", async ({ page, r
     }
     expect(readdirSync(join(other.state, "attachments"))).toEqual([budget.id]);
     expect(readdirSync(join(other.state, "attachments", budget.id))).toHaveLength(1);
+    // And from the sheet again: with nothing to say, the session opens at once, its files on its prompts.
+    await openSheet();
+    await page.getByTestId("import-keel-file-input").setInputFiles(asFile("whole.jsonl", whole));
+    await expect(page).not.toHaveURL(new RegExp(`/s/${cli.session.id}$`));
+    await expect(page.getByTestId("import-sheet")).toHaveCount(0);
+    await expect(page.getByTestId("message-file")).toHaveCount(2);
   } finally {
     await other.stop();
     rmSync(join(SCRATCH, `empty-${tag}`), { recursive: true, force: true });

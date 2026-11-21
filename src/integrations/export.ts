@@ -14,6 +14,8 @@ import { FAILED_LABEL, NOTE_CLOSE, NOTE_OPEN } from "./import/types.ts";
 import { INPUT_LABEL, inputKind } from "../core/inputs.ts";
 import { ownerPrompt } from "../core/owner.ts";
 import { checkpointAt } from "../engine/compact.ts";
+import { ATTACHMENT_MAX } from "../engine/attachments.ts";
+import { keelFileBytes, sizeText } from "../core/keel-file.ts";
 import { shq } from "../tools/shell.ts";
 
 export const EXPORT_VERSION = 2;
@@ -124,18 +126,37 @@ function renamed(data: any, to: (id: string) => string | undefined): any {
 // base64), however many prompts and names refer to it.
 // With `tree` the events are the whole session, every branch: each line names
 // its parent's ref, and the header the ref of the head shown (`tree.head`).
-export function toKeelJsonl(s: Session, events: StoredEvent[], opts: { blob?: (id: string) => Uint8Array | undefined; tree?: { head: string | null } } = {}): string {
+// A file larger than an import takes (`max`) is not written: with `size` (a
+// stored file's bytes, known without reading it) that is found before any
+// file is read.
+export function toKeelJsonl(s: Session, events: StoredEvent[], opts: { blob?: (id: string) => Uint8Array | undefined; size?: (id: string) => number | undefined; max?: number; tree?: { head: string | null } } = {}): string {
   const ref = new Map(events.map((e, i) => [e.id, `e${i + 1}`]));
   const files = new Map<string, { id: string; name: string; size: number }>();
   for (const e of events) if (e.kind === "user") for (const b of e.data.images ?? []) if (b.type === "attachment") files.set(b.id, { id: b.id, name: b.name, size: b.size });
+  const line = (e: StoredEvent) => ({ ref: ref.get(e.id), parent: opts.tree ? ref.get(e.parent ?? "") ?? null : undefined, kind: e.kind, data: renamed(e.data, (id) => ref.get(id)), ts: e.ts });
+  const body = toJsonl(events.map(line));
+  if (opts.max !== undefined) {
+    const sizes = opts.blob ? [...files.values()].flatMap((f) => { const n = opts.size ? opts.size(f.id) : f.size; return n === undefined ? [] : [n]; }) : [];
+    const total = keelFileBytes(Buffer.byteLength(body) + 300 * files.size, sizes);
+    if (total > opts.max) throw new KeelFileTooLarge(total, sizes.reduce((a, b) => a + b, 0), opts.max);
+  }
   const blobs: { blob: string; size: number; data: string }[] = [];
   if (opts.blob) for (const id of files.keys()) {
     const bytes = opts.blob(id);
     if (bytes) blobs.push({ blob: id, size: bytes.byteLength, data: Buffer.from(bytes).toString("base64") });
   }
   const header = { keel_export: EXPORT_VERSION, events: events.length, blobs: opts.blob ? blobs.length : undefined, scope: opts.tree ? "tree" : "current branch", head: opts.tree ? ref.get(opts.tree.head ?? "") ?? null : undefined, title: s.title, model: s.model, workspace: s.workspace, created: s.created, attachments: files.size ? [...files.values()] : undefined };
-  const line = (e: StoredEvent) => ({ ref: ref.get(e.id), parent: opts.tree ? ref.get(e.parent ?? "") ?? null : undefined, kind: e.kind, data: renamed(e.data, (id) => ref.get(id)), ts: e.ts });
-  return toJsonl([header, ...events.map(line), ...blobs]);
+  return toJsonl([header]) + body + toJsonl(blobs);
+}
+
+// A Keel file no Keel would take: said with what it would weigh, before it is written.
+export class KeelFileTooLarge extends Error {
+  status = 413;
+  constructor(readonly bytes: number, readonly files_bytes: number, readonly max: number) {
+    super(files_bytes
+      ? `with its attached files (${sizeText(files_bytes)} in all) the Keel file would be about ${sizeText(bytes)}, and another Keel takes at most ${sizeText(max)}: export it without the files`
+      : `the Keel file would be about ${sizeText(bytes)}, and another Keel takes at most ${sizeText(max)}`);
+  }
 }
 
 // `blobs`: the bytes a self-contained file carries, by their sha256 id, each
@@ -155,6 +176,9 @@ export function parseKeelJsonl(text: string): ParsedExport {
     let e: any;
     try { e = JSON.parse(l); } catch { return { ok: false, error: `incomplete export: the record on line ${i + 1} is cut or unreadable` }; }
     if (typeof e?.blob === "string") {
+      // A file is held to what an upload may be, before its bytes are decoded.
+      if (!(e.size <= ATTACHMENT_MAX) || (typeof e.data === "string" && e.data.length > 4 * Math.ceil(ATTACHMENT_MAX / 3) + 4))
+        return { ok: false, error: `the attached file on line ${i + 1} is larger than a file can be (${sizeText(ATTACHMENT_MAX)}), so nothing was imported` };
       // What the line says its bytes are is checked, never taken on its word.
       const bytes = typeof e.data === "string" && /^[0-9a-f]{64}$/.test(e.blob) ? new Uint8Array(Buffer.from(e.data, "base64")) : undefined;
       if (!bytes || bytes.byteLength !== e.size || new Bun.CryptoHasher("sha256").update(bytes).digest("hex") !== e.blob)
@@ -163,6 +187,19 @@ export function parseKeelJsonl(text: string): ParsedExport {
       continue;
     }
     if (typeof e?.kind !== "string") return { ok: false, error: `the record on line ${i + 1} is not an event` };
+    // An event is its kind and an object of data; what a prompt carries is a
+    // list, and a file in it has a name a folder can hold. Refused here, so
+    // nothing is stored for a file that would fail half way.
+    if (!e.data || typeof e.data !== "object" || Array.isArray(e.data)) return { ok: false, error: `the event on line ${i + 1} has no data, so nothing was imported` };
+    if (e.kind === "user" && e.data.images !== undefined) {
+      if (!Array.isArray(e.data.images)) return { ok: false, error: `the prompt on line ${i + 1} does not list what it carries, so nothing was imported` };
+      for (const b of e.data.images) {
+        if (b?.type !== "attachment") continue;
+        const name = typeof b.name === "string" ? b.name.trim() : "";
+        if (typeof b.id !== "string" || !name || name === "." || name === ".." || (b.media_type !== undefined && typeof b.media_type !== "string") || (b.charset !== undefined && typeof b.charset !== "string"))
+          return { ok: false, error: `the prompt on line ${i + 1} names a file without a usable name or id, so nothing was imported` };
+      }
+    }
     events.push(e);
   }
   const notes: string[] = [];

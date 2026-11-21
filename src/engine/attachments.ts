@@ -8,7 +8,7 @@
 //   - anything else (a PDF for a model without PDF input, a spreadsheet, a
 //     long log): a note with the saved path, for the model's own tools.
 // The same reference always resolves to the same bytes for a given model.
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { decodeText, textEncoding } from "../core/text.ts";
 import type { AttachmentBlock, Message } from "../core/types.ts";
@@ -52,6 +52,11 @@ export function servedType(path: string, name: string, declared?: string): strin
   if (byName && byName !== "application/octet-stream") return byName;
   if (declared && TEXT_MEDIA.test(declared) && "text" in attachmentText({ type: "attachment", id: "", name, media_type: declared, size: 0 }, read(path))) return "text/plain;charset=utf-8";
   return "application/octet-stream";
+}
+
+// A stored file removed again: what an import wrote before it failed.
+export function dropAttachment(id: string) {
+  if (/^[0-9a-f]{64}$/.test(id)) rmSync(join(root, id), { recursive: true, force: true });
 }
 
 export function attachmentPath(id: string): string | undefined {

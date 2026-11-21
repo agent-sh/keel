@@ -318,3 +318,34 @@ test("the resume line quotes a folder a shell would split or expand, and leaves 
   expect(resumeLine("/w/it's a dir", "codex resume x")).toBe(`cd '/w/it'\\''s a dir' && codex resume x`);
   for (const dir of ["/w/a b", "/w/$HOME", "/w/a;b", "/w/`x`", "/w/a&b", "/w/~", "/w/*"]) expect(resumeLine(dir, "r")).toBe(`cd '${dir}' && r`);
 });
+
+test("a Keel file that would fail half way is refused whole, and one too large for an import is not written", () => {
+  const bytes = new TextEncoder().encode("ledger\n");
+  const id = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+  const file = { type: "attachment", id, name: "ledger.txt", media_type: "text/plain", size: bytes.byteLength };
+  const whole = toKeelJsonl(s, [ev("user", { text: "one", images: [file] })], { blob: () => bytes });
+  const lines = whole.split("\n").filter(Boolean);
+  expect(parseKeelJsonl(whole).ok).toBe(true);
+  // The event line changed in one way; the header and the blob line are as they were.
+  const withEvent = (f: (o: any) => any) => [lines[0], JSON.stringify(f(JSON.parse(lines[1]!))), lines[2]].join("\n") + "\n";
+  const refused = (text: string, words: string) => expect(parseKeelJsonl(text)).toEqual({ ok: false, error: expect.stringContaining(words) });
+  for (const data of [undefined, null, "text", 7, []]) refused(withEvent((o) => ({ ...o, data })), "has no data");
+  for (const images of ["x", { 0: file }, 3]) refused(withEvent((o) => ({ ...o, data: { ...o.data, images } })), "does not list what it carries");
+  for (const name of [".", "..", "", "  ", 7, null, undefined, { a: 1 }]) refused(withEvent((o) => ({ ...o, data: { ...o.data, images: [{ ...file, name }] } })), "without a usable name or id");
+  refused(withEvent((o) => ({ ...o, data: { ...o.data, images: [{ ...file, id: 5 }] } })), "without a usable name or id");
+  refused(withEvent((o) => ({ ...o, data: { ...o.data, images: [{ ...file, charset: {} }] } })), "without a usable name or id");
+  // A file line over what an upload may be is refused before its bytes are decoded.
+  const blob = JSON.parse(lines[2]!);
+  refused([lines[0], lines[1], JSON.stringify({ ...blob, size: 20 * 1024 * 1024 + 1 })].join("\n") + "\n", "larger than a file can be (20 MB)");
+  refused([lines[0], lines[1], JSON.stringify({ ...blob, data: "A".repeat(28 * 1024 * 1024) })].join("\n") + "\n", "larger than a file can be (20 MB)");
+
+  // Five files of 30 MiB do not fit a file an import takes: said with the total, and no stored file is read.
+  const big = Array.from({ length: 5 }, (_, i) => ({ type: "attachment", id: `${i}`.repeat(64), name: `big-${i}.bin`, media_type: "application/octet-stream", size: 30 * 1024 * 1024 }));
+  let read = 0;
+  const make = (max: number) => toKeelJsonl(s, [ev("user", { text: "big", images: big })], { blob: () => (read++, bytes), size: () => 30 * 1024 * 1024, max });
+  expect(() => make(128 * 1024 * 1024)).toThrow("with its attached files (150 MB in all) the Keel file would be about 200 MB, and another Keel takes at most 128 MB");
+  expect(read).toBe(0);
+  expect(make(256 * 1024 * 1024).split("\n").filter((l) => l.startsWith('{"blob"'))).toHaveLength(5);
+  // The same bound holds without files: a conversation too long for an import is said so.
+  expect(() => toKeelJsonl(s, [ev("user", { text: "x".repeat(5000) })], { max: 6000 })).toThrow("the Keel file would be about");
+});
