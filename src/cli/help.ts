@@ -94,7 +94,7 @@ const VALUES: [flags: string[], what: Words][] = [
 const SHELLS = ["bash", "zsh", "fish"];
 const FIRST: [commands: string[], what: Words][] = [
   [["show", "logs", "stop", "attach", "approve", "export", "resume", "send"], "sessions"],
-  [["import"], "list harnesses folders preview run batch index"],
+  [["import"], "list harnesses folders preview run batch file index"],
   [["login", "logout"], "xai"],
   [["plugin"], "check"],
   [["service"], "install"],
@@ -104,7 +104,8 @@ const FIRST: [commands: string[], what: Words][] = [
 const FOLDERS = ["open", "serve"]; // every argument is a folder
 // The shell's own words for each kind, in POSIX shells (bash and zsh run the same commands).
 const MODEL_IDS = String.raw`keel models --json 2>/dev/null | grep -o '"id": *"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/'`;
-const FLAGS_OF = (cmd: string) => String.raw`keel ${cmd} --help 2>/dev/null | grep -oE -- '(^|[ ,(])--?[a-zA-Z][a-zA-Z-]*' | grep -oE -- '--?[a-zA-Z][a-zA-Z-]*' | sort -u`;
+// A flag is a dash word that does not continue another word: after a space, a comma, a bracket, a bar.
+const FLAGS_OF = (cmd: string) => String.raw`keel ${cmd} --help 2>/dev/null | grep -oE -- '(^|[^a-zA-Z0-9-])--?[a-zA-Z][a-zA-Z-]*' | grep -oE -- '--?[a-zA-Z][a-zA-Z-]*' | sort -u`;
 const listOf = (what: Words) => (what === "models" ? `$(${MODEL_IDS})` : what === "all-sessions" ? "$(keel sessions --ids -a 2>/dev/null)" : what === "sessions" ? "$(keel sessions --ids 2>/dev/null)" : what === "commands" ? "@COMMANDS@" : what);
 
 // "@{" stands for the shell's "${" in the scripts below.
@@ -192,7 +193,7 @@ function __keel_after; set -l w (__keel_words); contains -- $w[-1] $argv; end
 function __keel_first_of; __keel_at 2; and contains -- (__keel_cmd) $argv; end
 function __keel_flags
   set -l cmd (__keel_cmd)
-  test -n "$cmd"; and keel $cmd --help 2>/dev/null | string match -rag -- '(?:^|[ ,(])(--?[a-zA-Z][a-zA-Z-]*)' | sort -u
+  test -n "$cmd"; and keel $cmd --help 2>/dev/null | string match -rag -- '(?:^|[^a-zA-Z0-9-])(--?[a-zA-Z][a-zA-Z-]*)' | sort -u
 end
 complete -c keel -n '__keel_at 1' -x -a '@COMMANDS@ --help -p'
 ${VALUES.map(([flags, what]) => `complete -c keel -n '__keel_after ${flags.join(" ")}' ${fishWords(what)}`).join("\n")}

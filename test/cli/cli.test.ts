@@ -85,10 +85,12 @@ describe("help, usage and completion", () => {
     const script = await keel(["completion", "bash"], { state });
     expect(script.code).toBe(0);
     writeFileSync(join(SCRATCH, "completion.bash"), script.out);
-    const probe = Bun.spawnSync(["bash", "-c", `PATH=${SCRATCH}:$PATH; source ${SCRATCH}/completion.bash; COMP_WORDS=(keel ru); COMP_CWORD=1; _keel; echo "\${COMPREPLY[@]}"; COMP_WORDS=(keel run --output-f); COMP_CWORD=2; _keel; echo "\${COMPREPLY[@]}"`], { env: { ...ENV, KEEL_STATE_DIR: state } });
-    const [words, flags] = probe.stdout.toString().trim().split("\n");
+    const probe = Bun.spawnSync(["bash", "-c", `PATH=${SCRATCH}:$PATH; source ${SCRATCH}/completion.bash; COMP_WORDS=(keel ru); COMP_CWORD=1; _keel; echo "\${COMPREPLY[@]}"; COMP_WORDS=(keel run --output-f); COMP_CWORD=2; _keel; echo "\${COMPREPLY[@]}"; COMP_WORDS=(keel import --); COMP_CWORD=2; _keel; echo "\${COMPREPLY[@]}"`], { env: { ...ENV, KEEL_STATE_DIR: state } });
+    const [words, flags, importFlags] = probe.stdout.toString().trim().split("\n");
     expect(words).toContain("run");
     expect(flags).toBe("--output-format");
+    // Every flag a command's help names, also the ones written in brackets or after a bar.
+    expect(importFlags!.split(" ")).toEqual(["--all", "--cursor", "--cwd", "--harness", "--json", "--limit", "--mode", "--path", "--show", "--sort", "--title"]);
 
     // zsh: its function, over stand-ins for the completion calls zsh has only inside its line editor.
     // The words it offers for a command, a flag, a flag's value and a first argument.
@@ -98,8 +100,9 @@ describe("help, usage and completion", () => {
     if (Bun.which("zsh")) {
       writeFileSync(join(SCRATCH, "completion.zsh"), zsh.out);
       const ask = (...w: string[]) => `words=(keel ${w.map((x) => JSON.stringify(x)).join(" ")}); CURRENT=${w.length + 1}; _keel | tr '\\n' ' '; echo`;
-      const z = Bun.spawnSync(["zsh", "-f", "-c", `PATH=${SCRATCH}:$PATH; compadd() { [[ $1 == -- ]] && shift; print -l -- "$@" }; compdef() { : }; _files() { print FILES }; source ${SCRATCH}/completion.zsh; ${ask("ru")}; ${ask("run", "--out")}; ${ask("run", "--output-format", "")}; ${ask("completion", "")}; ${ask("run", "")}`], { env: { ...ENV, KEEL_STATE_DIR: state } });
-      const [zWords, zFlags, zValues, zShells, zFiles] = z.stdout.toString().trimEnd().split("\n").map((l) => l.trim());
+      const z = Bun.spawnSync(["zsh", "-f", "-c", `PATH=${SCRATCH}:$PATH; compadd() { [[ $1 == -- ]] && shift; print -l -- "$@" }; compdef() { : }; _files() { print FILES }; source ${SCRATCH}/completion.zsh; ${ask("ru")}; ${ask("run", "--out")}; ${ask("run", "--output-format", "")}; ${ask("completion", "")}; ${ask("run", "")}; ${ask("import", "--mo")}`], { env: { ...ENV, KEEL_STATE_DIR: state } });
+      const [zWords, zFlags, zValues, zShells, zFiles, zImport] = z.stdout.toString().trimEnd().split("\n").map((l) => l.trim());
+      expect(zImport!.split(" ")).toContain("--mode");
       expect(z.stderr.toString()).toBe("");
       expect(zWords!.split(" ")).toContain("run");
       expect(zFlags!.split(" ")).toContain("--output-format");
@@ -117,6 +120,7 @@ describe("help, usage and completion", () => {
       expect(offers("keel run --output-f")).toEqual(["--output-format"]);
       expect(offers("keel run --output-format ")).toEqual(["json", "stream-json", "text"]);
       expect(offers("keel completion ")).toEqual(["bash", "fish", "zsh"]);
+      expect(offers("keel import --mo")).toEqual(["--mode"]);
     }
     // A shell there is no script for is a usage error that names the three.
     const none = await keel(["completion", "tcsh"], { state });
