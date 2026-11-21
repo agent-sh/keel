@@ -5,7 +5,7 @@ import type { Source as HookSource } from "../../../src/integrations/hooks.ts";
 import type { Batch } from "../../../src/safety/quarantine.ts";
 import type { ProjectFile } from "../../../src/safety/trust.ts";
 import { api, onFeature, reportError, failed } from "../lib/store.ts";
-import { cn } from "../lib/utils.ts";
+import { cn, when } from "../lib/utils.ts";
 import { confirmAction } from "./Confirm.tsx";
 import { DiffView } from "./DiffView.tsx";
 
@@ -152,7 +152,7 @@ function BatchCard({ b, onDone }: { b: Batch; onDone: () => void }) {
   const act = async (f: () => Promise<unknown>) => { setErr(""); try { await f(); onDone(); } catch (e) { setErr(failed(e, { at: "TrustPanel" })); } };
   return (
     <div className="rounded-xl border border-line bg-raised px-3 py-2" data-testid="quarantine-batch">
-      <p className="text-caption text-muted">{new Date(b.created).toLocaleString()} · {b.paths.length} file{b.paths.length === 1 ? "" : "s"}</p>
+      <p className="text-caption text-muted">{when(b.created)} · {b.paths.length} file{b.paths.length === 1 ? "" : "s"}</p>
       <ul className="mt-1 flex flex-col">
         {b.paths.map((p) => <li key={p} className="truncate font-mono text-caption">{p}</li>)}
       </ul>

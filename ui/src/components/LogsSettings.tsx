@@ -4,7 +4,7 @@
 import { Pause, Play } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, reportError } from "../lib/store.ts";
-import { cn, when } from "../lib/utils.ts";
+import { clock, cn, when } from "../lib/utils.ts";
 import { Card, Segmented, SettingRow } from "./Settings.tsx";
 import { useSettings } from "./StoragePanel.tsx";
 
@@ -164,7 +164,7 @@ function LiveLog() {
           {shown.length === 0 && <p className="k-empty p-3">No lines at this level{q ? " with that text" : ""}.</p>}
           {shown.map((l, i) => (
             <div key={`${l.ts}-${i}`} className="flex gap-3 whitespace-pre-wrap break-all" data-level={l.level}>
-              <span className="shrink-0 tabular-nums text-faint">{new Date(l.ts).toLocaleTimeString("en-GB", { hourCycle: "h23" })}</span>
+              <span className="shrink-0 tabular-nums text-faint">{clock(l.ts, { seconds: true })}</span>
               <span className={cn("w-10 shrink-0 uppercase", l.level === "error" ? "text-danger" : l.level === "warn" ? "text-warn" : "text-faint")}>{l.level}</span>
               <span className={cn("min-w-0", l.level === "error" ? "text-fg" : "text-muted")}>{l.text}</span>
             </div>

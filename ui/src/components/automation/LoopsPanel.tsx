@@ -4,7 +4,7 @@ import { Check, CircleAlert, CircleCheck, CircleDashed, CircleSlash, Copy, Exter
 import { useEffect, useMemo, useRef, useState } from "react";
 import { auto, autoState, inMs, openSession, useAuto, type LoopRecord, type RunRecord } from "../../lib/automation.ts";
 import { reportError, useStore, failed } from "../../lib/store.ts";
-import { ago, cn, fmtTokens } from "../../lib/utils.ts";
+import { ago, clock, cn, fmtTokens } from "../../lib/utils.ts";
 import { Empty, IconButton } from "./bits.tsx";
 
 function RunIcon({ r }: { r: RunRecord }) {
@@ -104,7 +104,7 @@ function History({ loop }: { loop: LoopRecord }) {
           {loop.schedule_text}
           {/* Times in the loop's own zone: they hold wherever the daemon runs. */}
           {loop.kind === "cron" && loop.tz ? <span data-testid="loop-zone"> ({loop.tz})</span> : null}
-          {loop.kind === "cron" && loop.next_runs?.length ? ` · next ${loop.next_runs.map((t) => new Date(t).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit", timeZone: loop.tz ?? undefined })).join(", ")}` : ""}
+          {loop.kind === "cron" && loop.next_runs?.length ? ` · next ${loop.next_runs.map((t) => clock(t, { weekday: true, zone: loop.tz ?? undefined })).join(", ")}` : ""}
           {loop.max_runs ? ` · at most ${loop.max_runs} runs` : ""}
           {loop.until_ms ? ` · until ${new Date(loop.until_ms).toLocaleDateString()}` : ""}
         </p>
@@ -118,7 +118,7 @@ function History({ loop }: { loop: LoopRecord }) {
             <span className="mt-0.5"><RunIcon r={r} /></span>
             <div className="min-w-0 flex-1">
               <div className="flex items-baseline gap-2">
-                <span>{new Date(r.started_ms ?? r.due_ms).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+                <span>{clock(r.started_ms ?? r.due_ms, { date: true, seconds: true })}</span>
                 <span className="text-caption text-faint">
                   {r.skip_reason ? "not run" : r.ended_ms && r.started_ms ? `${r.outcome ? `${OUTCOME[r.outcome]} · ` : ""}${((r.ended_ms - r.started_ms) / 1000).toFixed(1)}s` : r.started_ms ? "running" : "waiting for the session"}
                 </span>

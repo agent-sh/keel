@@ -81,7 +81,7 @@ export function end(sessionId: string, why: string, wake?: (s: Snooze) => void):
 }
 
 export function describe(s: Snooze): string {
-  const t = s.until_ms ? `until ${new Date(s.until_ms).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}` : "";
+  const t = s.until_ms ? `until ${new Date(s.until_ms).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })}` : "";
   return [t, s.until_needed ? "until it needs you" : ""].filter(Boolean).join(" or ");
 }
 

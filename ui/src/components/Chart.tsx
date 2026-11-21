@@ -9,7 +9,7 @@
 // or, when the pane shows too little above the plot for it, inside the plot's
 // top, so it is never cut off by what scrolls the chart.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { cn } from "../lib/utils.ts";
+import { clock, cn } from "../lib/utils.ts";
 
 export type Series = { label: string; color: string };
 export type Point = { t: number; values: (number | null)[] };
@@ -28,10 +28,10 @@ function niceStep(v: number): number {
 const timeLabel = (t: number, span: number) =>
   span > 2 * 86_400_000
     ? new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" })
-    : new Date(t).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+    : clock(t);
 
 const fullTime = (t: number) =>
-  new Date(t).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  clock(t, { date: true });
 
 export function TimeChart({
   data, series, bucket, since, until, kind = "line", format, max, height = 180, label, unit = 1,

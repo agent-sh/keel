@@ -87,3 +87,13 @@ test("nothing to show is said one way", () => {
   expect(found(components, /<(p|div|li) className="(?![^"]*\bk-empty\b)[^"]*"[^>]*>(No|Nothing) [a-z]/, (_, file) => file === "components/Chart.tsx")).toEqual([]);
   expect(found(sheets, /^\.k-(blank|picker-empty|ledger-empty)\b/)).toEqual([]);
 });
+
+test("every time is on the 24-hour clock", () => {
+  // The page formats a time through when() and clock() in lib/utils.ts and nowhere else.
+  const page = components.filter((f) => !f.endsWith("lib/utils.ts"));
+  expect(found(page, /toLocaleTimeString\(|toLocaleString\([^)]*\bhour\b|Date\([^()]*\)\.toLocaleString\(\)/)).toEqual([]);
+  // The daemon's own words (a waiting tool, a snooze, a retry) name the clock when they format one.
+  const daemon = files(join(import.meta.dir), /\.ts$/);
+  const lines = daemon.flatMap((f) => readFileSync(f, "utf8").split("\n").map((l, i) => ({ l, at: `${relative(import.meta.dir, f)}:${i + 1}` })));
+  expect(lines.filter(({ l }) => /toLocaleTimeString\(|toLocaleString\([^)]*\bhour\b/.test(l) && !/hourCycle: "h23"/.test(l)).map((x) => x.at)).toEqual([]);
+});

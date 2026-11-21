@@ -8,6 +8,7 @@ import { ModelPicker } from "./ModelPicker.tsx";
 import { enroll, passkeyBlock } from "../lib/presence.ts";
 import { Card, SettingRow } from "./Settings.tsx";
 import { Select } from "./Select.tsx";
+import { clock } from "../lib/utils.ts";
 
 type PermSettings = { default_mode: string; reviewer_model: string | null; reviewer_policy: string };
 
@@ -223,7 +224,7 @@ function PasskeysCard() {
           )}
           {code && (
             <p className="mt-3 text-caption text-muted" data-testid="passkey-code-shown">
-              On the other device, open Keel over HTTPS, go to Settings, Safety, and enroll it with <span className="rounded bg-code px-1.5 py-0.5 font-mono text-ui text-fg">{code.code}</span> (until {new Date(code.expires).toLocaleTimeString()}).
+              On the other device, open Keel over HTTPS, go to Settings, Safety, and enroll it with <span className="rounded bg-code px-1.5 py-0.5 font-mono text-ui text-fg">{code.code}</span> (until {clock(code.expires)}).
             </p>
           )}
           {msg && <p className={msg.error ? "mt-2 text-caption text-danger" : "mt-2 text-caption text-ok"} data-testid="passkey-msg">{msg.text}</p>}

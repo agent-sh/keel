@@ -21,7 +21,7 @@ import {
   type Held, type Only, type Receipt, type TimelineKind, type TimelineNow, type TimelineRow,
 } from "../lib/timeline.ts";
 import { savePref, setUI } from "../lib/ui.ts";
-import { cn, fmtCost, fmtTokens, when } from "../lib/utils.ts";
+import { clock, cn, fmtCost, fmtTokens, when } from "../lib/utils.ts";
 import { Choices } from "./Choices.tsx";
 
 const MARK: Record<Exclude<TimelineKind, "turn">, LucideIcon> = {
@@ -42,7 +42,6 @@ const STATE: Record<TimelineNow["state"], { word: string; dot: string }> = {
   idle: { word: "Idle", dot: "border-2 border-line-strong" },
 };
 const ink = (tone: TimelineRow["tone"], plain: string) => (tone === "failed" ? "text-st-fail" : tone === "owner" ? "text-st-need" : tone === "live" ? "text-st-work" : plain);
-const clock = (ts: number) => new Date(ts).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 const seconds = (ts: number) => `:${String(new Date(ts).getSeconds()).padStart(2, "0")}`;
 const DAY = 86_400_000;
 function day(ts: number, now: number): string {
@@ -438,7 +437,7 @@ function Apart({ turn, sessionId, onClose }: { turn: string; sessionId: string; 
   return (
     <div className="border-b border-line bg-raised pb-2 pl-[6.25rem] pr-2 pt-1.5" data-testid="timeline-asked" onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); } }}>
       <div className="flex items-center">
-        <span className="text-caption font-medium">{start ? `The turn of ${new Date(start).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" })}` : "The turn's receipt"}</span>
+        <span className="text-caption font-medium">{start ? `The turn of ${clock(start, { seconds: true })}` : "The turn's receipt"}</span>
         <button type="button" onClick={onClose} aria-label="Close the receipt" className="ml-auto grid size-6 place-items-center rounded-md text-muted hover:bg-hover hover:text-fg"><X className="size-3.5" /></button>
       </div>
       <TurnReceipt turn={turn} sessionId={sessionId} onRead={(r) => setStart(r.start_ms)} />

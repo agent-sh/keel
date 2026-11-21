@@ -48,6 +48,9 @@ test("loops: /loop, history, pause, run now, calendar", async ({ page, request }
   await expect(page.getByTestId("loop-history")).toContainText("weekdays at 09:30");
   // Its times are in a named zone kept with it, shown beside them.
   await expect(page.getByTestId("loop-zone")).toHaveText(/\(\w+(\/[\w+-]+)*\)/);
+  // Its next runs are on the 24-hour clock: no AM or PM after the time.
+  await expect(page.getByTestId("loop-history")).toContainText(/next \w{3} 09:30,/);
+  await expect(page.getByTestId("loop-history")).not.toContainText(/\d (AM|PM)\b/);
   await shoot(page, "loops-05-calendar");
 
   // Clean up: the loops end with the test.

@@ -35,7 +35,7 @@ function agentLine(a: agents.AgentRecord) {
 }
 
 function waitResult(w: waits.WaitRecord, extra = "") {
-  const when = w.kind === "timer" ? `at ${new Date((w.spec as any).at_ms).toLocaleTimeString()}` : `deadline in ${Math.round((w.deadline - Date.now()) / 1000)} s`;
+  const when = w.kind === "timer" ? `at ${new Date((w.spec as any).at_ms).toLocaleTimeString("en-GB", { hourCycle: "h23" })}` : `deadline in ${Math.round((w.deadline - Date.now()) / 1000)} s`;
   return ok(`Scheduled ${w.kind} wait ${w.id} (${when}). It costs no tokens while it waits; the session is woken when it fires, times out or is cancelled. End your turn now unless you have other work.${extra}`);
 }
 

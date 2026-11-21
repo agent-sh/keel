@@ -2,7 +2,7 @@
 // momentum's report with the control socket it uses.
 import { useEffect, useState } from "react";
 import { reportError } from "../lib/store.ts";
-import { cn } from "../lib/utils.ts";
+import { clock, cn } from "../lib/utils.ts";
 import { Card, SettingRow } from "./Settings.tsx";
 
 type Item = { id: string; title: string; detail?: string; at?: string };
@@ -72,7 +72,7 @@ export function IntegrationsSettings() {
         <Card>
           <div className="flex items-center gap-3 border-b border-line py-3">
             <span className="text-ui font-medium">momentum report</span>
-            <span className="text-caption text-faint">{new Date(r.generated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}</span>
+            <span className="text-caption text-faint">{clock(new Date(r.generated_at).getTime())}</span>
             <span className="ml-auto flex gap-3 text-caption tabular-nums text-muted" data-testid="momentum-counts">
               {Object.entries(r.counts).map(([k, v]) => <span key={k}>{v} {k.replace("_", " ")}</span>)}
             </span>

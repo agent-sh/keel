@@ -95,7 +95,7 @@ const RECOVER_MS = 20_000; // a copy owed at the start is tried again this often
 const RECOVER_TRIES = 6;
 const EXIT_MS = 15_000; // the helper gives an original 10 s to leave after the stop; a little more before it counts as still running
 const KEEP_MS = 10 * 60_000; // a finished wait stays on its row this long
-const clock = (ms: number) => new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+const clock = (ms: number) => new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 const mins = (ms: number) => (ms < 90_000 ? `${Math.max(1, Math.round(ms / 1000))} s` : `${Math.round(ms / 60_000)} min`);
 
 // What the copy reads of the work its original was ended in the middle of.

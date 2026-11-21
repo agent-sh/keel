@@ -11,6 +11,7 @@ import type { Goal, Task } from "../../../src/automation/goals.ts";
 import { actions, api, newer, onFeature, reportError } from "./store.ts";
 import { getUI, navigate } from "./ui.ts";
 import { remoteId, splitId } from "./fleet-ids.ts";
+import { clock } from "./utils.ts";
 
 export type { Goal, Task };
 export type { Activity, AgentRecord, Alert, AlertSettings, LoopRecord, RunRecord, Snooze, WaitRecord };
@@ -305,7 +306,7 @@ export function inMs(ts: number): string {
 }
 
 export function snoozeText(s: Snooze): string {
-  const t = s.until_ms ? new Date(s.until_ms).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "";
+  const t = s.until_ms ? clock(s.until_ms, { weekday: true }) : "";
   if (s.suspended) return "Snooze paused: it needs you";
   return [t ? `until ${t}` : "", s.until_needed ? "until it needs you" : ""].filter(Boolean).join(" or ");
 }

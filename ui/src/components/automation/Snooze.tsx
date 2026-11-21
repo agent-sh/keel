@@ -2,7 +2,7 @@ import { Menu } from "@base-ui/react/menu";
 import { BellOff, Moon, Sun } from "lucide-react";
 import { auto, snoozeText, useAuto } from "../../lib/automation.ts";
 import { reportError } from "../../lib/store.ts";
-import { cn } from "../../lib/utils.ts";
+import { clock, cn } from "../../lib/utils.ts";
 import { iconButton, itemClass, popupClass } from "../ui.tsx";
 
 type Choice = { label: string; until_ms?: number; until_needed?: boolean };
@@ -68,7 +68,7 @@ export function GlobalSnoozeButton() {
         data-testid="snooze-all"
         className={cn("flex h-7 items-center gap-1.5 rounded-md px-2 text-caption hover:bg-hover hover:text-fg data-popup-open:bg-hover", g ? "text-accent" : "text-muted")}
       >
-        <BellOff className="size-3.5" /> {g?.until_ms ? `Snoozed until ${new Date(g.until_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Snooze"}
+        <BellOff className="size-3.5" /> {g?.until_ms ? `Snoozed until ${clock(g.until_ms)}` : "Snooze"}
       </Menu.Trigger>
       <Menu.Portal>
         <Menu.Positioner sideOffset={6} align="end" className="z-[60] outline-none">

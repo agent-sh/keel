@@ -11,7 +11,7 @@ import { CircleStop, Hourglass, Play } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { api, failed, onFeature } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
-import { ago, cn, fmtWait } from "../lib/utils.ts";
+import { ago, clock, cn, fmtWait } from "../lib/utils.ts";
 import { Select } from "./Select.tsx";
 
 // `jobs`: how many of what is in flight are background jobs (a wait is for the rest).
@@ -58,7 +58,6 @@ export function noteRows(machine: string, rows: { harness: string; id: string; o
 // sheet's footer then points at the card instead of offering a plain import.
 export const useStopped = (t: Target): boolean => !!useKnown(t).stopped;
 
-const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 const KIND: Record<InFlight["kind"], string> = { job: "job", tool: "call", subagent: "subagent", turn: "reply", prompt: "prompt" };
 const DEADLINES = [{ ms: 5 * 60_000, label: "5 minutes" }, { ms: 15 * 60_000, label: "15 minutes" }, { ms: 60 * 60_000, label: "1 hour" }];
 

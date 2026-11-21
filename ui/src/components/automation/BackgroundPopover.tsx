@@ -3,13 +3,13 @@ import { Activity, ExternalLink, Pause, Play, Repeat, Timer, Trash2, X } from "l
 import { useMemo } from "react";
 import { auto, inMs, isLive, openSession, useAuto, type LoopRecord, type WaitRecord } from "../../lib/automation.ts";
 import { reportError, useStore } from "../../lib/store.ts";
-import { ago, cn } from "../../lib/utils.ts";
+import { ago, clock, cn } from "../../lib/utils.ts";
 import { AgentStatus, Empty, IconButton, SectionTitle, STATUS_LABEL, StopIcon } from "./bits.tsx";
 
 export function waitLabel(w: WaitRecord): string {
   const s: any = w.spec;
   switch (w.kind) {
-    case "timer": return `Timer ${new Date(s.at_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
+    case "timer": return `Timer ${clock(s.at_ms, { seconds: true })}`;
     case "file": return s.contains ? `File contains "${s.contains}" · ${s.path}` : `File exists · ${s.path}`;
     case "log": return `Log ${s.path} /${s.match}/`;
     case "http": return `HTTP ${s.status ?? "2xx/3xx"} · ${s.url}`;

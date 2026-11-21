@@ -11,7 +11,7 @@ import { getUI, navigate, seedComposer, setUI, useUI } from "../lib/ui.ts";
 import { announce } from "../lib/announce.ts";
 import { composing } from "../lib/keys.ts";
 import { Kbd } from "./Kbd.tsx";
-import { cn, fmtCost, fmtTokens, fmtWait, focusBox, scrollMotion } from "../lib/utils.ts";
+import { clock, cn, fmtCost, fmtTokens, fmtWait, focusBox, scrollMotion } from "../lib/utils.ts";
 import { Markdown } from "./Markdown.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { switchSession } from "../lib/switch.ts";
@@ -771,7 +771,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
             if (e.kind === "note" && e.data.kind === "model_told") return null;
             // A model switch: who made it and when, inline where it took effect.
             if (e.kind === "note" && e.data.kind === "model") {
-              const at = new Date(e.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+              const at = clock(e.ts);
               return <Divider key={e.id} testid="model-note"><span>{e.data.text} <span className="text-faint">{e.data.by === "cli" ? "From keel run" : "By you"}, {at}</span></span></Divider>;
             }
             if (e.kind === "note") {

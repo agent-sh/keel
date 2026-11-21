@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { activityTarget, auto, openSession, placeName, useAuto, type Activity } from "../../lib/automation.ts";
 import { reportError, useStore } from "../../lib/store.ts";
 import { openReceipt } from "../../lib/timeline.ts";
-import { ago, cn } from "../../lib/utils.ts";
+import { ago, cn, when } from "../../lib/utils.ts";
 import { Empty } from "./bits.tsx";
 import { Select } from "../Select.tsx";
 
@@ -146,7 +146,7 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
                 <span className="block text-caption leading-snug">{a.text}</span>
                 {place && <span className="block truncate text-micro text-faint" data-testid="activity-place">{place}</span>}
               </span>
-              <span className="shrink-0 text-micro text-faint tabular-nums" title={new Date(a.ts).toLocaleString()}>{ago(a.ts)}</span>
+              <span className="shrink-0 text-micro text-faint tabular-nums" title={when(a.ts)}>{ago(a.ts)}</span>
             </>
           );
           const n = notes[a.id];
