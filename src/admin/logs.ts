@@ -144,24 +144,26 @@ function seek(fd: number, size: number, ts: number): number {
   return lo;
 }
 
-// The lines of [since, until] from the files, oldest first, at most READ_MAX bytes of them.
+// The lines of [since, until] from the files, oldest first. At most READ_MAX
+// bytes are read, and they are the end of the window: on a log too chatty to
+// read whole, the newest lines of the window (the ones around a failure, the
+// ones a `limit` asks for) are the ones returned.
 export function fromFiles(dir: string, since: number, until: number): LogLine[] {
-  const out: LogLine[] = [];
+  let out: LogLine[] = [];
   let left = READ_MAX;
-  for (const f of days(dir)) {
+  for (const f of days(dir).reverse()) {
     const day = f.slice(5, 15);
-    if (day < dayOf(since) || day > dayOf(until) || left <= 0) continue;
+    if (day < dayOf(since) || day > dayOf(until)) continue;
+    if (left <= 0) break;
     try {
       const fd = openSync(join(dir, f), "r");
       try {
         const size = fstatSync(fd).size;
-        const from = seek(fd, size, since);
-        const to = Math.min(size, from + left);
+        // The window's end is within a piece after where the lines past `until` start.
+        const to = Math.min(size, seek(fd, size, until + 1) + PIECE);
+        const from = Math.max(seek(fd, size, since), to - left);
         left -= to - from;
-        for (const l of parseLines(piece(fd, from, to))) {
-          if (l.ts > until) return out;
-          if (l.ts >= since) out.push(l);
-        }
+        out = [...parseLines(piece(fd, from, to)).filter((l) => l.ts >= since && l.ts <= until), ...out];
       } finally { closeSync(fd); }
     } catch {}
   }

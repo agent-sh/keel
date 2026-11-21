@@ -25,8 +25,8 @@ test("a line keeps its session and turn, a stack stays under its line, and an ol
 test("the newest end is read across days, and a window is found inside a large file", () => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "logs-"));
   try {
-    // Two days: a line every 5 s, about 1.3 MB a day, some with a stack.
-    const mk = (d: string) => Array.from({ length: 17_280 }, (_, i): LogLine => ({ ts: day(d, 0, 0, 0) + i * 5000, level: i % 500 === 0 ? "error" : "info", text: `line ${d} ${i} ${"x".repeat(40)}${i % 500 === 0 ? "\n    at somewhere (file.ts:1:1)" : ""}`, ...(i % 3 === 0 ? { session: S, turn: T } : {}) }));
+    // Two days: a line every 5 s, about 3 MB a day (more than one read holds), some with a stack.
+    const mk = (d: string) => Array.from({ length: 17_280 }, (_, i): LogLine => ({ ts: day(d, 0, 0, 0) + i * 5000, level: i % 500 === 0 ? "error" : "info", text: `line ${d} ${i} ${"x".repeat(120)}${i % 500 === 0 ? "\n    at somewhere (file.ts:1:1)" : ""}`, ...(i % 3 === 0 ? { session: S, turn: T } : {}) }));
     const [one, two] = [mk("2026-11-20"), mk("2026-11-21")];
     writeFileSync(join(dir, "keel-2026-11-20.log"), one.map(formatLine).join("\n") + "\n");
     writeFileSync(join(dir, "keel-2026-11-21.log"), two.slice(0, 300).map(formatLine).join("\n") + "\n");
@@ -46,6 +46,12 @@ test("the newest end is read across days, and a window is found inside a large f
     const over = fromFiles(dir, day("2026-11-20", 23, 59, 0), day("2026-11-21", 0, 1, 0));
     expect(over.map((l) => l.text.slice(0, 22))).toEqual([...one.slice(-12), ...two.slice(0, 13)].map((l) => l.text.slice(0, 22)));
     expect(fromFiles(dir, day("2026-11-19", 1, 0, 0), day("2026-11-19", 2, 0, 0))).toEqual([]);
+    // A window larger than one read holds: its newest lines are the ones returned, to its very end.
+    const wide = fromFiles(dir, day("2026-11-20", 0, 0, 0), day("2026-11-21", 0, 20, 0));
+    expect(wide.at(-1)).toEqual(two[240]!);
+    expect(wide.length).toBeGreaterThan(5_000);
+    expect(wide.length).toBeLessThan(one.length);
+    expect(wide).toEqual([...one, ...two.slice(0, 241)].slice(-wide.length));
     expect(fromFiles(join(dir, "missing"), since, until)).toEqual([]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
