@@ -1,7 +1,7 @@
 // What the page cannot reach: the cleanup's clock, the running month, and
 // the counts on the real usage schema, where a deleted record also changes
 // the usage rollup through its triggers.
-import { afterEach, expect, setSystemTime, test } from "bun:test";
+import { afterAll, afterEach, expect, setSystemTime, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,7 +12,12 @@ import { readFile } from "../tools/files.ts";
 import { removedNote } from "../tools/spill.ts";
 import { PROPOSED, Retention, retentionOf } from "./retention.ts";
 import { loadSettings, patchSettings, settings } from "./settings.ts";
+import { allHooks } from "../engine/hooks.ts";
 import { Telemetry } from "./telemetry.ts";
+
+// Turn hooks are process-wide: the files after this one run without the ones its tests register.
+const hooksAtStart = allHooks().length;
+afterAll(() => { allHooks().length = hooksAtStart; });
 
 const DAY = 86_400_000;
 afterEach(() => setSystemTime());
