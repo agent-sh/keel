@@ -128,6 +128,17 @@ test("experiments: create, run live, stop and decide; an offline report", async 
   await expect(detail.getByTestId("experiment-command")).toContainText(`--experiment ${off.id}`);
   await shoot(page, "experiments-04-offline-report");
 
-  for (const x of [id, off.id]) await request.delete(`/api/experiments/${x}`);
+  // An arm with weight 0 gets no sessions and is shown as off; a live control cannot be one.
+  const arms = [{ name: "default" }, { name: "low", settings: { effort: "low" } }, { name: "shelved", weight: 0, settings: { effort: "high" } }];
+  const three = (await (await request.post("/api/experiments", { data: { template: "effort", name: `Three ${tag}`, arms } })).json()).experiment;
+  expect((await request.post("/api/experiments", { data: { template: "effort", name: `No control ${tag}`, arms: [{ name: "default", weight: 0 }, { name: "low" }] } })).status()).toBe(400);
+  await page.reload();
+  await panel.getByTestId("experiment-item").filter({ hasText: `Three ${tag}` }).click();
+  await expect(detail.getByTestId("experiment-sessions")).toContainText("shelved");
+  await expect(detail.getByTestId("arm-off")).toHaveCount(1);
+  await detail.getByTestId("experiment-sessions").scrollIntoViewIfNeeded();
+  await shoot(page, "experiments-05-arm-off");
+
+  for (const x of [id, off.id, three.id]) await request.delete(`/api/experiments/${x}`);
   for (const s of [...made, after.id]) await request.delete(`/api/sessions/${s}`);
 });

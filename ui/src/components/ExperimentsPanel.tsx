@@ -262,7 +262,7 @@ function Detail({ id, metrics, onChange }: { id: string; metrics: Record<Metric,
             {e.arms.map((a) => (
               <div key={a.name} className="flex flex-col">
                 <span className="text-title font-semibold tabular-nums">{e.sessions.find((s) => s.arm === a.name)?.n ?? 0}</span>
-                <span className="text-caption text-muted">{a.name}: {armDiff(a)}</span>
+                <span className="text-caption text-muted">{a.name}: {armDiff(a)}{a.weight === 0 && <span className="text-faint" data-testid="arm-off"> (weight 0: gets no sessions, not compared)</span>}</span>
               </div>
             ))}
           </div>

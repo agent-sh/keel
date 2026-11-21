@@ -212,6 +212,7 @@ export function validate(e: Partial<Experiment>): void {
     if (a.model && e.mode === "live") throw bad(`arm ${a.name}: a live arm keeps the owner's model; compare models offline`);
   }
   if (!e.arms.some((a) => (a.weight ?? 1) > 0)) throw bad("no arm has a weight above 0");
+  if (e.mode === "live" && !((e.arms[0]!.weight ?? 1) > 0)) throw bad(`arm ${e.arms[0]!.name} is the control, which every arm is compared with: in a live experiment its weight is above 0`);
   if (!e.primary || !(e.primary in METRICS)) throw bad(`primary is one of ${Object.keys(METRICS).join(", ")}`);
   for (const g of e.guards ?? []) {
     if (!(g.metric in METRICS)) throw bad(`guard metric ${g.metric} is unknown`);
@@ -625,7 +626,8 @@ export class Experiments {
   // After a turn ends while a live experiment runs (a turn of any session:
   // a window can close while the experiment's own sessions are quiet): the
   // guards' evidence stops it; so does reaching the sessions per arm it asked
-  // for (session families with a turn, so a subagent adds none).
+  // for, in every arm that gets sessions (session families with a turn, so
+  // a subagent adds none).
   check(sessionId: string, now = Date.now()) {
     const tag = armOf(this.store, sessionId);
     const e = tag ? this.get(tag.exp_id) : this.running();
@@ -636,7 +638,9 @@ export class Experiments {
     const n = e.stop.sessions_per_arm;
     if (!n) return;
     const rows = this.rows(e, now);
-    if (e.arms.every((a) => new Set(rows.filter((r) => r.arm === a.name).map((r) => r.cluster)).size >= n)) return this.stop(e.id, `reached ${n} sessions per arm`);
+    // An arm with weight 0 gets no sessions, so the cap is over the arms that do.
+    const enabled = e.arms.filter((a) => (a.weight ?? 1) > 0);
+    if (enabled.every((a) => new Set(rows.filter((r) => r.arm === a.name).map((r) => r.cluster)).size >= n)) return this.stop(e.id, `reached ${n} sessions per arm`);
   }
 }
 

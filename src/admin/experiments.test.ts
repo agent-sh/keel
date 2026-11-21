@@ -422,3 +422,29 @@ test("a guard's alpha is a probability, and the report carries the threshold it 
     expect([threshold(usual), threshold(strict), threshold(offline)]).toEqual([[20, 20], [100, 100], [50, undefined]]);
   } finally { d.close(); }
 });
+
+test("the sessions per arm cap is over the arms that get sessions; a live control is one of them", async () => {
+  const d = daemon();
+  try {
+    const { store, x, call } = d.open();
+    const arms = [{ name: "current" }, { name: "variant", settings: { effort: "low" } }, { name: "shelved", weight: 0, settings: { effort: "high" } }];
+    const e = x.start(x.create({ template: "effort", name: "cap", arms, stop: { sessions_per_arm: 2 } }).id);
+    for (const arm of ["current", "variant", "current"]) turn(store, root(store, x, e, arm));
+    const last = root(store, x, e, "variant");
+    x.check(last);
+    expect(x.get(e.id)!.state).toBe("running"); // the variant has one family with a turn
+    turn(store, last);
+    x.check(last);
+    expect(x.get(e.id)).toMatchObject({ state: "stopped", stop_reason: "reached 2 sessions per arm" });
+    // The shelved arm got nothing and is tested against nothing.
+    const r = x.report(x.get(e.id)!);
+    expect(r.arms.map((a) => [a.arm, a.clusters])).toEqual([["current", 2], ["variant", 2], ["shelved", 0]]);
+    expect(r.guards.map((g) => g.arm)).toEqual(["variant", "variant"]);
+
+    // A control with weight 0 would leave nothing to compare with: refused live, fine offline (weights split sessions only).
+    const off = [{ name: "current", weight: 0 }, { name: "variant" }];
+    const refused = await call("POST", "/api/experiments", { template: "effort", name: "no control", arms: off });
+    expect([refused.status, refused.body.error]).toEqual([400, expect.stringContaining("control")]);
+    expect((await call("POST", "/api/experiments", { template: "readers", name: "offline weights", arms: off })).status).toBe(201);
+  } finally { d.close(); }
+});
