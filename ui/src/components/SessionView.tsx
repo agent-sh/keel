@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { setBaseTitle } from "./Attention.tsx";
 import { FolderX, WifiOff } from "lucide-react";
+import { WaitingElsewhere } from "./AnswerQueue.tsx";
 import { Boundary } from "./Boundary.tsx";
 import { ChildApprovals } from "./automation/ChildApprovals.tsx";
 import { stopHere } from "../lib/automation.ts";
@@ -115,6 +116,7 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
                 }
                 asks={
                   <>
+                    <WaitingElsewhere sessionId={session.id} />
                     <Suspense fallback={null}><Questions sessionId={session.id} /></Suspense>
                     <Suspense fallback={null}><Approvals sessionId={session.id} /></Suspense>
                     <ChildApprovals parentId={session.id} />

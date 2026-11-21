@@ -1,7 +1,9 @@
 import { ClipboardList, Pencil } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PlanCard as Card } from "../../../src/server/routes/plan.ts";
+import { useAskKeys } from "../lib/asks.ts";
 import { api, onFeature, reportUnlessGone, failed } from "../lib/store.ts";
+import { cn } from "../lib/utils.ts";
 import { Markdown } from "./Markdown.tsx";
 import { Select } from "./Select.tsx";
 
@@ -49,9 +51,14 @@ function Plan({ c }: { c: Card }) {
   const [feedback, setFeedback] = useState("");
   const [back, setBack] = useState(false);
   const [err, setErr] = useState("");
+  // The plan takes the keyboard when it opens, as an approval does: Enter approves it.
+  const root = useRef<HTMLDivElement>(null);
+  const approve = useRef<HTMLButtonElement>(null);
+  const { ripe } = useAskKeys(root, approve);
+  const [onApprove, setOnApprove] = useState(false);
   const send = (b: object) => api(`/api/sessions/${c.session_id}/plan/${c.id}`, { method: "POST", body: JSON.stringify(b) }).catch((e) => setErr(failed(e, { at: "PlanCard" })));
   return (
-    <div className="animate-in overflow-hidden rounded-2xl border border-accent/40 bg-raised shadow-2" data-testid="plan-card">
+    <div ref={root} className="animate-in overflow-hidden rounded-2xl border border-accent/40 bg-raised shadow-2" data-testid="plan-card">
       <div className="flex items-center gap-2.5 px-4 pt-3">
         <span className="grid size-6 place-items-center rounded-md bg-accent-soft text-accent"><ClipboardList className="size-3.5" /></span>
         <span className="text-ui font-medium">{c.title || "The model's plan"}</span>
@@ -81,12 +88,14 @@ function Plan({ c }: { c: Card }) {
                 {MODES.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
               </Select>
             </span>
-            <button data-testid="plan-approve" disabled={!plan.trim()} title={plan.trim() ? undefined : "The plan is empty: write it, or keep planning"} onClick={() => send({ approve: true, mode, plan })} className="h-7 grow whitespace-nowrap rounded-md bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-50">
+            <button ref={approve} data-ask="" data-testid="plan-approve" onFocus={() => setOnApprove(true)} onBlur={() => setOnApprove(false)} disabled={!plan.trim()} title={plan.trim() ? undefined : "The plan is empty: write it, or keep planning"} onClick={() => send({ approve: true, mode, plan })} className="h-7 grow whitespace-nowrap rounded-md bg-accent px-3 text-ui font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-50">
               Approve plan
             </button>
           </div>
           <button data-testid="plan-back" onClick={() => setBack(true)} className="h-8 rounded-lg px-3 text-ui text-muted hover:bg-hover hover:text-fg">Keep planning</button>
-          {err && <span className="ml-auto text-micro text-danger">{err}</span>}
+          {err ? <span className="ml-auto text-micro text-danger">{err}</span>
+            // Said only while Approve has the keyboard, as the approval card says its own.
+            : <span className={cn("ml-auto text-micro text-faint max-sm:hidden pointer-coarse:hidden", !(ripe && onApprove) && "invisible")} data-testid="plan-hint">Enter approves the plan</span>}
         </div>
       )}
     </div>

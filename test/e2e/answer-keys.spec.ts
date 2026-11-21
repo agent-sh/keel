@@ -190,3 +190,133 @@ test("a question with several parts: numbers choose, words are an own answer, En
   await request.post(`/api/sessions/${id}/interrupt`);
   await request.delete(`/api/sessions/${id}`);
 });
+
+test("a plan takes the keyboard when it opens and Enter approves it", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const id = await create(request, "Plan the retry policy", folder("plan"));
+  await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "plan" } });
+  const plan = "## Retry policy\n\n1. Read the importer.\n2. Change the retry policy.\n3. Run the tests.";
+  await request.post(`/api/sessions/${id}/messages`, { data: { text: calls([{ name: "present_plan", input: { plan } }]) } });
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${id}/plan`)).json()).open.length, { timeout: 30_000 }).toBe(1);
+  await page.goto(`/s/${id}`);
+  const card = page.getByTestId("plan-card");
+  await expect(card.getByTestId("plan-approve")).toBeFocused();
+  await expect(card.getByTestId("plan-hint")).toBeVisible();
+  await shoot(page, "answer-keys-05-plan-keys");
+  await page.keyboard.press("Enter");
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${id}/plan`)).json()).open.length).toBe(0);
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${id}/permissions`)).json()).perm.mode).toBe("auto-edits");
+  await expect(card).toHaveCount(0);
+  await expect(page.getByTestId("composer")).toBeFocused();
+  await request.post(`/api/sessions/${id}/interrupt`);
+  await request.delete(`/api/sessions/${id}`);
+});
+
+test("what waits across sessions is answered in sequence, one key each", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const ws = folder("sequence");
+  const quiet = await create(request, "Nothing waits here", ws);
+  // Three approvals and a question, each in a session of its own, in the order they began to wait.
+  const a = await asksToRun(request, "Build the docs", ws, "docs");
+  const b = await asksToRun(request, "Clean the cache", ws, "cache");
+  const c = await asksToRun(request, "Tag the release", ws, "tag");
+  const q = await create(request, "Pick a color", ws);
+  await request.post(`/api/sessions/${q}/messages`, { data: { text: calls([colors]) } });
+  await expect.poll(() => pending(request, q)).toHaveLength(1);
+
+  await page.goto(`/s/${quiet}`);
+  await expect(page.getByTestId("composer")).toBeFocused();
+  const row = (id: string) => page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${id}"]`);
+  for (const id of [a, b, c, q]) await expect(row(id)).toHaveAttribute("data-watch", "need");
+  // Only the keyboard is used from here: every press is counted, and the pointer never moves.
+  let presses = 0;
+  const press = async (key: string) => { presses++; await page.keyboard.press(key); };
+  const at = (id: string) => expect(page).toHaveURL(new RegExp(`/s/${id}$`));
+  const card = page.getByTestId("approval");
+  const ready = async (id: string) => {
+    await at(id);
+    await expect(card.getByTestId("allow-once")).toBeFocused();
+    await expect(card).toHaveAttribute("data-live", "true");
+  };
+
+  // One key starts the sequence on the one that has waited longest.
+  await press("Alt+a");
+  await ready(a);
+  // Each Enter answers, and the next one opens by itself with the keyboard on it.
+  await press("Enter");
+  await ready(b);
+  // The card says that it is a sequence and how many more wait.
+  await expect(page.getByTestId("waiting-elsewhere")).toHaveAttribute("data-on", "true");
+  await expect(page.getByTestId("waiting-elsewhere")).toContainText("2 more sessions wait for you");
+  await shoot(page, "answer-keys-06-sequence");
+  await press("Enter");
+  await ready(c);
+  await expect(page.getByTestId("waiting-elsewhere")).toContainText("1 more session waits for you");
+  await press("Enter");
+  await at(q);
+  const question = page.getByTestId("composer-asks").getByTestId("question");
+  await expect(question).toBeFocused();
+  await expect(question).toHaveAttribute("data-live", "true");
+  await expect(page.getByTestId("waiting-elsewhere")).toHaveCount(0);
+  await shoot(page, "answer-keys-07-sequence-question");
+  await press("2");
+
+  // Everything is answered, in five presses, and the page says that nothing else waits.
+  await expect(page.locator(".k-tip")).toHaveText("Nothing else waits for you.");
+  expect(presses).toBe(5);
+  for (const id of [a, b, c]) await expect.poll(async () => (await approvals(request, id))[0]).toMatchObject({ state: "allowed", choice: "once" });
+  expect(await answersOf(request, q)).toEqual({ "0": { picked: ["Amber"] } });
+  for (const id of [a, b, c, q]) await expect(row(id)).not.toHaveAttribute("data-watch", "need");
+  await at(q);
+  await expect(page.getByTestId("composer")).toBeFocused();
+  await shoot(page, "answer-keys-08-sequence-done");
+
+  for (const id of [quiet, a, b, c, q]) { await request.post(`/api/sessions/${id}/interrupt`); await request.delete(`/api/sessions/${id}`); }
+});
+
+test("the sequence stays with the owner: several requests in one session, and it ends when they do something else", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const ws = folder("sequence-ends");
+  const quiet = await create(request, "Nothing waits here", ws);
+  // One session with two requests of different tools (each is answered on its own), and one more session.
+  const two = await create(request, "Two requests", ws);
+  await request.put(`/api/sessions/${two}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+  await request.post(`/api/sessions/${two}/messages`, { data: { text: `script:batch ${JSON.stringify([{ name: "Bash", input: { command: "echo one > one.txt" } }, { name: "Write", input: { file_path: `${ws}/two.txt`, content: "two" } }])}` } });
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${two}/approvals`)).json()).approvals.length).toBe(2);
+  const other = await asksToRun(request, "One more", ws, "more");
+
+  await page.goto(`/s/${quiet}`);
+  await expect(page.getByTestId("composer")).toBeFocused();
+  await page.keyboard.press("Alt+a");
+  await expect(page).toHaveURL(new RegExp(`/s/${two}$`));
+  const cards = page.getByTestId("approval");
+  await expect(cards).toHaveCount(2);
+  await expect(cards.first().getByTestId("allow-once")).toBeFocused();
+  await expect(cards.first()).toHaveAttribute("data-live", "true");
+  // The first is answered: the keyboard goes to the one left in this session, not to another session.
+  await page.keyboard.press("Enter");
+  await expect(cards).toHaveCount(1);
+  await expect(page).toHaveURL(new RegExp(`/s/${two}$`));
+  await expect(cards.getByTestId("allow-once")).toBeFocused();
+  // The owner types into the message box instead: the sequence is over, and an answer moves nothing.
+  await page.getByTestId("composer").focus();
+  await page.keyboard.type("x");
+  await expect(page.getByTestId("waiting-elsewhere")).not.toHaveAttribute("data-on", "true");
+  await expect(page.getByTestId("waiting-elsewhere")).toHaveText("1 more session waits for you.AltAgoes to the next.");
+  await shoot(page, "answer-keys-09-waits-elsewhere");
+  await page.getByTestId("composer").fill("");
+  await expect(cards).toHaveAttribute("data-live", "true");
+  await cards.getByTestId("allow-once").focus();
+  await page.keyboard.press("Enter");
+  await expect(cards).toHaveCount(0);
+  await page.waitForTimeout(800);
+  await expect(page).toHaveURL(new RegExp(`/s/${two}$`));
+  // The key again takes up what is left.
+  await page.keyboard.press("Alt+a");
+  await expect(page).toHaveURL(new RegExp(`/s/${other}$`));
+
+  for (const id of [quiet, two, other]) { await request.post(`/api/sessions/${id}/interrupt`); await request.delete(`/api/sessions/${id}`); }
+});
