@@ -38,3 +38,18 @@ test("what waits on the owner leads the state, oldest first, in one form", () =>
   // An agent's card names the agent it waits in.
   expect(stateOf(s(), undefined, { asks: [{ kind: "approval", text: "Bash: ls", child: "c", agent: "Scout" }] })).toMatchObject({ watch: "need", child: "c", text: "Agent Scout: Approve Bash: ls" });
 });
+
+test("a session whose turn ended waits while something it set up will wake it", () => {
+  const timer = { kind: "timer", text: "check the deploy", since: 5, until: 900 };
+  const command = { kind: "command", text: "make test", since: 3 };
+  // What is due first leads; the rest is counted.
+  expect(stateOf(s(), undefined, { pending: [command, timer] })).toEqual({ watch: "wait", agents: 0, why: "timer", text: "Timer: check the deploy, and 1 more", since: 5, until: 900 });
+  expect(stateOf(s(), undefined, { pending: [command] })).toMatchObject({ watch: "wait", why: "command", text: "Command: make test", since: 3 });
+  // An agent that waits is waited on, with what it waits for; one that runs is work.
+  expect(stateOf(s(), undefined, { agents: 1, parked: 1, pending: [{ kind: "timer", until: 50, agent: "Scout" }] })).toMatchObject({ watch: "wait", why: "agent", text: "Agent Scout: timer", until: 50 });
+  expect(stateOf(s(), undefined, { agents: 2, parked: 1, pending: [{ kind: "timer", agent: "Scout" }] }).watch).toBe("work");
+  // A running turn works, a stopped one stays stopped, a card is still the owner's.
+  expect(stateOf(s({ phase: "working" }), undefined, { pending: [timer] }).watch).toBe("work");
+  expect(stateOf(s({ settings: { last_end: "interrupted" } }), undefined, { pending: [timer] }).watch).toBe("stop");
+  expect(stateOf(s(), undefined, { pending: [timer], asks: [{ kind: "plan" }] }).watch).toBe("need");
+});

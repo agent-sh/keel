@@ -15,11 +15,11 @@ import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { callsigns, listBounds, listWidth, panesMax, toggleList, useRail } from "../lib/rail.ts";
 import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, cn, folderNames, when } from "../lib/utils.ts";
-import { branchOf, lastLine, useAgentCount, useAgentCounts, useWatch, useWatches, watchLabel, type Watch } from "../lib/watch.ts";
+import { lastLine, useAgentCount, useAgentCounts, useSessionState, useWatch, useWatches, watchLabel, type Watch } from "../lib/watch.ts";
 import { MachineSep, machineRuns, WherePip, whereWords } from "./Where.tsx";
 import { finished, ListFind, matches, order, setArrange, useArrange } from "./ListArrange.tsx";
 import { useAuto } from "../lib/automation.ts";
-import { folderOf, Mark, modelOf } from "./Mark.tsx";
+import { folderOf, Mark, modelOf, stateClock, timed, useNow } from "./Mark.tsx";
 import { AutomationFooter, SessionBadges, SessionChildren } from "./automation/SidebarExtras.tsx";
 import { dragSession, PaneCount } from "./Panes.tsx";
 import { PaneMenu } from "./PaneMenu.tsx";
@@ -82,7 +82,7 @@ function stepRows(e: KeyboardEvent<HTMLElement>) {
 }
 
 // States a row spells out; a finished or untouched session is its mark alone.
-const SPELLED: Watch[] = ["need", "work", "fail", "resume", "stop"];
+const SPELLED: Watch[] = ["need", "work", "wait", "fail", "resume", "stop"];
 
 // Opens a session in a new pane beside the one worked in (Ctrl or middle click, the row's button).
 export function openBeside(id: string) {
@@ -93,8 +93,9 @@ export function openBeside(id: string) {
 
 function Row({ s, active, where }: { s: Session; active: boolean; where?: boolean }) {
   const restore = s.archived;
-  const w = useWatch(s);
-  const agents = useAgentCount(s.id);
+  const st = useSessionState(s);
+  const w = st.watch;
+  const now = useNow(timed(st));
   const card = useContext(CardCtx)(s, 450);
   const shown = useStations((x) => x.shown.includes(s.id));
   const panes = useStations((x) => x.count);
@@ -133,7 +134,9 @@ function Row({ s, active, where }: { s: Session; active: boolean; where?: boolea
         <span className="k-row-title">{s.title || "New session"}</span>
         {SPELLED.includes(w) && (
           <span className="k-row-sub">
-            <span className="k-row-state" data-testid="row-state">{watchLabel(w, agents)}</span>
+            <span className="k-row-state" data-testid="row-state">{watchLabel(w, st.agents)}</span>
+            {st.text && <span className="k-row-why" data-testid="row-why" title={st.text}>{st.text}</span>}
+            {timed(st) && <span className="k-row-clock tabular-nums" data-testid="row-clock">{stateClock(st, now)}</span>}
           </span>
         )}
         {where && <span className="k-row-in" data-testid="row-folder">{folderOf(s)}</span>}
@@ -227,6 +230,7 @@ let openOn: "active" | "archived" = "active";
 const BANDS: { w: Watch[]; label: string; short: string }[] = [
   { w: ["need"], label: "Needs you", short: "Need" },
   { w: ["work"], label: "Working", short: "Work" },
+  { w: ["wait"], label: "Waiting", short: "Wait" },
   { w: ["fail"], label: "Failed", short: "Fail" },
   { w: ["resume", "stop"], label: "Stopped", short: "Stop" },
   { w: ["done", "idle"], label: "Done", short: "Done" },

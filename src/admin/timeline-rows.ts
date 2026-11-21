@@ -6,6 +6,7 @@
 import { localStamp, zoneNote } from "../core/clock.ts";
 import type { ErrorRecord, TurnStatus } from "../core/types.ts";
 import { errorClass } from "./classes.ts";
+import { waitWords } from "../core/watch.ts";
 
 export type TimelineKind =
   | "turn" | "agent" | "wait" | "loop" | "approval" | "question" | "compaction" | "model" | "restart" | "error" | "goal" | "limit" | "files"
@@ -211,11 +212,7 @@ export type Lookups = {
   loop?(id: string): { name?: string } | undefined;
   approval?(id: string): { tool?: string; risk?: string; state?: string; choice?: string; created?: number; resolved?: number } | undefined;
 };
-const WAIT_ON: Record<string, string> = {
-  timer: "a timer", file: "a file", log: "a log line", http: "an HTTP check", process: "a process", monitor: "a monitor",
-  websocket: "a WebSocket", pr_checks: "a pull request's checks", session: "another session",
-};
-export function waitWords(kind: unknown) { return WAIT_ON[String(kind)] ?? "a condition"; }
+export { waitWords };
 const STOPPED: Record<string, string> = {
   owner: "the owner stopped it", parent: "its parent stopped it", parent_turn: "it stopped with its parent's turn",
   time_limit: "its time limit passed", parent_archived: "its parent session was archived",

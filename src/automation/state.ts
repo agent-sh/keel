@@ -2,15 +2,17 @@
 // helper, the phone, the command line, the alerts): the one fact of
 // src/core/watch.ts, worked out from what the daemon knows now. This file
 // gathers that knowledge: what waits on the owner in the session or in an
-// agent under it (approvals, questions, plans), and the agents still at work.
-// A parent whose own turn ended reads as working while an agent it started
-// still runs or waits.
+// agent under it (approvals, questions, plans), the agents still at work, and
+// what the session waits on (its waits, the commands it left running, its
+// agents that wait). A parent whose own turn ended reads as working while an
+// agent it started still runs, and as waiting while all that is left waits.
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
-import { stateOf, watchLabel, watchWord, type Ask, type SessionState as State, type Watch, type WatchFacts } from "../core/watch.ts";
+import { stateOf, watchLabel, watchWord, type Ask, type Pending, type SessionState as State, type Watch, type WatchFacts } from "../core/watch.ts";
 import * as perm from "../server/routes/permissions.ts";
 import { plansWaiting } from "../server/routes/plan.ts";
 import { allPendingQuestions } from "../tools/interact.ts";
+import { liveJobs, running } from "../tools/jobs.ts";
 import { D } from "./core.ts";
 
 // The fact with its words: `label` as a page shows it, `word` as a tool says it.
@@ -59,15 +61,31 @@ function questionOf(store: Store, sessionId: string, callId: string): { text: st
   return out;
 }
 
-// What is read once for many sessions: everything that waits on the owner, and the agent counts.
-export type Lens = { d: From; asks: Map<string, Ask[]>; counts: Map<string, number> };
+// What is read once for many sessions: everything that waits on the owner,
+// everything a session waits on, and the live agents of each parent.
+type Kid = { session_id: string; title: string; status: string };
+export type Lens = { d: From; asks: Map<string, Ask[]>; counts: Map<string, number>; pending: Map<string, Pending[]>; kids: Map<string, Kid[]> };
+const push = <T>(m: Map<string, T[]>, k: string, v: T) => void (m.get(k) ?? m.set(k, []).get(k)!).push(v);
 export function lens(d: From = from(), counts?: Map<string, number>): Lens {
   const asks = new Map<string, Ask[]>();
-  const put = (sessionId: string, a: Ask) => void (asks.get(sessionId) ?? asks.set(sessionId, []).get(sessionId)!).push(a);
-  for (const a of perm.gate?.approvals({ pending: true }) ?? []) put(a.session_id, { kind: "approval", text: `${a.tool}: ${a.summary}`, since: a.created });
-  for (const q of allPendingQuestions()) put(q.session_id, { kind: "question", ...questionOf(d.store, q.session_id, q.call_id) });
-  for (const p of plansWaiting()) put(p.session_id, { kind: "plan", text: p.title ?? "", since: p.created });
-  return { d, asks, counts: counts ?? agentCounts(d) };
+  for (const a of perm.gate?.approvals({ pending: true }) ?? []) push(asks, a.session_id, { kind: "approval", text: `${a.tool}: ${a.summary}`, since: a.created });
+  for (const q of allPendingQuestions()) push(asks, q.session_id, { kind: "question", ...questionOf(d.store, q.session_id, q.call_id) });
+  for (const p of plansWaiting()) push(asks, p.session_id, { kind: "plan", text: p.title ?? "", since: p.created });
+  // What will start a session's next turn: its active waits (a timer is due at its wake time) and the commands it left running.
+  const pending = new Map<string, Pending[]>();
+  if (hasTable(d.store, "waits")) {
+    for (const w of d.store.db.query<{ session_id: string; kind: string; spec: string; note: string; created: number }, []>("SELECT session_id, kind, spec, note, created FROM waits WHERE status = 'active' ORDER BY created").all()) {
+      let until: number | undefined;
+      if (w.kind === "timer") try { until = Number(JSON.parse(w.spec).at_ms) || undefined; } catch {}
+      push(pending, w.session_id, { kind: w.kind, text: w.note, since: w.created, ...(until ? { until } : {}) });
+    }
+  }
+  for (const j of liveJobs()) if (j.background && running(j)) push(pending, j.sessionId, { kind: "command", text: j.description || j.command, since: j.started });
+  const kids = new Map<string, Kid[]>();
+  if (hasTable(d.store, "agents")) {
+    for (const a of d.store.db.query<Kid & { parent_id: string }, []>("SELECT parent_id, session_id, title, status FROM agents WHERE status IN ('running', 'waiting') ORDER BY created").all()) push(kids, a.parent_id, a);
+  }
+  return { d, asks, pending, kids, counts: counts ?? new Map([...kids].map(([k, v]) => [k, v.length])) };
 }
 
 // What the daemon knows of one session.
@@ -82,7 +100,24 @@ export function factsOf(s: Session, l: Lens): WatchFacts {
       for (const a of theirs) asks.push({ ...a, child: id, agent });
     }
   }
-  return { asks, agents: l.counts.get(s.id) ?? 0 };
+  // Its own waits and commands, then what each of its waiting agents waits on.
+  const pending: Pending[] = [...(l.pending.get(s.id) ?? [])];
+  const parked = (l.kids.get(s.id) ?? []).filter((k) => k.status === "waiting");
+  for (const k of parked) {
+    const theirs = l.pending.get(k.session_id);
+    if (theirs?.length) for (const p of theirs) pending.push({ ...p, agent: k.title });
+    else pending.push({ kind: "wake", agent: k.title });
+  }
+  return { asks, agents: l.counts.get(s.id) ?? 0, parked: parked.length, pending };
+}
+
+// The state in a tool's words. What a session waits on is named by its kind
+// only: a wait's note or a command line may hold what another session's
+// model should not read.
+const WAITS: Record<string, string> = { timer: "a timer", command: "a background command", agent: "an agent that waits" };
+export function stateWord(st: State): string {
+  if (st.watch === "wait") return `waiting on ${WAITS[st.why ?? ""] ?? "a condition it set"}`;
+  return watchWord(st.watch, st.agents);
 }
 
 // `counts`: agentCounts() when many sessions are told at once; `lens`: lens() the same way.
@@ -91,7 +126,7 @@ export function sessionState(s: Session, o: { counts?: Map<string, number>; from
   const running = l.d.engine.isRunning(s.id);
   const row = running && s.phase !== "working" ? { ...s, phase: "working" as const } : s;
   const st = stateOf(row, undefined, factsOf(s, l));
-  return { ...st, label: watchLabel(st.watch, st.agents), word: watchWord(st.watch, st.agents) };
+  return { ...st, label: watchLabel(st.watch, st.agents), word: stateWord(st) };
 }
 
 export type { Watch };

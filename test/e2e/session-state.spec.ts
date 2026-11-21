@@ -72,3 +72,48 @@ test("a plan waiting for approval reads Needs you on the row, the pane, the tab 
     await drop(request, made);
   }
 });
+
+test("a session waiting on a timer or a background command says so, with what it waits for and since when", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const made: string[] = [];
+  const ended = async (id: string) => {
+    const d = await (await request.get(`/api/sessions/${id}`)).json();
+    return !d.running && d.events.at(-1)?.kind === "turn_end";
+  };
+  try {
+    const timer = await start(request, "Check the deploy in a quarter of an hour");
+    const job = await start(request, "Run the slow suite in the background");
+    made.push(timer, job);
+    await send(request, timer, script([{ name: "wait_for", input: { kind: "timer", seconds: 900, note: "check the deploy" } }]));
+    await send(request, job, script([{ name: "Bash", input: { command: "sleep 300", run_in_background: true } }]));
+    await expect.poll(() => ended(timer), { timeout: 30_000 }).toBe(true);
+    await expect.poll(() => ended(job), { timeout: 30_000 }).toBe(true);
+
+    // The timer: waiting, on what, and when it is due.
+    await page.goto(`/s/${timer}`);
+    const t = row(page, timer);
+    await expect(t).toHaveAttribute("data-watch", "wait");
+    await expect(t.getByTestId("row-state")).toHaveText("Waiting");
+    await expect(t.getByTestId("row-why")).toHaveText("Timer: check the deploy");
+    await expect(t.getByTestId("row-clock")).toHaveText(/^due in 1[45]m$/);
+    await expect(page.getByTestId("station-word")).toHaveText("Waiting");
+    await expect(page.getByTestId("station-why")).toHaveText("Timer: check the deploy");
+    await expect(page.getByTestId("station-clock")).toHaveText(/^due in 1[45]m$/);
+    // The command left running: named, with how long it has run.
+    const j = row(page, job);
+    await expect(j).toHaveAttribute("data-watch", "wait");
+    await expect(j.getByTestId("row-why")).toHaveText("Command: sleep 300");
+    await expect(j.getByTestId("row-clock")).toHaveText(/^\d+s$/);
+    expect(await stateOf(request, timer)).toMatchObject({ watch: "wait", why: "timer", text: "Timer: check the deploy" });
+    expect(await stateOf(request, job)).toMatchObject({ watch: "wait", why: "command" });
+    await shoot(page, "session-state-02-waiting");
+
+    // The wait cancelled: nothing is waited on, the session is done.
+    const waits = (await (await request.get("/api/automation")).json()).waits as { id: string; session_id: string; status: string }[];
+    for (const w of waits.filter((w) => w.session_id === timer && w.status === "active")) await request.delete(`/api/waits/${w.id}`);
+    await expect(t).toHaveAttribute("data-watch", "done");
+  } finally {
+    await drop(request, made);
+  }
+});

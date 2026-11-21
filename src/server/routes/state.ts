@@ -99,7 +99,7 @@ export class StateBoard {
   sweep() {
     for (const [id, st] of this.last) {
       const w = (JSON.parse(st) as SessionState).watch;
-      if (w === "need" || w === "work") this.touch(id);
+      if (w === "need" || w === "work" || w === "wait") this.touch(id);
     }
   }
 }

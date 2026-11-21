@@ -1,24 +1,27 @@
 // The state of a session, one fact: what it needs from the owner in one word
-// (needs you, working, failed, waiting to resume, stopped, done or not
-// started), why, and since when. It is worked out here and nowhere else: the
+// (needs you, working, waiting, failed, waiting to resume, stopped, done or
+// not started), why, and since when. It is worked out here and nowhere else: the
 // daemon gathers what it knows of a session (src/automation/state.ts) and
 // sends the answer to every page, and the session tools, the helper, the
 // phone, the command line and the alerts read the same answer.
 //
 // A session is working while its own turn runs or while any agent it started
-// still runs or waits: a parent whose turn ended with agents at work is not
-// done. An agent's own session keeps its own state.
+// still runs: a parent whose turn ended with agents at work is not done. It
+// is waiting when its turn ended and something it set up will wake it: a
+// timer or another wait, a command left running in the background, an agent
+// that itself waits. An agent's own session keeps its own state.
 import type { Session, StoredEvent } from "./types.ts";
 
 // `stop`: the owner (or a parent) stopped the last turn; `resume`: a daemon
-// restart cut it and it waits to go on. Neither is done.
-export type Watch = "need" | "work" | "fail" | "resume" | "stop" | "done" | "idle";
+// restart cut it and it waits to go on. Neither is done. `wait`: nothing runs,
+// and something the session set up will start its next turn.
+export type Watch = "need" | "work" | "wait" | "fail" | "resume" | "stop" | "done" | "idle";
 
 export const WATCH_LABEL: Record<Watch, string> = {
-  need: "Needs you", work: "Working", fail: "Failed", resume: "Waiting to resume", stop: "Stopped", done: "Done", idle: "Not started",
+  need: "Needs you", work: "Working", wait: "Waiting", fail: "Failed", resume: "Waiting to resume", stop: "Stopped", done: "Done", idle: "Not started",
 };
 // Order of attention: what needs the owner first, quiet work last.
-export const WATCH_RANK: Record<Watch, number> = { need: 0, work: 1, fail: 2, resume: 3, stop: 4, done: 5, idle: 6 };
+export const WATCH_RANK: Record<Watch, number> = { need: 0, work: 1, wait: 2, fail: 3, resume: 4, stop: 5, done: 6, idle: 7 };
 const ENDED: Record<string, Watch> = { error: "fail", interrupted: "stop", restart: "resume" };
 
 // One thing that waits on the owner. `text` is what it asks, in its own
@@ -32,17 +35,26 @@ export type Ask = { kind: AskKind; text?: string; since?: number; child?: string
 export type SessionState = {
   watch: Watch;
   agents: number;   // agents of the session still at work
-  why?: string;     // need: the kind of the first thing that waits (approval, question, plan, unsent)
-  text?: string;    // the reason in words: "Approve Bash: rm -rf dist", "Plan to approve"
+  why?: string;     // need: the kind of the first thing that waits (approval, question, plan, unsent); wait: timer, wait, command, agent
+  text?: string;    // the reason in words: "Approve Bash: rm -rf dist", "Plan to approve", "Timer: check the deploy"
   since?: number;   // when the reason began (ms)
+  until?: number;   // wait: when what it waits for is due (a timer's wake)
   asks?: number;    // how many things wait on the owner here, each counted once
   child?: string;   // the agent session the first of them waits in
 };
 
+// Something the session set up that will start its next turn. `kind`: a
+// wait's own kind (timer, file, log, http, process, pr_checks, session, ...),
+// `command` for one left running in the background. `agent`: the title of
+// the agent of the session that waits on it. `until`: a timer's wake time.
+export type Pending = { kind: string; text?: string; since?: number; until?: number; agent?: string };
+
 // What the caller knows besides the session row: what waits on the owner
-// (its own or an agent's), and the agents still at work. `approvals` and
-// `asking` are the same in short, for a caller that has only counts.
-export type WatchFacts = { asks?: Ask[]; approvals?: number; asking?: boolean; agents?: number };
+// (its own or an agent's), the agents still at work, and what the session
+// waits on (its own waits and background commands, and those of its agents
+// that wait: `parked` is how many of `agents` those are). `approvals` and
+// `asking` are `asks` in short, for a caller that has only counts.
+export type WatchFacts = { asks?: Ask[]; approvals?: number; asking?: boolean; agents?: number; parked?: number; pending?: Pending[] };
 
 // An agent still at work: running, or waiting on something it set up.
 export const agentLive = (a: { status: string }) => a.status === "running" || a.status === "waiting";
@@ -71,6 +83,25 @@ export function askText(a: Ask): string {
     : t || "A message was not sent";
   return a.child ? `Agent ${oneLine(a.agent, 40) || "of this session"}: ${said}` : said;
 }
+
+// What a wait is on, by its kind.
+const WAIT_ON: Record<string, string> = {
+  timer: "a timer", file: "a file", log: "a log line", http: "an HTTP check", process: "a process", monitor: "a monitor",
+  websocket: "a WebSocket", pr_checks: "a pull request's checks", session: "another session", command: "a background command",
+  wake: "a wake of its own",
+};
+export function waitWords(kind: unknown) { return WAIT_ON[String(kind)] ?? "a condition"; }
+const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+
+// What a session waits for, in one form: the thing, then what the session
+// said of it. "Timer: check the deploy", "Command: make test", "Agent Scout: timer".
+export function pendingText(p: Pending): string {
+  const thing = p.kind === "command" ? "Command" : cap(waitWords(p.kind).replace(/^an? /, ""));
+  const t = oneLine(p.text, 120);
+  const said = t ? `${thing}: ${t}` : thing;
+  return p.agent !== undefined ? `Agent ${oneLine(p.agent, 40) || "of this session"}: ${said.charAt(0).toLowerCase()}${said.slice(1)}` : said;
+}
+const whyOf = (p: Pending) => (p.agent !== undefined ? "agent" : p.kind === "timer" || p.kind === "command" ? p.kind : "wait");
 
 // The session's own state, from its events when they are loaded, else from
 // the marks the daemon keeps on it (failed_ms, last_end).
@@ -107,7 +138,18 @@ export function stateOf(s: Session, events: StoredEvent[] | undefined, f: WatchF
   }
   if ((f.approvals ?? 0) > 0 || f.asking) return { watch: "need", agents, why: f.approvals ? "approval" : "question", asks: Math.max(1, f.approvals ?? 0) };
   const w = own(s, events);
-  return { watch: agents > 0 ? "work" : w, agents };
+  // Agents that run keep it working, whatever its own last turn came to.
+  if (w === "work" || agents - (f.parked ?? 0) > 0) return { watch: "work", agents };
+  // A turn the owner stopped, or a restart cut, waits on them, not on a timer.
+  if (w === "stop" || w === "resume" || !f.pending?.length) return { watch: w, agents };
+  // What is due first leads; without a due time, what has waited longest.
+  const pending = [...f.pending].sort((a, b) => (a.until ?? Infinity) - (b.until ?? Infinity) || (a.since ?? Infinity) - (b.since ?? Infinity));
+  const first = pending[0]!;
+  const more = pending.length - 1;
+  return {
+    watch: "wait", agents, why: whyOf(first), text: `${pendingText(first)}${more ? `, and ${more} more` : ""}`,
+    ...(first.since ? { since: first.since } : {}), ...(first.until ? { until: first.until } : {}),
+  };
 }
 
 export const watchOf = (s: Session, events: StoredEvent[] | undefined, f: WatchFacts = {}): Watch => stateOf(s, events, f).watch;

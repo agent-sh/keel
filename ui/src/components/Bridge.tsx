@@ -17,14 +17,14 @@ import { byAttention, getStations, opened, shares, stations, target, useStations
 import { getState, useStore } from "../lib/store.ts";
 import { getUI, navigate, savePref, setUI, useUI } from "../lib/ui.ts";
 import { ago, scrollMotion, when } from "../lib/utils.ts";
-import { branchOf, lastLine, useAgentCount, useAgentCounts, useWatch, watchLabel, type Watch } from "../lib/watch.ts";
+import { lastLine, useAgentCount, useAgentCounts, useSessionState, useWatch, watchLabel, type Watch } from "../lib/watch.ts";
 import { MachineSep, machineRuns, whereWords } from "./Where.tsx";
 import { isPinned, pin as pinSession } from "../lib/sessops.ts";
 import { reportError } from "../lib/store.ts";
 import { Grip } from "./Grip.tsx";
 import { PaneMenu } from "./PaneMenu.tsx";
 import { DRAG, dragSession, setPanes } from "./Panes.tsx";
-import { elapsed, folderOf, Mark, modelOf, useLive, useNow } from "./Mark.tsx";
+import { elapsed, folderOf, Mark, modelOf, stateClock, timed, useLive, useNow } from "./Mark.tsx";
 import { SessionHeader } from "./SessionHeader.tsx";
 import { Boundary, SessionView } from "./SessionView.tsx";
 import { StartBox } from "./StartBox.tsx";
@@ -74,18 +74,21 @@ function Tool({ label, onClick, children, testid, on, move }: { label: string; o
 
 function StationHead({ s, w, helm, pinned }: { s: Session; w: Watch; helm: boolean; pinned: boolean }) {
   const events = useStore((x) => x.events[s.id]);
-  const start = useMemo(() => branchOf(events, s.head)?.findLast((e) => e.kind === "turn_start")?.ts, [events, s.head]);
-  const now = useNow(w === "work" && s.phase === "working");
+  const start = useMemo(() => events?.findLast((e) => e.kind === "turn_start")?.ts, [events]);
+  const st = useSessionState(s);
+  const turning = w === "work" && s.phase === "working";
+  const now = useNow(turning || timed(st));
   const focus = useStations((x) => x.focus);
-  const panes = useStations((x) => x.count);
-  const agents = useAgentCount(s.id);
+  const agents = st.agents;
   return (
     <header className="k-station-head" data-testid="station-head" draggable={!focus} onDragStart={dragSession(s.id)} title={focus ? undefined : "Drag onto another pane to trade places"}>
       <div className="k-station-row k-station-identity">
         <h2 className="k-station-title" title={s.title}>{s.title || "New session"}</h2>
         <span className="k-station-state">
           <span className="k-station-word" data-testid="station-word"><Mark w={w} />{watchLabel(w, agents)}</span>
-          {w === "work" && start && s.phase === "working" && <span className="k-station-clock tabular-nums">{elapsed(now - start)}</span>}
+          {st.text && <span className="k-station-why" data-testid="station-why" title={st.text}>{st.text}</span>}
+          {turning && start ? <span className="k-station-clock tabular-nums">{elapsed(now - start)}</span>
+            : timed(st) && <span className="k-station-clock tabular-nums" data-testid="station-clock">{stateClock(st, now)}</span>}
         </span>
         <span className="k-station-meta truncate" title={s.workspace}>
           {s.workspace_gone ? <span className="k-gone">{folderOf(s)} gone</span> : folderOf(s)}{!helm && ` / ${modelOf(s.model)}`}

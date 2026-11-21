@@ -70,6 +70,8 @@
   /* State: one color per watch word (needs you, working, failed, done, not started). */
   --st-need: oklch(0.52 0.22 295);
   --st-work: oklch(0.64 0.15 62);
+  /* Waiting: nothing runs, a timer, a command or an agent will wake it. Steel blue, between work and rest. */
+  --st-wait: oklch(0.5 0.11 240);
   --st-fail: oklch(0.55 0.2 27);
   --st-done: oklch(0.52 0.09 168);
   --st-idle: oklch(0.6 0.015 255);
@@ -134,6 +136,7 @@
   --shadow-3: 0 2px 8px oklch(0 0 0 / 0.35), 0 30px 70px -14px oklch(0 0 0 / 0.65);
   --st-need: oklch(0.74 0.17 295);
   --st-work: oklch(0.8 0.15 72);
+  --st-wait: oklch(0.77 0.1 240);
   --st-fail: oklch(0.7 0.18 27);
   --st-done: oklch(0.74 0.09 168);
   --st-idle: oklch(0.55 0.015 255);
@@ -193,6 +196,7 @@
   --color-st-need: var(--st-need);
   --text-color-st-need: var(--st-need-ink);
   --color-st-work: var(--st-work);
+  --color-st-wait: var(--st-wait);
   --color-st-fail: var(--st-fail);
   --text-color-st-fail: var(--st-fail-ink);
   --color-st-done: var(--st-done);
