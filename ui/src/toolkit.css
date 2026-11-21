@@ -67,7 +67,7 @@
 .k-editor { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .k-editor-bar { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; height: 2.375rem; padding: 0 0.625rem 0 1.375rem; border-bottom: 1px solid var(--line); font: 500 0.75rem/1 var(--font-inst); font-stretch: 75%; color: var(--faint); }
 .k-editor-bar > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.k-editor-bar .k-dirty { color: var(--st-work); }
+.k-editor-bar .k-dirty { color: var(--st-work-ink); }
 .k-editor-bar .k-saved { color: var(--st-done); }
 .k-editor-bar > .k-btn:first-of-type { margin-left: auto; }
 .k-editor textarea { flex: 1; min-height: 12rem; resize: none; padding: 0.875rem 1.375rem 1.75rem; border: 0; outline: none; background: var(--sunken); color: var(--fg); font: 0.8438rem/1.65 var(--font-mono); tab-size: 2; }

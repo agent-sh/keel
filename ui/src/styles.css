@@ -41,6 +41,9 @@
   /* Amber as text: the fill above is under 4.5:1 on the light surfaces, so words take
      this ink (text-warn); dots, bars, borders, tints and icons keep the fill. */
   --warn-ink: oklch(0.47 0.11 62);
+  /* The other two ambers (brass, and "working" among the state colors) read as words in the same ink. */
+  --brass-ink: var(--warn-ink);
+  --st-work-ink: var(--warn-ink);
   --code-bg: oklch(0.935 0.006 250);
   /* Solid: at 60% the violet was under 3:1 on the grey rail and panels. */
   --ring: oklch(0.52 0.22 295);
@@ -99,6 +102,8 @@
   --ok: oklch(0.74 0.09 168);
   --warn: oklch(0.8 0.14 72);
   --warn-ink: var(--warn);
+  --brass-ink: var(--brass);
+  --st-work-ink: var(--st-work);
   --code-bg: oklch(0.18 0.015 255);
   --ring: oklch(0.74 0.17 295 / 0.65);
   --overlay: oklch(0.08 0.01 255 / 0.55);
@@ -145,6 +150,7 @@
   --color-accent-soft: var(--accent-soft);
   --color-accent-ink: var(--accent-ink);
   --color-brass: var(--brass);
+  --text-color-brass: var(--brass-ink);
   --color-brass-soft: var(--brass-soft);
   --color-danger: var(--danger);
   --color-danger-soft: var(--danger-soft);
@@ -267,6 +273,7 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 }
 /* An icon in a state color is a mark, not a word: it keeps the fill where its words take the ink. */
 svg.text-warn { color: var(--warn); }
+svg.text-brass { color: var(--brass); }
 button { cursor: default; }
 /* A sent image's size toggle: the pointer says which way it goes, and its ring keeps the image's corners. */
 .k-image-toggle { cursor: zoom-in; border-radius: var(--radius-lg); }

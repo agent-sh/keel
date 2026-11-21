@@ -84,7 +84,7 @@ kbd { font-family: var(--font-inst); font-stretch: 75%; }
 }
 .k-marks[data-watch="need"] { background: color-mix(in oklch, var(--st-need) 9%, transparent); }
 .k-marks[data-watch="need"] .k-marks-head { color: var(--st-need); }
-.k-marks[data-watch="work"] .k-marks-head { color: var(--st-work); }
+.k-marks[data-watch="work"] .k-marks-head { color: var(--st-work-ink); }
 .k-marks[data-watch="fail"] .k-marks-head { color: var(--st-fail); }
 /* A mark is the session's state and a short code of its title, so no two read alike. */
 .k-tick { position: relative; display: flex; align-items: center; gap: 0.375rem; width: 3.125rem; height: 1.75rem; padding-left: 0.5rem; border-radius: 0.25rem; }
@@ -115,7 +115,7 @@ kbd { font-family: var(--font-inst); font-stretch: 75%; }
 .k-rail-card-row .k-mark { width: 0.5rem; height: 0.5rem; }
 .k-rail-card-word { font: 700 0.75rem/1.0625rem var(--font-inst); font-stretch: 75%; letter-spacing: 0.04em; text-transform: uppercase; color: var(--st-done); }
 .k-rail-card[data-watch="need"] .k-rail-card-word { color: var(--st-need); }
-.k-rail-card[data-watch="work"] .k-rail-card-word { color: var(--st-work); }
+.k-rail-card[data-watch="work"] .k-rail-card-word { color: var(--st-work-ink); }
 .k-rail-card[data-watch="fail"] .k-rail-card-word { color: var(--st-fail); }
 .k-rail-card:is([data-watch="idle"], [data-watch="stop"], [data-watch="resume"]) .k-rail-card-word { color: var(--faint); }
 .k-rail-card-time { margin-left: auto; font: 0.75rem/1.0625rem var(--font-inst); font-stretch: 75%; color: var(--faint); }
@@ -158,7 +158,7 @@ kbd { font-family: var(--font-inst); font-stretch: 75%; }
 .k-row-main { min-width: 0; flex: 1; display: flex; flex-direction: column; }
 .k-row-state { margin-top: 1px; font: 700 0.6562rem/1rem var(--font-inst); font-stretch: 75%; letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); }
 .k-row[data-watch="need"] .k-row-state { color: var(--st-need); }
-.k-row[data-watch="work"] .k-row-state { color: var(--st-work); }
+.k-row[data-watch="work"] .k-row-state { color: var(--st-work-ink); }
 .k-row[data-watch="fail"] .k-row-state { color: var(--st-fail); }
 .k-row:focus-visible, .k-tick:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
 .k-row > :is(.k-needs, .k-row-tag, svg, [data-testid="snoozed-mark"]) { margin-top: 1px; }
@@ -309,7 +309,7 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-station-word { display: inline-flex; align-items: center; gap: 0.4375rem; font-family: var(--font-inst); font-stretch: 75%; font-weight: 700; font-size: 0.8125rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--st-done); }
 .k-station-word .k-mark { width: 0.5625rem; height: 0.5625rem; }
 .k-station[data-watch="need"] .k-station-word { color: var(--st-need); }
-.k-station[data-watch="work"] .k-station-word { color: var(--st-work); }
+.k-station[data-watch="work"] .k-station-word { color: var(--st-work-ink); }
 .k-station[data-watch="fail"] .k-station-word { color: var(--st-fail); }
 .k-station[data-watch="idle"] .k-station-word { color: var(--faint); }
 .k-station:is([data-watch="stop"], [data-watch="resume"]) .k-station-word { color: var(--muted); }
