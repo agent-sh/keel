@@ -71,7 +71,6 @@ test("the kept branch projects the same bytes as a walk of the tree, and a warm 
     };
     const warm = same();
     expect(warm).toHaveLength(360);
-    expect(Object.isFrozen(warm)).toBe(true);
     // Warm: the same array, and the session's events (all branches) are not read at all.
     const all = spyOn(store, "events");
     for (let n = 0; n < 50; n++) expect(engine.lineage(id)).toBe(warm);

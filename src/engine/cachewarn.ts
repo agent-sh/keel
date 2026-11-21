@@ -31,7 +31,7 @@ export const PAUSE_MARGIN_MS = MIN;
 // of this model after the last checkpoint that wrote to the cache (a later
 // read keeps that entry alive at its own lifetime). A write before the
 // checkpoint, or on another model, says nothing about this prefix.
-export function retention(wire: Wire | undefined, prior: StoredEvent[], model: string): { sure: number; max: number } {
+export function retention(wire: Wire | undefined, prior: readonly StoredEvent[], model: string): { sure: number; max: number } {
   const cp = checkpointAt(prior).at;
   let wrote: { cache_write: number; cache_write_1h?: number } | undefined;
   for (let i = prior.length - 1; i > cp && !wrote; i--) {
@@ -62,7 +62,7 @@ export function effectiveEffort(info: ModelInfo | undefined, want?: string): str
 }
 
 export function switchWarning(o: {
-  lineage: StoredEvent[];
+  lineage: readonly StoredEvent[];
   now: number;
   from?: ModelInfo; // the model the last request ran on
   to: ModelInfo;

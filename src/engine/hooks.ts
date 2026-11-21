@@ -95,7 +95,7 @@ export type TurnHooks = {
 
 export type ExternalIO = {
   signal: AbortSignal;
-  events(): StoredEvent[];   // the branch shown, as it is now
+  events(): readonly StoredEvent[];   // the branch shown, as it is now
   append(kind: StoredEvent["kind"], data: unknown): StoredEvent;
   delta(kind: "text" | "thinking", index: number, text: string): void;
   status(s: TurnStatus): void;

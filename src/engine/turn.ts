@@ -52,7 +52,7 @@ const cutText = (session: string, u: { id: string; name: string }) => {
 };
 // A call a restart cut while its card was open has no result: the next turn
 // runs it again on that card (Gate). These are such calls of the branch.
-const owedCalls = (session: string, line: StoredEvent[]): ToolUseBlock[] => {
+const owedCalls = (session: string, line: readonly StoredEvent[]): ToolUseBlock[] => {
   const done = new Set(line.flatMap((e) => (e.kind === "tool_result" ? e.data.results.map((r: any) => r.tool_use_id) : [])));
   return line.slice(checkpointAt(line).keepFrom).flatMap((e) => (e.kind === "assistant" ? e.data.blocks : []))
     .filter((b: any) => b.type === "tool_use" && !done.has(b.id) && outcomeOf(session, b.id) === "waiting");
@@ -82,7 +82,7 @@ export const MAX_CONTINUATIONS = 3;
 // Rebuild the wire conversation from the stored events of one branch (oldest
 // first). Pure: the same events always give the same bytes, so the provider's
 // prefix cache holds across turns.
-export function toMessages(events: StoredEvent[]): Message[] {
+export function toMessages(events: readonly StoredEvent[]): Message[] {
   const cp = checkpointAt(events);
   const out: Message[] = [];
   if (cp.at >= 0 && events[cp.at]!.data.mode === "summary") out.push(summaryMessage(events[cp.at]!.data));
@@ -429,8 +429,8 @@ export class Engine {
 
   // The branch the session shows, oldest first. The store keeps it (walked
   // once, grown by each appended event), so the loop's many reads of one step
-  // do not rebuild the tree; the array is frozen and shared, never changed.
-  lineage(id: string): StoredEvent[] {
+  // do not rebuild the tree; the array is shared and read-only.
+  lineage(id: string): readonly StoredEvent[] {
     return this.store.lineage(id);
   }
 
@@ -756,7 +756,7 @@ export class Engine {
   // replies above are another model's, and it should not take their claims
   // about itself as its own. Stored as a note for the model, so the bytes
   // stay the same on every later request. Nothing when no model replied yet.
-  private async tellSwitch(id: string, events: StoredEvent[], st: Step): Promise<boolean> {
+  private async tellSwitch(id: string, events: readonly StoredEvent[], st: Step): Promise<boolean> {
     for (let i = events.length - 1; i >= 0; i--) {
       const e = events[i]!;
       if (e.kind === "compaction" || (e.kind === "note" && e.data.kind === "model_told")) return false;
@@ -1062,12 +1062,13 @@ export class Engine {
       else if (how === "failed" && !signal.aborted) toolErrors++;
       const shown = this.shown.get(r.tool_use_id);
       this.shown.delete(r.tool_use_id);
-      this.store.db.transaction(() => {
+      // One write through the store: when it fails, the result is not left in the kept events.
+      this.store.atomic(id, () => {
         this.append(id, "tool_result", { results: [r], ...(shown !== undefined ? { shown: { [r.tool_use_id]: shown } } : {}) });
         for (const h of allHooks()) {
           try { h.resultStored?.(session, [r]); } catch (e) { this.errors.capture("server", e, { hook: "resultStored", session: id }); }
         }
-      })();
+      });
     };
     try {
       // Calls a restart cut while they waited for the owner: asked again on
@@ -1327,14 +1328,14 @@ export class Engine {
 
   // When the prepared summary's request read this context's cache on the
   // model's route: one written for this branch on the same prefix (preparedWarm).
-  private preparedMs(id: string, events: StoredEvent[], st: Step): number {
+  private preparedMs(id: string, events: readonly StoredEvent[], st: Step): number {
     const row = this.store.db.query<{ covered: string; data: string }, [string]>("SELECT covered, data FROM prepared_summaries WHERE session_id = ?").get(id);
     return row && events.some((e) => e.id === row.covered) ? preparedWarm(JSON.parse(row.data), st.info.id) : 0;
   }
 
   // The cache of this context has surely expired: no request of this model
   // read or wrote it within the longest lifetime the route may keep it.
-  private cacheCold(id: string, events: StoredEvent[], st: Step): boolean {
+  private cacheCold(id: string, events: readonly StoredEvent[], st: Step): boolean {
     const warm = lastWarm(events, st.info.id, this.preparedMs(id, events, st));
     return warm > 0 && Date.now() - warm > retention(st.provider.wire, events, st.info.id).max;
   }
@@ -1425,7 +1426,7 @@ export class Engine {
 
   // The prepared summary as a checkpoint, when it covers part of this branch
   // after its last checkpoint. The events since stay verbatim after it.
-  private applyPrepared(id: string, events: StoredEvent[]): boolean {
+  private applyPrepared(id: string, events: readonly StoredEvent[]): boolean {
     const row = this.store.db.query<{ covered: string; data: string }, [string]>("SELECT covered, data FROM prepared_summaries WHERE session_id = ?").get(id);
     if (!row) return false;
     const data = JSON.parse(row.data);
@@ -1452,13 +1453,13 @@ export class Engine {
   // a fresh checkpoint, a session just moved from another model) is estimated
   // whole from its bytes; the system prompt and the
   // tools are not in that estimate (they fit in the room the compaction share leaves).
-  private used(events: StoredEvent[], st: Step): number {
+  private used(events: readonly StoredEvent[], st: Step): number {
     return contextTokens(events, st.info.id).used;
   }
 
   // What the provider counted for a request against the bytes Keel counted
   // for it: the model's bytes a token, kept across restarts.
-  private learn(id: string, st: Step, events: StoredEvent[], u: Usage) {
+  private learn(id: string, st: Step, events: readonly StoredEvent[], u: Usage) {
     try {
       const ratio = learnRatio(st.info.id, contextBytes(events, st.info.id) + this.prefixBytes(st), u.input + u.cache_read + u.cache_write);
       if (ratio) this.store.db.run("INSERT OR REPLACE INTO token_ratios (model, ratio, ts) VALUES (?, ?, ?)", [st.info.id, ratio, Date.now()]);
@@ -1478,7 +1479,7 @@ export class Engine {
 
   // The provider refused this context as over the model's window: Keel's count
   // of it was too low, so the model's bytes a token come down to fit the refusal.
-  private refused(st: Step, events: StoredEvent[]) {
+  private refused(st: Step, events: readonly StoredEvent[]) {
     const ratio = capRatio(st.info.id, contextBytes(events, st.info.id) + this.prefixBytes(st), st.info.context);
     if (ratio) this.store.db.run("INSERT OR REPLACE INTO token_ratios (model, ratio, ts) VALUES (?, ?, ?)", [st.info.id, ratio, Date.now()]);
   }
@@ -1490,7 +1491,7 @@ export class Engine {
   // transcript: tool outputs shortened oldest first until one request holds
   // it, else in parts oldest first, each with the summary of the parts before
   // it. A request the provider still refuses as too long is built again smaller.
-  private async summarize(id: string, st: Step, session: Session, events: StoredEvent[], signal: AbortSignal, focus?: string): Promise<{ summary: string; usage: Usage; parts?: number; clipped?: number }> {
+  private async summarize(id: string, st: Step, session: Session, events: readonly StoredEvent[], signal: AbortSignal, focus?: string): Promise<{ summary: string; usage: Usage; parts?: number; clipped?: number }> {
     focus ??= allHooks().map((h) => h.compactFocus?.(session)).find(Boolean);
     let usage = emptyUsage();
     let retries = SUMMARY_RETRIES;
@@ -1835,7 +1836,7 @@ export class Engine {
 // A turn that failed while it was set up said so (an error) and is not owed;
 // only what follows the last prompt counts, so a prompt sent after such a
 // failure is.
-function owedTurn(tail: StoredEvent[]): boolean {
+function owedTurn(tail: readonly StoredEvent[]): boolean {
   const prompt = tail.findLastIndex((e) => e.kind === "user");
   return prompt >= 0 && !tail.slice(prompt).some((e) => e.kind === "error" || e.kind === "turn_start");
 }
@@ -1853,7 +1854,7 @@ export const STALLED_MAX = 3;
 // restart that a restart cut again before they finished a step (a tool call
 // that ran to its result). A continuation that got a step done ends the count:
 // the work moves between restarts.
-export function stalledContinuations(line: StoredEvent[]): number {
+export function stalledContinuations(line: readonly StoredEvent[]): number {
   let n = 0;
   for (let end = line.length - 1; end >= 0; ) {
     const e = line[end]!;

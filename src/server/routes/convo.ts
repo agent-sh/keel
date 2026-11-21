@@ -65,10 +65,10 @@ const textOf = (blocks: any[]) => blocks.filter((b) => b.type === "text").map((b
 const ask = (text: string): Message[] => [{ role: "user", content: [{ type: "text", text }] }];
 
 // The events the model sees now: from the last checkpoint's first kept event.
-const visible = (line: StoredEvent[]) => line.slice(checkpointAt(line).keepFrom);
+const visible = (line: readonly StoredEvent[]) => line.slice(checkpointAt(line).keepFrom);
 
 // The skill-mode note in force on this branch, if any.
-const modeNote = (line: StoredEvent[]) => visible(line).findLast((e) => e.kind === "note" && e.data.kind === "skill_mode");
+const modeNote = (line: readonly StoredEvent[]) => visible(line).findLast((e) => e.kind === "note" && e.data.kind === "skill_mode");
 
 export const convoRoutes: RouteModule = ({ store, bus, engine, providers, errors }) => {
   store.migrate(`CREATE TABLE IF NOT EXISTS session_digests (

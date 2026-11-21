@@ -135,10 +135,10 @@ export class Store {
   // 2 MB parsed, so only a few sessions are kept.
   private parsed = new SessionMap<StoredEvent[]>(4);
   // The branch each of those sessions shows, as it was last read: its events
-  // from the first to the head, frozen. A turn asks for it several times a
+  // from the first to the head. A turn asks for it several times a
   // step; it is walked once, grows by each event appended at its head, and is
   // walked again only when the session shows another branch.
-  private lines = new SessionMap<{ head: string; events: StoredEvent[] }>(4);
+  private lines = new SessionMap<{ head: string; events: readonly StoredEvent[] }>(4);
 
   constructor(readonly stateDir: string) {
     mkdirSync(stateDir, { recursive: true });
@@ -316,7 +316,8 @@ export class Store {
       all?.push(kept);
       // The branch that ended at its parent now ends at it. An event on another
       // parent starts a branch, which is walked when it is asked for.
-      if (line?.head === p) this.lines.set(session_id, { head: id, events: Object.freeze([...line.events, kept]) as StoredEvent[] });
+      // A new array: a reader that holds the branch as it was keeps it.
+      if (line?.head === p) this.lines.set(session_id, { head: id, events: [...line.events, kept] });
       else this.lines.delete(session_id);
     }
     return ev;
@@ -342,12 +343,14 @@ export class Store {
 
   // The branch the session shows (the events from the first to its head),
   // oldest first: the same events, in the same order, as lineage() of
-  // src/core/tree.ts gives over events(). The array is kept and frozen: the
-  // same one comes back until the head moves, so a reader that asks again pays
-  // nothing, and none may change it. A walk goes back from the head by
+  // src/core/tree.ts gives over events(). The array is kept: the same one
+  // comes back until the head moves, so a reader that asks again pays nothing.
+  // It is shared, so its type is read-only and no reader changes it (it is
+  // not frozen: freezing an array costs time for each of its elements on
+  // every append, and reading a frozen one is slower). A walk goes back from the head by
   // position (a parent is always stored before its child), so it copies and
   // indexes nothing of the other branches.
-  lineage(session_id: string): StoredEvent[] {
+  lineage(session_id: string): readonly StoredEvent[] {
     const head = this.db.query<{ head: string | null }, [string]>("SELECT head FROM sessions WHERE id = ?").get(session_id)?.head ?? null;
     if (!head) return [];
     const have = this.lines.get(session_id);
@@ -361,9 +364,9 @@ export class Store {
       out.push(all[at]!);
       want = all[at]!.parent;
     }
-    const events = Object.freeze(out.reverse()) as StoredEvent[];
-    this.lines.set(session_id, { head, events });
-    return events;
+    out.reverse();
+    this.lines.set(session_id, { head, events: out });
+    return out;
   }
 
   // Every event of the session, all branches, in seq order. With a cursor,

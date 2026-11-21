@@ -17,7 +17,7 @@ export const OWNER_WORDS_BYTES = 50_000;
 // A summary prepared ahead covers the history up to an earlier event; the
 // events between that one and the checkpoint stay verbatim after the summary.
 // Where the context starts: the last checkpoint, and the first event it keeps.
-export function checkpointAt(lineage: StoredEvent[]): { at: number; keepFrom: number } {
+export function checkpointAt(lineage: readonly StoredEvent[]): { at: number; keepFrom: number } {
   for (let i = lineage.length - 1; i >= 0; i--) {
     const e = lineage[i]!;
     if (e.kind !== "compaction") continue;
@@ -63,7 +63,7 @@ export const idleMinTokens = (limit: number) => Math.min(IDLE_MIN_TOKENS, Math.f
 // reported cache activity. Another model's reply used another route's cache, a
 // reply that reported none touched no cache, and a reply before the checkpoint
 // was on the history the checkpoint replaced. -1 when there is none.
-export function warmReplyAt(lineage: StoredEvent[], model: string): number {
+export function warmReplyAt(lineage: readonly StoredEvent[], model: string): number {
   const cp = checkpointAt(lineage).at;
   for (let i = lineage.length - 1; i > cp; i--) {
     const e = lineage[i]!;
@@ -77,7 +77,7 @@ export function warmReplyAt(lineage: StoredEvent[], model: string): number {
 // When a request last read or wrote this context's cache on `model`'s route:
 // that reply, or a summary prepared after it on the same prefix (preparedWarm).
 // 0 when nothing shows the cache was used.
-export function lastWarm(lineage: StoredEvent[], model: string, preparedMs = 0): number {
+export function lastWarm(lineage: readonly StoredEvent[], model: string, preparedMs = 0): number {
   const at = warmReplyAt(lineage, model);
   return Math.max(at < 0 ? 0 : lineage[at]!.ts, preparedMs);
 }
@@ -96,7 +96,7 @@ export function preparedWarm(data: { prepared_ms?: number; parts?: number; model
 // of this branch after its last checkpoint, and for idle compaction (which
 // covers the whole context) only notes came after it, such as a job notice its
 // own request stored. Those follow it verbatim when it is applied.
-export function preparedHolds(lineage: StoredEvent[], covered: string, idle: boolean, data?: { statements_done?: string[] }): boolean {
+export function preparedHolds(lineage: readonly StoredEvent[], covered: string, idle: boolean, data?: { statements_done?: string[] }): boolean {
   const at = lineage.findIndex((e) => e.id === covered);
   const cp = checkpointAt(lineage).at;
   if (at < 0 || at <= cp) return false;
@@ -209,7 +209,7 @@ const quoted = (s: string) => {
 // that retold a rule into something else must not stand as the rule); then
 // the story. A summary with no statements part (a handoff note) is kept as
 // written, the earlier statements before it.
-export function settle(lineage: StoredEvent[], text: string, stored: StoredStatement[] = []): Settled {
+export function settle(lineage: readonly StoredEvent[], text: string, stored: StoredStatement[] = []): Settled {
   // Legacy checkpoints did not distinguish requests from rules. Keep their
   // quotes as standing statements rather than letting the model retype them.
   const prior: Statement[] = stored.map((s) => ({ ...s, kind: s.kind === "request" ? "request" : "standing" }));
@@ -311,7 +311,7 @@ export function whose(e: StoredEvent): "owner" | "other" | null {
 
 // One side's messages since the last checkpoint (and those the last summary
 // kept), with their images and files.
-function entries(lineage: StoredEvent[], who: "owner" | "other"): Entry[] {
+function entries(lineage: readonly StoredEvent[], who: "owner" | "other"): Entry[] {
   let all: Entry[] = [];
   const at: number[] = []; // the index of each message's event
   lineage.forEach((e, i) => {
@@ -362,7 +362,7 @@ function fit(all: Entry[], budget: number): { kept: Entry[]; bytes: number; shor
 // peers) under their own heading, in what the owner's words left of the budget,
 // so they never push their words out. `*_shortened`: the one message of each
 // kept as its start and end, so the divider can say so.
-export function keptMessages(lineage: StoredEvent[], budget = OWNER_WORDS_BYTES): { owner_messages: string[]; owner_media?: PromptBlock[][]; owner_messages_shortened?: number; other_messages?: string[]; other_messages_shortened?: number } {
+export function keptMessages(lineage: readonly StoredEvent[], budget = OWNER_WORDS_BYTES): { owner_messages: string[]; owner_media?: PromptBlock[][]; owner_messages_shortened?: number; other_messages?: string[]; other_messages_shortened?: number } {
   const owner = fit(entries(lineage, "owner"), budget);
   const other = fit(entries(lineage, "other"), budget - owner.bytes);
   let media = 0;
@@ -389,7 +389,7 @@ export function keptMessages(lineage: StoredEvent[], budget = OWNER_WORDS_BYTES)
 // blocks of the summary before it. Claude Code re-injects invoked skills after
 // a compaction, capped; Keel keeps them whole, as it keeps the system prompt.
 const NESTED_BLOCK = /<nested-instructions path="([^"]+)">[\s\S]*?<\/nested-instructions>/g;
-export function fixedContext(lineage: StoredEvent[], prior: { key: string; text: string }[] = []): { key: string; text: string }[] {
+export function fixedContext(lineage: readonly StoredEvent[], prior: { key: string; text: string }[] = []): { key: string; text: string }[] {
   const out = new Map(prior.map((f) => [f.key, f.text]));
   const put = (key: string, text: string) => { out.delete(key); out.set(key, text); };
   const cp = checkpointAt(lineage);
@@ -414,7 +414,7 @@ export function fixedContext(lineage: StoredEvent[], prior: { key: string; text:
 // What a summary checkpoint stores besides how it was made: the settled
 // summary and its statements, the fixed context it carries, and the owner's
 // newest words in what the statements leave of the budget.
-export function checkpointData(lineage: StoredEvent[], summary: string, budget = OWNER_WORDS_BYTES) {
+export function checkpointData(lineage: readonly StoredEvent[], summary: string, budget = OWNER_WORDS_BYTES) {
   const cp = checkpointAt(lineage);
   const prev = cp.at >= 0 && lineage[cp.at]!.data.mode === "summary" ? lineage[cp.at]!.data : undefined;
   const settled = settle(lineage, summary, prev?.statements ?? []);
@@ -428,7 +428,7 @@ export function checkpointData(lineage: StoredEvent[], summary: string, budget =
 // verbatim and whole, whoever sent them (a typed prompt, speech, an agent's
 // report, a hook's), as Codex records the new input only after a pre-turn
 // compaction. Otherwise the whole branch.
-export function summarizable(lineage: StoredEvent[]): StoredEvent[] {
+export function summarizable(lineage: readonly StoredEvent[]): readonly StoredEvent[] {
   const start = lineage.findLastIndex((e) => e.kind === "turn_start");
   if (start < 0 || lineage.slice(start + 1).some((e) => e.kind === "assistant" || e.kind === "tool_result" || e.kind === "compaction")) return lineage;
   let k = start;
@@ -439,7 +439,7 @@ export function summarizable(lineage: StoredEvent[]): StoredEvent[] {
 // A summary would say something new: since the last one there is a reply, a
 // tool result or a prompt that is not the harness's own (a restart's continue,
 // a step-budget notice). Notes, turn marks and errors alone are not worth a request.
-export function worthSummarizing(upto: StoredEvent[]): boolean {
+export function worthSummarizing(upto: readonly StoredEvent[]): boolean {
   for (let i = upto.length - 1; i >= 0; i--) {
     const e = upto[i]!;
     if (e.kind === "compaction") return false;
@@ -541,7 +541,7 @@ export function setRatio(model: string, ratio: number) {
 // estimated whole. With `model` given, only a reply of that model counts as
 // measured: another model's tokens are not this one's, so after a switch the
 // context is estimated from its bytes until the new model has replied.
-export function contextTokens(lineage: StoredEvent[], model?: string): { used: number; measured: number; estimated: number; last?: Usage } {
+export function contextTokens(lineage: readonly StoredEvent[], model?: string): { used: number; measured: number; estimated: number; last?: Usage } {
   const cp = checkpointAt(lineage);
   const per = bytesPerToken(model);
   let measured = 0;
@@ -566,7 +566,7 @@ export function contextTokens(lineage: StoredEvent[], model?: string): { used: n
 
 // The bytes of the context as the next request carries it (the checkpoint's
 // summary and everything after it), in the estimate's own measure.
-export function contextBytes(lineage: StoredEvent[], model?: string): number {
+export function contextBytes(lineage: readonly StoredEvent[], model?: string): number {
   const cp = checkpointAt(lineage);
   const per = bytesPerToken(model);
   let bytes = 0;

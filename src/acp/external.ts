@@ -89,7 +89,7 @@ export function resultOf(tc: Json): ToolResultBlock {
 }
 
 // The owner's words since the agent last answered: the user events after the last turn_end.
-export function promptOf(events: StoredEvent[]): Json[] {
+export function promptOf(events: readonly StoredEvent[]): Json[] {
   let from = events.length;
   while (from > 0 && events[from - 1]!.kind !== "turn_end") from--;
   const blocks: Json[] = [];
