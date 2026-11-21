@@ -300,6 +300,13 @@ export class Engine {
     return !!q.anchor && !this.lineage(q.session_id).some((e) => e.id === q.anchor);
   }
 
+  // The steers the running turn takes in: those written on the branch it runs
+  // on. One written on another branch waits like any queued prompt of that
+  // branch: the queue is held at the turn's end until the owner says where it goes.
+  private liveSteers(id: string): QueueItem[] {
+    return this.store.queue(id).filter((q) => q.steer && !this.offBranch(q));
+  }
+
   private offBranchError() {
     return Object.assign(new Error("this prompt was queued on another branch: send it here, or go back to its branch"), { status: 409, code: "off_branch" });
   }
@@ -821,7 +828,7 @@ export class Engine {
       }
       for (;;) {
         // Steers sent while the last step ran join here, after its tool results.
-        for (const q of this.store.queue(id).filter((q) => q.steer)) {
+        for (const q of this.liveSteers(id)) {
           if (!this.store.dequeue(q.id)) continue;
           this.append(id, "user", { text: q.text, images: q.images, origin: "steer", queue_id: q.id, ...q.meta });
           this.emitQueue(id);
@@ -941,7 +948,7 @@ export class Engine {
         if (res.stop === "pause_turn") continue; // a server tool paused; the same request goes on
         if (res.stop === "tool_use" && uses.length) continue;
         // The model is done, but a steer arrived during its last reply: go on.
-        if (this.store.queue(id).some((q) => q.steer)) continue;
+        if (this.liveSteers(id).length) continue;
         reason = res.stop;
         break;
       }
