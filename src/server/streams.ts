@@ -28,8 +28,11 @@ export const FEED_LIMIT = 4 * 1024 * 1024;
 // A live feed for one reader with that bound. `send` is false once the feed
 // has ended: closed by the reader, or cut because a frame did not fit behind
 // what already waits (`onEnd(true)`, after `last` went out as the final bytes).
-export function boundedFeed(onEnd: (stalled: boolean) => void, opts: { limit?: number; last?: Uint8Array } = {}) {
-  const limit = opts.limit ?? FEED_LIMIT;
+// `open` is what the feed starts with (a snapshot): it is queued before the
+// reader has pulled anything and can be any size, so it is outside the bound.
+export function boundedFeed(onEnd: (stalled: boolean) => void, opts: { limit?: number; last?: Uint8Array; open?: Uint8Array[] } = {}) {
+  const open = opts.open ?? [];
+  const bound = (opts.limit ?? FEED_LIMIT) + open.reduce((n, b) => n + b.byteLength, 0);
   let ctl!: ReadableStreamDefaultController<Uint8Array>;
   let ended = false;
   let forget = () => {};
@@ -43,19 +46,20 @@ export function boundedFeed(onEnd: (stalled: boolean) => void, opts: { limit?: n
     } catch {}
     onEnd(stalled);
   };
-  const stream = new ReadableStream<Uint8Array>({ start(c) { ctl = c; }, cancel: () => end() }, { highWaterMark: limit, size: (c) => c?.byteLength ?? 0 });
+  const stream = new ReadableStream<Uint8Array>({ start(c) { ctl = c; for (const b of open) c.enqueue(b); }, cancel: () => end() }, { highWaterMark: bound, size: (c) => c?.byteLength ?? 0 });
   forget = holdStream({ close: () => end() });
   return {
     stream,
+    bound,
     ended: () => ended,
     // Bytes that wait for the reader inside this process.
-    pending: () => (ended ? 0 : Math.max(0, limit - (ctl.desiredSize ?? limit))),
+    pending: () => (ended ? 0 : Math.max(0, bound - (ctl.desiredSize ?? bound))),
     send(bytes: Uint8Array): boolean {
       if (ended) return false;
       const room = ctl.desiredSize;
       if (room === null) { end(); return false; }
       // One frame larger than the bound still goes to a reader that keeps up.
-      if (bytes.byteLength > room && room < limit) { end(true); return false; }
+      if (bytes.byteLength > room && room < bound) { end(true); return false; }
       try { ctl.enqueue(bytes); } catch { end(); return false; }
       return true;
     },

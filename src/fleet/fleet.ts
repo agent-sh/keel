@@ -32,7 +32,8 @@ if (!g.__keelTunnelsExit) {
 }
 
 const RELAY_MAX_BACKOFF = 60_000; // a lost relay is reopened after 1, 2, 4 s ... up to a minute
-const RELAY_SILENCE_MS = 45_000; // the far daemon pings every 15 s: three missed pings and the stream is dead
+const RELAY_SILENCE_MS = 45_000; // the far daemon pings every 5 s: nine missed pings and the stream is dead
+const RELAY_STEADY_MS = 30_000; // a stream that lived this long was being read: losing it starts the backoff over
 const FACTS_FRESH_MS = 60_000; // load1 averages a minute: a queue limit older than that is read again
 
 export class Fleet {
@@ -429,10 +430,14 @@ export class Fleet {
     if (this.stopped) return; // a check that ended after a hot reload replaced this fleet opens nothing
     const relay: Relay = { abort: new AbortController(), sessions: prev?.sessions ?? new Map(), live: false, stale: !!prev?.sessions.size, retry: prev?.retry ?? 0 };
     this.relays.set(id, relay);
+    let opened = 0;
     const lost = (reason: string) => {
       if (relay.abort.signal.aborted && this.relays.get(id) !== relay) return;
       relay.live = false;
       relay.stale = true;
+      // A stream that opens and is lost at once (a reader the far daemon cuts
+      // again and again) keeps backing off; one that held starts over.
+      if (opened && Date.now() - opened >= RELAY_STEADY_MS) relay.retry = 0;
       const wait = Math.min(1000 * 2 ** relay.retry++, RELAY_MAX_BACKOFF);
       relay.retryAt = Date.now() + wait;
       this.links.set(id, { ...this.links.get(id), state: "offline", reason, retry_at_ms: relay.retryAt });
@@ -445,7 +450,7 @@ export class Fleet {
       const res = await linkFetch(p, "/api/fleet/stream", { signal: relay.abort.signal, timeout: 2 ** 31 - 1 });
       if (!res.ok || !res.body) throw new LinkError(`the stream answered HTTP ${res.status}`);
       relay.live = true;
-      relay.retry = 0;
+      opened = Date.now();
       relay.retryAt = undefined;
       const dec = new TextDecoder();
       let buf = "";

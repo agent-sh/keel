@@ -190,7 +190,8 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
   // for the slowest one, the bound, and the times one was cut as stalled.
   const pairsView = () => f.pairs().map((p) => {
     const r = readers[p.daemon_id];
-    return { ...p, stream: { readers: r?.feeds.size ?? 0, pending_bytes: Math.max(0, ...[...(r?.feeds ?? [])].map((x) => x.pending())), limit_bytes: FEED_LIMIT, stalled: r?.stalled ?? 0, stalled_ms: r?.stalled_ms } };
+    const feeds = [...(r?.feeds ?? [])];
+    return { ...p, stream: { readers: feeds.length, pending_bytes: Math.max(0, ...feeds.map((x) => x.pending())), limit_bytes: Math.max(FEED_LIMIT, ...feeds.map((x) => x.bound)), stalled: r?.stalled ?? 0, stalled_ms: r?.stalled_ms } };
   });
 
   const machineView = (id: string) => {
@@ -250,6 +251,9 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       DELETE: (req: any) => {
         if (!f.keyOf(req.params.id)) return bad("no such pairing", 404);
         f.unpair(req.params.id);
+        // Its streams end with the pairing, and their record goes with them.
+        for (const feed of readers[req.params.id]?.feeds ?? []) feed.end();
+        delete readers[req.params.id];
         f.emitMachines();
         return json({ pairs: pairsView() });
       },
@@ -631,16 +635,19 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         let ping: Timer | undefined;
         const enc = new TextEncoder();
         const mine = (readers[c.daemonId] ??= { feeds: new Set(), stalled: 0 });
+        const frame = (x: unknown) => enc.encode(`data: ${JSON.stringify(x)}\n\n`);
+        // The opening frames are as large as this daemon's session list: they never cut a reader.
         const feed = boundedFeed((stalled) => {
           off();
           clearInterval(ping);
           mine.feeds.delete(feed);
           if (stalled) { mine.stalled++; mine.stalled_ms = Date.now(); }
-        }, { last: enc.encode(": stalled\n\n") });
+        }, {
+          last: enc.encode(": stalled\n\n"),
+          open: [frame({ t: "snapshot", sessions: store.sessions() }), frame({ t: "questions", pending: allPendingQuestions(), rev: bus.rev() })],
+        });
         mine.feeds.add(feed);
-        const send = (x: unknown) => feed.send(enc.encode(`data: ${JSON.stringify(x)}\n\n`));
-        send({ t: "snapshot", sessions: store.sessions() });
-        send({ t: "questions", pending: allPendingQuestions(), rev: bus.rev() });
+        const send = (x: unknown) => feed.send(frame(x));
         off = bus.on((fr) => {
           if (fr.t === "feature" && fr.name === "fleet_outbox") { if (fr.data?.daemon_id === c.daemonId) send(fr); return; }
           if (fr.t === "error" || (fr.t === "feature" && fr.name.startsWith("fleet_"))) return; // never relay a relay

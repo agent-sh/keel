@@ -111,6 +111,75 @@ test("two first requests to a machine pair once and hold the same key", async ()
   }
 });
 
+test("the relay feed: its opening frames are outside the bound, what waits after them is not", async () => {
+  const { boundedFeed } = await import("../server/streams.ts");
+  const ends: boolean[] = [];
+  const bytes = (n: number) => new Uint8Array(n);
+  // A snapshot larger than the bound, then the questions frame: neither cuts the reader.
+  const feed = boundedFeed((stalled) => ends.push(stalled), { limit: 100, open: [bytes(250), bytes(40)], last: bytes(3) });
+  expect(feed.ended()).toBe(false);
+  expect(feed.bound).toBe(390);
+  expect(feed.send(bytes(60))).toBe(true);
+  expect(feed.pending()).toBe(350);
+  // Nothing was read: the next frame does not fit behind what waits.
+  expect(feed.send(bytes(60))).toBe(false);
+  expect(ends).toEqual([true]);
+  // A reader that keeps up is never cut, whatever a frame's size.
+  const live = boundedFeed((stalled) => ends.push(stalled), { limit: 100 });
+  const reader = live.stream.getReader();
+  for (const n of [500, 20, 700]) {
+    expect(live.send(bytes(n))).toBe(true);
+    expect((await reader.read()).value!.byteLength).toBe(n);
+  }
+  live.end();
+  expect(ends).toEqual([true, false]);
+});
+
+test("the relay: a stream that is lost as soon as it opens keeps backing off", async () => {
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Fleet } = await import("./fleet.ts");
+  const key = "k", daemon_id = "far";
+  let streams = 0;
+  const srv = Bun.serve({
+    port: 0, hostname: "127.0.0.1",
+    fetch(req) {
+      const path = new URL(req.url).pathname;
+      if (path === "/api/fleet/pair") return Response.json({ daemon_id, key });
+      const headers = { "x-keel-proof": proof(key, req.headers.get("x-keel-nonce")!, daemon_id) };
+      if (path === "/api/fleet/identity") return Response.json({ daemon_id, server_name: "far", version: "t" }, { headers });
+      if (path === "/api/fleet/facts") return Response.json({ hostname: "far", os: "linux", arch: "x64", cpus: 8, load1: 0, mem_total_mb: 1, tools: [], sandbox: false, keel_version: "t" }, { headers });
+      // The far daemon cuts this reader every time, right after its snapshot.
+      if (path === "/api/fleet/stream") { streams++; return new Response(`data: ${JSON.stringify({ t: "snapshot", sessions: [] })}\n\n: stalled\n\n`, { headers }); }
+      return Response.json({}, { status: 404, headers });
+    },
+  });
+  const store = new Store(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "keel-relay-")));
+  const bus = new Bus();
+  const f = new Fleet(store, bus, { capture: (_s: string, e: unknown) => { throw e; } } as any);
+  try {
+    const m = f.add({ name: "far box", source: "daemon", daemon_url: `http://127.0.0.1:${srv.port}` });
+    // The wait each loss schedules, read when the fleet says its machines changed.
+    const waits = new Map<number, number>();
+    bus.on((fr) => {
+      const at = fr.t === "feature" && fr.name === "fleet_machines" ? f.view(f.row(m.id)!).daemon.retry_at_ms : undefined;
+      if (at && !waits.has(at)) waits.set(at, at - Date.now());
+    });
+    await f.check(m.id);
+    for (let i = 0; i < 400 && waits.size < 2; i++) await Bun.sleep(10);
+    const [first, second] = [...waits.values()];
+    expect(streams).toBeGreaterThanOrEqual(2);
+    expect(first).toBeGreaterThan(800);
+    expect(first).toBeLessThanOrEqual(1000);
+    expect(second).toBeGreaterThan(1800); // 2 s, not 1 s again
+    expect(f.view(f.row(m.id)!).daemon.reason).toContain("fell too far behind");
+  } finally {
+    f.stop();
+    srv.stop(true);
+    store.db.close();
+  }
+});
+
 // A scratch daemon's messages: its own store, no engine and no link.
 async function scratchDaemon(id: string) {
   const { Store } = await import("../core/store.ts");
