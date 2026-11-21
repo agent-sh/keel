@@ -14,6 +14,12 @@
 // resample families, guards read one value per family, and the sessions per
 // arm cap counts families. The key is stored with the assignment.
 //
+// A stop is final. The report the decision was read from is stored with it
+// (the counts, the intervals, the guards, the sessions per arm), and a
+// stopped experiment is read from that copy: a turn that started before the
+// stop and ended after it, a rating changed later or a late upload does not
+// revise what was decided.
+//
 // An arm is a configuration difference for the life of its experiment, never
 // a kept switch: the decision names what the losing side was, so its code
 // path is removed.
@@ -73,6 +79,7 @@ CREATE TABLE IF NOT EXISTS experiment_sessions (session_id TEXT PRIMARY KEY, exp
 CREATE INDEX IF NOT EXISTS experiment_sessions_exp ON experiment_sessions(exp_id);
 CREATE TABLE IF NOT EXISTS experiment_runs (id INTEGER PRIMARY KEY, exp_id TEXT NOT NULL, arm TEXT NOT NULL, task TEXT, rep INTEGER, ts INTEGER NOT NULL, metrics TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS experiment_runs_exp ON experiment_runs(exp_id);
+CREATE TABLE IF NOT EXISTS experiment_reports (exp_id TEXT PRIMARY KEY, ts INTEGER NOT NULL, data TEXT NOT NULL);
 `;
 export function experimentTables(store: Store) {
   store.migrate(SCHEMA);
@@ -177,7 +184,10 @@ export const worse = (m: Metric, diff: number) => (METRICS[m].better === "lower"
 export type ArmReport = { arm: string; units: number; clusters: number; metrics: Partial<Record<Metric, Interval>> };
 export type Effect = { arm: string; metric: Metric; diff: Interval & { significant: boolean; relative: number | null }; better: boolean | null };
 // A guard's `n`: the independent samples it read, the control's and the arm's.
-export type Report = { mode: Experiment["mode"]; unit: string; arms: ArmReport[]; effects: Effect[]; guards: { arm: string; metric: Metric; lr: number; reject: boolean; diff: number; worse: boolean; n: [number, number] }[]; decision: Decision };
+// `final_ms`: when the experiment stopped and this report was frozen.
+export type Report = { mode: Experiment["mode"]; unit: string; arms: ArmReport[]; effects: Effect[]; guards: { arm: string; metric: Metric; lr: number; reject: boolean; diff: number; worse: boolean; n: [number, number] }[]; decision: Decision; final_ms?: number };
+// What a stopped experiment is read from.
+export type Final = { report: Report; sessions: { arm: string; n: number }[]; runs: number };
 
 type Row = { arm: string; cluster: string; stratum?: string; m: Partial<Record<Metric, number>> };
 
@@ -333,6 +343,7 @@ export class Experiments {
     this.store.db.transaction(() => {
       this.store.db.query("DELETE FROM experiments WHERE id = ?").run(id);
       this.store.db.query("DELETE FROM experiment_runs WHERE exp_id = ?").run(id);
+      this.store.db.query("DELETE FROM experiment_reports WHERE exp_id = ?").run(id);
     })();
   }
 
@@ -356,8 +367,12 @@ export class Experiments {
   stop(id: string, reason = "stopped by the owner"): Experiment {
     const e = this.must(id);
     if (e.state !== "running") throw Object.assign(new Error(`it is ${e.state}`), { status: 409 });
-    const r = this.report(e);
-    const out = this.save({ ...e, state: "stopped", stopped_ms: Date.now(), stop_reason: reason, decision: r.decision });
+    const stopped_ms = Date.now();
+    const r = { ...report(e, this.rows(e, stopped_ms)), final_ms: stopped_ms };
+    const out = this.store.db.transaction(() => {
+      this.freeze(e, { report: r, sessions: this.sessions(e), runs: this.runs(e) });
+      return this.save({ ...e, state: "stopped", stopped_ms, stop_reason: reason, decision: r.decision });
+    })();
     try { this.onStop(out); } catch { /* the stop stands; the caller's notice is best effort */ }
     return out;
   }
@@ -395,6 +410,7 @@ export class Experiments {
 
   addRuns(id: string, runs: { arm: string; task?: string; rep?: number; metrics: Record<string, number> }[]) {
     const e = this.must(id);
+    if (e.state !== "running") throw Object.assign(new Error(e.state === "stopped" ? "it is stopped: its report is final" : "it is a draft: start it first"), { status: 409 });
     const names = new Set(e.arms.map((a) => a.name));
     for (const r of runs) {
       if (!names.has(r.arm)) throw bad(`no arm ${r.arm}`);
@@ -405,21 +421,47 @@ export class Experiments {
     return runs.length;
   }
 
-  rows(e: Experiment): Row[] {
+  private freeze(e: Experiment, f: Final) {
+    this.store.db.query("INSERT OR IGNORE INTO experiment_reports (exp_id, ts, data) VALUES (?, ?, ?)").run(e.id, f.report.final_ms ?? Date.now(), JSON.stringify(f));
+  }
+
+  // A stopped experiment's frozen evidence. One stopped before reports were
+  // kept is frozen at its first read, from the turns up to its stop.
+  final(e: Experiment): Final | undefined {
+    if (e.state !== "stopped") return undefined;
+    const q = this.store.db.query<{ data: string }, [string]>("SELECT data FROM experiment_reports WHERE exp_id = ?");
+    const kept = q.get(e.id);
+    if (kept) return JSON.parse(kept.data);
+    const r = report(e, this.rows(e, e.stopped_ms));
+    this.freeze(e, { report: { ...r, decision: e.decision ?? r.decision, final_ms: e.stopped_ms }, sessions: this.sessions(e), runs: this.runs(e) });
+    return JSON.parse(q.get(e.id)!.data);
+  }
+
+  runs(e: Experiment): number {
+    return this.store.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM experiment_runs WHERE exp_id = ?").get(e.id)!.n;
+  }
+
+  // The experiment with its counts, as the list and the detail show it.
+  summary(e: Experiment) {
+    const f = this.final(e);
+    return { ...e, sessions: f?.sessions ?? this.sessions(e), runs: f?.runs ?? this.runs(e) };
+  }
+
+  rows(e: Experiment, until = Date.now()): Row[] {
     if (e.mode === "offline") {
       return this.store.db.query<{ id: number; arm: string; task: string | null; metrics: string }, [string]>("SELECT id, arm, task, metrics FROM experiment_runs WHERE exp_id = ?").all(e.id)
         .map((r) => ({ arm: r.arm, cluster: `run-${r.id}`, stratum: r.task ?? undefined, m: JSON.parse(r.metrics) }));
     }
     // Turns of the experiment's sessions while it ran, each in its family's
     // cluster and arm (the assignment, not the row's own tag).
-    const until = e.stopped_ms ?? Date.now();
     return this.store.db.query<any, [string, number, number]>(
       `SELECT t.*, x.arm AS family_arm, COALESCE(x.root, x.session_id) AS family FROM telemetry_turns t JOIN experiment_sessions x ON x.session_id = t.session_id WHERE x.exp_id = ? AND t.ts >= ? AND t.ts <= ?`).all(e.id, e.started_ms ?? 0, until)
       .map((t) => ({ arm: t.family_arm, cluster: t.family, m: turnMetrics(t) }));
   }
 
-  report(e: Experiment) {
-    return report(e, this.rows(e));
+  // What the data says now; for a stopped experiment, what it said at the stop.
+  report(e: Experiment): Report {
+    return this.final(e)?.report ?? report(e, this.rows(e));
   }
 
   // Session families per arm: a root with its subagents is one.

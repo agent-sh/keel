@@ -70,6 +70,13 @@ test("experiments: create, run live, stop and decide; an offline report", async 
   const after = (await (await request.post("/api/sessions", { data: { model: STAND_IN, title: `exp ${tag} after`, text: "Say hello." } })).json()).session;
   await expect.poll(async () => (await (await request.get(`/api/sessions/${after.id}`)).json()).session.settings.last_end, { timeout: 30_000 }).toBeTruthy();
   expect((await (await request.get(`/api/experiments/${id}`)).json()).experiment.sessions.reduce((n: number, s: any) => n + s.n, 0)).toBe(made.length);
+  // The report is frozen with the decision: a reply rated down after the stop changes the telemetry, not the report.
+  const final = await (await request.get(`/api/experiments/${id}`)).json();
+  const reply = (await (await request.get(`/api/sessions/${made[0]}`)).json()).events.findLast((e: any) => e.kind === "assistant");
+  expect((await request.post("/api/features/rating", { data: { event_id: reply.id, value: -1 } })).ok()).toBe(true);
+  expect(await (await request.get(`/api/experiments/${id}`)).json()).toEqual(final);
+  expect(final.report.arms.reduce((n: number, a: any) => n + a.units, 0)).toBe(made.length);
+  await expect(detail.getByTestId("experiment-report")).toContainText("final, frozen when it stopped");
   await shoot(page, "experiments-03-live-decided");
 
   // Offline: the runner uploads one row per run; the report judges them.

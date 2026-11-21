@@ -27,6 +27,7 @@ type Report = {
   effects: { arm: string; metric: Metric; diff: Interval & { significant: boolean; relative: number | null }; better: boolean | null }[];
   guards: { arm: string; metric: Metric; lr: number; reject: boolean; diff: number; worse: boolean }[];
   decision: Decision;
+  final_ms?: number; // a stopped experiment: when its report was frozen
 };
 type List = { experiments: Experiment[]; templates: Template[]; metrics: Record<Metric, MetricInfo> };
 
@@ -191,7 +192,7 @@ function Detail({ id, metrics, onChange }: { id: string; metrics: Record<Metric,
 
       <Verdict d={e.decision ?? r.decision} final={!!e.decision} />
 
-      <Panel title="Arms" hint={`each arm against ${control}; unit: ${r.unit}; 95% BCa bootstrap intervals`} testid="experiment-report">
+      <Panel title="Arms" hint={`${r.final_ms ? "final, frozen when it stopped; " : ""}each arm against ${control}; unit: ${r.unit}; 95% BCa bootstrap intervals`} testid="experiment-report">
         <div className="-mx-4 overflow-x-auto">
           <table className="w-full text-ui">
             <thead>

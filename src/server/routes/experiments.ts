@@ -3,10 +3,11 @@
 // GET    /api/experiments                 every experiment, the templates and the metrics
 // POST   /api/experiments                 { template?, name, hypothesis, mode, arms, primary, guards, stop }
 // GET    /api/experiments/:id             the experiment, its report and its sessions per arm
+//                                         (a stopped one: the report frozen at its stop)
 // PATCH  /api/experiments/:id             a draft's fields
 // DELETE /api/experiments/:id             a draft or a stopped one
 // POST   /api/experiments/:id/start       live: new sessions get arms from now on
-// POST   /api/experiments/:id/stop        ends it and records the decision
+// POST   /api/experiments/:id/stop        ends it and records the decision with its report
 // POST   /api/experiments/:id/runs        { runs: [{ arm, task, rep, metrics }] } from the offline runner
 // GET    /api/features?period=|since_ms&until_ms   each feature's turns, savings, trend, regression state
 // POST   /api/features/check              the regression check now (it also runs hourly)
@@ -48,7 +49,7 @@ export const experimentRoutes: RouteModule = ({ store, errors }) => {
     }
   };
   const body = async (req: Request) => (await req.json().catch(() => null)) ?? {};
-  const summary = (e: Experiment) => ({ ...e, sessions: x.sessions(e), runs: store.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM experiment_runs WHERE exp_id = ?").get(e.id)!.n });
+  const summary = (e: Experiment) => x.summary(e);
   type P = Request & { params: { id: string } };
 
   return {

@@ -5,22 +5,35 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
+import { ErrorTracker } from "../core/errors.ts";
 import { Store } from "../core/store.ts";
+import { experimentRoutes, experiments, outcomes } from "../server/routes/experiments.ts";
 import { armOf, Experiments, type Experiment } from "./experiments.ts";
-import { Outcomes } from "./outcomes.ts";
+import type { Outcomes } from "./outcomes.ts";
 import { assignArm } from "./stats.ts";
 import { Telemetry } from "./telemetry.ts";
 
-// A daemon's experiment wiring over a state folder; `open` again is a restart.
+// A daemon's experiment wiring over a state folder, routes included; `open`
+// again is a restart. `call` is a request to its API.
 function daemon() {
   const dir = mkdtempSync(join(tmpdir(), "keel-experiments-"));
   const open = () => {
-    const store = new Store(dir);
+    const store = new Store(dir), bus = new Bus();
     // Subagent sessions name their parent (the agents module's column).
     if (!store.columnExists("sessions", "parent_id")) store.migrate("ALTER TABLE sessions ADD COLUMN parent_id TEXT");
-    new Telemetry(store, new Bus());
-    const x = new Experiments(store);
-    return { store, x, o: new Outcomes(store, x) };
+    new Telemetry(store, bus);
+    const routes = experimentRoutes({ store, errors: new ErrorTracker(store, bus) } as any);
+    const call = async (method: string, path: string, body?: unknown) => {
+      for (const [pattern, handlers] of Object.entries(routes)) {
+        const m = new RegExp(`^${pattern.replace(":id", "([^/]+)")}$`).exec(path);
+        if (!m || !handlers[method]) continue;
+        const req = new Request(`http://keel${path}`, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+        const res: Response = await handlers[method](Object.assign(req, { params: { id: m[1] } }));
+        return { status: res.status, body: await res.json() };
+      }
+      throw new Error(`no route ${method} ${path}`);
+    };
+    return { store, x: experiments!, o: outcomes!, call };
   };
   return { open, close: () => rmSync(dir, { recursive: true, force: true }) };
 }
@@ -86,5 +99,73 @@ test("a session family is one randomized sample, whatever its subagents ran", ()
     turn(store, second);
     x.check(second);
     expect(x.get(e.id)).toMatchObject({ state: "stopped", stop_reason: "reached 2 sessions per arm" });
+  } finally { d.close(); }
+});
+
+// A turn through the engine's own events and the turn rollup. `held` leaves
+// it open (started, not ended); `release` ends one.
+function start(store: Store, sessionId: string) {
+  return store.append(sessionId, "turn_start", { model: "p:m" }).id;
+}
+function release(store: Store, o: Outcomes, x: Experiments, sessionId: string, cost: number) {
+  store.append(sessionId, "assistant", { blocks: [{ type: "text", text: "done" }], model: "p:m", usage: { input: 100, output: 10, cache_read: 0, cache_write: 0, cost }, stop: "end_turn" });
+  const end = store.append(sessionId, "turn_end", { reason: "end_turn", ms: 1000, usage: { input: 100, output: 10, cache_read: 0, cache_write: 0, cost } });
+  o.recordTurn(store.session(sessionId)!, "end_turn");
+  x.check(sessionId);
+  return end.id;
+}
+
+test("a stopped experiment's report is frozen with its decision", async () => {
+  const d = daemon();
+  try {
+    let { store, x, o, call } = d.open();
+    const made = (await call("POST", "/api/experiments", { template: "effort", name: "frozen", primary: "thumbs_down" })).body.experiment as Experiment;
+    await call("POST", `/api/experiments/${made.id}/start`);
+    const e = x.get(made.id)!;
+    const ends: string[] = [];
+    for (const arm of ["default", "low", "default", "low", "default", "low"]) {
+      const s = root(store, x, e, arm);
+      start(store, s);
+      ends.push(release(store, o, x, s, arm === "low" ? 0.004 : 0.01));
+    }
+    // A turn that started before the stop and is still running at it.
+    const late = root(store, x, e, "low");
+    start(store, late);
+
+    expect((await call("POST", `/api/experiments/${e.id}/stop`)).status).toBe(200);
+    const read = async () => (await call("GET", `/api/experiments/${e.id}`)).body;
+    const final = await read();
+    expect(final.experiment).toMatchObject({ state: "stopped", decision: final.report.decision });
+    expect(final.report.arms.map((a: any) => [a.arm, a.units, a.clusters])).toEqual([["default", 3, 3], ["low", 3, 3]]);
+    expect(final.report.final_ms).toBe(final.experiment.stopped_ms);
+
+    // The held turn ends, a subagent of an assigned session runs, and an earlier reply is rated down.
+    release(store, o, x, late, 5);
+    const sub = child(store, x, late);
+    start(store, sub);
+    release(store, o, x, sub, 5);
+    expect((await call("POST", "/api/features/rating", { event_id: ends[1], value: -1 })).status).toBe(200);
+    // The telemetry did change; the report did not.
+    expect(store.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM telemetry_turns WHERE exp_id = ?").get(e.id)!.n).toBe(8);
+    expect(store.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM telemetry_turns WHERE rating = -1").get()!.n).toBe(1);
+    expect(await read()).toEqual(final);
+    expect(await read()).toEqual(final);
+    // The list shows the same counts.
+    expect((await call("GET", "/api/experiments")).body.experiments.find((r: any) => r.id === e.id)).toEqual(final.experiment);
+
+    // After a restart too.
+    ({ store, x, o, call } = d.open());
+    expect((await call("GET", `/api/experiments/${e.id}`)).body).toEqual(final);
+
+    // An offline run uploaded after the stop is refused, not counted.
+    const off = (await call("POST", "/api/experiments", { template: "readers", name: "late upload" })).body.experiment as Experiment;
+    const run = { arm: "readers on", task: "readlog", rep: 1, metrics: { cost_usd: 0.01, ok: 1 } };
+    await call("POST", `/api/experiments/${off.id}/start`);
+    expect((await call("POST", `/api/experiments/${off.id}/runs`, { runs: [run] })).status).toBe(201);
+    await call("POST", `/api/experiments/${off.id}/stop`);
+    const offFinal = (await call("GET", `/api/experiments/${off.id}`)).body;
+    expect((await call("POST", `/api/experiments/${off.id}/runs`, { runs: [{ ...run, rep: 2 }] })).status).toBe(409);
+    expect((await call("GET", `/api/experiments/${off.id}`)).body).toEqual(offFinal);
+    expect(offFinal.experiment.runs).toBe(1);
   } finally { d.close(); }
 });
