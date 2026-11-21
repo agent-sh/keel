@@ -296,8 +296,8 @@ test("an error opens the exact span that failed", async ({ page, request }) => {
   await expect(detail).toContainText(attempts[1].span_id);
   await expect(detail).not.toContainText(attempts[0].span_id);
   await expect(detail).toBeInViewport();
-  // One row is picked, the third, and it says which attempt it is. It is lifted
-  // off the panel: no other row has its background.
+  // One row is picked, the third, and it says which attempt it is. It stands
+  // off the panel: no other row has its background, and the panel does not either.
   await expect(picked).toHaveCount(1);
   await expect(picked).toContainText("attempt 2");
   await expect(view.getByTestId("span-attempt")).toHaveText(["attempt 1", "attempt 2", "attempt 3"]);
@@ -305,6 +305,13 @@ test("an error opens the exact span that failed", async ({ page, request }) => {
   const grounds = await view.getByTestId("span-row").evaluateAll((rows) => rows.map((r) => getComputedStyle(r).backgroundColor));
   expect(grounds.findIndex((g) => g !== grounds[0])).toBe(2);
   expect(new Set(grounds).size).toBe(2);
+  const [ground, under] = await picked.evaluate((r) => {
+    const clear = (c: string) => c === "transparent" || /, 0\)$/.test(c) || / \/ 0\)$/.test(c);
+    let up: Element | null = r.parentElement;
+    while (up && clear(getComputedStyle(up).backgroundColor)) up = up.parentElement;
+    return [getComputedStyle(r).backgroundColor, up ? getComputedStyle(up).backgroundColor : ""];
+  });
+  expect(ground).not.toBe(under);
   // And it carries the ink bar at its edge.
   expect(await picked.evaluate((r) => { const bar = getComputedStyle(r, "::before"); return [bar.content !== "none", bar.position, bar.backgroundColor !== "rgba(0, 0, 0, 0)"]; })).toEqual([true, "absolute", true]);
   await shoot(page, "observe-09-exact-attempt");

@@ -358,7 +358,9 @@ test.describe("a crowded toolbar", () => {
       await expect(menu.getByTestId("permission-mode")).toBeInViewport({ ratio: 1 });
       const modes = page.getByTestId("mode-ask");
       await expect(modes).toBeInViewport({ ratio: 1 });
-      expect((await modes.boundingBox())!.y).toBeGreaterThan((await menu.getByTestId("permission-menu").boundingBox())!.y);
+      // The modes open beside their row, below it or above it when there is no room below, never over it.
+      const [list, row] = [(await modes.boundingBox())!, (await menu.getByTestId("permission-menu").boundingBox())!];
+      expect(list.y >= row.y || list.y + list.height <= row.y + 1).toBe(true);
       await page.getByTestId("mode-auto-edits").tap();
       await expect(modes).toBeVisible();
       await expect(menu.getByTestId("permission-mode")).toHaveText("Auto edits");

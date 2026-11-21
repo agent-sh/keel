@@ -11,8 +11,8 @@ import { ago, cn, when } from "../lib/utils.ts";
 
 const tone = (s: Span["status"]) => ({ ok: "bg-ok", error: "bg-danger", running: "bg-accent", interrupted: "bg-line-strong" })[s];
 const btn = "flex h-7 items-center gap-1.5 rounded-md border border-line px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50";
-// The picked row of a list: lifted off the panel, with an ink bar at its edge. Read at a glance in both themes.
-const picked = "relative bg-raised hover:bg-raised before:absolute before:inset-y-1 before:left-0 before:w-0.5 before:rounded-full before:bg-accent";
+// The picked row of a list: set into the panel (the panel itself is the raised surface), with an ink bar at its edge. Read at a glance in both themes.
+const picked = "relative bg-sunken hover:bg-sunken before:absolute before:inset-y-1 before:left-0 before:w-0.5 before:rounded-full before:bg-accent";
 const label = (s: Span) => (s.kind === "turn" ? `${s.attrs.parent_session ? "Subagent turn" : "Turn"} on ${String(s.attrs.model ?? "").split(":").pop()}` : s.kind === "tool" ? s.attrs.tool : s.attrs.replay_of ? `Replay on ${s.attrs.route}` : s.attrs.model);
 
 export function TracesPanel({ session }: { session: Session }) {
@@ -173,7 +173,7 @@ function Trace({ id, span, ends, onOpen, onReplayed }: { id: string; span: strin
               <span className="truncate">{label(s)}</span>
               {retried && s.kind === "request" && s.attrs.attempt && <span className="shrink-0 font-normal tabular-nums text-faint" data-testid="span-attempt">attempt {s.attrs.attempt}</span>}
             </span>
-            <span className={cn("relative h-2.5 rounded-xs", sel === s.span_id ? "bg-sunken" : "bg-sunken")}>
+            <span className={cn("relative h-2.5 rounded-xs", sel === s.span_id ? "bg-line" : "bg-sunken")}>
               <span
                 className={cn("absolute inset-y-0 rounded-xs", tone(s.status), s.kind === "turn" && "opacity-40")}
                 style={{ left: `${((s.start_ms - t0) / total) * 100}%`, width: `max(2px, ${(spanMs(s) / total) * 100}%)` }}
