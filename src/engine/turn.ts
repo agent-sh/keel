@@ -322,6 +322,9 @@ export class Engine {
     // Each model's bytes a token, learned from what its provider counted.
     store.migrate("CREATE TABLE IF NOT EXISTS token_ratios (model TEXT PRIMARY KEY, ratio REAL NOT NULL, ts INTEGER NOT NULL)");
     for (const r of store.db.query<{ model: string; ratio: number }, []>("SELECT model, ratio FROM token_ratios").all()) setRatio(r.model, r.ratio);
+    // A session that changed (another branch shown, archived, cleared, deleted)
+    // may have made the summary being prepared for it obsolete.
+    bus.on((f) => { if (f.t === "session") this.dropObsolete(f.session.id); });
   }
 
   private hold(id: string) {
@@ -1315,7 +1318,8 @@ export class Engine {
     return result;
   }
 
-  private preparing = new Set<string>();
+  // Summaries being written ahead. Each can be stopped, and names the event it covers up to.
+  private preparing = new Map<string, { abort: AbortController; covered: string }>();
   private idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   // The prepared summary's time, when there is one.
@@ -1358,7 +1362,8 @@ export class Engine {
     const due = lastWarm(events) + life - IDLE_MARGIN_MS - Date.now();
     const t = setTimeout(() => {
       this.idleTimers.delete(id);
-      if (this.running.has(id) || !this.store.session(id)) return;
+      const now = this.store.session(id);
+      if (this.running.has(id) || this.draining || !now || now.archived) return;
       this.prepare(id, st, true);
     }, Math.max(0, due));
     (t as any).unref?.();
@@ -1370,27 +1375,45 @@ export class Engine {
   // when the context reaches the compaction limit.
   // `idle`: written for idle compaction, so it covers the whole context: an
   // older summary that covers less is written again.
+  // The work can be stopped: a preparation serves only while the event it
+  // covers up to is on the branch shown, after its last checkpoint, in an open
+  // session of a daemon that is not stopping. That is checked when the session
+  // changes and again when the summary arrives, so obsolete work is cut short
+  // and nothing of it is stored. One that still holds is stored and reused.
   private prepare(id: string, st: Step, idle = false) {
-    if (this.preparing.has(id)) return;
+    const current = this.preparing.get(id);
+    if (this.draining || (current && !current.abort.signal.aborted)) return;
     const events = this.lineage(id);
     const covered = events.findLast((e) => e.kind !== "turn_start" && e.kind !== "turn_end");
     if (!covered || !worthSummarizing(events)) return;
     const have = this.store.db.query<{ covered: string; data: string }, [string]>("SELECT covered, data FROM prepared_summaries WHERE session_id = ?").get(id);
     if (have && preparedHolds(events, have.covered, idle, JSON.parse(have.data))) return;
-    this.preparing.add(id);
+    const abort = new AbortController();
+    this.preparing.set(id, { abort, covered: covered.id });
     const session = this.store.session(id)!;
     const before = this.used(events, st);
     const t0 = Date.now();
-    this.summarize(id, st, session, events, new AbortController().signal)
+    this.summarize(id, st, session, events, abort.signal)
       .then((res) => {
         this.emitSession(id);
         const summary = res.summary;
         if (!summary) return;
         const data = { mode: "summary", ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped } : {}), ...checkpointData(events, summary, this.wordsBudget(st)), auto: true, ahead: !idle, trigger: idle ? "idle" : "threshold", covered: covered.id, tokens_before: before, usage: res.usage, model: st.info.id, prepared_ms: Date.now(), duration_ms: Date.now() - t0 };
+        if (abort.signal.aborted || !this.preparationHolds(id, covered.id, data)) return;
         this.store.db.run("INSERT OR REPLACE INTO prepared_summaries (session_id, covered, data, ts) VALUES (?, ?, ?, ?)", [id, covered.id, JSON.stringify(data), Date.now()]);
       })
-      .catch((e) => this.errors.capture("provider", e, { session: id, at: "preparing a summary" }))
-      .finally(() => this.preparing.delete(id));
+      .catch((e) => { if (!abort.signal.aborted) this.errors.capture("provider", e, { session: id, at: "preparing a summary" }); })
+      .finally(() => { if (this.preparing.get(id)?.abort === abort) this.preparing.delete(id); });
+  }
+
+  private preparationHolds(id: string, covered: string, data?: { statements_done?: string[] }): boolean {
+    const s = this.store.session(id);
+    return !!s && !s.archived && !this.draining && preparedHolds(this.lineage(id), covered, false, data);
+  }
+
+  private dropObsolete(id: string) {
+    const p = this.preparing.get(id);
+    if (p && !p.abort.signal.aborted && !this.preparationHolds(id, p.covered)) p.abort.abort();
   }
 
   // The prepared summary as a checkpoint, when it covers part of this branch
@@ -1398,9 +1421,14 @@ export class Engine {
   private applyPrepared(id: string, events: StoredEvent[]): boolean {
     const row = this.store.db.query<{ covered: string; data: string }, [string]>("SELECT covered, data FROM prepared_summaries WHERE session_id = ?").get(id);
     if (!row) return false;
-    this.store.db.run("DELETE FROM prepared_summaries WHERE session_id = ?", [id]);
     const data = JSON.parse(row.data);
-    if (!preparedHolds(events, row.covered, false, data)) return false;
+    if (!preparedHolds(events, row.covered, false, data)) {
+      // Written for another branch: kept for when that branch is shown again.
+      // One this branch has passed (a checkpoint came after it) serves no more.
+      if (events.some((e) => e.id === row.covered) || !this.store.event(row.covered)) this.store.db.run("DELETE FROM prepared_summaries WHERE session_id = ?", [id]);
+      return false;
+    }
+    this.store.db.run("DELETE FROM prepared_summaries WHERE session_id = ?", [id]);
     this.append(id, "compaction", data);
     this.emitSession(id);
     return true;
@@ -1591,6 +1619,8 @@ export class Engine {
   // to end by themselves. Nothing is cut yet, so the drain can still be called off.
   async settle(ms: number) {
     this.draining = true;
+    // A summary being prepared is not waited for: the next daemon prepares it again.
+    for (const p of this.preparing.values()) p.abort.abort();
     const all = [...this.running.values()].map((r) => r.done);
     if (all.length) await Promise.race([Promise.all(all), Bun.sleep(ms)]);
   }

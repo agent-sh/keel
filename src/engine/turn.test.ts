@@ -237,6 +237,105 @@ test("idle compaction prepares while warm and applies when the cache went cold",
   expect(store.events(s.id).find((e) => e.kind === "compaction")?.data.trigger).toBe("idle");
 });
 
+// The summary prepared while idle is speculative work with a lifecycle: while
+// its request is held, a session that shows another branch, is archived or
+// whose daemon drains makes it obsolete, so the request is stopped and no row
+// is stored. One whose covered events are still the branch shown is stored
+// and applied when the owner returns.
+test("an idle preparation made obsolete while it is written is stopped and stores nothing; a valid one is reused", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Engine } = await import("./turn.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "idle-life-"));
+  const store = new Store(dir);
+  const bus = new Bus();
+  const twoHours = Date.now() - 2 * 60 * 60_000;
+  const info = { id: "p:m", provider: "p", model: "m", name: "M", family: "other", context: 100_000, output: 1_000, efforts: [], billing: "per_token" };
+  // Each summary request waits until the test lets it go, and honors its stop.
+  const held: { session: string; signal: AbortSignal; go: () => void }[] = [];
+  let arrived = Promise.withResolvers<void>();
+  const provider = {
+    id: "p", wire: "anthropic_messages", available: () => true, list: async () => [],
+    stream: async (req: any) => {
+      if (req.purpose === "summary") {
+        const wait = Promise.withResolvers<void>();
+        held.push({ session: req.sessionKey, signal: req.signal, go: wait.resolve });
+        req.signal.addEventListener("abort", () => wait.resolve(), { once: true });
+        arrived.resolve();
+        await wait.promise;
+        if (req.signal.aborted) throw Object.assign(new Error("stopped"), { name: "AbortError" });
+      }
+      return { blocks: [{ type: "text", text: req.purpose === "summary" ? "SUMMARY-OF-IT" : "ok" }], usage: { input: 1, output: 1, cache_read: 0, cache_write: 0 }, stop: "end_turn", model: "m" };
+    },
+  };
+  const providers = { resolve: async () => ({ provider, info }), models: async () => [info], current: () => [info] };
+  const failures: unknown[] = [];
+  const engine = new Engine(store, bus, providers as any, { capture: (_s: string, e: unknown) => (failures.push(e), { message: String(e) }) } as any, join(dir, "spill"));
+  // A long idle context whose cache lifetime ended: its idle timer is due at once.
+  const idleSession = async () => {
+    const s = store.createSession({ model: "p:m", workspace: dir });
+    store.updateSession(s.id, { settings: { compact_at: 2_000 } });
+    const first = store.append(s.id, "user", { text: "read the big file" });
+    store.append(s.id, "assistant", { blocks: [{ type: "text", text: "x".repeat(8_000) }], model: "p:m", stop: "end_turn", usage: { input: 10, output: 2_000, cache_read: 0, cache_write: 9_000, cache_write_1h: 9_000 } });
+    store.db.run("UPDATE events SET ts = ? WHERE session_id = ?", [twoHours, s.id]);
+    arrived = Promise.withResolvers<void>();
+    (engine as any).scheduleIdle(s.id, await (engine as any).step(store.session(s.id), "p:m"));
+    await arrived.promise;
+    return { id: s.id, first: first.id, request: held.findLast((h) => h.session === s.id)! };
+  };
+  const settled = async () => { for (let n = 0; n < 400 && (engine as any).preparing.size; n++) await Bun.sleep(5); };
+  const rows = (id: string) => store.db.query<{ covered: string }, [string]>("SELECT covered FROM prepared_summaries WHERE session_id = ?").all(id);
+
+  // Another branch is shown (as the head route does it: the session changes and says so).
+  const a = await idleSession();
+  bus.emit({ t: "session", session: store.updateSession(a.id, { head: a.first }) });
+  expect(a.request.signal.aborted).toBe(true);
+  await settled();
+  expect(rows(a.id)).toEqual([]);
+
+  // A head moved with nothing said: the work runs to its end and is discarded there.
+  const b = await idleSession();
+  store.updateSession(b.id, { head: b.first });
+  expect(b.request.signal.aborted).toBe(false);
+  b.request.go();
+  await settled();
+  expect(rows(b.id)).toEqual([]);
+
+  // Archived while it is written.
+  const c = await idleSession();
+  bus.emit({ t: "session", session: store.updateSession(c.id, { archived: true }) });
+  expect(c.request.signal.aborted).toBe(true);
+  await settled();
+  expect(rows(c.id)).toEqual([]);
+
+  // Still the branch shown (a job's notice landed meanwhile): stored, and the
+  // turn that comes back after the cache expired goes on it.
+  const d = await idleSession();
+  store.append(d.id, "note", { text: "a job ended", model: true });
+  bus.emit({ t: "session", session: store.session(d.id)! });
+  expect(d.request.signal.aborted).toBe(false);
+  d.request.go();
+  await settled();
+  expect(rows(d.id)).toHaveLength(1);
+  store.db.run("UPDATE prepared_summaries SET data = json_set(data, '$.prepared_ms', ?) WHERE session_id = ?", [twoHours, d.id]);
+  store.db.run("UPDATE events SET ts = ? WHERE session_id = ?", [twoHours, d.id]);
+  engine.send(d.id, "and now?");
+  await engine.idle(d.id);
+  expect(store.events(d.id).find((e) => e.kind === "compaction")?.data).toMatchObject({ trigger: "idle", summary: "SUMMARY-OF-IT" });
+  expect(rows(d.id)).toEqual([]);
+
+  // The daemon drains: the held work is stopped, and a drain called off starts none by itself.
+  const e = await idleSession();
+  await engine.settle(0);
+  expect(e.request.signal.aborted).toBe(true);
+  await settled();
+  expect(rows(e.id)).toEqual([]);
+  engine.undrain();
+  expect(failures).toEqual([]);
+});
+
 // A threshold compaction is asked only when there is something new to
 // summarize, and a summary request answered without one (a tool call instead)
 // leaves the turn to go on whole while the context still fits the window.
