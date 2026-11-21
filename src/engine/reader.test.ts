@@ -181,8 +181,50 @@ test("an answer is checked against the material: quotes word for word at the lin
     '- C (notes/c.md:4): "a sentence nobody wrote down anywhere."',
   ].join("\n");
   const c = checkAnswer(answer, items);
-  expect(c).toEqual({ quotes: 3, verbatim: 2, atLine: 2, refs: 4, valid: 2, missing: ["a sentence nobody wrote down anywhere."] });
-  expect(checkedNote(c)).toContain("2 of 3 quotes appear word for word in the material (2 at the line cited); 2 of 4 path:line references");
+  expect(c).toEqual({ quotes: 3, verbatim: 2, atLine: 2, loose: 0, refs: 4, valid: 2, ambiguous: 0, missing: ["a sentence nobody wrote down anywhere."] });
+  expect(checkedNote(c)).toContain("2 of 3 quotes are word for word at the lines they cite; 2 of 4 path:line references");
   expect(checkedNote(c)).toContain('- "a sentence nobody wrote down anywhere."');
   expect(checkedNote(checkAnswer("no quotes and no references here", items))).toBe("");
+});
+
+test("a quote counts as at the line cited only word for word, case included, on the lines cited, in a file the path names alone, in a part a reader read", () => {
+  const items = [
+    { source: "x/a.md", text: "# X\nThe retry budget is seven attempts per job.\nOther text." },
+    { source: "y/a.md", text: "# Y\nThe retry budget is nine attempts per job.\nOther text." },
+    { source: "notes/b.md", text: "one\nThe Gateway refused the charge at noon.\nthree\nA line only the failed reader had in front of it.\n" },
+  ];
+  const one = (answer: string, read?: { source: string; from: number; to: number }[]) => checkAnswer(answer, items, read);
+  // Exact, from a path that names one file: at the line cited.
+  expect(one('- (x/a.md:2) "The retry budget is seven attempts per job."')).toMatchObject({ quotes: 1, verbatim: 1, atLine: 1, loose: 0, refs: 1, valid: 1, ambiguous: 0, missing: [] });
+  // Two files end with a.md: the quote is in the material, but no line is confirmed.
+  expect(one('- (a.md:2) "The retry budget is seven attempts per job."')).toMatchObject({ quotes: 1, verbatim: 1, atLine: 0, refs: 1, valid: 0, ambiguous: 1 });
+  // Another case than the file has: not word for word, counted apart.
+  const cased = one('- (notes/b.md:2) "the gateway refused the charge at noon."');
+  expect(cased).toMatchObject({ quotes: 1, verbatim: 0, atLine: 0, loose: 1, missing: [] });
+  expect(checkedNote(cased)).toContain("0 of 1 quotes are word for word at the lines they cite; 1 more matches the material only when case is ignored");
+  // One line off: in the material, not at the line cited.
+  const off = one('- (notes/b.md:3) "The Gateway refused the charge at noon."');
+  expect(off).toMatchObject({ quotes: 1, verbatim: 1, atLine: 0, loose: 0, valid: 1 });
+  expect(checkedNote(off)).toContain("0 of 1 quotes are word for word at the lines they cite; 1 more is word for word in the material but not on a line cited for it");
+  // A part no reader read is not material the answer can be confirmed against.
+  const read = [{ source: "x/a.md", from: 1, to: 3 }, { source: "y/a.md", from: 1, to: 3 }, { source: "notes/b.md", from: 1, to: 3 }];
+  const failed = one('- (notes/b.md:4) "A line only the failed reader had in front of it."', read);
+  expect(failed).toMatchObject({ quotes: 1, verbatim: 0, atLine: 0, loose: 0, refs: 1, valid: 0, missing: ["A line only the failed reader had in front of it."] });
+  expect(one('- (notes/b.md:4) "A line only the failed reader had in front of it."')).toMatchObject({ verbatim: 1, atLine: 1, valid: 1 });
+  // The line after the last one does not exist, with or without a newline at the end.
+  expect(one("see notes/b.md:5 and x/a.md:4")).toMatchObject({ refs: 2, valid: 0 });
+  expect(checkedNote(one('- (a.md:2) "The retry budget is seven attempts per job."'))).toContain("1 names a path that more than one file ends with");
+});
+
+test("a job holds its answer against the parts its readers read: a quote from a part every reader failed on is not confirmed", async () => {
+  const h: ReaderHost = {
+    models: async () => [big], current: async () => big, capture: () => {},
+    ask: async (_m, prompt) => {
+      if (/part 2 of/.test(prompt)) throw new Error("throttled");
+      return { text: '- (a.log:3) "line 3 xxxxxxxxxxxxx"\n- (b.log:3) "bbbb 3 xxxxxxxxxxxxx"', usage: { input: 1000, output: 20, cache_read: 0, cache_write: 0 } };
+    },
+  };
+  const o = await readMaterial(h, [{ source: "a.log", text: lines(3_500) }, { source: "b.log", text: lines(3_500).replace("line 3 ", "bbbb 3 ") }], "q", new AbortController().signal);
+  expect(o.parts.map((p) => p.state)).toEqual(["read", "unread"]);
+  expect(o.checked).toMatchObject({ quotes: 2, verbatim: 1, atLine: 1, refs: 2, valid: 1, missing: ["bbbb 3 xxxxxxxxxxxxx"] });
 });

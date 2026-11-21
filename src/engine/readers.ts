@@ -205,11 +205,13 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
     } else { text = r.text; compiled = true; }
   }
   tell();
+  // The answer is held against what a reader read, not against a part every reader failed on.
+  const readSpans = chunks.flatMap((c, i) => (parts[i]!.state === "read" || parts[i]!.state === "nothing" ? c.parts.map((p) => ({ source: p.source, from: p.from, to: p.to })) : []));
   const rate = readRate(cur, list);
   const chars = kept.reduce((n, m) => n + m.text.length, 0);
   const tokens = partTokens || chars / bytesPerToken(cur.id);
   return {
-    text, models: [...used], parts, unread, chars, usage, cost: usage.cost, compiled, ...(uncompiled ? { uncompiled } : {}), ...(text ? { checked: checkAnswer(text, kept) } : {}),
+    text, models: [...used], parts, unread, chars, usage, cost: usage.cost, compiled, ...(uncompiled ? { uncompiled } : {}), ...(text ? { checked: checkAnswer(text, kept, readSpans) } : {}),
     ...(billed.size === 1 && billed.has("subscription") ? { plan: true } : {}),
     working: { model: cur.name, tokens: Math.round(tokens), cost: rate === undefined || cur.billing !== "per_token" ? undefined : (tokens * rate) / 1e6 },
   };

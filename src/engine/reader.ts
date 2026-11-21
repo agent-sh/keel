@@ -283,40 +283,74 @@ export const READER_SYSTEM = "You read material for a coding agent and answer it
 
 // ---- the answer checked against the material ---------------------------------
 
-// What Keel found when it held the answer against the material: the quotes
-// that appear word for word, and whether at a line the answer cites for them;
-// the path:line references that name a line the material has. A working model
-// that sees its answer checked has no reason to search the material again.
-export type Checked = { quotes: number; verbatim: number; atLine: number; refs: number; valid: number; missing: string[] };
+// What Keel found when it held the answer against the material the readers
+// read. A quote is `verbatim` when it is there word for word, case included
+// (runs of whitespace and the style of quote marks aside), and `atLine` when
+// that is on the very lines the answer cites for it, in a file its path names
+// alone. `loose` quotes match only when case is ignored. A reference is
+// `valid` when it names lines a reader read, `ambiguous` when more than one
+// file ends with its path. A working model that sees its answer checked has
+// no reason to search the material again.
+export type Checked = { quotes: number; verbatim: number; atLine: number; loose: number; refs: number; valid: number; ambiguous: number; missing: string[] };
+// Lines of a source a reader read (1-based, inclusive).
+export type Span = { source: string; from: number; to: number };
 
-const norm = (s: string) => s.replace(/[\u201c\u201d]/g, '"').replace(/[\u2018\u2019]/g, "'").replace(/\s+/g, " ").trim().toLowerCase();
+const norm = (s: string) => s.replace(/[\u201c\u201d]/g, '"').replace(/[\u2018\u2019]/g, "'").replace(/\s+/g, " ").trim();
 const REF = /([\w@.\/-]*[\w-]\.[A-Za-z0-9]+):(\d+)(?:\s*[-\u2013]\s*(\d+))?|(?<![\w.\/])`?:(\d+)(?:\s*[-\u2013]\s*(\d+))?/g;
 const QUOTE = /"([^"\n]{12,})"|\u201c([^\u201d\n]{12,})\u201d/g;
 // A quote with an ellipsis is checked piece by piece.
 const pieces = (q: string) => q.split(/\.\.\.|\u2026/).map((p) => p.trim().replace(/[.,;:!?]+$/, "")).filter((p) => p.length >= 12);
 
-export function checkAnswer(answer: string, items: Material[]): Checked {
-  const lines = new Map<string, string[]>();
-  for (const m of items) lines.set(m.source, m.text.split("\n").map(norm));
-  const all = norm(items.map((m) => m.text).join("\n"));
-  // A source as the answer names it: exact, else by its ending (the readers may drop a folder).
-  const find = (p: string) => lines.has(p) ? p : [...lines.keys()].find((k) => k.endsWith(`/${p}`) || p.endsWith(`/${k}`));
-  const out: Checked = { quotes: 0, verbatim: 0, atLine: 0, refs: 0, valid: 0, missing: [] };
+// `read`: the lines the readers read; without it, every line of `items`.
+export function checkAnswer(answer: string, items: Material[], read?: Span[]): Checked {
+  // Each source's lines; a line no reader read is absent.
+  const lines = new Map<string, (string | undefined)[]>();
+  for (const m of items) {
+    const ls: (string | undefined)[] = m.text.split("\n");
+    if (ls.length > 1 && ls.at(-1) === "") ls.pop();
+    if (read) {
+      const got = new Uint8Array(ls.length);
+      for (const s of read) if (s.source === m.source) got.fill(1, Math.max(0, s.from - 1), Math.min(ls.length, s.to));
+      for (let i = 0; i < ls.length; i++) if (!got[i]) ls[i] = undefined;
+    }
+    lines.set(m.source, ls);
+  }
+  // What was read, as runs of neighbouring lines: a quote is never matched across a gap.
+  const runs: string[] = [];
+  for (const ls of lines.values()) {
+    for (let i = 0; i < ls.length; ) {
+      let j = i;
+      while (j < ls.length && ls[j] !== undefined) j++;
+      if (j > i) runs.push(norm(ls.slice(i, j).join("\n")));
+      i = j + 1;
+    }
+  }
+  const all = runs.join("\n"), lower = all.toLowerCase();
+  // A source as the answer names it: exact, else by its ending (the readers
+  // may drop a folder) when one source alone ends that way.
+  const find = (p: string): string | "ambiguous" | undefined => {
+    if (lines.has(p)) return p;
+    const ends = [...lines.keys()].filter((k) => k.endsWith(`/${p}`) || p.endsWith(`/${k}`));
+    return ends.length > 1 ? "ambiguous" : ends[0];
+  };
+  const out: Checked = { quotes: 0, verbatim: 0, atLine: 0, loose: 0, refs: 0, valid: 0, ambiguous: 0, missing: [] };
   let last: string | undefined;
   // A quote goes with the references on its own line, else with those of the
   // lines just above it (a heading line that names the file, then the quote).
-  let recent: { src: string; from: number; to: number }[] = [];
+  let recent: Span[] = [];
   let since = 0;
   for (const line of answer.split("\n")) {
-    let spans: { src: string; from: number; to: number }[] = [];
+    let spans: Span[] = [];
     for (const r of line.matchAll(REF)) {
       const path = r[1] ? find(r[1]) : last;
+      if (path === "ambiguous") { out.refs++; out.ambiguous++; last = undefined; continue; }
       if (r[1] && !path) { if (lines.size && /[\/.]/.test(r[1])) out.refs++; continue; }
       if (!path) continue;
       last = path;
       const from = Number(r[2] ?? r[4]), to = Number(r[3] ?? r[5] ?? from);
       out.refs++;
-      if (from >= 1 && to >= from && to <= lines.get(path)!.length) { out.valid++; spans.push({ src: path, from, to }); }
+      const ls = lines.get(path)!;
+      if (from >= 1 && to >= from && to <= ls.length && ls.slice(from - 1, to).every((l) => l !== undefined)) { out.valid++; spans.push({ source: path, from, to }); }
     }
     if (spans.length) { recent = spans; since = 0; } else if (++since <= 3) spans = recent;
     for (const q of line.matchAll(QUOTE)) {
@@ -324,26 +358,30 @@ export function checkAnswer(answer: string, items: Material[]): Checked {
       if (!ps.length) continue;
       out.quotes++;
       const n = ps.map(norm);
-      if (!n.every((p) => all.includes(p))) { if (out.missing.length < 5) out.missing.push((q[1] ?? q[2]!).slice(0, 120)); continue; }
-      out.verbatim++;
-      const near = spans.some((s) => {
-        const ls = lines.get(s.src)!;
-        const text = ls.slice(Math.max(0, s.from - 2), Math.min(ls.length, s.to + 1)).join(" ");
-        return n.every((p) => text.includes(p));
-      });
-      if (near) out.atLine++;
+      if (n.every((p) => all.includes(p))) {
+        out.verbatim++;
+        // On the lines cited, and no others.
+        if (spans.some((s) => { const text = norm(lines.get(s.source)!.slice(s.from - 1, s.to).join("\n")); return n.every((p) => text.includes(p)); })) out.atLine++;
+      } else if (n.every((p) => lower.includes(p.toLowerCase()))) out.loose++;
+      else if (out.missing.length < 5) out.missing.push((q[1] ?? q[2]!).slice(0, 120));
     }
   }
   return out;
 }
 
-// The line under an answer that says what the check found.
+// The line under an answer that says what the check found. Only a quote found
+// word for word on the lines cited for it is called that; a looser match is
+// counted apart.
 export function checkedNote(c: Checked): string {
   if (!c.quotes && !c.refs) return "";
   const parts: string[] = [];
-  if (c.quotes) parts.push(c.atLine === c.quotes ? `all ${c.quotes} quotes are word for word at the lines they cite`
-    : `${c.verbatim} of ${c.quotes} quotes appear word for word in the material${c.atLine ? ` (${c.atLine} at the line cited)` : ""}`);
-  if (c.refs) parts.push(`${c.valid} of ${c.refs} path:line references name lines that exist`);
-  const miss = c.missing.length ? `\nNot found in the material, so treat as unconfirmed:\n- "${c.missing.join('"\n- "')}"` : "";
+  if (c.quotes) {
+    parts.push(c.atLine === c.quotes ? `all ${c.quotes} quotes are word for word at the lines they cite` : `${c.atLine} of ${c.quotes} quotes are word for word at the lines they cite`);
+    const off = c.verbatim - c.atLine;
+    if (off) parts.push(`${off} more ${off === 1 ? "is" : "are"} word for word in the material but not on a line cited for ${off === 1 ? "it" : "them"}`);
+    if (c.loose) parts.push(`${c.loose} more match${c.loose === 1 ? "es" : ""} the material only when case is ignored`);
+  }
+  if (c.refs) parts.push(`${c.valid} of ${c.refs} path:line references name lines the readers read` + (c.ambiguous ? `; ${c.ambiguous} name${c.ambiguous === 1 ? "s" : ""} a path that more than one file ends with` : ""));
+  const miss = c.missing.length ? `\nNot found in what the readers read, so treat as unconfirmed:\n- "${c.missing.join('"\n- "')}"` : "";
   return `[Keel checked the answer against the files: ${parts.join("; ")}.${miss}]`;
 }
