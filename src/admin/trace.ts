@@ -58,6 +58,9 @@ CREATE INDEX IF NOT EXISTS spans_start ON spans(start_ms);
 `;
 
 export const SPAN_DAYS = 14;
+// How many traces a list returns: when the caller names no number, and at most.
+export const TRACE_LIST = 50;
+export const TRACE_LIST_MAX = 200;
 // A request larger than this (images inline) is not kept for replay.
 const KEEP_REQUEST_BYTES = 16 * 1024 * 1024;
 
@@ -337,8 +340,10 @@ export class Tracer {
 
   // A session's traces, newest first: the span of each turn (a subagent's first
   // turn sits under its spawn call), or the lone request of a side answer.
-  traces(sessionId: string, limit = 50): Span[] {
-    return this.store.db.query<any, [string, number]>(`SELECT ${COLS} FROM spans WHERE session_id = ? AND (parent_id IS NULL OR kind = 'turn') ORDER BY start_ms DESC LIMIT ?`).all(sessionId, limit).map(row);
+  // Never more than TRACE_LIST_MAX, whatever the caller asks for.
+  traces(sessionId: string, limit = TRACE_LIST): Span[] {
+    const n = Number.isFinite(limit) ? Math.min(TRACE_LIST_MAX, Math.max(1, Math.trunc(limit))) : TRACE_LIST;
+    return this.store.db.query<any, [string, number]>(`SELECT ${COLS} FROM spans WHERE session_id = ? AND (parent_id IS NULL OR kind = 'turn') ORDER BY start_ms DESC LIMIT ?`).all(sessionId, n).map(row);
   }
 
   // The request a failed span sent, as sent.

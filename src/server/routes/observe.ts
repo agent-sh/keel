@@ -7,6 +7,7 @@
 //        writes the bundle under the state folder and starts a session that is
 //        asked to find the cause and fix it -> { session, path }
 // GET  /api/debug/traces?session_id=&limit=     a session's traces (their root spans), newest first
+//                                               (limit: a whole number from 1, 50 by default, at most 200)
 // GET  /api/debug/traces/:id                    { spans } of one trace, in start order
 // GET  /api/debug/spans/:id                     { span }
 // POST /api/debug/spans/:id/replay { route? }   sends a failed request again (to its own route or another)
@@ -22,7 +23,7 @@ import { installLogs, LEVELS, logDir, logLines, onLog } from "../../admin/logs.t
 import { endpointOf, headerRefError, headerSourceOf, OtlpExporter } from "../../admin/otlp.ts";
 import { key } from "../../providers/creds.ts";
 import { onSettings, registerSettings, settings } from "../../admin/settings.ts";
-import { traceparent, Tracer } from "../../admin/trace.ts";
+import { TRACE_LIST, TRACE_LIST_MAX, traceparent, Tracer } from "../../admin/trace.ts";
 import { registerEnv } from "../../tools/jobs.ts";
 import { errorClass } from "../../admin/classes.ts";
 import { errorText } from "../../engine/retry.ts";
@@ -130,7 +131,10 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
         const sid = q.get("session_id");
         if (!sid) return json({ error: "session_id" }, 400);
         if (!store.session(sid)) return json({ error: "no such session" }, 404);
-        return json({ traces: t.traces(sid, Math.min(200, Number(q.get("limit")) || 50)) });
+        // A whole number from 1 up: SQLite reads a negative LIMIT as no limit at all.
+        const limit = q.get("limit");
+        if (limit !== null && !/^[1-9]\d*$/.test(limit)) return json({ error: `limit is a whole number of traces from 1 up (${TRACE_LIST} by default, at most ${TRACE_LIST_MAX})` }, 400);
+        return json({ traces: t.traces(sid, limit === null ? TRACE_LIST : Number(limit)) });
       },
     },
     "/api/debug/traces/:id": {
