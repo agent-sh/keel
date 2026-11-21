@@ -93,6 +93,15 @@ export class ScriptedProvider implements Provider {
       if (action.includes("judge-unavailable.txt")) return reply('{"decision":"allow"}');
     }
 
+    // A reader whose request says `script:quote`: it quotes the first line it
+    // was given at that line and the second at a line four further on, and the
+    // compile step hands the findings on as they are.
+    if (req.purpose === "reader" && lastText.includes("script:quote")) {
+      if (lastText.startsWith("Readers each")) return reply([...lastText.matchAll(/<findings [^>]*>\n([\s\S]*?)\n<\/findings>/g)].map((m) => m[1]).join("\n"));
+      const f = /<file path="([^"]+)"[^>]*>\n(\d+)\t([^\n]*)\n\d+\t([^\n]*)/.exec(lastText);
+      if (f) return reply(`- "${f[3]}" (${f[1]}:${f[2]})\n- "${f[4]}" (${f[1]}:${Number(f[2]) + 4})`);
+    }
+
     // A history read as a transcript in parts: the summary names the part it reached.
     const part = lastText.match(/^\[harness\] The context is being compacted, .* in (\d+) parts, oldest first; this is part (\d+)\./);
     if (part) return reply(`Goal: the owner is checking a history longer than the window. State: read part ${part[2]} of ${part[1]} of the transcript${lastText.includes("<summary>") ? ", after the summary of the parts before it" : ""}.`);

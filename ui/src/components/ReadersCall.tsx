@@ -11,7 +11,7 @@ import { Markdown } from "./Markdown.tsx";
 type Shown = {
   question: string; whole?: boolean; sources: number; chars: number; parts?: PartState[]; models?: string[];
   cost?: number; plan?: boolean; working?: { model: string; cost?: number }; unread?: string[]; skipped?: string[]; compiled?: boolean;
-  checked?: { quotes: number; verbatim: number; atLine: number; refs: number; valid: number };
+  checked?: { quotes: number; verbatim: number; atLine: number; loose?: number; refs: number; valid: number; ambiguous?: number };
 };
 type Props = { use: ToolUseBlock; result?: ToolResultBlock; live?: boolean; sessionId?: string; cwd?: string };
 
@@ -82,8 +82,10 @@ export function ReadersCall({ use, result, live, sessionId, cwd }: Props) {
               {shown.sources} source{shown.sources === 1 ? "" : "s"}, {shown.chars.toLocaleString("en-US")} characters
               {shown.whole ? ", short enough to read whole" : shown.models?.length ? ` read by ${shown.models.join(" and ")}${shown.compiled ? ", findings compiled" : ""}` : " read"}
               {shown.checked && shown.checked.quotes > 0 && (
-                <> · <span className={shown.checked.verbatim < shown.checked.quotes ? "text-danger" : undefined} data-testid="readers-checked">
-                  {shown.checked.verbatim} of {shown.checked.quotes} quotes found word for word
+                // The count the note leads with. Red: a quote is not in the material word for word; brass: it is, on another line.
+                <> · <span className={shown.checked.verbatim < shown.checked.quotes ? "text-danger" : shown.checked.atLine < shown.checked.quotes ? "text-brass" : undefined}
+                  data-testid="readers-checked" data-quotes={shown.checked.quotes} data-verbatim={shown.checked.verbatim}>
+                  {shown.checked.atLine} of {shown.checked.quotes} quotes at the lines cited
                 </span></>
               )}
               {shown.cost !== undefined && <> · readers {fmtCost(shown.cost)}</>}

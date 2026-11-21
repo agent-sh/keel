@@ -338,12 +338,15 @@ const pieces = (q: string) => q.split(/\.\.\.|\u2026/).map((p) => p.trim().repla
 export function checkAnswer(answer: string, items: Material[], read?: Span[]): Checked {
   // Each source's lines; a line no reader read is absent.
   const lines = new Map<string, (string | undefined)[]>();
+  // The spans by source, grouped once: a job has as many spans as sources.
+  const readOf = new Map<string, Span[]>();
+  for (const s of read ?? []) { const of = readOf.get(s.source); if (of) of.push(s); else readOf.set(s.source, [s]); }
   for (const m of items) {
     const ls: (string | undefined)[] = m.text.split("\n");
     if (ls.length > 1 && ls.at(-1) === "") ls.pop();
     if (read) {
       const got = new Uint8Array(ls.length);
-      for (const s of read) if (s.source === m.source) got.fill(1, Math.max(0, s.from - 1), Math.min(ls.length, s.to));
+      for (const s of readOf.get(m.source) ?? []) got.fill(1, Math.max(0, s.from - 1), Math.min(ls.length, s.to));
       for (let i = 0; i < ls.length; i++) if (!got[i]) ls[i] = undefined;
     }
     lines.set(m.source, ls);

@@ -369,3 +369,17 @@ test("once a group of findings fails to merge, the groups after it are not sent"
   // The first group, by each of the two choices; not the two groups after it.
   expect(asked.filter((a) => a.compile).map((a) => a.model.id)).toEqual(["p:wide", "p:big"]);
 });
+
+test("the check of an answer against many sources does not walk every part read for every source", () => {
+  const items = Array.from({ length: 20_000 }, (_, i) => ({ source: `src/f${i}.ts`, text: `export const a${i} = ${i};\nexport const b${i} = ${i};\n` }));
+  const read = items.map((m) => ({ source: m.source, from: 1, to: 2 }));
+  const answer = '- (src/f7.ts:1) "export const a7 = 7;"';
+  const fastest = (spans?: typeof read) => Math.min(...[1, 2, 3].map(() => {
+    const t = performance.now();
+    expect(checkAnswer(answer, items, spans)).toMatchObject({ quotes: 1, atLine: 1, valid: 1 });
+    return performance.now() - t;
+  }));
+  // The same work with the parts read named as without them, give or take.
+  const plain = fastest(), withRead = fastest(read);
+  expect(withRead).toBeLessThan(plain * 4 + 100);
+});

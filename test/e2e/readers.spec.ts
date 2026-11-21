@@ -56,7 +56,9 @@ test("readers: a folder of logs is read in parts and compiled into one answer", 
   await expect(card.getByTestId("readers-summary")).toContainText("4 sources");
   await expect(card.getByTestId("readers-summary")).toContainText("findings compiled");
   // Keel held the answer against the files: its quotes are found word for word, and the note says nothing went unread.
-  await expect(card.getByTestId("readers-checked")).toHaveText(/^(\d+) of \1 quotes found word for word$/);
+  const checked = card.getByTestId("readers-checked");
+  await expect(checked).toHaveText(/^\d+ of \d+ quotes at the lines cited$/);
+  expect(await checked.getAttribute("data-verbatim")).toBe(await checked.getAttribute("data-quotes"));
   await expect(card.getByTestId("readers-notes")).toContainText("nothing was left unread");
   await expect(card.getByTestId("readers-notes")).toContainText("Keel checked the answer against the files");
   // A priced reader shows its cost; one on a plan says so.
@@ -93,7 +95,8 @@ test("readers: material past the job's budget is named, not gathered", async ({ 
 
   const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in" } })).json();
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
-  const call = { name: "ask_readers", input: { question: "Which service fails, and where?", paths: [dir] } };
+  // `script:quote`: each scripted reader quotes one line where it is and one four lines off.
+  const call = { name: "ask_readers", input: { question: "script:quote Which service fails, and where?", paths: [dir] } };
   await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([call])}` } });
   await expect.poll(async () => {
     const r = await (await request.get(`/api/sessions/${session.id}`)).json();
@@ -119,6 +122,9 @@ test("readers: material past the job's budget is named, not gathered", async ({ 
   await card.getByRole("button").first().click();
   await expect(card).toContainText("2 unread");
   await expect(card.getByTestId("readers-notes")).toContainText("big.log after line");
+  // The card leads with the count the note leads with: quotes at the lines cited, not quotes found anywhere.
+  await expect(card.getByTestId("readers-checked")).toHaveText("2 of 4 quotes at the lines cited");
+  await expect(card.getByTestId("readers-notes")).toContainText("2 of 4 quotes are word for word at the lines they cite; 2 more are word for word in the material but not on a line cited for them");
   await card.scrollIntoViewIfNeeded();
   await shoot(page, "readers-02-past-budget");
   rmSync(dir, { recursive: true, force: true });
