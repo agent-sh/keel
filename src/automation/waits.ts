@@ -626,7 +626,8 @@ export async function tick() {
   const now = Date.now();
   for (const w of list(undefined, 0)) {
     if (isMonitor(w.kind)) {
-      flushMonitor(w.id);
+      // At the deadline what is buffered goes out first, whatever is left of its window.
+      flushMonitor(w.id, now >= w.deadline);
       if (now >= w.deadline) settle(w.id, "timeout", "The monitor reached its deadline and was stopped. Start it again if it is still needed.");
       continue;
     }

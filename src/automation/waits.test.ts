@@ -284,3 +284,26 @@ test("an http wait's status is a real status or left out", async () => {
     server.stop(true);
   }
 });
+
+test("a monitor that reaches its deadline delivers the lines it still held, then says it timed out", async () => {
+  const marker = join(dir, "monitor-wrote");
+  // One matching line, held for a window far longer than the monitor's deadline.
+  const w = waits.create(s.id, waits.normalize({ kind: "monitor", command: `printf 'READY one\\n'; touch ${marker}; sleep 20`, match: "READY", coalesce_ms: 60_000 }, dir), { timeout_seconds: 30 });
+  await until(() => existsSync(marker));
+  await Bun.sleep(200); // the line is read from the pipe
+  await waits.tick();
+  expect(waits.get(w.id)).toMatchObject({ status: "active", events: 0 });
+  try {
+    setSystemTime(new Date(w.deadline + 1));
+    await waits.tick();
+  } finally {
+    setSystemTime();
+  }
+  flush(s.id);
+  const said = store.events(s.id).filter((e) => e.kind === "user" && String(e.data.text).includes(`id="${w.id}"`)).map((e) => String(e.data.text)).join("\n");
+  expect(said.match(/<monitor_event /g)).toHaveLength(1);
+  expect(said.match(/<wait_fired /g)).toHaveLength(1);
+  expect(said).toContain("READY one");
+  expect(said.indexOf("READY one")).toBeLessThan(said.indexOf('outcome="timeout"'));
+  expect(waits.get(w.id)).toMatchObject({ status: "timeout", events: 1 });
+});
