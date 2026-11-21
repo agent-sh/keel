@@ -53,7 +53,7 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
         if (!existsSync(workspace) || !statSync(workspace).isDirectory()) return bad(`not a directory: ${workspace}`);
         const model = b.model || (await providers.defaultModel());
         if (!model) return bad("no model is available: no provider has credentials", 409);
-        await providers.resolve(model);
+        try { await providers.resolve(model); } catch (e) { return bad(`${(e as Error).message}: pick another model`, 409); }
         const title = String(b.title || b.text || "").split("\n")[0]!.slice(0, 80);
         const s = store.createSession({ model, workspace, title });
         try {

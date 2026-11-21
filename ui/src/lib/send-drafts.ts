@@ -78,6 +78,16 @@ function save(key: string) {
 // `boot`: this page has just loaded, so a request marked as out has nobody
 // waiting for its answer any more.
 function read(key: string, raw: string | null, boot: boolean): SendDraft[] {
+  try {
+    return parse(key, raw, boot);
+  } catch {
+    // Stored data this page cannot read must not stop it from loading.
+    try { localStorage.removeItem(STORE + key); } catch { /* storage is unavailable */ }
+    return [];
+  }
+}
+
+function parse(key: string, raw: string | null, boot: boolean): SendDraft[] {
   let list: Stored[];
   try { list = JSON.parse(raw ?? "[]"); } catch { return []; }
   if (!Array.isArray(list)) return [];
@@ -89,8 +99,9 @@ function read(key: string, raw: string | null, boot: boolean): SendDraft[] {
     const mine = have.find((d) => d.id === s.id);
     if (mine) return { ...base, images: mine.images, lost: mine.lost };
     const images: Attachment[] = [];
-    const lost = [...(s.lost ?? [])];
+    const lost = Array.isArray(s.lost) ? s.lost.map(String) : [];
     for (const r of s.images) {
+      if (!r || typeof r.id !== "string") continue;
       const a = { type: "image" as const, media_type: r.media_type, data: "", id: r.id, name: r.name, bytes: r.bytes };
       if (r.file) images.push({ ...a, url: `/api/attachments/${r.file.id}`, file: r.file });
       else if (key === NEW) lost.push(r.name);

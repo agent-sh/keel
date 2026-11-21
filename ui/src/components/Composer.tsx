@@ -507,7 +507,7 @@ function SessionComposer({
             return (
               <div key={d.id} role="group" aria-label={`${heading(d)}: ${d.text.trim().slice(0, 80) || "attachments only"}`} data-testid="saved-draft" data-state={d.state} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-md bg-sunken px-2.5 py-1.5 text-caption">
                 <div className="min-w-0 flex-1 basis-48">
-                  <p className={d.state === "parked" ? "font-medium text-muted" : "font-medium text-warn"}>{heading(d)}</p>
+                  <p className={d.state === "parked" ? "font-medium text-muted" : "font-medium text-fg"}>{d.state !== "parked" && <span aria-hidden className="mr-1.5 inline-block size-1.5 rounded-full bg-warn align-middle" />}{heading(d)}</p>
                   <p className="truncate text-fg" title={d.text}>{d.text.trim() || "Attachments only"}</p>
                   {!!d.images.length && <p className="truncate text-muted" title={d.images.map((a) => a.name).join(", ")}>{d.images.map((a) => a.name).join(", ")}</p>}
                   {!!d.lost?.length && <p className="break-words text-warn" data-testid="saved-lost">Not kept across the reload: {d.lost.join(", ")}</p>}

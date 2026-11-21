@@ -159,7 +159,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           if (!existsSync(workspace) || !statSync(workspace).isDirectory()) return bad(`not a directory: ${workspace}`);
           const model = body.model || (await providers.defaultModel());
           if (!model) return bad("no model is available: no provider has credentials", 409);
-          await providers.resolve(model);
+          // Nothing is made yet: a model that cannot be used is a refusal, not a failure.
+          try { await providers.resolve(model); } catch (e) { return bad(`${(e as Error).message}: pick another model`, 409); }
           let s = store.createSession({ model, workspace, title: body.title });
           // Module fields given at creation (tags, max_steps, the memory switches) hold or refuse it.
           const mine = [...patchers.values()].filter((p) => p.fields.some((f) => body[f] !== undefined));
