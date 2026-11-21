@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import { attachmentPath, saveAttachment, setAttachmentsRoot } from "../engine/attachments.ts";
+import { adminCommands } from "../cli/admin.ts";
 import { mobileCommands } from "../cli/mobile.ts";
 import { HASH_CHUNK, hashFile, restore, Storage, undoCutRestore, verify } from "./storage.ts";
 
@@ -43,50 +44,140 @@ test("a backup restores into an empty state folder", () => {
   }
 });
 
-// The owner's config folder goes with the state: a restore puts its files
-// back, each at the mode it had, with what it replaced kept as .prev. A
-// sign-in is neither copied nor put back.
-test("a backup carries the config folder, and a restore puts it back", () => {
+// The owner's config folder goes with the state. A restore puts its files
+// back only into a folder the caller names, each at the mode the live file
+// has, with what it replaced kept as .prev. A sign-in is neither copied nor
+// put back, and nothing in the folder can fail a backup.
+test("a backup carries the config folder, and a restore puts it back where it is told to", () => {
   const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
+  const config = join(root, "config");
   try {
-    const config = join(root, "config");
     fs.mkdirSync(join(config, "agents"), { recursive: true });
     writeFileSync(join(config, "mcp.json"), '{"servers":{"a":{"command":"a"}}}');
     writeFileSync(join(config, "agents", "scout.md"), "scout");
-    writeFileSync(join(config, "fcm-service-account.json"), "key", { mode: 0o600 });
+    writeFileSync(join(config, "fcm-service-account.json"), "key");
     fs.chmodSync(join(config, "fcm-service-account.json"), 0o600);
-    writeFileSync(join(config, "xai-auth.json"), "grant-then", { mode: 0o600 });
+    writeFileSync(join(config, "xai-auth.json"), "grant-then");
     writeFileSync(join(config, "mcp.json.prev"), "older");
     fs.symlinkSync("/etc/hostname", join(config, "linked"));
+    // A tool's own store is not configuration, and a file that cannot be read fails nothing.
+    for (const d of [".venv", "skills/x/node_modules", "skills/x"]) fs.mkdirSync(join(config, d), { recursive: true });
+    writeFileSync(join(config, ".venv", "big.bin"), "x".repeat(4096));
+    writeFileSync(join(config, "skills", "x", "node_modules", "p.js"), "p");
+    writeFileSync(join(config, "skills", "x", "SKILL.md"), "skill");
+    writeFileSync(join(config, "skills", "x", "locked.txt"), "no");
+    fs.chmodSync(join(config, "skills", "x", "locked.txt"), 0);
     const src = new Store(join(root, "src"));
     src.createSession({ model: "p:m", workspace: root, title: "kept" });
-    const b = new Storage(src, {} as any, new Bus(), {} as any, config).backup("test");
-    src.db.close();
+    const caught: unknown[][] = [];
+    const storage = new Storage(src, {} as any, new Bus(), { capture: (...a: unknown[]) => caught.push(a) } as any, config);
+    const b = storage.backup("test");
     const mode = (p: string) => fs.statSync(p).mode & 0o777;
     const held = (dir: string, under = ""): string[] => readdirSync(join(dir, under)).flatMap((n) => (fs.statSync(join(dir, under, n)).isDirectory() ? held(dir, join(under, n)) : [join(under, n)])).sort();
-    expect(held(join(b.path, "config"))).toEqual(["agents/scout.md", "fcm-service-account.json", "mcp.json"]);
+    expect(held(join(b.path, "config"))).toEqual(["agents/scout.md", "fcm-service-account.json", "mcp.json", "skills/x/SKILL.md"]);
+    const manifest = JSON.parse(readFileSync(join(b.path, "manifest.json"), "utf8"));
+    expect(manifest.config.dir).toBe(config);
+    expect(manifest.config.skipped.map((x: { name: string }) => x.name)).toEqual(["skills/x/locked.txt"]);
+    expect(caught.length).toBe(1);
     // No copy is easier to read than its original.
     expect(mode(join(b.path, "config", "fcm-service-account.json"))).toBe(0o600);
     expect(mode(join(b.path, "config"))).toBe(0o700);
     expect(verify(b.path).ok).toBe(true);
+    // A keel from before config was carried checks the files the manifest lists and names the first one missing: this sentence.
+    expect(manifest.files[0].name).toStartWith("a keel that knows backups with a config folder");
+    expect(existsSync(join(b.path, manifest.files[0].name))).toBe(false);
 
-    // Since the backup: a server list changed, a file lost, a newer sign-in, a file the backup never held.
+    // The next backup: an unchanged file is a second name for the first backup's copy, a changed one is copied.
+    writeFileSync(join(config, "agents", "scout.md"), "scout, changed");
+    const b2 = storage.backup("test");
+    const ino = (p: string) => fs.statSync(p).ino;
+    expect(ino(join(b2.path, "config", "mcp.json"))).toBe(ino(join(b.path, "config", "mcp.json")));
+    expect(ino(join(b2.path, "config", "agents", "scout.md"))).not.toBe(ino(join(b.path, "config", "agents", "scout.md")));
+    expect(ino(join(b2.path, "config", "mcp.json"))).not.toBe(ino(join(config, "mcp.json"))); // never the live file
+    expect(readFileSync(join(b2.path, "config", "agents", "scout.md"), "utf8")).toBe("scout, changed");
+    expect(verify(b2.path).ok).toBe(true);
+    src.db.close();
+
+    // Since the first backup: a server list changed and narrowed to the owner, a file lost, a newer sign-in, a file the backup never held.
     writeFileSync(join(config, "mcp.json"), '{"servers":{}}');
+    fs.chmodSync(join(config, "mcp.json"), 0o600);
     rmSync(join(config, "agents", "scout.md"));
     writeFileSync(join(config, "xai-auth.json"), "grant-now");
     writeFileSync(join(config, "hooks.json"), "{}");
+    // Not told a config folder: the state alone.
+    expect(restore(join(root, "src"), b.path).config_files).toBe(0);
+    expect(readFileSync(join(config, "mcp.json"), "utf8")).toBe('{"servers":{}}');
     const r = restore(join(root, "src"), b.path, config);
     expect(r.config_files).toBe(2);
     expect(readFileSync(join(config, "mcp.json"), "utf8")).toBe('{"servers":{"a":{"command":"a"}}}');
+    expect(mode(join(config, "mcp.json"))).toBe(0o600); // the mode the owner gave it since
     expect(readFileSync(join(config, "mcp.json.prev"), "utf8")).toBe('{"servers":{}}');
     expect(readFileSync(join(config, "agents", "scout.md"), "utf8")).toBe("scout");
     expect(mode(join(config, "fcm-service-account.json"))).toBe(0o600);
     expect(readFileSync(join(config, "xai-auth.json"), "utf8")).toBe("grant-now");
     expect(readFileSync(join(config, "hooks.json"), "utf8")).toBe("{}");
     // A changed config file in a backup fails its check, as any other file of it does.
-    writeFileSync(join(b.path, "config", "mcp.json"), "other");
+    fs.chmodSync(join(b.path, "config", "agents", "scout.md"), 0o600);
+    writeFileSync(join(b.path, "config", "agents", "scout.md"), "other");
     expect(() => restore(join(root, "dst"), b.path, config)).toThrow("changed since the backup was made");
   } finally {
+    fs.chmodSync(join(config, "skills", "x", "locked.txt"), 0o600);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// keel restore, from a shell whose config folder is neither the one the
+// backup was made from nor anything to do with the state folder named: the
+// case that would rewrite the owner's servers with a scratch daemon's.
+test("keel restore leaves the config folder alone unless asked, and asks for the folder when it is another", async () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
+  const made = join(root, "made-config"), shell = join(root, "shell-config"), other = join(root, "other-config");
+  const kept = process.env.KEEL_CONFIG_DIR;
+  const said: string[] = [];
+  const log = console.log, error = console.error;
+  console.log = console.error = (...a: unknown[]) => { said.push(a.join(" ")); };
+  try {
+    for (const [d, text] of [[made, '{"servers":{"stand-in":{"command":"x"}}}'], [shell, '{"servers":{"owners":{"command":"y"}}}']] as const) {
+      fs.mkdirSync(d, { recursive: true });
+      writeFileSync(join(d, "mcp.json"), text);
+    }
+    const src = new Store(join(root, "one"));
+    src.createSession({ model: "p:m", workspace: root, title: "kept" });
+    const b = new Storage(src, {} as any, new Bus(), {} as any, made).backup("test");
+    src.db.close();
+    const state = join(root, "two");
+    const run = async (...args: string[]) => { said.length = 0; return adminCommands.restore([b.path, "--state-dir", state, ...args]); };
+    const servers = (d: string) => readFileSync(join(d, "mcp.json"), "utf8");
+    process.env.KEEL_CONFIG_DIR = shell;
+
+    expect(await run()).toBe(0);
+    expect(servers(shell)).toContain("owners");
+    expect(said.join("\n")).toContain(`left alone: the 1 config file this backup carries, from ${made}`);
+    expect(said.join("\n")).toContain(`--config=${made}`);
+    expect(new Store(state).sessions().length).toBe(1);
+
+    // Asked, but this shell's folder is not the backup's: nothing moves, the state included.
+    const before = readdirSync(state).sort();
+    expect(await run("--config")).toBe(1);
+    expect(said.join("\n")).toContain(`came from ${made}, and this shell's config folder is ${shell}`);
+    expect(servers(shell)).toContain("owners");
+    expect(readdirSync(state).sort()).toEqual(before);
+
+    // The folder spelled out, and the shell the backup was made from.
+    expect(await run(`--config=${other}`)).toBe(0);
+    expect(servers(other)).toContain("stand-in");
+    expect(said.join("\n")).toContain(`into ${other}, which is not the folder they came from (${made})`);
+    expect(servers(shell)).toContain("owners");
+    process.env.KEEL_CONFIG_DIR = made;
+    writeFileSync(join(made, "mcp.json"), '{"servers":{}}');
+    expect(await run("--config")).toBe(0);
+    expect(servers(made)).toContain("stand-in");
+    expect(said.join("\n")).toContain(`put back 1 of 1 config file into ${made}`);
+    expect(servers(shell)).toContain("owners");
+  } finally {
+    console.log = log;
+    console.error = error;
+    process.env.KEEL_CONFIG_DIR = kept;
     rmSync(root, { recursive: true, force: true });
   }
 });

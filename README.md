@@ -217,6 +217,33 @@ newest 200 causes), with the Errors rows that last happened in that session or
 its agents. For an agent's session it returns the rows of its parent that name
 it.
 
+## Backups
+
+`keel backup` writes a checked copy under `<state>/backups`: the database, the
+settings files, the uploaded files, and the files of the config folder (MCP
+servers, hooks, skills, plugins, agents, instructions). The daemon makes one
+before a restart. `keel backups` lists them.
+
+Config files are copied at their own mode into folders only the owner can
+open. A file that did not change since the last backup is shared with that
+backup, not copied again. Left out: links, `.prev` and temp files, folders
+whose name starts with a dot, `node_modules`, and the sign-in file. A file
+that cannot be read is skipped and named in the backup's `manifest.json`. It
+never fails the backup.
+
+`keel restore BACKUP` puts the state back. The daemon must be stopped. The
+files it replaced stay beside the state. The config folder is left alone
+unless asked for, because the state folder does not say which config folder
+goes with it:
+
+- `--config` puts the backup's config files into this shell's config folder,
+  when that is the folder the backup was made from.
+- `--config=DIR` puts them into `DIR`.
+
+Each file put back keeps what it held as `<name>.prev`, and keeps its mode. A
+file the backup does not hold stays as it is. A keel from before backups
+carried config refuses such a backup and says why. The state is untouched.
+
 ## Phone
 
 `android/` holds Keel for Android: sessions, approvals, questions and push on

@@ -6,7 +6,7 @@
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { GRANT_FILES, writeOwnFile } from "../core/ownfile.ts";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
@@ -323,23 +323,19 @@ export class Storage {
           files.push(`attachments/${id}/${name}`);
         }
       }
-      // The owner's config folder (MCP servers, hooks, skills, plugins, agents,
-      // instructions), under config/: each file at its own mode, in folders
-      // only the owner can open, so a copy is never easier to read than its
-      // original.
-      if (this.config) for (const rel of configFiles(this.config)) {
-        const from = join(this.config, rel), to = join(tmp, "config", rel);
-        mkdirSync(dirname(to), { recursive: true, mode: 0o700 });
-        copyFileSync(from, to);
-        chmodSync(to, statSync(from).mode & 0o777);
-        files.push(`config/${rel}`);
-      }
+      const carried = this.config ? this.carryConfig(resolve(this.config), tmp) : null;
       const check = verify(tmp);
       if (!check.ok) throw new Error(`the backup did not check out: ${check.why}`);
       if (check.sessions !== counts.sessions || check.events < counts.events) throw new Error(`the backup holds ${check.sessions} sessions and ${check.events} events, the store ${counts.sessions} and ${counts.events}`);
-      const manifest = {
+      const manifest: Manifest = {
         created_ms: Date.now(), reason, sessions: check.sessions, events: check.events,
-        files: files.map((f) => ({ name: f, bytes: statSync(join(tmp, f)).size, sha256: hashFile(join(tmp, f)) })),
+        files: [
+          // First, so a keel from before config was carried stops at once (see OLDER_KEEL).
+          ...(carried?.files.length ? [{ name: OLDER_KEEL, bytes: 0, sha256: "", older_keel: true as const }] : []),
+          ...files.map((f) => ({ name: f, bytes: statSync(join(tmp, f)).size, sha256: hashFile(join(tmp, f)) })),
+          ...(carried?.files ?? []),
+        ],
+        ...(carried ? { config: { dir: carried.dir, skipped: carried.skipped } } : {}),
       };
       writeFileSync(join(tmp, "manifest.json"), JSON.stringify(manifest, null, 2), { mode: 0o600 });
       renameSync(tmp, final);
@@ -350,6 +346,52 @@ export class Storage {
     this.prune();
     this.last = undefined;
     return this.backups().find((b) => b.name === basename(final))!;
+  }
+
+  // The owner's config folder (MCP servers, hooks, skills, plugins, agents,
+  // instructions) goes with the state, under config/: each file at its own
+  // mode, in folders only the owner can open, so a copy is never easier to
+  // read than its original.
+  // A file that is as the newest backup of this folder has it (the same
+  // size, time and mode) is a second name for that backup's copy, not a new
+  // one: a backup's files are never written again, so sharing them is safe,
+  // and an unchanged folder costs a listing. (Never a link to the live file:
+  // an editor that writes in place would change the backup with it.)
+  // A file that cannot be read, or goes away meanwhile, is left out and
+  // named in the manifest: nothing in this folder fails a backup, so nothing
+  // in it calls off the restart that waits on one.
+  private carryConfig(dir: string, tmp: string) {
+    const prev = this.backups().find((b) => !b.unreadable && b.config === dir);
+    const was = new Map<string, ManifestFile>();
+    if (prev) try {
+      for (const f of (JSON.parse(readFileSync(join(prev.path, "manifest.json"), "utf8")) as Manifest).files) if (f.name.startsWith("config/")) was.set(f.name, f);
+    } catch {} // nothing to share with
+    const { files: listed, skipped } = configFiles(dir);
+    const files: ManifestFile[] = [];
+    for (const rel of listed) {
+      const name = `config/${rel}`, from = join(dir, rel), to = join(tmp, name);
+      try {
+        const st = lstatSync(from);
+        if (!st.isFile()) continue; // became a folder or a link since the listing
+        const mode = st.mode & 0o777, old = was.get(name);
+        mkdirSync(dirname(to), { recursive: true, mode: 0o700 });
+        if (old && old.bytes === st.size && old.mtime_ms === st.mtimeMs && old.mode === mode) {
+          try {
+            linkSync(join(prev!.path, name), to);
+            files.push({ ...old });
+            continue;
+          } catch {} // another filesystem, or that copy is gone: a real copy
+        }
+        copyFileSync(from, to);
+        chmodSync(to, mode);
+        files.push({ name, bytes: statSync(to).size, sha256: hashFile(to), mtime_ms: st.mtimeMs, mode });
+      } catch (e) {
+        rmSync(to, { force: true });
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") skipped.push({ name: rel, why: (e as Error).message });
+      }
+    }
+    if (skipped.length) this.errors.capture?.("server", new Error(`the backup left out ${skipped.length} config file${skipped.length === 1 ? "" : "s"} it could not read: ${skipped.map((s) => s.name).join(", ")}`), { at: "backup config", dir });
+    return { dir, files, skipped };
   }
 
   private counts(db: Database) {
@@ -378,7 +420,7 @@ export class Storage {
         try {
           const m = JSON.parse(readFileSync(join(path, "manifest.json"), "utf8"));
           if (typeof m.created_ms !== "number" || !Array.isArray(m.files)) throw new Error("it lacks created_ms or files");
-          return { name, path, created_ms: m.created_ms, reason: m.reason, sessions: m.sessions, events: m.events, bytes: (m.files as { bytes: number }[]).reduce((n, f) => n + f.bytes, 0) };
+          return { name, path, created_ms: m.created_ms, reason: m.reason, sessions: m.sessions, events: m.events, bytes: (m.files as { bytes: number }[]).reduce((n, f) => n + f.bytes, 0), ...(typeof m.config?.dir === "string" ? { config: m.config.dir } : {}) };
         } catch (e) {
           return { name, path, created_ms: stampMs(name), reason: "", sessions: null, events: null, bytes: null, unreadable: `manifest.json cannot be read: ${(e as Error).message}` };
         }
@@ -389,7 +431,19 @@ export class Storage {
   }
 }
 
-type Backup = { name: string; path: string; created_ms: number | null; reason: string; sessions: number | null; events: number | null; bytes: number | null; unreadable?: string };
+// `config`: the config folder the backup carries files of, when it carries any.
+type Backup = { name: string; path: string; created_ms: number | null; reason: string; sessions: number | null; events: number | null; bytes: number | null; unreadable?: string; config?: string };
+
+type ManifestFile = { name: string; bytes: number; sha256: string; mtime_ms?: number; mode?: number; older_keel?: true };
+type Manifest = { created_ms: number; reason: string; sessions: number; events: number; files: ManifestFile[]; config?: { dir: string; skipped: { name: string; why: string }[] } };
+
+// A backup that carries config files cannot be restored by a keel from
+// before it did (it would take config/ for a state file and stop on it).
+// That keel checks every file the manifest lists and says which one is
+// missing, so the first entry of such a manifest is this sentence: its
+// restore then ends with "the backup cannot be restored: a keel that knows
+// ... is missing", the state untouched. This keel skips the entry.
+const OLDER_KEEL = "a keel that knows backups with a config folder (this one carries it: restore with the keel that made it, or a newer one)";
 
 // keel-2026-11-19T10-00-00-000Z[-N] -> its time, or null; and its N.
 const order = (name: string) => Number(/Z-(\d+)$/.exec(name)?.[1] ?? 0);
@@ -401,21 +455,41 @@ const stampMs = (name: string) => {
 
 // The files of a config folder a backup carries, as paths inside it: every
 // regular file. Left out: links (what they point at is not the folder's), the
-// .prev and .tmp files an edit leaves beside a config file, a clone's
-// history and installed packages, and a sign-in (GRANT_FILES): its tokens
-// rotate, so an older copy no longer signs in and would replace one that
-// does, and a copy in every backup would outlive a sign-out.
-export function configFiles(dir: string, under = ""): string[] {
-  const out: string[] = [];
-  let names: string[];
-  try { names = readdirSync(join(dir, under)).sort(); } catch { return out; }
+// .prev and .tmp files an edit leaves beside a config file, folders that
+// are a tool's own store and not configuration (a name that starts with a
+// dot: a clone's history, a virtual environment, a cache; and
+// node_modules), and a sign-in (GRANT_FILES): its tokens rotate, so an
+// older copy no longer signs in and would replace one that does, and a copy
+// in every backup would outlive a sign-out.
+// `skipped`: what could not be listed (a folder that cannot be opened).
+// Something that went away meanwhile is just not there.
+export function configFiles(dir: string, under = "", skipped: { name: string; why: string }[] = []): { files: string[]; skipped: { name: string; why: string }[] } {
+  const files: string[] = [];
+  const gone = (e: unknown) => (e as NodeJS.ErrnoException).code === "ENOENT";
+  let names: string[] = [];
+  try { names = readdirSync(join(dir, under)).sort(); } catch (e) {
+    if (under && !gone(e)) skipped.push({ name: `${under}/`, why: (e as Error).message });
+  }
   for (const name of names) {
     const rel = under ? join(under, name) : name;
-    const st = lstatSync(join(dir, rel));
-    if (st.isDirectory()) { if (name !== ".git" && name !== "node_modules") out.push(...configFiles(dir, rel)); }
-    else if (st.isFile() && !name.endsWith(".prev") && !name.endsWith(".tmp") && !(under === "" && GRANT_FILES.has(name))) out.push(rel);
+    try {
+      const st = lstatSync(join(dir, rel));
+      if (st.isDirectory()) { if (!name.startsWith(".") && name !== "node_modules") files.push(...configFiles(dir, rel, skipped).files); }
+      else if (st.isFile() && !name.endsWith(".prev") && !name.endsWith(".tmp") && !(under === "" && GRANT_FILES.has(name))) files.push(rel);
+    } catch (e) {
+      if (!gone(e)) skipped.push({ name: rel, why: (e as Error).message });
+    }
   }
-  return out;
+  return { files, skipped };
+}
+
+// What a backup says of the config files it carries: how many, and the
+// folder they were read from (null: none, or a backup from before that was
+// written down).
+export function backupConfig(backupDir: string): { dir: string | null; files: number } {
+  let dir: string | null = null;
+  try { dir = (JSON.parse(readFileSync(join(backupDir, "manifest.json"), "utf8")) as Manifest).config?.dir ?? null; } catch {}
+  return { dir, files: configFiles(join(backupDir, "config")).files.length };
 }
 
 export const shadowDir = (stateDir: string, workspace: string) =>
@@ -444,7 +518,8 @@ export function verify(dir: string): { ok: true; sessions: number; events: numbe
   const mf = join(dir, "manifest.json");
   if (existsSync(mf)) {
     const m = JSON.parse(readFileSync(mf, "utf8"));
-    for (const f of m.files as { name: string; sha256: string }[]) {
+    for (const f of m.files as ManifestFile[]) {
+      if (f.older_keel) continue; // a sentence for a keel that cannot restore this backup, not a file
       if (!existsSync(join(dir, f.name))) return { ok: false, why: `${f.name} is missing` };
       const sha = hashFile(join(dir, f.name));
       if (sha !== f.sha256) return { ok: false, why: `${f.name} changed since the backup was made` };
@@ -480,10 +555,13 @@ const ASIDE = /^before-restore-[\w-]+$/;
 // Puts a backup in place of the state (the daemon must be stopped; the caller
 // holds the state folder's claim). The current files are kept beside it, so a
 // restore can be undone.
-// `config` is the owner's config folder: the config files the backup carries
-// are put back there once the state is in, each one whole, and what it
-// replaced stays beside it as <name>.prev. A config file the backup does not
-// hold is left as it is, and so is a sign-in.
+// `config` names a config folder to put the backup's config files back
+// into, once the state is in. It is the caller's choice, never a default:
+// the state folder says nothing about which config folder goes with it, and
+// a backup of a scratch daemon restored into scratch state must not rewrite
+// the owner's servers. Each file is put back whole, a file that is there
+// keeps its mode, and what it held stays beside it as <name>.prev. A config
+// file the backup does not hold is left as it is, and so is a sign-in.
 // The backup is copied into the state folder first: what can fail for lack of
 // space or a bad file fails with the state untouched. Then it is swapped in by
 // renames, written down before the first one. A swap that fails is undone, and
@@ -539,15 +617,17 @@ export function restore(stateDir: string, backupDir: string, config?: string) {
   rmSync(at(stage), { recursive: true, force: true });
   let put = 0;
   if (config) {
-    const from = join(backupDir, "config");
-    try {
-      for (const rel of configFiles(from)) {
-        const src = join(from, rel);
-        if (writeOwnFile(join(config, rel), readFileSync(src), { mode: statSync(src).mode & 0o777 })) put++;
+    const from = join(backupDir, "config"), failed: string[] = [];
+    for (const rel of configFiles(from).files) {
+      const src = join(from, rel), to = join(config, rel);
+      try {
+        // A file that is there keeps the mode the owner gave it since; a new one gets the backup's.
+        if (writeOwnFile(to, readFileSync(src), existsSync(to) ? {} : { mode: statSync(src).mode & 0o777 })) put++;
+      } catch (e) {
+        failed.push(`${rel}: ${(e as Error).message}`);
       }
-    } catch (e) {
-      throw new Error(`the state was restored (what it replaced is in ${at(aside)}), but not every config file was put back: ${(e as Error).message}. Each file that was replaced has what it held beside it as .prev.`, { cause: e });
     }
+    if (failed.length) throw new Error(`the state was restored (what it replaced is in ${at(aside)}) and ${put} config file${put === 1 ? " was" : "s were"} put back, but not ${failed.length === 1 ? "this one" : "these"}:\n  ${failed.join("\n  ")}\nEach file that was replaced has what it held beside it as .prev.`);
   }
   return { ...check, aside: at(aside), config_files: put };
 }

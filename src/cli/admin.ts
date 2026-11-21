@@ -9,7 +9,7 @@ import { parseArgs } from "node:util";
 import { unitTemplate } from "../admin/unit.ts";
 import { claimState, lockHolder } from "../admin/daemon.ts";
 import { parseBind } from "../core/bind.ts";
-import { restore as restoreBackup } from "../admin/storage.ts";
+import { backupConfig, restore as restoreBackup } from "../admin/storage.ts";
 import { configDir } from "../providers/config.ts";
 import { authHeaders, findDaemon, refusal } from "./client.ts";
 import { defaultStateDir } from "../core/paths.ts";
@@ -139,7 +139,7 @@ const cleanup = wrap("keel cleanup --older-than DAYS [--yes] [--leftovers] [--ur
     return 0;
   });
 
-const backup = wrap("keel backup [--url URL]  A checked copy of the database and settings, kept under <state>/backups.", {}, async (v) => {
+const backup = wrap("keel backup [--url URL]  A checked copy of the database, the settings and the config folder's files, kept under <state>/backups.", {}, async (v) => {
   const r = await call(urlOf(v.url), "/api/backups", { method: "POST" });
   console.log(`${r.backup.path}  ${mb(r.backup.bytes)}, ${r.backup.sessions} sessions, ${r.backup.events} events, checked`);
   return 0;
@@ -151,24 +151,56 @@ const backups = wrap("keel backups [--url URL] [--json]", {}, async (v) => {
   return 0;
 });
 
-const restore = wrap("keel restore BACKUP [--state-dir DIR]\n  Puts a backup (a name from `keel backups` or a folder) in place of the state. The daemon must be stopped; the current files are kept beside it.",
-  { "state-dir": { type: "string" } },
-  async (v, pos) => {
+const RESTORE_USAGE = [
+  "keel restore BACKUP [--state-dir DIR] [--config[=DIR]]",
+  "  Puts a backup (a name from `keel backups` or a folder) in place of the state. The daemon must be stopped; the current files are kept beside it.",
+  "  A backup also carries the config folder's files (MCP servers, hooks, skills, plugins, agents). They are left alone unless asked for:",
+  "  --config      puts them back into this shell's config folder, when that is the folder the backup was made from",
+  "  --config=DIR  puts them back into DIR",
+  "  Each file put back keeps what it held beside it as <name>.prev. A sign-in is never part of a backup.",
+].join("\n");
+
+// The state folder says nothing about which config folder goes with it (a
+// scratch daemon's backup restored into its scratch state, from a shell whose
+// config folder is the owner's own), so config is put back only when asked,
+// and into this shell's folder only when the backup came from it.
+const restore = (argv: string[]) => {
+  // A bare --config never takes the next word (the backup's name) as its folder: the folder is --config=DIR.
+  let config: string | true | undefined;
+  const rest = argv.filter((a) => {
+    if (a !== "--config" && !a.startsWith("--config=")) return true;
+    config = a.slice("--config=".length) || true;
+    return false;
+  });
+  return wrap(RESTORE_USAGE, { "state-dir": { type: "string" } }, async (v, pos) => {
     const dir = stateDirOf(v["state-dir"]);
     if (!pos[0]) throw new Error("name the backup (keel backups lists them)");
     const pid = lockHolder(dir);
     if (pid) throw new Error(`a daemon (pid ${pid}) uses ${dir}: stop it first (keel drain)`);
     const src = existsSync(pos[0]) ? resolve(pos[0]) : join(dir, "backups", pos[0]);
     if (!existsSync(src)) throw new Error(`no backup ${pos[0]}`);
+    // Decided before anything moves: a refusal leaves the state as it is too.
+    const held = backupConfig(src);
+    const from = held.dir ?? "a folder it does not name";
+    let into: string | undefined;
+    if (config !== undefined) {
+      if (!held.files) throw new Error("this backup carries no config files: --config has nothing to put back");
+      const here = resolve(configDir());
+      if (config === true && (!held.dir || resolve(held.dir) !== here)) throw new Error(`this backup's config files came from ${from}, and this shell's config folder is ${here}. Nothing was changed. Name the folder to put them into: --config=DIR`);
+      into = config === true ? here : resolve(config);
+    }
     // Held for the restore: no daemon starts on the folder in the middle of it.
     const claim = claimState(dir);
     if (!claim) throw new Error(`a daemon uses ${dir}: stop it first (keel drain)`);
     let r;
-    try { r = restoreBackup(dir, src, configDir()); } finally { claim.release(); }
+    try { r = restoreBackup(dir, src, into); } finally { claim.release(); }
     console.log(`restored ${r.sessions} sessions, ${r.events} events into ${dir}\nthe files it replaced are in ${r.aside}`);
-    if (r.config_files) console.log(`put back ${r.config_files} config file${r.config_files === 1 ? "" : "s"} in ${configDir()}: what each one held is beside it as .prev`);
+    const n = (k: number) => `${k} config file${k === 1 ? "" : "s"}`;
+    if (into) console.log(`put back ${r.config_files} of ${n(held.files)} into ${into}${held.dir && resolve(held.dir) !== into ? `, which is not the folder they came from (${from})` : ""}. A file not put back was already as the backup has it; what each replaced one held is beside it as .prev. A daemon that uses this folder takes them up at its next reload.`);
+    else if (held.files) console.log(`left alone: the ${n(held.files)} this backup carries, from ${from}. The config folder is not part of the state folder, so it is put back only when asked: keel restore ${pos[0]} --config${held.dir ? `=${held.dir}` : "=DIR"}`);
     return 0;
-  });
+  })(rest);
+};
 
 const report = wrap("keel report [--session ID] [--note TEXT] [--dry-run] [--url URL]\n  Writes a redacted bundle about a problem (no credentials) to <state>/reports.",
   { session: { type: "string" }, note: { type: "string" }, "dry-run": { type: "boolean" } },
