@@ -3,7 +3,7 @@
 import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { neverAllowed, neverAllowedText } from "./autonomy.ts";
-import { isReadOnly, matchRule, risksOf, splitCommand, suggestRule, type Simple } from "./shell.ts";
+import { isReadOnly, matchRule, readForm, resolveVariables, risksOf, splitCommand, suggestRule, type Simple } from "./shell.ts";
 import { contains } from "../core/paths.ts";
 import type { ToolKind } from "../tools/types.ts";
 import { extractShellApplyPatch, patchTargetPaths } from "../tools/v4a.ts";
@@ -64,7 +64,8 @@ export type CallClass =
   // A call its tool refused before it was judged (the reason is the result).
   | { kind: "refused"; why: string };
 
-export type Ask = { risk: "high" | "low"; why?: string; suggest: Suggest[]; ownerOnly?: true };
+// `notice`: a line for the owner on the card (the form of the command that would not have asked).
+export type Ask = { risk: "high" | "low"; why?: string; suggest: Suggest[]; ownerOnly?: true; notice?: string };
 export type Decision =
   | { allow: true; why?: string }
   | { deny: string }
@@ -311,20 +312,26 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
   }
   if (f.mode === "full-auto") return { allow: true };
   const shellRules = f.rules.filter((r) => r.kind === "shell");
-  const open = parts.filter((p) => (interpreter !== undefined || !isReadOnly(p)) && !shellRules.some((r) => matchRule(r.pattern, p)));
+  // A variable the line's first words give a value is read as that value.
+  const open = resolveVariables(parts).filter((p) => (interpreter !== undefined || !isReadOnly(p)) && !shellRules.some((r) => matchRule(r.pattern, p)));
   if (!open.length) return { allow: true };
+  // The form that would be read as a read, when an expansion among the arguments is all that keeps it from being one.
+  const form = interpreter === undefined ? readForm(open[0]!) : null;
   if (f.mode === "read-only") {
     const p = open[0]!;
     // Say what would make it a read, when that is all it lacks.
     const why = isReadOnly(p) ? ` It runs in ${interpreter}, and only a command bash runs is read as a read: run it with bash.`
-      : p.dyn && isReadOnly({ ...p, dyn: undefined, splits: undefined }) ? " One of its arguments comes from an expansion ($(...), a variable, {a,b}), which could add an option that writes: write the value out."
+      : form ? ` One of its arguments comes from an expansion ($(...), a variable, {a,b}, a glob), which could add an option that writes: ${form}.`
       : p.unknown && isReadOnly({ ...p, unknown: undefined }) ? " The rules cannot follow what the shell evaluates in it (arithmetic, a subscript, a sliced or indirect variable, a case inside a substitution): write it plainly."
       : "";
     return { deny: `This session is read-only: only read-only commands run, and \`${p.text}\` is not one.${why}` };
   }
   if ((f.mode === "auto-edits" || f.mode === "auto") && f.sandboxed) return { allow: true, why: "sandboxed" };
   // A part with no command word (a redirect after a group, a loop or nothing) has no rule to suggest.
-  return { ask: { risk: "low", suggest: [...new Set(open.filter((p) => p.words.length).map(suggestRule))].slice(0, 5).map((pattern) => ({ kind: "shell" as const, pattern })) } };
+  const suggest = [...new Set(open.filter((p) => p.words.length).map(suggestRule))].slice(0, 5).map((pattern) => ({ kind: "shell" as const, pattern }));
+  // One command asks, and only for its expansion: the card says the form that runs without asking.
+  const notice = form && open.length === 1 ? `It reads, but one of its arguments comes from an expansion, which could add an option that writes. To run without asking: ${form}.` : undefined;
+  return { ask: { risk: "low", suggest, ...(notice ? { notice } : {}) } };
 }
 
 // Driving another session. An allow rule for a tool does not cover another

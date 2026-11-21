@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { highRisk, isReadOnly, matchRule, readOnlyCommand, risksOf, splitCommand, suggestRule } from "./shell.ts";
+import { highRisk, isReadOnly, matchRule, readForm, readOnlyCommand, resolveVariables, risksOf, splitCommand, suggestRule } from "./shell.ts";
 
 const split = (c: string) => splitCommand(c)!;
 const ro = (c: string) => split(c).every(isReadOnly);
@@ -60,6 +60,45 @@ test("a word an expansion makes is marked, and what evaluates a value is unknown
     expect([c, split(c).some((s) => s.unknown)]).toEqual([c, true]);
   for (const c of ["echo ${x}", "echo ${#x}", "echo ${x:-y}", "echo ${x%/*}", 'echo "${x//a/b}"'])
     expect([c, split(c).some((s) => s.unknown)]).toEqual([c, false]);
+});
+
+test("what is known of a word an expansion makes: its written-out lead, whether it stays one word, what makes it", () => {
+  const how = (c: string) => split(c).at(-1)!.how!.map((m) => [m.one, m.lead, m.subs.length, m.vars.map((v) => v.name).join(), m.rest]);
+  expect(how('sort "src/$d" $f')).toEqual([[true, "src/", 0, "d", false], [false, "", 0, "f", false]]);
+  expect(how('git diff $(git merge-base main HEAD)..HEAD "$(pwd)/x"')).toEqual([[false, "", 1, "", false], [true, "", 1, "", false]]);
+  expect(how('echo --since="${d}" *.ts x${y:-z} "$@"')).toEqual([[true, "--since=", 0, "d", false], [false, "", 0, "", true], [false, "x", 0, "", true], [false, "", 0, "", true]]);
+  // The operator that ends a command, and what stands after a loop, a conditional or a group.
+  expect(split("a=1 && b | c; for x in 1; do d; done; e").map((s) => [s.words[0], s.sep ?? ";", !!s.flow])).toEqual([["a=1", "&&", false], ["b", "|", false], ["c", ";", false], ["d", ";", true], ["e", ";", true]]);
+});
+
+test("a variable the line's first words give a value is read as that value", () => {
+  const words = (c: string) => resolveVariables(split(c)).at(-1)!.words.join(" ");
+  expect(words("f=a.ts; wc -l $f")).toBe("wc -l a.ts");
+  expect(words('d=src n=5; git log -$n -- "$d/x" ${d}')).toBe("git log -5 -- src/x src");
+  expect(words("o=-delete; find . $o")).toBe("find . -delete");
+  // Not when it may hold something else by then, or was never certainly given.
+  for (const c of ["f=a; f=b; sort $f", "f=a; read f; sort $f", "f=a | cat; sort $f", "true && f=a; sort $f", "f=a; for f in b; do sort $f; done", "f=a; if true; then sort $f; fi", "f='a b'; sort $f", "f=a; : ${g:=x}; sort $f"])
+    expect([c, words(c)]).toEqual([c, "sort $f"]);
+  // A substitution in an assignment's own value runs before the assignment.
+  expect(resolveVariables(split("g=$(find . $f); f=d")).map((s) => s.words.join(" "))).toEqual(["find . $f", "g=$(...)", "f=d"]);
+  // The output of a substitution stands where the variable does.
+  expect(ro("base=$(git merge-base main HEAD); git diff $base -- src")).toBe(false);
+  expect(readOnlyCommand("base=$(git merge-base main HEAD); git diff $base -- src")).toBe(true);
+  expect(readOnlyCommand("base=$(git describe --tags); git diff $base")).toBe(false);
+});
+
+test("an expansion among a reader's arguments is let through only where it cannot be an option", () => {
+  for (const c of ["git diff $(git merge-base main HEAD)", "git log --oneline $(git rev-parse HEAD~3)..HEAD", 'git show "HEAD:$f"', "git log -1 -- $f", "rg foo -- $(git ls-files)", 'sort "./$f"',
+    'find "$HOME/x" -name a', 'sed -n 1,5p -- "$f"', 'git -C "$dir" status', "echo $((1+2)) ${a[0]}", "x=5; echo $x"])
+    expect([c, readOnlyCommand(c)]).toEqual([c, true]);
+  for (const c of ["git diff $(git describe --tags)", "git diff $(git merge-base main HEAD)--output=f", "git log --grep -- $x", "git log --end-of-options $x", "sort -t -- $f", "sort src/$f", 'find "$X" -name a',
+    'sed -n "$s" a', 'sed -- "$s" a', "git -C $dir status", 'git branch -- "x$y"', "for HOME in -x; do find \"$HOME/x\"; done", "echo $((i+1))", "X=5; echo $X"])
+    expect([c, readOnlyCommand(c)]).toEqual([c, false]);
+  const form = (c: string) => readForm(split(c).at(-1)!);
+  expect(form("rg foo $(git ls-files)")).toContain("put -- before it");
+  expect(form("git diff $base")).toContain("quote it after written-out text");
+  expect(form("sort -o out $f")).toBeNull();
+  expect(form("rg foo -- $(git ls-files)")).toBeNull();
 });
 
 test("sed and awk are reads only when their script is", () => {

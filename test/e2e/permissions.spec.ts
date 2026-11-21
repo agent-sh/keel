@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
@@ -277,6 +277,39 @@ test("a write through a redirect on a group, a loop or nothing is never run as a
   await shoot(page, "perm-11-redirect-asked");
   await card.getByTestId("allow-once").click();
   await expect.poll(() => existsSync(join(ws, "grouped.txt")), { timeout: 30_000 }).toBe(true);
+  await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 60_000 });
+  await request.delete(`/api/sessions/${session.id}`);
+});
+
+// Everyday reads run in Ask mode without a card: a lookup, a test, a filter,
+// a variable the line itself gives a value, find with a reader behind -exec. A
+// read whose argument comes from an expansion still asks, and its card says
+// the form that runs without asking.
+test("everyday reads run unasked, and an expansion that asks names the form that would not", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `perm-reads-${Date.now()}`);
+  mkdirSync(ws, { recursive: true });
+  writeFileSync(join(ws, "a.txt"), "b\na\n");
+  const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: "scripted:stand-in", title: "Everyday reads" } })).json();
+  const run = (commands: string[]) => request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify(commands.map((command) => ({ name: "Bash", input: { command } })))}` } });
+
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+  await page.goto(`/s/${session.id}`);
+  await expect(page.getByTestId("permission-mode")).toHaveText("Ask");
+  await run(["command -v ls", "[[ -f a.txt ]] && seq 1 3 | tac", "f=a.txt; sort $f | paste - -", "sort -- $(ls)", "find . -type f -exec wc -l {} +"]);
+  // No card: the turn ends on its own, with the last command's output.
+  await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
+  await expect(page.getByTestId("approval")).toHaveCount(0);
+  await expect(page.getByText(/Done with 5 calls\. Last result:/)).toContainText("a.txt");
+  await shoot(page, "perm-12-reads-unasked");
+
+  await run(["sort $(ls)"]);
+  const card = page.getByTestId("approval");
+  await expect(card).toBeVisible({ timeout: 30_000 });
+  await expect(card.getByTestId("approval-notice")).toContainText("put -- before it");
+  await shoot(page, "perm-13-expansion-notice");
+  await card.getByTestId("allow-once").click();
   await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 60_000 });
   await request.delete(`/api/sessions/${session.id}`);
 });

@@ -189,9 +189,22 @@ test("a command another interpreter runs is never read as a read", () => {
   expect(kind(decide(argv, facts("ask")))).toBe("ask-low");
 });
 
-test("a Read only session is told when an expansion is all that keeps a command from being a read", () => {
-  const d = decide({ kind: "shell", command: "git diff $(git merge-base main HEAD)" }, facts("read-only"));
-  expect("deny" in d && d.deny).toContain("write the value out");
-  const plain = decide({ kind: "shell", command: "git commit -m x" }, facts("read-only"));
+test("a Read only session and the owner's card are told the form of a command that would be read as a read", () => {
+  const ro = (command: string) => decide({ kind: "shell", command }, facts("read-only"));
+  const ask = (command: string) => decide({ kind: "shell", command }, facts("ask"));
+  // A substitution that prints commit hashes cannot add an option: a read.
+  expect(kind(ro("git diff $(git merge-base main HEAD)"))).toBe("allow");
+  const tag = ro("git log $(git describe --tags --abbrev=0)..HEAD");
+  expect("deny" in tag && tag.deny).toContain("quote it after written-out text");
+  expect(kind(ro('git log "refs/tags/$(git describe --tags --abbrev=0)..HEAD"'))).toBe("allow");
+  const files = ask("rg foo $(git ls-files)");
+  expect("ask" in files && files.ask.notice).toContain("put -- before it");
+  expect(kind(ask("rg foo -- $(git ls-files)"))).toBe("allow");
+  const find = ro("find . $X");
+  expect("deny" in find && find.deny).toContain("write the value out");
+  // A command that writes gets no such hint, on the refusal or on the card.
+  const plain = ro("git commit -m x");
   expect("deny" in plain && plain.deny).not.toContain("write the value out");
+  const card = ask("sort -o out $f");
+  expect("ask" in card && card.ask.notice).toBeUndefined();
 });

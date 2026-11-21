@@ -230,3 +230,14 @@ export function xargsCommand(args: string[]): string[] | null {
   }
   return args.slice(i);
 }
+
+// Programs whose options end at `--`, each with the options that take no value: a `--` that stands after one of
+// them (or after an operand) is the end of the options, while after any other option it may be that option's value.
+export const ENDS = new Map<string, RegExp>([
+  ["sort", /^-[bdfghiMnRrVcCmsuz]+$/],
+  ["rg", /^(-[cFHhiLlNnoPSsUuvwxz.]+|--[a-z-]+=.*|--(files|hidden|no-ignore|json|count|ignore-case|smart-case|case-sensitive|line-number|no-line-number|files-with-matches|files-without-match|fixed-strings|word-regexp|line-regexp|invert-match|only-matching|no-heading|heading|multiline|pcre2|follow|null|stats|trim|vimgrep|column|no-filename|with-filename))$/],
+  ["fd", /^(-[HIaLlpsiugF01]+|--[a-z-]+=.*|--(hidden|no-ignore|absolute-path|follow|list-details|full-path|case-sensitive|ignore-case|glob|fixed-strings|print0))$/],
+  ["file", /^(-[bhiLkrsz0NnS]+|--(brief|mime|mime-type|mime-encoding|dereference|no-dereference|keep-going|uncompress|print0|raw))$/],
+  ["shuf", /^(-[erz]+|--(echo|repeat|zero-terminated))$/],
+  ...["base64", "base32", "basenc"].map((p): [string, RegExp] => [p, /^(-[di]+|--(decode|ignore-garbage|base64|base64url|base32|base32hex|base16|z85))$/]),
+]);

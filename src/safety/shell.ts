@@ -1,7 +1,7 @@
 // Shell command analysis for the permission gate: split a command line into
 // the simple commands it runs, decide which are read-only, which are high
 // risk, and whether a stored rule covers each one. Pure functions.
-import { READERS, anyArguments, denied, long, xargsCommand } from "./shell-reads.ts";
+import { ENDS, READERS, anyArguments, denied, long, xargsCommand } from "./shell-reads.ts";
 
 // One simple command: its words with quotes removed, and whether it writes
 // through a redirection. `nested`: it runs inside a substitution or a
@@ -13,8 +13,20 @@ import { READERS, anyArguments, denied, long, xargsCommand } from "./shell-reads
 // conditional, or with no command at all, is a part with no words.
 // `dyn`: the words (by index) an expansion makes ($x, $(...), {a,b}), so what
 // they hold, and with `splits` how many words they are, is not known from the
-// text. `inputs`: the files it reads through a redirect.
-export type Simple = { words: string[]; text: string; redirects: boolean; nested?: true; unknown?: true; heredoc?: true; dyn?: number[]; splits?: true; inputs?: string[] };
+// text; `how` says, for each of them in the same order, what is known of it.
+// `inputs`: the files it reads through a redirect. `sep`: the operator that
+// ends it when that is not `;` or a newline. `flow`: a loop, a conditional, a
+// group or an assigning expansion stands before it in the line, so a variable
+// may not hold what the line's first words gave it.
+export type Simple = { words: string[]; text: string; redirects: boolean; nested?: true; unknown?: true; heredoc?: true; dyn?: number[]; splits?: true; how?: Made[]; inputs?: string[]; sep?: string; flow?: true };
+
+// What is known of a word an expansion makes. `one`: it stays one word (every
+// expansion in it is inside double quotes, and no glob or brace is). `lead`:
+// its literal text before the first expansion. `subs`: the commands of each
+// $(...) and `...` in it. `vars`: each plain $name and ${name}, with where it
+// stands in the word. `rest`: something else makes it too (a glob, braces,
+// ${x:-y}, $'..', $"..", arithmetic, a positional or special parameter).
+export type Made = { one: boolean; lead: string; subs: Simple[][]; vars: { name: string; at: number; len: number }[]; rest: boolean };
 
 const OPS = ["&&", "||", "|&", ";;", ";", "|", "&", "\n"];
 // Leading words that are syntax, not commands.
@@ -41,16 +53,26 @@ export function splitCommand(cmd: string): Simple[] | null {
 // that closes the substitution they are in.
 // Nesting deeper than this is not followed: the cost of reading it grows with the square of its depth.
 let level = 0;
-function scan(cmd: string, start: number, inner: boolean): { parts: Simple[]; end: number } | null {
+function scan(cmd: string, start: number, inner: boolean, flow = false): { parts: Simple[]; end: number } | null {
   if (level >= 64) return null;
   level++;
-  try { return scanIn(cmd, start, inner); } finally { level--; }
+  try { return scanIn(cmd, start, inner, flow); } finally { level--; }
 }
-function scanIn(cmd: string, start: number, inner: boolean): { parts: Simple[]; end: number } | null {
+function scanIn(cmd: string, start: number, inner: boolean, flow: boolean): { parts: Simple[]; end: number } | null {
   const out: Simple[] = [];
   let words: string[] = [];
   let dyn: number[] = [];
+  let how: Made[] = [];
   let splits = false;
+  // The word being read, when an expansion makes it: see Made. `lead` is how much of it was literal before the first one.
+  const fresh = () => ({ lead: 0, open: false, rest: false, subs: [] as Simple[][], vars: [] as Made["vars"] });
+  let cur = fresh();
+  // An expansion makes the word from `at` on. `open`: its result is split into words, or is several.
+  const expands = (at: number, open: boolean) => {
+    if (!made) cur.lead = at;
+    made = true;
+    if (open) splits = cur.open = true;
+  };
   let word = "";
   let inWord = false;
   let quoted = false; // the word has a quoted or escaped character
@@ -77,31 +99,37 @@ function scanIn(cmd: string, start: number, inner: boolean): { parts: Simple[]; 
     else {
       // A `case` pattern ends in a `)` that closes nothing: inside a substitution, where that one ends is then not known.
       if (inner && !quoted && word === "case" && (!words.length || CONTROL.test(words[0]!) || /^(coproc|function)$/.test(words[0]!))) unknown = true;
-      if (made) dyn.push(words.length);
+      if (made) { dyn.push(words.length); how.push({ one: !cur.open, lead: word.slice(0, cur.lead), subs: cur.subs, vars: cur.vars, rest: cur.rest }); }
       words.push(word);
     }
     word = "";
     inWord = false;
     quoted = false;
     made = false;
+    cur = fresh();
   };
-  const flushCmd = () => {
+  const flushCmd = (sep?: string) => {
     flushWord();
     if (want) { bad = true; want = null; }
     // `for x in ...`, `select x in ...` and `case ... in` headers run nothing themselves.
-    if (/^(for|select|case)$/.test(words[0] ?? "")) words = [];
+    if (/^(for|select|case)$/.test(words[0] ?? "")) { words = []; flow = true; }
     let lead = 0;
     while (lead < words.length && CONTROL.test(words[lead]!)) lead++;
+    if (lead) flow = true;
     words = words.slice(lead);
-    dyn = dyn.map((n) => n - lead).filter((n) => n >= 0 && n < words.length);
+    const kept = dyn.map((n, k) => ({ n: n - lead, m: how[k]! })).filter((d) => d.n >= 0 && d.n < words.length);
+    dyn = kept.map((d) => d.n);
+    how = kept.map((d) => d.m);
     if (words.length || redirects || unknown || inputs.length)
       out.push({
         words, text: text.trim(), redirects,
         ...(depth > 0 ? { nested: true as const } : {}), ...(unknown ? { unknown: true as const } : {}),
-        ...(dyn.length ? { dyn } : {}), ...(dyn.length && splits ? { splits: true as const } : {}), ...(inputs.length ? { inputs } : {}),
+        ...(dyn.length ? { dyn, how } : {}), ...(dyn.length && splits ? { splits: true as const } : {}), ...(inputs.length ? { inputs } : {}),
+        ...(sep && sep !== ";" && sep !== "\n" ? { sep } : {}), ...(flow ? { flow: true as const } : {}),
       });
     words = [];
     dyn = [];
+    how = [];
     inputs = [];
     splits = false;
     text = "";
@@ -110,29 +138,44 @@ function scanIn(cmd: string, start: number, inner: boolean): { parts: Simple[]; 
   };
   // $( at j: the commands inside, and where its ) is. $(( is arithmetic: it
   // evaluates the names in it, and a name's value can hold a substitution.
+  // Arithmetic on numbers alone names nothing: its result is a number.
   const substitution = (j: number): number | null => {
-    const r = scan(cmd, j + 2, true);
+    if (cmd[j] === "$") {
+      const sum = /^\$\(\([0-9+\-*\/% \t]*\)\)/.exec(cmd.slice(j, j + 200));
+      if (sum) { cur.rest = true; return j + sum[0].length - 1; }
+    }
+    const r = scan(cmd, j + 2, true, flow);
     if (!r) return null;
     out.push(...nestedIn(r.parts));
+    if (cmd[j] === "$") cur.subs.push(r.parts);
     if (cmd[j] === "$" && cmd[j + 2] === "(") unknown = true;
     return r.end;
   };
-  // $ at j outside single quotes: the word it is in is made by an expansion.
-  // ${name}, ${#name} and the forms that default, trim or replace are followed;
-  // the rest index, slice or evaluate (${a[i]}, ${x:i}, ${!x}, ${x@P}, $[...])
-  // and can run what a value holds.
-  const dollar = (j: number, inDouble: boolean) => {
+  // $ at j outside single quotes: the word it is in is made by an expansion
+  // from `at` on. ${name}, ${#name}, the forms that default, trim or replace,
+  // an element or a slice named by a number (${a[0]}, ${a[@]}, ${x:0:5}) are
+  // followed; the rest index, slice or evaluate (${a[i]}, ${x:i}, ${!x},
+  // ${x@P}, $[...]) and can run what a value holds.
+  const dollar = (j: number, inDouble: boolean, at: number) => {
     const n = cmd[j + 1] ?? "";
-    if (n === '"' && !inDouble) made = true; // $"..." is the string with the $ dropped: the word is not what it reads
+    if (n === '"' && !inDouble) { expands(at, false); cur.rest = true; } // $"..." is the string with the $ dropped: the word is not what it reads
     else if (n === "[") unknown = true;
     else if (n === "{") {
-      made = true;
-      splits ||= !inDouble;
+      const here = cmd.slice(j, j + 200);
+      const plain = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}/.exec(here);
+      // "${a[@]}" is one word for each element, quoted or not.
+      expands(at, !inDouble || /^\$\{[A-Za-z_][A-Za-z0-9_]*\[[@*]\]/.test(here));
+      if (plain) cur.vars.push({ name: plain[1]!, at, len: plain[0].length });
+      else cur.rest = true;
       if (!inDouble) param++;
-      if (!/^\$\{#?[A-Za-z_][A-Za-z0-9_]*(\}|:?[-=?+]|[#%\/^,])/.test(cmd.slice(j, j + 200))) unknown = true;
+      if (!/^\$\{#?[A-Za-z_][A-Za-z0-9_]*(\}|:?[-=?+]|[#%\/^,]|\[(\d+|[@*])\]\}|:\d+(:\d+)?\})/.test(here)) unknown = true;
+      // ${x:=y} and ${x=y} assign: from here on a variable may not hold what it was given.
+      if (/^\$\{[A-Za-z_][A-Za-z0-9_]*:?=/.test(here)) flow = true;
     } else if (/[A-Za-z0-9_@*!=~^+-]/.test(n)) { // $=x, $~x, $^x and $+x are zsh's
-      made = true;
-      splits ||= !inDouble || n === "@" || n === "*";
+      const name = /^\$([A-Za-z_][A-Za-z0-9_]*)/.exec(cmd.slice(j, j + 200));
+      expands(at, !inDouble || n === "@" || n === "*");
+      if (name) cur.vars.push({ name: name[1]!, at, len: name[0].length });
+      else cur.rest = true;
     }
   };
   // ` at j: the command between the backquotes, its own escapes removed.
@@ -144,9 +187,10 @@ function scanIn(cmd: string, start: number, inner: boolean): { parts: Simple[]; 
       code += cmd[k];
     }
     if (k >= cmd.length) return null;
-    const r = scan(code, 0, false);
+    const r = scan(code, 0, false, flow);
     if (!r) return null;
     out.push(...nestedIn(r.parts));
+    cur.subs.push(r.parts);
     return k;
   };
   // The here-documents opened on the line that ended before `from`: where the text after them starts.
@@ -167,14 +211,17 @@ function scanIn(cmd: string, start: number, inner: boolean): { parts: Simple[]; 
       if (!d.quoted) {
         if (cmd.slice(first, last).includes("\\\n")) return null; // bash joins the lines before it compares one to the delimiter
         const word = [made, splits];
+        const mine = cur;
+        cur = fresh();
         for (let k = first; k < last; k++) {
           if (cmd[k] === "\\") { k++; continue; }
-          if (cmd[k] === "$" && cmd[k + 1] !== "(") dollar(k, true);
+          if (cmd[k] === "$" && cmd[k + 1] !== "(") dollar(k, true, 0);
           const end = cmd[k] === "$" && cmd[k + 1] === "(" ? substitution(k) : cmd[k] === "`" ? backquoted(k, false) : k;
           if (end === null) return null;
           k = Math.min(end, last);
         }
         [made, splits] = word as [boolean, boolean];
+        cur = mine;
       }
       const script = splitCommand(cmd.slice(first, last));
       if (script) out.push(...script.map((s) => ({ ...s, nested: true as const, heredoc: true as const })));
@@ -199,7 +246,7 @@ function scanIn(cmd: string, start: number, inner: boolean): { parts: Simple[]; 
       let lit = "";
       for (; j < cmd.length && cmd[j] !== "'"; j++) {
         // An escape there can spell any character (\x2d is a dash): the word is not known.
-        if (ansi && cmd[j] === "\\" && j + 1 < cmd.length) { j++; made = true; }
+        if (ansi && cmd[j] === "\\" && j + 1 < cmd.length) { j++; expands(word.length + lit.length, false); cur.rest = true; }
         lit += cmd[j];
       }
       if (j >= cmd.length) return null;
@@ -219,14 +266,14 @@ function scanIn(cmd: string, start: number, inner: boolean): { parts: Simple[]; 
           continue;
         }
         if ((cmd[j] === "$" && cmd[j + 1] === "(") || cmd[j] === "`") {
+          expands(word.length + lit.length, false);
           const end = cmd[j] === "$" ? substitution(j) : backquoted(j, true);
           if (end === null) return null;
           lit += cmd[j] === "$" ? "$(...)" : "`...`";
-          made = true;
           j = end;
           continue;
         }
-        if (cmd[j] === "$") { dollar(j, true); if (cmd[j + 1] === "{") braces++; }
+        if (cmd[j] === "$") { dollar(j, true, word.length + lit.length); if (cmd[j + 1] === "{") braces++; }
         else if (cmd[j] === "}" && braces) braces--;
         lit += cmd[j];
       }
@@ -237,22 +284,22 @@ function scanIn(cmd: string, start: number, inner: boolean): { parts: Simple[]; 
       continue;
     }
     if ((c === "$" || c === "<" || c === ">") && cmd[i + 1] === "(") {
+      // <(...) and >(...) become a file name; $(...) becomes whatever the command prints.
+      if (c === "$") expands(word.length, true);
       const end = substitution(i);
       if (end === null) return null;
-      // <(...) and >(...) become a file name; $(...) becomes whatever the command prints.
-      if (c === "$") made = splits = true;
       word += "$(...)"; inWord = true; text += cmd.slice(i, end + 1); i = end;
       continue;
     }
     if (c === "`") {
+      expands(word.length, true);
       const end = backquoted(i, false);
       if (end === null) return null;
-      made = splits = true;
       word += "`...`"; inWord = true; text += cmd.slice(i, end + 1); i = end;
       continue;
     }
     if (c === "$") {
-      dollar(i, false);
+      dollar(i, false, word.length);
       if (cmd[i + 1] === "{") { word += "${"; inWord = true; text += "${"; i++; continue; }
     }
     if (c === "#" && !inWord && !param) {
@@ -281,7 +328,7 @@ function scanIn(cmd: string, start: number, inner: boolean): { parts: Simple[]; 
     }
     const op = OPS.find((o) => cmd.startsWith(o, i));
     if (op) {
-      flushCmd();
+      flushCmd(op);
       i += op.length - 1;
       if (op === "\n" && docs.length) {
         const next = bodies(i + 1);
@@ -304,10 +351,10 @@ function scanIn(cmd: string, start: number, inner: boolean): { parts: Simple[]; 
       continue;
     }
     // {a,b} and {1..3} become several words.
-    if (c === "{" && cmd[i - 1] !== "$" && braceExpands(cmd, i)) made = splits = true;
+    if (c === "{" && cmd[i - 1] !== "$" && braceExpands(cmd, i)) { expands(word.length, true); cur.rest = true; }
     if (c === "}" && param) param--;
     // A glob that opens a word can expand to an option (a file named -o): not known from the text.
-    if ((c === "*" || c === "?" || c === "[") && !want && !words.every((w) => CONTROL.test(w)) && (word === "" || word.startsWith("-"))) made = splits = true;
+    if ((c === "*" || c === "?" || c === "[") && !want && !words.every((w) => CONTROL.test(w)) && (word === "" || word.startsWith("-"))) { expands(word.length, true); cur.rest = true; }
     word += c; inWord = true; text += c;
   }
   flushCmd();
@@ -459,28 +506,35 @@ function sedReads(script: string): boolean {
 }
 
 // sed [OPTION]... {script} [file]...: no -i and no -f, and every script only prints.
-function sedReadOnly(args: string[]): boolean {
+// A word an expansion makes (`made`, by argument) is read only as a file: after the script, never as the script or an option's value.
+function sedReadOnly(args: string[], made?: Map<number, Kind>): boolean {
   const scripts: string[] = [];
-  const operands: string[] = [];
+  let script = -1; // the first operand, which is the script when no -e gave one
+  const operand = (i: number) => { if (script < 0) script = i; };
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
-    if (a === "--") { operands.push(...args.slice(i + 1)); break; }
+    if (made?.has(i)) {
+      if (made.get(i) !== "operand" && made.get(i) !== "hashes") return false;
+      operand(i);
+      continue;
+    }
+    if (a === "--") { if (i + 1 < args.length) operand(i + 1); break; }
     if (a.startsWith("--")) {
       if (a.startsWith("--expression=")) scripts.push(a.slice(13));
-      else if (a === "--expression" && i + 1 < args.length) scripts.push(args[++i]!);
+      else if (a === "--expression" && i + 1 < args.length && !made?.has(i + 1)) scripts.push(args[++i]!);
       else if (!/^--(quiet|silent|regexp-extended|separate|unbuffered|null-data|posix|debug|sandbox|line-length=\d+)$/.test(a)) return false; // --in-place, --file, a cut-short form
     } else if (a.startsWith("-") && a.length > 1) {
       for (let k = 1; k < a.length; k++) {
         if ("nErsuz".includes(a[k]!)) continue;
         if (a[k] !== "e" && a[k] !== "l") return false; // -i, -f, and what is not known
-        const value = a.slice(k + 1) || args[++i];
+        const value = a.slice(k + 1) || (made?.has(i + 1) ? undefined : args[++i]);
         if (value === undefined) return false;
         if (a[k] === "e") scripts.push(value);
         break;
       }
-    } else operands.push(a);
+    } else operand(i);
   }
-  if (!scripts.length && operands.length) scripts.push(operands[0]!);
+  if (!scripts.length && script >= 0 && !made?.has(script)) scripts.push(args[script]!);
   return scripts.length > 0 && scripts.every(sedReads);
 }
 
@@ -539,18 +593,32 @@ function gitConfigReads(rest: string[]): boolean {
   return names.length === 1 && names[0]!.includes(".");
 }
 
-function gitReadOnly(args: string[]): boolean {
+// Options of the reading subcommands that take no value: a `--` right after one of them ends the options, and is not a value.
+const GIT_PLAIN = /^(-\d+|-[pqswbrtzc]+|--[a-z-]+=.*|--(oneline|stat|shortstat|numstat|name-only|name-status|cached|staged|patch|no-patch|graph|all|no-merges|merges|first-parent|follow|reverse|quiet|abbrev-commit|no-color|color|decorate|summary|raw|full-history|word-diff|cc|porcelain|short|long|tags|branches|remotes|ignore-all-space|ignore-space-change|check|exit-code|verify|heads|count|left-right|cherry-pick|no-index|text|minimal|patience|histogram|full-index|no-renames|find-renames|others|modified|deleted|stage|unmerged|ignored|exclude-standard|line-number|files-with-matches|ignore-case|word-regexp|fixed-strings|extended-regexp|perl-regexp|untracked))$/;
+
+// `made`: the arguments an expansion makes, with what is known of each.
+function gitReadOnly(args: string[], made?: Map<number, Kind>): boolean {
   // git --version, and the usage text of git --help and git help with no topic (a topic opens its manual page in a pager).
-  if (/^(--version|-v)$/.test(args[0] ?? "")) return args.slice(1).every((a) => a === "--build-options");
-  if (args.length === 1 && /^(--help|-h|help)$/.test(args[0]!)) return true;
+  if (/^(--version|-v)$/.test(args[0] ?? "")) return !made && args.slice(1).every((a) => a === "--build-options");
+  if (args.length === 1 && /^(--help|-h|help)$/.test(args[0]!)) return !made;
   let i = 0;
-  while (i < args.length && args[i]!.startsWith("-")) {
-    if (GIT_VALUE.test(args[i]!)) i += 2;
+  while (i < args.length && args[i]!.startsWith("-") && !made?.has(i)) {
+    // The folder of -C may come from an expansion when it stays one word.
+    if (GIT_VALUE.test(args[i]!)) { if (made?.has(i + 1) && (args[i] !== "-C" || made.get(i + 1) === null || made.get(i + 1) === "hashes")) return false; i += 2; }
     else if (GIT_FLAG.test(args[i]!)) i++;
     else return false; // -c, --exec-path and --config-env run or set things; the rest is not known
   }
+  if (made?.has(i)) return false; // the subcommand itself
   const sub = args[i];
   const rest = args.slice(i + 1);
+  const loose = made ? [...made.keys()].filter((k) => k > i).map((k) => k - i - 1) : [];
+  if (loose.length) {
+    // Among a reading subcommand's arguments an expansion is a revision, a pattern or a path: after --, or when it cannot be an option.
+    // Not after --end-of-options: blame and shortlog read the options behind it all the same (git 2.53), and git before 2.24 does not know it.
+    if (!sub || !GIT_READ.has(sub) || sub === "reflog") return false;
+    const end = optionsEnd(rest, (k) => made!.has(k + i + 1), GIT_PLAIN);
+    if (loose.some((k) => !(end >= 0 && k > end) && !/^(operand|hashes|option)$/.test(made!.get(k + i + 1) ?? ""))) return false;
+  }
   if (rest.some((a) => a.startsWith("--output") || a === "--ext-diff")) return false;
   // git grep -O / --open-files-in-pager runs the pager it names on the hits.
   if (sub === "grep" && rest.some((a) => /^-[a-zA-Z0-9]*O/.test(a) || long(a, "open-files-in-pager") || a.startsWith("--open-files-in-pager"))) return false;
@@ -569,6 +637,64 @@ function gitReadOnly(args: string[]): boolean {
   if (sub === "submodule") return rest.length === 0 || rest[0] === "status";
   if (sub === "notes") return rest.length === 0 || rest[0] === "list" || rest[0] === "show";
   return !!sub && GIT_READ.has(sub);
+}
+
+// What is known of a word an expansion makes: "operand": one word that cannot
+// be an option (it starts with literal text that is not a dash, or with the
+// home or working directory, or holds only what prints a path or commit
+// hashes); "hashes": commit hashes, one word or several, none an option;
+// "option": one word that starts with a written-out --name=; "word": one word
+// of unknown text; null: nothing is known.
+export type Kind = "operand" | "hashes" | "option" | "word" | null;
+
+// A revision as it is written: no leading dash, nothing the shell or git reads as more than a name.
+const REV = /^[A-Za-z0-9_.\/@^~{}][A-Za-z0-9_.\/@^~{}-]*$/;
+
+// What the one command of a substitution prints, when the rules know its shape: commit hashes (or a
+// revision as written, when git cannot resolve it), or an absolute path. null: anything.
+function prints(parts: Simple[]): "hashes" | "path" | null {
+  const p = parts[0];
+  if (parts.length !== 1 || !p || p.unknown || p.redirects || p.dyn || p.inputs || p.heredoc) return null;
+  // Its errors are not its output: 2>/dev/null is the one redirect let through (2>&1 would put them in the word).
+  if (/[<>]/.test(p.text.replace(/2>\s*\/dev\/null/g, ""))) return null;
+  const w = p.words;
+  if (w[0] === "pwd") return w.length === 1 || (w.length === 2 && /^-[LP]$/.test(w[1]!)) ? "path" : null;
+  if (w[0] !== "git") return null;
+  const [sub, ...rest] = w.slice(1);
+  if (sub === "rev-parse" && rest.length === 1 && /^--(show-toplevel|absolute-git-dir)$/.test(rest[0]!)) return "path";
+  const flags = rest.filter((a) => a.startsWith("-"));
+  const all = (re: RegExp) => flags.every((f) => re.test(f));
+  if (!rest.every((a) => a.startsWith("-") || REV.test(a))) return null;
+  if (sub === "merge-base") return all(/^(--fork-point|--octopus|-a|--all|--independent|--is-ancestor)$/) ? "hashes" : null;
+  if (sub === "rev-parse") return rest.length > flags.length && all(/^(--verify|-q|--quiet|--short|--short=\d+)$/) ? "hashes" : null;
+  if (sub === "rev-list") return all(/^(-\d+|-n|-n\d+|--max-count=\d+|--first-parent|--no-merges|--merges|--reverse|--all|--branches|--tags|--remotes)$/) ? "hashes" : null;
+  return null; // git log --format=%H is not here: with log.showSignature set it prints the signature check too
+}
+
+function wordKind(m: Made, word: string, flow: boolean): Kind {
+  // A dash right after an expansion would open the word when the expansion is empty.
+  const dash = m.lead.startsWith("-") || /(\)|`|\}|\$[A-Za-z0-9_]+)-/.test(word);
+  if (!m.rest && !m.vars.length && m.subs.length && !dash) {
+    const out = m.subs.map(prints);
+    if (out.every((o) => o === "hashes")) return m.one ? "operand" : "hashes";
+    if (m.one && out.every((o) => o)) return "operand";
+  }
+  if (!m.one) return null;
+  if (m.lead && !m.lead.startsWith("-")) return "operand";
+  // "$HOME/x" and "$PWD/x": the home and the working directory are absolute paths, unless the line gave them another value.
+  const v = m.vars[0];
+  if (v && v.at === 0 && !flow && (v.name === "HOME" || v.name === "PWD") && (word.length === v.len || word[v.len] === "/")) return "operand";
+  if (/^--[a-z][a-z0-9-]*=/.test(m.lead)) return "option";
+  return "word";
+}
+
+// Where the options end among `args`: the first written-out `--` that stands first, after an operand or after an
+// option that takes no value (`plain`). After any other option it may be that option's value: -1, as when there is none.
+function optionsEnd(args: string[], made: (i: number) => boolean, plain: RegExp): number {
+  const i = args.findIndex((a, k) => a === "--" && !made(k));
+  if (i <= 0) return i;
+  const before = args[i - 1]!;
+  return !made(i - 1) && (!before.startsWith("-") || plain.test(before)) ? i : -1;
 }
 
 // Programs that are files on disk and read whatever their arguments are: what xargs and find -exec may run.
@@ -598,12 +724,16 @@ function condReadOnly(args: string[], dyn: number[]): boolean {
   return !args.some((w, k) => !dyn.includes(k + 1) && /^-(v|R|eq|ne|lt|le|gt|ge)$/.test(w));
 }
 
+// A variable the shell or a program on the allow-list reads for itself: giving it a value changes what the rest of the line does.
+const KEPT = /^(histchars|auto_resume|[a-z_]*_proxy)=/;
+
 // A command that cannot change anything (files, processes, the network state).
 export function isReadOnly(s: Simple): boolean {
   if (s.heredoc) return true;
   if (s.unknown || s.redirects) return false;
   const { env, words } = body(s.words);
-  if (!words.length) return !env;
+  // `name=value` alone gives a shell variable a value. A name in capitals may be one the shell or a program reads (PATH, IFS, GIT_DIR).
+  if (!words.length) return s.words.every((w) => /^[a-z_][a-z0-9_]*=/.test(w) && !KEPT.test(w));
   const [prog, ...args] = words;
   const lead = s.words.length - words.length;
   // An assignment before a command changes what that command runs with. `IFS= read` only says how read splits its line.
@@ -619,9 +749,27 @@ export function isReadOnly(s: Simple): boolean {
   if (prog === "printf") return !dyn.includes(1) && (!args[0]?.startsWith("-") || args[0] === "--");
   // command -v and -V say what a name is; without them command runs it. Nothing after takes that back.
   if (prog === "command") return !dyn.includes(1) && /^-[pvV]*[vV][pvV]*$/.test(args[0] ?? "");
-  // The rest read or write by their arguments: one an expansion makes ($(echo -delete), {-delete,x}) is not known.
-  if (dyn.length) return false;
-  if (reader) return typeof reader === "function" ? reader(args) : !denied(reader, args);
+  if (!dyn.length) return byArguments(prog!, args);
+  // The rest read or write by their arguments, and one an expansion makes ($(echo -delete), {-delete,x}) is not known from the text.
+  // It is let through where it cannot be an option that writes: see wordKind.
+  const made = new Map<number, Kind>();
+  (s.dyn ?? []).forEach((n, k) => { if (n > lead) made.set(n - lead - 1, s.how?.[k] ? wordKind(s.how[k]!, s.words[n]!, !!s.flow) : null); });
+  if (prog === "git") return gitReadOnly(args, made);
+  if (prog === "sed") return sedReadOnly(args, made);
+  // Programs whose operands are only read. The ones in ENDS take `--` as the end of their options.
+  const plain = ENDS.get(prog!);
+  if (!plain && prog !== "find" && prog !== "tree" && typeof reader !== "object") return false;
+  const end = plain ? optionsEnd(args, (i) => made.has(i), plain) : -1;
+  for (const [i, kind] of made) if (!(end >= 0 && i > end) && kind !== "operand" && kind !== "hashes" && (kind !== "option" || prog === "find")) return false;
+  // What find -exec runs ends at a `;` or a `+`, which an expansion could be.
+  if (prog === "find" && args.some((a) => a === "-exec" || a === "-execdir")) return false;
+  return byArguments(prog!, args);
+}
+
+// A program that reads or writes by its arguments, all of them as written.
+function byArguments(prog: string, args: string[]): boolean {
+  const reader = READERS.get(prog);
+  if (reader) return typeof reader === "function" ? reader(args) : !denied(reader as { short?: string; long?: string[] }, args);
   if (prog === "env" || prog === "hostname") return args.length === 0; // `env CMD` runs CMD; `hostname X` sets it
   if (prog === "date") return !dateSets(args);
   if (prog === "find") return findReadOnly(args);
@@ -640,10 +788,84 @@ export function isReadOnly(s: Simple): boolean {
   return false;
 }
 
+// What the line's first commands give its variables, used where a later word reads them. A line that opens with
+// `name=value` assignments (ended by `;`, a newline or `&&`) runs them before anything else, so `$name` after them
+// is that value: a written-out one is put in its place, and the output of a substitution stands where the variable
+// does. Not when a loop, a conditional or a group stands before the use, nor when anything else on the line could
+// give the name another value.
+const ASSIGNS = /^(read|declare|typeset|local|export|readonly|unset|printf|mapfile|readarray|getopts|let|wait|coproc|builtin|command|eval|source|\.)$/;
+const WRITTEN = /^[A-Za-z0-9_.\/@:+,=%^-]+$/; // no blank, quote, glob or tilde: the same word quoted or not
+export function resolveVariables(parts: Simple[]): Simple[] {
+  const known = new Map<string, { text?: string; sub?: Simple[]; part: Simple }>();
+  const dead = new Set<string>();
+  for (const p of parts) {
+    if (p.nested) continue; // the commands of a substitution in a value
+    if (p.flow || p.unknown || p.redirects || p.heredoc || !p.words.length || !p.words.every((w) => /^[a-z_][a-z0-9_]*=/.test(w))) break;
+    if (p.sep && p.sep !== "&&" && p.sep !== "||") break; // in a pipeline or the background it runs in a shell of its own
+    let certain = true; // a substitution's failure is the assignment's: what follows `&&` may not run
+    p.words.forEach((w, k) => {
+      const name = w.slice(0, w.indexOf("="));
+      const value = w.slice(name.length + 1);
+      const m = p.how?.[p.dyn?.indexOf(k) ?? -1];
+      if (known.has(name) || dead.has(name)) { known.delete(name); dead.add(name); }
+      else if (!m) { if (WRITTEN.test(value)) known.set(name, { text: value, part: p }); else dead.add(name); }
+      else {
+        certain = false;
+        if ((value === "$(...)" || value === "`...`") && m.subs.length === 1 && !m.rest && !m.vars.length && prints(m.subs[0]!) === "hashes") known.set(name, { sub: m.subs[0]!, part: p });
+        else dead.add(name);
+      }
+    });
+    if (p.sep === "||" || (p.sep === "&&" && !certain)) break;
+  }
+  // Anything else on the line that could give a name a value takes the knowledge away.
+  for (const p of parts) {
+    const prog = body(p.words).words[0] ?? "";
+    for (const [name, k] of known) {
+      if (p !== k.part && p.words.some((w) => w.startsWith(name + "=") || w.startsWith(name + "+=") || w.startsWith(name + "["))) known.delete(name);
+      else if (ASSIGNS.test(prog) && (p.dyn || /^(eval|source|\.)$/.test(prog) || p.words.includes(name))) known.delete(name);
+    }
+  }
+  if (!known.size) return parts;
+  return parts.map((p, at) => {
+    if (!p.dyn || !p.how || p.flow) return p;
+    const words = [...p.words];
+    const dyn: number[] = [];
+    const how: Made[] = [];
+    // Only what runs after the assignment reads its value: a substitution in the assignment's own value runs before it.
+    const value = (name: string) => { const k = known.get(name); return k && parts.indexOf(k.part) < at ? k : undefined; };
+    p.dyn.forEach((n, k) => {
+      const m = p.how![k]!;
+      const mine = m.vars.map((v) => value(v.name));
+      if (m.vars.length && !m.rest && !m.subs.length && mine.every((v) => v?.text !== undefined)) {
+        // Every expansion in the word is a variable with a written-out value: the word is that text.
+        let w = words[n]!;
+        for (let v = m.vars.length - 1; v >= 0; v--) w = w.slice(0, m.vars[v]!.at) + mine[v]!.text + w.slice(m.vars[v]!.at + m.vars[v]!.len);
+        words[n] = w;
+        return;
+      }
+      // A variable that holds a substitution's output is that substitution, where it stands.
+      const subs = mine.flatMap((v) => (v?.sub ? [v.sub] : []));
+      dyn.push(n);
+      how.push(subs.length ? { ...m, subs: [...m.subs, ...subs], vars: m.vars.filter((_, v) => !mine[v]?.sub) } : m);
+    });
+    const { dyn: _d, how: _h, splits, ...rest } = p;
+    return { ...rest, words, ...(dyn.length ? { dyn, how, ...(splits ? { splits } : {}) } : {}) };
+  });
+}
+
+// The form of a command that would be read as a read, when an expansion among its arguments is all that keeps it from being one.
+export function readForm(s: Simple): string | null {
+  if (!s.dyn || isReadOnly(s) || !isReadOnly({ ...s, dyn: undefined, how: undefined, splits: undefined })) return null;
+  const prog = body(s.words).words[0] ?? "";
+  if (prog === "git") return "put -- before it when it names files, write the value out, or quote it after written-out text (\"refs/tags/$tag\")";
+  if (ENDS.has(prog) || prog === "sed") return "put -- before it, or write the value out";
+  return "write the value out, or quote it after written-out text (\"./$x\")";
+}
+
 // Whether a whole command line only reads. Not one the parser cannot split, and not an empty one.
 export function readOnlyCommand(command: string): boolean {
   const parts = splitCommand(command);
-  return !!parts && parts.length > 0 && parts.every(isReadOnly);
+  return !!parts && parts.length > 0 && resolveVariables(parts).every(isReadOnly);
 }
 
 // Why a command is dangerous enough that no standing answer may cover it,

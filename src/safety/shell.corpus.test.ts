@@ -182,6 +182,29 @@ const CHANGES: string[] = [
   "journalctl --cursor-file=out -n1", "journalctl --setup-keys", "journalctl --update-catalog", "journalctl --relinquish-var", "journalctl -M c",
   "bun x.ts", "uv run x", "deno run x.ts", "ruby x.rb", "java -jar x.jar", "gcc x.c", "gcc -o out x.c", "g++ x.cc", "cc x.c", "clang x.c", "clang++ x.cc", "cmake .", "cmake --build .",
   "gh pr merge 1", "gh repo delete x", "zsh x.sh", "openssl genrsa -out k 2048", "openssl enc -in a -out b", "wget -V https://x.example/f", "curl -V -o f https://x.example", "make -v install",
+  // A variable the line gives a value that is an option, or gives a value again before it is used.
+  "f=-delete; find . $f", "o=--output=out; git log $o", "f=a; f=-delete; find . $f", "f=a; read f <<< -delete; find . $f", "f=a; for f in -delete; do find . $f; done",
+  "f=a; if true; then f=-delete; fi; find . $f", "f=a; g() { f=-delete; }; g; find . $f", "f=a; : ${f:=x}; unset f; : ${f:=-delete}; find . $f", "f='in -o out'; sort $f",
+  "f=a; f+=' -o out'; sort $f", "f=a; f=$(echo -delete); find . $f", "f=a; while read f; do find . $f; done <<< -delete", "f=$(echo -delete); find . $f",
+  "o=-o; sort $o out a", "x=out; sort -o $x a", "x=out; echo hi > $x", "s='w out'; sed -n \"$s\" a", "p=-i; sed $p s/a/b/ a", "c=rm; $c a",
+  // A variable in capitals may be one the shell or a program reads.
+  "PATH=/tmp/evil; ls", "IFS=/; ls", "GIT_DIR=/tmp/evil; git status", "HOME=--output=o; sort \"$HOME/x\"", "LD_PRELOAD=./x.so; ls", "histchars=x; ls", "http_proxy=http://203.0.113.9; git log",
+  // The home and the working directory are paths unless the line gives them another value.
+  "for HOME in --output=o; do sort \"$HOME/x\"; done", "for HOME in --output=o; do echo $(sort \"$HOME/x\"); done", "read HOME <<< --output=o; sort \"$HOME/x\"",
+  "unset HOME; : ${HOME:=--output=o}; sort \"$HOME/x\"", "sleep 0 & wait -p HOME -n; sort \"$HOME/x\"",
+  // A substitution whose output is not commit hashes, or not only that.
+  "git diff $(echo --output=out)", "git diff $(git merge-base main HEAD; echo --output=f)", "git diff $(git merge-base main HEAD > f)", "git diff $(git rev-parse --output=f)",
+  "git diff $(git rev-parse '--output=f')", "git diff $(git log -1 --format=--output=%H)", "git diff $(git merge-base $(echo --output=f) HEAD 2>&1)", "git diff $(git rev-list --pretty=--output=f -1 HEAD)", "git diff $(git merge-base main HEAD)--output=f",
+  "git diff $(git merge-base $(echo --output=f) HEAD)", "git diff \"$(git rev-parse --show-toplevel)\"--output=f", "git log $(git log -1 --format=%H; echo --output=f)",
+  // A `--` that is the value of the option before it ends nothing, and blame and shortlog read the options behind --end-of-options.
+  "git blame --end-of-options $(echo --output=f) HEAD", "git shortlog --end-of-options $(echo --output=f)",
+  "sort -t -- $(echo -o) out a", "sort -k -- $(echo -o) out a", "rg -e -- $(echo --pre=./x) a", "git log --grep -- $(echo --output=f)", "git log -n -- $(echo --output=f)",
+  "git log --author -- $(echo --output=f)", "shuf -n -- $(echo -o) out a", "sed -e -- $(echo -i) a", "fd -d -- $(echo -x) rm",
+  // An expansion that opens a word, is split, or stands where the program reads a script or an option.
+  "find . \"$(echo -delete)\"", "sort \"$(echo -o)\" out a", "sort src/$(echo 'x -o out')", "git diff HEAD~$(echo '1 --output=f')", "sed -n \"$(echo 'w out')p\" a", "sed -- \"$(echo 'w out')\" a",
+  "sed -n \"x$(echo ';w out')\" a", "git log \"--$(echo output=f)\"", "git log \"--out$(echo put=f)\"", "sort \"--output=$(echo out)\" a", "git log \"--output=$(echo f)\"",
+  "find . -exec grep \"x$(echo)\" {} \\; -exec rm {} \\;", "find . -exec echo \"{$(echo '}')\" + -delete \\;", "git -C $(echo '. -c core.pager=x') log", "git \"$(echo commit)\" -m x",
+  "git branch -- \"x$(echo)\"", "git tag -l -- $(echo -d) v1", "uniq -- $(echo a out)", "git -c \"x$(echo)=y\" log",
 ];
 
 // Reads the rules could prove, as they are written every day.
@@ -261,15 +284,35 @@ const READS: string[] = [
   "node --version", "node -v", "bun --version", "python3 --version", "python --version", "python3 -V", "uv --version", "ruby --version", "gcc --version",
   "g++ --version", "cc --version", "clang --version", "clang++ --version", "make --version", "cmake --version", "bash --version", "zsh --version", "curl --version", "wget --version",
   "openssl version", "ssh -V",
+  // An expansion that cannot be an option: commit hashes, a word that starts with written-out text, what stands after --.
+  "git diff $(git merge-base main HEAD)", "git diff $(git merge-base main HEAD)..HEAD", "git log --oneline $(git merge-base origin/main HEAD)..HEAD", "git diff --stat $(git merge-base main HEAD) -- src",
+  'git diff "$(git merge-base main HEAD)"', "git show $(git rev-parse HEAD~1)", "git log -3 $(git rev-list -1 HEAD)", "git diff $(git rev-list -1 HEAD)~1", "git diff $(git merge-base main HEAD 2>/dev/null)", "git diff `git merge-base main HEAD`",
+  "git show --stat $(git rev-parse --verify -q HEAD)", "base=$(git merge-base main HEAD); git diff $base", "base=$(git merge-base main HEAD) && git diff $base --stat",
+  'base=$(git merge-base main HEAD); git log --oneline "$base"..HEAD', "git log \"refs/tags/$(git describe --tags --abbrev=0)..HEAD\"",
+  "git log -1 -- $f", "git log --oneline -- $(git ls-files 'src/*.ts')", 'git blame -- "$f"', 'git diff HEAD -- "$f"', "for f in a b; do git log -1 -- $f; done", 'git -C "$dir" status',
+  'git -C "$HOME/repo" log -1', 'git log --since="$d" --oneline', 'git log --author="$a"', 'git show "HEAD:$f"', 'git diff "origin/$b"', 'git grep -n foo -- "$dir"',
+  'cat "$(git rev-parse --show-toplevel)/README.md" | head', 'rg foo "$(git rev-parse --show-toplevel)/src"', 'find "$(pwd)" -name a', "rg foo -- $(git ls-files)", "rg -n foo -- $f",
+  'rg foo "src/$d"', 'rg --glob="$g" foo', "sort -- $f", "sort -n -- $f", 'sort "./$f"', "fd foo -- $d", "file -- $f", 'file "./$f"', "shuf -- $f", 'find "$HOME/x" -name a', 'find "$PWD" -name a',
+  'find "src/$d" -type f', 'find . -name "x$y"', 'tree "src/$d"', 'sed -n 1,5p -- "$f"', "sed -n 1,5p -- $f", 'sed -n 1,5p "src/$f"', "sed -e 's/a/b/' -- $f",
+  // A variable the line's first words give a value is read as that value.
+  "x=5; echo $x", "f=src/a.ts; wc -l $f; git log --oneline -- $f", "f=a; sort $f", "d=src; find $d -name '*.ts'", "n=5; git log -$n", "f=a && sed -n 1,3p $f", 'd=src; rg foo "$d/x"',
+  'name=world; echo "hello $name"', "count=$(ls | wc -l); echo $count", "today=$(date +%F); echo $today", "b=main; git log --oneline ${b}..HEAD", "f=a g=b; diff $f $g; sort $g",
+  // Arithmetic on numbers alone, and an element or a slice named by a number.
+  "echo $((1+2))", 'echo "$((1+2))"', "echo ${HOME:0:5}", "echo ${a[0]}", 'echo "${a[@]}"', "echo ${#a[@]}", "head -n $((10+5)) a",
 ];
 
 // Reads the rules cannot prove: an expansion among the arguments of a program
 // whose options can write. They ask, and a Read only session is told to write
 // the value out.
 const UNPROVEN: string[] = [
-  "git diff $(git merge-base main HEAD)", "git log $(git describe --tags --abbrev=0)..HEAD", 'find "$HOME/x" -name a', "rg foo $(git ls-files)",
-  "for f in a b; do git log -1 -- $f; done", 'sed -n "${a},${b}p" f', "sort $f", "git show {a,b}", "echo $((1+2))", "echo ${a[0]}",
+  "git log $(git describe --tags --abbrev=0)..HEAD", "rg foo $(git ls-files)", 'sed -n "${a},${b}p" f', "sort $f", "git show {a,b}",
   "echo hi >& $fd", "find . $X", 'find . "$X"', "git reflog main",
+  // A tag or a branch can be named like an option, a file too; an unquoted value can be several words.
+  "git log --end-of-options $(git describe --tags --abbrev=0)..HEAD", "git log --oneline --end-of-options $x",
+  "git diff $(git describe --tags)", "git log $(git rev-parse --abbrev-ref HEAD)", "git diff $(git log -1 --format=%H)~1", "git diff $(git merge-base main HEAD 2>&1)", "git log $(git branch --show-current)", "git diff HEAD~$n", "sort src/$f", 'find "$X/a" -name a',
+  "git diff $base", "wc -l $f; sort $f", 'sed -n 1,5p "$f"', "git log -$n", 'git log "$range"', "f=a | cat; sort $f", "f=a & sort $f", "true || f=a; sort $f", "false && f=a; sort $f",
+  "f=$(false) && g=a; sort $g", "F=a; sort $F", "f=a*; sort $f", "f=~/x; sort $f", "f=a; : ${g:=x}; sort $f", "git -C $d status", "sort -t -- $f", "rg -e -- $x", "git log --grep -- $x",
+  'git branch --list "x$y"', 'xxd -- "$f"', "uniq -- $f", "echo $((i+1))", "echo ${a[i]}", "echo ${x:i:2}", "git log --since=$d",
 ];
 
 // Reads that still ask, by design: they reach another machine, open a pager
