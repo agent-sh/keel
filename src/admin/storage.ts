@@ -85,12 +85,12 @@ export class Storage {
   private measuring?: Promise<StorageReport>;
 
   // `config`: the owner's config folder, which a backup carries with the state. Named by the daemon; none, none carried.
-  constructor(private store: Store, private engine: Engine, private bus: Bus, private errors: ErrorTracker, private config?: string) {
-    // The write-ahead log grows while a backup holds its snapshot (the
-    // daemon's writes wait in it); once it is emptied again the file goes
-    // back to this size instead of staying as large as it ever was.
-    try { store.db.run(`PRAGMA journal_size_limit = ${16 << 20}`); } catch {}
-  }
+  // The write-ahead log grows while a backup holds its snapshot (the
+  // daemon's writes wait in it). What the file goes back to once it is
+  // emptied again is the store's limit (src/core/store.ts), or the
+  // checkpoint thread's while that works (src/core/checkpoint.ts): nothing
+  // is set here.
+  constructor(private store: Store, private engine: Engine, private bus: Bus, private errors: ErrorTracker, private config?: string) {}
 
   get dir() { return this.store.stateDir; }
 
