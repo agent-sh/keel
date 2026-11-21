@@ -346,11 +346,15 @@ export const importRoutes: RouteModule = (deps) => {
         for (const p of include) if (!["reasoning", "tools"].includes(p)) return bad(`unknown part ${p}: the parts are reasoning and tools`);
         // The download name: the title on one line, in its own script where the
         // browser reads filename*, an ASCII name of the session's own otherwise.
-        const title = (s.title || "").replace(/\s+/g, " ").trim();
+        // The title is cut at a whole character: a cut between the two halves
+        // of one outside the basic plane (an emoji, a rare letter) leaves a
+        // half no encoding accepts.
+        const title = (s.title || "").replace(/\s+/g, " ").trim().toWellFormed();
+        const named = title.slice(0, 80).replace(/[\uD800-\uDBFF]$/, "");
         const ascii = title.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || `session-${s.id.slice(-8)}`;
         const headers = (type: string, ext: string) => ({
           "content-type": type,
-          "content-disposition": `attachment; filename="${ascii}.${ext}"${title ? `; filename*=UTF-8''${encodeURIComponent(`${title.slice(0, 80)}.${ext}`)}` : ""}`,
+          "content-disposition": `attachment; filename="${ascii}.${ext}"${title ? `; filename*=UTF-8''${encodeURIComponent(`${named}.${ext}`)}` : ""}`,
           "x-keel-redacted": "1",
         });
         // The files the prompts name travel inside the Keel file when asked for.

@@ -569,3 +569,22 @@ test("the import index status follows a walk of the stores", async ({ request })
     await request.post("/api/import/index", { data: { action: "refresh" } });
   }
 });
+
+// A download is named after the session's title, cut to 80 units: a cut that
+// falls inside a character outside the basic plane still gives a name a
+// browser can read, for the Markdown file and the Keel file alike.
+test("an export is named after a title cut inside an emoji", async ({ request }) => {
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  // The emoji's two halves are units 80 and 81 of the title.
+  const title = `${"a".repeat(68)} שלום עולם 😀 and the rest of a long title`;
+  expect(title.charCodeAt(79)).toBe(0xd83d);
+  const { session } = await (await request.post("/api/sessions", { data: { model: SCRIPTED, title } })).json();
+  for (const [format, ext] of [["md", "md"], ["jsonl", "jsonl"]] as const) {
+    const r = await request.get(`/api/sessions/${session.id}/export?format=${format}`);
+    expect(r.status()).toBe(200);
+    const star = /filename\*=UTF-8''([^;]+)/.exec(r.headers()["content-disposition"]!)![1]!;
+    expect(decodeURIComponent(star)).toBe(`${title.slice(0, 79)}.${ext}`);
+    expect(r.headers()["content-disposition"]).toContain(`.${ext}"`);
+  }
+  await request.delete(`/api/sessions/${session.id}`);
+});
