@@ -83,7 +83,7 @@ test("a start records each cut turn once, what became of it, and is whole once",
     expect(r.turns.map(restartTurnLine)).toEqual([
       '"Parser refactor" cut at step 3, during Bash, after 42 s: continued',
       '"Flaky fetch" cut at step 2, waiting for the model, after 42 s: held for the owner',
-      '"Docs" cut at step 1, waiting for an approval, after 42 s: went on by other means',
+      `"Docs" cut at step 1, waiting for the owner's answer, after 42 s: went on by other means`,
       "an untitled session cut before its turn began: left as cut",
       '"Cut the time before" cut by an earlier stop at step 3, during Bash, after 42 s: continued',
     ]);

@@ -64,7 +64,7 @@ export function restartSummary(r: Restart): string {
 
 // Where a turn was cut: the step, what it was at, and how long it had run.
 export const cutWhere = (t: CutTurn): string => t.unstarted ? "before its turn began"
-  : `at step ${t.step}, ${t.tools.length ? `during ${t.tools.slice(0, 3).join(", ")}${t.tools.length > 3 ? ` and ${t.tools.length - 3} more` : ""}` : t.waiting ? "waiting for an approval" : "waiting for the model"}, after ${span(t.ran_ms)}`;
+  : `at step ${t.step}, ${t.tools.length ? `during ${t.tools.slice(0, 3).join(", ")}${t.tools.length > 3 ? ` and ${t.tools.length - 3} more` : ""}` : t.waiting ? "waiting for the owner's answer" : "waiting for the model"}, after ${span(t.ran_ms)}`;
 
 // One line a cut turn: where it was cut and what became of it.
 export function restartTurnLine(t: RestartTurn): string {

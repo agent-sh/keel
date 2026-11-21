@@ -176,7 +176,7 @@ test("after a kill one place says when the daemon went down, which turns it cut 
     expect(said.stdout).toMatch(/start {4}The daemon went down without stopping \(killed, or the machine went down\) at about \d\d:\d\d:\d\d and came back at \d\d:\d\d:\d\d \(down ([89]|1\d) s\); 4 turns were cut: 4 continued\./);
     expect(said.stdout).toContain(`"Cut during a command" cut at step 1, during Bash, after`);
     expect(said.stdout).toContain(`"Cut while the model answered" cut at step 1, waiting for the model, after`);
-    expect(said.stdout).toContain(`"Cut at an approval" cut at step 1, waiting for an approval, after`);
+    expect(said.stdout).toContain(`"Cut at an approval" cut at step 1, waiting for the owner's answer, after`);
     expect(said.stdout).toContain(`"Cut during two commands" cut at step 1, during Bash, Bash, after`);
 
     // One Activity row, with all four.
@@ -197,7 +197,7 @@ test("after a kill one place says when the daemon went down, which turns it cut 
     await expect(panel.getByTestId("daemon-last-how")).toHaveText("Went down");
     await expect(panel.getByTestId("daemon-last-start")).toContainText("4 turns were cut: 4 continued");
     await expect(panel.getByTestId("daemon-cut-turn")).toHaveCount(4);
-    await expect(panel.getByTestId("daemon-cut-turn").filter({ hasText: "Cut at an approval" })).toContainText("waiting for an approval");
+    await expect(panel.getByTestId("daemon-cut-turn").filter({ hasText: "Cut at an approval" })).toContainText("waiting for the owner's answer");
     await shoot(page, "restart-07-daemon-last-start");
     await page.setViewportSize({ width: 390, height: 844 });
     await shoot(page, "restart-07-daemon-last-start-narrow");

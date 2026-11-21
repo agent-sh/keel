@@ -37,7 +37,7 @@ export type CutTurn = {
   unstarted: boolean;  // the prompt was accepted and its turn never began
   step: number;        // the step it was on
   tools: string[];     // the calls that were running
-  waiting: number;     // calls whose approval card was open
+  waiting: number;     // calls that wait on the owner: an approval, a question or a plan card left open
 };
 // What became of it: continued by itself, held for the owner (with the reason),
 // or the session went on by other means before it was continued.
