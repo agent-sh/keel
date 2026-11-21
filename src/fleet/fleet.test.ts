@@ -712,3 +712,56 @@ test("a move cut at the switch: the machine and the folder are both old or both 
     rig.close();
   }
 });
+
+test("a move carries the index apart from the files: staged, unstaged and untracked arrive as they were", async () => {
+  const rig = await moveRig();
+  try {
+    // One file with a staged edit and another edit on top of it, a staged new file, two untracked ones.
+    writeFileSync(join(rig.home, "a.txt"), "zero\none\n");
+    rig.git(rig.home, "add", "a.txt");
+    writeFileSync(join(rig.home, "a.txt"), "zero\none\nlast\n");
+    writeFileSync(join(rig.home, "new.txt"), "staged new\n");
+    rig.git(rig.home, "add", "new.txt");
+    writeFileSync(join(rig.home, "note.txt"), "untracked\n");
+    writeFileSync(join(rig.home, "scrap.txt"), "untracked too\n");
+    const look = (dir: string) => ({ staged: rig.git(dir, "diff", "--cached"), unstaged: rig.git(dir, "diff"), status: rig.git(dir, "status", "--porcelain") });
+    const start = look(rig.home);
+    expect(start.status.split("\n").filter(Boolean)).toEqual(["MM a.txt", "A  new.txt", "?? note.txt", "?? scrap.txt"]);
+
+    expect(await rig.moved("m1")).toMatchObject({ state: "done" });
+    const wt = rig.session().workspace;
+    expect(look(wt)).toEqual(start);
+    expect(await Bun.file(join(wt, "note.txt")).text()).toBe("untracked\n");
+    expect(look(rig.home)).toEqual(start); // the folder it left is as it was
+
+    // Back with nothing changed over there: the folder here is as it was at the start.
+    expect(await rig.moved("local")).toMatchObject({ state: "done", replaced: true });
+    expect(look(rig.home)).toEqual(start);
+
+    // Over there the staging changes and an untracked file goes; back here the same.
+    await rig.moved("m1");
+    rig.git(wt, "add", "a.txt");
+    rig.git(wt, "reset", "-q", "new.txt");
+    (await import("node:fs")).unlinkSync(join(wt, "scrap.txt"));
+    const there = look(wt);
+    expect(there.status.split("\n").filter(Boolean)).toEqual(["M  a.txt", "?? new.txt", "?? note.txt"]);
+    expect(await rig.moved("local")).toMatchObject({ state: "done", replaced: true });
+    expect(look(rig.home)).toEqual(there);
+
+    // Away again; this time only the index here changes while the session is gone.
+    await rig.moved("m1");
+    writeFileSync(join(wt, "a.txt"), "worked on over there\n");
+    rig.git(rig.home, "reset", "-q", "a.txt");
+    const kept = look(rig.home);
+    const back = await rig.moved("local");
+    expect(back).toMatchObject({ state: "done", replaced: false });
+    expect(look(rig.home)).toEqual(kept); // its index and its files stay
+    // The carried state is in the ref, the files and the index apart.
+    const ref = `refs/keel/handoff/${rig.session().id}`;
+    expect(back.summary).toContain(ref);
+    expect(rig.git(rig.home, "show", `${ref}:a.txt`)).toBe("worked on over there\n");
+    expect(rig.git(rig.home, "show", `${ref}^2:a.txt`)).toBe("zero\none\nlast\n");
+  } finally {
+    rig.close();
+  }
+});

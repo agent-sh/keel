@@ -3,7 +3,10 @@
 // state one snapshot commit (HEAD, or a commit on top holding every
 // uncommitted change, built through a throwaway index so the directory it
 // leaves is not touched), sends what the destination lacks as a git bundle,
-// and puts it in a worktree there with the rest uncommitted again. Coming
+// and puts it in a worktree there with the rest uncommitted again. What was
+// staged travels apart from the files, as git stash keeps it: the snapshot's
+// second parent is a commit of the index, and the index there is set from it,
+// so staged, unstaged and untracked changes arrive as they were. Coming
 // back, the snapshot lands in the directory the session first left, only when
 // that directory is as the session left it; its own state is saved to a ref
 // first, always.
@@ -43,12 +46,15 @@ export type Handoff = {
 // `away`: the worktree the session has on a machine. `making`: one about to be
 // made there, written before the call that makes it, so a move cut in between
 // makes that one again and never a second. `left`: the state a folder was in
-// when the session left it or a move last put it there.
+// when the session left it or a move last put it there ("files tree:index tree").
 type Moves = { home?: string; away: Record<string, string>; left: Record<string, string>; making?: Record<string, { dir: string; branch: string }>; last?: Handoff };
 
 const GIT = "git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c user.name=Keel -c user.email=keel@localhost";
 const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
 const key = (machine: string, dir: string) => `${machine}:${dir}`;
+type Snap = { top: string; head: string; tree: string; itree: string; snap: string; roots: string[] };
+// What a folder holds: its files and what is staged.
+const stateOf = (s: { tree: string; itree: string }) => `${s.tree}:${s.itree}`;
 
 export class MoveError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -170,53 +176,73 @@ export class Handoffs {
     return r.out;
   }
 
-  // The directory's whole state as one tree (tracked, staged, untracked), and a
-  // snapshot commit of it on top of HEAD when it differs. Touches nothing there.
-  private async snapshot(machine: MachineRow | null, dir: string, ref: string) {
+  // The directory's state as two trees, and a snapshot commit of them on top of
+  // HEAD when either differs from it: `tree` is every file (tracked and
+  // untracked), `itree` is what is staged. The commit holds the files; when
+  // something is staged its second parent is a commit of the index. Built in a
+  // copy of the index: nothing in the directory is touched.
+  private async snapshot(machine: MachineRow | null, dir: string, ref: string): Promise<Snap> {
     const out = await this.must(machine, dir, `
 top=$(git rev-parse --show-toplevel)
 head=$(git rev-parse HEAD)
+htree=$(git rev-parse 'HEAD^{tree}')
 idx=$(mktemp)
 trap 'rm -f "$idx"' EXIT
-GIT_INDEX_FILE="$idx" ${GIT} read-tree HEAD
+real=$(git rev-parse --git-path index)
+if [ -f "$real" ]; then cp "$real" "$idx"; else GIT_INDEX_FILE="$idx" ${GIT} read-tree HEAD; fi
+# An index with unmerged paths has no tree: HEAD's stands in for what is staged.
+itree=$(GIT_INDEX_FILE="$idx" ${GIT} write-tree 2>/dev/null) || itree=$htree
 GIT_INDEX_FILE="$idx" ${GIT} add -A
 tree=$(GIT_INDEX_FILE="$idx" ${GIT} write-tree)
-if [ "$tree" = "$(git rev-parse 'HEAD^{tree}')" ]; then snap=$head; else snap=$(${GIT} commit-tree "$tree" -p "$head" -m "keel: handoff snapshot"); fi
+if [ "$tree" = "$htree" ] && [ "$itree" = "$htree" ]; then snap=$head; else
+  staged=""
+  if [ "$itree" != "$htree" ]; then staged="-p $(${GIT} commit-tree "$itree" -p "$head" -m "keel: handoff index")"; fi
+  snap=$(${GIT} commit-tree "$tree" -p "$head" $staged -m "keel: handoff snapshot")
+fi
 ${GIT} update-ref ${q(ref)} "$snap"
-echo "top=$top"; echo "head=$head"; echo "tree=$tree"; echo "snap=$snap"
+echo "top=$top"; echo "head=$head"; echo "tree=$tree"; echo "itree=$itree"; echo "snap=$snap"
 roots=$(git rev-list --max-parents=0 HEAD | tr '\\n' ' '); echo "roots=$roots"`, "snapshot");
     const v = (k: string) => out.match(new RegExp(`^${k}=(.*)$`, "m"))?.[1]?.trim() ?? "";
-    return { top: v("top"), head: v("head"), tree: v("tree"), snap: v("snap"), roots: v("roots").split(" ").filter(Boolean) };
-  }
-
-  private async treeOf(machine: MachineRow | null, dir: string): Promise<string | null> {
-    const r = await this.sh(machine, dir, `idx=$(mktemp); GIT_INDEX_FILE="$idx" ${GIT} read-tree HEAD && GIT_INDEX_FILE="$idx" ${GIT} add -A && GIT_INDEX_FILE="$idx" ${GIT} write-tree; rm -f "$idx"`);
-    return r.code === 0 ? r.out.trim().split("\n").pop()! : null;
+    return { top: v("top"), head: v("head"), tree: v("tree"), itree: v("itree"), snap: v("snap"), roots: v("roots").split(" ").filter(Boolean) };
   }
 
   // Put a snapshot into an existing directory: its own state saved to a ref of
-  // its own first; replaced only when it is as the session left it and its
-  // HEAD is an ancestor of the snapshot. Otherwise its files stay.
-  private async land(machine: MachineRow | null, dir: string, beforeRef: string, snap: { head: string; snap: string; tree: string }, leftTree?: string) {
+  // its own first; replaced only when it is as the session left it (its files
+  // and its index both) and its HEAD is an ancestor of the snapshot. Otherwise
+  // its files and its index stay. Replacing goes from the tree the directory is
+  // (untracked files too) to the snapshot's, so a file removed over there is
+  // removed here, then the index is set to what was staged. Git refuses the
+  // step whole when a file changed under it: the index is put back as it was.
+  private async land(machine: MachineRow | null, dir: string, beforeRef: string, snap: Snap, left?: string) {
     const now = await this.snapshot(machine, dir, beforeRef);
     // A move cut after this step put it here already: nothing to do.
-    if (now.head === snap.head && now.tree === snap.tree) return { replaced: true };
-    const asLeft = leftTree !== undefined && now.tree === leftTree;
+    if (now.head === snap.head && stateOf(now) === stateOf(snap)) return { replaced: true };
+    // A place an older build left has only its files' tree on record.
+    const asLeft = left !== undefined && (left === stateOf(now) || left === now.tree);
     const anc = (await this.sh(machine, dir, `git merge-base --is-ancestor ${now.head} ${snap.snap}`)).code === 0;
     if (!asLeft || !anc) return { replaced: false, why: !asLeft ? "it changed since the session left it" : "its commit is not an ancestor of the carried state" };
-    await this.must(machine, dir, `${GIT} reset -q --hard ${snap.head}\n${GIT} read-tree -u --reset ${snap.snap}\n${GIT} reset -q ${snap.head}`, "apply");
+    await this.must(machine, dir, `real=$(git rev-parse --git-path index)
+bak=$(mktemp)
+cp "$real" "$bak"
+${GIT} read-tree ${now.tree}
+${GIT} update-index -q --refresh >/dev/null || true
+if ! ${GIT} read-tree -u -m ${now.tree} ${snap.tree}; then cp "$bak" "$real"; rm -f "$bak"; exit 1; fi
+rm -f "$bak"
+${GIT} read-tree ${snap.itree}
+${GIT} reset -q --soft ${snap.head}
+${GIT} update-index -q --refresh >/dev/null || true`, "apply");
     return { replaced: true };
   }
 
   // Lands the snapshot in a folder that exists. Where the folder's own state
   // goes is on the receipt before anything is written there.
-  private async landIn(h: Handoff, moves: Moves, machine: MachineRow | null, dir: string, snap: { head: string; snap: string; tree: string }, ref: string) {
+  private async landIn(h: Handoff, moves: Moves, machine: MachineRow | null, dir: string, snap: Snap, ref: string) {
     const place = key(machine?.id ?? "local", dir);
     h.before_ref = `refs/keel/handoff-before/${h.session_id}/${Date.now()}`;
     this.saveMoves(h.session_id, { ...moves, last: h });
     const r = await this.land(machine, dir, h.before_ref, snap, moves.left[place]);
     h.replaced = r.replaced;
-    if (r.replaced) moves.left[place] = snap.tree;
+    if (r.replaced) moves.left[place] = stateOf(snap);
     else h.summary = `${machine ? "The worktree there" : dir} was kept as it was (${r.why}); the carried state is in ${ref}.`;
     this.saveMoves(h.session_id, { ...moves, last: h });
   }
@@ -299,7 +325,7 @@ roots=$(git rev-list --max-parents=0 HEAD | tr '\\n' ' '); echo "roots=$roots"`,
       } else {
         const snap = await step("snapshot", () => this.snapshot(src, s.workspace, ref));
         if (!snap) throw new Error("no snapshot");
-        moves.left[key(h.from.machine_id, snap.top)] = snap.tree;
+        moves.left[key(h.from.machine_id, snap.top)] = stateOf(snap);
         if (h.from.machine_id === "local" && !moves.home) moves.home = snap.top;
         this.saveMoves(sid, { ...moves, last: h });
         h.home = moves.home;
@@ -346,9 +372,9 @@ roots=$(git rev-list --max-parents=0 HEAD | tr '\\n' ' '); echo "roots=$roots"`,
             const made = cut ?? { dir: join(root, ".keel", "worktrees", `handoff-${sid.slice(-12)}-${stamp}`), branch: `keel/handoff-${sid.slice(-12)}-${stamp}` };
             moves.making = { ...moves.making, [dest.id]: made };
             this.saveMoves(sid, { ...moves, last: h });
-            await this.must(dest, root, `${cut ? `rm -rf ${q(made.dir)}\n${GIT} -C ${q(repo)} worktree prune\n` : ""}${GIT} -C ${q(repo)} worktree add -q -B ${q(made.branch)} ${q(made.dir)} ${snap.snap}\n${snap.snap !== snap.head ? `cd ${q(made.dir)} && ${GIT} reset -q ${snap.head}` : "true"}`, "worktree there");
+            await this.must(dest, root, `${cut ? `rm -rf ${q(made.dir)}\n${GIT} -C ${q(repo)} worktree prune\n` : ""}${GIT} -C ${q(repo)} worktree add -q -B ${q(made.branch)} ${q(made.dir)} ${snap.snap}\n${snap.snap !== snap.head ? `cd ${q(made.dir)}\n${GIT} read-tree ${snap.itree}\n${GIT} reset -q --soft ${snap.head}\n${GIT} update-index -q --refresh >/dev/null || true` : "true"}`, "worktree there");
             moves.away[dest.id] = made.dir;
-            moves.left[key(dest.id, made.dir)] = snap.tree;
+            moves.left[key(dest.id, made.dir)] = stateOf(snap);
             delete moves.making[dest.id];
             this.saveMoves(sid, { ...moves, last: h });
             return made.dir;

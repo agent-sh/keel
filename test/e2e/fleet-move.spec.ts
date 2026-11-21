@@ -209,6 +209,62 @@ test("fleet move: a queue the owner held stays held after the move", async ({ pa
   }
 });
 
+// What is staged travels apart from the files: one file with a staged edit and
+// another edit on top, a staged new file and an untracked one are over there
+// as they were here, and here again after the way back. No model runs.
+test("fleet move: staged, unstaged and untracked changes arrive as they were", async ({ page, request }) => {
+  const peerWhy = await peerProblem(request, PEER);
+  test.skip(!!peerWhy, peerWhy ?? "");
+  const model = ((await (await request.get("/api/models")).json()).models as { provider: string; context: number; id: string }[])
+    .filter((m) => m.provider === "scripted").sort((a, b) => b.context - a.context)[0]?.id;
+  test.skip(!model, "the daemon runs without the scripted provider");
+  mkdirSync(ROOT, { recursive: true });
+  const { machines } = await (await request.get("/api/fleet/machines")).json();
+  let first = machines.find((m: any) => m.daemon_url === PEER);
+  if (!first) {
+    const r = await (await request.post("/api/fleet/machines", { data: { name: "devbox", daemon_url: PEER, workspace_root: ROOT } })).json();
+    first = r.machines.find((m: any) => m.id === r.id);
+  }
+  const home = `${process.env.HOME}/.cache/keel-work/bun/e2e-ws/move-index-${Date.now().toString(36)}`;
+  mkdirSync(home, { recursive: true });
+  const git = (dir: string, ...a: string[]) => execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", ...a], { encoding: "utf8" });
+  git(home, "init", "-q");
+  writeFileSync(`${home}/a.txt`, "one\ntwo\nthree\n");
+  git(home, "add", "a.txt");
+  git(home, "commit", "-qm", "init");
+  writeFileSync(`${home}/a.txt`, "zero\none\ntwo\nthree\n");
+  git(home, "add", "a.txt"); // staged: the first line
+  writeFileSync(`${home}/a.txt`, "zero\none\ntwo\nthree\nfour\n"); // not staged: the last line
+  writeFileSync(`${home}/new.txt`, "staged new file\n");
+  git(home, "add", "new.txt");
+  writeFileSync(`${home}/note.txt`, "untracked\n");
+  const look = (dir: string) => ({ staged: git(dir, "diff", "--cached"), unstaged: git(dir, "diff"), status: git(dir, "status", "--porcelain"), untracked: readFileSync(`${dir}/note.txt`, "utf8") });
+  const start = look(home);
+  expect(start.status.split("\n").filter(Boolean)).toEqual(["MM a.txt", "A  new.txt", "?? note.txt"]);
+  const s = (await (await request.post("/api/sessions", { data: { workspace: home, title: "Staged and not", model } })).json()).session;
+  try {
+    await page.goto(`/s/${s.id}`);
+    await page.getByTestId("machine-chip").click();
+    await page.locator(`[data-testid="move-to"][data-machine="${first.id}"]`).click();
+    await expect(page.getByTestId("move-progress")).toHaveAttribute("data-state", "done", { timeout: 60_000 });
+    const there = (await (await request.get(`/api/sessions/${s.id}`)).json()).session.workspace as string;
+    expect(there).toContain("/.keel/worktrees/handoff-");
+    expect(look(there)).toEqual(start);
+    expect(look(home)).toEqual(start); // the folder it left is untouched
+
+    await page.locator('[data-testid="move-to"][data-machine="local"]').click();
+    await expect(page.getByTestId("move-progress")).toContainText(`${first.name} to`, { timeout: 60_000 });
+    await expect(page.getByTestId("move-progress")).toHaveAttribute("data-state", "done");
+    expect((await (await request.get(`/api/sessions/${s.id}`)).json()).session.workspace).toBe(home);
+    expect(look(home)).toEqual(start);
+  } finally {
+    await page.goto("about:blank");
+    await request.delete(`/api/sessions/${s.id}`);
+    rmSync(home, { recursive: true, force: true });
+    rmSync(`${ROOT}/${basename(home)}`, { recursive: true, force: true });
+  }
+});
+
 // A daemon that goes down in the middle of a move. Its own daemon here (the
 // spec kills it), reaching the peer through a way that keeps back the answer
 // to one call: the worktree is made over there and this daemon never hears
