@@ -1,7 +1,7 @@
 import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { shoot } from "./shots.ts";
+import { shoot, SHOTS } from "./shots.ts";
 
 // Feature: the state of a session is one fact. The daemon works it out in one
 // place (what the session waits on, why, since when) and every surface reads
@@ -97,7 +97,7 @@ test("a session waiting on a timer or a background command says so, with what it
     await expect(t).toHaveAttribute("data-watch", "wait");
     await expect(t.getByTestId("row-state")).toHaveText("Waiting");
     await expect(t.getByTestId("row-why")).toHaveText("Timer: check the deploy");
-    await expect(t.getByTestId("row-clock")).toHaveText(/^due in 1[45]m$/);
+    await expect(t.getByTestId("row-time")).toHaveText(/^in 1[45]m$/);
     await expect(page.getByTestId("station-word")).toHaveText("Waiting");
     await expect(page.getByTestId("station-why")).toHaveText("Timer: check the deploy");
     await expect(page.getByTestId("station-clock")).toHaveText(/^due in 1[45]m$/);
@@ -105,7 +105,7 @@ test("a session waiting on a timer or a background command says so, with what it
     const j = row(page, job);
     await expect(j).toHaveAttribute("data-watch", "wait");
     await expect(j.getByTestId("row-why")).toHaveText("Command: sleep 300");
-    await expect(j.getByTestId("row-clock")).toHaveText(/^\d+s$/);
+    await expect(j.getByTestId("row-time")).toHaveText(/^\d+s$/);
     expect(await stateOf(request, timer)).toMatchObject({ watch: "wait", why: "timer", text: "Timer: check the deploy" });
     expect(await stateOf(request, job)).toMatchObject({ watch: "wait", why: "command" });
     await shoot(page, "session-state-02-waiting");
@@ -188,7 +188,7 @@ test("is anything stuck: a held stream, a hung tool and a stalled agent are list
     const text = await (await request.get("/api/stuck?after=5&format=text")).text();
     expect(text).toMatch(/stuck \(no progress for 5 s\), longest first:/);
     expect(text).toMatch(new RegExp(`${stream}  Draft the release notes: the model is answering, no output for \\d+s`));
-    expect(text).toMatch(new RegExp(`${tool}  Run the migration against staging: running Bash, for \\d+s`));
+    expect(text).toMatch(new RegExp(`${tool}  Run the migration against staging: running until .+, for \\d+s`));
     expect(text).toMatch(new RegExp(`${agent}  agent .+ of Audit the three services: the model is answering, no output for \\d+s`));
     const cli = execFileSync("bun", ["src/main.ts", "stuck", "--after", "5", "--url", baseURL!], { encoding: "utf8", env: { ...process.env, KEEL_CONFIG_DIR: process.env.KEEL_CONFIG_DIR ?? `${WS}/config` } });
     for (const id of [stream, tool, agent]) expect(cli).toContain(id);
@@ -203,7 +203,7 @@ test("is anything stuck: a held stream, a hung tool and a stalled agent are list
     await expect(strip).toBeVisible({ timeout: 15_000 });
     await expect(strip.getByTestId("stuck-item")).toHaveCount(3);
     await expect(strip.locator(`[data-session="${stream}"]`)).toContainText("no output");
-    await expect(strip.locator(`[data-session="${tool}"]`)).toContainText("Running Bash");
+    await expect(strip.locator(`[data-session="${tool}"]`)).toContainText("Running until");
     await expect(strip.locator(`[data-session="${agent}"]`)).toContainText("agent of Audit the three services");
     await shoot(page, "session-state-04-stuck");
     await strip.locator(`[data-session="${tool}"]`).click();
@@ -316,6 +316,156 @@ test("a session that needs the owner or failed is never behind the fold, and a f
     await expect(row(page, quiet[0]!)).toHaveCount(0);
     await shoot(page, "session-state-05-never-folded");
   } finally {
+    await drop(request, made);
+  }
+});
+
+test("a row says why once: what is asked of the owner, the step with its time, the failure; the rail card says the reason", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const made: string[] = [];
+  const gate = `${WS}/row-${Date.now().toString(36)}.go`;
+  try {
+    const watcher = await start(request, "A quiet session to watch from");
+    const approval = await start(request, "Clean the build output before the release", "ask");
+    const question = await start(request, "Pick the database for the queue");
+    const plan = await start(request, "Plan the move to resumable uploads", "plan");
+    const working = await start(request, "Run the slow test suite");
+    const failed = await start(request, "Reindex the docs");
+    made.push(watcher, approval, question, plan, working, failed);
+    await send(request, approval, script([{ name: "Bash", input: { command: "rm -rf dist build .cache" } }]));
+    await send(request, question, script([{ name: "AskUserQuestion", input: { questions: [{ header: "Store", question: "Which database should hold the queue?", options: [{ label: "SQLite" }, { label: "Valkey" }], multiSelect: false }] } }]));
+    await send(request, plan, script([{ name: "present_plan", input: { title: "Resumable uploads", plan: "1. Add a chunk table." } }]));
+    await send(request, working, script([{ name: "Bash", input: { command: `until [ -f ${gate} ]; do sleep 0.2; done; echo suite passed`, description: "bun test --slow" } }]));
+    await send(request, failed, "script:billing");
+
+    await page.goto(`/s/${watcher}`);
+    // What is asked of the owner, in one form, without a hover: the word once, then the thing.
+    const why = (id: string) => row(page, id).getByTestId("row-why");
+    await expect(why(approval)).toHaveText("Approve Bash: rm -rf dist build .cache");
+    await expect(why(question)).toHaveText("Question: Which database should hold the queue?");
+    await expect(why(plan)).toHaveText("Plan to approve: Resumable uploads");
+    for (const id of [approval, question, plan]) {
+      const r = row(page, id);
+      await expect(r).toHaveAttribute("data-watch", "need");
+      await expect(r.getByTestId("row-state")).toHaveText("Needs you");
+      // Said once: no second "needs you" on the row.
+      expect((await r.innerText()).match(/needs you/gi)).toHaveLength(1);
+      await expect(r.getByTestId("needs-you")).toHaveCount(0);
+      await expect(r.getByTestId("row-time")).toHaveText(/^\d+[sm]$/);
+    }
+    // A message this browser could not send is the same kind of reason.
+    // (The refusal arrives after the owner moved to another session, so the message is kept for its own.)
+    const held = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    await page.route(`**/api/sessions/${watcher}/messages`, async (r) => { held.resolve(); await release.promise; await r.fulfill({ status: 400, json: { error: "The daemon refused this message." } }); }, { times: 1 });
+    const composer = page.getByTestId("composer");
+    await composer.fill("This one will not go.");
+    await composer.press("Enter");
+    await held.promise;
+    await row(page, failed).click();
+    const refused = page.waitForResponse((r) => r.url().endsWith(`/api/sessions/${watcher}/messages`) && r.status() === 400);
+    release.resolve();
+    await refused;
+    await expect(why(watcher)).toHaveText("A message was not sent");
+    await expect(row(page, watcher).getByTestId("row-state")).toHaveText("Needs you");
+    // Working: the command it runs and how long that step has run.
+    await expect(why(working)).toHaveText(/^Running until \[ -f .+/);
+    await expect(row(page, working).getByTestId("row-time")).toHaveText(/^\d+s$/);
+    // Failed: the class beside the word and what the provider said.
+    await expect(row(page, failed).getByTestId("row-class")).toHaveText("billing");
+    await expect(why(failed)).toContainText("credit balance is too low");
+    await shoot(page, "session-state-06-row-reasons");
+
+    // Folded: the card beside a mark says the reason too.
+    await page.getByTestId("rail-toggle").click();
+    const tick = (id: string) => page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${id}"]`);
+    const card = page.getByTestId("rail-card");
+    await tick(failed).hover();
+    await expect(card.getByTestId("rail-card-why")).toContainText("credit balance is too low");
+    await expect(card).toContainText("billing");
+    await tick(question).hover();
+    await expect(card.getByTestId("rail-card-why")).toHaveText("Question: Which database should hold the queue?");
+    await tick(working).hover();
+    await expect(card.getByTestId("rail-card-why")).toHaveText(/^Running until/);
+    await shoot(page, "session-state-07-rail-card-reason");
+    await page.getByTestId("rail-toggle").click();
+  } finally {
+    mkdirSync(WS, { recursive: true });
+    writeFileSync(gate, "");
+    await drop(request, made);
+  }
+});
+
+// The look of it: a dozen sessions in mixed states, in the list, on the folded
+// rail and on a phone, in both themes. Each row is checked for its state.
+test("twelve sessions in mixed states read apart at a glance, wide and on a phone", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  test.setTimeout(240_000);
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const made: string[] = [];
+  const tag = Date.now().toString(36);
+  const api = `${WS}/api-${tag}`, web = `${WS}/web-${tag}`;
+  const gate = `${WS}/twelve-${tag}.go`;
+  const ended = async (id: string) => {
+    const d = await (await request.get(`/api/sessions/${id}`)).json();
+    return !d.running && ["turn_end", "error"].includes(d.events.at(-1)?.kind);
+  };
+  const mk = async (title: string, mode: string, folder: string, text?: string) => {
+    const id = await start(request, title, mode, folder);
+    made.push(id);
+    if (text) await send(request, id, text);
+    return id;
+  };
+  const hang = `until [ -f ${gate} ]; do sleep 0.2; done; echo released`;
+  try {
+    const fresh = await mk("Sketch the importer for old exports", "full-auto", web);
+    const done1 = await mk("Explain the build script", "full-auto", web, "Say hello.");
+    const done2 = await mk("List the open TODOs in the scanner", "full-auto", api, "Say hello.");
+    const stopped = await mk("Rename the config keys", "full-auto", api, script([{ name: "Bash", input: { command: hang } }]));
+    const failed = await mk("Reindex the docs after the schema change", "full-auto", web, "script:billing");
+    const timer = await mk("Check the deploy in a quarter of an hour", "full-auto", api, script([{ name: "wait_for", input: { kind: "timer", seconds: 900, note: "check the deploy" } }]));
+    const job = await mk("Run the slow suite in the background", "full-auto", api, script([{ name: "Bash", input: { command: "sleep 300", run_in_background: true } }]));
+    const parent = await mk("Audit the three services", "full-auto", web, script([{ name: "spawn_agent", input: { message: `Read the billing service\n${script([{ name: "Bash", input: { command: hang } }])}`, isolation: "none" } }]));
+    const silent = await mk("Summarize the incident from Monday", "full-auto", web, `script:hold ${gate}`);
+    const working = await mk("Migrate the uploads table", "full-auto", api, script([{ name: "Bash", input: { command: hang, description: "bun run migrate --table uploads" } }]));
+    const plan = await mk("Plan the move to resumable uploads", "plan", web, script([{ name: "present_plan", input: { title: "Resumable uploads", plan: "1. Add a chunk table.\n2. Resume from the last chunk." } }]));
+    const question = await mk("Pick the database for the queue", "full-auto", api, script([{ name: "AskUserQuestion", input: { questions: [{ header: "Store", question: "Which database should hold the queue?", options: [{ label: "SQLite" }, { label: "Valkey" }], multiSelect: false }] } }]));
+    const approval = await mk("Clean the build output before the release", "ask", api, script([{ name: "Bash", input: { command: "rm -rf dist build .cache && git tag v0.9.0" } }]));
+    for (const id of [done1, done2, failed, timer, job]) await expect.poll(() => ended(id), { timeout: 30_000 }).toBe(true);
+    await expect.poll(async () => (await stateOf(request, stopped))?.why, { timeout: 30_000 }).toBe("tool");
+    await request.post(`/api/sessions/${stopped}/interrupt`);
+
+    await page.goto(`/s/${done1}`);
+    const want: [string, string][] = [
+      [approval, "need"], [question, "need"], [plan, "need"], [working, "work"], [silent, "work"], [parent, "work"],
+      [timer, "wait"], [job, "wait"], [failed, "fail"], [stopped, "stop"], [done1, "done"], [fresh, "idle"],
+    ];
+    for (const [id, w] of want) await expect(row(page, id), id).toHaveAttribute("data-watch", w, { timeout: 15_000 });
+    // The stream goes silent after its limit: the row says so.
+    await expect(row(page, silent).getByTestId("row-why")).toHaveAttribute("data-why", "stalled", { timeout: 40_000 });
+    await shoot(page, "session-state-12-list");
+    await page.screenshot({ path: `${SHOTS}/session-state-12-list-rail-dark.png`, clip: { x: 0, y: 0, width: 640, height: 1040 } });
+
+    // Folded: the same sessions as marks, banded by state.
+    await page.getByTestId("rail-toggle").click();
+    await expect(page.getByTestId("rail-band").first()).toBeVisible();
+    await page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${approval}"]`).hover();
+    await expect(page.getByTestId("rail-card")).toBeVisible();
+    await shoot(page, "session-state-12-rail");
+    await page.getByTestId("rail-toggle").click();
+
+    // A phone: the dock names what waits, the drawer is the same list.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`/s/${approval}`);
+    await expect(page.locator(".k-dock")).toBeVisible();
+    await shoot(page, "session-state-12-phone-dock");
+    await page.getByRole("button", { name: "All sessions" }).click();
+    await expect(row(page, approval)).toBeVisible();
+    await shoot(page, "session-state-12-phone-list");
+  } finally {
+    mkdirSync(WS, { recursive: true });
+    writeFileSync(gate, "");
     await drop(request, made);
   }
 });

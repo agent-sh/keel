@@ -37,9 +37,10 @@ export function elapsed(ms: number) {
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
 }
 
-// How long a state has held, or when what it waits for is due.
-export function stateClock(st: SessionState, now: number): string {
-  if (st.until) return st.until > now ? `due in ${span(st.until - now)}` : "due now";
+// How long a state has held, or when what it waits for is due. `short`: for a
+// row's narrow time column ("in 14m").
+export function stateClock(st: SessionState, now: number, short = false): string {
+  if (st.until) return st.until > now ? `${short ? "in" : "due in"} ${span(st.until - now)}` : short ? "due" : "due now";
   return st.since ? span(now - st.since) : "";
 }
 // A state that moves by itself or waits on the owner is timed; one at rest is not.

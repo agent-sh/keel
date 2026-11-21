@@ -95,12 +95,12 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
 export function SessionBadges({ sessionId }: { sessionId: string }) {
   const unread = useAuto((s) => s.unread.sessions[sessionId] ?? 0);
   const loops = useAuto((s) => Object.values(s.loops).some((l) => l.session_id === sessionId && l.enabled));
-  const waits = useAuto((s) => Object.values(s.waits).some((w) => w.session_id === sessionId && w.status === "active"));
   const snoozed = useAuto((s) => s.snoozes[sessionId]);
   return (
     <>
       {snoozed && !snoozed.suspended && <Moon data-testid="snoozed-mark" className="k-snoozed-mark size-3 shrink-0 text-faint" aria-label={`Snoozed ${snoozeText(snoozed)}`} />}
-      {(loops || waits) && <Repeat className="size-3 shrink-0 text-faint" aria-label="Scheduled work" />}
+      {/* A wait is the row's own state (Waiting, with what it waits for); a loop is scheduled work beside it. */}
+      {loops && <Repeat className="size-3 shrink-0 text-faint" aria-label="Scheduled work" />}
       {unread > 0 && <span data-testid="unread-dot" title={`${unread} unread`} className="k-unread-dot size-2 shrink-0 rounded-full bg-accent" />}
     </>
   );

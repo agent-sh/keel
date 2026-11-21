@@ -185,7 +185,7 @@ test("a refused send stays separate from the next draft", async ({ page, request
   // The session it was for says so on its row, while the other one is shown.
   const row = page.locator(`[data-testid="session-row"][data-session="${a}"]`);
   await expect(row).toHaveAttribute("data-watch", "need");
-  await expect(row.getByTestId("unsent-mark")).toHaveText("not sent");
+  await expect(row.getByTestId("row-why")).toHaveText("A message was not sent");
   await shoot(page, "draft-05-row-mark");
   await select(a);
   await expect(saved).toContainText("Review the first screenshot.");
@@ -209,7 +209,7 @@ test("a refused send stays separate from the next draft", async ({ page, request
   await retry.evaluate((b: HTMLButtonElement) => { b.click(); b.click(); });
   await expect(saved).toHaveCount(0);
   await expect(row).not.toHaveAttribute("data-watch", "need");
-  await expect(row.getByTestId("unsent-mark")).toHaveCount(0);
+  await expect(row.getByTestId("row-why")).toHaveCount(0);
   await expect(composer).toHaveValue("A separate note for later.");
   await expect(page.getByTestId("attachments").locator("img")).toHaveAttribute("alt", "next.png");
   expect(posts.map((p) => p.text)).toEqual(["Review the first screenshot.", "Review the first screenshot."]);
@@ -244,7 +244,7 @@ test("a refused send stays separate from the next draft", async ({ page, request
   await expect(saved.getByTestId("saved-reason")).toHaveText("The proxy lost the daemon.");
   await expect(saved).toContainText("Sending it again is safe");
   await expect(saved.getByRole("button", { name: "Retry send" })).toHaveCount(1);
-  await expect(row.getByTestId("unsent-mark")).toHaveText("unconfirmed");
+  await expect(row.getByTestId("row-why")).toHaveText("A message's delivery is unconfirmed");
   await shoot(page, "draft-04-unconfirmed-send");
   await composer.fill("In the box meanwhile.");
   await saved.getByRole("button", { name: "Restore draft" }).click();

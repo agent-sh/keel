@@ -8,14 +8,12 @@ import { Archive, ArchiveRestore, Bug, Columns2, Folder, Moon, PanelLeftClose, P
 import { createContext, Fragment, useContext, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { machineName, useFleet } from "../lib/fleet.ts";
-import { useSafety } from "../lib/safety.ts";
-import { useUnsent, useWaitingSend } from "../lib/send-drafts.ts";
 import { stations, useStations } from "../lib/stations.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { callsigns, listBounds, listWidth, panesMax, toggleList, useRail } from "../lib/rail.ts";
 import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, cn, folderNames, when } from "../lib/utils.ts";
-import { lastLine, useAgentCount, useAgentCounts, useSessionState, useWatch, useWatches, watchLabel, type Watch } from "../lib/watch.ts";
+import { lastLine, useSessionState, useSessionStates, useWatches, watchLabel, type Watch } from "../lib/watch.ts";
 import { MachineSep, machineRuns, WherePip, whereWords } from "./Where.tsx";
 import { finished, ListFind, matches, order, setArrange, useArrange } from "./ListArrange.tsx";
 import { useAuto } from "../lib/automation.ts";
@@ -138,15 +136,16 @@ function Row({ s, active, where }: { s: Session; active: boolean; where?: boolea
             <span className="k-row-state" data-testid="row-state">{watchLabel(w, st.agents)}</span>
             {w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="row-class">{failWord(st.cls)}</span>}
             {st.text && <span className="k-row-why" data-testid="row-why" data-why={st.why} title={whyText(st, now)}>{whyText(st, now)}</span>}
-            {timed(st) && <span className="k-row-clock tabular-nums" data-testid="row-clock">{stateClock(st, now)}</span>}
           </span>
         )}
         {where && <span className="k-row-in" data-testid="row-folder">{folderOf(s)}</span>}
       </span>
       {(s.settings.tags ?? []).slice(0, 1).map((t) => <span key={t} title={(s.settings.tags ?? []).join(", ")} className="k-row-tag max-w-20 shrink truncate rounded-xs bg-sunken px-1 text-micro text-faint" data-testid="row-tag">{t}</span>)}
-      <NeedsYou sessionId={s.id} />
       <SessionBadges sessionId={s.id} />
-      <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" title={when(s.updated)}>{ago(s.updated)}</span>
+      {/* The time a glance wants: how long it has needed them, worked on this step or waited (when a timer is due); at rest, when it last moved. */}
+      {timed(st)
+        ? <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-live title={st.until ? `Due ${when(st.until)}` : `Since ${when(st.since!)}`}>{stateClock(st, now, true)}</span>
+        : <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" title={when(s.updated)}>{ago(s.updated)}</span>}
       {!restore && !shown && !phone() && (
         <button type="button" title="Open beside, in a new pane (Ctrl click)" aria-label="Open beside" data-testid="row-beside" onClick={(e) => { e.stopPropagation(); openBeside(s.id); }} className="k-row-act hidden group-hover:grid group-focus-within:grid">
           <Columns2 />
@@ -206,25 +205,6 @@ export function Group({ list, current, every, where }: { list: Session[]; curren
   );
 }
 
-// What a kept message of the session says where its row or card names it.
-const UNSENT = {
-  refused: { word: "not sent", line: "A message was not sent", title: "A message here was not sent. Open the session to send it again or discard it." },
-  unconfirmed: { word: "unconfirmed", line: "A message's delivery is unconfirmed", title: "Nobody confirmed that a message here arrived. Open the session to check." },
-} as const;
-
-// A session waiting on an approval, or holding a message that did not go.
-export function NeedsYou({ sessionId }: { sessionId: string }) {
-  const n = useSafety((s) => s.approvals[sessionId]?.length ?? 0);
-  const unsent = useUnsent(sessionId);
-  const waiting = useWaitingSend(sessionId);
-  return (
-    <>
-      {n > 0 && <span data-testid="needs-you" title={`${n} approval${n === 1 ? "" : "s"} waiting`} className="k-needs">needs you</span>}
-      {unsent && <span data-testid="unsent-mark" title={UNSENT[unsent].title} className="k-needs">{UNSENT[unsent].word}</span>}
-      {waiting && !unsent && <span data-testid="waiting-send-mark" title="A message here waits for Keel and goes out by itself when it is back." className="shrink-0 rounded-md bg-brass-soft px-1.5 text-micro font-medium text-brass">waits to send</span>}
-    </>
-  );
-}
 
 // The tab the index opens on (the folded rail's archive button asks for "archived").
 let openOn: "active" | "archived" = "active";
@@ -245,8 +225,8 @@ function Marks({ current }: { current: string | null }) {
   const sessions = useStore((s) => s.sessions);
   const list = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id && !s.settings.helper).sort((a, b) => b.updated - a.updated), [sessions]);
   const codes = useMemo(() => callsigns(list), [list]);
-  const watches = useWatches(list);
-  const agents = useAgentCounts();
+  const states = useSessionStates(list);
+  const watches = useMemo(() => Object.fromEntries(list.map((s) => [s.id, states[s.id]!.watch])) as Record<string, Watch>, [list, states]);
   const shown = useStations((x) => x.shown);
   const unread = useAuto((s) => s.unread.sessions);
   const bind = useContext(CardCtx);
@@ -272,7 +252,7 @@ function Marks({ current }: { current: string | null }) {
                       data-shown={shown.includes(s.id) || undefined}
                       data-unread={unread[s.id] ? true : undefined}
                       aria-current={current === s.id ? "page" : undefined}
-                      aria-label={`${s.title || "New session"}, ${watchLabel(watches[s.id]!, agents[s.id])}, ${folderOf(s)}${whereWords(s)}, ${ago(s.updated)}`}
+                      aria-label={`${s.title || "New session"}, ${watchLabel(watches[s.id]!, states[s.id]!.agents)}${states[s.id]!.text ? `: ${states[s.id]!.text}` : ""}, ${folderOf(s)}${whereWords(s)}, ${ago(s.updated)}`}
                       {...card}
                       draggable
                       onDragStart={(e) => { card.onDragStart?.(e); dragSession(s.id)(e); }}
@@ -282,7 +262,7 @@ function Marks({ current }: { current: string | null }) {
                       <span className="k-tick-code" data-testid="rail-code" aria-hidden="true">{codes[s.id]}</span>
                       <WherePip s={s} />
                       <span className="sr-only">{s.title || "New session"}</span>
-                      <span className="k-tick-badges"><NeedsYou sessionId={s.id} /><SessionBadges sessionId={s.id} /></span>
+                      <span className="k-tick-badges"><SessionBadges sessionId={s.id} /></span>
                     </button>
                     <div className="k-tick-kids"><SessionChildren parentId={s.id} current={current} /></div>
                   </li>
@@ -300,26 +280,29 @@ function Marks({ current }: { current: string | null }) {
 const home = (p: string) => p.replace(/^\/(home|Users)\/[^/]+/, "~");
 function RailCard({ s: given, y, left }: { s: Session; y: number; left: number }) {
   const s = useStore((x) => x.sessions[given.id]) ?? given;
-  const w = useWatch(s);
-  const agents = useAgentCount(s.id);
+  const st = useSessionState(s);
+  const w = st.watch;
+  const now = useNow(timed(st));
   const unread = useAuto((x) => x.unread.sessions[s.id] ?? 0);
   const events = useStore((x) => x.events[s.id]);
-  const approvals = useSafety((x) => x.approvals[s.id]?.length ?? 0);
-  const unsent = useUnsent(s.id);
-  const line = lastLine(branchOf(events, s.head), s.workspace);
+  const line = lastLine(events, s.workspace);
+  const why = whyText(st, now);
   const top = Math.min(Math.max(y, 96), innerHeight - 96);
   return (
     <div className="k-rail-card" data-watch={w} style={{ top, left }} data-testid="rail-card" aria-hidden="true">
       <div className="k-rail-card-row">
         <Mark w={w} />
-        <span className="k-rail-card-word">{watchLabel(w, agents)}</span>
-        <span className="k-rail-card-time" title={when(s.updated)}>{ago(s.updated) === "now" ? "just now" : `${ago(s.updated)} ago`}</span>
+        <span className="k-rail-card-word">{watchLabel(w, st.agents)}</span>
+        {w === "fail" && failWord(st.cls) && <span className="k-row-class">{failWord(st.cls)}</span>}
+        {timed(st)
+          ? <span className="k-rail-card-time tabular-nums" data-live>{stateClock(st, now)}</span>
+          : <span className="k-rail-card-time" title={when(s.updated)}>{ago(s.updated) === "now" ? "just now" : `${ago(s.updated)} ago`}</span>}
       </div>
       <p className="k-rail-card-title">{s.title || "New session"}</p>
-      {approvals > 0 && <p className="k-rail-card-need">{approvals === 1 ? "An approval waits for you" : `${approvals} approvals wait for you`}</p>}
-      {unsent && <p className="k-rail-card-need" data-testid="rail-card-unsent">{UNSENT[unsent].line}</p>}
-      {line && <p className="k-rail-card-line">{line}</p>}
-      {unread > 0 && approvals === 0 && <p className="k-rail-card-new">New since you looked</p>}
+      {/* Why it is in its state: what waits on the owner, the step, what it waits for, how it failed. */}
+      {why && <p className="k-rail-card-why" data-testid="rail-card-why" data-why={st.why}>{why}</p>}
+      {line && line !== why && <p className="k-rail-card-line">{line}</p>}
+      {unread > 0 && w !== "need" && <p className="k-rail-card-new">New since you looked</p>}
       <dl className="k-rail-card-meta">
         <dt>Folder</dt><dd title={s.workspace}><b>{folderOf(s)}</b>{s.machine ? ` on ${machineName(s.machine)}` : ""} in {home(s.workspace.replace(/\/[^/]*\/?$/, "")) || "/"}</dd>
         <dt>Model</dt><dd>{modelOf(s.model)}</dd>

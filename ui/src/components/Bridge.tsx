@@ -24,7 +24,7 @@ import { reportError } from "../lib/store.ts";
 import { Grip } from "./Grip.tsx";
 import { PaneMenu } from "./PaneMenu.tsx";
 import { DRAG, dragSession, setPanes } from "./Panes.tsx";
-import { elapsed, folderOf, Mark, modelOf, stateClock, timed, useLive, useNow, whyText } from "./Mark.tsx";
+import { elapsed, failWord, folderOf, Mark, modelOf, stateClock, timed, useLive, useNow, whyText } from "./Mark.tsx";
 import { SessionHeader } from "./SessionHeader.tsx";
 import { Boundary, SessionView } from "./SessionView.tsx";
 import { StartBox } from "./StartBox.tsx";
@@ -86,6 +86,7 @@ function StationHead({ s, w, helm, pinned }: { s: Session; w: Watch; helm: boole
         <h2 className="k-station-title" title={s.title}>{s.title || "New session"}</h2>
         <span className="k-station-state">
           <span className="k-station-word" data-testid="station-word"><Mark w={w} />{watchLabel(w, agents)}</span>
+          {w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="station-class">{failWord(st.cls)}</span>}
           {st.text && <span className="k-station-why" data-testid="station-why" data-why={st.why} title={whyText(st, now)}>{whyText(st, now)}</span>}
           {turning && start ? <span className="k-station-clock tabular-nums">{elapsed(now - start)}</span>
             : timed(st) && <span className="k-station-clock tabular-nums" data-testid="station-clock">{stateClock(st, now)}</span>}

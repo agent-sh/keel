@@ -8,12 +8,13 @@
 // agent it started still runs, and as waiting while all that is left waits.
 import type { Store } from "../core/store.ts";
 import type { Session, TurnStatus } from "../core/types.ts";
-import { failWord, stateOf, watchLabel, watchWord, type Ask, type Pending, type SessionState as State, type Watch, type WatchFacts } from "../core/watch.ts";
+import { failWord, oneLine, stateOf, watchLabel, watchWord, type Ask, type Pending, type SessionState as State, type Watch, type WatchFacts } from "../core/watch.ts";
 import * as perm from "../server/routes/permissions.ts";
 import { plansWaiting } from "../server/routes/plan.ts";
 import { allPendingQuestions } from "../tools/interact.ts";
 import { liveJobs, running } from "../tools/jobs.ts";
 import { errorClass } from "../admin/classes.ts";
+import { toolLine } from "../../ui/src/lib/tools.ts";
 import { D } from "./core.ts";
 
 // The fact with its words: `label` as a page shows it, `word` as a tool says it.
@@ -108,6 +109,19 @@ export function lens(d: From = from(), counts?: Map<string, number>): Lens {
   return { d, asks, pending, kids, counts: counts ?? new Map([...kids].map(([k, v]) => [k, v.length])) };
 }
 
+// The tool step a turn is on, in the words the transcript uses for the call:
+// the command, the file, the pattern. With several calls in one step, the first and a count.
+function stepOf(store: Store, s: Session, names: string[]): string | undefined {
+  const e = store.db.query<{ data: string }, [string]>("SELECT data FROM events WHERE session_id = ? AND kind = 'assistant' ORDER BY seq DESC LIMIT 1").get(s.id);
+  if (!e) return undefined;
+  try {
+    const uses = ((JSON.parse(e.data).blocks ?? []) as any[]).filter((b) => b.type === "tool_use" && names.includes(b.name));
+    if (!uses.length) return undefined;
+    const first = oneLine(toolLine(uses[0].name, uses[0].input ?? {}, s.workspace), 160);
+    return uses.length > 1 ? `${first}, and ${uses.length - 1} more` : first;
+  } catch { return undefined; }
+}
+
 // What the daemon knows of one session.
 export function factsOf(s: Session, l: Lens): WatchFacts {
   const asks: Ask[] = [...(l.asks.get(s.id) ?? [])];
@@ -131,7 +145,8 @@ export function factsOf(s: Session, l: Lens): WatchFacts {
   // A running turn: what it waits on now, when it started, whether its reply is streaming.
   const e = l.d.engine;
   const turn = e.isRunning(s.id) ? e.turnOf?.(s.id) : undefined;
-  const live = turn ? { status: e.statusOf?.(s.id), turn: l.d.store.event(turn)?.ts, output: e.outputOf?.(s.id) } : {};
+  const status = turn ? e.statusOf?.(s.id) : undefined;
+  const live = turn ? { status, turn: l.d.store.event(turn)?.ts, output: e.outputOf?.(s.id), ...(status?.kind === "tool" ? { step: stepOf(l.d.store, s, status.names) } : {}) } : {};
   return { asks, agents: l.counts.get(s.id) ?? 0, parked: parked.length, pending, ...live, failure: failureOf(l.d.store, s) };
 }
 

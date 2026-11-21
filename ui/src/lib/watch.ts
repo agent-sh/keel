@@ -12,7 +12,9 @@ import { useAuto } from "./automation.ts";
 import { useSafety } from "./safety.ts";
 import { unsentOf, useShelfVersion, useUnsent } from "./send-drafts.ts";
 import { actions, api, getState, newer, onFeature, reportError, useStore } from "./store.ts";
-import { shortPath, stripAnsi, toolKind, type ToolKind } from "./tools.ts";
+import { stripAnsi, toolKind, toolLine, type ToolKind } from "./tools.ts";
+
+export { toolLine };
 
 export { WATCH_LABEL, WATCH_RANK, watchLabel, type SessionState, type Watch } from "../../../src/core/watch.ts";
 
@@ -120,25 +122,6 @@ export function useLoadEvents(ids: string[]) {
       actions.loadSession(id).catch((e) => { if ((e as { status?: number }).status !== 404) { asked.delete(id); reportError(e, { at: "overview events" }); } });
     }
   }, [key]);
-}
-
-const VERB: Partial<Record<ToolKind, string>> = {
-  shell: "Running", stdin: "Typing into", read: "Reading", edit: "Editing", write: "Writing", patch: "Patching",
-  search: "Searching", glob: "Finding", list: "Listing", web: "Searching the web for", fetch: "Fetching", plan: "Planning",
-  ask: "Asking you", skill: "Using skill", mcp: "Calling",
-};
-
-export function toolLine(name: string, input: any, cwd?: string): string {
-  const k = toolKind(name);
-  const arg =
-    k === "shell" ? input.cmd ?? input.command ?? input.description
-    : k === "read" || k === "edit" || k === "write" ? shortPath(input.file_path ?? "", cwd)
-    : k === "search" || k === "glob" ? input.pattern
-    : k === "list" ? shortPath(input.dir_path ?? input.path ?? "", cwd)
-    : k === "web" ? input.query
-    : k === "fetch" ? input.url
-    : k === "ask" ? "" : name;
-  return [VERB[k] ?? "Using", arg].filter(Boolean).join(" ");
 }
 
 // The newest thing a session did: its last tool call, the reply it is

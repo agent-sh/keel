@@ -105,3 +105,23 @@ export function patchFiles(patch: string): { path: string; op: "add" | "delete" 
 }
 
 export const shortPath = (p: string, cwd?: string) => (cwd && p.startsWith(cwd + "/") ? p.slice(cwd.length + 1) : p.replace(/^\/home\/[^/]+/, "~"));
+
+// A tool call as one line of what it does: "Running bun test", "Editing src/a.ts".
+const VERB: Partial<Record<ToolKind, string>> = {
+  shell: "Running", stdin: "Typing into", read: "Reading", edit: "Editing", write: "Writing", patch: "Patching",
+  search: "Searching", glob: "Finding", list: "Listing", web: "Searching the web for", fetch: "Fetching", plan: "Planning",
+  ask: "Asking you", skill: "Using skill", mcp: "Calling",
+};
+
+export function toolLine(name: string, input: any, cwd?: string): string {
+  const k = toolKind(name);
+  const arg =
+    k === "shell" ? input.cmd ?? input.command ?? input.description
+    : k === "read" || k === "edit" || k === "write" ? shortPath(input.file_path ?? "", cwd)
+    : k === "search" || k === "glob" ? input.pattern
+    : k === "list" ? shortPath(input.dir_path ?? input.path ?? "", cwd)
+    : k === "web" ? input.query
+    : k === "fetch" ? input.url
+    : k === "ask" ? "" : name;
+  return [VERB[k] ?? "Using", arg].filter(Boolean).join(" ");
+}

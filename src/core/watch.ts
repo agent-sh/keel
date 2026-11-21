@@ -61,6 +61,8 @@ export type Pending = { kind: string; text?: string; since?: number; until?: num
 export type WatchFacts = {
   asks?: Ask[]; approvals?: number; asking?: boolean; agents?: number; parked?: number; pending?: Pending[];
   status?: TurnStatus; turn?: number; output?: number;
+  // The tool step in words, when the caller can read the call ("Running bun test").
+  step?: string;
   // The failure the last turn ended in: its class, its first line, when.
   failure?: { cls?: string; text?: string; at?: number };
 };
@@ -125,7 +127,7 @@ export function span(ms: number): string {
 function doing(f: WatchFacts): Pick<SessionState, "why" | "text" | "since"> {
   const st = f.status;
   const since = (t: number | undefined) => (t ? { since: t } : {});
-  if (st?.kind === "tool") return { why: "tool", text: `Running ${st.names.slice(0, 3).join(", ")}${st.names.length > 3 ? ` and ${st.names.length - 3} more` : ""}`, ...since(st.since) };
+  if (st?.kind === "tool") return { why: "tool", text: f.step || `Running ${st.names.slice(0, 3).join(", ")}${st.names.length > 3 ? ` and ${st.names.length - 3} more` : ""}`, ...since(st.since) };
   if (st?.kind === "model") {
     if (st.quiet) return { why: "stalled", text: "The model is answering, no output", ...since(st.quiet) };
     return { why: "model", text: st.preparing ? "Scaling images for the model" : "Waiting for the model", ...since(st.since) };

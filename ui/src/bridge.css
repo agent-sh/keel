@@ -176,11 +176,11 @@
 .k-row[data-watch="work"] .k-row-state { color: var(--st-work-ink); }
 .k-row[data-watch="wait"] .k-row-state { color: var(--st-wait); }
 /* A failure's class beside the word, in its colour: rate limit, billing, sign-in. */
-.k-row-class { flex-shrink: 0; padding: 0 0.3125rem; border-radius: 0.1875rem; box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--st-fail) 45%, transparent); font: 600 0.6562rem/1rem var(--font-inst); font-stretch: 75%; letter-spacing: 0.04em; text-transform: uppercase; color: var(--st-fail); }
+.k-row-class { flex-shrink: 0; white-space: nowrap; padding: 0 0.3125rem; border-radius: 0.1875rem; box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--st-fail) 45%, transparent); font: 600 0.6562rem/1rem var(--font-inst); font-stretch: 75%; letter-spacing: 0.04em; text-transform: uppercase; color: var(--st-fail); }
 /* Why, after the word: what it waits for and since when, on the same line. */
-.k-row-sub { display: flex; align-items: baseline; gap: 0.375rem; min-width: 0; }
-.k-row-state { flex-shrink: 0; }
-.k-row-why { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.75rem; line-height: 1rem; color: var(--muted); }
+/* The state line reads as one sentence: the word, then why. It may take a
+   second line (the command of an approval, a question) and is cut after it. */
+.k-row-why { font-size: 0.75rem; color: var(--muted); }
 /* A stream that went silent is said in the working ink: it may need a look. */
 :is(.k-row-why, .k-station-why)[data-why="stalled"] { color: var(--st-work-ink); font-weight: 500; }
 .k-row-clock { flex-shrink: 0; margin-left: auto; font: 0.6875rem/1rem var(--font-inst); font-stretch: 75%; color: var(--faint); }
@@ -240,7 +240,6 @@
 .k-row-act { flex-shrink: 0; margin: -0.1875rem 0; width: 1.5rem; height: var(--spacing-ctl-sm); place-items: center; border-radius: 0.1875rem; color: var(--faint); }
 .k-row-act:hover { background: var(--hover); color: var(--fg); }
 .k-row-act svg { width: 0.875rem; height: 0.875rem; }
-.k-needs { flex-shrink: 0; padding: 0 0.375rem; border-radius: 0.5rem; font-weight: 600; font-size: var(--text-micro); line-height: 1.0625rem; color: var(--accent-fg); background: var(--st-need); }
 .k-more { height: var(--spacing-ctl-md); padding-left: 1.75rem; border-radius: 0.25rem; text-align: left; font-size: var(--text-caption); color: var(--faint); }
 .k-more:hover { background: var(--hover); color: var(--muted); }
 /* The list with nothing in it: the shared empty line (k-empty in styles.css), at the rows' edge. */
@@ -339,6 +338,7 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-station[data-watch="wait"] .k-station-word { color: var(--st-wait); }
 /* Why the pane is in its state, beside the word: one line, cut at the pane's room. */
 .k-station-state { display: inline-flex; align-items: baseline; gap: 0.5rem; min-width: 0; }
+.k-station-state .k-row-class { align-self: center; }
 .k-station-why { min-width: 0; max-width: 28rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.8125rem; color: var(--muted); }
 .k-station[data-watch="fail"] .k-station-word { color: var(--st-fail-ink); }
 .k-station[data-watch="idle"] .k-station-word { color: var(--faint); }
@@ -540,7 +540,6 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-tick-badges svg { display: none; }
 /* Unread is the mark's own fullness here (a seen one goes quiet), not a dot. */
 .k-tick-badges .k-unread-dot { display: none; }
-.k-tick-badges .k-needs { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .k-tick-badges .k-snoozed-mark { display: block; width: 0.5625rem; height: 0.5625rem; color: var(--muted); }
 /* Agents a session started: small marks under its own, on the folded rail. */
 .k-tick-kids .k-session-children { display: flex; flex-direction: column; align-items: center; margin: 0; padding: 0; border: 0; }
