@@ -93,11 +93,12 @@ test("a request over the destination model's window is never sent", async ({ pag
   const info = (await (await request.get("/api/models")).json()).models.find((m: any) => m.id === STRICT);
   test.skip(!info, "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
 
-  // A first input larger than the window: there is nothing to compact, so the
-  // turn ends saying so and the provider is never asked to answer it.
+  // A first input larger than the window however its bytes are counted (at
+  // five bytes a token, the most a model is taken to have): there is nothing
+  // to compact, so the turn ends saying so and the provider is never asked.
   const first = await sessionOn(request, STRICT);
-  const long = "word ".repeat(52_000);
-  expect(Buffer.byteLength(long) / 2.5).toBeGreaterThan(info.context);
+  const long = "word ".repeat(90_000);
+  expect(Buffer.byteLength(long) / 5).toBeGreaterThan(info.context);
   await request.post(`/api/sessions/${first}/messages`, { data: { text: long } });
   await turnEnds(request, first, 1);
   const failed = await eventsOf(request, first);
@@ -107,6 +108,14 @@ test("a request over the destination model's window is never sent", async ({ pag
   await page.goto(`/s/${first}`);
   await expect(page.getByTestId("turn-end")).toHaveCount(1);
   await shoot(page, "context-over-window-02-first-input-refused");
+  // The next prompt takes the place of the one that could not be sent: the session answers it.
+  await request.post(`/api/sessions/${first}/messages`, { data: { text: "A shorter one instead." } });
+  await expect(page.getByTestId("assistant-text").last()).toHaveText("Scripted reply.", { timeout: 30_000 });
+  const shown = (await (await request.get(`/api/sessions/${first}`)).json());
+  const branch: any[] = [];
+  for (let e = shown.events.find((x: any) => x.id === shown.session.head); e; e = shown.events.find((x: any) => x.id === e.parent)) branch.unshift(e);
+  expect(branch.filter((e) => e.kind === "user").map((e) => e.data.text)).toEqual(["A shorter one instead."]);
+  expect(shown.events.filter((e: any) => e.kind === "user")).toHaveLength(2);
 
   // A history another model measured in its own tokens (far fewer than the
   // strict one counts), then the session moves to the smaller window: the
@@ -133,7 +142,7 @@ test("a request over the destination model's window is never sent", async ({ pag
 
   // A side question whose own words overflow the window is refused with its
   // code and never sent; one that fits is answered.
-  const side = await request.post(`/api/sessions/${moved}/side`, { data: { question: "why ".repeat(60_000) } });
+  const side = await request.post(`/api/sessions/${moved}/side`, { data: { question: "why ".repeat(100_000) } });
   expect(side.status()).toBe(409);
   expect((await side.json()).code).toBe("context_over_window");
   const short = await request.post(`/api/sessions/${moved}/side`, { data: { question: "Which step was last?" } });

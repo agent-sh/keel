@@ -101,11 +101,11 @@ test("what a hook adds counts: the turn compacts to fit and goes on; what cannot
   expect(r.store.events(a).find((e) => e.kind === "compaction")?.data.trigger).toBe("threshold");
   expect(r.store.events(a).at(-1)?.data.reason).toBe("end_turn");
   expect(JSON.stringify(r.sent.at(-1)!.messages)).toContain("memory memory");
-  // A note larger than the window itself stays over it after the history is summarized.
+  // A note larger than the window however its bytes are counted stays over it after the history is summarized.
   r.sent.length = 0;
   const b = r.session(SMALL.id);
   history(b);
-  noteHook(r, b, 30_000);
+  noteHook(r, b, 60_000);
   r.engine.send(b, "go on");
   await r.idle(b);
   expect(r.sent.filter((s) => s.purpose === "turn" || s.refused)).toEqual([]);
@@ -140,9 +140,10 @@ test("a summary cut each time is asked for once per context, not on every step",
   expect(r.sent.filter((s) => s.purpose === "summary")).toHaveLength(3);
   expect(r.sent.filter((s) => s.purpose === "turn")).toHaveLength(5);
   expect(events.filter((e) => e.kind === "compaction")).toEqual([]);
+  // Said once a turn, the second time from memory.
   const said = events.filter((e) => e.kind === "note" && e.data.kind === "compaction_failed");
-  expect(said).toHaveLength(1);
-  expect(said[0]!.data.text).toContain("compact with a focus that asks for less, continue on a model that writes longer replies, or clear the context");
+  expect(said).toHaveLength(2);
+  expect(said[1]!.data.text).toContain("compact with a focus that asks for less, continue on a model that writes longer replies, or clear the context");
   expect(events.filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).toEqual(["end_turn", "end_turn"]);
   // The owner's own request is still tried; its checkpoint lets summaries be prepared again.
   cut = false;
@@ -153,6 +154,114 @@ test("a summary cut each time is asked for once per context, not on every step",
   await r.idle(id);
   expect(r.sent.filter((s) => s.purpose === "summary")).toHaveLength(1);
   expect(r.store.events(id).filter((e) => e.kind === "compaction")).toHaveLength(2);
+});
+
+// The memory of a summary that could not be written whole belongs to the
+// context it was tried on: a shorter branch is another context; at the window
+// the turn gets one try by the way not yet tried (the transcript in parts);
+// a summary prepared earlier is still applied.
+test("a remembered failed summary holds for its own context, and leaves the window one try in parts", async () => {
+  let cutOwn = true, cutParts = false;
+  const r = rig((req) => {
+    if (req.purpose !== "summary") return undefined;
+    const own = req.messages.length > 1;
+    return (own ? cutOwn : cutParts) ? text("cut in the middle of a", "max_tokens") : text(own ? "OWN-SUMMARY" : "PARTS-SUMMARY");
+  });
+  const reply = (id: string, total: number, bytes = 15_000) => r.store.append(id, "assistant", { blocks: [{ type: "text", text: words(bytes) }], model: SMALL.id, stop: "end_turn", usage: { input: 10, cache_read: 100, cache_write: 0, output: total - 110 } });
+  const summaries = () => r.sent.filter((s) => s.purpose === "summary");
+  // A session whose summary at the line (2,000 tokens here) is cut each time: three requests, then remembered.
+  const failing = async () => {
+    const id = r.session(SMALL.id);
+    r.store.updateSession(id, { settings: { compact_at: 2_000 } });
+    r.store.append(id, "user", { text: "read it" });
+    const early = reply(id, 900, 1_000);
+    r.store.append(id, "user", { text: "and the rest" });
+    const late = reply(id, 6_100, 13_000);
+    r.sent.length = 0;
+    r.engine.send(id, "go on");
+    await r.idle(id);
+    expect(summaries()).toHaveLength(3);
+    r.sent.length = 0;
+    return { id, early: early.id, late: late.id };
+  };
+  const checkpoints = (id: string) => r.line(id).filter((e) => e.kind === "compaction").map((e) => e.data.summary);
+
+  // Another branch of the session, from an early reply: its context was never tried. It is summarized at its line.
+  const a = await failing();
+  r.store.updateSession(a.id, { head: a.early });
+  reply(a.id, 6_100, 13_000);
+  cutOwn = false;
+  r.engine.send(a.id, "on the short branch");
+  await r.idle(a.id);
+  expect(checkpoints(a.id)).toEqual(["OWN-SUMMARY"]);
+
+  // A summary prepared before the failure is applied at the line, with no request.
+  cutOwn = true;
+  const b = await failing();
+  r.store.db.run("INSERT INTO prepared_summaries (session_id, covered, data, ts) VALUES (?, ?, ?, ?)", [b.id, b.late, JSON.stringify({ mode: "summary", summary: "PREPARED", owner_messages: [], auto: true, ahead: true, trigger: "threshold", covered: b.late, model: SMALL.id }), Date.now()]);
+  r.engine.send(b.id, "again");
+  await r.idle(b.id);
+  expect(checkpoints(b.id)).toEqual(["PREPARED"]);
+  expect(summaries()).toEqual([]);
+
+  // At the window: one try, as a transcript in parts (the single request is not sent again).
+  const c = await failing();
+  reply(c.id, 10_050, 1_000);
+  r.engine.send(c.id, "at the window");
+  await r.idle(c.id);
+  expect(checkpoints(c.id)).toEqual(["PARTS-SUMMARY"]);
+  expect(summaries().every((s) => s.messages.length === 1)).toBe(true);
+  expect(r.store.events(c.id).findLast((e) => e.kind === "turn_end")?.data.reason).toBe("end_turn");
+
+  // The parts are cut too: the turn ends with the error and its code. The
+  // next prompt takes the place of the one that was not sent, with no request,
+  // so the context does not grow by a prompt a try; Continue asks the same prompt again.
+  cutParts = true;
+  const d = await failing();
+  reply(d.id, 10_050, 1_000);
+  r.engine.send(d.id, "at the window");
+  await r.idle(d.id);
+  const failed = r.line(d.id);
+  expect(failed.findLast((e) => e.kind === "turn_end")?.data).toMatchObject({ reason: "error", code: "summary_truncated", steps: 0 });
+  expect(summaries()).toHaveLength(3);
+  r.sent.length = 0;
+  r.engine.send(d.id, "once more");
+  await r.idle(d.id);
+  expect(r.line(d.id)).toHaveLength(failed.length);
+  r.engine.resume(d.id);
+  await r.idle(d.id);
+  const now = r.line(d.id);
+  expect(r.sent).toEqual([]);
+  expect(now.filter((e) => e.kind === "turn_end").at(-1)?.data).toMatchObject({ reason: "error", code: "summary_truncated" });
+  expect(now.filter((e) => e.kind === "user").map((e) => e.data.text).slice(-2)).toEqual(["go on", "once more"]);
+  expect(r.store.events(d.id).filter((e) => e.kind === "user").map((e) => e.data.text)).toContain("at the window");
+  expect(now.findLast((e) => e.kind === "error")?.data.message).toContain("or clear the context");
+});
+
+// A context counted from bytes alone can be counted far too high: the model's
+// learned bytes a token come from tool-heavy sessions, prose runs near twice
+// that. A first message that cannot be compacted is refused unsent only when
+// it is over the window however its bytes are counted.
+test("a long first message that fits is sent; one over the window at any count is not, and the next prompt takes its place", async () => {
+  const r = rig();
+  setRatio(SMALL.id, 1.5); // learned from dense sessions; the stand-in counts 2.5 bytes a token
+  const a = r.session(SMALL.id);
+  r.engine.send(a, words(20_000)); // 13,300 tokens by the learned ratio, 8,000 by the provider's count, in a window of 10,000
+  await r.idle(a);
+  expect(r.sent.filter((s) => s.purpose === "turn").map((s) => s.refused)).toEqual([false]);
+  expect(r.store.events(a).findLast((e) => e.kind === "turn_end")?.data.reason).toBe("end_turn");
+  // 60 KB is over the window at the most bytes a token a model is taken to have: not sent.
+  r.sent.length = 0;
+  const b = r.session(SMALL.id);
+  r.engine.send(b, words(60_000));
+  await r.idle(b);
+  expect(r.sent.filter((s) => s.purpose === "turn")).toEqual([]);
+  expect(r.store.events(b).findLast((e) => e.kind === "turn_end")?.data).toMatchObject({ reason: "error", code: "context_over_window", steps: 0 });
+  // The prompt after it replaces it on the branch: the session is not left unusable.
+  r.engine.send(b, "a short one instead");
+  await r.idle(b);
+  expect(r.line(b).filter((e) => e.kind === "user").map((e) => e.data.text)).toEqual(["a short one instead"]);
+  expect(r.store.events(b).findLast((e) => e.kind === "turn_end")?.data.reason).toBe("end_turn");
 });
 
 // A summary request whose reply stopped because request and reply together

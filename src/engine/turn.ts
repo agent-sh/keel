@@ -8,6 +8,7 @@ import { errorScope, type ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
 import { SessionMap } from "../core/session-map.ts";
 import { conceal } from "../core/conceal.ts";
+import { ownerPrompt } from "../core/owner.ts";
 import { blockName, blocksOf, changedBlocks, PromptStore, type PromptPart } from "./prompt-store.ts";
 import type { AssistantBlock, Message, QueueItem, Session, StoredEvent, ToolResultBlock, ToolUseBlock, TurnStatus, Usage, UserBlock } from "../core/types.ts";
 import { addUsage, emptyUsage } from "../core/types.ts";
@@ -23,7 +24,7 @@ import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, type Material } from "./reader.ts";
 import { readBudget, readMaterial, readSource, type ReaderHost, type ReadOutcome } from "./readers.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
-import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, messagesBytes, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleMinTokens, checkpointData, lastWarm, preparedWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
+import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleMinTokens, checkpointData, lastWarm, preparedWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
 import { effectiveEffort, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { withoutImages } from "./images.ts";
@@ -270,6 +271,11 @@ const SUMMARY_ROOM_BYTES = (st: Step) => Math.floor(Math.min(st.info.output, st.
 const SUMMARY_RETRIES = 2;
 // What the owner can do when a summary cannot be written whole.
 const SUMMARY_REMEDIES = "compact with a focus that asks for less, continue on a model that writes longer replies, or clear the context";
+// The failures of a summary that end the same way on the same context: remembered (Engine.gaveUp).
+const SUMMARY_GAVE_UP = new Set(["summary_truncated", "summary_too_long", "summary_no_room"]);
+// A turn that ended with one of these before any request did so because its
+// context cannot be sent: the prompt that opened it got no answer (Engine.unanswered).
+const NOT_SENT = new Set([...SUMMARY_GAVE_UP, "context_over_window"]);
 
 type Step = { provider: Provider; info: ModelInfo; tools: Tool[]; system: string; systemSplit: number; effort?: string; native?: boolean };
 
@@ -277,7 +283,10 @@ type Step = { provider: Provider; info: ModelInfo; tools: Tool[]; system: string
 // request that carries its context (Engine.whole), and the messages that
 // count covered when the request holds more than them (a side question's
 // words, a summary's prompt). Without `base` the messages given to call().
-type Fit = { tokens: number; base?: readonly Message[] };
+// `least`: set when nothing in the request can be compacted, so a refusal
+// would be final: the fewest tokens the context can be (Engine.least). The
+// request is then refused unsent only when even that is over the window.
+type Fit = { tokens: number; base?: readonly Message[]; least?: number };
 
 // The bytes the built messages hold beyond the counted ones. A message that
 // is the same object in both cancels out, so only what a hook, a side
@@ -556,7 +565,9 @@ export class Engine {
     }
     // Input that is not the owner's (a report, a wake) never releases a held queue.
     if (!opts.meta) this.release(id);
-    const ev = this.accept(id, { text, images: opts.images?.length ? opts.images : undefined, ...opts.meta });
+    // The owner's prompt after one that could not be sent takes its place (see unanswered).
+    const stale = opts.meta ? undefined : this.unanswered(id);
+    const ev = this.accept(id, { text, images: opts.images?.length ? opts.images : undefined, ...opts.meta }, stale ? stale.parent : undefined);
     // The title comes from the owner's first words, not from a timer's or a report's envelope.
     // A prompt of only attachments (no words) is named by its files, or Image.
     const files = (opts.images ?? []).filter((b: any) => b?.type === "attachment").map((b: any) => String(b.name));
@@ -646,9 +657,31 @@ export class Engine {
   resume(id: string) {
     if (this.running.has(id)) throw Object.assign(new Error("a turn is running"), { status: 409 });
     this.release(id);
-    this.accept(id, { text: "[harness] The previous turn was stopped before it finished. Continue where it left off.", origin: "harness" });
+    // A turn that sent nothing has nothing to continue from: its prompt is asked again as it stands.
+    if (!this.unanswered(id)) this.accept(id, { text: "[harness] The previous turn was stopped before it finished. Continue where it left off.", origin: "harness" });
     this.start(id);
     this.emitQueue(id);
+  }
+
+  // The owner's prompt that the last turn of the branch could not send: the
+  // turn ended before any request because its context does not fit the window
+  // and cannot be made to (NOT_SENT), on the model the session is still on,
+  // and nothing was said since. The next prompt is stored as another version
+  // of it, as an edited prompt is, so a context that is already too large does
+  // not grow by a prompt for every try. The earlier one stays stored and can
+  // be shown again.
+  private unanswered(id: string): StoredEvent | undefined {
+    const line = this.lineage(id);
+    const end = line.findLastIndex((e) => e.kind === "turn_end");
+    if (end < 0) return undefined;
+    const d = line[end]!.data;
+    if (d.reason !== "error" || d.steps !== 0 || !NOT_SENT.has(d.code)) return undefined;
+    if (line.slice(end + 1).some((e) => e.kind !== "error" && !(e.kind === "note" && !e.data.model))) return undefined;
+    const start = line.findLastIndex((e, i) => i < end && e.kind === "turn_start");
+    if (start < 1 || line[start]!.data.model !== this.store.session(id)?.model) return undefined;
+    if (line.slice(start + 1, end).some((e) => e.kind !== "note")) return undefined;
+    const prompt = line[start - 1]!;
+    return prompt.kind === "user" && ownerPrompt(prompt.data) ? prompt : undefined;
   }
 
   // After a turn: the next queued prompt starts, unless the queue is held.
@@ -859,7 +892,8 @@ export class Engine {
       if (!fit || !counted) return;
       const gained = gainedBytes(counted.messages, req.messages, st.info.id) + toolsBytes(req.tools) - counted.tools;
       const tokens = fit.tokens + Math.round(gained / bytesPerToken(st.info.id));
-      if (tokens >= st.info.context) throw overWindow(st.info, tokens);
+      const held = fit.least === undefined ? tokens : fit.least + Math.round(gained / RATIO_MAX);
+      if (held >= st.info.context) throw overWindow(st.info, tokens);
     };
     fits();
     for (let attempt = 0; ; attempt++) {
@@ -1098,6 +1132,8 @@ export class Engine {
     let fellBack = false;
     let compactedForFit = false;
     let summaryFailed = false;
+    // The code of the error that ended the turn (context_over_window, summary_truncated), kept on its turn_end.
+    let failed: string | undefined;
     let steps = 0;
     // What the turn's end says it took: the replies the model gave, its tool
     // results, those of calls that ran and failed (what telemetry and the
@@ -1169,10 +1205,11 @@ export class Engine {
         // A history with no reply of its own yet (one long first message) is
         // summarized only when it cannot be sent as it is.
         // (The prompts that opened a turn with no reply yet are not summarized: they follow the summary whole.)
-        // (A context whose summary could not be written whole is not tried again while it still fits.)
-        if ((used >= limit || over) && !summaryFailed && (over || (events.some((e) => e.kind === "assistant") && !this.summaryGaveUp(id, events, st))) && worthSummarizing(summarizable(events))) {
+        if ((used >= limit || over) && !summaryFailed && (over || events.some((e) => e.kind === "assistant")) && worthSummarizing(summarizable(events))) {
           // A summary prepared ahead swaps in at once; else the turn waits for one.
           // One that fails while the context still fits is said, and the turn goes on whole.
+          // (A context whose summary could not be written whole is not asked for again:
+          // compactNow says so at once, with no request, and the turn says it once.)
           if (!this.applyPrepared(id, events)) await this.compactNow(id, { auto: true, trigger: "threshold", signal, step: st }).catch((e) => {
             if (signal.aborted || over) throw e;
             summaryFailed = true;
@@ -1181,8 +1218,9 @@ export class Engine {
           });
           events = this.lineage(id);
           // A request counted over the window is never sent.
+          // (What is left cannot be made smaller: held to the fewest tokens it can be.)
           const now = this.whole(events, st);
-          if (now >= st.info.context) throw Object.assign(new Error(`The context is still larger than ${st.info.name}'s window after compacting (about ${now} of ${st.info.context} tokens): continue on a model with a larger window, or start a new session.`), { status: 409, code: "context_over_window" });
+          if (this.least(events, st) >= st.info.context) throw Object.assign(new Error(`The context is still larger than ${st.info.name}'s window after compacting (about ${now} of ${st.info.context} tokens): continue on a model with a larger window, or start a new session.`), { status: 409, code: "context_over_window" });
         } else if (steps === 1 && this.cacheCold(id, events, st) && this.applyPrepared(id, events)) {
           // Back after the cache expired: the summary written while idle (or
           // ahead) replaces the history instead of the history being written again.
@@ -1194,16 +1232,21 @@ export class Engine {
         const messages = toMessages(events);
         let res: ProviderResult;
         try {
-          res = await this.call(id, st, messages, signal, partial, session, false, "turn", { tokens: this.whole(events, st) });
+          // A context with nothing to compact (a first long message, a fresh
+          // summary and the prompts after it) cannot be made smaller: it is
+          // sent unless it is over the window however its bytes are counted.
+          const final = !worthSummarizing(summarizable(events));
+          res = await this.call(id, st, messages, signal, partial, session, false, "turn", { tokens: this.whole(events, st), ...(final ? { least: this.least(events, st) } : {}) });
         } catch (e) {
+          // Counted over the window before it was sent: the provider said nothing about its own count.
+          const unsent = !!(e as any)?.unsent;
+          // Refused by the provider as over its window: its count of this context is higher than Keel's.
+          if (!signal.aborted && (e as any)?.kind === "context" && !unsent) this.refused(st, events);
           // The request no longer fits the window: compact once and go on.
           // (A context that is a fresh summary, or only the prompts that opened
           // the turn, has nothing left to compact: the provider's error stands.)
           if (!signal.aborted && (e as any)?.kind === "context" && !compactedForFit && worthSummarizing(summarizable(events))) {
             compactedForFit = true;
-            // Counted over the window before it was sent: the provider said nothing about its own count.
-            const unsent = !!(e as any).unsent;
-            if (!unsent) this.refused(st, events);
             await this.compactNow(id, { auto: true, trigger: unsent ? "threshold" : "overflow", signal, step: st });
             continue;
           }
@@ -1275,11 +1318,11 @@ export class Engine {
       }
     } catch (e) {
       reason = signal.aborted ? (this.parking.has(id) ? "restart" : "interrupted") : "error";
-      if (!signal.aborted) throw e;
+      if (!signal.aborted) { failed = typeof (e as any)?.code === "string" ? (e as any).code : undefined; throw e; }
     } finally {
       const by = this.stoppedBy.get(id);
       this.stoppedBy.delete(id);
-      this.append(id, "turn_end", { reason, usage, ms: Date.now() - t0, steps: replies, tools: toolResults, tool_errors: toolErrors, tool_denied: toolDenied, ...(by && reason === "interrupted" ? { stopped_by: by } : {}) });
+      this.append(id, "turn_end", { reason, usage, ms: Date.now() - t0, steps: replies, tools: toolResults, tool_errors: toolErrors, tool_denied: toolDenied, ...(failed ? { code: failed } : {}), ...(by && reason === "interrupted" ? { stopped_by: by } : {}) });
       // Between turns, a context past the preparing share gets its summary ready.
       if (!signal.aborted) {
         const events = this.lineage(id);
@@ -1394,18 +1437,32 @@ export class Engine {
   // until a checkpoint lands or the session is on another model. At the
   // window, where a turn cannot go on without one, the turn ends with that
   // error, which names what the owner can do.
-  private gaveUp = new SessionMap<{ at: string; error: Error }>(256);
-  private gaveUpAt(events: readonly StoredEvent[], st: Step): string {
+  // The memory holds only for that context as it grows: the last event the
+  // failed try covered must still be at its place on the branch shown (a
+  // shorter branch, or another one, is a context of its own). It is kept for
+  // each of the two ways a summary is written: `line`, one request on the
+  // session's own messages while the context fits, and `window`, the
+  // transcript in parts once it does not. A failure at the line leaves the
+  // turn at the window one try by the other way before it fails.
+  private gaveUp = new SessionMap<{ key: string; at: number; id: string; tried: Set<"line" | "window">; error: Error }>(256);
+  private gaveUpKey(events: readonly StoredEvent[], st: Step): string {
     const cp = checkpointAt(events).at;
     return `${cp < 0 ? "" : events[cp]!.id}|${st.info.id}`;
   }
-  private summaryGaveUp(id: string, events: readonly StoredEvent[], st: Step): Error | undefined {
+  private gaveUpFor(id: string, events: readonly StoredEvent[], st: Step) {
     const g = this.gaveUp.get(id);
-    return g && g.at === this.gaveUpAt(events, st) ? g.error : undefined;
+    return g && g.key === this.gaveUpKey(events, st) && events[g.at]?.id === g.id ? g : undefined;
   }
-  private giveUp(id: string, events: readonly StoredEvent[], st: Step, e: unknown) {
-    const code = (e as any)?.code;
-    if (code === "summary_truncated" || code === "summary_too_long") this.gaveUp.set(id, { at: this.gaveUpAt(events, st), error: e as Error });
+  private summaryGaveUp(id: string, events: readonly StoredEvent[], st: Step, over: boolean): Error | undefined {
+    const g = this.gaveUpFor(id, events, st);
+    return g?.tried.has(over ? "window" : "line") ? g.error : undefined;
+  }
+  private giveUp(id: string, events: readonly StoredEvent[], st: Step, covered: StoredEvent | undefined, over: boolean, e: unknown) {
+    if (!covered || !SUMMARY_GAVE_UP.has((e as any)?.code)) return;
+    const had = this.gaveUpFor(id, events, st);
+    const at = had ? had.at : events.findLastIndex((x) => x.id === covered.id);
+    if (at < 0) return;
+    this.gaveUp.set(id, { key: this.gaveUpKey(events, st), at, id: events[at]!.id, tried: new Set([...(had?.tried ?? []), over ? "window" as const : "line" as const]), error: e as Error });
   }
 
   // Summaries being written ahead. Each can be stopped, and names the event it covers up to.
@@ -1484,7 +1541,7 @@ export class Engine {
     if (this.draining || (current && !current.abort.signal.aborted)) return;
     const events = this.lineage(id);
     const covered = events.findLast((e) => e.kind !== "turn_start" && e.kind !== "turn_end");
-    if (!covered || !worthSummarizing(events) || this.summaryGaveUp(id, events, st)) return;
+    if (!covered || !worthSummarizing(events) || this.summaryGaveUp(id, events, st, false)) return;
     const have = this.store.db.query<{ covered: string; data: string }, [string]>("SELECT covered, data FROM prepared_summaries WHERE session_id = ?").get(id);
     if (have && preparedHolds(events, have.covered, idle, JSON.parse(have.data))) return;
     const abort = new AbortController();
@@ -1503,7 +1560,7 @@ export class Engine {
       })
       .catch((e) => {
         if (abort.signal.aborted) return;
-        this.giveUp(id, events, st, e);
+        this.giveUp(id, events, st, covered, false, e);
         this.errors.capture("provider", e, { session: id, at: "preparing a summary" });
       })
       .finally(() => { if (this.preparing.get(id)?.abort === abort) this.preparing.delete(id); });
@@ -1563,6 +1620,19 @@ export class Engine {
     return contextTokens(events, st.info.id, Math.ceil(this.prefixBytes(st) / bytesPerToken(st.info.id))).used;
   }
 
+  // The fewest tokens the request that carries this context can be. A count a
+  // reply measured is that count. A count from bytes alone can be far too
+  // high: the model's learned bytes a token come from tool-heavy sessions, and
+  // prose (a long first message, a pasted document) runs near twice that. Its
+  // floor is the bytes, system prompt and tools included, at the most bytes a
+  // token a model is taken to have. A request that cannot be made smaller is
+  // refused unsent only when this is over the window; under it the request is
+  // sent, and a provider that refuses it teaches the ratio (refused()).
+  private least(events: readonly StoredEvent[], st: Step): number {
+    const t = contextTokens(events, st.info.id);
+    return t.measured ? t.used : Math.ceil((contextBytes(events, st.info.id) + this.prefixBytes(st)) / RATIO_MAX);
+  }
+
   // What the provider counted for a request against the bytes Keel counted
   // for it: the model's bytes a token, kept across restarts.
   private learn(id: string, st: Step, events: readonly StoredEvent[], u: Usage) {
@@ -1597,7 +1667,8 @@ export class Engine {
   // transcript: tool outputs shortened oldest first until one request holds
   // it, else in parts oldest first, each with the summary of the parts before
   // it. A request the provider still refuses as too long is built again smaller.
-  private async summarize(id: string, st: Step, session: Session, events: readonly StoredEvent[], signal: AbortSignal, focus?: string): Promise<{ summary: string; usage: Usage; parts?: number; clipped?: number }> {
+  // `transcript`: read as a transcript from the start (the single request was tried on this context and failed).
+  private async summarize(id: string, st: Step, session: Session, events: readonly StoredEvent[], signal: AbortSignal, focus?: string, transcript = false): Promise<{ summary: string; usage: Usage; parts?: number; clipped?: number }> {
     focus ??= allHooks().map((h) => h.compactFocus?.(session)).find(Boolean);
     let usage = emptyUsage();
     const one = async (ask: Message[], fit: Fit): Promise<string> => {
@@ -1621,7 +1692,7 @@ export class Engine {
     };
     const messages = toMessages(events);
     let over: unknown;
-    if (!(this.whole(events, st) >= st.info.context)) {
+    if (!transcript && !(this.whole(events, st) >= st.info.context)) {
       try {
         return { summary: await one([...messages, { role: "user", content: [{ type: "text", text: summaryPrompt(focus) }] }], { tokens: this.whole(events, st), base: messages }), usage };
       } catch (e) {
@@ -1673,7 +1744,9 @@ export class Engine {
         over = e;
       }
     }
-    throw over;
+    // No part of it fits with the room a summary needs, at any size tried: said
+    // with what can be done, and remembered like a summary that is cut each time.
+    throw Object.assign(new Error(`the history could not be summarized within ${st.info.name}'s window, in one request or in parts (${errorText(over).slice(0, 160)}): continue on a model with a larger window, or clear the context`), { status: 409, code: "summary_no_room", cause: over });
   }
 
   // Summarize the context into a checkpoint. Runs inside a turn (auto, before a
@@ -1690,19 +1763,23 @@ export class Engine {
     if (upto.length < events.length) {
       const opening = events.slice(upto.length);
       const tokens = contextTokens(opening, st.info.id).used;
-      if (tokens >= st.info.context) throw Object.assign(new Error(`The prompt this turn answers is about ${tokens} tokens (${opening.reduce((n, e) => n + (e.kind === "user" ? utf8Bytes(String(e.data.text ?? "")) : 0), 0)} bytes), more than ${st.info.name}'s window of ${st.info.context} tokens, so it cannot be sent whole: shorten it, or continue on a model with a larger window.`), { status: 409, code: "context_over_window" });
+      // Not compacted with the rest and with no count of its own: over the window only if it is at any bytes a token.
+      if (Math.ceil(contextBytes(opening, st.info.id) / RATIO_MAX) >= st.info.context) throw Object.assign(new Error(`The prompt this turn answers is about ${tokens} tokens (${opening.reduce((n, e) => n + (e.kind === "user" ? utf8Bytes(String(e.data.text ?? "")) : 0), 0)} bytes), more than ${st.info.name}'s window of ${st.info.context} tokens, so it cannot be sent whole: shorten it, or continue on a model with a larger window.`), { status: 409, code: "context_over_window" });
     }
     const before = this.used(events, st);
     // Not asked again by itself for a context whose summary could not be written whole; the owner's own request is.
-    const gaveUp = opts.auto ? this.summaryGaveUp(id, events, st) : undefined;
+    // At the window, a failure remembered from the line leaves one try by the way not tried: the transcript in parts.
+    const over = this.whole(events, st) >= st.info.context;
+    const gaveUp = opts.auto ? this.summaryGaveUp(id, events, st, over) : undefined;
     if (gaveUp) throw gaveUp;
+    const transcript = !!opts.auto && over && !!this.gaveUpFor(id, events, st);
     for (const h of allHooks()) await Promise.resolve().then(() => h.beforeCompact?.(session)).catch((e) => this.errors.capture("server", e, { hook: "beforeCompact", session: id }));
     this.status(id, { kind: "compacting", auto: !!opts.auto });
     const own = new AbortController();
     const signal = opts.signal ?? own.signal;
     const t0 = Date.now();
     try {
-      const res = await this.summarize(id, st, session, upto, signal, opts.focus).catch((e) => { this.giveUp(id, events, st, e); throw e; });
+      const res = await this.summarize(id, st, session, upto, signal, opts.focus, transcript).catch((e) => { this.giveUp(id, events, st, upto.at(-1), over, e); throw e; });
       const u: Usage = res.usage;
       const summary = res.summary;
       if (!summary) throw Object.assign(new Error("the model wrote no summary"), { status: 409 });
@@ -1887,7 +1964,8 @@ export class Engine {
     const line = this.lineage(id);
     const messages = toMessages(line);
     // The stored branch is what the count below covers; the question's words come on top.
-    const fit: Fit = { tokens: this.whole(line, st), base: [...messages] };
+    // (A side question compacts nothing: an unmeasured branch is held to the fewest tokens it can be.)
+    const fit: Fit = { tokens: this.whole(line, st), base: [...messages], least: this.least(line, st) };
     if (pending) messages.splice(0, messages.length, ...withPending(messages, pending));
     const last = messages.at(-1);
     for (const m of extra) {

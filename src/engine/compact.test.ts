@@ -334,4 +334,8 @@ test("another model's reply is a floor, not the count; an interrupted reply with
   const cut = [...own, ev("assistant", { blocks: [{ type: "text", text: "half" }], model: "lab:moved", stop: "interrupted", usage: { input: 0, cache_read: 0, cache_write: 0, output: 0 } }), ev("user", { text: "again" })];
   expect(contextTokens(cut, "lab:moved")).toMatchObject({ used: 30_010 + Math.round((4 + 4 + 5) / BYTES_PER_TOKEN), measured: 30_010 });
   expect(contextTokens(cut).measured).toBe(30_010);
+  // A reply whose provider reports no usage (an outside agent's) is still the measured one: the count is what
+  // came since, not the bytes of the whole history on every call.
+  const silent = [...line, ev("assistant", { blocks: [{ type: "text", text: "z".repeat(40_000) }], model: "lab:moved", stop: "end_turn", usage: { input: 0, cache_read: 0, cache_write: 0, output: 0 } }), ev("user", { text: "more" })];
+  expect(contextTokens(silent, "lab:moved")).toMatchObject({ used: 2, measured: 0, estimated: 2 });
 });

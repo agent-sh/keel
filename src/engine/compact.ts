@@ -501,7 +501,10 @@ export function summaryMessage(data: { summary: string; fixed?: { key: string; t
 // to half. A model's own ratio is learned from what its provider reports.
 export const BYTES_PER_TOKEN = 2.5;
 const RATIO_MIN = 1;
-const RATIO_MAX = 5;
+// The most bytes a token a model is taken to have: prose runs near 4, a
+// learned ratio comes from tool-heavy sessions and sits far lower. A context
+// counted from bytes alone holds at least its bytes over this.
+export const RATIO_MAX = 5;
 const RATIO_RATE = 0.2; // each new reply moves the learned ratio a fifth of the way (Gemini CLI's adaptive estimate)
 // Below this many counted tokens a request says little about the ratio.
 const RATIO_SAMPLE_TOKENS = 2_000;
@@ -538,8 +541,9 @@ export function setRatio(model: string, ratio: number) {
 // Tokens the next request will carry: what the provider counted on the last
 // response of this context, plus the bytes appended since at the model's
 // bytes a token. A context with no counted reply (an imported history) is
-// estimated whole. A reply stored with no input counted (one the owner
-// interrupted) measured nothing and is passed over.
+// estimated whole. A reply the owner interrupted is stored with no usage: it
+// measured nothing and is passed over (any other reply is taken as measured,
+// also one whose provider reports no usage: the search stops at it).
 // With `model` given, the count is that model's: its own newest reply plus
 // the bytes since, or its bytes alone when it has not replied here. A newer
 // reply of another model (the session was moved) is not this model's count,
@@ -557,8 +561,7 @@ export function contextTokens(lineage: readonly StoredEvent[], model?: string, p
   for (let i = lineage.length - 1; i > cp.at; i--) {
     const e = lineage[i]!;
     if (e.kind !== "assistant" || !e.data.usage || e.data.stop === "refusal") continue;
-    const u = e.data.usage;
-    if (u.input + u.cache_read + u.cache_write <= 0) continue;
+    if (e.data.stop === "interrupted") continue;
     if (model && e.data.model && e.data.model !== model) { if (other < 0) other = i; continue; }
     own = i;
     break;
