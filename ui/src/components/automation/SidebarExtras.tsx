@@ -139,7 +139,7 @@ function FooterButtons({ onInbox, onLoops }: { onInbox: () => void; onLoops: () 
         data-testid="inbox-button"
         onClick={onInbox}
         title={held ? "Inbox: alerts are snoozed" : "Inbox"}
-        className={cn("relative flex items-center gap-1.5 rounded-md px-2 py-1 text-caption hover:bg-raised", unread ? "text-fg" : "text-faint")}
+        className={cn("relative flex h-ctl-md items-center gap-1.5 rounded-md px-2 text-caption hover:bg-raised", unread ? "text-fg" : "text-faint")}
       >
         {held ? <BellOff className="size-3.5" /> : <Bell className="size-3.5" />}
         {unread > 0 && <span data-testid="inbox-count" data-watch={top} className="k-inbox-count tabular-nums">{unread}</span>}
@@ -149,7 +149,7 @@ function FooterButtons({ onInbox, onLoops }: { onInbox: () => void; onLoops: () 
         data-testid="loops-button"
         onClick={onLoops}
         title="Loops"
-        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-caption text-faint hover:bg-raised hover:text-fg"
+        className="flex items-center gap-1.5 h-ctl-md rounded-md px-2 text-caption text-faint hover:bg-raised hover:text-fg"
       >
         <Repeat className="size-3.5" />
         {loops > 0 && <span className="tabular-nums">{loops}</span>}

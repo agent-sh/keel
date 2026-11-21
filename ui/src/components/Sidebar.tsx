@@ -366,7 +366,7 @@ function Index({ current }: { current: string | null }) {
         <div className="flex flex-wrap gap-1 px-3 pb-2" role="group" aria-label="Filter by tag" data-testid="tag-filter">
           {tags.map((t) => (
             <button key={t} type="button" aria-pressed={tag === t} onClick={() => setTag(tag === t ? null : t)}
-              className={cn("inline-flex items-center gap-1 rounded-xs px-1.5 py-0.5 text-caption", tag === t ? "bg-accent-soft text-accent-ink" : "bg-sunken text-muted hover:text-fg")}>
+              className={cn("inline-flex h-ctl-sm items-center gap-1 rounded-xs px-1.5 text-caption", tag === t ? "bg-accent-soft text-accent-ink" : "bg-sunken text-muted hover:text-fg")}>
               <Tag className="size-3" />{t}
             </button>
           ))}

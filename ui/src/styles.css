@@ -212,6 +212,14 @@
   --text-display: 2rem;
   --text-display--line-height: 1.15;
 
+  /* Control heights: four and no other, the smallest a 24 px target at the default text size.
+     sm: a tab, a chip that acts, a row's action. md: a button in a bar, an icon button.
+     lg: a field, a button, a menu row. xl: a row of the rail, a tool row. */
+  --spacing-ctl-sm: 1.5rem;
+  --spacing-ctl-md: 1.75rem;
+  --spacing-ctl-lg: 2rem;
+  --spacing-ctl-xl: 2.25rem;
+
   /* Instrument corners: small and few. */
   --radius-xs: 2px;
   --radius-sm: 0.1875rem;
@@ -290,7 +298,7 @@ input:focus-visible, textarea:focus-visible { outline: none; }
    over the track's width. */
 .k-seg { display: inline-flex; flex-shrink: 0; max-width: 100%; gap: 2px; padding: 2px; overflow-x: auto; scrollbar-width: none; border-radius: var(--radius-md); background: var(--sunken); box-shadow: inset 0 0 0 1px var(--line); }
 .k-seg > * {
-  display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; gap: 0.375rem; height: 1.5rem; min-width: 1.5rem; padding: 0 0.625rem;
+  display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; gap: 0.375rem; height: var(--spacing-ctl-sm); min-width: 1.5rem; padding: 0 0.625rem;
   border-radius: var(--radius-sm); font-size: var(--text-caption); font-weight: 500; line-height: 1; white-space: nowrap; color: var(--muted); cursor: default;
   transition: color 120ms var(--ease-out), background-color 120ms var(--ease-out);
 }
@@ -363,7 +371,7 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .k-surface-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-caption); color: var(--faint); }
 /* What follows the title keeps to the right end; the close is the last of it. */
 .k-surface-end { display: flex; align-items: center; gap: 0.25rem; flex-shrink: 0; margin-left: auto; }
-.k-surface-close { display: grid; place-items: center; flex-shrink: 0; width: 2rem; height: 2rem; border-radius: var(--radius-md); color: var(--faint); }
+.k-surface-close { display: grid; place-items: center; flex-shrink: 0; width: 2rem; height: var(--spacing-ctl-lg); border-radius: var(--radius-md); color: var(--faint); }
 .k-surface-close:hover { background: var(--hover); color: var(--fg); }
 .k-surface-close svg { width: 1rem; height: 1rem; }
 .k-surface-head > .k-surface-close:not(.k-surface-end *) { margin-left: auto; }
@@ -443,15 +451,15 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 
 /* Code blocks: a quiet head with the language and a copy button. */
 .code-block { border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--code-bg); overflow: hidden; }
-.code-head { display: flex; align-items: center; height: 2rem; padding: 0 0.375rem 0 0.75rem; font-size: var(--text-caption); color: var(--faint); border-bottom: 1px solid var(--line); }
+.code-head { display: flex; align-items: center; height: var(--spacing-ctl-lg); padding: 0 0.375rem 0 0.75rem; font-size: var(--text-caption); color: var(--faint); border-bottom: 1px solid var(--line); }
 /* A long fence label gives way on one line; Copy keeps its place. */
 .code-head .code-lang { min-width: 0; margin-right: 0.5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.code-head .code-copy { margin-left: auto; flex-shrink: 0; display: inline-flex; align-items: center; gap: 0.3125rem; height: 1.5rem; padding: 0 0.5rem; border-radius: var(--radius-sm); color: var(--faint); }
+.code-head .code-copy { margin-left: auto; flex-shrink: 0; display: inline-flex; align-items: center; gap: 0.3125rem; height: var(--spacing-ctl-sm); padding: 0 0.5rem; border-radius: var(--radius-sm); color: var(--faint); }
 .code-head .code-copy:hover { color: var(--fg); background: var(--hover); }
 .code-head .code-copy[data-copied] { color: var(--ok-ink); }
 .code-head .code-copy[data-failed], .code-head .code-copy[data-failed]:hover { color: var(--danger-ink); background: var(--danger-soft); }
 /* The shared copy button (CopyButton.tsx), and a block with one in its corner. */
-.k-copy { display: grid; place-items: center; width: 1.75rem; height: 1.75rem; flex-shrink: 0; border-radius: var(--radius-sm); color: var(--faint); }
+.k-copy { display: grid; place-items: center; width: 1.75rem; height: var(--spacing-ctl-md); flex-shrink: 0; border-radius: var(--radius-sm); color: var(--faint); }
 .k-copy:hover { background: var(--hover); color: var(--fg); }
 .k-copy svg { width: 0.875rem; height: 0.875rem; }
 .k-copy[data-copied] { color: var(--ok); }

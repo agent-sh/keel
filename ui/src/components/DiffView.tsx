@@ -158,7 +158,7 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk }: {
   return (
     <section className="overflow-hidden rounded-xl border border-line bg-raised" data-testid="diff-file" data-path={f.path}>
       <header className="flex items-center gap-2 border-b border-line bg-sunken/60 px-3 py-1.5">
-        <button onClick={() => setOpen(!open)} className="grid size-5 place-items-center rounded text-faint hover:text-fg" aria-label={open ? "Collapse" : "Expand"}>
+        <button onClick={() => setOpen(!open)} className="grid size-ctl-sm place-items-center rounded text-faint hover:text-fg" aria-label={open ? "Collapse" : "Expand"}>
           <ChevronRight className={cn("size-3.5 transition-transform", open && "rotate-90")} />
         </button>
         <span className="min-w-0 truncate font-mono text-caption">{f.path}</span>
@@ -198,7 +198,7 @@ function FileBlock({ f, p, cut, load, actions, comments, onComment, onHunk }: {
                             <span className="min-w-0 flex-1 truncate">{l.text}</span>
                             {onHunk && (
                               <button data-testid="revert-hunk" onClick={() => onHunk({ path: f.path, index: hunkIndex, header: l.text, body: l.body ?? "" })}
-                                className="shrink-0 rounded px-1.5 font-sans text-micro text-muted hover:bg-hover hover:text-fg">Revert hunk</button>
+                                className="inline-flex h-ctl-sm shrink-0 items-center rounded px-1.5 font-sans text-micro text-muted hover:bg-hover hover:text-fg">Revert hunk</button>
                             )}
                           </div>
                         </td>
