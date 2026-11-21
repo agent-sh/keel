@@ -41,8 +41,8 @@ test("mcp roots: a local server is told the session's folder", async ({ page, re
     expect(atStart.roots[0].uri).toMatch(/^file:\/\/\//);
     expect(atStart.roots[0].uri).not.toBe(root(ws).roots[0]!.uri);
     // What each was told Keel offers: roots to the legacy local server only.
-    expect(JSON.parse(results[2]!)).toEqual({ roots: {} });
-    expect(JSON.parse(results[3]!)).toEqual({});
+    expect(JSON.parse(results[2]!)).toEqual({ elicitation: { form: {} }, roots: {} });
+    expect(JSON.parse(results[3]!)).toEqual({ elicitation: { form: {} } });
 
     const tool = page.getByTestId("tool-call").first();
     await tool.click();

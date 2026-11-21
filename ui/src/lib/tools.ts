@@ -1,6 +1,6 @@
 // How the UI reads tool calls of every family: one kind per tool name, and
 // the few shapes (plans, questions, shell results) normalized.
-import type { ToolResultBlock } from "../../../src/core/types.ts";
+import type { Asked, ToolResultBlock } from "../../../src/core/types.ts";
 
 export type ToolKind = "shell" | "stdin" | "read" | "edit" | "write" | "patch" | "notebook" | "search" | "glob" | "list"
   | "web" | "fetch" | "plan" | "ask" | "skill" | "mcp" | "stop" | "other";
@@ -26,7 +26,12 @@ export function planItems(name: string, input: any): PlanItem[] {
   return list(input?.todos).map((t: any) => ({ text: String(t?.content ?? ""), status: t?.status, active: t?.activeForm }));
 }
 
-export type UiQuestion = { id: string; header?: string; question: string; options: { label: string; description?: string }[]; multi: boolean };
+// `optional`: the card can be sent without it.
+export type UiQuestion = { id: string; header?: string; question: string; options: { label: string; description?: string }[]; multi: boolean; optional?: boolean };
+
+// The questions a server asked on a call's card (the registry's, by their own ids).
+export const askedQuestions = (asked: Asked): UiQuestion[] =>
+  asked.questions.map((q) => ({ id: q.id, header: q.header, question: q.question, options: q.options, multi: !!q.multiSelect, optional: !!q.optional }));
 
 export function questions(name: string, input: any): UiQuestion[] {
   return (input?.questions ?? []).map((q: any, i: number) => ({

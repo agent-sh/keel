@@ -3,7 +3,7 @@
 // with useStore(selector).
 import { useEffect, useSyncExternalStore } from "react";
 import { lineage, type Page } from "../../../src/core/tree.ts";
-import type { ErrorRecord, Frame, PromptBlock, QueueItem, Session, SocketFrame, StoredEvent, TurnStatus } from "../../../src/core/types.ts";
+import type { Asked, ErrorRecord, Frame, PromptBlock, QueueItem, Session, SocketFrame, StoredEvent, TurnStatus } from "../../../src/core/types.ts";
 import type { ModelInfo, ProviderStatus } from "../../../src/providers/types.ts";
 import { apiPath, localize, splitId } from "./fleet-ids.ts";
 import { seedComposer } from "./ui.ts";
@@ -44,6 +44,8 @@ type State = {
   // belongs to it; its parent needs the owner too.
   questionCalls: Record<string, string[]>;
   questionChildren: Record<string, string[]>;
+  // What a waiting call was asked that its own input does not hold (an MCP server's question), by session and call.
+  questionAsks: Record<string, Record<string, Asked>>;
   // Deleted while this page was open: the parent's id for a subagent's session (its view links back), else true.
   gone: Record<string, string | true>;
   events: Record<string, StoredEvent[]>;
@@ -70,7 +72,7 @@ type State = {
 };
 
 let state: State = { loaded: { sessions: false, models: false, allModels: false }, modelCount: 0,
-  sessions: {}, questionCalls: {}, questionChildren: {}, gone: {}, events: {}, drafts: {}, models: [], defaultModel: "", pinned: [], providerLabels: {}, limits: null, errors: [], connected: false, synced: false, providers: null, queues: {}, status: {},
+  sessions: {}, questionCalls: {}, questionChildren: {}, questionAsks: {}, gone: {}, events: {}, drafts: {}, models: [], defaultModel: "", pinned: [], providerLabels: {}, limits: null, errors: [], connected: false, synced: false, providers: null, queues: {}, status: {},
 };
 const subs = new Set<() => void>();
 // What the socket brings is put into the state at once, in its order, and
@@ -351,6 +353,9 @@ export const actions = {
     if (ask.last) q.set("last", "1");
     return api<{ texts: string[] }>(`/api/sessions/${id}/reply?${q}`).then((r) => r.texts.join("\n\n"));
   },
+  // Says no to a question a server asked on the call's card.
+  declineQuestion: (id: string, callId: string) =>
+    api(`/api/sessions/${id}/questions/${callId}`, { method: "POST", body: JSON.stringify({ decline: true }) }),
   jobs: (id: string) => api<{ jobs: JobView[] }>(`/api/sessions/${id}/jobs`),
   stopJob: (id: string, job: string) => api(`/api/sessions/${id}/jobs/${job}/stop`, { method: "POST" }),
   interrupt: (id: string) => api(`/api/sessions/${id}/interrupt`, { method: "POST", body: JSON.stringify({ by: "owner" }) }),
@@ -580,14 +585,16 @@ const loadingQuestions = new Set<string>();
 function publishQuestions() {
   const questionCalls: State["questionCalls"] = {};
   const questionChildren: State["questionChildren"] = {};
+  const questionAsks: State["questionAsks"] = {};
   for (const pending of [...questionSnapshots.values(), ...legacyQuestions.values()]) for (const q of pending) {
     (questionCalls[q.session_id] ??= []).push(q.call_id);
+    if (q.asked) (questionAsks[q.session_id] ??= {})[q.call_id] = q.asked;
     if (q.parent_id) {
       const children = (questionChildren[q.parent_id] ??= []);
       if (!children.includes(q.session_id)) children.push(q.session_id);
     }
   }
-  set({ questionCalls, questionChildren });
+  set({ questionCalls, questionChildren, questionAsks });
 }
 
 function forgetLegacyQuestions(id: string) {

@@ -137,6 +137,10 @@ export type TurnHooks = {
   callOutcome?: (sessionId: string, callId: string) => { denied: string } | "not_run" | "waiting" | undefined;
   // Whether the call waits on a card only the owner can answer, right now (an open approval).
   awaitsOwner?: (sessionId: string, callId: string) => boolean;
+  // A call that is no question tool put a question to the owner on its card
+  // (an MCP server asked while the call ran), and that question closed.
+  ownerAsked?: (sessionId: string, callId: string, text: string) => void;
+  ownerAnswered?: (sessionId: string, callId: string, answered: boolean) => void;
   // The daemon stops and parks this session's turn (before its signal aborts).
   turnParking?: (sessionId: string) => void;
   // Work that is not a turn and that a stop should not cut (a session moving

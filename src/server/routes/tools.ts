@@ -4,7 +4,7 @@
 // request, so the bytes stay the same on every later request.
 import { join } from "node:path";
 import { registerHooks } from "../../engine/hooks.ts";
-import { answer, pendingQuestions, type Answers } from "../../tools/interact.ts";
+import { answer, decline, pendingQuestions, type Answers } from "../../tools/interact.ts";
 import { conceal } from "../../core/conceal.ts";
 import { ackNotices, adoptJobs, drainNotices, findJob, jobsChanged, jobsOf, jobView, running, stopJob } from "../../tools/jobs.ts";
 import { renderForOwner } from "../../tools/skills.ts";
@@ -46,7 +46,9 @@ export const toolRoutes: RouteModule = (deps) => {
     },
     "/api/sessions/:id/questions/:call": {
       POST: async (req: any) => {
-        const body = (await req.json().catch(() => ({}))) as { answers?: Answers };
+        const body = (await req.json().catch(() => ({}))) as { answers?: Answers; decline?: boolean };
+        // A question a server asked can be declined; the model's own takes an answer.
+        if (body.decline === true) return decline(req.params.id, req.params.call) ? json({ ok: true }) : json({ error: "no question that can be declined is waiting for that call" }, 404);
         if (!body.answers || typeof body.answers !== "object") return json({ error: "answers must be an object" }, 400);
         return answer(req.params.id, req.params.call, body.answers)
           ? json({ ok: true })

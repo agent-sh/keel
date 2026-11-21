@@ -11,7 +11,10 @@ import { detached, type ErrorTracker } from "../core/errors.ts";
 import { registerCatalog, unregisterCatalog, type CatalogTool } from "../tools/catalog.ts";
 import type { CallClass } from "../safety/policy.ts";
 import type { ToolContext, ToolOutput } from "../tools/types.ts";
-import { AuthRequired, McpAuthorizationError, McpClient, RpcError, SessionExpired, type InputRequest, type McpCallResult, type McpTool, type Transport } from "./client.ts";
+import { AuthRequired, McpAuthorizationError, McpClient, RpcError, SessionExpired, type InputHandler, type InputRequest, type McpCallResult, type McpTool, type Transport } from "./client.ts";
+import { formOf, type ElicitResult } from "./elicit.ts";
+import { allHooks } from "../engine/hooks.ts";
+import { askFor, DECLINED } from "../tools/interact.ts";
 import { canon, expand, importable, mergeServers, parseConfig, RESERVED, validate, writeConfig, type McpConfigFile, type McpServerConfig } from "./config.ts";
 import { binding, endpoint, readSources, sourceFiles, sourced } from "./sources.ts";
 import { OAuthStore } from "./oauth.ts";
@@ -255,6 +258,8 @@ export class McpManager {
     this.oauth = new OAuthStore(stateDir);
     this.bundledOffPath = join(stateDir, "mcp-bundled-off.json");
     this.publishedPath = join(stateDir, "mcp-instructions.json");
+    this.askedPath = join(stateDir, "mcp-asked.json");
+    try { this.asked = new Set(JSON.parse(readFileSync(this.askedPath, "utf8"))); } catch {} // none kept
     try { this.published = JSON.parse(readFileSync(this.publishedPath, "utf8")); } catch {} // none kept yet
     const keyPath = join(stateDir, "mcp-bind.key");
     if (!existsSync(keyPath)) {
@@ -751,36 +756,98 @@ export class McpManager {
     const authorize = ctx.authorizationError ? () => ctx.authorizationError!() ??
       (!e || this.entries.get(name) !== e || e.client !== client || e.config !== config || e.tools !== tools
         ? "Refused: the MCP server or tool changed before invocation. Look up the tool again." : undefined) : undefined;
+    // A call a program made has no card of its own: its questions get no answer.
+    const card = ctx.callId && !ctx.nestedIn ? `${ctx.sessionId}:${ctx.callId}` : undefined;
     let r: McpCallResult;
     try {
-      r = await client.callTool(tool, input, ctx.signal, (e?.config.tool_timeout_secs ?? 600) * 1000, meta, authorize, (q) => this.input(q, ctx));
+      r = await client.callTool(tool, input, ctx.signal, (e?.config.tool_timeout_secs ?? 600) * 1000, meta, authorize, (q) => this.input(name, q, ctx, card));
     } catch (err) {
+      this.callEnded(ctx.sessionId, card);
       if (err instanceof McpAuthorizationError) return { content: err.message, is_error: true };
       if (err instanceof AuthRequired && e) {
         e.state = "needs_auth";
         e.www = err.wwwAuthenticate;
         return { content: `${shown} needs sign-in again: the owner signs in from the MCP servers panel.`, is_error: true };
       }
-      this.errors.capture("tool", err, { mcp: name, tool, session: ctx.sessionId });
+      // A call the owner's stop or a daemon stop ended did not fail.
+      if (!ctx.signal.aborted) this.errors.capture("tool", err, { mcp: name, tool, session: ctx.sessionId });
       if (err instanceof SessionExpired) return { content: `${shown}__${tool} did not run: ${err.message}. Keel opens a new session; the call was not sent again. Look the tool up again and call it if it is still needed.`, is_error: true };
       return { content: `${shown}__${tool} failed: ${(err as Error).message}`, is_error: true };
     }
+    this.callEnded(ctx.sessionId, card);
     return toOutput(r, ctx, `${shown}__${tool}`);
   }
 
   // ---- what a server asks while it works on a call ----
 
-  // The folders of the session whose call the server works on.
-  private input(q: InputRequest, ctx: ToolContext): Promise<unknown> {
+  // Calls whose question is open on a card now, and calls that had asked one
+  // when they were last seen (kept in a file). A daemon that stops while a
+  // card is open parks the turn: the call keeps no result, and the next
+  // daemon runs it again, so the server asks again and the card is back
+  // (callOutcome "waiting"). A crash leaves the same record.
+  private asking = new Set<string>();
+  private asked = new Set<string>();
+  private askedPath: string;
+  private parked = new Set<string>();
+  private queue = new Map<string, Promise<unknown>>();
+  private keepAsked() {
+    try { writeFileSync(this.askedPath, JSON.stringify([...this.asked])); } catch (e) { this.errors.capture("server", e, { at: "mcp asked calls" }); }
+  }
+  awaitsOwner(sessionId: string, callId: string) { return this.asking.has(`${sessionId}:${callId}`); }
+  askedBefore(sessionId: string, callId: string) { return this.asked.has(`${sessionId}:${callId}`); }
+  park(sessionId: string) { this.parked.add(sessionId); }
+  private callEnded(sessionId: string, card?: string) {
+    if (card && !this.parked.has(sessionId) && this.asked.delete(card)) this.keepAsked();
+  }
+
+  private input(server: string, q: InputRequest, ctx: ToolContext, card?: string): Promise<unknown> {
+    // The folders of the session whose call the server works on.
     if (q.method === "roots/list") return Promise.resolve(rootsOf(ctx.cwd));
-    throw new RpcError(-32601, `keel does not support ${q.method}`);
+    if (q.method !== "elicitation/create") throw new RpcError(-32601, `keel does not support ${q.method}`);
+    const mode = q.params?.mode ?? "form";
+    // 2025-11-25 elicitation, Error Handling: a mode the client did not declare is invalid params.
+    if (mode !== "form") throw new RpcError(-32602, `keel offers form elicitation only, not ${mode} mode`);
+    if (!card) return Promise.resolve<ElicitResult>({ action: "cancel" });
+    // One card per call: a second question waits for the first.
+    const run = (this.queue.get(card) ?? Promise.resolve()).then(() => this.elicit(server, q.params, ctx, card));
+    const tail = run.catch(() => {});
+    this.queue.set(card, tail);
+    void tail.then(() => { if (this.queue.get(card) === tail) this.queue.delete(card); });
+    return run;
   }
 
   // A server that asks outside any call (many ask for the roots as soon as
-  // they are connected): the folder the server itself was started in.
+  // they are connected): the folder the server itself was started in. A
+  // question then has no card to be asked on, so no choice was made.
   private inputOutside(dir: string, q: InputRequest): Promise<unknown> {
     if (q.method === "roots/list") return Promise.resolve(rootsOf(dir));
+    if (q.method === "elicitation/create") return Promise.resolve<ElicitResult>({ action: "cancel" });
     throw new RpcError(-32601, `keel does not support ${q.method}`);
+  }
+
+  // The owner answers on the call's question card. An answer the schema does
+  // not take is asked again with what was wrong; a declined card is the
+  // protocol's decline; a stopped turn (or a stopping daemon) is its cancel.
+  private async elicit(server: string, params: unknown, ctx: ToolContext, card: string): Promise<ElicitResult> {
+    const form = formOf(params);
+    if (!this.asked.has(card)) { this.asked.add(card); this.keepAsked(); }
+    this.asking.add(card);
+    const tell = (f: (h: ReturnType<typeof allHooks>[number]) => void) => { for (const h of allHooks()) try { f(h); } catch (e) { this.errors.capture("server", e, { hook: "ownerAsked", session: ctx.sessionId }); } };
+    tell((h) => h.ownerAsked?.(ctx.sessionId, ctx.callId!, `${server} asks: ${form.message}`));
+    let answered = false;
+    try {
+      for (let round = 0, note: string | undefined; ; round++) {
+        const a = await askFor(ctx, { from: server, message: form.message, questions: form.questions, ...(note ? { note, round } : {}) });
+        if (a === null) return { action: "cancel" };
+        if (a === DECLINED) return { action: "decline" };
+        const r = form.content(a);
+        if ("content" in r) { answered = true; return { action: "accept", content: r.content }; }
+        note = r.problems.join(" ");
+      }
+    } finally {
+      this.asking.delete(card);
+      tell((h) => h.ownerAnswered?.(ctx.sessionId, ctx.callId!, answered));
+    }
   }
 
   // ---- owner actions ----

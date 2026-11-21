@@ -12,7 +12,7 @@ import type { Server } from "bun";
 import type { Session, StoredEvent } from "../../core/types.ts";
 import type { Approval, Gate } from "../../safety/gate.ts";
 import type { Deps } from "../../server/app.ts";
-import { answer, closedQuestions, pendingQuestions, type Answers } from "../../tools/interact.ts";
+import { answer, askedOf, closedQuestions, decline, pendingQuestions, type Answers } from "../../tools/interact.ts";
 import * as alerts from "../../automation/alerts.ts";
 import * as loops from "../../automation/loops.ts";
 import { sessionState } from "../../automation/state.ts";
@@ -333,11 +333,13 @@ export function mobileApi(ctx: MobileCtx) {
   function questionCard(s: Session, callId: string) {
     const e = store.db.query<any, [string, string]>("SELECT * FROM events WHERE session_id = ? AND kind = 'assistant' AND instr(data, ?) > 0 ORDER BY seq DESC LIMIT 1").get(s.id, JSON.stringify(callId));
     const tu = e ? (JSON.parse(e.data).blocks ?? []).find((b: any) => b.type === "tool_use" && b.id === callId) : undefined;
-    const qs = tu ? normQuestions(tu.input) : [];
+    // A question a server asked while the call ran is not the call's input: the registry holds it.
+    const asked = askedOf(s.id, callId);
+    const qs = asked ? normQuestions({ questions: asked.questions }) : tu ? normQuestions(tu.input) : [];
     const options = qs.flatMap((q) => q.options.map((o) => o.label));
     return {
       id: `q-${callId}`, chat_id: s.id, session_key: s.id, kind: "question",
-      command: tu ? qs.map((q) => q.question).join("\n") || "A question" : "This question is no longer stored; answer it in the workbench",
+      command: asked ? [`${asked.from} asks: ${asked.message}`, ...qs.map((q) => q.question)].join("\n") : tu ? qs.map((q) => q.question).join("\n") || "A question" : "This question is no longer stored; answer it in the workbench",
       description: options.join(" / "), options, unavailable: !tu,
       // One entry per question, by id: a card of several takes one answer each.
       questions: qs.map((q) => ({ id: q.id, question: q.question, options: q.options.map((o) => o.label), multi: q.multi })),
@@ -462,6 +464,11 @@ export function mobileApi(ctx: MobileCtx) {
       const s = store.session(card.chat_id)!;
       const answers: Answers = {};
       const qs = card.questions as { id: string; options: string[]; multi: boolean }[];
+      // Dismissing a question a server asked is the protocol's decline.
+      if (choice === "deny" && askedOf(s.id, callId)) {
+        if (!decline(s.id, callId)) return err("this question is no longer waiting", 409);
+        return json({ approval: { ...card, actions: [], state: "denied", choice }, resolved: 1 });
+      }
       if (choice !== "deny" && !byId && qs.length > 1) return err(`this card asks ${qs.length} questions; answer each by its id (answers: { id: answer })`, 400);
       for (const q of qs) {
         if (choice === "deny") { answers[q.id] = { picked: [], other: "The owner dismissed the question." }; continue; }

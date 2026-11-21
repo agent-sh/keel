@@ -12,9 +12,11 @@ import { chunks, pumpLines, pumpText } from "../core/proc.ts";
 export const MODERN_VERSION = "2026-07-28";
 export const LEGACY_VERSION = "2025-11-25";
 const CLIENT_INFO = { name: "keel", version: "0.1.0" };
-// What Keel offers a server, declared in initialize to a legacy server
+// What Keel offers a server. Declared in initialize to a legacy server
 // (2025-11-25 lifecycle, capability negotiation) and in the _meta of every
-// request to a modern one (2026-07-28).
+// request to a modern one (2026-07-28). Elicitation in form mode only: the
+// owner answers on a card. URL mode is not offered, so a server must not
+// send one.
 //
 // Roots (roots/list: the folders the client works in, as file URIs) go to a
 // legacy server that is a local command only. The 2026-07-28 revision
@@ -22,14 +24,19 @@ const CLIENT_INFO = { name: "keel", version: "0.1.0" };
 // folder is a tool argument or server configuration), so a modern server is
 // not offered it. A server reached over HTTP is not either: a path on this
 // machine is nothing it can open, and it would learn the owner's folder names.
+const ELICITATION = { elicitation: { form: {} } };
 const offered = (t: Transport, era: "modern" | "legacy"): Record<string, object> =>
-  t.kind === "stdio" && era === "legacy" ? { roots: {} } : {};
+  t.kind === "stdio" && era === "legacy" ? { ...ELICITATION, roots: {} } : ELICITATION;
 
 // What a server asks of the client while it works on a call, and the handler
 // a call gives for it. The handler resolves to the result the method names
-// and throws an RpcError for what Keel refuses.
+// (an ElicitResult) and throws an RpcError for what Keel refuses.
 export type InputRequest = { method: string; params?: any };
 export type InputHandler = (req: InputRequest) => Promise<unknown>;
+// A modern server answers a call with input_required and no question, to be
+// called again with its state. Each such round is sent at once with no owner
+// in it, so a server that never stops would spin: this many in a row end the call.
+const QUIET_ROUNDS = 3;
 
 // Error codes the modern spec reserves; seeing one means the server is modern.
 const MODERN_ERRORS = new Set([-32020, -32021, -32022]);
@@ -106,8 +113,9 @@ const pause = (ms: number, signal: AbortSignal) => new Promise<void>((res) => {
   signal.addEventListener("abort", end, { once: true });
 });
 
-// `onInput`: the call answers what the server asks while it works on it.
-type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; onInput?: InputHandler };
+// `onInput`: the call takes the server's questions. `hold` stops the
+// request's timer while the owner is asked, and gives back what starts it again.
+type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; onInput?: InputHandler; hold: () => () => void };
 
 export class McpClient {
   era: "modern" | "legacy" = "legacy";
@@ -279,11 +287,12 @@ export class McpClient {
     else if (msg.method === "notifications/resources/updated" && typeof msg.params?.uri === "string") this.onResources?.({ uri: msg.params.uri });
   }
 
-  // A legacy server's own request (2025-11-25: roots/list, at any time). It
+  // A legacy server's own request (2025-11-25: elicitation/create is sent
+  // while the server works on a client request; roots/list at any time). It
   // goes to the call it belongs to: over HTTP the one whose response stream
   // carried it. Over stdio nothing names the call, so it is the one call in
-  // flight that answers such requests, or the newest of several. With no such
-  // call it goes to `outside`: no session's folder is the answer then.
+  // flight that takes questions, or the newest of several. With no such call
+  // it goes to `outside`: there is no card to ask on and no session's folder.
   outside?: InputHandler;
   private async serverRequest(msg: any, origin?: number | string) {
     const reply = (body: object) => this.write({ jsonrpc: "2.0", id: msg.id, ...body });
@@ -293,10 +302,14 @@ export class McpClient {
       ?? [...this.pending.values()].filter((p) => p.onInput).at(-1);
     const handler = asker?.onInput ?? this.outside;
     if (!handler) return refuse(-32603, "nothing here answers this");
+    // The owner's time is not the server's: the call's timer waits with it.
+    const resume = asker?.hold();
     try {
       reply({ result: await handler({ method: msg.method, params: msg.params }) });
     } catch (e) {
       refuse(e instanceof RpcError ? e.code : -32603, (e as Error).message);
+    } finally {
+      resume?.();
     }
   }
 
@@ -626,8 +639,14 @@ export class McpClient {
         if (told && !opt.modern && method !== "initialize" && !this.closed) this.write({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id, reason } });
       };
       const onAbort = () => giveUp("cancelled", "cancelled");
-      this.pending.set(id, { resolve: done(resolve), reject: fail, onInput: opt.onInput });
-      timer = setTimeout(() => giveUp(`${method} timed out after ${Math.round(timeoutMs / 1000)}s`, "timed out"), timeoutMs);
+      const arm = () => { timer = setTimeout(() => giveUp(`${method} timed out after ${Math.round(timeoutMs / 1000)}s`, "timed out"), timeoutMs); };
+      let held = 0;
+      const hold = () => {
+        if (held++ === 0) clearTimeout(timer);
+        return () => { if (--held === 0 && this.pending.has(id)) arm(); };
+      };
+      this.pending.set(id, { resolve: done(resolve), reject: fail, onInput: opt.onInput, hold });
+      arm();
       opt.signal?.addEventListener("abort", onAbort, { once: true });
       if (this.t.kind === "stdio") this.write(msg);
       // Over the older transport the POST is only accepted; the answer comes on the event stream.
@@ -681,10 +700,31 @@ export class McpClient {
   listResources(signal?: AbortSignal, from?: string) { return this.page<any>("resources/list", "resources", signal, from); }
   listResourceTemplates(signal?: AbortSignal, from?: string) { return this.page<any>("resources/templates/list", "resourceTemplates", signal, from); }
   listPrompts(signal?: AbortSignal) { return this.list<any>("prompts/list", "prompts", signal); }
-  readResource(uri: string, signal?: AbortSignal) { return this.rpc("resources/read", { uri }, { signal }); }
-  getPrompt(name: string, args: Record<string, string> = {}, signal?: AbortSignal) { return this.rpc("prompts/get", { name, arguments: args }, { signal }); }
+  readResource(uri: string, signal?: AbortSignal) { return this.rounds("resources/read", { uri }, { signal }); }
+  getPrompt(name: string, args: Record<string, string> = {}, signal?: AbortSignal) { return this.rounds("prompts/get", { name, arguments: args }, { signal }); }
   callTool(name: string, args: unknown, signal?: AbortSignal, timeoutMs?: number, meta?: Record<string, unknown>, authorize?: () => string | undefined, onInput?: InputHandler): Promise<McpCallResult> {
-    return this.rpc("tools/call", { name, arguments: args ?? {}, ...(meta ? { _meta: meta } : {}) }, { signal, timeoutMs, authorize, onInput });
+    return this.rounds("tools/call", { name, arguments: args ?? {}, ...(meta ? { _meta: meta } : {}) }, { signal, timeoutMs, authorize, onInput });
+  }
+
+  // A modern server asks for input by answering the request with
+  // input_required: its questions in `inputRequests`, its own state in
+  // `requestState`. The client gathers the answers and sends the request
+  // again, as a new one, with `inputResponses` and the state exactly as it
+  // came (2026-07-28 basic/patterns/mrtr). A legacy server sends its
+  // questions as requests of its own while the call is open (serverRequest).
+  private async rounds(method: string, params: Record<string, unknown>, opt: NonNullable<Parameters<McpClient["rpc"]>[2]>): Promise<any> {
+    let next = params;
+    for (let quiet = 0; ;) {
+      const r = await this.rpc(method, next, opt);
+      if (r?.resultType !== "input_required") return r;
+      const asked = Object.entries((r.inputRequests ?? {}) as Record<string, InputRequest>);
+      if (!asked.length && ++quiet > QUIET_ROUNDS) throw new Error("the server kept asking to be called again without asking for anything");
+      if (asked.length) quiet = 0;
+      if (asked.length && !opt.onInput) throw new Error(`the server asked for input (${asked.map(([, q]) => q?.method).join(", ")}), which only a tool call can gather`);
+      const inputResponses: Record<string, unknown> = {};
+      for (const [key, q] of asked) inputResponses[key] = await opt.onInput!({ method: String(q?.method), params: q?.params });
+      next = { ...params, ...(asked.length ? { inputResponses } : {}), ...(r.requestState !== undefined ? { requestState: r.requestState } : {}) };
+    }
   }
 
   // Close once nothing waits on this client (a reload replaced it).

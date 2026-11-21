@@ -2,39 +2,43 @@
 // ask_user). The tool call waits until the owner answers in the UI; the
 // question itself is the tool_use block already in the transcript. Whether it
 // can still be answered comes from this live registry, not that history.
-import type { PendingQuestion } from "../core/types.ts";
+import type { Asked, AskedQuestion, PendingQuestion } from "../core/types.ts";
 import type { ToolContext } from "./types.ts";
 
-export type Question = {
-  id: string;
-  header?: string;
-  question: string;
-  options: { label: string; description?: string }[];
-  multiSelect?: boolean;
-};
+export type Question = AskedQuestion;
 // Per question id: the labels picked, plus free text the owner typed.
 export type Answers = Record<string, { picked: string[]; other?: string }>;
+// The owner said no to a question that can be declined (one a server asked).
+export const DECLINED = "declined";
+type Reply = Answers | typeof DECLINED | null;
 
-type Pending = { question: PendingQuestion; resolve: (a: Answers | null) => void };
+type Pending = { question: PendingQuestion; resolve: (a: Reply) => void };
 const pending = new Map<string, Pending>();
 const keyOf = (sessionId: string, callId: string) => `${sessionId}:${callId}`;
 // Questions that stopped waiting, newest last: a phone that saw one pending
 // learns it closed. A few hundred are plenty.
 // `answers`: what was picked, so a card reopened elsewhere shows it.
 const closed: { call_id: string; session_id: string; at: number; answered: boolean; answers?: Answers }[] = [];
-const close = (call_id: string, session_id: string, answers: Answers | null) => {
+const close = (call_id: string, session_id: string, reply: Reply) => {
+  const answers = reply === DECLINED ? null : reply;
   closed.push({ call_id, session_id, at: Date.now(), answered: answers !== null, ...(answers ? { answers } : {}) });
   if (closed.length > 300) closed.splice(0, closed.length - 300);
 };
 export const closedQuestions = (sinceMs: number) => closed.filter((q) => q.at >= sinceMs);
 
-export function ask(ctx: ToolContext): Promise<Answers | null> {
+// The model's own question: the card reads it from the call's input.
+export const ask = (ctx: ToolContext) => askFor(ctx) as Promise<Answers | null>;
+
+// `asked`: a question the call's input does not hold (a server asked it while
+// the call ran). The card shows it from the registry, and the owner can
+// decline it. One question waits per call at a time.
+export function askFor(ctx: ToolContext, asked?: Asked): Promise<Reply> {
   if (ctx.signal.aborted) return Promise.resolve(null);
   const id = ctx.callId ?? `q-${crypto.randomUUID()}`;
   const key = keyOf(ctx.sessionId, id);
-  const question = { session_id: ctx.sessionId, call_id: id, parent_id: ctx.parentId };
+  const question: PendingQuestion = { session_id: ctx.sessionId, call_id: id, parent_id: ctx.parentId, ...(asked ? { asked } : {}) };
   return new Promise((resolve) => {
-    const done = (a: Answers | null) => {
+    const done = (a: Reply) => {
       ctx.signal.removeEventListener("abort", onAbort);
       if (pending.get(key)?.resolve === done) {
         pending.delete(key);
@@ -56,6 +60,15 @@ export function answer(sessionId: string, callId: string, answers: Answers): boo
   p.resolve(answers);
   return true;
 }
+
+// Only a question a server asked can be declined: the model's own takes an answer.
+export function decline(sessionId: string, callId: string): boolean {
+  const p = pending.get(keyOf(sessionId, callId));
+  if (!p?.question.asked) return false;
+  p.resolve(DECLINED);
+  return true;
+}
+export const askedOf = (sessionId: string, callId: string) => pending.get(keyOf(sessionId, callId))?.question.asked;
 
 export const allPendingQuestions = () => Array.from(pending.values(), (p) => p.question);
 export const pendingQuestions = (sessionId: string) =>

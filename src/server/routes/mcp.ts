@@ -1,6 +1,7 @@
 import { registerSocket, type RouteModule } from "../app.ts";
 import { McpManager } from "../../mcp/manager.ts";
 import { installMcpTools } from "../../mcp/tools.ts";
+import { registerHooks } from "../../engine/hooks.ts";
 import { installChromeBridge } from "../../integrations/chrome.ts";
 import { installPhone } from "../../integrations/phone.ts";
 import { configPath, readConfig, type McpServerConfig } from "../../mcp/config.ts";
@@ -34,6 +35,13 @@ export const mcpRoutes: RouteModule = (deps) => {
   const m = new McpManager(deps.errors, deps.store.stateDir, deps.workspace, configPath());
   g.__keelMcp = m;
   installMcpTools(m);
+  // A call whose server asked the owner a question waits on the owner: a
+  // drain does not wait for it, and a restart asks again on the same card.
+  registerHooks({
+    awaitsOwner: (sessionId, callId) => m.awaitsOwner(sessionId, callId),
+    callOutcome: (sessionId, callId) => (m.askedBefore(sessionId, callId) ? "waiting" : undefined),
+    turnParking: (sessionId) => m.park(sessionId),
+  });
   installChromeBridge(m);
   installPhone(m);
   m.start();

@@ -160,7 +160,13 @@ export type SessionSettings = {
 // `anchor`: the session's head when it was queued (the branch it was written on).
 export type QueueItem = { id: string; session_id: string; text: string; images?: ImageBlock[]; steer: boolean; pos: number; created: number; anchor?: string; meta?: Record<string, unknown> };
 
-export type PendingQuestion = { session_id: string; call_id: string; parent_id?: string };
+// `asked`: a question that is not the call's own input (an MCP server asked
+// it while the call ran): who asks, its words as plain text, the fields, what
+// was wrong with the last answer, and that the owner can decline it.
+export type AskedQuestion = { id: string; header?: string; question: string; options: { label: string; description?: string }[]; multiSelect?: boolean; optional?: boolean };
+// `round`: how often it was asked before (an answer that did not fit is asked again).
+export type Asked = { from: string; message: string; questions: AskedQuestion[]; note?: string; round?: number };
+export type PendingQuestion = { session_id: string; call_id: string; parent_id?: string; asked?: Asked };
 
 // Frames pushed over the WebSocket. `event` frames are durable (replayable by seq);
 // `delta` frames are live streaming text and are not stored. `rev` is the bus's
