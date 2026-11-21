@@ -4,7 +4,12 @@ import type { Deps } from "../server/app.ts";
 // The daemon's parts, set once when the automation routes are built (before any
 // turn runs). Tools reach the engine and the store through this.
 let deps: Deps | undefined;
-export const setDeps = (d: Deps) => void (deps = d);
+// What a module set up against the parts before these (the failure notice's
+// rider reads its store's table) goes with them: it is set up again for these.
+export const setDeps = (d: Deps) => {
+  deps = d;
+  rider.get = undefined;
+};
 export function D(): Deps {
   if (!deps) throw new Error("automation is not initialized");
   return deps;

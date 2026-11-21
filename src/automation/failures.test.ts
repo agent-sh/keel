@@ -7,7 +7,7 @@ import { Store } from "../core/store.ts";
 import { lineage } from "../core/tree.ts";
 import * as activity from "./activity.ts";
 import * as agents from "./agents.ts";
-import { flush, setDeps } from "./core.ts";
+import { deliver, flush, setDeps } from "./core.ts";
 import * as failures from "./failures.ts";
 import * as waits from "./waits.ts";
 
@@ -235,4 +235,15 @@ test("a prune that fails after the failure is written does not bring the report 
   expect(got).toHaveLength(1);
   expect(got[0]).toContain(`1 agent failed (server), with no report of its own: ${a.id} "Lane"`);
   expect(got[0]).not.toContain("<subagent_result");
+});
+
+// Last in the file: it sets other daemon parts.
+test("the notice's rider goes with the daemon parts it was set up for", () => {
+  const other = new Store(join(dir, "other")); // a store the notice was never set up on: no failures table
+  const out: string[] = [];
+  const send = (id: string, text: string, o: any) => (out.push(text), { event: other.append(id, "user", { text, ...o?.meta }) });
+  setDeps({ store: other, bus: new Bus(), errors: { capture() {} }, engine: { isRunning: () => false, send } } as any);
+  const s = other.createSession({ model: "m:x", workspace: dir, title: "Other parts" });
+  deliver(s.id, "a wake", { kind: "wake" });
+  expect(out).toEqual(["a wake"]);
 });
