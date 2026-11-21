@@ -1,7 +1,7 @@
 // Files the owner attaches to a prompt: stored once by content, sent per model
 // (src/engine/attachments.ts). Not tied to a session, so a new session's first
 // prompt can carry them too.
-import { ATTACHMENT_MAX, attachmentPath, saveAttachment, servedType, setAttachmentsRoot } from "../../engine/attachments.ts";
+import { ATTACHMENT_MAX, attachmentPath, saveAttachmentStream, servedType, setAttachmentsRoot, TOO_LARGE } from "../../engine/attachments.ts";
 import type { RouteModule } from "../app.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -12,15 +12,21 @@ export const attachmentRoutes: RouteModule = ({ store }) => {
     "/api/attachments": {
       POST: async (req: Request) => {
         const name = new URL(req.url).searchParams.get("name") || "file";
-        const len = Number(req.headers.get("content-length") ?? 0);
-        if (len > ATTACHMENT_MAX) return json({ error: `a file can be at most ${ATTACHMENT_MAX / 1024 / 1024} MiB` }, 413);
-        const bytes = new Uint8Array(await req.arrayBuffer());
-        if (!bytes.byteLength) return json({ error: "the file is empty" }, 400);
-        if (bytes.byteLength > ATTACHMENT_MAX) return json({ error: `a file can be at most ${ATTACHMENT_MAX / 1024 / 1024} MiB` }, 413);
+        // A declared length past the cap is refused before a byte is read; a body
+        // that declares none, or lies, is refused where it passes the cap.
+        if (Number(req.headers.get("content-length") ?? 0) > ATTACHMENT_MAX) return json({ error: TOO_LARGE }, 413);
+        if (!req.body) return json({ error: "the file is empty" }, 400);
         const ct = req.headers.get("content-type") ?? "";
         const type = ct.split(";")[0]!.trim();
         const charset = /;\s*charset=([^;]+)/i.exec(ct)?.[1];
-        return json(saveAttachment(bytes, name, type, charset), 201);
+        // The body goes to the disk as it arrives, hashed on the way: never whole in memory.
+        try {
+          return json(await saveAttachmentStream(req.body, name, type, charset), 201);
+        } catch (e) {
+          const status = (e as { status?: number }).status;
+          if (!status) throw e;
+          return json({ error: (e as Error).message }, status);
+        }
       },
     },
     "/api/attachments/:id": {

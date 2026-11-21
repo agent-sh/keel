@@ -1,5 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { createHash } from "node:crypto";
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
 import { HAIKU, shoot, tabInto } from "./shots.ts";
 
@@ -240,4 +242,72 @@ test("attachment names and types survive upload and download", async ({ request 
   expect(shown.headers()["content-type"]).toBe("image/png");
   expect(shown.headers()["content-disposition"]).toBeUndefined();
   expect((await shown.body()).equals(png(1, 2, 3))).toBe(true);
+});
+
+// Feature: an upload goes to the disk as it arrives, hashed on the way, and is
+// put in place whole. A body sent in chunks with no declared length is stored
+// like any other; one past the cap is refused where it passes it, and one cut
+// off on its way is dropped, both with no part and no file left behind. The
+// same bytes sent at once under two names are one stored file, each reference
+// with its own name and type.
+test("uploads stream to the store: the cap, a cut upload and the same bytes at once", async ({ request, baseURL }) => {
+  const { state_dir } = await (await request.get("/api/daemon")).json();
+  const root = join(state_dir, "attachments");
+  const parts = () => (existsSync(join(root, ".tmp")) ? readdirSync(join(root, ".tmp")) : []);
+  const stored = () => readdirSync(root).filter((d) => d !== ".tmp").sort();
+  const MB = 1024 * 1024;
+  const block = Buffer.alloc(MB);
+  const stamp = Date.now();
+  for (let i = 0; i < MB; i += 4) block.writeUInt32LE((i * 2654435761 + stamp) >>> 0, i);
+  // `n` megabytes in chunks, with no content-length; `cut`: the connection is dropped after that many.
+  const chunked = (n: number, name: string, cut?: number) => {
+    let sent = 0;
+    const ac = new AbortController();
+    const body = new ReadableStream<Uint8Array>({
+      async pull(c) {
+        if (sent === cut) return ac.abort();
+        if (sent++ === n) return c.close();
+        c.enqueue(block);
+      },
+    });
+    return fetch(`${baseURL}/api/attachments?name=${encodeURIComponent(name)}`, { method: "POST", headers: { "content-type": "application/octet-stream" }, body, duplex: "half", signal: ac.signal } as RequestInit);
+  };
+  const sha = createHash("sha256");
+  for (let i = 0; i < 6; i++) sha.update(block);
+  const six = await chunked(6, `six-${stamp}.bin`);
+  expect(six.status).toBe(201);
+  const ref = await six.json();
+  expect([ref.id, ref.size, ref.name]).toEqual([sha.digest("hex"), 6 * MB, `six-${stamp}.bin`]);
+  expect(statSync(join(root, ref.id, `six-${stamp}.bin`)).size).toBe(6 * MB);
+  const before = stored();
+
+  // Past the cap with no length declared: refused there, the rest not read.
+  const over = await chunked(40, `over-${stamp}.bin`);
+  expect(over.status).toBe(413);
+  expect((await over.json()).error).toBe("a file can be at most 20 MiB");
+  // A length declared past the cap is refused before a byte is read.
+  expect((await request.post("/api/attachments?name=declared.bin", { headers: { "content-type": "application/octet-stream" }, data: Buffer.alloc(21 * MB) })).status()).toBe(413);
+  expect((await request.post("/api/attachments?name=none.txt", { headers: { "content-type": "text/plain" }, data: Buffer.alloc(0) })).status()).toBe(400);
+  // Cut off after three megabytes.
+  await expect(chunked(8, `cut-${stamp}.bin`, 3)).rejects.toThrow();
+  await expect.poll(parts, { timeout: 15_000 }).toEqual([]);
+  expect(stored()).toEqual(before);
+
+  // The same bytes at once, under two names and types.
+  const same = Buffer.from(`the same bytes ${stamp}`);
+  const up = (name: string, type: string) => request.post(`/api/attachments?name=${encodeURIComponent(name)}`, { headers: { "content-type": type }, data: same }).then((r) => r.json());
+  const [a, b, c] = await Promise.all([up(`budget-${stamp}.txt`, "text/plain; charset=utf-8"), up(`release-${stamp}.md`, "text/markdown"), up(`budget-${stamp}.txt`, "text/plain")]);
+  expect([a.id, b.id, c.id]).toEqual([a.id, a.id, a.id]);
+  expect([a, b, c].map((r) => [r.name, r.media_type, r.size, r.charset])).toEqual([
+    [`budget-${stamp}.txt`, "text/plain", same.length, "utf-8"], [`release-${stamp}.md`, "text/markdown", same.length, undefined], [`budget-${stamp}.txt`, "text/plain", same.length, undefined],
+  ]);
+  expect(readdirSync(join(root, a.id))).toHaveLength(1);
+  for (const r of [a, b]) {
+    const dl = await request.get(`/api/attachments/${r.id}?name=${encodeURIComponent(r.name)}&type=${encodeURIComponent(r.media_type)}`);
+    expect((await dl.body()).equals(same)).toBe(true);
+    expect(dl.headers()["content-disposition"]).toContain(r.name);
+  }
+  expect(parts()).toEqual([]);
+  const errs = (await (await request.get("/api/errors?resolved=0")).json()).errors as { message: string; ts?: number; last_ms?: number }[];
+  expect(errs.filter((e) => (e.last_ms ?? e.ts ?? 0) >= stamp).map((e) => e.message)).toEqual([]);
 });

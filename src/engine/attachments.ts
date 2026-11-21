@@ -8,8 +8,10 @@
 //   - anything else (a PDF for a model without PDF input, a spreadsheet, a
 //     long log): a note with the saved path, for the model's own tools.
 // The same reference always resolves to the same bytes for a given model.
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { chunks } from "../core/proc.ts";
 import { decodeText, textEncoding } from "../core/text.ts";
 import type { AttachmentBlock, Message } from "../core/types.ts";
 import type { ModelInfo } from "../providers/types.ts";
@@ -21,7 +23,18 @@ export { TEXT_INLINE } from "./compact.ts";
 import { TEXT_INLINE, TEXT_MEDIA } from "./compact.ts";
 
 let root = "";
-export const setAttachmentsRoot = (dir: string) => void (root = join(dir, "attachments"));
+// A file is written under <root>/.tmp and put in place whole. What a daemon
+// that went down mid-upload left there goes at a later start (an upload under
+// way now is younger than that).
+const PART_KEEP_MS = 3_600_000;
+export const setAttachmentsRoot = (dir: string) => {
+  root = join(dir, "attachments");
+  const parts = join(root, ".tmp");
+  if (!existsSync(parts)) return;
+  for (const d of readdirSync(parts)) {
+    try { if (Date.now() - statSync(join(parts, d)).mtimeMs > PART_KEEP_MS) rmSync(join(parts, d), { recursive: true, force: true }); } catch {}
+  }
+};
 export const hasAttachmentsRoot = () => !!root;
 
 // The name the owner sees and the model reads: the file's own name in any
@@ -35,17 +48,79 @@ const shownName = (n: string) => {
 // so the path stays safe everywhere and the extension still gives the type.
 const diskName = (n: string) => (/^[\w.\- ()+]+$/.test(n) ? n : `file${/\.[A-Za-z0-9]{1,10}$/.exec(n)?.[0]?.toLowerCase() ?? ""}`);
 
+const refOf = (id: string, shown: string, mediaType: string, size: number, charset?: string): AttachmentBlock => {
+  const cs = charset?.trim().toLowerCase().replace(/^"|"$/g, "");
+  return { type: "attachment", id, name: shown, media_type: mediaType || "application/octet-stream", size, ...(cs && /^[\w.:-]{1,40}$/.test(cs) ? { charset: cs } : {}) };
+};
+
+// A folder of its own for one file on its way in.
+function partDir(): string {
+  const dir = join(root, ".tmp", Bun.randomUUIDv7());
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+// The folder that holds a whole file becomes the content's folder in one
+// rename: a reader never finds half a file under a content's id, and the same
+// bytes under another name or extension stay one copy (the folder is there
+// already, so this one goes; each prompt keeps its own name).
+function publish(part: string, id: string) {
+  try {
+    renameSync(part, join(root, id));
+  } catch (e) {
+    rmSync(part, { recursive: true, force: true });
+    if (!["ENOTEMPTY", "EEXIST"].includes((e as NodeJS.ErrnoException).code ?? "")) throw e;
+  }
+}
+
 export function saveAttachment(bytes: Uint8Array, name: string, mediaType: string, charset?: string): AttachmentBlock {
   const id = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
-  const dir = join(root, id);
   const shown = shownName(name);
-  // The same bytes under another name or extension: one copy; each prompt keeps its own name.
-  if (!existsSync(dir) || !readdirSync(dir).length) {
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, diskName(shown)), bytes);
+  if (!attachmentPath(id)) {
+    const part = partDir();
+    try { writeFileSync(join(part, diskName(shown)), bytes); } catch (e) { rmSync(part, { recursive: true, force: true }); throw e; }
+    publish(part, id);
   }
-  const cs = charset?.trim().toLowerCase().replace(/^"|"$/g, "");
-  return { type: "attachment", id, name: shown, media_type: mediaType || "application/octet-stream", size: bytes.byteLength, ...(cs && /^[\w.:-]{1,40}$/.test(cs) ? { charset: cs } : {}) };
+  return refOf(id, shown, mediaType, bytes.byteLength, charset);
+}
+
+const refused = (message: string, status: number) => Object.assign(new Error(message), { status });
+export const TOO_LARGE = `a file can be at most ${ATTACHMENT_MAX / 1024 / 1024} MiB`;
+
+// An upload as it arrives: each chunk is hashed and written to its part file
+// before the next is read, so a file of any size holds one chunk in memory.
+// A body past the cap stops being read there; that, an empty body and an
+// upload cut off on its way are refused (`status`) with nothing left on disk.
+export async function saveAttachmentStream(body: ReadableStream<Uint8Array>, name: string, mediaType: string, charset?: string): Promise<AttachmentBlock> {
+  const shown = shownName(name);
+  const part = partDir();
+  // Read through chunks(): a read left early cancels the stream, so the body is read no further.
+  const read = chunks(body);
+  const hash = new Bun.CryptoHasher("sha256");
+  let size = 0;
+  try {
+    const file = await open(join(part, diskName(shown)), "wx");
+    try {
+      for (;;) {
+        const { done, value } = await read.next().catch(() => { throw refused("the upload was cut off before its end", 400); });
+        if (done) break;
+        size += value.byteLength;
+        if (size > ATTACHMENT_MAX) throw refused(TOO_LARGE, 413);
+        hash.update(value);
+        for (let at = 0; at < value.byteLength;) at += (await file.write(value, at)).bytesWritten;
+      }
+    } finally {
+      await file.close();
+    }
+    if (!size) throw refused("the file is empty", 400);
+  } catch (e) {
+    await read.return().catch(() => {});
+    rmSync(part, { recursive: true, force: true });
+    throw e;
+  }
+  const id = hash.digest("hex");
+  publish(part, id);
+  return refOf(id, shown, mediaType, size, charset);
 }
 
 // What a download says it is: the type its name gives; a file declared as
