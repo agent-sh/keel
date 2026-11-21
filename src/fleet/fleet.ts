@@ -456,6 +456,11 @@ export class Fleet {
   // Called when a linked daemon has messages waiting for this one (its outbox).
   onOutbox?: (machineId: string) => void;
 
+  // The relay to a machine's daemon is open now.
+  relayLive(id: string): boolean {
+    return this.relays.get(id)?.live ?? false;
+  }
+
   private onRelayFrame(id: string, relay: Relay, f: any) {
     if (f.t === "feature" && f.name === "fleet_outbox") { this.onOutbox?.(id); return; }
     if (f.t === "snapshot") {

@@ -307,8 +307,13 @@ export class Messages {
 
   // What waits for a daemon: handed out until that daemon acknowledges it
   // (after it kept it), so an answer lost on the way is handed out again.
+  // Oldest first and read for that daemon alone: what waits for other daemons
+  // never pushes one of its messages out of the answer.
   pendingOutbound(daemonId: string): Message[] {
-    return this.list({ state: "outbound" }).filter((m) => m.to_daemon === daemonId).reverse();
+    return this.store.db
+      .query<Row, [string, number]>("SELECT * FROM fleet_messages WHERE state = 'outbound' AND to_daemon = ? ORDER BY created_ms, id LIMIT ?")
+      .all(daemonId, MAX_OUTBOX)
+      .map(toMessage);
   }
   ackOutbound(daemonId: string, ids: string[]) {
     for (const id of ids) this.store.db.query("UPDATE fleet_messages SET state = 'delivered', reason = 'received by its daemon' WHERE id = ? AND state = 'outbound' AND to_daemon = ?").run(id, daemonId);

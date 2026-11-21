@@ -83,6 +83,78 @@ test("the outbox: handed out until acknowledged, and kept once however often it 
   expect(a.msgs.pendingOutbound("dB")).toHaveLength(1);
 });
 
+// A scratch daemon's messages: its own store, no engine and no link.
+async function scratchDaemon(id: string) {
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { Messages } = await import("./messages.ts");
+  const { migrate } = await import("./db.ts");
+  const engine: any = { isHeld: () => true, emitQueue() {}, isRunning: () => false, send() { return {}; } };
+  const store = new Store(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), `keel-msg-${id}-`)));
+  migrate(store);
+  const f: any = { id, name: id, rows: () => [], pairs: () => [] };
+  const ws = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "keel-ws-"));
+  return { store, ws, msgs: new Messages(store, new Bus(), engine, f, () => ({ mode: "full-auto", sandbox: "off" }), () => {}) };
+}
+
+test("the outbox: one destination's older message is handed out whatever waits for the others", async () => {
+  const a = await scratchDaemon("dA");
+  const from = a.store.createSession({ model: "m", workspace: a.ws });
+  const sender = a.msgs.senderOf(from);
+  const old = a.msgs.queueOutbound("dB", "s-b", "the old one", sender, true);
+  a.store.db.query("UPDATE fleet_messages SET created_ms = created_ms - 60000 WHERE id = ?").run(old.id);
+  for (const d of ["dC", "dD"]) for (let i = 0; i < 100; i++) a.msgs.queueOutbound(d, `s-${d}`, `later ${i}`, sender, true);
+  expect(a.msgs.list({ state: "outbound" })).toHaveLength(200); // 201 wait in all
+  expect(a.msgs.pendingOutbound("dB").map((m) => m.id)).toEqual([old.id]);
+  expect(a.msgs.pendingOutbound("dC")).toHaveLength(100);
+  expect(a.msgs.pendingOutbound("dC")[0]!.text).toBe("later 0"); // oldest first
+});
+
+test("the outbox: a lost acknowledgement is retried within a bound, the message kept once", async () => {
+  const { OutboxDrain } = await import("./outbox.ts");
+  const { LinkError } = await import("./link.ts");
+  const a = await scratchDaemon("dA"), b = await scratchDaemon("dB");
+  const from = a.store.createSession({ model: "m", workspace: a.ws });
+  const to = b.store.createSession({ model: "m", workspace: b.ws });
+  const sent = a.msgs.queueOutbound("dB", to.id, "hello", a.msgs.senderOf(from), true);
+  let live = true, lose = 1, fetches = 0, acks = 0;
+  const failed: unknown[] = [];
+  const drain = new OutboxDrain({
+    link: async () => ({
+      pending: async () => { fetches++; return a.msgs.pendingOutbound("dB"); },
+      keep: (m) => { b.msgs.receiveOutbound(to, m, true); },
+      ack: async (ids) => { acks++; if (lose-- > 0) throw new LinkError("the answer was lost"); a.msgs.ackOutbound("dB", ids); },
+    }),
+    live: () => live,
+    failed: (e) => failed.push(e),
+    retryMs: [5, 5],
+  });
+  const settled = async () => { for (let i = 0; i < 200 && !drain.idle("mB"); i++) await Bun.sleep(5); };
+  drain.kick("mB");
+  await settled();
+  expect([fetches, acks]).toEqual([2, 2]); // one retry, no new trigger
+  expect(a.msgs.pendingOutbound("dB")).toHaveLength(0);
+  expect(a.msgs.get(sent.id)!.state).toBe("delivered");
+  expect(b.msgs.list({ session_id: to.id })).toHaveLength(1);
+  expect(failed).toEqual([]);
+
+  // The bound: a link that stays broken while its relay is open is given up
+  // after the listed retries and reported once; a closed relay is not retried.
+  a.msgs.queueOutbound("dB", to.id, "again", a.msgs.senderOf(from), true);
+  lose = Infinity; fetches = 0;
+  drain.kick("mB");
+  await settled();
+  expect(fetches).toBe(3);
+  expect(failed).toHaveLength(1);
+  live = false; fetches = 0;
+  drain.kick("mB");
+  await settled();
+  expect(fetches).toBe(1);
+  expect(failed).toHaveLength(1);
+  expect(a.msgs.pendingOutbound("dB")).toHaveLength(1); // still waits for the next relay
+  expect(b.msgs.list({ session_id: to.id })).toHaveLength(2);
+});
+
 // A message for a session the owner stopped waits in its held queue through
 // the engine's own queue path, so it is still a peer message when it runs.
 test("a peer message held by a Stop keeps who sent it", async () => {

@@ -22,6 +22,7 @@ import { bindNotices } from "../../fleet/notice.ts";
 import { registerSendFiles, RemoteAgents } from "../../fleet/agents.ts";
 import { setRemotePlacer } from "../../automation/agents.ts";
 import { HttpError, type Message, Messages } from "../../fleet/messages.ts";
+import { OutboxDrain } from "../../fleet/outbox.ts";
 import * as alerts from "../../automation/alerts.ts";
 import { contains } from "../../core/paths.ts";
 import type { Deps, RouteModule } from "../app.ts";
@@ -59,21 +60,26 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     }
   });
   // A linked daemon's outbox: messages its sessions wrote for this daemon's.
-  f.onOutbox = (machineId) => {
-    (async () => {
+  const go = globalThis as { __keelOutbox?: OutboxDrain };
+  go.__keelOutbox?.stop();
+  const outbox = (go.__keelOutbox = new OutboxDrain({
+    async link(machineId) {
       const p = await f.peer(machineId);
-      const r = await linkJson<{ messages: Message[] }>(p, "/api/fleet/outbox", { method: "POST", body: JSON.stringify({ daemon_id: f.id, name: f.name }) });
-      const kept: string[] = [];
-      for (const m of r.messages) {
-        const to = store.session(m.to_session);
-        // Proven by the link's answer; it counts as that daemon's when it says it was written there.
-        // Refused (gone, archived, rate) is an answer too: it is not handed out again.
-        if (to) try { msgs.receiveOutbound(to, m, m.from.daemon_id === p.daemonId); } catch (e) { if (!(e instanceof HttpError)) throw e; }
-        kept.push(m.id);
-      }
-      if (kept.length) await linkJson(p, "/api/fleet/outbox/ack", { method: "POST", body: JSON.stringify({ daemon_id: f.id, ids: kept }) });
-    })().catch((e) => { if (!(e instanceof LinkError)) errors.capture("server", e, { at: "fleet outbox", machine: machineId }); });
-  };
+      return {
+        pending: async () => (await linkJson<{ messages: Message[] }>(p, "/api/fleet/outbox", { method: "POST", body: JSON.stringify({ daemon_id: f.id, name: f.name }) })).messages,
+        keep(m) {
+          const to = store.session(m.to_session);
+          // Proven by the link's answer; it counts as that daemon's when it says it was written there.
+          // Refused (gone, archived, rate) is an answer too: it is not handed out again.
+          if (to) try { msgs.receiveOutbound(to, m, m.from.daemon_id === p.daemonId); } catch (e) { if (!(e instanceof HttpError)) throw e; }
+        },
+        ack: (ids) => linkJson(p, "/api/fleet/outbox/ack", { method: "POST", body: JSON.stringify({ daemon_id: f.id, ids }) }),
+      };
+    },
+    live: (machineId) => f.relayLive(machineId),
+    failed: (e, machineId) => errors.capture("server", e, { at: "fleet outbox", machine: machineId }),
+  }));
+  f.onOutbox = (machineId) => outbox.kick(machineId);
   if (!runMode.client) f.start();
   const spillRoot = `${store.stateDir}/spill`;
 
