@@ -399,3 +399,21 @@ test("a failure captured after the store closed is said on the console and throw
   }
   expect(said.join("\n")).toContain("after the close (not recorded:");
 });
+
+test("a version of a prompt appended while the session's events are out of the cache is among its versions", () => {
+  const store = new Store(scratch());
+  const s = store.createSession({ model: "m", workspace: "/" });
+  const first = store.append(s.id, "user", { text: "first version" });
+  store.append(s.id, "assistant", { blocks: [{ type: "text", text: "reply" }] });
+  expect(store.versions(s.id, null)).toEqual([]); // the only prompt under its parent: no other version
+  // Other sessions are read meanwhile: this one's parsed events and branch leave their caches, its versions stay.
+  for (let i = 0; i < 6; i++) {
+    const other = store.createSession({ model: "m", workspace: "/" });
+    store.append(other.id, "user", { text: "elsewhere" });
+    store.events(other.id);
+    store.lineage(other.id);
+  }
+  const second = store.append(s.id, "user", { text: "second version" }, null);
+  expect(store.versions(s.id, null).map((e) => e.id)).toEqual([first.id, second.id]);
+  store.db.close();
+});
