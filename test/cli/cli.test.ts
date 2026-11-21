@@ -104,6 +104,21 @@ describe("admin commands", () => {
   });
   afterAll(() => stand?.stop(true));
 
+  test("a malformed option prints the usage, exits 3 and asks the daemon nothing", async () => {
+    asked.length = 0;
+    const bogus = await k(["status", "--bogus"]);
+    // --bind with no value, last on the line; the unit file would go under the scratch config.
+    const bind = await keel(["service", "install", "--bind"], { state, env: { XDG_CONFIG_HOME: join(SCRATCH, "config") } });
+    const trace = /\n\s+at /;
+    expect({ bogus: [bogus.code, bogus.out, bogus.err.split("\n")[0], bogus.err.includes("\n\nkeel status [--url URL] [--json]"), trace.test(bogus.err)],
+      bind: [bind.code, bind.out, bind.err.split("\n")[0], bind.err.includes("\n\nkeel service install [--bind HOST:PORT]"), trace.test(bind.err)],
+      asked, written: existsSync(join(SCRATCH, "config")) }).toEqual({
+      bogus: [3, "", "keel status: Unknown option '--bogus'", true, false],
+      bind: [3, "", "keel service: Option '--bind <value>' argument missing", true, false],
+      asked: [], written: false,
+    });
+  }, 30_000);
+
   test("upgrade --help says it restarts the binary in place and installs nothing", async () => {
     const up = await k(["upgrade", "--help"]);
     const re = await k(["restart", "--help"]);

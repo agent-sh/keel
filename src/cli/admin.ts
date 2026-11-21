@@ -33,9 +33,18 @@ async function call(url: string, path: string, init?: RequestInit): Promise<any>
   return body;
 }
 
+// A command: its usage is its --help, and a bad option prints it (exit 3)
+// before anything is asked of the daemon, as the client commands do.
 function wrap(usage: string, opts: Record<string, any>, run: (v: any, pos: string[]) => Promise<number>) {
   return async (argv: string[]) => {
-    const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { ...common, ...opts } });
+    let parsed;
+    try {
+      parsed = parseArgs({ args: argv, allowPositionals: true, options: { ...common, ...opts } });
+    } catch (e) {
+      console.error(`keel ${usage.split(" ")[1]}: ${(e as Error).message.replace(/\. To specify a positional.*$/s, "")}\n\n${usage}`);
+      return 3;
+    }
+    const { values, positionals } = parsed as { values: any; positionals: string[] };
     if (values.help) return (console.log(usage), 0);
     try {
       return await run(values, positionals);
