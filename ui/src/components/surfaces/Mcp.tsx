@@ -61,7 +61,7 @@ function ServerReader({ s, act }: { s: McpServerState; act: Act }) {
         facts={[
           ["State", LABEL[s.state]],
           ["Tools", <span data-testid="mcp-tool-count">{toolCount(s)}</span>],
-          ["Transport", s.transport],
+          ["Transport", s.sse ? "http, SSE (older)" : s.transport],
           ...(s.bundled ? [["Source", <span data-testid="mcp-bundled">Built in · {s.bundled}</span>] as [string, React.ReactNode]] : []),
           ...(s.sync ? [["Follows", <span data-testid="mcp-sync" data-gone={s.sync.gone || undefined}>{s.sync.label}{s.sync.name !== s.name ? ` (${s.sync.name})` : ""}{s.sync.gone ? ", which no longer has it" : ""}</span>] as [string, React.ReactNode]] : []),
           ...(s.state === "ready" && s.server_info?.name ? [["Server", `${s.server_info.name}${s.server_info.version ? ` ${s.server_info.version}` : ""}, MCP ${s.version}`] as [string, string]] : []),

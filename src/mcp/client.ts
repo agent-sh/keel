@@ -1,4 +1,5 @@
-// A small MCP client: stdio and Streamable HTTP, both protocol eras.
+// A small MCP client: stdio, Streamable HTTP in both protocol eras, and the
+// older HTTP with SSE transport (2024-11-05) that servers still in use speak.
 //
 // Modern servers (2026-07-28) are stateless: no initialize handshake, every
 // request carries its version and capabilities in _meta. Legacy servers
@@ -28,7 +29,10 @@ export type Transport =
   // `started`: told the process once it runs, so its owner can see that it ends (src/mcp/procs.ts).
   | { kind: "stdio"; command: string; args: string[]; env: Record<string, string>; cwd?: string; started?: (proc: { pid: number; kill(signal?: number | NodeJS.Signals): void; exited: Promise<unknown> }) => void }
   // `pinned`: its headers go to this address only, so a redirect is an error (a server an editor passed).
-  | { kind: "http"; url: string; headers: Record<string, string>; token?: () => Promise<string | undefined>; pinned?: boolean };
+  // `sse`: the older HTTP with SSE transport. The URL is the server's event
+  // stream: its first event names the address messages are posted to, and
+  // every answer and notification comes back on the stream.
+  | { kind: "http"; url: string; headers: Record<string, string>; token?: () => Promise<string | undefined>; pinned?: boolean; sse?: boolean };
 
 export class RpcError extends Error {
   constructor(readonly code: number, message: string, readonly data?: unknown) {
@@ -115,6 +119,8 @@ export class McpClient {
     const dropped = () => c.close();
     signal?.addEventListener("abort", dropped, { once: true });
     try {
+      // A server of the older transport predates the modern era: no probe.
+      if (t.kind === "http" && t.sse) { await c.openEvents(); era = "legacy"; }
       await c.handshake(era);
     } catch (e) {
       c.close();
@@ -208,6 +214,7 @@ export class McpClient {
     this.closed = true;
     this.closedWhy = why;
     this.stream?.abort();
+    this.events?.abort();
     this.closeHook?.(why);
   }
 
@@ -255,6 +262,93 @@ export class McpClient {
     this.pending.clear();
   }
 
+  // ---- HTTP with SSE (2024-11-05) ----
+
+  // The server's event stream, held for the life of the client. Its first
+  // event, `endpoint`, names where messages are posted (a path or a URL of
+  // the same origin: a server cannot send the client's requests elsewhere).
+  // Every later `message` event is a JSON-RPC message: an answer to a posted
+  // request, a notification, a request of the server's own. The stream
+  // ending ends the client: its requests have nowhere to be answered.
+  private events?: AbortController;
+  private endpoint?: string;
+  private async openEvents() {
+    const t = this.t as Extract<Transport, { kind: "http" }>;
+    const ac = new AbortController();
+    this.events = ac;
+    const headers: Record<string, string> = { accept: "text/event-stream", ...t.headers };
+    const tok = await t.token?.();
+    if (tok) headers.authorization = `Bearer ${tok}`;
+    const timer = setTimeout(() => ac.abort(), this.timeoutMs);
+    let res: Response;
+    try {
+      res = await fetch(t.url, { headers, signal: ac.signal, timeout: false } as RequestInit);
+    } catch (e) {
+      clearTimeout(timer);
+      throw ac.signal.aborted ? new Error(`the event stream did not open within ${Math.round(this.timeoutMs / 1000)}s`) : e;
+    }
+    if (res.status === 401) { clearTimeout(timer); throw new AuthRequired(res.headers.get("www-authenticate")); }
+    if (!res.ok || !res.body || !(res.headers.get("content-type") ?? "").includes("text/event-stream")) {
+      clearTimeout(timer);
+      ac.abort();
+      throw new Error(`no event stream at ${t.url}: HTTP ${res.status}${res.ok ? `, ${res.headers.get("content-type") ?? "no content type"}` : ""}`);
+    }
+    let named!: () => void, refused!: (e: Error) => void;
+    const ready = new Promise<void>((ok, no) => { named = ok; refused = no; });
+    const read = async () => {
+      const dec = new TextDecoder();
+      let buf = "", event = "message", data: string[] = [];
+      const value = (line: string, name: string) => line.slice(name.length + 1).replace(/^ /, "");
+      const flush = () => {
+        const body = data.join("\n"), kind = event;
+        data = [];
+        event = "message";
+        if (!body) return;
+        if (kind === "endpoint") {
+          if (this.endpoint) return; // named once
+          let to: URL;
+          try { to = new URL(body, t.url); } catch { return refused(new Error(`the server named an address that is not one: ${body.slice(0, 200)}`)); }
+          if (to.origin !== new URL(t.url).origin) return refused(new Error(`the server named another origin for its messages (${to.origin}): refused`));
+          this.endpoint = to.href;
+          return named();
+        }
+        if (kind !== "message") return;
+        let msg: unknown;
+        try { msg = JSON.parse(body); } catch { return; }
+        try { this.dispatch(msg); } catch {}
+      };
+      for await (const chunk of chunks(res.body!)) {
+        buf += dec.decode(chunk, { stream: true });
+        if (buf.length > STREAM_EVENT_MAX && !buf.includes("\n")) throw new StreamOverrun();
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl).replace(/\r$/, "");
+          buf = buf.slice(nl + 1);
+          if (line === "") flush();
+          else if (line.startsWith("event:")) event = value(line, "event");
+          else if (line.startsWith("data:")) data.push(value(line, "data"));
+        }
+      }
+    };
+    read().then(
+      () => "the server closed its event stream",
+      (e) => (ac.signal.aborted ? "the connection is closed" : e instanceof StreamOverrun ? "the server sent an event too large to read" : `the event stream broke: ${(e as Error).message}`),
+    ).then((why) => {
+      refused(new Error(why));
+      if (this.closed) return;
+      this.failAll(new Error(why));
+      this.shut(why);
+    });
+    try {
+      await ready;
+    } catch (e) {
+      ac.abort();
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   // ---- HTTP ----
 
   private async headers(method: string, params: any): Promise<Record<string, string>> {
@@ -297,7 +391,7 @@ export class McpClient {
     const headers = await this.headers(msg.method, msg.params);
     const deny = authorize?.();
     if (deny) throw new McpAuthorizationError(deny);
-    const res = await this.pinned(() => fetch(t.url, {
+    const res = await this.pinned(() => fetch(t.sse ? this.endpoint! : t.url, {
       method: "POST",
       headers,
       body: JSON.stringify(msg),
@@ -394,7 +488,8 @@ export class McpClient {
   private stream?: AbortController;
   private listen() {
     const c = this.capabilities;
-    if (this.t.kind !== "http" || this.era !== "legacy" || this.closed || this.stream) return;
+    // (The older transport's own event stream carries what the server sends: there is no second one to open.)
+    if (this.t.kind !== "http" || this.t.sse || this.era !== "legacy" || this.closed || this.stream) return;
     if (!c.tools?.listChanged && !c.resources?.listChanged && !c.resources?.subscribe) return;
     const url = this.t.url;
     const ac = (this.stream = new AbortController());
@@ -479,6 +574,8 @@ export class McpClient {
       timer = setTimeout(() => giveUp(`${method} timed out after ${Math.round(timeoutMs / 1000)}s`, "timed out"), timeoutMs);
       opt.signal?.addEventListener("abort", onAbort, { once: true });
       if (this.t.kind === "stdio") this.write(msg);
+      // Over the older transport the POST is only accepted; the answer comes on the event stream.
+      else if (this.t.sse) this.post(msg, ac.signal, opt.authorize).catch((e) => { if (this.pending.has(id)) fail(e); });
       else {
         this.post(msg, ac.signal, opt.authorize).then(
           // A stream that ended without our answer loses the request.
@@ -547,6 +644,7 @@ export class McpClient {
   close() {
     this.failAll(new Error("the connection is closed"));
     this.stream?.abort();
+    this.events?.abort();
     if (this.closed) return;
     this.closed = true;
     if (this.proc) {

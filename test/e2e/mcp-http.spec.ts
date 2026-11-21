@@ -145,3 +145,60 @@ test("mcp http: a resource page that failed", async ({ page, request }) => {
     await s.stop();
   }
 });
+
+// Feature: a server of the older HTTP with SSE transport, the kind with no
+// Streamable HTTP address at all. It connects when its config names the
+// transport, and when it does not: a server that refuses the request is
+// asked the older way once. Its tools run like any other server's.
+test("mcp sse: an old SSE-only server connects, named or found, and its tool runs", async ({ page, request }) => {
+  const fx = spawn("bun", [join(import.meta.dirname, "fixtures/legacy-sse-mcp.ts")], { stdio: ["ignore", "pipe", "inherit"] });
+  const port = await new Promise<string>((res) => createInterface({ input: fx.stdout! }).once("line", res));
+  const base = `http://127.0.0.1:${port}`;
+  const names = ["ssenamed", "ssefound"];
+  const row = async (name: string) => ((await (await request.get("/api/mcp/servers")).json()).servers as any[]).find((s) => s.name === name);
+  for (const n of names) await request.delete(`/api/mcp/servers/${n}`).catch(() => {});
+  try {
+    expect((await request.post("/api/mcp/servers", { data: { name: names[0], url: `${base}/sse`, transport: "sse" } })).ok()).toBe(true);
+    expect((await request.post("/api/mcp/servers", { data: { name: names[1], url: `${base}/sse` } })).ok()).toBe(true);
+    for (const n of names) await expect.poll(async () => (await row(n))?.state, { timeout: 20_000 }).toBe("ready");
+    for (const n of names) expect(await row(n)).toMatchObject({ transport: "http", sse: true, tools: 1, tool_names: ["echo"], version: "2024-11-05", server_info: { name: "legacy-sse" } });
+    // The one whose transport was named never posted to the stream's address; the other was refused once, then found.
+    const st = await (await request.get(`${base}/stats`)).json();
+    expect(st.streams_open).toBe(2);
+    expect(st.refused_posts).toBeGreaterThanOrEqual(1);
+
+    await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
+    const session = (await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "MCP over SSE" } })).json()).session;
+    const call = (tool: string, text: string) => ({ name: "mcp_call", input: { tool, arguments: { text } } });
+    await page.goto(`/s/${session.id}`);
+    await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([call("ssenamed__echo", "named"), call("ssefound__echo", "found")])}`);
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 30_000 });
+    const results = ((await (await request.get(`/api/sessions/${session.id}`)).json()).events as any[]).filter((e) => e.kind === "tool_result").map((e) => JSON.stringify(e.data));
+    expect(results.join(" ")).toContain("echo: named");
+    expect(results.join(" ")).toContain("echo: found");
+    expect((await (await request.get(`${base}/stats`)).json()).calls).toEqual(["named", "found"]);
+
+    // The server closes its stream: the row says why, and a reconnect brings it back.
+    await request.post(`${base}/control`, { data: { close: true } });
+    await expect.poll(async () => (await row(names[0]!))?.state, { timeout: 10_000 }).toBe("error");
+    expect((await row(names[0]!)).error).toBe("the server closed its event stream");
+    await page.goto("/");
+    await page.getByTestId("composer").fill("/mcp");
+    await page.keyboard.press("Enter");
+    const panel = page.getByTestId("mcp-panel");
+    await panel.locator('[data-testid="mcp-entry"]').filter({ hasText: names[0]! }).first().click();
+    const shown = panel.locator(`[data-testid="mcp-server"][data-name="${names[0]}"]`);
+    await expect(shown).toHaveAttribute("data-state", "error");
+    await shoot(page, "mcp-http-05-sse-stream-closed");
+    expect((await request.post(`/api/mcp/servers/${names[0]}/reconnect`)).ok()).toBe(true);
+    await expect.poll(async () => (await row(names[0]!))?.state, { timeout: 20_000 }).toBe("ready");
+    await expect(shown).toHaveAttribute("data-state", "ready");
+    await expect(shown).toContainText("http, SSE (older)");
+    await shoot(page, "mcp-http-06-sse-ready");
+    await request.delete(`/api/sessions/${session.id}`);
+  } finally {
+    for (const n of names) await request.delete(`/api/mcp/servers/${n}`).catch(() => {});
+    fx.kill();
+  }
+});

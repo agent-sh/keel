@@ -59,6 +59,7 @@ export type McpServerState = {
   last_connected?: number;
   era?: "modern" | "legacy";
   version?: string;
+  sse?: true;         // it speaks the older HTTP with SSE transport (its config says so, or it was found to)
   server_info?: { name?: string; version?: string };
   sign_in: boolean;   // the server can take an OAuth sign-in (HTTP)
   signed_in: boolean;
@@ -109,6 +110,8 @@ type Entry = {
   connecting?: Promise<McpClient>;
   last?: number;
   era?: "modern" | "legacy";
+  // Found to speak only the older HTTP with SSE transport (its config does not say so).
+  sse?: boolean;
   www?: string | null;
   failures: number;
   bundled?: BundledServer;
@@ -554,6 +557,7 @@ export class McpManager {
       url: expand(c.url!),
       headers,
       token: bearer ? async () => bearer : () => this.oauth.token(e.name),
+      ...(c.transport === "sse" || e.sse ? { sse: true } : {}),
     };
   }
 
@@ -574,7 +578,6 @@ export class McpManager {
       // One connection for every session: a turn that happens to open it does
       // not own it, so what it fails with later is no turn's.
       e.connecting = detached(() => (async () => {
-        if (e.config.transport === "sse") throw new Error("this server uses the older SSE transport, which Keel does not speak; give its Streamable HTTP address instead");
         // A session's own command runs inside the session's sandbox, as its shell commands do.
         if (e.session && t.kind === "stdio") {
           const held = this.sessionSandbox?.(e.session, [t.command, ...t.args]);
@@ -592,7 +595,19 @@ export class McpManager {
           // The helper's own Authorization wins over a stored sign-in.
           if (Object.keys(h).some((k) => k.toLowerCase() === "authorization")) t.token = undefined;
         }
-        const client = await McpClient.connect(t, (e.config.timeout_secs ?? 30) * 1000, e.era, abort.signal);
+        const timeout = (e.config.timeout_secs ?? 30) * 1000;
+        let client: McpClient;
+        try {
+          client = await McpClient.connect(t, timeout, e.era, abort.signal);
+        } catch (err) {
+          // A server that refuses the request with a 4xx may speak only the
+          // older HTTP with SSE transport, at the same address: asked that
+          // way once (the transports' own rule for a client that knows
+          // neither). What the first try said stands when that fails too.
+          if (t.kind !== "http" || t.sse || abort.signal.aborted || !/^HTTP 4\d\d/.test((err as Error).message)) throw err;
+          try { client = await McpClient.connect({ ...t, sse: true }, timeout, undefined, abort.signal); } catch { throw err; }
+          e.sse = true;
+        }
         // Removed, turned off or replaced meanwhile: this client is nobody's.
         const stale = () => this.entries.get(name) !== e || e.abort !== abort || e.state === "disabled" || this.disposed;
         if (stale()) {
@@ -751,6 +766,7 @@ export class McpManager {
       last_connected: e.last,
       era: e.client?.era,
       version: e.client?.version,
+      ...(e.config.transport === "sse" || e.sse ? { sse: true as const } : {}),
       // Name, title and version; icons (data URIs of kilobytes) stay out of a list polled every second or two.
       server_info: e.client?.serverInfo ? { name: e.client.serverInfo.name, title: (e.client.serverInfo as any).title, version: e.client.serverInfo.version } : undefined,
       endpoint: e.bundled ? undefined : endpoint(e.config),

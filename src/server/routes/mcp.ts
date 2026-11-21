@@ -139,7 +139,7 @@ export const mcpRoutes: RouteModule = (deps) => {
         if (b.command) { const guard = needs(req); if (guard) return guard; }
         const cfg: McpServerConfig = b.command
           ? { command: b.command, args: b.args, env: b.env, cwd: b.cwd }
-          : { url: b.url, headers: b.headers, bearer_env: b.bearer_env, oauth: b.oauth, headers_helper: typeof b.headers_helper === "string" && b.headers_helper.trim() ? b.headers_helper : undefined };
+          : { url: b.url, headers: b.headers, bearer_env: b.bearer_env, oauth: b.oauth, transport: b.transport === "sse" ? "sse" : undefined, headers_helper: typeof b.headers_helper === "string" && b.headers_helper.trim() ? b.headers_helper : undefined };
         // A headers helper is a command too: from a remote device it takes the passkey.
         if (cfg.headers_helper) { const guard = needs(req); if (guard) return guard; }
         if (b.enabled === false) cfg.enabled = false;

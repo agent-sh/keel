@@ -4,6 +4,7 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { startLegacyMcp } from "../../test/e2e/fixtures/legacy-http-mcp.ts";
+import { startSseMcp } from "../../test/e2e/fixtures/legacy-sse-mcp.ts";
 import { McpClient } from "./client.ts";
 
 const until = async (ok: () => boolean | Promise<boolean>, what: string, ms = 3000) => {
@@ -121,5 +122,51 @@ test("a modern stdio server is told when a request times out or is cancelled", a
     expect(c.inflight).toBe(0);
   } finally {
     c.close();
+  }
+});
+
+// The older HTTP with SSE transport (2024-11-05): one event stream for the
+// life of the client, whose first event names where messages are posted.
+test("the older SSE transport: answers and the server's own messages come on its stream, and its end ends the client", async () => {
+  const s = startSseMcp();
+  const c = await McpClient.connect({ kind: "http", url: s.url, headers: {}, sse: true }, 5000);
+  try {
+    expect([c.era, c.version, c.serverInfo?.name]).toEqual(["legacy", "2024-11-05", "legacy-sse"]);
+    expect((await c.listTools()).map((t) => t.name)).toEqual(["echo"]);
+    expect((await c.callTool("echo", { text: "over the stream" })).content).toEqual([{ type: "text", text: "echo: over the stream" }]);
+    // Twenty at once: each answer finds its own request.
+    const many = await Promise.all(Array.from({ length: 20 }, (_, i) => c.callTool("echo", { text: String(i) })));
+    expect(many.map((r) => (r.content![0] as { text: string }).text)).toEqual(Array.from({ length: 20 }, (_, i) => `echo: ${i}`));
+    // One stream carried it all, and nothing was posted to the stream's own address.
+    expect(await s.stats()).toMatchObject({ streams_opened: 1, streams_open: 1, refused_posts: 0, initializes: 1 });
+    // What the server sends by itself: a changed list, and a ping that is answered.
+    let changed = 0;
+    c.onListChanged = () => changed++;
+    await s.control({ changed: true, ping: true });
+    await until(async () => changed === 1 && (await s.stats()).pongs.length === 1, "the list change and the answer to the ping");
+    expect((await s.stats()).pongs).toEqual([{ id: "ping-1", result: {} }]);
+    // The stream ends: the client is closed, says why, and a request out at that moment fails with it.
+    let why = "";
+    c.onClose = (w) => (why = w);
+    await s.control({ close: true });
+    await until(() => c.isClosed, "the client to close");
+    expect(why).toBe("the server closed its event stream");
+    await expect(c.callTool("echo", { text: "late" })).rejects.toThrow("the connection is closed");
+  } finally {
+    c.close();
+    s.stop();
+  }
+});
+
+test("the older SSE transport: no stream, and an address of another origin, are refused", async () => {
+  const s = startSseMcp({ endpoint: "elsewhere" }), plain = startLegacyMcp({ get: "decline" });
+  try {
+    await expect(McpClient.connect({ kind: "http", url: s.url, headers: {}, sse: true }, 5000)).rejects.toThrow("named another origin for its messages (http://127.0.0.1:9): refused");
+    // Its stream was let go.
+    await until(async () => (await s.stats()).streams_open === 0, "the stream to be closed");
+    await expect(McpClient.connect({ kind: "http", url: plain.url, headers: {}, sse: true }, 5000)).rejects.toThrow(`no event stream at ${plain.url}: HTTP 405`);
+  } finally {
+    s.stop();
+    plain.stop();
   }
 });
