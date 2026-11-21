@@ -7,7 +7,7 @@ import { LayoutPanelLeft, Pin, PinOff, Search, X } from "lucide-react";
 import { Suspense, useMemo, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { panels, type Panel } from "../lib/extend.ts";
-import { registerCommand } from "../lib/keys.ts";
+import { composing, registerCommand } from "../lib/keys.ts";
 import { usePanelBeside } from "../lib/rail.ts";
 import { getUI, phone, savePref, useUI } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
@@ -100,7 +100,7 @@ function Picker({ list, open, label, testid = "panel-menu" }: { list: Panel[]; o
                 aria-label="Find a panel"
                 data-testid="panel-search"
                 onChange={(e) => setQ(e.target.value)}
-                onKeyDown={(e) => { const top = shown[0]?.items[0]; if (e.key === "Enter" && top) pick(top.id); }}
+                onKeyDown={(e) => { const top = shown[0]?.items[0]; if (e.key === "Enter" && !composing(e) && top) pick(top.id); }}
               />
             </label>
             <div className="k-picker-list">

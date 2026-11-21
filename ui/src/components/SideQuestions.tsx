@@ -4,6 +4,7 @@
 import { MessageCircleQuestion, Plus, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Session } from "../../../src/core/types.ts";
+import { composing } from "../lib/keys.ts";
 import { reportError } from "../lib/store.ts";
 import { side, type SideState } from "../lib/side.ts";
 import { cn, fmtCost, fmtTokens } from "../lib/utils.ts";
@@ -94,8 +95,7 @@ export function SideQuestions({ session }: { session: Session }) {
           rows={2}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            // The Enter that confirms a word being composed is the input method's (key code 229 where the event does not say so).
-            if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+            if (composing(e)) return; // the Enter that confirms a composed word is the input method's
             if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); }
           }}
           placeholder={current ? "Ask a follow-up" : "Ask a side question"}

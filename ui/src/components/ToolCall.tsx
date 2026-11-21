@@ -21,6 +21,7 @@ import { CodeCall } from "./CodeCall.tsx";
 import { ReadersCall } from "./ReadersCall.tsx";
 import { Copyable } from "./CopyButton.tsx";
 import { stripAnsiText } from "../../../src/core/ansi.ts";
+import { composing } from "../lib/keys.ts";
 
 // The file a call names, for its copy line.
 const pathOf = (input: any): string | undefined => { const p = input?.file_path ?? input?.path ?? input?.notebook_path; return typeof p === "string" && p ? p : undefined; };
@@ -390,7 +391,7 @@ function QuestionCard({ use, result, sessionId }: Props) {
               <input
                 value={other[q.id] ?? ""}
                 onChange={(e) => setOther((o) => ({ ...o, [q.id]: e.target.value }))}
-                onKeyDown={(e) => { if (e.key === "Enter" && ready && !sending) submit(); }}
+                onKeyDown={(e) => { if (e.key === "Enter" && !composing(e) && ready && !sending) submit(); }}
                 placeholder={q.options.length ? "Or type your own answer" : "Type your answer"}
                 data-testid="question-other"
                 className="h-8 rounded-md border border-line bg-sunken px-3 text-ui outline-none placeholder:text-faint focus:border-accent"

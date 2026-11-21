@@ -106,8 +106,9 @@ test("side questions in order, retried, and per branch", async ({ page, request 
 
 // A word being composed (an input method's candidates on screen) is confirmed
 // with Enter: that Enter belongs to the input method, and the question is not
-// asked until an Enter after it.
-test("a side question is not asked by the Enter that confirms a composed word", async ({ page, request }) => {
+// asked until an Enter after it. The same holds for the other fields that act
+// on Enter: the message box, a prompt being edited, the palette, Panels search.
+test("the Enter that confirms a composed word is not the field's Enter", async ({ page, request }) => {
   const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
   test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
   const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", text: "first" } })).json();
@@ -136,5 +137,48 @@ test("a side question is not asked by the Enter that confirms a composed word", 
     await expect(input).toHaveValue("");
     expect(posts).toHaveLength(1);
     expect(JSON.parse(posts[0]!).question ?? JSON.parse(posts[0]!).text).toBe("东京の天気は");
+
+    // The same two marks on the Enter of other fields: nothing is sent, opened or picked.
+    const sent: string[] = [];
+    page.on("request", (r) => { if (r.method() === "POST" && r.url().endsWith(`/api/sessions/${session.id}/messages`)) sent.push(r.postData() ?? ""); });
+    const composed = async (field: import("@playwright/test").Locator) => {
+      for (const init of [{ isComposing: true }, { keyCode: 229 }]) await field.evaluate((el, init) => { el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true, ...init })); }, init);
+      await page.waitForTimeout(200);
+    };
+    const box = page.getByTestId("composer");
+    await box.fill("返事を書く");
+    await composed(box);
+    await expect(box).toHaveValue("返事を書く");
+    // A prompt being edited.
+    await page.getByTestId("user-message").first().hover();
+    await page.getByTestId("edit-message").first().click();
+    const edit = page.getByTestId("edit-box");
+    await edit.fill("最初の質問");
+    await composed(edit);
+    await expect(edit).toHaveValue("最初の質問");
+    await edit.press("Escape");
+    expect(sent).toHaveLength(0);
+    // Panels search: the top match is not opened.
+    const shownPanel = await page.getByTestId("side-panel").getAttribute("data-panel");
+    await page.getByTestId("panel-menu").click();
+    const search = page.getByTestId("panel-search");
+    await search.fill("files");
+    await composed(search);
+    await expect(page.getByTestId("panel-picker")).toBeVisible();
+    await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel", shownPanel!);
+    await page.keyboard.press("Escape");
+    // The palette: nothing is picked, it stays open with its words.
+    await page.keyboard.press("Control+k");
+    const palette = page.getByTestId("palette-input");
+    await palette.fill("設定");
+    await composed(palette);
+    await expect(page.getByTestId("palette")).toBeVisible();
+    await expect(palette).toHaveValue("設定");
+    await page.keyboard.press("Escape");
+    // With the composition over, Enter in the message box sends, once.
+    await box.focus();
+    await page.keyboard.press("Enter");
+    await expect(box).toHaveValue("");
+    expect(sent).toHaveLength(1);
   } finally { await request.delete(`/api/sessions/${session.id}`); }
 });

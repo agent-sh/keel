@@ -12,6 +12,7 @@ import { switchSession } from "../lib/switch.ts";
 import { seedComposer } from "../lib/ui.ts";
 import { cn, fmtCost, fmtTokens } from "../lib/utils.ts";
 import { itemClass, popupClass } from "./ui.tsx";
+import { composing } from "../lib/keys.ts";
 
 const chipBtn = "grid size-6 place-items-center rounded-md text-faint hover:text-fg hover:bg-hover outline-none focus-visible:ring-2 focus-visible:ring-accent/30";
 
@@ -62,7 +63,7 @@ function QueueRow({ q, sessionId, place, off }: { q: QueueItem; sessionId: strin
           autoFocus
           value={text}
           onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && canSave) save(); if (e.key === "Escape") setEditing(false); }}
+          onKeyDown={(e) => { if (composing(e)) return; if (e.key === "Enter" && canSave) save(); if (e.key === "Escape") setEditing(false); }}
           onBlur={() => setEditing(false)}
           className={cn(words, "rounded-md border border-line bg-sunken px-2 py-0.5 text-ui outline-none")}
         />

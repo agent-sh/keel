@@ -32,6 +32,15 @@ export const runCommand = (id: string) => commands.get(id)?.run();
 
 export const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
 
+// A key press that belongs to an input method: a word is being composed, and
+// the Enter that confirms it is not the field's. Some browsers say so on the
+// event; one sends that Enter after the composition ended, with key code 229.
+// Every field that acts on Enter asks this first.
+export const composing = (e: KeyboardEvent | { nativeEvent: KeyboardEvent }): boolean => {
+  const n = "nativeEvent" in e ? e.nativeEvent : e;
+  return n.isComposing || n.keyCode === 229;
+};
+
 // The message box's own keys, named once for the box and the shortcut sheet.
 export const QUEUE_KEYS = "mod+shift+enter";
 // What sends and what makes a new line, by the owner's "Send with" setting.
@@ -58,7 +67,7 @@ function matches(e: KeyboardEvent, spec: string): boolean {
 
 export function installKeymap() {
   const onKey = (e: KeyboardEvent) => {
-    if (e.defaultPrevented || e.isComposing) return;
+    if (e.defaultPrevented || composing(e)) return;
     const t = e.target as HTMLElement | null;
     const typing = !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
     for (const c of allCommands()) {

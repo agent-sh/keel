@@ -9,6 +9,7 @@ import { actions, reportError, useStore, type DraftBlock } from "../lib/store.ts
 import { useSafety } from "../lib/safety.ts";
 import { getUI, navigate, seedComposer, setUI, useUI } from "../lib/ui.ts";
 import { announce } from "../lib/announce.ts";
+import { composing } from "../lib/keys.ts";
 import { Kbd } from "./Kbd.tsx";
 import { cn, fmtCost, fmtTokens, fmtWait, focusBox, scrollMotion } from "../lib/utils.ts";
 import { Markdown } from "./Markdown.tsx";
@@ -172,6 +173,7 @@ function EditPrompt({ e, s, onDone }: { e: StoredEvent; s: Session; onDone: () =
           placeholder={n ? "Words to send with the attachments (optional)" : undefined}
           onChange={(x) => setText(x.target.value)}
           onKeyDown={(x) => {
+            if (composing(x)) return;
             if (x.key === "Escape") onDone();
             if (x.key === "Enter" && !x.shiftKey) { x.preventDefault(); send(); }
           }}

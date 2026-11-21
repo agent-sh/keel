@@ -10,6 +10,7 @@ import { ago, cn, when } from "../lib/utils.ts";
 import { Select } from "./Select.tsx";
 import { Card, SettingRow } from "./Settings.tsx";
 import { iconButton } from "./ui.tsx";
+import { composing } from "../lib/keys.ts";
 
 const KINDS = ["fact", "person", "preference", "decision", "commitment", "reference"];
 const failed = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -33,7 +34,7 @@ function Item({ m }: { m: MemoryRecord }) {
     if (!edit) return;
     editMemory(m.key, { value: edit.value, aliases: split(edit.aliases), topics: split(edit.topics) }).then(() => { setEdit(null); setErr(""); }, (e) => setErr(failed(e)));
   };
-  const keys = (e: React.KeyboardEvent) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); save(); } if (e.key === "Escape") setEdit(null); };
+  const keys = (e: React.KeyboardEvent) => { if (composing(e)) return; if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); save(); } if (e.key === "Escape") setEdit(null); };
   return (
     <li className="group border-b border-line py-2 last:border-0" data-testid="memory-item" data-key={m.key} data-kind={m.kind}>
       <div className="flex items-center gap-2">

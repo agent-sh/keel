@@ -7,6 +7,7 @@ import { navigate } from "../lib/ui.ts";
 import { copyable, takeOver, TOOL } from "./TakeOver.tsx";
 import { ago, cn, when } from "../lib/utils.ts";
 import { Markdown } from "./Markdown.tsx";
+import { composing } from "../lib/keys.ts";
 
 type List = { configured: boolean; sessions: Row[]; not_listed?: string[]; at?: number };
 type Read = { session: Row; turns?: Turn[]; lines?: string[]; prompt: ReadPrompt | null };
@@ -297,7 +298,7 @@ function Detail({ id, back }: { id: string; back: () => void }) {
             <textarea
               value={text}
               onChange={(e) => setText(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !composing(e)) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }}
               disabled={!s.drive.send}
               rows={Math.min(6, Math.max(1, text.split("\n").length))}
               data-testid="elsewhere-input"

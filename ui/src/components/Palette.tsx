@@ -1,7 +1,7 @@
 import { Dialog } from "@base-ui/react/dialog";
 import { Archive, Bot, CornerDownLeft, Search, SquareTerminal, TextSearch, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { allCommands, commandsVersion, fuzzy, onCommands } from "../lib/keys.ts";
+import { allCommands, commandsVersion, composing, fuzzy, onCommands } from "../lib/keys.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
 import { switchSession } from "../lib/switch.ts";
 import { navigate, setUI, useUI } from "../lib/ui.ts";
@@ -181,6 +181,7 @@ export function Palette() {
               data-testid="palette-input"
               className="h-13 w-full bg-transparent text-[1.0312rem] outline-none placeholder:text-faint"
               onKeyDown={(e) => {
+                if (composing(e)) return; // the arrows and Enter are the input method's while a word is composed
                 if (e.key === "ArrowDown") { e.preventDefault(); move(1); }
                 if (e.key === "ArrowUp") { e.preventDefault(); move(-1); }
                 if (e.key === "Enter") { e.preventDefault(); pick(active); }
