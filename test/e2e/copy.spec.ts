@@ -75,6 +75,7 @@ test("copy what a session shows, also without the async clipboard", async ({ pag
 // refused too) says so on the button, in view and to assistive technology,
 // never shows Copied, and is recorded once.
 test("a failed copy says so", async ({ page, request }) => {
+  await page.setViewportSize({ width: 1920, height: 1040 });
   const s = (await (await request.post("/api/sessions", { data: { model: MODEL, title: `Copy fails ${Date.now()}` } })).json()).session;
   await request.post(`/api/sessions/${s.id}/messages`, { data: { text: "Show the parser. script:render" } });
   await expect.poll(async () => (await (await request.get(`/api/sessions/${s.id}`)).json()).events.filter((e: any) => e.kind === "turn_end").length, { timeout: 30_000 }).toBe(1);
@@ -107,6 +108,12 @@ test("a failed copy says so", async ({ page, request }) => {
   await shoot(page, "copy-03-failed");
   // Recorded once, and the button goes back to Copy.
   await expect.poll(recorded).toBe(before + 1);
+  // A second failure before the first one's time is up: its words stay their whole time.
+  await page.keyboard.press("Enter");
+  await expect.poll(recorded).toBe(before + 2);
+  await page.waitForTimeout(2000);
+  await expect(reply).toHaveAttribute("data-failed", "true");
+  await expect(page.getByRole("tooltip")).toHaveText("Copy failed");
   await expect(reply).toHaveAccessibleName("Copy the reply", { timeout: 6000 });
   await expect(reply).not.toHaveAttribute("data-failed", /.*/);
 
@@ -116,11 +123,19 @@ test("a failed copy says so", async ({ page, request }) => {
   await page.keyboard.press("Enter");
   await expect(code).toHaveText("Copy failed");
   await expect(code).toHaveAttribute("data-failed", "");
+  // Its glyph is the cross and its name the same words, as on the shared button.
+  await expect(code).toHaveAccessibleName("Copy failed");
+  await expect(code.locator("svg rect")).toHaveCount(0);
   await shoot(page, "copy-04-code-failed");
+  await page.keyboard.press("Enter");
+  await expect.poll(recorded).toBe(before + 4);
+  await page.waitForTimeout(2000);
+  await expect(code).toHaveText("Copy failed");
   await expect(code).toHaveText("Copy", { timeout: 6000 });
-  await expect.poll(recorded).toBe(before + 2);
+  await expect(code).toHaveAccessibleName("Copy code");
+  await expect(code.locator("svg rect")).toHaveCount(1);
   await page.waitForTimeout(500);
-  expect(await recorded()).toBe(before + 2);
+  expect(await recorded()).toBe(before + 4);
   expect(await page.evaluate(() => (window as any).said.filter((x: string) => /Copied|\|true$/.test(x)))).toEqual([]);
   await request.delete(`/api/sessions/${s.id}`);
 });

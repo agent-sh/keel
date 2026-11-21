@@ -10,6 +10,11 @@ import { getUI, navigate, savePref, setUI } from "../lib/ui.ts";
 import { whenIdle } from "../lib/utils.ts";
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const svg = (paths: string) => `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+const FAILED_ICON = svg(`<path d="M18 6 6 18"/><path d="m6 6 12 12"/>`);
+// What a code block's copy button shows, and the time limit of its Copied or failed state.
+const copyFace = (icon: string, words: string) => `${icon}<span>${words}</span>`;
+const copyTimers = new WeakMap<HTMLElement, number>();
 const COPY_ICON = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>`;
 
 // Raw HTML in model output is shown as text, never rendered: the renderer
@@ -44,7 +49,7 @@ md.use({
       if (!text) return "";
       const l = (lang ?? "").trim().split(/\s/)[0] ?? "";
       if (l === "math") return mathHtml(text, true);
-      return `<div class="code-block"><div class="code-head"><span>${esc(l || "text")}</span><button type="button" class="code-copy" aria-label="Copy code">${COPY_ICON}<span>Copy</span></button></div><pre><code data-lang="${esc(l)}">${esc(text)}</code></pre></div>`;
+      return `<div class="code-block"><div class="code-head"><span>${esc(l || "text")}</span><button type="button" class="code-copy" aria-label="Copy code">${copyFace(COPY_ICON, "Copy")}</button></div><pre><code data-lang="${esc(l)}">${esc(text)}</code></pre></div>`;
     },
   },
 });
@@ -193,11 +198,19 @@ const onClick = (sessionId?: string) => (e: React.MouseEvent | React.KeyboardEve
   const btn = (e.target as HTMLElement).closest<HTMLButtonElement>(".code-copy");
   if (!btn) return;
   const code = btn.closest(".code-block")?.querySelector("code")?.textContent ?? "";
-  // Copied or failed, the button says which for a moment, in view and to assistive technology.
+  // Copied or failed, the button says which for a moment: its words, its
+  // name and, failed, its glyph. A second press starts the moment again.
+  const face = (mark: "copied" | "failed" | null, words: string) => {
+    delete btn.dataset.copied;
+    delete btn.dataset.failed;
+    if (mark) btn.dataset[mark] = "";
+    btn.setAttribute("aria-label", mark ? words : "Copy code");
+    btn.innerHTML = copyFace(mark === "failed" ? FAILED_ICON : COPY_ICON, words);
+  };
   const say = (mark: "copied" | "failed", words: string, ms: number) => {
-    btn.dataset[mark] = "";
-    btn.lastElementChild!.textContent = words;
-    setTimeout(() => { delete btn.dataset[mark]; btn.lastElementChild!.textContent = "Copy"; }, ms);
+    clearTimeout(copyTimers.get(btn));
+    face(mark, words);
+    copyTimers.set(btn, window.setTimeout(() => face(null, "Copy"), ms));
   };
   copyText(code).then(
     () => { say("copied", "Copied", 1400); announce("Copied"); },

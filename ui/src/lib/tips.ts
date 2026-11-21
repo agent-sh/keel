@@ -10,6 +10,7 @@ let watch: MutationObserver | null = null;
 // A tip shown by tipNow stays through a scroll (it follows its control): the
 // transcript scrolls by itself while a reply is written.
 let pinned = false;
+let pinTimer = 0;
 
 function place() {
   if (!tip || !host) return;
@@ -68,7 +69,9 @@ export function tipNow(el: Element, ms: number) {
   hide();
   show(el, 0);
   pinned = true;
-  setTimeout(() => { if (host === el && pinned) hide(); }, ms);
+  // One time limit, the newest: an earlier call's would cut this tip short.
+  clearTimeout(pinTimer);
+  pinTimer = window.setTimeout(() => { if (host === el && pinned) hide(); }, ms);
 }
 
 const titled = (t: EventTarget | null) => (t instanceof Element ? t.closest("[title], [data-tip]") : null);
