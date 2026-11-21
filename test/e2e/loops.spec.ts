@@ -56,3 +56,33 @@ test("loops: /loop, history, pause, run now, calendar", async ({ page, request }
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });
+
+const STAND_IN = "scripted:stand-in";
+
+// A calendar loop made with a time zone of its own keeps it: its times are
+// that zone's wall clock, whatever zone the daemon runs in.
+test("loops: a calendar loop keeps the time zone it is made with", async ({ page, request }) => {
+  const { models } = await (await request.get("/api/models")).json();
+  test.skip(!models.some((m: { id: string }) => m.id === STAND_IN), "requires the scripted provider");
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Zoned loop" } })).json();
+  const here = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const tz = here === "Pacific/Auckland" ? "America/New_York" : "Pacific/Auckland";
+  const made = await request.post("/api/loops", { data: { session_id: session.id, schedule: "every day at 09:30", prompt: "Report the plan for the day.", tz } });
+  expect(made.status()).toBe(201);
+  const loop = await made.json();
+  expect(loop.tz).toBe(tz);
+  const wall = (ms: number) => new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(ms);
+  expect([loop.next_ms, ...loop.next_runs].map(wall)).toEqual(["09:30", "09:30", "09:30", "09:30"]);
+
+  const bad = await request.post("/api/loops", { data: { session_id: session.id, schedule: "every day at 09:30", prompt: "Never made.", tz: "Mars/Olympus" } });
+  expect(bad.status()).toBe(400);
+  expect((await bad.json()).error).toContain("is not a time zone");
+  expect((await (await request.get("/api/loops")).json()).loops.some((l: any) => l.prompt === "Never made.")).toBe(false);
+
+  await page.goto(`/s/${session.id}`);
+  await page.getByTestId("loops-button").click();
+  await page.getByTestId("loop-item").filter({ hasText: "Report the plan for the day" }).first().click();
+  await expect(page.getByTestId("loop-zone")).toContainText(`(${tz})`);
+  await shoot(page, "loops-06-zone");
+  await request.delete(`/api/loops/${loop.id}`);
+});

@@ -209,7 +209,7 @@ export type CreateInput = {
   session_id: string; name?: string; prompt?: string; schedule: string; max_runs?: number | null; until_ms?: number | null;
   created_by?: "owner" | "model"; min_delay_seconds?: number; max_delay_seconds?: number; first_delay_seconds?: number;
   signed?: boolean; min_interval_seconds?: number;
-  tz?: string; // a calendar schedule's zone; this machine's when not given
+  tz?: string | null; // a calendar schedule's zone; this machine's when not given
 };
 
 const newSecret = () => `whsec_${randomBytes(32).toString("base64")}`;
@@ -242,7 +242,9 @@ export function create(input: CreateInput): { loop: LoopRecord; hook_key?: strin
   const maxD = Math.max(minD, Math.min(Number(input.max_delay_seconds ?? 3600), YEAR));
   const id = Bun.randomUUIDv7().slice(-8);
   const schedule = sch.kind === "cron" ? sch.expr : input.schedule.trim().toLowerCase();
-  const tz = sch.kind === "cron" ? (input.tz ? checkZone(input.tz) : localZone()) : null;
+  // A zone that is named is checked whatever the schedule; only a calendar schedule keeps one.
+  const zone = input.tz === undefined || input.tz === null || input.tz === "" ? null : checkZone(input.tz);
+  const tz = sch.kind === "cron" ? zone ?? localZone() : null;
   const first = sch.kind === "auto" ? now + Math.max(0, input.first_delay_seconds ?? 0) * 1000 : sch.kind === "webhook" ? null : nextDue({ kind: sch.kind, schedule, tz }, now);
   let hookKey: string | undefined;
   let hash: string | null = null;

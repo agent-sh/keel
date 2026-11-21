@@ -112,8 +112,9 @@ export function parseCron(expr: string): Fields {
 export const localZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 export function checkZone(tz: string): string {
   try {
-    new Intl.DateTimeFormat("en-US", { timeZone: tz });
-    return tz;
+    if (typeof tz !== "string") throw new Error("not a name");
+    // The name as the zone database writes it (europe/paris is Europe/Paris).
+    return new Intl.DateTimeFormat("en-US", { timeZone: tz }).resolvedOptions().timeZone;
   } catch {
     throw new Error(`"${tz}" is not a time zone: use an IANA name such as Europe/Paris or UTC`);
   }

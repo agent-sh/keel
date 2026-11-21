@@ -383,7 +383,7 @@ export const automationRoutes: RouteModule = (deps) => {
           deps.bus.emit({ t: "session", session: s });
           sid = s.id;
         }
-        const r = loops.create({ session_id: sid, name: b.name, prompt: b.prompt, schedule: String(b.schedule ?? ""), max_runs: b.max_runs, until_ms: b.until_ms, created_by: "owner", signed: b.signed === undefined ? undefined : !!b.signed, min_interval_seconds: b.min_interval_seconds });
+        const r = loops.create({ session_id: sid, name: b.name, prompt: b.prompt, schedule: String(b.schedule ?? ""), max_runs: b.max_runs, until_ms: b.until_ms, tz: b.tz, created_by: "owner", signed: b.signed === undefined ? undefined : !!b.signed, min_interval_seconds: b.min_interval_seconds });
         return json({ ...r.loop, hook_key: r.hook_key, hook_secret: r.hook_secret }, 201);
       }),
     },
