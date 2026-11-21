@@ -70,13 +70,17 @@ function leftBehind() {
   throw new Error(`${file} ended with ${left.length} turn hook${left.length > 1 ? "s" : ""} of its own still registered (${left.map((h) => Object.keys(h).join("+")).join("; ")}). Hooks are process-wide: take them off in the test that adds them, or in afterAll.`);
 }
 beforeEach(() => {
-  const now = Object.keys(require.cache).find((k) => /\.test\.tsx?$/.test(k) && !seen.has(k));
-  if (!now) return;
-  seen.add(now);
+  // Every test module not seen yet, in the order they loaded: the last is the
+  // file this test is in, and the ones before it ran no test (all skipped).
+  // All are seen from here, so none of them reads as a new file later, in
+  // the middle of this one.
+  const fresh = Object.keys(require.cache).filter((k) => /\.test\.tsx?$/.test(k) && !seen.has(k));
+  if (!fresh.length) return;
+  for (const k of fresh) seen.add(k);
   try {
     leftBehind();
   } finally {
-    file = relative(join(import.meta.dir, ".."), now);
+    file = relative(join(import.meta.dir, ".."), fresh.at(-1)!);
   }
 });
 afterEach(() => { afterLast = [...allHooks()]; });
