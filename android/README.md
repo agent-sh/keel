@@ -7,7 +7,7 @@ can sit beside it on the same phone.
 
 | | |
 | --- | --- |
-| Package | `dev.avifenesh.keel` (debug builds: `dev.avifenesh.keel.debug`) |
+| Package | `dev.avifenesh.keel` (debug builds: `dev.avifenesh.keel.debug`, QA builds: `dev.avifenesh.keel.qa`) |
 | Pairing link | `keel://pair?u=<daemon address>&c=<one-time code>&n=<name>` |
 | Android | 12 or later (API 31) |
 
@@ -16,7 +16,8 @@ can sit beside it on the same phone.
 The daemon serves the mobile `/v1` surface (`src/integrations/mobile/v1.ts`).
 The phone reaches it over HTTPS at an address you choose, usually a private
 network proxy in front of the daemon's local port. Plain HTTP is refused in
-release builds.
+release builds; debug and QA builds also take it for a daemon on this machine
+(see The QA build).
 
 1. On the computer: Settings, then Phone. Enter the address the phone reaches
    the daemon at and show a pairing code (or run `keel pair --url <address>`).
@@ -74,6 +75,32 @@ cd android
 ```
 
 A release build without signing fails; there is no debug-key fallback.
+
+## The QA build
+
+```bash
+./gradlew :app:assembleQa        # app/build/outputs/apk/qa/
+```
+
+The QA build type is the release build made testable against a dev daemon. It
+is for checking the minified app, never for distribution.
+
+| | QA | Release |
+| --- | --- | --- |
+| Package | `dev.avifenesh.keel.qa`, named Keel QA, version name ending `-qa` | `dev.avifenesh.keel` |
+| Code | The release settings: R8 minification, shrunk resources, the same ProGuard rules | The same |
+| Signing | The Android debug key; no keystore file is needed | Your release key; the build fails without it |
+| Plain HTTP | Only to `10.0.2.2` (the emulator's host), `127.0.0.1` and `localhost`, without subdomains | Refused everywhere |
+
+Every other address needs HTTPS in the QA build too. The three addresses are
+the ones in `app/src/qa/res/xml/network_security.xml`; the debug build has the
+same list. A real phone reaches a daemon on the computer at `127.0.0.1` through
+`adb reverse tcp:<port> tcp:<port>`; the emulator reaches it at `10.0.2.2`.
+
+Because the package differs, a QA build installs beside the release and debug
+builds, pairs on its own, and needs its own Android app entry in the Firebase
+project to receive push. It is signed with a key that every Android SDK has,
+so it proves nothing about who built it.
 
 ## Layout
 
