@@ -416,7 +416,12 @@ describe("a session a script holds open", () => {
   test("the script answers and interrupts: a call allowed once, one refused with its words, a question, a turn stopped, a request refused when its input closes", async () => {
     // Through an address that records every call and passes no socket: the events are read by seq alone.
     const calls = new Set<string>();
-    const fr = front(dm.url, (method, path) => void calls.add(`${method} ${path}`));
+    // The first answer to a card is turned away once, as a restarting daemon does.
+    let turnedAway = 0;
+    const fr = front(dm.url, (method, path) => {
+      calls.add(`${method} ${path}`);
+      if (method === "POST" && path.includes("/approvals/") && !turnedAway++) return Response.json({ error: "Keel is restarting: answer again in a moment, when it is back" }, { status: 503 });
+    });
     const s = held(["run", "--input-format", "stream-json", "--permission-mode", "ask", "--on-ask", "stdin", "--archived", "--url", fr.url], state);
     const asked = (l: any) => l.type === "control_request" && l.request.subtype === "can_use_tool";
     const answer = (request_id: string, response: unknown) => s.write({ type: "control_response", response: { subtype: "success", request_id, response } });
@@ -424,13 +429,27 @@ describe("a session a script holds open", () => {
       s.write(said('script:calls [{"name":"Bash","input":{"command":"touch stream-allowed.txt"}},{"name":"Bash","input":{"command":"touch stream-denied.txt"}}]'));
       let q = await s.until(asked);
       expect(s.got[q].request).toMatchObject({ tool_name: "Bash", input: { command: "touch stream-allowed.txt" } });
+      // An answer the daemon did not take leaves the request open: the same answer again is taken.
       answer(s.got[q].request_id, { behavior: "allow" });
+      const not = await s.until((l) => l.type === "system" && l.subtype === "input_error" && l.request_id === s.got[q].request_id, q);
+      expect(s.got[not].error).toContain("still open");
+      expect(existsSync(join(WS, "stream-allowed.txt"))).toBe(false);
+      answer(s.got[q].request_id, { behavior: "allow", updatedInput: { command: "touch stream-allowed.txt" } });
       q = await s.until(asked, q + 1);
       answer(s.got[q].request_id, { behavior: "deny", message: "not this one" });
       let at = await s.until(isResult);
       expect(s.got[at]).toMatchObject({ subtype: "success", refused_approvals: 1 });
       expect([existsSync(join(WS, "stream-allowed.txt")), existsSync(join(WS, "stream-denied.txt"))]).toEqual([true, false]);
       expect(JSON.stringify(s.got.slice(q, at).filter((l) => l.type === "user"))).toContain("not this one");
+      expect(s.got[at].permission_denials).toEqual([{ tool_name: "Bash", tool_use_id: expect.any(String), tool_input: { command: "touch stream-denied.txt" } }]);
+      // An allow that changes the call's input runs nothing: the call is refused and both are told why.
+      s.write(said('script:calls [{"name":"Bash","input":{"command":"touch stream-asked.txt"}}]'));
+      q = await s.until(asked, at + 1);
+      answer(s.got[q].request_id, { behavior: "allow", updatedInput: { command: "touch stream-changed.txt" } });
+      await s.until((l) => l.type === "system" && l.subtype === "input_error" && /updatedInput/.test(l.error), q);
+      at = await s.until(isResult, at + 1);
+      expect([existsSync(join(WS, "stream-asked.txt")), existsSync(join(WS, "stream-changed.txt")), s.got[at].refused_approvals]).toEqual([false, false, 1]);
+      expect(JSON.stringify(s.got.slice(q, at).filter((l) => l.type === "user"))).toContain("another input");
       // A question of the model is the script's to answer too.
       s.write(said(`script:calls ${JSON.stringify([{ name: "AskUserQuestion", input: { questions: [{ header: "Color", question: "Which color should I use?", options: [{ label: "Teal" }, { label: "Amber" }], multiSelect: false }] } }])}`));
       q = await s.until((l) => l.type === "control_request" && l.request.subtype === "ask_question", at + 1);
@@ -446,14 +465,14 @@ describe("a session a script holds open", () => {
       s.write({ type: "control_request", request_id: "r1", request: { subtype: "interrupt" } });
       await s.until((l) => l.type === "control_response" && l.response.request_id === "r1" && l.response.subtype === "success", at + 1);
       at = await s.until(isResult, at + 1);
-      expect(s.got[at]).toMatchObject({ subtype: "cancelled", outcome: "cancelled", num_turns: 3 });
+      expect(s.got[at]).toMatchObject({ subtype: "cancelled", outcome: "cancelled", num_turns: 4 });
       // One stopped while its request is open: the request is withdrawn on the stream.
       s.write(said('script:calls [{"name":"Bash","input":{"command":"touch stream-never.txt"}}]'));
       q = await s.until(asked, at + 1);
       s.write({ type: "control_request", request_id: "r2", request: { subtype: "interrupt" } });
       await s.until((l) => l.type === "control_cancel_request" && l.request_id === s.got[q].request_id, q);
       at = await s.until(isResult, at + 1);
-      expect(s.got[at]).toMatchObject({ subtype: "cancelled", num_turns: 4 });
+      expect(s.got[at]).toMatchObject({ subtype: "cancelled", num_turns: 5 });
       // The allow was for that one call: the same command asks again.
       s.write(said('script:calls [{"name":"Bash","input":{"command":"touch stream-allowed.txt"}}]'));
       q = await s.until(asked, at + 1);
@@ -461,7 +480,7 @@ describe("a session a script holds open", () => {
       const end = await s.end();
       const closed = s.got.findIndex((l, n) => n > q && l.type === "system" && l.subtype === "permission_denied");
       expect(s.got[closed]).toMatchObject({ request_id: s.got[q].request_id, reason: expect.stringContaining("closed") });
-      expect([end.code, s.got.at(-1)]).toEqual([0, expect.objectContaining({ type: "result", subtype: "success", num_turns: 5 })]);
+      expect([end.code, s.got.at(-1)]).toEqual([0, expect.objectContaining({ type: "result", subtype: "success", num_turns: 6 })]);
       expect((await dm.api(`/api/sessions/${s.got[0].session_id}?events=0`)).session.archived).toBe(true);
 
       // Every route the command called is one docs/http-api.md lists as stable, and the daemon serves them all.
@@ -476,18 +495,75 @@ describe("a session a script holds open", () => {
     }
   }, 120_000);
 
+  test("a failed turn's result carries its own error, and the next turn's carries none of it", async () => {
+    const stdin = [said("script:billing"), said("script:rate-limit-always"), said("fine now")].map((m) => JSON.stringify(m)).join("\n") + "\n";
+    const r = await keel(["run", "--input-format", "stream-json"], { state, stdin });
+    const results = lines(r.out).filter(isResult);
+    expect(results.map((x) => [x.subtype, x.is_error, x.num_turns])).toEqual([["error_during_execution", true, 1], ["error_during_execution", true, 2], ["success", false, 3]]);
+    expect(results[0].result).toContain("HTTP 402");
+    expect(results[1].result).toContain("HTTP 429");
+    expect(results[1].result).not.toContain("402");
+    expect([results[2].result, r.code]).toEqual(["Scripted reply.", 0]);
+  }, 60_000);
+
+  test("a daemon restart under a held session: the command waits, the cut turn goes on, and its result comes once", async () => {
+    const own = join(SCRATCH, "state-stream-restart");
+    const port = 20_000 + Math.floor(Math.random() * 20_000);
+    const serve = async () => {
+      const d = Bun.spawn([BIN, "serve", "--bind", `127.0.0.1:${port}`, "--state-dir", own, "--workspace", WS], { cwd: WS, env: { ...ENV, KEEL_DRAIN_MS: "300", KEEL_RESUME_AT_ONCE: "1" }, stdout: "pipe", stderr: "ignore" });
+      const reader = d.stdout.getReader();
+      let seen = "";
+      while (!seen.includes("listening")) seen += new TextDecoder().decode((await reader.read()).value);
+      reader.releaseLock();
+      return d;
+    };
+    let d = await serve();
+    const s = held(["run", "--input-format", "stream-json", "--permission-mode", "full-auto"], own);
+    try {
+      s.write(said("script:long-tool", "p1"));
+      await s.until((l) => l.type === "assistant" && l.message.content.some((b: any) => b.type === "tool_use"));
+      await Bun.sleep(300);
+      d.kill("SIGTERM");
+      await d.exited;
+      // A prompt written while no daemon answers waits for it.
+      s.write(said("after the restart", "p2"));
+      await s.until((l) => l.type === "system" && l.subtype === "daemon_away");
+      d = await serve();
+      await s.until((l) => l.type === "system" && l.subtype === "daemon_back");
+      const first = await s.until(isResult);
+      expect(s.got[first]).toMatchObject({ subtype: "success", result: "Continued after the restart.", num_turns: 1, user_message_uuids: ["p1"] });
+      const second = await s.until(isResult, first + 1);
+      expect(s.got[second]).toMatchObject({ subtype: "success", result: "Scripted reply.", num_turns: 2, user_message_uuids: ["p2"] });
+      const end = await s.end();
+      expect([end.code, s.got.filter(isResult).length]).toEqual([0, 2]);
+    } finally {
+      s.kill();
+      d.kill("SIGTERM");
+      await d.exited;
+    }
+  }, 120_000);
+
   test("prompts piped in one go run one after another, with no daemon running", async () => {
     const alone = join(SCRATCH, "state-stream-alone");
-    const r = await keel(["run", "--input-format", "stream-json"], { state: alone, stdin: [said("first", "a"), said("second", "b")].map((m) => JSON.stringify(m)).join("\n") + "\n" });
+    // A line that is no message comes first: the first line written says the schema version all the same.
+    const picture = { type: "user", uuid: "c", message: { role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: DOT } }] } };
+    const began = Date.now();
+    const r = await keel(["run", "--input-format", "stream-json"], { state: alone, stdin: "junk\n" + [said("first", "a"), said("second", "b"), picture].map((m) => JSON.stringify(m)).join("\n") + "\n" });
     const ls = lines(r.out);
     const results = ls.filter(isResult);
-    expect([r.code, results.map((x) => [x.subtype, x.result, x.num_turns, x.user_message_uuids])]).toEqual([0, [["success", "Scripted reply.", 1, ["a"]], ["success", "Scripted reply.", 2, ["b"]]]]);
+    expect([ls[0].subtype, ls[0].schema_version, ls.find((l) => l.subtype === "init").schema_version, ls.filter((l) => "schema_version" in l).length]).toEqual(["input_error", 1, 1, 2]);
+    // An image alone is a prompt, as in the workbench.
+    expect([r.code, results.map((x) => [x.subtype, x.result, x.num_turns, x.user_message_uuids])]).toEqual([0, [["success", "Scripted reply.", 1, ["a"]], ["success", "Scripted reply.", 2, ["b"]], ["success", "Scripted reply.", 3, ["c"]]]]);
+    // A result's time is its own turn's: together they are no longer than the command ran.
+    expect(results.reduce((n, x) => n + x.duration_ms, 0)).toBeLessThan(Date.now() - began);
     expect(new Set(ls.map((l) => l.session_id).filter(Boolean)).size).toBe(1);
     // The second prompt went in after the first one's result.
     expect(ls.findIndex((l) => l.type === "user" && l.message.content[0].text === "second")).toBeGreaterThan(ls.indexOf(results[0]));
     // The flags that do not fit a held session are refused before anything is sent.
     const bad = await keel(["run", "--input-format", "stream-json", "--output-format", "json"], { state: alone, stdin: "" });
     expect([bad.code, bad.out]).toEqual([3, ""]);
+    const schema = await keel(["run", "--input-format", "stream-json", "--json-schema", '{"type":"object"}'], { state: alone, stdin: "" });
+    expect([schema.code, schema.out, schema.err.split("\n")[0]]).toEqual([3, "", expect.stringContaining("--json-schema does not go with --input-format stream-json")]);
     expect((await keel(["run", "--on-ask", "stdin", "hi"], { state: alone })).err).toContain("--on-ask stdin needs --input-format stream-json");
   }, 60_000);
 });

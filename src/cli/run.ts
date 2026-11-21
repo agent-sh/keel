@@ -10,7 +10,7 @@ import { lockedDaemon } from "../admin/daemon.ts";
 import type { StoredEvent } from "../core/types.ts";
 import { startDaemon, type Started } from "../server/start.ts";
 import { ApiError, clean, Client, command, EXIT, type Found, out, pipedStdin, promptFiles, usageError } from "./client.ts";
-import { assistantText, Follower, STREAM_SCHEMA, streamLine } from "./events.ts";
+import { assistantText, deltaLine, Follower, STREAM_SCHEMA, streamLine } from "./events.ts";
 import { runStream } from "./stream.ts";
 
 export const RUN_USAGE = `keel run [PROMPT] [options]       (also: keel -p is keel run -p)
@@ -429,7 +429,7 @@ export async function runPrompt(v: any, pos: string[], c0: Client, found: Found,
     const follow = (at: { after_seq: number; event_id: string | null; queue_id?: string | null }, text: string) => watch({
       c, sessionId: sessionId!, afterSeq: at.after_seq, eventId: at.event_id, queueId: at.queue_id, prompt: text, stay: stay!, onAsk, timeoutS,
       onEvent: stream ? (e) => console.log(JSON.stringify(streamLine(e))) : undefined,
-      onDelta: partial ? (d) => console.log(JSON.stringify({ type: "stream_event", session_id: sessionId, event: { type: "content_block_delta", delta: { type: d.kind === "thinking" ? "thinking_delta" : d.kind === "text" ? "text_delta" : "input_json_delta", text: d.text } } })) : undefined,
+      onDelta: partial ? (d) => console.log(JSON.stringify(deltaLine(sessionId, d))) : undefined,
       t0,
     });
     const w = await follow(sent, sentText);

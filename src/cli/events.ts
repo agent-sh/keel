@@ -85,6 +85,13 @@ export function streamLine(e: StoredEvent): Record<string, unknown> {
 
 export type Delta = { kind: "text" | "thinking" | "tool_input"; text: string };
 
+// Streamed text as a stream-json line, with Claude Code's field per kind:
+// text in `text`, thinking in `thinking`, a tool's input in `partial_json`.
+export const deltaLine = (sessionId: string | undefined, d: { kind: string; text: string }) => ({
+  type: "stream_event", session_id: sessionId,
+  event: { type: "content_block_delta", delta: d.kind === "thinking" ? { type: "thinking_delta", thinking: d.text } : d.kind === "text" ? { type: "text_delta", text: d.text } : { type: "input_json_delta", partial_json: d.text } },
+});
+
 // A stored reply as it streams: what each of its blocks adds, in order.
 const streamOf = (e: StoredEvent): Delta[] => (e.data.blocks ?? []).flatMap((b: any): Delta[] =>
   b.type === "text" ? [{ kind: "text", text: b.text ?? "" }]
@@ -103,6 +110,8 @@ export class Follower {
   private ws?: WebSocket;
   private wake?: () => void;
   private stopped = false;
+  // The socket was open and closed by itself (the daemon restarted): connect() opens another.
+  lost = false;
   // The last stored event the socket has passed. Streamed text is of the reply
   // after that event: when a read by seq is ahead of the socket, the text
   // still arriving is of a reply already handed over whole, or of a turn before it.
@@ -152,14 +161,26 @@ export class Follower {
   }
 
   connect(): Promise<void> {
+    this.lost = false;
+    if (this.stopped || this.ws) return Promise.resolve();
     return new Promise((resolve) => {
       try {
         const ws = new WebSocket(this.c.base.replace(/^http/, "ws") + "/ws", { headers: authHeaders() } as any);
         this.ws = ws;
+        let opened = false;
+        // Gone: the reads by seq go on without it, and the next connect() starts from where they are.
+        ws.onclose = () => {
+          if (this.ws !== ws) return;
+          this.ws = undefined;
+          this.torn = true;
+          if (opened && !this.stopped) this.lost = true;
+          this.wake?.();
+        };
         // The daemon sends a socket events and deltas only after its resume:
         // the events after this cursor, what the running reply has streamed
         // so far, then both as they happen.
         ws.onopen = () => {
+          opened = true;
           this.wsSeq = this.seq;
           ws.send(JSON.stringify({ op: "resume", cursors: { [this.sessionId]: this.seq } }));
           resolve();

@@ -121,7 +121,8 @@ export const runRoutes: RouteModule = (deps) => {
       POST: async (req: Request) => {
         const b = ((await req.json().catch(() => null)) ?? {}) as any;
         const text = typeof b.text === "string" ? b.text.trim() : "";
-        if (!text) throw fail("the prompt is empty");
+        // An image or a file may go without words, as in the workbench.
+        if (!text && !(Array.isArray(b.images) && b.images.length)) throw fail("the prompt is empty");
         const key = typeof b.idempotency_key === "string" && b.idempotency_key ? b.idempotency_key.slice(0, 200) : null;
         // The caller's request as given (not the defaults it resolves to): a
         // retry sends the same, a reused key with another prompt or place is a

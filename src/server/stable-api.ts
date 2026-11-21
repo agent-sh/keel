@@ -16,12 +16,12 @@ export const STABLE: StableRoute[] = [
   { method: "GET", path: "/api/routes", what: "The routes this daemon serves, each with the methods that are stable.", response: "`{ api_version, routes: [{ path, methods, stable }], missing }`. `missing` lists stable routes this daemon does not serve; it is empty on a sound build." },
   {
     method: "POST", path: "/api/run", what: "One prompt to a new session or an existing one. Settings are applied first; a refused request changes nothing.",
-    request: "`{ text, images?, session_id? | continue?, cwd?, model?, provider?, permission_mode?, effort?, worktree?, peer?, mode?, idempotency_key? }`. `mode` is `send`, `steer` or `queue` for a session that is busy. `images` holds `{ type: \"image\", media_type, data }` blocks (base64). With `idempotency_key`, a retry gets the first answer back.",
+    request: "`{ text, images?, session_id? | continue?, cwd?, model?, provider?, permission_mode?, effort?, worktree?, peer?, mode?, idempotency_key? }`. `mode` is `send`, `steer` or `queue` for a session that is busy. `images` holds `{ type: \"image\", media_type, data }` blocks (base64); with one, `text` may be empty. With `idempotency_key`, a retry gets the first answer back and stores nothing.",
     response: "`201 { session_id, replayed, after_seq, event_id, queue_id?, queued? }`. `after_seq` is the last event before the prompt: read events after it. `event_id` is the prompt's event, or null when it was queued (`queue_id`).",
   },
   {
     method: "GET", path: "/api/cli/state/:id", what: "What a caller that waits needs on every tick, without the transcript.",
-    response: "`{ session, last_seq, running, queue, held, status, approvals, questions, background: { agents, waits, jobs } }`. `approvals` are the open permission requests of the session and its agents (`id`, `session_id`, `call_id`, `tool`, `input`, `summary`, `risk`); `questions` are `{ session_id, call_id }`.",
+    response: "`{ session, state, last_seq, running, queue, held, status, approvals, questions, background: { agents, waits, jobs } }`. `state.watch` is the session's one state: `need`, `work`, `wait`, `fail`, `declined`, `resume` (a turn a restart cut is about to continue), `stop`, `done` or `idle`, with `why` and `text`. `approvals` are the open permission requests of the session and its agents (`id`, `session_id`, `call_id`, `tool`, `input`, `summary`, `risk`, `cut`, `why`); `questions` are `{ session_id, call_id }`.",
   },
   { method: "GET", path: "/api/cli/resolve", what: "A session from any unique prefix of its id (`?id=PREFIX`).", response: "`{ session }`" },
   {
@@ -33,7 +33,7 @@ export const STABLE: StableRoute[] = [
   {
     method: "POST", path: "/api/sessions/:id/approvals/:aid", what: "Answers one open permission request.",
     request: "`{ choice, reason? }`. `choice` is `once` or `deny` (`session` and `always` store a standing grant: from a remote device they need the owner's passkey). `reason` reaches the model with a refusal.",
-    response: "`{ ok: true }`, or `404`/`409` with `error` when the request is not open any more.",
+    response: "`{ ok: true }`. `404` or `409` with `error`: the request is not open any more. `503`: the daemon is restarting, answer again. `428`: the answer needs the owner's passkey.",
   },
   {
     method: "POST", path: "/api/sessions/:id/questions/:call", what: "Answers a question the model asked (`:call` is the tool call's id).",
@@ -115,6 +115,9 @@ export function renderApiDoc(): string {
     "2. Read `GET /api/sessions/:id/events?after=SEQ` until a `turn_end` (or an `error` with no",
     "   `turn_start` before it). Read `GET /api/cli/state/:id` between reads: an entry in `approvals`",
     "   or `questions` waits for an answer.",
+    "   A failed turn stores its `turn_end` (reason `error`) first and its `error` event after it: read",
+    "   until `running` is false to have both. A `turn_end` with reason `restart` is a turn a daemon",
+    "   restart cut: while `state.watch` is `resume` the daemon continues it.",
     "3. Answer with the approvals or questions route, or stop the turn with the interrupt route.",
     "4. `POST /api/run` with `session_id` for the next prompt.",
     "",

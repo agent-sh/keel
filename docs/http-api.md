@@ -38,14 +38,14 @@ The routes this daemon serves, each with the methods that are stable.
 
 One prompt to a new session or an existing one. Settings are applied first; a refused request changes nothing.
 
-- Request: `{ text, images?, session_id? | continue?, cwd?, model?, provider?, permission_mode?, effort?, worktree?, peer?, mode?, idempotency_key? }`. `mode` is `send`, `steer` or `queue` for a session that is busy. `images` holds `{ type: "image", media_type, data }` blocks (base64). With `idempotency_key`, a retry gets the first answer back.
+- Request: `{ text, images?, session_id? | continue?, cwd?, model?, provider?, permission_mode?, effort?, worktree?, peer?, mode?, idempotency_key? }`. `mode` is `send`, `steer` or `queue` for a session that is busy. `images` holds `{ type: "image", media_type, data }` blocks (base64); with one, `text` may be empty. With `idempotency_key`, a retry gets the first answer back and stores nothing.
 - Response: `201 { session_id, replayed, after_seq, event_id, queue_id?, queued? }`. `after_seq` is the last event before the prompt: read events after it. `event_id` is the prompt's event, or null when it was queued (`queue_id`).
 
 ### GET /api/cli/state/:id
 
 What a caller that waits needs on every tick, without the transcript.
 
-- Response: `{ session, last_seq, running, queue, held, status, approvals, questions, background: { agents, waits, jobs } }`. `approvals` are the open permission requests of the session and its agents (`id`, `session_id`, `call_id`, `tool`, `input`, `summary`, `risk`); `questions` are `{ session_id, call_id }`.
+- Response: `{ session, state, last_seq, running, queue, held, status, approvals, questions, background: { agents, waits, jobs } }`. `state.watch` is the session's one state: `need`, `work`, `wait`, `fail`, `declined`, `resume` (a turn a restart cut is about to continue), `stop`, `done` or `idle`, with `why` and `text`. `approvals` are the open permission requests of the session and its agents (`id`, `session_id`, `call_id`, `tool`, `input`, `summary`, `risk`, `cut`, `why`); `questions` are `{ session_id, call_id }`.
 
 ### GET /api/cli/resolve
 
@@ -76,7 +76,7 @@ The session's permission mode.
 Answers one open permission request.
 
 - Request: `{ choice, reason? }`. `choice` is `once` or `deny` (`session` and `always` store a standing grant: from a remote device they need the owner's passkey). `reason` reaches the model with a refusal.
-- Response: `{ ok: true }`, or `404`/`409` with `error` when the request is not open any more.
+- Response: `{ ok: true }`. `404` or `409` with `error`: the request is not open any more. `503`: the daemon is restarting, answer again. `428`: the answer needs the owner's passkey.
 
 ### POST /api/sessions/:id/questions/:call
 
@@ -110,6 +110,9 @@ Reading events by seq (`GET /api/sessions/:id/events`) gives the same events wit
 2. Read `GET /api/sessions/:id/events?after=SEQ` until a `turn_end` (or an `error` with no
    `turn_start` before it). Read `GET /api/cli/state/:id` between reads: an entry in `approvals`
    or `questions` waits for an answer.
+   A failed turn stores its `turn_end` (reason `error`) first and its `error` event after it: read
+   until `running` is false to have both. A `turn_end` with reason `restart` is a turn a daemon
+   restart cut: while `state.watch` is `resume` the daemon continues it.
 3. Answer with the approvals or questions route, or stop the turn with the interrupt route.
 4. `POST /api/run` with `session_id` for the next prompt.
 

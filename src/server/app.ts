@@ -479,6 +479,15 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       // What this daemon serves, with the methods a script may rely on (stable-api.ts).
       "/api/routes": { GET: wrap(() => json(routeTable(routes))) },
     }, modules, deps, wrap, !!opts.development);
+  // A route a script may rely on is there under its documented path and
+  // method: a rename that left the stable table behind stops a dev daemon at
+  // its start, and a built one records it.
+  const { missing } = routeTable(routes);
+  if (missing.length) {
+    const e = new Error(`stable routes not served: ${missing.join(", ")} (src/server/stable-api.ts lists them; docs/http-api.md is made from it)`);
+    if (opts.development) throw e;
+    errors.capture("server", e, { at: "routes" });
+  }
 
   const options = {
     hostname: opts.hostname,

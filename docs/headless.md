@@ -5,9 +5,9 @@ holds one session open: a script writes JSON lines to standard input and reads J
 standard output until it closes the input. Both work with a daemon running (`keel serve`) and
 without one: with none, the command runs the session inside itself and stops it at the end.
 
-Schema version of the lines: 1 (`schema_version` on the first line). The version goes up when a
-line a script reads changes its meaning or loses a field. A new field or a new line type does not
-move it, so ignore what you do not know.
+Schema version of the lines: 1. The first line written carries `schema_version`, whatever line
+it is, and so does `init`. The version goes up when a line a script reads changes its meaning or
+loses a field. A new field or a new line type does not move it, so ignore what you do not know.
 
 ## A held session
 
@@ -17,8 +17,8 @@ keel run --input-format stream-json [--permission-mode MODE] [--on-ask deny|stdi
 ```
 
 `--input-format stream-json` implies `--output-format stream-json`. A prompt given as an argument
-is the first message. `--attach`, `--wait`, `--queue`, `--json` and `--idempotency-key` are for a
-single prompt and are refused here.
+is the first message. `--attach`, `--wait`, `--queue`, `--json`, `--json-schema` and
+`--idempotency-key` are for a single prompt and are refused here.
 
 A client in a few lines:
 
@@ -44,7 +44,8 @@ print("exit", p.wait())
 
 ### Input lines
 
-One JSON object per line.
+One JSON object per line. A line longer than 32 MiB is skipped and said back as an
+`input_error`: no host takes a request that large, so it could not be one prompt.
 
 A prompt:
 
@@ -53,7 +54,8 @@ A prompt:
 ```
 
 - `content` is a string, or a list of `{"type":"text","text"}` and
-  `{"type":"image","source":{"type":"base64","media_type","data"}}` blocks.
+  `{"type":"image","source":{"type":"base64","media_type","data"}}` blocks. An image may go
+  without text.
 - `uuid` is optional. The result of the turn that took the message names it in
   `user_message_uuids`.
 - Prompts run one after another, each in a turn of its own: the next one is sent when the turn
@@ -81,6 +83,13 @@ An answer to a permission request or a question (only with `--on-ask stdin`, see
 {"type":"control_response","response":{"subtype":"success","request_id":"ID","response":{"answers":{"0":{"picked":["Teal"]}}}}}
 ```
 
+- A call runs as it was asked or not at all. An allow may carry `updatedInput` when it equals
+  the input of the request. One that differs refuses the call: the model is told to call the
+  tool again with the input wanted, and an `input_error` says so.
+- `updatedPermissions` is not taken. The call is allowed once and an `input_error` says so.
+- An answer the daemon did not take (it was restarting, or the call needs the owner's passkey)
+  is said back as an `input_error` with the `request_id`. The request stays open: answer again.
+
 A line that is none of these is skipped and said back as
 `{"type":"system","subtype":"input_error","error"}`. The session goes on.
 
@@ -91,17 +100,22 @@ A line that is none of these is skipped and said back as
 | `system` / `init` | once, when the first prompt was accepted | `schema_version`, `session_id`, `cwd`, `model`, `provider`, `permission_mode`, `on_ask`, `capabilities`, `url` |
 | `user` | a prompt was stored, or tool results came back | `message.content`: text blocks, or `tool_result` blocks with `tool_use_id`, `content`, `is_error` |
 | `assistant` | a reply of the model | `message.content`: `text`, `thinking` and `tool_use` blocks (`id`, `name`, `input`) |
-| `stream_event` | with `--include-partial-messages`, as the reply streams | `event.delta.type`: `text_delta`, `thinking_delta` or `input_json_delta`; `event.delta.text` |
+| `stream_event` | with `--include-partial-messages`, as the reply streams | `event.delta`: `{type: "text_delta", text}`, `{type: "thinking_delta", thinking}` or `{type: "input_json_delta", partial_json}` |
 | `system` / other | every other stored event (`turn_start`, `turn_end`, `error`, `note`, ...) | `subtype` is the event's kind |
-| `control_request` | with `--on-ask stdin`: a call needs an answer | `request_id`, `request.subtype`: `can_use_tool` (`tool_name`, `tool_use_id`, `input`, `summary`, `risk`) or `ask_question` (`tool_use_id`, `input`) |
+| `control_request` | with `--on-ask stdin`: a call needs an answer | `request_id`, `request.subtype`: `can_use_tool` (`tool_name`, `tool_use_id`, `input`, `summary`, `risk`, `input_cut`, `once_only`) or `ask_question` (`tool_use_id`, `input`) |
 | `control_cancel_request` | an open request closed without the script (its turn was stopped, or it was answered in the workbench) | `request_id` |
 | `control_response` | the answer to a control request of the script | `response.subtype`: `success` or `error`, `response.request_id` |
 | `system` / `permission_denied` | a request was refused here | `request_id`, `tool_name`, `tool_use_id`, `reason` |
 | `system` / `input_error` | an input line was not taken | `error`, `request_id` when it names one |
+| `system` / `daemon_away`, `daemon_back` | the daemon stopped taking calls, and took them again | `reason`: `draining` or `unreached` |
 | `result` | a turn ended | see below |
 
 `user`, `assistant` and the other `system` lines of stored events also carry `session_id`, `seq`,
 `id`, `ts_ms` and the stored event itself as `event`.
+
+In a `can_use_tool` request, an input longer than 20,000 characters arrives as
+`{"_clipped": "the first 20,000 characters"}` with `input_cut: true`: the request shows only its
+start. `once_only` is why a standing answer would not be offered for this call.
 
 One `result` line is written per turn:
 
@@ -114,10 +128,12 @@ One `result` line is written per turn:
 
 - `subtype`: `success`, `cancelled` (interrupted), `error_during_execution`, `needs_input` (the
   session waits for the owner) or `timeout`.
-- `result`: the last text the model wrote in the turn, or the error.
+- `result`: the last text the model wrote in the turn. For a failed turn, the error it ended on.
+- `duration_ms`: from when the turn's prompt was sent (or the turn began) to this line.
 - `usage`: this turn's tokens. `total_cost_usd` and `num_turns`: the whole command so far.
   `total_cost_usd` is null when a model in it has no listed price.
-- `refused_approvals`: how many requests were refused in the turn, when any.
+- `permission_denials`: the requests refused in the turn (`tool_name`, `tool_use_id`,
+  `tool_input`), when any; `refused_approvals` is how many.
 - A turn that work in the background starts (an agent's report) gets a result too.
 
 ### Permission requests
@@ -134,6 +150,20 @@ flag a person uses). A call the mode asks about is never allowed silently:
 - `--on-ask exit`: the command writes a `needs_input` result and exits 2. Not available when the
   command runs the daemon itself.
 
+### When the daemon restarts
+
+A command that runs the session inside itself has no daemon to lose. With a daemon:
+
+- While the daemon drains for a stop or a restart it takes no new prompt. The command writes
+  `daemon_away` (`reason: "draining"`), keeps the prompt and sends it when the daemon takes it.
+- While no daemon takes a connection the command writes `daemon_away` (`reason: "unreached"`)
+  and waits up to 90 seconds, the time `keel restart` gives a daemon to come back. Then
+  `daemon_back`, and the session goes on. A prompt is stored once, also when its answer was lost.
+- A turn the restart cut is continued by the new daemon. It gets one result, at its end. When
+  the daemon does not continue it, its result is `error_during_execution` with the reason.
+- When the daemon does not come back in that time, the command writes an
+  `error_during_execution` result and exits 3. The session is kept: `-r ID` holds it again.
+
 ### How it ends
 
 The command reads until standard input closes, then stays until the prompts it took have run and
@@ -144,7 +174,7 @@ ended). The session is kept and can be resumed with `-r ID`.
 | --- | --- |
 | 0 | the last result was `success`, or no prompt was sent |
 | 2 | the last result was `needs_input`: the session waits for the owner |
-| 3 | the last result was an error or `cancelled`; a usage error; the first prompt was refused (no session was made, the reason is on standard error) |
+| 3 | the last result was an error or `cancelled`; a usage error; the first prompt was refused (no session was made, the reason is on standard error); the daemon did not come back |
 | 124 | `--timeout` ran out |
 | 130, 143 | SIGINT, SIGTERM: the turn that ran was stopped |
 
@@ -160,18 +190,33 @@ script can call them directly: see [http-api.md](http-api.md).
 The lines follow the stream-json form of Claude Code where Keel says the same thing, so a client
 written for one needs few changes for the other:
 
-- Claude Code: `claude -p --input-format stream-json --output-format stream-json`, user messages
-  as `{"type":"user","message":{...}}`, one `result` per response, and `control_request` /
-  `control_response` lines for an interrupt and for `can_use_tool`
+- Claude Code: `claude -p --input-format stream-json --output-format stream-json` takes user
+  messages as `{"type":"user","message":{...}}` and writes one `result` per response
   ([headless](https://code.claude.com/docs/en/headless),
   [CLI reference](https://code.claude.com/docs/en/cli-reference),
-  [streaming input](https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode)). Its
-  SDKs for TypeScript and Python wrap these lines.
+  [streaming input](https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode)). An
+  allow is `{behavior: "allow", updatedInput}` and a deny `{behavior: "deny", message}`
+  ([user input](https://code.claude.com/docs/en/agent-sdk/user-input)). The `control_request`
+  and `control_response` lines that carry an interrupt and a `can_use_tool` request are not in
+  those pages: they are what its SDKs write and read
+  ([claude-agent-sdk-python, `_internal/query.py`](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/_internal/query.py)).
 - Codex: `codex app-server` speaks JSON-RPC over JSON lines (`thread/start`, `turn/start`,
   `turn/interrupt`, approval requests the client answers with `accept` or `decline`), and its
   SDKs drive that server ([app server](https://developers.openai.com/codex/app-server),
-  [SDK](https://developers.openai.com/codex/sdk)).
+  [SDK](https://developers.openai.com/codex/sdk)). `codex exec --json` writes events and takes
+  no input stream ([non-interactive](https://developers.openai.com/codex/noninteractive)).
 
-Differences from Claude Code's lines: Keel sends a `result` for an interrupted turn with
-`subtype: "cancelled"`; a question is its own request (`ask_question`) and not a `can_use_tool`
-of the question tool; the permission mode and the model are not changed over the stream.
+Differences from Claude Code's lines:
+
+- An interrupted turn gets a `result`, with `subtype: "cancelled"`.
+- A question is its own request (`ask_question`), not a `can_use_tool` of the question tool.
+- The permission mode and the model are not changed over the stream.
+- An allow cannot change the call's input (`updatedInput`) or store a rule
+  (`updatedPermissions`).
+- `user` lines are always written. Claude Code writes the script's own messages back only with
+  `--replay-user-messages`.
+- Refused requests are listed in `permission_denials` as in Claude Code, and counted in
+  `refused_approvals`.
+- A request's input over 20,000 characters is shown clipped (`input_cut`).
+- `result.duration_ms` is one turn's time, and `total_cost_usd` and `num_turns` count the
+  whole command.
