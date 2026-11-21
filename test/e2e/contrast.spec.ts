@@ -85,3 +85,20 @@ test("warn text reads on every surface in both themes", async ({ page }) => {
     if (!dark) expect(c.word).not.toBe(c.fill);
   }
 });
+
+// The ring is drawn on the surface around the control (offset out of it), so
+// the surface is what it has to stand off from: the grey rail and panels too.
+test("the focus ring stands off every surface in both themes", async ({ page }) => {
+  await page.goto("/settings/general");
+  await page.getByTestId("text-size").waitFor();
+  const got = await measure(page, [{ name: "ring", color: "--ring" }]);
+  console.log(got.map((g) => `${g.theme} ${g.surface} ${g.probe} ${g.ratio}`).join("\n"));
+  expect(got).toHaveLength(8);
+  expect(got.filter((g) => g.ratio < 3)).toEqual([]);
+  // The ring a control really gets is that token, two pixels wide.
+  await page.getByTestId("text-size").getByRole("radio", { checked: true }).focus();
+  await page.keyboard.press("ArrowRight");
+  const ring = await page.locator(":focus").evaluate((el) => { const c = getComputedStyle(el); return { style: c.outlineStyle, width: c.outlineWidth }; });
+  expect(ring.style).toBe("solid");
+  expect(ring.width).toBe("2px");
+});
