@@ -124,13 +124,14 @@ export function FilesPanel({ session }: { session: Session }) {
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
         {hits.map((h) => (
-          <div key={h.path} className="group flex h-8 items-center gap-2 rounded-md px-2 text-ui hover:bg-hover">
+          <div key={h.path} className="group flex h-8 items-center gap-2 rounded-md px-2 text-ui hover:bg-hover focus-within:bg-hover touch:h-10">
             <button type="button" onClick={() => show(h)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
               {h.dir ? <Folder className="size-4 shrink-0 text-faint" /> : <FileIcon className="size-4 shrink-0 text-faint" />}
               <span className={cn("truncate font-mono text-caption", h.dir ? "text-muted" : "text-fg")}>{h.path}</span>
             </button>
+            {/* In the Tab order from the start; quiet until the row is hovered or holds the keyboard, shown where nothing hovers. */}
             {!h.dir && (
-              <button type="button" title="Mention in the message box" aria-label={`Mention ${h.path}`} onClick={() => mention(h.path)} className="hidden size-6 place-items-center rounded-sm text-faint hover:text-fg group-hover:grid">
+              <button type="button" title="Mention in the message box" aria-label={`Mention ${h.path}`} onClick={() => mention(h.path)} className="grid size-6 shrink-0 place-items-center rounded-sm text-faint opacity-0 hover:bg-hover hover:text-fg focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 touch:size-8 touch:text-muted touch:opacity-100">
                 <AtSign className="size-3.5" />
               </button>
             )}

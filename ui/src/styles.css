@@ -3,6 +3,8 @@
 @custom-variant dark (&:where(.dark, .dark *));
 /* Inside a model chooser narrower than 24rem (ModelMenu.tsx): rem here is the owner's text size. */
 @custom-variant picker-narrow (@container picker (width < 24rem));
+/* Where nothing hovers (a touch screen): what a mouse reveals on hover is shown from the start. */
+@custom-variant touch (@media (hover: none));
 
 /* The Bridge: the shell and how its parts look. Unlayered, so it wins over utilities. */
 @import "./bridge.css";

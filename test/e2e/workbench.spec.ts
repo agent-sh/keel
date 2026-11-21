@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { shoot } from "./shots.ts";
+import { openPanel, shoot } from "./shots.ts";
 
 test.use({ permissions: ["clipboard-read", "clipboard-write"] });
 
@@ -305,4 +305,61 @@ test("the side panel sits beside the conversation when the pane has room, else l
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("bridge").locator(":scope > [data-slot]")).toHaveCount(1);
   } finally { await request.delete(`/api/sessions/${session.id}`); }
+});
+
+// A file result's Mention is reachable without a mouse: by Tab from the
+// result, and on a touch screen it shows before the row is tapped. Either way
+// one press puts the path in the message box without opening the file.
+const mentionSession = async (request: import("@playwright/test").APIRequestContext) =>
+  (await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", workspace: process.cwd(), title: `Mention a file ${Date.now().toString(36)}` } })).json()).session;
+
+test("a file result's Mention by keyboard", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const s = await mentionSession(request);
+  await page.goto(`/s/${s.id}`);
+  await openPanel(page, "files");
+  await page.getByTestId("files-search").fill("ui/src/styles.css");
+  const hit = page.getByTestId("files-panel").getByRole("button", { name: "ui/src/styles.css", exact: true });
+  await expect(hit).toBeVisible();
+  // The pointer is nowhere near: from the search box, Tab to the result, Tab to its Mention.
+  await page.mouse.move(0, 0);
+  await page.keyboard.press("Tab");
+  await expect(hit).toBeFocused();
+  await page.keyboard.press("Tab");
+  const mention = page.getByRole("button", { name: "Mention ui/src/styles.css", exact: true });
+  await expect(mention).toBeFocused();
+  expect(await mention.evaluate((b) => getComputedStyle(b).opacity)).toBe("1");
+  await shoot(page, "wb-15-file-mention-by-keyboard");
+  await page.keyboard.press("Enter");
+  const composer = page.locator(`[data-station="${s.id}"]`).getByTestId("composer");
+  await expect(composer).toHaveValue("@ui/src/styles.css ");
+  await expect(composer).toBeFocused();
+  await expect(page.getByTestId("file-view")).toHaveCount(0);
+  await request.delete(`/api/sessions/${s.id}`);
+});
+
+test.describe("on a touch screen", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test("a file result's Mention shows before a tap", async ({ page, request }) => {
+    const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+    test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+    const s = await mentionSession(request);
+    await page.goto(`/s/${s.id}`);
+    expect(await page.evaluate(() => matchMedia("(hover: none)").matches)).toBe(true);
+    await openPanel(page, "files");
+    await page.getByTestId("files-search").fill("ui/src/styles.css");
+    await expect(page.getByTestId("files-panel").getByRole("button", { name: "ui/src/styles.css", exact: true })).toBeVisible();
+    const mention = page.getByRole("button", { name: "Mention ui/src/styles.css", exact: true });
+    await expect(mention).toBeVisible();
+    expect(await mention.evaluate((b) => getComputedStyle(b).opacity)).toBe("1");
+    const b = (await mention.boundingBox())!;
+    expect(b.x + b.width).toBeLessThanOrEqual(390);
+    expect(Math.min(b.width, b.height)).toBeGreaterThanOrEqual(24);
+    await shoot(page, "wb-16-file-mention-touch");
+    await mention.tap();
+    await expect(page.locator(`[data-station="${s.id}"]`).getByTestId("composer")).toHaveValue("@ui/src/styles.css ");
+    await expect(page.getByTestId("file-view")).toHaveCount(0);
+    await request.delete(`/api/sessions/${s.id}`);
+  });
 });
