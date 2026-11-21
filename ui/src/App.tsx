@@ -84,6 +84,46 @@ export function App() {
     addEventListener("keydown", f, true);
     return () => removeEventListener("keydown", f, true);
   }, [rail.over]);
+  // On a phone the open list is a drawer over the page, and it owns the
+  // keyboard as a panel sheet does: the page under it is out of reach, the
+  // keys start in the drawer (on the session shown), Tab stays in it, and
+  // Escape, like a tap beside it, closes it and nothing else, with the keys
+  // back on what opened it. A popup the drawer opened keeps its own keys.
+  const drawer = phone() && sidebar;
+  const wrap = useRef<HTMLDivElement>(null);
+  const opener = useRef<HTMLElement | null>(null);
+  const closeDrawer = () => {
+    toggleList(false);
+    // The button that opened it left the header while the drawer was open: the one there now takes the keys.
+    requestAnimationFrame(() => ((opener.current?.isConnected ? opener.current : null) ?? document.querySelector<HTMLElement>('[data-helm] [data-testid="show-sidebar"]') ?? document.querySelector<HTMLElement>('[data-testid="show-sidebar"], .k-dock-btn[aria-label="All sessions"]'))?.focus());
+  };
+  useEffect(() => {
+    if (!drawer) return;
+    const el = wrap.current;
+    if (!el) return;
+    opener.current = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
+    const stops = () => [...el.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])')].filter((x) => x.getClientRects().length > 0);
+    // The drawer is not focusable until it starts to slide in: asked again on the next frames.
+    let raf = 0, tries = 0;
+    const enter = () => {
+      (el.querySelector<HTMLElement>('[aria-current="page"]') ?? stops()[0])?.focus();
+      if (!el.contains(document.activeElement) && tries++ < 12) raf = requestAnimationFrame(enter);
+    };
+    enter();
+    const f = (e: KeyboardEvent) => {
+      const at = document.activeElement;
+      if (at instanceof HTMLElement && !el.contains(at) && at.closest('[role="menu"], [role="dialog"], [role="listbox"]')) return;
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); return closeDrawer(); }
+      if (e.key !== "Tab") return;
+      const all = stops();
+      const first = all[0], last = all.at(-1);
+      if (!first || !last) return;
+      const out = !(at instanceof HTMLElement) || !el.contains(at);
+      if (e.shiftKey ? out || at === first : out || at === last) { e.preventDefault(); (e.shiftKey ? last : first).focus(); }
+    };
+    addEventListener("keydown", f, true);
+    return () => { cancelAnimationFrame(raf); removeEventListener("keydown", f, true); };
+  }, [drawer]);
   const page = route.name === "settings" || route.name === "project";
   return (
     <Boundary>
@@ -101,11 +141,13 @@ export function App() {
           }}
         >
           {/* Desktop: the rail, folded or open. Phone: the open rail as a drawer. */}
-          <div className="k-rail-wrap" data-drawer={sidebar || undefined} data-over={rail.over || undefined}><Sidebar open={rail.list} /></div>
-          {(rail.over || sidebar) && <div className="k-scrim" data-over={rail.over || undefined} onClick={() => toggleList(false)} aria-hidden="true" />}
-          {page ? (
-            <main className="k-page"><Suspense fallback={null}>{route.name === "settings" && <Settings section={route.section} />}{route.name === "project" && <ProjectPage id={route.id} />}</Suspense></main>
-          ) : <Suspense fallback={null}><Bridge /></Suspense>}
+          <div ref={wrap} className="k-rail-wrap" data-drawer={sidebar || undefined} data-over={rail.over || undefined}><Sidebar open={rail.list} /></div>
+          {(rail.over || sidebar) && <div className="k-scrim" data-over={rail.over || undefined} onClick={() => (drawer ? closeDrawer() : toggleList(false))} aria-hidden="true" />}
+          <div className="contents" inert={drawer} data-testid="under-drawer">
+            {page ? (
+              <main className="k-page"><Suspense fallback={null}>{route.name === "settings" && <Settings section={route.section} />}{route.name === "project" && <ProjectPage id={route.id} />}</Suspense></main>
+            ) : <Suspense fallback={null}><Bridge /></Suspense>}
+          </div>
         </div>
       </div>
       <Overlays />

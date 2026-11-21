@@ -399,6 +399,60 @@ test("files search, a file and Back keep the keyboard's place", async ({ page, r
   }
 });
 
+// A phone's session list is a drawer over the page, and it owns the keyboard
+// as a panel sheet does: the keys start in it, Tab and Shift Tab stay in it,
+// the page under it is out of reach, and Escape closes it and does nothing
+// else, with the keys back on the button that opens it.
+test.describe("at a phone's width", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+  test("the session list drawer owns the keyboard", async ({ page, request }) => {
+    const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+    test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+    const s = await mentionSession(request);
+    try {
+      await page.goto(`/s/${s.id}`);
+      const station = page.locator(`[data-station="${s.id}"]`);
+      const composer = station.getByTestId("composer");
+      await composer.fill("a draft that Escape must leave alone");
+      const opener = station.getByTestId("show-sidebar");
+      const drawer = page.getByTestId("sidebar");
+      const under = page.getByTestId("under-drawer");
+      const inside = () => page.evaluate(() => !!document.activeElement?.closest('[data-testid="sidebar"]'));
+      await expect(under).not.toHaveAttribute("inert", /.*/);
+      await opener.focus();
+      await page.keyboard.press("Enter");
+      await expect(drawer).toBeInViewport();
+      // The keys start on the session shown, and the page under the drawer is out of reach.
+      await expect(drawer.locator(`[data-testid="session-row"][data-session="${s.id}"]`)).toBeFocused();
+      await expect(under).toHaveAttribute("inert", /.*/);
+      await shoot(page, "wb-20-phone-drawer-keys");
+      // Tab goes round inside it, both ways, past its last and its first control.
+      const stops = await drawer.evaluate((el) => [...el.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])')].filter((x) => x.getClientRects().length > 0).length);
+      expect(stops).toBeGreaterThan(5);
+      const seen = new Set<string>();
+      for (let i = 0; i < stops + 3; i++) {
+        await page.keyboard.press("Tab");
+        expect(await inside()).toBe(true);
+        seen.add(await page.evaluate(() => { const a = document.activeElement!; return `${a.tagName} ${a.getAttribute("data-testid") ?? ""} ${a.getAttribute("aria-label") ?? a.textContent?.slice(0, 30)}`; }));
+      }
+      expect(seen.size).toBeGreaterThan(5);
+      for (let i = 0; i < stops + 3; i++) {
+        await page.keyboard.press("Shift+Tab");
+        expect(await inside()).toBe(true);
+      }
+      // Escape closes the drawer and nothing else: the draft stands, the keys are back on the opener.
+      await page.keyboard.press("Escape");
+      await expect(drawer).not.toBeInViewport();
+      await expect(under).not.toHaveAttribute("inert", /.*/);
+      await expect(opener).toBeFocused();
+      await expect(composer).toHaveValue("a draft that Escape must leave alone");
+      await expect(page).toHaveURL(new RegExp(`/s/${s.id}$`));
+    } finally {
+      await request.delete(`/api/sessions/${s.id}`);
+    }
+  });
+});
+
 test.describe("on a touch screen", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   test("a file result's Mention shows before a tap", async ({ page, request }) => {
