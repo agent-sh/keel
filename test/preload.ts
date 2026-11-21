@@ -6,7 +6,7 @@
 // reach on the machine, point into one fresh folder, removed when the last
 // test is done. A test that needs its own sets it over these.
 import { afterAll, afterEach, beforeEach } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { allHooks } from "../src/engine/hooks.ts";
@@ -17,7 +17,13 @@ const made = (...p: string[]) => {
   mkdirSync(d, { recursive: true });
   return d;
 };
+// The memory store's command line: a stand-in that answers nothing, so no
+// test reaches the owner's store whatever is on the PATH or in the shell. A
+// test of the memory hooks passes a stand-in of its own.
+const noStore = join(made("bin"), "no-store.sh");
+writeFileSync(noStore, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
 Object.assign(process.env, {
+  TACIT_BIN: noStore,
   KEEL_CONFIG_DIR: made("config"),
   KEEL_STATE_DIR: made("state"),
   // The other agents' setup and session stores (MCP import, keel port, session import).
