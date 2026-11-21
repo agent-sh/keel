@@ -4,7 +4,7 @@ import type { PromptBlock, Session } from "../../../src/core/types.ts";
 import { slash, type SlashItem } from "../lib/extend.ts";
 import { loadMcpPrompts } from "../lib/tools-ui.ts";
 import { fromBlock, toAttachment, toBlock, type Attachment } from "../lib/images.ts";
-import { fuzzy } from "../lib/keys.ts";
+import { fuzzy, isMac, keyLabel, QUEUE_KEYS } from "../lib/keys.ts";
 import { splitId } from "../lib/fleet-ids.ts";
 import { draftGone, draftHere, dropImage, fromServer, getDraft, isKeeping, keepImage, textTaken, typing, type Draft } from "../lib/drafts.ts";
 import { hasSavedImage, messageRefused, savedImages, sendDrafts, setSendDraft, setSendImage, shelfKey, shown, unread, useSendDrafts, type SendDraft } from "../lib/send-drafts.ts";
@@ -25,6 +25,8 @@ type Menu =
 type Option = { key: string; label: ReactNode; detail?: string; disabled?: boolean; icon: ReactNode; apply: () => void };
 
 const draftKey = (id?: string) => `keel.draft.${id ?? "new"}`;
+// The key that queues a message for after the running turn, as this platform names it.
+const queueKeys = keyLabel(QUEUE_KEYS).join(" ");
 // A window lower than this many rem is short: the toolbar keeps to one row.
 const SHORT_REM = 28;
 
@@ -45,7 +47,8 @@ type ComposerProps = {
   session?: Session;
   onSend: (text: string, images: PromptBlock[]) => Promise<unknown> | void;
   // While a turn runs, Enter steers (the text joins the turn at its next model
-  // call) and Tab or the queue button queues it for after the turn.
+  // call) and Ctrl Shift Enter (QUEUE_KEYS) or the queue button queues it for
+  // after the turn. Tab is the browser's: it moves on to the next control.
   onQueue?: (text: string, images: PromptBlock[]) => Promise<unknown> | void;
   onStop?: () => void;
   // What Escape does when no menu is open (default: stop a working turn).
@@ -597,7 +600,7 @@ function SessionComposer({
         rows={1}
         value={text}
         aria-label="Message"
-        placeholder={working ? "Enter steers the running turn, Tab queues for after it" : session ? "Reply, / for commands, @ for files" : "Describe the task, / for commands, @ for files"}
+        placeholder={working ? `Enter steers the running turn, ${queueKeys} queues for after it` : session ? "Reply, / for commands, @ for files" : "Describe the task, / for commands, @ for files"}
         onChange={(e) => { setText(e.target.value); detect(e.target.value, e.target.selectionStart); }}
         onSelect={(e) => detect(e.currentTarget.value, e.currentTarget.selectionStart)}
         onBlur={() => setTimeout(() => setMenu(null), 100)}
@@ -614,11 +617,14 @@ function SessionComposer({
             if (e.key === "Escape") { e.preventDefault(); setMenu(null); return; }
           }
           const mod = e.metaKey || e.ctrlKey;
-          if (e.key === "Enter" && ((enterSends && !e.shiftKey && !mod) || (!enterSends && mod))) {
+          // Ctrl Shift Enter queues for after the running turn, whichever key sends.
+          if (e.key === "Enter" && mod && e.shiftKey && !e.altKey && working && onQueue) {
+            e.preventDefault();
+            if (!e.repeat) submit(true);
+          } else if (e.key === "Enter" && ((enterSends && !e.shiftKey && !mod) || (!enterSends && mod))) {
             e.preventDefault();
             submit();
           }
-          if (e.key === "Tab" && !e.shiftKey && working && onQueue && canSend) { e.preventDefault(); submit(true); }
           if (e.key === "Escape" && (onEscape || working)) { e.preventDefault(); (onEscape ?? onStop)?.(); }
         }}
         className="block max-h-[40vh] w-full resize-none bg-transparent px-4 pt-3.5 pb-1.5 text-read leading-relaxed outline-none placeholder:text-faint"
@@ -656,8 +662,9 @@ function SessionComposer({
               data-testid="queue-button"
               onClick={() => submit(true)}
               disabled={!canSend}
-              title="Queue for after this turn (Tab)"
+              title={`Queue for after this turn (${queueKeys})`}
               aria-label="Queue for after this turn"
+              aria-keyshortcuts={isMac ? "Meta+Shift+Enter" : "Control+Shift+Enter"}
               className="grid size-8 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg disabled:opacity-40"
             >
               <ListPlus className="size-4" />

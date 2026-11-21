@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { HAIKU, shoot } from "./shots.ts";
 
 // Feature: while a turn works, Enter steers (the text joins the turn after the
-// running tool), Tab queues for after it; Stop cuts the running tool at once
+// running tool), Ctrl Shift Enter queues for after it; Stop cuts the running tool at once
 // and holds the queue; a queued prompt can be sent now.
 test("steer, queue, stop and send now", async ({ page, request }) => {
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
@@ -21,7 +21,7 @@ test("steer, queue, stop and send now", async ({ page, request }) => {
   await composer.fill("Also tell me what 2+2 is, in the same reply.");
   await composer.press("Enter");
   await composer.fill("Now reply with only the word queued-ok.");
-  await composer.press("Tab");
+  await composer.press("Control+Shift+Enter");
   await expect(page.getByTestId("queue-item")).toHaveCount(2);
   await shoot(page, "turn-01-steer-and-queue");
 
@@ -39,7 +39,7 @@ test("steer, queue, stop and send now", async ({ page, request }) => {
   await expect(page.getByTestId("tool-call")).toHaveCount(2, { timeout: 60_000 });
   await page.waitForTimeout(2_000); // the call is stored and its command runs
   await composer.fill("Reply with only the word after-stop.");
-  await composer.press("Tab");
+  await composer.press("Control+Shift+Enter");
   const t0 = Date.now();
   await page.getByTestId("stop").click();
   await expect(page.getByTestId("turn-end").last()).toContainText("Stopped by you", { timeout: 10_000 });
@@ -65,7 +65,7 @@ test("steer, queue, stop and send now", async ({ page, request }) => {
 // Feature: the queue under races and edge cases, on the scripted stand-in (a
 // `script:slow` turn keeps the stop pending 3 s): one Send now wins and a second
 // one or a Remove meanwhile is told it is already sending; a screenshot alone
-// queues by Tab and by the button and can lose its caption; Move up moves one
+// queues by Ctrl Shift Enter and by the button and can lose its caption; Move up moves one
 // place; a correction to a prompt sent meanwhile lands in the box, unsent; a
 // prompt queued on one branch waits for a choice when the chat shows another.
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
@@ -103,17 +103,17 @@ test("queue races, screenshots, order, late edits and branches", async ({ page, 
   const sent = (await events()).filter((e) => e.kind === "user" && e.data.text === "same words");
   expect(sent.map((e) => e.data.queue_id)).toEqual([twin.id, other.id]);
 
-  // A screenshot alone queues by Tab and by the button; then text prompts; Stop holds them.
+  // A screenshot alone queues by Ctrl Shift Enter and by the button; then text prompts; Stop holds them.
   await composer.fill("script:slow");
   await composer.press("Enter");
   await expect(page.getByTestId("stop")).toBeVisible();
-  for (const how of ["tab", "button"]) {
+  for (const how of ["keys", "button"]) {
     await page.getByTestId("attach-input").setInputFiles([{ name: `${how}.png`, mimeType: "image/png", buffer: PNG }]);
     await expect(page.getByTestId("attachments")).toBeVisible();
-    if (how === "tab") await composer.press("Tab");
+    if (how === "keys") await composer.press("Control+Shift+Enter");
     else await page.getByTestId("queue-button").click();
   }
-  for (const t of ["alpha", "bravo", "charlie"]) { await composer.fill(t); await composer.press("Tab"); }
+  for (const t of ["alpha", "bravo", "charlie"]) { await composer.fill(t); await composer.press("Control+Shift+Enter"); }
   await expect(page.getByTestId("queue-item")).toHaveCount(5);
   await page.getByTestId("stop").click();
   await expect(page.getByTestId("queue-held")).toBeVisible({ timeout: 10_000 });

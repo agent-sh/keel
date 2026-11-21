@@ -1,7 +1,7 @@
 import { Dialog } from "@base-ui/react/dialog";
 import { X } from "lucide-react";
 import { useSyncExternalStore } from "react";
-import { allCommands, commandsVersion, onCommands } from "../lib/keys.ts";
+import { allCommands, commandsVersion, onCommands, QUEUE_KEYS } from "../lib/keys.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { Kbd } from "./Kbd.tsx";
 
@@ -9,6 +9,7 @@ import { Kbd } from "./Kbd.tsx";
 const FIXED: [string, string, string][] = [
   ["Message box", "Send", "enter"],
   ["Message box", "New line", "shift+enter"],
+  ["Message box", "Queue for after the running turn", QUEUE_KEYS],
   ["Message box", "Commands", "/"],
   ["Message box", "Mention a file", "@"],
   ["Conversation", "Go to the end and follow", "end"],

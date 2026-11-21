@@ -29,6 +29,9 @@ export const runCommand = (id: string) => commands.get(id)?.run();
 
 export const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
 
+// The message box's own keys, named once for the box and the shortcut sheet.
+export const QUEUE_KEYS = "mod+shift+enter";
+
 function matches(e: KeyboardEvent, spec: string): boolean {
   const parts = spec.toLowerCase().split("+");
   const key = parts.pop()!;

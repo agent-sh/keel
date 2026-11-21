@@ -59,19 +59,51 @@ test("session draft", async ({ page, request }) => {
 
   // 5. Queue an image while a turn runs: it waits with its prompt and reaches the model.
   await page.getByTestId("composer").fill(HAIKU.startsWith("scripted:")
-    ? 'script:calls [{"name":"Bash","input":{"command":"sleep 4"}}]'
-    : "Run the Bash command `sleep 4` and then reply with the word slept.");
+    ? 'script:calls [{"name":"Bash","input":{"command":"sleep 8"}}]'
+    : "Run the Bash command `sleep 8` and then reply with the word slept.");
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("tool-call").last()).toBeVisible({ timeout: 60_000 });
   await request.post(`/api/sessions/${a}/draft`, { data: { images: [{ name: "second.png", mime: "image/png", data: PNG }], origin: "capture" } });
   await expect(page.getByTestId("attachments").locator("img")).toHaveCount(1);
-  await page.getByTestId("composer").fill("And this one, in three words?");
+  const box = page.getByTestId("composer");
+  await box.fill("And this one, in three words?");
+  const posts: string[] = [];
+  page.on("request", (r) => { if (r.method() === "POST" && r.url().endsWith(`/api/sessions/${a}/messages`)) posts.push(r.postData() ?? ""); });
+  // Tab is the browser's key: it moves on to the next control, and the words,
+  // the image and the queue stay as they were.
+  await box.focus();
   await page.keyboard.press("Tab");
+  await expect(page.getByTestId("attach")).toBeFocused();
+  await expect(box).toHaveValue("And this one, in three words?");
+  await expect(page.getByTestId("attachments").locator("img")).toHaveCount(1);
+  await expect(page.getByTestId("queue-item")).toHaveCount(0);
+  expect(posts).toHaveLength(0);
+  // The key the box, the button and the shortcut sheet name queues it, once.
+  await expect(box).toHaveAttribute("placeholder", /Ctrl Shift Enter queues/);
+  await expect(page.getByTestId("queue-button")).toHaveAttribute("title", "Queue for after this turn (Ctrl Shift Enter)");
+  await page.keyboard.press("Shift+Tab");
+  await expect(box).toBeFocused();
+  await page.keyboard.press("Control+Shift+Enter");
+  await expect(page.getByTestId("queue-item")).toHaveCount(1);
   await expect(page.getByTestId("queue-images")).toHaveText("1 image");
+  await expect(box).toHaveValue("");
+  await expect(page.getByTestId("attachments")).toHaveCount(0);
+  expect(posts).toHaveLength(1);
   await shoot(page, "draft-02-queued-image");
-  await expect(page.getByTestId("turn-end")).toHaveCount(3, { timeout: 180_000 });
+  // The button queues one more.
+  await box.fill("And a second thing for after.");
+  await page.getByTestId("queue-button").click();
+  await expect(page.getByTestId("queue-item")).toHaveCount(2);
+  expect(posts).toHaveLength(2);
+  await page.keyboard.press("Control+/");
+  const row = page.getByTestId("shortcuts").locator("div", { hasText: /^Queue for after the running turn/ }).last();
+  await expect(row.locator("kbd")).toHaveText(["Ctrl", "Shift", "Enter"]);
+  await shoot(page, "draft-02b-queue-key-in-sheet");
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("turn-end")).toHaveCount(4, { timeout: 180_000 });
   const users = (await (await request.get(`/api/sessions/${a}`)).json()).events.filter((e: any) => e.kind === "user");
-  expect(users.at(-1).data.images?.[0]?.data).toBe(PNG);
+  expect(users.at(-2).data.images?.[0]?.data).toBe(PNG);
+  expect(users.at(-1).data.text).toBe("And a second thing for after.");
 
   // Bad input is refused with a reason.
   expect((await request.post(`/api/sessions/${a}/draft`, { data: { images: [{ mime: "application/pdf", data: PNG }] } })).status()).toBe(400);

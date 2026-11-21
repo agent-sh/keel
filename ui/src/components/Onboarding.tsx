@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { INIT_PROMPT, reviewPrompt } from "../lib/builtins.ts";
+import { keyLabel, QUEUE_KEYS } from "../lib/keys.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
 import { navigate, seedComposer } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
@@ -83,7 +84,7 @@ export function FirstSteps() {
       </div>
       <ul className="mt-6 flex flex-col gap-1.5 text-caption text-muted">
         <li>Each session works in one folder, the one above the box. Paste a screenshot or mention a file with @.</li>
-        <li>While it works, Enter steers it and Tab queues the next message. Edits and commands ask first; the mode next to the session title changes that.</li>
+        <li>While it works, Enter steers it and {keyLabel(QUEUE_KEYS).join(" ")} queues the next message. Edits and commands ask first; the mode next to the session title changes that.</li>
       </ul>
     </section>
   );
