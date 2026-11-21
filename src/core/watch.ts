@@ -7,9 +7,9 @@
 // the alerts read the same answer.
 //
 // The order the facts are read in, first match wins:
-//   1. something waits on the owner (an approval, a question, a plan, a turn a
-//      restart cut and Keel did not continue, a message that did not go):
-//      needs you;
+//   1. something waits on the owner (an approval, a question, a plan, a secret
+//      to give, a turn a restart cut and Keel did not continue, a message that
+//      did not go, a running turn whose every call waits on them): needs you;
 //   2. its own turn runs: working, with the step;
 //   3. an agent it started runs: working;
 //   4. its last turn failed and the provider's wait is the reason: waiting,
@@ -54,7 +54,8 @@ const END_TEXT: Record<string, string> = {
 // words: the command of an approval, the question, a plan's title. `child`:
 // the agent's session it waits in, when it is not the session's own.
 // `resume`: a turn a daemon restart cut that Keel did not continue by itself.
-export type AskKind = "approval" | "question" | "plan" | "resume" | "unsent";
+// `secret`: a secret the model asked the owner to type into a card.
+export type AskKind = "approval" | "question" | "plan" | "secret" | "resume" | "unsent";
 export type Ask = { kind: AskKind; text?: string; since?: number; child?: string; agent?: string };
 
 // A running step that has made no progress for too long (src/core/stuck.ts).
@@ -66,7 +67,7 @@ export type StuckMark = { what: "stream" | "model" | "tool" | "step"; text: stri
 export type SessionState = {
   watch: Watch;
   agents: number;   // agents of the session still at work
-  // need: the kind of the first thing that waits (approval, question, plan, resume, unsent);
+  // need: the kind of the first thing that waits (approval, question, plan, secret, resume, unsent, owner);
   // work: tool, model, stalled (a stream that went silent), retry, compacting, turn, agents;
   // wait: timer, wait, command, agent, resume (the turn continues by itself), send (a message waits for the daemon);
   // fail: the failure's class, or max_tokens; declined: refusal; stop: max_steps, held.
@@ -95,6 +96,8 @@ export type Pending = { kind: string; text?: string; since?: number; until?: num
 // started, and when the reply being streamed last gave output.
 export type WatchFacts = {
   asks?: Ask[]; approvals?: number; asking?: boolean; agents?: number; parked?: number; pending?: Pending[];
+  // `asking` comes from the engine: the running turn does nothing but wait on the owner (Engine.waitsOnOwner).
+  owner?: boolean;
   status?: TurnStatus; turn?: number; output?: number;
   // The tool step in words, when the caller can read the call ("Running bun test").
   step?: string;
@@ -132,6 +135,7 @@ export function askText(a: Ask): string {
     a.kind === "approval" ? (t ? `Approve ${t}` : "An approval waits")
     : a.kind === "question" ? (t ? `Question: ${t}` : "A question waits")
     : a.kind === "plan" ? (t ? `Plan to approve: ${t}` : "Plan to approve")
+    : a.kind === "secret" ? (t ? `Secret to give: ${t}` : "A secret is asked for")
     : a.kind === "resume" ? "Continue the turn a restart cut"
     : t || "A message was not sent";
   return a.child ? `Agent ${oneLine(a.agent, 40) || "of this session"}: ${said}` : said;
@@ -185,9 +189,15 @@ function doing(f: WatchFacts): Pick<SessionState, "why" | "text" | "since" | "un
   return { why: "turn", ...(f.output ? { text: "The model is answering" } : {}), ...since(f.turn) };
 }
 
-// The reason as one sentence part: a silence says how long it has lasted.
+// The time of day on the reader's 24-hour clock: 09:51.
+const hhmm = (ts: number) => new Date(ts).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+
+// The reason as one sentence part: a silence says how long it has lasted, a
+// turn that resumes by itself at what time (worked out where it is read, so
+// in the reader's own time zone).
 export function whyText(st: SessionState, now = Date.now()): string {
   if (st.why === "stalled" && st.since) return `${st.text} for ${span(now - st.since)}`;
+  if (st.why === "resume" && st.watch === "wait" && st.until) return `${st.text} at ${hhmm(st.until)}`;
   return st.text ?? "";
 }
 
@@ -250,7 +260,8 @@ export function stateOf(s: Session, events: StoredEvent[] | undefined, f: WatchF
       ...(first.since ? { since: first.since } : {}), ...(first.child ? { child: first.child } : {}),
     };
   }
-  if ((f.approvals ?? 0) > 0 || f.asking) return { watch: "need", agents, why: f.approvals ? "approval" : "question", asks: Math.max(1, f.approvals ?? 0) };
+  // The caller knows only that it waits on the owner (a count, or a running turn whose every call does): said without the thing.
+  if ((f.approvals ?? 0) > 0 || f.asking) return { watch: "need", agents, why: f.approvals ? "approval" : f.owner ? "owner" : "question", ...(f.owner ? { text: "Waits for your answer" } : {}), asks: Math.max(1, f.approvals ?? 0) };
   const { watch: w, end } = own(s, events);
   if (w === "work") return { watch: "work", agents, ...(f.status || f.turn ? doing(f) : {}) };
   // Agents that run keep it working, whatever its own last turn came to.
@@ -258,9 +269,11 @@ export function stateOf(s: Session, events: StoredEvent[] | undefined, f: WatchF
   // A failure says what kind it was and what the provider said.
   const cls = f.failure?.cls ?? (end === "max_tokens" ? "max_tokens" : undefined);
   const failed = { ...(cls ? { why: cls, cls } : {}), ...(f.failure?.text ? { text: oneLine(f.failure.text, 200) } : END_TEXT[end ?? ""] ? { text: END_TEXT[end!] } : {}), ...(f.failure?.at ? { since: f.failure.at } : {}) };
-  // The provider asked for a wait longer than a turn waits, and the session continues by itself then: waiting, with the time.
-  const again = (s.settings as { continue_at?: { at?: number } }).continue_at?.at;
-  if (again && (w === "fail" || w === "declined")) return { watch: "wait", agents, why: "resume", text: `Continues by itself${failWord(cls) ? ` after the ${failWord(cls)}` : ""}`, until: again, ...(cls ? { cls } : {}) };
+  // The provider asked for a wait longer than a turn waits, and the session resumes by itself then
+  // (settings.continue_at, kept while that failure is the last thing in it): waiting, until that time.
+  // Once it gave up after its rounds, or the owner called it off, the mark is gone and it reads Failed.
+  const again = s.settings.continue_at?.at;
+  if (again && w === "fail") return { watch: "wait", agents, why: "resume", text: "Resumes by itself", until: again, ...(f.failure?.at ? { since: f.failure.at } : {}), ...(cls ? { cls } : {}) };
   // A failure is not hidden by a wait still armed: what went wrong is said first.
   if (w === "fail") return { watch: "fail", agents, ...failed };
   if (w === "declined") return { watch: "declined", agents, why: "refusal", text: END_TEXT.refusal! };

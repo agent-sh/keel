@@ -72,7 +72,14 @@ test("a failure is not hidden by a wait still armed; a provider's wait that ends
   expect(stateOf(failed, undefined, { pending: [timer] }).watch).toBe("fail");
   // The provider asked for a long wait and the session continues by itself: waiting, until then.
   const resumes = s({ settings: { failed_ms: 500, last_end: "error", continue_at: { at: 9000, after: "e1" } } as Session["settings"] });
-  expect(stateOf(resumes, undefined, { failure: { cls: "rate_limit", at: 500 } })).toEqual({ watch: "wait", agents: 0, why: "resume", text: "Continues by itself after the rate limit", until: 9000, cls: "rate_limit" });
+  const st = stateOf(resumes, undefined, { failure: { cls: "rate_limit", at: 500 }, pending: [timer] });
+  expect(st).toEqual({ watch: "wait", agents: 0, why: "resume", text: "Resumes by itself", since: 500, until: 9000, cls: "rate_limit" });
+  expect(whyText(st)).toMatch(/^Resumes by itself at \d\d:\d\d$/);
+  // It gave up after its rounds, or the owner called it off: the mark is gone and it is Failed.
+  expect(stateOf(failed, undefined, { failure: { cls: "rate_limit", at: 500 } }).watch).toBe("fail");
+  // A secret to give is asked of the owner like a question; a turn whose every call waits on them needs them too.
+  expect(stateOf(s({ phase: "working" }), undefined, { asks: [{ kind: "secret", text: "DEPLOY_KEY", since: 3 }] })).toMatchObject({ watch: "need", why: "secret", text: "Secret to give: DEPLOY_KEY" });
+  expect(stateOf(s({ phase: "working" }), undefined, { asking: true, owner: true })).toEqual({ watch: "need", agents: 0, why: "owner", text: "Waits for your answer", asks: 1 });
 });
 
 test("a turn the model declined, cut at the output limit or stopped at its step budget is not done", () => {

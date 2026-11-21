@@ -263,6 +263,8 @@
 .k-row-sub { order: 9; flex: 0 0 100%; display: flex; align-items: baseline; gap: 0.375rem; min-width: 0; padding-left: 1.1875rem; line-height: 1rem; }
 .k-row-sub .k-row-state { margin-top: 0; white-space: nowrap; }
 .k-row-sub .k-row-class { align-self: center; }
+/* A message that waits for the daemon to be back: it goes out by itself, so it is said in the waiting ink, not the owner's. */
+.k-row-send { flex-shrink: 0; white-space: nowrap; font-size: var(--text-micro); font-weight: 500; color: var(--st-wait); }
 /* Where it runs, at the line's end, when the list is not grouped by folder. */
 .k-row-sub .k-row-in { flex-shrink: 1; min-width: 2rem; max-width: 40%; margin-left: auto; }
 .k-row-sub .k-row-in:first-child { max-width: 100%; margin-left: 0; }

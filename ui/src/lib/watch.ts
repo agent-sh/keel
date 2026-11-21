@@ -76,7 +76,7 @@ const UNSENT_LINE = { refused: "A message was not sent", unconfirmed: "A message
 const SEND_WAITS = "A message waits for Keel to be back";
 type Kept = "refused" | "unconfirmed" | "waiting" | null;
 // What the shelf holds for a session: a send the owner must look at first, else one that waits for the daemon.
-const keptOf = (sid: string): Kept => unsentOf(sid) ?? (sendDrafts(sid).some((d) => (d.state as string) === "waiting") ? "waiting" : null);
+const keptOf = (sid: string): Kept => unsentOf(sid) ?? (sendDrafts(sid).some((d) => d.state === "waiting") ? "waiting" : null);
 function withUnsent(st: SessionState, kept: Kept): SessionState {
   if (!kept) return st;
   if (kept === "waiting") return AT_REST.includes(st.watch) ? { watch: "wait", agents: st.agents, why: "send", text: SEND_WAITS } : st;

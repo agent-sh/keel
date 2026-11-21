@@ -717,6 +717,77 @@ test("a declined turn, a stopped one with a held queue and a scheduled loop read
   }
 });
 
+test("a turn that resumes by itself after a provider's wait is Waiting with its time; called off, it is Failed", async ({ page, request, baseURL }) => {
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const made: string[] = [];
+  try {
+    const watcher = await start(request, "A quiet session to watch from");
+    const limited = await start(request, "Reindex the docs under a rate limit");
+    made.push(watcher, limited);
+    await send(request, limited, "script:rate-limit-long");
+    await expect.poll(async () => (await stateOf(request, limited))?.why, { timeout: 30_000 }).toBe("resume");
+    // The provider asked for a wait longer than a turn waits: the session resumes by itself then. Waiting, not Failed.
+    const st = await stateOf(request, limited) as { watch: string; why: string; text: string; until: number; cls?: string };
+    expect(st).toMatchObject({ watch: "wait", why: "resume", text: "Resumes by itself", cls: "rate_limit" });
+    expect(st.until).toBeGreaterThan(Date.now() + 10 * 60_000);
+    await page.goto(`/s/${watcher}`);
+    const r = row(page, limited);
+    await expect(r).toHaveAttribute("data-watch", "wait");
+    await expect(r.getByTestId("row-state")).toHaveText("Waiting");
+    await expect(r.getByTestId("row-why")).toHaveText(/^Resumes by itself at \d\d:\d\d$/);
+    await expect(r.getByTestId("row-time")).toHaveText(/^in 1[45]m$/);
+    // The command line and the timeline's Now say the same.
+    const cli = execFileSync("bun", ["src/main.ts", "sessions", "--url", baseURL!], { encoding: "utf8", env: { ...process.env, KEEL_CONFIG_DIR: process.env.KEEL_CONFIG_DIR ?? `${WS}/config` } }).split("\n");
+    const at = cli.findIndex((l) => l.startsWith(limited));
+    expect(cli[at]).toMatch(/\s+waiting\s+/);
+    expect(cli[at + 1]).toMatch(/^\s+waiting: Resumes by itself at \d\d:\d\d, due in 1[45]m$/);
+    const now = await (await request.get(`/api/sessions/${limited}/timeline?format=text&limit=1`)).text();
+    expect(now).toContain("Now: waiting.");
+    expect(now).toMatch(/Resumes by itself when the wait the provider asked for is over, .*due in 1[45] min/);
+    // Its own pane: the band and the transcript's box agree, and the box carries the two actions.
+    await r.click();
+    await expect(page.getByTestId("station-word")).toHaveText("Waiting");
+    await expect(page.getByTestId("station-why")).toHaveText(/^Resumes by itself at \d\d:\d\d$/);
+    const box = page.getByTestId("resume-at");
+    await expect(box).toContainText(/Resumes by itself at \d\d:\d\d/);
+    await expect(box.getByTestId("resume-now")).toHaveText(/Resume now/);
+    await expect(box.getByTestId("resume-cancel")).toHaveText("Do not resume");
+    await shoot(page, "session-state-14-resumes-by-itself");
+    // Called off: nothing resumes by itself, and the failure is in sight with its class.
+    await box.getByTestId("resume-cancel").click();
+    await expect(r).toHaveAttribute("data-watch", "fail");
+    await expect(r.getByTestId("row-state")).toHaveText("Failed");
+    await expect(r.getByTestId("row-class")).toHaveText("rate limit");
+    expect(await stateOf(request, limited)).toMatchObject({ watch: "fail", cls: "rate_limit" });
+  } finally {
+    await drop(request, made);
+  }
+});
+
+test("a secret the model asks for reads Needs you with its name", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const made: string[] = [];
+  try {
+    const watcher = await start(request, "A quiet session to watch from");
+    const asks = await start(request, "Check the deploy with the deploy key");
+    made.push(watcher, asks);
+    await send(request, asks, script([{ name: "request_secret", input: { name: "DEPLOY_KEY", purpose: "deploy check" } }]));
+    await expect.poll(async () => (await stateOf(request, asks))?.watch, { timeout: 30_000 }).toBe("need");
+    expect(await stateOf(request, asks)).toMatchObject({ watch: "need", why: "secret", text: "Secret to give: DEPLOY_KEY", asks: 1 });
+    await page.goto(`/s/${watcher}`);
+    await expect(row(page, asks)).toHaveAttribute("data-watch", "need");
+    await expect(row(page, asks).getByTestId("row-why")).toHaveText("Secret to give: DEPLOY_KEY");
+    await expect(page).toHaveTitle(/^\(\d+\) /);
+    const now = await (await request.get(`/api/sessions/${asks}/timeline?format=text&limit=1`)).text();
+    expect(now).toContain("Now: waiting on the owner.");
+    expect(now).toContain("Waits on the owner: a secret to give");
+  } finally {
+    await drop(request, made);
+  }
+});
+
 // The look of it: a dozen sessions in mixed states, in the list, on the folded
 // rail and on a phone, in both themes. Each row is checked for its state.
 test("twelve sessions in mixed states read apart at a glance, wide and on a phone", async ({ page, request }) => {
@@ -790,8 +861,10 @@ test("twelve sessions in mixed states read apart at a glance, wide and on a phon
     const bands = page.getByTestId("rail-band");
     await expect(bands).toHaveCount(6);
     expect(await bands.evaluateAll((els) => els.map((e) => e.getAttribute("data-watch")))).toEqual(["need", "fail", "wait", "work", "resume", "done"]);
-    // And every one of the twelve has its mark on it (other sessions of the daemon may be held back behind a count).
-    for (const [id] of want) await expect(page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${id}"]`), id).toBeVisible();
+    // With room for all, every one of the twelve has its mark. (On a daemon crowded by other specs' sessions
+    // a band holds some back behind a count, and what needs the owner still has its marks.)
+    const crowded = (await page.getByTestId("rail-more").count()) > 0;
+    for (const [id, w] of want) if (!crowded || w === "need") await expect(page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${id}"]`), id).toBeVisible();
     const railBox = (await page.getByTestId("session-list").boundingBox())!;
     for (const b of await bands.all()) {
       const box = (await b.boundingBox())!;

@@ -15,6 +15,7 @@ import { fitBands } from "../lib/rail-fit.ts";
 import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, cn, folderNames, when } from "../lib/utils.ts";
 import { AT_REST, lastLine, LIST_TIER, useSessionState, useSessionStates, useWatches, watchLabel, type Watch } from "../lib/watch.ts";
+import { useWaitingSend } from "../lib/send-drafts.ts";
 import { MachineSep, machineRuns, WherePip, whereWords } from "./Where.tsx";
 import { finished, ListFind, matches, order, setArrange, useArrange } from "./ListArrange.tsx";
 import { useAuto } from "../lib/automation.ts";
@@ -98,6 +99,9 @@ function Row({ s, active, where }: { s: Session; active: boolean; where?: boolea
   const w = st.watch;
   const now = useNow(timed(st));
   const card = useContext(CardCtx)(s, 450);
+  // A message of the session waits for the daemon to be back and goes out by itself: said on the
+  // state line, whatever the state is (it is the reason itself when the session is otherwise at rest).
+  const waitingSend = useWaitingSend(s.id);
   const shown = useStations((x) => x.shown.includes(s.id));
   const panes = useStations((x) => x.count);
   const [placing, setPlacing] = useState(false);
@@ -163,11 +167,12 @@ function Row({ s, active, where }: { s: Session; active: boolean; where?: boolea
         {restore ? <ArchiveRestore /> : <Archive />}
       </button>
       {/* Two lines at most. The second is the state with why, as wide as the row (and the folder, where the list is not grouped by it). */}
-      {(SPELLED.includes(w) || where) && (
+      {(SPELLED.includes(w) || where || waitingSend) && (
         <span className="k-row-sub">
           {SPELLED.includes(w) && <span className="k-row-state" data-testid="row-state">{watchLabel(w, st.agents)}</span>}
           {w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="row-class">{failWord(st.cls)}</span>}
-          {SPELLED.includes(w) && st.text && <span className="k-row-why" data-testid="row-why" data-why={st.why} title={whyText(st, now)}>{whyText(st, now)}</span>}
+          {SPELLED.includes(w) && st.text && st.why !== "send" && <span className="k-row-why" data-testid="row-why" data-why={st.why} title={whyText(st, now)}>{whyText(st, now)}</span>}
+          {waitingSend && <span className="k-row-send" data-testid="waiting-send-mark" title="A message here waits for Keel and goes out by itself when it is back.">waits to send</span>}
           {where && <span className="k-row-in" data-testid="row-folder">{folderOf(s)}</span>}
         </span>
       )}

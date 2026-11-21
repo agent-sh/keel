@@ -908,7 +908,8 @@ test("a question and a plan waiting at a crash or a stop still wait after the re
     await expect(page.getByTestId("turn-reason")).toHaveText("Cut by a daemon restart, 2 times");
     await expect(page.getByTestId("turn-end")).toHaveCount(1);
     // The parked turns are not filed as finished beside their open cards (nobody was watching these two).
-    expect(await filed(planner)).toEqual([]);
+    // The plan that waits is one inbox item, raised once: the kill and the stop under it raised no second.
+    expect(await filed(planner)).toEqual(["question"]);
     expect(await filed(parent)).not.toContain("finished");
 
     // Answerable: the owner's answer is the question's one result.

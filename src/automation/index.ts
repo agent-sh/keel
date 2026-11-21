@@ -196,10 +196,13 @@ function init(deps: Deps) {
     // A plan presented for approval waits on the owner like a question: an alert until it is answered.
     if (f.t === "feature" && f.name === "plan") {
       const { card, state } = f.data as { card: { id: string; session_id: string; title?: string; plan: string }; state: "open" | "closed" };
+      // (Put back on its card after a daemon restart, it is the same plan: no second alert,
+      // and a daemon that stops under the card does not read the alert for the owner.)
       if (state === "open") {
+        if (alerts.raisedFor("plan_id", card.id, card.session_id)) return;
         const first = card.plan.split("\n").find((l) => l.trim())?.replace(/^[#\s>*-]+/, "") ?? "";
         alerts.raise("question", card.session_id, `Plan to approve: ${deps.store.session(card.session_id)?.title || "a session"}`, clip(card.title || first || "The model presents its plan.", 300), { plan_id: card.id, open_session: card.session_id });
-      } else alerts.readWhere("plan_id", card.id);
+      } else if (!deps.engine.isDraining?.()) alerts.readWhere("plan_id", card.id);
       return;
     }
     if (f.t !== "feature" || f.name !== "approval") return;

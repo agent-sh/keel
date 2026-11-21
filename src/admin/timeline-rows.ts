@@ -349,6 +349,8 @@ export type NowInput = {
   approvals: { id: string; call_id?: string; tool?: string; risk?: string; created?: number; child_session?: string; child_title?: string }[];
   questions: { call_id: string; child_session?: string; child_title?: string }[];
   plans?: { id: string; created?: number; child_session?: string; child_title?: string }[]; // plans presented for approval
+  secrets?: { id: string; created?: number; child_session?: string; child_title?: string }[]; // secrets asked for and not given yet
+  resumes?: { at: number; since?: number } | null; // the failed turn resumes by itself then (the provider asked for the wait)
   jobs?: { id: string; started: number }[]; // commands left running in the background
   // The session's one state (src/core/watch.ts), when the caller has it: the word of "now" follows it.
   watch?: string;
@@ -386,6 +388,8 @@ export function nowLines(n: NowInput): TimelineNow {
     add(`approval:${a.id}`, "approval", "owner", `Waits on the owner: approval for ${a.tool ?? "a tool"}${a.risk === "high" ? " (high risk)" : ""}${inChild(a)}`, { ts: a.created, open: true }, { approval_id: a.id, call_id: a.call_id, child_session: a.child_session });
   }
   for (const q of n.questions) add(`question:${q.call_id}`, "question", "owner", `Waits on the owner: a question${inChild(q)}`, { open: true }, { call_id: q.call_id, child_session: q.child_session });
+  for (const c of n.secrets ?? []) add(`secret:${c.id}`, "question", "owner", `Waits on the owner: a secret to give${inChild(c)}`, { ...(c.created ? { ts: c.created } : {}), open: true }, { call_id: c.id, child_session: c.child_session });
+  if (n.resumes) add("resumes", "limit", "plain", "Resumes by itself when the wait the provider asked for is over", { ...(n.resumes.since ? { ts: n.resumes.since } : {}), until: n.resumes.at, open: true });
   for (const p of n.plans ?? []) add(`plan:${p.id}`, "question", "owner", `Waits on the owner: a plan to approve${inChild(p)}`, { ...(p.created ? { ts: p.created } : {}), open: true }, { child_session: p.child_session });
   if (n.held) add("held", "restart", "owner", "Waits on the owner: a turn cut by a daemon restart was not continued", { ts: n.held.since }, { note_id: n.held.note_id });
   if (n.turn) {
@@ -414,7 +418,7 @@ export function nowLines(n: NowInput): TimelineNow {
   // The word is the session's one state: the lines below it say what is going on and what waits,
   // and never a different word. A loop's next run and a held queue are lines, not a state.
   // Without the state (a store read with no daemon) the word is read off the lines.
-  const own: TimelineNow["state"] = n.approvals.length || n.questions.length || n.plans?.length || n.held ? "owner" : n.turn || n.starting || n.agents.length ? "working" : n.waits.length || n.jobs?.length ? "waiting" : "idle";
+  const own: TimelineNow["state"] = n.approvals.length || n.questions.length || n.plans?.length || n.secrets?.length || n.held ? "owner" : n.turn || n.starting || n.agents.length ? "working" : n.waits.length || n.jobs?.length ? "waiting" : "idle";
   const state: TimelineNow["state"] = n.watch === undefined ? own : NOW_STATE[n.watch] ?? "idle";
   if (!lines.length) add("idle", "idle", "plain", n.last ? `Nothing is running or waited on. The last turn ${ENDED[n.last.outcome] ?? "ended"}.` : "Nothing has run in this session yet.", n.last ? { ts: n.last.ts } : {});
   return { state, lines };

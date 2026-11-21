@@ -170,6 +170,11 @@ test("now: what waits on the owner first, then what runs, then what is waited on
   // The word follows the session's one state where that says more.
   expect(nowLines({ ...quiet, watch: "wait" }).state).toBe("waiting");
   expect(nowLines({ ...quiet, turn: { id: "t1", ts: 1, steps: 1, status: { kind: "idle" } }, watch: "need" }).state).toBe("owner");
+  // A secret to give waits on the owner; a failed turn that resumes by itself says until when.
+  expect(nowLines({ ...quiet, secrets: [{ id: "c9", created: 60_000 }] })).toMatchObject({ state: "owner", lines: [{ kind: "question", tone: "owner", text: "Waits on the owner: a secret to give" }] });
+  const resumes = nowLines({ ...quiet, watch: "wait", resumes: { at: 100_000 + 12 * 60_000, since: 90_000 } });
+  expect(resumes.state).toBe("waiting");
+  expect(timelineText({ session_id: "s", as_of: 100_000, now: resumes, rows: [], next: null } as any)).toContain("Resumes by itself when the wait the provider asked for is over, for 10 s, due in 12 min");
   // The word is the session's state: a stopped session is stopped whatever waits under it, and a loop or a held queue is a line, not a word.
   expect(nowLines({ ...quiet, watch: "stop", waits: [{ id: "w", kind: "timer", created: 1, deadline: 100_000 + 11 * 60_000 + 60_000 }], queue: { queued: 1, steers: 0, held: true, owed: false } }).state).toBe("stopped");
   expect(nowLines({ ...quiet, watch: "done", loops: [{ id: "l", name: "Daily", next_ms: 200_000 }] })).toMatchObject({ state: "idle", lines: [{ kind: "loop" }] });

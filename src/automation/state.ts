@@ -16,6 +16,7 @@ import { failWord, oneLine, stateOf, watchLabel, watchWord, type Ask, type Pendi
 import { settings } from "../admin/settings.ts";
 import * as perm from "../server/routes/permissions.ts";
 import { plansWaiting } from "../server/routes/plan.ts";
+import { secretsWaiting } from "../server/routes/secrets.ts";
 import { allPendingQuestions } from "../tools/interact.ts";
 import { jobsOf, liveJobs, running } from "../tools/jobs.ts";
 import { errorClass } from "../admin/classes.ts";
@@ -30,6 +31,7 @@ export type From = {
   engine: {
     isRunning(id: string): boolean; statusOf?(id: string): TurnStatus; turnOf?(id: string): string | undefined;
     outputOf?(id: string): number | undefined; aliveOf?(id: string): number | undefined; isHeld?(id: string): boolean;
+    waitsOnOwner?(id: string): boolean;
   };
 };
 const from = (): From => D();
@@ -132,6 +134,7 @@ export function lens(d: From = from(), counts?: Map<string, number>): Lens {
   for (const a of perm.gate?.approvals({ pending: true }) ?? []) push(asks, a.session_id, { kind: "approval", text: `${a.tool}: ${a.summary}`, since: a.created });
   for (const q of allPendingQuestions()) push(asks, q.session_id, { kind: "question", ...questionOf(d.store, q.session_id, q.call_id) });
   for (const p of plansWaiting()) push(asks, p.session_id, { kind: "plan", text: p.title ?? "", since: p.created });
+  for (const c of secretsWaiting()) push(asks, c.session_id, { kind: "secret", text: c.name, since: c.created });
   // What will start a session's next turn: its active waits (a timer is due at its wake time) and the commands it left running.
   const pending = new Map<string, Pending[]>();
   if (hasTable(d.store, "waits")) {
@@ -189,17 +192,21 @@ export function factsOf(s: Session, l: Lens): WatchFacts {
   // A stopped session's queue: what waits until the owner resumes.
   const queue = !turn && e.isHeld?.(s.id) ? { queue: { held: true, queued: l.d.store.queue(s.id).filter((q) => !q.steer).length } } : {};
   const held = heldOf(l.d, s);
-  return { asks, agents: l.counts.get(s.id) ?? 0, parked: parked.length, pending, ...live, ...running, ...queue, ...(held ? { held } : {}), failure: failureOf(l.d.store, s) };
+  // A running turn whose every call waits on the owner with no card this file knows by name
+  // (a program's inner card, a call blocked on agents that ask): the engine's one answer.
+  const owner = turn && !asks.length && e.waitsOnOwner?.(s.id) ? { asking: true, owner: true } : {};
+  return { ...owner, asks, agents: l.counts.get(s.id) ?? 0, parked: parked.length, pending, ...live, ...running, ...queue, ...(held ? { held } : {}), failure: failureOf(l.d.store, s) };
 }
 
 // A step that only waits (on an agent, on the owner's answer): its time is the agent's or the owner's, not its own.
-const WAITING_TOOLS = new Set(["wait_agent", "Agent", "Task", "spawn_agent", "send_input", "AskUserQuestion", "request_user_input", "ask_user", "ExitPlanMode", "present_plan"]);
+// (What waits on the owner is the engine's answer, Engine.waitsOnOwner; these wait on an agent.)
+const WAITING_TOOLS = new Set(["wait_agent", "Agent", "Task", "spawn_agent", "send_input"]);
 const wrote = (log: string) => { try { return statSync(log).mtimeMs; } catch { return 0; } };
 
 // The running step and when it last made progress (src/core/stuck.ts); null for a step that waits or a turn between steps.
 export function progressOf(s: Session, l: Lens, f: WatchFacts): Progress | null {
   const st = f.status;
-  if (!st || f.asks?.length) return null;
+  if (!st || f.asks?.length || f.owner || l.d.engine.waitsOnOwner?.(s.id)) return null;
   if (st.kind === "model") {
     if (st.preparing) return null;
     if (st.quiet) return { what: "stream", text: "The model is answering, no output", since: st.quiet };
@@ -225,7 +232,7 @@ export function stuckAfter(): After {
 // only: a wait's note or a command line may hold what another session's
 // model should not read.
 const WAITS: Record<string, string> = { timer: "a timer", command: "a background command", agent: "an agent that waits", resume: "the provider, and continues by itself", send: "a message to be delivered" };
-const NEEDS: Record<string, string> = { approval: "an approval", question: "a question", plan: "a plan to approve", resume: "a turn a restart cut, to continue", unsent: "a message that was not sent" };
+const NEEDS: Record<string, string> = { approval: "an approval", question: "a question", plan: "a plan to approve", secret: "a secret to give", owner: "an answer", resume: "a turn a restart cut, to continue", unsent: "a message that was not sent" };
 export function stateWord(st: State): string {
   if (st.watch === "need") return `needs you${NEEDS[st.why ?? ""] ? ` (${NEEDS[st.why!]})` : ""}`;
   if (st.watch === "wait") return `waiting on ${WAITS[st.why ?? ""] ?? "a condition it set"}`;

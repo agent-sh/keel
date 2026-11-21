@@ -76,6 +76,7 @@ export type Live = {
   outputOf?(id: string): number | undefined; // when the reply being streamed last gave output
   parkedOn?(id: string): { kind: string; until?: number } | undefined; // what a waiting agent's session waits on
   plans?(): { id: string; session_id: string; created: number }[]; // plans presented for approval
+  secrets?(): { id: string; session_id: string; created: number }[]; // secrets asked for and not given yet
   jobs?(id: string): { id: string; started: number }[]; // commands the session left running in the background
   watchOf?(id: string): string | undefined; // the session's one state (src/core/watch.ts)
   isHeld?(id: string): boolean;
@@ -567,8 +568,13 @@ export class Timeline {
     const plans = (live.plans?.() ?? [])
       .filter((p) => p.session_id === sessionId || children.has(p.session_id))
       .map((p) => ({ id: p.id, created: p.created, ...(p.session_id === sessionId ? {} : { child_session: p.session_id, child_title: children.get(p.session_id) }) }));
+    const secrets = (live.secrets?.() ?? [])
+      .filter((c) => c.session_id === sessionId || children.has(c.session_id))
+      .map((c) => ({ id: c.id, created: c.created, ...(c.session_id === sessionId ? {} : { child_session: c.session_id, child_title: children.get(c.session_id) }) }));
+    // A failed turn that resumes by itself at the time the provider named.
+    const again = !turn && !live.isRunning?.(sessionId) ? this.store.session(sessionId)?.settings.continue_at : undefined;
     return nowLines({
-      ts, turn, last, held, approvals, questions, waits, loops, plans, jobs: live.jobs?.(sessionId) ?? [], watch: live.watchOf?.(sessionId),
+      ts, turn, last, held, approvals, questions, waits, loops, plans, secrets, resumes: again ? { at: again.at, since: last?.ts } : null, jobs: live.jobs?.(sessionId) ?? [], watch: live.watchOf?.(sessionId),
       agents: agents.map((a) => (a.status === "waiting" ? { ...a, wait: live.parkedOn?.(a.session_id) } : a)),
       // A turn the engine has taken up and not opened yet: its system prompt, its model, its first event.
       starting: !turn && !!live.isRunning?.(sessionId),

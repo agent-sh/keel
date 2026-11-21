@@ -20,6 +20,8 @@ const bad = (error: string, status = 400) => json({ error }, status);
 export type SecretRequest = { id: string; session_id: string; name: string; purpose?: string; created: number };
 type Waiting = SecretRequest & { resolve: (r: { given: true } | { given: false; reason?: string }) => void };
 const waiting = new Map<string, Waiting>();
+// The secrets asked for that the owner has not given yet: a session with one needs them (src/automation/state.ts).
+export const secretsWaiting = (): SecretRequest[] => Array.from(waiting.values(), ({ resolve: _r, ...c }) => c);
 
 const RequestSecret: Tool = {
   name: "request_secret",
