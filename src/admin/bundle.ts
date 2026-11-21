@@ -4,6 +4,7 @@
 // daemon's log at the time, and where to look further. Keys, tokens and the
 // home folder are redacted. Built for one error, or for a session's turn.
 import { homedir } from "node:os";
+import { localStamp, localTime, zoneNote } from "../core/clock.ts";
 import type { Store } from "../core/store.ts";
 import { leafOf, lineage } from "../core/tree.ts";
 import type { ErrorRecord, StoredEvent, TurnStatus } from "../core/types.ts";
@@ -17,7 +18,9 @@ const TAIL = 14;
 const CLIP = 600;
 
 const clip = (s: string, n = CLIP) => (s.length > n ? `${s.slice(0, n)}... (${s.length} chars)` : s);
-const iso = (ms: number) => new Date(ms).toISOString().replace("T", " ").replace(/\.\d+Z$/, "Z");
+// Every time in a bundle is the machine's own zone (the one alerts and the
+// page use); the first line says which. The log files it points at are in UTC.
+const iso = localStamp;
 const dur = (ms: number | null) => (ms === null ? "still running" : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`);
 const fence = (s: string, lang = "") => "```" + lang + "\n" + s.replace(/```/g, "` ` `") + "\n```";
 
@@ -74,9 +77,9 @@ export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { mark
 
   const title = e ? `${e.source}: ${clip(e.message, 120)}` : `turn in ${s?.title || sid}`;
   out.push(`# Keel debug bundle`, "");
-  if (o.own) out.push(`Made ${iso(Date.now())}.`, "Read top to bottom: the failure, where it happened, the trace of its turn, then the transcript before it. Secrets are redacted; text is clipped where marked.", "");
+  if (o.own) out.push(`Made ${iso(Date.now())}. ${zoneNote()}.`, "Read top to bottom: the failure, where it happened, the trace of its turn, then the transcript before it. Secrets are redacted; text is clipped where marked.", "");
   else {
-    out.push(`Made ${iso(Date.now())}. Keel ${o.version ?? "dev"}, Bun ${Bun.version}, ${process.platform} ${process.arch}, daemon pid ${process.pid}, state ${o.daemon.state_dir}.`);
+    out.push(`Made ${iso(Date.now())}. ${zoneNote()}. Keel ${o.version ?? "dev"}, Bun ${Bun.version}, ${process.platform} ${process.arch}, daemon pid ${process.pid}, state ${o.daemon.state_dir}.`);
     out.push("Read top to bottom: the failure, where it happened, the trace of its turn, the transcript before it, then the daemon log around it. Secrets are redacted; text is clipped where marked.", "");
   }
 
@@ -147,7 +150,7 @@ export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { mark
     out.push(`## Daemon log around it (${iso(at - LOG_WINDOW_MS)} to ${iso(at + 30_000)}, ${logs.length} lines)`, "");
     // Whose line it is: this turn's, this session's, another session's, or the daemon's own (nothing said).
     const whose = (l: { session?: string; turn?: string }) => (!l.session ? "" : l.session !== sid ? `(session ${l.session}) ` : turnEvent && l.turn === turnEvent ? "(this turn) " : "(this session) ");
-    out.push(logs.length ? fence(logs.map((l) => `${new Date(l.ts).toISOString().slice(11, 23)} ${l.level.toUpperCase().padEnd(5)} ${whose(l)}${clip(l.text, 800)}`).join("\n")) : "No lines in that window.", "");
+    out.push(logs.length ? fence(logs.map((l) => `${localTime(l.ts, true)} ${l.level.toUpperCase().padEnd(5)} ${whose(l)}${clip(l.text, 800)}`).join("\n")) : "No lines in that window.", "");
   }
 
   // Where to look further is the daemon's own words and ids, added after the
@@ -165,7 +168,7 @@ export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { mark
     }
 
     more.push("## Looking further", "");
-    more.push(`- Daemon log files: ${logDir() ?? "(not installed)"} (one per day, \`keel-YYYY-MM-DD.log\`)`);
+    more.push(`- Daemon log files: ${logDir() ?? "(not installed)"} (one per UTC day, \`keel-YYYY-MM-DD.log\`; their times are UTC, with a Z)`);
     more.push(`- Database: ${o.daemon.state_dir}/keel.db (SQLite). Tables: \`errors\`, \`spans\` (trace_id, kind, attrs JSON), \`events\` (session_id, kind, data JSON), \`telemetry_calls\`.`);
     if (traceId) more.push(`- This trace as JSON: \`GET /api/debug/traces/${traceId}\``);
     if (failing?.replayable) more.push(`- Send the failed request again: \`POST /api/debug/spans/${failing.span_id}/replay\` with \`{"route": "provider:model"}\` to try another model`);
@@ -200,7 +203,7 @@ function failingSection(f: Span): string[] {
 
 function eventLines(ev: StoredEvent): string[] {
   const d = ev.data ?? {};
-  const t = new Date(ev.ts).toISOString().slice(11, 19);
+  const t = localTime(ev.ts);
   switch (ev.kind) {
     case "user": return [`- ${t} **user**${d.origin ? ` (${d.origin})` : ""}: ${clip(String(d.text ?? ""))}`];
     case "assistant": {

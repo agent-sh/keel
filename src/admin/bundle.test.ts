@@ -4,6 +4,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
+import { localStamp } from "../core/clock.ts";
 import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
 import { buildBundle } from "./bundle.ts";
@@ -80,7 +81,7 @@ test("a bundle asked from a span is about that span and the branch its turn ran 
     expect(pruned).not.toContain("MARK-SIBLING");
     // The error row happened again an hour later, elsewhere: the bundle stays at the turn's end, not there.
     const end = store.events(s.id).find((x) => x.kind === "turn_end")!;
-    const iso = (ms: number) => new Date(ms).toISOString().replace("T", " ").replace(/\.\d+Z$/, "Z");
+    const iso = localStamp;
     const row = { id: "err-1", ts: end.ts + 3_600_000, first_ts: end.ts, count: 2, source: "provider", message: "fixture: the original request was refused", session_id: s.id } as any;
     const later = buildBundle(store, tracer, { error: row, session_id: s.id, turn_event: original.turn, span_id: original.span, daemon: { state_dir: store.stateDir } }).markdown;
     expect(later).toContain(`## Daemon log around it (${iso(end.ts - 120_000)} to `);

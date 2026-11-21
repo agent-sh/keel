@@ -8,6 +8,7 @@
 //   SESSION is a session's id, a prefix of it, or an agent's id or a prefix of that.
 //   keel debug log [-f] [--level L] [--grep TEXT] [--lines N] [--session ID]   the daemon's log; -f follows it
 import { parseArgs } from "node:util";
+import { zonedStamp } from "../core/clock.ts";
 import { formatLine, type LogLine } from "../admin/logs.ts";
 import { type Gap, type SpanLite, turnGaps, waitLabel } from "../admin/trace-rows.ts";
 import { chunks } from "../core/proc.ts";
@@ -36,7 +37,8 @@ async function get(url: string, path: string): Promise<Response> {
   return r;
 }
 const getJson = async (url: string, path: string) => (await get(url, path)).json() as Promise<any>;
-const time = (ms: number) => new Date(ms).toISOString().replace("T", " ").slice(0, 19);
+// The terminal's own zone, said on the line: a line is read alone.
+const time = zonedStamp;
 const ms = (x: number) => (x < 1000 ? `${x} ms` : `${(x / 1000).toFixed(2)} s`);
 
 export async function debug(argv: string[]): Promise<number> {

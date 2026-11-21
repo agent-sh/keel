@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { localStamp, zoneLabel } from "../core/clock.ts";
 import { outcomeOf as recorded } from "./outcomes.ts";
 import { activityRow, dur, errorRow, failureRow, isFailure, markRow, nowLines, originOf, outcomeOf, timelineText, turnRow } from "./timeline-rows.ts";
 
@@ -176,18 +177,18 @@ test("the text form: a line a row, with the ids that open its detail or that a c
   const now = nowLines({ ...quiet, ts: 100_000, approvals: [{ id: "p1", tool: "Bash", created: 40_000, child_session: "c1", child_title: "Check the parser" }], waits: [{ id: "w1", kind: "timer", created: 70_000, deadline: 400_000 }] });
   const page = { session_id: "s1", as_of: Date.UTC(2026, 0, 2, 14, 40, 0), now, rows, next: "5:x" };
   expect(timelineText({ ...page, now: { ...now, lines: now.lines.map((l) => ({ ...l, ts: page.as_of - 60_000, until: l.until && page.as_of + 300_000 })) } }, { title: "Parser work" }).split("\n")).toEqual([
-    'Timeline of session "Parser work" (s1), newest first. Times are UTC; read at 2026-01-02 14:40:00.',
+    `Timeline of session "Parser work" (s1), newest first. Times are local (${zoneLabel(page.as_of)}); read at ${localStamp(page.as_of)}.`,
     "Now: waiting on the owner.",
     '  Waits on the owner: approval for Bash, in agent "Check the parser", for 1 min  [approval=p1 session=c1]',
     "  Waits on a timer, for 1 min, due in 5 min  [wait=w1]",
-    "01-02 14:32:07   Wait wake, 14 steps, 2 failed tools, 3 min, $0.03  [turn=t2]",
-    "01-02 14:30:59 ! Model request error (rate limit)  [error=e1]",
+    `${localStamp(rows[0]!.ts).slice(5)}   Wait wake, 14 steps, 2 failed tools, 3 min, $0.03  [turn=t2]`,
+    `${localStamp(rows[1]!.ts).slice(5)} ! Model request error (rate limit)  [error=e1]`,
     "Older rows: before=5:x",
   ]);
   // Without ids: for a model that only reads.
   const bare = timelineText(page, { ids: false });
   expect(bare).not.toMatch(/\[(turn|error|wait|approval|session)=/);
-  expect(bare).toContain("01-02 14:32:07   Wait wake, 14 steps, 2 failed tools, 3 min, $0.03\n");
+  expect(bare).toContain(`${localStamp(rows[0]!.ts).slice(5)}   Wait wake, 14 steps, 2 failed tools, 3 min, $0.03\n`);
   // A filtered read that stopped at its bound with nothing says how far it looked.
   expect(timelineText({ session_id: "s1", as_of: 0, rows: [], next: "5:x", scanned: 500 })).toContain("None in the newest 500 rows.");
   expect(timelineText({ session_id: "s1", as_of: 0, rows: [], next: null })).toContain("No rows.");

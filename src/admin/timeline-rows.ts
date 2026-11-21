@@ -3,6 +3,7 @@
 // titles the session list already shows. It never carries a prompt, a tool's
 // input or output, a wait's note or an error's message: those stay behind the
 // ids a row names (the turn's receipt, its trace, the agent's session, the error).
+import { localStamp, zoneNote } from "../core/clock.ts";
 import type { ErrorRecord, TurnStatus } from "../core/types.ts";
 import { errorClass } from "./classes.ts";
 
@@ -400,12 +401,13 @@ export function nowLines(n: NowInput): TimelineNow {
 
 // The same story as text, for a model: one line per row, newest first, the ids
 // that open a row's detail or that a coordinator acts on at the end of its
-// line (`ids: false` leaves them out). Times are UTC.
+// line (`ids: false` leaves them out). Times are the machine's own zone, the
+// one alerts and the page use, and the first line says which.
 const STATE: Record<TimelineNow["state"], string> = { working: "working", owner: "waiting on the owner", waiting: "waiting", idle: "idle" };
-const stamp = (ts: number) => new Date(ts).toISOString().slice(5, 19).replace("T", " ");
+const stamp = (ts: number) => localStamp(ts).slice(5);
 export function timelineText(p: TimelinePage, opts: { title?: string; ids?: boolean } = {}): string {
   const at = p.as_of;
-  const out: string[] = [`Timeline of session ${title(opts.title, p.session_id)} (${p.session_id}), newest first. Times are UTC; read at ${new Date(at).toISOString().slice(0, 19).replace("T", " ")}.`];
+  const out: string[] = [`Timeline of session ${title(opts.title, p.session_id)} (${p.session_id}), newest first. ${zoneNote(at)}; read at ${localStamp(at)}.`];
   if (p.now) {
     out.push(`Now: ${STATE[p.now.state]}.`);
     for (const l of p.now.lines) {
