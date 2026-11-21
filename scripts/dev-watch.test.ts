@@ -115,3 +115,117 @@ test("a poke changes the file's time and none of its bytes; the lock names the d
   writeFileSync(join(top, "daemon.lock"), JSON.stringify({ pid: 2 ** 22 + 1 }));
   expect(holder(top)).toBeUndefined();
 });
+
+// The launcher with a stand-in daemon: a process that takes the folder's lock,
+// writes down each signal it gets, drains for a moment on the first one and
+// stops at once on a second, as the daemon does. `restart` hands the folder
+// to a daemon it starts and exits, as a daemon that restarts itself does.
+const STAND_IN = `
+import { appendFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+const [state, mode = "plain"] = process.argv.slice(2);
+const lock = state + "/daemon.lock", me = process.pid;
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+let got = 0;
+for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, async () => {
+  appendFileSync(state + "/signals", me + " " + sig + "\\n");
+  if (++got > 1) process.exit(0);
+  await Bun.sleep(400);
+  appendFileSync(state + "/signals", me + " drained\\n");
+  try { if (JSON.parse(readFileSync(lock, "utf8")).pid === me) rmSync(lock); } catch {}
+  process.exit(0);
+});
+const before = Number(process.env.STAND_IN_AFTER || 0);
+while (before && alive(before)) await Bun.sleep(20);
+if (mode === "slow") await Bun.sleep(1500);
+writeFileSync(lock, JSON.stringify({ pid: me, started_ms: Date.now() }));
+if (mode === "restart") {
+  await Bun.sleep(300);
+  const next = Bun.spawn(["bun", import.meta.path, state], { env: { ...process.env, STAND_IN_AFTER: String(me) }, stdio: ["ignore", "ignore", "ignore"], detached: true });
+  next.unref();
+  writeFileSync(lock, JSON.stringify({ ...JSON.parse(readFileSync(lock, "utf8")), pid: next.pid }));
+  await Bun.sleep(100);
+  process.exit(0);
+}
+setInterval(() => {}, 1000);
+`;
+const running = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const until = async (what: () => unknown, ms = 8000) => { for (const end = Date.now() + ms; Date.now() < end; await Bun.sleep(25)) if (what()) return true; return false; };
+
+function launcher(mode = "plain") {
+  const state = mkdtempSync(join(tmpdir(), "keel-dev-launch-"));
+  made.push(state);
+  writeFileSync(join(state, "stand-in.ts"), STAND_IN);
+  // A session of its own, as a terminal gives a command: its pid is its process group.
+  const start = () => Bun.spawn(["bun", join(import.meta.dir, "dev-watch.ts"), state, "--", "bun", join(state, "stand-in.ts"), state, mode], { stdio: ["ignore", "ignore", "ignore"], detached: true });
+  const lock = () => { try { return JSON.parse(readFileSync(join(state, "daemon.lock"), "utf8")).pid as number; } catch { return 0; } };
+  const signals = () => { try { return readFileSync(join(state, "signals"), "utf8").trim().split("\n"); } catch { return []; } };
+  return { state, start, lock, signals };
+}
+
+test("a signal to the launcher's group reaches the daemon once, and it drains", async () => {
+  const l = launcher();
+  const p = l.start();
+  expect(await until(l.lock)).toBe(true);
+  const daemon = l.lock();
+  process.kill(-p.pid, "SIGINT"); // Ctrl-C: the terminal signals the whole foreground group
+  expect(await p.exited).toBe(0);
+  expect(l.signals()).toEqual([`${daemon} SIGTERM`, `${daemon} drained`]);
+  expect(running(daemon)).toBe(false);
+}, 20_000);
+
+test("a second signal stops the daemon at once, and the launcher", async () => {
+  const l = launcher();
+  const p = l.start();
+  expect(await until(l.lock)).toBe(true);
+  const daemon = l.lock();
+  process.kill(p.pid, "SIGTERM");
+  await until(() => l.signals().length === 1);
+  process.kill(p.pid, "SIGTERM");
+  expect(await p.exited).toBe(130);
+  expect(await until(() => !running(daemon), 2000)).toBe(true);
+  expect(l.signals()).toEqual([`${daemon} SIGTERM`, `${daemon} SIGTERM`]);
+}, 20_000);
+
+test("a daemon stopped from outside ends the launcher within a moment", async () => {
+  const l = launcher();
+  const p = l.start();
+  expect(await until(l.lock)).toBe(true);
+  process.kill(l.lock(), "SIGTERM");
+  const t0 = Date.now();
+  expect(await p.exited).toBe(0);
+  expect(Date.now() - t0).toBeLessThan(4000);
+}, 30_000);
+
+test("a daemon that restarted itself is followed, and stopped with the launcher", async () => {
+  const l = launcher("restart");
+  const p = l.start();
+  expect(await until(l.lock)).toBe(true);
+  const first = l.lock();
+  expect(await until(() => l.lock() && l.lock() !== first && !running(first))).toBe(true);
+  const second = l.lock();
+  await Bun.sleep(2500); // longer than any gap the launcher waits out
+  expect(p.exitCode).toBeNull();
+  expect(running(second)).toBe(true);
+  process.kill(p.pid, "SIGTERM");
+  expect(await p.exited).toBe(0);
+  expect(l.signals()).toEqual([`${second} SIGTERM`, `${second} drained`]);
+  expect(running(second)).toBe(false);
+}, 30_000);
+
+test("a lock left by a daemon that ended is never signalled", async () => {
+  const l = launcher("slow");
+  // Another program runs under the pid a stale lock names.
+  const other = Bun.spawn(["sleep", "30"], { stdio: ["ignore", "ignore", "ignore"] });
+  writeFileSync(join(l.state, "daemon.lock"), JSON.stringify({ pid: other.pid, started_ms: Date.now() - 60_000 }));
+  try {
+    const p = l.start();
+    await Bun.sleep(700); // the launcher's daemon runs and has not taken the lock yet
+    process.kill(p.pid, "SIGTERM");
+    await p.exited;
+    expect(running(other.pid)).toBe(true);
+    expect(l.signals().length).toBeGreaterThan(0);
+    expect(l.signals().every((s) => !s.startsWith(`${other.pid} `))).toBe(true);
+  } finally {
+    other.kill();
+  }
+}, 30_000);

@@ -88,6 +88,20 @@ export function acquireLock(stateDir: string) {
   });
 }
 
+// A restart hands the folder's lock to the daemon it started, before this one
+// exits: the lock names a live daemon all the way through, so what follows the
+// folder by its lock (the dev launcher, a client command) sees one daemon
+// replaced by the next and never an unowned folder. The new daemon writes its
+// own lock once it holds the claim; this one's exit leaves a lock that is no
+// longer its own alone.
+export function handLock(stateDir: string, pid: number) {
+  const path = join(stateDir, LOCK);
+  try {
+    const held = JSON.parse(readFileSync(path, "utf8"));
+    if (held.pid === process.pid) writeFileSync(path, JSON.stringify({ ...held, pid }), { mode: 0o600 });
+  } catch {}
+}
+
 // The address the daemon answers at, kept in its lock so a client command
 // finds it from the state folder alone. `client` marks a daemon a command
 // started inside its own process (it ends with the command).
@@ -322,5 +336,6 @@ export class Daemon {
       detached: true,
     });
     p.unref();
+    handLock(this.deps.store.stateDir, p.pid);
   }
 }

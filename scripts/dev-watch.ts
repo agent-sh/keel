@@ -3,11 +3,12 @@
 //
 //   bun scripts/dev-watch.ts <state-dir> -- <daemon command...>
 //
-// It starts the daemon and stays for as long as a daemon holds the state
-// folder: a dev daemon that restarts itself is replaced by a process of its
-// own, and the launcher follows the folder's lock to it, so reloads go on.
-// Stopping the launcher (Ctrl-C, SIGTERM) stops the daemon that holds the
-// folder now; a daemon that ended takes the launcher with it.
+// It starts the daemon and stays for as long as its daemon holds the state
+// folder: a dev daemon that restarts itself hands the folder's lock to the
+// process it started, and the launcher follows the lock to it, so reloads go
+// on. Stopping the launcher (Ctrl-C, SIGTERM) stops that daemon as one signal
+// to it does: its turns drain. A daemon that ended, or was stopped from
+// outside, takes the launcher with it within a moment.
 //
 // What it watches:
 // - Bun's dev bundler rebuilds the stylesheet when ui/src/styles.css changes
@@ -104,17 +105,58 @@ export function reloader(opts: Opts) {
 
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (e) { return (e as any).code === "EPERM"; } };
 
-// The live daemon that holds the state folder, from its lock.
-export function holder(state: string): number | undefined {
+// The live daemon that holds the state folder, from its lock, when it took the
+// folder at `since` or later. A lock left by a daemon that ended before (a
+// crash, a reboot) names a pid that may be another program's by now: it is
+// never taken for the daemon.
+export function holder(state: string, since = 0): number | undefined {
   try {
-    const pid = JSON.parse(readFileSync(join(state, "daemon.lock"), "utf8")).pid as number;
-    return pid && alive(pid) ? pid : undefined;
+    const lock = JSON.parse(readFileSync(join(state, "daemon.lock"), "utf8")) as { pid?: number; started_ms?: number };
+    return lock.pid && (lock.started_ms ?? 0) >= since && alive(lock.pid) ? lock.pid : undefined;
   } catch { return undefined; }
 }
 
-// How long the folder may be without a daemon before the launcher gives up:
-// a daemon that restarts itself waits for the old one to exit, then starts.
-const GAP_MS = 20_000;
+// How long the folder may be without a daemon before the launcher ends. A
+// daemon that restarts itself hands its lock to the one it started before it
+// exits, so there is no gap to wait out: this only covers a lock read while it
+// is being written.
+const GAP_MS = 1_500;
+
+// Starts the daemon and stays with it. `follow` is the launcher's daemon: the
+// one it started, then whichever daemon that one handed the folder to.
+export function launch(state: string, command: string[], cwd: string, onStop: () => void = () => {}) {
+  const since = Date.now();
+  // In a session of its own: a signal sent to the launcher's process group
+  // (Ctrl-C in the terminal) reaches the launcher only, which passes it on
+  // once, so the daemon drains its turns as it does for one signal.
+  const child = Bun.spawn(command, { cwd, stdin: "inherit", stdout: "inherit", stderr: "inherit", detached: true });
+  let childCode: number | undefined;
+  void child.exited.then((c) => { childCode = c; });
+  // Never a pid the launcher's daemon did not lead to: its own child while it
+  // lives, after that the holder of a lock taken since the launcher started.
+  const follow = () => (childCode === undefined ? child.pid : holder(state, since));
+
+  // Stopped: its daemon is asked to stop (it drains), and the launcher ends
+  // when it has. A second signal stops the daemon at once, and the launcher.
+  let stopping = false;
+  const stop = () => {
+    const pid = follow();
+    if (pid) { try { process.kill(pid, "SIGTERM"); } catch {} }
+    if (stopping) process.exit(130);
+    stopping = true;
+    onStop();
+  };
+  for (const s of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(s, stop);
+
+  // A daemon runs while the one started here has not ended or one it led to holds the folder.
+  // When none does, the launcher ends with the code of the daemon it started (a taken port,
+  // a folder in use, a daemon stopped from outside).
+  let last = Date.now();
+  setInterval(() => {
+    if (follow()) { last = Date.now(); return; }
+    if (stopping || childCode !== 0 || Date.now() - last > GAP_MS) process.exit(childCode ?? 0);
+  }, 250);
+}
 
 async function main() {
   const at = process.argv.indexOf("--");
@@ -136,30 +178,7 @@ async function main() {
   watch(join(top, "ui", "src"), { recursive: true }, r.css);
   watch(join(top, "src"), { recursive: true }, r.source);
   watch(top, r.manifest);
-
-  const child = Bun.spawn(command, { cwd: top, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
-  let childCode: number | undefined;
-  void child.exited.then((c) => { childCode = c; });
-
-  // Stopped: the daemon that holds the folder now is asked to stop (it drains),
-  // and the launcher ends when it has. A second signal ends it at once.
-  let stopping = false;
-  const stop = () => {
-    if (stopping) process.exit(130);
-    stopping = true;
-    installing?.kill();
-    const pid = holder(state) ?? (childCode === undefined ? child.pid : undefined);
-    if (pid) { try { process.kill(pid, "SIGTERM"); } catch {} }
-  };
-  for (const s of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(s, stop);
-
-  // A daemon runs while the one started here has not ended or one holds the folder.
-  let last = Date.now();
-  setInterval(() => {
-    if (childCode === undefined || holder(state)) { last = Date.now(); return; }
-    // The daemon it started failed (a taken port, a folder in use): its exit code is the launcher's.
-    if (stopping || childCode !== 0 || Date.now() - last > GAP_MS) process.exit(childCode);
-  }, 500);
+  launch(state, command, top, () => installing?.kill());
 }
 
 if (import.meta.main) await main();
