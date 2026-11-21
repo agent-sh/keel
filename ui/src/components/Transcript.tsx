@@ -656,7 +656,14 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   const content = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const settling = useRef(false);
+  // Where the scroll was last put, by the reader or by this transcript. A
+  // scroll event that finds it lower is the reader going up (a wheel, a key,
+  // the scroll bar, the browser's find): following the end stops. One that
+  // only reports where this transcript put it is not, also when the content
+  // grew meanwhile (a reply streams between the pin and its event) or shrank
+  // (a streamed draft gave way to its stored reply, old rows were let go).
   const lastTop = useRef(0);
+  const pin = (el: HTMLElement) => { el.scrollTop = el.scrollHeight; lastTop.current = el.scrollTop; };
   const [away, setAway] = useState(false);
   // What the reader looks at when not following the end: the deepest block
   // crossing the top of the view, and its offset there. A
@@ -720,13 +727,22 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     stick.current = true;
     setAway(false);
     el.scrollTo({ top: el.scrollHeight, behavior: smooth ? scrollMotion() : "instant" });
+    lastTop.current = el.scrollTop;
   };
 
   // Follow the end while it grows (streaming, a tool row opening), unless the reader scrolled up.
   // The streaming draft grows inside `content`, so the ResizeObserver below follows it.
+  // Here only when the transcript opens or shows another run of events: the
+  // end is on screen at the first paint. Events added to the run shown grow
+  // the content, which the size observer below follows in the same frame
+  // without a layout made on the spot for every event.
+  const shownFrom = useRef<string | undefined>(undefined);
   useLayoutEffect(() => {
     const el = scroller.current;
-    if (el && stick.current && !reading?.end) el.scrollTop = el.scrollHeight;
+    const from = events?.[0]?.id;
+    const same = shownFrom.current !== undefined && shownFrom.current === from;
+    shownFrom.current = from;
+    if (el && !same && stick.current && !reading?.end) pin(el);
   }, [events]);
   useEffect(() => {
     const c = content.current;
@@ -741,7 +757,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       const box = el.closest<HTMLElement>(".k-session");
       const sbw = `${el.offsetWidth - el.clientWidth}px`;
       if (box && box.style.getPropertyValue("--sbw") !== sbw) box.style.setProperty("--sbw", sbw);
-      if (stick.current && !short.current) el.scrollTop = el.scrollHeight;
+      if (stick.current && !short.current) pin(el);
       else if (anchor.current?.el.isConnected) {
         // The anchor stays the one the reader chose by scrolling: after rows
         // are added above it (an earlier part read), the row now at the top is
@@ -752,6 +768,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           const was = el.scrollTop;
           el.scrollTop += moved;
           settling.current = el.scrollTop !== was; // a scroll event follows only when it moved
+          lastTop.current = el.scrollTop;
         }
         return;
       }

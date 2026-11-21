@@ -154,7 +154,7 @@ export function ProvidersSettings() {
   const rows = report?.providers ?? [];
   const ready = rows.filter((p) => p.available);
   const idle = rows.filter((p) => !p.available);
-  const heading = (t: string) => <h3 className="mt-6 mb-2 k-label">{t}</h3>;
+  const heading = (t: string) => <h3 className="k-after-card mt-6 mb-2 k-label">{t}</h3>;
 
   return (
     <div data-testid="providers-panel">
@@ -185,14 +185,14 @@ export function ProvidersSettings() {
           </button>
         </SettingRow>
       </Card>
-      {!report && <p className="k-empty py-4">Reading the providers.</p>}
+      {!report && <p className="k-after-card k-empty py-4">Reading the providers.</p>}
       {ready.length > 0 && heading("Set up")}
       {ready.length > 0 && <Card>{ready.map((p) => <ProviderRow key={p.id} p={p} />)}</Card>}
       {idle.length > 0 && heading("Not set up")}
       {idle.length > 0 && <Card>{idle.map((p) => <ProviderRow key={p.id} p={p} />)}</Card>}
       {!!report?.plugins.length && (
         // The plugins themselves (state, check, plugins.toml) are on their own page.
-        <button type="button" className="mt-4 flex w-full items-center gap-3 rounded-md border border-line bg-raised px-4 py-3 text-left hover:bg-hover" data-testid="providers-plugins-link" onClick={() => navigate({ name: "settings", section: "plugins" })}>
+        <button type="button" className="k-after-card mt-4 flex w-full items-center gap-3 rounded-md border border-line bg-raised px-4 py-3 text-left hover:bg-hover" data-testid="providers-plugins-link" onClick={() => navigate({ name: "settings", section: "plugins" })}>
           <Puzzle className="size-4 shrink-0 text-faint" aria-hidden="true" />
           <span className="min-w-0 flex-1 text-ui">
             <span className="text-fg">{report.plugins.length} provider plugin{report.plugins.length === 1 ? "" : "s"}</span>

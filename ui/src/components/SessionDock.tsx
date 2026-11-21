@@ -17,7 +17,6 @@ const since = (t: number) => {
 
 function useJobs(sessionId: string, working: boolean) {
   const [jobs, setJobs] = useState<JobView[]>([]);
-  const events = useStore((s) => s.events[sessionId]);
   useEffect(() => {
     let stop = false;
     let timer: Timer | undefined;
@@ -34,7 +33,9 @@ function useJobs(sessionId: string, working: boolean) {
     };
     load();
     return () => { stop = true; clearTimeout(timer); };
-  }, [sessionId, working, events?.length]);
+    // Read when the turn starts and ends, and every two seconds while it runs
+    // or a command still does (above): not again at each event of the turn.
+  }, [sessionId, working]);
   return jobs.filter((j) => j.background && (j.running || (j.ended ?? 0) > Date.now() - 60_000));
 }
 

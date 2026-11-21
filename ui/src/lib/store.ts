@@ -67,14 +67,47 @@ let state: State = { loaded: { sessions: false, models: false },
   sessions: {}, questionCalls: {}, questionChildren: {}, gone: {}, events: {}, drafts: {}, models: [], defaultModel: "", pinned: [], providerLabels: {}, limits: null, errors: [], connected: false, synced: false, providers: null, queues: {}, status: {},
 };
 const subs = new Set<() => void>();
+// What the socket brings is put into the state at once, in its order, and
+// the readers are told once a frame of the page: a dozen sessions streaming
+// send hundreds of frames a second, and telling the readers of each one
+// rendered every pane for it. The page also measures what a frame that told
+// them costs it (the render, layout and paint) and spaces the next one so
+// that live updates take about a third of its time at most: one pane streams
+// at the screen's rate, six panes a little slower each, and the page stays
+// free for the owner's keys and scrolling. A change the page itself makes (a
+// click, an answer to its own request) tells the readers there and then.
+const SHARE = 0.3; // of the main thread, for what the socket brings
+let live = false; // inside the socket's delivery of a frame
+let due: { raf?: number; timer: ReturnType<typeof setTimeout> } | null = null;
+let cost = 0; // what the frames that told the readers cost lately (ms, smoothed)
+let told = 0; // when they were last told
+const paints = () => typeof requestAnimationFrame === "function" && !(typeof document !== "undefined" && document.hidden);
+function tell() {
+  if (due) { if (due.raf !== undefined) cancelAnimationFrame(due.raf); clearTimeout(due.timer); due = null; }
+  const at = (told = paints() ? performance.now() : 0);
+  subs.forEach((f) => f());
+  // A task queued here runs when this frame's work is through: the time until then is what it cost.
+  if (at) setTimeout(() => { cost = 0.7 * cost + 0.3 * (performance.now() - at); }, 0);
+}
+const onFrame = () => { due = { raf: requestAnimationFrame(tell), timer: setTimeout(tell, 250) }; };
 const set = (patch: Partial<State>) => {
   state = { ...state, ...patch };
-  subs.forEach((f) => f());
+  // No frames to wait for (a hidden page draws none, a test has none): told at once.
+  if (!live || !paints()) return tell();
+  if (due) return;
+  const rest = Math.min(250, cost / SHARE) - (performance.now() - told);
+  if (rest > 4) due = { timer: setTimeout(onFrame, rest) };
+  else onFrame();
 };
+// The socket's delivery of one frame: the readers are told of it with the frame of the page.
+function delivered(f: () => void) {
+  live = true;
+  try { f(); } finally { live = false; }
+}
 
 // One subscribe function for every reader: a new one per render would make
 // React unsubscribe and subscribe again on each render.
-const subscribe = (f: () => void) => {
+export const subscribe = (f: () => void) => {
   subs.add(f);
   return () => void subs.delete(f);
 };
@@ -325,7 +358,11 @@ export const actions = {
 // Events of a branch asked for at a time, and how many a session may hold
 // before its oldest are let go (see trimmed).
 export const PAGE = 200;
-const HELD = 6 * PAGE;
+// Two parts, cut back to one: what a pane costs the page while it follows a
+// stream grows with the rows it has mounted (measured: the main thread's
+// share for one streaming pane rose from 16% to 50% between 8,000 and 50,000
+// nodes), and so does the memory of a page of six of them.
+const HELD = 2 * PAGE;
 const holds = (id: string, eventId: string) => !!state.events[id]?.findLast((e) => e.id === eventId);
 
 // The newest seq the page has seen of each session it holds: from a
@@ -383,7 +420,7 @@ export function trimmed(list: StoredEvent[], head: string | null): StoredEvent[]
   const line = lineage(list, head);
   // A head the page does not hold yet (its part is on its way): nothing is let go.
   if (!line.length) return list;
-  let k = Math.max(0, line.length - 2 * PAGE);
+  let k = Math.max(0, line.length - PAGE);
   for (let i = k; i > Math.max(0, k - PAGE); i--) if (line[i - 1]!.kind === "turn_end") { k = i; break; }
   if (k === 0 && line.length === list.length) return list;
   const keep = new Set(line.slice(k).map((e) => e.id));
@@ -559,6 +596,9 @@ export function apply(f: Frame) {
     // is read, which brings the versions it stands beside.
     if (f.rev !== undefined && e.kind === "user" && !e.data.origin && e.parent !== was && paged.has(e.session_id)) actions.page(e.session_id, { around: e.id }).catch(reportUnlessGone);
   } else if (f.t === "delta") {
+    // A reply streaming in a session this page has not opened is not kept: no
+    // view reads it. A session opened later reads the reply so far from its snapshot.
+    if (!state.events[f.session_id] && !loading.has(f.session_id)) return;
     // A whole draft taken at this rev or a later one (a snapshot that overtook this frame) holds it already.
     if (f.rev !== undefined && f.rev <= (revs.get(`${f.session_id}:draft`) ?? 0)) return;
     set({ drafts: { ...state.drafts, [f.session_id]: draftStep(state.drafts[f.session_id] ?? {}, f)! } });
@@ -733,10 +773,10 @@ export function connect() {
     if (f.t === "pong") { clearTimeout(deadline); deadline = undefined; }
     // The replay's whole draft, also at the rev of a snapshot that came before this socket
     // opened (nothing was emitted between them): the open dropped the snapshot's copy.
-    else if (f.t === "draft") { if (newer(`${f.session_id}:draft`, f.rev, true)) set({ drafts: { ...state.drafts, [f.session_id]: f.blocks } }); }
+    else if (f.t === "draft") delivered(() => { if (newer(`${f.session_id}:draft`, f.rev, true)) set({ drafts: { ...state.drafts, [f.session_id]: f.blocks } }); });
     else if (f.t === "replayed") { caught = true; if (socket === ws) onReplayed?.(f.cursors ?? {}); }
     else if (f.t === "hello" || f.t === "ui") servedUi(f.t === "ui" ? f.version : f.ui);
-    else apply(f);
+    else delivered(() => apply(f));
   };
   ws.onclose = () => {
     clearInterval(pinger);

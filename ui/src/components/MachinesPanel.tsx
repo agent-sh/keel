@@ -16,7 +16,7 @@ const field = "h-8 w-full rounded-lg border border-line bg-bg px-2.5 text-ui out
 const btn = "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-line-strong bg-raised px-3 text-ui font-medium hover:bg-hover disabled:opacity-50 [&>svg]:size-3.5 [&>svg]:text-faint";
 const ghost = "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-caption text-muted hover:bg-hover hover:text-fg disabled:opacity-50 [&>svg]:size-3.5";
 const heading = (t: string, extra?: ReactNode) => (
-  <h3 className="mt-7 mb-2 flex items-center gap-2 k-label">{t}{extra}</h3>
+  <h3 className="k-after-card mt-7 mb-2 flex items-center gap-2 k-label">{t}{extra}</h3>
 );
 
 const TONE: Record<string, string> = { ready: "bg-ok", busy: "bg-brass", starting: "bg-brass animate-pulse-dot", offline: "bg-danger", unknown: "bg-line-strong" };

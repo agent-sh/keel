@@ -183,7 +183,7 @@ function PasskeysCard() {
     } catch (e) { setMsg({ text: failed(e, { at: "SafetySettings" }), error: true }); }
   };
   return (
-    <div className="flex flex-col gap-2">
+    <div className="k-after-card flex flex-col gap-2">
       <h3 className="px-1 text-ui font-medium text-muted">Passkeys</h3>
       <Card>
         <div className="py-4" data-testid="passkeys">

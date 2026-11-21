@@ -486,7 +486,15 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 
 /* Rendered markdown in assistant replies. */
 .prose-keel { font-size: var(--text-read); line-height: 1.7; overflow-wrap: anywhere; }
-.prose-keel > * + * { margin-top: 0.8em; }
+/* Space between blocks: every block but the first. Not written "* + *": a
+   sibling rule (+ or ~) with a side that has no class, id or attribute to
+   key on (a bare tag, or *) applies to any element, so each element removed
+   anywhere in the page made the browser restyle the whole subtree of its
+   parent (a working line or a streamed draft leaving a transcript restyled
+   all of its rows: ".k-card + *" in the settings did that to every pane).
+   The same elements match here, with the same weight. ui/src/styles.test.ts
+   keeps such rules out. */
+.prose-keel > :where(:not(:first-child)) { margin-top: 0.8em; }
 .prose-keel > :first-child { margin-top: 0; }
 /* A heading is told from the text by more than its weight. h1 and h2 are a size up;
    h3 and h4 are the text's own size (the scale has no step between), so h3 is bold
@@ -500,7 +508,7 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .prose-keel ul { list-style: disc; padding-left: 1.35em; }
 .prose-keel ol { list-style: decimal; padding-left: 1.5em; }
 .prose-keel li::marker { color: var(--faint); }
-.prose-keel li + li { margin-top: 0.3em; }
+.prose-keel li:where(:not(:first-child)) { margin-top: 0.3em; }
 .prose-keel li > ul, .prose-keel li > ol { margin-top: 0.3em; }
 .prose-keel a { color: var(--accent-ink); text-decoration: underline; text-decoration-color: color-mix(in oklch, var(--accent) 45%, transparent); text-underline-offset: 0.1875rem; }
 .prose-keel a:hover { text-decoration-color: var(--accent); }

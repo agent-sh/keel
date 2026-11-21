@@ -112,7 +112,20 @@ function useFit(tools: Tool[], reserve: number) {
   const watch = () => {
     if (head.current && ro.current) for (const c of [head.current, ...head.current.children, ...head.current.querySelectorAll("[data-tools] > *")]) ro.current.observe(c);
   };
-  useLayoutEffect(() => { fit.current(); watch(); });
+  // A render that changed what is in the row (a tool came or went, the title
+  // is renamed, tools folded) measures before paint. One that left the row as
+  // it was measures nothing: the header renders with every event of its
+  // session, and a measure makes the browser lay the page out on the spot. A
+  // tool that only changed width is seen by the observer below.
+  const shape = useRef("");
+  useLayoutEffect(() => {
+    const el = head.current;
+    const now = `${reserve}|${tools.map((t) => t.id).join()}|${out.join()}|${el ? [...el.children].map((c) => (c as HTMLElement).dataset.tool ?? c.tagName).join() : ""}|${el?.querySelectorAll("[data-tools] > *").length ?? 0}|${list.current?.childElementCount ?? 0}`;
+    if (now === shape.current) return;
+    shape.current = now;
+    fit.current();
+    watch();
+  });
   useEffect(() => {
     ro.current = new ResizeObserver(later);
     watch();

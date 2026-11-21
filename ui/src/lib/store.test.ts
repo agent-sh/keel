@@ -43,7 +43,7 @@ const waiting: { url: string; done: (body: unknown, status?: number) => void }[]
 G.fetch = (url: string) => new Promise<Response>((resolve) => waiting.push({ url: String(url), done: (body, status = 200) => resolve(new Response(JSON.stringify(body), { status })) }));
 afterAll(() => Object.assign(G, kept));
 
-const { actions, connect, getState, PAGE, setBootLoad, trimmed } = await import("./store.ts");
+const { actions, apply, connect, getState, PAGE, setBootLoad, subscribe, trimmed } = await import("./store.ts");
 
 const settle = async () => { for (let i = 0; i < 30; i++) await new Promise((r) => setImmediate(r)); };
 const asked = (url: string) => waiting.some((w) => w.url === url);
@@ -282,8 +282,49 @@ test("a session a daemon answers whole (no page routes) is kept whole", async ()
   const part = events.slice(-1300);
   await openPaged(row("x", "x-e1400"), part.map((e) => ({ ...e, id: e.id.replace("w-", "x-"), session_id: "x", parent: e.parent?.replace("w-", "x-") ?? null })), 1400, 996);
   await frame({ t: "event", event: event("x", 1401), rev: 997 } as Frame);
-  expect(getState().events.x!.length).toBeLessThan(700);
+  expect(getState().events.x!.length).toBeLessThan(2 * PAGE);
   expect(getState().events.x!.at(-1)!.seq).toBe(1401);
+});
+
+test("what the socket brings is in the state at once, and its readers are told once a frame", async () => {
+  await open(row("v", "v-e1", { phase: "working" }), [event("v", 1)], 1100);
+  // A page has frames to wait for.
+  const frames: (() => void)[] = [];
+  G.requestAnimationFrame = (f: () => void) => frames.push(f);
+  G.cancelAnimationFrame = () => {};
+  let told = 0;
+  const off = subscribe(() => told++);
+  try {
+    const delta = (text: string, rev: number) => frame({ t: "delta", session_id: "v", index: 0, kind: "text", text, rev } as Frame);
+    await delta("one ", 1101);
+    await delta("two ", 1102);
+    await delta("three", 1103);
+    await frame({ t: "queue", session_id: "v", queue: [], held: true, rev: 1104 } as Frame);
+    // All of it is there, in order; nobody was told yet, and one frame was asked for.
+    expect(getState().drafts.v![0]!.text).toBe("one two three");
+    expect(getState().queues.v!.held).toBe(true);
+    expect(told).toBe(0);
+    expect(frames.length).toBe(1);
+    frames.pop()!();
+    expect(told).toBe(1);
+    // A delta of a session this page has not opened is not kept, and tells nobody.
+    await frame({ t: "delta", session_id: "nobody", index: 0, kind: "text", text: "x", rev: 1105 } as Frame);
+    expect(getState().drafts.nobody).toBeUndefined();
+    expect(frames.length).toBe(0);
+    // A stored step ends the draft; the readers hear of it with the next frame.
+    await frame({ t: "event", event: event("v", 2, "assistant"), rev: 1106 } as Frame);
+    expect(getState().drafts.v).toEqual({});
+    expect(getState().events.v!.map((e) => e.seq)).toEqual([1, 2]);
+    expect(told).toBe(1);
+    // A change the page itself makes (not the socket's delivery) tells them there and then, of everything so far.
+    apply({ t: "queue", session_id: "v", queue: [], held: false, rev: 1107 } as Frame);
+    expect(told).toBe(2);
+  } finally {
+    off();
+    delete G.requestAnimationFrame;
+    delete G.cancelAnimationFrame;
+    timers.length = 0; // the timers the frames left (the page's fallback and its measure)
+  }
 });
 
 test("a session that outgrew what the page holds keeps its newest part", () => {
@@ -302,8 +343,8 @@ test("a session that outgrew what the page holds keeps its newest part", () => {
   }
   const kept = trimmed(list, list.at(-1)!.id);
   const line = kept.filter((e) => e.seq > 2);
-  expect(line.length).toBeGreaterThanOrEqual(2 * PAGE);
-  expect(line.length).toBeLessThan(3 * PAGE);
+  expect(line.length).toBeGreaterThanOrEqual(PAGE);
+  expect(line.length).toBeLessThan(2 * PAGE);
   expect(line[0]!.kind).toBe("user"); // from a turn's start
   expect(line.at(-1)).toBe(list.at(-1)!);
   expect(kept.includes(main)).toBe(false);

@@ -60,7 +60,7 @@ export function Ledger({ groups, selected, onSelect, add, children, testid, empt
     .filter((g) => g.entries.length);
   return (
     <div className="k-ledger" data-testid={testid}>
-      <div className="k-ledger-list" role="listbox" aria-label="Entries">
+      <div className="k-ledger-list" role="listbox" aria-label="Entries" data-find={total > 8 || undefined}>
         {total > 8 && (
           <label className="k-ledger-find">
             <Search />

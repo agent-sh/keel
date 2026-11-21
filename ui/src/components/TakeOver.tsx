@@ -32,11 +32,15 @@ export function LiveSourceBanner({ sessionId }: { sessionId: string }) {
   const [o, setO] = useState<Origin["origin"]>(null);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
-  // Read again as the session changes: a later list or a take-over clears it.
-  const n = useStore((s) => s.events[sessionId]?.length ?? 0);
+  // A session that was not copied from another tool never becomes one: it is
+  // asked once. A copy is read again as its turns end (a later list or a
+  // take-over clears the mark), not at every event of a running turn.
+  const [plain, setPlain] = useState<string | null>(null);
+  const ends = useStore((s) => (plain === sessionId ? 0 : s.events[sessionId]?.findLast((e) => e.kind === "turn_end")?.seq ?? 0));
   useEffect(() => {
-    api<Origin>(`/api/sessions/${sessionId}/origin`).then((r) => setO(r.origin), () => setO(null));
-  }, [sessionId, n]);
+    if (plain === sessionId) return;
+    api<Origin>(`/api/sessions/${sessionId}/origin`).then((r) => { setO(r.origin); if (!r.origin) setPlain(sessionId); }, () => setO(null));
+  }, [sessionId, ends, plain]);
   // A copy from a machine reached over ssh: while its original still runs there, its state and the choices to resume it here.
   if (o?.machine?.ssh) return <ResumeCard target={{ machine: o.machine.id, harness: o.harness, id: o.source_id }} tool={o.label} machineName={o.machine.name} every={10_000} />;
   const live = o?.live_source;

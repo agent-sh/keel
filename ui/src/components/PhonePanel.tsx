@@ -206,7 +206,7 @@ export function PhoneSettings() {
   return (
     <div className="space-y-6" data-testid="phone-panel">
       <PairCard settings={settings} paired={justPaired} />
-      <section>
+      <section className="k-after-card">
         <div className="mb-2 flex items-baseline justify-between">
           <h3 className="text-ui font-semibold text-muted">Paired phones</h3>
           {settings && (
@@ -220,10 +220,10 @@ export function PhoneSettings() {
           {active.map((d) => <DeviceRow key={d.id} d={d} canPush={!!settings?.push.configured} reload={load} />)}
         </Card>
         {settings && !settings.push.configured && (
-          <p className="mt-2 text-caption text-faint">To send alerts to the phone, put the service-account key of the app's Firebase project at <code className="font-mono">{settings.push.path}</code>.</p>
+          <p className="k-after-card mt-2 text-caption text-faint">To send alerts to the phone, put the service-account key of the app's Firebase project at <code className="font-mono">{settings.push.path}</code>.</p>
         )}
         {revoked.length > 0 && (
-          <details className="mt-3 text-ui text-faint">
+          <details className="k-after-card mt-3 text-ui text-faint">
             <summary className="cursor-pointer select-none">{revoked.length} revoked</summary>
             <ul className="mt-1 space-y-0.5 pl-4">
               {revoked.map((d) => <li key={d.id}>{d.name} <span className="text-caption">paired {when(d.created * 1000)}</span></li>)}

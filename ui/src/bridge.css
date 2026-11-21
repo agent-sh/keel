@@ -284,11 +284,13 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-station[data-watch="need"] .k-band { background-color: var(--st-need); height: 0.4375rem; }
 .k-station[data-watch="fail"] .k-band { background-color: var(--st-fail); height: 0.375rem; }
 .k-station[data-watch="done"] .k-band { background-color: color-mix(in oklab, var(--st-done) 80%, var(--line)); }
-.k-station[data-watch="work"] .k-band { background-color: color-mix(in oklab, var(--st-work) 70%, var(--line)); animation: k-breathe 3.2s ease-in-out infinite; }
-@keyframes k-breathe {
-  0%, 100% { background-color: color-mix(in oklab, var(--st-work) 40%, var(--line)); }
-  50% { background-color: var(--st-work); }
-}
+/* Working: the band breathes between a dim and the full color. The full color
+   is a layer over the dim one and only its opacity moves, which the browser
+   animates off the main thread: a color animated in place made every working
+   pane restyle and repaint on every frame of the screen. */
+.k-station[data-watch="work"] .k-band { background-color: color-mix(in oklab, var(--st-work) 40%, var(--line)); }
+.k-station[data-watch="work"] .k-band::after { content: ""; position: absolute; inset: 0; background-color: var(--st-work); opacity: 0.5; will-change: opacity; animation: k-breathe 3.2s ease-in-out infinite; }
+@keyframes k-breathe { 0%, 100% { opacity: 0; } 50% { opacity: 1; } }
 /* The header's working line: the same breath, in opacity. */
 .k-wake-line { position: absolute; inset: auto 0 -1px; height: 2px; pointer-events: none; background: var(--brass); animation: k-breathe-o 3.2s ease-in-out infinite; }
 @keyframes k-breathe-o { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
@@ -600,7 +602,11 @@ html[data-resizing] iframe { pointer-events: none; }
 }
 /* Cards are flat instrument panels; a row's label leads, its hint is quiet. */
 .k-card { border-radius: 0.3125rem; box-shadow: none; border-color: var(--line); }
-.k-card + .k-card, .k-card + * , * + .k-card { margin-top: 0.875rem; }
+/* A gap above a card that is not the first, and above what follows a card.
+   What follows one says so itself (k-after-card): ".k-card + *" would do it
+   for anything, at the cost the note on sibling rules in styles.css tells. */
+.k-card:where(:not(:first-child)) { margin-top: 0.875rem; }
+.k-card + .k-after-card { margin-top: 0.875rem; }
 .k-setting > div:first-child > div:first-child { font-weight: 600; }
 
 /* ---------- Micro-interactions ---------- */
