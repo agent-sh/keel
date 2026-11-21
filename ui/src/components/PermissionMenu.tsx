@@ -89,8 +89,9 @@ export function PermissionMenu({ sessionId }: { sessionId: string }) {
                 <p className="mt-1.5 text-caption leading-snug text-muted">
                   {sandbox && !sandbox.available ? sandbox.reason : PROFILES.find((p) => p.id === perm.sandbox)!.hint + (perm.sandbox === "off" ? "." : ", in bubblewrap.")}
                 </p>
-                <label className={cn("mt-2 flex items-center justify-between", perm.sandbox === "off" && "opacity-40")}>
-                  <span className="text-ui">Network in the sandbox</span>
+                {/* With the sandbox off the switch is dimmed; its name stays readable, quiet. */}
+                <label className="mt-2 flex items-center justify-between">
+                  <span className={cn("text-ui", perm.sandbox === "off" && "text-faint")}>Network in the sandbox</span>
                   <Switch.Root
                     checked={perm.network}
                     disabled={perm.sandbox === "off"}

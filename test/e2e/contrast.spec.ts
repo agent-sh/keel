@@ -295,3 +295,53 @@ test("the light theme steps from steel to paper to white", async ({ page, reques
   expect(Math.min(...tile.steps)).toBeGreaterThanOrEqual(1.06);
   await shoot(page, "contrast-card-on-panel");
 });
+
+// Two words that were under the ratio on their own ground: the bridge's Need tally,
+// violet on its violet tint over the rail, and the name of a switch that is off
+// with its group (Network in the sandbox), which was dimmed with its switch.
+test("the Need tally and a switched-off setting's name read in both themes", async ({ page, request }) => {
+  const model = process.env.KEEL_TEST_MODEL ?? "scripted:stand-in";
+  const { session } = await (await request.post("/api/sessions", { data: { model, title: "Words on their own ground" } })).json();
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await page.goto(`/s/${session.id}`);
+  await page.getByTestId("permission-menu").first().click();
+  const name = page.getByText("Network in the sandbox");
+  await name.waitFor();
+  // The contrast of an element's text against what is painted behind it, its ancestors' opacity counted.
+  const contrast = (el: Element) => {
+    const cv = document.createElement("canvas");
+    cv.width = cv.height = 1;
+    const ctx = cv.getContext("2d", { willReadFrequently: true })!;
+    const rgba = (css: string) => { ctx.clearRect(0, 0, 1, 1); ctx.fillStyle = css; ctx.fillRect(0, 0, 1, 1); const d = ctx.getImageData(0, 0, 1, 1).data; return [d[0]!, d[1]!, d[2]!, d[3]! / 255]; };
+    const over = (f: number[], b: number[]) => [0, 1, 2].map((i) => f[i]! * f[3]! + b[i]! * (1 - f[3]!)).concat(1);
+    const lum = (c: number[]) => { const v = c.slice(0, 3).map((u) => { u /= 255; return u <= 0.04045 ? u / 12.92 : ((u + 0.055) / 1.055) ** 2.4; }); return 0.2126 * v[0]! + 0.7152 * v[1]! + 0.0722 * v[2]!; };
+    const stack: number[][] = [];
+    let op = 1;
+    for (let p: Element | null = el; p; p = p.parentElement) { const s = getComputedStyle(p); op *= Number(s.opacity); const c = rgba(s.backgroundColor); if (c[3]! > 0) stack.push(c); }
+    let bg = [255, 255, 255, 1];
+    for (const c of stack.reverse()) bg = over(c, bg);
+    const fg = rgba(getComputedStyle(el).color);
+    fg[3] = fg[3]! * op;
+    const [x, y] = [lum(over(fg, bg)), lum(bg)].sort((a, b) => b - a);
+    return Math.round(((x! + 0.05) / (y! + 0.05)) * 100) / 100;
+  };
+  const got: string[] = [];
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate((t) => { document.documentElement.classList.add("theme-switch"); document.documentElement.classList.toggle("dark", t === "dark"); }, theme);
+    const network = await name.evaluate(contrast);
+    // The tally as the folded rail draws it.
+    const tally = await page.evaluate((fn) => {
+      const rail = document.createElement("div");
+      rail.className = "k-rail";
+      rail.innerHTML = '<div class="k-marks" data-watch="need"><div class="k-marks-head"><span>Need</span><span>1</span></div></div>';
+      document.body.append(rail);
+      const r = new Function(`return (${fn})`)()(rail.querySelector("span")!);
+      rail.remove();
+      return r as number;
+    }, contrast.toString());
+    got.push(`${theme}: network ${network}, need tally ${tally}`);
+    expect(network, `${theme} network`).toBeGreaterThanOrEqual(4.5);
+    expect(tally, `${theme} tally`).toBeGreaterThanOrEqual(4.5);
+  }
+  console.log(got.join("\n"));
+});

@@ -55,6 +55,8 @@
   --ok-ink: oklch(0.45 0.09 168);
   --st-fail-ink: var(--danger-ink);
   --st-done-ink: var(--ok-ink);
+  /* Violet as a word: the fill is 4.2:1 on its own tint over the rail (the Need tally). */
+  --st-need-ink: oklch(0.46 0.2 295);
   --code-bg: oklch(0.95 0.005 250);
   /* Solid: at 60% the violet was under 3:1 on the grey rail and panels. */
   --ring: oklch(0.52 0.22 295);
@@ -117,6 +119,7 @@
   --st-work-ink: var(--st-work);
   --danger-ink: var(--danger);
   --ok-ink: var(--ok);
+  --st-need-ink: var(--st-need);
   --code-bg: oklch(0.18 0.015 255);
   --ring: oklch(0.74 0.17 295 / 0.65);
   --overlay: oklch(0.08 0.01 255 / 0.55);
@@ -182,6 +185,7 @@
   --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
   --font-inst: "Martian Mono Variable", "JetBrains Mono Variable", ui-monospace, monospace;
   --color-st-need: var(--st-need);
+  --text-color-st-need: var(--st-need-ink);
   --color-st-work: var(--st-work);
   --color-st-fail: var(--st-fail);
   --text-color-st-fail: var(--st-fail-ink);
@@ -345,6 +349,7 @@ svg.text-danger { color: var(--danger); }
 svg.text-ok { color: var(--ok); }
 svg.text-st-fail { color: var(--st-fail); }
 svg.text-st-done { color: var(--st-done); }
+svg.text-st-need { color: var(--st-need); }
 button { cursor: default; }
 /* A sent image's size toggle: the pointer says which way it goes, and its ring keeps the image's corners. */
 .k-image-toggle { cursor: zoom-in; border-radius: var(--radius-lg); }
