@@ -5,7 +5,7 @@ import { GitBranch, Split } from "lucide-react";
 import { rowActions, slash } from "./extend.ts";
 import { chooseFallback, setFallback } from "../components/Fallback.tsx";
 import { fuzzy, registerCommand } from "./keys.ts";
-import { actions, getState, reportError } from "./store.ts";
+import { actions, getState, reportError, ensureModels } from "./store.ts";
 import { getUI, navigate } from "./ui.ts";
 
 const current = () => {
@@ -45,9 +45,10 @@ slash.add(
     label: "The model a declined request goes on with",
     hint: "[model | off]",
     when: ({ session }) => !!session,
-    run: (arg, { session }) => {
+    run: async (arg, { session }) => {
       if (!arg) return chooseFallback(session!.id);
       if (arg === "off" || arg === "none") return setFallback(session!.id, null).then(() => {});
+      await ensureModels(); // a name is looked for in the whole listing
       const best = getState().models.map((m) => ({ m, s: fuzzy(arg, `${m.name} ${m.id}`) })).filter((x) => x.s > 0).sort((a, b) => b.s - a.s)[0];
       if (!best) throw new Error(`No listed model matches "${arg}".`);
       return setFallback(session!.id, best.m.id).then(() => {});

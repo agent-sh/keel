@@ -3,7 +3,7 @@
 // later in the list reads when the one before is not listed, does not hold the
 // part, or fails. Empty: the cheapest model of the session's own provider.
 import { ArrowUp, X } from "lucide-react";
-import { reportError, useStore } from "../lib/store.ts";
+import { reportError, useStore, useModels } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { ModelMenu } from "./ModelMenu.tsx";
 import { useSettings } from "./StoragePanel.tsx";
@@ -11,7 +11,7 @@ import { useSettings } from "./StoragePanel.tsx";
 const icon = "grid size-7 place-items-center rounded-sm text-muted hover:bg-hover hover:text-fg disabled:opacity-40";
 
 export function SmallModels() {
-  const models = useStore((s) => s.models);
+  const models = useModels();
   const [settings, patch] = useSettings();
   if (!settings) return null;
   const ids: string[] = settings.small_models?.ids ?? [];

@@ -2,7 +2,7 @@ import { Dialog } from "@base-ui/react/dialog";
 import { Archive, Bot, CornerDownLeft, Search, SquareTerminal, TextSearch, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { allCommands, commandsVersion, composing, fuzzy, onCommands } from "../lib/keys.ts";
-import { actions, reportError, useStore } from "../lib/store.ts";
+import { actions, reportError, useStore, useModels } from "../lib/store.ts";
 import { switchSession } from "../lib/switch.ts";
 import { navigate, setUI, useUI } from "../lib/ui.ts";
 import { ago, cn, folderNames } from "../lib/utils.ts";
@@ -30,7 +30,7 @@ export function Palette() {
   const open = useUI((s) => s.palette);
   const route = useUI((s) => s.route);
   const sessions = useStore((s) => s.sessions);
-  const models = useStore((s) => s.models);
+  const models = useModels();
   const live = useMemo(() => Object.values(sessions).filter((s) => !s.archived), [sessions]);
   const watches = useWatches(live);
   const agents = useAgentCounts();

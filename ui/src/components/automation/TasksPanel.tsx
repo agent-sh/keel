@@ -5,7 +5,7 @@ import type { Session } from "../../../../src/core/types.ts";
 import { auto, openSession, useAuto, type Goal, type Task } from "../../lib/automation.ts";
 import { remoteId, splitId } from "../../lib/fleet-ids.ts";
 import { composing } from "../../lib/keys.ts";
-import { reportError, failed, useStore } from "../../lib/store.ts";
+import { reportError, failed, useStore, useModels } from "../../lib/store.ts";
 import { cn, fmtTokens } from "../../lib/utils.ts";
 import { ModelPicker } from "../ModelPicker.tsx";
 import { Empty, IconButton, SectionTitle } from "./bits.tsx";
@@ -101,7 +101,7 @@ function GoalCard({ g, sid }: { g: Goal; sid: string }) {
 // its own: the judge's model, else the session's (src/automation/verify.ts).
 function VerifierModel({ g, sid }: { g: Goal; sid: string }) {
   const fallback = useStore((s) => g.judge_model ?? s.sessions[sid]?.model ?? "");
-  const name = useStore((s) => s.models.find((m) => m.id === fallback)?.name ?? fallback);
+  const name = useModels().find((m) => m.id === fallback)?.name ?? fallback;
   const set = (m: string | null) => auto.patchGoal(sid, { verifier_model: m }).catch(reportError);
   const same = `Same as the ${g.judge_model ? "judge" : "session"}${name ? ` (${name})` : ""}`;
   return (

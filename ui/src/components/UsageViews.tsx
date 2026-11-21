@@ -3,7 +3,7 @@
 // classes per provider and model, over time), what each compaction did, and
 // two ranges or two models side by side. Plain markup on the shared tokens.
 import { useEffect, useState, type ReactNode } from "react";
-import { api, reportError, useStore } from "../lib/store.ts";
+import { api, reportError, useStore, useModels } from "../lib/store.ts";
 import { navigate, setUI } from "../lib/ui.ts";
 import { ago, cn, fmtTokens, when } from "../lib/utils.ts";
 import { TimeChart } from "./Chart.tsx";
@@ -186,7 +186,7 @@ type Report = {
 };
 
 export function ErrorsView({ range }: { range: Range }) {
-  const models = useStore((s) => s.models);
+  const models = useModels();
   const name = (id: string) => models.find((m) => m.id === id)?.name ?? id.slice(id.indexOf(":") + 1);
   const r = useReport<Report>(`/api/telemetry?since_ms=${Date.now() - RANGES[range]}`, [range]);
   if (!r) return <div className="text-ui text-faint">Reading the measurements.</div>;
@@ -317,7 +317,7 @@ const PRESETS: Record<string, { label: string; bounds: (now: number) => { a: [nu
 };
 
 export function CompareView() {
-  const models = useStore((s) => s.models);
+  const models = useModels();
   const short = (id: string) => models.find((m) => m.id === id)?.name ?? id.slice(id.indexOf(":") + 1);
   const labels = useStore((s) => s.providerLabels);
   const provider = (id: string) => { const p = id.slice(0, id.indexOf(":")); return labels[p] ?? p; };

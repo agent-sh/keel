@@ -1,7 +1,7 @@
 // One client store: sessions, per-session events, live streaming drafts and
 // errors, fed by REST on load and by the WebSocket after. Components read it
 // with useStore(selector).
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import { lineage, type Page } from "../../../src/core/tree.ts";
 import type { ErrorRecord, Frame, PromptBlock, QueueItem, Session, SocketFrame, StoredEvent, TurnStatus } from "../../../src/core/types.ts";
 import type { ModelInfo, ProviderStatus } from "../../../src/providers/types.ts";
@@ -58,13 +58,18 @@ type State = {
   // The socket is open and the open sessions are restored on it (the replay
   // came and their snapshots landed): until then the page is catching up.
   synced: boolean;
-  loaded: { sessions: boolean; models: boolean }; // the first listing of each arrived (first-run screens wait for it)
+  // The first listing of each arrived (first-run screens wait for it). `models`:
+  // the few a page shows before a list is opened (see loadModelsBrief), or
+  // all of them; `allModels`: the whole listing is in `models`.
+  loaded: { sessions: boolean; models: boolean; allModels: boolean };
+  // How many models the daemon lists, known from the first read on.
+  modelCount: number;
   providers: ProvidersReport | null;
   queues: Record<string, { queue: QueueItem[]; held: boolean }>;
   status: Record<string, TurnStatus>;
 };
 
-let state: State = { loaded: { sessions: false, models: false },
+let state: State = { loaded: { sessions: false, models: false, allModels: false }, modelCount: 0,
   sessions: {}, questionCalls: {}, questionChildren: {}, gone: {}, events: {}, drafts: {}, models: [], defaultModel: "", pinned: [], providerLabels: {}, limits: null, errors: [], connected: false, synced: false, providers: null, queues: {}, status: {},
 };
 const subs = new Set<() => void>();
@@ -116,6 +121,18 @@ export function useStore<T>(sel: (s: State) => T): T {
   return useSyncExternalStore(subscribe, () => sel(state));
 }
 export const getState = () => state;
+// The whole model listing is in the store: asked for once, by the first thing that lists models.
+let allModelsOut: Promise<void> | null = null;
+export function ensureModels(): Promise<void> {
+  if (state.loaded.allModels) return Promise.resolve();
+  return (allModelsOut ??= actions.loadModels().finally(() => { allModelsOut = null; }));
+}
+// Every model the daemon lists, for a view that lists them or looks one up
+// that the page may not hold yet. The view's first use reads the listing.
+export function useModels(): ListedModel[] {
+  useEffect(() => { ensureModels().catch((e) => reportError(e, { at: "models" })); }, []);
+  return useStore((s) => s.models);
+}
 
 // A write a remote device makes with the owner's authority answers 428 with
 // the action to sign: the page gets a passkey assertion (lib/presence.ts) and
@@ -156,9 +173,24 @@ export const actions = {
     const remote = Object.entries(state.sessions).filter(([id]) => splitId(id));
     set({ sessions: Object.fromEntries([...remote, ...sessions.map((s) => [s.id, s] as const)]), loaded: { ...state.loaded, sessions: true } });
   },
+  // The whole model listing. It can hold hundreds of entries, so a page
+  // reads it when something lists models (the picker, the palette, a
+  // settings page, a command that takes a model's name): see useModels and
+  // ensureModels. Before that it holds the few of loadModelsBrief.
   async loadModels(refresh = false) {
     const r = await api<{ models: ListedModel[]; default: string; pinned: string[]; providers: { id: string; label: string }[] }>(`/api/models${refresh ? "?refresh" : ""}`);
-    set({ loaded: { ...state.loaded, models: true }, models: r.models, defaultModel: r.default, pinned: r.pinned ?? [], providerLabels: Object.fromEntries((r.providers ?? []).map((p) => [p.id, p.label])) });
+    set({ loaded: { ...state.loaded, models: true, allModels: true }, models: r.models, modelCount: r.models.length, defaultModel: r.default, pinned: r.pinned ?? [], providerLabels: Object.fromEntries((r.providers ?? []).map((p) => [p.id, p.label])) });
+  },
+  // What a page shows before anybody opens a list: the default model and the
+  // models its sessions run on (a message box names its model, knows whether
+  // it reads images, its window and its efforts), and how many there are.
+  // `also`: models the page shows that are no session's (the one picked for a new session).
+  async loadModelsBrief(also: string[] = []) {
+    if (state.loaded.allModels) return actions.loadModels(); // a page that listed them once keeps the whole listing current
+    const r = await api<{ models: ListedModel[]; default: string; total?: number }>(`/api/models?brief${also.filter(Boolean).map((id) => `&id=${encodeURIComponent(id)}`).join("")}`);
+    if (state.loaded.allModels) return; // the whole listing came in meanwhile
+    // (A daemon that answers with its whole listing, an older one, gives no count: the list is the count.)
+    set({ loaded: { ...state.loaded, models: true, allModels: r.total === undefined }, models: r.models, modelCount: r.total ?? r.models.length, defaultModel: r.default });
   },
   async loadLimits(refresh = false) {
     set({ limits: await api<Limits>(`/api/limits${refresh ? "?refresh" : ""}`) });
@@ -730,7 +762,7 @@ export function connect() {
     // What the page loads at start is loaded again: a first load the daemon
     // was not up for (a restart under the page) comes in now, quietly.
     const reload = () => {
-      if (!state.loaded.models) actions.loadModels().catch((e) => reportError(e, { at: "reconnect" }));
+      if (!state.loaded.models) actions.loadModelsBrief().catch((e) => reportError(e, { at: "reconnect" }));
       actions.loadErrors().catch((e) => reportError(e, { at: "reconnect" }));
       return actions.loadSessions().catch((e) => reportError(e, { at: "reconnect" }));
     };

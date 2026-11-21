@@ -1,7 +1,7 @@
 import { ArrowLeft, Bot, ChevronDown, Info, Keyboard, Menu, Search, SlidersHorizontal } from "lucide-react";
 import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { settingsSections } from "../lib/extend.ts";
-import { actions, reportError, useStore } from "../lib/store.ts";
+import { actions, reportError, useStore, useModels } from "../lib/store.ts";
 import { navigate, savePref, SCALE_NAMES, SCALES, setScale, setTheme, setUI, useUI, type ThemePref } from "../lib/ui.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
 import { ShortcutList } from "./ShortcutSheet.tsx";
@@ -80,7 +80,7 @@ function General() {
 }
 
 function Models() {
-  const models = useStore((s) => s.models);
+  const models = useModels();
   const def = useStore((s) => s.defaultModel);
   const [busy, setBusy] = useState(false);
   const byProvider = useMemo(() => {

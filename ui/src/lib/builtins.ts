@@ -8,7 +8,7 @@ import { createElement, lazy } from "react";
 import { panels, slash } from "./extend.ts";
 import { fuzzy, isMac, registerCommand } from "./keys.ts";
 import { getSafetyModes, safety } from "./safety.ts";
-import { actions, getState, reportError } from "./store.ts";
+import { actions, getState, reportError, ensureModels } from "./store.ts";
 import { leafOf, lineage } from "../../../src/core/tree.ts";
 import { getUI, navigate, notePick, savePref, setScale, setTheme, setUI, stepScale, type ThemePref } from "./ui.ts";
 import { resolveModelArg } from "./picker.ts";
@@ -151,8 +151,10 @@ slash.add(
     id: "model",
     label: "Switch the model",
     hint: "[name]",
-    run: (arg, { session }) => {
+    run: async (arg, { session }) => {
       if (!arg) return setUI({ modelMenu: getUI().modelMenu + 1 });
+      // A name is looked for in the whole listing.
+      await ensureModels();
       // An exact route id picks that route; a name two routes share is asked
       // about, never settled by the listing's order. The switch goes through
       // the same cache warning as the picker.

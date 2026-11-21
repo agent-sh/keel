@@ -83,7 +83,7 @@ export const fleet = {
     // Answers can come back out of order: one asked before the last applied
     // one is older news (a stale list must not bring back a row a newer one dropped).
     const mine = ++viewAsked;
-    const r = await api<{ machines: FleetMachineView[] }>("/api/fleet");
+    const r = await api<{ machines: FleetMachineView[] }>("/api/fleet?others");
     if (mine < viewApplied) return;
     viewApplied = mine;
     set({ view: r.machines });

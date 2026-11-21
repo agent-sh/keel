@@ -74,6 +74,63 @@ test("a page load asks each endpoint once", async ({ page, request }) => {
 });
 
 
+// W2RE-S23, the large lists. The model listing can hold hundreds of entries
+// and the fleet view repeated every local session twice. A page reads, as
+// it loads, the few models it shows (the default, the ones its sessions run
+// on) and the other machines alone; the whole listing is read when
+// something lists models, once.
+test("the whole model listing and this machine's own sessions are not read before they are used", async ({ page, request }) => {
+  const all = (await (await request.get("/api/models")).json()).models as { id: string; name: string }[];
+  test.skip(!all.some((m) => m.id === STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Reads of the large lists" } })).json();
+  // What the brief read holds: the default and the models sessions run on (this session's among them), and the count of all.
+  const brief = await (await request.get("/api/models?brief")).json();
+  expect(brief.total).toBe(all.length);
+  const used = new Set<string>([brief.default, ...((await (await request.get("/api/sessions")).json()).sessions as { model: string }[]).map((x) => x.model)]);
+  expect(brief.models.map((m: { id: string }) => m.id).filter((id: string) => !used.has(id))).toEqual([]);
+  expect(brief.models.map((m: { id: string }) => m.id)).toContain(STAND_IN);
+  // The fleet view for a page: no machine entry of this daemon's own sessions, no recents.
+  const others = await (await request.get("/api/fleet?others")).json();
+  expect(others.machines.some((m: { id: string }) => m.id === "local")).toBe(false);
+  expect(others.recents).toEqual([]);
+  expect((await (await request.get("/api/fleet")).json()).machines[0].sessions.length).toBeGreaterThan(0);
+
+  const asked: string[] = [];
+  page.on("request", (r) => {
+    const u = new URL(r.url());
+    if (r.method() === "GET" && (u.pathname === "/api/models" || u.pathname === "/api/fleet")) asked.push(u.pathname + u.search);
+  });
+  await page.goto(`/s/${session.id}`);
+  const picker = page.getByTestId("model-picker");
+  // The message box names its model from the brief read.
+  await expect(picker).toContainText(all.find((m) => m.id === STAND_IN)!.name);
+  await expect(page.getByTestId("model-unlisted")).toHaveCount(0);
+  await expect(page.getByTestId("sync-state")).toHaveCount(0);
+  await page.evaluate(() => new Promise((r) => setTimeout(r, 1500)));
+  expect(asked.sort()).toEqual(["/api/fleet?others", "/api/models?brief"]);
+
+  // Opening the picker reads the whole listing, once, and offers a model the page did not hold.
+  const held = new Set(brief.models.map((m: { id: string }) => m.id));
+  const listed = (all as { id: string; name: string; model: string; hidden?: boolean }[]).filter((m) => !m.hidden && m.id !== STAND_IN);
+  const other = listed.find((m) => !held.has(m.id)) ?? listed[0]!;
+  const popup = page.getByTestId("model-popup");
+  for (let open = 0; open < 2; open++) {
+    await picker.click();
+    await expect(popup).toBeVisible();
+    await page.getByPlaceholder("Search models").fill(other.model);
+    await expect(popup.locator(`[data-testid="model-option"][data-model="${other.id}"]`).first()).toBeVisible({ timeout: 10_000 });
+    await page.keyboard.press("Escape");
+    await expect(popup).toHaveCount(0);
+  }
+  expect(asked.filter((p) => p === "/api/models")).toHaveLength(1);
+  // A command that takes a model's name looks in the whole listing too.
+  await page.getByTestId("composer").fill(`/model ${other.id}`);
+  await page.getByTestId("composer").press("Enter");
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}?events=0`)).json()).session.model, { timeout: 10_000 }).toBe(other.id);
+  await expect(picker).toContainText(other.name);
+  await request.delete(`/api/sessions/${session.id}`);
+});
+
 // What changes between a page's first reads and its socket's open is told
 // by no frame. A feature's state (the open approvals, a session's state) is
 // therefore read when the socket opens, not before; the session list, read

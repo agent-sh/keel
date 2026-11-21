@@ -67,7 +67,8 @@ export function App() {
     if (approval && at.name === "session") focusApproval(approval);
     // The first socket reloads whatever of this first load failed (a daemon
     // restart under the page), so it waits on all of it, not only the sessions.
-    const loads = [actions.loadSessions(), actions.loadModels(), actions.loadErrors()];
+    // A settings page lists models as it opens: the whole listing. Any other page shows a few.
+    const loads = [actions.loadSessions(), at.name === "settings" ? actions.loadModels() : actions.loadModelsBrief([getUI().newModel]), actions.loadErrors()];
     for (const l of loads) l.catch(reportError);
     setBootLoad(Promise.all(loads));
     connect();

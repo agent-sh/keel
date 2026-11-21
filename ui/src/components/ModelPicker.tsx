@@ -1,6 +1,6 @@
 import { ChevronsUpDown } from "lucide-react";
-import { lazy, Suspense, useRef, useState } from "react";
-import { useStore } from "../lib/store.ts";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { useStore, ensureModels, reportError } from "../lib/store.ts";
 import { usePeerModels } from "../lib/peer-models.ts";
 import { cn } from "../lib/utils.ts";
 
@@ -16,7 +16,11 @@ export const triggerClass = (compact?: boolean) =>
 // `placeholder` names what an empty choice means ("Same as the session").
 export function TriggerLabel({ label, any, value, placeholder }: { label?: string; any: boolean; value?: string; placeholder?: string }) {
   const loaded = useStore((s) => s.loaded.models);
-  const missing = !label && !!value && loaded;
+  // The page holds a few models until a list is opened: a model it does not
+  // hold is looked for in the whole listing before it is called unlisted.
+  const all = useStore((s) => s.loaded.allModels);
+  useEffect(() => { if (!label && value && loaded && !all) ensureModels().catch(reportError); }, [label, value, loaded, all]);
+  const missing = !label && !!value && all;
   const text = label ?? (value ? value : placeholder ?? (any ? "Choose a model" : loaded ? "No models" : "Loading models"));
   return (
     <>
@@ -36,7 +40,7 @@ export function ModelPicker(props: { value: string; onChange: (id: string) => vo
   const [clicked, setClicked] = useState(0);
   const peer = usePeerModels(props.machine);
   const localLabel = useStore((s) => s.models.find((m) => m.id === props.value)?.name);
-  const localAny = useStore((s) => s.models.length > 0);
+  const localAny = useStore((s) => s.modelCount > 0);
   const label = props.machine ? peer?.models?.find((m) => m.id === props.value)?.name : localLabel;
   const any = props.machine ? !!peer?.models?.length : localAny;
   const signal = (props.openSignal ?? 0) !== atMount.current ? props.openSignal! : clicked;

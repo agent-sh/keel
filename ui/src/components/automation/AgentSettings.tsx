@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { advisorSession, auto, setAdvisorSession } from "../../lib/automation.ts";
-import { reportError, useStore } from "../../lib/store.ts";
+import { reportError, useStore, useModels } from "../../lib/store.ts";
 import { cn } from "../../lib/utils.ts";
 import { ModelPicker } from "../ModelPicker.tsx";
 import { Card, SettingRow } from "../Settings.tsx";
@@ -12,7 +12,7 @@ const choice = "h-8 rounded-md border px-3 text-ui";
 // default" puts it back on the default; the default itself is the card below.
 function ThisSession({ id, title, onDone }: { id: string; title: string; onDone: () => void }) {
   const [a, setA] = useState<SessionAdvisor | undefined>(undefined);
-  const models = useStore((s) => s.models);
+  const models = useModels();
   const name = (m: string | null) => (m ? models.find((x) => x.id === m)?.name ?? m : "none");
   useEffect(() => void auto.sessionAdvisor(id).then(setA).catch(reportError), [id]);
   if (!a) return null;
@@ -43,10 +43,10 @@ function ThisSession({ id, title, onDone }: { id: string; title: string; onDone:
 export default function AgentSettings() {
   const [model, setModel] = useState<string | null | undefined>(undefined);
   const [from, setFrom] = useState(advisorSession);
-  const name = useStore((s) => s.models.find((m) => m.id === model)?.name);
+  const name = useModels().find((m) => m.id === model)?.name;
   // A saved advisor the listing no longer has: the preference stays, and the
   // page says it cannot be consulted now (a consultation would refuse it).
-  const unlisted = useStore((s) => s.loaded.models && !!model && !s.models.some((m) => m.id === model));
+  const unlisted = useStore((s) => s.loaded.allModels && !!model && !s.models.some((m) => m.id === model));
   useEffect(() => void auto.advisor().then((r) => setModel(r.model)).catch(reportError), []);
   // Leaving the page forgets where it was opened from.
   useEffect(() => () => setAdvisorSession(null), []);

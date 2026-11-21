@@ -3,8 +3,8 @@
 // with its default model. Shown once there is a project.
 import { Boxes } from "lucide-react";
 import { projectOfFolder, useProjects } from "../lib/projects.ts";
-import { getState } from "../lib/store.ts";
-import { savePref, setUI, useUI } from "../lib/ui.ts";
+import { ensureModels, getState, reportError } from "../lib/store.ts";
+import { getUI, savePref, setUI, useUI } from "../lib/ui.ts";
 import { Select } from "./Select.tsx";
 
 // What the start box sends: the picked project, else the folder's.
@@ -26,7 +26,10 @@ export function ProjectPicker({ workspace }: { workspace: string }) {
         onChange={(e) => {
           const id = e.target.value;
           const p = list.find((x) => x.id === id);
-          setUI({ newProject: id, ...(p?.defaults.model && getState().models.some((m) => m.id === p.defaults.model) ? { newModel: p.defaults.model } : {}) });
+          setUI({ newProject: id });
+          // The project's own model, when the daemon still lists it (asked of the whole listing).
+          const model = p?.defaults.model;
+          if (model) void ensureModels().then(() => { if (getUI().newProject === id && getState().models.some((m) => m.id === model)) setUI({ newModel: model }); }).catch(reportError);
           if (p?.folders[0] && !p.folders.some((f) => workspace === f || workspace.startsWith(`${f}/`))) savePref("newWorkspace", p.folders[0]);
         }}
       >

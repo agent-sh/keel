@@ -222,16 +222,19 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
   };
 
   // Every session across machines, from the relays: never waits on a link.
-  const fleetView = (showQuestions: boolean) => {
-    const local = store.sessions();
-    const machines: any[] = [{ id: "local", name: f.name, state: "ready", sessions: local }];
+  // `others`: the other machines alone. A page holds this daemon's own
+  // sessions already (its session list), and reads no list of recents: it is
+  // not sent every local session twice more with each view.
+  const fleetView = (showQuestions: boolean, others = false) => {
+    const local = others ? [] : store.sessions();
+    const machines: any[] = others ? [] : [{ id: "local", name: f.name, state: "ready", sessions: local }];
     const recents: any[] = local.map((s) => ({ machine_id: "local", machine: f.name, session_id: s.id, title: s.title, phase: s.phase, updated_ms: s.updated, failed: s.phase === "error" }));
     for (const m of f.rows()) {
       if ((!m.link_key && m.state === "unknown") || f.isSsh(m)) continue; // an ssh machine has no sessions of its own
       const r = f.remoteSessions(m.id);
       const v = f.view(m);
       machines.push({ id: m.id, name: m.name, state: v.daemon.state === "linked" ? m.state : "offline", sessions: r.sessions, states: r.states, states_rev: r.states_rev, questions: showQuestions ? r.questions : undefined, reason: v.daemon.reason ?? m.reason ?? undefined, colour: m.colour ?? undefined, stale: r.stale || undefined, retry_at_ms: r.retry_at_ms });
-      if (!r.stale) for (const s of r.sessions) recents.push({ machine_id: m.id, machine: m.name, session_id: s.id, title: s.title, phase: s.phase, updated_ms: s.updated, failed: s.phase === "error" });
+      if (!others && !r.stale) for (const s of r.sessions) recents.push({ machine_id: m.id, machine: m.name, session_id: s.id, title: s.title, phase: s.phase, updated_ms: s.updated, failed: s.phase === "error" });
     }
     recents.sort((a, b) => b.updated_ms - a.updated_ms);
     return { daemon_id: f.id, machines, recents };
@@ -243,7 +246,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
   return {
     // Only the browser's fleet view needs third-party question snapshots. A
     // paired daemon gets this daemon's questions from its own relay stream.
-    "/api/fleet": { GET: (req: Request) => json(fleetView(!forwardedStanding(req))) },
+    "/api/fleet": { GET: (req: Request) => json(fleetView(!forwardedStanding(req), new URL(req.url).searchParams.has("others"))) },
 
     "/api/fleet/identity": {
       GET: (req: Request) => proven(json(f.identity()), paired(req), f.id),

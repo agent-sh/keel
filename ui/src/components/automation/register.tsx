@@ -2,7 +2,7 @@ import { BellRing, Bot, ListChecks } from "lucide-react";
 import { lazy } from "react";
 import { auto, setAdvisorSession } from "../../lib/automation.ts";
 import { panels, settingsSections, slash } from "../../lib/extend.ts";
-import { actions, getState } from "../../lib/store.ts";
+import { actions, getState, ensureModels } from "../../lib/store.ts";
 import { getUI, navigate, savePref } from "../../lib/ui.ts";
 
 // The automation lane's entries in the workbench: /loop and Settings > Alerts.
@@ -44,6 +44,7 @@ slash.add({
     if (!a || !session) { setAdvisorSession(session ? { id: session.id, title: session.title || "this session" } : null); return navigate({ name: "settings", section: "agents" }); }
     if (a === "off" || a === "default") return void (await auto.setSessionAdvisor(session.id, a === "off" ? "off" : null));
     const w = a.toLowerCase();
+    await ensureModels();
     const ms = getState().models.filter((m) => !m.hidden);
     const hit = ms.find((m) => m.id === a) ?? ms.find((m) => m.id.toLowerCase().includes(w) || m.name.toLowerCase().includes(w));
     if (!hit) throw new Error(`No listed model matches "${a}".`);

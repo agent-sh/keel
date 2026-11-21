@@ -4,7 +4,7 @@
 // an endpoint's models take the owner's own window, capabilities and price.
 import { Loader2, Pencil, Radar, Search } from "lucide-react";
 import { useMemo, useState } from "react";
-import { actions, api, failed, useStore, type ListedModel } from "../lib/store.ts";
+import { actions, api, failed, useStore, type ListedModel, useModels } from "../lib/store.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
 import { Select } from "./Select.tsx";
 
@@ -85,7 +85,7 @@ function Editor({ m, provider, onDone }: { m: ListedModel; provider: string; onD
 }
 
 export function ProviderModels({ provider, editable }: { provider: string; editable: boolean }) {
-  const all = useStore((s) => s.models);
+  const all = useModels();
   const [q, setQ] = useState("");
   const [probing, setProbing] = useState<Record<string, boolean>>({});
   const [notes, setNotes] = useState<Record<string, string>>({});

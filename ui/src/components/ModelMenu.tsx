@@ -3,7 +3,7 @@ import { Check, Eye, EyeOff, Image, ImageOff, RefreshCw, Star } from "lucide-rea
 import { TriggerLabel, triggerClass } from "./ModelPicker.tsx";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { composing } from "../lib/keys.ts";
-import { actions, reportError, useStore } from "../lib/store.ts";
+import { actions, ensureModels, reportError, useStore } from "../lib/store.ts";
 import { cn, fmtTokens } from "../lib/utils.ts";
 import { buildGroups, buildItems, countLabel, hiddenReason, providerOrder, type Group, type Item } from "../lib/picker.ts";
 import { notePick, recentPicks } from "../lib/ui.ts";
@@ -27,7 +27,9 @@ export function ModelMenu({ value, onChange, compact, openSignal, machine, place
   const highlighted = useRef<string | undefined>(undefined);
   const [hint, setHint] = useState<string | null>(null);
   useEffect(() => { if (openSignal) setOpen(true); }, [openSignal]);
+  // The whole listing is read when the menu first opens; until then the trigger names its model from the few the page holds.
   const local = useStore((s) => s.models);
+  useEffect(() => { if (open) ensureModels().catch((e) => reportError(e, { at: "models" })); }, [open]);
   const peer = usePeerModels(machine);
   const models = machine ? peer?.models ?? [] : local;
   const sessions = useStore((s) => s.sessions);

@@ -49,7 +49,7 @@ export function StartBox({ only }: { only?: boolean } = {}) {
   useEffect(() => { setRemoteDir(sshMachine ? localStorage.getItem(`keel.remoteFolder.${sshMachine.id}`) ?? "" : ""); }, [sshMachine?.id]);
   const pickRemote = (p: string) => { setRemoteDir(p); if (sshMachine) localStorage.setItem(`keel.remoteFolder.${sshMachine.id}`, p); };
   const loaded = useStore((s) => s.loaded);
-  const noModels = useStore((s) => s.loaded.models && s.models.length === 0);
+  const noModels = useStore((s) => s.loaded.models && s.modelCount === 0);
   const firstRun = loaded.sessions && !Object.values(sessions).some((s) => !s.archived);
   // The newest sessions anywhere, without the ones the rows of what needs the owner show.
   const attended = useAttended();

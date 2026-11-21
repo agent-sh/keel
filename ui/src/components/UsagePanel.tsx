@@ -6,7 +6,7 @@
 // and error rates from the local telemetry.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { composing } from "../lib/keys.ts";
-import { api, reportError, useStore } from "../lib/store.ts";
+import { api, reportError, useStore, useModels } from "../lib/store.ts";
 import { navigate, setUI } from "../lib/ui.ts";
 import { ago, clock, cn, fmtTokens, when } from "../lib/utils.ts";
 import { TimeChart } from "./Chart.tsx";
@@ -241,7 +241,7 @@ function Overview({ range, go }: { range: Range; go: (v: View) => void }) {
   const [cost, setCost] = useState<Record<string, Cost> | null>(null);
   const [usage, setUsage] = useState<{ total: Cost; by_purpose: (Cost & { purpose: string })[] } | null>(null);
   const [costFailed, setCostFailed] = useState<number | null>(null);
-  const models = useStore((s) => s.models);
+  const models = useModels();
   const name = (id: string) => models.find((m) => m.id === id)?.name ?? id.slice(id.indexOf(":") + 1);
 
   // Telemetry and prices load on their own: a failed price lookup leaves fresh
