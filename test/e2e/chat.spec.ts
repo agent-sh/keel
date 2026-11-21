@@ -67,6 +67,8 @@ test("a session that is loading shows that it is loading", async ({ page, reques
     const loading = page.getByTestId("transcript-loading");
     await expect(loading).toBeVisible({ timeout: 1_500 });
     await expect(loading).toContainText("Loading the conversation");
+    // It fades in after a moment: the shot is taken once it is fully there.
+    await expect.poll(() => loading.locator("div").first().evaluate((el) => getComputedStyle(el).opacity)).toBe("1");
     await expect(page.getByTestId("user-message")).toHaveCount(0);
     await shoot(page, "05-loading-session");
     await expect(page.getByTestId("user-message")).toContainText("A prompt in the slow session.", { timeout: 15_000 });
