@@ -201,6 +201,24 @@ test("loading again reads the model listing again", async () => {
   expect(m.options[0].options.map((o: any) => o.value)).toEqual(["p:beta"]);
 });
 
+test("a session whose model is no longer listed keeps it, marked, until the owner picks a listed one", async () => {
+  const s = { id: "s", workspace: "/w", model: "p:gone", head: null, updated: 1 };
+  const f = fixture([s], {});
+  f.d.post = (method) => { if (method === "PATCH") s.model = "p:alpha"; };
+  const values = (m: any) => m.options.flatMap((g: any) => g.options.map((o: any) => o.value));
+  for (const method of ["session/load", "session/resume"]) {
+    const m = (await call(f.bridge, f.out, method, { sessionId: "s" })).result.configOptions.find((o: any) => o.id === "model");
+    expect(m.currentValue).toBe("p:gone");
+    expect(values(m)).toEqual(["p:gone", "p:alpha"]);
+    expect(m.options[0]).toEqual({ group: "unavailable", name: "Not available", options: [{ value: "p:gone", name: "p:gone (not available)", description: "No provider lists this model now. Pick a listed model to go on." }] });
+  }
+  expect(f.calls.some((c) => c.startsWith("PATCH"))).toBe(false); // nothing switched by itself
+  const picked = (await call(f.bridge, f.out, "session/set_config_option", { sessionId: "s", configId: "model", value: "p:alpha" })).result.configOptions.find((o: any) => o.id === "model");
+  expect(f.calls).toContain("PATCH /api/sessions/s");
+  expect(picked.currentValue).toBe("p:alpha");
+  expect(values(picked)).toEqual(["p:alpha"]);
+});
+
 test("an embedded file reaches the prompt or the prompt is refused", async () => {
   const blob = { type: "resource", resource: { uri: "memory://draft/spec", mimeType: "application/pdf", blob: Buffer.from("%PDF").toString("base64") } };
   await expect(promptOf([{ type: "text", text: "inspect spec" }, blob])).rejects.toThrow("cannot be attached");

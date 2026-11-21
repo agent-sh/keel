@@ -338,11 +338,17 @@ export class AcpBridge {
   }
 
   private async sessionSetup(s: Json, mode: string, fresh = false) {
+    const models = await this.modelOptions(fresh);
+    // The session's model is its current value also when no provider lists it
+    // now (a key removed, a model retired): it is shown as what it is, an option
+    // of its own that says so, and stays until the owner picks a listed one.
+    const listed = models.some((g) => g.options.some((o: Json) => o.value === s.model));
+    if (!listed && s.model) models.unshift({ group: "unavailable", name: "Not available", options: [{ value: s.model, name: `${s.model} (not available)`, description: "No provider lists this model now. Pick a listed model to go on." }] });
     return {
       modes: { currentModeId: mode, availableModes: MODES },
       configOptions: [
         { id: "mode", name: "Permissions", category: "mode", type: "select", currentValue: mode, options: MODES.map((m) => ({ value: m.id, name: m.name, description: m.description })) },
-        { id: "model", name: "Model", category: "model", type: "select", currentValue: s.model, options: await this.modelOptions(fresh) },
+        { id: "model", name: "Model", category: "model", type: "select", currentValue: s.model, options: models },
       ],
     };
   }
