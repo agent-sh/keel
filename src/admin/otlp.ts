@@ -157,12 +157,14 @@ const QUEUE = 5000;
 
 export type ExportState = { endpoint: string | null; from: "setting" | "env" | null; headers: HeadersShown | null; sent: number; dropped: number; failures: number; last_ok_ms: number | null; last_error: string | null; queued: number };
 
+// One collector's work: the spans waiting for it, its timer, its backoff and
+// the request in flight. Another collector gets another one, so nothing queued
+// or under way for the first reaches the second.
+type Target = { url: string; queue: Span[]; timer?: ReturnType<typeof setTimeout>; backoffUntil: number; busy: boolean; cancel: AbortController };
+
 // Batches finished spans and posts them; a failed post waits 30 s, the spans kept.
 export class OtlpExporter {
-  private queue: Span[] = [];
-  private timer: ReturnType<typeof setTimeout> | undefined;
-  private backoffUntil = 0;
-  private busy = false;
+  private target: Target | null = null;
   private source: HeaderSource | null = null;
   state: ExportState = { endpoint: null, from: null, headers: null, sent: 0, dropped: 0, failures: 0, last_ok_ms: null, last_error: null, queued: 0 };
 
@@ -170,14 +172,24 @@ export class OtlpExporter {
   constructor(private resource: Record<string, unknown>, private read: (src: KeySource) => Promise<string | null>, private onFail: (e: Error) => void) {}
 
   configure(ep: { url: string; from: "setting" | "env" } | null, headers: HeaderSource | null = null) {
-    // The counts are the current endpoint's: another endpoint starts from none.
-    if (ep?.url !== this.state.endpoint) Object.assign(this.state, { endpoint: ep?.url ?? null, from: ep?.from ?? null, sent: 0, dropped: 0, failures: 0, last_ok_ms: null, last_error: null });
+    // Another collector, or none: what waited or was under way for the last
+    // one ends with it, and the counts start from none.
+    if (ep?.url !== this.state.endpoint) this.point(ep);
     if (headers?.label !== this.source?.label) this.state.last_error = null;
     this.source = headers;
     this.state.headers = headers ? { label: headers.label, from: headers.from, names: [], missing: false } : null;
-    this.backoffUntil = 0;
-    if (!ep) { this.queue = []; this.state.queued = 0; }
+    if (this.target) this.target.backoffUntil = 0;
     if (headers) void this.headers().catch(() => {});
+  }
+
+  private point(ep: { url: string; from: "setting" | "env" } | null) {
+    const old = this.target;
+    this.target = ep ? { url: ep.url, queue: [], backoffUntil: 0, busy: false, cancel: new AbortController() } : null;
+    Object.assign(this.state, { endpoint: ep?.url ?? null, from: ep?.from ?? null, sent: 0, dropped: 0, failures: 0, last_ok_ms: null, last_error: null, queued: 0 });
+    if (!old) return;
+    clearTimeout(old.timer);
+    old.queue = [];
+    old.cancel.abort();
   }
 
   // The headers to send now; the state shows their names.
@@ -190,38 +202,52 @@ export class OtlpExporter {
     return r.headers;
   }
 
+  private arm(t: Target, ms: number) {
+    t.timer ??= setTimeout(() => { t.timer = undefined; void this.flush(); }, ms);
+  }
+
   push(s: Span) {
-    if (!this.state.endpoint) return;
-    this.queue.push(s);
-    if (this.queue.length > QUEUE) { this.state.dropped += this.queue.length - QUEUE; this.queue.splice(0, this.queue.length - QUEUE); }
-    this.state.queued = this.queue.length;
-    this.timer ??= setTimeout(() => { this.timer = undefined; void this.flush(); }, 1000);
+    const t = this.target;
+    if (!t) return;
+    t.queue.push(s);
+    if (t.queue.length > QUEUE) { this.state.dropped += t.queue.length - QUEUE; t.queue.splice(0, t.queue.length - QUEUE); }
+    this.state.queued = t.queue.length;
+    this.arm(t, 1000);
   }
 
   async flush() {
-    if (this.busy || !this.state.endpoint || !this.queue.length) return;
-    if (Date.now() < this.backoffUntil) { this.timer ??= setTimeout(() => { this.timer = undefined; void this.flush(); }, this.backoffUntil - Date.now()); return; }
-    this.busy = true;
-    const batch = this.queue.splice(0, BATCH);
+    const t = this.target;
+    if (!t || t.busy || !t.queue.length) return;
+    if (Date.now() < t.backoffUntil) return this.arm(t, t.backoffUntil - Date.now());
+    t.busy = true;
+    const batch = t.queue.splice(0, BATCH);
+    // False once the exporter points elsewhere: this batch then changes nothing.
+    const current = () => this.target === t;
     try {
       const headers = await this.headers();
-      const r = await fetch(this.state.endpoint, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(toOtlp(batch, this.resource)), signal: AbortSignal.timeout(10_000) });
-      if (!r.ok) throw new Error(`OTLP export to ${this.state.endpoint}: HTTP ${r.status}: ${(await r.text().catch(() => "")).slice(0, 300)}`);
+      if (!current()) return;
+      const r = await fetch(t.url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(toOtlp(batch, this.resource)), signal: AbortSignal.any([t.cancel.signal, AbortSignal.timeout(10_000)]) });
+      if (!r.ok) throw new Error(`OTLP export to ${t.url}: HTTP ${r.status}: ${(await r.text().catch(() => "")).slice(0, 300)}`);
+      if (!current()) return;
       this.state.sent += batch.length;
       this.state.last_ok_ms = Date.now();
       this.state.last_error = null;
     } catch (e) {
-      this.queue.unshift(...batch);
+      if (!current()) return;
+      t.queue.unshift(...batch);
       this.state.failures++;
       this.state.last_error = (e as Error).message;
-      this.backoffUntil = Date.now() + 30_000;
-      this.onFail(e instanceof Error && e.message.startsWith("OTLP") ? e : new Error(`OTLP export to ${this.state.endpoint}: ${(e as Error).message}`));
+      t.backoffUntil = Date.now() + 30_000;
+      this.onFail(e instanceof Error && e.message.startsWith("OTLP") ? e : new Error(`OTLP export to ${t.url}: ${(e as Error).message}`));
     } finally {
-      this.busy = false;
-      this.state.queued = this.queue.length;
-      if (this.queue.length) this.timer ??= setTimeout(() => { this.timer = undefined; void this.flush(); }, Math.max(1000, this.backoffUntil - Date.now()));
+      t.busy = false;
+      if (current()) {
+        this.state.queued = t.queue.length;
+        if (t.queue.length) this.arm(t, Math.max(1000, t.backoffUntil - Date.now()));
+      }
     }
   }
 
-  stop() { clearTimeout(this.timer); }
+  // Nothing more goes out: the timer, the queue and the request in flight end here.
+  stop() { this.point(null); }
 }

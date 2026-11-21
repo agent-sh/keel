@@ -86,3 +86,107 @@ test("auth headers come from a named source, are sent, and show by name only", a
     server.stop(true);
   }
 });
+
+// A loopback collector: the span ids of each batch it got. `hold` keeps its
+// answer back until `release(status)`.
+function collector(hold = false) {
+  const got: string[][] = [];
+  let arrived = Promise.withResolvers<void>();
+  let gate = Promise.withResolvers<number>();
+  const server = Bun.serve({
+    port: 0, hostname: "127.0.0.1",
+    fetch: async (r) => {
+      got.push(((await r.json()) as any).resourceSpans[0].scopeSpans[0].spans.map((s: any) => s.spanId));
+      arrived.resolve();
+      return new Response("{}", { status: hold ? await gate.promise : 200 });
+    },
+  });
+  return { got, ep: { url: `http://127.0.0.1:${server.port}/v1/traces`, from: "setting" as const }, arrived: () => arrived.promise, release: (status: number) => gate.resolve(status), stop: () => { gate.resolve(200); server.stop(true); } };
+}
+const sp = (id: string): Span => ({ ...base, span_id: id.padEnd(16, "0"), trace_id: "e".repeat(32), parent_id: null, kind: "tool", name: "execute_tool Bash", start_ms: 1, status: "ok", error: null, error_type: null, attrs: {} });
+const ids = (...names: string[]) => names.map((n) => n.padEnd(16, "0"));
+
+test("what waits or is in flight for one collector never reaches the next, and its late end changes nothing", async () => {
+  const failed: string[] = [];
+  for (const late of [500, 200]) {
+    const a = collector(true), b = collector();
+    const ex = new OtlpExporter({}, async () => null, (e) => failed.push(e.message));
+    try {
+      ex.configure(a.ep);
+      ex.push(sp("a1"));
+      const held = ex.flush();
+      await a.arrived();
+      ex.push(sp("a2")); // waits for A behind the batch in flight
+      ex.configure(b.ep);
+      expect(ex.state).toMatchObject({ endpoint: b.ep.url, queued: 0, sent: 0, failures: 0 });
+      ex.push(sp("b1"));
+      await ex.flush();
+      expect(b.got).toEqual([ids("b1")]);
+      // A answers late, with a failure or a success: B's counts, queue and backoff are as they were.
+      a.release(late);
+      await held;
+      expect(ex.state).toMatchObject({ endpoint: b.ep.url, queued: 0, sent: 1, failures: 0, last_error: null });
+      ex.push(sp("b2"));
+      await ex.flush();
+      expect(b.got).toEqual([ids("b1"), ids("b2")]);
+      expect(a.got).toEqual([ids("a1")]);
+      expect(ex.state).toMatchObject({ queued: 0, sent: 2, failures: 0 });
+    } finally {
+      ex.stop();
+      a.stop();
+      b.stop();
+    }
+  }
+  expect(failed).toEqual([]);
+});
+
+test("a batch whose headers were still being read is not posted to the collector picked meanwhile", async () => {
+  const a = collector(), b = collector();
+  const failed: string[] = [];
+  let reads = 0;
+  const gate = Promise.withResolvers<void>();
+  // The first read is configure's own; the flush's read is held.
+  const ex = new OtlpExporter({}, async () => (++reads > 1 && (await gate.promise), "x-team=one"), (e) => failed.push(e.message));
+  const source = headerSourceOf({ env: "COLLECTOR_HEADERS" }, {});
+  try {
+    ex.configure(a.ep, source);
+    ex.push(sp("a1"));
+    const held = ex.flush();
+    ex.configure(b.ep, source);
+    gate.resolve();
+    await held;
+    await ex.flush();
+    expect([a.got, b.got]).toEqual([[], []]);
+    expect(ex.state).toMatchObject({ endpoint: b.ep.url, queued: 0, sent: 0, failures: 0 });
+    expect(failed).toEqual([]);
+  } finally {
+    ex.stop();
+    a.stop();
+    b.stop();
+  }
+});
+
+test("turning the export off ends the batch in flight: nothing comes back into the queue", async () => {
+  const a = collector(true);
+  const failed: string[] = [];
+  const ex = new OtlpExporter({}, async () => null, (e) => failed.push(e.message));
+  try {
+    ex.configure(a.ep);
+    ex.push(sp("a1"));
+    const held = ex.flush();
+    await a.arrived();
+    ex.configure(null);
+    a.release(500);
+    await held;
+    expect(ex.state).toMatchObject({ endpoint: null, queued: 0, sent: 0, failures: 0, last_error: null });
+    expect(failed).toEqual([]);
+    // Pointed at the same collector again, it starts with nothing of before.
+    ex.configure(a.ep);
+    await ex.flush();
+    expect(a.got).toEqual([ids("a1")]);
+    expect(ex.state.queued).toBe(0);
+  } finally {
+    ex.stop();
+    a.stop();
+  }
+});
