@@ -59,7 +59,7 @@ const ExitPlanMode: Tool = {
 const PresentPlan: Tool = {
   name: "present_plan",
   description: "In plan mode, present your plan to the owner for approval before you change anything. The owner approves it (maybe edited) or says what to change.",
-  input_schema: { ...schema, properties: { ...schema.properties, title: { type: "string" } } }, readOnly: true, families: ["gpt", "gemini"], run: present,
+  input_schema: { ...schema, properties: { ...schema.properties, title: { type: "string" } } }, readOnly: true, families: ["gpt", "gemini", "other"], run: present,
 };
 
 export const planRoutes: RouteModule = (deps: Deps) => {
