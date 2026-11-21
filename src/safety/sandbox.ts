@@ -3,8 +3,8 @@
 // runs at a lower CPU and IO weight (and a memory cap when one is set). When
 // bwrap is missing or cannot start, sandboxing is unavailable and says why;
 // a session never believes it is confined when it is not.
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { gitViewsDir } from "../core/git.ts";
 import type { SessionPerm } from "./gate.ts";
 
@@ -72,6 +72,62 @@ export function splitScope(argv: string[]): { props: string[]; argv: string[] } 
   return end < 0 ? { props: [], argv } : { props: argv.slice(h.length, end), argv: argv.slice(end + 1) };
 }
 
+// A checkout's own config (`config.worktree` in its git directory) runs code
+// as the repository's config does, when the repository turns per-worktree
+// config on (sparse checkout does). It is read-only then; a missing one is
+// made empty first, so a confined command cannot write it.
+function worktreeConfig(common: string, own: string): string[] {
+  const cfg = join(own, "config.worktree");
+  try {
+    if (!existsSync(cfg)) {
+      if (!/^\s*worktreeconfig\s*=\s*(true|yes|on|1)\s*$/im.test(readFileSync(join(common, "config"), "utf8"))) return [];
+      writeFileSync(cfg, "");
+    }
+    return ["--ro-bind", cfg, cfg];
+  } catch {
+    return [];
+  }
+}
+
+// A linked worktree keeps git's files outside its folder: its own directory
+// `<common>/worktrees/<name>` (index, HEAD, logs) and the repository's common
+// directory (objects, refs). A commit writes both, so both are writable, and
+// nothing else of the repository is: its hooks and config stay read-only (they
+// run code outside the sandbox later), and so does what belongs to the other
+// checkouts (the other worktrees' directories, the main checkout's HEAD,
+// index and submodules).
+//
+// The `.git` file that names the directory is inside the writable folder, so
+// a confined command can rewrite it. It is believed only when git's own
+// layout confirms it: the directory is `<common>/worktrees/<name>`, its
+// `gitdir` file points back at this folder, and the common directory is a
+// repository. A forged pointer needs those files in a place the sandbox
+// could already write, so it gains nothing.
+export function linkedGitBinds(workspace: string): string[] {
+  try {
+    const dot = join(workspace, ".git");
+    if (!statSync(dot).isFile()) return [];
+    const named = /^gitdir: (.+)$/m.exec(readFileSync(dot, "utf8"))?.[1]?.trim();
+    if (!named) return [];
+    const own = realpathSync(resolve(workspace, named));
+    const common = dirname(dirname(own));
+    if (basename(dirname(own)) !== "worktrees") return [];
+    if (realpathSync(resolve(own, readFileSync(join(own, "commondir"), "utf8").trim())) !== common) return [];
+    const back = resolve(own, readFileSync(join(own, "gitdir"), "utf8").trim());
+    if (realpathSync(dirname(back)) !== realpathSync(workspace) || basename(back) !== ".git") return [];
+    if (!["HEAD", "objects", "refs"].every((p) => existsSync(join(common, p)))) return [];
+    const out = ["--bind", common, common];
+    for (const p of ["hooks", "config", "worktrees", "HEAD", "index", "modules"]) {
+      const full = join(common, p);
+      if (existsSync(full)) out.push("--ro-bind", full, full);
+    }
+    out.push("--bind", own, own, ...worktreeConfig(common, own));
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 // The argv that runs `argv` confined by the session's profile.
 // `scratch` is the session's own tool folder (a command's working-directory
 // file, spilled output), or several (an ACP agent's own folders): writable in
@@ -92,6 +148,8 @@ export function confine(argv: string[], perm: Pick<SessionPerm, "sandbox" | "net
       const full = join(workspace, p);
       if (existsSync(full)) b.push("--ro-bind", full, full);
     }
+    if (existsSync(join(workspace, ".git/config"))) b.push(...worktreeConfig(join(workspace, ".git"), join(workspace, ".git")));
+    b.push(...linkedGitBinds(workspace));
   }
   // The views the daemon's own git reads repositories through (src/core/git.ts):
   // never writable, also for a session whose folder holds Keel's state folder.
