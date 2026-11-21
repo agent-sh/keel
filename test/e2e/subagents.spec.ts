@@ -149,7 +149,9 @@ test("a parked subagent notifies its busy parent before the final report", async
     expect((await view()).running).toBe(true);
     expect((await request.delete(`/api/waits/${await waitIdOf(cancelled)}`)).ok()).toBe(true);
 
-    await expect(page.getByTestId("wake-notice")).toHaveCount(1);
+    // The parent's turn ends when its wait_agent gives up, 5 s after it began: the wake follows that,
+    // and the default 5 s was passed when the daemon was slow (after a test of this file that ran a minute).
+    await expect(page.getByTestId("wake-notice")).toHaveCount(1, { timeout: 20_000 });
     const note = page.getByTestId("agent-park-notice");
     await expect(note).toHaveCount(1);
     await note.getByRole("button").click();
