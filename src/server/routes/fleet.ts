@@ -29,6 +29,7 @@ import type { Deps, RouteModule } from "../app.ts";
 import { gate, presence } from "./permissions.ts";
 import { runMode } from "../../core/runmode.ts";
 import { allPendingQuestions } from "../../tools/interact.ts";
+import { board } from "./state.ts";
 import { fitted } from "../../engine/image-fit.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -229,7 +230,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       if ((!m.link_key && m.state === "unknown") || f.isSsh(m)) continue; // an ssh machine has no sessions of its own
       const r = f.remoteSessions(m.id);
       const v = f.view(m);
-      machines.push({ id: m.id, name: m.name, state: v.daemon.state === "linked" ? m.state : "offline", sessions: r.sessions, questions: showQuestions ? r.questions : undefined, reason: v.daemon.reason ?? m.reason ?? undefined, colour: m.colour ?? undefined, stale: r.stale || undefined, retry_at_ms: r.retry_at_ms });
+      machines.push({ id: m.id, name: m.name, state: v.daemon.state === "linked" ? m.state : "offline", sessions: r.sessions, states: r.states, questions: showQuestions ? r.questions : undefined, reason: v.daemon.reason ?? m.reason ?? undefined, colour: m.colour ?? undefined, stale: r.stale || undefined, retry_at_ms: r.retry_at_ms });
       if (!r.stale) for (const s of r.sessions) recents.push({ machine_id: m.id, machine: m.name, session_id: s.id, title: s.title, phase: s.phase, updated_ms: s.updated, failed: s.phase === "error" });
     }
     recents.sort((a, b) => b.updated_ms - a.updated_ms);
@@ -664,7 +665,8 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
           if (stalled) { mine.stalled++; mine.stalled_ms = Date.now(); }
         }, {
           last: enc.encode(": stalled\n\n"),
-          open: [frame({ t: "snapshot", sessions: store.sessions() }), frame({ t: "questions", pending: allPendingQuestions(), rev: bus.rev() })],
+          // The sessions, then each one's state (src/core/watch.ts) and the questions that wait: what the other daemon's pages show at once.
+          open: [frame({ t: "snapshot", sessions: store.sessions() }), frame({ t: "states", states: board?.all() ?? {} }), frame({ t: "questions", pending: allPendingQuestions(), rev: bus.rev() })],
         });
         mine.feeds.add(feed);
         const send = (x: unknown) => feed.send(frame(x));

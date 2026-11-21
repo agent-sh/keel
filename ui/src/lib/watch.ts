@@ -7,16 +7,17 @@
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { ownerPrompt } from "../../../src/core/owner.ts";
 import type { Session, StoredEvent } from "../../../src/core/types.ts";
-import { agentLive, liveAgentCounts, stateOf, watchLabel, type SessionState, type Watch } from "../../../src/core/watch.ts";
+import { agentLive, AT_REST, liveAgentCounts, stateOf, watchLabel, type SessionState, type Watch } from "../../../src/core/watch.ts";
 import { useAuto } from "./automation.ts";
+import { remoteId, splitId } from "./fleet-ids.ts";
 import { useSafety } from "./safety.ts";
-import { unsentOf, useShelfVersion, useUnsent } from "./send-drafts.ts";
+import { sendDrafts, unsentOf, useShelfVersion } from "./send-drafts.ts";
 import { actions, api, getState, newer, onFeature, reportError, useStore } from "./store.ts";
 import { stripAnsi, toolKind, toolLine, type ToolKind } from "./tools.ts";
 
 export { toolLine };
 
-export { WATCH_LABEL, WATCH_RANK, watchLabel, type SessionState, type Watch } from "../../../src/core/watch.ts";
+export { AT_REST, LIST_TIER, WATCH_LABEL, WATCH_RANK, watchLabel, type SessionState, type Watch } from "../../../src/core/watch.ts";
 
 // Agents still at work, per parent session (the automation store keeps every live one).
 export function useAgentCounts(): Record<string, number> {
@@ -40,8 +41,19 @@ export const useToldStates = () => useTold((x) => x);
 export const useToldState = (id: string | undefined) => useTold((x) => (id ? x[id] : undefined));
 export async function loadStates() {
   const r = await api<{ states: Record<string, SessionState>; rev?: number }>("/api/state");
-  const next = { ...told };
-  for (const [id, st] of Object.entries(r.states)) if (newer(`${id}:state`, r.rev, true)) next[id] = st;
+  // The snapshot is every session this daemon tells of: one it leaves out (archived or
+  // deleted while the page was away) is told no more, unless a newer frame says otherwise.
+  // Another machine's sessions are told by its relay (tellRemote).
+  const next: Record<string, SessionState> = {};
+  for (const [id, st] of Object.entries(told)) if (splitId(id) || (!(id in r.states) && !newer(`${id}:state`, r.rev, true))) next[id] = st;
+  for (const [id, st] of Object.entries(r.states)) next[id] = newer(`${id}:state`, r.rev, true) || !told[id] ? st : told[id]!;
+  setTold(next);
+}
+// The states of another machine's sessions, as its daemon told them with the relay's snapshot.
+export function tellRemote(machine: string, states: Record<string, SessionState>) {
+  const next: Record<string, SessionState> = {};
+  for (const [id, st] of Object.entries(told)) if (splitId(id)?.machine !== machine) next[id] = st;
+  for (const [id, st] of Object.entries(states)) next[remoteId(machine, id)] = st.child ? { ...st, child: remoteId(machine, st.child) } : st;
   setTold(next);
 }
 onFeature({
@@ -56,12 +68,20 @@ onFeature({
 loadStates().catch(reportError);
 
 // A message this browser keeps because it was not sent, or nobody confirmed
-// it, waits for the owner like a question does: the session needs them.
+// it, waits for the owner like a question does: the session needs them. One
+// that waits for the daemon to be back goes out by itself: nothing for the
+// owner to do, so a session at rest reads Waiting with that as its reason,
+// and a state that already says more (needs you, working, failed) keeps its own.
 const UNSENT_LINE = { refused: "A message was not sent", unconfirmed: "A message's delivery is unconfirmed" } as const;
-function withUnsent(st: SessionState, unsent: "refused" | "unconfirmed" | null): SessionState {
-  if (!unsent) return st;
+const SEND_WAITS = "A message waits for Keel to be back";
+type Kept = "refused" | "unconfirmed" | "waiting" | null;
+// What the shelf holds for a session: a send the owner must look at first, else one that waits for the daemon.
+const keptOf = (sid: string): Kept => unsentOf(sid) ?? (sendDrafts(sid).some((d) => (d.state as string) === "waiting") ? "waiting" : null);
+function withUnsent(st: SessionState, kept: Kept): SessionState {
+  if (!kept) return st;
+  if (kept === "waiting") return AT_REST.includes(st.watch) ? { watch: "wait", agents: st.agents, why: "send", text: SEND_WAITS } : st;
   if (st.watch === "need") return { ...st, asks: (st.asks ?? 1) + 1 };
-  return { watch: "need", agents: st.agents, why: "unsent", text: UNSENT_LINE[unsent], asks: 1 };
+  return { watch: "need", agents: st.agents, why: "unsent", text: UNSENT_LINE[kept], asks: 1 };
 }
 
 // A session the daemon has not told of (another machine's before its first
@@ -74,11 +94,12 @@ export function useSessionState(s: Session | undefined): SessionState {
   const events = useStore((x) => (s && !state ? x.events[s.id] : undefined));
   const n = useSafety((x) => (s ? x.approvals[s.id]?.length ?? 0 : 0));
   const asking = useStore((x) => !!s && !!(x.questionCalls[s.id]?.length || x.questionChildren[s.id]?.length));
-  const unsent = useUnsent(s?.id);
+  useShelfVersion();
+  const kept = s ? keptOf(s.id) : null;
   const agents = useAgentCount(s?.id);
   return useMemo(
-    () => (s ? withUnsent(state ?? fromHeld(s, { events, approvals: n, asking, agents }), unsent) : { watch: "idle", agents: 0 }),
-    [s, state, events, n, asking, agents, unsent],
+    () => (s ? withUnsent(state ?? fromHeld(s, { events, approvals: n, asking, agents }), kept) : { watch: "idle", agents: 0 }),
+    [s, state, events, n, asking, agents, kept],
   );
 }
 export const useWatch = (s: Session | undefined): Watch => useSessionState(s).watch;
@@ -102,7 +123,7 @@ export function useSessionStates(list: Session[]): Record<string, SessionState> 
     const out: Record<string, SessionState> = {};
     for (const s of list) {
       const st = states[s.id] ?? fromHeld(s, { events: events[s.id], approvals: approvals[s.id]?.length, asking: !!(calls[s.id]?.length || children[s.id]?.length), agents: agents[s.id] });
-      out[s.id] = withUnsent(st, unsentOf(s.id));
+      out[s.id] = withUnsent(st, keptOf(s.id));
     }
     return out;
   }, [list, states, events, calls, children, approvals, agents, shelf]);

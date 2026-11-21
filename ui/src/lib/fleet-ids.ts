@@ -45,7 +45,9 @@ export function relayed(machine: string, f: Frame): Frame | null {
       const inner = d?.data && typeof d.data === "object" && ("session_id" in d.data || "parent_id" in d.data)
         ? { ...d, data: { ...d.data, ...("session_id" in d.data ? { session_id: q(d.data.session_id) } : {}), ...("parent_id" in d.data ? { parent_id: q(d.data.parent_id) } : {}) } }
         : f.data;
-      return { ...f, session_id: map(f.session_id), data: inner };
+      // A session's state names the agent session its first ask waits in: that daemon's too.
+      const state = f.name === "state" && f.data && typeof f.data === "object" && typeof (f.data as { child?: unknown }).child === "string" ? { ...f.data, child: map((f.data as { child: string }).child) } : null;
+      return { ...f, session_id: map(f.session_id), data: state ?? inner };
     }
     default: return null;
   }

@@ -1,6 +1,7 @@
 // Client state of the fleet: the machines, which machine ran each tool call,
 // and the machine a new session starts on. Sessions of other daemons go into
 // the main store under "<machine>--<id>".
+import { tellRemote, type SessionState } from "./watch.ts";
 import { useSyncExternalStore } from "react";
 import type { Frame, Session } from "../../../src/core/types.ts";
 import { asRemote, relayed, splitId } from "./fleet-ids.ts";
@@ -16,7 +17,7 @@ export type Machine = {
   transport?: "ssh" | "daemon"; routes?: string[]; route?: string; helper?: { runtime: string; helper: string; uploaded: string[]; dir: string };
 };
 export type RemoteDirs = { path: string; parent: string | null; root: string; is_git: boolean; dirs: { name: string; path: string; is_git: boolean }[] };
-export type FleetMachineView = { id: string; name: string; state: string; sessions: Session[]; questions?: Extract<Frame, { t: "questions" }>; reason?: string; colour?: string; stale?: boolean; retry_at_ms?: number };
+export type FleetMachineView = { id: string; name: string; state: string; sessions: Session[]; states?: Record<string, SessionState>; questions?: Extract<Frame, { t: "questions" }>; reason?: string; colour?: string; stale?: boolean; retry_at_ms?: number };
 
 type State = {
   machines: Machine[];
@@ -92,6 +93,8 @@ export const fleet = {
       if (m.id === "local") continue;
       const questions = m.questions && relayed(m.id, m.questions);
       if (questions) apply(questions);
+      // Each of its sessions' state as that daemon tells it: shown with the list, not at its next change.
+      if (m.states) tellRemote(m.id, m.states);
       for (const s of m.sessions) {
         const rs = asRemote(m.id, s);
         const held = cur[rs.id];
@@ -151,6 +154,8 @@ const reloadMachines = () => { clearTimeout(machinesTimer); machinesTimer = setT
 onFeature({
   frame(f) {
     if (f.name === "fleet_frame") {
+      // The states that come with a relay's snapshot.
+      if ((f.data.frame as { t: string }).t === "states") return tellRemote(f.data.machine, (f.data.frame as unknown as { states: Record<string, SessionState> }).states ?? {});
       const fr = relayed(f.data.machine, f.data.frame);
       if (fr) apply(fr);
     } else if (f.name === "fleet_machines") reloadMachines();
