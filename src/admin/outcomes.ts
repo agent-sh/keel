@@ -119,13 +119,24 @@ export class Outcomes {
     return this.write(s.id, events.slice(startAt, endAt + 1), reason);
   }
 
+  // The rollup of one turn. A request or tool run belongs to the turn whose id
+  // it was recorded with (`turn_event`), whatever the clock says: two turns
+  // that share a millisecond, or branches of one session, never count each
+  // other's rows. A side request is in no turn. A row from before the ids
+  // were recorded goes to one turn only: the last one of its session that
+  // started at or before it (by time, then by order), when that turn was still
+  // running at the row's time.
   private write(sessionId: string, span: StoredEvent[], reason: string): Turn | undefined {
     const start = span[0]!, end = span.at(-1)!;
     const db = this.store.db;
-    const calls = db.query<any, [string, number, number]>(
-      "SELECT * FROM telemetry_calls WHERE session_id = ? AND ts >= ? AND ts <= ? AND COALESCE(purpose, 'turn') != 'side' ORDER BY ts").all(sessionId, start.ts, end.ts);
-    const tools = db.query<{ tool: string; is_error: number }, [string, number, number]>(
-      "SELECT tool, is_error FROM telemetry_tools WHERE session_id = ? AND ts >= ? AND ts <= ?").all(sessionId, start.ts, end.ts);
+    const own = (table: string, cols: string) => db.query<any, [string, string, number, number, number]>(
+      `SELECT ${cols} FROM ${table} r WHERE r.turn_event = ?1
+       UNION ALL
+       SELECT ${cols} FROM ${table} r WHERE r.session_id = ?2 AND r.turn_event IS NULL AND r.ts >= ?3 AND r.ts <= ?4
+         AND NOT EXISTS (SELECT 1 FROM events e WHERE e.session_id = ?2 AND e.kind = 'turn_start' AND e.ts <= r.ts AND (e.ts > ?3 OR (e.ts = ?3 AND e.seq > ?5)))
+       ORDER BY ts, id`).all(start.id, sessionId, start.ts, end.ts, start.seq);
+    const calls = own("telemetry_calls", "r.*").filter((c) => (c.purpose ?? "turn") !== "side");
+    const tools: { tool: string; is_error: number }[] = own("telemetry_tools", "r.id, r.ts, r.tool, r.is_error");
     const ok = calls.filter((c) => c.outcome === "ok");
     const turnCalls = ok.filter((c) => (c.purpose ?? "turn") === "turn");
     const sum = (k: string) => ok.reduce((n, c) => n + (c[k] ?? 0), 0);

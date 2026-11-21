@@ -128,6 +128,8 @@ export class Telemetry {
       ...ZONES.map((z) => ["telemetry_calls", `z_${z}`, "INTEGER"])] as const;
     for (const [t, col, type] of cols) if (!store.columnExists(t, col)) store.db.exec(`ALTER TABLE ${t} ADD COLUMN ${col} ${type}`);
     store.migrate("CREATE INDEX IF NOT EXISTS telemetry_calls_session ON telemetry_calls(session_id, ts)");
+    // A turn's rollup reads its own requests and tool runs by the turn's id.
+    store.migrate("CREATE INDEX IF NOT EXISTS telemetry_calls_turn ON telemetry_calls(turn_event); CREATE INDEX IF NOT EXISTS telemetry_tools_turn ON telemetry_tools(turn_event)");
     this.backfill();
     void bus;
     registerHooks({
