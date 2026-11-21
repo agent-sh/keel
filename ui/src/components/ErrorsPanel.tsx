@@ -22,14 +22,29 @@ function Wire({ s }: { s: Span }) {
 
 function Row({ e }: { e: ErrorRecord }) {
   const session = useStore((s) => (e.session_id ? s.sessions[e.session_id] : undefined));
-  const [span, setSpan] = useState<Span | null>(null);
+  // The span this failure names, once asked for: kept, or gone (null: spans are pruned after a while).
+  const [got, setGot] = useState<{ id: string; span: Span | null }>();
   const [copied, setCopied] = useState(false);
   const [fixing, setFixing] = useState(false);
   const n = e.count ?? 1;
   const unread = !e.read_ts;
   const target = { error_id: e.id };
-  const expand = (open: boolean) => {
-    if (open && e.span_id && span?.span_id !== e.span_id) api<{ span: Span }>(`/api/debug/spans/${e.span_id}`).then((r) => setSpan(r.span)).catch(() => {});
+  const named = got && got.id === e.span_id ? got.span : undefined;
+  const find = async () => {
+    const id = e.span_id;
+    if (!id || named !== undefined) return named ?? null;
+    const span = await api<{ span: Span }>(`/api/debug/spans/${id}`).then((r) => r.span).catch(() => null);
+    setGot({ id, span });
+    return span;
+  };
+  const expand = (open: boolean) => { if (open) void find(); };
+  // The trace opens on the span that failed, in whatever trace holds it: a
+  // request outside any turn (a side question) has a trace of its own. A
+  // failure with no span, or whose span is gone, opens its turn's trace.
+  const trace = async () => {
+    const s = await find();
+    if (s) openTrace(s.session_id, s.trace_id, s.span_id);
+    else if (e.turn_event) openTrace(e.session_id!, traceOfTurn(e.turn_event));
   };
   const open = () => {
     if (e.turn_event) setUI({ focusEvent: e.turn_event });
@@ -67,7 +82,7 @@ function Row({ e }: { e: ErrorRecord }) {
           {e.read_ts && !e.resolved_ts && <span>Read <span className="tabular-nums text-fg">{when(e.read_ts)}</span></span>}
           {e.resolved_ts && <span>Resolved <span className="tabular-nums text-fg">{when(e.resolved_ts)}</span></span>}
         </div>
-        {span && <Wire s={span} />}
+        {named && <Wire s={named} />}
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
@@ -88,8 +103,14 @@ function Row({ e }: { e: ErrorRecord }) {
           >
             <ClipboardCopy className="size-3.5" /> {copied ? "Copied" : "Copy debug bundle"}
           </button>
-          {e.session_id && e.turn_event && (
-            <button type="button" className={tool} onClick={() => openTrace(e.session_id!, traceOfTurn(e.turn_event!))} data-testid="error-trace">
+          {e.session_id && (e.turn_event || (e.span_id && named !== null)) && (
+            <button
+              type="button"
+              className={tool}
+              title={e.span_id ? "Opens the trace at the request or tool call that failed" : "Opens the trace of the turn it failed in"}
+              onClick={() => trace().catch(reportError)}
+              data-testid="error-trace"
+            >
               <Activity className="size-3.5" /> Trace
             </button>
           )}

@@ -3,7 +3,7 @@
 // was sent (its shape), what the wire saw, and the failure, with "send again"
 // for a failed request, the debug bundle and "fix this".
 import { ClipboardCopy, RefreshCw, Send, Wrench } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { copyBundle, fixThis, fmtMs, type Span, spanMs, traceFocus } from "../lib/observe.ts";
 import { api, reportError, useStore } from "../lib/store.ts";
@@ -16,7 +16,10 @@ const label = (s: Span) => (s.kind === "turn" ? `${s.attrs.parent_session ? "Sub
 export function TracesPanel({ session }: { session: Session }) {
   const [list, setList] = useState<Span[] | null>(null);
   const focus = useSyncExternalStore(traceFocus.subscribe, traceFocus.get);
-  const [open, setOpen] = useState<string | null>(focus);
+  const [open, setOpen] = useState<string | null>(focus?.trace ?? null);
+  // The span to pick in the open trace, when something asked for one (an error's own span).
+  const [span, setSpan] = useState<string | null>(focus?.span ?? null);
+  const show = (trace: string, pick: string | null = null) => { setOpen(trace); setSpan(pick); };
   const ends = useStore((s) => (s.events[session.id] ?? []).filter((e) => e.kind === "turn_end" || e.kind === "error").length);
 
   const load = useCallback(() => {
@@ -26,7 +29,13 @@ export function TracesPanel({ session }: { session: Session }) {
     }).catch((e) => reportError(e, { at: "traces panel" }));
   }, [session.id]);
   useEffect(load, [load, ends]);
-  useEffect(() => { if (focus) { setOpen(focus); traceFocus.set(null); } }, [focus]);
+  useEffect(() => {
+    if (!focus) return;
+    show(focus.trace, focus.span);
+    traceFocus.set(null);
+    // A trace made since the list was read (a side question's request) is not on it yet.
+    if (list) load();
+  }, [focus]);
 
   if (!list) return <p className="p-4 text-ui text-faint">Loading traces.</p>;
   return (
@@ -43,7 +52,7 @@ export function TracesPanel({ session }: { session: Session }) {
           <button
             key={t.span_id}
             type="button"
-            onClick={() => setOpen(t.trace_id)}
+            onClick={() => show(t.trace_id)}
             data-testid="trace-row"
             aria-current={open === t.trace_id}
             className={cn("flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-ui hover:bg-hover", open === t.trace_id && "bg-sunken")}
@@ -55,7 +64,7 @@ export function TracesPanel({ session }: { session: Session }) {
           </button>
         ))}
       </div>
-      {open && <Trace key={open} id={open} onOpen={setOpen} />}
+      {open && <Trace key={`${open} ${span ?? ""}`} id={open} span={span} onOpen={show} />}
     </div>
   );
 }
@@ -76,16 +85,22 @@ function tree(spans: Span[]): { s: Span; depth: number }[] {
   return out;
 }
 
-function Trace({ id, onOpen }: { id: string; onOpen: (trace: string) => void }) {
+// `span`: the one to open on (the span an error names). Without it, or when the
+// trace no longer holds it, the first failed request or call is picked.
+function Trace({ id, span, onOpen }: { id: string; span: string | null; onOpen: (trace: string) => void }) {
   const [spans, setSpans] = useState<Span[] | null>(null);
-  const [sel, setSel] = useState<string | null>(null);
+  const [sel, setSel] = useState<string | null>(span);
+  const asked = useRef<HTMLButtonElement>(null);
   const load = useCallback(() => {
     api<{ spans: Span[] }>(`/api/debug/traces/${id}`).then((r) => {
       setSpans(r.spans);
-      setSel((s) => s ?? (r.spans.find((x) => x.status === "error" && x.kind !== "turn") ?? r.spans[0])?.span_id ?? null);
+      setSel((s) => (s && r.spans.some((x) => x.span_id === s) ? s : (r.spans.find((x) => x.status === "error" && x.kind !== "turn") ?? r.spans[0])?.span_id ?? null));
     }).catch((e) => reportError(e, { at: "trace" }));
   }, [id]);
   useEffect(load, [load]);
+  // In a long trace the span that was asked for may sit below the fold.
+  const loaded = !!spans;
+  useEffect(() => { if (loaded) asked.current?.scrollIntoView({ block: "nearest" }); }, [loaded]);
   if (!spans) return null;
   const t0 = Math.min(...spans.map((s) => s.start_ms));
   const total = Math.max(1, Math.max(...spans.map((s) => (s.end_ms ?? Date.now()))) - t0);
@@ -96,8 +111,10 @@ function Trace({ id, onOpen }: { id: string; onOpen: (trace: string) => void }) 
         {tree(spans).map(({ s, depth }) => (
           <button
             key={s.span_id}
+            ref={s.span_id === span ? asked : undefined}
             type="button"
             role="listitem"
+            aria-current={sel === s.span_id}
             onClick={() => setSel(s.span_id)}
             data-testid="span-row"
             data-status={s.status}

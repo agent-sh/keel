@@ -43,17 +43,18 @@ export async function fixThis(t: BundleTarget) {
   return r;
 }
 
-// The trace the Traces panel shows when it opens next.
-let focus: string | null = null;
+// The trace the Traces panel shows when it opens next, and the span picked in it.
+export type TraceFocus = { trace: string; span?: string };
+let focus: TraceFocus | null = null;
 const subs = new Set<() => void>();
 export const traceFocus = {
   get: () => focus,
-  set(id: string | null) { focus = id; subs.forEach((f) => f()); },
+  set(to: TraceFocus | null) { focus = to; subs.forEach((f) => f()); },
   subscribe: (f: () => void) => (subs.add(f), () => void subs.delete(f)),
 };
 
-export function openTrace(sessionId: string, traceId: string | null) {
-  traceFocus.set(traceId);
+export function openTrace(sessionId: string, traceId: string, spanId?: string) {
+  traceFocus.set({ trace: traceId, span: spanId });
   setUI({ errors: false });
   if (getUI().panel !== "traces") savePref("panel", "traces");
   navigate({ name: "session", id: sessionId });

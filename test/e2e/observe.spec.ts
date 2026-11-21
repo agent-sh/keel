@@ -175,3 +175,70 @@ test("a replay the model declines shows as declined, an answered one as answered
   expect(answered.span).toMatchObject({ status: "ok", error: null, error_type: null, attrs: { result: { stop: "end_turn" } } });
   await shoot(page, "observe-08-replay-answered");
 });
+
+// An error opens the span it names, not the first failure of the trace and not
+// the session's newest turn. The scripted overload fails twice and then
+// answers: the row's last occurrence is attempt 2. Asked on the side, the same
+// failure repeats in a request that belongs to no turn, with a trace of its own.
+test("an error opens the exact span that failed", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes(STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const overloaded = async () => (await (await request.get("/api/errors?resolved=0")).json()).errors.find((e: any) => e.message.includes("529 overloaded"));
+  const spansOf = async (trace: string) => (await (await request.get(`/api/debug/traces/${trace}`)).json()).spans as any[];
+  const openRow = async () => {
+    await page.getByTestId("errors-button").click();
+    const row = page.getByTestId("errors-panel").getByTestId("error-row").filter({ hasText: "529 overloaded" }).first();
+    await row.locator("summary").click();
+    return row;
+  };
+
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Exact span check" } })).json();
+  await page.goto(`/s/${session.id}`);
+  await page.getByTestId("composer").fill("script:overloaded");
+  await page.getByTestId("composer").press("Enter");
+  await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 30_000 });
+
+  // Two failed attempts in one trace; the row names the second.
+  const err = await overloaded();
+  expect(err.session_id).toBe(session.id);
+  const turn = (await (await request.get(`/api/sessions/${session.id}/events`)).json()).events.find((e: any) => e.kind === "turn_start");
+  expect(err.turn_event).toBe(turn.id);
+  const attempts = (await spansOf(turn.id.replace(/-/g, ""))).filter((x) => x.kind === "request");
+  expect(attempts.map((x) => [x.attrs.attempt, x.status])).toEqual([[1, "error"], [2, "error"], [3, "ok"]]);
+  expect(err.span_id).toBe(attempts[1].span_id);
+
+  let row = await openRow();
+  await expect(row.getByTestId("error-wire")).toContainText("attempt 2");
+  await row.getByTestId("error-trace").click();
+  await openPanel(page, "traces");
+  const view = page.getByTestId("trace-view");
+  const picked = view.locator('[data-testid="span-row"][aria-current="true"]');
+  const detail = page.getByTestId("span-detail");
+  await expect(view.getByTestId("span-row")).toHaveCount(4);
+  await expect(detail).toContainText(attempts[1].span_id);
+  await expect(detail).not.toContainText(attempts[0].span_id);
+  await expect(picked).toHaveCount(1);
+  expect(await view.getByTestId("span-row").evaluateAll((rows) => rows.findIndex((r) => r.getAttribute("aria-current") === "true"))).toBe(2);
+  await shoot(page, "observe-09-exact-attempt");
+
+  // The same failure in a side question: counted on the same row, in no turn.
+  expect((await request.post(`/api/sessions/${session.id}/side`, { data: { question: "What happened?" } })).status()).toBe(201);
+  const aside = await overloaded();
+  expect([aside.id, aside.count, aside.session_id, aside.turn_event]).toEqual([err.id, err.count + 2, session.id, undefined]);
+  expect(attempts.map((x) => x.span_id)).not.toContain(aside.span_id);
+  const { span } = await (await request.get(`/api/debug/spans/${aside.span_id}`)).json();
+  expect([span.parent_id, span.attrs.attempt, span.attrs.turn_event]).toEqual([null, 2, undefined]);
+  const md = await (await request.get(`/api/debug/bundle?error_id=${aside.id}`)).text();
+  for (const part of ["In no turn: a request of its own", "## Trace of the request", `[span ${aside.span_id}]`]) expect(md).toContain(part);
+  expect(md).not.toContain("## Trace of the turn");
+
+  row = await openRow();
+  await expect(row.getByTestId("error-session")).not.toContainText("at its turn");
+  await row.getByTestId("error-trace").click();
+  await expect(page.locator('[data-testid="trace-row"][aria-current="true"]')).toContainText("529 overloaded");
+  await expect(view.getByTestId("span-row")).toHaveCount(1);
+  await expect(picked).toHaveCount(1);
+  await expect(detail).toContainText(aside.span_id);
+  await expect(detail).toContainText("Attempt");
+  await shoot(page, "observe-10-standalone-span");
+});
