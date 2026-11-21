@@ -436,8 +436,8 @@ function CompareTable({ heads, rows }: { heads: string[]; rows: CompareRow[] }) 
         </thead>
         <tbody role="rowgroup" className="@max-[36rem]:block">
           {rows.map(([label, a, b, change]) => (
-            <tr key={label} role="row" className="border-b border-line/60 last:border-0 @max-[36rem]:grid @max-[36rem]:grid-cols-[minmax(0,1fr)_auto] @max-[36rem]:gap-x-4 @max-[36rem]:gap-y-0.5 @max-[36rem]:px-4 @max-[36rem]:py-2.5">
-              <th role="rowheader" scope="row" className="max-w-64 truncate px-4 py-1.5 text-left font-normal @max-[36rem]:max-w-none @max-[36rem]:whitespace-normal @max-[36rem]:p-0 @max-[36rem]:pb-0.5 @max-[36rem]:font-medium">{label}</th>
+            <tr key={label} role="row" className="border-b border-line/60 last:border-0 @max-[36rem]:grid @max-[36rem]:grid-cols-[minmax(0,1fr)_auto] @max-[36rem]:gap-x-4 @max-[36rem]:gap-y-1.5 @max-[36rem]:px-4 @max-[36rem]:py-3">
+              <th role="rowheader" scope="row" className="max-w-64 truncate px-4 py-1.5 text-left font-normal @max-[36rem]:max-w-none @max-[36rem]:whitespace-normal @max-[36rem]:p-0 @max-[36rem]:font-medium">{label}</th>
               <td role="cell" data-side={heads[0]} className={SIDE}>{a}</td>
               <td role="cell" data-side={heads[1]} className={SIDE}>{b}</td>
               <td role="cell" className="px-4 py-1.5 text-right tabular-nums text-muted whitespace-nowrap @max-[36rem]:col-start-2 @max-[36rem]:row-start-1 @max-[36rem]:p-0">{change}</td>

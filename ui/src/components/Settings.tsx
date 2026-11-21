@@ -23,17 +23,19 @@ export function SettingRow({ label, hint, children }: { label: string; hint?: Re
 }
 
 // One choice of a few: a radio group with one Tab stop, on the option chosen;
-// the arrows move to the next option and choose it.
+// the arrows move to the next option and choose it. Wider than its place (a
+// phone, a large text size), it scrolls sideways inside itself and the page
+// does not: Choices keeps the chosen option in view.
 export function Segmented<T extends string>({ value, options, onChange, label }: { value: T; options: { value: T; label: string }[]; onChange: (v: T) => void; label: string }) {
   return (
-    <Choices aria-label={label} value={value} onValueChange={(v) => onChange(v as T)} className="inline-flex rounded-md border border-line bg-sunken p-0.5">
+    <Choices aria-label={label} value={value} onValueChange={(v) => onChange(v as T)} className="inline-flex max-w-full overflow-x-auto rounded-md border border-line bg-sunken p-0.5 [scrollbar-width:none]">
       {options.map((o) => (
         <Radio.Root
           key={o.value}
           value={o.value}
           nativeButton
           render={<button type="button" />}
-          className={cn("h-7 rounded-sm px-3 text-ui text-muted transition-colors", value === o.value ? "bg-raised text-fg shadow-1" : "hover:text-fg")}
+          className={cn("h-7 shrink-0 whitespace-nowrap rounded-sm px-3 text-ui text-muted transition-colors", value === o.value ? "bg-raised text-fg shadow-1" : "hover:text-fg")}
         >
           {o.label}
         </Radio.Root>
@@ -220,7 +222,7 @@ export function Settings({ section }: { section: string }) {
             ))}
           </div>
         </nav>
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-y-auto" data-testid="settings-scroll">
           <div className="k-settings-body px-4 py-6 md:px-12 md:py-10" data-wide={WIDE.has(cur.id) || undefined}>
             <h2 className="mb-5 text-title font-semibold tracking-[-0.015em]" data-testid="settings-title">{cur.label}</h2>
             <Body />

@@ -138,6 +138,23 @@ test("usage compare: both sides and the change read together on a phone", async 
   // Nothing of the table is off to the side, and nothing in it scrolls sideways.
   const fit = await table.locator("table").evaluate((el) => { const r = el.getBoundingClientRect(), w = el.parentElement!; return { left: r.left, right: r.right, pans: w.scrollWidth > w.clientWidth + 1 }; });
   expect(fit.pans).toBe(false);
+  // The settings pane scrolls up and down only: nothing in it is wider than the pane,
+  // in either way of comparing, and the block stands inside the pane with its margin.
+  const pane = page.getByTestId("settings-scroll");
+  const sideways = () => pane.evaluate((el) => el.scrollWidth - el.clientWidth);
+  expect(await sideways()).toBeLessThanOrEqual(0);
+  expect(fit.left).toBeGreaterThan(0);
+  await panel.getByRole("radio", { name: "Two ranges" }).click();
+  await expect(table).toContainText("The range before");
+  expect(await sideways()).toBeLessThanOrEqual(0);
+  // A group of choices wider than the pane scrolls inside itself, the chosen one in view.
+  const views = panel.getByRole("radiogroup", { name: "View" });
+  await pane.evaluate((el) => el.scrollTo(0, 0));
+  expect(await views.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+  await expect(views.getByRole("radio", { name: "Compare" })).toBeInViewport({ ratio: 1 });
+  await panel.getByRole("radio", { name: "Two models" }).click();
+  await expect(table).toContainText("Rate limited");
+  expect(await sideways()).toBeLessThanOrEqual(0);
   // The page itself stays put: only the settings pane scrolls.
   expect(await page.evaluate(() => { const d = document.scrollingElement!; return d.scrollWidth <= d.clientWidth && d.scrollHeight <= d.clientHeight; })).toBe(true);
   expect(fit.left).toBeGreaterThanOrEqual(0);
@@ -161,6 +178,16 @@ test("usage compare: both sides and the change read together on a phone", async 
   await shoot(page, "usage-views-07-compare-phone");
   await rows.first().scrollIntoViewIfNeeded();
   await shoot(page, "usage-views-08-compare-phone-top");
+
+  // The other views of the pane keep to its width as well.
+  await pane.evaluate((el) => el.scrollTo(0, 0));
+  for (const view of ["Compactions", "Errors", "Token zones", "Overview"]) {
+    await views.getByRole("radio", { name: view }).click();
+    await expect(views.getByRole("radio", { name: view })).toBeInViewport({ ratio: 0.95 });
+    await expect(panel.getByText("Reading the measurements.")).toHaveCount(0);
+    await expect.poll(sideways, view).toBeLessThanOrEqual(0);
+  }
+  await shoot(page, "usage-views-09-overview-phone");
 
   for (const id of made) await request.delete(`/api/sessions/${id}`);
 });

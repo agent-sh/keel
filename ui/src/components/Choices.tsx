@@ -3,7 +3,8 @@
 // after that, so a value set from elsewhere (a command, a shortcut, another
 // control) would leave Tab on the old option. The group is made again when
 // its value changes while the focus is outside it; with the focus inside, the
-// focus moves to the option now chosen.
+// focus moves to the option now chosen. A group that scrolls sideways inside
+// itself keeps the chosen option in view.
 import { RadioGroup } from "@base-ui/react/radio-group";
 import { useLayoutEffect, useRef, useState, type ComponentProps } from "react";
 import { cn } from "../lib/utils.ts";
@@ -19,5 +20,13 @@ export function Choices({ value, className, ...rest }: ComponentProps<typeof Rad
     const chosen = el.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]');
     if (chosen !== document.activeElement) chosen?.focus();
   }, [value]);
+  useLayoutEffect(() => {
+    const el = root.current;
+    const chosen = el?.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]');
+    if (!el || !chosen || el.scrollWidth <= el.clientWidth) return;
+    const box = el.getBoundingClientRect(), c = chosen.getBoundingClientRect();
+    if (c.left < box.left) el.scrollLeft -= box.left - c.left;
+    else if (c.right > box.right) el.scrollLeft += c.right - box.right;
+  }, [value, made]);
   return <RadioGroup key={made} ref={root} value={value} className={cn("k-choices", className)} {...rest} />;
 }

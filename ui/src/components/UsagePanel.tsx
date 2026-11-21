@@ -118,10 +118,10 @@ export function Tile({ label, value, sub, tone, testid }: { label: string; value
 export function Panel({ title, hint, children, testid, aside }: { title: string; hint?: string; children: ReactNode; testid?: string; aside?: ReactNode }) {
   return (
     <section className="rounded-lg border border-line bg-raised p-4 shadow-1" data-testid={testid}>
-      <div className="mb-3 flex items-baseline gap-2">
+      <div className="mb-3 flex items-baseline gap-x-2 gap-y-1.5 max-md:flex-wrap">
         <h3 className="shrink-0 text-base font-medium">{title}</h3>
         {hint && <span className="min-w-0 truncate text-caption text-faint">{hint}</span>}
-        {aside && <div className="ml-auto shrink-0 self-center">{aside}</div>}
+        {aside && <div className="ml-auto max-w-full shrink-0 self-center">{aside}</div>}
       </div>
       {children}
     </section>
