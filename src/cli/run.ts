@@ -119,6 +119,7 @@ export async function watch(w: Watch): Promise<Watched> {
   // Staying for the work a turn left: the turn of another prompt, begun after
   // this one's ended, is not this command's to show or to count.
   let theirs = false;
+  let theirsBegan = false;
   const mine = (e: StoredEvent) =>
     e.id === w.eventId || (!!w.queueId && e.data?.queue_id === w.queueId) || (!w.eventId && !w.queueId && String(e.data?.text ?? "").trim() === w.prompt.trim());
   const prompt = (e: StoredEvent) => e.kind === "user" && !e.data?.kind && [undefined, "queued", "steer", "voice"].includes(e.data?.origin);
@@ -126,9 +127,16 @@ export async function watch(w: Watch): Promise<Watched> {
     if (frozen) return;
     if (!ours && e.kind === "user" && mine(e)) ours = true;
     if (!ours) return;
-    if (ended && prompt(e)) theirs = true;
+    if (ended && prompt(e)) {
+      theirs = true;
+      theirsBegan = false;
+      // Work reported back to the session (a subagent's report, a wake) is not
+      // their prompt's, also when it joins their running turn.
+    } else if (theirs && e.kind === "user" && e.data?.kind && e.data.kind !== "harness") theirs = false;
     if (theirs) {
-      if (e.kind === "turn_end") theirs = false;
+      if (e.kind === "turn_start") theirsBegan = true;
+      // Their turn is over at its end, or at the error that kept it from starting.
+      else if (e.kind === "turn_end" || (e.kind === "error" && !theirsBegan)) theirs = false;
       return;
     }
     w.onEvent?.(e);
