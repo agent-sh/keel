@@ -58,10 +58,13 @@ const CHUNK = 64 * 1024;
 // rest of the file is not read, and nothing held grows with the file. `total`
 // is the file's line count when the scan reached its end (`past`: the offset
 // lies beyond it); a page cut before that says where to continue without it.
-// `signal` stops a scan on its way to a far offset.
+// `signal` stops a scan on its way to a far offset. A limit below zero asks
+// for no lines, as numbered() takes it: none are kept, and the scan goes as
+// far as the offset's own line, so an offset past the end is still told.
 export async function lineRange(p: string, o: { offset?: number; limit?: number; number?: boolean; maxChars?: number; signal?: AbortSignal } = {}): Promise<{ body: string; partial: boolean; total?: number; past?: boolean; stopped?: boolean; bytes: number }> {
   const start = Math.max(1, o.offset ?? 1);
-  const end = o.limit ? start - 1 + o.limit : Infinity;
+  const none = (o.limit ?? 0) < 0;
+  const end = none ? start : o.limit ? start - 1 + o.limit : Infinity;
   const maxChars = o.maxChars ?? READ_CHARS;
   const out: string[] = [];
   let size = 0;
@@ -72,7 +75,7 @@ export async function lineRange(p: string, o: { offset?: number; limit?: number;
   let cut = false;
   // The line read is over: it joins the page unless the page is full. False ends the read.
   const close = () => {
-    if (line >= start) {
+    if (line >= start && !none) {
       const l = len > LINE_CAP ? `${head} [line cut at ${LINE_CAP} of ${len} chars]` : head;
       const row = o.number === false ? l : `${line}\t${l}`;
       if (size + row.length > maxChars && out.length) return !(cut = true);

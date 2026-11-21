@@ -78,7 +78,8 @@ const read_file: Tool = {
       const { text } = decodeText(new Uint8Array(await Bun.file(p).arrayBuffer()));
       ctx.seen.set(p, mtime(p));
       const r = numbered(text, s ?? 1, limit, false);
-      return ok(r.body);
+      // The same answer as for a file read in chunks: a start past the end is said, not an empty success.
+      return s && s > r.total ? fail(`${p} has ${r.total} lines; line ${s} is past the end.`) : ok(r.body);
     }
     const r = await readFile(p, ctx, {});
     if (typeof r.content === "string" && !r.error) return ok(r.content.replace(/^ *\d+\t/gm, ""));

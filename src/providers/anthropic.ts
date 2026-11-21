@@ -86,8 +86,8 @@ export class AnthropicProvider implements Provider {
     if (this.id === "anthropic") {
       const base = (this.env.ANTHROPIC_BASE_URL || "https://api.anthropic.com").replace(/\/$/, "");
       // Every page, to the end: a listing that names a cursor twice or has no end fails and says so.
-      return allPages(this.label, async (after) => {
-        const d = await getJson(this.label, `${base}/v1/models?limit=1000${after ? `&after_id=${encodeURIComponent(after)}` : ""}`, { ...this.headers(), "anthropic-version": API_VERSION }, this.secrets);
+      return allPages(this.label, async (after, until) => {
+        const d = await getJson(this.label, `${base}/v1/models?limit=1000${after ? `&after_id=${encodeURIComponent(after)}` : ""}`, { ...this.headers(), "anthropic-version": API_VERSION }, this.secrets, until);
         return { rows: (d.data ?? []).map((m: any): ListedModel => ({ model: m.id, name: m.display_name, context: m.max_input_tokens, output: m.max_tokens })), next: d.has_more && d.last_id };
       });
     }

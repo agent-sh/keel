@@ -155,8 +155,8 @@ export class EndpointProvider implements Provider {
   // does not end fails and says so (allPages).
   private rows(first: any, a: { headers: Record<string, string>; secrets: string[] }): Promise<any[]> {
     const paged = this.wire === "anthropic_messages" ? "after_id" : this.wire === "gemini_generate_content" ? "pageToken" : "";
-    return allPages(this.label, async (cursor) => {
-      const d = cursor ? await getJson(this.label, `${this.listUrl}&${paged}=${encodeURIComponent(cursor)}`, a.headers, a.secrets) : first;
+    return allPages(this.label, async (cursor, until) => {
+      const d = cursor ? await getJson(this.label, `${this.listUrl}&${paged}=${encodeURIComponent(cursor)}`, a.headers, a.secrets, until) : first;
       return {
         rows: this.wire === "gemini_generate_content" ? d.models ?? [] : d.data ?? d.models ?? [],
         next: !paged ? "" : this.wire === "anthropic_messages" ? (d.has_more && d.last_id ? d.last_id : "") : d.nextPageToken,

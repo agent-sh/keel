@@ -185,18 +185,28 @@ async function* stream(o: StreamOpts, guard: ReturnType<typeof idleGuard>): Asyn
 
 // More pages than any listing has: a server whose pages never end is stopped here.
 export const MAX_PAGES = 200;
+// One deadline for a whole listing, however many pages it has: twice what one
+// page gets. A registry refresh and a turn that waits for a model's listing
+// wait on every page, so a slow paged server holds them this long, not a page's
+// time for each page.
+export const LISTING_MS = 60_000;
 
 // Every page of a listing, from its first: `read` gives a page's rows and the
-// cursor of the page after it (none at the end). A cursor the server gave
-// before would read the same pages again without end, and a listing of more
-// pages than MAX_PAGES is not one either: the listing fails and says so, and
-// the pages read so far are not taken for the whole list.
-export async function allPages<T>(label: string, read: (cursor: string) => Promise<{ rows: T[]; next?: unknown }>): Promise<T[]> {
+// cursor of the page after it (none at the end), and passes `until` to the
+// request so a page that hangs is cut at the listing's deadline. A cursor the
+// server gave before would read the same pages again without end, and a
+// listing of more pages than MAX_PAGES is not one either: the listing fails
+// and says so, as does one that passes its deadline, and the pages read so far
+// are not taken for the whole list.
+export async function allPages<T>(label: string, read: (cursor: string, until: number) => Promise<{ rows: T[]; next?: unknown }>, ms = LISTING_MS): Promise<T[]> {
   const out: T[] = [];
   const seen = new Set<string>();
+  const until = Date.now() + ms;
+  const late = (page: number) => new ProviderError("server", `${label}: the model listing took more than ${Math.round(ms / 1000)} s (it was on page ${page}); ${out.length} models were read and the list is not complete`);
   let cursor = "";
   for (let page = 1; ; page++) {
-    const d = await read(cursor);
+    if (page > 1 && Date.now() >= until) throw late(page);
+    const d = await read(cursor, until).catch((e) => { throw Date.now() >= until ? late(page) : e; });
     out.push(...d.rows);
     const next = d.next ? String(d.next) : "";
     if (!next) return out;
@@ -209,11 +219,12 @@ export async function allPages<T>(label: string, read: (cursor: string) => Promi
   }
 }
 
-// A GET that returns JSON, for listings.
-export async function getJson(label: string, url: string, headers: Record<string, string>, secrets: string[] = []): Promise<any> {
+// A GET that returns JSON, for listings. `until`: the time the whole listing
+// this page belongs to must be done by; the request is cut then at the latest.
+export async function getJson(label: string, url: string, headers: Record<string, string>, secrets: string[] = [], until?: number): Promise<any> {
   let r: Response;
   try {
-    r = await fetch(url, { headers: { accept: "application/json", ...headers }, signal: AbortSignal.timeout(30_000) });
+    r = await fetch(url, { headers: { accept: "application/json", ...headers }, signal: AbortSignal.timeout(until === undefined ? 30_000 : Math.max(1, Math.min(30_000, until - Date.now()))) });
   } catch (e) {
     throw new ProviderError("network", `${label}: ${scrub((e as Error).message, secrets)}`);
   }

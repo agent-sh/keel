@@ -83,8 +83,8 @@ export class GeminiProvider extends KeyedProvider {
   async list(): Promise<ListedModel[]> {
     const k = await this.key();
     // Every page, to the end: a listing that names a token twice or has no end fails and says so.
-    return allPages(this.label, async (token) => {
-      const d = await getJson(this.label, `${this.base}/v1beta/models?pageSize=1000${token ? `&pageToken=${encodeURIComponent(token)}` : ""}`, { "x-goog-api-key": k }, [k]);
+    return allPages(this.label, async (token, until) => {
+      const d = await getJson(this.label, `${this.base}/v1beta/models?pageSize=1000${token ? `&pageToken=${encodeURIComponent(token)}` : ""}`, { "x-goog-api-key": k }, [k], until);
       const rows: ListedModel[] = [];
       for (const m of d.models ?? []) {
         const id = String(m.name ?? "").replace(/^models\//, "");

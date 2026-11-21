@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { classify, MAX_PAGES, ProviderError, streamEvents } from "./http.ts";
+import { allPages, classify, getJson, MAX_PAGES, ProviderError, streamEvents } from "./http.ts";
 import { type Wire, wireScope } from "./wiretap.ts";
 
 // A stream that sends one event and then nothing is cut after the idle
@@ -107,5 +107,37 @@ test("a built-in listing whose pages repeat or never end fails and says so", asy
   } finally {
     server.stop(true);
     for (const [k, v] of [["GEMINI_BASE_URL", before.g], ["GEMINI_API_KEY", before.k]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+});
+
+// One deadline for a whole paged listing: slow pages add up to it, and a page
+// that hangs is cut at it, with what was read named as not the whole list.
+test("a paged listing has one deadline over all its pages", async () => {
+  let hang = false;
+  const server = Bun.serve({
+    port: 0, hostname: "127.0.0.1",
+    async fetch(req) {
+      const at = Number(new URL(req.url).searchParams.get("after") ?? 0);
+      if (hang && at === 1) await Bun.sleep(5_000);
+      else await Bun.sleep(350);
+      return Response.json({ data: [`m${at}`], next: `${at + 1}` });
+    },
+  });
+  const page = async (cursor: string, until: number) => {
+    const d = await getJson("Slow", `http://127.0.0.1:${server.port}/?after=${cursor || 0}`, {}, [], until);
+    return { rows: d.data as string[], next: d.next };
+  };
+  try {
+    // Each page is quick enough on its own; together they pass the listing's time.
+    let t0 = Date.now();
+    await expect(allPages("Slow", page, 1_000)).rejects.toThrow(/^Slow: the model listing took more than 1 s \(it was on page [34]\); [23] models were read and the list is not complete$/);
+    expect(Date.now() - t0).toBeLessThan(1_600);
+    // A page that hangs is cut when the listing's time is up, not after its own.
+    hang = true;
+    t0 = Date.now();
+    await expect(allPages("Slow", page, 1_000)).rejects.toThrow("Slow: the model listing took more than 1 s (it was on page 2); 1 models were read and the list is not complete");
+    expect(Date.now() - t0).toBeLessThan(1_600);
+  } finally {
+    server.stop(true);
   }
 });

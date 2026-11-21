@@ -334,15 +334,17 @@ const ATTACH_USAGE = `keel attach ID [--thoughts]
 
 type Answer = { picked: string[]; other?: string };
 
-// What `/answer ARG` means for one question: its choices by number (several
-// when the question takes several), a choice by its label, else the text as
-// the owner's own answer.
+// What `/answer ARG` means for one question: a choice by its exact label
+// first (choices "1", "3", "5": 3 is the choice that reads 3, not the third),
+// else its choices by number (several when the question takes several), else
+// the text as the owner's own answer.
 export function answerOf(q: UiQuestion, arg: string): Answer {
+  const label = q.options.find((o) => o.label.toLowerCase() === arg.trim().toLowerCase());
+  if (label) return { picked: [label.label] };
   const nums = arg.split(/[\s,]+/).filter(Boolean);
   const byNumber = nums.length > 0 && nums.every((n) => /^\d+$/.test(n) && Number(n) >= 1 && Number(n) <= q.options.length);
   if (byNumber && (q.multi || nums.length === 1)) return { picked: [...new Set(nums.map((n) => q.options[Number(n) - 1]!.label))] };
-  const label = q.options.find((o) => o.label.toLowerCase() === arg.toLowerCase());
-  return label ? { picked: [label.label] } : { picked: [], other: arg };
+  return { picked: [], other: arg };
 }
 
 // A question card as the terminal shows it, once: each question with its choices numbered.
@@ -365,6 +367,8 @@ export async function attachTo(c: Client, sessionId: string, v: { thoughts?: boo
   let seenCards = new Set<string>();
   // The open question cards, each shown once: its questions, and the answers given so far.
   const asked = new Map<string, Promise<{ session_id: string; call_id: string; qs: UiQuestion[]; answers: Record<string, Answer> }>>();
+  // The cards whose questions this terminal has printed.
+  const shown = new Set<string>();
   // What is open now: a card or a question not shown yet is printed, one that closed is forgotten.
   const sync = async () => {
     const st = await c.get<any>(`/api/cli/state/${sessionId}`).catch(() => null);
@@ -377,15 +381,22 @@ export async function attachTo(c: Client, sessionId: string, v: { thoughts?: boo
     seenCards = new Set([...seenCards].filter((id) => st.approvals.some((a: any) => a.id === id)));
     for (const q of st.questions) {
       if (asked.has(q.call_id)) continue;
-      asked.set(q.call_id, (async () => {
+      const card = (async () => {
         const { events } = await c.get<{ events: StoredEvent[] }>(`/api/sessions/${q.session_id}/events`);
         const use = events.flatMap((e) => (e.kind === "assistant" ? e.data.blocks ?? [] : [])).find((b: any) => b.type === "tool_use" && b.id === q.call_id);
         const qs = askedOf(use?.name ?? "", use?.input);
         for (const l of questionLines(qs, q.session_id !== sessionId ? `  (subagent ${q.session_id})` : "")) console.log(l);
+        shown.add(q.call_id);
         return { session_id: q.session_id, call_id: q.call_id, qs, answers: {} };
-      })());
+      })();
+      asked.set(q.call_id, card);
+      // A card that could not be read is not kept: the next look reads it again.
+      card.catch((e) => {
+        if (asked.get(q.call_id) === card) asked.delete(q.call_id);
+        console.error(`keel attach: a question could not be read (${(e as Error).message}); it is read again shortly`);
+      });
     }
-    for (const id of [...asked.keys()]) if (!st.questions.some((q: any) => q.call_id === id)) asked.delete(id);
+    for (const id of [...asked.keys()]) if (!st.questions.some((q: any) => q.call_id === id)) { asked.delete(id); shown.delete(id); }
     return st;
   };
   const f = new Follower(c, sessionId, events.at(-1)?.seq ?? 0, (e) => { for (const l of textLines(e, v)) console.log(l); });
@@ -413,11 +424,17 @@ export async function attachTo(c: Client, sessionId: string, v: { thoughts?: boo
         if (!a) console.error("nothing is open");
         else await c.post(`/api/sessions/${a.session_id}/approvals/${a.id}`, cmd === "/deny" ? { choice: "deny", reason: arg || undefined } : { choice: ["session", "always"].includes(arg) ? arg : "once" });
       } else if (cmd === "/answer") {
-        // The oldest open question (shown first when this is the first the terminal hears of it).
+        // The oldest open question. One this terminal had not printed before
+        // this line was typed (it opened since the last look, as the one the
+        // owner read was answered elsewhere) is printed and not answered: the
+        // answer typed was for a question the owner had read.
+        const read = new Set(shown);
         const st = await sync();
-        const q = await asked.get(st?.questions[0]?.call_id);
+        const id = st?.questions[0]?.call_id;
+        const q = await asked.get(id)?.catch(() => undefined);
         const next = q?.qs.find((x) => !q.answers[x.id]);
-        if (!q) console.error("no question is open");
+        if (!q) console.error(id ? "the open question could not be read; try /answer again" : "no question is open");
+        else if (!read.has(id)) console.error("-- this question is new here, shown above: nothing was answered. Give its answer with /answer");
         else if (!arg) console.error("give the choice's number, or your own answer: /answer N or /answer TEXT");
         else if (next) {
           q.answers[next.id] = answerOf(next, arg);

@@ -203,3 +203,35 @@ test("a notebook cell with two images gives no empty text block between them", a
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// A read is the same read whichever path takes it: a file under the
+// whole-file limit is read whole and cut, one over it is read in chunks. A
+// limit below zero and a start past the end are the cases the two answered
+// differently.
+test("a negative limit and a start past the end read the same for a small file and a large one", async () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? "/var/tmp", "parity-"));
+  const row = (i: number) => `line ${i} ${"x".repeat(60)}`;
+  const make = (name: string, n: number) => { const p = join(dir, name); writeFileSync(p, Array.from({ length: n }, (_, i) => row(i + 1)).join("\n") + "\n"); return { p, n }; };
+  const small = make("small.txt", 200), large = make("large.txt", 6_000);
+  expect(statSync(small.p).size).toBeLessThan(256 * 1024);
+  expect(statSync(large.p).size).toBeGreaterThan(256 * 1024);
+  const ctx: any = { cwd: dir, seen: new Map(), signal: new AbortController().signal };
+  const g = geminiTools.find((t) => t.name === "read_file")!;
+  for (const { p, n } of [small, large]) {
+    const read = async (o: { offset?: number; limit?: number }) => { const r = await readFile(p, ctx, o); return [r.content, r.error ?? false]; };
+    // A limit below zero asks for no lines: none come back, from any offset in the file.
+    expect([p, await read({ offset: 5, limit: -1 })]).toEqual([p, ["", false]]);
+    expect([p, await read({ offset: n, limit: -3 })]).toEqual([p, ["", false]]);
+    // A start past the end is named with the line count, whatever the limit.
+    for (const limit of [undefined, 1, -1]) expect([p, limit, await read({ offset: n + 1, limit })]).toEqual([p, limit, [`${p} has ${n} lines; offset ${n + 1} is past the end.`, true]]);
+    // The last line is not past the end.
+    expect([p, await read({ offset: n, limit: 1 })]).toEqual([p, [`${n}\t${row(n)}`, false]]);
+    // The Gemini profile's read_file, by start and end line.
+    const lines = async (input: Record<string, number>) => { const r = await g.run({ file_path: p, ...input }, ctx); return [r.content, r.is_error ?? false]; };
+    expect([p, await lines({ start_line: n + 1 })]).toEqual([p, [`${p} has ${n} lines; line ${n + 1} is past the end.`, true]]);
+    expect([p, await lines({ start_line: n + 4, end_line: n + 9 })]).toEqual([p, [`${p} has ${n} lines; line ${n + 4} is past the end.`, true]]);
+    expect([p, await lines({ start_line: n, end_line: n + 9 })]).toEqual([p, [row(n), false]]);
+    expect([p, await lines({ start_line: 9, end_line: 5 })]).toEqual([p, ["", false]]);
+  }
+  rmSync(dir, { recursive: true, force: true });
+});
