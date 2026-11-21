@@ -704,6 +704,10 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     if (!view || view.other) return;
     const s = getState().sessions[sessionId];
     const line = lineage(getState().events[sessionId] ?? [], s?.head ?? null);
+    // A head the page does not hold yet (the session's row comes just before
+    // its new event; the end of another branch is on its way): nothing is let
+    // go, or the run that leads to that head would go with the part.
+    if (!line.length) return setView(null);
     const kept = new Set(line.map((e) => e.id));
     // The other versions of the prompts that stay are still counted on them.
     const versions = new Set(line.filter((e) => e.kind === "user" && !e.data.origin).map((e) => e.parent));
@@ -813,8 +817,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     if (outside.current?.key === key) return outside.current;
     const q = new URLSearchParams({ head: reading?.end ? (reading.other ? reading.head : session.head) ?? "" : events.at(-1)!.id, before: String(events[0]!.seq) });
     if (reading?.end) q.set("after", String(events.at(-1)!.seq));
-    const r = await api<{ older: StoredEvent[]; newer: StoredEvent[] }>(`/api/sessions/${sessionId}/users?${q}`);
-    outside.current = { key, before: r.older.filter(isPrompt).length, after: r.newer.filter(isPrompt).length };
+    const r = await api<{ before: number; after: number }>(`/api/sessions/${sessionId}/users?${q}`);
+    outside.current = { key, before: r.before, after: r.after };
     return outside.current;
   };
   // A page that does not fill the view asks for the one before it.

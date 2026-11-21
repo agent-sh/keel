@@ -42,47 +42,91 @@ test("a reply under a long transcript renders only its own rows", async ({ page,
     const prompts = before.filter((e) => e.kind === "user").length;
     await page.goto(`${d.url}/s/${id}`);
     await expect(page.getByTestId("compacted")).toBeVisible({ timeout: 30_000 });
-    // The whole branch is read into the page, part by part (the side branch's three prompts are not on it).
-    // The button leaves when the last part is in (a read the scroll started may
-    // take it away under a press): a press that finds no button is not waited on.
-    await expect.poll(async () => {
-      await page.getByTestId("load-earlier").click({ timeout: 1500 }).catch(() => {});
-      return page.getByTestId("user-message").count();
-    }, { timeout: 90_000, intervals: [150] }).toBe(prompts - 3);
+    // The page opened with the newest part: its prompts and turn ends are on it, not the session's.
+    const part = ((await (await fetch(`${d.url}/api/sessions/${id}?page=200`)).json()) as any).events as { kind: string; data: any }[];
+    const shown = () => page.getByTestId("user-message").count();
+    const opened = part.filter((e) => e.kind === "user" && !e.data.origin).length;
+    const ends = part.filter((e) => e.kind === "turn_end").length;
+    expect(opened).toBeGreaterThan(20);
+    expect(opened).toBeLessThan(prompts - 3);
+    await expect(page.getByTestId("user-message")).toHaveCount(opened);
+    await expect(page.getByTestId("turn-end")).toHaveCount(ends);
 
     // From here on: every row model made and every row rendered, by event id.
-    await page.evaluate(() => {
+    const count = () => page.evaluate(() => {
       const w = window as any;
       w.__made = []; w.__rendered = [];
       w.__keelRows.made = (id: string) => w.__made.push(id);
       w.__keelRows.rendered = (id: string) => w.__rendered.push(id);
     });
+    const counted = () => page.evaluate(() => ({ made: (window as any).__made as string[], rendered: (window as any).__rendered as string[] }));
+    const reqs: string[] = [];
+    page.on("request", (r) => { const u = new URL(r.url()); if (u.pathname.startsWith(`/api/sessions/${id}`)) reqs.push(u.pathname.replace(`/api/sessions/${id}`, "") + u.search); });
+    await count();
     await page.getByTestId("composer").fill("script:render");
     await page.getByTestId("composer").press("Enter");
     await expect(page.getByTestId("draft")).toBeVisible({ timeout: 15_000 });
     await shoot(page, "long-transcript-01-streaming");
-    await expect(page.getByTestId("turn-end")).toHaveCount(prompts - 3 + 1, { timeout: 60_000 });
+    await expect(page.getByTestId("turn-end")).toHaveCount(ends + 1, { timeout: 60_000 });
     await expect(page.getByTestId("working")).toHaveCount(0);
 
-    const fresh = new Set((await stored()).slice(before.length).map((e) => e.id));
+    let after = await stored();
+    const fresh = new Set(after.slice(before.length).map((e) => e.id));
     expect(fresh.size).toBeGreaterThanOrEqual(4);
-    const { made, rendered } = await page.evaluate(() => ({ made: (window as any).__made as string[], rendered: (window as any).__rendered as string[] }));
+    const first = await counted();
+    // Nothing of the history was read for the page's own prompt.
+    expect(reqs.filter((r) => r.includes("/page"))).toEqual([]);
     // Rows were made and rendered for the turn's events only. The footer that
     // stopped being the last one changed by itself: its Answer again went.
-    expect(made.length).toBeGreaterThan(0);
-    expect(made.filter((x) => !fresh.has(x))).toEqual([]);
-    expect(rendered.filter((x) => fresh.has(x)).length).toBeGreaterThan(0);
-    expect([...new Set(rendered.filter((x) => !fresh.has(x)))]).toEqual([]);
+    expect(first.made.length).toBeGreaterThan(0);
+    expect(first.made.filter((x) => !fresh.has(x))).toEqual([]);
+    expect(first.rendered.filter((x) => fresh.has(x)).length).toBeGreaterThan(0);
+    expect([...new Set(first.rendered.filter((x) => !fresh.has(x)))]).toEqual([]);
     await expect(page.getByTestId("retry")).toHaveCount(1);
 
-    // The history is still all there: the page's own find reaches the first
-    // prompt, and a finished turn's footer copies its reply.
-    expect(await page.evaluate(() => (window as any).find("Prompt 1:", false, true, true))).toBe(true);
+    // An earlier part is read in above (the rows already there are not rendered
+    // for it), and a finished turn's footer copies its reply.
+    const onPage = () => page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-testid="transcript"] [data-event-id]')].map((x) => x.dataset.eventId!));
+    const there = new Set(await onPage());
+    await count();
+    await page.getByTestId("load-earlier").click();
+    await expect.poll(shown, { timeout: 30_000 }).toBeGreaterThan(opened + 1);
+    const more = await shown();
+    const above = await counted();
+    expect(above.rendered.length).toBeGreaterThan(0);
+    expect([...new Set(above.rendered.filter((x) => there.has(x)))]).toEqual([]);
     await page.getByTestId("copy-reply").nth(4).click();
     const clip = await page.evaluate(() => navigator.clipboard.readText());
-    expect(clip).toContain("Looking at **step 5**.");
-    expect(clip).toContain("Reply 5 ends here.");
+    expect(clip).toMatch(/Looking at \*\*step \d+\*\*\./);
+    expect(clip).toMatch(/Reply \d+ ends here\./);
+
+    // Back at the end, what a pane that follows it holds is bounded: the next
+    // reply's first event lets the oldest part go. The rows that stay are not
+    // rendered again for it.
+    await page.getByTestId("jump-latest").click();
+    await expect(page.getByTestId("turn-end").last()).toBeInViewport();
+    await expect(page.getByTestId("jump-latest")).toHaveCount(0);
+    await count();
+    const kept = after.map((e) => e.id);
+    await page.getByTestId("composer").fill("script:render");
+    await page.getByTestId("composer").press("Enter");
+    await expect.poll(async () => (await stored()).length, { timeout: 30_000 }).toBeGreaterThan(after.length);
+    await expect.poll(async () => ((await (await fetch(`${d.url}/api/sessions/${id}?events=0`)).json()) as any).running, { timeout: 60_000 }).toBe(false);
+    await expect(page.getByTestId("working")).toHaveCount(0, { timeout: 30_000 });
+    await expect.poll(shown, { timeout: 30_000 }).toBeLessThan(more);
+    await expect(page.getByTestId("load-earlier")).toBeVisible();
+    after = await stored();
+    const second = new Set(after.filter((e) => !kept.includes(e.id)).map((e) => e.id));
+    expect(second.size).toBeGreaterThanOrEqual(4);
+    const trimmed = await counted();
+    expect([...new Set(trimmed.rendered.filter((x) => !second.has(x)))]).toEqual([]);
+    await expect(page.getByTestId("turn-end").last()).toBeInViewport();
     await shoot(page, "long-transcript-02-after-reply");
+
+    // Previous prompt from the message box says its place in the whole branch, not in the part held.
+    await page.getByTestId("composer").focus();
+    await page.keyboard.press("Alt+ArrowUp");
+    await expect(page.getByTestId("prompt-place")).toHaveText(`Prompt ${prompts - 3 + 2} of ${prompts - 3 + 2}`);
   } finally {
     d.proc.kill("SIGTERM");
     await exited(d.proc);
@@ -97,7 +141,7 @@ test("a long session opens with its newest part and reads the rest as asked", as
   try {
     const all = ((await (await fetch(`${d.url}/api/sessions/${id}/events`)).json()) as any).events as { id: string; seq: number; kind: string; parent: string | null; data: any }[];
     const session = async () => ((await (await fetch(`${d.url}/api/sessions/${id}?events=0`)).json()) as any).session as { head: string };
-    const main = (await session()).head;
+    let main = (await session()).head;
     const got = parts(page, id!);
     const sockets: number[] = [];
     page.on("websocket", (ws) => ws.on("framereceived", ({ payload }) => { const f = JSON.parse(String(payload)); if (f.t === "event" && f.event.session_id === id) sockets.push(f.event.seq); }));
@@ -172,6 +216,7 @@ test("a long session opens with its newest part and reads the rest as asked", as
     await expect(page.locator(`#e-${far.id}`)).toHaveCount(0);
     await expect(page.getByTestId("user-message").last()).toContainText("sent from here");
     await idle();
+    main = (await session()).head;
 
     // The other version of the edited prompt: its branch is read when it is
     // chosen, and the transcript opens at the prompt.
@@ -193,13 +238,16 @@ test("a long session opens with its newest part and reads the rest as asked", as
 
     // A reply at the end: its events arrive once each, in order, and the page
     // never read the session whole (no part was as large as the session).
-    await page.getByTestId("composer").fill("script:render");
+    const base = ((await (await fetch(`${d.url}/api/sessions/${id}?events=0`)).json()) as any).seq as number;
+    await page.getByTestId("composer").fill("script:render at the end");
     await page.getByTestId("composer").press("Enter");
+    await expect(page.getByTestId("user-message").last()).toContainText("at the end", { timeout: 30_000 });
+    await idle();
     await expect(page.getByTestId("assistant-text").last()).toContainText("The parser, moved", { timeout: 30_000 });
     await expect(page.getByTestId("working")).toHaveCount(0);
-    const fresh = ((await (await fetch(`${d.url}/api/sessions/${id}/events?after=${all.at(-1)!.seq}`)).json()) as any).events.map((e: any) => e.seq);
+    const fresh = ((await (await fetch(`${d.url}/api/sessions/${id}/events?after=${base}`)).json()) as any).events.map((e: any) => e.seq);
     expect(fresh.length).toBeGreaterThanOrEqual(4);
-    expect(sockets.filter((s) => s > all.at(-1)!.seq)).toEqual(fresh);
+    expect(sockets.filter((s) => s > base)).toEqual(fresh);
     expect(Math.max(...got.map((g) => g.events))).toBeLessThan(700);
     expect(got.some((g) => g.url.startsWith("/events"))).toBe(false);
     expect(await held()).toBeLessThan(1500);

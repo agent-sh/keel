@@ -593,8 +593,11 @@ export function apply(f: Frame) {
     set({ events: { ...state.events, [e.session_id]: next.length > HELD && paged.has(e.session_id) && !keepers.get(e.session_id) ? trimmed(next, head) : next } });
     // A prompt that did not go on from the head (another version of an earlier
     // prompt, made in another tab or from the command line): the part around it
-    // is read, which brings the versions it stands beside.
-    if (f.rev !== undefined && e.kind === "user" && !e.data.origin && e.parent !== was && paged.has(e.session_id)) actions.page(e.session_id, { around: e.id }).catch(reportUnlessGone);
+    // is read, which brings the versions it stands beside. A prompt at the end
+    // goes on from the head the page knew, or (when the session's row with the
+    // new head came before the event) from the newest event it holds: nothing
+    // is read for it, and no row above it is made again.
+    if (f.rev !== undefined && e.kind === "user" && !e.data.origin && e.parent !== was && e.parent !== list.at(-1)?.id && paged.has(e.session_id)) actions.page(e.session_id, { around: e.id }).catch(reportUnlessGone);
   } else if (f.t === "delta") {
     // A reply streaming in a session this page has not opened is not kept: no
     // view reads it. A session opened later reads the reply so far from its snapshot.

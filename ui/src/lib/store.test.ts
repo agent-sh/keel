@@ -286,6 +286,24 @@ test("a session a daemon answers whole (no page routes) is kept whole", async ()
   expect(getState().events.x!.at(-1)!.seq).toBe(1401);
 });
 
+test("a prompt at the end reads nothing; another version of an earlier prompt reads the part around it", async () => {
+  const events = Array.from({ length: 30 }, (_, i) => event("y", i + 1));
+  await openPaged(row("y", "y-e30"), events, 30, 1200);
+  const around = (id: string) => `/api/sessions/y/page?limit=${PAGE}&around=${id}`;
+  const prompt = (seq: number, parent: string): StoredEvent => ({ ...event("y", seq, "user"), parent });
+  // The page's own prompt, its event first.
+  await frame({ t: "event", event: prompt(31, "y-e30"), rev: 1201 } as Frame);
+  expect(asked(around("y-e31"))).toBe(false);
+  // The next one, with the session's row (already at the new head) before its event.
+  await frame({ t: "session", session: row("y", "y-e32"), rev: 1202 } as Frame);
+  await frame({ t: "event", event: prompt(32, "y-e31"), rev: 1203 } as Frame);
+  expect(asked(around("y-e32"))).toBe(false);
+  expect(getState().events.y!.map((e) => e.seq).slice(-2)).toEqual([31, 32]);
+  // Another version of an early prompt, made elsewhere: the part around it is read.
+  await frame({ t: "event", event: prompt(33, "y-e4"), rev: 1204 } as Frame);
+  expect(await answer(around("y-e33"), { events: [prompt(33, "y-e4")], head: "y-e33", on_head: true, end: true, last: "y-e33" })).toBe(true);
+});
+
 test("what the socket brings is in the state at once, and its readers are told once a frame", async () => {
   await open(row("v", "v-e1", { phase: "working" }), [event("v", 1)], 1100);
   // A page has frames to wait for.
