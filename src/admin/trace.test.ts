@@ -6,14 +6,14 @@ import { gunzipSync } from "node:zlib";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
-import { KEEP_REQUEST_BYTES, SPAN_DAYS, packRequest, parseTraceparent, requestShape, type Span, toolSpanId, traceIdOf, traceparent, Tracer, turnPlace, turnSpanId } from "./trace.ts";
+import { KEEP_REQUEST_BYTES, SPAN_DAYS, packRequest, parseTraceparent, requestShape, type Span, spawnContext, toolSpanId, traceIdOf, traceparent, Tracer, turnPlace, turnSpanId } from "./trace.ts";
 
 // A tracer over a store of its own, with the hooks it registered. Closing takes
 // the hooks away with the store: a turn of a later test file would call them.
-function tracer() {
+function tracer(running = false) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "trace-test-"));
   const store = new Store(dir);
-  const t = new Tracer(store, new Bus(), () => false);
+  const t = new Tracer(store, new Bus(), () => running);
   const hooks = allHooks().at(-1)!;
   return { dir, store, t, hooks, close: () => { allHooks().splice(allHooks().indexOf(hooks), 1); store.db.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
@@ -44,6 +44,62 @@ test("a subagent's first turn sits under the spawn call in the parent's trace; l
   const span: Span = { span_id: later.span, trace_id: later.trace, parent_id: null, session_id: "child", kind: "turn", name: "invoke_agent", start_ms: 1, end_ms: 2, status: "ok", error: null, error_type: null, error_id: null, attrs: { model: "m", links: later.links }, replayable: false };
   const [out] = toOtlp([span], {}).resourceSpans[0]!.scopeSpans[0]!.spans;
   expect(out!.links).toEqual([{ traceId: trace, spanId: call }]);
+});
+
+test("a chain of spawns stays in the first turn's trace, each agent under the call that started it", () => {
+  const x = tracer(true);
+  try {
+    const session = () => x.store.createSession({ workspace: x.dir, model: "p:m" });
+    const [root, child, grand] = [session(), session(), session()];
+    const turn = (s: { id: string }) => x.store.append(s.id, "turn_start", { model: "p:m" });
+    // What a spawn does: the task prompt carries the context of the call that started the agent.
+    const task = (s: { id: string }, from: { id: string }, call: string) => x.store.append(s.id, "user", { text: "task", kind: "task", traceparent: spawnContext(x.store, from.id, call) });
+    const ran = (s: any, call: string) => x.hooks.toolRan!(s, { id: call, tool: { name: "Agent" }, input: {} } as any, { type: "tool_result", tool_use_id: call, content: "done" } as any, { ms: 1, outcome: "ok" });
+    const end = (s: any) => { x.store.append(s.id, "turn_end", { reason: "end_turn" }); x.hooks.turnEnd!(s, "end_turn"); };
+
+    const rootTurn = turn(root);
+    const trace = traceIdOf(rootTurn.id);
+    task(child, root, "c1");
+    const childTurn = turn(child);
+    task(grand, child, "c2");
+    const grandTurn = turn(grand);
+    end(grand);
+    ran(child, "c2");
+    end(child);
+    ran(root, "c1");
+    end(root);
+
+    const [call1, call2] = [toolSpanId(root.id, "c1"), toolSpanId(child.id, "c2")];
+    const span = (id: string) => turnSpanId(traceIdOf(id));
+    const tree = (spans: { span_id: string; trace_id: string; parent_id: string | null }[]) => Object.fromEntries(spans.map((s) => [s.span_id, [s.trace_id, s.parent_id]]));
+    const local = x.t.trace(trace);
+    expect(tree(local)).toEqual({
+      [span(rootTurn.id)]: [trace, null],
+      [call1]: [trace, span(rootTurn.id)],
+      [span(childTurn.id)]: [trace, call1],
+      [call2]: [trace, span(childTurn.id)],
+      [span(grandTurn.id)]: [trace, call2],
+    });
+    // What goes to a collector is the same tree.
+    const sent = toOtlp(local, {}).resourceSpans[0]!.scopeSpans[0]!.spans;
+    expect(tree(sent.map((s: any) => ({ span_id: s.spanId, trace_id: s.traceId, parent_id: s.parentSpanId ?? null })))).toEqual(tree(local));
+
+    // A later turn of each agent runs on its own time: its own trace, linked to its spawn call.
+    x.store.append(child.id, "user", { text: "more" });
+    const childLater = turn(child);
+    end(child);
+    x.store.append(grand.id, "user", { text: "more" });
+    const grandLater = turn(grand);
+    end(grand);
+    const own = (id: string) => x.t.trace(traceIdOf(id)).map((s) => [s.span_id, s.parent_id, s.attrs.links]);
+    expect(own(childLater.id)).toEqual([[span(childLater.id), null, [{ trace_id: trace, span_id: call1 }]]]);
+    expect(own(grandLater.id)).toEqual([[span(grandLater.id), null, [{ trace_id: trace, span_id: call2 }]]]);
+    expect(x.t.trace(trace).length).toBe(5);
+    // A spawn from that later turn starts in the later turn's own trace.
+    expect(parseTraceparent(spawnContext(x.store, child.id, "c3"))).toEqual({ trace: traceIdOf(childLater.id), span: toolSpanId(child.id, "c3") });
+  } finally {
+    x.close();
+  }
 });
 
 const req = (text: string) => ({ model: "m", system: "", tools: [], messages: [{ role: "user", content: [{ type: "text", text }] }] }) as any;

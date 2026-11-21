@@ -17,7 +17,7 @@ import { configDir } from "../providers/config.ts";
 import { carriedPlugins } from "../tools/skills.ts";
 import { checkpointAt } from "../engine/compact.ts";
 import { STALLED_MAX } from "../engine/turn.ts";
-import { toolSpanId, traceIdOf, traceparent } from "../admin/trace.ts";
+import { spawnContext } from "../admin/trace.ts";
 
 // Subagents: a child session with its own context that works on one task and
 // reports back to the session that spawned it. One level deep. The child gets
@@ -608,8 +608,8 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
   }
   // task_at: where the parent's own words start, so the page shows them verbatim.
   // traceparent: the spawn call's span, so the child's turns trace under it.
-  const parentTurn = input.call_id ? store.db.query<{ id: string }, [string]>("SELECT id FROM events WHERE session_id = ? AND kind = 'turn_start' ORDER BY seq DESC LIMIT 1").get(parentId) : null;
-  const tp = parentTurn ? { traceparent: traceparent(traceIdOf(parentTurn.id), toolSpanId(parentId, input.call_id!)) } : {};
+  const context = input.call_id ? spawnContext(store, parentId, input.call_id) : null;
+  const tp = context ? { traceparent: context } : {};
   const ev = engine.send(child.id, task, { meta: { kind: "task", agent_id: id, task_at: task.length - input.prompt.length, ...tp } }).event!;
   const rec = update(id, { first_seq: ev.seq - 1 })!;
   if (input.background === false) {

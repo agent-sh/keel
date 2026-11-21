@@ -97,6 +97,28 @@ export function turnPlace(turnEvent: string, spawn: { trace: string; span: strin
   return { trace: own, span, parent: null, links: [{ trace_id: spawn.trace, span_id: spawn.span }] };
 }
 
+type Turn = { id: string; ts: number; seq: number };
+
+// Where a session's turn sits, read from its events: a subagent's task prompt
+// carries the context of the spawn call that started it.
+export function placeOf(store: Store, sessionId: string, turn: Pick<Turn, "id" | "seq">): Place {
+  const task = store.db.query<{ seq: number; tp: string }, [string]>(
+    "SELECT seq, json_extract(data, '$.traceparent') AS tp FROM events WHERE session_id = ? AND kind = 'user' AND json_extract(data, '$.traceparent') IS NOT NULL ORDER BY seq LIMIT 1",
+  ).get(sessionId);
+  const spawn = task && task.seq < turn.seq ? parseTraceparent(task.tp) : null;
+  const first = !!spawn && !store.db.query("SELECT 1 FROM events WHERE session_id = ? AND kind = 'turn_start' AND seq > ? AND seq < ? LIMIT 1").get(sessionId, task!.seq, turn.seq);
+  return turnPlace(turn.id, spawn, first);
+}
+
+// The context a spawn call hands the session it starts: the call's span, in
+// the trace the calling turn really sits in. That is the turn's own trace for
+// a plain turn and an ancestor's for the first turn of a spawned agent, so a
+// chain of spawns stays in the trace of the turn that started the first one.
+export function spawnContext(store: Store, sessionId: string, callId: string): string | null {
+  const turn = store.db.query<Turn, [string]>("SELECT id, ts, seq FROM events WHERE session_id = ? AND kind = 'turn_start' ORDER BY seq DESC LIMIT 1").get(sessionId);
+  return turn ? traceparent(placeOf(store, sessionId, turn).trace, toolSpanId(sessionId, callId)) : null;
+}
+
 // What a request carries, by count and size, never its text. Bytes are UTF-8
 // bytes of the JSON, as they go on the wire, not UTF-16 units of the string.
 export function requestShape(req: Pick<ProviderRequest, "system" | "messages" | "tools" | "effort" | "maxTokens" | "purpose" | "speed">) {
@@ -149,7 +171,6 @@ const row = (r: any): Span => ({
 // The pointer alone does not make a retry replayable: the span it names can age out first, and its bytes go with it.
 const COLS = "span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, error, error_type, error_id, attrs, (request IS NOT NULL OR EXISTS (SELECT 1 FROM spans AS kept WHERE kept.span_id = json_extract(spans.attrs, '$.request_in') AND kept.request IS NOT NULL)) AS replayable";
 
-type Turn = { id: string; ts: number; seq: number };
 type Open = { span: string; trace: string; t0: number; first?: number; attempt: number };
 
 export class Tracer {
@@ -211,17 +232,11 @@ export class Tracer {
     return this.store.db.query<Turn, [string]>("SELECT id, ts, seq FROM events WHERE session_id = ? AND kind = 'turn_start' ORDER BY seq DESC LIMIT 1").get(sessionId);
   }
 
-  // A subagent's turns: the spawn call's context rides on its task prompt.
   private places = new Map<string, Place>();
   place(sessionId: string, turn: Turn): Place {
     const hit = this.places.get(turn.id);
     if (hit) return hit;
-    const task = this.store.db.query<{ seq: number; tp: string }, [string]>(
-      "SELECT seq, json_extract(data, '$.traceparent') AS tp FROM events WHERE session_id = ? AND kind = 'user' AND json_extract(data, '$.traceparent') IS NOT NULL ORDER BY seq LIMIT 1",
-    ).get(sessionId);
-    const spawn = task && task.seq < turn.seq ? parseTraceparent(task.tp) : null;
-    const first = !!spawn && !this.store.db.query("SELECT 1 FROM events WHERE session_id = ? AND kind = 'turn_start' AND seq > ? AND seq < ? LIMIT 1").get(sessionId, task!.seq, turn.seq);
-    const p = turnPlace(turn.id, spawn, first);
+    const p = placeOf(this.store, sessionId, turn);
     if (this.places.size > 500) this.places.clear();
     this.places.set(turn.id, p);
     return p;
