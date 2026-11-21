@@ -6,6 +6,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Deps } from "../server/app.ts";
+import { flushAll } from "../automation/core.ts";
 import { claimState, hasClaim } from "../core/claim.ts";
 import { addAdmission } from "../server/admission.ts";
 
@@ -152,6 +153,8 @@ export class Daemon {
   // The last restart that was called off (what had to hold before it did not),
   // until the next drain: the page and `keel restart` say so.
   restartFailed: { ts_ms: number; error: string } | null = null;
+  // The process was told to stop (a signal): it stops, whatever a restart was doing.
+  private stopping = false;
   private beforeExit: (() => void | Promise<void>)[] = [];
   private beforeRestart: (() => void | Promise<void>)[] = [];
 
@@ -195,6 +198,7 @@ export class Daemon {
 
   // New work is turned away from now on (the process is stopping).
   refuseWork() {
+    this.stopping = true;
     if (this.draining) return;
     this.draining = { since_ms: Date.now(), restart: false, deadline_ms: Date.now() + Number(process.env.KEEL_DRAIN_MS ?? 10_000) };
     this.emit();
@@ -221,8 +225,11 @@ export class Daemon {
           // Called off before a turn was cut: this daemon goes on as it was.
           const rec = this.deps.errors.capture("server", e, { at: "before a restart" });
           this.restartFailed = { ts_ms: Date.now(), error: rec.message };
+          // A stop by signal meanwhile goes on (main.ts parks the turns and exits): no turn starts.
+          if (this.stopping) return this.emit();
           this.draining = null;
           this.deps.engine.undrain();
+          flushAll();
           this.emit();
           return;
         }

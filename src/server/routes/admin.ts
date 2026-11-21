@@ -65,6 +65,12 @@ export const adminRoutes: RouteModule = (deps) => {
   const storage = new Storage(store, deps.engine, bus, errors);
   const awake = new Awake(bus, (e, ctx) => errors.capture("server", e, ctx));
   daemon.onExit(() => awake.stopAll());
+  // The backup before a restart is made once the running turns had their
+  // time and before the rest are parked (a backup that fails calls the
+  // restart off with no turn cut). So it does not hold what a turn the
+  // restart parks wrote after it: the results of its cut calls and its end.
+  // Restored, that turn is found open, as after a crash: the start closes
+  // it as cut and continues it.
   daemon.onRestart(() => {
     if (!settings().backup.before_restart) return;
     try { storage.backup("before a restart"); } catch (e) { throw new Error(`The backup before the restart failed: ${(e as Error).message}`, { cause: e }); }

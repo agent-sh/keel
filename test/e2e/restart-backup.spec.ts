@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
@@ -7,8 +7,9 @@ import { shoot } from "./shots.ts";
 
 // Feature: a restart makes a backup first, and a backup that fails calls the
 // restart off: no turn is cut, the failure is one error, the page and
-// `keel restart` say so, and the same daemon takes work again. Once the fault
-// is gone the restart goes through. Runs its own daemon on a scratch state
+// `keel restart` say so, and the same daemon takes work again, a wake that
+// came due while it drained included. Once the fault is gone the restart goes
+// through. Runs its own daemon on a scratch state
 // folder, on the scripted stand-in.
 const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
 const FAILED = "The backup before the restart failed";
@@ -43,7 +44,16 @@ test("a failed backup calls the restart off; the retry restarts", async ({ page 
   // One connection per call: a kept one would be the old daemon's after the restart.
   const call = (path: string, body?: unknown, method = body === undefined ? "GET" : "POST") =>
     fetch(d.url + path, { method, headers: { "content-type": "application/json", connection: "close" }, body: body === undefined ? undefined : JSON.stringify(body) }).then(async (r) => ({ status: r.status, ...((await r.json()) as any) }));
-  const restart = (timeout: number) => spawnSync("bun", ["src/main.ts", "restart", "--timeout", String(timeout), "--url", d.url], { encoding: "utf8", timeout: 150_000 });
+  // Not a blocking spawn: this process is the daemon's parent. The old daemon
+  // is not gone until its parent takes its exit, and the new one waits for that.
+  const restart = (timeout: number) => new Promise<{ status: number | null; stdout: string; stderr: string }>((done) => {
+    const p = spawn("bun", ["src/main.ts", "restart", "--timeout", String(timeout), "--url", d.url], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "", stderr = "";
+    p.stdout!.on("data", (b) => (stdout += b));
+    p.stderr!.on("data", (b) => (stderr += b));
+    p.once("exit", (status) => done({ status, stdout, stderr }));
+  });
+  const events = async (id: string) => (await call(`/api/sessions/${id}`)).events as any[];
   const failures = async () => (await call("/api/errors")).errors.filter((e: any) => e.message.includes(FAILED));
   const pid0 = (await call("/api/daemon")).pid as number;
   try {
@@ -52,17 +62,25 @@ test("a failed backup calls the restart off; the retry restarts", async ({ page 
     await call(`/api/sessions/${session.id}/permissions`, { mode: "full-auto" }, "PUT");
     await call(`/api/sessions/${session.id}/messages`, { text: "script:long-tool" });
     await expect.poll(async () => (await call(`/api/sessions/${session.id}`)).events.some((e: any) => e.kind === "assistant"), { timeout: 30_000 }).toBe(true);
+    // A session that waits on a timer: it comes due while the daemon drains.
+    const waiter = (await call("/api/sessions", { model: "scripted:stand-in", title: "Woken after a called-off restart" })).session;
+    await call(`/api/sessions/${waiter.id}/messages`, { text: `script:calls ${JSON.stringify([{ name: "wait_for", input: { kind: "timer", seconds: 6, note: "due during the drain" } }])}` });
+    await expect.poll(async () => (await events(waiter.id)).filter((e) => e.kind === "turn_end").length, { timeout: 30_000 }).toBe(1);
     const fault = join(state, "state", "backups");
     writeFileSync(fault, "not a folder");
 
-    // The restart does not wait for the turn (1 s): the backup fails, and it is called off.
-    const off = restart(1);
+    // The restart gives the turn 10 s, less than it needs: the backup fails, and it is called off.
+    expect((await events(waiter.id)).filter((e) => e.kind === "user")).toHaveLength(1);
+    const off = await restart(10);
     expect(off.status, off.stdout + off.stderr).toBe(1);
     expect(off.stderr).toContain(`the restart was called off, and the daemon (pid ${pid0}) takes work again. ${FAILED}`);
     const st = await call("/api/daemon");
     expect(st).toMatchObject({ pid: pid0, draining: null });
     expect(st.restart_failed.error).toContain(FAILED);
     expect(await failures()).toMatchObject([{ source: "server", count: 1 }]);
+    // The timer came due while no turn started: its wake is sent now, not at the session's next prompt.
+    await expect.poll(async () => (await events(waiter.id)).filter((e) => e.kind === "user").length, { timeout: 15_000 }).toBe(2);
+    expect((await events(waiter.id)).filter((e) => e.kind === "user")[1].ts).toBeGreaterThanOrEqual(st.restart_failed.ts_ms);
     // The same daemon takes work.
     const next = await call("/api/sessions", { model: "scripted:stand-in", title: "Taken after the called-off restart" });
     expect(next.status).toBe(201);
@@ -93,13 +111,13 @@ test("a failed backup calls the restart off; the retry restarts", async ({ page 
 
     // The fault is gone: the restart goes through, with its backup.
     rmSync(fault);
-    const ok = restart(5);
+    const ok = await restart(5);
     expect(ok.status, ok.stdout + ok.stderr).toBe(0);
     const last = (await call("/api/daemon")).pid;
     expect(last).not.toBe(pid0);
     expect(ok.stdout).toContain(`restarted: pid ${last}`);
     expect((await call("/api/daemon")).restart_failed).toBeNull();
-    expect((await call("/api/backups")).backups).toMatchObject([{ reason: "before a restart", sessions: 2 }]);
+    expect((await call("/api/backups")).backups).toMatchObject([{ reason: "before a restart", sessions: 3 }]);
     await page.reload();
     await expect(panel.getByTestId("daemon-status")).toContainText(`pid ${last}`, { timeout: 30_000 });
     await expect(panel.getByTestId("daemon-restart-failed")).toHaveCount(0);

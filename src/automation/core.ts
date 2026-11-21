@@ -128,6 +128,12 @@ export function flush(sessionId: string) {
   }
 }
 
+// After a drain that was called off: what came due while the daemon started
+// no turn (a wait that fired, an agent's report, a loop run) is sent now.
+export function flushAll() {
+  for (const id of [...pending.keys()]) flush(id);
+}
+
 // Called by the turn-end hook: once the turn has fully ended, what waited runs.
 export function afterTurn(sessionId: string, then?: () => void) {
   D().engine.idle(sessionId).then(() => {
