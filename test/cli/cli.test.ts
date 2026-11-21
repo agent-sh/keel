@@ -119,6 +119,21 @@ describe("admin commands", () => {
     });
   }, 30_000);
 
+  test("port --apply exits by its result with --json as without", async () => {
+    const item = { id: "skills:one", area: "skills", source: "claude", title: "one", state: "new", pick: true };
+    const got: unknown[] = [];
+    for (const [failed, it] of [[1, { ...item, error: "could not be copied" }], [0, { ...item, result: "copied" }]] as [number, Record<string, unknown>][]) {
+      answers = { "/api/port": { items: [it], counts: { applied: 1 - failed, failed } } };
+      const asJson = await k(["port", "--apply", "--json"]);
+      const asText = await k(["port", "--apply"]);
+      got.push([failed, asJson.code, json(asJson.out), asText.code, asText.out.includes(String(it.error ?? it.result))]);
+    }
+    expect(got).toEqual([
+      [1, 3, { items: [{ ...item, error: "could not be copied" }], counts: { applied: 0, failed: 1 } }, 3, true],
+      [0, 0, { items: [{ ...item, result: "copied" }], counts: { applied: 1, failed: 0 } }, 0, true],
+    ]);
+  }, 30_000);
+
   test("upgrade --help says it restarts the binary in place and installs nothing", async () => {
     const up = await k(["upgrade", "--help"]);
     const re = await k(["restart", "--help"]);

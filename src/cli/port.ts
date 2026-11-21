@@ -65,7 +65,8 @@ export const portCmd = command("port", USAGE, {
     return EXIT.ok;
   }
   const r = await c.post<any>("/api/port", { ids, areas, days: v.days ? Number(v.days) : undefined, max: v.max ? Number(v.max) : undefined });
-  if (v.json) return (printJson(r), EXIT.ok);
-  show(r.items.filter((i: any) => i.result || i.error || v.all), true);
-  return r.counts.failed ? EXIT.error : EXIT.ok;
+  // An item that failed is the command's failure in both forms of output.
+  if (v.json) printJson(r);
+  else show(r.items.filter((i: any) => i.result || i.error || v.all), true);
+  return r.counts?.failed ? EXIT.error : EXIT.ok;
 });
