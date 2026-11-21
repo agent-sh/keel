@@ -35,6 +35,10 @@ export type Goal = {
   // The turn end counted last (its event id), saved before the judge is asked:
   // a restart while it judges, or a second look at the same turn, counts it once.
   counted?: string | null;
+  // The turn end whose check ran to its outcome (a continuation, a pause, an
+  // end). A goal still pursuing after a turn end that is not this one is owed
+  // a check; one from before these marks (neither is set) is owed none.
+  checked?: string | null;
   // The independent check of a "met" (verify.ts): its child session, while it
   // runs and after; what it saw; met only once it agreed.
   verifier_session?: string | null; verifying?: boolean; evidence?: string[] | null; verified?: boolean;
@@ -119,13 +123,14 @@ export async function set(sessionId: string, input: { objective: string; token_b
   dropVerifier(cur);
   const g = save({
     id: Bun.randomUUIDv7(), session_id: sessionId, objective, status: "pursuing", token_budget: checkBudget(input.token_budget, "token_budget"), max_turns: checkBudget(input.max_turns, "max_turns"),
-    tokens_used: 0, turns: 0, idle_turns: 0, counted: null, started_ms: now, updated_ms: now, judge_model: input.judge_model ?? null, verifier_model: input.verifier_model ?? null, rev: (cur?.rev ?? 0) + 1,
+    tokens_used: 0, turns: 0, idle_turns: 0, counted: null, checked: null, started_ms: now, updated_ms: now, judge_model: input.judge_model ?? null, verifier_model: input.verifier_model ?? null, rev: (cur?.rev ?? 0) + 1,
   });
   activity.record("turn", "goal", sessionId, `Goal set: ${objective.slice(0, 200)}`);
   kickoff(g);
   return g;
 }
 
+const resume = (g: Goal) => deliver(g.session_id, `[harness] The goal is back on. Continue toward it:\n${g.objective}`, { kind: "goal", goal: "resume" });
 const kickoff = (g: Goal) =>
   deliver(g.session_id, `${g.objective}\n\n(This is the session's goal: make it hold. After each turn a check reads the conversation, and before it counts as met an independent verifier checks the files and reruns what proves it, so leave evidence it can check: run the test, print the file.)`, { kind: "goal", goal: "start" });
 
@@ -163,7 +168,7 @@ export async function patch(sessionId: string, p: { status?: "paused" | "pursuin
     g.status_reason = null;
     g.idle_turns = 0;
     save(g);
-    if (!D().engine.isRunning(sessionId)) deliver(sessionId, `[harness] The goal is back on. Continue toward it:\n${g.objective}`, { kind: "goal", goal: "resume" });
+    if (!D().engine.isRunning(sessionId)) resume(g);
     return g;
   } else if (p.status !== undefined) throw new Error("status is paused or pursuing");
   return save(g);
@@ -194,7 +199,7 @@ const sum = (u: any = {}) => (u.input ?? 0) + (u.output ?? 0) + (u.cache_read ??
 // used a tool, over the whole turn: a message the owner steered in mid-turn
 // is part of it, not its start.
 function turnFacts(sessionId: string): { id?: string; tokens: number; tools: boolean } {
-  const evs = D().store.events(sessionId);
+  const evs = lineage(D().store.events(sessionId), D().store.session(sessionId)?.head ?? null);
   const end = evs.findLastIndex((e) => e.kind === "turn_end");
   if (end < 0) return { tokens: 0, tools: false };
   let tools = false;
@@ -212,29 +217,37 @@ const judging = new Set<string>();
 // After a restart, what an active goal is owed. A verification the daemon was
 // waiting on has no waiter any more: its verifier stops and the turn is checked
 // again. A turn that ended with its check not done (the judge was out when the
-// daemon went down, or the turn-end hook never ran, or the continuation was
-// not sent) is checked now, and counted only if it was not. A turn the restart
-// cut is the engine's to continue: its end is checked like any other.
+// daemon went down, the daemon was draining, or the turn-end hook never ran)
+// is checked now, and counted only if it was not. A turn the restart cut is
+// the engine's to continue, or to hold: its end, or the end of whatever turn
+// comes next in the session (a loop's, a wake's), is checked like any other.
+// A goal saved before turn ends were marked carries no record of a check it
+// is owed: it is left as it is and goes on at its session's next turn end.
 export function recover() {
   judging.clear(); // a new daemon: no check is under way
   for (const r of db().query<{ data: string }, []>("SELECT data FROM goals").all()) {
     let g = JSON.parse(r.data) as Goal;
-    if (g.verifying) {
+    const verifying = !!g.verifying;
+    if (verifying) {
       const old = g.verifier_session ? agents.byChild(g.verifier_session) : undefined;
       if (old && !agents.isEnded(old)) agents.stop(old.id, "parent"); // its answer has no one to go to
       g = save({ ...g, verifying: false });
     }
     const s = D().store.session(g.session_id);
     if (!active(g) || !s || s.archived) continue;
-    // The judge's model may still be starting (a plugin): waited for, as the engine waits for a cut turn's.
-    ready(g.judge_model ?? s.model).catch(() => {}).then(() => owed(g.session_id)).catch((e) => capture(e, { at: "goal recheck", session: g.session_id }));
+    if (!verifying && g.counted === undefined) continue;
+    // The judge's model may still be starting (a plugin): waited for, as the
+    // engine waits for a cut turn's. A model that does not come is not asked:
+    // the goal stays as it is, for its next turn end or the next start.
+    const id = g.session_id;
+    ready(g.judge_model ?? s.model).then(() => owed(id)).catch((e) => capture(e, { at: "goal recheck", session: id }));
   }
 }
 
 async function ready(model: string) {
   for (let i = 0; ; i++) {
     try { await D().providers.resolve(model); return; } catch (e) { if (i >= 12) throw e; }
-    await Bun.sleep(5_000);
+    await Bun.sleep(Number(process.env.KEEL_GOAL_READY_GAP_MS ?? 5_000));
   }
 }
 
@@ -248,22 +261,22 @@ async function owed(sessionId: string) {
   if (last && (last.kind !== "turn_end" || last.data.reason === "restart")) return;
   // No turn since the goal was set: its first prompt never went (the daemon was on its way down).
   if (!last || last.ts < g!.started_ms) return void kickoff(g!);
+  // Its check ran to its outcome and the goal goes on, yet nothing followed the
+  // turn: the prompt that was to follow (a continuation, the owner's resume
+  // after a stopped or failed turn) was lost with the daemon. It goes now; the
+  // turn is not judged a second time, nor a stopped one paused again.
+  if (g!.checked === last.id) return void resume(g!);
   // A goal saved before turns were marked as counted had this one counted by the daemon that ran it.
   await afterTurn(sessionId, String(last.data.reason), { recheck: g!.counted === undefined });
-}
-
-// The engine did not continue the cut turn of a session with an active goal:
-// nothing runs toward it, so it pauses with the way on.
-export function onCutTurnHeld(sessionId: string) {
-  const g = get(sessionId);
-  if (active(g)) save({ ...g!, status: "paused", status_reason: "its turn was cut by a daemon restart and not continued: resume to go on" });
 }
 
 // After each turn of a session with an active goal: the turn is counted and a
 // stop pauses the goal at once; the check waits (`judge` false) while more
 // work is lined up (an agent's report, a wait), as Claude Code defers it.
 // The count is saved before the judge is asked, so a daemon that stops while
-// it judges leaves the turn counted once and the check owed (recover).
+// it judges leaves the turn counted once and the check owed (recover). A
+// daemon on its way down asks no judge and starts no verifier: what it decided
+// would not be sent, and a verifier's turn would be parked at once.
 export async function afterTurn(sessionId: string, reason: string, opts: { judge?: boolean; recheck?: boolean } = {}) {
   const g = get(sessionId);
   if (!active(g)) return;
@@ -271,6 +284,8 @@ export async function afterTurn(sessionId: string, reason: string, opts: { judge
   const ours = (x?: Goal) => !!x && instance(x) === mine;
   const key = `${sessionId} ${mine}`;
   const facts = turnFacts(sessionId);
+  // The check's outcome, saved with the turn it was for.
+  const done = (x: Goal) => save({ ...x, checked: facts.id ?? null });
   if (!opts.recheck && facts.id && g!.counted !== facts.id) {
     g!.counted = facts.id;
     g!.tokens_used += facts.tokens;
@@ -282,15 +297,16 @@ export async function afterTurn(sessionId: string, reason: string, opts: { judge
     } else if (facts.tools) g!.idle_turns = 0;
   }
   if (reason === "restart") return void save(g!);
-  if (reason === "error" || reason === "max_tokens") return void save({ ...g!, status: "paused", status_reason: reason === "error" ? "a turn failed: fix it, then resume" : "a reply hit the output limit" });
-  if (reason === "interrupted") return void save({ ...g!, status: "paused", status_reason: "the turn was stopped" });
+  if (reason === "error" || reason === "max_tokens") return void done({ ...g!, status: "paused", status_reason: reason === "error" ? "a turn failed: fix it, then resume" : "a reply hit the output limit" });
+  if (reason === "interrupted") return void done({ ...g!, status: "paused", status_reason: "the turn was stopped" });
   // A check of this goal already under way decides: this turn is counted, not judged twice.
   if (opts.judge === false || judging.has(key)) return void save(g!);
   save(g!);
+  if (D().engine.isDraining?.()) return; // owed to the next start
   judging.add(key);
   try {
     const s = D().store.session(sessionId);
-    if (!s || s.archived) return void save({ ...g!, status: "paused", status_reason: "the session is archived" });
+    if (!s || s.archived) return void done({ ...g!, status: "paused", status_reason: "the session is archived" });
     const model = g!.judge_model ?? undefined;
     const res = await D().engine.ask(sessionId, [{ role: "user", content: [{ type: "text", text: JUDGE(g!.objective) }] }], new AbortController().signal, model);
     const text = res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n");
@@ -300,6 +316,8 @@ export async function afterTurn(sessionId: string, reason: string, opts: { judge
     if (!active(now) || !ours(now)) return; // paused, cleared or replaced while it judged
     const u = res.usage as any;
     const judgeTokens = (u.input ?? 0) + (u.output ?? 0) + (u.cache_read ?? 0) + (u.cache_write ?? 0);
+    // The daemon began to stop while it judged: the verdict is dropped (its cost is not) and the next start asks again.
+    if (D().engine.isDraining?.()) return void save({ ...now!, tokens_used: now!.tokens_used + judgeTokens });
     let next: Goal = { ...now!, tokens_used: now!.tokens_used + judgeTokens, last_verdict: v.verdict, last_reason: v.reason, judged_by: res.model_id, evidence: null };
     activity.record("turn", "goal", sessionId, `Goal check: ${v.verdict.replace("_", " ")}. ${v.reason}`.slice(0, 400));
     if (v.verdict === "met") {
@@ -308,25 +326,25 @@ export async function afterTurn(sessionId: string, reason: string, opts: { judge
       const out = await verify(sessionId, now!, v.reason, (child) => { const c = get(sessionId); if (ours(c)) save({ ...c!, verifier_session: child }); });
       const after = get(sessionId);
       if (!ours(after)) return; // cleared or replaced meanwhile: the goal there now is not this check's to touch
-      if (!active(after)) return void save({ ...after!, verifying: false }); // paused meanwhile
+      if (!active(after)) return void done({ ...after!, verifying: false }); // paused meanwhile
       next = { ...after!, verifying: false, verifier_session: out.child_id, tokens_used: after!.tokens_used + out.tokens };
-      if ("error" in out.result) return void save({ ...next, status: "paused", status_reason: `the judge said met; ${out.result.error}. Resume to try again.` });
+      if ("error" in out.result) return void done({ ...next, status: "paused", status_reason: `the judge said met; ${out.result.error}. Resume to try again.` });
       const r = out.result;
       activity.record("turn", "goal", sessionId, `Goal verification: ${r.verdict.replace("_", " ")}. ${r.reason}`.slice(0, 400));
       next = { ...next, last_verdict: r.verdict, last_reason: r.reason, evidence: r.evidence };
-      if (r.verdict === "met") return void save({ ...next, status: "achieved", status_reason: r.reason, verified: true });
+      if (r.verdict === "met") return void done({ ...next, status: "achieved", status_reason: r.reason, verified: true });
       v.reason = `${r.reason}${r.evidence.length ? `\n${r.evidence.map((e) => `- ${e}`).join("\n")}` : ""}`;
       v.verdict = "not_met";
     }
-    if (v.verdict === "impossible") return void save({ ...next, status: "impossible", status_reason: v.reason });
-    if (spent(next)) return void save({ ...next, status: "budget", status_reason: next.max_turns != null && next.turns >= next.max_turns ? `ran its ${next.max_turns} turns` : `spent its ${next.token_budget} tokens` });
-    if (next.idle_turns >= STALL_TURNS) return void save({ ...next, status: "stalled", status_reason: `${STALL_TURNS} turns in a row used no tool` });
-    save(next);
+    if (v.verdict === "impossible") return void done({ ...next, status: "impossible", status_reason: v.reason });
+    if (spent(next)) return void done({ ...next, status: "budget", status_reason: next.max_turns != null && next.turns >= next.max_turns ? `ran its ${next.max_turns} turns` : `spent its ${next.token_budget} tokens` });
+    if (next.idle_turns >= STALL_TURNS) return void done({ ...next, status: "stalled", status_reason: `${STALL_TURNS} turns in a row used no tool` });
+    done(next);
     deliver(sessionId, `[harness] The goal is not met yet${next.evidence ? " (an independent check of the work found this)" : ""}: ${v.reason}\nContinue toward it.`, { kind: "goal", goal: "continue" });
   } catch (e) {
     capture(e, { at: "goal check", session: sessionId });
     const now = get(sessionId);
-    if (ours(now)) save({ ...now!, verifying: false, status: "paused", status_reason: `the judge could not answer: ${(e as Error).message}` });
+    if (ours(now)) done({ ...now!, verifying: false, status: "paused", status_reason: `the judge could not answer: ${(e as Error).message}` });
   } finally {
     judging.delete(key);
   }

@@ -77,7 +77,9 @@ let hooked = false;
 function hook() {
   if (hooked) return;
   hooked = true;
-  registerHooks({ turnEnd: (s, reason) => void waiting.get(s.id)?.(reason) });
+  // A turn parked for a daemon stop has not ended: the wait goes with the
+  // daemon, the goal stays verifying, and the next start checks it again (goals.recover).
+  registerHooks({ turnEnd: (s, reason) => { if (reason !== "restart") waiting.get(s.id)?.(reason); } });
 }
 
 const lastText = (childId: string) => {

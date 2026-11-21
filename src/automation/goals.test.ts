@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
-import { setDeps } from "./core.ts";
+import { dropPending, setDeps } from "./core.ts";
 import * as activity from "./activity.ts";
 import * as agents from "./agents.ts";
 import * as goals from "./goals.ts";
@@ -17,25 +17,30 @@ import * as waits from "./waits.ts";
 
 let store!: Store;
 let running = false;
+let draining = false; // the daemon is on its way down
+let modelUp = true;
 // The scripted judge: each request waits for its answer; `verdict` answers the newest.
 const asked: ((text: string) => void)[] = [];
+const askedFor: string[] = []; // the session of each request, in the same order
+const asks = (id: string) => askedFor.filter((x) => x === id).length;
 let verdict: (text: string) => void = () => {};
 // The scripted verifier: its child session's turn runs until `verifierSays` ends it.
 const live = new Set<string>();
 const engine = {
   isRunning: (id: string) => running || live.has(id),
+  isDraining: () => draining,
   interrupt: async () => {},
   idle: async () => {},
   send: (id: string, text: string, o: any) => {
     if (store.session(id)?.parent_id) live.add(id);
     return { event: store.append(id, "user", { text, ...o?.meta }) };
   },
-  ask: () => new Promise((res) => asked.push((verdict = (text) => res({ blocks: [{ type: "text", text }], usage: { input: 1, output: 1 }, model_id: "m" })))),
+  ask: (id: string) => new Promise((res) => (askedFor.push(id), asked.push((verdict = (text) => res({ blocks: [{ type: "text", text }], usage: { input: 1, output: 1 }, model_id: "m" }))))),
 };
 // A daemon on a state folder; called again on the same folder, the daemon after a restart.
 function boot(dir: string) {
   store = new Store(dir);
-  setDeps({ store, bus: new Bus(), errors: { capture() {} }, engine, providers: { resolve: async (id: string) => ({ info: { id } }) } } as any);
+  setDeps({ store, bus: new Bus(), errors: { capture() {} }, engine, providers: { resolve: async (id: string) => { if (!modelUp) throw new Error("the provider is not up"); return { info: { id } }; } } } as any);
   activity.migrate();
   agents.migrate();
   waits.migrate();
@@ -259,7 +264,7 @@ test("a goal whose turn ended as the daemon went down gets its verdict after the
   }
 });
 
-test("a turn parked for a restart is not judged: its continuation is, and a held one pauses the goal", async () => {
+test("a turn parked for a restart is not judged: its continuation is", async () => {
   const s = session();
   await goals.set(s.id, { objective: "make it pass" });
   store.append(s.id, "turn_start", {});
@@ -281,9 +286,154 @@ test("a turn parked for a restart is not judged: its continuation is, and a held
   verdict('{"verdict": "not_met", "reason": "one test fails"}');
   await check;
   expect(goals.get(s.id)).toMatchObject({ status: "pursuing", turns: 1, tokens_used: 17 });
+});
 
-  const held = session();
-  await goals.set(held.id, { objective: "ship it" });
-  goals.onCutTurnHeld(held.id);
-  expect(goals.get(held.id)).toMatchObject({ status: "paused", status_reason: expect.stringContaining("restart") });
+// The next daemon on the same folder: what the last one held in memory is gone.
+const restart = (...sessions: string[]) => {
+  for (const id of sessions) dropPending(id);
+  live.clear();
+  draining = false;
+  const dir = store.stateDir;
+  store.db.close();
+  boot(dir);
+  goals.recover();
+};
+const quiet = () => Bun.sleep(30);
+
+test("a cut turn the engine holds leaves the goal pursuing: the next turn in the session is judged", async () => {
+  const s = session();
+  await goals.set(s.id, { objective: "ship it" });
+  store.append(s.id, "turn_start", {});
+  store.append(s.id, "turn_end", { reason: "restart", usage: usage(0) });
+  await goals.afterTurn(s.id, "restart");
+  restart(s.id);
+  // The engine holds the turn (continued three times with no step done): a note, no turn.
+  store.append(s.id, "note", { kind: "restart", text: "This turn was not continued again." });
+  await quiet();
+  expect(asks(s.id)).toBe(0);
+  expect(goals.get(s.id)).toMatchObject({ status: "pursuing" });
+  // A loop's turn ends in the session afterwards: it is judged, and the goal goes on.
+  store.append(s.id, "user", { text: "tick", kind: "loop" });
+  turn(s.id, 5);
+  const check = goals.afterTurn(s.id, "end_turn");
+  expect(asks(s.id)).toBe(1);
+  verdict('{"verdict": "not_met", "reason": "one test fails"}');
+  await check;
+  expect(goals.get(s.id)).toMatchObject({ status: "pursuing", turns: 1, last_verdict: "not_met" });
+  expect(said(s.id, "continue")).toHaveLength(1);
+});
+
+test("a drain that parks the verifier's turn leaves the goal verifying, and the next start checks it again", async () => {
+  const g = await judgedMet("ship it");
+  // The daemon drains: the verifier's turn is parked and its end hook runs with "restart".
+  draining = true;
+  store.append(g.child, "turn_end", { reason: "restart", usage: usage(0) });
+  live.delete(g.child);
+  for (const h of allHooks()) h.turnEnd?.(store.session(g.child)!, "restart");
+  await quiet();
+  expect(goals.get(g.id)).toMatchObject({ status: "pursuing", verifying: true });
+
+  restart(g.id);
+  await until(() => asks(g.id) === 2);
+  expect(goals.get(g.id)).toMatchObject({ status: "pursuing", verifying: false, turns: 1 });
+  asked[askedFor.lastIndexOf(g.id)]!('{"verdict": "met", "reason": "it looks done"}');
+  const child = await until(() => { const c = goals.get(g.id)?.verifier_session; return c && c !== g.child ? c : undefined; });
+  await until(() => live.has(child));
+  verifierSays(child, '{"verdict": "met", "reason": "the suite passes", "evidence": ["bun test: 4 pass, 0 fail"]}');
+  await until(() => goals.get(g.id)?.status === "achieved");
+  expect(goals.get(g.id)).toMatchObject({ verified: true, turns: 1 });
+});
+
+test("a draining daemon asks no judge and starts no verifier: the check is the next start's", async () => {
+  // The turn ends inside the drain.
+  const late = session();
+  await goals.set(late.id, { objective: "ship it" });
+  turn(late.id, 5);
+  // The judge is asked before the drain and answers met inside it.
+  const met = session();
+  await goals.set(met.id, { objective: "ship it" });
+  turn(met.id, 5);
+  const check = goals.afterTurn(met.id, "end_turn");
+  const answer = verdict;
+  draining = true;
+  await goals.afterTurn(late.id, "end_turn");
+  expect(asks(late.id)).toBe(0);
+  answer('{"verdict": "met", "reason": "it looks done"}');
+  await check;
+  for (const id of [late.id, met.id]) {
+    expect(goals.get(id)).toMatchObject({ status: "pursuing", turns: 1 });
+    expect(goals.get(id)!.verifying ?? false).toBe(false);
+    expect(goals.get(id)!.verifier_session ?? null).toBeNull();
+  }
+  expect(goals.get(met.id)!.tokens_used).toBe(7); // the judge's request was paid for
+
+  const before = asked.length;
+  restart(late.id, met.id);
+  await until(() => asks(late.id) === 1 && asks(met.id) === 2);
+  for (const answer of asked.slice(before)) answer('{"verdict": "not_met", "reason": "no test run yet"}');
+  await until(() => said(late.id, "continue").length && said(met.id, "continue").length);
+  expect(goals.get(late.id)).toMatchObject({ status: "pursuing", turns: 1, tokens_used: 7 });
+  expect(goals.get(met.id)).toMatchObject({ status: "pursuing", turns: 1, tokens_used: 9 });
+});
+
+test("a goal from before turn ends were marked is not woken by a start: it goes on at its next turn end", async () => {
+  const s = session();
+  // The row as the build before wrote it: no id, no marks, its continuation lost.
+  const now = Date.now();
+  store.db.query("INSERT INTO goals (session_id, data) VALUES (?, ?)").run(s.id, JSON.stringify({
+    session_id: s.id, objective: "ship it", status: "pursuing", token_budget: null, max_turns: null, tokens_used: 100, turns: 3, idle_turns: 0,
+    started_ms: now - 60_000, updated_ms: now, judge_model: null, verifier_model: null, rev: 1,
+  }));
+  store.append(s.id, "user", { text: "go" });
+  turn(s.id, 10);
+  restart(s.id);
+  await quiet();
+  expect(asks(s.id)).toBe(0);
+  expect(store.events(s.id).filter((e) => e.kind === "user")).toHaveLength(1);
+  expect(goals.get(s.id)).toMatchObject({ status: "pursuing", turns: 3, tokens_used: 100 });
+  // Its session's next turn (a loop's, the owner's) ends: counted and judged as any turn.
+  store.append(s.id, "user", { text: "tick", kind: "loop" });
+  turn(s.id, 5);
+  const check = goals.afterTurn(s.id, "end_turn");
+  verdict('{"verdict": "not_met", "reason": "more to do"}');
+  await check;
+  expect(goals.get(s.id)).toMatchObject({ status: "pursuing", turns: 4, tokens_used: 107 });
+  expect(said(s.id, "continue")).toHaveLength(1);
+});
+
+test("a judge whose model does not come up at a start is not asked, and the goal stays pursuing", async () => {
+  const s = session();
+  await goals.set(s.id, { objective: "ship it" });
+  turn(s.id, 5);
+  draining = true;
+  await goals.afterTurn(s.id, "end_turn"); // counted, its check owed to the next start
+  process.env.KEEL_GOAL_READY_GAP_MS = "1";
+  modelUp = false;
+  try {
+    restart(s.id);
+    await Bun.sleep(80); // every try made
+  } finally {
+    modelUp = true;
+    delete process.env.KEEL_GOAL_READY_GAP_MS;
+  }
+  expect(asks(s.id)).toBe(0);
+  expect(goals.get(s.id)).toMatchObject({ status: "pursuing", turns: 1 });
+});
+
+test("a resume whose prompt was lost in a drain is sent at the next start, the stopped turn not paused again", async () => {
+  const s = session();
+  await goals.set(s.id, { objective: "ship it" });
+  store.append(s.id, "turn_start", {});
+  store.append(s.id, "turn_end", { reason: "interrupted", usage: usage(5) });
+  await goals.afterTurn(s.id, "interrupted");
+  expect(goals.get(s.id)).toMatchObject({ status: "paused", status_reason: "the turn was stopped" });
+  draining = true;
+  await goals.patch(s.id, { status: "pursuing" }); // its prompt waits in a daemon that is going down
+  expect(said(s.id, "resume")).toHaveLength(0);
+  restart(s.id);
+  await until(() => said(s.id, "resume").length);
+  await quiet();
+  expect(asks(s.id)).toBe(0);
+  expect(said(s.id, "resume")).toHaveLength(1);
+  expect(goals.get(s.id)).toMatchObject({ status: "pursuing", turns: 1 });
 });
