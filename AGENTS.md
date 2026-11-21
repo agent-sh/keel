@@ -71,12 +71,16 @@ under `~/.cache/keel-work/bun/research/`.
   answers with a whole session brings it in first, a part at a time
   (`store.warm`).
 - The loop waits for the disk as little as SQLite allows. The write-ahead log
-  is synced and checkpointed on a thread (`src/core/checkpoint.ts`), a
-  statement's undo pages stay in memory (`temp_store`), and what a start or a
-  hook event needs of a file or a session is kept from the last read and read
-  again only when it changed (the hook files by their marks on disk, a
-  session's idle facts by its head). A new write that every step of a turn
-  makes needs a reason to be a commit of its own.
+  is synced and checkpointed on a thread (`src/core/checkpoint.ts`): the log
+  is 16 to 64 MB under load, and the daemon's connection still checkpoints in
+  a commit about once per 16,000 pages. A statement's undo pages stay in
+  memory (`temp_store`), so a sort over a whole table belongs on the read
+  thread. A start decides a session's idle timer from facts kept with its
+  head, and the owner's hooks file is read again only when its mark on disk
+  changed. What guards what runs is never decided from an earlier read: a
+  repository's pinned hooks file and every file it covers are read at each
+  event. A new write that every step of a turn makes needs a reason to be a
+  commit of its own.
 - Every failure is captured once in the `errors` table (`ErrorTracker.capture`)
   and shown live in the UI's Errors panel. Browser errors post to `/api/errors`.
 - A session is told what went wrong in its scope without asking: failures of its

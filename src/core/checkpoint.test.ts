@@ -9,7 +9,7 @@ import { AT, Checkpointer, FAR, framesWaiting, NEAR } from "./checkpoint.ts";
 import { Store } from "./store.ts";
 
 const pragma = (store: Store, name: string) => Object.values(store.db.query<Record<string, number>, []>(`PRAGMA ${name}`).get()!)[0]!;
-const until = async (f: () => boolean, ms = 5_000) => { for (const t0 = Date.now(); !f() && Date.now() - t0 < ms;) await Bun.sleep(10); return f(); };
+const until = async (f: () => boolean, ms = 30_000) => { for (const t0 = Date.now(); !f() && Date.now() - t0 < ms;) await Bun.sleep(10); return f(); };
 // About `pages` pages of log.
 const write = (store: Store, id: string, pages: number) => {
   for (let n = 0; n < pages / 5; n++) store.append(id, "note", { text: "x".repeat(16_000) + n });
@@ -83,7 +83,7 @@ test("a thread syncs the log after a write and checkpoints it once enough waits;
     store.db.close();
     rmSync(dir, { recursive: true, force: true });
   }
-});
+}, 60_000);
 
 test("a thread that cannot run leaves the checkpoints to SQLite", async () => {
   const dir = mkdtempSync(join(tmpdir(), "keel-ckpt-"));
@@ -108,4 +108,37 @@ test("a thread that cannot run leaves the checkpoints to SQLite", async () => {
     store.db.close();
     rmSync(dir, { recursive: true, force: true });
   }
-});
+}, 60_000);
+
+// A thread that took a request and never answers it: after the deadline it is
+// ended, one error is recorded, and SQLite checkpoints in the commit again.
+test("a thread that stops answering is noticed at its deadline", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-ckpt-"));
+  const store = new Store(dir);
+  const failures: unknown[] = [];
+  // Answers the first checkpoint, then takes requests and says nothing.
+  const hangs = URL.createObjectURL(new Blob([`let n = 0; self.onmessage = (ev) => { const m = ev.data; if ("open" in m) return; if (n++ === 0) postMessage({ id: m.id, passes: 1, log: 0, checkpointed: 0, busy: 0 }); };`], { type: "application/javascript" }));
+  const c = new Checkpointer(store, (e) => failures.push(e), hangs, 20, 300);
+  try {
+    c.start();
+    expect(await until(() => c.counts.checkpoints >= 1)).toBe(true);
+    expect(pragma(store, "wal_autocheckpoint")).toBe(FAR);
+    const id = store.createSession({ model: "p:m", workspace: "/" }).id;
+    write(store, id, 50);
+    expect(await until(() => c.counts.failed >= 1)).toBe(true);
+    expect(c.counts).toMatchObject({ asked: 2, done: 1, failed: 1 });
+    expect(String((failures[0] as Error).message)).toContain("did not answer");
+    expect(failures).toHaveLength(1);
+    expect(pragma(store, "wal_autocheckpoint")).toBe(NEAR);
+    expect(pragma(store, "journal_size_limit")).toBe(4_194_304);
+    // From here the connection bounds the log by itself.
+    write(store, id, 2_000);
+    await Bun.sleep(100);
+    expect(c.counts.asked).toBe(2);
+    expect(c.waiting()).toBeLessThan(NEAR);
+  } finally {
+    c.stop();
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 60_000);

@@ -14,24 +14,30 @@
 // - once AT frames wait it runs the checkpoint. It is a passive one: it
 //   takes no write lock and waits for no reader, so the daemon's connection
 //   never waits for it.
-// The daemon's connection keeps a checkpoint of its own much further out
-// (FAR pages): the bound on the log when the thread cannot keep up with a
-// writer that never pauses, or is gone.
 //
-// One sync stays on the loop: when the log starts again after a checkpoint
-// that copied all of it, SQLite syncs the log's new header in the write that
-// starts it (without it a power cut could leave old frames under a new
-// header). That is one small sync for each AT pages written at most, where
-// there were three for each 1,000, two of them over the whole log and every
-// page copied.
+// What bounds the log. A passive pass copies what was in the log when it
+// began; the log starts again only when a write finds all of it copied, so
+// only when the writer paused for as long as a pass takes. With a few
+// sessions that happens every AT pages or so and the file stays near 16 MB.
+// With a writer that never pauses (twelve working sessions) it does not: the
+// log grows to FAR pages (64 MB), where the daemon's connection runs its own
+// checkpoint, in the commit, on the loop, as SQLite always did, about once
+// per FAR pages instead of once per 1,000. The thread has copied nearly all
+// of it by then, so that checkpoint is short unless the disk is too busy for
+// the thread to keep up. After it the file is cut back to AT pages.
+//
+// Besides that checkpoint one sync stays on the loop: when the log starts
+// again, SQLite syncs the log's new header in the write that starts it
+// (without it a power cut could leave old frames under a new header).
 //
 // What a write keeps. A committed write (an accepted prompt, an approval
 // answer, an event) is in the log when the call returns: it survives the
 // daemon's death at once, as before. It survives a power cut once the log is
-// synced: by the thread within about a second of the write, where before it
-// was at the next checkpoint, up to 1,000 pages of writes later. No sync is
-// left out: the thread's connection syncs the log before it copies and the
-// database after, as the daemon's own did. Where the thread cannot run,
+// synced: by the thread within about a second of the write (a second and a
+// checkpoint pass when one is running), where before it was at the next
+// checkpoint, up to 1,000 pages of writes later. No sync is left out: the
+// thread's connection syncs the log before it copies and the database after,
+// as the daemon's own did. Where the thread cannot run, or stops answering,
 // SQLite checkpoints and syncs in the commit, as before.
 import { closeSync, openSync, readSync } from "node:fs";
 import { endianness } from "node:os";
@@ -47,15 +53,21 @@ export const NEAR = 1_000;
 // sync the loop still makes, so further is better for the loop; the log's
 // sync no longer waits for the checkpoint, so nothing is given up for it.
 export const AT = 4 * NEAR;
-// The daemon's own checkpoint while the thread works: 64 MB of log. Twelve
-// working sessions write that in about a minute; below it a slow disk has
-// room, above it a start after a crash would replay too much.
+// The daemon's own checkpoint while the thread works, and so the most the
+// log holds: 64 MB. Twelve working sessions write that in ten seconds to a
+// minute; further out the loop's checkpoint would be rarer, and a start
+// after a crash would have more to read back.
 export const FAR = 16 * NEAR;
 const TICK_MS = 1_000;
 // How long the thread stays after its last checkpoint.
 const IDLE_MS = 60_000;
 // Passes in a row while frames written during a pass still wait.
 const PASSES = 4;
+// A request with no answer after this long is over: the thread is taken to be
+// stuck and SQLite's own checkpoints take over. A pass is two syncs and the
+// copy; a sync was seen to take up to three seconds on a saturated disk, so a
+// minute is past anything a working thread needs.
+const DEADLINE_MS = 60_000;
 
 let program: string | undefined;
 function programUrl(): string {
@@ -86,6 +98,7 @@ export class Checkpointer {
   private idle?: ReturnType<typeof setTimeout>;
   private asked = 0;
   private busy = false;
+  private due?: ReturnType<typeof setTimeout>;
   // The thread has checkpointed once: the daemon's connection leaves the near checkpoints to it.
   private proved = false;
   private off = false;
@@ -95,10 +108,12 @@ export class Checkpointer {
   // What was asked of the thread and how it ended (tests read it).
   readonly counts = { asked: 0, done: 0, synced: 0, checkpoints: 0, failed: 0 };
   last?: { passes: number; log: number; checkpointed: number };
-  // The log file's size limit the store set, put back when the thread stops.
+  // The log file's size limit the store set and the one set here: the first
+  // is put back when the thread stops, unless something else set another since.
   private limit?: number;
+  private raised?: number;
 
-  constructor(private store: { db: Database; stateDir: string }, private onError: (e: unknown) => void = () => {}, private workerProgram?: string, private tickMs = TICK_MS) {}
+  constructor(private store: { db: Database; stateDir: string }, private onError: (e: unknown) => void = () => {}, private workerProgram?: string, private tickMs = TICK_MS, private deadlineMs = DEADLINE_MS) {}
 
   // Starts the thread and asks it one checkpoint: once it answers, the
   // daemon's connection moves its own checkpoint out to FAR.
@@ -126,13 +141,16 @@ export class Checkpointer {
   private own(thread: boolean) {
     const db = this.store.db;
     try {
+      const limit = () => db.query<{ journal_size_limit: number }, []>("PRAGMA journal_size_limit").get()!.journal_size_limit;
       if (thread) {
-        this.limit ??= db.query<{ journal_size_limit: number }, []>("PRAGMA journal_size_limit").get()!.journal_size_limit;
+        this.limit = limit();
         const page = db.query<{ page_size: number }, []>("PRAGMA page_size").get()!.page_size;
-        db.exec(`PRAGMA wal_autocheckpoint = ${FAR}; PRAGMA journal_size_limit = ${Math.max(this.limit, AT * (page + 24))}`);
+        this.raised = Math.max(this.limit, AT * (page + 24));
+        db.exec(`PRAGMA wal_autocheckpoint = ${FAR}; PRAGMA journal_size_limit = ${this.raised}`);
       } else {
         db.exec(`PRAGMA wal_autocheckpoint = ${NEAR}`);
-        if (this.limit !== undefined) db.exec(`PRAGMA journal_size_limit = ${this.limit}`);
+        if (this.limit !== undefined && limit() === this.raised) db.exec(`PRAGMA journal_size_limit = ${this.limit}`);
+        this.limit = this.raised = undefined;
       }
     } catch (e) { this.onError(e); }
   }
@@ -162,6 +180,9 @@ export class Checkpointer {
     this.busy = true;
     this.counts.asked++;
     clearTimeout(this.idle);
+    clearTimeout(this.due);
+    this.due = setTimeout(() => this.failed(w, new Error(`the checkpoint thread did not answer in ${Math.round(this.deadlineMs / 1000)} s`)), this.deadlineMs);
+    this.due.unref?.();
     w.postMessage({ id: ++this.asked, passes: checkpoint ? PASSES : 0 });
   }
 
@@ -179,6 +200,7 @@ export class Checkpointer {
       const m = ev.data as { id: number; passes?: number; log?: number; checkpointed?: number; error?: string };
       if (this.worker !== w) return;
       if (m.error) return this.failed(w, new Error(`the checkpoint thread failed: ${m.error}`));
+      clearTimeout(this.due);
       this.busy = false;
       this.counts.done++;
       if (m.passes) {
@@ -203,6 +225,7 @@ export class Checkpointer {
     const w = this.worker;
     this.worker = undefined;
     this.busy = false;
+    clearTimeout(this.due);
     w?.terminate();
   }
 

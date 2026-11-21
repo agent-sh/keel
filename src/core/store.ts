@@ -13,11 +13,18 @@ PRAGMA foreign_keys = ON;
 -- A statement inside a transaction that changes many pages keeps their old
 -- content until it ends (an event's row, its indexes and its search entry
 -- pass the 64 KB at which SQLite moves that to a file): kept in memory, an
--- append creates, writes and removes no temporary file.
+-- append creates, writes and removes no temporary file. The same setting
+-- keeps a sort no index serves, and a temporary table, in memory too: on
+-- this connection that must stay a small one. A read that sorts or groups a
+-- whole table (a report, a search, a sum over every event) belongs on the
+-- read thread, whose connection keeps the default and sorts in a file.
 PRAGMA temp_store = MEMORY;
--- The write-ahead log is checkpointed at 1,000 pages (4.1 MB) and grows past
--- that only while a long read holds it (the read thread, a backup). This
--- gives the file back to that size at the first write after such a read.
+-- What the log is held to when no checkpoint thread works (checkpoint.ts):
+-- SQLite checkpoints it at 1,000 pages (4.1 MB), it grows past that only
+-- while a long read holds it (the read thread, a backup), and this gives the
+-- file back to that size at the first write after such a read. With the
+-- thread the file is kept at 16 MB and holds up to 64 MB under load (the
+-- thread raises this limit while it works and puts it back when it stops).
 PRAGMA journal_size_limit = 4194304;
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
