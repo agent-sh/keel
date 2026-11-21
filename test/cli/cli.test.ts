@@ -58,7 +58,7 @@ afterAll(() => { if (!process.env.KEEL_CLI_SCRATCH) rmSync(SCRATCH, { recursive:
 
 describe("help, usage and completion", () => {
   const state = join(SCRATCH, "state-help");
-  test("help per command, a short usage for an unknown one, bash completion", async () => {
+  test("help per command, a short usage for an unknown one, completion for bash, zsh and fish", async () => {
     const top = await keel(["--help"], { state });
     expect(top.code).toBe(0);
     for (const c of ["run", "send", "sessions", "show", "stop", "resume", "import", "completion"]) expect(top.out).toContain(`  ${c} `);
@@ -89,6 +89,39 @@ describe("help, usage and completion", () => {
     const [words, flags] = probe.stdout.toString().trim().split("\n");
     expect(words).toContain("run");
     expect(flags).toBe("--output-format");
+
+    // zsh: its function, over stand-ins for the completion calls zsh has only inside its line editor.
+    // The words it offers for a command, a flag, a flag's value and a first argument.
+    const zsh = await keel(["completion", "zsh"], { state });
+    expect(zsh.code).toBe(0);
+    expect(zsh.out.split("\n")[0]).toBe("#compdef keel");
+    if (Bun.which("zsh")) {
+      writeFileSync(join(SCRATCH, "completion.zsh"), zsh.out);
+      const ask = (...w: string[]) => `words=(keel ${w.map((x) => JSON.stringify(x)).join(" ")}); CURRENT=${w.length + 1}; _keel | tr '\\n' ' '; echo`;
+      const z = Bun.spawnSync(["zsh", "-f", "-c", `PATH=${SCRATCH}:$PATH; compadd() { [[ $1 == -- ]] && shift; print -l -- "$@" }; compdef() { : }; _files() { print FILES }; source ${SCRATCH}/completion.zsh; ${ask("ru")}; ${ask("run", "--out")}; ${ask("run", "--output-format", "")}; ${ask("completion", "")}; ${ask("run", "")}`], { env: { ...ENV, KEEL_STATE_DIR: state } });
+      const [zWords, zFlags, zValues, zShells, zFiles] = z.stdout.toString().trimEnd().split("\n").map((l) => l.trim());
+      expect(z.stderr.toString()).toBe("");
+      expect(zWords!.split(" ")).toContain("run");
+      expect(zFlags!.split(" ")).toContain("--output-format");
+      expect([zValues, zShells, zFiles]).toEqual(["text json stream-json", "bash zsh fish", "FILES"]);
+    }
+    // fish: what fish itself offers for the same lines (run where fish is installed).
+    const fish = await keel(["completion", "fish"], { state });
+    expect(fish.code).toBe(0);
+    expect(fish.out).toContain("complete -c keel");
+    if (Bun.which("fish")) {
+      writeFileSync(join(SCRATCH, "completion.fish"), fish.out);
+      const offers = (line: string) => Bun.spawnSync(["fish", "--no-config", "-c", `source ${SCRATCH}/completion.fish; complete -C ${JSON.stringify(line)}`], { env: { ...ENV, KEEL_STATE_DIR: state, PATH: `${SCRATCH}:${process.env.PATH}`, HOME: SCRATCH } })
+        .stdout.toString().trim().split("\n").map((l) => l.split("\t")[0]);
+      expect(offers("keel ru")).toContain("run");
+      expect(offers("keel run --output-f")).toEqual(["--output-format"]);
+      expect(offers("keel run --output-format ")).toEqual(["json", "stream-json", "text"]);
+      expect(offers("keel completion ")).toEqual(["bash", "fish", "zsh"]);
+    }
+    // A shell there is no script for is a usage error that names the three.
+    const none = await keel(["completion", "tcsh"], { state });
+    expect(none.code).toBe(3);
+    expect(none.err).toContain("keel completion bash|zsh|fish");
   });
 });
 

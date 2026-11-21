@@ -46,7 +46,7 @@ const GROUPS: [string, [string, string][]][] = [
     ["plugin", "check a provider plugin against protocol v1"],
     ["login", "sign in to a provider plan (xai)"],
     ["logout", "sign out of a provider plan (xai)"],
-    ["completion", "shell completion: keel completion bash"],
+    ["completion", "shell completion: keel completion bash|zsh|fish"],
   ]],
 ];
 
@@ -72,61 +72,139 @@ export function unknownCommand(name: string): number {
   return 3;
 }
 
+// Shell completion for bash, zsh and fish, from one table: the flags that
+// take a value and what the value is, and what a command's first argument is.
 // Flags come from each command's own --help when a word is completed (one
 // source of truth); session ids from `keel sessions --ids`.
-const BASH = `# keel completion for bash. Load it with:  source <(keel completion bash)
+type Words = string | "dirs" | "files" | "models" | "all-sessions" | "sessions" | "commands";
+const VALUES: [flags: string[], what: Words][] = [
+  [["--cwd", "-C", "--workspace", "--state-dir", "--path", "--file", "--exec"], "dirs"],
+  [["--attach"], "files"],
+  [["--output-format"], "text json stream-json"],
+  [["--permission-mode", "--mode"], "ask auto-edits auto full-auto read-only plan reviewer new update open"],
+  [["--on-ask"], "exit deny wait"],
+  [["--choice"], "once session always deny"],
+  [["--format"], "claude_code codex"],
+  [["--harness"], "claude codex keel"],
+  [["--model", "-m"], "models"],
+  [["--session", "--resume", "-r", "--approval"], "all-sessions"],
+];
+const SHELLS = ["bash", "zsh", "fish"];
+const FIRST: [commands: string[], what: Words][] = [
+  [["show", "logs", "stop", "attach", "approve", "export", "resume", "send"], "sessions"],
+  [["import"], "list harnesses folders preview run batch index"],
+  [["login", "logout"], "xai"],
+  [["plugin"], "check"],
+  [["service"], "install"],
+  [["completion"], SHELLS.join(" ")],
+  [["help"], "commands"],
+];
+const FOLDERS = ["open", "serve"]; // every argument is a folder
+// The shell's own words for each kind, in POSIX shells (bash and zsh run the same commands).
+const MODEL_IDS = String.raw`keel models --json 2>/dev/null | grep -o '"id": *"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/'`;
+const FLAGS_OF = (cmd: string) => String.raw`keel ${cmd} --help 2>/dev/null | grep -oE -- '(^|[ ,(])--?[a-zA-Z][a-zA-Z-]*' | grep -oE -- '--?[a-zA-Z][a-zA-Z-]*' | sort -u`;
+const listOf = (what: Words) => (what === "models" ? `$(${MODEL_IDS})` : what === "all-sessions" ? "$(keel sessions --ids -a 2>/dev/null)" : what === "sessions" ? "$(keel sessions --ids 2>/dev/null)" : what === "commands" ? "@COMMANDS@" : what);
+
+// "@{" stands for the shell's "${" in the scripts below.
+const bashWords = (what: Words) => (what === "dirs" ? `COMPREPLY=( $(compgen -d -- "$cur") )` : what === "files" ? `COMPREPLY=( $(compgen -f -- "$cur") )` : `COMPREPLY=( $(compgen -W "${listOf(what)}" -- "$cur") )`);
+const BASH = String.raw`# keel completion for bash. Load it with:  source <(keel completion bash)
 _keel_flags_cache=()
 _keel() {
   local cur prev cmd words
-  cur="\${COMP_WORDS[COMP_CWORD]}"
-  prev="\${COMP_WORDS[COMP_CWORD-1]}"
-  cmd="\${COMP_WORDS[1]}"
+  cur="@{COMP_WORDS[COMP_CWORD]}"
+  prev="@{COMP_WORDS[COMP_CWORD-1]}"
+  cmd="@{COMP_WORDS[1]}"
   if [ "$COMP_CWORD" -eq 1 ]; then
     COMPREPLY=( $(compgen -W "@COMMANDS@ --help -p" -- "$cur") )
     return
   fi
   case "$prev" in
-    --cwd|-C|--workspace|--state-dir|--path|--file|--exec) COMPREPLY=( $(compgen -d -- "$cur") ); return ;;
-    --attach) COMPREPLY=( $(compgen -f -- "$cur") ); return ;;
-    --output-format) COMPREPLY=( $(compgen -W "text json stream-json" -- "$cur") ); return ;;
-    --permission-mode|--mode) COMPREPLY=( $(compgen -W "ask auto-edits auto full-auto read-only plan reviewer new update open" -- "$cur") ); return ;;
-    --on-ask) COMPREPLY=( $(compgen -W "exit deny wait" -- "$cur") ); return ;;
-    --choice) COMPREPLY=( $(compgen -W "once session always deny" -- "$cur") ); return ;;
-    --format) COMPREPLY=( $(compgen -W "claude_code codex" -- "$cur") ); return ;;
-    --harness) COMPREPLY=( $(compgen -W "claude codex keel" -- "$cur") ); return ;;
-    --model|-m) COMPREPLY=( $(compgen -W "$(keel models --json 2>/dev/null | grep -o '"id": *"[^"]*"' | sed 's/.*"\\([^"]*\\)"$/\\1/')" -- "$cur") ); return ;;
-    --session|--resume|-r|--approval) COMPREPLY=( $(compgen -W "$(keel sessions --ids -a 2>/dev/null)" -- "$cur") ); return ;;
+${VALUES.map(([flags, what]) => `    ${flags.join("|")}) ${bashWords(what)}; return ;;`).join("\n")}
   esac
   if [[ "$cur" == -* ]]; then
     local i key="$cmd" flags=""
-    for i in "\${!_keel_flags_cache[@]}"; do
-      [[ "\${_keel_flags_cache[$i]}" == "$key="* ]] && flags="\${_keel_flags_cache[$i]#*=}"
+    for i in "@{!_keel_flags_cache[@]}"; do
+      [[ "@{_keel_flags_cache[$i]}" == "$key="* ]] && flags="@{_keel_flags_cache[$i]#*=}"
     done
     if [ -z "$flags" ]; then
-      flags="$(keel "$cmd" --help 2>/dev/null | grep -oE -- '(^|[ ,(])--?[a-zA-Z][a-zA-Z-]*' | grep -oE -- '--?[a-zA-Z][a-zA-Z-]*' | sort -u | tr '\\n' ' ')"
+      flags="$(${FLAGS_OF('"$cmd"')} | tr '\n' ' ')"
       _keel_flags_cache+=("$key=$flags")
     fi
     COMPREPLY=( $(compgen -W "$flags" -- "$cur") )
     return
   fi
   case "$cmd" in
-    show|logs|stop|attach|approve|export|resume|send)
-      [ "$COMP_CWORD" -eq 2 ] && COMPREPLY=( $(compgen -W "$(keel sessions --ids 2>/dev/null)" -- "$cur") ) ;;
-    import) [ "$COMP_CWORD" -eq 2 ] && COMPREPLY=( $(compgen -W "list harnesses folders preview run batch index" -- "$cur") ) ;;
-    login|logout) [ "$COMP_CWORD" -eq 2 ] && COMPREPLY=( $(compgen -W "xai" -- "$cur") ) ;;
-    plugin) [ "$COMP_CWORD" -eq 2 ] && COMPREPLY=( $(compgen -W "check" -- "$cur") ) ;;
-    service) [ "$COMP_CWORD" -eq 2 ] && COMPREPLY=( $(compgen -W "install" -- "$cur") ) ;;
-    completion) [ "$COMP_CWORD" -eq 2 ] && COMPREPLY=( $(compgen -W "bash" -- "$cur") ) ;;
-    help) [ "$COMP_CWORD" -eq 2 ] && COMPREPLY=( $(compgen -W "@COMMANDS@" -- "$cur") ) ;;
-    open|serve) COMPREPLY=( $(compgen -d -- "$cur") ) ;;
+${FIRST.map(([cmds, what]) => `    ${cmds.join("|")}) [ "$COMP_CWORD" -eq 2 ] && ${bashWords(what)} ;;`).join("\n")}
+    ${FOLDERS.join("|")}) COMPREPLY=( $(compgen -d -- "$cur") ) ;;
   esac
 }
 complete -o default -F _keel keel
 `;
 
+// zsh: the same function over zsh's own completion calls. Sourced, it
+// registers itself; saved as _keel in a folder of $fpath, zsh loads it on
+// first use (the #compdef line) and runs it.
+// (zsh splits an unquoted command substitution into words, and nothing else.)
+const zshWords = (what: Words) => (what === "dirs" ? "_files -/" : what === "files" ? "_files" : `compadd -- ${listOf(what)}`);
+const ZSH = String.raw`#compdef keel
+# keel completion for zsh. Load it with:  source <(keel completion zsh)
+# or save it where zsh looks for completions:  keel completion zsh > "@{fpath[1]}/_keel"
+typeset -gA _keel_flags_cache
+_keel() {
+  local cur="@{words[CURRENT]}" prev="@{words[CURRENT-1]}" cmd="@{words[2]}"
+  if (( CURRENT == 2 )); then
+    compadd -- @COMMANDS@ --help -p
+    return
+  fi
+  case "$prev" in
+${VALUES.map(([flags, what]) => `    ${flags.join("|")}) ${zshWords(what)}; return ;;`).join("\n")}
+  esac
+  if [[ "$cur" == -* ]]; then
+    [[ -n "@{_keel_flags_cache[$cmd]}" ]] || _keel_flags_cache[$cmd]="$(${FLAGS_OF('"$cmd"')} | tr '\n' ' ')"
+    compadd -- @{=_keel_flags_cache[$cmd]}
+    return
+  fi
+  case "$cmd" in
+${FIRST.map(([cmds, what]) => `    ${cmds.join("|")}) if (( CURRENT == 3 )); then ${zshWords(what)}; else _files; fi ;;`).join("\n")}
+    ${FOLDERS.join("|")}) _files -/ ;;
+    *) _files ;;
+  esac
+}
+if [[ "@{funcstack[1]}" == _keel ]]; then _keel "$@"; else compdef _keel keel; fi
+`;
+
+// fish: one rule per row of the table. Files are offered where nothing else
+// is, as in the other two.
+const fishWords = (what: Words) =>
+  what === "dirs" ? `-x -a '(__fish_complete_directories)'` : what === "files" ? "-r -F"
+  : what === "models" ? String.raw`-x -a '(keel models --json 2>/dev/null | string match -rg -- \'"id": *"([^"]*)"\')'`
+  : what === "all-sessions" ? `-x -a '(keel sessions --ids -a 2>/dev/null)'` : what === "sessions" ? `-x -a '(keel sessions --ids 2>/dev/null)'`
+  : `-x -a '${what === "commands" ? "@COMMANDS@" : what}'`;
+const FISH = String.raw`# keel completion for fish. Save it where fish looks for completions:
+#   keel completion fish > ~/.config/fish/completions/keel.fish
+# The words before the one being completed.
+function __keel_words; commandline -opc; end
+function __keel_cmd; set -l w (__keel_words); test (count $w) -ge 2; and echo $w[2]; end
+function __keel_at; test (count (__keel_words)) -eq $argv[1]; end
+function __keel_after; set -l w (__keel_words); contains -- $w[-1] $argv; end
+function __keel_first_of; __keel_at 2; and contains -- (__keel_cmd) $argv; end
+function __keel_flags
+  set -l cmd (__keel_cmd)
+  test -n "$cmd"; and keel $cmd --help 2>/dev/null | string match -rag -- '(?:^|[ ,(])(--?[a-zA-Z][a-zA-Z-]*)' | sort -u
+end
+complete -c keel -n '__keel_at 1' -x -a '@COMMANDS@ --help -p'
+${VALUES.map(([flags, what]) => `complete -c keel -n '__keel_after ${flags.join(" ")}' ${fishWords(what)}`).join("\n")}
+complete -c keel -n 'not __keel_at 1; and string match -q -- "-*" (commandline -ct)' -f -a '(__keel_flags)'
+${FIRST.map(([cmds, what]) => `complete -c keel -n '__keel_first_of ${cmds.join(" ")}' ${fishWords(what)}`).join("\n")}
+complete -c keel -n 'contains -- (__keel_cmd) ${FOLDERS.join(" ")}' -x -a '(__fish_complete_directories)'
+`;
+const SCRIPTS: Record<string, string> = { bash: BASH, zsh: ZSH, fish: FISH };
+
 export async function completion(argv: string[]): Promise<number> {
-  if (argv[0] === "--help" || argv[0] === "-h") return (console.log("keel completion bash\n  Prints the bash completion script. Load it with: source <(keel completion bash)\n  or save it: keel completion bash > ~/.local/share/bash-completion/completions/keel"), 0);
-  if (argv[0] !== "bash") return (console.error("keel completion: only bash is supported: keel completion bash"), 3);
-  process.stdout.write(BASH.replaceAll("@COMMANDS@", COMMAND_NAMES.filter((n) => n !== "help").concat("help").join(" ")));
+  const usage = "keel completion bash|zsh|fish\n  Prints the shell's completion script.\n  bash: source <(keel completion bash), or save it: keel completion bash > ~/.local/share/bash-completion/completions/keel\n  zsh:  source <(keel completion zsh), or save it as _keel in a folder of $fpath\n  fish: keel completion fish > ~/.config/fish/completions/keel.fish";
+  if (argv[0] === "--help" || argv[0] === "-h") return (console.log(usage), 0);
+  const script = SCRIPTS[argv[0] ?? ""];
+  if (!script) return (console.error(`keel completion: ${argv[0] ? `no completion for ${JSON.stringify(argv[0])}` : "name the shell"}: keel completion ${SHELLS.join("|")}`), 3);
+  process.stdout.write(script.replaceAll("@{", "${").replaceAll("@COMMANDS@", COMMAND_NAMES.filter((n) => n !== "help").concat("help").join(" ")));
   return 0;
 }
