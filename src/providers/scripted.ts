@@ -227,6 +227,15 @@ export class ScriptedProvider implements Provider {
         const name = block?.match(/^- (?:RULE )?([^:\n]+):/m)?.[1];
         return reply(name ? `From memory: ${name}.` : "No memory came with this prompt.");
       }
+      case "recall": {
+        // `script:recall <word>`: says whether a turn before this prompt holds
+        // the word, as a model that read its history would. For specs that
+        // check a history made elsewhere (an imported one) reached the model.
+        const word = owner.match(/script:recall\s+(\S+)/)?.[1]?.toLowerCase() ?? "";
+        const at = msgs.findLastIndex((m) => m.role === "user" && textOf(m).includes("script:recall"));
+        const held = !!word && msgs.slice(0, at).some((m) => textOf(m).toLowerCase().includes(word));
+        return reply(held ? `The history names ${word}.` : `Nothing before this prompt names ${word}.`);
+      }
       case "liar":
         // A worker that says it finished without doing anything, and a judge
         // that believes it: what the independent goal check exists for.

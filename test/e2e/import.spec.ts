@@ -80,10 +80,12 @@ test("import and export", async ({ page, request }) => {
   await expect(page.getByTestId("assistant-text").last()).toContainText("The fruit is quince.");
   await request.patch(`/api/sessions/${id}`, { data: { model: HAIKU } });
   await page.reload();
-  await page.getByTestId("composer").fill("Which fruit did the file name? Answer with the one word.");
+  // A real model is asked in words; the scripted stand-in says whether the turns before its prompt name the fruit.
+  const standIn = HAIKU.startsWith("scripted:");
+  await page.getByTestId("composer").fill(standIn ? "script:recall quince" : "Which fruit did the file name? Answer with the one word.");
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 120_000 });
-  await expect(page.getByTestId("assistant-text").last()).toContainText(/quince/i);
+  await expect(page.getByTestId("assistant-text").last()).toContainText(standIn ? "The history names quince." : /quince/i);
   await shoot(page, "import-02-continued");
 
   // The source goes on: the list says so. The copy went on here too, so it is
