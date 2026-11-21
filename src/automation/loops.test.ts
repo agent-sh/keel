@@ -234,6 +234,23 @@ test("a webhook request that waited survives a restart and runs once, no sooner 
   expect(loops.get(loop.id)).toMatchObject({ runs: 2, next_ms: null, enabled: true });
 });
 
+test("an edit of a webhook loop keeps the time its waiting request goes", () => {
+  const t0 = Date.now();
+  at(t0);
+  const { s, loop, key } = hook({ min_interval_seconds: 60 });
+  loops.webhook(key, '{"n":1}');
+  step(s.id, 5);
+  end(s.id);
+  at(t0 + 5_000);
+  loops.webhook(key, '{"n":2}'); // waits for the minimum interval
+  expect(loops.get(loop.id)!.next_ms).toBe(t0 + 60_000);
+  loops.update(loop.id, { schedule: "webhook", name: "Renamed" });
+  expect(loops.get(loop.id)).toMatchObject({ name: "Renamed", next_ms: t0 + 60_000 });
+  at(t0 + 60_500);
+  loops.tick();
+  expect(sent.map((x) => x.text)).toEqual([expect.stringContaining('n\\":1'), expect.stringContaining('n\\":2')]);
+});
+
 test("a calendar loop whose saved schedule the parser now refuses is turned off with the reason, once", () => {
   fresh();
   const s = session();

@@ -314,8 +314,9 @@ export function update(id: string, p: UpdateInput, by: "owner" | "model" = "owne
     }
   }
   const rec = patch(id, out)!;
-  // A webhook request that waited does not outlive the pause.
-  if (p.enabled === false && l.kind === "webhook") { drainWebhook(id); return get(id)!; }
+  // A webhook request that waits is looked at again after any edit: it does
+  // not outlive a pause, and it keeps its time when the edit reset the loop's.
+  if (l.kind === "webhook") { drainWebhook(id); return get(id)!; }
   return rec;
 }
 
