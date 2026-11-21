@@ -23,6 +23,12 @@ export const READ_CHUNK_CHARS = 100_000;
 // Librarian about eight calls; a provider's rate limit answers with a wait,
 // which the request's own retry takes.
 export const READERS_AT_ONCE = 8;
+// The override when it is a positive whole number, else the default: Infinity
+// would start a reader for every part, and a fraction is not a count.
+export function readersAtOnce(env: Record<string, string | undefined> = process.env): number {
+  const n = Number(env.KEEL_READERS_AT_ONCE);
+  return Number.isSafeInteger(n) && n >= 1 ? n : READERS_AT_ONCE;
+}
 
 // Tokens a reader's request keeps free besides its part: the instructions and
 // the request around it. The answer is capped at READER_OUTPUT.

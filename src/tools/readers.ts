@@ -6,7 +6,7 @@
 // style name, the other families a snake_case one.
 import { mkdirSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { READ_WHOLE_CHARS, READERS_AT_ONCE, wholeText, type Material } from "../engine/reader.ts";
+import { READ_WHOLE_CHARS, readersAtOnce, wholeText, type Material } from "../engine/reader.ts";
 import { coverageNote } from "../engine/readers.ts";
 import { conceal } from "../core/conceal.ts";
 import { readText } from "../core/proc.ts";
@@ -128,7 +128,7 @@ export async function gather(input: { paths?: unknown; urls?: unknown }, ctx: To
     const pages: (Material | undefined)[] = [];
     const notes: (string | undefined)[] = [];
     let next = 0;
-    await Promise.all(Array.from({ length: Math.min(o.atOnce ?? READERS_AT_ONCE, urls.length) }, async () => {
+    await Promise.all(Array.from({ length: Math.min(o.atOnce ?? readersAtOnce(), urls.length) }, async () => {
       while (next < urls.length) {
         const i = next++, url = urls[i]!;
         stop();

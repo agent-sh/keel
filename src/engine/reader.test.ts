@@ -2,7 +2,7 @@
 // session's provider and family that holds the text, never a dearer one.
 import { expect, test } from "bun:test";
 import type { ModelInfo } from "../providers/types.ts";
-import { checkAnswer, checkedNote, chunkChars, chunkMaterial, NOTHING, partRef, pickReader, READ_CHUNK_CHARS, READER_OUTPUT, readerChoices } from "./reader.ts";
+import { checkAnswer, checkedNote, chunkChars, chunkMaterial, NOTHING, partRef, pickReader, READ_CHUNK_CHARS, READER_OUTPUT, readerChoices, READERS_AT_ONCE } from "./reader.ts";
 import { coverageNote, readMaterial, type ReaderHost } from "./readers.ts";
 
 const m = (id: string, input: number | undefined, o: Partial<ModelInfo> = {}): ModelInfo => ({
@@ -278,4 +278,25 @@ test("the characters a job reports are the ones a reader read: a part that held 
   expect(coverageNote(mixed, 3)).toContain(`(${a + c} chars)`);
   expect((await job(() => false)).chars).toBe(a + b + c);
   expect((await job(() => true)).chars).toBe(0);
+});
+
+test("readers at once: the default unless the override is a positive whole number, then exactly that", async () => {
+  const files = Array.from({ length: 10 }, (_, i) => ({ source: `f${i}.log`, text: lines(2_300) }));
+  const most = async (override: string | undefined) => {
+    let now = 0, top = 0;
+    const o = await readMaterial({
+      models: async () => [big], current: async () => big, capture: () => {}, env: { KEEL_READERS_AT_ONCE: override },
+      ask: async () => {
+        top = Math.max(top, ++now);
+        await Bun.sleep(5);
+        now--;
+        return { text: NOTHING, usage: { input: 1000, output: 20, cache_read: 0, cache_write: 0 } };
+      },
+    }, files, "q", new AbortController().signal);
+    expect(o.parts.length).toBe(10);
+    return top;
+  };
+  for (const bad of [undefined, "Infinity", "2.5", "0", "-3", "many", "1e400"]) expect(`${bad}: ${await most(bad)}`).toBe(`${bad}: ${READERS_AT_ONCE}`);
+  expect(await most("3")).toBe(3);
+  expect(await most("1")).toBe(1);
 });

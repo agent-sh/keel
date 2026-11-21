@@ -14,7 +14,7 @@ import { registerSettings, settings } from "../admin/settings.ts";
 import { OUTPUT_CAP } from "../tools/spill.ts";
 import {
   checkAnswer, checkedNote, chunkChars, chunkMaterial, compilePrompt, type Checked, type Finding, findingsPreview, findingsSize, groupFindings, holds,
-  materialCap, NOTHING, partPrompt, partRef, READ_CHUNK_CHARS, READERS_AT_ONCE, readerChoices, readRate, type Chunk, type Material,
+  materialCap, NOTHING, partPrompt, partRef, READ_CHUNK_CHARS, readersAtOnce, readerChoices, readRate, type Chunk, type Material,
 } from "./reader.ts";
 
 // The owner's small models, best first: they read before any other choice.
@@ -151,7 +151,7 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
     }
     tell();
   };
-  const atOnce = Math.max(1, Number(env.KEEL_READERS_AT_ONCE) || READERS_AT_ONCE);
+  const atOnce = readersAtOnce(env);
   // `n` runs side by side, at most `atOnce` at a time.
   const sideBySide = async (n: number, run: (i: number) => Promise<void>) => {
     let next = 0;
