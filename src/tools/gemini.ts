@@ -5,7 +5,7 @@ import { claimNote, isClaimFile } from "../core/claim.ts";
 import { decodeText } from "../core/text.ts";
 import { join } from "node:path";
 import { notFound } from "./missing.ts";
-import { abs, editFile, globFiles, guardOverwrite, mtime, numbered, readFile, ripgrep, writeFile } from "./files.ts";
+import { abs, editFile, globFiles, guardOverwrite, lineRange, mtime, numbered, readFile, ripgrep, WHOLE_FILE_BYTES, writeFile } from "./files.ts";
 import { answerText, ask, type Question } from "./interact.ts";
 import { jobsOf, running, waitJob } from "./jobs.ts";
 import { headTail, runShell, shellCwd } from "./shell.ts";
@@ -67,9 +67,17 @@ const read_file: Tool = {
     if (s || e) {
       if (mtime(p) === -1) return fail(notFound(p, ctx.cwd));
       if (isClaimFile(p)) return fail(claimNote(p));
+      const limit = e ? e - (s ?? 1) + 1 : undefined;
+      if (Bun.file(p).size > WHOLE_FILE_BYTES) {
+        // Too large to read whole: only the lines up to the range's end are read.
+        const r = await lineRange(p, { offset: s ?? 1, limit, number: false, signal: ctx.signal });
+        if (r.stopped) return fail(`The read of ${p} was stopped before it reached line ${s ?? 1}.`);
+        ctx.seen.set(p, mtime(p));
+        return r.past ? fail(`${p} has ${r.total} lines; line ${s} is past the end.`) : ok(r.body);
+      }
       const { text } = decodeText(new Uint8Array(await Bun.file(p).arrayBuffer()));
       ctx.seen.set(p, mtime(p));
-      const r = numbered(text, s ?? 1, e ? e - (s ?? 1) + 1 : undefined, false);
+      const r = numbered(text, s ?? 1, limit, false);
       return ok(r.body);
     }
     const r = await readFile(p, ctx, {});

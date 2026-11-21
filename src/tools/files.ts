@@ -2,14 +2,14 @@
 // PDFs and notebooks; exact-string edits with the quote and line-ending
 // tolerance models need; the read-before-overwrite guard; glob and ripgrep.
 import { chmodSync, readFileSync, statSync } from "node:fs";
-import { mkdir, readdir } from "node:fs/promises";
+import { mkdir, open, readdir } from "node:fs/promises";
 import { dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { claimNote, isClaimFile } from "../core/claim.ts";
 import type { ImageBlock, TextBlock } from "../core/types.ts";
 import { notFound } from "./missing.ts";
 import type { ToolContext } from "./types.ts";
 import { readText } from "../core/proc.ts";
-import { decodeText } from "../core/text.ts";
+import { decodeText, textEncoding } from "../core/text.ts";
 
 export const abs = (p: string, ctx: ToolContext) => (isAbsolute(p) ? p : resolve(ctx.cwd, p));
 export const mtime = (p: string) => { try { return statSync(p).mtimeMs; } catch { return -1; } };
@@ -50,6 +50,81 @@ export function numbered(text: string, offset = 1, limit?: number, number = true
   return { body, partial, total };
 }
 
+const CHUNK = 64 * 1024;
+
+// Lines `offset`.. of a text file of any size, as numbered() gives them, read
+// in chunks of 64 KB. The lines before the range are counted and dropped, a
+// long line keeps only the part shown, and the read ends with the page: the
+// rest of the file is not read, and nothing held grows with the file. `total`
+// is the file's line count when the scan reached its end (`past`: the offset
+// lies beyond it); a page cut before that says where to continue without it.
+// `signal` stops a scan on its way to a far offset.
+export async function lineRange(p: string, o: { offset?: number; limit?: number; number?: boolean; maxChars?: number; signal?: AbortSignal } = {}): Promise<{ body: string; partial: boolean; total?: number; past?: boolean; stopped?: boolean; bytes: number }> {
+  const start = Math.max(1, o.offset ?? 1);
+  const end = o.limit ? start - 1 + o.limit : Infinity;
+  const maxChars = o.maxChars ?? READ_CHARS;
+  const out: string[] = [];
+  let size = 0;
+  let line = 1;   // the line being read
+  let head = "";  // its first LINE_CAP characters, kept only inside the range
+  let len = 0;    // its length so far
+  let last = start - 1;
+  let cut = false;
+  // The line read is over: it joins the page unless the page is full. False ends the read.
+  const close = () => {
+    if (line >= start) {
+      const l = len > LINE_CAP ? `${head} [line cut at ${LINE_CAP} of ${len} chars]` : head;
+      const row = o.number === false ? l : `${line}\t${l}`;
+      if (size + row.length > maxChars && out.length) return !(cut = true);
+      out.push(row);
+      size += row.length + 1;
+      last = line;
+    }
+    line++;
+    head = "";
+    len = 0;
+    return line <= end;
+  };
+  const fh = await open(p, "r");
+  const buf = new Uint8Array(CHUNK);
+  let pos = 0;
+  let ended = false;
+  let stopped = false;
+  try {
+    let dec: TextDecoder | undefined;
+    scan: for (;;) {
+      if (o.signal?.aborted) { stopped = true; break; }
+      const { bytesRead } = await fh.read(buf, 0, CHUNK, pos);
+      const chunk = buf.subarray(0, bytesRead);
+      dec ??= new TextDecoder(textEncoding(chunk).encoding);
+      const text = dec.decode(chunk, { stream: bytesRead > 0 });
+      pos += bytesRead;
+      for (let i = 0; i < text.length; ) {
+        const nl = text.indexOf("\n", i);
+        const to = nl < 0 ? text.length : nl;
+        if (line >= start && head.length < LINE_CAP) head += text.slice(i, Math.min(to, i + LINE_CAP - head.length));
+        len += to - i;
+        if (nl < 0) break;
+        if (!close()) break scan;
+        i = nl + 1;
+      }
+      if (!bytesRead) {
+        // The end of the file: a last line without a line end is a line too.
+        if (len) close();
+        ended = true;
+        break;
+      }
+    }
+  } finally {
+    await fh.close();
+  }
+  const total = ended ? line - 1 : undefined;
+  let body = out.join("\n");
+  // Cut by its size before the range's end: where to go on, without the line count a whole read would take.
+  if (cut) body += `\n\nPARTIAL view: lines ${start}-${last}. Continue with offset ${last + 1}.`;
+  return { body, partial: cut, total, past: total !== undefined && start > total, stopped, bytes: pos };
+}
+
 // `large` (Claude Code's allow_large): a text read sized to the context left
 // (ctx.room) instead of one page and the whole-file limit.
 export async function readFile(p: string, ctx: ToolContext, o: { offset?: number; limit?: number; pages?: string; large?: boolean } = {}): Promise<ReadResult> {
@@ -74,6 +149,14 @@ export async function readFile(p: string, ctx: ToolContext, o: { offset?: number
   }
   if (!o.large && !o.offset && !o.limit && st.size > WHOLE_FILE_BYTES) {
     return { content: `${p} is ${(st.size / 1024).toFixed(0)} KB, over the ${WHOLE_FILE_BYTES / 1024} KB whole-file limit. Read a part with offset and limit, or search it.`, error: true };
+  }
+  if (!o.large && st.size > WHOLE_FILE_BYTES) {
+    // A range of a file too large to read whole: only the lines up to the page's end are read.
+    const r = await lineRange(p, { offset: o.offset, limit: o.limit, signal: ctx.signal });
+    if (r.stopped) return { content: `The read of ${p} was stopped before it reached line ${Math.max(1, o.offset ?? 1)}.`, error: true };
+    ctx.seen.set(p, st.mtimeMs);
+    if (r.past) return { content: `${p} has ${r.total} lines; offset ${o.offset} is past the end.`, error: true };
+    return { content: r.body, partial: r.partial };
   }
   const { text } = decodeText(new Uint8Array(await f.arrayBuffer()));
   ctx.seen.set(p, st.mtimeMs);

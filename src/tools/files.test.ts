@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { claudeTools } from "./claude.ts";
-import { applyEdit, editFile, globFiles, readFile } from "./files.ts";
+import { applyEdit, editFile, globFiles, lineRange, readFile } from "./files.ts";
 import { geminiTools } from "./gemini.ts";
 import { notFound, similar } from "./missing.ts";
 
@@ -101,3 +101,51 @@ test("a glob in a folder that is not there says where to look, and one stopped p
   chmodSync(join(root, "crate/locked"), 0o755);
   if (process.getuid?.() !== 0) expect("stopped" in part && part.stopped).toContain("EACCES");
 });
+
+// A range of a file too large to read whole: the rows asked for, by the same
+// 1-based offsets and in the file's encoding, without reading what lies after
+// them (the bytes this process read say so) and with a scan that can be stopped.
+test("a ranged read of a large file reads up to its page and no further, and can be stopped", async () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? "/var/tmp", "range-"));
+  const p = join(dir, "big.txt");
+  const N = 400_000;
+  writeFileSync(p, Array.from({ length: N }, (_, i) => `line ${i} ${"x".repeat(60)}`).join("\n") + "\n");
+  const size = statSync(p).size;
+  const ctx: any = { cwd: dir, seen: new Map(), signal: new AbortController().signal };
+  // Bytes read by this process (Linux): what a read took from the disk.
+  const rchar = () => (existsSync("/proc/self/io") ? Number(/rchar: (\d+)/.exec(readFileSync("/proc/self/io", "utf8"))![1]) : 0);
+  const reading = async <T>(f: () => Promise<T>) => { const before = rchar(); const r = await f(); return { r, read: rchar() - before }; };
+
+  const head = await reading(() => readFile(p, ctx, { offset: 3, limit: 2 }));
+  expect(head.r.content).toBe(`3\tline 2 ${"x".repeat(60)}\n4\tline 3 ${"x".repeat(60)}`);
+  expect(head.read).toBeLessThan(1024 * 1024);
+  expect((await lineRange(p, { offset: 3, limit: 2 })).bytes).toBeLessThanOrEqual(64 * 1024);
+  // The default first page: cut by its size, it says where to go on without counting the file's lines.
+  const page = await reading(() => readFile(p, ctx, { limit: 2000 }));
+  expect(page.r.partial).toBe(true);
+  expect(String(page.r.content)).toMatch(/\n\nPARTIAL view: lines 1-(\d+)\. Continue with offset \d+\.$/);
+  expect(page.read).toBeLessThan(1024 * 1024);
+  // A range in the middle reads up to it, not the half after it.
+  const mid = await reading(() => readFile(p, ctx, { offset: N / 2 + 1, limit: 1 }));
+  expect(mid.r.content).toBe(`${N / 2 + 1}\tline ${N / 2} ${"x".repeat(60)}`);
+  if (mid.read) expect(mid.read).toBeLessThan(size * 0.6);
+  // The file's end: its last lines whole, and an offset past it named with the line count.
+  expect((await readFile(p, ctx, { offset: N - 1 })).content).toBe(`${N - 1}\tline ${N - 2} ${"x".repeat(60)}\n${N}\tline ${N - 1} ${"x".repeat(60)}`);
+  expect((await readFile(p, ctx, { offset: N + 5, limit: 1 })).content).toBe(`${p} has ${N} lines; offset ${N + 5} is past the end.`);
+  // Stopped on its way to a far offset: the scan ends there.
+  const stop = new AbortController();
+  setTimeout(() => stop.abort(), 0);
+  const cut = await reading(() => readFile(p, { ...ctx, signal: stop.signal }, { offset: N, limit: 1 }));
+  expect(cut.r).toEqual({ content: `The read of ${p} was stopped before it reached line ${N}.`, error: true });
+  if (cut.read) expect(cut.read).toBeLessThan(size / 2);
+
+  // UTF-16 by its mark, one very long line cut to what is shown, a last line with no line end.
+  const wide = join(dir, "wide.txt");
+  const rows = ["Status: מוכן 🌍", "y".repeat(300_000), "last"];
+  writeFileSync(wide, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(rows.join("\n"), "utf16le")]));
+  expect((await readFile(wide, ctx, { limit: 1 })).content).toBe(`1\t${rows[0]}`);
+  expect((await readFile(wide, ctx, { offset: 2 })).content).toBe(`2\t${"y".repeat(2000)} [line cut at 2000 of 300000 chars]\n3\tlast`);
+  const g = geminiTools.find((t) => t.name === "read_file")!;
+  expect((await g.run({ file_path: p, start_line: 3, end_line: 4 }, ctx)).content).toBe(`line 2 ${"x".repeat(60)}\nline 3 ${"x".repeat(60)}`);
+  rmSync(dir, { recursive: true, force: true });
+}, 60_000);
