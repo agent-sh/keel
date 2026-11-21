@@ -45,7 +45,18 @@ export class ErrorTracker {
     const scope = errorScope.getStore();
     const session_id = at.session_id ?? sessionOf(context) ?? span?.session_id;
     const turn_event = at.turn_event ?? (scope?.session === session_id ? scope?.turn : undefined) ?? (span?.session_id === session_id ? span?.attrs.turn_event : undefined);
-    const rec = this.store.recordError({ source, message: e.message, stack: e.stack, context, session_id, turn_event, span_id });
+    // The store may not take it (closed, full, locked). The failure is still
+    // said, on the console, and nothing is thrown from here: a capture that
+    // throws inside a catch or the process's rejection handler turns one
+    // failure into another.
+    let rec: ErrorRecord;
+    try {
+      rec = this.store.recordError({ source, message: e.message, stack: e.stack, context, session_id, turn_event, span_id });
+    } catch (failed) {
+      console.error(`[${source}] ${e.message} (not recorded: ${(failed as Error)?.message ?? failed})`);
+      const now = Date.now();
+      return { id: "", source, message: e.message, stack: e.stack, context, count: 1, first_ts: now, ts: now, session_id, turn_event, span_id } as ErrorRecord;
+    }
     this.bus.emit({ t: "error", error: rec });
     for (const listener of this.captures) {
       try { listener({ id: rec.id, source, context, turnSession: scope?.session }); } catch {}

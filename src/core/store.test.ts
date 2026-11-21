@@ -180,3 +180,24 @@ test("a database whose tree columns were added and not filled, or half filled, g
     expect(tree(dir)).toEqual(LINES);
   }
 });
+
+test("a failure captured after the store closed is said on the console and throws nothing", async () => {
+  const { ErrorTracker } = await import("./errors.ts");
+  const { Bus } = await import("./bus.ts");
+  const dir = mkdtempSync(join(tmpdir(), "keel-errors-"));
+  const store = new Store(dir);
+  const errors = new ErrorTracker(store, new Bus());
+  expect(errors.capture("server", new Error("first")).id).not.toBe("");
+  store.db.close();
+  const said: string[] = [];
+  const log = console.error;
+  console.error = (...a: unknown[]) => void said.push(a.join(" "));
+  try {
+    const rec = errors.capture("server", new Error("after the close"));
+    expect([rec.id, rec.message]).toEqual(["", "after the close"]);
+  } finally {
+    console.error = log;
+    rmSync(dir, { recursive: true, force: true });
+  }
+  expect(said.join("\n")).toContain("after the close (not recorded:");
+});
