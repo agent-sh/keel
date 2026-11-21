@@ -21,7 +21,12 @@ if (sub === undefined || sub === "-h" || sub === "--help" || sub === "help") {
 // What this binary was built from: the revision a release names.
 if (sub === "--version" || sub === "-V") process.exit((console.log(versionLine(daemonApi())), 0));
 // Client commands (keel run, keel send, keel pair, ...) parse their own options.
-if (sub && commands[sub]) process.exit(await commands[sub](Bun.argv.slice(3)));
+// -h is --help for every one of them (up to a `--`, after which words are the caller's).
+if (sub && commands[sub]) {
+  const rest = Bun.argv.slice(3);
+  const end = rest.indexOf("--");
+  process.exit(await commands[sub](rest.map((a, i) => (a === "-h" && (end < 0 || i < end) ? "--help" : a))));
+}
 
 const args = Bun.argv.slice(2);
 if (args[0] && args[0] !== "serve" && !args[0].startsWith("-")) process.exit(unknownCommand(args[0]));

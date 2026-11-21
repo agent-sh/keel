@@ -58,7 +58,8 @@ async function pair(argv: string[]): Promise<number> {
 }
 
 async function devices(argv: string[]): Promise<number> {
-  const { values } = parseArgs({ args: argv, options: { "state-dir": { type: "string" } } });
+  const { values } = parseArgs({ args: argv, options: { "state-dir": { type: "string" }, help: { type: "boolean" } } });
+  if (values.help) return (console.log("keel devices [--state-dir DIR]\n  Lists the paired phones: id, name, whether it was revoked, and its push registration."), 0);
   const m = open(values["state-dir"]);
   for (const d of m.devices()) {
     const p = m.pushStatus(d.id);
@@ -69,14 +70,16 @@ async function devices(argv: string[]): Promise<number> {
 }
 
 async function revoke(argv: string[]): Promise<number> {
-  const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { "state-dir": { type: "string" } } });
+  const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { "state-dir": { type: "string" }, help: { type: "boolean" } } });
+  if (values.help) return (console.log("keel revoke <device id> [--state-dir DIR]\n  Revokes a paired phone (keel devices lists the ids)."), 0);
   if (!positionals[0]) return (console.error("usage: keel revoke <device id>"), 2);
   console.log(open(values["state-dir"]).revoke(positionals[0]) ? "revoked" : "unknown device");
   return 0;
 }
 
 async function notify(argv: string[]): Promise<number> {
-  const { values } = parseArgs({ args: argv, options: { test: { type: "boolean" }, device: { type: "string" }, bind: { type: "string", default: process.env.KEEL_BIND ?? "127.0.0.1:47960" } } });
+  const { values } = parseArgs({ args: argv, options: { test: { type: "boolean" }, device: { type: "string" }, bind: { type: "string", default: process.env.KEEL_BIND ?? "127.0.0.1:47960" }, help: { type: "boolean" } } });
+  if (values.help) return (console.log("keel notify --test [--device ID] [--bind HOST:PORT]\n  Sends a test push to the paired phones (or one) through the daemon at --bind."), 0);
   if (!values.test) return (console.error("keel notify sends a test push: pass --test"), 2);
   let res: Response;
   try {
@@ -99,4 +102,4 @@ async function notify(argv: string[]): Promise<number> {
 const plain = (run: (argv: string[]) => Promise<number>) => async (argv: string[]) => {
   try { return await run(argv); } catch (e) { return (console.error(`keel: ${(e as Error).message}`), 1); }
 };
-export const mobileCommands = { pair: plain(pair), devices: plain(devices), revoke: plain(revoke), notify };
+export const mobileCommands = { pair: plain(pair), devices: plain(devices), revoke: plain(revoke), notify: plain(notify) };

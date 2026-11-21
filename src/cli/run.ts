@@ -352,7 +352,7 @@ export async function runPrompt(v: any, pos: string[], c0: Client, found: Found,
   const onAskFlag = v["on-ask"];
   if (onAskFlag && !["exit", "deny", "wait"].includes(onAskFlag)) return usageError(name, onAskFlag === "stdin" ? "--on-ask stdin needs --input-format stream-json" : "--on-ask is exit, deny or wait", RUN_USAGE);
   const timeoutS = v.timeout === undefined ? undefined : Number(v.timeout);
-  if (timeoutS !== undefined && !(timeoutS > 0)) return usageError(name, "--timeout is a number of seconds above 0", RUN_USAGE);
+  if (timeoutS !== undefined && !(Number.isFinite(timeoutS) && timeoutS > 0)) return usageError(name, "--timeout is a number of seconds above 0", RUN_USAGE);
   const sessionArg = v.session ?? v.resume;
   if (sessionArg && v.continue) return usageError(name, "pass --session or --continue, not both", RUN_USAGE);
   if (v.steer && v.queue) return usageError(name, "--steer or --queue, not both", RUN_USAGE);

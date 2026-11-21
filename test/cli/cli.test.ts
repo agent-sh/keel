@@ -252,6 +252,19 @@ describe("admin commands", () => {
     });
   }, 30_000);
 
+  test("-h is --help for a command, and asks the daemon nothing", async () => {
+    asked.length = 0;
+    const got: Record<string, [number, boolean, string]> = {};
+    for (const c of ["status", "drain", "backups", "service", "ui", "debug", "pair", "devices", "notify", "acp"]) {
+      const short = await keel([c, "-h"], { state });
+      const long = await keel([c, "--help"], { state });
+      got[c] = [short.code, short.out === long.out && short.out.startsWith("keel "), short.err];
+    }
+    expect(got).toEqual(Object.fromEntries(Object.keys(got).map((c) => [c, [0, true, ""]])));
+    expect((await k(["status", "-h"])).out).toStartWith("keel status [--url URL] [--json]");
+    expect(asked).toEqual([]);
+  }, 60_000);
+
   test("ui install: a missing bundle or a folder is a local error and asks the daemon nothing", async () => {
     asked.length = 0;
     const missing = join(SCRATCH, "no-such-bundle.tar.gz");
@@ -1204,6 +1217,17 @@ describe("a prompt next to other work in its session", () => {
       }
     }
     expect({ got, after: await now() }).toEqual({ got: got.map((g: any) => [g[0], 3, "", true]), after: before });
+  }, 60_000);
+
+  test("run refuses a bad --timeout, Infinity included, before it does anything", async () => {
+    const { api } = dm;
+    const before = (await api("/api/sessions")).sessions.length;
+    const got: unknown[] = [];
+    for (const bad of ["--timeout=0", "--timeout=-5", "--timeout=soon", "--timeout=Infinity"]) {
+      const r = await k(["run", "-p", "hello", bad]);
+      got.push([bad, r.code, r.out, r.err.includes("keel run: --timeout is a number of seconds above 0") && r.err.includes("keel run [PROMPT]")]);
+    }
+    expect({ got, after: (await api("/api/sessions")).sessions.length }).toEqual({ got: got.map((g: any) => [g[0], 3, "", true]), after: before });
   }, 60_000);
 });
 
