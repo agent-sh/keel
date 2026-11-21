@@ -145,6 +145,12 @@ under `~/.cache/keel-work/bun/research/`.
   text size the owner picks scales everything; px only for hairlines (2px or
   less), shadows and media queries. JS that measures in px multiplies by the
   scale (`ui/src/lib/rail.ts`).
+- The desktop app (`desktop/`) is the same page in a native window. The page
+  learns it from `window.keelShell` (`ui/src/lib/shell.ts`), never from its
+  user agent, and uses it only where the app does something a tab cannot. The
+  daemon knows an app is attached by its open stream (`src/server/shell.ts`):
+  a desktop notification goes to the app or is shown by the daemon, never
+  both. Its routes are for the machine itself.
 - Public repo rules (agent-sh): no owner chat quotes, no hostnames or private
   project names, no em dashes in code or docs.
 
@@ -163,6 +169,7 @@ under `~/.cache/keel-work/bun/research/`.
 | `src/admin/stall-watch.ts` | the stall watcher's thread: what the main thread did while the loop was held |
 | `ui/` | React 19 UI, bundled by Bun from `ui/index.html` |
 | `test/e2e/` | Playwright e2e per feature |
+| `desktop/` | the desktop app: a native window, tray mark and notifications around the page (Rust, GTK 4, the system web view) |
 
 ## Commands
 
@@ -193,4 +200,6 @@ bun scripts/release.ts && scripts/release-check.sh   # a release packaged in dis
 bun scripts/build.ts --ui dist/keel-ui.tar.gz && keel ui install dist/keel-ui.tar.gz --url URL
                                # a UI-only change on a running daemon: no restart, turns go on, pages reload;
                                # refused when src/ differs from the daemon's build (that needs a restart)
+desktop/build.sh                # desktop/dist/keel-desktop, the desktop app (install: for this account; deb: a package)
+desktop/test/e2e.sh             # its e2e, in a hidden desktop with a scratch daemon (never the owner's screen)
 ```

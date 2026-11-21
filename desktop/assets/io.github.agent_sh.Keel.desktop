@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Name=Keel
+GenericName=Coding Agent Workbench
+Comment=Run coding agents and steer them from one place
+Exec=keel-desktop %u
+Icon=io.github.agent_sh.Keel
+Terminal=false
+Categories=Development;
+Keywords=agent;coding;ai;sessions;
+MimeType=x-scheme-handler/keel;
+StartupNotify=true
+StartupWMClass=io.github.agent_sh.Keel
+Actions=new-session;
+
+[Desktop Action new-session]
+Name=New Session
+Exec=keel-desktop --new

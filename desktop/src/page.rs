@@ -1,0 +1,164 @@
+//! What the shell puts beside the page: the capability object a page reads to
+//! know it runs in the shell, the style of the title bar, and the calm page
+//! shown while the daemon is away.
+use crate::daemon::Link;
+use crate::prefs::Look;
+
+/// Injected before the page's own scripts. The page reads `window.keelShell`
+/// (ui/src/lib/shell.ts); it is never told by its user agent. `post` is the
+/// page's way to the shell; the shell answers with `keel-shell` events.
+pub fn bridge(window: &str, tray: bool) -> String {
+    format!(
+        r#"(() => {{
+  if (window.top !== window || window.keelShell) return;
+  const post = (m) => {{ try {{ window.webkit.messageHandlers.keel.postMessage(JSON.stringify(m)); }} catch (e) {{}} }};
+  Object.defineProperty(window, "keelShell", {{ value: Object.freeze({{
+    name: "keel-desktop", version: "{version}", engine: "webkit", platform: "linux", window: "{window}",
+    can: Object.freeze({{ titlebar: true, windows: true, links: true, notifications: true, tray: {tray} }}), post,
+  }}) }});
+}})();"#,
+        version = env!("CARGO_PKG_VERSION"),
+    )
+}
+
+/// The style of the shell's own widgets, in the page's colors. Every color is
+/// a checked hex value (prefs::hex), so nothing a page says can add a rule.
+pub fn style(l: &Look) -> String {
+    let px = |n: f64| format!("{:.0}px", (n * l.scale).round());
+    format!(
+        r#"
+window.keel {{ background: {bg}; }}
+window.keel .titlebar {{ min-height: 0; padding: 0; margin: 0; border: none; background: transparent; box-shadow: none; }}
+.keel-bar {{ background: {panel}; color: {muted}; min-height: {h}; padding: 0 {pad}; border-bottom: 1px solid {line}; box-shadow: none; }}
+.keel-bar .keel-title {{ font-size: {font}; font-weight: 500; color: {muted}; }}
+.keel-bar windowcontrols {{ border-spacing: {gap}; }}
+.keel-bar windowcontrols button {{ min-width: {btn}; min-height: {btn}; padding: 0; margin: 0; border: none; border-radius: {radius}; background: transparent; color: {muted}; box-shadow: none; outline-offset: -2px; transition: background 120ms ease, color 120ms ease; }}
+.keel-bar windowcontrols button image {{ background: transparent; box-shadow: none; padding: 0; -gtk-icon-size: {icon}; }}
+.keel-bar windowcontrols button:hover {{ background: alpha({fg}, 0.09); color: {fg}; }}
+.keel-bar windowcontrols button:active {{ background: alpha({fg}, 0.16); }}
+.keel-bar windowcontrols button.close:hover {{ background: #d9434b; color: #ffffff; }}
+.keel-bar:backdrop .keel-title, .keel-bar:backdrop windowcontrols button {{ color: alpha({muted}, 0.6); }}
+.keel-pill {{ font-size: {small}; color: {muted}; padding: {pill_y} {pill_x}; border-radius: 999px; background: alpha({fg}, 0.06); border-spacing: {gap}; }}
+.keel-pill .keel-dot {{ min-width: {dot}; min-height: {dot}; border-radius: 999px; background: {need}; animation: keel-pulse 1.8s ease-in-out infinite; }}
+.keel-start {{ font-size: {small}; font-weight: 600; min-height: 0; min-width: 0; padding: {start_y} {pill_x}; margin: 0; border: none; border-radius: 999px; background: {fg}; color: {bg}; box-shadow: none; outline-offset: 2px; transition: background 120ms ease; }}
+.keel-start:hover {{ background: alpha({fg}, 0.85); }}
+.keel-start:active {{ background: alpha({fg}, 0.7); }}
+@keyframes keel-pulse {{ 0% {{ opacity: 0.3; }} 50% {{ opacity: 1; }} 100% {{ opacity: 0.3; }} }}
+"#,
+        bg = l.bg, panel = l.panel, fg = l.fg, muted = l.muted, line = l.line, need = l.need,
+        h = px(34.0), pad = px(6.0), font = px(13.0), small = px(12.0), btn = px(26.0), radius = px(7.0), icon = px(16.0),
+        gap = px(4.0), dot = px(6.0), pill_y = px(2.0), pill_x = px(10.0), start_y = px(3.0),
+    )
+}
+
+fn esc(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// The words of the page for a state of the daemon: headline, line under it, whether the button shows.
+pub fn words(link: &Link, starting: bool) -> (&'static str, &'static str, bool) {
+    match (link, starting) {
+        (Link::Restarting, _) => ("Keel is restarting", "Your sessions carry on where they were. This window comes back by itself.", false),
+        (_, true) => ("Starting Keel", "The daemon is coming up. This takes a moment.", false),
+        (Link::Down, _) => ("Keel is not running", "The daemon runs your sessions and keeps them. Start it to pick up where you left off.", true),
+        (Link::Up, _) => ("Opening Keel", "", false),
+    }
+}
+
+/// The page shown while the daemon is away: the product's mark, what is
+/// happening in one line, and one button. `setState` moves it between its
+/// states without a reload, so nothing flashes.
+pub fn away(l: &Look, link: &Link, starting: bool, url: &str, note: &str) -> String {
+    let (head, line, button) = words(link, starting);
+    format!(
+        r##"<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Keel</title><style>
+:root {{ color-scheme: {scheme}; }}
+html, body {{ height: 100%; margin: 0; }}
+body {{ background: {bg}; color: {fg}; font: {font}px/1.5 "IBM Plex Sans Variable", "IBM Plex Sans", "Inter", system-ui, sans-serif; display: grid; place-items: center; -webkit-user-select: none; user-select: none; cursor: default; }}
+main {{ width: min(26rem, 86vw); display: grid; justify-items: start; gap: 0; transform: translateY(-6vh); }}
+svg {{ width: 2.75rem; height: 2.75rem; display: block; margin-bottom: 1.5rem; }}
+h1 {{ font-size: 1.5rem; line-height: 1.25; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 0.5rem; }}
+p {{ margin: 0; color: {muted}; max-width: 24rem; }}
+.act {{ height: 2.25rem; margin-top: 1.5rem; display: flex; align-items: center; gap: 0.875rem; }}
+button {{ font: inherit; font-weight: 600; height: 2.25rem; padding: 0 1rem; border: 0; border-radius: 0.5rem; background: {fg}; color: {bg}; cursor: pointer; transition: opacity 120ms ease; }}
+button:hover {{ opacity: 0.86; }}
+button:focus-visible {{ outline: 2px solid {need}; outline-offset: 2px; }}
+.bar {{ width: 9rem; height: 2px; border-radius: 2px; background: {line}; overflow: hidden; }}
+.bar::after {{ content: ""; display: block; width: 40%; height: 100%; border-radius: 2px; background: {need}; animation: slide 1.6s cubic-bezier(0.45, 0, 0.55, 1) infinite; }}
+@keyframes slide {{ 0% {{ transform: translateX(-100%); }} 100% {{ transform: translateX(250%); }} }}
+@media (prefers-reduced-motion: reduce) {{ .bar::after {{ animation: none; width: 100%; opacity: 0.5; }} }}
+.note {{ margin-top: 1rem; font-size: 0.8125rem; color: {muted}; }}
+.where {{ margin-top: 2.5rem; padding-top: 0.875rem; border-top: 1px solid {line}; width: 100%; font: 0.75rem/1.4 "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, monospace; color: {muted}; opacity: 0.8; }}
+[hidden] {{ display: none !important; }}
+</style></head><body><main data-testid="shell-away">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Keel"><rect width="32" height="32" rx="8" fill="#0e6a80"/><path d="M6 11.5h20c-1.1 4.9-5 7.6-10 7.6s-8.9-2.7-10-7.6z" fill="#f4faf9"/><path d="M14.6 18.6h2.8l-.7 6.4h-1.4z" fill="#f4faf9"/></svg>
+<h1 id="head">{head}</h1><p id="line">{sub}</p>
+<div class="act"><button id="start" type="button" {hide_button}>Start Keel</button><div class="bar" id="bar" role="progressbar" aria-label="Working" {hide_bar}></div></div>
+<p class="note" id="note" {hide_note}>{note}</p>
+<div class="where" id="where">{url}</div>
+</main><script>
+const $ = (id) => document.getElementById(id);
+const post = (m) => window.webkit.messageHandlers.keel.postMessage(JSON.stringify(m));
+$("start").addEventListener("click", () => post({{ t: "start" }}));
+window.setState = (s) => {{
+  $("head").textContent = s.head; $("line").textContent = s.line;
+  $("start").hidden = !s.button; $("bar").hidden = s.button;
+  $("note").textContent = s.note || ""; $("note").hidden = !s.note;
+  if (s.url) $("where").textContent = s.url;
+  if (s.button) $("start").focus();
+}};
+if (!$("start").hidden) $("start").focus();
+</script></body></html>"##,
+        scheme = if l.dark { "dark" } else { "light" },
+        bg = l.bg, fg = l.fg, muted = l.muted, line = l.line, need = l.need,
+        font = (16.0 * l.scale).round(),
+        head = head, sub = line,
+        hide_button = if button { "" } else { "hidden" },
+        hide_bar = if button { "hidden" } else { "" },
+        hide_note = if note.is_empty() { "hidden" } else { "" },
+        note = esc(note), url = esc(url),
+    )
+}
+
+/// The same state as a call of the away page's `setState`.
+pub fn away_state(link: &Link, starting: bool, url: &str, note: &str) -> String {
+    let (head, line, button) = words(link, starting);
+    format!("window.setState && window.setState({})", serde_json::json!({ "head": head, "line": line, "button": button, "note": note, "url": url }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_away_page_says_one_thing_per_state() {
+        assert_eq!(words(&Link::Down, false), ("Keel is not running", "The daemon runs your sessions and keeps them. Start it to pick up where you left off.", true));
+        assert!(!words(&Link::Restarting, false).2);
+        assert!(!words(&Link::Restarting, true).2);
+        assert_eq!(words(&Link::Down, true).0, "Starting Keel");
+    }
+
+    #[test]
+    fn what_is_shown_is_text_not_markup() {
+        let html = away(&Look::of(true), &Link::Down, false, "http://127.0.0.1:1/<b>", "could not start: <script>alert(1)</script>");
+        assert!(!html.contains("<script>alert(1)"));
+        assert!(html.contains("&lt;script&gt;alert(1)"));
+        assert!(html.contains("http://127.0.0.1:1/&lt;b&gt;"));
+        assert!(away_state(&Link::Down, false, "u", "a\"b</script>").contains(r#"a\"b"#));
+    }
+
+    #[test]
+    fn the_style_scales_with_the_text_size() {
+        let mut l = Look::of(false);
+        assert!(style(&l).contains("min-height: 34px"));
+        l.scale = 1.5;
+        assert!(style(&l).contains("min-height: 51px"));
+        assert!(style(&l).contains(&l.panel));
+    }
+
+    #[test]
+    fn the_bridge_names_the_shell() {
+        let b = bridge("main", true);
+        assert!(b.contains(r#"window: "main""#) && b.contains("tray: true") && b.contains("keelShell"));
+    }
+}
