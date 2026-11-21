@@ -129,6 +129,12 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
   };
   live.ui = () => ui.active.version;
 
+  // The sends the page named (`client_id` on a message): each is stored once.
+  store.migrate("CREATE TABLE IF NOT EXISTS sends (client_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, fingerprint TEXT NOT NULL, receipt TEXT NOT NULL, created_ms INTEGER NOT NULL)");
+  const sendOf = store.db.query<{ fingerprint: string; receipt: string }, [string]>("SELECT fingerprint, receipt FROM sends WHERE client_id = ?");
+  const recordSend = store.db.query("INSERT INTO sends (client_id, session_id, fingerprint, receipt, created_ms) VALUES (?, ?, ?, ?, ?)");
+  const dropOldSends = store.db.query("DELETE FROM sends WHERE created_ms < ?");
+
   const routes = withModules({
       // GET: what is served; POST: a bundle (.tar.gz) to serve now; rollback: the one before.
       "/api/ui": {
@@ -273,7 +279,37 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           if (!text && !(body.edit_of ? store.event(String(body.edit_of))?.data.images?.length : body.images?.length)) return bad("text cannot be empty");
           if (body.mode && !["send", "steer", "queue"].includes(body.mode)) return bad(`unknown mode ${body.mode}`);
           if (body.edit_of) return json(await engine.edit(s.id, String(body.edit_of), text), 201);
-          return json(await fitted(s.id, body.images, (images) => engine.send(s.id, text, { mode: body.mode, images })), 201);
+          // `client_id` names the send, made by the page and kept with the
+          // message until an answer arrives. The same id again (the answer was
+          // lost, or the daemon was away) gets the receipt of the prompt it
+          // already stored and stores nothing. A send without one is a new
+          // prompt each time.
+          const clientId = typeof body.client_id === "string" ? body.client_id.trim() : "";
+          if (clientId.length > 80) return bad("the send id is longer than 80 characters");
+          if (!clientId) return json(await fitted(s.id, body.images, (images) => engine.send(s.id, text, { mode: body.mode, images })), 201);
+          const fingerprint = new Bun.CryptoHasher("sha256").update(JSON.stringify([s.id, text, body.images ?? []])).digest("hex");
+          const prior = () => {
+            const r = sendOf.get(clientId);
+            if (!r) return undefined;
+            if (r.fingerprint !== fingerprint) throw Object.assign(new Error("this send id was used for another message; send this one under a new id"), { status: 409 });
+            return { ...JSON.parse(r.receipt), replayed: true };
+          };
+          const had = prior();
+          if (had) return json(had);
+          // The prompt and its receipt are one write: a daemon that stops between
+          // them has neither, and the retry stores the prompt once.
+          const out = await fitted(s.id, body.images, (images) => store.atomic(s.id, () => {
+            // Read again inside the write: the same send may have come in while the images were fitted.
+            const now = prior();
+            if (now) return now;
+            const r = engine.send(s.id, text, { mode: body.mode, images });
+            // The receipt names what was stored, without the images' bytes.
+            const receipt = r.event ? { event: { id: r.event.id, seq: r.event.seq } } : { queued: { id: r.queued!.id }, steer: r.steer };
+            recordSend.run(clientId, s.id, fingerprint, JSON.stringify(receipt), Date.now());
+            dropOldSends.run(Date.now() - 30 * 86_400_000);
+            return r;
+          }));
+          return json(out, "replayed" in out ? 200 : 201);
         }),
       },
 

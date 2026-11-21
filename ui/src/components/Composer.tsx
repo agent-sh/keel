@@ -7,7 +7,8 @@ import { fromBlock, toAttachment, toBlock, type Attachment } from "../lib/images
 import { composing, fuzzy, isMac, keyLabel, QUEUE_KEYS, SEND_KEYS } from "../lib/keys.ts";
 import { splitId } from "../lib/fleet-ids.ts";
 import { draftGone, draftHere, dropImage, fromServer, getDraft, isKeeping, keepImage, textTaken, typing, type Draft } from "../lib/drafts.ts";
-import { hasSavedImage, messageRefused, savedImages, sendDrafts, setSendDraft, setSendImage, shelfKey, shown, unread, useSendDrafts, type SendDraft } from "../lib/send-drafts.ts";
+import { daemonAway, hasSavedImage, messageRefused, namedSends, savedImages, sendDrafts, setSendDraft, setSendImage, shelfKey, shown, unread, useSendDrafts, type SendDraft } from "../lib/send-drafts.ts";
+import { sendWaitingSoon } from "../lib/resend.ts";
 import { onFeature, reportError, reportUnlessGone, useStore, failed } from "../lib/store.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { lineage } from "../../../src/core/tree.ts";
@@ -43,18 +44,19 @@ function useSlashItems() {
 // Images of kept sends being read back from the session's draft after a reload.
 const reading = new Set<string>();
 const MAX_FILES = 20;
-const heading = (d: SendDraft) => (d.state === "refused" ? (d.queue ? "Not queued" : "Not sent") : d.state === "unconfirmed" ? "Delivery unconfirmed" : "Saved draft");
+const heading = (d: SendDraft) => (d.state === "waiting" ? "Waiting for Keel" : d.state === "refused" ? (d.queue ? "Not queued" : "Not sent") : d.state === "unconfirmed" ? "Delivery unconfirmed" : "Saved draft");
 
 const OFF_BRANCH = "You are reading another branch. Choose Continue from this branch to reply there, or Back to the current one.";
 
 type ComposerProps = {
   session?: Session;
-  onSend: (text: string, images: PromptBlock[]) => Promise<unknown> | void;
+  // `id` names the send: a session's route takes the same one once (see lib/resend.ts).
+  onSend: (text: string, images: PromptBlock[], id?: string) => Promise<unknown> | void;
   // While a turn runs, Enter steers (the text joins the turn at its next model
   // call) and Ctrl Shift Enter (QUEUE_KEYS) or the queue button queues it for
   // after the turn. Tab queues nothing: with a draft it goes to the queue
   // button, so Tab then Enter queues.
-  onQueue?: (text: string, images: PromptBlock[]) => Promise<unknown> | void;
+  onQueue?: (text: string, images: PromptBlock[], id?: string) => Promise<unknown> | void;
   onStop?: () => void;
   // What Escape does when no menu is open (default: stop a working turn).
   onEscape?: () => void;
@@ -414,6 +416,7 @@ function SessionComposer({
     else if (r.bottom > view.bottom) box.scrollTop += sel === options.length - 1 ? box.scrollHeight : r.bottom - view.bottom;
   }, [sel, menu?.kind, menu?.query, options.length]);
 
+  const named = namedSends(shelf);
   const blocked = (attachments: Attachment[]) => {
     if (offBranch) return OFF_BRANCH;
     if (switching) return "The model switch is not confirmed yet: nothing was sent.";
@@ -432,8 +435,14 @@ function SessionComposer({
     setSendDraft(shelf, id, { ...entry, state: "sending" });
     try {
       const send = queue && onQueue ? onQueue : onSend;
-      await send(text.trim(), images.map(toBlock));
+      await send(text.trim(), images.map(toBlock), id);
     } catch (e) {
+      // The daemon was away or restarting: the message waits on its shelf and
+      // goes out by itself, once, when the daemon is back.
+      if (named && daemonAway(e)) {
+        setSendDraft(shelf, id, { ...entry, state: "waiting", error: undefined });
+        return sendWaitingSoon();
+      }
       // The New box sends through a create: its refusal is as certain as a message's.
       const refused = messageRefused(e, sid);
       const words = failed(e, { at: "send", ...(sid && { session_id: sid }) });
@@ -480,7 +489,8 @@ function SessionComposer({
 
   const retry = (id: string) => {
     const entry = sendDrafts(shelf).find((d) => d.id === id);
-    if (entry?.state !== "refused" || entry.images.some(unread)) return;
+    // A named send may go again whatever became of the first try: the daemon takes it once.
+    if (!entry || !(entry.state === "refused" || (named && entry.state === "unconfirmed")) || entry.images.some(unread)) return;
     const why = blocked(entry.images);
     if (why) return setNotice(why);
     ref.current?.focus();
@@ -532,15 +542,16 @@ function SessionComposer({
             return (
               <div key={d.id} role="group" aria-label={`${heading(d)}: ${d.text.trim().slice(0, 80) || "attachments only"}`} data-testid="saved-draft" data-state={d.state} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-lg border border-line bg-raised px-3 py-2 text-caption shadow-1">
                 <div className="min-w-0 flex-1 basis-48">
-                  <p className={d.state === "parked" ? "font-medium text-muted" : "font-medium text-fg"}>{d.state !== "parked" && <span aria-hidden className="mr-1.5 inline-block size-1.5 rounded-full bg-warn align-middle" />}{heading(d)}</p>
+                  <p className={d.state === "parked" ? "font-medium text-muted" : "font-medium text-fg"}>{d.state !== "parked" && <span aria-hidden className={cn("mr-1.5 inline-block size-1.5 rounded-full align-middle", d.state === "waiting" ? "bg-brass animate-pulse-dot" : "bg-warn")} />}{heading(d)}</p>
                   <p className="truncate text-fg" title={d.text}>{d.text.trim() || "Attachments only"}</p>
                   {!!d.images.length && <p className="truncate text-muted" title={d.images.map((a) => a.name).join(", ")}>{d.images.map((a) => a.name).join(", ")}</p>}
                   {!!d.lost?.length && <p className="break-words text-warn" data-testid="saved-lost">Not kept across the reload: {d.lost.join(", ")}</p>}
                   {d.state !== "parked" && d.error && <p className="break-words text-muted" data-testid="saved-reason">{d.error}</p>}
-                  {d.state === "unconfirmed" && <p className="text-muted">{sid ? "It may have arrived. Check before sending again." : "The session may have been made. Check the list before sending again."}</p>}
+                  {d.state === "waiting" && <p className="text-muted" data-testid="saved-waiting">{connected ? "Keel takes no new work right now. This goes out by itself, once, when it does." : "Keel is not reachable. This goes out by itself, once, when it is back."}</p>}
+                  {d.state === "unconfirmed" && <p className="text-muted">{named ? "It may have arrived. Sending it again is safe: Keel takes it once." : sid ? "It may have arrived. Check before sending again." : "The session may have been made. Check the list before sending again."}</p>}
                 </div>
                 <div className="flex flex-wrap gap-1">
-                  {d.state === "refused" && <button type="button" disabled={waiting} className={cn(draftButton, "bg-accent text-accent-fg hover:bg-accent-hover")} onClick={() => retry(d.id)}>{d.queue ? "Retry queue" : "Retry send"}</button>}
+                  {(d.state === "refused" || (named && d.state === "unconfirmed")) && <button type="button" disabled={waiting} className={cn(draftButton, "bg-accent text-accent-fg hover:bg-accent-hover")} onClick={() => retry(d.id)}>{d.queue ? "Retry queue" : "Retry send"}</button>}
                   <button type="button" disabled={waiting} className={cn(draftButton, "border border-line text-fg hover:bg-hover")} title="Move this into the box without sending. The current draft is kept." onClick={() => restore(d.id)}>Restore draft</button>
                   <button type="button" className={cn(draftButton, "text-muted hover:bg-hover hover:text-fg")} onClick={() => void discard(d.id)}>Discard</button>
                 </div>

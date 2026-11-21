@@ -94,8 +94,8 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
                 model={session.model}
                 workspace={session.workspace}
                 onModel={(m) => switchSession(session.id, { model: m }).catch(reportError)}
-                onSend={(t, images) => actions.send(session.id, t, { images })}
-                onQueue={(t, images) => actions.send(session.id, t, { mode: "queue", images })}
+                onSend={(t, images, client_id) => actions.send(session.id, t, { images, client_id })}
+                onQueue={(t, images, client_id) => actions.send(session.id, t, { mode: "queue", images, client_id })}
                 onStop={() => void stopHere(session)}
                 {...(session.parent_id ? { onEscape: () => navigate({ name: "session", id: session.parent_id! }), stopLabel: "Stop this agent" } : {})}
                 focus={focus}

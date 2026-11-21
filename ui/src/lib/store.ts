@@ -226,8 +226,9 @@ export const actions = {
     set({ sessions: { ...state.sessions, [r.session.id]: r.session } });
     return r.session;
   },
-  send: (id: string, text: string, opts: { images?: PromptBlock[]; mode?: "send" | "queue" } = {}) =>
-    api(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ text, images: opts.images, mode: opts.mode }) }),
+  // `client_id` names the send: the daemon stores it once however often it is sent.
+  send: (id: string, text: string, opts: { images?: PromptBlock[]; mode?: "send" | "queue"; client_id?: string } = {}) =>
+    api(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ text, images: opts.images, mode: opts.mode, client_id: opts.client_id }) }),
   edit: (id: string, eventId: string, text: string) =>
     api(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ text, edit_of: eventId }) }),
   answer: (id: string, callId: string, answers: Record<string, { picked: string[]; other?: string }>) =>

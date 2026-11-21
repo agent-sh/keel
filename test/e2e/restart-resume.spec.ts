@@ -1,6 +1,6 @@
 import { expect, test } from "./isolate.ts";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { shoot } from "./shots.ts";
@@ -601,6 +601,89 @@ test("a question and a plan waiting at a crash or a stop still wait after the re
     expect((await call(`/api/sessions/${child}/questions/${childId}`, { answers: { "0": { picked: ["Teal"] } } })).status).toBe(200);
     await expect.poll(async () => (await events(child)).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results).map((r: any) => [r.tool_use_id, !!r.is_error]), { timeout: 15_000 }).toEqual([[childId, false]]);
     await expect.poll(async () => (await call(`/api/sessions/${parent}/agents`, undefined, "GET")).agents[0].status, { timeout: 30_000 }).toBe("completed");
+  } finally {
+    d.proc.kill("SIGKILL");
+  }
+});
+
+// Feature: a message sent while the daemon is away is not lost and not sent
+// twice. Down (a crash) or taking no new work (a stop waiting for a running
+// turn), the message waits on the box's shelf under the id it was sent with,
+// goes out by itself when the daemon is back, and is stored once.
+test("a message sent while the daemon is down or draining goes out once when it is back", async ({ page }) => {
+  const state = join(ROOT, `restart-sends-${Date.now()}`);
+  made.push(state);
+  mkdirSync(state, { recursive: true });
+  const bin = join(state, "keel");
+  const built = spawnSync("bun", ["scripts/build.ts", bin], { encoding: "utf8" });
+  expect(built.status, built.stderr).toBe(0);
+  const port = await new Promise<number>((r) => { const s = createServer().listen(0, "127.0.0.1", () => { const p = (s.address() as any).port; s.close(() => r(p)); }); });
+  const at = { bin, bind: `127.0.0.1:${port}` };
+  const env = { KEEL_DRAIN_MS: "6000" };
+  let d = await daemon(state, env, at);
+  try {
+    const call = (path: string, body?: unknown, method = "POST") =>
+      fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then(async (r) => ({ status: r.status, ...(await r.json() as any) }));
+    const { session } = await call("/api/sessions", { model: "scripted:stand-in", title: "Sends across restarts" });
+    const sid = session.id as string;
+    await call(`/api/sessions/${sid}/permissions`, { mode: "full-auto" }, "PUT");
+    const view = () => call(`/api/sessions/${sid}`, undefined, "GET");
+    const sent = async () => ((await view()).events as any[]).filter((e) => e.kind === "user" && e.data.origin !== "restart").map((e) => e.data.text);
+    const composer = page.getByTestId("composer");
+    const saved = page.getByTestId("saved-draft");
+    await page.goto(`${d.url}/s/${sid}`, { waitUntil: "networkidle" }); // every part of the page is loaded before the daemon goes
+    await expect(composer).toBeVisible();
+    await expect(page.getByTestId("sync-state")).toHaveCount(0, { timeout: 30_000 });
+
+    // Down: the message waits, and says so.
+    d.proc.kill("SIGKILL");
+    await exited(d.proc);
+    await expect(page.getByTestId("sync-state")).toHaveText("Reconnecting", { timeout: 15_000 });
+    await composer.fill("sent while Keel was down");
+    await composer.press("Enter");
+    await expect(saved).toHaveAttribute("data-state", "waiting");
+    await expect(saved).toContainText("Waiting for Keel");
+    await expect(saved).toContainText("sent while Keel was down");
+    await expect(saved.getByTestId("saved-waiting")).toContainText("goes out by itself, once");
+    await expect(composer).toHaveValue("");
+    await shoot(page, "restart-09-send-waits-for-daemon");
+
+    // Back: it goes out by itself, once, and no card is left.
+    d = await daemon(state, env, at);
+    await expect(saved).toHaveCount(0, { timeout: 30_000 });
+    await expect(page.getByTestId("user-message").filter({ hasText: "sent while Keel was down" })).toHaveCount(1, { timeout: 15_000 });
+    await expect(page.getByTestId("assistant-text").last()).toHaveText("Scripted reply.", { timeout: 15_000 });
+    expect(await sent()).toEqual(["sent while Keel was down"]);
+
+    // The same send again under its id (an answer that was lost): the daemon stores nothing new and says so.
+    const named = { text: "named once", client_id: "spec-send-1" };
+    const first = await call(`/api/sessions/${sid}/messages`, named);
+    const again = await call(`/api/sessions/${sid}/messages`, named);
+    expect([first.status, again.status, again.replayed]).toEqual([201, 200, true]);
+    expect((again.event ?? again.queued).id).toBe((first.event ?? first.queued).id);
+    expect((await call(`/api/sessions/${sid}/messages`, { text: "another message", client_id: "spec-send-1" })).status).toBe(409);
+    await expect.poll(async () => (await view()).running, { timeout: 15_000 }).toBe(false);
+    expect(await sent()).toEqual(["sent while Keel was down", "named once"]);
+
+    // Stopping while a turn runs: the daemon takes no new work, and the message waits the same way.
+    const gate = join(state, "gate");
+    await composer.fill(`script:hold ${gate}`);
+    await composer.press("Enter");
+    await expect.poll(async () => (await view()).running, { timeout: 15_000 }).toBe(true);
+    d.proc.kill("SIGTERM");
+    await expect(page.getByTestId("admin-band")).toBeVisible({ timeout: 5_000 });
+    await composer.fill("sent while Keel was stopping");
+    await composer.press("Enter");
+    await expect(saved).toHaveAttribute("data-state", "waiting");
+    await expect(saved).toContainText("sent while Keel was stopping");
+    await shoot(page, "restart-10-send-waits-for-drain");
+    await exited(d.proc);
+    d = await daemon(state, env, at);
+    await expect(saved).toHaveCount(0, { timeout: 30_000 });
+    writeFileSync(gate, "");
+    await expect.poll(async () => (await view()).running, { timeout: 60_000 }).toBe(false);
+    expect(await sent()).toEqual(["sent while Keel was down", "named once", `script:hold ${gate}`, "sent while Keel was stopping"]);
+    await expect(page.getByTestId("user-message").filter({ hasText: "sent while Keel was stopping" })).toHaveCount(1);
   } finally {
     d.proc.kill("SIGKILL");
   }

@@ -216,33 +216,46 @@ test("a refused send stays separate from the next draft", async ({ page, request
   expect(posts[1]?.images.map((i) => i.data)).toEqual([PNG]);
   await expect(page.getByTestId("turn-end")).toHaveCount(1);
 
-  // Lose a response only after the real daemon has accepted the message.
+  // Lose a response only after the real daemon has accepted the message: it
+  // goes out again by itself under the same id, and the daemon takes it once.
   await page.route(messages, async (r) => {
     posts.push(r.request().postDataJSON());
     expect((await r.fetch()).status()).toBe(201);
     await r.abort("failed");
   }, { times: 1 });
   await composer.press("Enter");
+  await expect(composer).toHaveValue("");
+  await expect.poll(() => posts.length, { timeout: 15_000 }).toBe(4);
+  await expect(saved).toHaveCount(0);
+  expect((posts[3] as any).client_id).toBe((posts[2] as any).client_id);
+  expect((posts[3] as any).client_id).toBeTruthy();
+  await expect(row.getByTestId("unsent-mark")).toHaveCount(0);
+  const texts = async () => (await (await request.get(`/api/sessions/${a}`)).json()).events.filter((e: any) => e.kind === "user").map((e: any) => e.data.text);
+  expect(await texts()).toEqual(["Review the first screenshot.", "A separate note for later."]);
+
+  // A fault that is not a refusal leaves delivery unconfirmed; sending it again is safe under its id.
+  await page.route(messages, async (r) => {
+    posts.push(r.request().postDataJSON());
+    await r.fulfill({ status: 502, json: { error: "The proxy lost the daemon." } });
+  }, { times: 1 });
+  await composer.fill("Keep this one too.");
+  await composer.press("Enter");
   await expect(saved).toContainText("Delivery unconfirmed");
-  await expect(saved.getByTestId("saved-reason")).toHaveText("The daemon's answer did not arrive.");
-  await expect(saved.getByRole("button", { name: "Retry send" })).toHaveCount(0);
+  await expect(saved.getByTestId("saved-reason")).toHaveText("The proxy lost the daemon.");
+  await expect(saved).toContainText("Sending it again is safe");
+  await expect(saved.getByRole("button", { name: "Retry send" })).toHaveCount(1);
   await expect(row.getByTestId("unsent-mark")).toHaveText("unconfirmed");
   await shoot(page, "draft-04-unconfirmed-send");
-  await expect(composer).toHaveValue("");
-  await composer.fill("Keep this one too.");
+  await composer.fill("In the box meanwhile.");
   await saved.getByRole("button", { name: "Restore draft" }).click();
-  await expect(composer).toHaveValue("A separate note for later.");
-  await expect(page.getByTestId("attachments").locator("img")).toHaveAttribute("alt", "next.png");
-  await expect(saved).toContainText("Keep this one too.");
-  expect(posts).toHaveLength(3);
-  const events = (await (await request.get(`/api/sessions/${a}`)).json()).events;
-  expect(events.filter((e: any) => e.kind === "user").map((e: any) => e.data.text)).toEqual([
-    "Review the first screenshot.", "A separate note for later.",
-  ]);
+  await expect(composer).toHaveValue("Keep this one too.");
+  await expect(saved).toContainText("In the box meanwhile.");
+  expect(posts).toHaveLength(5);
+  expect(await texts()).toEqual(["Review the first screenshot.", "A separate note for later."]);
 
   // A deleted session takes what was kept for it.
   const kept = () => page.evaluate((k) => localStorage.getItem(k), `keel.sends.${a}`);
-  expect(await kept()).toContain("Keep this one too.");
+  expect(await kept()).toContain("In the box meanwhile.");
   await select(b);
   await request.delete(`/api/sessions/${a}`);
   await expect.poll(kept).toBeNull();

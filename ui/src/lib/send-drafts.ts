@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { splitId } from "./fleet-ids.ts";
 import type { Attachment } from "./images.ts";
 
 export type SendDraft = {
@@ -8,7 +9,9 @@ export type SendDraft = {
   queue: boolean;
   // sending: the request is out. done: sent or discarded, its images are being
   // released. Neither is shown; the rest are the items the owner acts on.
-  state: "sending" | "refused" | "unconfirmed" | "parked" | "done";
+  // waiting: the daemon was away or restarting; the message goes out by itself
+  // when it is back, under the same id, so the daemon takes it once (resend.ts).
+  state: "sending" | "waiting" | "refused" | "unconfirmed" | "parked" | "done";
   error?: string;
   // Attachments a reload could not bring back, by name.
   lost?: string[];
@@ -35,7 +38,13 @@ const own = new Set<string>();
 
 export const sendDrafts = (key: string) => drafts.get(key) ?? empty;
 export const useSendDrafts = (key: string) => useSyncExternalStore(subscribe, () => sendDrafts(key));
-export const shown = (d: SendDraft) => d.state === "refused" || d.state === "unconfirmed" || d.state === "parked";
+export const shown = (d: SendDraft) => d.state === "waiting" || d.state === "refused" || d.state === "unconfirmed" || d.state === "parked";
+// A session of this daemon: its message route takes each named send once, so
+// sending one again under its id is safe. The New box and a session of another
+// machine (a daemon that may predate the ids) keep the owner's own check.
+export const namedSends = (key: string) => key !== NEW && !splitId(key);
+// Every send waiting for the daemon, with its shelf.
+export const waitingSends = () => [...drafts].flatMap(([key, list]) => list.filter((d) => d.state === "waiting").map((d) => ({ key, d })));
 export const hasSavedImage = (key: string, id: string) => sendDrafts(key).some((d) => d.images.some((a) => a.id === id));
 // Images the shelf holds in the session's server draft, which takes 20 in all.
 export const savedImages = (key: string) => sendDrafts(key).reduce((n, d) => n + d.images.filter((a) => !a.file).length, 0);
@@ -94,7 +103,8 @@ function parse(key: string, raw: string | null, boot: boolean): SendDraft[] {
   const have = sendDrafts(key);
   return list.filter((s) => s && typeof s.id === "string" && Array.isArray(s.images)).map((s): SendDraft => {
     const cut = boot && s.state === "sending";
-    const base = { ...s, text: String(s.text ?? ""), ...(cut ? { state: "unconfirmed" as const, error: "The page was reloaded before the daemon answered." } : {}) };
+    // A named send the reload cut goes out again under its id: taken once, whether or not it arrived.
+    const base = { ...s, text: String(s.text ?? ""), ...(!cut ? {} : namedSends(key) ? { state: "waiting" as const, error: undefined } : { state: "unconfirmed" as const, error: "The page was reloaded before the daemon answered." }) };
     // Attachments never change after the item is made: the copy already here is the full one.
     const mine = have.find((d) => d.id === s.id);
     if (mine) return { ...base, images: mine.images, lost: mine.lost };
@@ -161,6 +171,14 @@ const CREATES = ["/api/sessions", "/api/worktrees", "/api/fleet/sessions"];
 // route (each answers 4xx only before a session exists, or after deleting the
 // one it made), from the admission check in front of both, or a passkey check
 // that was needed and not given (the request is not repeated).
+// The daemon was not there to take it: the request never got an answer (the
+// daemon is down, or its answer was cut), or the daemon said it takes no new
+// work while it restarts.
+export function daemonAway(err: unknown) {
+  const e = err as { status?: number; body?: { draining?: boolean } } | null;
+  return err instanceof TypeError || (e?.status === 503 && e.body?.draining === true);
+}
+
 export function messageRefused(err: unknown, sid?: string) {
   const e = err as { path?: string; status?: number; body?: { error?: unknown; draining?: boolean } } | null;
   if (e?.status === 428) return true;
