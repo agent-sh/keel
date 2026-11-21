@@ -259,6 +259,35 @@ The event list and fields are from the
 events) and the [Codex hooks page](https://developers.openai.com/codex/hooks)
 (14 events, three of them its own), read on 2026-11-21.
 
+### Handlers
+
+A hook's `type` says what runs. Every kind is under the same rule: a
+repository's file runs only pinned, and the pin holds the URL or the tool it
+names.
+
+| `type` | Fields | What runs |
+| --- | --- | --- |
+| `command` | `command`, `timeout`, `onFailure` | The command in bash, with the event on stdin |
+| `command` with `args` | `command`, `args` | The program itself with those arguments, no shell. `${KEEL_PROJECT_DIR}` and `${CLAUDE_PROJECT_DIR}` are filled in |
+| `http` | `url`, `headers`, `allowedEnvVars`, `timeout`, `onFailure` | A POST of the event as JSON. A header takes an environment variable (`$NAME`, `${NAME}`) only when `allowedEnvVars` lists it |
+| `mcp_tool` | `server`, `tool`, `input`, `timeout`, `onFailure` | A tool of an MCP server Keel is connected to. `${tool_input.file_path}` in `input` is filled from the event: alone it keeps its type, inside a text it is written into it |
+
+An `http` hook answers with a 2xx status. No body is a hook with nothing to
+say. A JSON object is its answer, read like a command's stdout. Any other
+body, any other status, a redirect and a failed connection are a failed hook:
+the text never reaches the model, and the action goes ahead unless the hook
+has `onFailure: "block"`.
+
+An `mcp_tool` hook's text is read like a command's stdout. An error answer,
+a server that is not connected and a missing tool are a failed hook. The call
+asks for no approval and runs no other hook: you chose the tool when you
+wrote or pinned the file.
+
+`prompt` and `agent` hooks are read and not run, as in Codex. Each asks a
+model on every event. Keel's model checks on a call are the judge and the
+reviewer, on the model you chose for them. Settings lists such a hook under
+the file's problems.
+
 ### What a PreToolUse hook can do to a call
 
 A `PreToolUse` hook runs before the permission gate. It answers with

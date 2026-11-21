@@ -9,6 +9,7 @@ import { access, connectorConfig, ghSignedIn, keelName, REGISTRY, searchRegistry
 import { catalogSources, catalogTools } from "../../tools/catalog.ts";
 import { score } from "../../mcp/tools.ts";
 import { presence } from "./permissions.ts";
+import { hookMcp } from "../../integrations/hooks.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -34,6 +35,12 @@ export const mcpRoutes: RouteModule = (deps) => {
   installChromeBridge(m);
   installPhone(m);
   m.start();
+  // An mcp_tool hook: a tool of a server that is connected or connects in time, called as the hook file's owner asked.
+  hookMcp.call = async (server, tool, input, ms) => {
+    const client = await m.ensure(server, Math.min(ms, 30_000));
+    const r = await client.callTool(tool, input, AbortSignal.timeout(ms), ms);
+    return { text: (r.content ?? []).map((c) => (c.type === "text" ? c.text : "")).join("\n").trim(), error: r.isError || undefined };
+  };
   // A deleted or archived session lets go of what a bundled server held for it (tabs).
   (g as any).__keelMcpOff?.();
   (g as any).__keelMcpOff = deps.bus.on((f) => { if (f.t === "session" && f.session.archived) m.releaseSession(f.session.id); });

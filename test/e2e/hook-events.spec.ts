@@ -1,5 +1,6 @@
 import { expect, test } from "./isolate.ts";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { HAIKU, shoot } from "./shots.ts";
 
@@ -183,4 +184,51 @@ test("every hook event fires", async ({ page, request }) => {
   // Once each for what happens once in this session's life.
   for (const e of ["SubagentStart", "SubagentStop", "PermissionDenied", "PermissionRequest", "UserPromptExpansion", "PreCompact", "PostCompact", "StopFailure", "Interrupt", "SessionEnd", "PostToolUseFailure"]) expect(given(e).length, e).toBe(1);
   for (const e of FIRED) expect(given(e).length, e).toBeGreaterThan(0);
+});
+
+// Feature: a hook that is not a shell command. An http hook's handler is a URL:
+// the event is posted to it as JSON, and a JSON answer is the hook's answer.
+test("an http hook receives the event at a local sink", async ({ page, request }) => {
+  test.skip(!scripted, "needs the scripted model: the calls are given exactly");
+  const got: { path: string; type: string; body: any }[] = [];
+  const sink = createServer((req, res) => {
+    let text = "";
+    req.on("data", (c) => (text += c));
+    req.on("end", () => {
+      const body = JSON.parse(text);
+      got.push({ path: String(req.url), type: String(req.headers["content-type"]), body });
+      if (req.url !== "/pre" || !String(body.tool_input?.command).includes("blocked-by-the-sink")) return void res.end();
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "the sink refused it" } }));
+    });
+  });
+  await new Promise<void>((done) => sink.listen(0, "127.0.0.1", done));
+  const at = `http://127.0.0.1:${(sink.address() as { port: number }).port}`;
+  try {
+    const { ws, id } = await pinned(page, request, {
+      PreToolUse: [{ matcher: "Bash", hooks: [{ type: "http", url: `${at}/pre` }] }],
+      PostToolUse: [{ matcher: "Bash", hooks: [{ type: "http", url: `${at}/post` }] }],
+    });
+    const source = (await (await request.get(`/api/hooks?cwd=${encodeURIComponent(ws)}`)).json()).sources.find((s: any) => s.scope === "project");
+    expect(source.problems).toEqual([]);
+    await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+    await page.goto(`/s/${id}`);
+    await page.getByTestId("composer").fill(calls("echo to-the-sink", "echo blocked-by-the-sink"));
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
+    // The sink got both calls before they ran and the one that ran after it, as JSON with the event's fields.
+    const pre = got.filter((g) => g.path === "/pre"), post = got.filter((g) => g.path === "/post");
+    expect(pre.map((g) => g.body.tool_input.command)).toEqual(["echo to-the-sink", "echo blocked-by-the-sink"]);
+    expect(pre[0]).toMatchObject({ type: "application/json", body: { session_id: id, cwd: ws, hook_event_name: "PreToolUse", tool_name: "Bash", permission_mode: "bypassPermissions" } });
+    expect(post.length).toBe(1);
+    expect(post[0]!.body).toMatchObject({ hook_event_name: "PostToolUse", tool_input: { command: "echo to-the-sink" }, tool_response: expect.stringContaining("to-the-sink") });
+    // The sink's answer refused the second call.
+    await expect(page.getByTestId("tool-call").nth(1)).toHaveAttribute("data-state", "error");
+    const results = JSON.stringify((await (await request.get(`/api/sessions/${id}`)).json()).events.filter((e: any) => e.kind === "tool_result"));
+    expect(results).toContain("A hook blocked this call: the sink refused it");
+    await page.getByTestId("tool-call").nth(1).click();
+    await shoot(page, "hook-events-04-http-sink");
+  } finally {
+    sink.close();
+  }
 });

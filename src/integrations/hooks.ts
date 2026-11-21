@@ -77,7 +77,41 @@ const CAN: Record<HookEvent, Can> = {
 const TOOL_EVENTS = new Set<string>(["PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "PermissionDenied"]);
 // Seconds a hook gets when it names none: [default, most it may ask for].
 const TIMEOUTS: Partial<Record<HookEvent, [number, number]>> = { UserPromptSubmit: [30, 600], UserPromptExpansion: [30, 600], SessionEnd: [1.5, 60], Interrupt: [1, 3] };
-type Handler = { type: "command"; command: string; timeout?: number; onFailure?: "block" | "continue"; if?: string };
+// What runs for an event: a shell command (or, with `args`, a program run
+// without a shell), a POST of the event to a URL, or a tool of a connected
+// MCP server. A `prompt` or `agent` handler is read and not run: see parseHooks.
+type Common = { timeout?: number; onFailure?: "block" | "continue"; if?: string };
+type Handler =
+  | (Common & { type: "command"; command: string; args?: string[] })
+  | (Common & { type: "http"; url: string; headers?: Record<string, string>; allowedEnvVars?: string[] })
+  | (Common & { type: "mcp_tool"; server: string; tool: string; input?: Record<string, unknown> });
+// Why a handler cannot run, or nothing.
+function handlerProblem(h: any): string | null {
+  const text = (v: unknown) => typeof v === "string" && !!v.trim();
+  switch (h?.type) {
+    case "command":
+      if (!text(h.command)) return "a command hook needs a command";
+      return h.args === undefined || (Array.isArray(h.args) && h.args.every((a: unknown) => typeof a === "string")) ? null : "a command hook's args must be a list of strings";
+    case "http":
+      if (!text(h.url) || !/^https?:\/\//.test(h.url)) return "an http hook needs an http or https url";
+      if (h.headers !== undefined && (!h.headers || typeof h.headers !== "object" || Object.values(h.headers).some((v) => typeof v !== "string"))) return "an http hook's headers must be strings";
+      return h.allowedEnvVars === undefined || (Array.isArray(h.allowedEnvVars) && h.allowedEnvVars.every((a: unknown) => typeof a === "string")) ? null : "an http hook's allowedEnvVars must be a list of names";
+    case "mcp_tool":
+      if (!text(h.server) || !text(h.tool)) return "an mcp_tool hook needs a server and a tool";
+      return h.input === undefined || (h.input && typeof h.input === "object" && !Array.isArray(h.input)) ? null : "an mcp_tool hook's input must be an object";
+    case "prompt":
+    case "agent":
+      // A model asked on every event: Keel's own model checks are the judge and the reviewer, on the model the owner chose for them.
+      return `${h.type} hooks are read and not run: they ask a model on every event`;
+    default:
+      return `no handler of type ${h?.type ?? "(none)"}`;
+  }
+}
+
+// Set by the MCP module: calls a tool of a connected server for an mcp_tool
+// hook. The hook file's owner chose the tool: no approval is asked and no
+// other hook runs for the call.
+export const hookMcp: { call?: (server: string, tool: string, input: unknown, ms: number) => Promise<{ text: string; error?: boolean }> } = {};
 type Group = { matcher?: string; hooks: Handler[] };
 
 // `covers`: the files under .keel/ the pin covers besides hooks.json (what its commands run).
@@ -113,7 +147,8 @@ export function coveredFiles(root: string, groups: Partial<Record<HookEvent, Gro
   };
   // Scripts a hook runs from .keel/ or, for hooks brought from Claude Code, from .claude/.
   for (const list of Object.values(groups)) for (const g of list ?? []) for (const h of g.hooks) {
-    for (const m of h.command.matchAll(/(\.keel|\.claude)\/([\w./@+-]+)/g)) {
+    // (A program run without a shell names its script in its arguments.)
+    for (const m of (h.type === "command" ? [h.command, ...(h.args ?? [])].join(" ") : "").matchAll(/(\.keel|\.claude)\/([\w./@+-]+)/g)) {
       const base = join(root, m[1]!);
       const p = resolve(base, m[2]!.replace(/\/+$/, ""));
       if (!contains(base, p) || p === base || p === join(keel, "hooks.json")) continue;
@@ -230,9 +265,9 @@ export function parseHooks(text: string): { groups: Partial<Record<HookEvent, Gr
         try { new RegExp(g.matcher); } catch { problems.push(`${event}: matcher ${g.matcher} is not a regular expression`); continue; }
       }
       const hooks = (Array.isArray(g?.hooks) ? g.hooks : []).filter((h: any) => {
-        if (h?.type === "command" && typeof h.command === "string" && h.command.trim()) return true;
-        problems.push(`${event}: only command hooks run here (${h?.type ?? "no type"})`);
-        return false;
+        const why = handlerProblem(h);
+        if (why) problems.push(`${event}: ${why}`);
+        return !why;
       });
       if (hooks.length) out.push({ matcher: g.matcher, hooks });
     }
@@ -414,7 +449,10 @@ export class Hooks {
     const can = CAN[event];
     const input = JSON.stringify(data);
     const [normal, most] = TIMEOUTS[event] ?? [600, 3600];
-    const outs = await Promise.all(handlers.map((h) => runHook(h, input, s.workspace, Math.min(h.timeout ?? normal, most) * 1000)));
+    const outs = await Promise.all(handlers.map((h) => {
+      const ms = Math.min(h.timeout ?? normal, most) * 1000;
+      return h.type === "http" ? runHttp(h, input, ms) : h.type === "mcp_tool" ? runMcp(h, data, ms) : runHook(h, input, s.workspace, ms);
+    }));
     let stop: string | undefined;
     for (const [i, o] of outs.entries()) {
       const h = handlers[i]!;
@@ -475,10 +513,16 @@ export class Hooks {
   }
 }
 
-async function runHook(h: Handler, input: string, cwd: string, ms: number): Promise<{ code: number | null; stdout: string; stderr: string }> {
+type Out = { code: number | null; stdout: string; stderr: string };
+
+async function runHook(h: Extract<Handler, { type: "command" }>, input: string, cwd: string, ms: number): Promise<Out> {
+  const root = projectRoot(cwd);
+  // With `args` the program runs as given, no shell: each argument is one word, and the project folder's placeholders are filled in.
+  const place = (x: string) => x.replace(/\$\{(?:KEEL|CLAUDE)_PROJECT_DIR\}/g, root);
+  const argv = h.args ? [place(h.command), ...h.args.map(place)] : ["bash", "-c", h.command];
   let p: ReturnType<typeof Bun.spawn>;
   try {
-    p = Bun.spawn(["bash", "-c", h.command], { cwd, stdin: Buffer.from(input), stdout: "pipe", stderr: "pipe", detached: true, env: { ...process.env, KEEL_PROJECT_DIR: projectRoot(cwd), CLAUDE_PROJECT_DIR: projectRoot(cwd) } });
+    p = Bun.spawn(argv, { cwd, stdin: Buffer.from(input), stdout: "pipe", stderr: "pipe", detached: true, env: { ...process.env, KEEL_PROJECT_DIR: root, CLAUDE_PROJECT_DIR: root } });
   } catch (e) {
     return { code: -1, stdout: "", stderr: (e as Error).message };
   }
@@ -488,6 +532,56 @@ async function runHook(h: Handler, input: string, cwd: string, ms: number): Prom
   const [stdout, stderr, code] = await Promise.all([read(p.stdout), read(p.stderr), p.exited]);
   clearTimeout(t);
   return { code: timedOut ? null : code, stdout, stderr };
+}
+
+// The event as the body of a POST. A 2xx answer with no body is a hook with
+// nothing to say; with a JSON object it is the hook's answer, read like a
+// command's stdout. Any other answer, status or failure is a failed hook
+// (text that is not JSON never reaches the model). A header takes the value
+// of an environment variable only when the hook lists it in allowedEnvVars.
+async function runHttp(h: Extract<Handler, { type: "http" }>, input: string, ms: number): Promise<Out> {
+  const allowed = new Set(h.allowedEnvVars ?? []);
+  const fill = (v: string) => v.replace(/\$\{(\w+)\}|\$(\w+)/g, (_m, a, b) => (allowed.has(a ?? b) ? process.env[a ?? b] ?? "" : ""));
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  for (const [k, v] of Object.entries(h.headers ?? {})) headers[k] = fill(v);
+  try {
+    const r = await fetch(h.url, { method: "POST", headers, body: input, signal: AbortSignal.timeout(ms), redirect: "error" });
+    const text = (await r.text()).trim();
+    if (!r.ok) return { code: 1, stdout: "", stderr: `the hook's server answered ${r.status}` };
+    if (!text) return { code: 0, stdout: "", stderr: "" };
+    let j: unknown;
+    try { j = JSON.parse(text); } catch {}
+    return j && typeof j === "object" && !Array.isArray(j) ? { code: 0, stdout: text, stderr: "" } : { code: 1, stdout: "", stderr: "the hook's server answered something that is not a JSON object" };
+  } catch (e) {
+    return { code: (e as Error).name === "TimeoutError" ? null : 1, stdout: "", stderr: (e as Error).message };
+  }
+}
+
+// A value of the hook's `input` with ${path} filled from the event: a
+// placeholder that is the whole value keeps the type it names, one inside a
+// longer text is written into it.
+export function fillInput(v: unknown, data: Record<string, any>): unknown {
+  const at = (path: string) => path.split(".").reduce<any>((o, k) => (o && typeof o === "object" ? o[k] : undefined), data);
+  if (typeof v === "string") {
+    const whole = /^\$\{([\w.]+)\}$/.exec(v);
+    if (whole) return at(whole[1]!) ?? null;
+    return v.replace(/\$\{([\w.]+)\}/g, (_m, p) => { const x = at(p); return x === undefined || x === null ? "" : typeof x === "string" ? x : JSON.stringify(x); });
+  }
+  if (Array.isArray(v)) return v.map((x) => fillInput(x, data));
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fillInput(x, data)]));
+  return v;
+}
+
+// A tool of a connected MCP server: its text is read like a command's stdout,
+// and an error answer, a missing server or a missing tool is a failed hook.
+async function runMcp(h: Extract<Handler, { type: "mcp_tool" }>, data: Record<string, any>, ms: number): Promise<Out> {
+  if (!hookMcp.call) return { code: 1, stdout: "", stderr: "no MCP servers here" };
+  try {
+    const r = await hookMcp.call(h.server, h.tool, fillInput(h.input ?? {}, data), ms);
+    return r.error ? { code: 1, stdout: "", stderr: r.text } : { code: 0, stdout: r.text, stderr: "" };
+  } catch (e) {
+    return { code: (e as Error).name === "TimeoutError" ? null : 1, stdout: "", stderr: (e as Error).message };
+  }
 }
 
 export const hookContext = (event: string, lines: string[]) => `<hook event="${event}">\n${lines.join("\n\n")}\n</hook>`;
