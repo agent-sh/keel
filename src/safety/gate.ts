@@ -15,7 +15,8 @@ import { preAllow } from "./autonomy.ts";
 import { lookRepo, repoContext } from "./repofacts.ts";
 import { confine } from "./sandbox.ts";
 import { detect, placeholdersIn, vault } from "./secrets.ts";
-import { splitCommand } from "./shell.ts";
+import { readOnlyCommand, splitCommand } from "./shell.ts";
+import { report, watch, type Watch } from "./refwatch.ts";
 import { configDir } from "../providers/config.ts";
 import { artifactsDir, contains, realOf } from "../core/paths.ts";
 import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
@@ -432,6 +433,17 @@ export class Gate {
       !(r.cls.kind === "shell" && r.cls.escalate) && this.sandboxed(session, p) && p.sandbox !== "off"
         ? { wrapSpawn: (argv) => confine(argv, p, session.workspace, call.ctx.spillDir), confined: { sandbox: p.sandbox, network: p.network } }
         : undefined;
+    // A confined command in a linked worktree can write the refs it shares
+    // with the other checkouts: they are read now and compared after it
+    // (refsChanged). Not for a command proved to only read, nor for one that
+    // runs on another machine.
+    if (ctx && p.sandbox === "workspace-write" && !session.machine && r.cls.kind === "shell" && !(r.cls.interpreter === undefined && readOnlyCommand(r.cls.command))) {
+      const w = await watch(session.workspace);
+      if (w) {
+        if (this.watches.size >= 256) this.watches.delete(this.watches.keys().next().value!); // calls that never came back
+        this.watches.set(callKey(session.id, call.id), w);
+      }
+    }
     if (!r.authorization) return ctx ? { ctx } : undefined;
     const auth = r.authorization;
     const wrap = ctx?.wrapSpawn ?? call.ctx.wrapSpawn;
@@ -440,6 +452,16 @@ export class Gate {
       ...auth,
       valid: (now, input) => now.ctx.wrapSpawn === wrap && JSON.stringify(now.ctx.confined) === confined && auth.valid(now, input),
     } };
+  }
+
+  // After a call: what a confined command in a linked worktree changed in the
+  // repository outside its own branch, in one sentence, or nothing.
+  private watches = new Map<string, Watch>();
+  async refsChanged(sessionId: string, callId: string): Promise<string | undefined> {
+    const key = callKey(sessionId, callId);
+    const w = this.watches.get(key);
+    this.watches.delete(key);
+    return w && report(w);
   }
 
   // A dispatcher (mcp_call) is judged as the tool it runs: its own read flag,

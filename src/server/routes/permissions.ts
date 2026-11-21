@@ -1,6 +1,8 @@
 // Permission gate routes and its beforeTool hook. app.ts wraps every handler
 // so a throw is captured as an error.
 import { deliver } from "../../automation/core.ts";
+import * as activity from "../../automation/activity.ts";
+import { stopKind } from "../../core/stops.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { Gate, type SandboxProfile } from "../../safety/gate.ts";
 import { asksLess, isMode, MODE_GROUPS, MODES } from "../../safety/policy.ts";
@@ -35,6 +37,17 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
   setGitReach((id) => g.gitReach(id));
   registerHooks({
     beforeTool: (s, call) => g.beforeTool(s, call),
+    // What a confined command in a linked worktree changed outside its own
+    // branch is said in its result and in the session's activity.
+    afterTool: async (s, call, result) => {
+      const note = await g.refsChanged(s.id, call.id);
+      if (!note) return;
+      activity.record("approval", "sandbox", s.id, note, { call_id: call.id });
+      const text = `[sandbox] ${note} If this command did that and it was not asked for, put it back and say so.`;
+      // (A result that says the turn was stopped under the call is read by its exact words.)
+      if (typeof result.content !== "string") result.content = [...result.content, { type: "text", text }];
+      else if (!stopKind(result.content)) result.content = result.content ? `${result.content}\n\n${text}` : text;
+    },
     callOutcome: (sid, callId) => g.callOutcome(sid, callId),
     awaitsOwner: (sid, callId) => g.awaitsOwner(sid, callId),
     turnParking: (sid) => g.park(sid),

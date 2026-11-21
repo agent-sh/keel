@@ -190,6 +190,50 @@ sandboxing separately from approvals and can review eligible approvals
 automatically. [OpenCode](https://opencode.ai/docs/permissions/) uses
 `allow`, `ask` and `deny` rules scoped by action and resource.
 
+## The command sandbox
+
+With a session's sandbox on (workspace-write), a command runs in
+[bubblewrap](https://github.com/containers/bubblewrap): the whole machine is
+read-only to it except the session's folder, the temporary folder and the
+session's own scratch, and the network is off unless the session turns it on.
+
+A session can commit. That needs git's own files to be writable, so the
+profile opens them and keeps read-only what git would run outside the sandbox
+later, for this checkout or another:
+
+- The hooks, `config` and every `config.worktree` of the repository, of its
+  submodules and of its linked worktrees. A hooks folder or a
+  `config.worktree` that is missing is made empty first, so there is always
+  something to keep read-only.
+- A session in a linked worktree gets the repository's common git directory
+  and its own directory in it. The other worktrees' directories, the main
+  checkout's `HEAD` and index, and the submodules stay read-only.
+- A session in the main checkout keeps its `.git` writable. The directories
+  of linked worktrees checked out outside its folder are read-only.
+- The folders that hold those files cannot be renamed away or replaced.
+
+What the sandbox does not stop, because git writes lock files next to what
+it changes and a bind covers a path, not one ref:
+
+- A session in a linked worktree can write every ref of the repository: move
+  or delete a branch another checkout has out, a tag, a stash. After each
+  such command Keel compares the refs with what they were and says what
+  changed outside the session's own branch, in the command's result and in
+  the session's activity. It names what changed while the command ran, not
+  who changed it: with several sessions in one repository, another session's
+  work can show up there.
+- It can also create files at the top of the common git directory, where the
+  main checkout keeps the state of a merge or a rebase it is in the middle
+  of. A new entry there is named the same way. Do not continue a rebase or a
+  merge in the main checkout that you did not start.
+- `git gc` in a worktree session cannot expire the other worktrees' reflogs.
+  It says so, repacks, and exits 0.
+- A repository the session creates inside its folder is its own, hooks and
+  config included. So is a folder whose `.git` is a symbolic link: nothing
+  pins a link, so such a folder gets no git protection and no git access.
+- A command that was moved to the background is compared when the call
+  returns, not when the command ends.
+
 ## Keel's own git
 
 Keel runs git by itself in a session's folder: for the file picker, the

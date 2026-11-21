@@ -111,4 +111,31 @@ test("a sandboxed session commits in its worktree", async ({ page, request }) =>
   const report = async () => JSON.stringify((await (await request.get(`/api/sessions/${parent.id}`)).json()).events.filter((e: any) => e.kind === "user"));
   await expect.poll(report, { timeout: 30_000 }).toContain("1 commit over main");
   await shoot(page, "sandbox-04-agent-commit");
+
+  // The limit of the profile, said when it is used: every ref of the shared
+  // repository is writable (a commit needs lock files next to them), so a
+  // confined command can move a branch another checkout has out or delete
+  // one. The result of such a command says what changed, and so does the
+  // session's activity. A command that only commits says nothing.
+  git(repo, "branch", "gone");
+  const results = async () => ((await (await request.get(`/api/sessions/${id}`)).json()).events as any[]).filter((e) => e.kind === "tool_result").map((e) => String(e.data.results[0].content));
+  const run = async (cmd: string, n: number) => {
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: cmd } }])}` } });
+    await expect.poll(async () => (await results()).length, { timeout: 60_000 }).toBe(n);
+    return (await results()).at(-1)!;
+  };
+  const quiet = await run("echo more >> NOTES.md && git -c user.name=k -c user.email=k@k commit -qam more && echo again", 2);
+  expect(quiet).toContain("again");
+  expect(quiet).not.toContain("[sandbox]");
+  const before = git(repo, "rev-parse", "--short=7", "main");
+  const loud = await run("git update-ref refs/heads/main HEAD && git update-ref -d refs/heads/gone && echo moved", 3);
+  const said = `While this command ran, what this worktree shares with the repository's other checkouts changed: moved branch main (${before} to ${git(repo, "rev-parse", "--short=7", "main")}); deleted branch gone.`;
+  expect(loud).toContain(`[sandbox] ${said}`);
+  const rows = ((await (await request.get(`/api/activity?session_id=${id}`)).json()).items as any[]).filter((a) => a.sub === "sandbox").map((a) => a.text);
+  expect(rows).toEqual([said]);
+  await page.goto(`/s/${id}`);
+  const last = page.getByTestId("tool-call").last();
+  await last.click();
+  await expect(last).toContainText("moved branch main");
+  await shoot(page, "sandbox-05-refs-changed");
 });
