@@ -126,26 +126,36 @@ failure, its class and its first lines, with numbers, ids and paths folded) and
 sends what the session has not seen yet as one harness input, built from the
 table with no model call. Ten agents that failed on the same provider error
 arrive as one entry with the error once and each agent's id, not as ten
-reports. An agent that failed and wrote something of its own still reports
-normally.
+reports. Folding can merge failures that differ only in a number or a path, so
+an entry shows the first one.
 
-- An agent's failure that stands in for its report starts a turn, as the
-  report would have. Everything else goes with the session's next input and
-  never starts a turn: a tool failure an agent repeated three times or more,
-  and a turn of the session itself that ended on an error.
+- An agent that failed and wrote nothing of its own is told in the notice
+  instead of in a report. That starts a turn, as the report would have. An
+  agent that wrote something, left work in its worktree, or failed after its
+  cause already named twenty agents still waiting to be told, reports normally.
+- Everything else never starts a turn. It goes with the next input the harness
+  delivers to the session (a report, a wake, a loop run), never with a message
+  the owner types: a tool failure that one agent repeated three times or more
+  since it was last told, and a turn of the session itself that ended on an
+  error (dropped once a later turn gets through).
 - A cause appears once per notice. If it happens again later, the next notice
   says how many more and the total.
+- A session whose queue is held after the owner's Stop is not started by a
+  notice. The notice goes after the owner's next turn.
 - What is owed is in the table, so a notice owed when the daemon stops is sent
   once after it starts.
 - Text is redacted like everything stored, an entry holds at most three lines
-  and twenty ids, and a notice at most eight causes.
-- A session's own tool failures are counted but not sent back: it has their
-  results. Failed model requests (retried ones too) and timed out waits are
-  counted too.
+  and twenty ids, and a notice at most eight causes; more causes go with the
+  next notice.
+- Counted but never sent: the session's own tool failures (it has their
+  results), the failures of a reviewer or verifier agent (their results never
+  enter the conversation), failed model requests (retried ones too) and timed
+  out waits.
 
-The same rows are read at `GET /api/errors?session=<id>` (`failures`), with the
-Errors rows that last happened in that session or its agents. For an agent's
-session it returns the rows of its parent that name it.
+The same rows are read at `GET /api/errors?session=<id>` (`failures`, the
+newest 200 causes), with the Errors rows that last happened in that session or
+its agents. For an agent's session it returns the rows of its parent that name
+it.
 
 ## Phone
 

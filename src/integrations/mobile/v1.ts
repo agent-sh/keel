@@ -83,11 +83,23 @@ const NORMAL_STOP = new Set(["end_turn", "tool_use", "stop_sequence", undefined,
 // Input the harness put in a conversation: whose it is and a label for it.
 type Origin = { origin: string; label: string; text: string; meta?: Record<string, unknown> };
 const unesc = (t: string) => t.replace(/&lt;/g, "<");
+// The failure notice an input carries (src/automation/failures.ts), alone or
+// with a report or a wake: `section` is its entries and the lines after them,
+// out of their frame; `rest` is the input without it. Only where the input's
+// meta says it holds one (a report may quote the tag).
+function failuresIn(text: string, d: any): { section: string; rest: string } {
+  const has = d.kind === "failures" || ((d.parts ?? []) as any[]).some((p) => p?.kind === "failures");
+  const m = has ? text.match(/\[harness\] Failures in this session's work[^\n]*\n<failures>\n([\s\S]*?)\n<\/failures>((?:\n(?!\n)[^\n]*)*)/) : null;
+  if (!m) return { section: "", rest: text };
+  return { section: `**Failures, grouped by cause**\n\n${unesc(m[1]!)}${m[2]}`, rest: text.replace(m[0], "").trim() };
+}
+const joined = (...parts: string[]) => parts.filter(Boolean).join("\n\n");
 function wakeOf(text: string, d: any): Origin {
   const ws = [...text.matchAll(/<wait_fired id="[^"]*" kind="([^"]*)" outcome="([^"]*)">\n?([\s\S]*?)\n?<\/wait_fired>|<monitor_event id="[^"]*" batch="(\d+)"[^>]*>\n?([\s\S]*?)<\/monitor_event>/g)];
   const label = ws.map((m) => (m[4] ? `monitor event ${m[4]}` : m[2] === "fired" ? `${m[1]} fired` : m[2] === "timeout" ? `${m[1]} timed out` : `${m[1]} ${m[2]}`)).join(", ");
   const body = ws.map((m) => unesc((m[4] ? m[5] : m[3]) ?? "").trimEnd()).join("\n\n");
-  return { origin: "wait", label: `Woken: ${label || "a wait ended"}`, text: body || text, meta: { wait_id: d.wait_id ?? null } };
+  const f = failuresIn(text, d);
+  return { origin: "wait", label: `Woken: ${label || "a wait ended"}`, text: joined(body || f.rest, f.section), meta: { wait_id: d.wait_id ?? null } };
 }
 function originOf(e: StoredEvent, titleOf: (sid: string) => string | undefined, parentOf: (sid: string) => string | null): Origin | null {
   const d = e.data ?? {};
@@ -98,13 +110,13 @@ function originOf(e: StoredEvent, titleOf: (sid: string) => string | undefined, 
       const reps = [...text.matchAll(/<subagent_result agent_id="([^"]*)" title="([^"]*)" status="([^"]*)">\n?([\s\S]*?)\n?<\/subagent_result>/g)];
       if (reps.length) {
         const body = reps.map((m) => `**Report from ${unesc(m[2]!)}** (${m[3]})\n\n${unesc(m[4]!)}`).join("\n\n");
-        return { origin: "subagent", label: "", text: body, meta: { agent_id: d.agent_id ?? reps[0]![1], agent_ids: reps.map((m) => m[1]) } };
+        return { origin: "subagent", label: "", text: joined(body, failuresIn(text, d).section), meta: { agent_id: d.agent_id ?? reps[0]![1], agent_ids: reps.map((m) => m[1]) } };
       }
       if (d.kind === "subagent") return { origin: "subagent", label: "Agent report", text, meta: { agent_id: d.agent_id ?? null } };
       return wakeOf(text, d);
     }
     case "wait": return wakeOf(text, d);
-    case "failures": return { origin: "harness", label: "", text: text.replace(/^\[harness\]\s*/, "") };
+    case "failures": return { origin: "harness", label: "", text: failuresIn(text, d).section || text.replace(/^\[harness\]\s*/, "") };
     case "loop": return { origin: "loop", label: `Loop run${d.loop_name ? `: ${d.loop_name}` : ""}`, text, meta: { loop_id: d.loop_id ?? null } };
     case "goal": return { origin: "goal", label: d.goal === "start" ? "Goal set" : d.goal === "resume" ? "Goal resumed" : "Goal not met yet: next turn", text: text.replace(/^\[harness\]\s*/, "") };
     case "task": {

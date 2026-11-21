@@ -37,7 +37,9 @@ under `~/.cache/keel-work/bun/research/`.
   (`src/automation/failures.ts`, the grouping in `failure-groups.ts`) and go to
   its model as one harness input, each cause once with a count. An agent that
   failed with no words of its own is told there instead of in a report of its
-  own. The same rows are read at `GET /api/errors?session=<id>`.
+  own. Only what a notice can name is owed; a notice never starts a session
+  held after the owner's Stop. The same rows are read at
+  `GET /api/errors?session=<id>`.
 - Every feature is researched first: how Claude Code, Codex, OpenCode and the
   other leading harnesses do it today, from current primary sources.
 - Tests: no over-testing. One Playwright e2e per feature in `test/e2e/`, driving

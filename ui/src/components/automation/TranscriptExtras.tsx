@@ -175,7 +175,12 @@ export function InputNotice({ e }: { e: StoredEvent }) {
   const failCard = fails && (
     <Shell icon={AlertTriangle} tone="danger" label="Failures, grouped by cause" sub={fails.sub} testid="failure-notice" defaultOpen>
       <div className="mx-3 mb-3 flex max-h-80 flex-col gap-2 overflow-auto rounded-lg bg-code p-2.5 font-mono text-caption text-muted">
-        <pre className="whitespace-pre-wrap" data-testid="failure-entries">{fails.body}</pre>
+        {/* An entry's first line hangs; the lines of its first failure sit under it, and stay there when they wrap. */}
+        <div data-testid="failure-entries">
+          {fails.body.split("\n").map((line, i) => (
+            <div key={i} className={cn("whitespace-pre-wrap break-words", line.startsWith("- ") ? "pl-4 -indent-4 text-fg" : "pl-8 text-muted", i > 0 && line.startsWith("- ") && "mt-1.5")}>{line.trimStart()}</div>
+          ))}
+        </div>
         {fails.after && <p className="whitespace-pre-wrap font-sans text-faint">{fails.after}</p>}
       </div>
     </Shell>

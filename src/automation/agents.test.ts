@@ -40,6 +40,7 @@ const sends: { id: string; text: string }[] = [];
 const interrupted: { id: string; by?: string }[] = [];
 const engine = {
   isRunning: (id: string) => busy.has(id),
+  isHeld: () => false,
   send: (id: string, text: string, o: any) => (sends.push({ id, text }), { event: store.append(id, "user", { text, ...o?.meta }) }),
   interrupt: async (id: string, by?: string) => { interrupted.push({ id, by }); busy.delete(id); agents.onTurnEnd(id, "interrupted"); },
   lineage: (id: string) => lineage(store.events(id), store.session(id)?.head ?? null),

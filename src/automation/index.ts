@@ -99,6 +99,8 @@ function init(deps: Deps) {
       afterTurn(s.id, () => {
         const loopRun = loops.runOpenIn(s.id);
         failures.onTurnEnd(s.id, reason);
+        // A notice held back while the owner had stopped the session goes after the owner's next turn.
+        failures.wake(s.id);
         loops.onTurnEnd(s.id, reason);
         agents.onTurnEnd(s.id, reason);
         // A session whose agents still work has not finished: its alert waits

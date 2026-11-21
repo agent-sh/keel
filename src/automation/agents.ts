@@ -162,7 +162,8 @@ const defOf = (id: string): AgentDef | undefined => {
   return r?.def ? JSON.parse(r.def) : undefined;
 };
 
-function update(id: string, patch: Partial<Omit<AgentRecord, "id">>) {
+// `quiet`: the caller tells the change itself, once what it wrote with it is committed.
+function update(id: string, patch: Partial<Omit<AgentRecord, "id">>, quiet = false) {
   const sets: string[] = [];
   const vals: any[] = [];
   for (const [k, v] of Object.entries(patch)) {
@@ -173,7 +174,7 @@ function update(id: string, patch: Partial<Omit<AgentRecord, "id">>) {
   if (sets.length) D().store.db.query(`UPDATE agents SET ${sets.join(", ")} WHERE id = ?`).run(...vals, id);
   const rec = get(id);
   if (rec && patch.status && isEnded(rec)) wakeSlots(rec.parent_id);
-  if (rec) emit("agent", rec);
+  if (rec && !quiet) emit("agent", rec);
   return rec;
 }
 
@@ -860,10 +861,16 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   // A blocking agent's result is held by the call that started it: while that
   // call waits, and after a stop of the parent's turn cut it (cutCalls).
   const blocked = silent || (!a.background && (waitersOn(a.id) > 0 || cutCalls.has(a.id)));
-  // Told in the failure notice with the others of its cause: no report of its own is owed.
-  const grouped = !!cause && !blocked;
-  const rec = update(a.id, { status, ended: Date.now(), result, handback: !blocked && !grouped, stopped_by: how.stopped_by ?? undefined, end_reason: how.end_reason })!;
-  if (status === "failed") failures.agentFailed(rec, cls, cause || got.error || how.note || result, grouped);
+  // Told in the failure notice with the others of its cause, it owes no report
+  // of its own. Giving up the report and writing the failure are one write: a
+  // stop between them cannot lose both, and a failure that could not be
+  // written, or that its cause can no longer name, leaves the report owed.
+  let grouped = false;
+  const rec = D().store.db.transaction(() => {
+    if (status === "failed") grouped = failures.agentFailed(a, cls, cause || got.error || how.note || result, !!cause && !blocked);
+    return update(a.id, { status, ended: Date.now(), result, handback: !blocked && !grouped, stopped_by: how.stopped_by ?? undefined, end_reason: how.end_reason }, true)!;
+  })();
+  emit("agent", rec);
   const said = status === "completed" ? "reported" : status === "stopped" && how.stopped_by ? `stopped: ${STOP_TEXT[how.stopped_by]}` : status === "incomplete" ? `did not finish: ${END_TEXT[how.end_reason] ?? how.end_reason}` : status;
   activity.record("agent", status, a.parent_id, `Agent "${a.title}" ${said}`, { agent_id: a.id, child_session: a.session_id, stopped_by: how.stopped_by });
   wake(a.id);

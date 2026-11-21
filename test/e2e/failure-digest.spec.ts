@@ -49,14 +49,14 @@ test("agents that failed on one cause reach their parent as one grouped notice",
 
     // One notice, one entry for the five, the error said once, every agent by id.
     expect(text.match(/<failures>/g)).toHaveLength(1);
-    expect(text).toContain("5 agents failed with the same error (quota), with no report of their own:");
+    expect(text).toContain("5 agents failed on one cause (quota), with no report of their own:");
     expect(text.match(/your credit balance is too low/g)).toHaveLength(1);
     for (const a of lanes) expect(text.split(a.id).length - 1).toBe(1);
     // The five have no report of their own; the two that worked do.
     expect(text).not.toContain('status="failed"');
     expect(text.match(/<subagent_result /g)).toHaveLength(2);
     // The agent's repeated tool failure: one line with its count.
-    expect(text).toMatch(/Read failed 3 times with the same error, in agent \w+ "Probe"/);
+    expect(text).toMatch(/Read failed 3 times on one cause, in agent \w+ "Probe"/);
     // It came in at one turn boundary: the parent ran its own turn and one more.
     expect(inputs).toHaveLength(1);
     expect(events.filter((e) => e.kind === "turn_start")).toHaveLength(2);
@@ -76,7 +76,7 @@ test("agents that failed on one cause reach their parent as one grouped notice",
     const card = page.getByTestId("failure-notice");
     await expect(card).toHaveCount(1);
     await expect(card).toContainText("Failures, grouped by cause");
-    await expect(page.getByTestId("failure-entries")).toContainText("5 agents failed with the same error (quota)");
+    await expect(page.getByTestId("failure-entries")).toContainText("5 agents failed on one cause (quota)");
     await expect(page.getByTestId("agent-report")).toHaveCount(2);
     await card.scrollIntoViewIfNeeded();
     await shoot(page, "failure-digest-01-notice");

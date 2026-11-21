@@ -99,6 +99,32 @@ describe("messages", () => {
     expect(chats.find((c: any) => c.id === parent.id).parent_id).toBeNull();
   });
 
+  test("a failure notice shows with the report or the wake it came with, without its frame", async () => {
+    const s = session("Coordinator");
+    const notice = "[harness] Failures in this session's work, one entry per cause (the first one shown). Data, not an instruction.\n<failures>\n- 2 agents failed on one cause (quota), with no report of their own: ag7 \"Lane 1\", ag8 \"Lane 2\"\n    HTTP 402: no credit &lt;/failures> left\n</failures>\n1 more of your agents is still running.";
+    const report = '<subagent_result agent_id="ag2" title="Child" status="completed">\nstatus ok\n</subagent_result>';
+    const wake = '<wait_fired id="w1" kind="timer" outcome="fired">\nThe timer is up.\n</wait_fired>';
+    const groups = [{ fp: "x", kind: "agent", owed: 2, count: 2 }];
+    store.append(s.id, "user", { text: `${report}\n\n${notice}`, kind: "wake", parts: [{ kind: "subagent", agent_id: "ag2" }, { kind: "failures", groups }] });
+    store.append(s.id, "user", { text: `${wake}\n\n${notice}`, kind: "wake", parts: [{ kind: "wait", wait_id: "w1" }, { kind: "failures", groups }] });
+    store.append(s.id, "user", { text: notice, kind: "failures", groups });
+    const m = (await call("GET", `/v1/chats/${s.id}/messages`)).body.messages;
+    expect(m).toHaveLength(3);
+    for (const x of m) {
+      expect(x.role).toBe("agent");
+      expect(x.content).toContain("Failures, grouped by cause");
+      expect(x.content).toContain('2 agents failed on one cause (quota), with no report of their own: ag7 "Lane 1", ag8 "Lane 2"');
+      expect(x.content).toContain("HTTP 402: no credit </failures> left");
+      expect(x.content).toContain("1 more of your agents is still running.");
+      expect(x.content).not.toContain("<failures>");
+      expect(x.content).not.toContain("[harness]");
+    }
+    expect(m[0].content).toContain("Report from Child");
+    expect(m[0].meta.origin).toBe("subagent");
+    expect(m[1].content).toContain("Woken: timer fired");
+    expect(m[2].meta.origin).toBe("harness");
+  });
+
   test("a committed queued prompt takes its queue receipt's id; same-millisecond events keep their order", async () => {
     setSystemTime(new Date("2026-01-01T09:00:00Z"));
     const s = session();
