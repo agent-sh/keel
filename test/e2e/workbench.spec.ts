@@ -453,7 +453,7 @@ test.describe("at a phone's width", () => {
       await expect(drawer.locator(`[data-testid="session-row"][data-session="${s.id}"]`)).toBeFocused();
       await page.keyboard.press("Enter");
       await expect(drawer).not.toBeInViewport();
-      expect(await page.evaluate(() => document.activeElement?.closest("[data-station]")?.getAttribute("data-station"))).toBe(s.id);
+      await expect.poll(() => page.evaluate(() => document.activeElement?.closest("[data-station]")?.getAttribute("data-station"))).toBe(s.id);
     } finally {
       await request.delete(`/api/sessions/${s.id}`);
     }

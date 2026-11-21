@@ -131,7 +131,9 @@ export function App() {
       // the session's pane (not into its message box: no keyboard pops up).
       if (Date.now() - picked > 1000) return;
       requestAnimationFrame(() => {
-        if (document.activeElement && document.activeElement !== document.body) return;
+        // Still on the row inside the closed drawer, or on nothing: anything else took the keys by itself.
+        const at = document.activeElement;
+        if (at && at !== document.body && !el.contains(at)) return;
         const pane = document.querySelector<HTMLElement>(".k-station[data-helm]");
         if (!pane) return;
         pane.tabIndex = -1;
