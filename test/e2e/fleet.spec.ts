@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { peerProblem } from "./peer.ts";
-import { createHash } from "node:crypto";
-import { createServer } from "node:http";
+import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -301,5 +301,106 @@ test("fleet machines: an edited daemon port is checked like a new one", async ({
     await request.patch(`/api/fleet/machines/${linked}`, { data: { daemon_port: null } });
     await request.delete(`/api/fleet/machines/${scratch}`);
     stub.close();
+  }
+});
+
+// A stand-in for another machine's daemon that the spec can take offline and
+// bring back: it pairs, proves its answers, says it is idle and holds a relay
+// stream with no sessions. Nothing runs there.
+function standInDaemon(name: string) {
+  const daemon_id = randomUUID(), key = randomUUID();
+  let server: Server | undefined, port = 0;
+  const open = () => new Promise<void>((resolve, reject) => {
+    server = createServer((req, res) => {
+      req.resume();
+      res.setHeader("content-type", "application/json");
+      const path = (req.url ?? "").split("?")[0];
+      if (path === "/api/fleet/pair") return res.end(JSON.stringify({ daemon_id, key }));
+      res.setHeader("x-keel-proof", createHmac("sha256", key).update(`${req.headers["x-keel-nonce"]}|${daemon_id}`).digest("hex"));
+      if (path === "/api/fleet/identity") return res.end(JSON.stringify({ daemon_id, server_name: name, version: "stand-in" }));
+      if (path === "/api/fleet/facts") return res.end(JSON.stringify({ hostname: name, os: "linux", arch: "x64", cpus: 8, load1: 0, mem_total_mb: 16000, tools: [], sandbox: false, keel_version: "stand-in" }));
+      if (path === "/api/fleet/stream") {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(`data: ${JSON.stringify({ t: "snapshot", sessions: [] })}\n\n`);
+        const ping = setInterval(() => res.write(": ping\n\n"), 5000);
+        return void res.on("close", () => clearInterval(ping));
+      }
+      res.writeHead(404).end("{}");
+    });
+    server.once("error", reject).listen(port, "127.0.0.1", () => { port = (server!.address() as AddressInfo).port; resolve(); });
+  });
+  const close = () => new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
+  return { open, close, url: () => `http://127.0.0.1:${port}` };
+}
+
+// The start box with a machine picked that stops answering before the send:
+// nothing is sent and no session starts on this machine in its place. The
+// blocked state names the machine and the draft stays, through asking again
+// and through choosing this machine instead.
+test("fleet start: a picked machine that went offline never becomes a local start", async ({ page, request }) => {
+  const model = ((await (await request.get("/api/models")).json()).models as { provider: string; context: number; id: string; name: string }[])
+    .filter((m) => m.provider === "scripted").sort((a, b) => b.context - a.context)[0];
+  test.skip(!model, "the daemon runs without the scripted provider");
+  const box = standInDaemon("stand-in");
+  await box.open();
+  const name = `Stand-in ${Date.now().toString(36)}`;
+  const machine = (await (await request.post("/api/fleet/machines", { data: { name, daemon_url: box.url(), workspace_root: "/srv/stand-in" } })).json()).id as string;
+  const state = async () => (await (await request.get(`/api/fleet/machines/${machine}`)).json()).state;
+  const sessions = async () => ((await (await request.get("/api/sessions")).json()).sessions as { id: string }[]).map((s) => s.id).sort();
+  const before = await sessions();
+  const draft = "Count the files in this folder.";
+  try {
+    await expect.poll(state).toBe("ready");
+    await page.goto("/");
+    await page.getByTestId("model-picker").click();
+    await page.getByPlaceholder("Search models").fill(model!.name);
+    await page.getByRole("option").first().click();
+    await page.getByTestId("machine-picker").click();
+    await page.locator(`[data-testid="machine-option"][data-machine="${machine}"]`).click();
+    await expect(page.getByTestId("machine-picker")).toContainText(name);
+    await page.getByTestId("composer").fill(draft);
+
+    // It stops answering, then the owner sends.
+    await box.close();
+    await expect.poll(state, { timeout: 30_000 }).toBe("offline");
+    // The page has heard it: the picker lists the machine as offline.
+    await page.getByTestId("machine-picker").click();
+    await expect(page.locator(`[data-testid="machine-option"][data-machine="${machine}"]`)).toContainText("offline");
+    await page.keyboard.press("Escape");
+    await page.getByTestId("composer").press("Enter");
+    await page.waitForTimeout(1000);
+    expect(await sessions(), "a session started although the picked machine is offline").toEqual(before);
+    await page.getByTestId("composer").press("Enter");
+    await expect(page.getByTestId("composer-notice")).toContainText(`Not sent: ${name} is offline.`);
+    await expect(page.getByTestId("machine-blocked")).toContainText(`${name} is offline`);
+    await expect(page.getByTestId("machine-blocked")).toContainText("nothing starts on this machine instead");
+    await expect(page.getByTestId("machine-picker")).toContainText(name);
+    await expect(page.getByTestId("composer")).toHaveValue(draft);
+    await expect(page.getByTestId("workspace-picker")).toHaveCount(0); // no folder of this machine is offered for it
+    await shoot(page, "fleet-07-pick-offline");
+
+    // It answers again: asking clears the block, the pick and the draft are as they were.
+    await box.open();
+    await page.getByTestId("machine-retry").click();
+    await expect(page.getByTestId("machine-blocked")).toHaveCount(0, { timeout: 30_000 });
+    await expect(page.getByTestId("machine-picker")).toContainText(name);
+    await expect(page.getByTestId("composer")).toHaveValue(draft);
+
+    // Offline again, and the owner chooses this machine: only then a session starts here.
+    await box.close();
+    await expect(page.getByTestId("machine-blocked")).toBeVisible({ timeout: 30_000 });
+    await page.getByTestId("machine-start-here").click();
+    await expect(page.getByTestId("machine-blocked")).toHaveCount(0);
+    await expect(page.getByTestId("machine-picker")).not.toContainText(name);
+    await expect(page.getByTestId("composer")).toHaveValue(draft);
+    await page.getByTestId("composer").press("Enter");
+    await expect(page).toHaveURL(/\/s\//);
+    const made = (await sessions()).filter((id) => !before.includes(id));
+    expect(made).toHaveLength(1);
+    expect((await (await request.get(`/api/sessions/${made[0]}`)).json()).session.machine ?? null).toBeNull();
+  } finally {
+    for (const id of (await sessions()).filter((id) => !before.includes(id))) await request.delete(`/api/sessions/${id}`);
+    await request.delete(`/api/fleet/machines/${machine}`);
+    await box.close().catch(() => {});
   }
 });

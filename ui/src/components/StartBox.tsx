@@ -11,7 +11,7 @@ import { Kbd } from "./Kbd.tsx";
 import { SidebarButton } from "./SessionHeader.tsx";
 import { WorkspacePicker } from "./WorkspacePicker.tsx";
 import { ProjectPicker, startProject } from "./ProjectPicker.tsx";
-import { MachinePicker, RemoteFolderPicker, useNewMachine } from "./Fleet.tsx";
+import { MachineBlocked, MachinePicker, RemoteFolderPicker, useNewMachine } from "./Fleet.tsx";
 import { fleet, useFleet } from "../lib/fleet.ts";
 import { createInWorktree, isGitFolder, useStartInWorktree } from "../lib/worktree.ts";
 
@@ -35,7 +35,7 @@ export function StartBox() {
     lastDefault.current = defaultModel;
   }, [defaultModel]);
   const inWorktree = useStartInWorktree();
-  const machine = useNewMachine();
+  const { id: machine, blocked } = useNewMachine();
   // An ssh machine's folder, kept per machine (its granted directory until one is picked).
   const sshMachine = useFleet((s) => s.machines.find((m) => m.id === machine && m.transport === "ssh"));
   const [remoteDir, setRemoteDir] = useState("");
@@ -80,6 +80,7 @@ export function StartBox() {
               <span className="truncate text-faint">· {place.reason}</span>
             </p>
           )}
+          {blocked && <MachineBlocked blocked={blocked} />}
           {noModels && <SetupProviders />}
           <div data-testid="new-composer">
             <Composer
@@ -87,6 +88,7 @@ export function StartBox() {
               onModel={(id) => setUI({ newModel: id })}
               workspace={workspace}
               autoFocus
+              hold={blocked ? `Not sent: ${blocked.name} ${blocked.why}.` : undefined}
               onSend={async (t, images) => {
                 const s = machine
                   ? await fleet.createOn(machine, t, model || undefined, images, autoThere ? undefined : workspace || undefined, machine === "auto" ? place?.machine_id : undefined, sshMachine ? remoteDir || undefined : undefined)

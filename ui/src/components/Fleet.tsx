@@ -1,7 +1,7 @@
 // Small fleet pieces used across the workbench: the machine a session's tools
 // run on (header chip, tool row badge), and the machine a new session starts on.
 import { Popover } from "@base-ui/react/popover";
-import { ArrowRight, Check, ChevronDown, ChevronLeft, Cpu, Folder, FolderGit2, History, Server, Wand2 } from "lucide-react";
+import { ArrowRight, Check, ChevronDown, ChevronLeft, CloudOff, Cpu, Folder, FolderGit2, History, RefreshCw, Server, Wand2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { splitId } from "../lib/fleet-ids.ts";
@@ -159,8 +159,12 @@ export function MachinePicker() {
   const rules = useFleet((s) => s.rules);
   const [open, setOpen] = useState(false);
   const usable = machines.filter((m) => m.source !== "local" && m.enabled && m.workspace_root);
-  if (!usable.length && !rules.length) return null;
-  const cur = chosen === "auto" && rules.length ? { id: "auto", name: "Auto", workspace_root: "placement rules" } : usable.find((m) => m.id === chosen);
+  // The pick stays shown when it cannot be used now (offline, removed): it is still where a send would go.
+  const pick = useNewMachine();
+  if (!usable.length && !rules.length && !pick.blocked) return null;
+  const cur = chosen === "auto" && rules.length ? { id: "auto", name: "Auto", workspace_root: "placement rules" }
+    : pick.blocked ? { id: pick.id, name: pick.blocked.machine ? pick.blocked.name : "Removed machine", workspace_root: pick.blocked.machine ? pick.blocked.why.replace(/^(is|has) /, "") : "not in the fleet" }
+    : usable.find((m) => m.id === chosen);
   const local = machines.find((m) => m.source === "local");
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
@@ -168,9 +172,9 @@ export function MachinePicker() {
         data-testid="machine-picker"
         className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-raised px-2.5 text-ui text-muted shadow-1 hover:text-fg data-popup-open:text-fg"
       >
-        {cur ? <Server className="size-3.5 text-accent" /> : <Cpu className="size-3.5 text-accent" />}
+        {pick.blocked ? <CloudOff className="size-3.5 text-brass" /> : cur ? <Server className="size-3.5 text-accent" /> : <Cpu className="size-3.5 text-accent" />}
         <span className="font-medium text-fg">{cur?.name ?? local?.name ?? "This machine"}</span>
-        {cur && <span className="hidden truncate font-mono text-micro text-faint sm:inline">{cur.workspace_root}</span>}
+        {cur && <span className={cn("hidden truncate font-mono text-micro sm:inline", pick.blocked ? "text-brass" : "text-faint")}>{cur.workspace_root}</span>}
         <ChevronDown className="size-3.5 opacity-60" />
       </Popover.Trigger>
       <Popover.Portal>
@@ -206,13 +210,54 @@ export function MachinePicker() {
   );
 }
 
-// The machine chosen for a new session, when it can still be used.
-export function useNewMachine(): string {
+// The machine picked for a new session ("" is this one), and why it cannot
+// take one now. A pick that cannot be used stays the pick: the start box says
+// so and sends nothing, and never starts the session on this machine instead.
+export type NewMachine = { id: string; blocked?: { machine?: string; name: string; why: string } };
+export function useNewMachine(): NewMachine {
   const machines = useFleet((s) => s.machines);
   const chosen = useFleet((s) => s.newMachine);
   const rules = useFleet((s) => s.rules.length);
-  if (chosen === "auto") return rules ? "auto" : "";
-  return machines.some((m) => m.id === chosen && m.workspace_root && m.state !== "offline") ? chosen : "";
+  if (!chosen) return { id: "" };
+  if (chosen === "auto") return { id: rules ? "auto" : "" };
+  const m = machines.find((x) => x.id === chosen);
+  // Before the first listing nothing is known about it: the daemon answers for the pick.
+  if (!m) return machines.length ? { id: chosen, blocked: { name: "The machine you picked", why: "is no longer in the fleet" } } : { id: chosen };
+  if (!m.workspace_root) return { id: chosen, blocked: { machine: m.id, name: m.name, why: "has no granted directory" } };
+  if (m.state === "offline") return { id: chosen, blocked: { machine: m.id, name: m.name, why: "is offline" } };
+  return { id: chosen };
+}
+
+// The blocked pick, said under the pickers: which machine, that nothing is
+// sent, and the two ways on (ask it again, or start on this machine).
+export function MachineBlocked({ blocked }: { blocked: NonNullable<NewMachine["blocked"]> }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const retry = async () => {
+    setBusy(true);
+    setErr("");
+    try { await fleet.check(blocked.machine!); } catch (e) { setErr(failed(e, { at: "MachineBlocked" })); } finally { setBusy(false); }
+  };
+  const button = "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-caption font-medium disabled:opacity-50";
+  return (
+    <div role="status" data-testid="machine-blocked" data-machine={blocked.machine} className="mb-2.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-brass/40 bg-brass-soft/50 py-2 pl-3 pr-2 text-caption">
+      <CloudOff className="size-4 shrink-0 text-brass" />
+      <span className="min-w-0 flex-1 basis-64 leading-snug text-muted">
+        <span className="font-medium text-fg">{blocked.name}</span> {blocked.why}. Nothing is sent, and nothing starts on this machine instead: your message stays here.
+        {err && <span className="block text-danger">{err}</span>}
+      </span>
+      <span className="flex shrink-0 gap-1">
+        {blocked.machine && (
+          <button type="button" data-testid="machine-retry" disabled={busy} onClick={retry} className={cn(button, "border border-line bg-raised text-fg shadow-1 hover:border-line-strong")}>
+            <RefreshCw className={cn("size-3.5", busy && "animate-spin")} /> {busy ? "Asking" : "Try again"}
+          </button>
+        )}
+        <button type="button" data-testid="machine-start-here" onClick={() => setNewMachine("")} className={cn(button, "text-muted hover:bg-hover hover:text-fg")}>
+          <Cpu className="size-3.5" /> Start here
+        </button>
+      </span>
+    </div>
+  );
 }
 
 // The folder a new session works in on an ssh machine: its recent folders

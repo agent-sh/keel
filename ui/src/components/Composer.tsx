@@ -55,6 +55,9 @@ type ComposerProps = {
   // settles nothing is sent, so a message never leaves on the model being left.
   onModel: (id: string) => unknown;
   workspace?: string; // the folder @-mentions search
+  // Why nothing can be sent now (the place picked for a new session does not
+  // answer): Enter says it and the draft stays in the box.
+  hold?: string;
   autoFocus?: boolean;
   // The station that has the keys (several message boxes can be on screen): only it answers Alt+M.
   focus?: boolean;
@@ -65,7 +68,7 @@ export function Composer(props: ComposerProps) {
 }
 
 function SessionComposer({
-  session, onSend, onQueue, onStop, onEscape, stopLabel = "Stop the turn", working, model, onModel, workspace, autoFocus, focus = true,
+  session, onSend, onQueue, onStop, onEscape, stopLabel = "Stop the turn", working, model, onModel, workspace, autoFocus, focus = true, hold,
 }: ComposerProps) {
   const sid = session?.id;
   const key = draftKey(sid);
@@ -353,6 +356,7 @@ function SessionComposer({
   const blocked = (attachments: Attachment[]) => {
     if (offBranch) return OFF_BRANCH;
     if (switching) return "The model switch is not confirmed yet: nothing was sent.";
+    if (hold) return hold;
     // A new screenshot for a model that says it reads none: nothing starts until
     // the owner switches model or removes the image to send the text alone.
     // Images already in the history are not this check's (the turn notes them).
