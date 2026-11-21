@@ -21,7 +21,7 @@ const KIND: Record<Activity["kind"], { label: string; icon: typeof Bell }> = {
 };
 const KINDS = Object.keys(KIND) as Activity["kind"][];
 
-const bad = (a: Activity) => /fail|error|refused/.test(a.sub) || a.sub === "denied" || (a.kind === "daemon" && a.sub === "killed");
+const bad = (a: Activity) => /fail|error|refused/.test(a.sub) || a.sub === "denied" || (a.kind === "daemon" && (a.sub === "killed" || a.sub === "crash"));
 
 // Everything that happened, across sessions, newest first: filter by kind,
 // session and words; a row opens its session (or the agent inside it).

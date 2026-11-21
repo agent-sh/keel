@@ -16,7 +16,8 @@ import { serve } from "./app.ts";
 import { routeModules } from "./routes/index.ts";
 import { portHolder, waitForPredecessor } from "../admin/daemon.ts";
 import { relayDiagnostics } from "./diagnostics.ts";
-import { beginLife, Restarts } from "../admin/life.ts";
+import { beginLife, lifeListening, Restarts } from "../admin/life.ts";
+import { beginWatch, during, timed } from "../admin/stall.ts";
 import { newestTurn } from "../admin/marks.ts";
 
 export { defaultStateDir };
@@ -78,6 +79,10 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   );
   const url = server.url.href.replace(/\/+$/, "");
   recordUrl(stateDir, url, !!opts.client);
+  // It answers from here on: its sign of life says so, and only now is a late
+  // timer a stall (the start-up before this is not one).
+  lifeListening();
+  beginWatch();
   // A client's daemon recovers nothing; the sessions the last daemon left
   // working are idle again, as no turn runs in them.
   if (opts.client) for (const id of store.bootWorking) store.bootSettled(id);
@@ -85,16 +90,19 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
     providers.models().catch((e) => errors.capture("provider", e, { at: "startup listing" }));
     // Turns the last daemon left open or parked continue; a model whose provider is
     // still starting (a plugin) is waited for, up to a minute.
-    void engine.recover(store.bootWorking, async (model) => {
+    // The recovery reads the branch of every session before its first await,
+    // while the daemon already listens: timed, so a stall it makes is named.
+    void timed(() => "the start's recovery read every session's branch", () => during("the start's recovery", engine.recover(store.bootWorking, async (model) => {
       for (let i = 0; ; i++) {
         try { await providers.resolve(model); return; } catch (e) { if (i >= 12) throw e; }
         await Bun.sleep(5_000);
       }
-    }).catch((e) => errors.capture("server", e, { at: "recover" }))
+    }))).catch((e) => errors.capture("server", e, { at: "recover" }))
       // Every cut turn is decided: one that nobody settled went on by other means when its session has a newer turn.
       .then(() => restarts?.finish((id, cut) => engine.isRunning(id) || newestTurn(store, id)?.id !== cut.turn_event))
       .catch((e) => errors.capture("server", e, { at: "restart record" }));
-    void providers.models().then(() => engine.resumeIdle()).catch((e) => errors.capture("server", e, { at: "idle compaction" }));
+    // It reads the context of every session used in the last hour, an await a session.
+    void providers.models().then(() => during("the start's pass over the sessions used in the last hour (idle compaction)", engine.resumeIdle())).catch((e) => errors.capture("server", e, { at: "idle compaction" }));
   }
   const stop = async (drainMs = 0) => {
     stopDiagnostics?.();

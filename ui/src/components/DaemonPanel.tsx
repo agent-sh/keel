@@ -14,7 +14,7 @@ import { Card, Segmented, SettingRow } from "./Settings.tsx";
 import { useSettings } from "./StoragePanel.tsx";
 
 type Status = { pid: number; started_ms: number; uptime_ms: number; state_dir: string; bun: string; systemd: boolean; running: string[]; draining: { since_ms: number; restart: boolean; deadline_ms: number } | null; restart_failed?: { ts_ms: number; error: string } | null; last_start?: Restart | null };
-const ENDED: Record<Restart["before"]["how"], string> = { killed: "Went down", restart: "Restarted", stop: "Stopped" };
+const ENDED: Record<NonNullable<Restart["before"]>["how"] | "unknown", string> = { killed: "Went down", crash: "Failed", restart: "Restarted", stop: "Stopped", unknown: "Not known" };
 const BECAME: Record<Restart["turns"][number]["state"], string> = { continued: "Continued", held: "Held", moved: "Went on", left: "Left as cut", pending: "Deciding" };
 type Awake = { available: boolean; held: boolean; locked: boolean; mode: string; on_battery: boolean; since_ms?: number; reason?: string; refused?: string; until_ms?: number };
 
@@ -150,13 +150,13 @@ export function DaemonPanel() {
         </SettingRow>
       </Card>
 
-      {st.last_start && (
+      {st.last_start && (st.last_start.before || st.last_start.turns.length > 0) && (
         <Card>
           {/* The start that made this daemon: when the one before it went down, how, and each turn that cut. */}
           <SettingRow label="Last start" hint={<span data-testid="daemon-last-start">{restartSummary(st.last_start)}</span>}>
             <span className="flex items-center gap-2 text-ui text-muted" data-testid="daemon-last-how">
-              <Dot tone={st.last_start.before.how === "killed" ? "danger" : "off"} />
-              {ENDED[st.last_start.before.how]}
+              <Dot tone={st.last_start.before?.how === "killed" || st.last_start.before?.how === "crash" ? "danger" : "off"} />
+              {ENDED[st.last_start.before?.how ?? "unknown"]}
             </span>
           </SettingRow>
           {st.last_start.turns.length > 0 && (

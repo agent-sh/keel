@@ -34,7 +34,7 @@ test("a blocked event loop leaves one error row and one log line with its durati
 
   const row = (await stalls()).sort((a, b) => b.ts - a.ts)[0];
   expect(row.source).toBe("server");
-  expect(row.message).toMatch(/^Daemon unresponsive for 2\.\d s: blocked by its own code, outside any request handler \(1 turn was running/);
+  expect(row.message).toMatch(/^Daemon unresponsive for 2\.\d s: blocked by its own code, outside anything it times \(1 turn was running/);
   expect(row.context.ms).toBeGreaterThanOrEqual(HELD_MS - 300);
   expect(row.context.ms).toBeLessThan(HELD_MS + 3000);
   expect(row.context.busy_ms).toBeGreaterThan(HELD_MS / 2);

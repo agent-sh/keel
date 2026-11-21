@@ -1,81 +1,112 @@
 // The daemon's own life across restarts: when the last one went down and how
-// (it stopped by itself, or it was killed), which turns that cut, at which
-// step or tool, and what became of each. One record a start, kept in the
-// store, told in one place: `keel status`, Settings > Daemon and one Activity
-// row.
+// (it stopped by itself, it ended on a failure, or it was killed), which turns
+// that cut, at which step or tool, and what became of each. One record a
+// start, kept in the store, told in one place: `keel status`, Settings >
+// Daemon, the log, and an Activity row when the owner has something to look at.
 //
-// A running daemon writes a sign of life once a second into a small file
-// beside its lock; a stop writes its end there. The next start reads it
-// before anything else: an end means it stopped by itself, none means it went
-// down under its work (a kill, a crash, the machine), within a second of the
-// last sign. The engine tells of each cut turn (TurnHooks.turnCut) and of what
-// became of it (turnCutSettled).
-import { readFileSync, writeFileSync } from "node:fs";
+// A running daemon keeps a sign of life in a small file beside its lock,
+// written in place about once a second (it rides on the stall monitor's
+// timer), and a stop writes its end there. The next start reads it before
+// anything else: an end means it stopped by itself, none means it went down
+// under its work (a kill, a crash of the runtime, the machine), within a
+// second or so of the last sign. A file that is missing, empty or not this
+// format, or one a daemon that keeps no such file has run after, says
+// nothing: the record of that start says so, and never passes an older
+// start's account off as its own. The engine tells of each cut turn
+// (TurnHooks.turnCut) and of what became of it (turnCutSettled).
+import { closeSync, openSync, readFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import { type CutState, type CutTurn, registerHooks } from "../engine/hooks.ts";
 import type { Before, Restart, RestartTurn } from "./life-rows.ts";
+import { tail } from "./logs.ts";
 
 export * from "./life-rows.ts";
 
 const FILE = "daemon.alive";
 const BEAT_MS = 1000;
+// The file is one line of this length, written whole each time: never
+// shorter than the line before it, so writing in place leaves nothing behind.
+const WIDTH = 192;
 // Starts kept: the last ones are what anyone asks about.
 const KEPT = 50;
 const G = globalThis as { __keelLife?: Life; __keelRestarts?: Restarts };
 
-type Alive = { pid: number; started_ms: number; alive_ms: number; ended_ms?: number; how?: "restart" | "stop" };
+// `listening_ms`: when it began to answer. `code`: the exit code of an end it did not choose.
+type Alive = { pid: number; started_ms: number; alive_ms: number; listening_ms?: number; ended_ms?: number; how?: "restart" | "stop" | "crash"; code?: number };
 
-export type Life = { before: Before | null; started_ms: number; end(how: "restart" | "stop"): void };
+// `unknown`: why nothing is known of the daemon before this one.
+export type Life = { before: Before | null; unknown?: string; started_ms: number; beat(): void; listening(): void; end(how: "restart" | "stop" | "crash", code?: number): void };
+
+// How the daemon that wrote this sign of life ended, or why that cannot be said.
+// `listened`: when the log last shows a daemon begin to answer (any daemon writes that line).
+export function readBefore(text: string | null, listened: number | undefined, pid = process.pid): { before: Before | null; unknown?: string } {
+  if (text === null) return { before: null, unknown: "no sign of life was found (a first start, or the daemon before kept none)" };
+  let a: Alive;
+  try { a = JSON.parse(text) as Alive; } catch { return { before: null, unknown: "the sign of life was cut while it was written" }; }
+  if (!a || !a.pid || !Number.isFinite(a.alive_ms) || !Number.isFinite(a.started_ms)) return { before: null, unknown: "the sign of life is not one this daemon reads" };
+  if (a.pid === pid) return { before: null, unknown: "the sign of life is this process's own" };
+  // A daemon began to answer after the one that wrote the file did: one that keeps no sign of life ran since.
+  if (listened !== undefined && listened > (a.listening_ms ?? a.alive_ms) + 2000) return { before: null, unknown: "another daemon, one that keeps no sign of life, ran since the last sign" };
+  return { before: { pid: a.pid, started_ms: a.started_ms, down_ms: a.ended_ms ?? a.alive_ms, how: a.ended_ms ? a.how ?? "stop" : "killed", ...(a.how === "crash" && a.code !== undefined ? { code: a.code } : {}) } };
+}
 
 // Once per process (a hot reload keeps the life it has): reads how the last
 // daemon ended, then keeps this one's sign of life.
 export function beginLife(stateDir: string): Life {
   if (G.__keelLife) return G.__keelLife;
   const path = join(stateDir, FILE);
-  let before: Before | null = null;
-  try {
-    const a = JSON.parse(readFileSync(path, "utf8")) as Alive;
-    if (a.pid && a.pid !== process.pid && Number.isFinite(a.alive_ms)) {
-      before = { pid: a.pid, started_ms: a.started_ms, down_ms: a.ended_ms ?? a.alive_ms, how: a.ended_ms ? a.how ?? "stop" : "killed" };
-    }
-  } catch {
-    // No file (a first start, or a daemon from before it was written), or one cut mid-write: nothing is known.
-  }
+  let text: string | null = null;
+  try { text = readFileSync(path, "utf8"); } catch {}
+  const listened = tail(join(stateDir, "logs"), 2000).findLast((l) => l.text.startsWith("keel listening on "))?.ts;
+  const { before, unknown } = readBefore(text, listened);
   const started_ms = Date.now();
   let ended = false;
+  let listening_ms: number | undefined;
+  let last = 0;
+  // Kept open and written in place: one small write, no truncate, nothing for the disk to flush each time.
+  let fd: number | undefined;
+  try { fd = openSync(path, "w+", 0o600); } catch {}
   const write = (more: Partial<Alive> = {}) => {
-    try { writeFileSync(path, JSON.stringify({ pid: process.pid, started_ms, alive_ms: Date.now(), ...more }), { mode: 0o600 }); } catch {}
+    if (fd === undefined) return;
+    last = Date.now();
+    try { writeSync(fd, `${JSON.stringify({ pid: process.pid, started_ms, alive_ms: last, ...(listening_ms ? { listening_ms } : {}), ...more }).padEnd(WIDTH - 1)}\n`, 0); } catch {}
   };
   write();
-  const timer = setInterval(() => { if (!ended) write(); }, BEAT_MS);
-  (timer as any).unref?.();
   const life: Life = {
-    before, started_ms,
-    end(how) {
+    before, unknown, started_ms,
+    beat() { if (!ended && Date.now() - last >= BEAT_MS) write(); },
+    listening() { listening_ms = Date.now(); if (!ended) write(); },
+    end(how, code) {
       if (ended) return;
       ended = true;
-      write({ ended_ms: Date.now(), how });
+      write({ ended_ms: Date.now(), how, ...(code !== undefined ? { code } : {}) });
+      if (fd !== undefined) try { closeSync(fd); } catch {}
+      fd = undefined;
     },
   };
-  // Any exit the process makes itself is a stop; one it does not make (a kill) leaves no end.
-  process.on("exit", () => life.end("stop"));
+  // An exit the process makes itself with nothing wrong is a stop; with a
+  // failing code it ended on a failure (an error nothing caught); one it does
+  // not make (a kill) leaves no end.
+  process.on("exit", (code) => life.end(code ? "crash" : "stop", code || undefined));
   return (G.__keelLife = life);
 }
 
 // A stop the daemon makes itself says which kind before it exits.
 export const endLife = (how: "restart" | "stop") => G.__keelLife?.end(how);
+// The sign of life, from the daemon's one timer; and the moment it began to answer.
+export const beatLife = () => G.__keelLife?.beat();
+export const lifeListening = () => G.__keelLife?.listening();
 
 // When the last daemon went down, for what was open then (a turn, a span).
 export const wentDownAt = (): number | undefined => G.__keelLife?.before?.down_ms;
-
 
 const SCHEMA = "CREATE TABLE IF NOT EXISTS daemon_starts (id TEXT PRIMARY KEY, up_ms INTEGER NOT NULL, data TEXT NOT NULL);";
 
 // The record of this start and the ones before it.
 export class Restarts {
-  private now: Restart | null = null;
+  private now: Restart;
   // Told when the record changes, and once when it is whole.
   changed: () => void = () => {};
   whole: (r: Restart) => void = () => {};
@@ -83,9 +114,9 @@ export class Restarts {
   constructor(private store: Store, life: Life) {
     store.migrate(SCHEMA);
     G.__keelRestarts = this;
-    if (!life.before) return;
+    // Every start has its record, also one that knows nothing of the daemon before it.
     const id = `${process.pid}-${life.started_ms}`;
-    this.now = this.read(id) ?? { id, up_ms: life.started_ms, pid: process.pid, before: life.before, turns: [] };
+    this.now = this.read(id) ?? { id, up_ms: life.started_ms, pid: process.pid, before: life.before, ...(life.before ? {} : { unknown: life.unknown ?? "nothing is known" }), turns: [] };
     this.save();
     store.db.query(`DELETE FROM daemon_starts WHERE id NOT IN (SELECT id FROM daemon_starts ORDER BY up_ms DESC LIMIT ${KEPT})`).run();
     registerHooks({
@@ -101,28 +132,29 @@ export class Restarts {
 
   private save() {
     const r = this.now;
-    if (!r) return;
     this.store.db.query("INSERT INTO daemon_starts (id, up_ms, data) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data").run(r.id, r.up_ms, JSON.stringify(r));
     try { this.changed(); } catch {}
   }
 
-  // This start's record (null: nothing is known of a daemon before this one), else the newest kept.
-  last(): Restart | null {
-    if (this.now) return this.now;
-    const r = this.store.db.query<{ data: string }, []>("SELECT data FROM daemon_starts ORDER BY up_ms DESC LIMIT 1").get();
-    return r ? (JSON.parse(r.data) as Restart) : null;
+  // This start's record: its own, whatever it knows, never an older start's.
+  last(): Restart {
+    return this.now;
   }
 
   private cut(s: Session, cut: CutTurn) {
     const r = this.now;
-    if (!r || r.settled_ms || r.turns.some((t) => t.end_event === cut.end_event)) return;
-    r.turns.push({ ...cut, session_id: s.id, title: s.title, parent_id: s.parent_id ?? null, state: "pending" });
+    if (r.settled_ms || r.turns.some((t) => t.end_event === cut.end_event)) return;
+    // A turn cut before the daemon before this one had started was cut by an
+    // earlier stop and was still waiting to be decided: it is this start's to
+    // decide, and not one this stop cut.
+    const earlier = !!r.before && cut.down_ms < r.before.started_ms;
+    r.turns.push({ ...cut, session_id: s.id, title: s.title, parent_id: s.parent_id ?? null, state: "pending", ...(earlier ? { earlier: true as const } : {}) });
     this.save();
   }
 
   private settle(s: Session, cut: CutTurn, state: CutState, why?: string) {
-    const t = this.now?.turns.find((x) => x.end_event === cut.end_event);
-    if (!t || this.now!.settled_ms) return;
+    const t = this.now.turns.find((x) => x.end_event === cut.end_event);
+    if (!t || this.now.settled_ms) return;
     t.state = state;
     t.title = s.title || t.title;
     if (why) t.why = why.slice(0, 300);
@@ -134,7 +166,7 @@ export class Restarts {
   // left as it was. `went`: whether a session has a newer turn than the cut one.
   finish(went: (sessionId: string, cut: RestartTurn) => boolean) {
     const r = this.now;
-    if (!r || r.settled_ms) return;
+    if (r.settled_ms) return;
     for (const t of r.turns) if (t.state === "pending") t.state = went(t.session_id, t) ? "moved" : "left";
     r.settled_ms = Date.now();
     this.save();

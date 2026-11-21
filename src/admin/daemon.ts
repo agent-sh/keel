@@ -9,8 +9,8 @@ import type { Deps } from "../server/app.ts";
 import { flushAll } from "../automation/core.ts";
 import { claimState, hasClaim } from "../core/claim.ts";
 import { addAdmission } from "../server/admission.ts";
-import { endLife, restarts } from "./life.ts";
-import { describeStall, StallMonitor, TurnWatch } from "./stall.ts";
+import { beatLife, endLife, restarts } from "./life.ts";
+import { describeStall, StallMonitor, TurnWatch, watchWith } from "./stall.ts";
 
 export { claimState };
 
@@ -182,18 +182,23 @@ export class Daemon {
   // The daemon's own unresponsiveness (src/admin/stall.ts): each stall is one
   // error row and, through the capture, one log line. The error names no
   // stack: the code that held the loop is not on it any more.
+  // It is started once the server listens (src/server/start.ts): the start-up
+  // itself is not a stall of a daemon that was answering. Its timer is the
+  // daemon's one periodic timer: the sign of life is written from it.
   watchStalls(): StallMonitor {
     const watch = new TurnWatch();
     this.deps.bus.on((f) => watch.frame(f as any));
     const monitor = new StallMonitor({
       turns: (began) => watch.at(began),
+      working: () => watch.running(),
+      tick: beatLife,
       report: (stall) => {
         const d = describeStall(stall);
         this.deps.errors.capture("server", Object.assign(new Error(d.message), { stack: undefined }), d.context);
       },
       note: (stall) => console.warn(`[daemon] ${describeStall(stall).message}`),
     });
-    monitor.start();
+    watchWith(monitor);
     return monitor;
   }
 
@@ -209,7 +214,7 @@ export class Daemon {
       running: this.runningSessions(),
       draining: this.draining,
       restart_failed: this.restartFailed,
-      // The last start: when the daemon before it went down, how, and what became of the turns that cut.
+      // This start: when the daemon before it went down, how (when that is known), and what became of the turns that cut.
       last_start: restarts()?.last() ?? null,
     };
   }

@@ -95,7 +95,7 @@ const status = wrap(STATUS_USAGE, { sessions: { type: "boolean" }, away: { type:
     `turns    ${d.running.length} running${d.draining ? `; draining${d.draining.restart ? " for a restart" : ""} since ${time(d.draining.since_ms)}` : ""}`,
     d.restart_failed ? `restart  called off at ${time(d.restart_failed.ts_ms)}. ${d.restart_failed.error}` : "",
     // The last start: when the daemon before it went down, how, and each turn that cut.
-    ...(d.last_start ? [`start    ${restartSummary(d.last_start)}`, ...d.last_start.turns.map((t: RestartTurn) => `           ${restartTurnLine(t)}${t.state === "held" && t.why ? `\n             ${t.why}` : ""}`)] : []),
+    ...(d.last_start && (d.last_start.before || d.last_start.turns.length) ? [`start    ${restartSummary(d.last_start)}`, ...d.last_start.turns.map((t: RestartTurn) => `           ${restartTurnLine(t)}${t.state === "held" && t.why ? `\n             ${t.why}` : ""}`)] : []),
     a ? `awake    ${a.held ? `held (${a.reason})` : a.available ? "not held" : `not available${a.refused ? `: ${a.refused}` : ""}`}, mode ${a.mode}${a.on_battery ? ", on battery" : ""}` : "",
   ].filter(Boolean).join("\n"));
   return 0;

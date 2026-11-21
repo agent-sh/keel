@@ -173,7 +173,7 @@ test("after a kill one place says when the daemon went down, which turns it cut 
     // The command says it, with a line a turn.
     const said = spawnSync("bun", ["src/main.ts", "status", "--url", d.url], { encoding: "utf8", env: { ...process.env, KEEL_CONFIG_DIR: join(state, "config") } });
     expect(said.status, said.stderr).toBe(0);
-    expect(said.stdout).toMatch(/start {4}The daemon went down without stopping \(killed or crashed\) at about \d\d:\d\d:\d\d and came back at \d\d:\d\d:\d\d \(down ([89]|1\d) s\); 4 turns were cut: 4 continued\./);
+    expect(said.stdout).toMatch(/start {4}The daemon went down without stopping \(killed, or the machine went down\) at about \d\d:\d\d:\d\d and came back at \d\d:\d\d:\d\d \(down ([89]|1\d) s\); 4 turns were cut: 4 continued\./);
     expect(said.stdout).toContain(`"Cut during a command" cut at step 1, during Bash, after`);
     expect(said.stdout).toContain(`"Cut while the model answered" cut at step 1, waiting for the model, after`);
     expect(said.stdout).toContain(`"Cut at an approval" cut at step 1, waiting for an approval, after`);
@@ -210,6 +210,32 @@ test("after a kill one place says when the daemon went down, which turns it cut 
     await expect(row).toHaveCount(1);
     await expect(row.getByTestId("activity-cut-turn")).toHaveCount(4);
     await shoot(page, "restart-08-activity-row");
+
+    // The sign of life is one line of a fixed length, written in place, and says when the daemon began to answer.
+    const sign = readFileSync(join(state, "daemon.alive"), "utf8");
+    expect(sign.length).toBe(192);
+    expect(JSON.parse(sign)).toMatchObject({ pid: (await call("/api/daemon", undefined, "GET")).pid, listening_ms: expect.any(Number) });
+    // A stop the daemon makes itself, with every turn done: the next start knows it was a stop and when, says so
+    // in its record and its log, and adds no Activity row (a row is for a daemon that went down or a turn not continued).
+    for (const id of ids) await call(`/api/sessions/${id}/interrupt`, { by: "owner" });
+    await expect.poll(async () => (await call("/api/daemon", undefined, "GET")).running.length, { timeout: 20_000 }).toBe(0);
+    const stopped = Date.now();
+    d.proc.kill("SIGTERM");
+    await exited(d.proc);
+    expect(JSON.parse(readFileSync(join(state, "daemon.alive"), "utf8"))).toMatchObject({ how: "stop", ended_ms: expect.any(Number) });
+    d = await daemon(state);
+    await expect.poll(async () => (await record())?.settled_ms ?? 0, { timeout: 30_000 }).toBeGreaterThan(0);
+    const calm = await record();
+    expect(calm).toMatchObject({ before: { how: "stop" }, turns: [] });
+    expect(Math.abs(calm.before.down_ms - stopped)).toBeLessThan(2_000);
+    expect((await call("/api/activity?kind=daemon", undefined, "GET")).items).toHaveLength(1);
+    const logged = ((await call("/api/logs?limit=2000", undefined, "GET")).lines as { text: string }[]).filter((l) => l.text.startsWith("[daemon] The daemon "));
+    expect(logged.map((l) => l.text.replace(/\d\d:\d\d:\d\d/g, "T").replace(/\(down [^)]*\)/, "(down N)"))).toEqual([
+      "[daemon] The daemon went down without stopping (killed, or the machine went down) at about T and came back at T (down N); 4 turns were cut: 4 continued.",
+      "[daemon] The daemon was stopped at T and came back at T (down N); no turn was cut.",
+    ]);
+    // Neither start filed itself as a stall: the daemon is watched from the moment it answers.
+    expect(((await call("/api/errors", undefined, "GET")).errors as any[]).filter((e) => e.context?.kind === "stall")).toEqual([]);
   } finally {
     d.proc.kill("SIGKILL");
   }

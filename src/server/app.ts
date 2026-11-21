@@ -101,7 +101,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       let slow = false;
       const timer = setTimeout(() => { slow = true; srv.timeout(req, 0); }, SLOW_MS);
       // What the daemon was answering, should it stop responding meanwhile (src/admin/stall.ts).
-      const label = () => `${req.method} ${new URL(req.url).pathname}`;
+      const label = () => `answering ${req.method} ${new URL(req.url).pathname}`;
       const answered = inFlight(req, label);
       try {
         const refused = admit(req, srv);
@@ -359,7 +359,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
 
     websocket: {
       open(ws) { const h = socketKind(ws); if (h) h.open?.(ws); else live.open(ws); },
-      message(ws, m) { const h = socketKind(ws); timed(() => "a page's socket message", () => (h ? h.message?.(ws, m) : live.message(ws, m))); },
+      message(ws, m) { const h = socketKind(ws); timed(() => "handling a page's socket message", () => (h ? h.message?.(ws, m) : live.message(ws, m))); },
       close(ws, code, reason) { socketKind(ws)?.close?.(ws, code, reason); },
       // Pings while quiet; a client silent for 40 s is gone. One that stops
       // reading is closed instead of buffered without end: a page resumes on reconnect.

@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { Awake } from "../../admin/awake.ts";
 import { Daemon } from "../../admin/daemon.ts";
 import { restarts } from "../../admin/life.ts";
-import { restartSummary, restartTurnLine } from "../../admin/life-rows.ts";
+import { restartNeedsEye, restartSummary, restartTurnLine } from "../../admin/life-rows.ts";
 import * as activity from "../../automation/activity.ts";
 import { loadSettings, onSettings, patchSettings, resetSettings, settings, settingsUnreadable } from "../../admin/settings.ts";
 import { Storage } from "../../admin/storage.ts";
@@ -59,11 +59,10 @@ export const adminRoutes: RouteModule = (deps) => {
   loadSettings(store.stateDir, (e) => errors.capture("server", e, { at: "settings" }));
   const prev = G.__keelAdmin;
   prev?.awake.stopAll();
-  prev?.stalls?.stop();
   clearInterval(prev?.daily);
   const daemon = new Daemon(deps);
   // A command's own short-lived daemon answers nobody else: only a served one is watched.
-  const stalls = runMode.client ? undefined : daemon.watchStalls();
+  if (!runMode.client) daemon.watchStalls();
   const storage = new Storage(store, deps.engine, bus, errors, configDir());
   const awake = new Awake(bus, (e, ctx) => errors.capture("server", e, ctx));
   daemon.onExit(() => awake.stopAll());
@@ -81,17 +80,18 @@ export const adminRoutes: RouteModule = (deps) => {
   const policy = () => storage.applyPolicy().catch((e) => errors.capture("server", e, { at: "archive policy" }));
   const daily = setInterval(policy, 86_400_000);
   (daily as any).unref?.();
-  G.__keelAdmin = { awake, daily, daemon, stalls };
+  G.__keelAdmin = { awake, daily, daemon };
   // The record of this start (src/admin/life.ts): the page follows it as the
-  // cut turns are decided, and when it is whole it is one Activity row and
-  // the log's account of the restart.
+  // cut turns are decided, and when it is whole it is the log's account of the
+  // restart, and one Activity row when the owner has something to look at (the
+  // daemon did not choose to go down, or a turn was not continued).
   const starts = restarts();
   if (starts) {
     starts.changed = () => daemon.emit();
     // The log has a line a turn already, under the turn's own name (observe.ts).
     starts.whole = (r) => {
-      console.log(`[daemon] ${restartSummary(r)}`);
-      activity.record("daemon", r.before.how, null, [restartSummary(r), ...r.turns.map(restartTurnLine)].join(" "), { restart: r });
+      if (r.before || r.turns.length) console.log(`[daemon] ${restartSummary(r)}`);
+      if (restartNeedsEye(r)) activity.record("daemon", r.before?.how ?? "unknown", null, [restartSummary(r), ...r.turns.map(restartTurnLine)].join(" "), { restart: r });
     };
   }
 

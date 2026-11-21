@@ -1,12 +1,11 @@
 // The daemon notices when it was itself unresponsive. One process answers
 // every page, command and turn, so code that does not yield (a read that
 // walks a whole session, a large parse) stops all of them, and from outside
-// nothing says so. A timer that should fire every TICK_MS measures how late
-// it fired: late by seconds means nothing else ran for that long. The stall
-// leaves one error row and one log line with how long it was, what was on the
-// stack when a request handler was (timed here: the part of a handler that
-// runs before its first await), and the requests and turns that were in
-// progress.
+// nothing says so. One timer measures how late it fires: late by seconds
+// means nothing else ran for that long. The stall leaves one error row and
+// one log line with how long it was, what held the loop when that was timed
+// here (the part of a request handler that runs before its first await, the
+// start's recovery), and the requests and turns that were in progress.
 //
 // The clock is the monotonic one: a suspended machine is not a stall.
 // Two seconds make a row: a page that does not answer for that long reads as
@@ -14,44 +13,74 @@
 // session read into memory takes a few hundred milliseconds, and the probes
 // a first turn runs once, a second on a busy machine). Half a second makes a
 // log line only, so the smaller ones leave a trail without a row each.
-const G = globalThis as { __keelStall?: State };
+//
+// The timer fires ten times a second while the daemon works (a turn runs, a
+// request is open or was a moment ago) and once a second while it is idle,
+// so an idle daemon wakes for it once a second. Idle, a stall outside
+// anything timed is measured up to a second short.
+const G = globalThis as { __keelStall?: State; __keelStallMonitor?: StallMonitor };
 
 export const STALL_MS = Number(process.env.KEEL_STALL_MS) > 0 ? Number(process.env.KEEL_STALL_MS) : 2000;
 export const STALL_LOG_MS = STALL_MS / 4;
 const TICK_MS = 100;
-// A handler's own time that is worth naming as what the daemon was busy with.
+const IDLE_TICK_MS = 1000;
+// After the last request or frame, the daemon counts as working this long.
+const WORKING_MS = 5000;
+// A section's own time that is worth naming as what the daemon was busy with.
 const NOTED_MS = 50;
+// A request open longer than this when a stall begins is a stream or a long
+// poll, not a request the stall kept waiting (the server's own mark of a slow handler).
+const WAITING_MS = 8000;
 
+// `label`: what the daemon was doing, as the words after "while": "answering GET /api/daemon".
 type Section = { label: string; ms: number };
-type State = { longest: Section | null; flights: Map<object, { label: () => string; t0: number }> };
-const state = (): State => (G.__keelStall ??= { longest: null, flights: new Map() });
+// `work`: the daemon's own long passes (a start's read of its sessions), by what they are: in progress (false),
+// or over since the last tick (true: a pass that ends as the loop comes free is still what the tick was late for).
+type State = { longest: Section | null; flights: Map<object, { label: () => string; t0: number }>; work: Map<string, boolean>; touched: number };
+const state = (): State => (G.__keelStall ??= { longest: null, flights: new Map(), work: new Map(), touched: 0 });
+// The processor time the process has used, in milliseconds (a test sets its own).
+let cpuMs = () => { const u = process.cpuUsage(); return (u.user + u.system) / 1000; };
 
 // Runs `f` and notes how long it held the event loop: its synchronous part,
 // which is all of a handler with no await and the start of one with awaits.
+// It is named only when the process was busy for it: a machine that stopped
+// or starved the daemon inside a handler did not make that handler slow.
 export function timed<T>(label: () => string, f: () => T): T {
   const t0 = performance.now();
+  const c0 = cpuMs();
   try {
     return f();
   } finally {
-    const ms = performance.now() - t0;
+    const now = performance.now();
+    const ms = now - t0;
     const st = state();
-    if (ms >= NOTED_MS && ms > (st.longest?.ms ?? 0)) st.longest = { label: label(), ms };
+    st.touched = now;
+    if (ms >= NOTED_MS && ms > (st.longest?.ms ?? 0) && cpuMs() - c0 >= ms * 0.5) st.longest = { label: label(), ms };
   }
 }
 
 // A request from its handler's start to its answer: what was in progress when a stall began.
 export function inFlight(key: object, label: () => string): () => void {
   const st = state();
-  st.flights.set(key, { label, t0: performance.now() });
+  st.flights.set(key, { label, t0: (st.touched = performance.now()) });
   return () => void st.flights.delete(key);
+}
+
+// A pass of the daemon's own that goes on over several awaits (so no one
+// section of it can be timed): while it is in progress a stall says so.
+export function during<T>(label: string, work: Promise<T>): Promise<T> {
+  const st = state();
+  st.work.set(label, false);
+  return work.finally(() => void st.work.set(label, true));
 }
 
 export type RunningTurn = { session_id: string; turn?: string; doing: string };
 export type Stall = {
   ms: number;        // how long nothing else ran, at least
   busy_ms: number;   // the processor time the daemon used meanwhile
-  during?: Section;  // the handler that held the loop, when one was timed
-  in_flight: string[];
+  during?: Section;  // what held the loop, when it was timed
+  in_flight: string[]; // requests taken shortly before it and still open: they waited for it to end
+  work?: string[];     // the daemon's own passes in progress then (see during)
   turns: RunningTurn[];
 };
 
@@ -65,9 +94,9 @@ export function describeStall(s: Stall): { message: string; context: Record<stri
   const busy = s.busy_ms >= s.ms * 0.5;
   // The row's title is cut short where it is listed: how long and what come first.
   const what = s.during
-    ? ` while answering ${s.during.label}`
+    ? ` while ${s.during.label}`
     : busy
-      ? ": blocked by its own code, outside any request handler"
+      ? `: blocked by its own code, ${s.work?.length ? `with ${s.work.join(" and ")} in progress` : "outside anything it times"}`
       : ": its process was not running (a blocking call, or a stopped or starved machine)";
   const also = [
     s.turns.length ? `${s.turns.length} turn${s.turns.length > 1 ? "s were" : " was"} running` : "",
@@ -79,6 +108,7 @@ export function describeStall(s: Stall): { message: string; context: Record<stri
       kind: "stall", ms: Math.round(s.ms), busy_ms: Math.round(s.busy_ms),
       ...(s.during ? { during: s.during.label, during_ms: Math.round(s.during.ms), ...(sessionIn(s.during.label) ? { session: sessionIn(s.during.label) } : {}) } : {}),
       ...(s.in_flight.length ? { in_flight: s.in_flight.slice(0, 8) } : {}),
+      ...(s.work?.length ? { work: s.work } : {}),
       ...(s.turns.length ? { turns: s.turns.slice(0, 8) } : {}),
     },
   };
@@ -106,6 +136,12 @@ export class TurnWatch {
     }
   }
 
+  // Whether a turn runs now.
+  running(): boolean {
+    for (const w of this.turns.values()) if (w.ended === undefined) return true;
+    return false;
+  }
+
   // The turns that ran at `began`, each with what it was at then. Turns over before it are forgotten.
   at(began: number): RunningTurn[] {
     const out: RunningTurn[] = [];
@@ -124,6 +160,10 @@ export type StallDeps = {
   note?(s: Stall): void;
   // The turns that ran when the stall began (`began`: on the monotonic clock).
   turns(began: number): RunningTurn[];
+  // Whether a turn runs now: the timer keeps its short period while one does.
+  working?(): boolean;
+  // Every tick, late or not (the daemon's sign of life rides on it).
+  tick?(): void;
   thresholdMs?: number;
   // For a test: the processor time used so far, in milliseconds.
   cpu?: () => number;
@@ -131,33 +171,49 @@ export type StallDeps = {
 
 export class StallMonitor {
   private last = 0;
+  private due = 0;
   private cpuLast = 0;
-  private timer?: ReturnType<typeof setInterval>;
-  private cpu: () => number;
+  private timer?: ReturnType<typeof setTimeout>;
 
   constructor(private deps: StallDeps) {
-    this.cpu = deps.cpu ?? (() => { const u = process.cpuUsage(); return (u.user + u.system) / 1000; });
+    if (deps.cpu) cpuMs = deps.cpu;
   }
 
+  // From now on: what came before (the start-up, a reload) is not a stall of a daemon that was answering.
   start() {
     this.stop();
     this.last = performance.now();
-    this.cpuLast = this.cpu();
+    this.cpuLast = cpuMs();
     state().longest = null;
-    this.timer = setInterval(() => this.tick(), TICK_MS);
-    (this.timer as any).unref?.();
+    this.arm();
   }
 
   stop() {
-    clearInterval(this.timer);
+    clearTimeout(this.timer);
     this.timer = undefined;
   }
 
+  // The time to the next tick: short while the daemon works, long while it is idle.
+  period(): number {
+    const st = state();
+    return st.flights.size || performance.now() - st.touched < WORKING_MS || this.deps.working?.() ? TICK_MS : IDLE_TICK_MS;
+  }
+
+  private arm(timer = true) {
+    const ms = this.period();
+    this.due = this.last + ms;
+    if (!timer) return;
+    this.timer = setTimeout(() => { this.tick(); this.arm(); }, ms);
+    (this.timer as any).unref?.();
+  }
+
   // One tick of the timer: how late it is says how long the loop was held.
+  // A test calls it by hand, with the clock it moves.
   tick(): Stall | undefined {
     const now = performance.now();
-    const cpu = this.cpu();
-    const late = now - this.last - TICK_MS;
+    const cpu = cpuMs();
+    if (!this.due) this.due = this.last + this.period();
+    const late = now - this.due;
     const busy = cpu - this.cpuLast;
     const st = state();
     const longest = st.longest;
@@ -165,22 +221,37 @@ export class StallMonitor {
     this.last = now;
     this.cpuLast = cpu;
     st.longest = null;
+    const work = [...st.work.keys()];
+    for (const [label, over] of st.work) if (over) st.work.delete(label);
+    if (!this.timer) this.arm(false);
+    try { this.deps.tick?.(); } catch {}
     const row = this.deps.thresholdMs ?? STALL_MS;
-    if (late < row / 4) return undefined;
+    // A section that was timed says exactly how long it held the loop, also when the tick was a long one.
+    const during = longest && longest.ms >= late * 0.5 ? longest : undefined;
+    const held = during ? Math.max(late, during.ms) : late;
+    if (held < row / 4) return undefined;
     const stall: Stall = {
-      // A handler that was timed says exactly how long it held the loop.
-      ms: longest && longest.ms >= late * 0.5 ? Math.max(late, longest.ms) : late,
+      ms: held,
       busy_ms: Math.min(busy, now - began),
-      ...(longest && longest.ms >= late * 0.5 ? { during: longest } : {}),
-      // Requests taken before the stall began and still open: they waited for it to end.
-      in_flight: [...st.flights.values()].filter((f) => f.t0 <= began + TICK_MS).map((f) => f.label()),
+      ...(during ? { during } : {}),
+      // Requests taken shortly before the stall began and still open: they waited for it to end.
+      // One open for long before it (a stream, a long poll) did not.
+      in_flight: [...st.flights.values()].filter((f) => f.t0 <= began + TICK_MS && began - f.t0 < WAITING_MS).map((f) => f.label()),
+      ...(work.length ? { work } : {}),
       // Within a tick of its start: what the last good tick saw is from before it.
       turns: this.deps.turns(began + TICK_MS),
     };
     try {
-      if (late >= row) this.deps.report(stall);
+      if (held >= row) this.deps.report(stall);
       else this.deps.note?.(stall);
     } catch {}
-    return late >= row ? stall : undefined;
+    return held >= row ? stall : undefined;
   }
 }
+
+// The daemon's one monitor: made with the admin routes, started once the server listens.
+export function watchWith(m: StallMonitor) {
+  G.__keelStallMonitor?.stop();
+  G.__keelStallMonitor = m;
+}
+export const beginWatch = () => G.__keelStallMonitor?.start();
