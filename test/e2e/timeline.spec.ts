@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { TimelinePage, TimelineRow } from "../../src/admin/timeline-rows.ts";
@@ -429,6 +429,53 @@ test("a session reads its own timeline and its agents' through a tool, and no ot
     expect((await results(id)).at(-1)).toMatchObject({ is_error: true, content: "NOT_AVAILABLE: that agent's session was deleted, so it has no timeline to read." });
     const errs = (await call("/api/errors?resolved=0")).errors as { context?: { at?: string } }[];
     expect(errs.filter((e) => e.context?.at !== "listing")).toEqual([]);
+  } finally {
+    d.proc.kill("SIGKILL");
+    await exited(d.proc);
+  }
+});
+
+// Feature: the timeline is read in bounded time whatever the session holds. A
+// session of 40,000 plain notes and no turn (none of them makes a row) opens
+// its Timeline at once, and the daemon answers other requests meanwhile: what
+// lies between a session's marks is never walked.
+test("the timeline of a session of forty thousand notes opens at once and the daemon keeps answering", async ({ page }) => {
+  const state = join(ROOT, `timeline-long-${Date.now()}`);
+  made.push(state);
+  for (const d of ["state", "work", "config", "home"]) mkdirSync(join(state, d), { recursive: true });
+  const [id] = JSON.parse(execFileSync("bun", [join(import.meta.dirname, "fixtures/long-transcript.ts"), join(state, "state"), join(state, "work"), "40000", "Forty thousand notes"],
+    { encoding: "utf8", env: { ...process.env, KEEL_CONFIG_DIR: join(state, "config") } })) as string[];
+  const d = await daemon(state);
+  try {
+    // A read that walks the notes takes minutes and holds every other request: both are given seconds.
+    const timed = async (path: string) => {
+      const t = performance.now();
+      const r = await fetch(d.url + path, { signal: AbortSignal.timeout(10_000) });
+      const body = await r.text();
+      return { ms: performance.now() - t, status: r.status, body };
+    };
+    const reads: number[] = [];
+    for (const q of ["", "?only=failures", "?only=turns&limit=200", "?format=text", ""]) {
+      const [tl, daemonInfo] = await Promise.all([timed(`/api/sessions/${id}/timeline${q}`), timed("/api/daemon")]);
+      expect(tl.status, q).toBe(200);
+      expect(daemonInfo.status).toBe(200);
+      expect(daemonInfo.ms, `/api/daemon beside the timeline${q}`).toBeLessThan(2000);
+      expect(tl.ms, `the timeline${q}`).toBeLessThan(2000);
+      reads.push(tl.ms);
+      if (!q) expect(JSON.parse(tl.body)).toMatchObject({ rows: [], next: null, now: { state: "idle", lines: [{ text: "Nothing has run in this session yet." }] } });
+    }
+    // The machine may be busy: the quickest of the reads is the read's own time.
+    expect(Math.min(...reads), `timeline reads took ${reads.map((m) => m.toFixed(0)).join(", ")} ms`).toBeLessThan(100);
+
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto(`${d.url}/s/${id}`);
+    await page.getByTestId("panel-menu").click();
+    await page.getByTestId("panel-search").fill("timeline");
+    await page.getByTestId("panel-pick-timeline").click();
+    const panel = page.getByTestId("timeline-panel");
+    await expect(panel.getByTestId("timeline-state")).toHaveText("Idle");
+    await expect(panel.getByTestId("timeline-now-line")).toHaveText("Nothing has run in this session yet.");
+    await shoot(page, "timeline-long-session");
   } finally {
     d.proc.kill("SIGKILL");
     await exited(d.proc);

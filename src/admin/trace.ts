@@ -16,6 +16,7 @@ import { errorText } from "../engine/retry.ts";
 import type { ProviderRequest, ProviderResult } from "../providers/types.ts";
 import { redactHeaders, type Wire, wireOf } from "../providers/wiretap.ts";
 import { errorClass } from "./classes.ts";
+import { newestTurn } from "./marks.ts";
 
 export type SpanKind = "turn" | "request" | "tool";
 export type SpanStatus = "running" | "ok" | "error" | "interrupted";
@@ -105,13 +106,23 @@ type Turn = { id: string; ts: number; seq: number };
 // back: a turn_start with its turn_end right after it, of no length) is not
 // the agent's first turn; the first one that ran is.
 // Kept by turn: what is before a turn does not change once it has started.
+// The task prompt is kept by session for the same reason, and is looked for
+// only in a session an agent call started: every other session has none, and
+// finding that out would read all its prompts at each new turn.
 const places = new Map<string, Place>();
+const tasks = new Map<string, { seq: number; tp: string } | null>();
 export function placeOf(store: Store, sessionId: string, turn: Pick<Turn, "id" | "seq">): Place {
   const hit = places.get(turn.id);
   if (hit) return hit;
-  const task = store.db.query<{ seq: number; tp: string }, [string]>(
-    "SELECT seq, json_extract(data, '$.traceparent') AS tp FROM events WHERE session_id = ? AND kind = 'user' AND json_extract(data, '$.traceparent') IS NOT NULL ORDER BY seq LIMIT 1",
-  ).get(sessionId);
+  let task = tasks.get(sessionId);
+  if (task === undefined) {
+    // `null`: the daemon's sessions say who started them, and this one says nobody did.
+    task = store.session(sessionId)?.parent_id === null ? null : store.db.query<{ seq: number; tp: string }, [string]>(
+      "SELECT seq, json_extract(data, '$.traceparent') AS tp FROM events WHERE session_id = ? AND kind = 'user' AND json_extract(data, '$.traceparent') IS NOT NULL ORDER BY seq LIMIT 1",
+    ).get(sessionId);
+    if (tasks.size > 500) tasks.clear();
+    tasks.set(sessionId, task);
+  }
   const spawn = task && task.seq < turn.seq ? parseTraceparent(task.tp) : null;
   const first = !!spawn && !store.db.query(
     `SELECT 1 FROM events t WHERE t.session_id = ? AND t.kind = 'turn_start' AND t.seq > ? AND t.seq < ?
@@ -129,7 +140,7 @@ export function placeOf(store: Store, sessionId: string, turn: Pick<Turn, "id" |
 // a plain turn and an ancestor's for the first turn of a spawned agent, so a
 // chain of spawns stays in the trace of the turn that started the first one.
 export function spawnContext(store: Store, sessionId: string, callId: string): string | null {
-  const turn = store.db.query<Turn, [string]>("SELECT id, ts, seq FROM events WHERE session_id = ? AND kind = 'turn_start' ORDER BY seq DESC LIMIT 1").get(sessionId);
+  const turn = newestTurn(store, sessionId);
   return turn ? traceparent(placeOf(store, sessionId, turn).trace, toolSpanId(sessionId, callId)) : null;
 }
 
@@ -243,7 +254,7 @@ export class Tracer {
   }
 
   private lastTurn(sessionId: string): Turn | null {
-    return this.store.db.query<Turn, [string]>("SELECT id, ts, seq FROM events WHERE session_id = ? AND kind = 'turn_start' ORDER BY seq DESC LIMIT 1").get(sessionId);
+    return newestTurn(this.store, sessionId);
   }
 
   place(sessionId: string, turn: Turn): Place {

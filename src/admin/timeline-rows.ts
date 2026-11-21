@@ -175,6 +175,9 @@ export function turnRow(t: TurnInput): TimelineRow {
 export type Mark = { id: string; ts: number; kind: string; data: Record<string, any> | null };
 const short = (model: unknown) => String(model ?? "").split(":").pop() || "another model";
 const tokens = (n: unknown) => (typeof n === "number" && n > 0 ? `, from ${n < 1000 ? n : n < 1_000_000 ? `${Math.round(n / 1000)}k` : `${(n / 1_000_000).toFixed(1)}M`} tokens` : "");
+// The kinds of note that make a row: the timeline's index holds these notes
+// and no other, so a kind told here is named here (a test holds the two together).
+export const NOTE_MARKS = ["model_told", "fallback", "restart", "compaction_failed", "rewind", "fork"] as const;
 export function markRow(e: Mark, turn?: string): TimelineRow | null {
   const d = e.data ?? {};
   const row = (kind: TimelineKind, sub: string, text: string, tone: Tone = "plain"): TimelineRow => clean({ id: e.id, ts: e.ts, kind, sub, tone, text, turn_event: turn });
