@@ -345,7 +345,8 @@ function describe(a: Arm): string {
 }
 
 // The arm that is significantly better on the primary metric with no guard
-// significantly worse wins; a guard regression loses its arm; otherwise the
+// significantly worse wins; a guard regression loses its arm; the control
+// wins when every arm compared with it is significantly worse; otherwise the
 // result is inconclusive and the current path (the control) stays.
 export function decide(e: Experiment, effects: Effect[], guards: Report["guards"]): Decision {
   const control = e.arms[0]!;
@@ -365,12 +366,22 @@ export function decide(e: Experiment, effects: Effect[], guards: Report["guards"
       text: `${best.arm} is better on ${METRICS[e.primary].label} by ${fmtValue(e.primary, Math.abs(best.diff.estimate))} (95% interval of the change ${fmtValue(e.primary, best.diff.lo)} to ${fmtValue(e.primary, best.diff.hi)}), with no guard worse.`,
       remove: `Make ${describe(a)} the only path and remove what ${control.name} had (${describe(control)}).` };
   }
-  const worseArm = effects.find((f) => f.metric === e.primary && f.better === false);
-  if (worseArm) {
-    const a = e.arms.find((x) => x.name === worseArm.arm)!;
+  // The control wins only against every arm it was compared with: one
+  // variant that lost says nothing about one not measured yet or not told apart.
+  const compared = e.arms.slice(1).filter((a) => e.mode === "offline" || (a.weight ?? 1) > 0);
+  const lost = effects.filter((f) => f.metric === e.primary && f.better === false && compared.some((a) => a.name === f.arm));
+  const by = (f: Effect) => `${f.arm} is worse by ${fmtValue(e.primary, Math.abs(f.diff.estimate))} (95% interval of the change ${fmtValue(e.primary, f.diff.lo)} to ${fmtValue(e.primary, f.diff.hi)})`;
+  const drop = (fs: Effect[]) => fs.map((f) => `${f.arm} (${describe(e.arms.find((x) => x.name === f.arm)!)})`).join(", ");
+  if (lost.length && lost.length === compared.length) {
     return { winner: control.name, verdict: "won", ts,
-      text: `${control.name} is better on ${METRICS[e.primary].label}: ${worseArm.arm} is worse by ${fmtValue(e.primary, Math.abs(worseArm.diff.estimate))} (95% interval of the change ${fmtValue(e.primary, worseArm.diff.lo)} to ${fmtValue(e.primary, worseArm.diff.hi)}).`,
-      remove: `Drop arm ${worseArm.arm} (${describe(a)}); ${control.name} stays as it is.` };
+      text: `${control.name} is better on ${METRICS[e.primary].label}: ${lost.map(by).join("; ")}.`,
+      remove: `Drop ${lost.length > 1 ? "arms" : "arm"} ${drop(lost)}; ${control.name} stays as it is.` };
+  }
+  if (lost.length) {
+    const open = compared.filter((a) => !lost.some((f) => f.arm === a.name)).map((a) => `${a.name} ${effects.some((f) => f.metric === e.primary && f.arm === a.name) ? "does not differ beyond chance" : "is not measured yet"}`);
+    return { winner: null, verdict: "inconclusive", ts,
+      text: `${lost.map(by).join("; ")} on ${METRICS[e.primary].label}, but ${open.join(" and ")}: no arm has won.`,
+      remove: `${lost.length > 1 ? "Arms" : "Arm"} ${drop(lost)} can be dropped; nothing else is proven, and the current path stays.` };
   }
   return { winner: null, verdict: "inconclusive", ts,
     text: `No arm differs from ${control.name} on ${METRICS[e.primary].label} beyond chance at this sample size.`,

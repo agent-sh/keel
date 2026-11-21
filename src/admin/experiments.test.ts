@@ -9,7 +9,7 @@ import { ErrorTracker } from "../core/errors.ts";
 import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
 import { experimentRoutes, experiments, outcomes } from "../server/routes/experiments.ts";
-import { armOf, Experiments, liveGuards, WINDOW_MIN, type Experiment, type Obs } from "./experiments.ts";
+import { armOf, Experiments, liveGuards, report, WINDOW_MIN, type Experiment, type Obs } from "./experiments.ts";
 import { offlineReport, runMetrics, Uploads } from "./offline.ts";
 import type { Outcomes } from "./outcomes.ts";
 import { assignArm, rng } from "./stats.ts";
@@ -447,4 +447,31 @@ test("the sessions per arm cap is over the arms that get sessions; a live contro
     expect([refused.status, refused.body.error]).toEqual([400, expect.stringContaining("control")]);
     expect((await call("POST", "/api/experiments", { template: "readers", name: "offline weights", arms: off })).status).toBe(201);
   } finally { d.close(); }
+});
+
+test("the control wins only when every arm compared with it lost", () => {
+  const e = { mode: "offline", primary: "cost_usd", guards: [], stop: {}, arms: [{ name: "current" }, { name: "dear", tools_off: ["run_code"] }, { name: "other", settings: { effort: "low" } }] } as unknown as Experiment;
+  // Nine runs of an arm at about `cost`, three per task.
+  const runs = (arm: string, cost: number) => Array.from({ length: 9 }, (_, i) => ({ arm, cluster: `${arm}-${i}`, stratum: `task-${i % 3}`, m: { cost_usd: cost + (i % 3) * 0.001 + Math.floor(i / 3) * 0.0002 } }));
+  const decide = (...rows: ReturnType<typeof runs>[]) => report(e, rows.flat()).decision;
+
+  // One clear loser, the other arm not measured: no winner.
+  const unmeasured = decide(runs("current", 0.01), runs("dear", 0.02));
+  expect(unmeasured).toMatchObject({ verdict: "inconclusive", winner: null });
+  expect(unmeasured.text).toContain("dear is worse by");
+  expect(unmeasured.text).toContain("other is not measured yet");
+  expect(unmeasured.remove).toContain("Arm dear (without run_code) can be dropped");
+  // One clear loser, the other arm not told apart from the control: no winner.
+  const same = decide(runs("current", 0.01), runs("dear", 0.02), runs("other", 0.01));
+  expect(same).toMatchObject({ verdict: "inconclusive", winner: null });
+  expect(same.text).toContain("other does not differ beyond chance");
+  // Both arms decisively worse: the control wins, and both go.
+  const both = decide(runs("current", 0.01), runs("dear", 0.02), runs("other", 0.03));
+  expect(both).toMatchObject({ verdict: "won", winner: "current" });
+  expect(both.remove).toContain("Drop arms dear (without run_code), other (effort \"low\")");
+  // An arm that is better still wins over a loser.
+  expect(decide(runs("current", 0.01), runs("dear", 0.02), runs("other", 0.005))).toMatchObject({ verdict: "won", winner: "other" });
+  // Live: an arm with weight 0 is not compared, so the one enabled loser is every arm.
+  const live = { ...e, mode: "live", arms: [e.arms[0]!, e.arms[1]!, { ...e.arms[2]!, weight: 0 }] } as Experiment;
+  expect(report(live, [...runs("current", 0.01), ...runs("dear", 0.02)]).decision).toMatchObject({ verdict: "won", winner: "current" });
 });
