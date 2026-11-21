@@ -5,18 +5,22 @@
 //   keel debug errors [--all]        the open errors (every one with --all), newest first
 //   keel debug trace TRACE_ID        one trace's spans as a waterfall
 //   keel debug timeline SESSION      what happened in a session and what it is doing now, a line a row
+//   SESSION is a session's id, a prefix of it, or an agent's id or a prefix of that.
 //   keel debug log [-f] [--level L] [--grep TEXT] [--lines N]   the daemon's log; -f follows it
 import { parseArgs } from "node:util";
 import { chunks } from "../core/proc.ts";
 import { authHeaders, findDaemon, refusal } from "./client.ts";
 
 const USAGE = `keel debug [ERROR_ID] | --session ID [--turn EVENT]   the debug bundle, as Markdown
+                                                      (an id that names no error is read as a session: its last turn)
 keel debug errors [--all] [--json]                    the open errors, newest first
 keel debug trace TRACE_ID [--json]                    one trace's spans
 keel debug timeline SESSION [--since 1h] [--only failures|turns|agents] [--limit N] [--before CURSOR] [--no-ids] [--json]
                                                       what happened in a session, newest first, and what it does now
                                                       (--no-ids leaves the ids off the lines: fewer tokens for a model that only reads)
 keel debug log [-f] [--level debug|info|warn|error] [--grep TEXT] [--lines N]
+  SESSION and --session ID take a session's id, a prefix of it that names one session, or an
+  agent's id or a prefix of that (the agent's session).
   Every form takes --url URL (else KEEL_URL, else the daemon of the state folder).`;
 
 async function get(url: string, path: string): Promise<Response> {
@@ -74,11 +78,19 @@ export async function debug(argv: string[]): Promise<number> {
     }
     if (pos[0] === "log") return await log(url, v);
     let q: string;
-    if (v.session) q = `session_id=${encodeURIComponent(v.session)}${v.turn ? `&turn_event=${encodeURIComponent(v.turn)}` : ""}`;
+    if (v.session) {
+      const { session } = await getJson(url, `/api/cli/resolve?id=${encodeURIComponent(v.session)}`);
+      q = `session_id=${encodeURIComponent(session.id)}${v.turn ? `&turn_event=${encodeURIComponent(v.turn)}` : ""}`;
+    }
     else {
       const id = pos[0] ?? (await getJson(url, "/api/errors?resolved=0")).errors[0]?.id;
       if (!id) return (console.log("No open errors; name one (keel debug errors --all) or a session (--session ID)."), 0);
       q = `error_id=${encodeURIComponent(id)}`;
+      // An id that names no error may name a session (the short id a report's row ends with): its last turn's bundle.
+      if (pos[0] && !(await fetch(`${url}/api/debug/bundle?${q}`, { headers: authHeaders() }).then((r) => r.ok, () => true))) {
+        const found = await fetch(`${url}/api/cli/resolve?id=${encodeURIComponent(id)}`, { headers: authHeaders() }).then((r) => (r.ok ? (r.json() as Promise<any>) : null), () => null);
+        if (found?.session?.id) q = `session_id=${encodeURIComponent(found.session.id)}`;
+      }
     }
     process.stdout.write(await (await get(url, `/api/debug/bundle?${q}`)).text());
     return 0;

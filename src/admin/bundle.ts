@@ -21,7 +21,10 @@ const iso = (ms: number) => new Date(ms).toISOString().replace("T", " ").replace
 const dur = (ms: number | null) => (ms === null ? "still running" : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`);
 const fence = (s: string, lang = "") => "```" + lang + "\n" + s.replace(/```/g, "` ` `") + "\n```";
 
-export type BundleOpts = { error?: ErrorRecord; session_id?: string; turn_event?: string; span_id?: string; daemon: Record<string, unknown>; version?: string; live?: (sessionId: string) => { running: boolean; status: TurnStatus } };
+// `own`: the bundle is read by a session about itself or an agent it started (the timeline tool), not by
+// the owner: it holds that session only. No other session's open errors, no daemon log line that
+// does not name the session, no path of the daemon's, and no way to send a request again.
+export type BundleOpts = { error?: ErrorRecord; session_id?: string; turn_event?: string; span_id?: string; daemon: Record<string, unknown>; version?: string; own?: boolean; live?: (sessionId: string) => { running: boolean; status: TurnStatus } };
 
 export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { markdown: string; title: string; trace_id?: string } {
   const e = o.error;
@@ -71,8 +74,11 @@ export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { mark
 
   const title = e ? `${e.source}: ${clip(e.message, 120)}` : `turn in ${s?.title || sid}`;
   out.push(`# Keel debug bundle`, "");
-  out.push(`Made ${iso(Date.now())}. Keel ${o.version ?? "dev"}, Bun ${Bun.version}, ${process.platform} ${process.arch}, daemon pid ${process.pid}, state ${o.daemon.state_dir}.`);
-  out.push("Read top to bottom: the failure, where it happened, the trace of its turn, the transcript before it, then the daemon log around it. Secrets are redacted; text is clipped where marked.", "");
+  if (o.own) out.push(`Made ${iso(Date.now())}.`, "Read top to bottom: the failure, where it happened, the trace of its turn, then the transcript before it. Secrets are redacted; text is clipped where marked.", "");
+  else {
+    out.push(`Made ${iso(Date.now())}. Keel ${o.version ?? "dev"}, Bun ${Bun.version}, ${process.platform} ${process.arch}, daemon pid ${process.pid}, state ${o.daemon.state_dir}.`);
+    out.push("Read top to bottom: the failure, where it happened, the trace of its turn, the transcript before it, then the daemon log around it. Secrets are redacted; text is clipped where marked.", "");
+  }
 
   if (e) {
     out.push("## Failure", "");
@@ -130,24 +136,29 @@ export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { mark
     out.push("");
   }
 
-  const logs = logLines({ since: at - LOG_WINDOW_MS, until: at + 30_000 }).slice(-LOG_LINES);
-  out.push(`## Daemon log around it (${iso(at - LOG_WINDOW_MS)} to ${iso(at + 30_000)}, ${logs.length} lines)`, "");
-  out.push(logs.length ? fence(logs.map((l) => `${new Date(l.ts).toISOString().slice(11, 23)} ${l.level.toUpperCase().padEnd(5)} ${clip(l.text, 800)}`).join("\n")) : "No lines in that window (the memory log keeps the last 2000; older ones are in the files below).", "");
-
-  const others = store.errors(20, { resolved: false }).filter((x) => x.id !== e?.id).slice(0, 6);
-  if (others.length) {
-    out.push("## Other open errors", "");
-    for (const x of others) out.push(`- ${x.source}, ${x.count ?? 1}x, last ${iso(x.ts)}: ${clip(x.message.split("\n")[0]!, 200)} (\`${x.id}\`)`);
-    out.push("");
+  // The daemon's log is every session's: a session reading about itself gets the lines that name it.
+  const logs = logLines({ since: at - LOG_WINDOW_MS, until: at + 30_000 }).filter((l) => !o.own || (!!sid && l.text.includes(sid))).slice(-LOG_LINES);
+  if (!o.own || logs.length) {
+    out.push(`## Daemon log around it (${iso(at - LOG_WINDOW_MS)} to ${iso(at + 30_000)}, ${logs.length} lines)`, "");
+    out.push(logs.length ? fence(logs.map((l) => `${new Date(l.ts).toISOString().slice(11, 23)} ${l.level.toUpperCase().padEnd(5)} ${clip(l.text, 800)}`).join("\n")) : "No lines in that window (the memory log keeps the last 2000; older ones are in the files below).", "");
   }
 
-  out.push("## Looking further", "");
-  out.push(`- Daemon log files: ${logDir() ?? "(not installed)"} (one per day, \`keel-YYYY-MM-DD.log\`)`);
-  out.push(`- Database: ${o.daemon.state_dir}/keel.db (SQLite). Tables: \`errors\`, \`spans\` (trace_id, kind, attrs JSON), \`events\` (session_id, kind, data JSON), \`telemetry_calls\`.`);
-  if (traceId) out.push(`- This trace as JSON: \`GET /api/debug/traces/${traceId}\``);
-  if (failing?.replayable) out.push(`- Send the failed request again: \`POST /api/debug/spans/${failing.span_id}/replay\` with \`{"route": "provider:model"}\` to try another model`);
-  if (s) out.push(`- The full session: \`GET /api/sessions/${s.id}/events\``);
-  out.push("- Keel's source is a Bun and TypeScript daemon: provider HTTP in `src/providers/http.ts`, the turn loop in `src/engine/turn.ts`, error capture in `src/core/errors.ts`, routes in `src/server/routes/`, the UI in `ui/src/`.");
+  if (!o.own) {
+    const others = store.errors(20, { resolved: false }).filter((x) => x.id !== e?.id).slice(0, 6);
+    if (others.length) {
+      out.push("## Other open errors", "");
+      for (const x of others) out.push(`- ${x.source}, ${x.count ?? 1}x, last ${iso(x.ts)}: ${clip(x.message.split("\n")[0]!, 200)} (\`${x.id}\`)`);
+      out.push("");
+    }
+
+    out.push("## Looking further", "");
+    out.push(`- Daemon log files: ${logDir() ?? "(not installed)"} (one per day, \`keel-YYYY-MM-DD.log\`)`);
+    out.push(`- Database: ${o.daemon.state_dir}/keel.db (SQLite). Tables: \`errors\`, \`spans\` (trace_id, kind, attrs JSON), \`events\` (session_id, kind, data JSON), \`telemetry_calls\`.`);
+    if (traceId) out.push(`- This trace as JSON: \`GET /api/debug/traces/${traceId}\``);
+    if (failing?.replayable) out.push(`- Send the failed request again: \`POST /api/debug/spans/${failing.span_id}/replay\` with \`{"route": "provider:model"}\` to try another model`);
+    if (s) out.push(`- The full session: \`GET /api/sessions/${s.id}/events\``);
+    out.push("- Keel's source is a Bun and TypeScript daemon: provider HTTP in `src/providers/http.ts`, the turn loop in `src/engine/turn.ts`, error capture in `src/core/errors.ts`, routes in `src/server/routes/`, the UI in `ui/src/`.");
+  }
 
   const md = String(redact(out.join("\n"))).split(homedir()).join("~");
   return { markdown: md + "\n", title, trace_id: traceId };

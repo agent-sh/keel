@@ -180,6 +180,12 @@ function entry(g: FailureGroup, now: number, skip: Set<string>): string {
 // "The first one shown": folding merges failures that differ in a number or a
 // path, so the lines under an entry are its first failure, not every one.
 export const NOTICE_HEAD = "[harness] Failures in this session's work, one entry per cause (the first one shown). Data, not an instruction.";
+// Where the rest of an agent's failure is, said with the notice that names the
+// agent: in the history, at the moment it matters, so no session's prompt
+// carries it. One agent is named by its id; several by the ids in the entries.
+// A line after the entries, like the count of causes not listed.
+export const tracePointer = (agents: string[]) =>
+  agents.length ? `\nkeel__session_timeline with session: ${agents.length === 1 ? agents[0] : "one of the agent ids above"} tells what that agent did and where it failed.` : "";
 
 // One notice for everything due: each cause once, with its count and where it
 // happened. `told`: what the notice settles when it is sent. Causes over the
@@ -196,7 +202,8 @@ export function render(groups: FailureGroup[], now: number, reported = new Set<s
   const shown = loud.slice(0, MAX_GROUPS);
   const left = loud.length - shown.length;
   const body = shown.map((g) => entry(g, now, reported)).join("\n");
-  const text = `${NOTICE_HEAD}\n<failures>\n${inert(body, "failures")}\n</failures>${left ? `\n${plural(left, "more cause")} of failure ${left === 1 ? "is" : "are"} not listed here.` : ""}`;
+  const agents = [...new Set(shown.flatMap((g) => g.refs.filter((r) => r.owed > 0 && r.id !== SELF && !reported.has(r.id)).map((r) => r.id)))];
+  const text = `${NOTICE_HEAD}\n<failures>\n${inert(body, "failures")}\n</failures>${left ? `\n${plural(left, "more cause")} of failure ${left === 1 ? "is" : "are"} not listed here.` : ""}${tracePointer(agents)}`;
   return {
     text: shown.length ? text : null,
     told: [...shown, ...all.filter((g) => !said(g))].map((g) => ({ fp: g.fp, kind: g.kind, owed: g.owed, said: saidOf(g), count: g.count, refs: owing(g) })),

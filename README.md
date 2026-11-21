@@ -84,6 +84,28 @@ its rows from its parent's list.
 leaves the IDs off the lines. The Timeline side panel shows it live: it asks
 only for what is newer than what it holds, and not at all from a hidden tab.
 
+## A model traces a failure by itself
+
+The notice a session gets when an agent it started fails ends with one line
+that names the tool and the agent: `keel__session_timeline with session: ID
+tells what that agent did and where it failed.` It is part of an input in the
+history, so no session's system prompt or cached prefix changes for it.
+
+- `keel__session_timeline` takes `session`: an agent the session started, by
+  its ID, a prefix of it or its session ID. `open` (`error=ID` or `turn=ID`,
+  as a row ends) gives that one failure in full instead of the rows: what
+  failed, its trace and the events before it. It holds only the session's own
+  work or its agents': no other session's errors, no daemon log line that does
+  not name the session, no path of the daemon's and no way to send a request
+  again. An error ID that is not the session's, or no longer (a kind of
+  failure keeps the last session it happened in), is refused with a pointer
+  at the turn's ID, which does not move.
+- `keel debug timeline`, `keel debug --session` and the other commands that
+  name a session take a session's ID, a prefix that names one session, its
+  last twelve characters (no shorter ending), or an agent's ID or a prefix of
+  that. So does `GET /api/sessions/:id/timeline`. `keel debug ID` with an ID
+  that names no error reads it as a session.
+
 ## Auto and Full auto
 
 **Auto** keeps Keel's existing read permissions. In-scope edits, read-only

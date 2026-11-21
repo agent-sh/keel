@@ -83,7 +83,8 @@ export async function emptyKeel(dir: string): Promise<{ url: string; state: stri
 // it cannot reach a real model provider whatever the spec was started from:
 // of the caller's environment it gets the path only, so no provider key; its
 // home is its own, so no sign-in file; and it has no session bus, so no keyring.
-export function ownDaemon(state: string, port = 0): Promise<{ proc: ChildProcess; url: string; port: number }> {
+// `more`: settings of the spec's own for that daemon (a shorter wait, a gap).
+export function ownDaemon(state: string, port = 0, more: Record<string, string> = {}): Promise<{ proc: ChildProcess; url: string; port: number }> {
   for (const d of ["config", "home/run", "stores", "tmp"]) mkdirSync(join(state, d), { recursive: true });
   writeFileSync(join(state, "ssh_config"), "");
   const proc = spawn("bun", ["src/main.ts", "serve", "--bind", `127.0.0.1:${port}`, "--state-dir", state, "--workspace", state], {
@@ -93,6 +94,7 @@ export function ownDaemon(state: string, port = 0): Promise<{ proc: ChildProcess
       KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_SERVER_NAME: "desk", KEEL_CONFIG_DIR: join(state, "config"), KEEL_SSH_CONFIG: join(state, "ssh_config"), KEEL_DESKTOP_NOTIFY: "off",
       KEEL_MCP_CONFIG: join(state, "mcp.json"), KEEL_IMPORT_HOME: join(state, "home"), KEEL_IMPORT_CLAUDE_DIR: join(state, "stores/claude"), KEEL_IMPORT_CODEX_DIR: join(state, "stores/codex"), KEEL_IMPORT_AGY_DIR: join(state, "stores/agy"),
       KEEL_IMPORT_KEEL_DB: join(state, "stores/keel.db"), KEEL_IMPORT_HERMES_DIR: join(state, "stores/hermes"), TACIT_BIN: resolve("test/e2e/fixtures/tacit-standin.sh"),
+      ...more,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -108,6 +110,12 @@ export function ownDaemon(state: string, port = 0): Promise<{ proc: ChildProcess
     proc.stderr!.on("data", on);
   });
 }
+// The environment of a command line run against such a daemon: the path and that daemon's own folders, nothing of the caller's.
+export const ownEnv = (state: string): NodeJS.ProcessEnv => ({
+  PATH: process.env.PATH ?? "", TMPDIR: process.env.TMPDIR ?? join(state, "tmp"), LANG: "C.UTF-8", HOME: join(state, "home"),
+  KEEL_KEYRING_SERVICE: "keel-scratch-empty", DBUS_SESSION_BUS_ADDRESS: "unix:path=/nonexistent/bus", XDG_RUNTIME_DIR: join(state, "home/run"), KEEL_CRED_GET: "/bin/false",
+  KEEL_CONFIG_DIR: join(state, "config"), KEEL_STATE_DIR: state,
+});
 export const exited = (p: ChildProcess) => new Promise<void>((r) => (p.exitCode !== null ? r() : p.once("exit", () => r())));
 
 // The way to another daemon with a hand on it: every request goes through to

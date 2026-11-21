@@ -55,6 +55,18 @@ test("a bundle asked from a span is about that span and the branch its turn ran 
     expect(now).not.toContain("MARK-ORIGINAL");
     expect(now).not.toContain("branch it left");
 
+    // Read by a session about itself (the timeline tool): the same failure and transcript, and nothing
+    // of the daemon's other sessions or its own folders.
+    const other = store.createSession({ workspace: dir, model: "p:m" });
+    store.recordError({ source: "provider", message: "MARK-OTHER-SESSION a failure elsewhere", session_id: other.id });
+    const owners = bundle({ turn_event: sibling.turn });
+    for (const part of ["## Other open errors", "MARK-OTHER-SESSION", "## Looking further", "/replay", ", state ", "keel.db", "## Daemon log around it"]) expect(owners).toContain(part);
+    const own = buildBundle(store, tracer, { session_id: s.id, turn_event: sibling.turn, daemon: { state_dir: store.stateDir }, own: true }).markdown;
+    expect(failing(own)).toContain("the sibling request was refused");
+    expect(own).toContain("MARK-SIBLING");
+    expect(own).toContain("## Trace of the turn");
+    for (const part of ["Other open errors", "MARK-OTHER-SESSION", "Looking further", "/replay", "/api/sessions/", "keel.db", ", state ", "daemon pid"]) expect(own).not.toContain(part);
+
     // The span is pruned: the bundle says so and shows no other span as the failing one.
     store.db.run("DELETE FROM spans WHERE span_id = ?", [original.span]);
     const pruned = bundle({ turn_event: original.turn, span_id: original.span });

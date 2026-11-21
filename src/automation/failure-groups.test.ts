@@ -31,6 +31,15 @@ test("ten agents that failed on one cause are one entry, each listed by id", () 
   // The lines under an entry are its first failure: the notice says so, in a short header.
   expect(r.text!.split("\n")[0]).toContain("the first one shown");
   expect(r.text!.split("\n")[0]!.length).toBeLessThan(120);
+  // Where the rest is: the tool that reads an agent's timeline, after the entries. Several agents are named by the entries.
+  expect(r.text!.split("\n").at(-1)).toBe("keel__session_timeline with session: one of the agent ids above tells what that agent did and where it failed.");
+  const one = new Map<string, FailureGroup>();
+  put(one, agent(7));
+  expect(render([...one.values()], 1000)!.text!.split("\n").at(-1)).toBe("keel__session_timeline with session: a7 tells what that agent did and where it failed.");
+  // A failure of the session's own turn names no agent, and gets no pointer.
+  const own = new Map<string, FailureGroup>();
+  put(own, { kind: "turn", cls: "quota", message: QUOTA, tell: "ride" });
+  expect(render([...own.values()], 1000)!.text!.split("\n").at(-1)).toBe("</failures>");
 });
 
 test("a group told once is told again only for what came after, with the total", () => {

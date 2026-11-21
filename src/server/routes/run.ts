@@ -6,7 +6,7 @@
 //   One prompt to a new or existing session, settings first. With a key, a
 //   retry gets the first answer back and starts neither a session nor a turn.
 // GET  /api/cli/state/:id               -> running, queue, open cards and questions, background work
-// GET  /api/cli/resolve?id=PREFIX       -> { session } (a unique prefix of an id)
+// GET  /api/cli/resolve?id=PREFIX       -> { session } (a unique prefix of an id, or an agent's id or a prefix of it)
 // GET  /api/cli/model?model=&provider=  -> { model } (an id, a bare model name or a listed name)
 import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
@@ -21,6 +21,7 @@ import * as waits from "../../automation/waits.ts";
 import { pendingQuestions } from "../../tools/interact.ts";
 import { jobsOf, running } from "../../tools/jobs.ts";
 import { fitted } from "../../engine/image-fit.ts";
+import { sessionRef } from "../../admin/session-ref.ts";
 
 const SCHEMA = `CREATE TABLE IF NOT EXISTS cli_runs (key TEXT PRIMARY KEY, session_id TEXT NOT NULL, after_seq INTEGER NOT NULL, event_id TEXT, created INTEGER NOT NULL);`;
 
@@ -45,15 +46,8 @@ export function pickModel(models: ModelInfo[], want: string, provider?: string):
   throw fail(`no listed model is ${want}${provider ? ` on ${provider}` : ""} (keel models lists them)`);
 }
 
-export function resolveSession(deps: Deps, id: string) {
-  const exact = deps.store.session(id);
-  if (exact) return exact;
-  if (!/^[0-9a-f-]{4,}$/i.test(id)) throw fail(`no session ${id}`, 404);
-  const rows = deps.store.db.query<{ id: string }, [string]>("SELECT id FROM sessions WHERE id LIKE ? || '%' LIMIT 6").all(id.toLowerCase());
-  if (!rows.length) throw fail(`no session ${id}`, 404);
-  if (rows.length > 1) throw fail(`${id} names more than one session: ${rows.map((r) => r.id).join(", ")}`, 409);
-  return deps.store.session(rows[0]!.id)!;
-}
+// Also an agent's id or a prefix of it: the agent's session.
+export const resolveSession = (deps: Deps, id: string) => sessionRef(deps.store, id);
 
 const lastSeq = (deps: Deps, id: string) =>
   deps.store.db.query<{ n: number | null }, [string]>("SELECT max(seq) AS n FROM events WHERE session_id = ?").get(id)?.n ?? 0;
