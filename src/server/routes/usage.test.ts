@@ -1,13 +1,16 @@
 // The usage ledger over a generated store, where the e2e cannot reach: the
 // answer of every grouping and sort is the one a walk over every request
 // gives (the calculation the route did before it summed in SQLite), and what
-// SQLite hands to JS does not grow with the number of requests.
+// SQLite hands to JS does not grow with the number of requests. The route
+// sums a rollup that triggers keep as requests are written, taken out or
+// changed: the walk reads the ledger itself, so the two agree only while the
+// rollup is right.
 import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../../core/store.ts";
 import { allHooks } from "../../engine/hooks.ts";
-import { usageRoutes } from "./usage.ts";
+import { BUCKET, ensureRollup, usageRoutes } from "./usage.ts";
 
 const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "usage-routes-"));
 const store = new Store(dir);
@@ -158,6 +161,11 @@ const CASES: Record<string, string | number>[] = [
   { group: "model", session_id: "s-other" }, { group: "session", children_of: "s-parent", sort: "cost" }, { group: "day", children_of: "s-parent", tz: "Europe/Berlin" },
   { group: "model", since_ms: Date.UTC(2026, 2, 8, 6, 30), until_ms: Date.UTC(2026, 3, 5, 15) }, { group: "day", tz: "America/New_York", since_ms: Date.UTC(2026, 2, 8, 6, 59, 59, 999), until_ms: Date.UTC(2026, 2, 8, 7, 0, 0, 1) },
   { group: "provider", session_id: "nobody" },
+  // Windows that are not whole quarter hours (their ends are read from the ledger), one inside a quarter hour,
+  // and day offsets a quarter hour does not fit (summed from the ledger).
+  { group: "model", since_ms: Date.UTC(2026, 2, 7, 3, 7, 11, 5), until_ms: Date.UTC(2026, 5, 11, 9, 52, 0, 1) }, { group: "session", since_ms: Date.UTC(2026, 2, 28, 4, 1), until_ms: Date.UTC(2026, 2, 28, 4, 9) },
+  { group: "day", tz: "Europe/Berlin", since_ms: Date.UTC(2026, 2, 28, 22, 59, 30), until_ms: Date.UTC(2026, 2, 30, 1, 0, 1), session_id: "s-parent" },
+  { group: "day", tz_offset_minutes: 7 }, { group: "day", tz_offset_minutes: -121, children_of: "s-parent" },
 ];
 
 test("every grouping, sort, filter and civil day is what a walk over every request gives", async () => {
@@ -200,10 +208,40 @@ test("a day's offset leaves no statement behind, and a time window of sessions i
   for (let m = -720; m <= 840; m += 45) await ask({ group: "day", tz_offset_minutes: m });
   for (const tz of ZONES) await ask({ group: "day", tz, limit: 4 });
   expect(keptSql.size).toBe(kept);
-  // Sessions since a time, with no statistics for the planner: the time index, not a walk of the ledger by session.
-  const since = Date.UTC(2026, 9, 31);
+  // Sessions since a time: the rollup's quarter hours by its time key, and the part of a quarter hour at the
+  // window's start from the ledger by its time index, never a walk of the ledger.
+  const since = Date.UTC(2026, 9, 31) + 61_000, whole = Date.UTC(2026, 9, 31) + BUCKET;
   same(named((await ask({ group: "session", since_ms: since })).body), named(walked({ group: "session", since_ms: since })), "sessions since");
-  const plan = query<{ detail: string }, [number]>(`EXPLAIN QUERY PLAN ${lastSql}`).all(since).map((r) => r.detail).join("; ");
-  expect(plan).toContain("telemetry_calls_ts");
-  expect(plan).not.toContain("telemetry_calls_session");
+  const plan = query<{ detail: string }, number[]>(`EXPLAIN QUERY PLAN ${lastSql}`).all(whole, since, whole).map((r) => r.detail).join("; ");
+  expect(plan).toContain("SEARCH usage_rollup USING PRIMARY KEY (bucket>?)");
+  expect(plan).toContain("SEARCH telemetry_calls USING INDEX telemetry_calls_ts (ts>? AND ts<?)");
+  expect(plan).not.toContain("SCAN telemetry_calls");
+  // Every request ever made, by model: nothing of the ledger is read.
+  await ask({ group: "model" });
+  expect(query<{ detail: string }, []>(`EXPLAIN QUERY PLAN ${lastSql}`).all().map((r) => r.detail).join("; ")).not.toContain("telemetry_calls");
+});
+
+test("requests taken out, changed or moved leave every sum what a walk gives", async () => {
+  const rollup = () => query<{ n: number; calls: number }, []>("SELECT COUNT(*) AS n, SUM(calls) AS calls FROM usage_rollup").get()!;
+  const before = rollup();
+  store.db.run("DELETE FROM telemetry_calls WHERE id % 7 = 0");
+  // Priced requests lose their price, others fail with nothing reported (no longer counted) or get usage (counted now).
+  store.db.run("UPDATE telemetry_calls SET cost = NULL, unpriced = 1 WHERE id % 11 = 0");
+  store.db.run("UPDATE telemetry_calls SET outcome = 'error', input = 0, output = 0, cache_read = 0, cache_write = 0, cost = NULL WHERE id % 13 = 0");
+  store.db.run("UPDATE telemetry_calls SET input = 5, outcome = 'ok' WHERE outcome = 'error' AND input + output + cache_read + cache_write = 0 AND cost IS NULL AND id % 2 = 0");
+  // Moved to another quarter hour, model, session and purpose.
+  store.db.run("UPDATE telemetry_calls SET ts = ts + 3 * 3600000 + 17, model = 'beta:one', session_id = 's-child-2', purpose = 'advisor' WHERE id % 17 = 0");
+  expect(rollup().calls).toBeLessThan(before.calls);
+  for (const c of CASES) same(named((await ask(c)).body), named(walked(c)), JSON.stringify(c));
+  // A session's requests all gone: no row of it is left behind.
+  store.db.run("DELETE FROM telemetry_calls WHERE session_id = 's-other'");
+  expect(query<{ n: number }, []>("SELECT COUNT(*) AS n FROM usage_rollup WHERE session_id = 's-other' OR calls <= 0").get()!.n).toBe(0);
+  for (const c of CASES) same(named((await ask(c)).body), named(walked(c)), JSON.stringify(c));
+  // Made again from the ledger, the rollup is the one the triggers kept.
+  const kept = query<any, []>("SELECT * FROM usage_rollup ORDER BY bucket, session_id, model, purpose").all();
+  store.db.run("DROP TRIGGER usage_rollup_v1_add");
+  expect(ensureRollup(store.db)).toBe(true);
+  const made = query<any, []>("SELECT * FROM usage_rollup ORDER BY bucket, session_id, model, purpose").all();
+  expect(made.length).toBe(kept.length);
+  for (let i = 0; i < made.length; i++) same(kept[i], made[i], `rollup row ${i}`);
 });

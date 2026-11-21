@@ -13,7 +13,13 @@
 // (default), fresh (input without cache plus output) or cost.
 // children_of: the requests of the agents a session started (its delegated spend).
 // The ledger is summed in SQLite: what reaches JS is one row per bucket and
-// purpose, however many requests they hold.
+// purpose, however many requests they hold. And the sums are not made from the
+// ledger: a rollup (usage_rollup) holds them per quarter hour, session, model
+// and purpose, kept by triggers as requests are written, so a view reads a few
+// narrow rows per quarter hour instead of every request ever made. Only the
+// part of a time window that is not whole quarter hours (at most the quarter
+// hour at each end) is read from the ledger, by its time index.
+import type { Database } from "bun:sqlite";
 import type { RouteModule } from "../app.ts";
 
 const GROUPS = new Set(["model", "session", "day", "provider"]);
@@ -59,7 +65,7 @@ function zoneOffset(zone: string): (ms: number) => number {
 // changes its clock. Only days that hold requests are looked at, two instants
 // each; a day whose ends differ is walked to find each change to the
 // millisecond. Between two days with requests a step may sit anywhere.
-export function offsetSql(days: number[], at: (ms: number) => number): string {
+export function offsetSteps(days: number[], at: (ms: number) => number): { from: number; off: number }[] {
   const steps: { from: number; off: number }[] = [];
   let cur: number | undefined;
   for (const d of days) {
@@ -81,11 +87,70 @@ export function offsetSql(days: number[], at: (ms: number) => number): string {
       } else lo = hi;
     }
   }
+  return steps;
+}
+export function offsetSql(days: number[], at: (ms: number) => number, steps = offsetSteps(days, at)): string {
   if (steps.length < 2) return String(steps[0]?.off ?? 0);
   return `CASE ${steps.slice(1).map((s, i) => `WHEN ts < ${s.from} THEN ${steps[i]!.off}`).join(" ")} ELSE ${steps.at(-1)!.off} END`;
 }
 
 type Group = Sum & { key: string | number; purpose: string; first: number };
+
+// The rollup's bucket: a quarter hour of UTC. Every zone's offset from UTC and
+// every clock change falls on one, so a bucket lies in one civil day of any
+// zone (a view at an offset that does not is summed from the ledger).
+export const BUCKET = 900_000;
+const bucketOf = (ts: string) => `(${ts} - (((${ts} % ${BUCKET}) + ${BUCKET}) % ${BUCKET}))`;
+// A failed attempt that reported no usage is not a request to count.
+const counted = (r = "") => `NOT (${r}outcome = 'error' AND ${r}input + ${r}output + ${r}cache_read + ${r}cache_write = 0 AND ${r}cost IS NULL)`;
+// The rollup's columns after its key's time, session and model, and a ledger
+// row (`r`: NEW. or OLD. in a trigger) as each of them.
+const COLS = ["purpose", "first", "calls", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "priced_cost_usd", "unpriced_calls", "incomplete_calls", "included_calls"];
+const SUMS = COLS.slice(2);
+const ledger = (r = "") => [
+  `COALESCE(${r}purpose, 'turn')`, `${r}id`, "1", `${r}input`, `${r}output`, `${r}cache_read`, `${r}cache_write`, `COALESCE(${r}cost, 0)`,
+  `(${r}cost IS NULL AND ${r}unpriced != 0)`, `(${r}cost IS NULL AND ${r}unpriced = 0 AND ${r}outcome != 'ok')`, `(${r}cost IS NULL AND ${r}unpriced = 0 AND ${r}outcome = 'ok')`,
+];
+// The triggers' name carries the version of what they write: when it changes,
+// the rollup is made again from the ledger (a rollup of another shape gets
+// another table).
+const TRIGGER = "usage_rollup_v1";
+
+// The rollup and the triggers that keep it, made once from the ledger as it
+// stands (in the write that adds the triggers, so no request falls between).
+// The triggers are part of the database: a request written by any build, or
+// by hand, is counted; a row taken out or changed is taken out of its sums.
+// False while the ledger's table is not there yet.
+export function ensureRollup(db: Database): boolean {
+  if (db.query("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(`${TRIGGER}_add`)) return true;
+  if (!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'telemetry_calls'").get()) return false;
+  const key = (r: string) => `bucket = ${bucketOf(`${r}ts`)} AND session_id = ${r}session_id AND model = ${r}model AND purpose = COALESCE(${r}purpose, 'turn')`;
+  const add = `INSERT INTO usage_rollup (bucket, session_id, model, ${COLS.join(", ")}) SELECT ${bucketOf("NEW.ts")}, NEW.session_id, NEW.model, ${ledger("NEW.").join(", ")} WHERE ${counted("NEW.")}
+    ON CONFLICT (bucket, session_id, model, purpose) DO UPDATE SET first = MIN(first, excluded.first), ${SUMS.map((c) => `${c} = ${c} + excluded.${c}`).join(", ")};`;
+  const old = ledger("OLD.").slice(2);
+  // The first request of a bucket that goes is replaced by the first one left.
+  const sub = `UPDATE usage_rollup SET ${SUMS.map((c, i) => `${c} = ${c} - ${old[i]}`).join(", ")},
+      first = CASE WHEN first = OLD.id THEN COALESCE((SELECT MIN(id) FROM telemetry_calls WHERE session_id = OLD.session_id AND ts >= ${bucketOf("OLD.ts")} AND ts < ${bucketOf("OLD.ts")} + ${BUCKET}
+        AND model = OLD.model AND COALESCE(purpose, 'turn') = COALESCE(OLD.purpose, 'turn') AND id != OLD.id AND ${counted()}), first) ELSE first END
+      WHERE ${key("OLD.")} AND ${counted("OLD.")};
+    DELETE FROM usage_rollup WHERE ${key("OLD.")} AND calls <= 0;`;
+  db.transaction(() => {
+    for (const r of db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'usage_rollup_%'").all()) db.run(`DROP TRIGGER ${r.name}`);
+    db.run(`CREATE TABLE IF NOT EXISTS usage_rollup (bucket INTEGER NOT NULL, session_id TEXT NOT NULL, model TEXT NOT NULL, purpose TEXT NOT NULL, first INTEGER NOT NULL, calls INTEGER NOT NULL,
+      input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, cache_read_tokens INTEGER NOT NULL, cache_write_tokens INTEGER NOT NULL, priced_cost_usd REAL NOT NULL,
+      unpriced_calls INTEGER NOT NULL, incomplete_calls INTEGER NOT NULL, included_calls INTEGER NOT NULL, PRIMARY KEY (bucket, session_id, model, purpose)) WITHOUT ROWID`);
+    db.run("CREATE INDEX IF NOT EXISTS usage_rollup_session ON usage_rollup(session_id, bucket)");
+    db.run("DELETE FROM usage_rollup");
+    db.run(`INSERT INTO usage_rollup (bucket, session_id, model, ${COLS.join(", ")})
+      SELECT ${bucketOf("ts")}, session_id, model, COALESCE(purpose, 'turn'), MIN(id), COUNT(*), SUM(input), SUM(output), SUM(cache_read), SUM(cache_write), COALESCE(SUM(cost), 0),
+        SUM(cost IS NULL AND unpriced != 0), SUM(cost IS NULL AND unpriced = 0 AND outcome != 'ok'), SUM(cost IS NULL AND unpriced = 0 AND outcome = 'ok')
+      FROM telemetry_calls WHERE ${counted()} GROUP BY 1, 2, 3, 4`);
+    db.run(`CREATE TRIGGER ${TRIGGER}_add AFTER INSERT ON telemetry_calls BEGIN ${add} END`);
+    db.run(`CREATE TRIGGER ${TRIGGER}_del AFTER DELETE ON telemetry_calls BEGIN ${sub} END`);
+    db.run(`CREATE TRIGGER ${TRIGGER}_upd AFTER UPDATE OF session_id, ts, model, input, output, cache_read, cache_write, cost, unpriced, outcome, purpose ON telemetry_calls BEGIN ${sub} ${add} END`);
+  })();
+  return true;
+}
 
 export const usageRoutes: RouteModule = ({ store }) => ({
   "/api/usage": {
@@ -105,41 +170,58 @@ export const usageRoutes: RouteModule = ({ store }) => ({
         try { offset = zoneOffset(zone); }
         catch { return Response.json({ error: `unknown time zone ${zone}` }, { status: 400 }); }
       }
-      // A failed attempt that reported no usage is not a request to count.
-      const where = ["NOT (outcome = 'error' AND input + output + cache_read + cache_write = 0 AND cost IS NULL)"];
+      const where: string[] = [];
       const args: (string | number)[] = [];
       if (q.get("session_id")) { where.push("session_id = ?"); args.push(q.get("session_id")!); }
       if (q.get("children_of")) { where.push("session_id IN (SELECT id FROM sessions WHERE parent_id = ?)"); args.push(q.get("children_of")!); }
-      if (since !== undefined) { where.push("ts >= ?"); args.push(since); }
-      if (until !== undefined) { where.push("ts < ?"); args.push(until); }
-      const from = `FROM telemetry_calls WHERE ${where.join(" AND ")}`;
+      // What is summed, as rows of the rollup's shape with a time: the rollup
+      // for the whole quarter hours of the window, the ledger for what is left
+      // at its ends (`whole` false: the ledger for all of it).
+      const source = (whole: boolean): { sql: string; args: (string | number)[] } => {
+        const parts: string[] = [];
+        const all: (string | number)[] = [];
+        const part = (table: "usage_rollup" | "telemetry_calls", from?: number, to?: number) => {
+          const ts = table === "usage_rollup" ? "bucket" : "ts";
+          const w = [...(table === "usage_rollup" ? [] : [counted()]), ...where, ...(from !== undefined ? [`${ts} >= ?`] : []), ...(to !== undefined ? [`${ts} < ?`] : [])];
+          parts.push(`SELECT ${ts} AS ts, session_id, model, ${table === "usage_rollup" ? COLS.join(", ") : ledger().map((e, i) => `${e} AS ${COLS[i]}`).join(", ")} FROM ${table}${w.length ? ` WHERE ${w.join(" AND ")}` : ""}`);
+          all.push(...args, ...(from !== undefined ? [from] : []), ...(to !== undefined ? [to] : []));
+        };
+        const lo = since === undefined ? undefined : Math.ceil(since / BUCKET) * BUCKET, hi = until === undefined ? undefined : Math.floor(until / BUCKET) * BUCKET;
+        if (!whole || !ensureRollup(store.db) || (lo !== undefined && hi !== undefined && lo > hi)) part("telemetry_calls", since, until);
+        else {
+          part("usage_rollup", lo, hi);
+          if (since !== lo) part("telemetry_calls", since, lo);
+          if (until !== hi) part("telemetry_calls", hi, until);
+        }
+        return { sql: parts.join(" UNION ALL "), args: all };
+      };
+      let src = source(true);
       let key = "model";
       if (group === "provider") key = "substr(model, 1, max(0, instr(model, ':') - 1))";
-      // (The plus keeps the planner from walking the whole ledger in session order to group it: a time window is searched by its index.)
-      else if (group === "session") key = "+session_id";
+      else if (group === "session") key = "session_id";
       else if (group === "day") {
         // The day number of the local clock: at the zone's offset of that
         // instant (the UTC days that hold requests say where its clock changes),
-        // else at the fixed offset given.
-        key = offset
-          ? dayOf(`ts + ${offsetSql(store.db.query<{ d: number }, any[]>(`SELECT DISTINCT ${dayOf("ts")} AS d ${from} ORDER BY d`).all(...args).map((r) => r.d), offset)}`)
-          : dayOf(`CAST(ts - (${tz * 60_000}) AS INTEGER)`);
+        // else at the fixed offset given. A quarter hour of the rollup is in one
+        // local day when the offset and its changes fall on quarter hours.
+        if (offset) {
+          const steps = offsetSteps(store.db.query<{ d: number }, any[]>(`SELECT DISTINCT ${dayOf("ts")} AS d FROM (${src.sql}) ORDER BY d`).all(...src.args).map((r) => r.d), offset);
+          if (steps.some((x) => x.off % BUCKET || x.from % BUCKET)) src = source(false);
+          key = dayOf(`ts + ${offsetSql([], offset, steps)}`);
+        } else {
+          if ((tz * 60_000) % BUCKET) src = source(false);
+          key = dayOf(`CAST(ts - (${tz * 60_000}) AS INTEGER)`);
+        }
       }
       // A day key carries the request's offset in its text: its statement is made
       // for this request and freed after it. Kept, one would stay for every
       // offset ever asked for.
       const sums = (sql: string): Group[] => {
-        if (group !== "day") return store.db.query<Group, any[]>(sql).all(...args);
+        if (group !== "day") return store.db.query<Group, any[]>(sql).all(...src.args);
         const st = store.db.prepare<Group, any[]>(sql);
-        try { return st.all(...args); } finally { st.finalize(); }
+        try { return st.all(...src.args); } finally { st.finalize(); }
       };
-      const groups = sums(`SELECT ${key} AS key, COALESCE(purpose, 'turn') AS purpose, MIN(id) AS first, COUNT(*) AS calls,
-          SUM(input) AS input_tokens, SUM(output) AS output_tokens, SUM(cache_read) AS cache_read_tokens, SUM(cache_write) AS cache_write_tokens,
-          COALESCE(SUM(cost), 0) AS priced_cost_usd,
-          SUM(cost IS NULL AND unpriced != 0) AS unpriced_calls,
-          SUM(cost IS NULL AND unpriced = 0 AND outcome != 'ok') AS incomplete_calls,
-          SUM(cost IS NULL AND unpriced = 0 AND outcome = 'ok') AS included_calls
-          ${from} GROUP BY 1, 2`);
+      const groups = sums(`SELECT ${key} AS key, purpose, MIN(first) AS first, ${SUMS.map((c) => `SUM(${c}) AS ${c}`).join(", ")} FROM (${src.sql}) GROUP BY 1, 2`);
       // Buckets and purposes in the order their first request was written.
       const total = empty();
       const buckets = new Map<string, Sum & { first: number }>();
