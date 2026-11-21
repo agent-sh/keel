@@ -398,7 +398,8 @@ export class Engine {
   // wake, a loop run): { kind, ... } is stored with the event for the page.
   send(id: string, text: string, opts: { mode?: "send" | "steer" | "queue"; images?: any[]; meta?: Record<string, unknown> } = {}) {
     const mode = opts.mode ?? "send";
-    if (this.running.has(id) || (mode === "queue" && this.store.queue(id).length)) {
+    // A queue request must not start a held session, even if nothing else is queued.
+    if (this.running.has(id) || (mode === "queue" && (this.held.has(id) || this.store.queue(id).length))) {
       const q = this.store.enqueue(id, text, mode !== "queue", opts.images, opts.meta);
       this.emitQueue(id);
       return { queued: q, steer: q.steer };

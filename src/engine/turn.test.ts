@@ -326,6 +326,61 @@ test("a steer or queued prompt from momentum or a hook keeps its origin", async 
   expect(prompts).toEqual([["start", undefined, true], ["from momentum", "momentum", false], ["from a hook", "hook", false]]);
 });
 
+test("a queue request cannot start a stopped session with an empty queue", async () => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { Store } = await import("../core/store.ts");
+  const { Bus } = await import("../core/bus.ts");
+  const { allHooks } = await import("./hooks.ts");
+  const { Engine } = await import("./turn.ts");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "queue-stop-"));
+  const store = new Store(dir);
+  const s = store.createSession({ model: "fixture:m", workspace: dir });
+  const engine = new Engine(store, new Bus(), {} as any, { capture: (_s: string, e: unknown) => { throw e; } } as any, dir);
+  let running = Promise.withResolvers<void>();
+  let pause = true;
+  allHooks().push({ external: (session) => session.id === s.id ? async ({ signal }) => {
+    if (pause) {
+      running.resolve();
+      await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+    }
+    return { reason: "end_turn" };
+  } : undefined });
+  try {
+    for (const resume of ["queue", "owner"] as const) {
+      running = Promise.withResolvers<void>();
+      pause = true;
+      engine.send(s.id, "start");
+      await running.promise;
+      await engine.interrupt(s.id, "owner");
+      pause = false;
+      const stopped = store.events(s.id).at(-1)!;
+      expect(stopped.data).toMatchObject({ reason: "interrupted", stopped_by: "owner" });
+      expect(store.queue(s.id)).toEqual([]);
+
+      const r = engine.send(s.id, "automation notification", { mode: "queue", meta: { kind: "fixture" } });
+      expect(engine.isRunning(s.id)).toBe(false);
+      expect(engine.isHeld(s.id)).toBe(true);
+      expect(store.events(s.id, stopped.seq)).toEqual([]);
+      expect(store.queue(s.id)).toMatchObject([{ id: r.queued!.id, steer: false, meta: { kind: "fixture" } }]);
+
+      if (resume === "queue") engine.resumeQueue(s.id);
+      else engine.send(s.id, "owner follow-up");
+      await engine.idle(s.id);
+      await engine.idle(s.id);
+      const prompts = store.events(s.id, stopped.seq).filter((e) => e.kind === "user");
+      if (resume === "owner") expect(prompts.shift()?.data).toEqual({ text: "owner follow-up" });
+      expect(prompts.map((e) => e.data)).toEqual([{ text: "automation notification", kind: "fixture", origin: "queued", queue_id: r.queued!.id }]);
+      expect(engine.isHeld(s.id)).toBe(false);
+    }
+  } finally {
+    await engine.interrupt(s.id);
+    allHooks().pop();
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // A finished tool call takes its abort listener off the turn's shared signal,
 // whether it succeeded, failed or a gate refused it.
 test("a settled tool call leaves no abort listener on the turn's signal", async () => {
