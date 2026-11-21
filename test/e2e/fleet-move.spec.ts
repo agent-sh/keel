@@ -2,6 +2,8 @@ import { expect, test } from "./isolate.ts";
 import { peerProblem } from "./peer.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { basename } from "node:path";
 import { HAIKU, shoot } from "./shots.ts";
 
@@ -73,5 +75,69 @@ test("fleet move: there with its git state, work there, back home", async ({ pag
     // The scratch repository here and the one the move made over there.
     rmSync(HOME_DIR, { recursive: true, force: true });
     rmSync(`${ROOT}/${basename(HOME_DIR)}`, { recursive: true, force: true });
+  }
+});
+
+// A session whose tools run on another machine only comes back here: the
+// daemon refuses a move from there to a third machine, so the picker offers
+// "back here", lists the other machines with the reason, and offers them
+// again once the session is home. Place only: nothing is carried, no model runs.
+test("fleet move: from another machine a session only comes back here, and the picker says why", async ({ page, request }) => {
+  const peerWhy = await peerProblem(request, PEER);
+  test.skip(!!peerWhy, peerWhy ?? "");
+  const model = ((await (await request.get("/api/models")).json()).models as { provider: string; context: number; id: string }[])
+    .filter((m) => m.provider === "scripted").sort((a, b) => b.context - a.context)[0]?.id;
+  test.skip(!model, "the daemon runs without the scripted provider");
+  mkdirSync(ROOT, { recursive: true });
+  let { machines } = await (await request.get("/api/fleet/machines")).json();
+  let first = machines.find((m: any) => m.daemon_url === PEER);
+  if (!first) {
+    const r = await (await request.post("/api/fleet/machines", { data: { name: "devbox", daemon_url: PEER, workspace_root: ROOT } })).json();
+    first = r.machines.find((m: any) => m.id === r.id);
+  }
+  // A third machine that is only a record with a granted directory: nothing moves there.
+  const stub = createServer((_, res) => res.writeHead(404).end("{}"));
+  await new Promise<void>((resolve, reject) => stub.once("error", reject).listen(0, "127.0.0.1", resolve));
+  const thirdName = `Third box ${Date.now().toString(36)}`;
+  const third = (await (await request.post("/api/fleet/machines", { data: { name: thirdName, daemon_url: `http://127.0.0.1:${(stub.address() as AddressInfo).port}`, workspace_root: "/srv/third" } })).json()).id as string;
+  const s = (await (await request.post("/api/sessions", { data: { title: "Move twice", model } })).json()).session;
+  const to = (machine: string) => page.locator(`[data-testid="move-to"][data-machine="${machine}"]`);
+  try {
+    await page.goto(`/s/${s.id}`);
+    await page.getByTestId("machine-chip").click();
+    // At home both machines are offered.
+    await expect(to(first.id)).toBeEnabled();
+    await expect(to(third)).toBeEnabled();
+    await expect(page.getByTestId("move-later")).toHaveCount(0);
+    await page.getByRole("radio", { name: "place only" }).click();
+    await to(first.id).click();
+    await expect(page.getByTestId("move-progress")).toHaveAttribute("data-state", "done", { timeout: 60_000 });
+    await expect(page.getByTestId("machine-chip")).toContainText(first.name);
+
+    // There: only "back here" is a move; the third machine is listed with the reason.
+    await expect(page.getByTestId("move-to")).toHaveCount(1);
+    await expect(to("local")).toContainText("back here");
+    await expect(to(third)).toHaveCount(0);
+    const later = page.getByTestId("move-later");
+    await expect(later.locator(`[data-testid="move-unavailable"][data-machine="${third}"]`)).toContainText(thirdName);
+    await expect(later).toContainText(`Move it back here first, then to ${thirdName}.`);
+    await shoot(page, "fleet-move-03-only-back");
+    // What the picker no longer offers is what the daemon refuses.
+    const refused = await request.post(`/api/sessions/${s.id}/handoff`, { data: { machine_id: third, carry: "none" } });
+    expect(refused.status()).toBe(409);
+    expect((await refused.json()).error).toContain("comes back here before it goes to a third");
+
+    // Home again: both are offered as moves.
+    await to("local").click();
+    await expect(page.getByTestId("move-progress")).toContainText(`${first.name} to`, { timeout: 60_000 });
+    await expect(page.getByTestId("move-progress")).toHaveAttribute("data-state", "done");
+    await expect(to(first.id)).toBeEnabled();
+    await expect(to(third)).toBeEnabled();
+    await expect(page.getByTestId("move-later")).toHaveCount(0);
+    await shoot(page, "fleet-move-04-home-again");
+  } finally {
+    await request.delete(`/api/sessions/${s.id}`);
+    await request.delete(`/api/fleet/machines/${third}`);
+    stub.close();
   }
 });

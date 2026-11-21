@@ -26,7 +26,7 @@ const dot = (colour?: string) => <span className="size-1.5 shrink-0 rounded-full
 
 type Handoff = {
   state: "running" | "done" | "failed"; carry: "git" | "none"; from: { machine: string }; to: { machine: string; cwd?: string };
-  steps: { name: string; state: string; detail?: string }[]; summary?: string; error?: string;
+  steps: { name: string; state: string; detail?: string }[]; summary?: string; error?: string; started_ms?: number;
 };
 
 const STEP_LABEL: Record<string, string> = { interrupt: "Stop the turn", snapshot: "Snapshot the folder", transfer: "Send what is missing", worktree: "Put it in place", switch: "Switch" };
@@ -44,14 +44,19 @@ export function MachineChip({ session }: { session: Session }) {
   const lives = splitId(session.id)?.machine;
   const runs = session.machine ?? undefined;
   const id = lives ?? runs;
-  const targets = machines.filter((m) => m.source !== "local" && m.enabled && m.workspace_root && m.id !== runs);
+  const others = machines.filter((m) => m.source !== "local" && m.enabled && m.workspace_root && m.id !== runs);
+  // A session whose tools run on another machine comes back here before it
+  // goes to a third (the daemon refuses anything else): from there the other
+  // machines are listed, with why, and are not offered as a move.
+  const targets = runs ? [] : others;
+  const later = runs ? others : [];
   const where = useWhere({ machine: id });
   useEffect(() => {
     if (lives) return;
     api<{ handoff: Handoff | null }>(`/api/sessions/${session.id}/handoff`).then((r) => setH(r.handoff)).catch(reportError);
     return onFeature({ frame: (f) => { if (f.name === "handoff_progress" && f.session_id === session.id) setH(f.data); } });
   }, [session.id, lives]);
-  if (!id && !targets.length) return null;
+  if (!id && !others.length) return null;
   const name = id ? machineName(id) : machines.find((m) => m.source === "local")?.name ?? "this machine";
   // Elsewhere: the same tag as the rows (Where.tsx), with whether it answers.
   const chip = where ? (
@@ -72,7 +77,12 @@ export function MachineChip({ session }: { session: Session }) {
   if (lives) return <span data-testid="machine-chip" title={`This session lives on ${name}'s daemon; you see and drive it through the link.${where?.reach === "offline" ? ` ${name} does not answer now.` : ""}`} className={cls} {...tag}>{chip}</span>;
   const move = async (to: string) => {
     setErr("");
-    try { setH((await api<{ handoff: Handoff }>(`/api/sessions/${session.id}/handoff`, { method: "POST", body: JSON.stringify({ machine_id: to, carry }) })).handoff); }
+    try {
+      const r = await api<{ handoff: Handoff }>(`/api/sessions/${session.id}/handoff`, { method: "POST", body: JSON.stringify({ machine_id: to, carry }) });
+      // The answer is the move as it started. A quick move's progress frames
+      // can be here before it: they are newer and stay.
+      setH((cur) => (cur?.started_ms !== undefined && cur.started_ms === r.handoff.started_ms ? cur : r.handoff));
+    }
     catch (e) { setErr(failed(e, { at: "Fleet" })); }
   };
   const dests = [...(runs ? [{ id: "local", name: machines.find((m) => m.source === "local")?.name ?? "this machine", sub: "back here" }] : []), ...targets.map((m) => ({ id: m.id, name: m.name, sub: m.workspace_root! }))];
@@ -108,6 +118,23 @@ export function MachineChip({ session }: { session: Session }) {
                     <ArrowRight className="size-3.5 text-faint" />
                   </button>
                 ))}
+              </div>
+            )}
+            {later.length > 0 && (
+              <div className="border-t border-line p-1.5" data-testid="move-later">
+                <div className="px-2 pb-1 pt-1 text-micro font-medium text-faint">After it is back here</div>
+                {later.map((m) => (
+                  <div key={m.id} data-testid="move-unavailable" data-machine={m.id} aria-disabled="true" className="flex h-11 items-center gap-2.5 px-2.5 text-faint">
+                    <Server className="size-4 shrink-0" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-ui font-medium text-muted">{m.name}</span>
+                      <span className="block truncate font-mono text-micro">{m.workspace_root}</span>
+                    </span>
+                  </div>
+                ))}
+                <p className="px-2.5 pb-1.5 pt-1 text-caption leading-snug text-muted">
+                  A session goes to another machine from this one. Move it back here first, then to {later.length === 1 ? later[0]!.name : "one of these"}.
+                </p>
               </div>
             )}
             {err && <div className="px-3.5 pb-3 text-caption text-danger">{err}</div>}
