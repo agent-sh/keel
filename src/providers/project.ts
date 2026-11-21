@@ -7,13 +7,36 @@
 // - tool call ids are made portable (`[A-Za-z0-9_-]{1,64}`, the strictest rule
 //   among the wires), the same way every time so the cached prefix holds;
 // - blocks keep only the fields the canonical shape defines;
-// - what a wire refuses as malformed is repaired (see `Repair`): a provider
-//   that refuses a request refuses every later one of the session too, since
-//   the block that made it malformed stays in the history.
-// Pure: the same history and origin give the same bytes, and the stored
-// history is never changed. A history that needs no repair is projected as it
-// was before the repairs existed.
+// - what the request's own wire refuses as malformed is repaired (`WireRules`):
+//   a provider that refuses a request refuses every later one of the session
+//   too, since the block that made it malformed stays in the history.
+// Pure: the same history, origin and rules give the same bytes, and the stored
+// history is never changed. A repair is made only for a form the wire itself
+// refuses, so a history a wire takes as it is stored is sent as it is stored.
 import type { AssistantBlock, ImageBlock, Message, TextBlock, ToolRefBlock, ToolResultBlock, UserBlock } from "../core/types.ts";
+import { wire } from "./wiretap.ts";
+
+// What one wire refuses in a replayed history. Each wire driver states its own
+// beside the source of each rule (src/providers/wires/); a form whose refusal
+// is not established for a wire is left as it is stored on that wire.
+export type WireRules = {
+  // Every result answers a call, once, and every call is answered: "next"
+  // where a call's results must be in the message right after it, "any" where
+  // the wire only matches them by id, wherever they come after the call.
+  pairs?: "next" | "any";
+  // Results come before the other blocks of their message.
+  resultsFirst?: boolean;
+  // No two calls of a request share an id.
+  distinctIds?: boolean;
+  // A call's name: at most `max` characters, at least one, none of `bad`.
+  name?: { max: number; bad?: RegExp };
+  // A call's input is an object.
+  objectInput?: boolean;
+  // An image is labelled as the format its bytes are.
+  imageByBytes?: boolean;
+  // A text block of a user message or of a result is not empty.
+  textNotEmpty?: boolean;
+};
 
 export type ProjectOpts = {
   origin: string;               // "<provider>:<model>" of the request's target
@@ -24,6 +47,8 @@ export type ProjectOpts = {
   // The request declares deferred tools, so tool_reference blocks stay blocks
   // (the Anthropic wire); otherwise each one becomes a line of text.
   toolRefs?: boolean;
+  // What the request's wire refuses; absent: nothing is repaired.
+  rules?: WireRules;
   // The session the request belongs to, named in a repair's record.
   sessionKey?: string;
   // A piece of a conversation (one reply's block), not a whole request: its
@@ -38,21 +63,24 @@ export const REPAIRS = {
   call_without_result: "a tool call with no stored result (a turn cut between the two) was answered by a short result saying it was cut",
   result_order: "tool results that came after other blocks of their message were moved first",
   repeated_call_id: "a tool call id an earlier call already used was made distinct",
-  tool_name: "a tool call's name outside [A-Za-z_][A-Za-z0-9_-]{0,63} (another family's or a made-up tool) was made to fit",
+  tool_name: "a tool call's name the wire does not take (another family's or a made-up tool) was made to fit",
   tool_input: "a tool call's input that is not an object was wrapped in one",
   image_type: "an image labelled as another format than its bytes are was labelled by its bytes",
   empty_text: "an empty text block was left out",
-  starts_with_reply: "a history that begins with a reply (what came before it is gone) was given a first line from the harness",
 } as const;
 export type RepairKind = keyof typeof REPAIRS;
 // `message`: the index of the message in the request's history; `call`: the
 // tool call's id. Never any content.
 export type Repair = { kind: RepairKind; session?: string; message: number; call?: string };
 
-// The first repair of each kind in a session is told to the listeners (the
-// daemon records it, src/server/routes/providers.ts); the projection itself
-// stays a pure function of the history. `id` keeps one listener per module
-// across hot reloads.
+// A repair is a diagnostic, not a failure: the request went out and the turn
+// goes on. It is noted in two places, neither of them the errors table:
+// - on the request's trace span (`wire.repairs`: the kinds made for that request);
+// - once per session and kind for good, by the listeners (the daemon keeps the
+//   pair in the session's settings, `recordRepairs`).
+// `told` only spares the listeners a lookup per request: a pair that left it
+// is asked again, and the listener's own record answers. `id` keeps one
+// listener per module across hot reloads.
 const listeners = new Map<string, (r: Repair) => void>();
 const told = new Set<string>();
 const TOLD_MAX = 8192;
@@ -60,23 +88,31 @@ export function onRepair(id: string, f: (r: Repair) => void): () => void {
   listeners.set(id, f);
   return () => { if (listeners.get(id) === f) listeners.delete(id); };
 }
-// The daemon's record of a repair: one row per session and kind in the errors
-// table, marked as a warning (the request went out and the turn goes on, but
-// something stored a history no wire takes as it is). It names the session,
-// the kind, the message's place in the request and the call id, never content;
-// the tracker adds the turn the request was sent in.
-export function recordRepairs(errors: { capture(source: "provider", err: unknown, context?: unknown): unknown }): () => void {
-  return onRepair("errors", (r) => {
-    errors.capture("provider", new Error(`warning: a request was repaired before it was sent: ${REPAIRS[r.kind]}`), { level: "warning", session: r.session, repair: r.kind, message_index: r.message, call: r.call });
-  });
-}
 function tell(r: Repair) {
   if (!listeners.size) return;
   const key = `${r.session ?? ""}\u0000${r.kind}`;
   if (told.has(key)) return;
-  if (told.size >= TOLD_MAX) told.clear();
+  if (told.size >= TOLD_MAX) told.delete(told.values().next().value!); // the oldest
   told.add(key);
   for (const f of listeners.values()) try { f(r); } catch {}
+}
+
+// The daemon's record: the first repair of each kind in a session, kept in the
+// session's settings for good (a restart finds it there and records nothing
+// again). It holds when, where in the request, the call id and the turn, never
+// content. A request that belongs to no stored session leaves no record.
+export type RepairMark = { ts: number; message: number; call?: string; turn?: string };
+type Sessions = {
+  session(id: string): { id: string; settings: { repairs?: Record<string, RepairMark> } } | undefined;
+  mergeSettings(id: string, patch: Record<string, unknown>): unknown;
+};
+export function recordRepairs(store: Sessions, turnOf: (session: string) => string | undefined = () => undefined): () => void {
+  return onRepair("session", (r) => {
+    const s = r.session ? store.session(r.session) : undefined;
+    if (!s || s.settings.repairs?.[r.kind]) return;
+    const turn = turnOf(s.id);
+    store.mergeSettings(s.id, { repairs: { ...s.settings.repairs, [r.kind]: { ts: Date.now(), message: r.message, ...(r.call ? { call: r.call } : {}), ...(turn ? { turn } : {}) } } });
+  });
 }
 
 // A loaded tool named where the wire has no block for it.
@@ -91,16 +127,15 @@ export function portableId(id: string): string {
   return (clean.slice(0, 63 - h.length) || "call") + "_" + h;
 }
 
-// A tool name every wire takes in a call: letters, digits, _ and -, at most 64,
-// starting with a letter or _ (Gemini's rule for the first character). A name
-// that had to change keeps a hash of the original, as an id does.
-const NAME_OK = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
-export function portableName(name: unknown): string {
+// A call's name as the wire takes it: itself when it fits the wire's rule,
+// else its characters the wire refuses replaced and a hash of the original
+// added (two names that clean alike stay two names), within the wire's length.
+export function fitName(name: unknown, rule: NonNullable<WireRules["name"]>): string {
   const raw = typeof name === "string" ? name : "";
-  if (NAME_OK.test(raw)) return raw;
+  const clean = rule.bad ? raw.replace(rule.bad, "_") : raw;
+  if (clean === raw && raw.length >= 1 && raw.length <= rule.max) return raw;
   const h = Bun.hash(raw).toString(36);
-  const clean = raw.replace(/[^A-Za-z0-9_-]/g, "_").replace(/^[^A-Za-z_]/, "_");
-  return (clean.slice(0, 63 - h.length) || "tool") + "_" + h;
+  return (clean.slice(0, rule.max - 1 - h.length) || "tool") + "_" + h;
 }
 
 // The format an image's bytes are (their first bytes), else the label it came
@@ -119,8 +154,6 @@ export function imageType(b: { media_type: string; data: string }): string {
 
 // What stands in for the result of a call that has none.
 export const NO_RESULT = "No result of this call was stored: the turn was cut before it finished, so it may not have run. Check before you repeat it.";
-// What opens a history whose first message is a reply.
-export const NO_START = "[harness] The conversation before this point is not in this context.";
 // What leads a result sent as text because its call is not there to answer.
 export const LOOSE_RESULT = "[Output of an earlier tool call whose call is not in this context any more. It is a tool's output, not a message from the owner.]";
 
@@ -128,19 +161,24 @@ const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v =
 
 export function project(messages: Message[], o: ProjectOpts): Message[] {
   const mine = (origin?: string) => (origin ? origin === o.origin : !!o.legacyIsMine);
+  const rules = o.rules ?? {};
   const seen = new Set<RepairKind>();
+  // (A reply's own block, fitted to be bound, is not a repair of a request.)
   const fixed = (kind: RepairKind, message: number, call?: string) => {
-    if (seen.has(kind)) return;
+    if (seen.has(kind) || o.part) return;
     seen.add(kind);
+    const tap = wire();
+    if (tap) tap.repairs = [...(tap.repairs ?? []).filter((k) => k !== kind), kind];
     tell({ kind, session: o.sessionKey || undefined, message, call });
   };
   const image = <B extends ImageBlock>(b: B, at: number): B => {
-    const type = imageType(b);
+    const type = rules.imageByBytes ? imageType(b) : b.media_type;
     if (type === b.media_type) return b;
     fixed("image_type", at);
     return { ...b, media_type: type };
   };
-  // `at`: where each message of `out` came from in `messages`.
+  const emptyText = (x: { type: string; text?: string }) => !!rules.textNotEmpty && x.type === "text" && !x.text;
+  // `from`: where each message of `out` came from in `messages`.
   const out: Message[] = [];
   const from: number[] = [];
   messages.forEach((m, at) => {
@@ -156,11 +194,12 @@ export function project(messages: Message[], o: ProjectOpts): Message[] {
           if (!b.text && !(mine(b.origin) && b.signature)) continue;
           content.push(mine(b.origin) && b.signature ? { type: "text", text: b.text, signature: b.signature } : { type: "text", text: b.text });
         } else if (b.type === "tool_use") {
-          const name = portableName(b.name);
+          const name = rules.name ? fitName(b.name, rules.name) : b.name;
           if (name !== b.name) fixed("tool_name", at, b.id);
-          // null and undefined were always sent as an empty object.
-          if (b.input != null && !isObject(b.input)) fixed("tool_input", at, b.id);
-          const t: AssistantBlock = { type: "tool_use", id: portableId(b.id), name, input: b.input == null ? {} : isObject(b.input) ? b.input : { input: b.input } };
+          // (null and undefined were always sent as an empty object.)
+          const wrap = !!rules.objectInput && b.input != null && !isObject(b.input);
+          if (wrap) fixed("tool_input", at, b.id);
+          const t: AssistantBlock = { type: "tool_use", id: portableId(b.id), name, input: wrap ? { input: b.input } : b.input ?? {} };
           if (mine(b.origin) && b.signature) t.signature = b.signature;
           content.push(t);
         }
@@ -170,17 +209,17 @@ export function project(messages: Message[], o: ProjectOpts): Message[] {
       const content: UserBlock[] = [];
       for (const b of m.content) {
         if (b.type === "text") {
-          if (b.text) content.push(b);
-          else fixed("empty_text", at);
+          if (emptyText(b)) fixed("empty_text", at);
+          else content.push(b);
         } else if (b.type === "image") content.push(image(b, at));
         else if (b.type !== "tool_result") content.push(b);
         else {
           let c = b.content;
           if (typeof c !== "string") {
             if (!o.toolRefs && c.some((x) => x.type === "tool_reference")) c = c.map((x) => (x.type === "tool_reference" ? { type: "text" as const, text: refText(x.tool_name) } : x));
-            if (c.some((x) => (x.type === "text" && !x.text) || (x.type === "image" && imageType(x) !== x.media_type))) {
-              if (c.some((x) => x.type === "text" && !x.text)) fixed("empty_text", at, b.tool_use_id);
-              c = c.filter((x) => x.type !== "text" || x.text).map((x) => (x.type === "image" ? image(x, at) : x));
+            if (c.some((x) => emptyText(x) || (x.type === "image" && image(x, at) !== x))) {
+              if (c.some(emptyText)) fixed("empty_text", at, b.tool_use_id);
+              c = c.filter((x) => !emptyText(x)).map((x) => (x.type === "image" ? image(x, at) : x));
             }
           }
           content.push({ ...b, tool_use_id: portableId(b.tool_use_id), content: c });
@@ -190,8 +229,8 @@ export function project(messages: Message[], o: ProjectOpts): Message[] {
     }
   });
   const merged = merge(out, from);
-  if (o.part) return merged.messages;
-  return pair(merged.messages, merged.from, fixed);
+  if (o.part || !(rules.pairs || rules.distinctIds)) return merged.messages;
+  return pair(merged.messages, merged.from, rules, fixed);
 }
 
 // Dropping blocks can leave two messages of one role side by side.
@@ -215,32 +254,39 @@ function loose(r: ToolResultBlock): UserBlock[] {
   return [{ type: "text", text: `${LOOSE_RESULT}${r.is_error ? " It reported an error." : ""}${text.trim() ? `\n${text}` : ""}` }, ...images];
 }
 
-// Every wire refuses a result that answers no call of the assistant message
-// before it, and a call no result answers. The engine's own projection
-// (toMessages) pairs them from the stored events; this is the same rule at
-// the last step, for whatever reached the request another way: a hook that
-// built the messages, an imported history, a call id two calls share.
-// A message that is already paired is returned as it is, the same object.
-function pair(messages: Message[], from: number[], fixed: (kind: RepairKind, message: number, call?: string) => void): Message[] {
+// A wire that pairs calls and results refuses a result that answers no call
+// and a call no result answers. The engine's own projection (toMessages)
+// pairs them from the stored events; this is the same rule at the last step,
+// for whatever reached the request another way: a hook that built the
+// messages, an imported history, a call id two calls share.
+// A message that is already as the wire takes it is returned as it is, the
+// same object.
+function pair(messages: Message[], from: number[], rules: WireRules, fixed: (kind: RepairKind, message: number, call?: string) => void): Message[] {
+  const next = rules.pairs === "next";
   const out: Message[] = [];
   const used = new Set<string>();
-  // The calls of the assistant message before, as their results name them
-  // (`was`) and as they are sent (`id`).
-  let open: { was: string; id: string; done: boolean }[] = [];
+  const called = new Set<string>();
+  // The calls no result has answered yet, as their results name them (`was`)
+  // and as they are sent (`id`): those of the assistant message before, or
+  // (`pairs: "any"`) of every message before.
+  let open: { was: string; id: string }[] = [];
   let changed = false;
   const noResult = (c: { id: string }): ToolResultBlock => ({ type: "tool_result", tool_use_id: c.id, content: NO_RESULT, is_error: true });
   messages.forEach((m, i) => {
     const at = from[i]!;
     if (m.role === "assistant") {
       // (Two assistant messages are never side by side here: they were merged.)
-      open = [];
+      if (next) open = [];
       let content: AssistantBlock[] | undefined;
       m.content.forEach((b, k) => {
         if (b.type !== "tool_use") return;
         let id = b.id;
-        for (let n = 2; used.has(id); n++) id = portableId(`${b.id}.${n}`);
-        used.add(id);
-        open.push({ was: b.id, id, done: false });
+        if (rules.distinctIds) {
+          for (let n = 2; used.has(id); n++) id = portableId(`${b.id}.${n}`);
+          used.add(id);
+        }
+        open.push({ was: b.id, id });
+        called.add(b.id);
         if (id === b.id) return;
         fixed("repeated_call_id", at, b.id);
         (content ??= [...m.content])[k] = { ...b, id };
@@ -254,42 +300,39 @@ function pair(messages: Message[], from: number[], fixed: (kind: RepairKind, mes
     let moved = false;
     for (const b of m.content) {
       if (b.type !== "tool_result") { rest.push(b); continue; }
-      const call = open.find((c) => c.was === b.tool_use_id && !c.done);
-      if (call) {
-        call.done = true;
-        if (rest.length) { moved = true; fixed("result_order", at, b.tool_use_id); }
-        if (call.id !== b.tool_use_id) moved = true;
-        results.push(call.id === b.tool_use_id ? b : { ...b, tool_use_id: call.id });
-      } else {
+      const k = open.findIndex((c) => c.was === b.tool_use_id);
+      if (k >= 0) {
+        const [call] = open.splice(k, 1);
+        if (rest.length && rules.resultsFirst) { moved = true; fixed("result_order", at, b.tool_use_id); }
+        if (call!.id !== b.tool_use_id) moved = true;
+        (rules.resultsFirst ? results : rest).push(call!.id === b.tool_use_id ? b : { ...b, tool_use_id: call!.id });
+      } else if (rules.pairs) {
         moved = true;
-        fixed(open.some((c) => c.was === b.tool_use_id) ? "repeated_result" : "result_without_call", at, b.tool_use_id);
+        fixed(called.has(b.tool_use_id) ? "repeated_result" : "result_without_call", at, b.tool_use_id);
         rest.push(...loose(b));
-      }
+      } else rest.push(b);
     }
-    const missing = open.filter((c) => !c.done);
+    // A call whose result must be here and is not.
+    const missing = next ? open : [];
     for (const c of missing) fixed("call_without_result", at, c.id);
-    open = [];
+    if (next) open = [];
     if (!moved && !missing.length) { out.push(m); return; }
     changed = true;
-    const content = [...results, ...missing.map(noResult), ...rest];
+    const content = [...missing.map(noResult), ...results, ...rest];
     if (content.length) out.push({ role: "user", content });
   });
-  // A call at the very end (a request built from a turn cut after its call).
-  if (open.length) {
+  // Calls nothing answered by the end (a request built from a turn cut after its call).
+  if (open.length && rules.pairs) {
     changed = true;
     for (const c of open) fixed("call_without_result", from[from.length - 1]!, c.id);
-    out.push({ role: "user", content: open.map(noResult) });
-  }
-  // The wires that name a first turn want the user's.
-  if (out[0]?.role === "assistant") {
-    changed = true;
-    fixed("starts_with_reply", from[0]!);
-    out.unshift({ role: "user", content: [{ type: "text", text: NO_START }] });
+    const last = out.at(-1);
+    if (last?.role === "user") out[out.length - 1] = { role: "user", content: [...last.content, ...open.map(noResult)] };
+    else out.push({ role: "user", content: open.map(noResult) });
   }
   if (!changed) return messages;
   // A user message that held only an empty result is gone: its neighbours meet.
   const joined = merge(out.map((m) => ({ role: m.role, content: [...m.content] }) as Message), out.map((_, i) => i)).messages;
-  return joined.length === out.length ? out : pair(joined, joined.map((_, i) => from[Math.min(i, from.length - 1)]!), fixed);
+  return joined.length === out.length ? out : pair(joined, joined.map((_, i) => from[Math.min(i, from.length - 1)]!), rules, fixed);
 }
 
 // The tool name each call id answers, for wires whose results name the tool.

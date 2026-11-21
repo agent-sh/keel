@@ -154,6 +154,23 @@ export function toMessages(events: readonly StoredEvent[]): Message[] {
   return projected;
 }
 
+// The stand-in of a call that has no result yet (the call asking a side
+// question of the running turn) says `pending.text` instead. Only that
+// stand-in, in the last message, on a copy: an earlier call a server gave the
+// same id keeps its stored result, and a stored block is never written
+// (stored events are frozen).
+export function withPending(messages: Message[], pending: { id: string; text: string }): Message[] {
+  const k = messages.length - 1, last = messages[k];
+  if (last?.role !== "user") return messages;
+  let done = false;
+  const content = last.content.map((b) => {
+    if (done || b.type !== "tool_result" || b.tool_use_id !== pending.id) return b;
+    done = true;
+    return { ...b, content: pending.text, is_error: false };
+  });
+  return done ? [...messages.slice(0, k), { role: "user", content }] : messages;
+}
+
 // A feature may hold back or replace a file's text (a repository's changed
 // instruction file loads as last trusted); null leaves the file out.
 export const instructionFilter: { file?: (path: string, text: string) => string | null } = {};
@@ -1844,7 +1861,7 @@ export class Engine {
     const messages = toMessages(line);
     // The stored branch is what the count below covers; the question's words come on top.
     const fit: Fit = { tokens: this.whole(line, st), base: [...messages] };
-    if (pending) for (const m of messages) for (const b of m.content as any[]) if (b.type === "tool_result" && b.tool_use_id === pending.id) { b.content = pending.text; b.is_error = false; }
+    if (pending) messages.splice(0, messages.length, ...withPending(messages, pending));
     const last = messages.at(-1);
     for (const m of extra) {
       if (last?.role === "user" && m === extra[0] && m.role === "user") messages[messages.length - 1] = { role: "user", content: [...last.content, ...m.content] };

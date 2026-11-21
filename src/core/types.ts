@@ -144,6 +144,9 @@ export type SessionSettings = {
   drop_thinking?: boolean; // the provider refused this session's sent-back thinking once: "drop_block" from then on
   image_edge?: number; // px: the image limit the provider stated when it refused a request; larger images are sent scaled to it
   images_out?: string[]; // images (imageKey) the provider refused a request over: sent as a note from then on (src/engine/image-fit.ts)
+  // The first time a request of this session was repaired so its wire takes it, per kind of repair: when, the
+  // message's place in the request, the call id and the turn; never content (src/providers/project.ts).
+  repairs?: Record<string, { ts: number; message: number; call?: string; turn?: string }>;
   folder_id?: string;  // the owner's folder of sessions it is filed in (src/server/routes/session-folders.ts)
   project?: string;    // a project's id, or "none"; absent = the project that holds its folder (src/server/routes/projects.ts)
   helper?: boolean; // the owner's always-on helper conversation (src/helper/)

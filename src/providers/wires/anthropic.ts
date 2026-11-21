@@ -2,7 +2,7 @@
 // route) and the reader of its SSE events.
 import type { AssistantBlock, ImageBlock, Message } from "../../core/types.ts";
 import { emptyUsage } from "../../core/types.ts";
-import { project } from "../project.ts";
+import { project, type WireRules } from "../project.ts";
 import { bindReply, carry, unbind, type Binder } from "./binding.ts";
 import type { ProviderRequest, ProviderResult } from "../types.ts";
 import { parseArgs, parseJson, type WireCodec, type WireCtx, type WireParser } from "./common.ts";
@@ -15,6 +15,41 @@ import { parseArgs, parseJson, type WireCodec, type WireCtx, type WireParser } f
 export const CACHE_TTL: "5m" | "1h" = "1h";
 const CACHE: { type: "ephemeral"; ttl: "5m" | "1h" } = { type: "ephemeral", ttl: CACHE_TTL };
 
+// What the Messages API refuses in a replayed history, each with its source
+// (the documentation at platform.claude.com/docs, or the API's own answer).
+export const ANTHROPIC_RULES: WireRules = {
+  // "Tool result blocks must immediately follow their corresponding tool use
+  // blocks in the message history" (agents-and-tools/tool-use/handle-tool-calls).
+  // The API's answers: "unexpected `tool_use_id` found in `tool_result` blocks
+  // [...] Each `tool_result` block must have a corresponding `tool_use` block in
+  // the previous message", "tool_use ids were found without tool_result blocks
+  // immediately after".
+  pairs: "next",
+  // "the tool_result blocks must come FIRST in the content array. Any text must
+  // come AFTER all tool results" (same page).
+  resultsFirst: true,
+  // "`tool_use` ids must be unique" (the API's answer, quoted in
+  // anthropics/claude-code issue 21206).
+  distinctIds: true,
+  // A replayed call's name: `minLength: 1, maxLength: 200` and no pattern
+  // (api/messages/create, ToolUseBlockParam.name). A declared tool's name is
+  // narrower, TOOL_NAME below.
+  name: { max: 200 },
+  // `input: map[unknown]` (same reference); the API's answer to anything else:
+  // "tool_use.input: Input should be a valid dictionary".
+  objectInput: true,
+  // The API's answer: "The image was specified using the image/jpeg media type,
+  // but the image appears to be a image/png image".
+  imageByBytes: true,
+  // `text: string, minLength: 1` (same reference, TextBlockParam, which a tool
+  // result's content holds too); the API's answer: "text content blocks must be
+  // non-empty" (anthropics/anthropic-sdk-python issue 461).
+  textNotEmpty: true,
+};
+// A declared tool's name: "Must match the regex `^[a-zA-Z0-9_-]{1,128}$`"
+// (agents-and-tools/tool-use/define-tools).
+export const TOOL_NAME = /^[a-zA-Z0-9_-]{1,128}$/;
+
 // (The projection labels an image by its bytes, src/providers/project.ts.)
 const image = (b: ImageBlock) => ({ type: "image", source: { type: "base64", media_type: b.media_type, data: b.data } });
 
@@ -22,8 +57,8 @@ const image = (b: ImageBlock) => ({ type: "image", source: { type: "base64", med
 // breakpoint on the system), and a rolling breakpoint on the last user message
 // so each request reads the whole previous prefix from cache.
 // `part`: one reply's block, not a request (its calls are not paired with results).
-export function toWire(messages: Message[], ctx: Pick<WireCtx, "origin" | "legacyIsMine"> & { sessionKey?: string }, mark: typeof CACHE | null | undefined = CACHE, toolRefs = false, part = false): any[] {
-  const out: any[] = project(messages, { origin: ctx.origin, legacyIsMine: ctx.legacyIsMine, sessionKey: ctx.sessionKey, toolRefs, part }).map((m) => ({
+export function toWire(messages: Message[], ctx: Pick<WireCtx, "origin" | "legacyIsMine" | "rules"> & { sessionKey?: string }, mark: typeof CACHE | null | undefined = CACHE, toolRefs = false, part = false): any[] {
+  const out: any[] = project(messages, { origin: ctx.origin, legacyIsMine: ctx.legacyIsMine, sessionKey: ctx.sessionKey, rules: ctx.rules ?? ANTHROPIC_RULES, toolRefs, part }).map((m) => ({
     role: m.role,
     content: m.content.map((b): any => {
       switch (b.type) {

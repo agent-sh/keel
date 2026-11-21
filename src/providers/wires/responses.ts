@@ -5,7 +5,7 @@
 import type { AssistantBlock } from "../../core/types.ts";
 import { emptyUsage } from "../../core/types.ts";
 import { ProviderError } from "../http.ts";
-import { project, refText } from "../project.ts";
+import { project, type WireRules } from "../project.ts";
 import type { ProviderRequest } from "../types.ts";
 import { effortFor, parseArgs, parseJson, type WireCodec, type WireCtx, type WireParser } from "./common.ts";
 
@@ -30,6 +30,25 @@ function xaiSchema(s: any): any {
 }
 
 const dataUrl = (b: { media_type: string; data: string }) => `data:${b.media_type};base64,${b.data}`;
+
+// What the Responses API refuses in a replayed history, each with its source:
+// the API's own answer, or its description (openai/openai-openapi, openapi.yaml,
+// read 2026-11-21).
+export const RESPONSES_RULES: WireRules = {
+  // The API's answers: "No tool call found for function call output with
+  // call_id ..." and "No tool output found for function call ..." (the second
+  // quoted in openai/openai-agents-python issue 673).
+  // Neither says where the output has to be: they are matched by call id.
+  pairs: "any",
+  // A replayed call's name. The API's answers: "Invalid 'input[N].name': string
+  // does not match pattern. Expected a string that matches the pattern
+  // '^[a-zA-Z0-9_-]+$'" (openai/codex issue 10563) and "Invalid 'input[N].name':
+  // empty string". The length is a function's own: FunctionToolParam.name,
+  // `maxLength: 128, minLength: 1, pattern: ^[a-zA-Z0-9_-]+$`.
+  name: { max: 128, bad: /[^a-zA-Z0-9_-]/g },
+};
+// A declared function's name (FunctionToolParam.name, above).
+export const FUNCTION_NAME = /^[a-zA-Z0-9_-]{1,128}$/;
 
 // Freeform tools (a grammar, raw text in and out: apply_patch, exec) go as
 // OpenAI custom tools, as Codex sends them; xAI gets the JSON form.
@@ -84,7 +103,7 @@ export function responsesBody(req: ProviderRequest, ctx: WireCtx, dialect: Respo
   const customCalls = new Set<string>();
   const search = searchOf(req);
   const searches = new Set<string>();
-  for (const m of project(req.messages, { ...ctx, toolRefs: !!search })) {
+  for (const m of project(req.messages, { ...ctx, rules: ctx.rules ?? RESPONSES_RULES, toolRefs: !!search })) {
     let texts: any[] = [];
     const flush = () => {
       if (texts.length) input.push({ type: "message", role: m.role, content: texts });
@@ -114,8 +133,7 @@ export function responsesBody(req: ProviderRequest, ctx: WireCtx, dialect: Respo
         flush();
         const output = typeof b.content === "string"
           ? b.content
-          // (A loaded tool named in a result that is not this wire's search, one another family wrote: a line of text.)
-          : b.content.map((c) => (c.type === "image" ? { type: "input_image", image_url: dataUrl(c) } : { type: "input_text", text: c.type === "text" ? c.text : refText(c.tool_name) }));
+          : b.content.map((c) => (c.type === "image" ? { type: "input_image", image_url: dataUrl(c) } : { type: "input_text", text: c.type === "text" ? c.text : "" }));
         input.push({ type: customCalls.has(b.tool_use_id) ? "custom_tool_call_output" : "function_call_output", call_id: b.tool_use_id, output });
       }
     }

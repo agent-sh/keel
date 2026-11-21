@@ -1,30 +1,32 @@
 // The structural rules each wire refuses a request over, as checks of a built
 // body. For tests: a request Keel builds from any history must pass its wire's
-// check (valid.test.ts builds random histories). Each rule names the provider
-// answer it stands for. Nothing here is sent anywhere, and nothing is about a
-// model.
+// check (valid.test.ts builds random histories). Each check is that wire's own
+// rule, from the source cited where the wire driver states it (ANTHROPIC_RULES,
+// RESPONSES_RULES, CHAT_RULES, GEMINI_RULES and the declared-name patterns
+// beside them); a form whose refusal is not established for a wire is not
+// checked on it. Nothing here is sent anywhere, and nothing is about a model.
 import { imageType } from "../project.ts";
-import { RESERVED_NAMESPACES, type ResponsesDialect } from "./responses.ts";
+import { ANTHROPIC_RULES, TOOL_NAME } from "./anthropic.ts";
+import { CHAT_RULES, FUNCTION_NAME as CHAT_NAME } from "./chat.ts";
+import { FUNCTION_NAME as GEMINI_NAME, GEMINI_RULES } from "./gemini.ts";
+import { FUNCTION_NAME as RESPONSES_NAME, RESERVED_NAMESPACES, RESPONSES_RULES, type ResponsesDialect } from "./responses.ts";
 
-// Function and tool names: OpenAI and Anthropic take `[a-zA-Z0-9_-]`, at most
-// 64 (the Anthropic API takes longer ones today; 64 is what every host takes).
-const NAME = /^[A-Za-z0-9_-]{1,64}$/;
-// Gemini: starts with a letter or underscore, then also dots and colons.
-const GEMINI_NAME = /^[A-Za-z_][A-Za-z0-9_.:-]{0,63}$/;
-const ID = /^[A-Za-z0-9_-]{1,64}$/;
+// A replayed call's name under a wire's rule: its length, and none of the
+// characters the wire refuses.
+const nameFits = (name: unknown, rule: { max: number; bad?: RegExp }) =>
+  typeof name === "string" && name.length >= 1 && name.length <= rule.max && !(rule.bad && name.replace(rule.bad, "") !== name);
+// ToolUseBlockParam.id: `pattern: ^[a-zA-Z0-9_-]+$` (api/messages/create).
+const ID = /^[a-zA-Z0-9_-]+$/;
 const isObject = (v: unknown) => !!v && typeof v === "object" && !Array.isArray(v);
 
 // "The image was specified using the image/jpeg media type, but the image
-// appears to be a image/png image": a label that is not what the bytes are.
+// appears to be a image/png image": a label that is not what the bytes are
+// (the Anthropic wire's answer; not checked on the others).
 function mislabeled(type: unknown, data: unknown): string | null {
   if (typeof type !== "string" || typeof data !== "string") return "an image without a type or data";
   const real = imageType({ media_type: "", data });
   return real && real !== type ? `an image labelled ${type} whose bytes are ${real}` : null;
 }
-const dataUrl = (url: unknown): string | null => {
-  const m = typeof url === "string" ? /^data:([^;,]*);base64,(.*)$/s.exec(url) : null;
-  return m ? mislabeled(m[1], m[2]) : "an image that is not a base64 data URL";
-};
 
 // Anthropic Messages.
 export function anthropicProblems(body: any): string[] {
@@ -34,12 +36,11 @@ export function anthropicProblems(body: any): string[] {
   const tools: any[] = body.tools ?? [];
   const declared = new Set<string>();
   for (const t of tools) {
-    if (!NAME.test(String(t.name))) say("tools", `the name ${JSON.stringify(t.name)} is outside [a-zA-Z0-9_-]{1,64}`);
+    if (!TOOL_NAME.test(String(t.name))) say("tools", `the name ${JSON.stringify(t.name)} is outside ${TOOL_NAME.source}`);
     if (declared.has(t.name)) say("tools", `two tools are named ${t.name}`);
     declared.add(t.name);
     if (!isObject(t.input_schema)) say("tools", `${t.name} has no input_schema object`);
   }
-  if (messages[0] && messages[0].role !== "user") say("messages.0", "the first message is not the user's");
   const ids = new Set<string>();
   let marks = (body.system ?? []).filter((b: any) => b?.cache_control).length + tools.filter((t) => t.cache_control).length;
   const image = (at: string, b: any) => {
@@ -70,7 +71,7 @@ export function anthropicProblems(body: any): string[] {
         // "`tool_use` ids must be unique".
         if (ids.has(b.id)) say(at, `the call id ${b.id} is used twice`);
         ids.add(b.id);
-        if (!NAME.test(String(b.name))) say(at, `the tool name ${JSON.stringify(b.name)}`);
+        if (!nameFits(b.name, ANTHROPIC_RULES.name!)) say(at, `the tool name ${JSON.stringify(b.name)}`);
         // "tool_use.input: Input should be a valid dictionary".
         if (!isObject(b.input)) say(at, "a call's input is not an object");
       } else if (b.type === "tool_result") {
@@ -107,57 +108,46 @@ const XAI_RESERVED = new Set(["web_search", "tool_search", "x_search", "code_exe
 export function responsesProblems(body: any, dialect: ResponsesDialect = "openai"): string[] {
   const out: string[] = [];
   const say = (at: string, what: string) => void out.push(`${at}: ${what}`);
-  const fn = (at: string, t: any, inside?: string) => {
-    if (!NAME.test(String(t.name))) say(at, `the function name ${JSON.stringify(t.name)}`);
+  const fn = (at: string, t: any) => {
+    if (!RESPONSES_NAME.test(String(t.name))) say(at, `the function name ${JSON.stringify(t.name)}`);
     if (dialect === "xai" && XAI_RESERVED.has(t.name)) say(at, `${t.name} is a name xAI keeps for its own tools`);
-    void inside;
   };
   // "Function 'web.websearch' is not allowed in reserved namespace 'web'."
   const space = (at: string, t: any) => {
-    if (!NAME.test(String(t.name))) say(at, `the namespace name ${JSON.stringify(t.name)}`);
     if (RESERVED_NAMESPACES.has(t.name)) say(at, `the reserved namespace ${t.name}`);
+    // NamespaceToolParam: `name: minLength: 1`, `tools: minItems: 1`.
+    if (!t.name) say(at, "a namespace without a name");
     if (!Array.isArray(t.tools) || !t.tools.length) say(at, `the namespace ${t.name} is empty`);
-    for (const x of t.tools ?? []) fn(`${at}.${t.name}`, x, t.name);
+    for (const x of t.tools ?? []) fn(`${at}.${t.name}`, x);
   };
-  const seen = new Set<string>();
   for (const t of body.tools ?? []) {
-    if (t.type === "function" || t.type === "custom") {
-      fn("tools", t);
-      if (seen.has(t.name)) say("tools", `two tools are named ${t.name}`);
-      seen.add(t.name);
-    } else if (t.type === "namespace") space("tools", t);
+    if (t.type === "function") fn("tools", t);
+    else if (t.type === "namespace") space("tools", t);
   }
   const input: any[] = body.input ?? [];
-  const open = new Map<string, string>(); // call id -> the kind of call
-  const answered = new Set<string>();
-  const image = (at: string, c: any) => { const bad = dataUrl(c.image_url); if (bad) say(at, bad); };
+  // The calls not answered yet, by call id (an id two calls share is not refused here).
+  const open = new Map<string, string[]>();
   input.forEach((it, i) => {
     const at = `input.${i}`;
-    if (it.type === "message") {
-      if (!Array.isArray(it.content) || !it.content.length) say(at, "a message without content");
-      for (const c of it.content ?? []) {
-        if (c.type === "input_image") image(at, c);
-        else if ((c.type === "input_text" || c.type === "output_text") && !c.text) say(at, "an empty text part");
-      }
-    } else if (it.type === "function_call" || it.type === "custom_tool_call" || it.type === "tool_search_call") {
-      if (!it.call_id || typeof it.call_id !== "string") say(at, "a call without a call_id");
-      if (it.type !== "tool_search_call" && !NAME.test(String(it.name))) say(at, `the function name ${JSON.stringify(it.name)}`);
-      if (it.namespace !== undefined && (!NAME.test(String(it.namespace)) || RESERVED_NAMESPACES.has(it.namespace))) say(at, `the namespace ${JSON.stringify(it.namespace)}`);
+    if (it.type === "function_call" || it.type === "custom_tool_call" || it.type === "tool_search_call") {
+      // `call_id: maxLength: 64, minLength: 1` (the output items' reference).
+      if (typeof it.call_id !== "string" || !it.call_id || it.call_id.length > 64) say(at, `the call id ${JSON.stringify(it.call_id)}`);
+      if (it.type === "function_call" && !nameFits(it.name, RESPONSES_RULES.name!)) say(at, `the function name ${JSON.stringify(it.name)}`);
+      if (it.namespace !== undefined && RESERVED_NAMESPACES.has(it.namespace)) say(at, `the reserved namespace ${JSON.stringify(it.namespace)}`);
+      // FunctionToolCall.arguments: "A JSON string of the arguments".
       if (it.type === "function_call" && typeof it.arguments !== "string") say(at, "arguments that are not a string");
-      if (it.type === "custom_tool_call" && typeof it.input !== "string") say(at, "a custom call's input that is not a string");
-      open.set(it.call_id, it.type);
+      open.set(it.call_id, [...(open.get(it.call_id) ?? []), it.type]);
     } else if (CALLS[it.type]) {
       // "No tool call found for function call output with call_id ...".
-      if (open.get(it.call_id) !== CALLS[it.type]) say(at, `no ${CALLS[it.type]} found for the ${it.type} with call_id ${it.call_id}`);
-      if (answered.has(it.call_id)) say(at, `two outputs for ${it.call_id}`);
-      answered.add(it.call_id);
+      const calls = open.get(it.call_id) ?? [];
+      const k = calls.indexOf(CALLS[it.type]!);
+      if (k < 0) say(at, `no ${CALLS[it.type]} found for the ${it.type} with call_id ${it.call_id}`);
+      else calls.splice(k, 1);
       if (it.type === "tool_search_output") for (const t of it.tools ?? []) (t.type === "namespace" ? space : fn)(at, t);
-      else if (Array.isArray(it.output)) for (const c of it.output) { if (c.type === "input_image") image(at, c); }
-      else if (typeof it.output !== "string") say(at, "an output that is neither text nor parts");
     }
   });
   // "No tool output found for function call ...".
-  for (const [id] of open) if (!answered.has(id)) say("input", `the call ${id} has no output`);
+  for (const [id, calls] of open) if (calls.length) say("input", `the call ${id} has no output`);
   return out;
 }
 
@@ -165,32 +155,27 @@ export function responsesProblems(body: any, dialect: ResponsesDialect = "openai
 export function chatProblems(body: any): string[] {
   const out: string[] = [];
   const say = (at: string, what: string) => void out.push(`${at}: ${what}`);
-  for (const t of body.tools ?? []) if (!NAME.test(String(t.function?.name))) say("tools", `the function name ${JSON.stringify(t.function?.name)}`);
+  for (const t of body.tools ?? []) if (!CHAT_NAME.test(String(t.function?.name))) say("tools", `the function name ${JSON.stringify(t.function?.name)}`);
   const messages: any[] = body.messages ?? [];
   let open: string[] = [];
   messages.forEach((m, i) => {
     const at = `messages.${i}`;
     if (m.role === "tool") {
-      // "messages with role 'tool' must be a response to a preceding message with 'tool_calls'".
+      // "messages with role 'tool' must be a response to a preceeding message with 'tool_calls'".
       const k = open.indexOf(m.tool_call_id);
       if (k < 0) say(at, `a tool message for ${m.tool_call_id}, which the assistant message before did not call`);
       else open.splice(k, 1);
-      if (typeof m.content !== "string" || !m.content) say(at, "a tool message without text");
       return;
     }
     // "An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'".
     for (const id of open) say(at, `the call ${id} has no tool message before this message`);
     open = [];
-    if (m.role === "assistant") {
-      if (m.content === null && !m.tool_calls?.length) say(at, "an assistant message with neither text nor calls");
-      for (const c of m.tool_calls ?? []) {
-        if (!c.id) say(at, "a call without an id");
-        if (!NAME.test(String(c.function?.name))) say(at, `the function name ${JSON.stringify(c.function?.name)}`);
-        if (typeof c.function?.arguments !== "string") say(at, "arguments that are not a string");
-        open.push(c.id);
-      }
-    } else if (m.role === "user" && Array.isArray(m.content)) {
-      for (const p of m.content) if (p.type === "image_url") { const bad = dataUrl(p.image_url?.url); if (bad) say(at, bad); }
+    if (m.role !== "assistant") return;
+    for (const c of m.tool_calls ?? []) {
+      if (!nameFits(c.function?.name, CHAT_RULES.name!)) say(at, `the function name ${JSON.stringify(c.function?.name)}`);
+      // ChatCompletionMessageToolCall.function.arguments: a string.
+      if (typeof c.function?.arguments !== "string") say(at, "arguments that are not a string");
+      open.push(c.id);
     }
   });
   for (const id of open) say("messages", `the call ${id} has no tool message`);
@@ -203,33 +188,21 @@ export function geminiProblems(body: any): string[] {
   const say = (at: string, what: string) => void out.push(`${at}: ${what}`);
   for (const t of body.tools ?? []) for (const f of t.functionDeclarations ?? []) if (!GEMINI_NAME.test(String(f.name))) say("tools", `the function name ${JSON.stringify(f.name)}`);
   const contents: any[] = body.contents ?? [];
+  const count = (c: any, key: string) => (c?.parts ?? []).filter((p: any) => p[key]).length;
   contents.forEach((c, i) => {
     const at = `contents.${i}`;
-    if (!Array.isArray(c.parts) || !c.parts.length) return say(at, "no parts");
-    if (contents[i - 1]?.role === c.role) say(at, `two ${c.role} turns in a row`);
+    // "Please ensure that the number of function response parts is equal to
+    // the number of function call parts of the function call turn."
     const prev = contents[i - 1];
-    const calls: any[] = prev?.role === "model" ? prev.parts.filter((p: any) => p.functionCall).map((p: any) => p.functionCall) : [];
-    const answers: any[] = c.parts.filter((p: any) => p.functionResponse).map((p: any) => p.functionResponse);
-    if (c.role === "user") {
-      // "Please ensure that the number of function response parts is equal to
-      // the number of function call parts of the function call turn."
-      if (answers.length !== calls.length) say(at, `${answers.length} function responses for ${calls.length} function calls`);
-      for (const a of answers) {
-        const call = calls.find((x) => x.id === a.id);
-        if (!call) say(at, `a function response for ${a.id}, which the turn before did not call`);
-        else if (call.name !== a.name) say(at, `the response for ${a.id} is named ${a.name}, its call ${call.name}`);
-      }
-    } else if (answers.length) say(at, "a function response in a model turn");
-    for (const p of c.parts) {
-      if (p.functionCall) {
-        if (c.role !== "model") say(at, "a function call in a user turn");
-        if (!GEMINI_NAME.test(String(p.functionCall.name))) say(at, `the function name ${JSON.stringify(p.functionCall.name)}`);
-        if (!isObject(p.functionCall.args)) say(at, "a call's args are not an object");
-      }
-      if (p.functionResponse && !GEMINI_NAME.test(String(p.functionResponse.name))) say(at, `the function name ${JSON.stringify(p.functionResponse.name)}`);
-      if (p.inlineData && String(p.inlineData.mimeType).startsWith("image/")) { const bad = mislabeled(p.inlineData.mimeType, p.inlineData.data); if (bad) say(at, bad); }
+    const calls = prev?.role === "model" ? count(prev, "functionCall") : 0;
+    if (c.role === "user" && count(c, "functionResponse") !== calls) say(at, `${count(c, "functionResponse")} function responses for ${calls} function calls`);
+    if (c.role === "model" && count(c, "functionCall") && contents[i + 1]?.role !== "user") say(at, `no function responses for ${count(c, "functionCall")} function calls`);
+    for (const p of c.parts ?? []) {
+      if (!p.functionCall) continue;
+      if (!nameFits(p.functionCall.name, GEMINI_RULES.name!)) say(at, `the function name ${JSON.stringify(p.functionCall.name)}`);
+      // FunctionCall.args: `type: object`.
+      if (!isObject(p.functionCall.args)) say(at, "a call's args are not an object");
     }
-    if (c.role === "model" && c.parts.some((p: any) => p.functionCall) && contents[i + 1]?.role !== "user") say(at, "function calls with no user turn after them");
   });
   return out;
 }

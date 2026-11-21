@@ -2,7 +2,7 @@
 import { expect, test } from "bun:test";
 import { leafOf, lineage, versions } from "../core/tree.ts";
 import type { Message, StoredEvent } from "../core/types.ts";
-import { RESTART_CUT, stalledContinuations, toMessages } from "./turn.ts";
+import { RESTART_CUT, stalledContinuations, toMessages, withPending } from "./turn.ts";
 import { keptMessages } from "./compact.ts";
 
 let seq = 0;
@@ -673,4 +673,23 @@ test("continuations cut in a row count only while none finished a step", () => {
   const worked = [e("user", { origin: "restart" }), e("turn_start"), e("tool_result", { results: [{ content: "ok" }] }), ...cutTurn().slice(2)];
   expect(stalledContinuations([...cutTurn(), ...cutTurn("restart"), ...worked, ...cutTurn("restart")])).toBe(1);
   expect(stalledContinuations([...cutTurn("restart"), e("user", { text: "more" }), e("turn_start"), e("turn_end", { reason: "end_turn" })])).toBe(0);
+});
+
+test("a side question's stand-in is written on a copy, and an earlier call with the same id keeps its result", () => {
+  // A server that sends no call ids left one id on the same call in two steps.
+  const freeze = <T,>(v: T): T => { if (v && typeof v === "object") { Object.freeze(v); Object.values(v).forEach(freeze); } return v; };
+  const call = { type: "tool_use" as const, id: "call_0_same", name: "advisor", input: { q: "same" } };
+  const line = freeze([
+    ev("q1", null, "user", { text: "ask twice" }),
+    ev("q2", "q1", "assistant", { blocks: [call] }),
+    ev("q3", "q2", "tool_result", { results: [{ type: "tool_result", tool_use_id: "call_0_same", content: "the first answer" }] }),
+    ev("q4", "q3", "assistant", { blocks: [call] }),
+  ]);
+  const stored = JSON.stringify(line);
+  const messages = toMessages(line);
+  const out = withPending(messages, { id: "call_0_same", text: "(this advisor call: the request follows)" });
+  expect(out.map((m) => m.content.filter((b) => b.type === "tool_result").map((b: any) => [b.content, b.is_error]))).toEqual([[], [], [["the first answer", undefined]], [], [["(this advisor call: the request follows)", false]]]);
+  expect(JSON.stringify(out.at(-1))).toBe('{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_0_same","content":"(this advisor call: the request follows)","is_error":false}]}');
+  expect(JSON.stringify(line)).toBe(stored);
+  expect(withPending(messages, { id: "none", text: "x" })).toBe(messages);
 });

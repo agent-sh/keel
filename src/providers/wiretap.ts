@@ -19,6 +19,8 @@ export type Wire = {
   error_body?: string;
   resent_after_auth?: boolean;
   transport?: string;
+  // What the projection repaired so the wire takes this request (the kinds, src/providers/project.ts).
+  repairs?: string[];
 };
 
 export const wireScope = new AsyncLocalStorage<Wire>();

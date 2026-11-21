@@ -1,4 +1,5 @@
 import type { SseEvent } from "../sse.ts";
+import type { WireRules } from "../project.ts";
 import type { Delta, ProviderRequest, ProviderResult, Wire } from "../types.ts";
 
 // What every wire codec gets besides the request.
@@ -7,6 +8,9 @@ export type WireCtx = {
   sessionKey: string;
   efforts: string[];      // levels the model takes; empty: send none
   legacyIsMine?: boolean; // see project.ts
+  // What is repaired in the history; absent: what the wire refuses (each
+  // driver's own rules). A test passes {} to get the history as it is stored.
+  rules?: WireRules;
 };
 
 // The cache lifetimes a request on a wire can choose between

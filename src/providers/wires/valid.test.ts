@@ -1,13 +1,14 @@
-// A request built from any stored history is valid for the wire it goes to.
+// A request built from any stored history is valid for the wire it is sent on.
 // A provider that refuses a request as malformed refuses every later one of
 // the session too (the block that made it malformed stays in the history), so
-// the projection repairs what a wire refuses. Proved three ways: the provider
-// refusals seen in the field, each from a constructed history; random
-// histories (calls, results, images, attachments, checkpoints, cuts, family
-// switches) against each wire's structural rules (valid.ts); and that a
-// history needing no repair is projected exactly as before, the same bytes
-// every time.
-import { expect, test } from "bun:test";
+// the projection repairs what the request's own wire refuses, and nothing
+// else: a history a wire takes as it is stored is sent as it is stored.
+// Proved three ways: the provider refusals seen in the field, each from a
+// constructed history; random histories (calls, results, images, attachments,
+// checkpoints, cuts, family switches) against each wire's rules (valid.ts);
+// and that a request whose unrepaired form passes its wire's rules is the
+// same bytes with and without the repairs.
+import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,20 +16,23 @@ import type { Message, StoredEvent } from "../../core/types.ts";
 import type { ProviderRequest, ToolSpec } from "../types.ts";
 
 // Nothing here reads the owner's configuration.
-process.env.KEEL_CONFIG_DIR = mkdtempSync(join(tmpdir(), "keel-valid-"));
+const CONFIG = mkdtempSync(join(tmpdir(), "keel-valid-"));
+process.env.KEEL_CONFIG_DIR = CONFIG;
+afterAll(() => rmSync(CONFIG, { recursive: true, force: true }));
 const { toMessages } = await import("../../engine/turn.ts");
 const { resolveAttachments } = await import("../../engine/attachments.ts");
 const { toolsFor } = await import("../../tools/registry.ts");
 const { referenced } = await import("../../tools/defer.ts");
-const { LOOSE_RESULT, NO_RESULT, onRepair, portableId, portableName, project, recordRepairs } = await import("../project.ts");
-const { anthropicBody, toWire } = await import("./anthropic.ts");
-const { chatBody } = await import("./chat.ts");
-const { geminiBody, geminiWire } = await import("./gemini.ts");
-const { RESERVED_NAMESPACES, responsesBody } = await import("./responses.ts");
+const { fitName, LOOSE_RESULT, NO_RESULT, onRepair, portableId, project, recordRepairs } = await import("../project.ts");
+type WireRules = import("../project.ts").WireRules;
+const { ANTHROPIC_RULES, anthropicBody, toWire } = await import("./anthropic.ts");
+const { CHAT_RULES, chatBody } = await import("./chat.ts");
+const { GEMINI_RULES, geminiBody, geminiWire } = await import("./gemini.ts");
+const { RESERVED_NAMESPACES, RESPONSES_RULES, responsesBody } = await import("./responses.ts");
 const { anthropicProblems, chatProblems, geminiProblems, responsesProblems } = await import("./valid.ts");
 
 const base = { model: "m", system: "s", signal: new AbortController().signal } as ProviderRequest;
-const ctx = (origin = "p:m", sessionKey = "k") => ({ origin, sessionKey, efforts: [] as string[] });
+const ctx = (origin = "p:m", sessionKey = "k", rules?: WireRules) => ({ origin, sessionKey, efforts: [] as string[], rules });
 const spec = (name: string, more: Partial<ToolSpec> = {}): ToolSpec => ({ name, description: name, input_schema: { type: "object" }, ...more });
 
 const b64 = (...bytes: number[]) => Buffer.from([...bytes, ...new Array(24).fill(0)]).toString("base64");
@@ -40,40 +44,48 @@ const text = (t: string) => ({ type: "text" as const, text: t });
 const call = (id: string, name = "Read", input: unknown = { path: "/a" }) => ({ type: "tool_use" as const, id, name, input });
 const result = (id: string, content: any = "ok") => ({ type: "tool_result" as const, tool_use_id: id, content });
 
-// The four wires, each with a body and its rules.
-type Target = { name: string; body: (messages: Message[], tools: ToolSpec[], session?: string) => any; problems: (body: any) => string[] };
+// The four wires (and the xAI dialect of one), each with a body, the rules it
+// repairs by and the check of what it refuses. `rules: {}` gives the body
+// with nothing repaired: the history as it is stored.
+type Target = { name: string; rules: WireRules; body: (messages: Message[], tools: ToolSpec[], session?: string, rules?: WireRules) => any; problems: (body: any) => string[] };
 const targets: Target[] = [
-  { name: "anthropic", body: (messages, tools, s) => anthropicBody({ ...base, messages, tools }, { ...ctx("bedrock:claude", s), legacyIsMine: true }), problems: anthropicProblems },
-  { name: "responses", body: (messages, tools, s) => responsesBody({ ...base, messages, tools }, ctx("chatgpt:gpt", s), "codex"), problems: (b) => responsesProblems(b, "codex") },
-  { name: "responses-xai", body: (messages, tools, s) => responsesBody({ ...base, messages, tools }, ctx("xai:grok", s), "xai"), problems: (b) => responsesProblems(b, "xai") },
-  { name: "chat", body: (messages, tools, s) => chatBody({ ...base, messages, tools }, ctx("or:other", s), { replayReasoning: true }), problems: chatProblems },
-  { name: "gemini", body: (messages, tools, s) => geminiBody({ ...base, messages, tools }, ctx("gemini:g", s), { sentinel: true }), problems: geminiProblems },
+  { name: "anthropic", rules: ANTHROPIC_RULES, body: (messages, tools, s, r) => anthropicBody({ ...base, messages, tools }, { ...ctx("bedrock:claude", s, r), legacyIsMine: true }), problems: anthropicProblems },
+  { name: "responses", rules: RESPONSES_RULES, body: (messages, tools, s, r) => responsesBody({ ...base, messages, tools }, ctx("chatgpt:gpt", s, r), "codex"), problems: (b) => responsesProblems(b, "codex") },
+  { name: "responses-xai", rules: RESPONSES_RULES, body: (messages, tools, s, r) => responsesBody({ ...base, messages, tools }, ctx("xai:grok", s, r), "xai"), problems: (b) => responsesProblems(b, "xai") },
+  { name: "chat", rules: CHAT_RULES, body: (messages, tools, s, r) => chatBody({ ...base, messages, tools }, ctx("or:other", s, r), { replayReasoning: true }), problems: chatProblems },
+  { name: "gemini", rules: GEMINI_RULES, body: (messages, tools, s, r) => geminiBody({ ...base, messages, tools }, ctx("gemini:g", s, r), { sentinel: true }), problems: geminiProblems },
 ];
+const target = (name: string) => targets.find((t) => t.name === name)!;
 const valid = (messages: Message[], tools: ToolSpec[] = [spec("Read")]) =>
   Object.fromEntries(targets.map((t) => [t.name, t.problems(t.body(messages, tools))]));
 const none = Object.fromEntries(targets.map((t) => [t.name, [] as string[]]));
+// Whether a wire's request is the stored history byte for byte.
+const asStored = (name: string, messages: Message[], tools: ToolSpec[] = [spec("Read")]) =>
+  JSON.stringify(target(name).body(messages, tools)) === JSON.stringify(target(name).body(messages, tools, undefined, {}));
 
 // ---- the refusals seen in the field, each from a constructed history ----
 
-test("an image is labelled by its bytes on every wire, in a prompt and in a tool result", () => {
-  // "The image was specified using the image/jpeg media type, but the image
-  // appears to be a image/png image": a tool took the type from the file's
-  // extension, an MCP server or a browser from wherever it liked.
+test("an image is labelled by its bytes on the wire that refuses a wrong label", () => {
+  // The Anthropic wire's answer: "The image was specified using the image/jpeg
+  // media type, but the image appears to be a image/png image". A tool took
+  // the type from the file's extension, an MCP server or a browser from
+  // wherever it liked.
   const messages: Message[] = [
     { role: "user", content: [{ type: "image", media_type: "image/jpeg", data: PNG }, text("look")] },
     { role: "assistant", content: [call("c1")] },
     { role: "user", content: [result("c1", [{ type: "image", media_type: "image/png", data: JPEG }, { type: "image", media_type: "image/png", data: WEBP }, { type: "image", media_type: "image/gif", data: GIF }])] },
   ];
   const stored = JSON.stringify(messages);
-  expect(valid(messages)).toEqual(none);
   const a = anthropicBody({ ...base, messages, tools: [] }, ctx());
+  expect(anthropicProblems(a)).toEqual([]);
+  expect(anthropicProblems(anthropicBody({ ...base, messages, tools: [] }, ctx("p:m", "k", {})))).toContain("messages.0.content.0: an image labelled image/jpeg whose bytes are image/png");
   expect(a.messages[0].content[0].source.media_type).toBe("image/png");
   expect(a.messages[2].content[0].content.map((c: any) => c.source.media_type)).toEqual(["image/jpeg", "image/webp", "image/gif"]);
-  expect(responsesBody({ ...base, messages, tools: [] }, ctx(), "openai").input[0].content[0].image_url.startsWith("data:image/png;")).toBe(true);
-  expect(geminiBody({ ...base, messages, tools: [] }, ctx()).contents[0].parts[0].inlineData.mimeType).toBe("image/png");
+  // No refusal of a wrong label is established for the other wires: they send what is stored.
+  for (const name of ["responses", "responses-xai", "chat", "gemini"]) expect([name, asStored(name, messages)]).toEqual([name, true]);
   // Bytes that are no known format keep their label; the stored history is untouched.
   const odd = { type: "image" as const, media_type: "image/png", data: b64(1, 2, 3, 4) };
-  expect(project([{ role: "user", content: [odd] }], { origin: "p:m" })[0]!.content[0]).toBe(odd);
+  expect(project([{ role: "user", content: [odd] }], { origin: "p:m", rules: ANTHROPIC_RULES })[0]!.content[0]).toBe(odd);
   expect(JSON.stringify(messages)).toBe(stored);
 });
 
@@ -91,22 +103,35 @@ test("a result with no call before it is sent as text, a call with no result get
     { role: "assistant", content: [text("done"), call("cut")] },
   ];
   const stored = JSON.stringify(messages);
+  for (const t of targets) expect([t.name, t.problems(t.body(messages, [spec("Read")], undefined, {})).length > 0]).toEqual([t.name, true]); // every wire refuses it as stored
   expect(valid(messages)).toEqual(none);
-  const p = project(messages, { origin: "p:m" });
-  expect(p).toEqual([
+  const cut = (id: string) => ({ ...result(id, NO_RESULT), is_error: true });
+  const loose = [text(`${LOOSE_RESULT}\nagain`), text(`${LOOSE_RESULT}\nlate output`), { type: "image" as const, media_type: "image/png", data: PNG }];
+  const want = (third: any[], tail: any[]): Message[] => [
     { role: "user", content: [text("go"), text(`${LOOSE_RESULT}\noutput of a summarized call`)] },
     { role: "assistant", content: [call("a"), call("b")] },
-    { role: "user", content: [
-      result("a", "first"), { ...result("b", NO_RESULT), is_error: true },
-      text("a steer"), text(`${LOOSE_RESULT}\nagain`), text(`${LOOSE_RESULT}\nlate output`), { type: "image", media_type: "image/png", data: PNG },
-    ] },
+    { role: "user", content: third },
     { role: "assistant", content: [text("done"), call("cut")] },
-    { role: "user", content: [{ ...result("cut", NO_RESULT), is_error: true }] },
-  ]);
+    { role: "user", content: tail },
+  ];
+  // Anthropic: the call with no result is answered in the message after it, and results lead that message.
+  expect(project(messages, { origin: "p:m", rules: ANTHROPIC_RULES })).toEqual(want([cut("b"), result("a", "first"), text("a steer"), ...loose], [cut("cut")]));
+  // Chat Completions and Gemini: answered there too; the blocks keep their order.
+  for (const rules of [CHAT_RULES, GEMINI_RULES]) expect(project(messages, { origin: "p:m", rules })).toEqual(want([cut("b"), text("a steer"), result("a", "first"), ...loose], [cut("cut")]));
+  // Responses matches an output to its call by id wherever it comes, so the missing one goes at the end.
+  expect(project(messages, { origin: "p:m", rules: RESPONSES_RULES })).toEqual(want([text("a steer"), result("a", "first"), ...loose], [cut("b"), cut("cut")]));
+  const later: Message[] = [{ role: "user", content: [text("go")] }, { role: "assistant", content: [call("a")] }, { role: "user", content: [text("meanwhile")] }, { role: "assistant", content: [text("still waiting")] }, { role: "user", content: [result("a", "late")] }];
+  expect(asStored("responses", later)).toBe(true);
+  for (const name of ["anthropic", "chat", "gemini"]) expect([name, asStored(name, later)]).toEqual([name, false]);
   expect(JSON.stringify(messages)).toBe(stored);
   // A user message that held only an empty loose result is gone, and the replies around it are one.
-  expect(project([{ role: "user", content: [text("q")] }, { role: "assistant", content: [text("one")] }, { role: "user", content: [result("x", "")] }, { role: "assistant", content: [text("two")] }], { origin: "p:m" }))
+  expect(project([{ role: "user", content: [text("q")] }, { role: "assistant", content: [text("one")] }, { role: "user", content: [result("x", "")] }, { role: "assistant", content: [text("two")] }], { origin: "p:m", rules: CHAT_RULES }))
     .toEqual([{ role: "user", content: [text("q")] }, { role: "assistant", content: [text("one"), text("two")] }]);
+  // Results after other blocks, every one of them paired: only the Anthropic wire
+  // asks for results first ("the tool_result blocks must come FIRST").
+  const after: Message[] = [{ role: "user", content: [text("go")] }, { role: "assistant", content: [call("a")] }, { role: "user", content: [text("a note"), result("a")] }];
+  expect(project(after, { origin: "p:m", rules: ANTHROPIC_RULES })[2]!.content).toEqual([result("a"), text("a note")]);
+  for (const name of ["responses", "responses-xai", "chat", "gemini"]) expect([name, asStored(name, after)]).toEqual([name, true]);
 });
 
 test("a tool grouped under a namespace the Responses backend keeps for itself goes as its own function", () => {
@@ -128,8 +153,8 @@ test("a tool grouped under a namespace the Responses backend keeps for itself go
   expect([...RESERVED_NAMESPACES]).toContain("web");
 });
 
-test("a session that changed family: another wire's call ids, tool names and inputs", async () => {
-  // A Gemini server that sends no call ids: the same call in two steps is two calls.
+test("a session that changed family: each wire repairs only the ids, names and inputs it refuses", async () => {
+  // A Gemini server that sends no call ids: from now on the same call in two steps is two calls.
   const reply = (args: any) => {
     const p = geminiWire().parser(base, ctx("gemini:g"), () => {});
     p.event({ data: JSON.stringify({ candidates: [{ content: { parts: [{ functionCall: { name: "read_file", args } }] }, finishReason: "STOP" }] }) } as any);
@@ -138,28 +163,61 @@ test("a session that changed family: another wire's call ids, tool names and inp
   const first = reply({ path: "/a" });
   await Bun.sleep(2);
   expect(reply({ path: "/a" }).id).not.toBe(first.id);
+
+  const long = "mcp__plugin_agent-workspace-linux_agent-workspace-linux__mcp_agent_context"; // 74 characters
+  const names = ["read_file", "functions.Read", "", "9" + "x".repeat(140), long, "7zip_list", "-odd", "ns:tool", "x".repeat(210)];
   const messages: Message[] = [
     { role: "user", content: [text("go")] },
-    // The same id twice (stored before ids were per reply), a name with a dot, a made-up name, no name, a long one.
-    { role: "assistant", content: [call("call_0_x", "read_file"), call("call_0_x", "functions.Read"), call("n1", ""), call("n2", "9" + "x".repeat(90))] },
-    { role: "user", content: [result("call_0_x", "one"), result("call_0_x", "two"), result("n1"), result("n2")] },
-    { role: "assistant", content: [call("call_0_x", "multi_tool_use.parallel", "not an object"), call("arr", "Read", [1, 2]), call("nil", "Read", null)] },
+    // The same id in two steps, as stored from such a server; names of every kind.
+    { role: "assistant", content: names.map((n, i) => call(i < 2 ? "call_0_x" : `n${i}`, n)) },
+    { role: "user", content: names.map((_, i) => result(i < 2 ? "call_0_x" : `n${i}`, `out ${i}`)) },
+    { role: "assistant", content: [call("call_0_x", "read_file", "not an object"), call("arr", "Read", [1, 2]), call("nil", "Read", null)] },
     { role: "user", content: [result("call_0_x", "three"), result("arr"), result("nil")] },
   ];
   expect(valid(messages)).toEqual(none);
-  const p = project(messages, { origin: "p:m" });
-  const calls = p.flatMap((m) => (m.role === "assistant" ? m.content : [])) as any[];
-  const results = p.flatMap((m) => (m.role === "user" ? m.content : [])).filter((b) => b.type === "tool_result") as any[];
-  expect(new Set(calls.map((c) => c.id)).size).toBe(7);
-  expect(results.map((r) => r.tool_use_id)).toEqual(calls.map((c) => c.id));
-  expect(results.slice(0, 2).map((r) => r.content)).toEqual(["one", "two"]);
-  expect(calls.map((c) => c.name)).toEqual(["read_file", portableName("functions.Read"), portableName(""), portableName("9" + "x".repeat(90)), portableName("multi_tool_use.parallel"), "Read", "Read"]);
-  for (const c of calls) expect(c.name).toMatch(/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/);
-  expect(calls.slice(4).map((c) => c.input)).toEqual([{ input: "not an object" }, { input: [1, 2] }, {}]);
-  expect(portableName("functions.Read")).not.toBe(portableName("functions_Read"));
+  const view = (rules: WireRules) => {
+    const p = project(messages, { origin: "p:m", rules });
+    const calls = p.flatMap((m) => (m.role === "assistant" ? m.content : [])) as any[];
+    const results = p.flatMap((m) => (m.role === "user" ? m.content : [])).filter((b) => b.type === "tool_result") as any[];
+    expect(results.map((r) => r.tool_use_id)).toEqual(calls.map((c) => c.id)); // each result still answers its call
+    expect(results.map((r) => r.content)).toEqual([...names.map((_, i) => `out ${i}`), "three", "ok", "ok"]);
+    return { ids: new Set(calls.map((c) => c.id)).size, names: calls.slice(0, names.length).map((c) => c.name), inputs: calls.slice(names.length).map((c) => c.input) };
+  };
+  const fit = (rules: WireRules) => names.map((n) => fitName(n, rules.name!));
+  const raw = ["not an object", [1, 2], {}], wrapped = [{ input: "not an object" }, { input: [1, 2] }, {}];
+
+  // Anthropic: ids are unique; a call's name is 1 to 200 characters of any kind; input is an object.
+  const a = view(ANTHROPIC_RULES);
+  expect(a.ids).toBe(12);
+  expect(a.names).toEqual(["read_file", "functions.Read", fitName("", ANTHROPIC_RULES.name!), "9" + "x".repeat(140), long, "7zip_list", "-odd", "ns:tool", fitName("x".repeat(210), ANTHROPIC_RULES.name!)]);
+  expect(a.names[2]!.length).toBeGreaterThan(0);
+  expect(a.names[8]!.length).toBe(200);
+  expect(a.inputs).toEqual(wrapped);
+  // Gemini: the stored ids stay (10 distinct ids for 12 calls); letters, digits, _ - . : up to 128; input is an object.
+  const g = view(GEMINI_RULES);
+  expect(g.ids).toBe(10);
+  expect(g.names).toEqual(["read_file", "functions.Read", fit(GEMINI_RULES)[2]!, fit(GEMINI_RULES)[3]!, long, "7zip_list", "-odd", "ns:tool", fit(GEMINI_RULES)[8]!]);
+  expect(g.names[3]!.length).toBe(128);
+  expect(g.inputs).toEqual(wrapped);
+  // Responses: the stored ids and inputs stay; letters, digits, _ - up to 128.
+  const r = view(RESPONSES_RULES);
+  expect(r.ids).toBe(10);
+  expect(r.names).toEqual(["read_file", fit(RESPONSES_RULES)[1]!, fit(RESPONSES_RULES)[2]!, fit(RESPONSES_RULES)[3]!, long, "7zip_list", "-odd", fit(RESPONSES_RULES)[7]!, fit(RESPONSES_RULES)[8]!]);
+  expect(r.names[1]).toMatch(/^functions_Read_[a-z0-9]+$/);
+  expect(r.inputs).toEqual(raw);
+  // Chat Completions: the same characters, up to 64.
+  const c = view(CHAT_RULES);
+  expect(c.ids).toBe(10);
+  expect(c.names).toEqual(["read_file", fit(CHAT_RULES)[1]!, fit(CHAT_RULES)[2]!, fit(CHAT_RULES)[3]!, fit(CHAT_RULES)[4]!, "7zip_list", "-odd", fit(CHAT_RULES)[7]!, fit(CHAT_RULES)[8]!]);
+  expect(c.names[4]!.length).toBe(64);
+  expect(c.inputs).toEqual(raw);
+  // Two names that clean alike stay two names.
+  expect(fitName("functions.Read", CHAT_RULES.name!)).not.toBe(fitName("functions_Read", CHAT_RULES.name!));
+  expect(fitName("functions_Read", CHAT_RULES.name!)).toBe("functions_Read");
 });
 
-test("a repair is told once per session and kind, with no content", () => {
+test("a repair is told once per session and kind, with no content, and noted on the request's trace", async () => {
+  const { wireScope } = await import("../wiretap.ts");
   const seen: any[] = [];
   const off = onRepair("test", (r) => seen.push(r));
   const messages: Message[] = [
@@ -167,37 +225,46 @@ test("a repair is told once per session and kind, with no content", () => {
     { role: "assistant", content: [call("c1", "bad.name")] },
   ];
   for (const s of ["told-1", "told-1", "told-2"]) for (const t of targets) t.body(messages, [spec("Read")], s);
+  const tap: any = {};
+  wireScope.run(tap, () => target("chat").body(messages, [spec("Read")], "told-1"));
+  expect(tap.repairs).toEqual(["tool_name", "result_without_call", "call_without_result"]); // every request says its own
   off();
-  targets[0]!.body(messages, [spec("Read")], "told-3");
+  target("anthropic").body(messages, [spec("Read")], "told-3");
   expect(seen.map((r) => `${r.session} ${r.kind}`).sort()).toEqual(["told-1", "told-2"].flatMap((s) => ["call_without_result", "image_type", "result_without_call", "tool_name"].map((k) => `${s} ${k}`)).sort());
   expect(seen.find((r) => r.kind === "tool_name")).toEqual({ kind: "tool_name", session: "told-1", message: 1, call: "c1" });
   expect(JSON.stringify(seen)).not.toMatch(/secret|iVBOR/);
 });
 
-test("the daemon records a repair once per session and kind, as a warning that names the session", async () => {
+test("the daemon keeps a repair once per session and kind for good, and never as an error", async () => {
   const { Store } = await import("../../core/store.ts");
   const { Bus } = await import("../../core/bus.ts");
-  const { ErrorTracker } = await import("../../core/errors.ts");
   const dir = mkdtempSync(join(tmpdir(), "keel-valid-store-"));
   const store = new Store(dir);
-  const quiet = console.error;
-  console.error = () => {};
-  const off = recordRepairs(new ErrorTracker(store, new Bus()));
+  const frames: any[] = [];
+  const bus = new Bus();
+  bus.on((f: any) => frames.push(f));
   try {
     const one = store.createSession({ model: "m", workspace: "/" }), two = store.createSession({ model: "m", workspace: "/" });
     const messages: Message[] = [{ role: "user", content: [text("secret words"), result("gone", "secret output")] }];
-    for (const s of [one.id, one.id, two.id]) for (const t of targets) t.body(messages, [spec("Read")], s);
-    const rows = store.errors(50);
-    expect(rows.length).toBe(1); // one row per kind
-    expect(rows[0]!.count).toBe(2); // counted once per session
-    expect(rows[0]!.source).toBe("provider");
-    expect(rows[0]!.message).toStartWith("warning: a request was repaired before it was sent: a tool result whose call is not in the assistant message before it");
-    expect(rows[0]!.session_id).toBe(two.id);
-    expect(rows[0]!.context).toEqual({ level: "warning", session: two.id, repair: "result_without_call", message_index: 0, call: "gone" });
-    expect(JSON.stringify(rows)).not.toContain("secret");
+    const marks = () => [one, two].map((s) => store.session(s.id)!.settings.repairs);
+    let first: any;
+    // Three daemon starts: each has a module of its own, with nothing told in memory.
+    for (let start = 0; start < 3; start++) {
+      const mod: typeof import("../project.ts") = await import(`../project.ts?start=${start}`);
+      const off = mod.recordRepairs(store, (s) => (s === one.id ? "turn-1" : undefined));
+      for (let i = 0; i < 5; i++) for (const s of [one.id, two.id, "no-such-session"]) mod.project(messages, { origin: "p:m", sessionKey: s, rules: CHAT_RULES });
+      off();
+      first ??= JSON.stringify(marks());
+      expect(JSON.stringify(marks())).toBe(first); // a restart records nothing again
+    }
+    const [a, b] = marks();
+    expect(Object.keys(a!)).toEqual(["result_without_call"]);
+    expect(a!.result_without_call).toEqual({ ts: expect.any(Number), message: 0, call: "gone", turn: "turn-1" });
+    expect(b!.result_without_call).toEqual({ ts: expect.any(Number), message: 0, call: "gone" });
+    expect(store.errors(50)).toEqual([]);
+    expect(frames).toEqual([]);
+    expect(first).not.toContain("secret");
   } finally {
-    off();
-    console.error = quiet;
     store.db.close();
     rmSync(dir, { recursive: true, force: true });
   }
@@ -271,9 +338,14 @@ function branch(seed: number, faults: boolean): StoredEvent[] {
       const last = step === steps;
       const calls: any[] = [];
       if (!last || maybe(0.2)) for (let c = 0, cs = 1 + Math.floor(r() * 3); c < cs; c++) {
-        const name = bad(0.12) ? pick(FOREIGN) : pick(PROFILES[fam]).name;
-        const input = bad(0.1) ? pick(["raw text", [1], 7, null, true]) : fam === "gpt" && maybe(0.2) ? { input: "*** Begin Patch" } : { a: n };
-        calls.push({ type: "tool_use", id: id(fam), name, input, ...(fam !== "claude" ? { origin: ORIGIN[fam] } : {}) });
+        // A Gemini server that sends no call ids: the reader made the id from the
+        // call's place in its reply and its content, so the same call in two
+        // steps was stored with one id.
+        const noIds = fam === "gemini" && maybe(0.7);
+        const name = bad(0.12) ? pick(FOREIGN) : noIds ? PROFILES.gemini[0]!.name : pick(PROFILES[fam]).name;
+        const input = bad(0.1) ? pick(["raw text", [1], 7, null, true]) : noIds ? { a: Math.floor(r() * 2) } : fam === "gpt" && maybe(0.2) ? { input: "*** Begin Patch" } : { a: n };
+        const own = id(fam);
+        calls.push({ type: "tool_use", id: noIds ? `call_${c}_${Bun.hash(JSON.stringify({ name, args: input })).toString(36)}` : own, name, input, ...(fam !== "claude" ? { origin: ORIGIN[fam] } : {}) });
       }
       blocks.push(...calls);
       if (!blocks.length) blocks.push(text("ok"));
@@ -326,32 +398,46 @@ const declared = (f: Fam, messages: Message[], native = false): ToolSpec[] => {
   const have = new Set(tools.map((t) => t.name));
   return native ? [...tools, ...[...referenced(messages)].filter((x) => !have.has(x)).map((x) => spec(x, { defer: true }))] : tools;
 };
-const requests = (messages: Message[], session?: string): { name: string; body: any; problems: string[] }[] => {
+// Each wire's request for a history, with the tools its family is given.
+// `stored`: the same request with nothing repaired, and what the wire's rules
+// say of it.
+const requests = (messages: Message[], session?: string) => {
   const of = (name: string, f: Fam, native = false) => {
-    const t = targets.find((x) => x.name === name)!;
-    const body = t.body(messages, declared(f, messages, native), session);
-    return { name: `${name}${native ? " (deferred tools)" : ""}`, body, problems: t.problems(body) };
+    const t = target(name);
+    const tools = declared(f, messages, native);
+    const body = t.body(messages, tools, session), stored = t.body(messages, tools, session, {});
+    return { name: `${name}${native ? " (deferred tools)" : ""}`, wire: name, body, problems: t.problems(body), stored, refused: t.problems(stored) };
   };
   return [of("anthropic", "claude"), of("anthropic", "claude", true), of("responses", "gpt"), of("responses", "gpt", true), of("responses-xai", "gpt"), of("chat", "other"), of("gemini", "gemini")];
 };
 
 const SEEDS = 150;
 
-test("every wire's request from a random history passes the wire's rules", () => {
+test("every wire's request from a random history passes the wire's rules, and one the wire takes as stored is sent as stored", () => {
   const failed: string[] = [];
-  let repaired = 0;
-  const off = onRepair("test", () => void repaired++);
+  const count = { repaired: 0, as_stored: 0 };
+  let told = 0;
+  const off = onRepair("test", () => void told++);
   for (let seed = 1; seed <= SEEDS; seed++) {
     const events = branch(seed, true);
     const stored = JSON.stringify(events);
     for (const [how, messages] of [["engine", engineMessages(events)], ["plain", plainMessages(events)]] as const) {
-      for (const q of requests(messages, `rand-${seed}-${how}`)) if (q.problems.length) failed.push(`seed ${seed} ${how} ${q.name}: ${q.problems.slice(0, 3).join("; ")}`);
+      for (const q of requests(messages, `rand-${seed}-${how}`)) {
+        if (q.problems.length) failed.push(`seed ${seed} ${how} ${q.name}: ${q.problems.slice(0, 3).join("; ")}`);
+        const same = JSON.stringify(q.body) === JSON.stringify(q.stored);
+        // A repair is made only where the wire refuses the stored form.
+        if (!q.refused.length && !same) failed.push(`seed ${seed} ${how} ${q.name}: the wire takes the stored history, and it was changed`);
+        count[same ? "as_stored" : "repaired"]++;
+      }
     }
     expect(JSON.stringify(events)).toBe(stored); // the stored history is never rewritten
   }
   off();
   expect(failed.slice(0, 12)).toEqual([]);
-  expect(repaired).toBeGreaterThan(SEEDS); // the histories did need repairs
+  // The histories did need repairs, and many requests needed none.
+  expect(count.repaired).toBeGreaterThan(SEEDS);
+  expect(count.as_stored).toBeGreaterThan(SEEDS);
+  expect(told).toBeGreaterThan(SEEDS);
 });
 
 // The projection as it was before it repaired anything.
@@ -397,21 +483,33 @@ function projectBefore(messages: Message[], o: { origin: string; legacyIsMine?: 
   return merged;
 }
 
-test("a history that needs no repair is projected as it was before, with nothing told", () => {
-  let repaired = 0;
-  const off = onRepair("test", () => void repaired++);
-  let results = 0;
+test("what a healthy engine wrote is projected as it was before, but for the ids one wire refuses", () => {
+  const told = new Map<string, number>();
+  const off = onRepair("test", (r) => void told.set(r.kind, (told.get(r.kind) ?? 0) + 1));
+  let results = 0, repeats = 0;
+  const WIRES: [string, WireRules, Fam][] = [["anthropic", ANTHROPIC_RULES, "claude"], ["responses", RESPONSES_RULES, "gpt"], ["chat", CHAT_RULES, "other"], ["gemini", GEMINI_RULES, "gemini"]];
   for (let seed = 1; seed <= SEEDS; seed++) {
     const messages = engineMessages(branch(seed, false));
     results += messages.flatMap((m) => m.content as any[]).filter((b) => b.type === "tool_result").length;
-    for (const f of FAMILIES) for (const toolRefs of [false, true]) {
+    // The same call in two steps of a Gemini server that sends no ids: one id, stored so.
+    const ids = messages.flatMap((m) => (m.role === "assistant" ? m.content : [])).flatMap((b) => (b.type === "tool_use" ? [b.id] : []));
+    const repeated = new Set(ids).size < ids.length;
+    if (repeated) repeats++;
+    for (const [name, rules, f] of WIRES) for (const toolRefs of [false, true]) {
       const o = { origin: ORIGIN[f], legacyIsMine: f === "claude", toolRefs };
-      expect(JSON.stringify(project(messages, { ...o, sessionKey: `clean-${seed}` }))).toBe(JSON.stringify(projectBefore(messages, o)));
+      const same = JSON.stringify(project(messages, { ...o, rules, sessionKey: `clean-${seed}-${name}` })) === JSON.stringify(projectBefore(messages, o));
+      // Only the Anthropic wire refuses a repeated id ("`tool_use` ids must be unique").
+      expect([seed, name, same]).toEqual([seed, name, !(repeated && name === "anthropic")]);
     }
-    for (const q of requests(messages, `clean-${seed}`)) expect([seed, q.name, q.problems]).toEqual([seed, q.name, []]);
+    for (const q of requests(messages, `clean-${seed}`)) {
+      expect([seed, q.name, q.problems]).toEqual([seed, q.name, []]);
+      if (q.wire !== "anthropic") expect([seed, q.name, JSON.stringify(q.body) === JSON.stringify(q.stored)]).toEqual([seed, q.name, true]);
+      else if (repeated) expect([seed, q.name, q.refused.some((p) => p.includes("is used twice"))]).toEqual([seed, q.name, true]);
+    }
   }
   off();
-  expect(repaired).toBe(0);
+  expect([...told.keys()]).toEqual(["repeated_call_id"]);
+  expect(repeats).toBeGreaterThan(5);
   expect(results).toBeGreaterThan(SEEDS);
 });
 

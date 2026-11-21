@@ -1,5 +1,6 @@
 // Providers: what is set up, each listing's state, plugins, choices, and the
 // Grok plan sign-in.
+import { errorScope } from "../../core/errors.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import type { RouteModule } from "../app.ts";
 import { CLOSE_PERCENT, isClose } from "../../providers/limits.ts";
@@ -14,7 +15,7 @@ const hiddenIn = (c: { hidden: Record<string, string[]>; hidden_providers?: stri
   return !!c.hidden_providers?.includes(p) || !!c.hidden[p]?.includes(m);
 };
 
-export const providersRoutes: RouteModule = ({ providers, store, errors }) => {
+export const providersRoutes: RouteModule = ({ providers, store }) => {
   // The session's speed, read before each request so a change applies from
   // the next one, also in the middle of a turn. The registry turns it into the
   // offer's fields; a model without that offer runs at standard.
@@ -22,9 +23,13 @@ export const providersRoutes: RouteModule = ({ providers, store, errors }) => {
     beforeRequest: (s, req) => ({ ...req, speed: store.session(s.id)?.settings.speed }),
   });
 
-  // A request that had to be repaired so its wire takes it is recorded once
-  // per session and kind, as a warning (src/providers/project.ts).
-  recordRepairs(errors);
+  // The first repair of each kind a session's requests needed is kept in its
+  // settings, with the turn it happened in (src/providers/project.ts). It is a
+  // diagnostic: nothing is captured as an error.
+  recordRepairs(store, (session) => {
+    const scope = errorScope.getStore();
+    return scope?.session === session ? scope.turn : undefined;
+  });
 
   const report = async () => {
     await providers.plugins.freshen();
