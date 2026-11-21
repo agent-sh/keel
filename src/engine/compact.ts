@@ -718,6 +718,40 @@ function chunks(text: string, budget: number): string[] {
   return out;
 }
 
+// Transcript text cut again into parts of at most `budget` UTF-8 bytes, on
+// line ends where a line fits: the parts still to read, when the summary so
+// far left less room for them than they were first cut for.
+export function recut(text: string, budget: number): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let n = 0;
+  const add = (t: string, b: number) => {
+    if (n + b > budget && cur) { out.push(cur); cur = ""; n = 0; }
+    cur += t;
+    n += b;
+  };
+  for (const line of text.split(/(?<=\n)/)) {
+    const b = utf8Bytes(line);
+    if (b > budget) for (const c of chunks(line, budget)) add(c, utf8Bytes(c));
+    else add(line, b);
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+// Added to a summary request whose reply was cut at the output limit.
+export const shorterPrompt = (output: number) =>
+  `[harness] Your summary was cut at the output limit (${output} tokens) and was not kept. Write it again, whole, well within that limit: the same quoted statements, a shorter story.`;
+
+// The request for a summary too long to go with the next part of the transcript.
+export function condensePrompt(summary: string, bytes: number): string {
+  return [
+    `[harness] The context is being compacted from a transcript read in parts. Your summary of the parts so far is too long to go with the next part: it must fit in ${bytes} bytes.`,
+    `<summary>\n${summary}\n</summary>`,
+    "Write it again within that size: keep every quoted line under Statements, Requests, Lifted and Done exactly as it is, and shorten the story to what the work still needs. Reply with the summary only.",
+  ].join("\n");
+}
+
 // The request for one part: the summary of the parts before it, the part, and
 // what to write. The last part asks for the summary the context continues from.
 export function partPrompt(part: string, k: number, n: number, sofar: string, clipped: number, focus?: string): string {

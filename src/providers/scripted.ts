@@ -145,6 +145,14 @@ export class ScriptedProvider implements Provider {
       }
     }
 
+    if (req.purpose === "summary" && lastText.includes("[harness] The context is being compacted")) {
+      // The focus picks what a summary request gets: a reply cut at the output
+      // limit (every time, or until it is asked for again, shorter), or, for
+      // the first part of a transcript, a summary far longer than planned.
+      const cut = lastText.match(/Keep above all: script:summary-cut(-once)?/);
+      if (cut && !(cut[1] && lastText.includes("was cut at the output limit"))) return reply("Goal: the owner is checking a summary that the output limit cut in the middle of a", "max_tokens");
+      if (lastText.includes("Keep above all: script:summary-long") && /; this is part 1\./.test(lastText)) return reply(`## Story\n${"The first part, retold at length. ".repeat(1_800)}`);
+    }
     // A history read as a transcript in parts: the summary names the part it reached.
     const part = lastText.match(/^\[harness\] The context is being compacted, .* in (\d+) parts, oldest first; this is part (\d+)\./);
     if (part) return reply(`Goal: the owner is checking a history longer than the window. State: read part ${part[2]} of ${part[1]} of the transcript${lastText.includes("<summary>") ? ", after the summary of the parts before it" : ""}.`);

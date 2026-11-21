@@ -16,6 +16,8 @@ import { lineage } from "../core/tree.ts";
 
 const BIG = { id: "ctx:big", provider: "ctx", model: "big", name: "Big", family: "other", context: 200_000, output: 1_000, efforts: [], billing: "per_token", tools: false };
 const SMALL = { ...BIG, id: "ctx:small", model: "small", name: "Small", context: 10_000 };
+const MID = { ...BIG, id: "ctx:mid", model: "mid", name: "Mid", context: 20_000 };
+const MODELS = [BIG, SMALL, MID];
 const count = (req: { system: string; messages: Message[] }) =>
   Math.ceil((Buffer.byteLength(req.system) + req.messages.reduce((n, m) => n + (m.content as any[]).reduce((k, b) => k + Buffer.byteLength(b.text ?? b.thinking ?? JSON.stringify(b)), 0), 0)) / 2.5);
 
@@ -34,14 +36,14 @@ function rig(reply?: (req: any, sent: Sent[]) => any) {
   dirs.push(dir);
   // The same prompt on every machine: no instruction file above the scratch folder is loaded.
   instructionFilter.file = () => null;
-  for (const m of [BIG, SMALL]) setRatio(m.id, 2.5);
+  for (const m of MODELS) setRatio(m.id, 2.5);
   const store = new Store(dir);
   const sent: Sent[] = [];
   const failures: any[] = [];
   const provider = {
     id: "ctx", wire: "anthropic_messages", available: () => true, list: async () => [],
     stream: async (req: any) => {
-      const info = [BIG, SMALL].find((m) => m.model === req.model)!;
+      const info = MODELS.find((m) => m.model === req.model)!;
       const tokens = count(req);
       const refused = tokens > info.context;
       sent.push({ purpose: req.purpose, model: info.id, tokens, refused, messages: req.messages });
@@ -51,8 +53,8 @@ function rig(reply?: (req: any, sent: Sent[]) => any) {
       return { model: req.model, ...out, usage: { input: last, cache_read: tokens - last, cache_write: 0, output: 10, ...out.usage } };
     },
   };
-  const info = (id: string) => [BIG, SMALL].find((m) => m.id === id)!;
-  const providers = { resolve: async (id: string) => ({ provider, info: info(id) }), models: async () => [BIG, SMALL], current: () => [BIG, SMALL] };
+  const info = (id: string) => MODELS.find((m) => m.id === id)!;
+  const providers = { resolve: async (id: string) => ({ provider, info: info(id) }), models: async () => MODELS, current: () => MODELS };
   const errors = { capture: (_s: string, e: any) => { failures.push(e); return { id: "err", message: String(e?.message ?? e) }; } };
   const engine = new Engine(store, new Bus(), providers as any, errors as any, join(dir, "spill"));
   const session = (model: string) => store.createSession({ model, workspace: dir }).id;
@@ -152,4 +154,93 @@ test("what a hook adds counts: the turn compacts to fit and goes on; what cannot
   expect(r.sent.filter((s) => s.purpose === "turn" || s.refused)).toEqual([]);
   expect(r.failures.at(-1)?.code).toBe("context_over_window");
   expect(r.store.events(b).findLast((e) => e.kind === "turn_end")?.data.reason).toBe("error");
+});
+
+const lastText = (req: any): string => (req.messages.at(-1).content as any[]).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+const text = (t: string, stop = "end_turn") => ({ blocks: [{ type: "text", text: t }], stop });
+
+test("a summary cut at the output limit never becomes a checkpoint", async () => {
+  let cutFirst = 0;
+  const r = rig((req) => {
+    if (req.purpose !== "summary") return undefined;
+    if (lastText(req).includes("Keep above all: always")) return text("Goal: a summary the limit cut in the middle of a", "max_tokens");
+    // Cut once: the request that says so is answered whole.
+    if (lastText(req).includes("was cut at the output limit")) return text("WHOLE-SUMMARY");
+    return cutFirst++ ? text("WHOLE-SUMMARY") : text("Goal: cut in the middle of a", "max_tokens");
+  });
+  const history = (id: string) => {
+    r.store.append(id, "user", { text: "read it" });
+    r.store.append(id, "assistant", { blocks: [{ type: "text", text: words(15_000) }], model: SMALL.id, stop: "end_turn", usage: { input: 10, cache_read: 100, cache_write: 0, output: 6_000 } });
+  };
+  // Every attempt is cut: asked a bounded number of times, then nothing is stored.
+  const a = r.session(SMALL.id);
+  history(a);
+  const head = r.store.session(a)!.head;
+  await expect(r.engine.compactNow(a, { focus: "always" })).rejects.toMatchObject({ code: "summary_truncated", status: 409 });
+  expect(r.sent.map((s) => s.purpose)).toEqual(["summary", "summary", "summary"]);
+  expect(r.store.events(a).filter((e) => e.kind === "compaction")).toEqual([]);
+  expect(r.store.session(a)!.head).toBe(head);
+  // Cut once: the second answer, written whole, is the checkpoint.
+  r.sent.length = 0;
+  const b = r.session(SMALL.id);
+  history(b);
+  const cp = await r.engine.compactNow(b);
+  expect(cp.data.summary).toBe("WHOLE-SUMMARY");
+  expect(r.sent).toHaveLength(2);
+  // Inside a turn whose context still fits: said, and the turn goes on with the history whole.
+  r.sent.length = 0;
+  const c = r.session(SMALL.id);
+  r.store.updateSession(c, { settings: { compact_at: 2_000 } });
+  history(c);
+  registerHooks({ compactFocus: (s) => (s.id === c ? "always" : undefined) });
+  r.engine.send(c, "go on");
+  await r.idle(c);
+  const events = r.store.events(c);
+  expect(events.filter((e) => e.kind === "compaction")).toEqual([]);
+  expect(events.find((e) => e.kind === "note" && e.data.kind === "compaction_failed")?.data.text).toContain("output limit");
+  expect(events.findLast((e) => e.kind === "turn_end")?.data.reason).toBe("end_turn");
+});
+
+// A history read as a transcript in parts. The summary of the parts so far
+// goes with each next part: the request budget is the compaction share of the
+// window, whatever size the model made that summary.
+test("a long summary of the earlier parts and the next part fit the request budget", async () => {
+  const budget = Math.floor(MID.context * 0.85);
+  const long = (n: number) => `## Story\n${words(n, "carried ")}`;
+  const imported = (r: ReturnType<typeof rig>) => {
+    const id = r.session(MID.id);
+    for (let n = 0; n < 8; n++) {
+      r.store.append(id, "user", { text: `step ${n}` });
+      r.store.append(id, "assistant", { blocks: [{ type: "text", text: words(15_000, `line ${n}\n`) }], stop: "end_turn" });
+    }
+    return id;
+  };
+  const partOf = (req: any) => Number(lastText(req).match(/this is part (\d+)/)?.[1] ?? 0);
+  // 30 KB for the first part's summary, where 2.5 KB was planned: the rest is cut again to fit beside it.
+  const r = rig((req) => (partOf(req) === 1 ? text(long(30_000)) : undefined));
+  const a = imported(r);
+  const cp = await r.engine.compactNow(a);
+  expect(r.sent.filter((s) => s.refused)).toEqual([]);
+  expect(Math.max(...r.sent.map((s) => s.tokens))).toBeLessThanOrEqual(budget);
+  expect(cp.data.parts).toBeGreaterThan(4);
+  expect(cp.data.summary).toBe("SUMMARY");
+  expect(lastText({ messages: r.sent[1]!.messages })).toContain("carried carried");
+
+  // A summary that leaves no room for a part is asked for again, shorter.
+  const r2 = rig((req) => (partOf(req) === 1 ? text(long(37_000)) : undefined));
+  const b = imported(r2);
+  expect((await r2.engine.compactNow(b)).data.summary).toBe("SUMMARY");
+  expect(lastText({ messages: r2.sent[1]!.messages })).toContain("too long to go with the next part");
+  expect(r2.sent.filter((s) => s.refused)).toEqual([]);
+  expect(Math.max(...r2.sent.map((s) => s.tokens))).toBeLessThanOrEqual(budget);
+
+  // One that stays too long: a bounded number of requests, then the branch is left as it was.
+  const r3 = rig((req) => (req.purpose === "summary" ? text(long(37_000)) : undefined));
+  const c = imported(r3);
+  const head = r3.store.session(c)!.head;
+  await expect(r3.engine.compactNow(c)).rejects.toMatchObject({ code: "summary_too_long", status: 409 });
+  expect(r3.sent).toHaveLength(3);
+  expect(r3.sent.filter((s) => s.refused)).toEqual([]);
+  expect(r3.store.events(c).filter((e) => e.kind === "compaction")).toEqual([]);
+  expect(r3.store.session(c)!.head).toBe(head);
 });

@@ -146,3 +146,57 @@ test("a request over the destination model's window is never sent", async ({ pag
   }
   expect((await counted(request, moved)).requests).toBeGreaterThan(2);
 });
+
+// An imported history of `steps` exchanges with a 4 KB tool output each, no token counts.
+function longHistory(title: string, steps: number): { file: string; events: number } {
+  const lines: any[] = [];
+  const add = (kind: string, data: any) => lines.push({ ref: `e${lines.length + 1}`, kind, data, ts: 1_700_000_000_000 + lines.length });
+  for (let n = 1; n <= steps; n++) {
+    add("user", { text: `Step ${n}: check the service on port ${7000 + n}.` });
+    add("assistant", { blocks: [{ type: "tool_use", id: `call-${n}`, name: "Bash", input: { command: `curl -s localhost:${7000 + n}/health` } }], stop: "tool_use", imported: true });
+    add("tool_result", { results: [{ type: "tool_result", tool_use_id: `call-${n}`, content: `BEGIN-${n} ${"status ok; ".repeat(360)} END-${n}` }] });
+    add("assistant", { blocks: [{ type: "text", text: `Port ${7000 + n} answers. ${"All checks passed. ".repeat(40)}` }], stop: "end_turn", imported: true });
+  }
+  const file = [{ keel_export: 2, events: lines.length, scope: "current branch", title, model: STRICT, workspace: "", created: 1_700_000_000_000 }, ...lines].map((l) => JSON.stringify(l)).join("\n") + "\n";
+  return { file, events: lines.length };
+}
+
+// Feature: what a summary request brings back is checked before it becomes
+// the context. A summary cut at the output limit is asked for again and never
+// kept as it is; a summary of a transcript's earlier parts that came back far
+// longer than planned still goes with the next part inside one request.
+test("a cut summary is never a checkpoint, and a long summary of earlier parts still fits the next request", async ({ request }) => {
+  const info = (await (await request.get("/api/models")).json()).models.find((m: any) => m.id === STRICT);
+  test.skip(!info, "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const h = longHistory("Summaries that come back wrong", 60);
+  const id = (await (await request.post("/api/sessions/import", { data: h.file, headers: { "content-type": "application/x-ndjson" } })).json()).session.id;
+  const head = (await (await request.get(`/api/sessions/${id}`)).json()).session.head;
+
+  // Every attempt is cut at the output limit: refused, nothing stored, the branch as it was.
+  const cut = await request.post(`/api/sessions/${id}/compact`, { data: { focus: "script:summary-cut" } });
+  expect(cut.status()).toBe(409);
+  expect((await cut.json()).error).toMatch(/cut at Scripted strict window's output limit/);
+  expect((await eventsOf(request, id)).filter((e) => e.kind === "compaction")).toHaveLength(0);
+  expect((await (await request.get(`/api/sessions/${id}`)).json()).session.head).toBe(head);
+  const afterCut = await counted(request, id);
+  expect(afterCut.requests).toBe(3); // asked, and twice more, shorter
+
+  // The first part's summary comes back at 60 KB: the parts after it are cut
+  // again for the room it leaves, and no request goes over the window.
+  const long = await request.post(`/api/sessions/${id}/compact`, { data: { focus: "script:summary-long" } });
+  expect(long.ok()).toBe(true);
+  const cp = (await long.json()).event;
+  expect(cp.data.parts).toBeGreaterThan(1);
+  expect(cp.data.summary).toContain(`read part ${cp.data.parts} of ${cp.data.parts} of the transcript, after the summary of the parts before it`);
+  const c = await counted(request, id);
+  expect(c.refused, `requests over the window that reached the provider (${JSON.stringify(c)})`).toBe(0);
+  expect(c.requests - afterCut.requests).toBe(cp.data.parts);
+
+  // Cut once, then written whole when asked again: that answer is the checkpoint.
+  const again = await sessionOn(request, STRICT);
+  await request.post(`/api/sessions/${again}/messages`, { data: { text: "A first exchange to summarize." } });
+  await turnEnds(request, again, 1);
+  const once = await request.post(`/api/sessions/${again}/compact`, { data: { focus: "script:summary-cut-once" } });
+  expect(once.ok()).toBe(true);
+  expect((await once.json()).event.data.summary).toContain("the scripted scenario ran");
+});

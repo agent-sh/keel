@@ -24,7 +24,7 @@ import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, type Material } from "./reader.ts";
 import { readBudget, readMaterial, readSource, type ReaderHost, type ReadOutcome } from "./readers.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
-import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, messagesBytes, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, utf8Bytes, IDLE_MARGIN_MS, idleMinTokens, checkpointData, lastWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
+import { bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, messagesBytes, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleMinTokens, checkpointData, lastWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
 import { effectiveEffort, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { withoutImages } from "./images.ts";
@@ -243,9 +243,14 @@ type Running = { abort: AbortController; done: Promise<void> };
 const SHRINK_STEPS = [1, 0.7, 0.5, 0.35];
 // A part never gets smaller than this, however small the window.
 const MIN_PART_BYTES = 2_000;
-// Room kept in each part's request for the summary of the parts before it:
+// Room planned in each part's request for the summary of the parts before it:
 // what the model can write in one reply, at most a quarter of the window.
 const SUMMARY_ROOM_BYTES = (st: Step) => Math.floor(Math.min(st.info.output, st.info.context / 4) * bytesPerToken(st.info.id));
+
+// A summary cut at the output limit, or one too long to go with the next part
+// of a transcript, is asked for again this many times in one compaction. Then
+// the compaction fails and nothing is checkpointed: the branch stays as it was.
+const SUMMARY_RETRIES = 2;
 
 type Step = { provider: Provider; info: ModelInfo; tools: Tool[]; system: string; systemSplit: number; effort?: string; native?: boolean };
 
@@ -1453,11 +1458,21 @@ export class Engine {
   private async summarize(id: string, st: Step, session: Session, events: StoredEvent[], signal: AbortSignal, focus?: string): Promise<{ summary: string; usage: Usage; parts?: number; clipped?: number }> {
     focus ??= allHooks().map((h) => h.compactFocus?.(session)).find(Boolean);
     let usage = emptyUsage();
-    const one = async (ask: Message[], fit: Fit) => {
-      const res = await this.call(id, st, ask, signal, new Map(), session, true, "summary", fit); // the summary is not a reply
-      usage = addUsage(usage, res.usage);
-      this.store.addUsage(id, res.usage);
-      return res.stop === "refusal" ? "" : res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n").trim();
+    let retries = SUMMARY_RETRIES;
+    const one = async (ask: Message[], fit: Fit): Promise<string> => {
+      for (;;) {
+        const res = await this.call(id, st, ask, signal, new Map(), session, true, "summary", fit); // the summary is not a reply
+        usage = addUsage(usage, res.usage);
+        this.store.addUsage(id, res.usage);
+        if (res.stop === "refusal") return "";
+        // Cut at the output limit, its end (where the work stands, the next
+        // step) is missing: it is never kept. Asked again, shorter.
+        if (res.stop !== "max_tokens" && res.stop !== "model_context_window_exceeded") return res.blocks.filter((b) => b.type === "text").map((b: any) => b.text).join("\n").trim();
+        if (retries-- <= 0) throw Object.assign(new Error(`the summary was cut at ${st.info.name}'s output limit (${st.info.output} tokens) each time it was asked for, so nothing was kept`), { status: 409, code: "summary_truncated" });
+        const note = shorterPrompt(st.info.output);
+        const last = ask.at(-1)!;
+        if (!(last.content as any[]).some((b) => b.type === "text" && b.text === note)) ask = [...ask.slice(0, -1), { ...last, content: [...last.content, { type: "text", text: note }] } as Message];
+      }
     };
     const messages = toMessages(events);
     let over: unknown;
@@ -1473,13 +1488,36 @@ export class Engine {
     // What one request can hold of the transcript: the compaction share of
     // the window less the request's own prefix, in this model's bytes a token.
     const room = Math.floor(st.info.context * COMPACT_SHARE * bytesPerToken(st.info.id)) - this.prefixBytes(st);
+    // Each request is the prompt's own words, the summary of the parts before
+    // it and one part. The parts are cut for a summary of SUMMARY_ROOM_BYTES;
+    // a summary that came back longer takes its room from the parts after it.
+    const words = utf8Bytes(partPrompt("", 0, 2, " ", 1, focus));
+    const carry = SUMMARY_ROOM_BYTES(st);
+    const text = (t: string): Message[] => [{ role: "user", content: [{ type: "text", text: t }] }];
     for (const share of SHRINK_STEPS) {
-      const { parts, clipped } = transcriptParts(messages, Math.max(MIN_PART_BYTES, Math.floor(room * share) - SUMMARY_ROOM_BYTES(st)));
+      // Never less than the prompt, a summary and one smallest part.
+      const budget = Math.max(Math.floor(room * share), words + carry + MIN_PART_BYTES);
+      const cut = transcriptParts(messages, budget - words - carry);
+      const clipped = cut.clipped;
+      let parts = cut.parts;
       try {
         let summary = "";
         for (let k = 0; k < parts.length; k++) {
-          summary = await one([{ role: "user", content: [{ type: "text", text: partPrompt(parts[k]!, k, parts.length, summary, clipped, focus) }] }], { tokens: 0, bytes: 0 });
+          summary = await one(text(partPrompt(parts[k]!, k, parts.length, summary, clipped, focus)), { tokens: 0, bytes: 0 });
           if (!summary) return { summary, usage };
+          if (k + 1 === parts.length) break;
+          // The next request carries this summary. One that leaves no room for
+          // a part is asked for again within what does, a bounded number of times.
+          let left = budget - words - utf8Bytes(summary);
+          const most = budget - words - MIN_PART_BYTES;
+          while (left < MIN_PART_BYTES && retries-- > 0 && utf8Bytes(summary) + words <= budget) {
+            summary = await one(text(condensePrompt(summary, most)), { tokens: 0, bytes: 0 });
+            if (!summary) return { summary, usage };
+            left = budget - words - utf8Bytes(summary);
+          }
+          if (left < MIN_PART_BYTES) throw Object.assign(new Error(`the summary of the transcript's earlier parts is too long to go with the next part (${utf8Bytes(summary)} bytes, ${most} fit), so nothing was kept`), { status: 409, code: "summary_too_long" });
+          // The rest of the transcript, cut again for the room this summary leaves.
+          if (utf8Bytes(parts[k + 1]!) > left) parts = [...parts.slice(0, k + 1), ...recut(parts.slice(k + 1).join(""), left)];
         }
         return { summary, usage, parts: parts.length, clipped };
       } catch (e) {
