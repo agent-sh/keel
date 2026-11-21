@@ -588,3 +588,62 @@ test("an export is named after a title cut inside an emoji", async ({ request })
   }
   await request.delete(`/api/sessions/${session.id}`);
 });
+
+// Two copies of one Claude Code session; the original goes on. Update in the
+// older copy's Export dialog brings that copy up to date, not the newest one.
+// When the copy it is asked for cannot be updated (it went on here), nothing
+// is appended to either.
+test("Update in a copy's Export dialog updates that copy", async ({ page, request }) => {
+  const first = await (await request.get("/api/import/sessions?limit=1")).json();
+  const store = first.harnesses.find((x: any) => x.harness === "claude")?.store as string;
+  test.skip(!store.includes("keel-work"), "needs scratch import stores (KEEL_IMPORT_*)");
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const tag = String(Date.now());
+  const cwd = join(SCRATCH, `copies-${tag}`);
+  mkdirSync(cwd, { recursive: true });
+  const id = `c0b1e500-0000-4000-8000-${tag.padStart(12, "0")}`;
+  const reply = (text: string) => ({ type: "assistant", message: { id: `m-${text}`, role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text }], stop_reason: "end_turn" } });
+  const ask = (text: string) => ({ type: "user", message: { role: "user", content: text } });
+  const path = claudeFile(join(store, cwd.replace(/[^A-Za-z0-9]/g, "-")), cwd, id, [ask(`Name a fruit ${tag}`), reply("Quince.")]);
+  // The original gains a question and an answer, chained after what it holds.
+  let records = 2;
+  const grow = (q: string, a: string) => {
+    for (const r of [ask(q), reply(a)]) {
+      appendFileSync(path, JSON.stringify({ cwd, sessionId: id, version: "2.1.300", isSidechain: false, userType: "external", entrypoint: "cli", timestamp: new Date().toISOString(), uuid: `${id}-${records}`, parentUuid: `${id}-${records - 1}`, ...r }) + "\n");
+      records++;
+    }
+  };
+  const copy = async (mode?: string) => (await (await request.post("/api/import", { data: { harness: "claude", id, path, mode, model: SCRIPTED } })).json()).session.id as string;
+  const older = await copy();
+  const newer = await copy("new");
+  const texts = async (sid: string) => (await eventsOf(request, sid)).flatMap((e) => (e.kind === "assistant" ? e.data.blocks.map((b: any) => b.text) : e.kind === "user" ? [e.data.text] : []));
+  grow("And its colour?", "Yellow.");
+
+  await page.goto(`/s/${older}`);
+  await page.getByRole("button", { name: "Export or continue elsewhere" }).click();
+  const dialog = page.getByTestId("export-dialog");
+  await expect(dialog.getByTestId("export-origin")).toContainText("the original has gone on since");
+  await shoot(page, "import-10-update-this-copy");
+  await dialog.getByTestId("export-update").click();
+  await expect(dialog.getByTestId("export-origin")).not.toContainText("gone on since");
+  await page.keyboard.press("Escape");
+  // The page shows what the copy gained without a reload.
+  await expect(page.getByTestId("transcript").getByText("Yellow.")).toBeVisible();
+  expect(await texts(older)).toEqual([`Name a fruit ${tag}`, "Quince.", "And its colour?", "Yellow."]);
+  expect(await texts(newer)).toEqual([`Name a fruit ${tag}`, "Quince."]);
+
+  // The older copy goes on here, the original too: its Update is refused, and the other copy is not updated in its place.
+  await say(request, older, "And its season?");
+  grow("And its shape?", "Round.");
+  const before = { older: await texts(older), newer: await texts(newer) };
+  await page.reload();
+  await page.getByRole("button", { name: "Export or continue elsewhere" }).click();
+  await dialog.getByTestId("export-update").click();
+  await expect(dialog.getByTestId("export-error")).toContainText("went on since it was copied");
+  await shoot(page, "import-11-update-refused");
+  expect({ older: await texts(older), newer: await texts(newer) }).toEqual(before);
+  // A copy that is not one of this source is not found, whatever else the request names.
+  expect((await request.post("/api/import", { data: { mode: "update", session_id: "no-such-copy" } })).status()).toBe(404);
+  for (const sid of [older, newer]) await request.delete(`/api/sessions/${sid}`);
+  rmSync(path, { force: true });
+});

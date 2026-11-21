@@ -99,11 +99,13 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
       setBusy(false);
     }
   };
+  // The copy this dialog is open on takes what its original gained, not another copy of the same original.
   const update = async () => {
     if (!origin?.origin) return;
     setBusy(true);
+    setErr("");
     try {
-      const r = await fetch("/api/import", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ harness: origin.origin.harness, id: origin.origin.source_id, mode: "update" }) });
+      const r = await fetch("/api/import", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mode: "update", session_id: session.id }) });
       if (!r.ok) throw new Error((await r.json()).error);
       setOrigin(await (await fetch(`${base}/origin`)).json());
     } catch (e) {
@@ -131,7 +133,7 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
                   Imported from {origin.origin.label} {ago(origin.origin.imported_ms)}
                   {origin.source && !origin.source.exists ? ", its file is gone." : origin.source?.grew ? "; the original has gone on since." : "."}
                 </span>
-                {origin.source?.grew && <button type="button" disabled={busy} onClick={update} className="shrink-0 rounded-md px-2 py-0.5 text-accent hover:bg-accent-soft">Update</button>}
+                {origin.source?.grew && <button type="button" disabled={busy} onClick={update} data-testid="export-update" className="shrink-0 rounded-md px-2 py-0.5 text-accent hover:bg-accent-soft">Update</button>}
               </div>
             )}
             <Option href={`${base}/export?format=md&include=tools`} icon={<FileDown />} title="Markdown" hint="To read or share: the current branch with its tool calls and results; images and files named, not included; secrets taken out." testid="export-md" />
@@ -152,7 +154,7 @@ function ExportDialog({ session, onClose }: { session: Session | null; onClose: 
               <Option icon={<Terminal />} title="Claude Code" hint="A new transcript in its store" onClick={() => to("claude_code")} testid="export-claude" busy={busy} />
               <Option icon={<Terminal />} title="Codex" hint="A new rollout in its store" onClick={() => to("codex")} testid="export-codex" busy={busy} />
             </div>
-            {err && <p ref={intoView} className="rounded-md bg-danger-soft px-3 py-2 text-caption text-danger">{err}</p>}
+            {err && <p ref={intoView} className="rounded-md bg-danger-soft px-3 py-2 text-caption text-danger" data-testid="export-error">{err}</p>}
             {written && (
               <div ref={intoView} className="scroll-mb-4 rounded-lg border border-line bg-raised p-3" data-testid="export-written">
                 <p className="text-caption text-muted">Written as a new session. Resume it with:</p>

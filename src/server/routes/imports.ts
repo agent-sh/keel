@@ -243,7 +243,7 @@ export const importRoutes: RouteModule = (deps) => {
     },
     "/api/import": {
       POST: async (req: Request) => {
-        const b = await body(req);
+        let b = await body(req);
         if (b.mode && !["new", "update", "open"].includes(b.mode)) return bad(`unknown mode ${b.mode}`);
         // Open names the copy: it opens whether or not the original can still be read.
         if (b.mode === "open" && typeof b.session_id === "string") {
@@ -252,9 +252,21 @@ export const importRoutes: RouteModule = (deps) => {
           if (!l || !s || (b.harness && l.harness !== b.harness) || (b.id && l.source_id !== b.id)) return bad("no such copy", 404);
           return json({ action: "opened", session: s, imported_events: 0 });
         }
+        // Update names the copy too (a copy's own Export dialog): that copy is
+        // brought up to date from its own source, whichever copy is the newest.
+        let named: string | undefined;
+        if (b.mode === "update" && b.session_id !== undefined) {
+          const l = typeof b.session_id === "string" ? imports.link(b.session_id) : undefined;
+          if (!l || !store.session(l.session_id) || (b.harness && l.harness !== b.harness) || (b.id && l.source_id !== b.id)) return bad("no such copy", 404);
+          if (sourceMachine(l.source_path)) return bad("this copy's original is on another machine: update it from that machine's list", 409);
+          named = l.session_id;
+          b = { ...b, harness: l.harness, id: l.source_id, path: b.path ?? (l.harness === "claude" || l.harness === "codex" ? l.source_path : undefined) };
+        }
         const f = await target(b);
         if (f instanceof Response) return f;
-        const prior = imports.links(f.harness, f.id, f.path)[0];
+        const copies = imports.links(f.harness, f.id, f.path);
+        const prior = named ? copies.find((l) => l.session_id === named) : copies[0];
+        if (named && !prior) return bad("no such copy", 404);
         if (prior && !b.mode) return json({ error: "this session was imported before: open it, update it, or make a new copy", session_id: prior.session_id }, 409);
         if (!prior && (b.mode === "update" || b.mode === "open")) return bad("this session was never imported", 404);
         // The original's later turns would land after the copy's own.
@@ -262,13 +274,16 @@ export const importRoutes: RouteModule = (deps) => {
         const model = b.mode === "open" ? "" : b.model || (await modelFor(f));
         if (!model && b.mode !== "open") return bad("no model is available: no provider has credentials", 409);
         if (b.cwd && !isDir(b.cwd)) return bad(`not a directory: ${b.cwd}`);
+        const seq = prior && b.mode === "update" ? store.events(prior.session_id).at(-1)?.seq ?? 0 : 0;
         let r;
         try {
-          r = await imports.import(f, { mode: b.mode, model, workspace: workspaceOf(f, b.cwd), title: b.title });
+          r = await imports.import(f, { mode: b.mode, model, workspace: workspaceOf(f, b.cwd), title: b.title, session_id: named });
         } catch (e) {
           if ((e as any)?.status === 409) return json({ error: (e as Error).message, session_id: (e as any).session_id, reason: (e as any).reason }, 409);
           throw e;
         }
+        // A page that shows the copy gets the events it gained.
+        if (r.action === "updated") for (const e of store.events(r.session.id, seq)) bus.emit({ t: "event", event: e });
         bus.emit({ t: "session", session: r.session });
         // A copy of a session that still runs is told so, once the agent view's list is read.
         if (r.action !== "opened") takeover?.noteLiveLater(r.session.id);
