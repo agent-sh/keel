@@ -11,6 +11,7 @@ import { writeOwnFile } from "../core/ownfile.ts";
 import { CHECKED, checkDatabase, checkedOf, configFiles, DB_FILES, listBackups, materialize, syncPath, verify, verifyFiles, type Backup, type BackupDone, type BackupJob, type CheckDone, type CheckJob, type CheckResult, type Checked } from "./backup.ts";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
+import { gitSync } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
 import type { Engine } from "../engine/turn.ts";
 import { jobsOf, leftText, jobLive, stopJob, stopJobs } from "../tools/jobs.ts";
@@ -225,9 +226,9 @@ export class Storage {
       const size0 = (await du([dir])).get(dir) ?? 0;
       const trees = db.query<{ id: string; tree: string }, [string]>("SELECT c.id, c.tree FROM checkpoints c JOIN sessions s ON s.id = c.session_id WHERE s.workspace = ?").all(ws);
       const git = (args: string[], input?: string) => {
-        const r = timed(() => `running git ${args[0]} on a checkpoint store`, () => Bun.spawnSync(["git", ...args], { env: { ...process.env, GIT_DIR: dir }, stdin: input === undefined ? "ignore" : new TextEncoder().encode(input), stdout: "pipe", stderr: "pipe" }));
-        if (!r.success) throw new Error(`git ${args[0]} in ${dir}: ${r.stderr.toString().trim().slice(0, 300)}`);
-        return r.stdout.toString();
+        const r = timed(() => `running git ${args[0]} on a checkpoint store`, () => gitSync(dir, args, { mode: "own", gitDir: dir, input, timeout: 600_000 }));
+        if (r.code !== 0) throw new Error(`git ${args[0]} in ${dir}: ${r.err.trim().slice(0, 300)}`);
+        return r.out;
       };
       const old = git(["for-each-ref", "--format=%(refname)", "refs/keel/keep/"]).split("\n").filter(Boolean);
       // One command per ref: git refuses a delete and an update of the same ref

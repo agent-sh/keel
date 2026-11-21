@@ -17,11 +17,11 @@
 // POST /api/debug/export/flush                  sends what waits now, the measurements of the open window included -> the same state
 // GET  /api/logs?since_ms=&level=&q=&limit=     the daemon's kept log lines -> { lines, dir }
 // GET  /api/logs/stream?level=                  the same, live, as server-sent events
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { buildBundle } from "../../admin/bundle.ts";
 import { detached } from "../../core/errors.ts";
+import { gitSync } from "../../core/git.ts";
 import { cutWhere } from "../../admin/life-rows.ts";
 import { installLogs, LEVELS, logAt, logDir, logLines, onLog } from "../../admin/logs.ts";
 import { newestTurn } from "../../admin/marks.ts";
@@ -54,8 +54,8 @@ registerSettings("observe", { otlp_endpoint: null, otlp_headers: null, otlp_metr
 function source(): { dir: string; commit?: string } | undefined {
   const dir = resolve(dirname(import.meta.dir), "..", "..");
   if (!existsSync(join(dir, "package.json")) || !existsSync(join(dir, "src", "engine", "turn.ts"))) return undefined;
-  const r = spawnSync("git", ["-C", dir, "rev-parse", "--short", "HEAD"], { encoding: "utf8", timeout: 3000 });
-  return { dir, commit: r.status === 0 ? r.stdout.trim() : undefined };
+  const r = gitSync(dir, ["rev-parse", "--short", "HEAD"], { read: true, timeout: 3000 });
+  return { dir, commit: r.code === 0 ? r.out.trim() : undefined };
 }
 
 export let tracer: Tracer | undefined;

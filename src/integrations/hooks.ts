@@ -18,6 +18,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, statSyn
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { contains, realOf } from "../core/paths.ts";
+import { locate } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import { tacitToolCall } from "./tacit.ts";
@@ -243,11 +244,8 @@ export function pinKey(root: string): string {
   // A folder that is not on this machine (a session whose folder is on another
   // one, or one removed since): the spawn itself throws there. It has no
   // repository here, so its key is the folder.
-  let out = "";
-  try {
-    const r = timed(() => "running git rev-parse for a hooks file's repository", () => Bun.spawnSync(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root, stdout: "pipe", stderr: "ignore" }));
-    if (r.success) out = r.stdout.toString().trim();
-  } catch {}
+  // (Read from the files: git is not run for it, see src/core/git.ts.)
+  const out = timed(() => "finding a hooks file's repository", () => locate(root)?.common ?? "");
   const key = out ? (out.endsWith("/.git") ? dirname(out) : out) : root;
   pinKeys.set(root, key);
   return key;

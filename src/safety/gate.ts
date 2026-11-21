@@ -7,6 +7,7 @@ import { existsSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { Bus } from "../core/bus.ts";
+import { locate } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import type { ToolAuthorization, ToolCall, ToolGate } from "../engine/hooks.ts";
@@ -251,6 +252,19 @@ export class Gate {
     return { session_id: sessionId, mode: this.defaultMode(), sandbox: this.defaultSandbox(), network: true };
   }
 
+  // How far the daemon's own git may fetch for a session's worktree
+  // (GitOpts.fetch in src/core/git.ts): as far as the session's own commands
+  // reach. Any address when they are not confined; the ones the web tools
+  // reach when its sandbox leaves the network on; nothing when it is off.
+  // No session (the owner's own act): what the web tools reach.
+  gitReach(sessionId?: string): "any" | "public" | undefined {
+    const s = sessionId ? this.store.session(sessionId) : undefined;
+    if (!s) return "public";
+    const p = this.perm(s.id);
+    if (p.sandbox === "off" || !this.sandboxed(s, p)) return "any";
+    return p.network ? "public" : undefined;
+  }
+
   setPerm(sessionId: string, patch: Partial<Omit<SessionPerm, "session_id">>): SessionPerm {
     const prev = this.perm(sessionId);
     const next = { ...prev, ...patch };
@@ -271,8 +285,8 @@ export class Gate {
     if (hit) return hit;
     // A folder that is gone has no repository to ask (and may come back).
     if (!existsSync(workspace)) return workspace;
-    const r = timed(() => "running git rev-parse for a workspace's repository", () => Bun.spawnSync(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: workspace, stdout: "pipe", stderr: "ignore" }));
-    const out = r.success ? r.stdout.toString().trim() : "";
+    // (Read from the files: git is not run for it, see src/core/git.ts.)
+    const out = timed(() => "finding a workspace's repository", () => locate(workspace)?.common ?? "");
     const root = out ? (out.endsWith("/.git") ? dirname(out) : out) : workspace;
     this.roots.set(workspace, root);
     return root;

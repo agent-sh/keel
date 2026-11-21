@@ -7,6 +7,7 @@ import { basename, dirname, join, relative } from "node:path";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import { Shadow, type DiffResult } from "../safety/shadow.ts";
+import { addAll, git as gitCall, gitEnv, gitReach, innerWork, locate, nestedIn, type GitFetch } from "../core/git.ts";
 import { readText } from "../core/proc.ts";
 
 export type Worktree = {
@@ -22,8 +23,42 @@ export type Worktree = {
   updated: number;
 };
 // exists: the folder is on disk; branch_missing: the branch ref is gone;
-// unknown: git could not say what the branch holds (then nothing is removed).
-export type WorktreeStatus = Worktree & { exists: boolean; dirty: number; commits_ahead: number; branch_missing?: boolean; unknown?: string };
+// unknown: git could not say what the branch holds (then nothing is removed);
+// inner: the repositories inside it (a submodule, a nested clone) that hold
+// work no snapshot of the worktree keeps. They count in `dirty`.
+// inner_unpushed: every one of them is clean and holds only commits that none of its remotes has.
+export type WorktreeStatus = Worktree & { exists: boolean; dirty: number; commits_ahead: number; branch_missing?: boolean; unknown?: string; inner?: string[]; inner_unpushed?: boolean };
+
+// The uncommitted work in a folder: what git's status lists, and every
+// repository inside it that holds work of its own. Such a repository is one
+// entry however much it holds. The outer status does not look inside one
+// (the daemon's git never runs there from outside, src/core/git.ts), so each
+// submodule is asked through its own view.
+// - `held`: the submodules with uncommitted work or commits of their own
+//   that none of their remotes has;
+// - `nested`: the repositories the outer one does not track, also below a
+//   folder it does not track. They are in no tree at all;
+// - `inner`: both. A snapshot of the outer tree keeps none of it, and what a
+//   submodule committed lives in a git directory that goes with a worktree;
+// - `unpushed`: all of `inner` is submodules that are clean and hold only
+//   commits none of their remotes has (what to do about it differs);
+// - `unknown`: the ones that cannot be read, never read as clean.
+async function workIn(dir: string): Promise<{ dirty: number; inner: string[]; held: string[]; nested: string[]; unknown: string[]; unpushed: boolean }> {
+  const [st, others, work] = await Promise.all([git(dir, ["status", "--porcelain", "-z"]), git(dir, ["ls-files", "-o", "--exclude-standard", "-z"]), innerWork(dir)]);
+  const listed = new Set<string>();
+  const recs = st.split("\0").filter(Boolean);
+  for (let i = 0; i < recs.length; i++) {
+    const rec = recs[i]!;
+    listed.add(rec.slice(3).replace(/\/$/, ""));
+    if (rec[0] === "R" || rec[0] === "C") i++; // the name it had before follows
+  }
+  const nested = nestedIn(others);
+  const held = [...new Set([...work.dirty, ...work.unpushed])];
+  return { dirty: listed.size + work.dirty.filter((p) => !listed.has(p)).length, inner: [...held, ...nested], held, nested, unknown: work.unknown, unpushed: !work.dirty.length && !nested.length && work.unpushed.length > 0 };
+}
+const cannotRead = (paths: string[]) => `a repository inside it could not be read (${paths.slice(0, 3).join(", ")}${paths.length > 3 ? " and more" : ""})`;
+// `unpushed`: all of them are clean and hold commits that none of their remotes has.
+const notKept = (paths: string[], unpushed = false) => `${paths.length === 1 ? "a repository inside it holds" : `${paths.length} repositories inside it hold`} ${unpushed ? "commits of its own that none of its remotes has, which" : "work that"} a snapshot does not keep (${paths.slice(0, 3).join(", ")}${paths.length > 3 ? " and more" : ""}): ${unpushed ? "push them, or move it out, first" : "commit it there, or move it out, first"}`;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS worktrees (session_id TEXT PRIMARY KEY, repo_root TEXT NOT NULL, path TEXT NOT NULL, branch TEXT NOT NULL, base TEXT NOT NULL, base_commit TEXT NOT NULL, state TEXT NOT NULL, snapshot_ref TEXT, created INTEGER NOT NULL, updated INTEGER NOT NULL);
@@ -39,7 +74,7 @@ export class GitError extends Error {
 // repository run one after another.
 const worktreeQueue = new Map<string, Promise<unknown>>();
 
-export function git(cwd: string, args: string[], opts: { env?: Record<string, string>; input?: string; ok?: boolean } = {}): Promise<string> {
+export function git(cwd: string, args: string[], opts: { env?: Record<string, string>; input?: string; ok?: boolean; fetch?: GitFetch } = {}): Promise<string> {
   if (args[0] !== "worktree") return gitNow(cwd, args, opts);
   const run = (worktreeQueue.get(cwd) ?? Promise.resolve()).then(() => gitNow(cwd, args, opts));
   const tail = run.catch(() => {});
@@ -65,12 +100,10 @@ async function ownCommit(dir: string, args: string[]): Promise<string> {
   }
 }
 
-async function gitNow(cwd: string, args: string[], opts: { env?: Record<string, string>; input?: string; ok?: boolean }): Promise<string> {
-  const p = Bun.spawn(["git", ...args], {
-    cwd, env: { ...(process.env as Record<string, string>), GIT_TERMINAL_PROMPT: "0", ...opts.env },
-    stdin: opts.input !== undefined ? new TextEncoder().encode(opts.input) : "ignore", stdout: "pipe", stderr: "pipe", timeout: 120_000,
-  });
-  const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
+// Through the one place that runs git (src/core/git.ts): the repository's own
+// config is not read, so nothing it names is run for the daemon.
+async function gitNow(cwd: string, args: string[], opts: { env?: Record<string, string>; input?: string; ok?: boolean; fetch?: GitFetch }): Promise<string> {
+  const { code, out, err } = await gitCall(cwd, args, { env: opts.env, input: opts.input, fetch: opts.fetch, timeout: 120_000 });
   if (code !== 0) {
     if (opts.ok) return "";
     throw new GitError(`git ${args[0]}: ${err.trim().split("\n").slice(-3).join(" ") || `exit ${code}`}`);
@@ -79,7 +112,8 @@ async function gitNow(cwd: string, args: string[], opts: { env?: Record<string, 
 }
 
 async function run(cwd: string, argv: string[]): Promise<{ out: string; err: string; code: number }> {
-  const p = Bun.spawn(argv, { cwd, env: { ...process.env, GH_PROMPT_DISABLED: "1" }, stdout: "pipe", stderr: "pipe", stdin: "ignore", timeout: 120_000 });
+  // (gh runs git by itself: its calls read the repository as the daemon's do.)
+  const p = Bun.spawn(argv, { cwd, env: { ...gitEnv(cwd), GH_PROMPT_DISABLED: "1" }, stdout: "pipe", stderr: "pipe", stdin: "ignore", timeout: 120_000 });
   const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
   return { out, err, code };
 }
@@ -125,16 +159,19 @@ export class Worktrees {
 
   // The repository a folder belongs to: its main checkout's root.
   async repoOf(dir: string): Promise<{ root: string; top: string } | null> {
-    const top = (await git(dir, ["rev-parse", "--show-toplevel"], { ok: true })).trim();
-    if (!top) return null;
-    const common = (await git(dir, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
-    return { root: common.endsWith("/.git") ? dirname(common) : top, top };
+    // (Read from the files: see locate in src/core/git.ts.)
+    const at = locate(dir);
+    if (!at?.top) return null;
+    return { root: at.common.endsWith("/.git") ? dirname(at.common) : at.top, top: at.top };
   }
 
   // A new worktree of the repository `workspace` is in, on a new branch from
   // `base` (default: what the folder has checked out). Returns the folder the
   // session works in (the same subfolder inside the worktree).
-  async create(sessionKey: string, workspace: string, title: string, base?: string): Promise<{ wt: Omit<Worktree, "session_id">; cwd: string }> {
+  // `madeFor`: the session whose reach bounds what the fill may fetch in a
+  // partial clone (an agent's parent; GitOpts.fetch in src/core/git.ts); the
+  // key itself when that is a session.
+  async create(sessionKey: string, workspace: string, title: string, base?: string, madeFor: string = sessionKey): Promise<{ wt: Omit<Worktree, "session_id">; cwd: string }> {
     const repo = await this.repoOf(workspace);
     if (!repo) throw new GitError(`not a git repository: ${workspace}`, 400);
     const ref = base?.trim() || (await git(repo.top, ["symbolic-ref", "--quiet", "--short", "HEAD"], { ok: true })).trim() || "HEAD";
@@ -144,7 +181,7 @@ export class Worktrees {
     const branch = `keel/${slug(title)}-${short}`;
     const path = join(this.root, `${basename(repo.root)}-${short}`);
     mkdirSync(this.root, { recursive: true });
-    await git(repo.root, ["worktree", "add", "-q", "-b", branch, path, baseCommit]);
+    await git(repo.root, ["worktree", "add", "-q", "-b", branch, path, baseCommit], { fetch: gitReach(madeFor) });
     // Ignored files the repository asks to carry (.worktreeinclude, as Claude Code reads it): .env and the like.
     if (existsSync(join(repo.top, ".worktreeinclude"))) {
       const list = (await git(repo.top, ["ls-files", "-z", "--others", "--ignored", "--exclude-from=.worktreeinclude"], { ok: true })).split("\0").filter(Boolean);
@@ -179,11 +216,14 @@ export class Worktrees {
       }
     }
     try {
-      const [st, ahead] = await Promise.all([
-        git(w.path, ["status", "--porcelain", "-z"]),
+      const [work, ahead] = await Promise.all([
+        workIn(w.path),
         git(w.path, ["rev-list", "--count", `${w.base_commit}..HEAD`]),
       ]);
-      return { ...w, exists, dirty: st.split("\0").filter(Boolean).length, commits_ahead: Number(ahead.trim()) || 0 };
+      return {
+        ...w, exists, dirty: work.dirty, commits_ahead: Number(ahead.trim()) || 0,
+        ...(work.inner.length ? { inner: work.inner, ...(work.unpushed ? { inner_unpushed: true } : {}) } : {}), ...(work.unknown.length ? { unknown: cannotRead(work.unknown) } : {}),
+      };
     } catch (e) {
       return { ...w, exists, dirty: 0, commits_ahead: 0, unknown: (e as Error).message };
     }
@@ -201,7 +241,8 @@ export class Worktrees {
     try {
       const env = { GIT_INDEX_FILE: index };
       await git(dir, ["read-tree", "HEAD"], { env });
-      await git(dir, ["add", "-A"], { env });
+      // (Without git running inside a submodule or a nested repository: see addAll.)
+      await addAll(dir, (args, input) => git(dir, args, { env, input }));
       const tree = (await git(dir, ["write-tree"], { env })).trim();
       const commit = (await ownCommit(dir, ["commit-tree", tree, "-p", "HEAD", "-m", message])).trim();
       await git(dir, ["update-ref", ref, commit]);
@@ -212,10 +253,11 @@ export class Worktrees {
   }
 
   // Put a saved working state back into `dir` as uncommitted work.
-  private async applyState(dir: string, ref: string) {
+  private async applyState(dir: string, ref: string, sessionId: string) {
     const snap = (await git(dir, ["rev-parse", ref])).trim();
     const gone = (await git(dir, ["diff", "--name-only", "-z", "--diff-filter=D", "HEAD", snap])).split("\0").filter(Boolean);
-    await git(dir, ["checkout", snap, "--", "."]);
+    // (The files come back into the folder: a partial clone may fetch the ones it was promised.)
+    await git(dir, ["checkout", snap, "--", "."], { fetch: gitReach(sessionId) });
     for (const f of gone) rmSync(join(dir, f), { force: true });
     await git(dir, ["reset", "-q"]);
   }
@@ -230,29 +272,38 @@ export class Worktrees {
     for (const f of [...untracked, ...added]) rmSync(join(dir, f), { force: true });
   }
 
-  private async dirty(dir: string): Promise<number> {
-    return (await git(dir, ["status", "--porcelain", "-z"])).split("\0").filter(Boolean).length;
+  // The uncommitted work of a folder, for a move. One it cannot read stops the move.
+  private async work(dir: string) {
+    const work = await workIn(dir);
+    if (work.unknown.length) throw new GitError(`${dir}: ${cannotRead(work.unknown)}`);
+    return work;
   }
 
   // Handoff: a session in the main checkout moves to a new worktree on its own
   // branch, its uncommitted work with it (the main checkout is left at HEAD;
   // the work is also kept on refs/keel/worktree-handoff/<session>).
-  async toWorktree(s: Session): Promise<{ wt: Omit<Worktree, "session_id">; cwd: string; moved: number }> {
+  // `stayed`: the submodules whose own changes were left in the main checkout.
+  async toWorktree(s: Session): Promise<{ wt: Omit<Worktree, "session_id">; cwd: string; moved: number; stayed?: string[] }> {
     const cur = this.get(s.id);
     if (cur && cur.state === "active") throw new GitError("the session already works in a worktree");
     const repo = await this.repoOf(s.workspace);
     if (!repo) throw new GitError(`not a git repository: ${s.workspace}`, 400);
     if (repo.top !== repo.root) throw new GitError("the session's folder is a worktree Keel does not manage; open a session in the main checkout to move it", 400);
-    const moved = await this.dirty(repo.top);
+    // The outer work moves. A submodule's own changes stay where they are, in
+    // the main checkout, and nothing of them is lost. A repository the outer
+    // one does not track cannot be moved or left behind cleanly: that stops it.
+    const work = await this.work(repo.top);
+    if (work.nested.length) throw new GitError(`${repo.top}: ${notKept(work.nested)}`);
+    const moved = work.dirty;
     const ref = `refs/keel/worktree-handoff/${s.id}`;
     if (moved) await this.saveState(repo.top, ref, `keel: work moved to a worktree from ${s.workspace}`);
     // A fresh key: an earlier handoff's branch may still exist.
-    const made = await this.create(cur ? `${s.id}${Date.now().toString(36)}` : s.id, s.workspace, s.title);
+    const made = await this.create(cur ? `${s.id}${Date.now().toString(36)}` : s.id, s.workspace, s.title, undefined, s.id);
     if (moved) {
-      await this.applyState(made.wt.path, ref);
+      await this.applyState(made.wt.path, ref, s.id);
       await this.clearState(repo.top);
     }
-    return { ...made, moved };
+    return { ...made, moved, ...(work.held.length ? { stayed: work.held } : {}) };
   }
 
   // Handoff back: the main checkout switches to the worktree's branch and gets
@@ -260,15 +311,18 @@ export class Worktrees {
   // out in one place only). Refused while the main checkout has work of its own.
   async toMain(w: Worktree, s: Session): Promise<{ cwd: string; branch: string; previous: string | null; moved: number }> {
     if (w.state !== "active" || !existsSync(w.path)) throw new GitError(`the worktree is ${w.state === "active" ? "not on disk" : w.state}; restore it first`);
-    const mainDirty = await this.dirty(w.repo_root);
+    const mainDirty = (await this.work(w.repo_root)).dirty;
     if (mainDirty) throw new GitError(`the main checkout has ${mainDirty} changed file${mainDirty === 1 ? "" : "s"} of its own: commit or stash them first`);
-    const moved = await this.dirty(w.path);
+    // The worktree's folder goes: what a snapshot does not keep would go with it.
+    const work = await this.work(w.path);
+    if (work.inner.length) throw new GitError(`${w.path}: ${notKept(work.inner, work.unpushed)}`);
+    const moved = work.dirty;
     const ref = `refs/keel/worktree-handoff/${s.id}`;
     if (moved) await this.saveState(w.path, ref, `keel: work moved to the main checkout from ${w.branch}`);
     const previous = (await git(w.repo_root, ["symbolic-ref", "--quiet", "--short", "HEAD"], { ok: true })).trim() || null;
     await git(w.repo_root, ["worktree", "remove", "--force", w.path]);
     await git(w.repo_root, ["checkout", "-q", w.branch]);
-    if (moved) await this.applyState(w.repo_root, ref);
+    if (moved) await this.applyState(w.repo_root, ref, s.id);
     this.put({ ...w, state: "removed", snapshot_ref: null });
     return { cwd: join(w.repo_root, relative(w.path, s.workspace)), branch: w.branch, previous, moved };
   }
@@ -294,6 +348,9 @@ export class Worktrees {
 
   async park(w: Worktree): Promise<Worktree> {
     if (w.state !== "active") throw new GitError(`the worktree is ${w.state}`);
+    const st = await this.status(w);
+    if (st.unknown) throw new GitError(`git cannot read the worktree's state: ${st.unknown}`);
+    if (st.inner?.length) throw new GitError(notKept(st.inner, st.inner_unpushed));
     const ref = await this.snapshot(w);
     await git(w.repo_root, ["worktree", "remove", "--force", w.path]);
     const next = { ...w, state: "parked" as const, snapshot_ref: ref };
@@ -305,9 +362,9 @@ export class Worktrees {
     if (w.state === "active") throw new GitError("the worktree is active");
     if (!w.snapshot_ref && w.state === "removed") throw new GitError("the worktree was removed without a snapshot", 400);
     await git(w.repo_root, ["worktree", "prune"], { ok: true });
-    await git(w.repo_root, ["worktree", "add", "-q", w.path, w.branch]);
+    await git(w.repo_root, ["worktree", "add", "-q", w.path, w.branch], { fetch: gitReach(w.session_id) });
     if (w.snapshot_ref) {
-      await this.applyState(w.path, w.snapshot_ref); // the saved work comes back uncommitted, as it was
+      await this.applyState(w.path, w.snapshot_ref, w.session_id); // the saved work comes back uncommitted, as it was
       await git(w.repo_root, ["update-ref", "-d", w.snapshot_ref], { ok: true });
     }
     const next = { ...w, state: "active" as const, snapshot_ref: null };
@@ -323,6 +380,8 @@ export class Worktrees {
     if (st.unknown) return { removed: false, reason: `git cannot read the worktree's state: ${st.unknown}`, branch_deleted: false };
     if (st.exists && (st.dirty || st.commits_ahead) && !snapshot)
       return { removed: false, reason: `it holds work: ${st.dirty} changed files, ${st.commits_ahead} commits`, branch_deleted: false };
+    // With a snapshot too: the folder goes, and what is inside such a repository goes with it.
+    if (st.exists && st.inner?.length) return { removed: false, reason: notKept(st.inner, st.inner_unpushed), branch_deleted: false };
     let ref = w.snapshot_ref;
     if (st.exists) {
       if (st.dirty) ref = await this.snapshot(w);
@@ -410,7 +469,11 @@ export class Worktrees {
     if (!st.commits_ahead) throw new GitError("the branch has no commits over its base");
     const remote = (await git(w.path, ["remote"], { ok: true })).split("\n").map((x) => x.trim()).filter(Boolean);
     if (!remote.includes("origin")) throw new GitError("the repository has no origin remote", 400);
-    await git(w.path, ["push", "-u", "origin", `${w.branch}:${w.branch}`]);
+    await git(w.path, ["push", "origin", `${w.branch}:${w.branch}`]);
+    // The branch's upstream, which `push -u` would record: written to the
+    // repository's config file as a file (the push itself reads a view of it).
+    const common = locate(w.path)?.common;
+    if (common) for (const [k, v] of [["remote", "origin"], ["merge", `refs/heads/${w.branch}`]]) await gitCall(common, ["config", "--file", join(common, "config"), `branch.${w.branch}.${k}`, v!], { mode: "plain" });
     const base = /^[0-9a-f]{40}$/.test(w.base) ? null : w.base.replace(/^origin\//, "");
     const argv = ["gh", "pr", "create", "--head", w.branch];
     if (base) argv.push("--base", base);

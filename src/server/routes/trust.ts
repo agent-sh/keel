@@ -5,6 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { registerHooks, type ToolCall } from "../../engine/hooks.ts";
+import { git } from "../../core/git.ts";
 import { instructionFilter } from "../../engine/turn.ts";
 import { classifyCall } from "../../safety/gate.ts";
 import { Quarantine, snapshot, type Snap } from "../../safety/quarantine.ts";
@@ -12,7 +13,6 @@ import { rootOf, Trust } from "../../safety/trust.ts";
 import { skillFilter } from "../../tools/skills.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { gate, presence } from "./permissions.ts";
-import { readText } from "../../core/proc.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
@@ -22,9 +22,8 @@ async function patchOf(rel: string, a: string, b: string): Promise<{ text: strin
   try {
     writeFileSync(join(dir, "a"), a);
     writeFileSync(join(dir, "b"), b);
-    const p = Bun.spawn(["git", "diff", "--no-index", "--no-color", "-U3", "--", join(dir, "a"), join(dir, "b")], { stdout: "pipe", stderr: "ignore" });
-    const out = await readText(p.stdout);
-    await p.exited;
+    // (Run in the scratch folder: no repository's config is in force there.)
+    const { out } = await git(dir, ["diff", "--no-index", "--no-color", "-U3", "--", join(dir, "a"), join(dir, "b")], { mode: "plain" });
     const body = out.split("\n").filter((l) => !/^(diff --git|index |--- |\+\+\+ |new file|deleted file)/.test(l)).join("\n");
     const lines = body.split("\n");
     return { text: `diff --git a/${rel} b/${rel}\n${body}`, added: lines.filter((l) => l.startsWith("+")).length, removed: lines.filter((l) => l.startsWith("-")).length };

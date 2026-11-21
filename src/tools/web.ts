@@ -11,6 +11,7 @@ import { spill } from "./spill.ts";
 import type { ToolContext } from "./types.ts";
 import { READ_WHOLE_CHARS } from "../engine/reader.ts";
 import { chunks, readText } from "../core/proc.ts";
+import { privateHost } from "../core/hosts.ts";
 
 const HOME = homedir();
 const findBin = (name: string, env?: string) =>
@@ -126,11 +127,9 @@ async function bodyText(body: ReadableStream<Uint8Array> | null | undefined, poo
   return { text, taken, cut: false };
 }
 
-const PRIVATE_HOST = /^(localhost|.*\.localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|0\.|\[?::1\]?$|\[?f[cd])/i;
-// A host the web tools do not reach: this machine and private networks (and a
-// name with no dot, which resolves on the local network). Web fetch and the
-// http wait share it.
-export const privateHost = (hostname: string) => !hostname.includes(".") || PRIVATE_HOST.test(hostname);
+// (A host the web tools do not reach: src/core/hosts.ts. Web fetch, the http
+// wait and the daemon's own git fetches share it.)
+export { privateHost };
 
 export async function webFetch(url: string, o: FetchOpts, signal?: AbortSignal): Promise<Fetched> {
   let u: URL;

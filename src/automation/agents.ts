@@ -510,7 +510,8 @@ export const wantsWorktree = (def: Pick<AgentDef, "isolation" | "readOnly">, inp
 async function isolate(parent: Session, def: AgentDef, input: SpawnInput, title: string, key: string, mode: Mode | null) {
   if (!wantsWorktree(def, input, mode)) return null;
   if (!(await wts().repoOf(parent.workspace))) return null;
-  return wts().create(key, parent.workspace, title);
+  // (What its fill may fetch is bounded by the parent's reach: the agent works under the parent's permissions.)
+  return wts().create(key, parent.workspace, title, undefined, parent.id);
 }
 
 export async function spawn(parentId: string, input: SpawnInput, signal?: AbortSignal): Promise<AgentRecord> {
@@ -1019,8 +1020,9 @@ async function worktreeNote(a: AgentRecord): Promise<string> {
   const st = await wts().status(w);
   if (st.unknown) return `\n\nWorktree ${w.path} (branch ${w.branch}): git could not read it: ${st.unknown}`;
   if (!st.dirty && !st.commits_ahead) {
-    await wts().remove(w, false);
-    return "\n\n(The agent changed no files; its worktree was removed.)";
+    // (Kept when a repository inside it holds commits of its own that are nowhere else: the answer says why.)
+    const r = await wts().remove(w, false);
+    return r.removed ? "\n\n(The agent changed no files; its worktree was removed.)" : `\n\nWorktree ${w.path} (branch ${w.branch}) was kept: ${r.reason}.`;
   }
   return `\n\nIts work is on branch ${w.branch} in the worktree ${w.path}: ${st.commits_ahead} commit${st.commits_ahead === 1 ? "" : "s"} over ${w.base}, ${st.dirty} uncommitted file${st.dirty === 1 ? "" : "s"}. Review and merge it from there (git merge ${w.branch}).`;
 }
@@ -1082,7 +1084,7 @@ export async function send(id: string, message: string, interrupt = false): Prom
     if (a.machine && remote) await remote.revive(a);
     const w = a.worktree && !a.machine ? wts().get(a.session_id) : undefined;
     const parent = store.session(a.parent_id);
-    if (w && w.state === "removed" && parent) wts().adopt(a.session_id, (await wts().create(a.id, parent.workspace, a.title)).wt);
+    if (w && w.state === "removed" && parent) wts().adopt(a.session_id, (await wts().create(a.id, parent.workspace, a.title, undefined, parent.id)).wt);
     const text = `Message from the session that started you:\n${message}`;
     // Its turn ended and its report is being settled: it is finished, not
     // running. Steering it now would start a turn its record says is done.

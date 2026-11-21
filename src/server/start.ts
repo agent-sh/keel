@@ -1,6 +1,7 @@
 // Starting the daemon: `keel serve`, and the daemon a client command starts in
 // its own process when none answers (runMode.client).
 import { endStreams } from "./streams.ts";
+import { setGitViews } from "../core/git.ts";
 import { join, resolve } from "node:path";
 import { defaultStateDir } from "../core/paths.ts";
 import { acquireLock, recordUrl } from "../admin/daemon.ts";
@@ -50,6 +51,8 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   // How the daemon before this one ended, read before this one leaves its own
   // sign of life. A command's own daemon is not the machine's: it keeps none.
   const life = opts.client ? undefined : beginLife(stateDir);
+  // The daemon's git calls keep their views of repositories here, where a confined command cannot write.
+  setGitViews(stateDir);
   const store = new Store(stateDir);
   const bus = new Bus();
   const errors = new ErrorTracker(store, bus);

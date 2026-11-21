@@ -5,6 +5,7 @@
 // a session never believes it is confined when it is not.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { gitViewsDir } from "../core/git.ts";
 import type { SessionPerm } from "./gate.ts";
 
 export type SandboxStatus = { available: boolean; reason?: string; bwrap?: string; scope: boolean; scopeReason?: string };
@@ -92,6 +93,9 @@ export function confine(argv: string[], perm: Pick<SessionPerm, "sandbox" | "net
       if (existsSync(full)) b.push("--ro-bind", full, full);
     }
   }
+  // The views the daemon's own git reads repositories through (src/core/git.ts):
+  // never writable, also for a session whose folder holds Keel's state folder.
+  if (perm.sandbox === "workspace-write" && existsSync(gitViewsDir())) b.push("--ro-bind", gitViewsDir(), gitViewsDir());
   for (const p of typeof scratch === "string" ? [scratch] : scratch ?? []) if (p && existsSync(p)) b.push("--bind", p, p);
   b.push("--", ...argv);
   return st.scope ? [...scopeHead(), ...scopeProps(), "--", ...b] : b;

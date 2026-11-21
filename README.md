@@ -190,6 +190,84 @@ sandboxing separately from approvals and can review eligible approvals
 automatically. [OpenCode](https://opencode.ai/docs/permissions/) uses
 `allow`, `ask` and `deny` rules scoped by action and resource.
 
+## Keel's own git
+
+Keel runs git by itself in a session's folder: for the file picker, the
+Changes panel, checkpoints, worktrees, a session's move and the facts the
+permission rules read. git runs programs that a repository's own files name
+(a file-system monitor, hooks, a pager, filters and diff drivers that
+`.gitattributes` turns on), and a session can write those files. So Keel's
+git does not read a repository's own config:
+
+- It reads the repository through a view that holds only the plain settings
+  of its config: the format, line endings and file mode, sparse checkout,
+  remotes and upstreams, the identity, and `core.excludesFile`. Your global
+  and system config apply as always. Nothing a repository's config includes
+  from another file is read: an excludes file named only through
+  `include.path` is not honoured, and the files it leaves out show as new.
+- One filter is taken from a repository's own config: Git LFS, when its
+  `filter.lfs` section is exactly what `git lfs install --local` writes
+  (`clean`, `smudge`, `process` and `required`, nothing changed or added).
+  It runs the `git-lfs` program found on Keel's `PATH`, by its whole path,
+  and never one inside the repository's main checkout or one of its
+  worktrees.
+- Any other filter or driver defined only in a repository's config (git-crypt,
+  `git lfs install --local --skip-smudge`) is not run by Keel. A worktree
+  Keel makes there holds the files as git stores them (encrypted, or as LFS
+  pointers), the Changes panel shows such files as changed, and a move to a
+  worktree leaves them that way in the main checkout too. Run your own
+  `git checkout` there to put them back, or set the filter up in your global
+  config.
+- Hooks, the file-system monitor, external diffs and text conversions, a
+  repository's own credential helpers, ssh command and http settings are
+  never used. Opening a pull request from Keel pushes with your global setup.
+- A remote can be a folder on this machine, and that folder's repository has
+  a config of its own. A push or a fetch from Keel runs none of its hooks,
+  no file-system monitor and no program it names for the refs of its
+  alternates, and starts no gc there. A push into a branch that is checked
+  out in that folder is refused (updating the files there would run that
+  repository's filters): check out another branch there, or push to a bare
+  repository.
+- A repository of another user is not opened unless you listed it in
+  `safe.directory`, as with git itself.
+- In a partial clone, reading never fetches: a diff that needs a file that
+  is not here shows the list of files without the patch. Making a worktree
+  and restoring one fetch the files they put in the folder, from the
+  remote's address and with your own transport settings only. The address is
+  the repository's to name, so that fetch reaches no further than the
+  session the worktree is for reaches with its own commands:
+  - a session whose sandbox is off: any address;
+  - a sandboxed session with its network on, and a worktree you make
+    yourself with no session behind it: any address the web tools reach,
+    so none on this machine or a private network (`localhost`, a private or
+    link-local address, a host name with no dot);
+  - a sandboxed session with its network off: nothing is fetched.
+
+  Only https, http, ssh and git are spoken, and a folder on this machine
+  that the repository names as its remote: no other transport program is
+  started. When nothing is fetched, or the fetch fails, nothing of the
+  worktree stays and the answer names the command that fetches the files.
+
+A folder can hold other repositories: a submodule that is checked out, or a
+folder with a `.git` of its own, also below a folder git does not track.
+Keel's git never runs inside one from outside. It records each by the commit
+it has out, as git does, so:
+
+- A checkpoint, a parked worktree and a session's move hold the commit of a
+  repository inside the folder, never the uncommitted work in it. A rewind
+  does not put that work back. This is how git's own snapshot of a folder
+  works, and how Keel worked before.
+- A worktree is not removed, parked or moved back to the main checkout while
+  a repository inside it holds what would go with the folder: uncommitted
+  work, commits of a submodule that none of its remotes has, or a repository
+  git does not track. Keel asks each one and names it. One that cannot be
+  read counts as holding work. A submodule's commit that the main checkout's
+  copy of that submodule also holds is not lost with a worktree, and holds
+  nothing back.
+- A move from the main checkout to a worktree takes the outer work. A
+  submodule's own changes stay in the main checkout, and the move says so. A
+  repository git does not track stops the move.
+
 ## Hooks
 
 Keel reads hooks in the shape Claude Code and Codex share:

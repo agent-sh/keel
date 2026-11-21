@@ -1,4 +1,5 @@
 import { existsSync, openSync, readSync, closeSync, readFileSync, statSync } from "node:fs";
+import { gitEnv } from "../core/git.ts";
 import { isAbsolute, resolve } from "node:path";
 import { D, attr, capture, deliver, emit, inert, isPending } from "./core.ts";
 import * as activity from "./activity.ts";
@@ -450,7 +451,7 @@ function probe(w: WaitRecord, signal: AbortSignal): Promise<string | undefined> 
 // gh in a process group of its own, so stopping it also stops what it started
 // (a credential helper) and closes the pipes read here.
 async function prChecks(w: WaitRecord, s: Extract<WaitSpec, { kind: "pr_checks" }>, signal: AbortSignal): Promise<string | undefined> {
-  const p = Bun.spawn([process.env.KEEL_GH_BIN || "gh", "pr", "view", String(s.pr_number), "--repo", s.repo, "--json", "state,statusCheckRollup"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true });
+  const p = Bun.spawn([process.env.KEEL_GH_BIN || "gh", "pr", "view", String(s.pr_number), "--repo", s.repo, "--json", "state,statusCheckRollup"], { cwd: "/", env: gitEnv("/"), stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true }); // (gh runs git by itself: outside any repository, with the daemon's keys)
   const stop = () => { try { process.kill(-p.pid, "SIGKILL"); } catch {} };
   if (signal.aborted) stop();
   else signal.addEventListener("abort", stop, { once: true });

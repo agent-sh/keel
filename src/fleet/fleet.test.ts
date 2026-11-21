@@ -1052,6 +1052,33 @@ test("a move out of a folder with unfinished work is refused by name before anyt
   }
 });
 
+// A move's scripts add and check out files in the session's repository. A
+// filter that repository's own config names, or one a repository inside it
+// names, would run for the daemon there: the scripts read the repository
+// through the daemon's view of it and leave inner repositories out of the add.
+test("a move runs no filter the repository's own config names, in it or in a repository it holds", async () => {
+  const { readdirSync, readFileSync } = await import("node:fs");
+  const ran = (dir: string) => readdirSync(dir).filter((n) => n.startsWith("ran-"));
+  const rig = await moveRig((h, dir) => rig0(h, [
+    `printf '*.txt filter=x\\n' > .gitattributes; git config filter.x.clean "touch ${dir}/ran-clean; cat"; git config filter.x.smudge "touch ${dir}/ran-smudge; cat"`,
+    `mkdir nest; cd nest; git init -q -b main; printf '*.txt filter=y\\n' > .gitattributes; echo n > n.txt; git add -A; git commit -qm n; git config filter.y.clean "touch ${dir}/ran-nested; cat"; sleep 1; echo m > n.txt; cd ..`,
+    `git add nest .gitattributes; git commit -qm 'a repository inside'; echo two >> a.txt; rm -f ${dir}/ran-*`,
+  ].join("; ")));
+  try {
+    // The fixture is live: git's own add runs both filters.
+    rig.sh(rig.home, 'i=$(mktemp); cp .git/index "$i"; GIT_INDEX_FILE="$i" git add -A; rm -f "$i"');
+    expect(ran(rig.dir).sort()).toEqual(["ran-clean", "ran-nested"]);
+    rig.sh(rig.dir, "rm -f ran-*");
+    expect(await rig.moved("m1")).toMatchObject({ state: "done" });
+    expect(rig.git(rig.session().workspace, "status", "--porcelain").trim()).toBe("M a.txt");
+    expect(await rig.moved("local")).toMatchObject({ state: "done" });
+    expect(readFileSync(join(rig.home, "a.txt"), "utf8")).toBe("one\ntwo\n");
+    expect(ran(rig.dir)).toEqual([]);
+  } finally {
+    rig.close();
+  }
+});
+
 // What a tree cannot hold is said once on the receipt when it applies; a path
 // only marked to be added arrives marked; a repository with no commit is
 // refused in plain words; a session inside a folder of the repository stays in it.

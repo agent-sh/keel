@@ -10,7 +10,7 @@ import { READ_WHOLE_CHARS, readersAtOnce, wholeText, type Material } from "../en
 import { coverageNote } from "../engine/readers.ts";
 import { isClaimFile } from "../core/claim.ts";
 import { conceal } from "../core/conceal.ts";
-import { readText } from "../core/proc.ts";
+import { git } from "../core/git.ts";
 import { spill } from "./spill.ts";
 import { fail, ok, type Tool, type ToolContext, type ToolOutput } from "./types.ts";
 import { MARKUP_MAX, webFetch, type Fetched, type FetchOpts } from "./web.ts";
@@ -27,9 +27,8 @@ const skipDir = (f: string) => f.includes("/node_modules/") || f.includes("/.git
 // Every file git does not ignore under `dir`, else every file under it.
 async function filesIn(dir: string, signal: AbortSignal): Promise<string[]> {
   try {
-    const p = Bun.spawn(["git", "-C", dir, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], { stdout: "pipe", stderr: "ignore", signal });
-    const [out, code] = await Promise.all([readText(p.stdout), p.exited]);
-    if (code === 0) return out.split("\0").filter(Boolean).map((f) => join(dir, f)).sort();
+    const r = await git(dir, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], { read: true, signal });
+    if (r.code === 0) return r.out.split("\0").filter(Boolean).map((f) => join(dir, f)).sort();
   } catch {}
   // A stop killed the listing: no scan in its place.
   if (signal.aborted) throw Object.assign(new Error("interrupted"), { name: "AbortError" });

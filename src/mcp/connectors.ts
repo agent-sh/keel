@@ -9,6 +9,7 @@
 // Slack (docs.slack.dev/ai/mcp-server), Notion (developers.notion.com/docs/mcp),
 // Linear (linear.app/docs/mcp).
 import type { McpServerConfig } from "./config.ts";
+import { gitEnv } from "../core/git.ts";
 
 export type Connector = { id: string; name: string; what: string; url: string; docs: string; via?: "gh" };
 
@@ -102,7 +103,7 @@ export const ghHelper = (gh = process.env.KEEL_GH_BIN ?? "gh") =>
 
 export async function ghSignedIn(gh = process.env.KEEL_GH_BIN ?? "gh"): Promise<boolean> {
   try {
-    const p = Bun.spawn([gh, "auth", "token"], { stdout: "ignore", stderr: "ignore", stdin: "ignore" });
+    const p = Bun.spawn([gh, "auth", "token"], { cwd: "/", env: gitEnv("/"), stdout: "ignore", stderr: "ignore", stdin: "ignore" }); // (gh runs git by itself)
     const t = setTimeout(() => p.kill(), 5_000);
     const code = await p.exited;
     clearTimeout(t);

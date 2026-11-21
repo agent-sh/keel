@@ -113,9 +113,9 @@ export const worktreeRoutes: RouteModule = (deps: Deps) => {
           wts.adopt(s.id, r.wt);
           const next = store.updateSession(s.id, { workspace: r.cwd });
           bus.emit({ t: "session", session: next });
-          bus.emit({ t: "event", event: store.append(s.id, "note", { kind: "handoff", text: `Moved to a worktree on branch ${r.wt.branch}${r.moved ? `, with ${r.moved} changed file${r.moved === 1 ? "" : "s"}` : ""}. The main checkout is back at its last commit.` }) });
+          bus.emit({ t: "event", event: store.append(s.id, "note", { kind: "handoff", text: `Moved to a worktree on branch ${r.wt.branch}${r.moved ? `, with ${r.moved} changed file${r.moved === 1 ? "" : "s"}` : ""}. The main checkout is back at its last commit.${r.stayed?.length ? ` The changes inside ${r.stayed.length === 1 ? "the submodule" : "the submodules"} ${r.stayed.join(", ")} stayed in the main checkout: a submodule's own work does not move with the folder around it.` : ""}` }) });
           emit(s.id);
-          return json({ session: next, worktree: await wts.status(wts.get(s.id)!), moved: r.moved });
+          return json({ session: next, worktree: await wts.status(wts.get(s.id)!), moved: r.moved, ...(r.stayed ? { stayed: r.stayed } : {}) });
         }
         if (b.to === "main") {
           if (!w || w.state !== "active") return bad("the session has no active worktree");

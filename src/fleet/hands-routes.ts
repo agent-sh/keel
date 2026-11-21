@@ -4,6 +4,7 @@
 // helper an ssh machine runs (src/fleet/hands-main.ts), behind a socket only
 // its user can open. The same handlers in both.
 import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
+import { git, gitEnv, innerWork } from "../core/git.ts";
 import { dirname, resolve } from "node:path";
 import { contains } from "../core/paths.ts";
 import { readText } from "../core/proc.ts";
@@ -136,6 +137,35 @@ export function handsRoutes(deps: { spillRoot: string; capture: (err: unknown, c
       },
     },
 
+    // The uncommitted work in a folder of the granted directory, as the
+    // daemon's own git reads it: what status lists, and each submodule asked
+    // through its own view (src/core/git.ts). `base`: also the commits over it.
+    "/api/fleet/hands/work": {
+      POST: async (req: Request) => {
+        const b = await body(req);
+        const dir = resolve(String(b.dir ?? ""));
+        if (!b.root || !contains(resolve(b.root), dir) || !existsSync(dir)) return json({ error: `not a directory inside the granted one: ${dir}` });
+        return keepalive(async () => {
+          const [st, work, ahead] = await Promise.all([
+            git(dir, ["status", "--porcelain", "-z"], { read: true }),
+            innerWork(dir),
+            typeof b.base === "string" && /^[\w./-]+$/.test(b.base) && !b.base.startsWith("-") ? git(dir, ["rev-list", "--count", `${b.base}..HEAD`], { read: true }) : undefined,
+          ]);
+          if (st.code !== 0) return { error: st.err.trim().slice(0, 300) || "git could not read the folder" };
+          const listed = new Set<string>();
+          const recs = st.out.split("\0").filter(Boolean);
+          for (let i = 0; i < recs.length; i++) {
+            listed.add(recs[i]!.slice(3).replace(/\/$/, ""));
+            if (recs[i]![0] === "R" || recs[i]![0] === "C") i++;
+          }
+          return {
+            dirty: listed.size + work.dirty.filter((p) => !listed.has(p)).length, unpushed: work.unpushed, unknown: work.unknown,
+            ...(ahead ? { ahead: ahead.code === 0 ? Number(ahead.out.trim()) : undefined } : {}),
+          };
+        });
+      },
+    },
+
     "/api/fleet/hands/stat": {
       POST: async (req: Request) => {
         const b = await body(req);
@@ -163,7 +193,9 @@ export function handsRoutes(deps: { spillRoot: string; capture: (err: unknown, c
         if ("error" in argv) return json({ error: argv.error });
         return keepalive(async () => {
           const p = Bun.spawn(argv, {
-            cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", env: { ...process.env, GIT_TERMINAL_PROMPT: "0", ...named.env }, signal: req.signal,
+            // (`view`: a script of the daemon's own, a session's move, whose git reads the repository in `cwd` through this machine's view of it.
+            // `fetch`: it fills a work tree there, and may fetch what a partial clone lacks as far as that reaches: GitOpts.fetch.)
+            cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", env: { ...process.env, ...(b.view === true ? gitEnv(cwd, b.fetch === "any" || b.fetch === "public" ? b.fetch : undefined) : {}), GIT_TERMINAL_PROMPT: "0", ...named.env }, signal: req.signal,
             timeout: 10 * 60_000, // the longest a shell call may run in any family
           });
           const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);

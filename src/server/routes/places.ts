@@ -6,6 +6,7 @@ import { constants, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSy
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { claimNote, isClaimFile } from "../../core/claim.ts";
+import { gitSync } from "../../core/git.ts";
 import { contains } from "../../core/paths.ts";
 import type { Session } from "../../core/types.ts";
 import { instructionFilter } from "../../engine/turn.ts";
@@ -178,8 +179,8 @@ export const placesRoutes: RouteModule = ({ store, bus, engine, workspace }) => 
           copied = files.length;
         }
         if (b.init_git && !isRepo(to)) {
-          const p = Bun.spawnSync(["git", "init", "--quiet"], { cwd: to, env: toolEnv(s.id), stderr: "pipe" });
-          if (p.exitCode !== 0) return bad(`git init failed: ${p.stderr.toString().trim()}`, 409);
+          const p = gitSync(to, ["init", "--quiet"], { mode: "plain", env: toolEnv(s.id) });
+          if (p.code !== 0) return bad(`git init failed: ${p.err.trim()}`, 409);
         }
         if (to !== from) {
           store.updateSession(s.id, { workspace: to });

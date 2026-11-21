@@ -25,6 +25,7 @@
 // side with both its machine and its folder, and its transcript says where the
 // move stopped and what it kept.
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { GIT_SHELL_ENV, GIT_SHELL_FETCH, gitEnv, gitReach, type GitFetch } from "../core/git.ts";
 import { basename, join } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
@@ -98,7 +99,25 @@ trap 'rm -f "$idx"' EXIT
 real=$(gp index)
 if [ -f "$real" ]; then cp "$real" "$idx"; else GIT_INDEX_FILE="$idx" git read-tree HEAD; fi
 # Every file, also one outside a sparse checkout's cone that is on the disk. A git too old for that takes what it sees.
-snapadd() { GIT_INDEX_FILE="$idx" ${GIT} add -A $sparse "$@" 2>&1 || { [ -n "$sparse" ] && GIT_INDEX_FILE="$idx" ${GIT} add -A "$@" 2>&1; }; }
+# The repositories inside this one (a submodule that is checked out, a folder with a .git of its own) are left
+# out of the add: git would run git inside each, which reads that repository's own config (src/core/git.ts).
+# Each is recorded as git records it, a gitlink at the commit it has out.
+excl=(); inner=()
+while IFS= read -r -d '' e; do case "$e" in "160000 "*) p=\${e#*$'\\t'}; if [ -e "$top/$p/.git" ]; then excl+=(":(top,exclude,literal)$p"); inner+=("$p"); fi;; esac; done < <(GIT_INDEX_FILE="$idx" git -C "$top" ls-files -s -z)
+while IFS= read -r -d '' p; do case "$p" in */) excl+=(":(top,exclude,literal)\${p%/}"); inner+=("\${p%/}");; esac; done < <(git -C "$top" ls-files -o --exclude-standard -z)
+# (The commit an inner repository has out, as git's own add reads it: the name its HEAD holds, whether or not the object is there.)
+inside() { env -u GIT_DIR -u GIT_COMMON_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE git -C "$top/$1" rev-parse -q --verify HEAD 2>/dev/null; }
+links() { for p in "\${inner[@]}"; do h=$(inside "$p") && GIT_INDEX_FILE="$idx" git update-index --add --cacheinfo "160000,$h,$p" || true; done; }
+# (One with no commit yet cannot be recorded: git's own add refuses the folder for it, in these words.)
+snapadd() {
+  want=40; if [ "$(git rev-parse --show-object-format 2>/dev/null)" = sha256 ]; then want=64; fi
+  for p in "\${inner[@]}"; do
+    h=$(inside "$p") || { echo "error: '$p/' does not have a commit checked out"; return 1; }
+    [ "\${#h}" = "$want" ] || { echo "error: cannot add a submodule of a different hash algorithm"; return 1; }
+  done
+  GIT_INDEX_FILE="$idx" ${GIT} add -A $sparse "$@" -- :/ "\${excl[@]}" 2>&1 || { [ -n "$sparse" ] && GIT_INDEX_FILE="$idx" ${GIT} add -A "$@" -- :/ "\${excl[@]}" 2>&1; } || return 1
+  [ "$1" = -n ] || links
+}
 unreadable() { echo "refuse=Git cannot take the files in $top as they are: $(printf '%s\\n' "$1" | { grep -m 1 '^error:' || printf '%s\\n' "$1" | tail -n 1; } | sed 's/^error: //'). Fix that there, or move the session as place only."; exit 0; }`;
 // What a folder holds: its files and what is staged.
 const stateOf = (s: { tree: string; itree: string }) => `${s.tree}:${s.itree}`;
@@ -228,19 +247,30 @@ export class Handoffs {
 
   // ---- one shell script at a place: this machine, or a machine's hands
 
-  private async sh(machine: MachineRow | null, cwd: string, script: string): Promise<{ code: number; out: string }> {
+  // `view`: the script works in the repository `cwd` is in, and puts files
+  // into an index or a folder (an add, a write-tree, a checkout): its git
+  // reads that repository through the daemon's view of it, here and on the
+  // other machine, so no filter the repository's own config names runs
+  // (src/core/git.ts). The other scripts name their repository with -C and
+  // only move refs and objects; they get the keys below.
+  // `fetch`: the script fills a work tree, and may fetch what a partial clone lacks as far as that (GitOpts.fetch).
+  private async sh(machine: MachineRow | null, cwd: string, script: string, view = false, fetch?: GitFetch): Promise<{ code: number; out: string }> {
+    // Every git in the script, here or on the other machine, with what a
+    // repository's config must not turn on. (After the view's environment:
+    // these keep the file transport, which a bundle is fetched over.)
+    script = `${GIT_SHELL_ENV}\n${script}`;
     if (!machine) {
-      const p = Bun.spawn(["bash", "-c", script], { cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+      const p = Bun.spawn(["bash", "-c", script], { cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", env: { ...process.env, ...(view ? gitEnv(cwd, fetch) : {}), GIT_TERMINAL_PROMPT: "0" } });
       const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
       return { code, out: out + err };
     }
-    const r = await this.fleet.hands(machine.id, "/api/fleet/hands/exec", { method: "POST", body: JSON.stringify({ script, cwd, root: machine.workspace_root }), timeout: 11 * 60_000 });
+    const r = await this.fleet.hands(machine.id, "/api/fleet/hands/exec", { method: "POST", body: JSON.stringify({ script, cwd, root: machine.workspace_root, ...(view ? { view: true } : {}), ...(view && fetch ? { fetch } : {}) }), timeout: 11 * 60_000 });
     const b = (await r.json()) as { code: number; out: string; error?: string };
     return { code: b.code ?? 1, out: b.out ?? b.error ?? "" };
   }
 
-  private async must(machine: MachineRow | null, cwd: string, script: string, what: string): Promise<string> {
-    const r = await this.sh(machine, cwd, `set -e\n${script}`);
+  private async must(machine: MachineRow | null, cwd: string, script: string, what: string, view = false, fetch?: GitFetch): Promise<string> {
+    const r = await this.sh(machine, cwd, `set -e\n${script}`, view, fetch);
     if (r.code !== 0) throw new Error(`${what}: ${r.out.trim().split("\n").slice(-3).join(" ").slice(0, 400)}`);
     return r.out;
   }
@@ -251,14 +281,17 @@ export class Handoffs {
   // there removed or renamed it) is read from the nearest one above it that
   // still stands.
   private async preflight(machine: MachineRow | null, dir: string): Promise<{ dir: string; refuse?: string }> {
-    const r = await this.sh(machine, machine ? machine.workspace_root! : "/", `d=${q(dir)}
+    // (Two scripts: the second runs in the folder the first found, so its git reads that folder's repository through its view.)
+    const found = await this.sh(machine, machine ? machine.workspace_root! : "/", `d=${q(dir)}
 while [ ! -d "$d" ] && [ "$d" != / ] && [ "$d" != . ]; do d=$(dirname "$d"); done
 cd "$d" || exit 1
-echo "dir=$d"
-${CHECKS}
+echo "dir=$d"`);
+    const at = found.out.match(/^dir=(.*)$/m)?.[1]?.trim();
+    if (found.code !== 0 || !at) return { dir };
+    const r = await this.sh(machine, at, `${CHECKS}
 if [ -n "$stop" ]; then echo "refuse=$stop"; exit 0; fi
-err=$(snapadd -n) || unreadable "$err"`);
-    return { dir: r.out.match(/^dir=(.*)$/m)?.[1]?.trim() || dir, refuse: r.out.match(/^refuse=(.*)$/m)?.[1]?.trim() };
+err=$(snapadd -n) || unreadable "$err"`, true);
+    return { dir: at, refuse: r.out.match(/^refuse=(.*)$/m)?.[1]?.trim() };
   }
 
   // The directory's state as two trees, and a snapshot commit of them on top of
@@ -281,7 +314,7 @@ htree=$(git rev-parse 'HEAD^{tree}')
 # An index with unmerged paths has no tree: HEAD's stands in for what is staged.
 itree=$(GIT_INDEX_FILE="$idx" ${GIT} write-tree 2>/dev/null) || itree=$htree
 # Paths only marked to be added (git add -N) are in no tree: their names travel beside it.
-ita=$(GIT_INDEX_FILE="$idx" git diff-files -z --name-only --diff-filter=A 2>/dev/null | base64 | tr -d '\\n')
+ita=$(GIT_INDEX_FILE="$idx" git diff-files --ignore-submodules=dirty -z --name-only --diff-filter=A 2>/dev/null | base64 | tr -d '\\n')
 err=$(snapadd) || unreadable "$err"
 tree=$(GIT_INDEX_FILE="$idx" ${GIT} write-tree)
 if [ "$tree" = "$htree" ] && [ "$itree" = "$htree" ]; then snap=$head; else
@@ -298,7 +331,7 @@ for f in rebase-merge rebase-apply CHERRY_PICK_HEAD REVERT_HEAD; do if [ -e "$(g
 if [ -n "$sparse" ]; then lost="$lost sparse"; elif [ -n "$(git ls-files -v | grep -m 1 '^[a-zS] ')" ]; then lost="$lost bits"; fi` : ""}
 echo "top=$top"; echo "head=$head"; echo "tree=$tree"; echo "itree=$itree"; echo "snap=$snap"; echo "busy=$busy"; echo "ita=$ita"; echo "lost=$lost"
 echo "prefix=$(git rev-parse --show-prefix)"
-roots=$(git rev-list --max-parents=0 HEAD | tr '\\n' ' '); echo "roots=$roots"`, "snapshot");
+roots=$(git rev-list --max-parents=0 HEAD | tr '\\n' ' '); echo "roots=$roots"`, "snapshot", true);
     const v = (k: string) => out.match(new RegExp(`^${k}=(.*)$`, "m"))?.[1]?.trim() ?? "";
     // Said in the owner's words, with nothing changed: not a failed script.
     if (v("refuse")) throw new Error(v("refuse"));
@@ -395,7 +428,7 @@ if [ -s "$assume" ]; then
   ${inIndex} < "$assume" | ${GIT} update-index -z --assume-unchanged --stdin || true
   ${changed} | ${inIndex} | ${GIT} update-index -z --no-assume-unchanged --stdin || true
 fi
-${GIT} update-index -q --refresh >/dev/null || true`, "the folder could not take the carried state (it is as it was)");
+${GIT} update-index -q --refresh >/dev/null || true`, "the folder could not take the carried state (it is as it was)", true);
     const v = (k: string) => out.match(new RegExp(`^${k}=(.*)$`, "m"))?.[1]?.trim();
     if (v("inway")) return { replaced: false, why: `${v("inway")} exists there where git does not see it, and the carried state has a file of that name` };
     if (v("hidden")) throw new Error(`${v("hidden")} in ${dir} has an edit that git was told not to look at (a skip-worktree or assume-unchanged mark), and the carried state changes that file. Commit that edit or put it aside there, then move the session again. Nothing was changed.`);
@@ -559,7 +592,10 @@ ${GIT} update-index -q --refresh >/dev/null || true`, "the folder could not take
             const made = cut ?? { dir: join(root, ".keel", "worktrees", `handoff-${sid.slice(-12)}-${stamp}`), branch: `keel/handoff-${sid.slice(-12)}-${stamp}` };
             moves.making = { ...moves.making, [dest.id]: made };
             this.saveMoves(sid, { ...moves, last: h });
-            await this.must(dest, root, `${cut ? `rm -rf ${q(made.dir)}\n${GIT} -C ${q(repo)} worktree prune\n` : ""}${GIT} -C ${q(repo)} worktree add -q -B ${q(made.branch)} ${q(made.dir)} ${snap.snap}\n${snap.snap !== snap.head ? `cd ${q(made.dir)}\n${this.staged(snap)}\n${GIT} reset -q --soft ${snap.head}\n${GIT} update-index -q --refresh >/dev/null || true` : "true"}`, "worktree there");
+            await this.must(dest, root, `${cut ? `rm -rf ${q(made.dir)}\n${GIT} -C ${q(repo)} worktree prune\n` : ""}${GIT} -C ${q(repo)} worktree add -q --no-checkout -B ${q(made.branch)} ${q(made.dir)} ${snap.snap}`, "worktree there");
+            // Its files, through the view of the repository there: a checkout made by `worktree add` would run the filters that repository's own config names.
+            // (The fill of a new worktree may fetch what a partial clone was promised, as far as the moved session's own commands reach: see `fetch` in src/core/git.ts.)
+            await this.must(dest, made.dir, `${GIT_SHELL_FETCH}${GIT} reset -q --hard ${snap.snap}\n${snap.snap !== snap.head ? `${this.staged(snap)}\n${GIT} reset -q --soft ${snap.head}\n${GIT} update-index -q --refresh >/dev/null || true` : "true"}`, "worktree there", true, gitReach(sid));
             moves.away[dest.id] = made.dir;
             moves.left[key(dest.id, made.dir)] = stateOf(snap);
             delete moves.making[dest.id];

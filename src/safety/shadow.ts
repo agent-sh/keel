@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
-import { readText } from "../core/proc.ts";
+import { addAll, git, gitSync } from "../core/git.ts";
 import { capPatch } from "./patch.ts";
 import { timed } from "../admin/stall.ts";
 
@@ -61,20 +61,18 @@ export class Shadow {
   }
 
   async git(args: string[], opts: { index?: string; input?: string; timeout?: number; ok?: number[] } = {}): Promise<string> {
+    const here = existsSync(this.workspace);
+    // Through the one place that runs git (src/core/git.ts). The store's own
+    // bare directory has Keel's config. A real repository's git directory
+    // (`gitDir` given) is read through its view, its own config left out.
     // A work tree only while the folder is there: git refuses a missing one
     // even for what reads only the shadow (refs, trees, gc).
-    const env: Record<string, string> = { ...(process.env as Record<string, string>), GIT_DIR: this.dir, ...(existsSync(this.workspace) ? { GIT_WORK_TREE: this.workspace } : {}) };
-    delete env.GIT_INDEX_FILE;
-    if (opts.index) env.GIT_INDEX_FILE = opts.index;
-    const p = Bun.spawn(["git", "-c", "core.autocrlf=false", "-c", "core.quotepath=false", "-c", "core.fsmonitor=false", ...args], {
-      // Reads still work while a parked worktree's folder is off disk.
-      cwd: existsSync(this.workspace) ? this.workspace : this.dir, env,
-      stdin: opts.input !== undefined ? new TextEncoder().encode(opts.input) : "ignore",
-      stdout: "pipe", stderr: "pipe", timeout: opts.timeout ?? 60_000, killSignal: "SIGKILL",
+    const r = await git(here ? this.workspace : this.dir, ["-c", "core.autocrlf=false", "-c", "core.quotepath=false", ...args], {
+      ...(this.gitDir ? {} : { mode: "own" as const, gitDir: this.dir, workTree: here ? this.workspace : undefined }),
+      index: opts.index, input: opts.input, timeout: opts.timeout ?? 60_000,
     });
-    const [out, err, code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
-    if (code !== 0 && !(opts.ok ?? []).includes(code)) throw new Error(`git ${args[0]} failed (${p.signalCode ?? code}): ${err.trim().slice(0, 500)}`);
-    return out;
+    if (r.code !== 0 && !(opts.ok ?? []).includes(r.code)) throw new Error(`git ${args[0]} failed (${r.code}): ${r.err.trim().slice(0, 500)}`);
+    return r.out;
   }
 
   private inited = false;
@@ -82,8 +80,8 @@ export class Shadow {
     if (this.gitDir || this.inited) return;
     if (!existsSync(join(this.dir, "HEAD"))) {
       mkdirSync(dirname(this.dir), { recursive: true });
-      const r = timed(() => "running git init for a checkpoint store", () => Bun.spawnSync(["git", "init", "--bare", "-q", this.dir], { stdout: "ignore", stderr: "pipe" }));
-      if (!r.success) throw new Error(`git init failed: ${r.stderr.toString().trim()}`);
+      const r = timed(() => "running git init for a checkpoint store", () => gitSync(dirname(this.dir), ["init", "--bare", "-q", this.dir], { mode: "plain" }));
+      if (r.code !== 0) throw new Error(`git init failed: ${r.err.trim()}`);
       await this.git(["config", "gc.auto", "0"]);
     }
     this.writeExcludes([]);
@@ -142,7 +140,7 @@ export class Shadow {
         const index = join(this.dir, "keel-index");
         try {
           if (!(await this.sizeUp(index))) return this.writtenTree(paths ?? []);
-          await this.git(["add", "-A", "--ignore-errors", "--", "."], { index, timeout: 30_000, ok: [1] });
+          await this.addAll(index, 30_000);
         } catch (e) {
           // Too large or too slow to snapshot whole: fall back to the files the tools write.
           this.mode = "written";
@@ -155,13 +153,23 @@ export class Shadow {
     });
   }
 
+  // Every file of the work tree into `index`. A repository inside it (a
+  // submodule that is checked out, a folder with a .git of its own) is
+  // recorded by the commit it has out, as git records it, and git is not run
+  // inside it from here (src/core/git.ts): so a snapshot never held the
+  // uncommitted work inside such a repository, and a rewind does not put it
+  // back.
+  private addAll(index: string, timeout?: number) {
+    return addAll(this.workspace, (args, input) => this.git(args, { index, input, timeout, ok: [1] }), ["--ignore-errors"]);
+  }
+
   // A real repository's working tree as a tree, through a copy of its own
   // index (its stat cache spares hashing unchanged files); its index is not touched.
   private async realTree(): Promise<string> {
     const index = join(this.dir, `keel-snap-${crypto.randomUUID()}`);
     try {
       if (existsSync(join(this.dir, "index"))) copyFileSync(join(this.dir, "index"), index);
-      await this.git(["add", "-A", "--ignore-errors", "--", "."], { index, ok: [1] });
+      await this.addAll(index);
       return (await this.git(["write-tree"], { index })).trim();
     } finally {
       rmSync(index, { force: true });
@@ -193,12 +201,18 @@ export class Shadow {
       const spec = paths ? ["--", ...paths] : [];
       if (paths && !paths.length) return { files: [], diff: "", truncated: false };
       // NUL-separated lists: a path is never quoted or escaped there.
-      const [ns, num, patch] = await Promise.all([
-        this.git(["diff-tree", "-r", "-z", "--no-renames", "--name-status", a, b, ...spec]),
+      const ns = await this.git(["diff-tree", "-r", "-z", "--no-renames", "--name-status", a, b, ...spec]);
+      // The counts and the patch read the files' contents. A partial clone
+      // does not have every one, and the daemon's git fetches nothing: the
+      // list of files is shown then, without the patch.
+      const [num, patch] = await Promise.all([
         this.git(["diff-tree", "-r", "-z", "--no-renames", "--numstat", a, b, ...spec]),
         this.git(["diff-tree", "-r", "--no-renames", "-p", a, b, ...spec]),
-      ]);
-      const counts = new Map(num.split("\0").filter(Boolean).map((l) => {
+      ]).catch((e) => {
+        if (/promisor|lazy fetching disabled|could not fetch|missing blob/i.test((e as Error).message)) return [null, null] as const;
+        throw e;
+      });
+      const counts = new Map((num ?? "").split("\0").filter(Boolean).map((l) => {
         const [ad, rm, ...p] = l.split("\t");
         return [p.join("\t"), { added: Number(ad) || 0, removed: Number(rm) || 0 }];
       }));
@@ -209,7 +223,7 @@ export class Shadow {
         if (!status) break;
         files.push({ path, status, ...(counts.get(path) ?? { added: 0, removed: 0 }) });
       }
-      return { files, ...capPatch(patch, DIFF_CAP) };
+      return patch === null ? { files, diff: "", truncated: true } : { files, ...capPatch(patch, DIFF_CAP) };
     });
   }
 
@@ -311,8 +325,8 @@ export class Shadow {
         if (bt.includes("\0") || ot.includes("\0")) return null;
         writeFileSync(join(tmp, "base"), bt);
         writeFileSync(join(tmp, "other"), ot);
-        const p = Bun.spawn(["git", "merge-file", "-p", "--quiet", cur, join(tmp, "base"), join(tmp, "other")], { stdout: "pipe", stderr: "pipe", stdin: "ignore", timeout: 30_000 });
-        const [text, , code] = await Promise.all([readText(p.stdout), readText(p.stderr), p.exited]);
+        // (Run in the scratch folder: a merge of three files needs no repository.)
+        const { out: text, code } = await git(tmp, ["merge-file", "-p", "--quiet", cur, join(tmp, "base"), join(tmp, "other")], { mode: "plain", timeout: 30_000 });
         if (code < 0 || code > 127) return null;
         return { clean: code === 0, text };
       } finally {

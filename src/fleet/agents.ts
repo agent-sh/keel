@@ -9,6 +9,7 @@
 // tools' target); `keel__send_files` copies files of the caller's workspace
 // into the agent's directory there.
 import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { GIT_SHELL_ENV, GIT_SHELL_FETCH, gitReach, type GitFetch } from "../core/git.ts";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { RemotePlace, RemotePlacer } from "../automation/agents.ts";
 import * as agents from "../automation/agents.ts";
@@ -23,6 +24,13 @@ import type { Fleet } from "./fleet.ts";
 import { LinkError, linkFetch } from "./link.ts";
 
 const GIT = "git -c core.hooksPath=/dev/null -c core.fsmonitor=false";
+// Before the fill of a new worktree: it may fetch what a partial clone was
+// promised when the route that runs the script allows it for the session
+// the worktree is for (see `fetch` in src/core/git.ts); a machine of an
+// older build fetches nothing.
+const FILL = GIT_SHELL_FETCH;
+// How long a script on another machine, or its status of a worktree, may take (the link's own default is for a short answer).
+const SCRIPT_MS = 11 * 60_000;
 const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
 
 // The most files one call sends: a tree larger than this is an archive's job.
@@ -43,8 +51,14 @@ export class RemoteAgents implements RemotePlacer {
     return (this.fleet.byName(machine)?.name ?? machine).toLowerCase();
   }
 
-  private async sh(m: MachineRow, cwd: string, script: string): Promise<{ code: number; out: string }> {
-    const r = await this.fleet.hands(m.id, "/api/fleet/hands/exec", { method: "POST", body: JSON.stringify({ script, cwd, root: m.workspace_root }), timeout: 11 * 60_000 });
+  // The daemon's own git on the other machine, with what a repository's
+  // config must not turn on (src/core/git.ts). `view`: the script reads or
+  // fills the work tree of the repository `cwd` is in, so its git reads that
+  // repository through that machine's view of it (no filter of its own runs).
+  // `fetch`: the script fills a work tree, and may fetch as far as that.
+  private async sh(m: MachineRow, cwd: string, script: string, view = false, fetch?: GitFetch): Promise<{ code: number; out: string }> {
+    script = `${GIT_SHELL_ENV}\n${script}`;
+    const r = await this.fleet.hands(m.id, "/api/fleet/hands/exec", { method: "POST", body: JSON.stringify({ script, cwd, root: m.workspace_root, ...(view ? { view: true } : {}), ...(view && fetch ? { fetch } : {}) }), timeout: SCRIPT_MS });
     const b = (await r.json()) as { code?: number; out?: string; error?: string };
     return { code: b.code ?? 1, out: b.out ?? b.error ?? "" };
   }
@@ -80,8 +94,11 @@ export class RemoteAgents implements RemotePlacer {
       if (top.code !== 0 || !repo || !head) return { machine: m.id, name: m.name, cwd };
       const branch = `keel/agent-${o.key}`;
       const dir = join(root, ".keel", "worktrees", `agent-${o.key}`);
-      const made = await this.sh(m, root, `set -e\nmkdir -p ${q(join(root, ".keel", "worktrees"))}\n${GIT} -C ${q(repo)} worktree add -q -b ${q(branch)} ${q(dir)} HEAD`);
-      if (made.code !== 0) throw new Error(`no worktree could be made on ${m.name} from ${repo}: ${made.out.trim().split("\n").slice(-2).join(" ").slice(0, 300)}`);
+      const made = await this.sh(m, root, `set -e\nmkdir -p ${q(join(root, ".keel", "worktrees"))}\n${GIT} -C ${q(repo)} worktree add -q --no-checkout -b ${q(branch)} ${q(dir)} HEAD`);
+      // (Its files through the view: the checkout of `worktree add` would run the repository's own filters.)
+      // (What it may fetch in a partial clone is bounded by the parent's reach: the agent works under the parent's permissions.)
+      const filled = made.code === 0 ? await this.sh(m, dir, `${FILL}${GIT} reset -q --hard`, true, gitReach(parent.id)) : made;
+      if (filled.code !== 0) throw new Error(`no worktree could be made on ${m.name} from ${repo}: ${filled.out.trim().split("\n").slice(-2).join(" ").slice(0, 300)}`);
       const sub = relative(repo, cwd);
       const at = sub && !sub.startsWith("..") ? join(dir, sub) : dir;
       const baseName = branchNow || head;
@@ -106,11 +123,20 @@ export class RemoteAgents implements RemotePlacer {
     const m = this.fleet.row(a.machine ?? "");
     if (!w || !m) return "";
     try {
-      const st = await this.sh(m, m.workspace_root!, `[ -d ${q(w.worktree)} ] || { echo gone; exit 0; }\ncd ${q(w.worktree)}\necho "$(${GIT} status --porcelain | wc -l) $(${GIT} rev-list --count ${w.base}..HEAD)"`);
-      const line = st.out.trim().split("\n").at(-1) ?? "";
-      if (line === "gone") return "";
-      const [dirty, ahead] = line.split(" ").map(Number);
-      if (st.code !== 0 || dirty === undefined || ahead === undefined || Number.isNaN(dirty) || Number.isNaN(ahead)) return `\n\nWorktree ${w.worktree} on ${m.name} (branch ${w.branch}): git could not read it: ${line.slice(0, 200)}`;
+      const there = await this.sh(m, m.workspace_root!, `[ -d ${q(w.worktree)} ] || echo gone`);
+      if (there.out.trim().split("\n").at(-1) === "gone") return "";
+      // What git's status lists there, and every submodule that holds work
+      // of its own, each asked through its own view on that machine (the
+      // hands route runs the daemon's helper there; a script could only run
+      // git inside a submodule with the submodule's own config). One that
+      // cannot be read, or a machine whose build has no such route, gives no
+      // number, which removes nothing.
+      const res = await this.fleet.hands(m.id, "/api/fleet/hands/work", { method: "POST", body: JSON.stringify({ dir: w.worktree, root: m.workspace_root, base: w.base }), timeout: SCRIPT_MS });
+      const got = (res.ok ? await res.json().catch(() => ({})) : {}) as { dirty?: number; ahead?: number; unpushed?: string[]; unknown?: string[]; error?: string };
+      const dirty = got.unknown?.length ? undefined : got.dirty, ahead = got.ahead;
+      const line = got.error ?? (got.unknown?.length ? `a repository inside it could not be read (${got.unknown.slice(0, 3).join(", ")})` : res.ok ? "" : `that machine's Keel cannot say (status ${res.status})`);
+      if (typeof dirty !== "number" || typeof ahead !== "number" || Number.isNaN(dirty) || Number.isNaN(ahead)) return `\n\nWorktree ${w.worktree} on ${m.name} (branch ${w.branch}): git could not read it: ${line.slice(0, 200)}`;
+      if (!dirty && !ahead && got.unpushed?.length) return `\n\nWorktree ${w.worktree} on ${m.name} (branch ${w.branch}) was kept: ${got.unpushed.slice(0, 3).join(", ")} holds commits of its own that none of its remotes has.`;
       if (!dirty && !ahead) {
         await this.removeWork(w, false);
         return `\n\n(The agent changed no files; its worktree on ${m.name} was removed.)`;
@@ -127,7 +153,11 @@ export class RemoteAgents implements RemotePlacer {
     const w = this.work(a);
     const m = this.fleet.row(a.machine ?? "");
     if (!w || !m) return;
-    const r = await this.sh(m, m.workspace_root!, `[ -d ${q(w.worktree)} ] && exit 0\n${GIT} -C ${q(w.repo)} worktree add -q -B ${q(w.branch)} ${q(w.worktree)} ${w.base}`);
+    const r = await this.sh(m, m.workspace_root!, `[ -d ${q(w.worktree)} ] && exit 0\n${GIT} -C ${q(w.repo)} worktree add -q --no-checkout -B ${q(w.branch)} ${q(w.worktree)} ${w.base}\necho made`);
+    if (r.code === 0 && r.out.trim().endsWith("made")) {
+      const filled = await this.sh(m, w.worktree, `${FILL}${GIT} reset -q --hard`, true, gitReach(a.parent_id));
+      if (filled.code !== 0) throw new Error(`its worktree on ${m.name} could not be filled: ${filled.out.trim().slice(-300)}`);
+    }
     if (r.code !== 0) throw new Error(`its worktree on ${m.name} could not be made again: ${r.out.trim().slice(-300)}`);
   }
 

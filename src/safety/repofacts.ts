@@ -2,6 +2,7 @@
 // only (never the network), each bounded, read when first asked and kept a few
 // seconds for the calls of one line.
 import { existsSync } from "node:fs";
+import { gitSync, innerWorkSync, type InnerWork } from "../core/git.ts";
 import { contains } from "../core/paths.ts";
 import type { Session } from "../core/types.ts";
 import { gitCall, located, protectedBranch, pushPlan, type RepoFacts } from "./autonomy.ts";
@@ -11,9 +12,10 @@ import { timed } from "../admin/stall.ts";
 const KEEP_MS = 5_000;
 const cache = new Map<string, { at: number; f: RepoFacts | null }>();
 
+// Through the one place that runs git (src/core/git.ts): the repository's own config is not read.
 function git(dir: string, ...args: string[]): { ok: boolean; code: number; out: string } {
-  const r = timed(() => `running git ${args[0]} for a repository's facts`, () => Bun.spawnSync(["git", "-C", dir, ...args], { stdout: "pipe", stderr: "ignore", timeout: 3_000, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" } }));
-  return { ok: r.success, code: r.exitCode ?? -1, out: r.stdout.toString().trim() };
+  const r = timed(() => `running git ${args[0]} for a repository's facts`, () => gitSync(dir, args, { read: true, timeout: 3_000 }));
+  return { ok: r.code === 0, code: r.code, out: r.out.trim() };
 }
 
 export function lookRepo(dir: string): RepoFacts | null {
@@ -45,6 +47,8 @@ function read(dir: string): RepoFacts | null {
     }
     return status;
   };
+  let work: InnerWork | undefined;
+  const inner = () => (work ??= timed(() => "asking a repository's submodules for their state", () => innerWorkSync(top.out)));
   const defaultOf = (remote: string): string | null => {
     if (!(remote in remotes)) return null;
     if (!defaults.has(remote)) {
@@ -59,7 +63,18 @@ function read(dir: string): RepoFacts | null {
     upstream: up.ok && up.out ? up.out : null,
     remotes,
     defaultOf,
-    dirty: () => lines()?.filter((l) => !l.startsWith("??")).length ?? null,
+    // A submodule that holds uncommitted work is a changed file here, as git's
+    // own status counts it. That status does not look inside one (the daemon's
+    // git never runs there from outside), so each is asked through its own
+    // view; one that cannot be read makes the answer unknown, never zero.
+    dirty: () => {
+      const tracked = lines()?.filter((l) => !l.startsWith("??"));
+      if (!tracked) return null;
+      const work = inner();
+      if (work.unknown.length) return null;
+      const listed = new Set(tracked.map((l) => l.slice(3)));
+      return tracked.length + work.dirty.filter((p) => !listed.has(p)).length;
+    },
     untracked: () => lines()?.filter((l) => l.startsWith("??")).length ?? null,
     merged(remote, b) {
       const def = defaultOf(remote);

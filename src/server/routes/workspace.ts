@@ -6,8 +6,8 @@ import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import type { RouteModule } from "../app.ts";
 import { claimNote, isClaimFile } from "../../core/claim.ts";
+import { git } from "../../core/git.ts";
 import { contains } from "../../core/paths.ts";
-import { readText } from "../../core/proc.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -24,9 +24,8 @@ async function listFiles(root: string): Promise<string[]> {
   if (hit && Date.now() - hit.at < 10_000) return hit.files;
   let files: string[] = [];
   if (isGit(root)) {
-    const p = Bun.spawn(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"], { cwd: root, stdout: "pipe", stderr: "ignore" });
-    const out = await readText(p.stdout);
-    if ((await p.exited) === 0) files = out.split("\0").filter(Boolean).slice(0, MAX_FILES);
+    const r = await git(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], { read: true });
+    if (r.code === 0) files = r.out.split("\0").filter(Boolean).slice(0, MAX_FILES);
   }
   if (!files.length) {
     const walk = (dir: string, depth: number) => {

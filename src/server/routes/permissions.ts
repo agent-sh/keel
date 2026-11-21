@@ -8,6 +8,7 @@ import { makeJudge } from "../../safety/judge.ts";
 import { isLocal, Presence } from "../../safety/presence.ts";
 import { sandboxStatus } from "../../safety/sandbox.ts";
 import type { Deps, RouteModule } from "../app.ts";
+import { setGitReach } from "../../core/git.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -30,6 +31,8 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
   g.judge = makeJudge(store, deps.providers, () => g.setting("reviewer_model"), () => g.setting("reviewer_policy"));
   const sb = sandboxStatus();
   if (!sb.available && g.defaultSandbox() !== "off") deps.errors.capture("server", new Error(`sandbox unavailable: ${sb.reason}`), { at: "startup" });
+  // What the daemon's own git may fetch for a session's worktree: as far as that session reaches.
+  setGitReach((id) => g.gitReach(id));
   registerHooks({
     beforeTool: (s, call) => g.beforeTool(s, call),
     callOutcome: (sid, callId) => g.callOutcome(sid, callId),
