@@ -1,7 +1,7 @@
 // The read thread, which no page can tell from a read on the loop: the same
 // answer from both, the loop free while the thread reads, a failed read told.
 import { afterAll, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../core/store.ts";
@@ -46,4 +46,34 @@ test("a read on the thread gives what the loop gives, sees what was just written
   expect(await broken.sql("SELECT 2 AS two")).toEqual([{ two: 2 }]);
   expect(await broken.sql("SELECT 3 AS three")).toEqual([{ three: 3 }]);
   expect(broken.counts.loop).toBe(2);
+});
+
+test("a thread that ends or stops answering fails the reads that wait on it, and the next read starts another", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-reads-"));
+  dirs.push(dir);
+  const store = new Store(dir);
+  // Thread programs that answer their first read and then go wrong, each in its way.
+  const program = (name: string, then: string) => {
+    const path = join(dir, name);
+    writeFileSync(path, `let n = 0;\nself.onmessage = (ev) => { const m = ev.data; if ("open" in m) return; if (++n === 1) postMessage({ id: m.id, value: [n] }); else { ${then} } };\n`);
+    return "file://" + path;
+  };
+  const said = (p: Promise<unknown>) => p.then((v) => v, (e: Error) => e.message);
+  for (const [name, then, why, deadline] of [
+    ["ends.ts", "process.exit(0);", "it ended", 60_000],
+    ["silent.ts", "", "no answer in 150 ms", 150],
+  ] as const) {
+    const reads = new Reads(store, true, program(name, then), deadline);
+    try {
+      expect(await said(reads.sql("SELECT 1"))).toEqual([1]);
+      // Two reads wait when it goes: both are told, neither hangs.
+      const waiting = [said(reads.sql("SELECT 2")), said(reads.sql("SELECT 3"))];
+      expect(await Promise.all(waiting)).toEqual([`the read thread failed: ${why}`, `the read thread failed: ${why}`]);
+      // The next read is answered by a new thread (its first read again).
+      expect(await said(reads.sql("SELECT 4"))).toEqual([1]);
+      expect(reads.counts).toEqual({ thread: 4, loop: 0 });
+    } finally {
+      reads.close();
+    }
+  }
 });
