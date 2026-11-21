@@ -498,6 +498,36 @@ test("the phone strip says how many need the owner in plain words, and its marks
   }
 });
 
+test("the card beside a mark says a question waits, as it says an approval waits", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const made: string[] = [];
+  try {
+    const watcher = await start(request, "A quiet session to watch from");
+    const question = await start(request, "Pick the database for the queue");
+    const approval = await start(request, "Clean the build output", "ask");
+    made.push(watcher, question, approval);
+    await send(request, question, script([{ name: "AskUserQuestion", input: { questions: [{ header: "Store", question: "Which database should hold the queue?", options: [{ label: "SQLite" }, { label: "Valkey" }], multiSelect: false }] } }]));
+    await send(request, approval, script([{ name: "Bash", input: { command: "rm -rf dist" } }]));
+    await expect.poll(async () => (await stateOf(request, question))?.watch, { timeout: 30_000 }).toBe("need");
+    await expect.poll(async () => (await stateOf(request, approval))?.watch, { timeout: 30_000 }).toBe("need");
+
+    await page.goto(`/s/${watcher}`);
+    await page.getByTestId("rail-toggle").click();
+    const tick = (id: string) => page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${id}"]`);
+    const card = page.getByTestId("rail-card");
+    await tick(question).hover();
+    await expect(card).toHaveAttribute("data-watch", "need");
+    await expect(card).toContainText("Question: Which database should hold the queue?");
+    await expect(card).not.toContainText("New since you looked");
+    await tick(approval).hover();
+    await expect(card).toContainText("Approve Bash: rm -rf dist");
+    await page.getByTestId("rail-toggle").click();
+  } finally {
+    await drop(request, made);
+  }
+});
+
 test("the parent's Now line says what a parked agent waits for and until when", async ({ page, request }) => {
   test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
   await page.setViewportSize({ width: 1920, height: 1040 });
