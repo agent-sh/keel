@@ -165,3 +165,85 @@ test("panes on request, agents folded, the list filtered and arranged", async ({
   expect(await band.evaluate((el) => getComputedStyle(el).animationName)).toBe("none");
   await request.post(`/api/sessions/${parent}/interrupt`).catch(() => {});
 });
+
+// The archive tab asks the daemon for its list when it opens and when a
+// session is archived, restored or deleted, not on every change of a
+// session; an answer that a newer one overtook does not bring an old list back.
+test("the archive list is read again only when the archive changed", async ({ page, request }) => {
+  const tag = Date.now().toString(36);
+  const mk = async (title: string) => (await (await request.post("/api/sessions", { data: { model: MODEL, title } })).json()).session.id as string;
+  const patch = (id: string, data: unknown) => request.patch(`/api/sessions/${id}`, { data });
+  const old = await mk(`Archived before the page ${tag}`);
+  const next = await mk(`Archived while it is open ${tag}`);
+  const later = await mk(`Archived a little later ${tag}`);
+  const last = await mk(`Archived last ${tag}`);
+  const busy = await mk(`Still worked on ${tag}`);
+  await patch(old, { archived: true });
+  const made = [old, next, later, last, busy];
+  try {
+    // Every read of the archive, as the daemon answered it.
+    let reads = 0;
+    page.on("request", (r) => { if (r.method() === "GET" && /\/api\/sessions\?archived/.test(r.url())) reads++; });
+    const list = page.getByTestId("session-list");
+    const row = (id: string) => list.locator(`[data-testid="session-row"][data-session="${id}"]`);
+    await page.goto(`/s/${busy}`);
+    await page.getByTestId("tab-archived").click();
+    await expect(row(old)).toBeVisible();
+    await expect(row(next)).toHaveCount(0);
+    expect(reads).toBe(1);
+
+    // A turn and a rename of the session worked on, and a rename of another
+    // active one: the page shows them, and the archive is not read again.
+    await request.post(`/api/sessions/${busy}/messages`, { data: { text: "Say something." } });
+    await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 30_000 });
+    await patch(busy, { title: `Renamed while worked on ${tag}` });
+    await patch(later, { title: `Renamed and not archived yet ${tag}` });
+    await expect(page.getByTestId("session-title")).toHaveText(`Renamed while worked on ${tag}`);
+    await page.getByTestId("tab-active").click();
+    await expect(row(later)).toContainText(`Renamed and not archived yet ${tag}`);
+    await page.getByTestId("tab-archived").click();
+    await expect(row(old)).toBeVisible();
+    expect(reads).toBe(2); // the tab opened again; nothing between
+
+    // Archived: it joins the list. Renamed there: the list follows without a read.
+    await patch(next, { archived: true });
+    await expect(row(next)).toBeVisible();
+    expect(reads).toBe(3);
+    await patch(next, { title: `Renamed in the archive ${tag}` });
+    await expect(row(next)).toContainText(`Renamed in the archive ${tag}`);
+    expect(reads).toBe(3);
+    await shoot(page, "sidebar-arrange-archive-list");
+
+    // Two archived one after the other, the first answer held back: when it
+    // lands after the second it does not take the newer session off the list.
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let first = true;
+    await page.route(/\/api\/sessions\?archived/, async (route) => {
+      if (!first) return route.fallback();
+      first = false;
+      const answer = await route.fetch();
+      await held;
+      await route.fulfill({ response: answer });
+    });
+    await patch(later, { archived: true });
+    await expect.poll(() => reads).toBe(4);
+    await patch(last, { archived: true });
+    await expect(row(last)).toBeVisible();
+    await expect(row(later)).toBeVisible();
+    release();
+    await page.waitForTimeout(500);
+    await expect(row(last)).toBeVisible();
+    await page.unroute(/\/api\/sessions\?archived/);
+
+    // Restored: it leaves the list. Deleted: gone from it too.
+    await patch(old, { archived: false });
+    await expect(row(old)).toHaveCount(0);
+    await request.delete(`/api/sessions/${next}`);
+    await expect(row(next)).toHaveCount(0);
+    await expect(row(later)).toBeVisible();
+    await expect(row(last)).toBeVisible();
+  } finally {
+    for (const id of made) await request.delete(`/api/sessions/${id}`);
+  }
+});

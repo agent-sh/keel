@@ -303,15 +303,24 @@ function Index({ current }: { current: string | null }) {
   useFleet((s) => s.machines.length); // machine names in the group heads
   const [tab, setTab] = useState<"active" | "archived">(() => { const t = openOn; openOn = "active"; return t; });
   const [archived, setArchived] = useState<Session[]>([]);
+  // The archive is asked for when its tab opens and when what it lists moved:
+  // a session was archived or restored, or one is gone. A status or a title
+  // of a session is no reason (the list shows the store's row of each). The
+  // answer of a request that a newer one overtook is dropped.
+  const inArchive = useStore((s) => Object.values(s.sessions).filter((x) => x.archived).map((x) => x.id).sort().join(" "));
+  const gone = useStore((s) => s.gone);
+  const asked = useRef(0);
   useEffect(() => {
-    if (tab === "archived") api<{ sessions: Session[] }>("/api/sessions?archived").then((r) => setArchived(r.sessions)).catch(reportError);
-  }, [tab, sessions]);
+    if (tab !== "archived") return;
+    const n = ++asked.current;
+    api<{ sessions: Session[] }>("/api/sessions?archived").then((r) => { if (n === asked.current) setArchived(r.sessions); }).catch(reportError);
+  }, [tab, inArchive, gone]);
   // A tag picked above the list narrows it; pinned sessions lead it.
   // Each tab keeps its own tag: one picked in Sessions does not empty Archived.
   const [tags_, setTags] = useState<Record<string, string | null>>({});
   const base_ = useMemo(
-    () => (tab === "active" ? Object.values(sessions).filter((s) => !s.archived && !s.parent_id && !s.settings.helper) : archived.map((a) => sessions[a.id] ?? a).filter((s) => s.archived)),
-    [sessions, tab, archived],
+    () => (tab === "active" ? Object.values(sessions).filter((s) => !s.archived && !s.parent_id && !s.settings.helper) : archived.map((a) => sessions[a.id] ?? a).filter((s) => s.archived && !gone[s.id])),
+    [sessions, tab, archived, gone],
   );
   const tags = useMemo(() => [...new Set(base_.flatMap((s) => s.settings.tags ?? []))].sort((a, b) => a.localeCompare(b)), [base_]);
   const picked = tags_[tab] ?? null;
