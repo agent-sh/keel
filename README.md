@@ -336,6 +336,12 @@ Context bytes count UTF-8 text after Keel's cap, before its memory wrapper.
 Transcript metrics count reused versions, appends (a branch that only grew
 gets its new events appended), rebuilds, failures, files removed with their
 session, elapsed milliseconds, and bytes written. Reuse writes no bytes.
+Each hook also counts `late`: calls a turn waited its full wait for and went
+on without. `tools` counts tool calls the store was not asked about
+(`never_answered`: a call it answers with nothing whatever it holds;
+`known_nothing`: it had nothing for the same call of the same session within
+the last minute) and `not_held`: results not held for an answer that had not
+come, because the call changed nothing.
 `processes` counts hook processes: the most alive at once and their limit,
 calls not made because one of the same session and hook was still out
 unanswered, and probes. `owed_dropped` counts lines dropped because more was
@@ -361,13 +367,26 @@ session is ten blocks' worth; past it a line says how many were dropped.
 A turn waits for a call only so long (6 s for a start block, 2.2 s for a
 prompt, 0.9 s for a tool call), and no store process is ended before the
 store's own 15 s hook timeout: what it answers after the turn went on follows
-like a line that did not fit. A call a turn stopped waiting for starts an
-outage of its kind: the session is told once, later calls of that kind are
-made but not waited for, and a probe that asks the store nothing ends the
-outage when it answers within the wait again. The probe is asked only while
-calls of that kind are being made. After a summary or a clear the store is
-told, so what it gave before can come again; what was owed from before a
-clear is not carried into the fresh context.
+like a line that did not fit. One call a turn stopped waiting for is a late
+call, counted and no more (a loaded machine makes one slow). Two of a kind in
+a row are an outage of that kind: an error is recorded, the session is told
+once, later calls of that kind are made but not waited for, and a probe that
+asks the store nothing ends the outage when it answers within the wait again.
+The probe is asked only while calls of that kind are being made. After a
+summary or a clear the store is told, so what it gave before can come again;
+what was owed from before a clear is not carried into the fresh context.
+
+Before a tool the store is asked only when it can have something. An edit of
+a file in no checkout and an empty command are never asked about (the store
+answers them with nothing whatever it holds). An empty answer is remembered
+per session for a minute for the same call (the same file, the same command
+line, the same MCP tool), since the store's own follower looks for changes
+at least that often; a summary, a clear or a new start forgets it. Calls the
+store records as steps in themselves (its own tools, its command line in a
+shell) are always passed to it. A tool's result is held for the answer only
+when the call changes something (an edit, a write, a shell command that is
+not a read, an MCP tool its server does not call read-only); a read's rule
+follows with the next request.
 
 `GET /api/telemetry/memory?since_ms=&until_ms=&session_id=` reports what memory
 cost the turns and whether they used it, kept across restarts for 90 days: per

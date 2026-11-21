@@ -21,8 +21,10 @@
 // as repeated when the same line was already added earlier in the session
 // and is still in the context; as lost when the store gave it to the session
 // (a store that gives a fact once will not give it again) and no request of
-// the session ever carried it. Lost must be 0: saving tokens never costs a
-// fact. For the helper's records, a relevance check asks about a known
+// the session ever carried it. Lost must be 0: saving tokens or time never
+// costs a fact. A last section measures the before-a-tool path on a working
+// session: tool calls, calls made to the store, the store's process time,
+// the time tool results were held for it, rules delivered and rules lost. For the helper's records, a relevance check asks about a known
 // record by words of its text and counts how often that record is recalled.
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -176,7 +178,8 @@ function world(name: string, storeBin: string | null) {
       const at = req.messages.findLastIndex((m: any) => m.role === "user" && JSON.stringify(m).includes(`(ref ${ref})`));
       const done = req.messages.slice(at + 1).filter((m: any) => m.role === "assistant").length;
       const next = plan?.tools[done];
-      if (next) return { blocks: [{ type: "tool_use", id: `c-${ref}-${done}`, name: "Bash", input: { command: next } }], usage, stop: "tool_use", model: "scripted" };
+      // "write:<path>" writes that file; anything else is a shell command.
+      if (next) return { blocks: [next.startsWith("write:") ? { type: "tool_use", id: `c-${ref}-${done}`, name: "Write", input: { file_path: next.slice(6), content: "x\n" } } : { type: "tool_use", id: `c-${ref}-${done}`, name: "Bash", input: { command: next } }], usage, stop: "tool_use", model: "scripted" };
       // The reply names what the task needed, when the context holds it.
       const said: string[] = [];
       if (plan?.target && all.includes(`- ${plan.target}`)) said.push(`Per ${plan.target}: set as it says.`);
@@ -490,6 +493,82 @@ for (const mode of ["slow", "down"]) {
   console.log(`\nHelper recall, relevance: ${N} prompts of three words from one record's text among ${recs.length} records`);
   console.log(`  the record asked about is recalled: ${right} of ${N} (${Math.round((100 * right) / N)}%), first in ${first}; records recalled a prompt: ${(count / N).toFixed(1)}; tokens a prompt: ${Math.round(chars / N / bytesPerToken(MODEL))}`);
   result.relevance = { prompts: N, records: recs.length, right, first, records_per_prompt: count / N, tokens_per_prompt: chars / N / bytesPerToken(MODEL) };
+}
+
+// 6. Before a tool. A working session: every turn reads (the same status and
+// listing each turn, files, searches), changes things (a stamp touched each
+// turn, files written by a redirect), writes files in its checkout and
+// scratch files outside any checkout. The stand-in's before-a-tool path
+// takes 0.2 s (the store's own work, not process start) and has a rule for a
+// few commands and files, each given once.
+{
+  const dir = join(root, "store-tools");
+  mkdirSync(dir, { recursive: true });
+  seed = 31;
+  const triggers = Array.from({ length: 6 }, () => word());
+  writeFileSync(join(dir, "rules.tsv"), triggers.map((t, i) => `${t}\trule-${i}-${t}\tWhen ${t} is touched, ${word()} the ${common()} first`).join("\n") + "\n");
+  writeFileSync(join(dir, "calls"), "");
+  const bin = join(dir, "store.sh");
+  writeFileSync(bin, `#!/bin/sh
+dir=${JSON.stringify(dir)}
+input=$(cat)
+echo "$2" >> "$dir/calls"
+sid=$(printf '%s' "$input" | sed -n 's/.*"session_id":"\\([^"]*\\)".*/\\1/p')
+seen="$dir/seen-$sid"; touch "$seen"
+case "$2" in
+  session-start) echo "# store: this owner's standing rules"; echo "- RULE base-rule: Always check the queue before a release" ;;
+  pre-tool)
+    sleep 0.2
+    INPUT="$input" awk -F '\\t' -v seen="$seen" 'BEGIN { while ((getline line < seen) > 0) had[line] = 1 }
+      index(ENVIRON["INPUT"], $1) && !($2 in had) { out = out "\\\\n- " $2 ": " $3; print $2 >> seen }
+      END { if (out != "") printf "{\\"hookSpecificOutput\\":{\\"hookEventName\\":\\"PreToolUse\\",\\"additionalContext\\":\\"# store: before this step%s\\"}}\\n", out }' "$dir/rules.tsv" ;;
+esac
+exit 0
+`);
+  chmodSync(bin, 0o755);
+  const w = world("tools", bin);
+  const ws = join(w.dir, "ws");
+  for (const d of [".git", "notes", "src", "build", "out"]) mkdirSync(join(ws, d), { recursive: true });
+  mkdirSync(join(w.dir, "scratch"), { recursive: true });
+  for (let i = 0; i < 3; i++) writeFileSync(join(ws, "notes", `n${i}.md`), `note ${i}\n`);
+  const TURNS_T = 12;
+  const inputs: Input[] = Array.from({ length: TURNS_T }, (_, t) => {
+    const tools = [
+      "git status", "ls src", `cat notes/n${t % 3}.md`, `grep -rn ${word()} src`,
+      "touch build/stamp", `echo ${t} > out/log${t}.txt`,
+      `write:${join(ws, "src", `gen${t}.ts`)}`, `write:${join(w.dir, "scratch", `t${t}.txt`)}`,
+    ];
+    // A rule's trigger now and then: in a command that changes something, in a read, in a file written.
+    if (t === 2) tools.push(`touch build/${triggers[0]}.stamp`);
+    if (t === 3) tools.push(`cat notes/${triggers[1]}.md`);
+    if (t === 4) tools.push(`write:${join(ws, "src", `${triggers[2]}.ts`)}`);
+    if (t === 6) tools.push(`touch build/${triggers[3]}.stamp`);
+    if (t === 8) tools.push(`grep -rn ${triggers[4]} notes`);
+    if (t === 9) tools.push(`touch build/${triggers[0]}.stamp`); // again: its rule was given
+    return { ref: `q${t}`, who: "owner" as const, tools, text: `Go on with the ${common()} work. (ref q${t})` };
+  });
+  const s = w.store.createSession({ model: MODEL, workspace: ws });
+  const t0 = performance.now();
+  await w.run(s.id, inputs);
+  // One more prompt: a rule that followed a read arrives with a later request.
+  await w.run(s.id, [{ ref: "q99", who: "owner", tools: [], text: "And the summary? (ref q99)" }]);
+  const wall = performance.now() - t0;
+  const calls = inputs.reduce((n, i) => n + i.tools.length, 0);
+  const st = w.tacit.stats() as any;
+  const pre = st.hooks["pre-tool"];
+  const made = Object.values(pre.outcomes as Record<string, number>).reduce((a, b) => a + b, 0);
+  const { added } = addedBy(w.store, s.id, [...inputs, { ref: "q99", who: "owner", tools: [], text: "" }]);
+  const reached = new Set(added.flatMap((a) => a.entries.map(nameOf)));
+  const given = readFileSync(join(dir, `seen-${s.id}`), "utf8").trim().split("\n").filter(Boolean);
+  const lost = given.filter((g) => !reached.has(g)).length;
+  const m = meterOf?.(w.store).report({ session: s.id });
+  const held = m?.paths.find((p: any) => p.path === "store_tool")?.wait_ms ?? NaN;
+  console.log(`\nBefore a tool: ${TURNS_T} turns, ${calls} tool calls (${(calls / TURNS_T).toFixed(1)} a turn), a store that takes 0.2 s a call`);
+  console.log(`  calls made to the store: ${made} of ${calls}${st.tools ? ` (not asked: ${st.tools.known_nothing} known to be nothing, ${st.tools.never_answered} it never answers)` : ""}; store process time ${ms(pre.duration_ms.total)} ms`);
+  console.log(`  tool results held for the store: ${ms(held)} ms in all, ${ms(held / calls)} ms a tool call${st.tools ? `; not held for an answer still to come: ${st.tools.not_held}` : ""}; the session took ${ms(wall)} ms`);
+  console.log(`  rules the store gave: ${given.length}; in a request: ${given.length - lost}; lost: ${lost}`);
+  result.tools = { turns: TURNS_T, calls, made, process_ms: pre.duration_ms.total, held_ms: held, wall_ms: wall, given: given.length, lost, not_asked: st.tools ?? null };
+  w.close();
 }
 
 const out = Bun.argv.indexOf("--json");

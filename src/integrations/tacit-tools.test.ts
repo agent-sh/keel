@@ -1,0 +1,95 @@
+// What Keel knows about a tool call before asking the memory store about it:
+// the rules are read off what the store's hook does with a call.
+import { expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { callKey, changesSomething, filesOf, inCheckout, namesStore, neverAnswered, Nothing, NOTHING_FOR_MS } from "./tacit-tools.ts";
+
+const bash = (command: string) => ({ tool_name: "Bash", tool_input: { command } });
+const edit = (file_path: string) => ({ tool_name: "Edit", tool_input: { file_path } });
+const patch = (...files: string[]) => ({ tool_name: "apply_patch", tool_input: { command: `*** Begin Patch\n${files.map((f) => `*** Update File: ${f}\n@@\n-a\n+b`).join("\n")}\n*** End Patch` } });
+const mcp = (name: string) => ({ tool_name: `mcp__${name}`, tool_input: { path: "x", command: "y" } });
+
+test("a call's key is what the store's answer depends on, and nothing else", () => {
+  const cwd = "/work/repo";
+  // An edit and a write of a file, a command line, an MCP tool's name; the session's folder.
+  expect(callKey(cwd, edit("src/a.ts"))).toBe(callKey(cwd, edit("src/a.ts")));
+  expect(callKey(cwd, edit("src/a.ts"))).not.toBe(callKey(cwd, edit("src/b.ts")));
+  expect(callKey(cwd, edit("src/a.ts"))).not.toBe(callKey("/work/other", edit("src/a.ts")));
+  expect(callKey(cwd, bash("git status"))).not.toBe(callKey(cwd, bash("git status -s")));
+  // A patch by the files it writes, whatever its text; an MCP tool by its name, whatever its input.
+  expect(filesOf(patch("b.ts", "a.ts"))).toEqual(["b.ts", "a.ts"]);
+  expect(callKey(cwd, patch("b.ts", "a.ts"))).toBe(callKey(cwd, patch("a.ts", "b.ts")));
+  expect(callKey(cwd, patch("a.ts"))).not.toBe(callKey(cwd, patch("a.ts", "b.ts")));
+  expect(callKey(cwd, mcp("drive__list"))).toBe(callKey(cwd, { tool_name: "mcp__drive__list", tool_input: { other: 1 } }));
+  expect(callKey(cwd, mcp("drive__list"))).not.toBe(callKey(cwd, mcp("drive__read")));
+});
+
+test("calls the store records as steps are always made; edits outside every checkout and empty commands never are", () => {
+  // The store's own tools and its command line: it logs them, whatever it answers.
+  for (const c of [mcp("tacit__tacit_fact"), mcp("tacit__tacit_search"), bash("tacit fact some-name"), bash("cd /x && ~/.local/bin/tacit tree --depth 2"), bash("FOO=1 tacit search words")]) {
+    expect(namesStore(c)).toBe(true);
+    expect(neverAnswered("/nowhere", c)).toBe(false);
+  }
+  for (const c of [mcp("drive__list"), bash("git status"), bash("cat tacit-standin.sh"), edit("a.ts")]) expect(namesStore(c)).toBe(false);
+
+  const root = mkdtempSync(join(tmpdir(), "keel-checkout-"));
+  try {
+    const repo = join(root, "repo");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    mkdirSync(join(repo, "src"), { recursive: true });
+    mkdirSync(join(root, "scratch"), { recursive: true });
+    writeFileSync(join(repo, "src/a.ts"), "x");
+    // A file under a folder with a .git entry is in a checkout, a new file in a new folder of it too.
+    expect(inCheckout(join(repo, "src/a.ts"))).toBe(true);
+    expect(inCheckout(join(repo, "new/dir/b.ts"))).toBe(true);
+    expect(neverAnswered(repo, edit("src/a.ts"))).toBe(false);
+    expect(neverAnswered(join(root, "scratch"), edit(join(repo, "src/a.ts")))).toBe(false);
+    expect(neverAnswered(repo, patch("src/a.ts", join(root, "scratch/n.txt")))).toBe(false);
+    // The scratch folder is outside every checkout unless the temp folder itself sits in one.
+    if (!inCheckout(join(root, "scratch/n.txt"))) {
+      expect(neverAnswered(repo, edit(join(root, "scratch/n.txt")))).toBe(true);
+      expect(neverAnswered(join(root, "scratch"), { tool_name: "Write", tool_input: { file_path: "n.txt" } })).toBe(true);
+      expect(neverAnswered(join(root, "scratch"), patch("n.txt", "m.txt"))).toBe(true);
+    }
+    // A shell command is answered anywhere (areas are not tied to a repository), unless it is empty.
+    expect(neverAnswered(join(root, "scratch"), bash("make deploy"))).toBe(false);
+    expect(neverAnswered(repo, bash("   "))).toBe(true);
+    expect(neverAnswered(join(root, "scratch"), mcp("drive__list"))).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a tool's result is held for the answer only when the call changes something", () => {
+  for (const c of ["cat a.ts", "git status", "git log --oneline | head -5", "cd src && grep -rn foo . | wc -l", "ls -la; rg -n bar src"]) expect([c, changesSomething(bash(c))]).toEqual([c, false]);
+  for (const c of ["touch a", "git commit -m x", "cat a > b", "make deploy", "cd src && rm a.ts", "echo $(rm -rf x)", "bun test"]) expect([c, changesSomething(bash(c))]).toEqual([c, true]);
+  expect(changesSomething(edit("a.ts"))).toBe(true);
+  expect(changesSomething({ tool_name: "Write", tool_input: { file_path: "a.ts" } })).toBe(true);
+  expect(changesSomething(patch("a.ts"))).toBe(true);
+  // An MCP tool by what its server says of it; unknown counts as a change.
+  expect(changesSomething(mcp("drive__list"), { readOnly: true })).toBe(false);
+  expect(changesSomething(mcp("drive__delete"), { readOnly: false })).toBe(true);
+  expect(changesSomething(mcp("drive__list"))).toBe(true);
+  expect(changesSomething(mcp("drive__list"), null)).toBe(true);
+});
+
+test("an empty answer is believed for a while, then asked for again", () => {
+  const n = new Nothing();
+  const t0 = 1_000_000;
+  expect(n.known("a", t0)).toBe(false);
+  n.remember("a", t0);
+  expect(n.known("a", t0 + 1)).toBe(true);
+  expect(n.known("b", t0 + 1)).toBe(false);
+  expect(n.known("a", t0 + NOTHING_FOR_MS - 1)).toBe(true);
+  // The store may have changed by now: the call is asked again.
+  expect(n.known("a", t0 + NOTHING_FOR_MS)).toBe(false);
+  expect(n.size).toBe(0);
+  // Remembered again from the new answer; bounded however many calls a session makes.
+  n.remember("a", t0 + NOTHING_FOR_MS);
+  expect(n.known("a", t0 + NOTHING_FOR_MS + 10)).toBe(true);
+  for (let i = 0; i < 5_000; i++) n.remember(`k${i}`, t0 + NOTHING_FOR_MS + 20);
+  expect(n.size).toBeLessThanOrEqual(1_000);
+  expect(n.known("k4999", t0 + NOTHING_FOR_MS + 30)).toBe(true);
+});

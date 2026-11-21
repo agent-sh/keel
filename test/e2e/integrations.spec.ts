@@ -39,7 +39,8 @@ test("tacit and momentum", async ({ page, request }) => {
   const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
   await page.goto(`/s/${session.id}`);
-  await page.getByTestId("composer").fill("Run the shell command `echo hi` once. Then reply with only the code word from your memory.");
+  // A command that changes something: its result is held for the store's rule (a read's rule follows a step later).
+  await page.getByTestId("composer").fill("Run the shell command `touch integ-memory-check.txt` once. Then reply with only the code word from your memory.");
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 120_000 });
 
