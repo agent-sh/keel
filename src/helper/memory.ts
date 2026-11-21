@@ -54,7 +54,8 @@ export class Memory {
 
   // One record checked and made ready, not written: a key (given, or made
   // from its kind and first words), one short value, no secret.
-  private prepare(p: PutInput, source: MemorySource, prev?: MemoryRecord): MemoryRecord {
+  // `taken`: the keys a made key must avoid (the stored ones, and in a batch the ones it already uses).
+  private prepare(p: PutInput, source: MemorySource, prev?: MemoryRecord, taken: (k: string) => boolean = (k) => this.index.byKey.has(k)): MemoryRecord {
     const value = String(p.value ?? p.text ?? prev?.value ?? "").replace(/\s+/g, " ").trim();
     if (!value) throw bad("value is the fact to keep");
     if (value.length > VALUE_CHARS) throw bad(`a record's value is at most ${VALUE_CHARS} characters: keep one fact per record and split the rest under more keys`);
@@ -65,7 +66,7 @@ export class Memory {
     if (detect([value, ...aliases].join("\n")).length) throw bad("that looks like a secret (a key, token or password): it is not kept");
     let key = p.key === undefined || p.key === null || p.key === "" ? "" : normKey(p.key);
     if (p.key && !key) throw bad(`key "${String(p.key).slice(0, 40)}" has no letters or digits`);
-    if (!key) key = prev?.key ?? keyFor(kind, value, (k) => this.index.byKey.has(k));
+    if (!key) key = prev?.key ?? keyFor(kind, value, taken);
     const now = Date.now();
     const old = this.index.byKey.get(key);
     return { key, value, kind, aliases, topics, source: source === "owner" ? "owner" : old?.source === "owner" && source === "helper" ? "owner" : source, ts: old?.ts ?? now, updated: now, used: old?.used ?? 0 };
@@ -74,13 +75,26 @@ export class Memory {
   // Records written by key (a new key adds, a known one is replaced; a field
   // left out keeps its value). All or none: one bad record writes nothing.
   // An import (`lenient`) skips the records that fail instead, and counts them.
+  // A key named twice in one list is one record: the later entry replaces the
+  // earlier. A record without a key gets one made from its words that nothing
+  // stored and nothing else in the list uses, so two such records whose first
+  // words are the same are both kept; the same fact given twice is kept once.
   put(list: PutInput[], source: MemorySource, lenient = false): MemoryRecord[] & { skipped?: number } {
     if (!list.length) throw bad("records is a list of { key, value } to keep");
     const ready: MemoryRecord[] & { skipped?: number } = [];
     let skipped = 0;
+    const keyless = (p: PutInput) => p.key === undefined || p.key === null || p.key === "";
+    const reserved = new Set(list.filter((p) => !keyless(p)).map((p) => normKey(p.key!)).filter(Boolean));
+    const made = new Map<string, string>();
     for (const p of list) {
       try {
-        const r = this.prepare(p, source, p.key ? this.index.get(String(p.key)) : undefined);
+        let r = this.prepare(p, source, p.key ? this.index.get(String(p.key)) : undefined, (k) => this.index.byKey.has(k) || reserved.has(k));
+        if (keyless(p)) {
+          const fact = `${r.kind}\n${r.value}`;
+          const again = made.get(fact);
+          if (again) r = { ...r, key: again };
+          else { made.set(fact, r.key); reserved.add(r.key); }
+        }
         const at = ready.findIndex((x) => x.key === r.key);
         if (at >= 0) ready[at] = r; else ready.push(r);
       } catch (e) {

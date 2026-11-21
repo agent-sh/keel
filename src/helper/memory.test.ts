@@ -21,3 +21,30 @@ test("the old remembered list becomes keyed records, and its table goes", () => 
   // A second start finds the records and nothing to move.
   expect(new Memory(db).index.size).toBe(3);
 });
+
+// Records written without a key get one made from their first words. Two in
+// one list whose first words are the same are two records, not one.
+test("keys made within one list do not collide; a key named twice is still one record", () => {
+  const keys = (m: Memory) => m.list().map((r) => [r.key, r.value]).sort();
+  const a = new Memory(new Database(":memory:"));
+  const out = a.put([
+    { kind: "preference", value: "Keep replies short, no hedging" },
+    { kind: "preference", value: "Keep replies short: hedging is fine in drafts" },
+    { kind: "preference", value: "Keep replies short, no hedging" }, // the same fact again: kept once
+  ], "helper");
+  expect(out.map((r) => r.key)).toEqual(["preference.keep-replies-short-hedging", "preference.keep-replies-short-hedging-2"]);
+  expect(keys(a)).toEqual([
+    ["preference.keep-replies-short-hedging", "Keep replies short, no hedging"],
+    ["preference.keep-replies-short-hedging-2", "Keep replies short: hedging is fine in drafts"],
+  ]);
+  // The same list again makes no third record of the first fact's key: stored keys are avoided as before.
+  expect(a.put([{ kind: "preference", value: "Keep replies short, hedging never" }], "helper")[0]!.key).toBe("preference.keep-replies-short-hedging-3");
+  // A made key also keeps clear of a key the list names later.
+  const b = new Memory(new Database(":memory:"));
+  b.put([{ kind: "preference", value: "Keep replies short, no hedging" }, { key: "preference.keep-replies-short-hedging", value: "named" }], "helper");
+  expect(keys(b)).toEqual([["preference.keep-replies-short-hedging", "named"], ["preference.keep-replies-short-hedging-2", "Keep replies short, no hedging"]]);
+  // A key named twice is one record, the later entry's.
+  const c = new Memory(new Database(":memory:"));
+  expect(c.put([{ key: "Pref.Tone", value: "plain" }, { key: "pref.tone", value: "plain and short" }], "helper")).toHaveLength(1);
+  expect(keys(c)).toEqual([["pref.tone", "plain and short"]]);
+});
