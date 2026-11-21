@@ -2,7 +2,7 @@
 // lines (Claude Code's shapes where Keel says the same thing). Following a
 // session takes its events from the WebSocket, in line with the streamed
 // text, and reads them by seq (ordered, never lost) when the socket is not
-// there or skipped one.
+// there or skipped one. A reply's event completes what streamed of it.
 import type { StoredEvent } from "../core/types.ts";
 import { authHeaders, clean, type Client } from "./client.ts";
 
@@ -80,9 +80,20 @@ export function streamLine(e: StoredEvent): Record<string, unknown> {
 
 export type Delta = { kind: "text" | "thinking" | "tool_input"; text: string };
 
+// A stored reply as it streams: what each of its blocks adds, in order.
+const streamOf = (e: StoredEvent): Delta[] => (e.data.blocks ?? []).flatMap((b: any): Delta[] =>
+  b.type === "text" ? [{ kind: "text", text: b.text ?? "" }]
+    : b.type === "thinking" ? [{ kind: "thinking", text: b.thinking ?? "" }]
+    : b.type === "tool_use" ? [{ kind: "tool_input", text: JSON.stringify(b.input ?? {}) }] : []);
+
+const nothing = (): Record<Delta["kind"], string> => ({ text: "", thinking: "", tool_input: "" });
+
 // Reads a session's events after `seq`, in order and each once. Over the
 // socket they come as they are stored, in line with the text streamed between
-// them; without it, or past a gap, they are read by seq.
+// them; without it, or past a gap, they are read by seq. The text passed on
+// before a reply's event adds up to the reply: what did not stream here (the
+// reply ended before the socket was there, or is read by seq) is passed on
+// in one piece just before the event.
 export class Follower {
   private ws?: WebSocket;
   private wake?: () => void;
@@ -91,12 +102,38 @@ export class Follower {
   // after that event: when a read by seq is ahead of the socket, the text
   // still arriving is of a reply already handed over whole, or of a turn before it.
   private wsSeq = -1;
+  // What was passed on of the reply after `seq`.
+  private passed = nothing();
   constructor(private c: Client, private sessionId: string, public seq: number, private onEvent: (e: StoredEvent) => void, private onDelta?: (d: Delta) => void) {}
 
   private take(e: StoredEvent) {
     if (e.seq <= this.seq) return;
     this.seq = e.seq;
+    if (e.kind === "assistant") this.complete(e);
+    if (e.kind === "assistant" || e.kind === "turn_end") this.passed = nothing();
     this.onEvent(e);
+  }
+
+  private pass(d: Delta) {
+    if (!this.onDelta) return;
+    this.passed[d.kind] += d.text;
+    this.onDelta(d);
+  }
+
+  // The rest of a reply, after what streamed of it. Text that streamed as
+  // something else than the reply holds (a tool's input as the provider wrote
+  // it) is left as it streamed.
+  private complete(e: StoredEvent) {
+    if (!this.onDelta) return;
+    const parts = streamOf(e);
+    const skip: Partial<Record<Delta["kind"], number>> = {};
+    for (const p of parts) {
+      const had = this.passed[p.kind];
+      skip[p.kind] ??= parts.filter((x) => x.kind === p.kind).map((x) => x.text).join("").startsWith(had) ? had.length : Infinity;
+      const rest = p.text.slice(skip[p.kind]);
+      skip[p.kind] = Math.max(0, skip[p.kind]! - p.text.length);
+      if (rest) this.onDelta({ kind: p.kind, text: rest });
+    }
   }
 
   connect(): Promise<void> {
@@ -122,9 +159,11 @@ export class Follower {
             if (f.event.seq === this.seq + 1) this.take(f.event);
             this.wake?.();
           } else if (f.t === "delta" && here) {
-            if (this.wsSeq === this.seq) this.onDelta?.({ kind: f.kind, text: f.text });
+            if (this.wsSeq === this.seq) this.pass({ kind: f.kind, text: f.text });
           } else if (f.t === "draft" && here) {
-            if (this.wsSeq === this.seq) for (const b of Object.entries(f.blocks ?? {}).sort((x, y) => Number(x[0]) - Number(y[0])).map((x) => x[1] as Delta)) this.onDelta?.({ kind: b.kind, text: b.text });
+            if (this.wsSeq === this.seq) for (const b of Object.entries(f.blocks ?? {}).sort((x, y) => Number(x[0]) - Number(y[0])).map((x) => x[1] as Delta)) this.pass({ kind: b.kind, text: b.text });
+          } else if (f.t === "status" && here && f.status?.kind === "retry") {
+            this.passed = nothing(); // the retried attempt streams its reply again
           } else if ((f.t === "session" && here) || f.t === "queue") this.wake?.();
           else if (f.t === "feature" && (f.name === "approval" || f.name === "question")) this.wake?.();
         };

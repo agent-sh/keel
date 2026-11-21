@@ -203,8 +203,11 @@ describe("keel run with no daemon", () => {
     const ls = lines(stream.out);
     expect(ls[0]).toMatchObject({ type: "system", subtype: "init", model: "scripted:stand-in" });
     expect(ls.find((l) => l.type === "user").message.content[0].text).toContain("<stdin>\nthe piped context\n</stdin>");
-    expect(ls.some((l) => l.type === "stream_event" && l.event.delta.type === "text_delta")).toBe(true);
-    expect(ls.some((l) => l.type === "assistant")).toBe(true);
+    // The streamed text is the reply, once and before its message, also when
+    // the turn ended before this command could listen to it.
+    const streamed = ls.filter((l) => l.type === "stream_event" && l.event.delta.type === "text_delta");
+    expect(streamed.map((l) => l.event.delta.text).join("")).toBe("Scripted reply.");
+    expect(ls.indexOf(streamed.at(-1))).toBeLessThan(ls.findIndex((l) => l.type === "assistant"));
     expect(ls.at(-1)).toMatchObject({ type: "result", subtype: "success" });
 
     // The workbench's session continues later: --continue picks the newest of the folder.
@@ -508,7 +511,7 @@ describe("a prompt next to other work in its session", () => {
       "socket send": [0, `${GROW}\n`, 1, true],
       "socket run": stream(GROW),
       "polling send": [0, `${GROW}\n`, 1, true],
-      "polling run": stream(""),
+      "polling run": stream(GROW), // read by seq, the reply comes in one piece before its message
       direct: [0, true],
     });
   }, 90_000);
