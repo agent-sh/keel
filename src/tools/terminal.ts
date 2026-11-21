@@ -7,12 +7,14 @@ import { join } from "node:path";
 import { conceal, concealDeep } from "../core/conceal.ts";
 import { SessionMap } from "../core/session-map.ts";
 import { findJob, jobsOf, lastLineOf, type Meta, running, startJob, stopJob, toolEnv, waitJob } from "./jobs.ts";
+import { removedNote } from "./spill.ts";
 
 export type TermJob = {
   id: string; call_id?: string; by?: "owner"; command: string; description?: string; cwd: string;
   started: number; ended?: number; exit_code?: number | null; signal?: string | null; stop_reason?: string;
   background: boolean; running: boolean; pty: boolean; bytes: number; last?: string; tail: string; tail_from: number;
   log_missing?: boolean; // the job is known but its output log is gone
+  log_removed?: boolean; // gone because the storage retention removed it
 };
 
 // What a list carries of each output: the end, where a run says how it went.
@@ -82,7 +84,7 @@ export function listJobs(spillRoot: string, sessionId: string): TermJob[] {
   seen.set(sessionId, c);
   // Every job without its output first: the records the jobs left, then the
   // ones in memory (a job of this daemon is in both; memory is the newer).
-  type Bare = Omit<TermJob, "bytes" | "last" | "tail" | "tail_from" | "log_missing"> & { log: string; open: boolean };
+  type Bare = Omit<TermJob, "bytes" | "last" | "tail" | "tail_from" | "log_missing" | "log_removed"> & { log: string; open: boolean };
   const out = new Map<string, Bare>();
   const dir = jobsDir(spillRoot, sessionId);
   let files: string[] = [];
@@ -119,7 +121,7 @@ export function listJobs(spillRoot: string, sessionId: string): TermJob[] {
   for (const log of c.exits.keys()) if (!logs.has(log)) c.exits.delete(log);
   const jobs = listed.map(({ log, open, ...j }): TermJob => {
     const t = tailOf(c, log);
-    return { ...j, exit_code: open ? exitOf(c, log) : j.exit_code, bytes: t?.size ?? 0, last: t?.last, tail: t?.text ?? "", tail_from: t?.from ?? 0, log_missing: t ? undefined : true };
+    return { ...j, exit_code: open ? exitOf(c, log) : j.exit_code, bytes: t?.size ?? 0, last: t?.last, tail: t?.text ?? "", tail_from: t?.from ?? 0, log_missing: t ? undefined : true, log_removed: !t && removedNote(log, join(spillRoot, sessionId)) ? true : undefined };
   });
   // The whole record as the routes send it: secrets as placeholders.
   return concealDeep(jobs, sessionId);

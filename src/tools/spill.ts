@@ -1,6 +1,6 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { conceal } from "../core/conceal.ts";
 
 // Token efficiency: a tool output past the cap goes to a file; the model gets
@@ -53,4 +53,33 @@ export async function capResult<B extends { type: string }>(content: string | B[
   if (typeof content === "string") return hold(content);
   if (!content.some((b) => b.type === "text" && ((b as unknown as { text: string }).text?.length ?? 0) > cap)) return content;
   return Promise.all(content.map(async (b) => (b.type === "text" ? { ...b, text: await hold((b as unknown as { text: string }).text ?? "") } : b)));
+}
+
+// --- Spilled output the storage retention removed (src/admin/retention.ts) ---
+// The retention writes down what it removed in the session's spill folder:
+// a result in the transcript still names the file, and whoever reads it
+// later (the model, the transcript row, the Terminal panel) is told what
+// became of it, not that there never was such a file.
+export const REMOVED_NOTE = ".retention.json";
+type RemovedNote = { removed_ms: number; kept_days: number; files: number; bytes: number; names: string[] };
+
+// `names`: paths inside `dir` (the session's spill folder) that were removed now.
+export function noteRemoved(dir: string, names: string[], bytes: number, keptDays: number, now = Date.now()) {
+  let was: RemovedNote | undefined;
+  try { was = JSON.parse(readFileSync(join(dir, REMOVED_NOTE), "utf8")); } catch {} // the first removal here
+  mkdirSync(dir, { recursive: true });
+  const note: RemovedNote = { removed_ms: now, kept_days: keptDays, files: (was?.files ?? 0) + names.length, bytes: (was?.bytes ?? 0) + bytes, names: [...new Set([...(was?.names ?? []), ...names])] };
+  writeFileSync(join(dir, REMOVED_NOTE), JSON.stringify(note), { mode: 0o600 });
+}
+
+// What to say of a path under a session's spill folder that is not there
+// because the retention removed it; undefined for any other path.
+export function removedNote(path: string, spillDir: string): string | undefined {
+  if (!spillDir) return;
+  const rel = relative(spillDir, path);
+  if (!rel || rel.startsWith("..") || isAbsolute(rel) || existsSync(path)) return;
+  let note: RemovedNote;
+  try { note = JSON.parse(readFileSync(join(spillDir, REMOVED_NOTE), "utf8")); } catch { return; }
+  if (!Array.isArray(note.names) || !note.names.includes(rel)) return;
+  return `${path} was removed by the storage retention on ${new Date(note.removed_ms).toISOString().slice(0, 10)}: spilled output is kept ${note.kept_days} days after its session was last used (Settings, Storage). Run the command again to get its output.`;
 }

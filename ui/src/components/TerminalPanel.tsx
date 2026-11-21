@@ -18,6 +18,7 @@ type Entry = {
   machine?: string; started: number; ended?: number; state: "running" | "background" | "ok" | "failed" | "stopped";
   exit_code?: number | null; signal?: string | null; reason?: string; job_id?: string; bytes?: number; output: string; output_from?: number; last?: string;
   log_missing?: boolean;
+  log_removed?: boolean;
 };
 type Filter = "all" | "running" | "failed";
 
@@ -115,7 +116,7 @@ function Output({ session, e }: { session: string; e: Entry }) {
           {"\n"}
         </span>
       )}
-      {text ? <Ansi text={text} /> : <span className="text-faint" data-testid="term-no-output">{e.log_missing ? "Output log unavailable." : live(e) ? "No output yet." : "No output."}</span>}
+      {text ? <Ansi text={text} /> : <span className="text-faint" data-testid="term-no-output">{e.log_removed ? "The output was removed by the storage retention. Run the command again to get it." : e.log_missing ? "Output log unavailable." : live(e) ? "No output yet." : "No output."}</span>}
     </pre>
   );
 }

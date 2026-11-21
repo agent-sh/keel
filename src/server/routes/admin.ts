@@ -8,8 +8,10 @@
 // POST  /api/settings/reset                moves an unreadable settings.json aside -> { moved_to, settings }
 // GET   /api/storage?refresh=1             sizes by kind and by session
 // POST  /api/storage/cleanup               { older_than_days, sessions? } | { leftovers: true }
-// GET   /api/storage/retention             { settings, due }: spilled output and usage records past the owner's retention
-// POST  /api/storage/retention             { spill_before_ms?, usage_before_ms? } from a listing -> { removed, due }
+// GET   /api/storage/retention             { settings, due, proposed? }: spilled output and usage records past the owner's
+//                                          retention; while none is set, what the proposed one would list
+// POST  /api/storage/retention             { spill_before_ms?, usage_before_ms?, sessions? } from a listing -> { removed, due }
+// POST  /api/storage/retention/removed     { session_id, paths } -> { removed }: which of them the retention removed
 // GET   /api/backups                       { backups }
 // POST  /api/backups                       a backup now -> { backup }
 // GET   /api/daemon                        status: pid, uptime, running turns, draining, restart_failed
@@ -26,7 +28,7 @@ import { restartNeedsEye, restartSummary, restartTurnLine } from "../../admin/li
 import * as activity from "../../automation/activity.ts";
 import { loadSettings, onSettings, patchSettings, resetSettings, settings, settingsUnreadable } from "../../admin/settings.ts";
 import { Storage } from "../../admin/storage.ts";
-import { Retention } from "../../admin/retention.ts";
+import { PROPOSED, Retention } from "../../admin/retention.ts";
 import { configDir } from "../../providers/config.ts";
 import type { RouteModule } from "../app.ts";
 import { resources } from "./resources.ts";
@@ -173,14 +175,30 @@ export const adminRoutes: RouteModule = (deps) => {
     // to the instants a listing named (POST): never anything younger than the
     // settings allow.
     "/api/storage/retention": {
-      GET: async () => json({ settings: settings().retention, due: await retention.due() }),
+      GET: async () => {
+        const now = settings().retention;
+        // Nothing set yet: nothing is removed, and the page shows what the proposed retention would list.
+        const unset = !now.spill_days && !now.usage_days;
+        return json({ settings: now, due: await retention.due(), ...(unset ? { proposed: { ...PROPOSED, due: await retention.due(Date.now(), PROPOSED) } } : {}) });
+      },
       POST: async (req: Request) => {
         const b = (await body(req)) ?? {};
         const ms = (v: unknown) => v === undefined || v === null || (typeof v === "number" && Number.isFinite(v));
-        if (typeof b !== "object" || !ms(b.spill_before_ms) || !ms(b.usage_before_ms)) return json({ error: "the body is { spill_before_ms?, usage_before_ms? } from the listing" }, 400);
-        const removed = await retention.remove({ spill_before_ms: b.spill_before_ms, usage_before_ms: b.usage_before_ms });
+        if (typeof b !== "object" || !ms(b.spill_before_ms) || !ms(b.usage_before_ms) || (b.sessions !== undefined && (!Array.isArray(b.sessions) || b.sessions.some((x: unknown) => typeof x !== "string")))) {
+          return json({ error: "the body is { spill_before_ms?, usage_before_ms?, sessions? } from the listing" }, 400);
+        }
+        // Spilled output goes only from the sessions the listing named.
+        if (typeof b.spill_before_ms === "number" && b.sessions === undefined) return json({ error: "sessions is the list of session ids the listing named (due.spill.session_ids)" }, 400);
+        const removed = await retention.remove({ spill_before_ms: b.spill_before_ms, usage_before_ms: b.usage_before_ms, sessions: b.sessions });
         storage.stale();
         return json({ removed, due: await retention.due() });
+      },
+    },
+    "/api/storage/retention/removed": {
+      POST: async (req: Request) => {
+        const b = (await body(req)) ?? {};
+        if (typeof b.session_id !== "string" || !/^[\w-]+$/.test(b.session_id) || !Array.isArray(b.paths)) return json({ error: "the body is { session_id, paths }" }, 400);
+        return json({ removed: retention.removedOf(b.session_id, b.paths.slice(0, 50)) });
       },
     },
 

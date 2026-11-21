@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { setUI, useUI } from "../lib/ui.ts";
 import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { diffLines, splitLines } from "../../../src/tools/diff.ts";
-import { actions, failed, useStore } from "../lib/store.ts";
+import { actions, api, failed, useStore } from "../lib/store.ts";
 import { stopKind } from "../../../src/core/stops.ts";
 import { allowRetry, refusedBy, useBlocked } from "../lib/blocked.ts";
 import {
@@ -86,10 +86,28 @@ export function ToolCall({ use, result, live, sessionId, cwd }: Props) {
   return <GenericCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} kind={kind} input={input} />;
 }
 
+// A result that was cut names the file with all of it ("saved to <path>").
+// Whether the storage retention has removed that file since: asked once per
+// result that names one, so the row says what became of it.
+const SAVED = /saved to:? (\/\S+?\.(?:txt|log|md))/g;
+function useSpillRemoved(sessionId: string | undefined, out: string): boolean {
+  const [gone, setGone] = useState(false);
+  const paths = useMemo(() => [...new Set([...out.matchAll(SAVED)].map((m) => m[1]!))], [out]);
+  useEffect(() => {
+    if (!sessionId || !paths.length) return setGone(false);
+    let live = true;
+    api<{ removed: string[] }>("/api/storage/retention/removed", { method: "POST", body: JSON.stringify({ session_id: sessionId, paths }) })
+      .then((r) => { if (live) setGone(r.removed.length > 0); }, () => {});
+    return () => { live = false; };
+  }, [sessionId, paths]);
+  return gone;
+}
+
 function GenericCall({ use, result, live, sessionId, cwd, kind, input }: Props & { kind: ToolKind; input: any }) {
   const Icon = ICONS[kind];
   const { text: out, nested, memory } = useMemo(() => { const m = splitMemory(resultText(result)); return { ...splitNested(m.text), memory: m.memory }; }, [result]);
   const images = resultImages(result);
+  const spillGone = useSpillRemoved(sessionId, out);
   const refused = useBlocked(sessionId).find((b) => b.calls?.includes(use.id));
   // A call the owner's stop or a daemon restart ended did not fail: it reads "stopped" or "cut".
   const ended = result?.is_error ? stopKind(result.content) : undefined;
@@ -162,6 +180,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input }: Props &
             )}>{out}</pre>
           </Copyable>
         )}
+        {spillGone && <p className="mx-2.5 mb-2.5 text-caption text-faint" data-testid="spill-removed">The full output this result names was removed by the storage retention. Run the command again to get it.</p>}
         {nested.map((n) => (
           <details key={n.path} className="mx-2.5 mb-2.5 rounded-md border border-line bg-sunken" data-testid="nested-instructions">
             <summary className="cursor-pointer px-2.5 py-1.5 text-caption text-muted">Instructions loaded: <span className="font-mono">{shortPath(n.path, cwd)}</span></summary>

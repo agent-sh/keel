@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { HAIKU, shoot } from "./shots.ts";
@@ -71,46 +71,84 @@ test("storage, cleanup and backups", async ({ page, request }) => {
   await shoot(page, "storage-03b-backup-unreadable");
   rmSync(damaged.path, { recursive: true, force: true });
 
-  // Spilled output and usage records past the owner's retention are listed
-  // before any of it goes: an output file nothing wrote to for forty days, and
-  // three usage records from over a year ago. A young file stays.
-  const kept = await mk("Has old output");
+  // Retention. Nothing is removed until the owner sets one: the page proposes
+  // 30 and 365 days and says what they would list. Accepted, the listing is
+  // by session: one last used forty days ago, with a search result too long
+  // to keep whole (its full output is a spilled file), a command's log, and a
+  // file written today, which stays. Three usage records are over a year old.
+  const kept = (await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Has old output" } })).json()).session;
+  await request.put(`/api/sessions/${kept.id}/permissions`, { data: { mode: "full-auto" } });
+  const big = join(kept.workspace, `retention-${Date.now()}`);
+  mkdirSync(big, { recursive: true });
+  writeFileSync(join(big, "big.ts"), Array.from({ length: 4000 }, (_, i) => `export function parse(input: string): string[] { return input.split("\\n").filter(Boolean); } // row ${i}`).join("\n") + "\n");
+  const ran = async (calls: unknown[], n: number) => {
+    await request.post(`/api/sessions/${kept.id}/messages`, { data: { text: `script:calls ${JSON.stringify(calls)}` } });
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${kept.id}`)).json()).events.filter((e: any) => e.kind === "turn_end").length, { timeout: 30_000 }).toBe(n);
+    return (await (await request.get(`/api/sessions/${kept.id}`)).json()).events.filter((e: any) => e.kind === "tool_result").map((e: any) => e.data.results[0].content as string);
+  };
+  const results = await ran([{ name: "Grep", input: { pattern: "parse", path: big, output_mode: "content", head_limit: 5000 } }, { name: "Bash", input: { command: "echo from the command", run_in_background: true } }], 1);
+  const oldOut = /saved to (\S+) \.\.\.\]/.exec(results[0]!)![1]!;
   const spill = join(state_dir, "spill", kept.id);
-  mkdirSync(spill, { recursive: true });
-  const oldOut = join(spill, "1-bash-old.txt"), newOut = join(spill, "2-bash-new.txt");
-  writeFileSync(oldOut, "x".repeat(50_000));
+  const jobLog = join(spill, "jobs", readdirSync(join(spill, "jobs")).find((f) => f.endsWith(".log"))!);
+  await expect.poll(() => readFileSync(jobLog, "utf8")).toContain("from the command");
+  const newOut = join(spill, "2-bash-new.txt");
   writeFileSync(newOut, "y".repeat(100));
-  utimesSync(oldOut, past / 1000, past / 1000);
+  for (const f of [oldOut, jobLog]) utimesSync(f, past / 1000, past / 1000);
   const ledger = new DatabaseSync(join(state_dir, "keel.db"));
   ledger.exec("PRAGMA busy_timeout = 5000");
+  ledger.prepare("UPDATE sessions SET updated = ? WHERE id = ?").run(past, kept.id);
   for (let i = 0; i < 3; i++) ledger.prepare("INSERT INTO telemetry_calls (session_id, ts, model, outcome) VALUES (?, ?, 'p:m', 'ok')").run(kept.id, Date.now() - 400 * 86_400_000 - i);
   ledger.close();
+  expect((await (await request.get("/api/settings")).json()).settings.retention).toEqual({ spill_days: 0, usage_days: 0 });
   await page.reload();
+  const offer = panel.getByTestId("retention-proposed");
+  await expect(offer).toContainText("Nothing is removed until you set these.");
+  await expect(offer).toContainText("Past them now: 2 files of spilled output");
+  await expect(offer).toContainText("in 1 session, 3 usage records");
+  await offer.scrollIntoViewIfNeeded();
+  await shoot(page, "storage-03c-retention-proposed");
+  expect([existsSync(oldOut), existsSync(jobLog)]).toEqual([true, true]);
+  await panel.getByTestId("retention-accept").click();
+  await expect.poll(async () => (await (await request.get("/api/settings")).json()).settings.retention).toEqual({ spill_days: 30, usage_days: 365 });
   const dueNow = panel.getByTestId("retention-due");
-  await expect(dueNow).toContainText("1 file of spilled output");
+  await expect(dueNow).toContainText("Past these now: 2 files of spilled output");
   await expect(dueNow).toContainText("3 usage records");
   await expect(dueNow).toContainText("The daily cleanup next runs");
-  await dueNow.scrollIntoViewIfNeeded();
-  await shoot(page, "storage-03c-retention-due");
   // A retention is saved as typed, and empty is never.
-  await panel.getByTestId("retention-usage").fill("300");
-  await panel.getByTestId("retention-usage").press("Enter");
-  await expect.poll(async () => (await (await request.get("/api/settings")).json()).settings.retention.usage_days).toBe(300);
   await panel.getByTestId("retention-usage").fill("");
   await panel.getByTestId("retention-usage").press("Enter");
   await expect.poll(async () => (await (await request.get("/api/settings")).json()).settings.retention.usage_days).toBe(0);
   await expect(dueNow).toContainText("0 usage records");
-  await request.patch("/api/settings", { data: { retention: { usage_days: null } } });
-  await page.reload();
+  await panel.getByTestId("retention-usage").fill("365");
+  await panel.getByTestId("retention-usage").press("Enter");
   await expect(dueNow).toContainText("3 usage records");
-  await panel.getByTestId("retention-remove").click();
-  await expect(page.getByTestId("confirm")).toContainText("1 file of spilled output");
-  await page.getByTestId("confirm").getByRole("button", { name: "Remove" }).click();
-  await expect(panel.getByTestId("retention-done")).toContainText("Removed 1 file");
-  await expect(dueNow).toContainText("Nothing is past these now.");
-  expect([existsSync(oldOut), existsSync(newOut)]).toEqual([false, true]);
   await dueNow.scrollIntoViewIfNeeded();
-  await shoot(page, "storage-03d-retention-removed");
+  await shoot(page, "storage-03d-retention-due");
+  await panel.getByTestId("retention-remove").click();
+  await expect(page.getByTestId("confirm")).toContainText("2 files of spilled output");
+  await page.getByTestId("confirm").getByRole("button", { name: "Remove" }).click();
+  // The count is what went: three records, though each also changed the usage rollup.
+  await expect(panel.getByTestId("retention-done")).toContainText("Removed 2 files");
+  await expect(panel.getByTestId("retention-done")).toContainText("and 3 usage records");
+  await expect(dueNow).toContainText("Nothing is past these now.");
+  expect([existsSync(oldOut), existsSync(jobLog), existsSync(newOut)]).toEqual([false, false, true]);
+  await dueNow.scrollIntoViewIfNeeded();
+  await shoot(page, "storage-03e-retention-removed");
+  // What became of the removed output is said where it is met again: the
+  // command stays in the Terminal panel's list, the model that reads the
+  // file is told to run the command again, and the transcript row says so.
+  const term = (await (await request.get(`/api/sessions/${kept.id}/terminal`)).json()).commands.find((e: any) => e.job_id);
+  expect(term).toMatchObject({ log_missing: true, log_removed: true });
+  const again = await ran([{ name: "Read", input: { file_path: oldOut } }], 2);
+  expect(again.at(-1)).toContain("was removed by the storage retention");
+  expect(again.at(-1)).toContain("Run the command again to get its output.");
+  await page.goto(`/s/${kept.id}`);
+  const cutRow = page.getByTestId("tool-call").first();
+  await cutRow.getByRole("button").first().click();
+  await expect(cutRow.getByTestId("spill-removed")).toHaveText("The full output this result names was removed by the storage retention. Run the command again to get it.");
+  await shoot(page, "storage-03f-output-removed");
+  await request.patch("/api/settings", { data: { retention: null } });
+  await page.goto("/settings/storage");
 
   // A session that wrote a file has checkpoints: its share is shown and dropping them frees the rewind data.
   const prev = (await (await request.get("/api/permissions/settings")).json()).default_mode;

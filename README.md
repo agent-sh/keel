@@ -331,15 +331,25 @@ carried config refuses such a backup and says why. The state is untouched.
 
 Two things only grow: spilled tool output under `<state>/spill` (long
 results, command logs, fetched pages) and the usage records (one row per
-model call and per tool call). Settings, Storage sets how long each is kept:
-30 days and 365 days by default, 0 or empty for never.
+model call and per tool call). Nothing is removed until a retention is set:
+both are never (0) by default. Settings, Storage proposes 30 days for
+spilled output and 365 days for usage records, says what they would list
+now, and sets them when accepted.
 
-The page lists what is past these now and when the daily cleanup next runs.
-The first cleanup is a day after the daemon first has this, and a changed
-setting waits a day too, so nothing goes before the page could list it.
-"Remove now" asks first and removes exactly what was listed. A session that
-is working, or has a command running, keeps its files. `keel cleanup
---retention` prints the same list; with `--yes` it removes it.
+- Spilled output goes by its session's last use, not the file's age. A
+  session used yesterday keeps every file. A pinned session, one with a
+  running turn and one with a live command keep theirs.
+- Usage records of the running month are never removed, whatever the
+  setting: the monthly spend limit is counted from them.
+- The page lists what is past the settings and when the daily cleanup next
+  runs. A changed setting waits a day before the cleanup acts on it.
+- "Remove now" asks first and removes only the sessions and times that
+  were listed. `keel cleanup --retention` prints the same list; with
+  `--yes` it removes it.
+- A removed output is written down in its session's spill folder. A model
+  that reads the file again is told the retention removed it and to run
+  the command again. The transcript row and the Terminal panel say the
+  same, and a command stays in the Terminal panel's list.
 
 ## Phone
 

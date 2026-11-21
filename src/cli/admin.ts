@@ -156,13 +156,15 @@ const cleanup = wrap("keel cleanup --older-than DAYS [--yes] [--leftovers] [--re
   async (v) => {
     const url = urlOf(v.url);
     if (v.retention) {
-      const { settings: s, due } = await call(url, "/api/storage/retention");
-      const never = (d: number | null) => (d ? `kept ${d} days` : "kept for good");
-      console.log(`spilled output (${never(s.spill_days)}): ${due.spill.files} files, ${mb(due.spill.bytes)}, of ${due.spill.sessions} sessions are past it${due.spill.busy_sessions ? `; ${due.spill.busy_sessions} working sessions are left alone` : ""}`);
-      console.log(`usage records (${never(s.usage_days)}): ${due.usage.calls} model calls and ${due.usage.tools} tool calls are past it`);
+      const { settings: s, due, proposed } = await call(url, "/api/storage/retention");
+      const never = (d: number) => (d ? `kept ${d} days` : "kept for good");
+      const left = [due.spill.busy_sessions ? `${due.spill.busy_sessions} working` : "", due.spill.pinned_sessions ? `${due.spill.pinned_sessions} pinned` : ""].filter(Boolean).join(" and ");
+      console.log(`spilled output (${never(s.spill_days)} after its session was last used): ${due.spill.files} files, ${mb(due.spill.bytes)}, of ${due.spill.sessions} sessions are past it${left ? `; ${left} sessions are left alone` : ""}`);
+      console.log(`usage records (${never(s.usage_days)}; the running month always): ${due.usage.calls} model calls and ${due.usage.tools} tool calls are past it`);
+      if (proposed) console.log(`nothing is removed until a retention is set in Settings, Storage. With ${proposed.spill_days} and ${proposed.usage_days} days, ${proposed.due.spill.files} files (${mb(proposed.due.spill.bytes)}) and ${proposed.due.usage.calls + proposed.due.usage.tools} usage records would be past it now.`);
       const any = due.spill.files + due.usage.calls + due.usage.tools > 0;
       if (!v.yes || !any) return (console.log(any ? `the daily cleanup removes them at ${time(due.next_ms)}; run again with --yes to remove them now` : "nothing to remove"), 0);
-      const r = await call(url, "/api/storage/retention", { method: "POST", body: JSON.stringify({ spill_before_ms: due.spill.before_ms, usage_before_ms: due.usage.before_ms }) });
+      const r = await call(url, "/api/storage/retention", { method: "POST", body: JSON.stringify({ spill_before_ms: due.spill.before_ms, usage_before_ms: due.usage.before_ms, sessions: due.spill.session_ids }) });
       console.log(`removed ${r.removed.spill_files} files (${mb(r.removed.spill_bytes)}), ${r.removed.usage_calls} model calls and ${r.removed.usage_tools} tool calls`);
       return 0;
     }

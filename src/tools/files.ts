@@ -8,6 +8,7 @@ import { claimNote, isClaimFile } from "../core/claim.ts";
 import type { ImageBlock, TextBlock } from "../core/types.ts";
 import { notFound } from "./missing.ts";
 import type { ToolContext } from "./types.ts";
+import { removedNote } from "./spill.ts";
 import { readText } from "../core/proc.ts";
 import { decodeText, textEncoding } from "../core/text.ts";
 
@@ -134,7 +135,8 @@ export async function lineRange(p: string, o: { offset?: number; limit?: number;
 // (ctx.room) instead of one page and the whole-file limit.
 export async function readFile(p: string, ctx: ToolContext, o: { offset?: number; limit?: number; pages?: string; large?: boolean } = {}): Promise<ReadResult> {
   let st;
-  try { st = statSync(p); } catch { return { content: notFound(p, ctx.cwd), error: true }; }
+  // A spilled output the storage retention removed is said to be that, not a file that never was.
+  try { st = statSync(p); } catch { return { content: removedNote(p, ctx.spillDir) ?? notFound(p, ctx.cwd), error: true }; }
   if (st.isDirectory()) return { content: `${p} is a directory. List it with the shell (ls).`, error: true };
   // A count of lines: one below 1 reads nothing, and an empty result with no reason reads as an empty file.
   if (o.limit !== undefined && o.limit < 1) return { content: `limit is the number of lines to read, 1 or more (it was ${o.limit}). Leave it out to read on from the offset.`, error: true };

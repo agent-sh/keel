@@ -23,7 +23,8 @@ type Report = {
 };
 type CheckpointSession = { id: string; title: string; archived: boolean; subagent: boolean; checkpoints: number; checkpoint_bytes: number; updated_ms: number };
 type Backup = { name: string; path: string; created_ms: number | null; reason: string; sessions: number | null; events: number | null; bytes: number | null; unreadable?: string; kind?: "full" | "delta"; base?: string; base_missing?: true };
-type Due = { spill: { before_ms: number | null; files: number; bytes: number; sessions: number; busy_sessions: number }; usage: { before_ms: number | null; calls: number; tools: number }; next_ms: number };
+type Due = { spill: { before_ms: number | null; files: number; bytes: number; sessions: number; session_ids: string[]; busy_sessions: number; pinned_sessions: number }; usage: { before_ms: number | null; calls: number; tools: number }; next_ms: number };
+type Proposed = { spill_days: number; usage_days: number; due: Due };
 type Candidate = { id: string; title: string; updated_ms: number; bytes: number; family_updated_ms: number; subagents: { id: string; title: string }[] };
 
 const count = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
@@ -116,7 +117,8 @@ export function StoragePanel() {
   const [settings, patch, unreadable, resetSettings] = useSettings();
   const [due, setDue] = useState<Due | null>(null);
   const [kept, setKept] = useState<string | null>(null);
-  const loadDue = useCallback(() => api<{ due: Due }>("/api/storage/retention").then((x) => setDue(x.due)).catch(reportError), []);
+  const [proposed, setProposed] = useState<Proposed | null>(null);
+  const loadDue = useCallback(() => api<{ due: Due; proposed?: Proposed }>("/api/storage/retention").then((x) => (setDue(x.due), setProposed(x.proposed ?? null))).catch(reportError), []);
   useEffect(() => { loadDue(); }, [loadDue]);
 
   const load = useCallback((refresh = false) => {
@@ -156,21 +158,22 @@ export function StoragePanel() {
     load(true);
   };
 
-  // What is past the retention goes only after it was listed here, up to the instants of that listing.
+  // What is past the retention goes only after it was listed here: the sessions and the instants of that listing.
   const records = due ? due.usage.calls + due.usage.tools : 0;
   const removeDue = async () => {
     if (!due) return;
     const parts = [
-      due.spill.files ? `${count(due.spill.files, "file")} of spilled output (${fmtBytes(due.spill.bytes)}) last written before ${when(due.spill.before_ms!)}` : "",
+      due.spill.files ? `${count(due.spill.files, "file")} of spilled output (${fmtBytes(due.spill.bytes)}) of ${count(due.spill.sessions, "session")} last used before ${when(due.spill.before_ms!)}` : "",
       records ? `${count(records, "usage record")} from before ${when(due.usage.before_ms!)}` : "",
     ].filter(Boolean);
-    const ok = await confirmAction({ title: "Remove what is past these times?", body: `${parts.join(", and ")}. A session that reads a removed output again is told the file is gone and can run its command again. This cannot be undone.`, action: "Remove", danger: true });
+    const ok = await confirmAction({ title: "Remove what is past these times?", body: `${parts.join(", and ")}. A session that reads a removed output again is told the retention removed it and to run its command again. This cannot be undone.`, action: "Remove", danger: true });
     if (!ok) return;
-    const x = await api<{ removed: { spill_files: number; spill_bytes: number; usage_calls: number; usage_tools: number }; due: Due }>("/api/storage/retention", { method: "POST", body: JSON.stringify({ spill_before_ms: due.spill.before_ms, usage_before_ms: due.usage.before_ms }) });
+    const x = await api<{ removed: { spill_files: number; spill_bytes: number; usage_calls: number; usage_tools: number }; due: Due }>("/api/storage/retention", { method: "POST", body: JSON.stringify({ spill_before_ms: due.spill.before_ms, usage_before_ms: due.usage.before_ms, sessions: due.spill.session_ids }) });
     setDue(x.due);
     setKept(`Removed ${count(x.removed.spill_files, "file")} (${fmtBytes(x.removed.spill_bytes)}) and ${count(x.removed.usage_calls + x.removed.usage_tools, "usage record")}.`);
     load(true);
   };
+  const spared = due ? [due.spill.busy_sessions ? count(due.spill.busy_sessions, "working session") : "", due.spill.pinned_sessions ? count(due.spill.pinned_sessions, "pinned session") : ""].filter(Boolean).join(" and ") : "";
 
   if (!r) return <div className="text-ui text-faint">Measuring.</div>;
   // The rows add up to the total, which is what du says of the folder.
@@ -254,17 +257,28 @@ export function StoragePanel() {
 
       {settings && (
         <Card>
-          <SettingRow label="Keep spilled output" hint="Long tool output, command logs and fetched pages that nothing wrote to for this long are removed. Empty is never.">
+          <SettingRow label="Keep spilled output" hint="Long tool output, command logs and fetched pages go this long after their session was last used. A pinned session and one that is working keep theirs. Empty is never.">
             <DaysField label="Keep spilled output for days" testid="retention-spill" value={settings.retention.spill_days || null} onSave={(v) => patch({ retention: { spill_days: v ?? 0 } }).then(loadDue)} />
           </SettingRow>
-          <SettingRow label="Keep usage records" hint="One record per model call and tool call: cost by day, latency, cache. Each session keeps its own totals. Empty is never.">
+          <SettingRow label="Keep usage records" hint="One record per model call and tool call: cost by day, latency, cache. The running month is always kept, and each session keeps its own totals. Empty is never.">
             <DaysField label="Keep usage records for days" testid="retention-usage" value={settings.retention.usage_days || null} onSave={(v) => patch({ retention: { usage_days: v ?? 0 } }).then(loadDue)} />
           </SettingRow>
-          {due && (
+          {/* Nothing set: nothing is ever removed. The page proposes a retention and says what it would list. */}
+          {proposed && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 py-4">
+              <div className="min-w-[min(100%,16rem)] flex-1 text-ui text-muted" data-testid="retention-proposed">
+                Nothing is removed until you set these. Suggested: spilled output {proposed.spill_days} days after its session was last used, usage records {proposed.usage_days} days.
+                {" "}{proposed.due.spill.files + proposed.due.usage.calls + proposed.due.usage.tools === 0 ? "Nothing would be past them now." : `Past them now: ${count(proposed.due.spill.files, "file")} of spilled output (${fmtBytes(proposed.due.spill.bytes)}) in ${count(proposed.due.spill.sessions, "session")}, ${count(proposed.due.usage.calls + proposed.due.usage.tools, "usage record")}.`}
+                {" "}The first cleanup runs a day after you accept.
+              </div>
+              <button type="button" className={btn} data-testid="retention-accept" onClick={() => patch({ retention: { spill_days: proposed.spill_days, usage_days: proposed.usage_days } }).then(loadDue).catch(reportError)}>Use {proposed.spill_days} and {proposed.usage_days} days</button>
+            </div>
+          )}
+          {due && !proposed && (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2 py-4">
               <div className="min-w-[min(100%,16rem)] flex-1 text-ui text-muted" data-testid="retention-due">
                 {due.spill.files + records === 0 ? "Nothing is past these now." : `Past these now: ${count(due.spill.files, "file")} of spilled output (${fmtBytes(due.spill.bytes)}) in ${count(due.spill.sessions, "session")}, ${count(records, "usage record")}.`}
-                {due.spill.busy_sessions > 0 && ` ${count(due.spill.busy_sessions, "working session")} left alone.`}
+                {spared && ` ${spared} left alone.`}
                 {" "}The daily cleanup next runs {when(due.next_ms)}.
                 {kept && <span className="text-faint" data-testid="retention-done"> {kept}</span>}
               </div>
