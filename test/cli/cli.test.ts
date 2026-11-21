@@ -1,13 +1,16 @@
 // The command line, end to end: the compiled binary, a real daemon it starts
 // (`keel serve`) or runs inside itself (`keel run` with none answering), and
 // the scripted stand-in model, so every path is deterministic and free.
-// Run: bun test ./test/cli   (builds dist-cli/keel first)
+// Run: bun test ./test/cli   (builds the binary first)
+// Each run works in a folder of its own, so two runs at once do not collide:
+// KEEL_CLI_SCRATCH names it (default: one per process, removed at the end).
+// KEEL_CLI_BIN runs a binary built before instead of building one.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const ROOT = join(import.meta.dir, "../..");
-const SCRATCH = join(process.env.HOME!, ".cache/keel-work/bun/cli-test");
+const SCRATCH = process.env.KEEL_CLI_SCRATCH || join(process.env.HOME!, ".cache/keel-work/bun", `cli-test-${process.pid}`);
 const BIN = join(SCRATCH, "keel");
 const WS = join(SCRATCH, "ws");
 const ENV = {
@@ -24,10 +27,10 @@ const ENV = {
 };
 
 type Ran = { code: number; out: string; err: string };
-async function keel(args: string[], o: { state: string; stdin?: string; cwd?: string; signalAfterMs?: number } ): Promise<Ran> {
+async function keel(args: string[], o: { state: string; stdin?: string; cwd?: string; signalAfterMs?: number; env?: Record<string, string> } ): Promise<Ran> {
   const p = Bun.spawn([BIN, ...args], {
     cwd: o.cwd ?? WS,
-    env: { ...ENV, KEEL_STATE_DIR: o.state },
+    env: { ...ENV, KEEL_STATE_DIR: o.state, ...o.env },
     stdin: o.stdin !== undefined ? new TextEncoder().encode(o.stdin) : "ignore",
     stdout: "pipe",
     stderr: "pipe",
@@ -42,9 +45,12 @@ const lines = (s: string) => s.trim().split("\n").filter(Boolean).map(json);
 beforeAll(async () => {
   rmSync(SCRATCH, { recursive: true, force: true });
   mkdirSync(WS, { recursive: true });
+  if (process.env.KEEL_CLI_BIN) return symlinkSync(process.env.KEEL_CLI_BIN, BIN);
   const b = Bun.spawnSync(["bun", "scripts/build.ts", BIN], { cwd: ROOT, stdout: "pipe", stderr: "pipe" });
   if (b.exitCode !== 0) throw new Error(`build failed: ${b.stderr}`);
 }, 120_000);
+// A run's own default folder goes with it; a named one is the caller's to keep.
+afterAll(() => { if (!process.env.KEEL_CLI_SCRATCH) rmSync(SCRATCH, { recursive: true, force: true }); });
 
 describe("help, usage and completion", () => {
   const state = join(SCRATCH, "state-help");
