@@ -15,3 +15,15 @@ test("a color is told as the bytes the canvas drew", () => {
   expect(hexOf("  ", ctx)).toBeUndefined();
   expect(hexOf("red", null)).toBeUndefined();
 });
+
+test("a copied image the paste event did not carry is read from the clipboard", async () => {
+  const { pastedImages } = await import("./images.ts");
+  const png = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
+  const items = [
+    { types: ["text/plain"], getType: async () => new Blob(["words"]) },
+    { types: ["text/html", "image/png"], getType: async (t: string) => (t === "image/png" ? png : new Blob([])) },
+  ];
+  const files = await pastedImages(async () => items);
+  expect(files.map((f) => [f.name, f.type, f.size])).toEqual([["pasted.png", "image/png", 4]]);
+  expect(await pastedImages(async () => [])).toEqual([]);
+});

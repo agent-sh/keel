@@ -3,7 +3,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Reac
 import type { PromptBlock, Session } from "../../../src/core/types.ts";
 import { slash, type SlashItem } from "../lib/extend.ts";
 import { loadMcpPrompts } from "../lib/tools-ui.ts";
-import { fromBlock, toAttachment, toBlock, type Attachment } from "../lib/images.ts";
+import { fromBlock, pastedImages, toAttachment, toBlock, type Attachment } from "../lib/images.ts";
 import { boxRefused, ownFocus } from "../lib/asks.ts";
 import { composing, fuzzy, isMac, keyLabel, QUEUE_KEYS, SEND_KEYS } from "../lib/keys.ts";
 import { splitId } from "../lib/fleet-ids.ts";
@@ -749,7 +749,10 @@ function SessionComposer({
         onBlur={() => setTimeout(() => setMenu(null), 100)}
         onPaste={(e) => {
           const fs = [...e.clipboardData.files];
-          if (fs.length) { e.preventDefault(); addFiles(fs); }
+          if (fs.length) { e.preventDefault(); addFiles(fs); return; }
+          // A web view that hands the paste nothing at all for a copied image
+          // (WebKitGTK does): the image is read from the clipboard itself.
+          if (!e.clipboardData.types.length) pastedImages().then((images) => { if (images.length) addFiles(images); }).catch(() => {});
         }}
         onKeyDown={(e) => {
           if (composing(e)) return;
