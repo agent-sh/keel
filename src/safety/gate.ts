@@ -25,15 +25,12 @@ import { applyEdit } from "../tools/files.ts";
 import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
 import { classify, decide, isMode, ownPath, pathsNamed, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 import { timed } from "../admin/stall.ts";
+import { ownerDenial } from "../core/stops.ts";
+import { landing, type MarkArgs } from "./marks.ts";
 
-// An edit is judged by where it sits (its folders' links resolved) and by
-// where it lands (the file's own link followed too): a link inside the
-// workspace that points out of it, or into .git, is judged as the place it
-// names, and a link named like a file the repository runs (.envrc) stays that.
-// Only the paths change: everything else the call was classified with (what
-// its words name) goes to the rules as it was.
-export const landing = (c: CallClass): CallClass =>
-  c.kind === "edit" ? { ...c, paths: [...new Set(c.paths.flatMap((p) => [join(realOf(dirname(p)), basename(p)), realOf(p)]))] } : c;
+// (Where an edit lands is read in marks.ts, which the read thread loads too.)
+export { landing };
+export type { CallMark } from "./marks.ts";
 
 // The folders of a PATH that commands are found in by name and that lie
 // inside a session's folder: a whole path there, or a relative entry (bash
@@ -436,6 +433,19 @@ export class Gate {
     let root = session;
     for (let n = 0; root.parent_id && !root.machine && n < 32; n++) root = this.store.session(root.parent_id) ?? root;
     return { workspace: realOf(session.workspace), scratch: session.machine ? [] : [realOf(artifactsDir(this.store.stateDir, root.id))] };
+  }
+
+  // What the read thread judges this session's stored calls on (marks.ts):
+  // the facts `evaluate` gives the policy, as plain data. A session on another
+  // machine has none of this machine's files.
+  markFacts(session: Session): Pick<MarkArgs, "workspace" | "scope" | "machine" | "home" | "config" | "bins" | "rules" | "shell"> {
+    const local = !session.machine;
+    return {
+      workspace: session.workspace, scope: this.scope(session), machine: !local, home: realOf(homedir()),
+      config: local ? [...ownConfig(), ...(this.hookFiles?.(session) ?? [])] : [],
+      bins: local ? workspaceBins(process.env.PATH ?? "", realOf(session.workspace)) : [],
+      rules: this.rules(session), shell: process.env.SHELL,
+    };
   }
 
   // `real`: for a command that names a program a version manager may stand in for, whether each such name is
@@ -983,8 +993,6 @@ const keyOf = (name: string, target: { source?: string; shape?: string } | null,
 
 const reasonOf = (r: string) => r.replace(/[.\s]+$/, "");
 
-// What the model gets for a call the owner denied.
-const ownerDenial = (why?: string) => (why ? `The owner denied this call: ${why}` : "The owner denied this call. Do not retry it; take another way or ask.");
 
 export function closedWhy(a: Approval): string {
   const why = a.reason ? `: ${a.reason}` : "";

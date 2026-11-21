@@ -68,13 +68,15 @@ export type CallClass =
   | { kind: "refused"; why: string };
 
 // `notice`: a line for the owner on the card (the form of the command that would not have asked).
-export type Ask = { risk: "high" | "low"; why?: string; suggest: Suggest[]; ownerOnly?: true; notice?: string };
+// `rule`: the class of the rule that asks, in a few words (what a folded call is
+// marked with in the transcript); `why` is the sentence the approval card shows.
+export type Ask = { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; ownerOnly?: true; notice?: string };
 export type Decision =
   | { allow: true; why?: string }
   | { deny: string }
   | { ask: Ask };
 
-const onlyOwner = (why: string): Decision => ({ ask: { risk: "high", why, suggest: [], ownerOnly: true } });
+const onlyOwner = (why: string, rule = "yours alone to allow"): Decision => ({ ask: { risk: "high", why, rule, suggest: [], ownerOnly: true } });
 
 // What a call does. The tool's own definition says which kind of call it is
 // (its read flag and its kind); the input only supplies the command or the
@@ -205,31 +207,41 @@ function namesProgram(paths: string[], names: string[]): { path: string; what: s
 // one is the owner's call like a repository's RUNS_LATER files, wherever the
 // session's workspace is.
 const HOME_RUNS_LATER = /^(?:\.(?:bashrc|bash_profile|bash_login|bash_logout|bash_aliases|profile|zshrc|zshenv|zprofile|zlogin|zlogout|inputrc|xprofile|xsessionrc|xinitrc|pam_environment|gitconfig)$|\.ssh(?:\/|$)|\.bashrc\.d\/|\.local\/bin\/|\.config\/(?:fish\/|git\/|environment\.d\/|systemd\/user\/|autostart\/))/;
+// What such a file is, in a few words (the rule's class, as a mark says it).
+function homeClass(rel: string): string {
+  if (/^\.ssh(?:\/|$)/.test(rel)) return "remote login keys or settings";
+  if (/^\.gitconfig$|^\.config\/git\//.test(rel)) return "git's own configuration";
+  if (/^\.local\/bin\//.test(rel)) return "a folder of your own commands";
+  if (/^\.config\/systemd\/user\//.test(rel)) return "a user service";
+  if (/^\.config\/autostart\//.test(rel)) return "a program started at login";
+  return "a login or shell start file";
+}
+type OwnerOnly = { why: string; rule: string };
 // Why a change of this path is the owner's alone, or nothing. `config`: folders
 // and files Keel itself runs things from (its config folder: hooks, MCP
 // servers, skills, agents; the scripts the owner's hooks and a pinned
 // repository's hooks run), which no sandbox confines.
-function ownerOnlyEdit(p: string, f: Facts, does = "changes"): string | null {
+function ownerOnlyEdit(p: string, f: Facts, does = "changes"): OwnerOnly | null {
   const rel = relative(f.workspace, p);
-  if (RUNS_LATER.test(rel)) return `it ${does} ${rel}, which runs or configures things outside the sandbox later`;
+  if (RUNS_LATER.test(rel)) return { rule: "runs later, outside the sandbox", why: `it ${does} ${rel}, which runs or configures things outside the sandbox later` };
   const o = f.own?.();
   const own = (f.config ?? o?.config)?.find((c) => contains(c, p));
-  if (own) return `it ${does} ${p}, which Keel runs or reads its configuration from (its hooks and their scripts, MCP servers, skills and agents), outside any sandbox`;
+  if (own) return { rule: "Keel's own configuration", why: `it ${does} ${p}, which Keel runs or reads its configuration from (its hooks and their scripts, MCP servers, skills and agents), outside any sandbox` };
   const home = f.home ?? o?.home ?? homedir();
-  if (contains(home, p) && HOME_RUNS_LATER.test(relative(home, p))) return `it ${does} ${p}, which runs at every login or shell start, or lets someone log in`;
+  if (contains(home, p) && HOME_RUNS_LATER.test(relative(home, p))) return { rule: homeClass(relative(home, p)), why: `it ${does} ${p}, which runs at every login or shell start, or lets someone log in` };
   // A file of a folder commands are found in by name (an entry of the
   // session's PATH inside its workspace): its text runs at the next command,
   // or the next program Keel starts, of that name.
   const bins = f.bins ?? o?.bins;
   if (bins?.length) {
     const dir = dirname(p), inside = contains(f.workspace, p), at = inside ? relative(f.workspace, dir) : null;
-    if (bins.some((b) => (isAbsolute(b) ? b === dir : at !== null && (at === b || at.endsWith(`/${b}`))))) return `it ${does} ${inside ? rel : p}, a file of a folder on this session's PATH, where commands are found by name`;
+    if (bins.some((b) => (isAbsolute(b) ? b === dir : at !== null && (at === b || at.endsWith(`/${b}`))))) return { rule: "a folder on the session's PATH", why: `it ${does} ${inside ? rel : p}, a file of a folder on this session's PATH, where commands are found by name` };
   }
   return null;
 }
 // The same for a path a command or a tool's input names: asked of the path as
 // spelled and of where it lands (an edit's paths come to the gate landed already).
-function ownerOnlyNamed(w: string, cwd: string, f: Facts, does: string): string | null {
+function ownerOnlyNamed(w: string, cwd: string, f: Facts, does: string): OwnerOnly | null {
   const p = spelled(w, cwd, f.home ?? homedir());
   if (!p) return null;
   for (const q of f.own?.().land(p) ?? [p]) { const why = ownerOnlyEdit(q, f, does); if (why) return why; }
@@ -251,7 +263,7 @@ function spelled(w: string, cwd: string, home: string): string | null {
 // reviewer or the judge does not answer for a start file in passing.
 const LAST_ARG = new Set(["cp", "install", "ln", "rsync", "scp"]);
 const EACH_ARG = new Set(["tee", "mv", "rm", "truncate", "shred"]);
-function writesOf(p: Simple): string[] {
+export function writesOf(p: Simple): string[] {
   const out: string[] = [];
   if (p.redirects) for (const m of p.text.matchAll(/(?:&>>?|>>|>\||>)\s*("[^"]*"|'[^']*'|[^\s;|&<>()]+)/g)) out.push(m[1]!);
   const i = p.words.findIndex((w) => /^(?:.*\/)?(?:cp|install|ln|rsync|scp|tee|mv|rm|truncate|shred|sed|dd)$/.test(w));
@@ -298,6 +310,9 @@ export type Facts = {
   real?: (program: string) => boolean;
 };
 
+// The class of a command that asks to run outside the sandbox.
+export const ESCALATES = "asks to leave the sandbox";
+
 export function decide(c: CallClass, f: Facts): Decision {
   if (c.kind === "read" || c.kind === "control") return { allow: true };
   // Plan mode holds like read-only, and says how to go on.
@@ -313,7 +328,9 @@ export function decide(c: CallClass, f: Facts): Decision {
       const inner = decideShell(c.command, f, c.cwd, c.interpreter);
       if ("deny" in inner) return inner;
       const why = ["the command asks to run outside the sandbox", "ask" in inner ? inner.ask.why : undefined].filter(Boolean).join("; and ");
-      return f.mode === "auto" ? onlyOwner(why) : { ask: { risk: "high", why, suggest: [] } };
+      // What else the command is asked for, when that is a rule of its own.
+      const rule = [ESCALATES, "ask" in inner && inner.ask.risk === "high" ? inner.ask.rule : undefined].filter(Boolean).join("; ");
+      return f.mode === "auto" ? onlyOwner(why, rule) : { ask: { risk: "high", why, rule, suggest: [] } };
     }
     return decideShell(c.command, f, c.cwd, c.interpreter);
   }
@@ -326,9 +343,9 @@ export function decide(c: CallClass, f: Facts): Decision {
     // direnv, the project's hook and MCP files, Keel's own config, a shell's
     // start file, the login keys): the owner's call, one at a time. No grant,
     // reviewer or hook answers it.
-    for (const p of c.paths) { const why = ownerOnlyEdit(p, f); if (why) return onlyOwner(why); }
+    for (const p of c.paths) { const o = ownerOnlyEdit(p, f); if (o) return onlyOwner(o.why, o.rule); }
     const program = c.names?.length ? namesProgram(c.paths, c.names) : null;
-    if (program) return onlyOwner(`it writes ${program.what}, into ${relative(f.workspace, program.path)}`);
+    if (program) return onlyOwner(`it writes ${program.what}, into ${relative(f.workspace, program.path)}`, "names code a language server runs");
     const editRules = f.rules.filter((r) => r.kind === "edit");
     const covered = (p: string) => editRules.some((r) => contains(r.pattern, p));
     // The repository's own metadata is not an in-scope edit.
@@ -341,8 +358,8 @@ export function decide(c: CallClass, f: Facts): Decision {
   if (f.mode === "read-only") return { deny: `This session is read-only: ${f.tool} can change things, so it does not run here.` };
   // A tool that can change things, given a file that is the owner's alone to change (an MCP file server's write).
   if (c.kind === "other") for (const w of c.paths ?? []) {
-    const why = ownerOnlyNamed(w, f.workspace, f, "names");
-    if (why) return onlyOwner(why);
+    const o = ownerOnlyNamed(w, f.workspace, f, "names");
+    if (o) return onlyOwner(o.why, o.rule);
   }
   const grant = (c.kind === "other" && c.grant) || f.tool;
   if (f.rules.some((r) => r.kind === "tool" && r.pattern === grant && (!r.bind || r.bind === f.bind))) return { allow: true };
@@ -354,7 +371,7 @@ export function decide(c: CallClass, f: Facts): Decision {
 const never = (why: string, f: Facts): Decision =>
   f.mode === "auto" || f.mode === "full-auto" || f.mode === "reviewer"
     ? { deny: `Refused: the command ${why}, which never runs without the owner. Do not try another form of it; say what you wanted it for and go on with the rest.` }
-    : onlyOwner(`the command ${why}`);
+    : onlyOwner(`the command ${why}`, why);
 
 function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?: string): Decision {
   const parts = splitCommand(command);
@@ -364,20 +381,21 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
   if (!parts) {
     if (f.mode === "full-auto") return { allow: true };
     if (f.mode === "read-only") return { deny: "This session is read-only and the command could not be parsed to check it." };
-    return { ask: { risk: "high", why: "the command could not be parsed, so no rule can cover it", suggest: [] } };
+    return { ask: { risk: "high", why: "the command could not be parsed, so no rule can cover it", rule: "could not be parsed", suggest: [] } };
   }
   // A command whose plain shape writes a file that is the owner's alone to
   // change (`echo x >> ~/.bashrc`, a cp into Keel's config): the owner's call,
   // before any grant, the sandbox's allowance, the reviewer or the judge.
   // (Full auto runs it as it runs such an edit; Read only refuses it below.)
   if (f.mode !== "read-only" && f.mode !== "full-auto") for (const part of parts) if (interpreter !== undefined || !isReadOnly(part)) for (const w of writesOf(part)) {
-    const why = ownerOnlyNamed(w, cwd, f, "writes");
-    if (why) return onlyOwner(`the command: ${why}`);
+    const o = ownerOnlyNamed(w, cwd, f, "writes");
+    if (o) return onlyOwner(`the command: ${o.why}`, o.rule);
   }
   const risks = risksOf(parts);
   if (risks.length) {
     if (f.mode === "read-only") return { deny: `This session is read-only, and the command ${risks[0]}.` };
-    return { ask: { risk: "high", why: `the command ${risks.join(" and ")}`, suggest: [] } };
+    // (Each risk is the rule's own few words; a line of several is named by its first.)
+    return { ask: { risk: "high", why: `the command ${risks.join(" and ")}`, rule: risks.length > 1 ? `${risks[0]}, and ${risks.length - 1} more` : risks[0], suggest: [] } };
   }
   if (f.mode === "full-auto") return { allow: true };
   const shellRules = f.rules.filter((r) => r.kind === "shell");
@@ -415,7 +433,7 @@ function decideDrive(c: Extract<CallClass, { kind: "drive" }>, f: Facts): Decisi
   if (c.owner) {
     const tool = c.resource.slice(0, c.resource.indexOf(":"));
     if (tools.includes(c.resource) || tools.includes(`${tool}:*`)) return { allow: true };
-    return onlyOwner(`only the owner allows this: ${c.owner}`);
+    return onlyOwner(`only the owner allows this: ${c.owner}`, "acts in another session");
   }
   if (f.mode === "full-auto") return { allow: true };
   if (tools.includes(`drive:${c.target}`) || tools.includes("drive:*")) return { allow: true };

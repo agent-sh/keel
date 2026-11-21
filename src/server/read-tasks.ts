@@ -5,6 +5,7 @@
 import type { Database } from "bun:sqlite";
 import { reportOf, sideOf, tokensOf, type Limits } from "../admin/telemetry-report.ts";
 import type { Filter } from "../admin/telemetry.ts";
+import { marksOf, type MarkArgs } from "../safety/marks.ts";
 import { searchContent, type ContentQuery } from "./routes/search-content.ts";
 
 export const tasks = {
@@ -18,6 +19,8 @@ export const tasks = {
   "telemetry.tokens": (db: Database, a: { q: Filter }) => tokensOf(db, a.q),
   "telemetry.side": (db: Database, a: { q: Filter }) => sideOf(db, a.q),
   "search.content": (db: Database, a: ContentQuery) => searchContent(db, a),
+  // What the transcript marks on the calls of a page's events: every command of them is parsed here.
+  "calls.marks": (db: Database, a: MarkArgs) => marksOf(db, a),
 };
 
 export type Tasks = typeof tasks;

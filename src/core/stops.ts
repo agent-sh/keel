@@ -22,3 +22,17 @@ export const STOPPED_WHILE = "Interrupted by the user while this tool ran.";
 const CUT: readonly string[] = [RESTART_CUT, QUESTION_CUT, APPROVAL_CUT];
 export const stopKind = (content: unknown): "stopped" | "cut" | undefined =>
   typeof content !== "string" ? undefined : content === STOPPED_BEFORE || content === STOPPED_WHILE ? "stopped" : CUT.includes(content) || content.startsWith(RESTART_RAN) ? "cut" : undefined;
+
+// What the model gets for a call the owner denied on its card. The page reads
+// it back: a denial is the owner's own act, not a failure of the call, and
+// the words after the colon are the owner's reason.
+export const OWNER_DENIED = "The owner denied this call";
+export const ownerDenial = (why?: string) => (why ? `${OWNER_DENIED}: ${why}` : `${OWNER_DENIED}. Do not retry it; take another way or ask.`);
+// How a call that never ran was turned away, by its result's own words: the
+// owner denied it, or the policy, the reviewer or the judge refused it.
+export const turnedAway = (content: unknown): "denied" | "refused" | undefined =>
+  typeof content !== "string" ? undefined
+    : content.startsWith(OWNER_DENIED) ? "denied"
+      : /^(Refused: |Refused by |The reviewer refused this call|This session is (read-only|in plan mode)\b)/.test(content) ? "refused" : undefined;
+// The reason the owner gave with a denial; empty when they gave none.
+export const denialReason = (content: string): string => (content.startsWith(`${OWNER_DENIED}: `) ? content.slice(OWNER_DENIED.length + 2) : "");

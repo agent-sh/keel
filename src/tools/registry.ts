@@ -1,5 +1,6 @@
 import { testBuild } from "../core/build.ts";
 import type { ModelInfo } from "../providers/types.ts";
+import type { MarkTool } from "../safety/marks.ts";
 import { claudeTools } from "./claude.ts";
 import { geminiTools } from "./gemini.ts";
 import { gptTools } from "./gpt.ts";
@@ -46,6 +47,21 @@ export const sessionToolsKey = (family: ModelInfo["family"], sessionId: string) 
 export function unregisterShared(name: string) {
   const i = shared.findIndex((t) => t.name === name);
   if (i >= 0) shared.splice(i, 1);
+}
+
+// Every tool of every family as plain facts, for judging a stored call off
+// the loop (src/safety/marks.ts): its session may have changed models since.
+let facts: { n: number; list: MarkTool[] } | undefined;
+export function toolFacts(): MarkTool[] {
+  const all = [...byFamily.values(), shared].flat();
+  if (facts?.n === all.length) return facts.list;
+  const by = new Map<string, MarkTool>();
+  for (const t of all) {
+    if (by.has(t.name)) continue;
+    by.set(t.name, { name: t.name, readOnly: t.readOnly, kind: t.kind, props: Object.keys((t.built ?? (t.input_schema as any))?.properties ?? {}), ...(t.appliesPatch ? { appliesPatch: true as const } : {}), ...(t.interpreter ? { shellInput: true as const } : {}) });
+  }
+  facts = { n: all.length, list: [...by.values()] };
+  return facts.list;
 }
 
 // A tool of any family that only waits on the owner's answer.
