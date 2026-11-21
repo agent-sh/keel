@@ -8,7 +8,7 @@
 // The owner's prompt picks the scenario with a word `script:<name>`. What a
 // request gets depends only on the request and how often that exact request
 // was sent before, so a retry sees the next step of the same scenario.
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 import type { Message } from "../core/types.ts";
 import { classify, ProviderError } from "./http.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } from "./types.ts";
@@ -207,6 +207,18 @@ export class ScriptedProvider implements Provider {
         // ignores its signal): a delete waits that long for the turn to end.
         await Bun.sleep(12_000);
         return reply("Answered after not listening.");
+      case "hold": {
+        // `script:hold <path>`: half a reply, then nothing until that file
+        // exists (or a minute passed): a draft that stays as it is while a
+        // spec cuts the page's socket and looks at what the reconnect shows.
+        const gate = owner.match(/script:hold\s+(\S+)/)?.[1];
+        const halves = ["The first half, streamed before the hold. ", "The second half, after it."];
+        onDelta({ kind: "text", index: 0, text: halves[0]! });
+        for (let i = 0; i < 600 && gate && !existsSync(gate) && !req.signal.aborted; i++) await Bun.sleep(100);
+        onDelta({ kind: "text", index: 0, text: halves[1]! });
+        usage.output = tokens(halves.join(""));
+        return { blocks: [{ type: "text", text: halves.join("") }], usage, stop: "end_turn", model: req.model };
+      }
       case "slow":
         await Bun.sleep(3_000); // no bytes for a while
         return reply("Answered after a slow start.");

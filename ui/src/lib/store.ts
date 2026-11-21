@@ -157,9 +157,12 @@ export const actions = {
   },
   grokSignIn: () => api<any>("/api/providers/grok/sign-in", { method: "POST" }),
   grokSignInState: () => api<any>("/api/providers/grok/sign-in"),
-  async loadSession(id: string) {
+  // `transcript: false` asks for the session as it is now without its events:
+  // the page holds them and the socket's replay brings the ones after its
+  // cursor (a reconnect of a session of this daemon).
+  async loadSession(id: string, transcript = true) {
     // The page's first session load started at boot (see preloadSession) is taken once.
-    if (preload?.id === id) { const p = preload.p; preload = null; return p; }
+    if (transcript && preload?.id === id) { const p = preload.p; preload = null; return p; }
     // Events that arrive while the snapshot is on its way are kept and merged:
     // the snapshot may be older or newer than any of them.
     if (!state.events[id]) loading.set(id, loading.get(id) ?? []);
@@ -167,9 +170,9 @@ export const actions = {
     const log = draftLog.get(id) ?? { n: 0, frames: [] };
     log.n++;
     draftLog.set(id, log);
-    let r: { session: Session; events: StoredEvent[]; queue: QueueItem[]; held: boolean; status?: TurnStatus; draft?: Record<number, DraftBlock>; rev?: number };
+    let r: { session: Session; events?: StoredEvent[]; queue: QueueItem[]; held: boolean; status?: TurnStatus; draft?: Record<number, DraftBlock>; rev?: number };
     try {
-      r = await api(`/api/sessions/${id}`);
+      r = await api(`/api/sessions/${id}${transcript ? "" : "?events=0"}`);
     } catch (e) {
       loading.delete(id);
       throw e;
@@ -190,7 +193,8 @@ export const actions = {
     }
     set({
       sessions: newer(`${id}:session`, r.rev, true) ? { ...state.sessions, [id]: loc.session } : state.sessions,
-      events: { ...state.events, [id]: mergeEvents(mergeEvents(state.events[id] ?? [], loc.events!), early) },
+      // An answer without a transcript adds nothing to one the page no longer holds (deleted meanwhile).
+      events: loc.events || state.events[id] ? { ...state.events, [id]: mergeEvents(mergeEvents(state.events[id] ?? [], loc.events ?? []), early) } : state.events,
       queues: newer(`${id}:queue`, r.rev, true) ? { ...state.queues, [id]: { queue: r.queue, held: r.held } } : state.queues,
       status: r.status && newer(`${id}:status`, r.rev, true) ? { ...state.status, [id]: r.status } : state.status,
       drafts,
@@ -495,8 +499,10 @@ export function connect() {
     // snapshots were just taken and the replay brings queue and status: no second load.
     // The local resume cannot replay events from a peer, even when the
     // daemon-to-peer relay stayed up. Catch those transcripts up by HTTP too.
+    // A session of this daemon is asked for without its transcript: the page
+    // holds it, and the replay brings every event after its cursor.
     for (const [id] of first ? [] : loaded) {
-      loads.push(actions.loadSession(id).catch((e) => {
+      loads.push(actions.loadSession(id, !!splitId(id)).catch((e) => {
         if ((e as { status?: number }).status !== 404) return reportError(e, { at: "reconnect" });
         const { [id]: _, ...events } = state.events;
         const { [id]: __, ...sessions } = state.sessions;
@@ -524,7 +530,9 @@ export function connect() {
   ws.onmessage = (m) => {
     const f = JSON.parse(m.data) as Frame | SocketFrame;
     if (f.t === "pong") { clearTimeout(deadline); deadline = undefined; }
-    else if (f.t === "draft") { if (newer(`${f.session_id}:draft`, f.rev)) set({ drafts: { ...state.drafts, [f.session_id]: f.blocks } }); }
+    // The replay's whole draft, also at the rev of a snapshot that came before this socket
+    // opened (nothing was emitted between them): the open dropped the snapshot's copy.
+    else if (f.t === "draft") { if (newer(`${f.session_id}:draft`, f.rev, true)) set({ drafts: { ...state.drafts, [f.session_id]: f.blocks } }); }
     else if (f.t === "replayed") { if (socket === ws) onReplayed?.(); }
     else if (f.t === "hello" || f.t === "ui") servedUi(f.t === "ui" ? f.version : f.ui);
     else apply(f);

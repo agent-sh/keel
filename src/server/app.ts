@@ -181,9 +181,12 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       "/api/sessions/:id": {
         GET: wrap((req) => {
           const s = session(req.params.id);
-          return s
-            ? json({ session: s, events: store.events(s.id), running: engine.isRunning(s.id), queue: engine.queued(s.id), held: engine.isHeld(s.id), status: engine.statusOf(s.id), draft: live.draft(s.id), rev: bus.rev() })
-            : bad("no such session", 404);
+          if (!s) return bad("no such session", 404);
+          // `events=0`: the session as it is now without its transcript, for a
+          // page that holds the events and takes the ones after its cursor
+          // from the socket (a reconnect). The transcript is not read at all.
+          const bare = new URL(req.url).searchParams.get("events") === "0";
+          return json({ session: s, ...(bare ? {} : { events: store.events(s.id) }), running: engine.isRunning(s.id), queue: engine.queued(s.id), held: engine.isHeld(s.id), status: engine.statusOf(s.id), draft: live.draft(s.id), rev: bus.rev() });
         }),
         PATCH: wrap(async (req) => {
           const s = session(req.params.id);
