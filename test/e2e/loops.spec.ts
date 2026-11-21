@@ -86,3 +86,24 @@ test("loops: a calendar loop keeps the time zone it is made with", async ({ page
   await shoot(page, "loops-06-zone");
   await request.delete(`/api/loops/${loop.id}`);
 });
+
+// An edit is held to the limits a new loop is: a run cap that is not a whole
+// number of at least 1, or a prompt over 8,000 characters, changes nothing.
+test("loops: an edit keeps the limits of a new loop", async ({ request }) => {
+  const { models } = await (await request.get("/api/models")).json();
+  test.skip(!models.some((m: { id: string }) => m.id === STAND_IN), "requires the scripted provider");
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Edited loop" } })).json();
+  const loop = await (await request.post("/api/loops", { data: { session_id: session.id, schedule: "every day at 09:30", prompt: "Report the plan for the day.", max_runs: 5 } })).json();
+  const read = async () => (await (await request.get(`/api/loops/${loop.id}/runs`)).json()).loop;
+  const patch = (data: unknown) => request.patch(`/api/loops/${loop.id}`, { data });
+  const before = await read();
+  for (const data of [{ max_runs: 0 }, { max_runs: -2 }, { max_runs: 1.5 }, { prompt: "x".repeat(8001) }, { name: "Renamed", max_runs: 0 }]) {
+    const r = await patch(data);
+    expect(r.status(), JSON.stringify(data).slice(0, 40)).toBe(400);
+    expect(await read()).toEqual(before);
+  }
+  expect((await (await patch({ max_runs: 3 })).json()).max_runs).toBe(3);
+  expect((await (await patch({ max_runs: null })).json()).max_runs).toBeNull();
+  expect((await (await patch({ prompt: "y".repeat(8000) })).json()).prompt).toHaveLength(8000);
+  await request.delete(`/api/loops/${loop.id}`);
+});

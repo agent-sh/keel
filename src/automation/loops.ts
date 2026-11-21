@@ -215,6 +215,19 @@ export type CreateInput = {
 const newSecret = () => `whsec_${randomBytes(32).toString("base64")}`;
 const sha = (k: string) => createHash("sha256").update(k).digest("hex");
 
+// The limits a loop is made under, and edited under.
+const PROMPT_MAX = 8000;
+function checkPrompt(p: unknown): string {
+  const prompt = String(p ?? "").trim() || DEFAULT_PROMPT;
+  if (prompt.length > PROMPT_MAX) throw new Error("the prompt is at most 8,000 characters");
+  return prompt;
+}
+function checkMaxRuns(n: unknown): number | null {
+  if (n === undefined || n === null) return null;
+  if (typeof n !== "number" || !Number.isInteger(n) || n < 1) throw new Error("max_runs is a whole number of at least 1");
+  return n;
+}
+
 export function create(input: CreateInput): { loop: LoopRecord; hook_key?: string; hook_secret?: string } {
   const s = D().store.session(input.session_id);
   if (!s) throw new Error("no such session");
@@ -230,14 +243,12 @@ export function create(input: CreateInput): { loop: LoopRecord; hook_key?: strin
     if (!Number.isFinite(m) || m < 10 || m > YEAR) throw new Error("min_interval_seconds is 10 to a year");
     minInterval = Math.round(m);
   }
-  const prompt = (input.prompt ?? "").trim() || DEFAULT_PROMPT;
-  if (prompt.length > 8000) throw new Error("the prompt is at most 8,000 characters");
+  const prompt = checkPrompt(input.prompt);
   const now = Date.now();
   let until = input.until_ms ?? null;
   if (until !== null && until <= now) throw new Error("until_ms is in the past");
   if (by === "model") until = Math.min(until ?? Infinity, now + MODEL_EXPIRY);
-  const maxRuns = input.max_runs ?? null;
-  if (maxRuns !== null && (!Number.isInteger(maxRuns) || maxRuns < 1)) throw new Error("max_runs is a whole number of at least 1");
+  const maxRuns = checkMaxRuns(input.max_runs);
   const minD = Math.max(60, Math.min(Number(input.min_delay_seconds ?? 60), YEAR));
   const maxD = Math.max(minD, Math.min(Number(input.max_delay_seconds ?? 3600), YEAR));
   const id = Bun.randomUUIDv7().slice(-8);
@@ -270,7 +281,7 @@ export function update(id: string, p: UpdateInput, by: "owner" | "model" = "owne
   if (!l) throw new Error("no such loop");
   const out: Record<string, unknown> = {};
   if (p.name !== undefined) { if (!p.name.trim()) throw new Error("the name cannot be empty"); out.name = p.name.trim().slice(0, 80); }
-  if (p.prompt !== undefined) out.prompt = p.prompt.trim() || DEFAULT_PROMPT;
+  if (p.prompt !== undefined) out.prompt = checkPrompt(p.prompt);
   if (p.schedule !== undefined || p.tz !== undefined) {
     const sch = parseSchedule(p.schedule ?? l.schedule);
     if ((sch.kind === "webhook") !== (l.kind === "webhook")) throw new Error("a loop cannot change to or from a webhook loop");
@@ -280,7 +291,7 @@ export function update(id: string, p: UpdateInput, by: "owner" | "model" = "owne
     out.tz = sch.kind === "cron" ? (p.tz ? checkZone(p.tz) : l.tz ?? localZone()) : null;
     out.next_ms = sch.kind === "auto" ? Date.now() + l.min_delay * 1000 : sch.kind === "webhook" ? null : nextDue({ kind: sch.kind, schedule: out.schedule as string, tz: out.tz as string | null }, Date.now());
   }
-  if (p.max_runs !== undefined) out.max_runs = p.max_runs;
+  if (p.max_runs !== undefined) out.max_runs = checkMaxRuns(p.max_runs);
   if (p.until_ms !== undefined) {
     if (p.until_ms !== null && p.until_ms <= Date.now()) throw new Error("until_ms is in the past");
     out.until_ms = by === "model" ? Math.min(p.until_ms ?? Infinity, l.created + MODEL_EXPIRY) : p.until_ms;
