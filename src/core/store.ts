@@ -48,6 +48,9 @@ CREATE TABLE IF NOT EXISTS queue (
   pos REAL NOT NULL,
   created INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS boot_open (
+  session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE
+);
 `;
 
 type EventRow = Omit<StoredEvent, "data"> & { data: string };
@@ -126,7 +129,8 @@ const queueRow = (r: any): QueueItem => {
 
 export class Store {
   readonly db: Database;
-  // Sessions whose turn was open when the last daemon stopped.
+  // Sessions whose turn was open, or owed to a prompt just accepted, when the
+  // last daemon stopped.
   bootWorking: string[] = [];
   // The parsed events of the sessions read last. A turn reads its whole session
   // before each model call and the page and routes read it too; events never
@@ -160,9 +164,19 @@ export class Store {
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS errors_fp ON errors(fingerprint)");
     // Sessions left "working" by a crash or restart are idle now: no turn runs.
-    // The engine closes and resumes their cut turns (Engine.recover).
-    this.bootWorking = this.db.query<{ id: string }, []>("SELECT id FROM sessions WHERE phase = 'working'").all().map((r) => r.id);
-    this.db.run("UPDATE sessions SET phase = 'idle' WHERE phase = 'working'");
+    // The engine closes and resumes their cut turns (Engine.recover). Each
+    // stays listed until the engine has closed its turn (bootSettled), so a
+    // daemon killed during its own start leaves them for the next one.
+    this.db.transaction(() => {
+      this.db.run("INSERT OR IGNORE INTO boot_open (session_id) SELECT id FROM sessions WHERE phase = 'working'");
+      this.db.run("UPDATE sessions SET phase = 'idle' WHERE phase = 'working'");
+    })();
+    this.bootWorking = this.db.query<{ id: string }, []>("SELECT session_id AS id FROM boot_open").all().map((r) => r.id);
+  }
+
+  // The engine has closed what the last daemon left open in this session.
+  bootSettled(session_id: string) {
+    this.db.query("DELETE FROM boot_open WHERE session_id = ?").run(session_id);
   }
 
   // A feature module's tables: run once per start, statements must be idempotent

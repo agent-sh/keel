@@ -5,7 +5,8 @@
 import { expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
-import { promptsOf, QUEUED, rig, untilStopped } from "./delivery.fixture.ts";
+import { promptsOf, QUEUED, rig, SENT, untilStopped } from "./delivery.fixture.ts";
+import { STALLED_MAX } from "./turn.ts";
 
 const scratch = (name: string) => mkdtempSync(join(process.env.TMPDIR ?? ".", `${name}-`));
 const image = { type: "image" as const, media_type: "image/png", data: "iVBORw0KGgo=" };
@@ -64,6 +65,16 @@ test("a steer written on another branch waits for the owner instead of joining t
 // opens the same state. What the owner was told is queued is then still
 // queued or is one stored prompt, never neither and never both, with its
 // words and its attachment; once it has run there is exactly one.
+// A daemon on `dir` that kills itself at `point` of `scenario`; what it said first.
+async function killedDaemon(dir: string, scenario: string, point: string): Promise<{ session: string; queued: string }> {
+  const child = Bun.spawn(["bun", join(import.meta.dir, "delivery.child.ts"), dir, scenario, point], { stdout: "pipe", stderr: "inherit" });
+  const said = (await new Response(child.stdout).text()).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  await child.exited;
+  expect(child.signalCode).toBe("SIGKILL");
+  expect(said.at(-1)).toEqual({ killed_at: point });
+  return said[0];
+}
+
 const kills: [string, string][] = [
   ["dequeue", "claimed"], ["dequeue", "stored"],
   ["steer", "claimed"], ["steer", "stored"],
@@ -72,12 +83,7 @@ const kills: [string, string][] = [
 for (const [scenario, point] of kills) {
   test(`a daemon killed during ${scenario} (${point}) neither loses nor doubles the queued prompt`, async () => {
     const dir = scratch(`kill-${scenario}-${point}`);
-    const child = Bun.spawn(["bun", join(import.meta.dir, "delivery.child.ts"), dir, scenario, point], { stdout: "pipe", stderr: "inherit" });
-    const said = (await new Response(child.stdout).text()).trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
-    await child.exited;
-    expect(child.signalCode).toBe("SIGKILL");
-    expect(said.at(-1)).toEqual({ killed_at: point });
-    const { session: sid, queued: qid } = said[0] as { session: string; queued: string };
+    const { session: sid, queued: qid } = await killedDaemon(dir, scenario, point);
 
     // The next daemon on the same state.
     const { store, engine, requests } = rig(dir);
@@ -100,3 +106,73 @@ for (const [scenario, point] of kills) {
     expect(requests.at(-1)!.filter((t) => t === QUEUED.text).length).toBe(1);
   }, 30_000);
 }
+
+// A prompt is accepted (the owner is told it was sent, or it left the queue)
+// and the daemon is killed before the turn has started, while the turn
+// resolves its provider. The next daemon runs it once: also when that daemon
+// is killed during its own start (before it recovered anything, while it
+// waits for the model, or with the continued turn in setup again).
+const accepted: Record<string, { text: string; images: unknown }> = { send: SENT, dequeue: QUEUED, "send-now": QUEUED };
+const noRecover = async () => {};
+for (const scenario of Object.keys(accepted)) {
+  for (const again of [undefined, "boot", "waiting", "setup"]) {
+    test(`a prompt accepted by ${scenario} and killed in setup${again ? `, then again at the next start (${again}),` : ""} is run once`, async () => {
+      const dir = scratch(`setup-${scenario}-${again ?? "once"}`);
+      const { session: sid } = await killedDaemon(dir, scenario, "setup");
+      if (again) await killedDaemon(dir, "recover", again);
+      const want = accepted[scenario]!;
+
+      const { store, engine, requests } = rig(dir);
+      await engine.recover(store.bootWorking, noRecover);
+      await engine.idle(sid);
+      const line = engine.lineage(sid);
+      const prompts = line.filter((e) => e.kind === "user" && e.data.text === want.text);
+      expect(prompts.map((e) => e.data.images)).toEqual([want.images]);
+      // One request carried it, and one reply follows it.
+      expect(requests.map((r) => r.filter((t) => t === want.text).length)).toEqual([1]);
+      expect(line.slice(line.indexOf(prompts[0]!)).filter((e) => e.kind === "assistant").length).toBe(1);
+      expect(line.at(-1)).toMatchObject({ kind: "turn_end", data: { reason: "end_turn" } });
+      expect(store.session(sid)!.phase).toBe("idle");
+
+      // A start after that replays nothing: the turn is done.
+      const next = rig(dir);
+      const stored = next.store.events(sid).length;
+      expect(next.store.bootWorking).toEqual([]);
+      await next.engine.recover(next.store.bootWorking, noRecover);
+      await next.engine.idle(sid);
+      expect(next.requests).toEqual([]);
+      expect(next.store.events(sid).length).toBe(stored);
+    }, 30_000);
+  }
+}
+
+// When it cannot be continued, it is held where the owner sees it: the turn
+// reads as cut by the restart (what Continue is offered on), with the reason.
+test("an accepted prompt that cannot be continued is held with Continue", async () => {
+  const held = async (dir: string, sid: string, waitModel: () => Promise<void>, why: string) => {
+    const { store, engine, requests } = rig(dir);
+    await engine.recover(store.bootWorking, waitModel);
+    const line = engine.lineage(sid);
+    expect(requests).toEqual([]);
+    expect(line.at(-1)).toMatchObject({ kind: "note", data: { kind: "restart" } });
+    expect(line.at(-1)!.data.text).toContain(why);
+    expect(line.findLast((e) => e.kind === "turn_end")!.data.reason).toBe("restart");
+    expect(store.session(sid)!.phase).toBe("idle");
+    // The owner's Continue runs it, once.
+    engine.resume(sid);
+    await engine.idle(sid);
+    expect(requests.map((r) => r.filter((t) => t === SENT.text).length)).toEqual([1]);
+    expect(engine.lineage(sid).at(-1)).toMatchObject({ kind: "turn_end", data: { reason: "end_turn" } });
+  };
+
+  // Its model does not come back.
+  const gone = scratch("setup-held-model");
+  const a = await killedDaemon(gone, "send", "setup");
+  await held(gone, a.session, async () => { throw new Error("no provider lists this model"); }, "no provider lists this model");
+
+  // Every continuation dies in setup again: it is not tried for ever.
+  const dying = scratch("setup-held-stalled");
+  const b = await killedDaemon(dying, "send", "setup");
+  for (let i = 0; i < STALLED_MAX; i++) await killedDaemon(dying, "recover", "setup");
+  await held(dying, b.session, noRecover, `${STALLED_MAX} times in a row`);
+}, 60_000);

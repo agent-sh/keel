@@ -55,7 +55,9 @@ const owedCalls = (session: string, line: StoredEvent[]): ToolUseBlock[] => {
 // The message that continues a turn a restart cut. Each cut call's result says
 // what became of it (it may have partly run, or did not run); a call that
 // waited for the owner's approval is asked again on the same card.
-export function restartText(cut: number, owed: number): string {
+export function restartText(cut: number, owed: number, unstarted = false): string {
+  // The prompt was stored and the daemon went down before its turn began.
+  if (unstarted) return "[harness] The daemon restarted before this turn began: none of it ran. Go on with what was asked above.";
   const parts = [
     cut === 1 ? "the result of the 1 tool call it cut says what became of it" : cut ? `the results of the ${cut} tool calls it cut say what became of each` : "",
     owed === 1 ? "1 call that waited for the owner's approval was asked again, and its result is the owner's answer"
@@ -328,15 +330,34 @@ export class Engine {
   // prompt, never neither and never both. `release`: the queue's hold ends in
   // the same write. The prompt is the row as it is now (it may have been
   // edited while it waited). Undefined when the row is gone.
-  private deliver(qid: string, origin: "queued" | "steer", release = false): StoredEvent | undefined {
+  // `turn`: the prompt starts a turn (see accept); a steer joins the running one.
+  private deliver(qid: string, origin: "queued" | "steer", opts: { release?: boolean; turn?: boolean } = {}): StoredEvent | undefined {
     const q = this.store.queueItem(qid);
     if (!q) return undefined;
     const ev = this.store.atomic(q.session_id, () => {
       if (!this.store.dequeue(q.id)) return undefined;
-      if (release) this.release(q.session_id);
+      if (opts.release) this.release(q.session_id);
+      if (opts.turn) this.store.updateSession(q.session_id, { phase: "working" });
       return this.store.append(q.session_id, "user", { text: q.text, images: q.images, origin, queue_id: q.id, ...q.meta });
     });
-    if (ev) this.emitEvent(ev);
+    if (!ev) return undefined;
+    if (opts.turn) this.emitSession(q.session_id);
+    this.emitEvent(ev);
+    return ev;
+  }
+
+  // A prompt that starts a turn enters the history with the turn owed: the
+  // session is marked as working in the same write. A daemon killed before
+  // the turn has started (while its provider and system prompt are set up)
+  // finds the session open at its next start and runs the prompt then
+  // (recover), instead of leaving it with no reply and nothing to continue.
+  private accept(id: string, data: unknown, parent?: string | null): StoredEvent {
+    const ev = this.store.atomic(id, () => {
+      this.store.updateSession(id, { phase: "working" });
+      return this.store.append(id, "user", data, parent);
+    });
+    this.emitSession(id);
+    this.emitEvent(ev);
     return ev;
   }
 
@@ -437,7 +458,7 @@ export class Engine {
     }
     // Input that is not the owner's (a report, a wake) never releases a held queue.
     if (!opts.meta) this.release(id);
-    const ev = this.append(id, "user", { text, images: opts.images?.length ? opts.images : undefined, ...opts.meta });
+    const ev = this.accept(id, { text, images: opts.images?.length ? opts.images : undefined, ...opts.meta });
     // The title comes from the owner's first words, not from a timer's or a report's envelope.
     // A prompt of only attachments (no words) is named by its files, or Image.
     const files = (opts.images ?? []).filter((b: any) => b?.type === "attachment").map((b: any) => String(b.name));
@@ -455,7 +476,7 @@ export class Engine {
     await this.interrupt(id);
     this.release(id);
     // An edited steer is a new turn from the same place, not a live steer: it says what it was.
-    const ev = this.append(id, "user", { text, images: old.data.images, ...(old.data.origin === "steer" ? { edited_from: "steer" } : {}) }, old.parent);
+    const ev = this.accept(id, { text, images: old.data.images, ...(old.data.origin === "steer" ? { edited_from: "steer" } : {}) }, old.parent);
     this.emitSession(id);
     this.start(id);
     this.emitQueue(id);
@@ -479,7 +500,7 @@ export class Engine {
     try {
       this.emitQueue(id);
       await this.interrupt(id);
-      if (!this.deliver(qid, "queued", true)) throw gone();
+      if (!this.deliver(qid, "queued", { release: true, turn: true })) throw gone();
       this.start(id);
       this.emitQueue(id);
     } finally {
@@ -504,7 +525,7 @@ export class Engine {
   resume(id: string) {
     if (this.running.has(id)) throw Object.assign(new Error("a turn is running"), { status: 409 });
     this.release(id);
-    this.append(id, "user", { text: "[harness] The previous turn was stopped before it finished. Continue where it left off.", origin: "harness" });
+    this.accept(id, { text: "[harness] The previous turn was stopped before it finished. Continue where it left off.", origin: "harness" });
     this.start(id);
     this.emitQueue(id);
   }
@@ -520,7 +541,7 @@ export class Engine {
     if (!q) return;
     // Written on another branch: it waits for the owner to say where it goes.
     if (this.offBranch(q)) { this.hold(id); this.emitQueue(id); return; }
-    if (!this.deliver(q.id, q.steer ? "steer" : "queued")) return;
+    if (!this.deliver(q.id, q.steer ? "steer" : "queued", { turn: true })) return;
     this.start(id);
     this.emitQueue(id);
   }
@@ -1328,20 +1349,37 @@ export class Engine {
 
   // At startup: a turn the last daemon left open (a crash, a kill) is closed
   // the way a stop would close it, and a turn cut by a restart continues by
-  // itself, through any number of restarts. Only a session whose continued
-  // turns keep being cut before a step is done (STALLED_MAX) is held, with
-  // the reason shown and its Continue. A session with an owner of its own (an
-  // agent's, through the cutTurn hook) may say otherwise.
+  // itself, through any number of restarts. A prompt that was accepted and
+  // whose turn had not started yet (the daemon went down while its provider
+  // or system prompt was set up) is closed as a turn cut at its start, so it
+  // continues the same way. Only a session whose continued turns keep being
+  // cut before a step is done (STALLED_MAX) is held, with the reason shown
+  // and its Continue. A session with an owner of its own (an agent's, through
+  // the cutTurn hook) may say otherwise.
   async recover(openAtBoot: string[], waitModel: (model: string) => Promise<void>) {
     for (const id of openAtBoot) {
+      const session = this.store.session(id);
+      if (!session) continue;
       const line = this.lineage(id);
       const lastStart = line.findLastIndex((e) => e.kind === "turn_start");
-      if (lastStart < 0 || line.slice(lastStart).some((e) => e.kind === "turn_end")) continue;
-      const results = new Set(line.slice(lastStart).flatMap((e) => (e.kind === "tool_result" ? e.data.results.map((r: any) => r.tool_use_id) : [])));
-      // A call whose card is still open is left for the continued turn (owedCalls).
-      const cut = line.slice(lastStart).flatMap((e) => (e.kind === "assistant" ? e.data.blocks.filter((b: any) => b.type === "tool_use" && !results.has(b.id) && outcomeOf(id, b.id) !== "waiting") : []));
-      if (cut.length) this.append(id, "tool_result", { results: cut.map((u: any) => ({ type: "tool_result", tool_use_id: u.id, content: cutText(id, u), is_error: true })) });
-      this.append(id, "turn_end", { reason: "restart", usage: emptyUsage(), ms: Date.now() - line[lastStart]!.ts, crashed: true });
+      const lastEnd = line.findLastIndex((e) => e.kind === "turn_end");
+      // Closed in the write that takes the session off the list of open ones:
+      // a daemon killed here closes it at its next start, once.
+      const closing: StoredEvent[] = [];
+      this.store.atomic(id, () => {
+        if (lastStart > lastEnd) {
+          const results = new Set(line.slice(lastStart).flatMap((e) => (e.kind === "tool_result" ? e.data.results.map((r: any) => r.tool_use_id) : [])));
+          // A call whose card is still open is left for the continued turn (owedCalls).
+          const cut = line.slice(lastStart).flatMap((e) => (e.kind === "assistant" ? e.data.blocks.filter((b: any) => b.type === "tool_use" && !results.has(b.id) && outcomeOf(id, b.id) !== "waiting") : []));
+          if (cut.length) closing.push(this.store.append(id, "tool_result", { results: cut.map((u: any) => ({ type: "tool_result", tool_use_id: u.id, content: cutText(id, u), is_error: true })) }));
+          closing.push(this.store.append(id, "turn_end", { reason: "restart", usage: emptyUsage(), ms: Date.now() - line[lastStart]!.ts, crashed: true }));
+        } else if (owedTurn(line.slice(lastEnd + 1))) {
+          closing.push(this.store.append(id, "turn_start", { model: session.model }));
+          closing.push(this.store.append(id, "turn_end", { reason: "restart", usage: emptyUsage(), ms: 0, crashed: true, unstarted: true }));
+        }
+        this.store.bootSettled(id);
+      });
+      for (const e of closing) this.emitEvent(e);
     }
     // Each session on its own: a provider still starting holds only its sessions.
     // The continued turns start a few at a time, the newest first, spaced out,
@@ -1374,10 +1412,7 @@ export class Engine {
         // Checked again right before starting: the owner may have moved on, archived or sent meanwhile.
         const now = this.store.session(s.id);
         if (!now || now.archived || this.running.has(s.id) || this.lineage(s.id).at(-1)?.id !== end.id) return;
-        this.append(s.id, "user", {
-          origin: "restart",
-          text: restartText(cutTools, owed),
-        });
+        this.accept(s.id, { origin: "restart", text: restartText(cutTools, owed, !!end.data.unstarted) });
         this.start(s.id);
         this.emitQueue(s.id);
         // Held until the turn ends or its first steps had time to run: a turn that
@@ -1459,6 +1494,11 @@ export class Engine {
   }
 }
 
+
+// What follows a session's last ended turn when a prompt was accepted and the
+// daemon went down before its turn started: the prompt, and no turn. A turn
+// that failed while it was set up said so (an error) and is not owed.
+const owedTurn = (tail: StoredEvent[]) => tail.some((e) => e.kind === "user") && !tail.some((e) => e.kind === "error" || e.kind === "turn_start");
 
 // A session continued this many times in a row, each continuation cut by the
 // next restart before it finished a step, is not continued again: something

@@ -57,3 +57,5 @@ export const promptsOf = (store: Store, sessionId: string, queueId: string) =>
 
 // What the crash tests queue: words and an attachment the owner was told are queued.
 export const QUEUED = { text: "queued while the first turn ran", images: [{ type: "image" as const, media_type: "image/png", data: "iVBORw0KGgo=" }] };
+// What they send to an idle session.
+export const SENT = { text: "sent just before the daemon went down", images: QUEUED.images };
