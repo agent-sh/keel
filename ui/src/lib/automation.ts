@@ -278,22 +278,63 @@ export type Target = { parent: string | null; child: string | null; child_delete
 export const alertTarget = (id: string) => api<Target>(`/api/alerts/${id}/target`);
 export const activityTarget = (id: string) => api<Target>(`/api/activity/${id}/target`);
 
-// Moves keyboard focus to an approval card once the page shows it (a few
-// seconds at most), so Enter answers that card and no other.
-export function focusApproval(id: string) {
-  const find = () => document.querySelector<HTMLElement>(`[data-approval-id="${CSS.escape(id)}"]`);
-  const go = (el: HTMLElement) => {
-    el.scrollIntoView({ block: "center" });
-    (el.querySelector<HTMLElement>('[data-testid="allow-once"]:not([disabled])') ?? el.querySelector<HTMLElement>("button:not([disabled])") ?? el).focus({ preventScroll: true });
+// Where the keyboard is to land on an approval card the owner is on the way to:
+// - "allow": on its Allow once, so Enter answers that card and no other (a
+//   link that names one request). A card whose text is not all shown never
+//   takes the keyboard on an answer: there it lands on the list of requests.
+// - "card": on the list of requests, not on an answer. For an arrival from a
+//   row that showed the request in short (the home screen, the Inbox): it is
+//   read here first, and a key pressed on the way in answers nothing.
+// - "deny": the card opens its denial, the keyboard in the reason field. Never on Allow.
+// The card itself reads this when it is drawn (`arrivalOf`), however late that
+// is: an arrival is never forgotten in a way that lets the card take the
+// keyboard on an answer. What is typed between a press of Deny and the reason
+// field taking the keyboard is kept for that field (`typed`).
+export type Arrival = { to: "allow" | "card" | "deny"; typed: string };
+const arrivals = new Map<string, Arrival & { stop: () => void }>();
+// The arrival a card is to honour, taken once (a later look gets nothing).
+export function arrivalOf(id: string): Arrival | undefined {
+  const a = arrivals.get(id);
+  if (!a) return undefined;
+  arrivals.delete(id);
+  a.stop();
+  return { to: a.to, typed: a.typed };
+}
+// One still waiting for its card (the card asks before it takes the keyboard by itself).
+export const arriving = (id: string): Arrival["to"] | undefined => arrivals.get(id)?.to;
+
+// Brings an approval card into view once the page shows it and gives it the keyboard as `to` says.
+export function focusApproval(id: string, to: Arrival["to"] = "allow") {
+  arrivals.get(id)?.stop();
+  // Letters typed on the way to a denial are the reason's: they are kept, not handed to whatever has the keyboard meanwhile.
+  const keep = (e: KeyboardEvent) => {
+    const a = arrivals.get(id);
+    if (!a || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
+    if (e.key.length === 1) a.typed += e.key;
+    else if (e.key === "Backspace") a.typed = a.typed.slice(0, -1);
+    else if (e.key !== "Enter") return;
+    e.preventDefault();
+    e.stopPropagation();
   };
-  const now = find();
-  if (now) return go(now);
-  const mo = new MutationObserver(() => {
+  // (Kept for a few seconds at most: a card that does not come by then is not coming for these keys.)
+  const stopKeys = () => removeEventListener("keydown", keep, true);
+  if (to === "deny") { addEventListener("keydown", keep, true); setTimeout(stopKeys, 4000); }
+  // An arrival waits for its card however late it is drawn: a card that comes late never takes the
+  // keyboard on an answer the arrival did not ask for. One nobody took (the request was answered
+  // elsewhere, the session is gone) is dropped after ten minutes.
+  const forget = setTimeout(() => arrivalOf(id), 600_000);
+  const mo = new MutationObserver(() => { if (find()) { mo.disconnect(); go(); } });
+  arrivals.set(id, { to, typed: "", stop: () => { stopKeys(); clearTimeout(forget); mo.disconnect(); } });
+  const find = () => document.querySelector<HTMLElement>(`[data-approval-id="${CSS.escape(id)}"]`);
+  // A card already on the page is told now; one drawn later reads the arrival itself.
+  const go = () => {
     const el = find();
-    if (el) { mo.disconnect(); clearTimeout(t); go(el); }
-  });
-  const t = setTimeout(() => mo.disconnect(), 5000);
-  mo.observe(document.body, { childList: true, subtree: true });
+    if (!el) return;
+    el.scrollIntoView({ block: "center" });
+    el.dispatchEvent(new CustomEvent("keel:arrive", { bubbles: false }));
+  };
+  if (find()) go();
+  else mo.observe(document.body, { childList: true, subtree: true });
 }
 
 // The name of a row's destination: the session, and the agent inside it when

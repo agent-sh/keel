@@ -3,11 +3,14 @@ import { Check, CheckCheck, ChevronDown, FilePen, MessageSquareShare, ShieldAler
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import { shownInPart } from "../../../src/safety/summary.ts";
 import { batches, batchName, coverName, hold, nextAction, pressable, READ_MS, settled, SETTLE_MS, spentAction, stand, type Action, type Batch, type Hold, type Stand } from "../lib/approvals.ts";
+import { arrivalOf, arriving } from "../lib/automation.ts";
+import { hasHidden, hasRtl } from "../lib/hidden-chars.ts";
 import { composing } from "../lib/keys.ts";
 import { safety, useSafety, type Approval, type Suggest } from "../lib/safety.ts";
 import { failed, reportError } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
 import { BlockedCards } from "./BlockedCards.tsx";
+import { Spelled } from "./Spelled.tsx";
 import { SecretCards } from "./SecretCards.tsx";
 import { TrustCards } from "./TrustCards.tsx";
 import { PlanCards } from "./PlanCard.tsx";
@@ -142,7 +145,9 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
     }
     const acts = new Map<string, Action>();
     const open = new Set(s.cards.filter((a) => a.state === "pending").map((a) => a.id));
-    for (const g of batches(s.cards, read, cut)) acts.set(g.tool, nextAction(s.acts.get(g.tool), g.ids, s.hot.has(g.tool), now, open));
+    // A text with marked characters is read and answered on its own, as one cut by its box is.
+    const alone = new Set([...cut, ...s.cards.filter((c) => hasHidden(c.summary, "\n\t")).map((c) => c.id)]);
+    for (const g of batches(s.cards, read, alone)) acts.set(g.tool, nextAction(s.acts.get(g.tool), g.ids, s.hot.has(g.tool), now, open));
     s.acts = acts;
     const key = JSON.stringify([[...read], [...live], [...grant], [...ripe], [...cut], [...acts].map(([tool, a]) => [tool, a.covered, a.live])]);
     if (key !== s.view.key) setView((s.view = { read, live, grant, ripe, cut, acts, key }));
@@ -223,7 +228,7 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
   const cards = useSafety((s) => s.approvals[sessionId] ?? EMPTY);
   const list = useRef<HTMLDivElement>(null);
   const { view, tick, waiting, setHot, spend } = useReadings(list, cards);
-  const groups = batches(waiting, view.read, view.cut);
+  const groups = batches(waiting, view.read, new Set([...view.cut, ...waiting.filter((c) => hasHidden(c.summary, "\n\t")).map((c) => c.id)]));
   const [hot, setHotTools] = useState<string[]>([]); // the tools whose action the pointer or the keyboard is on
   const [at, setAt] = useState<{ on: "once" | "all" | "row"; id?: string } | null>(null); // where the keyboard is in the list
   const [sending, setSending] = useState<string[]>([]); // the ids an action is answering
@@ -406,7 +411,7 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
 // whether a judgement lets the press through: one that does not takes no
 // keyboard either (`onMouseDown`), so a row that slid under the pointer is
 // not left holding it.
-function usePress<T>(judge: () => T, ok: (said: T) => boolean) {
+export function usePress<T>(judge: () => T, ok: (said: T) => boolean) {
   const down = useRef<{ said: T } | null>(null);
   return {
     onPointerDown: () => { down.current = { said: judge() }; },
@@ -560,18 +565,58 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   const once = useRef<HTMLButtonElement>(null);
   const ids = `approval-${a.id}`;
   const busy = answering || locked;
+  // A request is answered only for what was read. While its text is not all on
+  // the card (cut by its box, shown only in part by the daemon, or holding a
+  // character that had to be spelled out), the card takes no answer and never
+  // has the keyboard on one: Allow once and Always allow refuse, and say to
+  // open the whole text first. Opening it is the owner's own act.
+  const part = shownInPart(a); // the daemon kept more of the input than the card shows
+  const marked = hasHidden(a.summary, "\n\t");
+  const mustOpen = !whole && (cut || part || marked);
+  const unread = useRef(mustOpen);
+  unread.current = mustOpen;
+  const openFirst = `Open the whole ${a.kind === "shell" ? "command" : "text"} first`;
+  const [told, setTold] = useState(false); // a press was refused for that reason: said on the card until it is opened
+  const toList = () => list.current?.focus({ preventScroll: true });
+  // Whether the card is in the window: a page of a phone's track that is not the one shown takes no keyboard.
+  const inView = () => { const r = root.current?.getBoundingClientRect(); return !!r && r.width > 0 && r.right > 0 && r.left < innerWidth; };
   // Take focus so Enter answers, unless the owner is busy elsewhere: once, and
   // not while the card is new. A card that has just been drawn takes nothing:
   // an Enter on its way to the message box never lands on it. (Where the Allow
   // was out of view, the region brings it in, and it acts a moment after that.)
+  // An arrival that asked for the list, or for the denial, is honoured instead,
+  // however late the card is drawn (lib/automation.ts).
   const asked = useRef(false);
-  useEffect(() => {
-    if (!first || !ripe || asked.current) return;
+  const arrive = () => {
+    const arrival = arrivalOf(a.id);
+    if (!arrival) return false;
     asked.current = true;
-    if (mayTakeFocus()) once.current?.focus({ preventScroll: true });
+    if (arrival.to === "deny") { setReason((r) => r + arrival.typed); setDenying(true); }
+    else if (arrival.to === "card" || unread.current) toList();
+    else once.current?.focus({ preventScroll: true });
+    return true;
+  };
+  useEffect(() => {
+    arrive();
+    const el = root.current;
+    const on = () => void arrive();
+    el?.addEventListener("keel:arrive", on);
+    return () => el?.removeEventListener("keel:arrive", on);
+  }, []);
+  useEffect(() => {
+    if (!first || !ripe || asked.current || arriving(a.id)) return;
+    asked.current = true;
+    if (!mayTakeFocus() || !inView()) return;
+    if (unread.current) toList();
+    else once.current?.focus({ preventScroll: true });
   }, [first, ripe]);
+  // The keyboard never rests on an answer of a card that is not all read (its text was found cut after the keyboard came).
+  useEffect(() => {
+    const at = document.activeElement as HTMLElement | null;
+    if (mustOpen && at && root.current?.contains(at) && (at.dataset.testid === "allow-once" || at.dataset.testid === "allow-always")) toList();
+  }, [mustOpen]);
   const held = useHandBack(root, list);
-  const pressed = usePress(() => armed("live"), (ok) => ok);
+  const pressed = usePress(() => !unread.current && armed("live"), (ok) => ok);
   const nudge = useNudge();
   // Why a press on one of its answers does nothing now.
   const notYet = ripe ? "Not yet: it moved a moment ago" : "Not yet: it has only just arrived";
@@ -613,7 +658,6 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   );
   const notice = a.notice && <p className={cn("text-caption text-warn", dense ? "mb-1" : "mx-4 mt-2")} data-testid="approval-notice">{a.notice}</p>;
   // The whole of what the daemon kept of the input, when the card shows only its start.
-  const part = shownInPart(a); // the daemon kept more of the input than the card shows
   const kept = part ? (typeof a.input?._clipped === "string" ? a.input._clipped : JSON.stringify(a.input ?? {}, null, 2)) : "";
   const short = !whole && (cut || part);
   const summary = (
@@ -622,6 +666,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
         id={`${ids}-summary`}
         className={cn(
           "overflow-auto bg-code font-mono text-caption leading-relaxed whitespace-pre-wrap break-all",
+          // A command is shown in the order it is written: letters written right to left are not reordered among the rest.
+          a.kind === "shell" && "[direction:ltr] [unicode-bidi:bidi-override]",
           dense ? "rounded-md px-2.5 py-1.5" : "mx-4 mt-2.5 rounded-lg px-3 py-2",
           !whole && (dense ? "max-h-32" : "max-h-48"),
         )}
@@ -629,10 +675,21 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
         data-cut={short || undefined}
       >
         {a.kind === "shell" && <span className="select-none text-accent">$ </span>}
-        {whole && part ? kept : a.summary}
+        <Spelled text={whole && part ? kept : a.summary} />
       </pre>
+      {/* A character that hides or reorders text is spelled out above, and the card says that it did so. */}
+      {hasHidden(a.summary, "\n\t") && (
+        <p className={cn("mt-1 text-micro text-danger", !dense && "mx-4")} data-testid="approval-hidden">
+          This text holds characters that do not show as written. Each is spelled out and marked.
+        </p>
+      )}
+      {a.kind === "shell" && hasRtl(a.summary) && (
+        <p className={cn("mt-1 text-micro text-warn", !dense && "mx-4")} data-testid="approval-rtl">
+          It holds letters written right to left: they are shown in the order the command is written.
+        </p>
+      )}
       {/* Text that does not fit its box says so, and opens in place. Cut, it is read and answered on its own. */}
-      {(short || whole) && (
+      {(short || whole || marked) && (
         <div className={cn("mt-1 flex flex-wrap items-center gap-x-2 text-micro", !dense && "mx-4")}>
           {short && (
             <span className="text-warn" data-testid="approval-cut">
@@ -649,11 +706,13 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
             data-testid="approval-expand"
             aria-expanded={whole}
             aria-controls={`${ids}-summary`}
-            onClick={() => setWhole(!whole)}
+            onClick={() => { setWhole(!whole); setTold(false); }}
             className="k-link rounded-sm text-accent-ink underline underline-offset-2 outline-none hover:text-fg focus-visible:ring-2 focus-visible:ring-ring"
           >
             {whole ? "Fold" : a.kind === "shell" ? "Show the whole command" : "Show all of it"}
           </button>
+          {/* Said once a press was refused for it, where the control that opens the text is. */}
+          {mustOpen && told && <span className="text-warn" role="status" data-testid="approval-open-first">{openFirst}.</span>}
         </div>
       )}
     </>
@@ -673,6 +732,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
       data-dense={dense || undefined}
       data-hot={hot || undefined}
       data-live={live || undefined}
+      data-must-open={mustOpen || undefined}
       className={cn(
         "k-approval group/card animate-in overflow-hidden rounded-2xl border bg-raised shadow-2",
         a.risk === "high" ? "border-danger/50" : "border-accent/40",
@@ -747,19 +807,19 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
           <button
             ref={once}
             disabled={busy}
-            aria-disabled={!live || undefined}
+            aria-disabled={!live || mustOpen || undefined}
             data-nudge={nudge.mark}
             data-testid="allow-once"
             data-stop="card"
             onPointerDown={pressed.onPointerDown}
             onMouseDown={pressed.onMouseDown}
-            onClick={(e) => { if (pressed.said(e)) answer({ choice: "once" }); else nudge.refuse(notYet); }}
+            onClick={(e) => { if (pressed.said(e)) answer({ choice: "once" }); else if (mustOpen) { setTold(true); nudge.refuse(openFirst); } else nudge.refuse(notYet); }}
             className="k-allow h-8 shrink-0 whitespace-nowrap rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-raised aria-disabled:cursor-default aria-disabled:opacity-50"
           >
             Allow once
           </button>
           {nudge.line}
-          {a.risk === "low" && a.suggest.length > 0 && <AlwaysButton a={a} busy={busy} live={grant} armed={() => armed("grant")} notYet={notYet} onGrant={(rules, session) => answer({ choice: session ? "session" : "always", rules })} />}
+          {a.risk === "low" && a.suggest.length > 0 && <AlwaysButton a={a} busy={busy} live={grant && !mustOpen} armed={() => !unread.current && armed("grant")} notYet={mustOpen ? openFirst : notYet} onRefused={() => { if (unread.current) setTold(true); }} onGrant={(rules, session) => answer({ choice: session ? "session" : "always", rules })} />}
           <button
             disabled={busy}
             data-testid="deny"
@@ -780,13 +840,13 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
 const KIND_LABEL = { shell: "Commands", edit: "Edits under", tool: "Tool" } as const;
 
 // `live` and `armed`: as the card's Allow once, the grant does not open within the settle time.
-function AlwaysButton({ a, busy, live, armed, notYet, onGrant }: { a: Approval; busy: boolean; live: boolean; armed: () => boolean; notYet: string; onGrant: (rules: Suggest[], session: boolean) => void }) {
+function AlwaysButton({ a, busy, live, armed, notYet, onRefused, onGrant }: { a: Approval; busy: boolean; live: boolean; armed: () => boolean; notYet: string; onRefused?: () => void; onGrant: (rules: Suggest[], session: boolean) => void }) {
   const [rules, setRules] = useState<Suggest[]>(a.suggest);
   const [open, setOpen] = useState(false);
   const pressed = usePress(armed, (ok) => ok);
   const nudge = useNudge();
   return (
-    <Popover.Root open={open} onOpenChange={(o, d) => { if (!o || pressed.said({ detail: (d.event as { detail?: number }).detail ?? 0 })) setOpen(o); else nudge.refuse(notYet); }}>
+    <Popover.Root open={open} onOpenChange={(o, d) => { if (!o || pressed.said({ detail: (d.event as { detail?: number }).detail ?? 0 })) setOpen(o); else { nudge.refuse(notYet); onRefused?.(); } }}>
       <Popover.Trigger
         disabled={busy}
         data-nudge={nudge.mark}
@@ -825,7 +885,7 @@ function AlwaysButton({ a, busy, live, armed, notYet, onGrant }: { a: Approval; 
                 onClick={() => { setOpen(false); onGrant(rules, false); }}
                 className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90"
               >
-                <Check className="size-3.5" /> In this workspace
+                <Check className="size-3.5" /> In this folder
               </button>
               <button
                 data-testid="grant-session"

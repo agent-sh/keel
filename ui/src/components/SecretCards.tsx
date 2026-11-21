@@ -2,6 +2,7 @@ import { KeyRound, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { secrets, useSecrets, type SecretMeta, type SecretRequest } from "../lib/secrets.ts";
 import { reportError, failed } from "../lib/store.ts";
+import { useUI } from "../lib/ui.ts";
 
 const NONE: never[] = [];
 
@@ -40,6 +41,10 @@ function Head({ title, sub }: { title: string; sub?: string }) {
 }
 
 function RequestCard({ r }: { r: SecretRequest }) {
+  // The field takes the keyboard only in the session the owner has open (the helm): a request of a
+  // session that is merely on the page (a pane beside it, a phone's page behind the home screen)
+  // never pulls the keyboard, or the screen, to itself.
+  const helm = useUI((x) => x.route.name === "session" && x.route.id === r.session_id);
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -54,7 +59,7 @@ function RequestCard({ r }: { r: SecretRequest }) {
       {r.purpose && <p className="px-4 pt-1.5 text-caption text-muted">{r.purpose}</p>}
       <form className="flex items-center gap-1.5 px-4 py-3" onSubmit={(e) => { e.preventDefault(); if (value) act(() => secrets.give(r.session_id, r.id, value)); }}>
         <input
-          autoFocus
+          autoFocus={helm}
           type="password"
           autoComplete="off"
           data-testid="secret-value"
