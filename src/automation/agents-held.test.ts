@@ -2,7 +2,7 @@
 // index.ts wires it: what the hold does to its agents' reports cannot be shown
 // with a stand-in engine, since the hold and the turns it lets through are the
 // engine's own.
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +11,7 @@ const dir = mkdtempSync(join(tmpdir(), "keel-agents-held-"));
 process.env.KEEL_CONFIG_DIR ??= join(dir, "config"); // before any Keel source is loaded
 const { Bus } = await import("../core/bus.ts");
 const { Store } = await import("../core/store.ts");
-const { registerHooks } = await import("../engine/hooks.ts");
+const { allHooks, registerHooks } = await import("../engine/hooks.ts");
 const { Engine } = await import("../engine/turn.ts");
 const core = await import("./core.ts");
 const agents = await import("./agents.ts");
@@ -51,6 +51,9 @@ waits.migrate();
 activity.migrate();
 goals.migrate();
 failures.init();
+// The hooks are process-wide: other test files run without this file's.
+const hooksBefore = allHooks().length;
+afterAll(() => { allHooks().length = hooksBefore; });
 registerHooks({
   turnStart: (s) => agents.onTurnStart(s.id),
   turnEnd: (s, reason) => {

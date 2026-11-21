@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { APIRequestContext } from "@playwright/test";
+import type { APIRequestContext } from "./isolate.ts";
 import { emptyKeel } from "./peer.ts";
 import { HAIKU, shoot } from "./shots.ts";
 

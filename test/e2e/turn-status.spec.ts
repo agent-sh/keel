@@ -1,4 +1,4 @@
-import type { WebSocketRoute } from "@playwright/test";
+import type { WebSocketRoute } from "./isolate.ts";
 import { expect, test } from "./isolate.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";

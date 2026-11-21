@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import type { APIRequestContext, Page } from "@playwright/test";
+import type { APIRequestContext, Page } from "./isolate.ts";
 import { shoot, tabInto } from "./shots.ts";
 
 // Feature: the Branches panel shows every branch of a session (edits and

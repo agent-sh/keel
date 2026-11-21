@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Locator, Page } from "@playwright/test";
+import type { Locator, Page } from "./isolate.ts";
 import { expect, test } from "./isolate.ts";
 import { shoot } from "./shots.ts";
 

@@ -54,20 +54,20 @@ export function turnReceipt(store: Store, tracer: Tracer, turnEvent: string) {
     after = rows.at(-1)!.seq;
   }
   const tip = [...path.values()].at(-1)!;
-  const inside: StoredEvent[] = [];
+  const ofTurn: StoredEvent[] = [];
   for (let n: Node | undefined = tip; n && n.id !== start.id; n = n.parent ? path.get(n.parent) : undefined) {
     // Only these kinds have something the receipt names.
-    if (n.kind === "user" || n.kind === "tool_result" || n.kind === "turn_end") inside.push(store.event(n.id)!);
+    if (n.kind === "user" || n.kind === "tool_result" || n.kind === "turn_end") ofTurn.push(store.event(n.id)!);
   }
-  inside.reverse();
-  const end = tip.kind === "turn_end" ? inside.at(-1)! : null;
+  ofTurn.reverse();
+  const end = tip.kind === "turn_end" ? ofTurn.at(-1)! : null;
 
   // A prelude note is not a prompt. Do not reach into a prior turn for one.
   let opener = start.parent ? store.event(start.parent) : undefined;
   while (opener?.session_id === sid && (opener.kind === "note" || opener.kind === "compaction")) {
     opener = opener.parent ? store.event(opener.parent) : undefined;
   }
-  const inputs = inside.filter((e) => e.kind === "user").map(input);
+  const inputs = ofTurn.filter((e) => e.kind === "user").map(input);
   if (opener?.session_id === sid && opener.kind === "user") inputs.unshift(input(opener));
 
   const root = tracer.span(turnSpanId(traceIdOf(start.id)));
@@ -80,7 +80,7 @@ export function turnReceipt(store: Store, tracer: Tracer, turnEvent: string) {
   }));
   const dispatched = new Map(children.filter((s) => s.kind === "tool").map((s) => [s.attrs.call_id, s]));
   const tools: ToolReceipt[] = [];
-  for (const e of inside) {
+  for (const e of ofTurn) {
     if (e.kind !== "tool_result" || !Array.isArray(e.data?.results)) continue;
     for (const r of e.data.results) {
       const span = dispatched.get(r?.tool_use_id);

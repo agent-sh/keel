@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import type { APIRequestContext, Page } from "@playwright/test";
+import type { APIRequestContext, Page } from "./isolate.ts";
 import { openPanel, shoot } from "./shots.ts";
 
 // Feature: the task panel when something else moved first. A rename the page

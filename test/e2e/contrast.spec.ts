@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import type { Page } from "@playwright/test";
+import type { Page } from "./isolate.ts";
 
 // Feature: the color tokens read on every surface they are used on, in both
 // themes. Warn text (a caption, or a chip on its own tint) has 4.5:1 against
