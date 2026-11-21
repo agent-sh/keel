@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { joinAgents } from "./agents.ts";
 import { classOf, optionFor, streamedInput } from "./external.ts";
+import { splitCommand } from "../safety/shell.ts";
 
 // Kimi Code asks permission for a call whose input it only streamed as text.
 test("a permission request without input is judged by the input the agent streamed", () => {
@@ -8,6 +9,10 @@ test("a permission request without input is judged by the input the agent stream
   expect(classOf({ ...announced, rawInput: streamedInput(announced) }, "/w")).toEqual({ kind: "shell", command: "rm -rf build" });
   expect(streamedInput({ content: [{ type: "content", content: { type: "text", text: '{"command":"rm -r' } }] })).toBeNull();
   expect(classOf({ kind: "edit", locations: [{ path: "a.txt" }] }, "/w")).toEqual({ kind: "edit", paths: ["/w/a.txt"] });
+  // An argument list is quoted word by word: a word that holds a quote does not close another.
+  const argv = classOf({ kind: "execute", rawInput: { command: ["find", ".", "'", "-delete", "-name", "'"] } }, "/w");
+  expect(argv.kind === "shell" && splitCommand(argv.command)![0]!.words).toEqual(["find", ".", "'", "-delete", "-name", "'"]);
+  expect(classOf({ kind: "execute", rawInput: { command: ["bash", "-lc", "git status"] } }, "/w")).toEqual({ kind: "shell", command: "git status" });
 });
 
 test("keel answers once, never with the agent's standing answer", () => {

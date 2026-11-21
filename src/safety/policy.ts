@@ -36,7 +36,9 @@ export type Suggest = { kind: RuleKind; pattern: string; bind?: string };
 
 export type CallClass =
   | { kind: "read" }
-  | { kind: "shell"; command: string; escalate?: boolean; cwd?: string }
+  // `interpreter`: the program that runs the command when it is not bash. The
+  // rules read a command as bash does, so none of it is then taken for a read.
+  | { kind: "shell"; command: string; escalate?: boolean; cwd?: string; interpreter?: string }
   | { kind: "control" } // input to, or the stop of, a process an allowed call started
   | { kind: "edit"; paths: string[] }
   // `grant` names the standing answer that covers it when the tool's name is
@@ -60,7 +62,7 @@ const onlyOwner = (why: string): Decision => ({ ask: { risk: "high", why, sugges
 // What a call does. The tool's own definition says which kind of call it is
 // (its read flag and its kind); the input only supplies the command or the
 // paths of that kind, so no key a model puts in a call changes how it is judged.
-export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKind; input_schema?: any; built?: any }, input: any, cwd: string): CallClass {
+export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKind; input_schema?: any; built?: any; interpreter?(input: any): string }, input: any, cwd: string): CallClass {
   if (tool.readOnly) return { kind: "read" };
   switch (tool.kind) {
     case "control":
@@ -71,7 +73,8 @@ export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKin
       // A tool that offers it (Codex's exec_command) can ask to run outside the sandbox.
       // Read from the running build's schema: a session may carry an older definition (Tool.built).
       const escalate = !!(tool.built ?? tool.input_schema)?.properties?.sandbox_permissions && input?.sandbox_permissions === "require_escalated";
-      return { kind: "shell", command: cmd, escalate: escalate || undefined, cwd };
+      const runs = tool.interpreter?.(input);
+      return { kind: "shell", command: cmd, escalate: escalate || undefined, cwd, ...(runs !== undefined && !BASH.test(runs) ? { interpreter: runs } : {}) };
     }
     case "edit": {
       const paths: string[] = [];
@@ -86,12 +89,17 @@ export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKin
   }
 }
 
-function shellText(input: any): string | null {
+const BASH = /^(\/usr)?(\/bin\/)?bash$/;
+
+// The command of a shell call as one bash line. An argument list is quoted
+// word by word, so a word is never read as shell syntax; `bash -c SCRIPT` is
+// the script. Another shell's script stays an argument: the rules read bash.
+export function shellText(input: any): string | null {
   const c = input?.command ?? input?.cmd;
   if (typeof c === "string") return c;
   if (Array.isArray(c) && c.every((x) => typeof x === "string")) {
     const w = c as string[];
-    if (w.length === 3 && /(^|\/)(ba|z)?sh$/.test(w[0]!) && /^-l?c$/.test(w[1]!)) return w[2]!;
+    if (w.length === 3 && BASH.test(w[0]!) && /^-l?c$/.test(w[1]!)) return w[2]!;
     return w.map((w: string) => (/^[\w./=:@%+-]+$/.test(w) ? w : `'${w.replace(/'/g, "'\\''")}'`)).join(" ");
   }
   return null;
@@ -114,12 +122,12 @@ export function decide(c: CallClass, f: Facts): Decision {
     // Other modes keep their existing handling of escalation requests.
     if (c.escalate && (f.sandboxed || f.mode === "auto")) {
       if (f.mode === "read-only") return { deny: "This session is read-only: commands cannot leave the sandbox." };
-      const inner = decideShell(c.command, f, c.cwd);
+      const inner = decideShell(c.command, f, c.cwd, c.interpreter);
       if ("deny" in inner) return inner;
       const why = ["the command asks to run outside the sandbox", "ask" in inner ? inner.ask.why : undefined].filter(Boolean).join("; and ");
       return f.mode === "auto" ? onlyOwner(why) : { ask: { risk: "high", why, suggest: [] } };
     }
-    return decideShell(c.command, f, c.cwd);
+    return decideShell(c.command, f, c.cwd, c.interpreter);
   }
   if (c.kind === "refused") return { deny: c.why };
   if (c.kind === "drive") return decideDrive(c, f);
@@ -154,7 +162,7 @@ const never = (why: string, f: Facts): Decision =>
     ? { deny: `Refused: the command ${why}, which never runs without the owner. Do not try another form of it; say what you wanted it for and go on with the rest.` }
     : onlyOwner(`the command ${why}`);
 
-function decideShell(command: string, f: Facts, cwd = f.workspace): Decision {
+function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?: string): Decision {
   const parts = splitCommand(command);
   const home = f.home ?? homedir();
   const worst = f.mode === "read-only" ? null : parts ? neverAllowed(parts, cwd, home) : neverAllowedText(command, home);
@@ -171,9 +179,17 @@ function decideShell(command: string, f: Facts, cwd = f.workspace): Decision {
   }
   if (f.mode === "full-auto") return { allow: true };
   const shellRules = f.rules.filter((r) => r.kind === "shell");
-  const open = parts.filter((p) => !isReadOnly(p) && !shellRules.some((r) => matchRule(r.pattern, p)));
+  const open = parts.filter((p) => (interpreter !== undefined || !isReadOnly(p)) && !shellRules.some((r) => matchRule(r.pattern, p)));
   if (!open.length) return { allow: true };
-  if (f.mode === "read-only") return { deny: `This session is read-only: only read-only commands run, and \`${open[0]!.text}\` is not one.` };
+  if (f.mode === "read-only") {
+    const p = open[0]!;
+    // Say what would make it a read, when that is all it lacks.
+    const why = isReadOnly(p) ? ` It runs in ${interpreter}, and only a command bash runs is read as a read: run it with bash.`
+      : p.dyn && isReadOnly({ ...p, dyn: undefined, splits: undefined }) ? " One of its arguments comes from an expansion ($(...), a variable, {a,b}), which could add an option that writes: write the value out."
+      : p.unknown && isReadOnly({ ...p, unknown: undefined }) ? " The rules cannot follow what the shell evaluates in it (arithmetic, a subscript, a sliced or indirect variable, a case inside a substitution): write it plainly."
+      : "";
+    return { deny: `This session is read-only: only read-only commands run, and \`${p.text}\` is not one.${why}` };
+  }
   if ((f.mode === "auto-edits" || f.mode === "auto") && f.sandboxed) return { allow: true, why: "sandboxed" };
   // A part with no command word (a redirect after a group, a loop or nothing) has no rule to suggest.
   return { ask: { risk: "low", suggest: [...new Set(open.filter((p) => p.words.length).map(suggestRule))].slice(0, 5).map((pattern) => ({ kind: "shell" as const, pattern })) } };

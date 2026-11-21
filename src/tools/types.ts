@@ -73,6 +73,10 @@ export type Tool = ToolSpec & {
   // Where a call's relative paths resolve, when not the session's folder
   // (apply_patch: the shell's current directory).
   cwdOf?(ctx: ToolContext, input: any): string;
+  // The program a shell tool hands its command to, when a call can name one
+  // (exec_command's shell). The gate reads a command as bash does: what
+  // another interpreter runs is never taken for a read.
+  interpreter?(input: any): string;
   // The effective command Auto can judge, or undefined for an unsupported
   // invocation (custom interpreter, login startup, intercepted commands).
   autoShell?(input: any): { command: string; interpreter: string; options?: unknown } | undefined;

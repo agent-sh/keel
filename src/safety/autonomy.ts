@@ -186,6 +186,8 @@ export function neverAllowed(command: Simple[], cwd: string, home: string): stri
   for (const { s, dir } of parts) {
     const w = afterEnv(s.words);
     const [prog, ...args] = w;
+    // A credential file read through a redirect, whatever reads it (a loop's `done < file` has no command word).
+    if (s.inputs?.some((t) => CRED_PATH.test(t))) reads = true;
     if (!prog) continue;
     const run = prog === "sudo" || prog === "doas" ? sudoBody(args) : w;
     const [p, ...a] = run;
@@ -212,7 +214,6 @@ export function neverAllowed(command: Simple[], cwd: string, home: string): stri
     if ((p === "printenv" || p === "env") && a.length === 0) reads = true;
     // A credential file read or sent (an ssh key given to ssh as its identity is not).
     if (p && !KEY_USERS.has(p) && w.slice(1).some((x) => CRED_PATH.test(x))) reads = true;
-    if (s.redirects && CRED_PATH.test(s.text) && /<\s*\S/.test(s.text)) reads = true;
   }
   if (reads && sends) return "reads credentials and sends data over the network";
   return null;

@@ -114,3 +114,36 @@ test("a command that writes is never run as a read: refused in Read only and Pla
   expect(kind(decide(sh("echo a > f"), facts("ask", { rules: [rule("shell", "echo *")] })))).toBe("allow");
   expect(kind(decide(sh("{ echo a; } > f"), facts("ask", { rules: [rule("shell", "echo *")] })))).toBe("ask-low");
 });
+
+test("a command another interpreter runs is never read as a read", () => {
+  const exec = { ...tool("exec_command", "shell"), interpreter: (i: any) => i?.shell || "bash" };
+  const cls = (input: any) => classify(exec, input, ws);
+  // Python reads this line as a write; bash reads it as `cat` with three words.
+  const py = { cmd: `cat = f'{open("f","w")}'`, shell: "python3", login: false };
+  expect(cls(py)).toMatchObject({ kind: "shell", interpreter: "python3" });
+  for (const input of [py, { cmd: "ls", shell: "fish" }, { cmd: "ls", shell: "sh" }, { cmd: "ls", shell: "/tmp/x/bash" }]) {
+    expect([input.shell, kind(decide(cls(input), facts("read-only")))]).toEqual([input.shell, "deny"]);
+    expect([input.shell, kind(decide(cls(input), facts("ask")))]).toEqual([input.shell, "ask-low"]);
+  }
+  for (const input of [{ cmd: "ls" }, { cmd: "ls", shell: "bash" }, { cmd: "ls", shell: "/bin/bash" }, { cmd: "ls", shell: "/usr/bin/bash" }]) {
+    expect(cls(input)).toEqual({ kind: "shell", command: "ls", cwd: ws });
+    expect(kind(decide(cls(input), facts("read-only")))).toBe("allow");
+  }
+  // A grant still covers it, and the risk rules still read it.
+  expect(kind(decide(cls({ cmd: "npm test", shell: "zsh" }), facts("ask", { rules: [rule("shell", "npm test *")] })))).toBe("allow");
+  expect(kind(decide(cls({ cmd: "git push --force", shell: "zsh" }), facts("ask")))).toBe("ask-high");
+  const d = decide(cls({ cmd: "ls", shell: "fish" }), facts("read-only"));
+  expect("deny" in d && d.deny).toContain("run it with bash");
+  // Only bash's own script is unwrapped from an argument list; the words of any other are quoted as words.
+  expect(classify(tool("shell", "shell"), { command: ["sh", "-c", "ls"] }, ws)).toMatchObject({ command: "sh -c ls" });
+  const argv = classify(tool("shell", "shell"), { command: ["find", ".", "'", "-delete", "-name", "'"] }, ws);
+  expect(kind(decide(argv, facts("read-only")))).toBe("deny");
+  expect(kind(decide(argv, facts("ask")))).toBe("ask-low");
+});
+
+test("a Read only session is told when an expansion is all that keeps a command from being a read", () => {
+  const d = decide({ kind: "shell", command: "git diff $(git merge-base main HEAD)" }, facts("read-only"));
+  expect("deny" in d && d.deny).toContain("write the value out");
+  const plain = decide({ kind: "shell", command: "git commit -m x" }, facts("read-only"));
+  expect("deny" in plain && plain.deny).not.toContain("write the value out");
+});

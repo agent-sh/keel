@@ -48,6 +48,30 @@ test("a line with text and no part is unknown, not a read", () => {
   expect(readOnlyCommand("echo 'open")).toBe(false);
 });
 
+test("a word an expansion makes is marked, and what evaluates a value is unknown", () => {
+  const made = (c: string) => split(c).map((s) => [s.words.join(" "), s.dyn ?? [], !!s.splits, !!s.unknown]);
+  expect(made("find . $(echo -delete)")).toEqual([["echo -delete", [], false, false], ["find . $(...)", [2], true, false]]);
+  expect(made('cat "$f" $g')).toEqual([['cat $f $g', [1, 2], true, false]]);
+  expect(made('[ -n "$x" ]')).toEqual([["[ -n $x ]", [2], false, false]]);
+  expect(made("grep 'a$' f; echo $? $#")).toEqual([["grep a$ f", [], false, false], ["echo $? $#", [], false, false]]);
+  expect(made("ls src/{a,b} stash@{0} {}")).toEqual([["ls src/{a,b} stash@{0} {}", [1], true, false]]);
+  expect(made("echo $'\\x2d'")).toEqual([["echo x2d", [1], false, false]]);
+  for (const c of ["echo ${a[i]}", "echo ${x:i:1}", "echo ${!x}", "echo ${x@P}", "echo $((i))", "((i))", "echo $[i]", 'echo "${x:-"y"}"'])
+    expect([c, split(c).some((s) => s.unknown)]).toEqual([c, true]);
+  for (const c of ["echo ${x}", "echo ${#x}", "echo ${x:-y}", "echo ${x%/*}", 'echo "${x//a/b}"'])
+    expect([c, split(c).some((s) => s.unknown)]).toEqual([c, false]);
+});
+
+test("sed and awk are reads only when their script is", () => {
+  for (const c of ["sed -n 1,20p f", "sed 's/a/b/g;s|x|y|' f", "sed -n '/a/,/b/{p;n;p}' f", "sed ':a;N;$!ba;s/\\n/ /g' f", "sed -n '$!{h;d};x;G;p' f", "sed '1i\\\nhead' f", "sed -E -e 's/[0-9]+/N/' -e 2q f",
+    "awk '{print $1}' f", "awk -F: -v n=2 'NR>n {print $1}' f", "awk '$1 > 5' f"])
+    expect([c, ro(c)]).toEqual([c, true]);
+  for (const c of ["sed -n 'w out' f", "sed 's/a/b/w out' f", "sed 's/a/b/e' f", "sed 'e' f", "sed '#x\\\nw out' f", "sed 'r f\\\nw out' f", "sed 'a\\\ntext\nw out' f", "sed 's/[/]/;/w f/p' f",
+    "sed 's/a/b/;wout' f", "sed -f s.sed f", "sed --in-pl p f", "sed '\\,x,w out' f", "sed 's[a[b[w out' f",
+    "awk '{print > \"o\"}' f", "awk '{print $1} NR>5 {exit}' f", "awk '{system(\"x\")}' f", "awk '{print | \"x\"}' f", "awk -f p.awk f", "awk '{print}' -i inplace f"])
+    expect([c, ro(c)]).toEqual([c, false]);
+});
+
 test("read-only commands", () => {
   for (const c of ["ls -la", "git status", "git -C sub log --oneline -5", "rg foo src | head -20", "cat a 2>/dev/null", "sed -n 1,20p f", "find . -name '*.ts'"])
     expect(ro(c)).toBe(true);

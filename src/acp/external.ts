@@ -16,7 +16,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import type { Store } from "../core/store.ts";
 import { emptyUsage, type Session, type StoredEvent, type ToolResultBlock, type Usage } from "../core/types.ts";
 import type { ExternalIO } from "../engine/hooks.ts";
-import type { CallClass } from "../safety/policy.ts";
+import { shellText, type CallClass } from "../safety/policy.ts";
 import type { AcpAgent, AcpAgents } from "./agents.ts";
 import { AcpConnection } from "./rpc.ts";
 
@@ -38,8 +38,8 @@ export function classOf(tc: Json, cwd: string): CallClass {
     case "edit": case "delete": case "move":
       return paths.length ? { kind: "edit", paths: [...new Set(paths)] } : { kind: "other" };
     case "execute": {
-      const c = raw.command ?? raw.cmd;
-      const command = typeof c === "string" ? c : Array.isArray(c) ? c.join(" ") : typeof tc.title === "string" ? tc.title : "";
+      // An argument list is quoted word by word: joined bare, a word with a quote or a space would read as other words.
+      const command = shellText(raw) ?? (typeof tc.title === "string" ? tc.title : "");
       return command ? { kind: "shell", command } : { kind: "other" };
     }
     default:
