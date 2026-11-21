@@ -189,7 +189,12 @@ describe("keel service install", () => {
 
     // An executable systemd would refuse is refused here, and the unit on disk stays as it was.
     const quoted = await keel(["service", "install", "--exec", join(odd, 'the "keel"')], { state, env: { XDG_CONFIG_HOME: config } });
-    expect([quoted.code, quoted.out, quoted.err.trim()]).toEqual([1, "", `keel: systemd does not start an executable whose path holds a quote or a backslash: ${join(odd, 'the "keel"')}`]);
+    expect([quoted.code, quoted.out, quoted.err.trim()]).toEqual([1, "", `keel: systemd does not start an executable whose path holds a quote, a backslash or a control character: ${JSON.stringify(join(odd, 'the "keel"'))}`]);
+    // A tab or a delete character too: systemd reads neither in the path it executes.
+    for (const name of ["the\tkeel", "the\x7fkeel"]) {
+      const control = await keel(["service", "install", "--print", "--exec", join(odd, name)], { state, env: { XDG_CONFIG_HOME: config } });
+      expect([control.code, control.out, control.err.trim()]).toEqual([1, "", `keel: systemd does not start an executable whose path holds a quote, a backslash or a control character: ${JSON.stringify(join(odd, name))}`]);
+    }
     expect(readFileSync(unitPath, "utf8")).toBe(printed.out);
   }, 30_000);
 

@@ -35,7 +35,7 @@ WantedBy=default.target
 export function unitWord(s: string, executable = false): string {
   if (/[\n\r\0]/.test(s)) throw new Error(`a path with a line break cannot go in a unit: ${JSON.stringify(s)}`);
   // systemd itself refuses these in the path it executes, however they are written.
-  if (executable && /["'\\]/.test(s)) throw new Error(`systemd does not start an executable whose path holds a quote or a backslash: ${s}`);
+  if (executable && /[\x00-\x1f\x7f"'\\]/.test(s)) throw new Error(`systemd does not start an executable whose path holds a quote, a backslash or a control character: ${JSON.stringify(s)}`);
   if (/^[\w@:.,/+=-]+$/.test(s)) return s;
   const q = s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/%/g, "%%");
   return `"${executable ? q : q.replace(/\$/g, "$$$$")}"`;
