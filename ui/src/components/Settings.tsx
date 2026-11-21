@@ -47,11 +47,12 @@ export function Card({ children }: { children: ReactNode }) {
 }
 
 // Text size: six steps, each shown as the letter at its size. It scales the
-// whole interface (type, spacing, controls), not the page zoom.
+// whole interface (type, spacing, controls), not the page zoom. The six share
+// the row's width in equal parts, so all of them fit a phone at any size.
 function TextSize() {
   const scale = useUI((s) => s.scale);
   return (
-    <Choices aria-label="Text size" data-testid="text-size" value={scale} onValueChange={(v) => setScale(v as number)} className="inline-flex items-stretch rounded-md border border-line bg-sunken p-0.5">
+    <Choices aria-label="Text size" data-testid="text-size" value={scale} onValueChange={(v) => setScale(v as number)} className="grid w-56 max-w-full grid-cols-6 rounded-md border border-line bg-sunken p-0.5">
       {SCALES.map((v, i) => (
         <Radio.Root
           key={v}
@@ -61,7 +62,7 @@ function TextSize() {
           aria-label={`${SCALE_NAMES[i]}, ${Math.round(v * 100)}%`}
           title={`${SCALE_NAMES[i]} (${Math.round(v * 100)}%)`}
           data-testid={`text-size-${Math.round(v * 100)}`}
-          className={cn("grid h-8 w-9 place-items-center rounded-sm font-semibold leading-none text-muted transition-colors", scale === v ? "bg-raised text-fg shadow-1" : "hover:text-fg")}
+          className={cn("grid h-8 min-w-0 place-items-center rounded-sm font-semibold leading-none text-muted transition-colors", scale === v ? "bg-raised text-fg shadow-1" : "hover:text-fg")}
           style={{ fontSize: `${Math.round(13 * v * 10) / 10}px` }}
         >
           A

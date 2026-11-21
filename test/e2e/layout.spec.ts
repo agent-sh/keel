@@ -317,3 +317,38 @@ test("pane count and settings choices by keyboard", async ({ page, request }) =>
   await expect(page.getByTestId("user-message")).toHaveCount(0);
   await request.delete(`/api/sessions/${s.id}`);
 });
+
+// Settings > General on a small phone at the largest text size: all six text
+// sizes are on the screen, the one in use is marked, and the default is one
+// tap away with nothing to pan to.
+test("text size choices fit a small phone", async ({ page }) => {
+  await page.addInitScript(() => { if (!sessionStorage.getItem("seeded")) { sessionStorage.setItem("seeded", "1"); localStorage.setItem("keel.textScale", "1.5"); } });
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.goto("/settings/general");
+  const sizes = page.getByTestId("text-size");
+  await sizes.scrollIntoViewIfNeeded();
+  const radios = sizes.getByRole("radio");
+  await expect(radios).toHaveCount(6);
+  for (const r of await radios.all()) await expect(r).toBeInViewport({ ratio: 1 });
+  const group = (await sizes.boundingBox())!;
+  expect(group.x).toBeGreaterThanOrEqual(0);
+  expect(group.x + group.width).toBeLessThanOrEqual(320);
+  // The six stand in one row, in order, none over another.
+  const boxes = await Promise.all((await radios.all()).map(async (r) => (await r.boundingBox())!));
+  for (let i = 1; i < boxes.length; i++) {
+    expect(boxes[i]!.x).toBeGreaterThanOrEqual(boxes[i - 1]!.x + boxes[i - 1]!.width - 0.5);
+    expect(Math.abs(boxes[i]!.y - boxes[0]!.y)).toBeLessThan(1);
+  }
+  const current = sizes.getByRole("radio", { checked: true });
+  await expect(current).toHaveAttribute("data-testid", "text-size-150");
+  expect(await current.evaluate((el) => getComputedStyle(el).backgroundColor)).not.toBe(await sizes.getByTestId("text-size-100").evaluate((el) => getComputedStyle(el).backgroundColor));
+  await shoot(page, "layout-10-text-size-phone");
+  // Back to the default from where the page stands.
+  await sizes.getByTestId("text-size-100").click();
+  expect(await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize))).toBe(17);
+  await expect(sizes.getByRole("radio", { checked: true })).toHaveAttribute("data-testid", "text-size-100");
+  // With room the control keeps its own width beside the label.
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  expect((await sizes.boundingBox())!.width).toBeLessThan(260);
+  await shoot(page, "layout-11-text-size-wide");
+});
