@@ -2,7 +2,7 @@
 // live sessions in order of attention.
 import { useEffect, useMemo, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { useStore } from "../lib/store.ts";
+import { liveNow, useStore } from "../lib/store.ts";
 import { WATCH_LABEL, WATCH_RANK, useWatches, type Watch } from "../lib/watch.ts";
 import { cn } from "../lib/utils.ts";
 
@@ -11,15 +11,18 @@ export function Mark({ w, className }: { w: Watch; className?: string }) {
   return <span className={cn("k-mark", className)} data-watch={w} role="img" aria-label={WATCH_LABEL[w]} />;
 }
 
-// Re-renders every `ms` while `on`; idle screens do not tick.
+// Re-renders every `ms` while `on`; idle screens do not tick. The time stops
+// while the daemon is unreachable: the page does not know the work goes on.
 export function useNow(on: boolean, ms = 1000) {
-  const [now, setNow] = useState(Date.now);
+  const connected = useStore((s) => s.connected);
+  const [now, setNow] = useState(liveNow);
   useEffect(() => {
     if (!on) return;
-    setNow(Date.now());
-    const t = setInterval(() => setNow(Date.now()), ms);
+    setNow(liveNow());
+    if (!connected) return;
+    const t = setInterval(() => setNow(liveNow()), ms);
     return () => clearInterval(t);
-  }, [on, ms]);
+  }, [on, ms, connected]);
   return now;
 }
 

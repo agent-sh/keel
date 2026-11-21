@@ -1,9 +1,14 @@
 // A band across the top of the page for the daemon's own state: a restart
-// that is waiting for running turns, and a new build of the page after the
-// daemon came back (the page asks before reloading, so nothing typed is lost).
-import { RotateCw } from "lucide-react";
+// that is waiting for running turns, a daemon the page cannot reach, and a
+// new build of the page after the daemon came back (the page asks before
+// reloading, so nothing typed is lost).
+import { RotateCw, Unplug } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api, onFeature, reportError, useStore } from "../lib/store.ts";
+import { api, downSince, onFeature, reportError, useStore } from "../lib/store.ts";
+
+// A drop this short is a blip (the socket opened again at once): nothing is said.
+const AWAY_AFTER_MS = 1_000;
+const clock = (ms: number) => new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 
 export function AdminBand() {
   const [draining, setDraining] = useState<{ restart: boolean } | null>(null);
@@ -27,6 +32,25 @@ export function AdminBand() {
     addEventListener("keel:turned-away", on);
     return () => { removeEventListener("keel:turned-away", on); clearTimeout(t); };
   }, []);
+  // Unreachable: said once the drop outlasts a blip, with the time it began.
+  // The page's clocks of running work stop meanwhile (store.liveNow).
+  const [away, setAway] = useState<number | null>(null);
+  useEffect(() => {
+    if (connected) return setAway(null);
+    const since = downSince();
+    if (since === null) return; // the page's first socket has not opened yet: it is loading
+    const t = setTimeout(() => setAway(since), Math.max(0, since + AWAY_AFTER_MS - Date.now()));
+    return () => clearTimeout(t);
+  }, [connected]);
+  if (away !== null && !updated) {
+    return (
+      <div role="status" data-testid="daemon-away" className="flex h-9 shrink-0 items-center justify-center gap-3 border-b border-warn/40 bg-brass-soft px-4 text-ui animate-in">
+        <Unplug className="size-3.5 shrink-0 text-warn" />
+        <span className="shrink-0 truncate font-medium max-md:shrink">Keel is not reachable since {clock(away)}. Reconnecting.</span>
+        <span className="min-w-0 truncate text-caption text-muted max-md:hidden" data-testid="daemon-away-note">What it was doing is not known until it is back. Messages you send wait and go out then.</span>
+      </div>
+    );
+  }
   const text = updated ? "Keel was updated." : draining && connected ? (draining.restart ? "Keel restarts when the running turns finish." : "Keel is stopping when the running turns finish.") : null;
   if (!text) return null;
   // A row of the page's own, above everything: it never sits on a message box or a card.

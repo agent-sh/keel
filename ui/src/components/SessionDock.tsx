@@ -3,14 +3,14 @@ import { Collapsible } from "@base-ui/react/collapsible";
 import { ChevronRight, ListChecks, Square, SquareTerminal } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { lineage } from "../../../src/core/tree.ts";
-import { actions, reportError, useStore, type JobView } from "../lib/store.ts";
+import { actions, liveNow, reportError, useStore, type JobView } from "../lib/store.ts";
 import { loadSkillCommands } from "../lib/tools-ui.ts";
 import { planItems, toolKind } from "../lib/tools.ts";
 import { cn } from "../lib/utils.ts";
 import { PlanCard } from "./ToolCall.tsx";
 
 const since = (t: number) => {
-  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  const s = Math.max(0, Math.round((liveNow() - t) / 1000)); // stopped while the daemon is unreachable
   return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 };
 

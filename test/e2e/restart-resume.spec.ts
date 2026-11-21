@@ -689,6 +689,60 @@ test("a message sent while the daemon is down or draining goes out once when it 
   }
 });
 
+// Feature: the page says when it cannot reach the daemon. A band across the
+// top appears within two seconds of the drop, the clock of the running turn
+// stops (the page no longer knows that the work goes on), and both go back
+// to normal when the daemon is reachable again.
+test("the page says the daemon is unreachable and stops its clocks", async ({ page }) => {
+  const state = join(ROOT, `restart-away-${Date.now()}`);
+  made.push(state);
+  mkdirSync(state, { recursive: true });
+  const bin = join(state, "keel");
+  const built = spawnSync("bun", ["scripts/build.ts", bin], { encoding: "utf8" });
+  expect(built.status, built.stderr).toBe(0);
+  const port = await new Promise<number>((r) => { const s = createServer().listen(0, "127.0.0.1", () => { const p = (s.address() as any).port; s.close(() => r(p)); }); });
+  const at = { bin, bind: `127.0.0.1:${port}` };
+  let d = await daemon(state, {}, at);
+  try {
+    const call = (path: string, body?: unknown, method = "POST") =>
+      fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json() as any);
+    const { session } = await call("/api/sessions", { model: "scripted:stand-in", title: "Working when the daemon went" });
+    await call(`/api/sessions/${session.id}/permissions`, { mode: "full-auto" }, "PUT");
+    const gate = join(state, "gate");
+    await call(`/api/sessions/${session.id}/messages`, { text: `script:hold ${gate}` });
+    await page.goto(`${d.url}/s/${session.id}`, { waitUntil: "networkidle" });
+    const band = page.getByTestId("daemon-away");
+    const clock = page.locator(".k-station-clock");
+    await expect(page.getByTestId("station-word")).toHaveText("Working");
+    await expect(clock).toHaveText(/^\d+s$/);
+    await expect(band).toHaveCount(0);
+
+    d.proc.kill("SIGKILL");
+    await exited(d.proc);
+    await expect(band).toBeVisible({ timeout: 2_000 });
+    await expect(band).toContainText(/Keel is not reachable since \d\d:\d\d\. Reconnecting\./);
+    await expect(band.getByTestId("daemon-away-note")).toContainText("Messages you send wait");
+    const stopped = await clock.innerText();
+    await page.waitForTimeout(2_500);
+    expect(await clock.innerText()).toBe(stopped);
+    await shoot(page, "restart-11-daemon-unreachable");
+    // Narrow: the band keeps its first words.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(band).toContainText("Keel is not reachable");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await shoot(page, "restart-12-daemon-unreachable-narrow");
+    await page.setViewportSize({ width: 1920, height: 1040 });
+
+    // Back: the band goes, and the turn (continued by itself) ends.
+    d = await daemon(state, {}, at);
+    await expect(band).toHaveCount(0, { timeout: 30_000 });
+    writeFileSync(gate, "");
+    await expect(page.getByTestId("station-word")).toHaveText("Done", { timeout: 60_000 });
+  } finally {
+    d.proc.kill("SIGKILL");
+  }
+});
+
 // Feature: a loop's run goes on through a restart with its turn. The run a
 // crash or a stop cut is the run that finishes: it closes once, as the
 // continued turn ended, and the loop counts no failure and starts no other run.

@@ -463,6 +463,12 @@ export function mergeEvents(a: StoredEvent[], b: StoredEvent[]): StoredEvent[] {
 // is closed and opened again.
 let retry = 500;
 let socket: WebSocket | undefined;
+// When the live feed dropped (null while it is up, and before the page's
+// first socket). A clock of running work reads `liveNow`: it stops at the
+// drop, since the page no longer knows that the work goes on.
+let downAt: number | null = null;
+export const liveNow = () => downAt ?? Date.now();
+export const downSince = () => downAt;
 // The session in the address is asked for at boot, with the page's first
 // loads, not once its view mounts (after the lazy chunks and the first render).
 let preload: { id: string; p: Promise<void> } | null = null;
@@ -489,6 +495,7 @@ export function connect() {
   ws.onopen = () => {
     open = true;
     retry = 500;
+    downAt = null;
     const loaded = Object.entries(state.events);
     const cursors = Object.fromEntries(loaded.filter(([id]) => !splitId(id)).map(([id, list]) => [id, list.at(-1)?.seq ?? 0]));
     // A draft from before the drop may be stale (a retry restarts it, the reply
@@ -574,6 +581,7 @@ export function connect() {
     if (open && !caught) cutShort = true;
     clearInterval(questionPoll);
     drops++;
+    if (opened) downAt ??= Date.now();
     set({ connected: false, synced: false });
     setTimeout(connect, (retry = Math.min(retry * 2, 8000)));
   };
