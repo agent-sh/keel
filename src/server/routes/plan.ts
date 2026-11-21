@@ -86,6 +86,9 @@ export const planRoutes: RouteModule = (deps: Deps) => {
         const w = waiting.get(req.params.pid);
         if (!w || w.session_id !== req.params.id) return bad("no plan is waiting with that id", 404);
         const b = await body(req);
+        // The decision is said one way. A body that says it another way (or not
+        // at all) decides nothing: the plan keeps waiting.
+        if (typeof b.approve !== "boolean") return bad('say the decision as "approve": true (with "mode") or false (with "feedback")');
         if (!b.approve) {
           w.resolve({ approved: false, feedback: typeof b.feedback === "string" && b.feedback.trim() ? b.feedback.trim().slice(0, 4000) : undefined });
           return json({ ok: true });

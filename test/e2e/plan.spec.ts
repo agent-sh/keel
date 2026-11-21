@@ -186,3 +186,35 @@ test("plan approval stays paired with its mode on a narrow screen", async ({ pag
   await request.post(`/api/sessions/${session.id}/interrupt`);
   await request.delete(`/api/sessions/${session.id}`);
 });
+
+// The decision on a plan is `approve`, true or false. A body that says it any
+// other way is refused and the plan keeps waiting: before, a body without
+// `approve` answered ok and was recorded as the owner rejecting the plan.
+test("a plan decision the endpoint does not understand is refused and the plan stays open", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Plan decision" } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "plan" } });
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "present_plan", input: { plan: "1. Read the importer.\n2. Change the retry policy." } }])}` } });
+  const open = async () => (await (await request.get(`/api/sessions/${session.id}/plan`)).json()).open as { id: string }[];
+  await expect.poll(async () => (await open()).length, { timeout: 30_000 }).toBe(1);
+  const [{ id }] = await open() as [{ id: string }];
+  const decide = (data: unknown) => request.post(`/api/sessions/${session.id}/plan/${id}`, { data });
+
+  for (const body of [{ decision: "approve" }, {}, { approve: "yes" }, { approve: 1, mode: "auto-edits" }, { feedback: "make it shorter" }]) {
+    const r = await decide(body);
+    expect(r.status(), JSON.stringify(body)).toBe(400);
+    expect((await r.json()).error).toContain("approve");
+  }
+  expect((await open()).map((c) => c.id)).toEqual([id]);
+  await page.goto(`/s/${session.id}`);
+  await expect(page.getByTestId("plan-card")).toBeVisible();
+  await expect(page.getByTestId("turn-end")).toHaveCount(0); // the turn still waits on the card
+  await shoot(page, "plan-04-still-open");
+
+  // The two answers it does understand still work.
+  expect((await decide({ approve: false, feedback: "make it shorter" })).status()).toBe(200);
+  await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 30_000 });
+  expect(await open()).toEqual([]);
+  await request.delete(`/api/sessions/${session.id}`);
+});
