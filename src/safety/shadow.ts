@@ -89,10 +89,17 @@ export class Shadow {
     this.inited = true;
   }
 
+  // The exclude file as this process last wrote it: every snapshot asks for
+  // it, and the same text is not written again (a file write on a busy disk
+  // holds the loop).
+  private excludes?: string;
   private writeExcludes(big: string[]) {
-    mkdirSync(join(this.dir, "info"), { recursive: true });
     const lines = ["# written by Keel", ...ALWAYS_OUT, ...(this.own ? [this.own] : []), ...big.map((p) => `/${p.replace(/([*?[\\])/g, "\\$1")}`)];
-    writeFileSync(join(this.dir, "info", "exclude"), lines.join("\n") + "\n");
+    const text = lines.join("\n") + "\n";
+    if (text === this.excludes) return;
+    mkdirSync(join(this.dir, "info"), { recursive: true });
+    writeFileSync(join(this.dir, "info", "exclude"), text);
+    this.excludes = text;
   }
 
   // Before a whole-workspace snapshot: files over the cap are left out (and
