@@ -143,3 +143,79 @@ test("a late permissions read never brings back an older mode", async ({ page, r
   }
   await request.delete(`/api/sessions/${session.id}`);
 });
+
+// On a narrow card at a large text size the three answers wrap and none is
+// cut: Allow once, Always allow and Deny, in that order for the Tab key. Deny
+// still opens its reason form, and the answers mean what they did.
+test("permission card answers wrap on a narrow screen", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `perm-narrow-${Date.now()}`);
+  mkdirSync(ws, { recursive: true });
+  const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: "scripted:stand-in", title: "Narrow permission card" } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "touch alpha.txt" } }])}` } });
+
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.goto(`/s/${session.id}`);
+  await page.evaluate(() => localStorage.setItem("keel.textScale", "1.5"));
+  await page.reload();
+  expect(await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize))).toBeCloseTo(25.5, 1);
+  const card = page.locator(`[data-station="${session.id}"]`).getByTestId("approval");
+  await expect(card).toBeVisible({ timeout: 30_000 });
+  const once = card.getByTestId("allow-once"), always = card.getByTestId("allow-always"), deny = card.getByTestId("deny");
+  // Each answer is whole: inside the card and the screen, with all of its words, and the card has nothing to pan to.
+  const whole = async (l: typeof once, words: string) => {
+    await expect(l).toHaveText(words);
+    const b = (await l.boundingBox())!, c = (await card.boundingBox())!;
+    expect(b.x, words).toBeGreaterThanOrEqual(c.x);
+    expect(b.x + b.width, words).toBeLessThanOrEqual(Math.min(320, c.x + c.width) + 0.5);
+    expect(await l.evaluate((el) => el.scrollWidth <= el.clientWidth + 1), words).toBe(true);
+  };
+  expect(await card.evaluate((el) => el.scrollWidth <= el.clientWidth + 1 && el.scrollLeft === 0)).toBe(true);
+  await whole(once, "Allow once");
+  await whole(always, "Always allow");
+  await whole(deny, "Deny");
+  expect(await card.evaluate((el) => el.scrollLeft)).toBe(0);
+  await shoot(page, "perm-07-card-narrow");
+  // The Tab key goes through them in that order.
+  await once.focus();
+  await page.keyboard.press("Tab");
+  await expect(always).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(deny).toBeFocused();
+  // Deny opens the reason form, whole too; Esc goes back to the three answers.
+  await page.keyboard.press("Enter");
+  const reason = card.getByTestId("deny-reason");
+  await expect(reason).toBeFocused();
+  const send = (await card.getByTestId("deny-send").boundingBox())!;
+  expect(send.x + send.width).toBeLessThanOrEqual(320);
+  // The reason has a line of its own to type in, not what the buttons leave.
+  expect((await reason.boundingBox())!.width).toBeGreaterThan(0.7 * (await card.boundingBox())!.width);
+  await shoot(page, "perm-08-deny-narrow");
+  await page.keyboard.press("Escape");
+  await expect(once).toBeVisible();
+  // Always allow still offers the suggested rule, and Allow once still runs the command.
+  await always.click();
+  await expect(page.getByTestId("grant-pattern")).toHaveValue("touch *");
+  await page.keyboard.press("Escape");
+  await once.click();
+  await expect(card).toHaveCount(0);
+  await expect.poll(() => existsSync(join(ws, "alpha.txt")), { timeout: 30_000 }).toBe(true);
+  await page.evaluate(() => localStorage.setItem("keel.textScale", "1"));
+
+  // A wide card keeps the answers on one line.
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "touch beta.txt" } }])}` } });
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await page.reload();
+  await expect(card).toBeVisible({ timeout: 30_000 });
+  const ys = await Promise.all([once, always, deny].map(async (l) => (await l.boundingBox())!.y));
+  expect(Math.max(...ys) - Math.min(...ys)).toBeLessThan(2);
+  await shoot(page, "perm-09-card-wide");
+  await deny.click();
+  await card.getByTestId("deny-send").click();
+  await expect(card).toHaveCount(0);
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).running, { timeout: 30_000 }).toBe(false);
+  expect(existsSync(join(ws, "beta.txt"))).toBe(false);
+  await request.delete(`/api/sessions/${session.id}`);
+});

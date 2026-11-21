@@ -160,7 +160,7 @@ function Card({ a, first, asker, list }: { a: Approval; first: boolean; asker?: 
             onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setDenying(false); } }}
             aria-label="Why you deny it (optional)"
             placeholder="Tell the model why, or what to do instead (optional)"
-            className="h-8 min-w-0 flex-1 rounded-lg border border-line bg-bg px-3 text-ui outline-none placeholder:text-faint focus:border-line-strong"
+            className="h-8 min-w-[min(100%,14rem)] flex-1 rounded-lg border border-line bg-bg px-3 text-ui outline-none placeholder:text-faint focus:border-line-strong"
           />
           <button type="submit" disabled={busy} data-testid="deny-send" className="h-8 rounded-lg bg-danger px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-50">
             Send denial
@@ -171,7 +171,8 @@ function Card({ a, first, asker, list }: { a: Approval; first: boolean; asker?: 
           {err && <span className="basis-full text-micro text-danger" role="alert" data-testid="approval-error">{err}</span>}
         </form>
       ) : (
-        <div className="flex items-center gap-1.5 px-4 py-3">
+        // The three answers keep their order and wrap when the card is narrow: none is cut, Deny least of all.
+        <div className="flex flex-wrap items-center gap-1.5 px-4 py-3" data-testid="approval-actions">
           <button
             ref={once}
             disabled={busy}
@@ -186,11 +187,11 @@ function Card({ a, first, asker, list }: { a: Approval; first: boolean; asker?: 
             disabled={busy}
             data-testid="deny"
             onClick={() => setDenying(true)}
-            className="h-8 shrink-0 rounded-lg px-3 text-ui text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-50"
+            className="h-8 shrink-0 whitespace-nowrap rounded-lg px-3 text-ui text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-50"
           >
             Deny
           </button>
-          {err ? <span className="ml-auto min-w-0 truncate text-micro text-danger" role="alert" title={err} data-testid="approval-error">{err}</span> : <span className="ml-auto text-micro text-faint max-sm:hidden pointer-coarse:hidden">Enter allows once, Esc to deny with a reason</span>}
+          {err ? <span className="ml-auto min-w-0 basis-full text-micro text-danger sm:basis-auto sm:truncate" role="alert" title={err} data-testid="approval-error">{err}</span> : <span className="ml-auto text-micro text-faint max-sm:hidden pointer-coarse:hidden">Enter allows once, Esc to deny with a reason</span>}
         </div>
       )}
     </div>
