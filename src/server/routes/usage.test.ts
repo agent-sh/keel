@@ -47,12 +47,12 @@ const counted = (make: (sql: string) => any, keep: boolean) => (sql: string) => 
 (store.db as any).prepare = counted(store.db.prepare.bind(store.db), false);
 const captured: string[] = [];
 const routes = usageRoutes({ store, errors: { capture: (_s: string, e: Error) => void captured.push(e.message) } } as any) as any;
-const route = routes["/api/usage"].GET as (req: Request) => Response;
+const route = routes["/api/usage"].GET as (req: Request) => Promise<Response>;
 // The daemon's own step at its start: the rollup is made off any request.
 expect(checkRollup(store.db)).toEqual({ ok: true, rollup_calls: 0, ledger_calls: 0, rebuilt: true });
 const ask = async (params: Record<string, string | number>) => {
   const before = handed;
-  const r = route(new Request(`http://x/api/usage?${new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)]))}`));
+  const r = await route(new Request(`http://x/api/usage?${new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)]))}`));
   const rows = handed - before;
   expect(r.status).toBe(200);
   return { body: (await r.json()) as any, rows };
@@ -278,7 +278,7 @@ test("a rollup that drifted from the ledger is found by its count and made again
   store.db.run("DELETE FROM usage_rollup");
   const errors = { capture: (_s: string, e: Error) => void captured.push(e.message) };
   const fresh = usageRoutes({ store, errors } as any) as any;
-  const early = await (fresh["/api/usage"].GET(new Request("http://x/api/usage?group=model")) as Response).json();
+  const early = await ((await fresh["/api/usage"].GET(new Request("http://x/api/usage?group=model"))) as Response).json();
   expect(query<{ n: number }, []>("SELECT COUNT(*) AS n FROM usage_rollup").get()!.n).toBe(0);
   same(named(early), named(walked({ group: "model" })), "a view before the start's step");
   await tick();

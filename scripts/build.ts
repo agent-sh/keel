@@ -60,6 +60,11 @@ const target = process.argv[3] as Bun.Build.Target | undefined;
 const hands = await Bun.build({ entrypoints: [join(root, "src/fleet/hands-main.ts")], target: "bun", minify: true, define });
 if (!hands.success) fail(hands);
 const handsJs = await hands.outputs[0]!.text();
+// The read thread (src/server/reads.ts), carried as text the same way: a
+// compiled binary starts a thread from a program it holds, not from a file.
+const reads = await Bun.build({ entrypoints: [join(root, "src/server/reads-worker.ts")], target: "bun", minify: true, define });
+if (!reads.success) fail(reads);
+const readsJs = await reads.outputs[0]!.text();
 const res = await Bun.build({
   entrypoints: [join(root, "src/main.ts")],
   compile: target ? { outfile: out, target } : { outfile: out },
@@ -67,7 +72,7 @@ const res = await Bun.build({
   splitting: true,
   sourcemap: "none",
   plugins: [tailwind],
-  define: { ...define, __KEEL_API__: JSON.stringify(api), __KEEL_UI_BUILT__: String(built), __KEEL_HANDS_JS__: JSON.stringify(handsJs) },
+  define: { ...define, __KEEL_API__: JSON.stringify(api), __KEEL_UI_BUILT__: String(built), __KEEL_HANDS_JS__: JSON.stringify(handsJs), __KEEL_READS_JS__: JSON.stringify(readsJs) },
 });
 if (!res.success) fail(res);
 await uiBundle(`${out}-ui.tar.gz`);

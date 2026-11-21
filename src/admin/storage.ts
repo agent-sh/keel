@@ -15,6 +15,7 @@ import type { Engine } from "../engine/turn.ts";
 import { jobsOf, leftText, jobLive, stopJob, stopJobs } from "../tools/jobs.ts";
 import { daysOrNull, registerSettings, settings } from "./settings.ts";
 import { readText } from "../core/proc.ts";
+import { readsOf } from "../server/reads.ts";
 
 const DAY = 86_400_000;
 
@@ -66,12 +67,12 @@ export class Storage {
   }
 
   private async measure() {
-    const db = this.store.db;
-    const rows = db.query<{ id: string; title: string; archived: number; updated: number; parent_id: string | null; bytes: number; attach: number }, []>(`
+    // Every event of the store is read for its size: off the loop (src/server/reads.ts).
+    const rows = await readsOf(this.store).sql<{ id: string; title: string; archived: number; updated: number; parent_id: string | null; bytes: number; attach: number }>(`
       SELECT s.id, s.title, s.archived, s.updated, s.parent_id,
         COALESCE((SELECT SUM(length(e.data)) FROM events e WHERE e.session_id = s.id), 0) AS bytes,
         COALESCE((SELECT SUM(length(json_extract(i.value, '$.data'))) FROM events e, json_each(e.data, '$.images') i WHERE e.session_id = s.id AND e.kind = 'user'), 0) AS attach
-      FROM sessions s`).all();
+      FROM sessions s`);
     const spillDirs = rows.map((r) => join(this.dir, "spill", r.id));
     const cps = this.checkpointRows();
     const shadowDirs = [...new Set(cps.map((c) => c.shadow))];

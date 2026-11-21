@@ -43,10 +43,10 @@ export const telemetryRoutes: RouteModule = ({ store, bus }) => {
     return { since, until, bucket, session, model: q.get(prefix + "model") || q.get("model") || undefined };
   };
   const bad = (f: Filter | Bad): f is Bad => "error" in f;
-  const route = (run: (f: Filter, q: URLSearchParams) => unknown) => (req: Request) => {
+  const route = (run: (f: Filter, q: URLSearchParams) => unknown) => async (req: Request) => {
     const q = new URL(req.url).searchParams;
     const f = filter(q);
-    return bad(f) ? json({ error: f.error }, f.status) : json(run(f, q));
+    return bad(f) ? json({ error: f.error }, f.status) : json(await run(f, q));
   };
   return {
     "/api/telemetry": { GET: route((f) => t.report(f)) },
@@ -54,23 +54,23 @@ export const telemetryRoutes: RouteModule = ({ store, bus }) => {
     "/api/telemetry/tokens": { GET: route((f) => t.tokens(f)) },
     // GET /api/telemetry/compactions?limit=: each compaction, newest first, with the sums.
     "/api/telemetry/compactions": {
-      GET: (req: Request) => {
+      GET: async (req: Request) => {
         const q = new URL(req.url).searchParams;
         const f = filter(q);
         if (bad(f)) return json({ error: f.error }, f.status);
         const limit = q.get("limit") ? Number(q.get("limit")) : undefined;
         if (limit !== undefined && !Number.isFinite(limit)) return json({ error: "limit is not a number" }, 400);
-        return json(t.compactions({ ...f, limit }));
+        return json(await t.compactions({ ...f, limit }));
       },
     },
     // GET /api/telemetry/compare?a_since_ms&a_until_ms&a_model&b_since_ms&b_until_ms&b_model (and session_id)
     "/api/telemetry/compare": {
-      GET: (req: Request) => {
+      GET: async (req: Request) => {
         const q = new URL(req.url).searchParams;
         const a = filter(q, "a_"), b = filter(q, "b_");
         if (bad(a)) return json({ error: a.error }, a.status);
         if (bad(b)) return json({ error: b.error }, b.status);
-        return json(t.compare(a, b));
+        return json(await t.compare(a, b));
       },
     },
     // GET /api/telemetry/examples?tool=&session_id=&limit=&since_ms=&until_ms=  the last failed tool calls (in that interval)

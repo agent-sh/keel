@@ -11,13 +11,13 @@ import { changedBlocks } from "../engine/prompt-store.ts";
 import { PromptStore } from "../engine/prompt-store.ts";
 import { breakCause, prefixDiff, prefixOf, Telemetry } from "./telemetry.ts";
 
-const withStore = (f: (store: Store) => void) => {
+const withStore = async (f: (store: Store) => void | Promise<void>) => {
   const root = mkdtempSync(join(tmpdir(), "keel-telemetry-"));
-  try { f(new Store(root)); } finally { rmSync(root, { recursive: true, force: true }); }
+  try { await f(new Store(root)); } finally { rmSync(root, { recursive: true, force: true }); }
 };
 const use = { type: "tool_use", id: "call_12", name: "inspect", input: {} };
 
-test("history from before telemetry counts each request once, a fork's copy included", () => withStore((store) => {
+test("history from before telemetry counts each request once, a fork's copy included", () => withStore(async (store) => {
   const a = store.createSession({ model: "p:m", workspace: "/" });
   store.append(a.id, "user", { text: "go" });
   const step = store.append(a.id, "assistant", { blocks: [use], model: "p:m", usage: { input: 10, output: 2, cache_read: 0, cache_write: 0, cost: 0.25 }, stop: "tool_use" });
@@ -27,7 +27,7 @@ test("history from before telemetry counts each request once, a fork's copy incl
   store.copyEvents(b.id, store.events(a.id));
 
   const t = new Telemetry(store, new Bus());
-  const r = t.report({});
+  const r = await t.report({});
   expect(r.total.calls).toBe(2);
   expect(r.total.priced_cost_usd).toBe(0.25);
   expect([r.total.tool_calls, r.total.tool_errors]).toEqual([1, 1]);
@@ -35,7 +35,7 @@ test("history from before telemetry counts each request once, a fork's copy incl
   expect(ex).toMatchObject({ session_id: a.id, call_id: "call_12", error: "Fixture report unavailable", event_id: step.id });
 }));
 
-test("a request is booked to its own branch, route and turn", () => withStore((store) => {
+test("a request is booked to its own branch, route and turn", () => withStore(async (store) => {
   const s = store.createSession({ model: "p:main", workspace: "/" });
   const root = store.append(s.id, "user", { text: "Start" });
   store.append(s.id, "assistant", { blocks: [{ type: "text", text: "ok" }], model: "p:main", usage: {}, stop: "end_turn" });
@@ -63,13 +63,13 @@ test("a request is booked to its own branch, route and turn", () => withStore((s
   store.append(s.id, "turn_end", { reason: "end_turn", usage: {} });
   send("side", 3);
 
-  const [c] = t.compactions({ session: s.id }).compactions;
+  const [c] = (await t.compactions({ session: s.id })).compactions;
   expect(c!.tokens_after).toBe(70);
   expect(c!.kept!.verbatim_events).toBe(2); // the start's reply and "Verify A", never B's
-  const turn = (t.tokens({ session: s.id }).turns as any[]).find((x) => x.turn_event === turnA.id);
+  const turn = ((await t.tokens({ session: s.id })).turns as any[]).find((x) => x.turn_event === turnA.id);
   expect(turn.prompt).toBe("Verify A");
   expect(turn.requests).toBe(1); // the side answers are in no turn
-  expect(t.report({}).by_model.map((m) => [m.model, m.calls]).sort()).toEqual([["p:main", 4], ["q:advisor", 1]]);
+  expect((await t.report({})).by_model.map((m) => [m.model, m.calls]).sort()).toEqual([["p:main", 4], ["q:advisor", 1]]);
 }));
 
 test("a cache break is a changed prefix only where a stored fingerprint differs", () => {

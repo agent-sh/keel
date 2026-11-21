@@ -14,7 +14,12 @@ import type { ProviderRequest } from "../providers/types.ts";
 import { errorClass } from "./classes.ts";
 import { armOf, experimentTables } from "./experiments.ts";
 import { registerSettings, settings } from "./settings.ts";
-import { scaleZones, ZONES, zoneBytes, zoneCache, type Zone, type ZoneCache, type Zones } from "./zones.ts";
+import { readsOf } from "../server/reads.ts";
+import { BREAK_CAUSES, group, pct, spendOf, type CallRow, type Limits } from "./telemetry-report.ts";
+import { scaleZones, ZONES, zoneBytes, type Zones } from "./zones.ts";
+
+export { BREAK_CAUSES, pct, pickBucket } from "./telemetry-report.ts";
+export type { ToolRow };
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS telemetry_calls (
@@ -96,7 +101,7 @@ export function warmUntil(store: Store, sessionId: string): number | undefined {
     "SELECT ts, cache_ms FROM telemetry_calls WHERE session_id = ? AND outcome = 'ok' AND COALESCE(purpose, 'turn') = 'turn' ORDER BY ts DESC LIMIT 1").get(sessionId);
   return r?.cache_ms ? r.ts + r.cache_ms : undefined;
 }
-export const BREAK_CAUSES = ["expired", "model_switch", "compaction", "prefix_changed", "provider_miss"] as const;
+
 
 registerSettings(
   "budget",
@@ -282,15 +287,12 @@ export class Telemetry {
 
   // Priced spend since local midnight and since the first of the month.
   spend(now = new Date()) {
-    const day = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-    const month = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
-    const q = (since: number) => this.store.db.query<{ usd: number | null; unpriced: number | null }, [number]>("SELECT SUM(cost) AS usd, SUM(unpriced) AS unpriced FROM telemetry_calls WHERE ts >= ?").get(since)!;
-    const d = q(day), m = q(month);
+    return spendOf(this.store.db, this.limits(), now);
+  }
+
+  private limits(): Limits {
     const b = settings().budget;
-    return {
-      day: { since_ms: day, usd: d.usd ?? 0, unpriced_calls: d.unpriced ?? 0, limit_usd: b.daily_usd as number | null },
-      month: { since_ms: month, usd: m.usd ?? 0, unpriced_calls: m.unpriced ?? 0, limit_usd: b.monthly_usd as number | null },
-    };
+    return { daily_usd: b.daily_usd as number | null, monthly_usd: b.monthly_usd as number | null };
   }
 
   private overBudget(): string | undefined {
@@ -354,110 +356,15 @@ export class Telemetry {
     })();
   }
 
-  private rows(q: Filter) {
-    const where = ["1 = 1"];
-    const args: (string | number)[] = [];
-    if (q.session) { where.push("session_id = ?"); args.push(q.session); }
-    if (q.model) { where.push("model = ?"); args.push(q.model); }
-    if (q.since !== undefined) { where.push("ts >= ?"); args.push(q.since); }
-    if (q.until !== undefined) { where.push("ts < ?"); args.push(q.until); }
-    const w = where.join(" AND ");
-    const calls = this.store.db.query<CallRow, any[]>(`SELECT * FROM telemetry_calls WHERE ${w} ORDER BY ts`).all(...args);
-    // A model filter keeps the tool calls that model's steps asked for (a row
-    // whose step is not known is in no model's count).
-    const tools = this.store.db.query<ToolRow, any[]>(`SELECT ts, tool, ms, is_error FROM telemetry_tools WHERE ${w} ORDER BY ts`).all(...args);
-    const since = q.since ?? Math.min(calls[0]?.ts ?? Date.now(), tools[0]?.ts ?? Date.now());
-    const until = q.until ?? Date.now();
-    return { calls, tools, since, until, bucket: q.bucket ?? pickBucket(until - since) };
-  }
-
+  // The report of the model requests and tool runs, read off the loop (a
+  // ledger of hundreds of thousands of rows takes seconds to read and sum).
   report(q: Filter) {
-    const { calls, tools, since, until, bucket } = this.rows(q);
-    const series = new Map<number, { calls: CallRow[]; tools: ToolRow[] }>();
-    const at = (ts: number) => {
-      const t = Math.floor(ts / bucket) * bucket;
-      let b = series.get(t);
-      if (!b) series.set(t, (b = { calls: [], tools: [] }));
-      return b;
-    };
-    for (const c of calls) at(c.ts).calls.push(c);
-    for (const t of tools) at(t.ts).tools.push(t);
-
-    const byModel = group(calls, (c) => c.model);
-    const byTool = group(tools, (t) => t.tool);
-    const errorKinds = group(calls.filter((c) => c.outcome === "error"), (c) => c.error ?? "unknown");
-    return {
-      since_ms: since,
-      until_ms: until,
-      bucket_ms: bucket,
-      total: { ...callStats(calls), ...toolStats(tools) },
-      series: [...series.entries()].sort(([a], [b]) => a - b).map(([t_ms, b]) => ({ t_ms, ...callStats(b.calls), ...toolStats(b.tools), classes: classCounts(b.calls) })),
-      by_model: [...byModel.entries()].map(([model, list]) => ({ model, ...callStats(list) })).sort((a, b) => b.calls - a.calls),
-      // total_ms sums the timed calls only (`timed` of `tool_calls`); null when none was timed.
-      tools: [...byTool.entries()].map(([tool, list]) => {
-        const timed = list.filter((t) => t.ms !== null);
-        return { tool, ...toolStats(list), p50_ms: pct(list.map((t) => t.ms), 0.5), p95_ms: pct(list.map((t) => t.ms), 0.95), timed: timed.length, total_ms: timed.length ? timed.reduce((n, t) => n + t.ms!, 0) : null };
-      })
-        .sort((a, b) => b.tool_calls - a.tool_calls),
-      breaks: BREAK_CAUSES.map((cause) => {
-        const list = calls.filter((c) => c.cache_break === cause);
-        // What differed, where it was recorded: each detail with its count.
-        const details = new Map<string, number>();
-        for (const c of list) if (c.break_detail) details.set(c.break_detail, (details.get(c.break_detail) ?? 0) + 1);
-        return {
-          cause, count: list.length, last_ms: list.at(-1)?.ts ?? null, uncached_tokens: list.reduce((n, c) => n + c.input + c.cache_write, 0),
-          details: [...details.entries()].map(([detail, count]) => ({ detail, count })).sort((a, b) => b.count - a.count),
-        };
-      }).filter((b) => b.count),
-      // Failures by class, per provider and model: `rate` is per request of that model.
-      error_classes: [...byModel.entries()].flatMap(([model, list]) =>
-        Object.entries(classCounts(list)).map(([cls, count]) => {
-          const of = list.filter((c) => c.error_class === cls);
-          return { provider: providerOf(model), model, class: cls, count, calls: list.length, rate: count / list.length, last_ms: of.at(-1)!.ts, last_error: of.findLast((c) => c.error)?.error ?? null };
-        })).sort((a, b) => b.count - a.count),
-      spend: this.spend(),
-      error_kinds: [...errorKinds.entries()].map(([message, list]) => ({ message, count: list.length, last_ms: list.at(-1)!.ts })).sort((a, b) => b.count - a.count).slice(0, 10),
-    };
+    return readsOf(this.store).run("telemetry.report", { q, limits: this.limits() });
   }
 
-  // Where the prompt tokens went: each request split into its zones (tools,
-  // system, frozen history, volatile tail) with how each zone was served
-  // (read from the cache, written to it, sent in full); in total, over time,
-  // and per turn (with a session: its last 30 turns).
+  // Where the prompt tokens went (see tokensOf), read off the loop.
   tokens(q: Filter) {
-    const { calls, since, until, bucket } = this.rows(q);
-    const measured = calls.filter((c) => c.z_tools !== null);
-    const sum = (list: CallRow[]) => {
-      const out = Object.fromEntries(ZONES.map((z) => [z, { tokens: 0, read: 0, written: 0, fresh: 0 }])) as Record<Zone, ZoneCache>;
-      for (const c of list) {
-        const zc = zoneCache({ tools: c.z_tools!, system: c.z_system!, history: c.z_history!, tail: c.z_tail! }, c);
-        for (const z of ZONES) for (const k of ["tokens", "read", "written", "fresh"] as const) out[z][k] += zc[z][k];
-      }
-      return out;
-    };
-    const series = new Map<number, CallRow[]>();
-    for (const c of measured) {
-      const t = Math.floor(c.ts / bucket) * bucket;
-      (series.get(t) ?? series.set(t, []).get(t)!).push(c);
-    }
-    let turns: unknown[] = [];
-    if (q.session) {
-      const evs = this.store.events(q.session);
-      const byTurn = group(measured.filter((c) => c.turn_event), (c) => c.turn_event!);
-      turns = [...byTurn.entries()].map(([id, list]) => {
-        // The prompt on the turn's own branch: its nearest user ancestor.
-        const prompt = evs.some((e) => e.id === id) ? lineage(evs, id).findLast((e) => e.kind === "user") : undefined;
-        return { turn_event: id, ts_ms: list[0]!.ts, prompt: String(prompt?.data.text ?? "").slice(0, 140), prompt_event: prompt?.id, requests: list.length, zones: sum(list), per_request: list.map((c) => ({ ts_ms: c.ts, purpose: c.purpose ?? "turn", zones: zoneCache({ tools: c.z_tools!, system: c.z_system!, history: c.z_history!, tail: c.z_tail! }, c) })) };
-      }).slice(-30);
-    }
-    return {
-      since_ms: since, until_ms: until, bucket_ms: bucket, zones: ZONES, estimate: true,
-      measured_calls: measured.length, calls: calls.length,
-      total: sum(measured),
-      series: [...series.entries()].sort(([a], [b]) => a - b).map(([t_ms, list]) => ({ t_ms, calls: list.length, zones: sum(list) })),
-      by_purpose: [...group(measured, (c) => c.purpose ?? "turn").entries()].map(([purpose, list]) => ({ purpose, calls: list.length, zones: sum(list) })),
-      turns,
-    };
+    return readsOf(this.store).run("telemetry.tokens", { q });
   }
 
   // Each compaction: what started it, the context before and after (the
@@ -465,14 +372,15 @@ export class Telemetry {
   // request), what the summary kept, what it cost and took, and how the
   // requests around it read the cache: the last one before and the first
   // AFTER_REQUESTS after.
-  compactions(q: Filter & { limit?: number }) {
+  async compactions(q: Filter & { limit?: number }) {
     const where = ["e.kind = 'compaction'"];
     const args: (string | number)[] = [];
     if (q.session) { where.push("e.session_id = ?"); args.push(q.session); }
     if (q.since !== undefined) { where.push("e.ts >= ?"); args.push(q.since); }
     if (q.until !== undefined) { where.push("e.ts < ?"); args.push(q.until); }
-    const rows = this.store.db.query<{ id: string; session_id: string; ts: number; seq: number; data: string; title: string | null }, any[]>(
-      `SELECT e.id, e.session_id, e.ts, e.seq, e.data, s.title FROM events e LEFT JOIN sessions s ON s.id = e.session_id WHERE ${where.join(" AND ")} ORDER BY e.ts DESC`).all(...args);
+    // Found by their kind among every event stored: read off the loop.
+    const rows = await readsOf(this.store).sql<{ id: string; session_id: string; ts: number; seq: number; data: string; title: string | null }>(
+      `SELECT e.id, e.session_id, e.ts, e.seq, e.data, s.title FROM events e LEFT JOIN sessions s ON s.id = e.session_id WHERE ${where.join(" AND ")} ORDER BY e.ts DESC`, args);
     // The turn requests after a compaction are the ones that carried it (the
     // compaction their branch had when sent); rows from before that was
     // recorded fall back to the session's next requests in time.
@@ -533,14 +441,9 @@ export class Telemetry {
   }
 
   // Two ranges, or two models over one range, side by side.
-  compare(a: Filter, b: Filter) {
-    const one = (q: Filter) => {
-      const { calls, tools, since, until } = this.rows(q);
-      const turn = calls.filter((c) => (c.purpose ?? "turn") === "turn");
-      return { since_ms: since, until_ms: until, model: q.model ?? null, ...callStats(calls), ...toolStats(tools), cache_hit_ratio_turns: callStats(turn).cache_hit_ratio, classes: classCounts(calls),
-        breaks: calls.filter((c) => c.cache_break).length, compactions: this.compactions({ ...q, limit: 0 }).total.count };
-    };
-    return { a: one(a), b: one(b) };
+  async compare(a: Filter, b: Filter) {
+    const reads = readsOf(this.store);
+    return { a: await reads.run("telemetry.side", { q: a }), b: await reads.run("telemetry.side", { q: b }) };
   }
 }
 
@@ -556,13 +459,6 @@ function openTurn(line: readonly { id: string; kind: string }[]): string | null 
 export type Filter = { since?: number; until?: number; session?: string; model?: string; bucket?: number };
 export const AFTER_REQUESTS = 3;
 
-type CallRow = {
-  ts: number; model: string; latency_ms: number | null; ttft_ms: number | null; input: number; output: number; cache_read: number; cache_write: number;
-  cost: number | null; unpriced: number; outcome: string; error: string | null; cache_break: string | null; break_detail: string | null;
-  purpose: string | null; error_class: string | null; turn_event: string | null; attempt: number | null; step_ms: number | null; text_ms: number | null; z_tools: number | null; z_system: number | null; z_history: number | null; z_tail: number | null;
-};
-
-const providerOf = (model: string) => (model.includes(":") ? model.slice(0, model.indexOf(":")) : "");
 const hit = (c: { input: number; cache_read: number; cache_write: number }) => {
   const p = c.input + c.cache_read + c.cache_write;
   return p ? c.cache_read / p : null;
@@ -571,12 +467,6 @@ const ratio = (list: { prompt_tokens: number; cache_read: number }[]) => {
   const p = list.reduce((n, c) => n + c.prompt_tokens, 0);
   return p ? list.reduce((n, c) => n + c.cache_read, 0) / p : null;
 };
-function classCounts(list: CallRow[]): Record<string, number> {
-  const out: Record<string, number> = {};
-  for (const c of list) if (c.error_class) out[c.error_class] = (out[c.error_class] ?? 0) + 1;
-  return out;
-}
-
 // `diff`: the parts of the prefix that differ from the last request's (null:
 // not recorded for it). A recorded difference is a changed prefix whatever
 // the clock says; with none recorded, a gap past the lifetime the last request
@@ -602,68 +492,3 @@ function excerpt(content: unknown): string {
 }
 type ToolRow = { ts: number; tool: string; ms: number | null; is_error: number };
 
-function group<T>(list: T[], key: (t: T) => string) {
-  const m = new Map<string, T[]>();
-  for (const x of list) (m.get(key(x)) ?? m.set(key(x), []).get(key(x))!).push(x);
-  return m;
-}
-
-// The value at fraction q of the measured values (nearest rank); null when none was measured.
-export function pct(values: (number | null)[], q: number): number | null {
-  const v = values.filter((x): x is number => x !== null).sort((a, b) => a - b);
-  if (!v.length) return null;
-  return v[Math.min(v.length - 1, Math.max(0, Math.ceil(q * v.length) - 1))]!;
-}
-
-// The narrowest width that cuts the range into at most 60 buckets.
-const WIDTHS = [5, 15, 60, 360, 1440, 10080, 43200].map((m) => m * 60_000);
-export const pickBucket = (range: number) => WIDTHS.find((w) => range / w <= 60) ?? WIDTHS.at(-1)!;
-
-function callStats(list: CallRow[]) {
-  const errors = list.filter((c) => c.outcome === "error").length;
-  const ok = list.filter((c) => c.outcome === "ok");
-  const input = list.reduce((n, c) => n + c.input, 0);
-  const cacheRead = list.reduce((n, c) => n + c.cache_read, 0);
-  const cacheWrite = list.reduce((n, c) => n + c.cache_write, 0);
-  const output = list.reduce((n, c) => n + c.output, 0);
-  const prompt = input + cacheRead + cacheWrite;
-  const unpriced = list.filter((c) => c.unpriced).length;
-  const priced = list.reduce((n, c) => n + (c.cost ?? 0), 0);
-  // Output speed over the streaming part of the request only.
-  const streamed = list.filter((c) => c.latency_ms !== null && c.ttft_ms !== null && c.latency_ms > c.ttft_ms && c.output > 0);
-  const streamMs = streamed.reduce((n, c) => n + (c.latency_ms! - c.ttft_ms!), 0);
-  return {
-    calls: list.length,
-    errors,
-    cache_breaks: list.filter((c) => c.cache_break).length,
-    interrupted: list.filter((c) => c.outcome === "interrupted").length,
-    error_rate: list.length ? errors / list.length : 0,
-    latency_p50: pct(list.map((c) => c.latency_ms), 0.5),
-    latency_p95: pct(list.map((c) => c.latency_ms), 0.95),
-    ttft_p50: pct(list.map((c) => c.ttft_ms), 0.5),
-    ttft_p95: pct(list.map((c) => c.ttft_ms), 0.95),
-    // latency_* and ttft_* are per attempt (the first streamed piece of
-    // anything); first_text_* is the first piece of reply text; step_latency_*
-    // is what a model step that answered took through its retries and waits.
-    first_text_p50: pct(list.map((c) => c.text_ms), 0.5),
-    step_latency_p50: pct(ok.map((c) => c.step_ms), 0.5),
-    step_latency_p95: pct(ok.map((c) => c.step_ms), 0.95),
-    retried_steps: ok.filter((c) => (c.attempt ?? 1) > 1).length,
-    // What the speed was measured over.
-    speed_sample: { calls: streamed.length, output_tokens: streamed.reduce((n, c) => n + c.output, 0) },
-    output_tokens_per_s: streamMs ? (streamed.reduce((n, c) => n + c.output, 0) / streamMs) * 1000 : null,
-    input_tokens: input,
-    output_tokens: output,
-    cache_read_tokens: cacheRead,
-    cache_write_tokens: cacheWrite,
-    cache_hit_ratio: prompt ? cacheRead / prompt : null,
-    priced_cost_usd: priced,
-    unpriced_calls: unpriced,
-    cost_usd: unpriced ? null : priced,
-  };
-}
-
-function toolStats(list: ToolRow[]) {
-  const errors = list.filter((t) => t.is_error).length;
-  return { tool_calls: list.length, tool_errors: errors, tool_error_rate: list.length ? errors / list.length : 0 };
-}

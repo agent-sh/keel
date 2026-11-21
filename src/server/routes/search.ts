@@ -5,6 +5,7 @@
 // not have to know about it.
 import type { Database } from "bun:sqlite";
 import type { RouteModule } from "../app.ts";
+import { readsOf } from "../reads.ts";
 
 // How much of one tool call's input or output is indexed (the rest is not
 // searched; a hit on a cut one says so).
@@ -131,18 +132,12 @@ export function ftsQuery(q: string): string | null {
 export const searchRoutes: RouteModule = ({ store }) => {
   initSearchIndex(store.db);
 
-  // The reply that holds a tool call (its card is where a hit on the call or its output opens).
-  const callEvent = (session: string, ref: string) =>
-    store.db.query<{ id: string }, [string, string]>(
-      "SELECT e.id FROM events e, json_each(e.data, '$.blocks') j WHERE e.session_id = ? AND e.kind = 'assistant' AND json_extract(j.value, '$.id') = ? LIMIT 1",
-    ).get(session, ref)?.id;
-
   return {
     "/api/search": {
       // ?q=words&limit=n (per group: titles and conversation hits are cut apart)
       // [&roots=1: no subagent sessions] [&archived=0|1: one partition]
       // [&cwd=folder] [&sessions=1: one hit per session, the best]
-      GET: (req: Request) => {
+      GET: async (req: Request) => {
         const u = new URL(req.url);
         const q = (u.searchParams.get("q") ?? "").trim();
         if (q.length > 500) return Response.json({ error: "query over 500 bytes" }, { status: 400 });
@@ -168,25 +163,14 @@ export const searchRoutes: RouteModule = ({ store }) => {
           .all(...args)
           .filter((t) => { const hay = fold(`${t.title ?? ""} ${t.workspace}`); return words.every((w) => hay.includes(w)); })
           .slice(0, limit);
-        let content: any[] = [];
-        try {
-          // One hit per session: the best of its rows (so many matches in one session do not crowd out another).
-          const inner = `SELECT f.event_id, f.session_id, f.kind, f.ts, f.ref, f.cut, snippet(search_idx, 0, char(1), char(2), '…', 14) AS snippet, bm25(search_idx) AS rank,
-               s.title, s.workspace, s.archived, ${pid} AS parent_id
-             FROM search_idx f JOIN sessions s ON s.id = f.session_id
-             WHERE search_idx MATCH ? ${where}`;
-          content = perSession
-            ? store.db.query<any, (string | number)[]>(`SELECT * FROM (SELECT *, row_number() OVER (PARTITION BY session_id ORDER BY rank) AS n FROM (${inner})) WHERE n = 1 ORDER BY archived, rank LIMIT ?`).all(match, ...args, limit)
-            : store.db.query<any, (string | number)[]>(`${inner} ORDER BY s.archived, rank LIMIT ?`).all(match, ...args, limit);
-        } catch {
-          content = []; // a query FTS cannot parse matches nothing
-        }
+        // The index is read off the loop: one word can match most of a long history.
+        const content = await readsOf(store).run("search.content", { match, where, args, limit, perSession, pid });
         const hits: Hit[] = [
           ...titles.map((t) => ({ session_id: t.id, session_title: t.title, kind: "title", ts: t.updated, snippet: t.title, cwd: t.workspace, archived: !!t.archived, parent_id: t.parent_id ?? null })),
           ...content.map((c) => {
             const tool = c.kind === "tool_use" || c.kind === "tool_result";
             return {
-              session_id: c.session_id, session_title: c.title, event_id: c.kind === "tool_result" && c.ref ? (callEvent(c.session_id, c.ref) ?? c.event_id) : c.event_id,
+              session_id: c.session_id, session_title: c.title, event_id: c.event_id,
               kind: c.kind, ts: c.ts, snippet: c.snippet, cwd: c.workspace, archived: !!c.archived, parent_id: c.parent_id ?? null,
               ...(tool && c.ref ? { ref: c.ref } : {}), ...(c.cut ? { partial: true } : {}),
             };

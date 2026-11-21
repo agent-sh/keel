@@ -24,6 +24,7 @@
 // ({ ok, rollup_calls, ledger_calls }) and POST makes the rollup again.
 import type { Database } from "bun:sqlite";
 import type { RouteModule } from "../app.ts";
+import { readsOf } from "../reads.ts";
 
 const GROUPS = new Set(["model", "session", "day", "provider"]);
 const SORTS = new Set(["total", "fresh", "cost"]);
@@ -210,7 +211,7 @@ export const usageRoutes: RouteModule = ({ store, errors }) => {
     },
   },
   "/api/usage": {
-    GET: (req: Request) => {
+    GET: async (req: Request) => {
       const q = new URL(req.url).searchParams;
       const group = q.get("group") ?? "model";
       if (!GROUPS.has(group)) return Response.json({ error: `unknown group ${group}` }, { status: 400 });
@@ -226,6 +227,7 @@ export const usageRoutes: RouteModule = ({ store, errors }) => {
         try { offset = zoneOffset(zone); }
         catch { return Response.json({ error: `unknown time zone ${zone}` }, { status: 400 }); }
       }
+      const reads = readsOf(store);
       const where: string[] = [];
       const args: (string | number)[] = [];
       if (q.get("session_id")) { where.push("session_id = ?"); args.push(q.get("session_id")!); }
@@ -262,7 +264,7 @@ export const usageRoutes: RouteModule = ({ store, errors }) => {
         // else at the fixed offset given. A quarter hour of the rollup is in one
         // local day when the offset and its changes fall on quarter hours.
         if (offset) {
-          const steps = offsetSteps(store.db.query<{ d: number }, any[]>(`SELECT DISTINCT ${dayOf("ts")} AS d FROM (${src.sql}) ORDER BY d`).all(...src.args).map((r) => r.d), offset);
+          const steps = offsetSteps((await reads.sql<{ d: number }>(`SELECT DISTINCT ${dayOf("ts")} AS d FROM (${src.sql}) ORDER BY d`, src.args)).map((r) => r.d), offset);
           if (steps.some((x) => x.off % BUCKET || x.from % BUCKET)) src = source(false);
           key = dayOf(`ts + ${offsetSql([], offset, steps)}`);
         } else {
@@ -270,15 +272,11 @@ export const usageRoutes: RouteModule = ({ store, errors }) => {
           key = dayOf(`CAST(ts - (${tz * 60_000}) AS INTEGER)`);
         }
       }
-      // A day key carries the request's offset in its text: its statement is made
-      // for this request and freed after it. Kept, one would stay for every
-      // offset ever asked for.
-      const sums = (sql: string): Group[] => {
-        if (group !== "day") return store.db.query<Group, any[]>(sql).all(...src.args);
-        const st = store.db.prepare<Group, any[]>(sql);
-        try { return st.all(...src.args); } finally { st.finalize(); }
-      };
-      const groups = sums(`SELECT ${key} AS key, purpose, MIN(first) AS first, ${SUMS.map((c) => `SUM(${c}) AS ${c}`).join(", ")} FROM (${src.sql}) GROUP BY 1, 2`);
+      // The sums are read off the loop (src/server/reads.ts): on a ledger whose
+      // requests are spread thin the rollup has nearly a row a request. The
+      // statement is made for this request and freed after it (a day key carries
+      // the request's offset in its text: kept, one would stay for every offset asked for).
+      const groups = await reads.sql<Group>(`SELECT ${key} AS key, purpose, MIN(first) AS first, ${SUMS.map((c) => `SUM(${c}) AS ${c}`).join(", ")} FROM (${src.sql}) GROUP BY 1, 2`, src.args);
       // Buckets and purposes in the order their first request was written.
       const total = empty();
       const buckets = new Map<string, Sum & { first: number }>();

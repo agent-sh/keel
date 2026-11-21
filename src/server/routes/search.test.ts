@@ -13,9 +13,9 @@ afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true 
 function open(dir?: string) {
   if (!dir) dirs.push((dir = mkdtempSync(join(tmpdir(), "keel-search-"))));
   const store = new Store(dir);
-  const start = () => searchRoutes({ store } as any)["/api/search"].GET as (req: Request) => Response;
-  const hits = async (get: (req: Request) => Response, q: string): Promise<any[]> =>
-    (await get(new Request(`http://keel/api/search?q=${encodeURIComponent(q)}&limit=100`)).json()).hits.filter((h: any) => h.kind !== "title");
+  const start = () => searchRoutes({ store } as any)["/api/search"].GET as (req: Request) => Promise<Response>;
+  const hits = async (get: (req: Request) => Promise<Response>, q: string): Promise<any[]> =>
+    (await (await get(new Request(`http://keel/api/search?q=${encodeURIComponent(q)}&limit=100`))).json()).hits.filter((h: any) => h.kind !== "title");
   return { dir, store, start, hits };
 }
 
