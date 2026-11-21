@@ -187,7 +187,12 @@ export function normalize(raw: any, cwd: string): WaitSpec {
     case "http": {
       const u = new URL(String(spec.url));
       if (!/^https?:$/.test(u.protocol)) throw new Error("an http wait needs an http(s) URL");
-      return { kind, url: u.href, status: spec.status ? Number(spec.status) : undefined };
+      // No status: any 2xx or 3xx. One given is the only one that fires the
+      // wait, so it has to be one a response can carry.
+      if (spec.status === undefined || spec.status === null) return { kind, url: u.href };
+      const status = typeof spec.status === "number" ? spec.status : typeof spec.status === "string" && /^\d+$/.test(spec.status.trim()) ? Number(spec.status) : NaN;
+      if (!Number.isInteger(status) || status < 200 || status > 599) throw new Error("an http wait's status is a whole number from 200 to 599; leave it out to wait for any 2xx or 3xx");
+      return { kind, url: u.href, status };
     }
     case "process": {
       const pid = Number(spec.pid);
@@ -406,7 +411,7 @@ function probe(w: WaitRecord, signal: AbortSignal): Promise<string | undefined> 
     }
     case "http":
       return fetch(s.url, { signal, redirect: "manual" }).then((r) => {
-        const ok = s.status ? r.status === s.status : r.status >= 200 && r.status < 400;
+        const ok = s.status != null ? r.status === s.status : r.status >= 200 && r.status < 400;
         setError(w.id, ok ? null : `HTTP ${r.status}`);
         return ok ? `${s.url} answered ${r.status}.` : undefined;
       });

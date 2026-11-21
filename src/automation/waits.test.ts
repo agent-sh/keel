@@ -259,3 +259,28 @@ test("a probe that answers after its wait was cancelled wakes nobody", async () 
   expect(status(w.id)).toBe("cancelled");
   expect(wakes(w.id)).toHaveLength(0);
 });
+
+test("an http wait's status is a real status or left out", async () => {
+  const http = (status?: unknown, path = "/") => waits.normalize({ kind: "http", url: `http://127.0.0.1:${server.port}${path}`, ...(status === undefined ? {} : { status }) }, dir);
+  const answers: Record<string, number> = { "/ok": 200, "/empty": 204, "/moved": 301, "/missing": 404 };
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (r) => new Response(null, { status: answers[new URL(r.url).pathname] ?? 500, headers: { location: "/ok" } }) });
+  try {
+    for (const bad of ["ready", "", "2xx", 204.5, "204.5", 0, 99, 600, -204, NaN, true, [204]]) expect(() => http(bad)).toThrow("whole number from 200 to 599");
+    expect(http()).not.toHaveProperty("status");
+    expect(http(null)).not.toHaveProperty("status");
+    expect(http(204)).toMatchObject({ status: 204 });
+    expect(http("204")).toMatchObject({ status: 204 });
+    // Left out: any 2xx or 3xx. Given: that status only.
+    const start = (status: unknown, path: string) => waits.create(s.id, http(status, path), { timeout_seconds: 600 });
+    const any = { ok: start(undefined, "/ok"), moved: start(undefined, "/moved"), missing: start(undefined, "/missing") };
+    const only = { ok: start(204, "/ok"), empty: start(204, "/empty") };
+    await waits.tick();
+    await until(() => !!waits.get(any.missing.id)!.last_error && !!waits.get(only.ok.id)!.last_error && status(only.empty.id) !== "active" && status(any.moved.id) !== "active" && status(any.ok.id) !== "active");
+    expect([status(any.ok.id), status(any.moved.id), status(any.missing.id)]).toEqual(["fired", "fired", "active"]);
+    expect([status(only.ok.id), status(only.empty.id)]).toEqual(["active", "fired"]);
+    expect(waits.get(only.ok.id)!.last_error).toBe("HTTP 200");
+    for (const w of [any.missing, only.ok]) waits.cancel(w.id);
+  } finally {
+    server.stop(true);
+  }
+});
