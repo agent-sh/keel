@@ -64,3 +64,25 @@ test("claude tools: plan, edit diff, background job, question", async ({ page, r
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });
+
+// The Bash tool says a command still running at its timeout moves to the
+// background. That holds for every command, one that starts with sleep too:
+// what comes after the sleep still runs, and its output is in the job's log.
+test("a command that outlives its timeout moves to the background, whatever it starts with", async ({ page, request }) => {
+  test.skip(!HAIKU.startsWith("scripted:"), "needs the scripted stand-in: the exact call is the test");
+  const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Timeout to the background" } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+  await page.goto(`/s/${session.id}`);
+  await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([{ name: "Bash", input: { command: "sleep 4; echo slept-th''rough", timeout: 1500 } }])}`);
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 30_000 });
+  const tool = page.getByTestId("tool-call").first();
+  await expect(tool.getByTestId("tool-background")).toBeVisible();
+  await tool.click();
+  await expect(tool).toContainText("did not complete within its 2s timeout and was moved to the background");
+  await expect(tool).not.toContainText("was killed");
+  await shoot(page, "tools-06-timeout-to-background");
+  // The rest of the command ran: the job ends by itself with the echo in its log.
+  const job = async () => (await (await request.get(`/api/sessions/${session.id}/jobs`)).json()).jobs[0];
+  await expect.poll(async () => { const j = await job(); return [j.running, j.exit_code, j.last]; }, { timeout: 20_000 }).toEqual([false, 0, "slept-through"]);
+});

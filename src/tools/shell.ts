@@ -66,7 +66,9 @@ export async function runShell(ctx: ToolContext, o: ShellOpts): Promise<ShellRun
 
   const finished = await waitJob(job, o.timeoutMs, ctx.signal);
   if (!finished) {
-    if (ctx.signal.aborted || o.onTimeout === "kill" || /^\s*sleep\b/.test(o.command)) {
+    // Every command a tool says it moves is moved, one that starts with sleep
+    // too: what follows the sleep still runs.
+    if (ctx.signal.aborted || o.onTimeout === "kill") {
       await stopJob(job, ctx.signal.aborted ? "was interrupted" : `was killed at its ${Math.round(o.timeoutMs / 1000)}s timeout`);
       return { state: "done", output: takeUnread(job), exitCode: job.exitCode ?? null, signal: job.signal, job };
     }
