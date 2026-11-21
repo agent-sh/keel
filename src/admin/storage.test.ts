@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import { attachmentPath, saveAttachment, setAttachmentsRoot } from "../engine/attachments.ts";
+import { mobileCommands } from "../cli/mobile.ts";
 import { restore, Storage, undoCutRestore, verify } from "./storage.ts";
 
 test("a backup restores into an empty state folder", () => {
@@ -121,7 +122,17 @@ const failing = <F extends (from: any, to: any, ...rest: any[]) => any>(f: F) =>
   if (fault?.(String(to), String(from))) throw Object.assign(new Error(`EIO: i/o error, ${String(to)}`), { code: "EIO" });
   return f(from, to, ...rest);
 }) as F;
-mock.module("node:fs", () => ({ ...real, copyFileSync: failing(real.copyFileSync), renameSync: failing(real.renameSync) }));
+// The process dying: while `dying` is set, removing a path it names stops
+// there (nothing after it runs). With "partly", a folder loses its database first.
+let dying: ((path: string) => boolean | "partly") | null = null;
+const KILLED = "the process was killed";
+const rmOrDie: typeof real.rmSync = (path, opts) => {
+  const how = dying?.(String(path));
+  if (how === "partly") real.rmSync(join(String(path), "keel.db"), { force: true });
+  if (how) throw new Error(KILLED);
+  return real.rmSync(path, opts);
+};
+mock.module("node:fs", () => ({ ...real, copyFileSync: failing(real.copyFileSync), renameSync: failing(real.renameSync), rmSync: rmOrDie }));
 
 // A backup holding one session, and a state folder in use holding another,
 // with a settings file the backup does not have.
@@ -188,7 +199,7 @@ test("a restore cut in the middle of its swap is undone before the state is used
     // In the middle: the database in use was moved aside and nothing took its place.
     expect(stateOf(dst).sessions).toBeNull();
 
-    expect(undoCutRestore(dst)).toBe(true);
+    expect(undoCutRestore(dst)).toBe("undone");
     expect(stateOf(dst)).toEqual(IN_USE);
     expect(undoCutRestore(dst)).toBe(false);
 
@@ -201,6 +212,103 @@ test("a restore cut in the middle of its swap is undone before the state is used
     expect(stateOf(dst)).toMatchObject({ sessions: ["from the backup"], settings: null, left: [r.aside.slice(dst.length + 1)] });
     expect(titles(join(r.aside, "keel.db"))).toEqual(["in use"]);
   } finally {
+    fault = null;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The two whole states a restore may leave: the one in use, or the backup.
+const FROM_BACKUP = { sessions: ["from the backup"], settings: null };
+const whole = (dst: string) => {
+  const now = stateOf(dst);
+  return now.sessions?.[0] === "in use" ? expect(now).toMatchObject({ sessions: IN_USE.sessions, settings: IN_USE.settings }) : expect(now).toMatchObject(FROM_BACKUP);
+};
+
+test("a restore killed while it tidies up leaves a state that opens, the old one or the backup", () => {
+  // Its swap is done; the process dies at one of the two things it removes after it.
+  for (const victim of ["restore.pending", ".restore-"]) {
+    const root = mkdtempSync(join(tmpdir(), "keel-restore-"));
+    try {
+      const { backup, dst } = backupAndState(root);
+      dying = (path) => path.startsWith(join(dst, victim));
+      expect(() => restore(dst, backup)).toThrow(KILLED);
+      dying = null;
+      // What the next start of the daemon does before it opens the database.
+      undoCutRestore(dst);
+      whole(dst);
+      new Store(dst).db.close();
+      // And the next restore: the backup is in, nothing of the cut one is left.
+      const r = restore(dst, backup);
+      expect(stateOf(dst)).toMatchObject(FROM_BACKUP);
+      expect(readdirSync(dst).filter((f) => f.startsWith("restore.pending") || f.startsWith(".restore-"))).toEqual([]);
+      expect(existsSync(join(r.aside, "keel.db"))).toBe(true);
+    } finally {
+      dying = null;
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("an undo killed while it removes the staged copy does not cost the database in use", () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-restore-"));
+  try {
+    const { backup, dst } = backupAndState(root);
+    // The restore is cut in its swap and cannot undo it.
+    let gone = false;
+    fault = (to) => gone || (gone = to === join(dst, "keel.db"));
+    expect(() => restore(dst, backup)).toThrow("could not be undone now");
+    fault = null;
+    // The undo puts everything back and dies removing the staged copy, its database already gone.
+    dying = (path) => (path.startsWith(join(dst, ".restore-")) ? "partly" : false);
+    expect(() => undoCutRestore(dst)).toThrow(KILLED);
+    dying = null;
+    // The next start: nothing to undo, and the state is the one in use.
+    expect(undoCutRestore(dst)).toBe(false);
+    expect(stateOf(dst)).toEqual(IN_USE);
+    new Store(dst).db.close();
+  } finally {
+    fault = null;
+    dying = null;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a restore.pending that cannot be read moves nothing and is said plainly", () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-restore-"));
+  try {
+    const { backup, dst } = backupAndState(root);
+    for (const bad of ["", "{", JSON.stringify({ aside: "before-restore-x", stage: ".restore-x.partial", moves: [["keel.db", "../elsewhere/keel.db"]] })]) {
+      writeFileSync(join(dst, "restore.pending"), bad);
+      expect(undoCutRestore(dst)).toBe("unreadable");
+      expect(stateOf(dst)).toEqual({ ...IN_USE, left: ["restore.pending.unreadable"] });
+    }
+    // A restore that meets one says so and changes nothing; the next one restores.
+    writeFileSync(join(dst, "restore.pending"), "");
+    expect(() => restore(dst, backup)).toThrow("could not be read, so nothing was changed");
+    expect(stateOf(dst)).toMatchObject({ sessions: IN_USE.sessions, settings: IN_USE.settings });
+    restore(dst, backup);
+    expect(stateOf(dst)).toMatchObject(FROM_BACKUP);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a command that opens the state by itself does not make an empty database in a cut restore", async () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-restore-"));
+  const log = console.log;
+  try {
+    const { backup, dst } = backupAndState(root);
+    let gone = false;
+    fault = (to) => gone || (gone = to === join(dst, "keel.db"));
+    expect(() => restore(dst, backup)).toThrow("could not be undone now");
+    fault = null;
+    expect(stateOf(dst).sessions).toBeNull();
+    // keel devices: the cut restore is undone first, and the database is the one in use.
+    console.log = () => {};
+    expect(await mobileCommands.devices(["--state-dir", dst])).toBe(0);
+    expect(stateOf(dst)).toEqual(IN_USE);
+  } finally {
+    console.log = log;
     fault = null;
     rmSync(root, { recursive: true, force: true });
   }

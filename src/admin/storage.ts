@@ -5,7 +5,7 @@
 // the durable state that are checked when written and can be restored.
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
@@ -422,20 +422,26 @@ export function verify(dir: string): { ok: true; sessions: number; events: numbe
 }
 
 // The swap a restore is in the middle of: the names it moves, in order,
-// relative to the state folder. Written before the first move and removed
-// after the last.
+// relative to the state folder. Written (and synced) before the first move,
+// and removed as soon as the swap is over or undone, before anything else is
+// tidied: while it is there, the stage folder is whole.
 const PENDING = "restore.pending";
 type Pending = { aside: string; stage: string; moves: [from: string, to: string][] };
+const STAGE = /^\.restore-[\w-]+\.partial$/;
+const ASIDE = /^before-restore-[\w-]+$/;
 
-// Puts a backup in place of the state (the daemon must be stopped). The
-// current files are kept beside it, so a restore can be undone.
+// Puts a backup in place of the state (the daemon must be stopped; the caller
+// holds the state folder's claim). The current files are kept beside it, so a
+// restore can be undone.
 // The backup is copied into the state folder first: what can fail for lack of
 // space or a bad file fails with the state untouched. Then it is swapped in by
 // renames, written down before the first one. A swap that fails is undone, and
 // one that was cut (the process died) is undone by the next restore or the next
 // start of the daemon. Either way the state is the one before, or the backup.
 export function restore(stateDir: string, backupDir: string) {
-  undoCutRestore(stateDir);
+  if (undoCutRestore(stateDir) === "unreadable") {
+    throw new Error(`${PENDING} in ${stateDir} could not be read, so nothing was changed: the state is as it was found. The file is now ${PENDING}.unreadable, and what a restore moved aside is in the before-restore folders. Run keel restore again to put the backup in.`);
+  }
   const check = verify(backupDir);
   if (!check.ok) throw new Error(`the backup cannot be restored: ${check.why}`);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -462,10 +468,12 @@ export function restore(stateDir: string, backupDir: string) {
   // restored state reads as it did then, defaults included.
   const live = [...["keel.db", "keel.db-wal", "keel.db-shm"].filter((f) => existsSync(at(f))), ...readdirSync(stateDir).filter((f) => f.endsWith(".json"))];
   const pending: Pending = { aside, stage, moves: [...live.map((f): [string, string] => [f, join(aside, f)]), ...inBackup.map((f): [string, string] => [join(stage, f), f])] };
-  mkdirSync(at(aside), { recursive: true });
-  writeFileSync(at(`${PENDING}.tmp`), JSON.stringify(pending), { mode: 0o600 });
+  // On disk whole before it has its name: a file by that name is never half written.
+  const tmp = openSync(at(`${PENDING}.tmp`), "w", 0o600);
+  try { writeSync(tmp, JSON.stringify(pending)); fsyncSync(tmp); } finally { closeSync(tmp); }
   renameSync(at(`${PENDING}.tmp`), at(PENDING));
   try {
+    mkdirSync(at(aside), { recursive: true });
     for (const [from, to] of pending.moves) renameSync(at(from), at(to));
   } catch (e) {
     let undone = true;
@@ -476,24 +484,55 @@ export function restore(stateDir: string, backupDir: string) {
       { cause: e },
     );
   }
-  rmSync(at(stage), { recursive: true, force: true });
   rmSync(at(PENDING));
+  rmSync(at(stage), { recursive: true, force: true });
   return { ...check, aside: at(aside) };
 }
 
-// Undoes a restore that stopped in the middle of its swap: every move it made
-// is taken back, last first, so the state is the one before it. True when
-// there was one. A move was made when its source is gone and its target is there.
-export function undoCutRestore(stateDir: string): boolean {
-  const path = join(stateDir, PENDING);
-  if (!existsSync(path)) return false;
-  const p = JSON.parse(readFileSync(path, "utf8")) as Pending;
-  for (const [from, to] of p.moves.toReversed()) {
-    if (!existsSync(join(stateDir, from)) && existsSync(join(stateDir, to))) renameSync(join(stateDir, to), join(stateDir, from));
+// What a restore that was cut left in a state folder (the caller holds the
+// folder's claim, so no restore is running in it):
+// - restore.pending: the swap stopped in the middle. Every move it made is
+//   taken back, last first, so the state is the one before it ("undone"). A
+//   move was made when its source is gone and its target is there.
+// - a restore.pending that cannot be read was not written by a restore (it
+//   is synced before it gets its name): nothing is moved, the file is set
+//   aside as restore.pending.unreadable, and the caller says so ("unreadable").
+// - no restore.pending: the copies a restore staged and never used, and the
+//   empty folders one left, are removed.
+export function undoCutRestore(stateDir: string): "undone" | "unreadable" | false {
+  const at = (...p: string[]) => join(stateDir, ...p);
+  if (!existsSync(at(PENDING))) {
+    if (existsSync(stateDir)) for (const d of readdirSync(stateDir)) {
+      if (STAGE.test(d) || d === `${PENDING}.tmp`) rmSync(at(d), { recursive: true, force: true });
+      else if (ASIDE.test(d) && !readdirSync(at(d)).length) rmSync(at(d), { recursive: true });
+    }
+    return false;
   }
-  rmSync(join(stateDir, p.stage), { recursive: true, force: true });
+  const p = readPending(at(PENDING));
+  if (!p) {
+    renameSync(at(PENDING), at(`${PENDING}.unreadable`));
+    return "unreadable";
+  }
+  for (const [from, to] of p.moves.toReversed()) {
+    if (!existsSync(at(from)) && existsSync(at(to))) renameSync(at(to), at(from));
+  }
+  // First, so that a cut from here on leaves nothing to undo: only folders to sweep.
+  rmSync(at(PENDING));
+  rmSync(at(p.stage), { recursive: true, force: true });
   // Nothing is left in it once every move is back.
-  if (!readdirSync(join(stateDir, p.aside)).length) rmSync(join(stateDir, p.aside), { recursive: true });
-  rmSync(path);
-  return true;
+  if (existsSync(at(p.aside)) && !readdirSync(at(p.aside)).length) rmSync(at(p.aside), { recursive: true });
+  return "undone";
+}
+
+// The swap as a restore writes it, or null: its two folders by their names,
+// and every move either a state file into the aside folder or a staged file
+// into the state folder, nothing outside it.
+function readPending(path: string): Pending | null {
+  try {
+    const p = JSON.parse(readFileSync(path, "utf8")) as Pending;
+    const name = (f: unknown): f is string => typeof f === "string" && f !== "" && f !== "." && f !== ".." && !/[\\/]/.test(f);
+    const ok = typeof p.stage === "string" && STAGE.test(p.stage) && typeof p.aside === "string" && ASIDE.test(p.aside) && Array.isArray(p.moves) &&
+      p.moves.every((m) => Array.isArray(m) && m.length === 2 && ((name(m[0]) && m[1] === join(p.aside, m[0])) || (name(m[1]) && m[0] === join(p.stage, m[1]))));
+    return ok ? p : null;
+  } catch { return null; }
 }

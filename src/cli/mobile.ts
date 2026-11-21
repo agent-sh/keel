@@ -6,6 +6,8 @@ import { existsSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { renderSVG, renderUnicodeCompact } from "uqr";
+import { claimState } from "../admin/daemon.ts";
+import { undoCutRestore } from "../admin/storage.ts";
 import { Store } from "../core/store.ts";
 import { MobileStore } from "../integrations/mobile/store.ts";
 import { pairLink } from "../integrations/mobile/v1.ts";
@@ -15,8 +17,21 @@ const stateDirOf = (v?: string) => (v ? resolve(v) : defaultStateDir());
 // The daemon may be running: open the database without the daemon's start-up
 // work (its schema changes, its list of the sessions left working).
 function open(dir?: string): MobileStore {
-  const path = join(stateDirOf(dir), "keel.db");
-  if (!existsSync(path)) return new MobileStore(new Store(stateDirOf(dir)));
+  const state = stateDirOf(dir);
+  const path = join(state, "keel.db");
+  if (!existsSync(path)) {
+    // No database: a new folder, or one a restore has moved its database out
+    // of for a moment. Only the holder of the folder's claim makes one, after
+    // a restore that was cut is undone (which can bring the database back).
+    const claim = claimState(state);
+    if (!claim) throw new Error(`${state} has no database yet and is in use (a restore, or a daemon starting): run the command again in a moment`);
+    try {
+      undoCutRestore(state);
+      if (!existsSync(path)) return new MobileStore(new Store(state));
+    } finally {
+      claim.release();
+    }
+  }
   const db = new Database(path, { strict: true });
   db.exec("PRAGMA busy_timeout = 5000");
   return new MobileStore({ db, migrate: (sql: string) => void db.exec(sql) });
@@ -80,4 +95,8 @@ async function notify(argv: string[]): Promise<number> {
   return failed ? 1 : 0;
 }
 
-export const mobileCommands = { pair, devices, revoke, notify };
+// A refusal (the state folder in use) is one line, not a stack.
+const plain = (run: (argv: string[]) => Promise<number>) => async (argv: string[]) => {
+  try { return await run(argv); } catch (e) { return (console.error(`keel: ${(e as Error).message}`), 1); }
+};
+export const mobileCommands = { pair: plain(pair), devices: plain(devices), revoke: plain(revoke), notify };

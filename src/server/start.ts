@@ -40,7 +40,9 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   // The state folder is claimed before anything of it is opened: a second
   // daemon on it stops here, with the database untouched.
   acquireLock(stateDir);
-  if (undoCutRestore(stateDir)) console.error(`keel: a restore of a backup into ${stateDir} was cut part way. It was undone: the state is the one before it.`);
+  const cut = undoCutRestore(stateDir);
+  if (cut === "undone") console.error(`keel: a restore of a backup into ${stateDir} was cut part way. It was undone: the state is the one before it.`);
+  if (cut === "unreadable") console.error(`keel: restore.pending in ${stateDir} could not be read, so nothing was undone: the state is as it was found. The file is now restore.pending.unreadable, and what a restore moved aside is in the before-restore folders.`);
   const store = new Store(stateDir);
   const bus = new Bus();
   const errors = new ErrorTracker(store, bus);
