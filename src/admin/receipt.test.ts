@@ -93,7 +93,7 @@ test("a long turn is followed to its end without parsing the session", () => {
     expect(receipt.inputs).toEqual([{ event_id: first.id, origin: "owner", queue_id: null }]);
     expect(receipt.end).toMatchObject({ event_id: end.id, reason: "max_steps" });
     // The store's parsed copy of the session was not made for it.
-    expect((t.store as any).parsed.get(t.s.id)).toBeUndefined();
+    expect((t.store as any).kept.get(t.s.id)).toBeUndefined();
   } finally {
     t.close();
   }

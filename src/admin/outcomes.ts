@@ -119,7 +119,7 @@ export class Outcomes {
   // The turn that just ended: from its turn_start to its turn_end on the
   // session's branch, with the calls and tool runs of that span.
   recordTurn(s: Session, reason: string, line?: StoredEvent[]): Turn | undefined {
-    const events = line ?? lineage(this.store.events(s.id), this.store.session(s.id)?.head ?? null);
+    const events = line ?? this.store.lineage(s.id);
     const endAt = events.findLastIndex((e) => e.kind === "turn_end");
     if (endAt < 0) return undefined;
     let startAt = endAt;

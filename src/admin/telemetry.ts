@@ -209,8 +209,10 @@ export class Telemetry {
     return p;
   }
 
+  // The branch the session shows, as the store keeps it: nothing is copied or
+  // walked for a request of a long session.
   private lineageOf(id: string) {
-    return lineage(this.store.events(id), this.store.session(id)?.head ?? null);
+    return this.store.lineage(id);
   }
 
   // The newest assistant event of the session holding a tool_use block with
@@ -228,7 +230,7 @@ export class Telemetry {
     const prompt = (u.input ?? 0) + (u.cache_read ?? 0) + (u.cache_write ?? 0);
     // Zones only where the provider counted the prompt.
     const z = r.outcome === "ok" && prompt > 0 ? scaleZones(p.bytes, prompt) : null;
-    const brk = r.outcome === "ok" && p.purpose === "turn" ? this.cacheBreak(p.session, p.model, p.t0, u, p.prefix) : null;
+    const brk = r.outcome === "ok" && p.purpose === "turn" ? this.cacheBreak(p.session, p.model, p.t0, u, p.prefix, p.compaction) : null;
     const x = p.prefix;
     const tag = armOf(this.store, p.session);
     this.store.db
@@ -250,15 +252,19 @@ export class Telemetry {
   // (side requests are not turn requests and are never compared). Why, by what the
   // two requests' stored fingerprints, the history and the clock say; `detail`
   // names the parts of the prefix that differ.
-  private cacheBreak(sessionId: string, model: string, ts: number, u: any, now: Prefix | null): { cause: string; detail: string | null } | null {
+  // `compaction`: the last compaction of the branch this request was sent on ("" for none).
+  private cacheBreak(sessionId: string, model: string, ts: number, u: any, now: Prefix | null, compaction: string): { cause: string; detail: string | null } | null {
     const prev = this.store.db
-      .query<{ ts: number; model: string; prompt: number; h_tools: string | null; h_system: string | null; n_msgs: number | null; h_msgs: string | null; h_kept: string | null; cache_ms: number | null }, [string]>(
-        "SELECT ts, model, input + cache_read + cache_write AS prompt, h_tools, h_system, n_msgs, h_msgs, h_kept, cache_ms FROM telemetry_calls WHERE session_id = ? AND outcome = 'ok' AND COALESCE(purpose, 'turn') = 'turn' ORDER BY ts DESC LIMIT 1")
+      .query<{ ts: number; model: string; prompt: number; h_tools: string | null; h_system: string | null; n_msgs: number | null; h_msgs: string | null; h_kept: string | null; cache_ms: number | null; compaction_event: string | null }, [string]>(
+        "SELECT ts, model, input + cache_read + cache_write AS prompt, h_tools, h_system, n_msgs, h_msgs, h_kept, cache_ms, compaction_event FROM telemetry_calls WHERE session_id = ? AND outcome = 'ok' AND COALESCE(purpose, 'turn') = 'turn' ORDER BY ts DESC LIMIT 1")
       .get(sessionId);
     if (!prev || prev.prompt <= 0) return null;
     const prompt = (u.input ?? 0) + (u.cache_read ?? 0) + (u.cache_write ?? 0);
-    const compacted = this.compactedBetween(sessionId, prev.ts, ts);
     if ((u.cache_read ?? 0) >= 0.5 * Math.min(prev.prompt, prompt)) return null;
+    // Compacted since the last request: the two were sent on different
+    // compactions, as each recorded. Only a row from before that was recorded
+    // has the session's events searched (every event of it is read for that).
+    const compacted = prev.compaction_event !== null ? prev.compaction_event !== compaction : this.compactedBetween(sessionId, prev.ts, ts);
     // The blocks of the system prompt the engine replaced since the last request.
     const changed = promptOf(this.store, sessionId)?.changed;
     const diff = now ? prefixDiff(prev, now, changed && changed.ts > prev.ts && changed.ts <= ts ? changed.blocks : []) : null;
@@ -539,7 +545,7 @@ export class Telemetry {
 }
 
 // The turn_start of the branch's running turn: the last one with no turn_end after it.
-function openTurn(line: { id: string; kind: string }[]): string | null {
+function openTurn(line: readonly { id: string; kind: string }[]): string | null {
   for (let i = line.length - 1; i >= 0; i--) {
     if (line[i]!.kind === "turn_end") return null;
     if (line[i]!.kind === "turn_start") return line[i]!.id;

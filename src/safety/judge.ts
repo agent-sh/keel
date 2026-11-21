@@ -8,7 +8,6 @@
 // else the session's own; the first that answers decides.
 import { settings } from "../admin/settings.ts";
 import type { Store } from "../core/store.ts";
-import { lineage } from "../core/tree.ts";
 import type { Providers } from "../providers/registry.ts";
 import { REVIEW_INPUT_LIMIT, REVIEW_SUMMARY_LIMIT, type ReviewAsk, type Verdict } from "./gate.ts";
 import { vault } from "./secrets.ts";
@@ -63,7 +62,7 @@ export function askedFor(store: Store, sessionId: string, n = 6): { owner: strin
   for (let i = 0; root?.parent_id && i < 32; i++) root = store.session(root.parent_id) ?? undefined;
   const words = (id: string) => {
     const s = store.session(id);
-    return s ? lineage(store.events(id), s.head) : [];
+    return s ? store.lineage(id) : [];
   };
   const owner = root ? words(root.id).filter((e) => e.kind === "user" && !e.data.kind && !NOT_OWNER.has(e.data.origin) && !String(e.data.text).startsWith("[harness]")).slice(-n).map((e) => `- ${String(e.data.text).slice(0, 1000)}`) : [];
   const task = self?.parent_id ? words(self.id).find((e) => e.kind === "user" && e.data.kind === "task")?.data.text : undefined;

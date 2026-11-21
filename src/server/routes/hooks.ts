@@ -1,7 +1,6 @@
 // The owner's hooks joined to the turn loop, and the routes that list hook
 // files and pin a repository's file.
 import type { RouteModule } from "../app.ts";
-import { lineage } from "../../core/tree.ts";
 import { registerHooks } from "../../engine/hooks.ts";
 import { toMessages } from "../../engine/turn.ts";
 import { Hooks, hookContext, namesOf, ownerHooksPath, projectRoot } from "../../integrations/hooks.ts";
@@ -20,7 +19,7 @@ export const hookRoutes: RouteModule = (deps) => {
   const answered = new Set<string>(); // user events already given to UserPromptSubmit
   const after = new Map<string, string[]>(); // call id -> PreToolUse context, joined to its result
   const stops = new Map<string, number>();
-  const events = (id: string) => lineage(store.events(id), store.session(id)?.head ?? null);
+  const events = (id: string) => store.lineage(id); // kept by the store: no copy or walk of the session per request
   const note = (sid: string, event: string, lines: string[]) => {
     const ev = store.append(sid, "note", { text: hookContext(event, lines), model: true, hook: event });
     bus.emit({ t: "event", event: ev });

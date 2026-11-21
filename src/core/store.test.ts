@@ -44,8 +44,8 @@ test("a cursor read parses only the events after the cursor, and finds them in m
   expect(all.length).toBe(N);
   expect(all.map((e) => e.seq)).toEqual(Array.from({ length: N }, (_, i) => i + 1));
   let looked = 0;
-  const cache = (cold as any).parsed;
-  cache.set(id, new Proxy(cache.get(id), { get: (t, k, r) => { if (typeof k === "string" && /^\d+$/.test(k)) looked++; return Reflect.get(t, k, r); } }));
+  const kept = (cold as any).kept.get(id);
+  kept.all = new Proxy(kept.all, { get: (t, k, r) => { if (typeof k === "string" && /^\d+$/.test(k)) looked++; return Reflect.get(t, k, r); } });
   parse.mockClear();
   const warm = cold.events(id, cursor);
   expect(parse).toHaveBeenCalledTimes(0);
@@ -66,6 +66,84 @@ test("a cursor read parses only the events after the cursor, and finds them in m
   const more = cold.append(id, "user", { text: "one more" });
   expect(cold.events(id, N).map((e) => e.id)).toEqual([more.id]);
   expect(new Store(dir).events(id, N).map((e) => e.id)).toEqual([more.id]);
+});
+
+test("a step of a working session parses nothing again, however many other sessions work", () => {
+  const store = new Store(scratch());
+  // Twelve sessions with a history, each in a turn.
+  const ids = Array.from({ length: 12 }, () => long(store, 200).id);
+  for (const id of ids) store.updateSession(id, { phase: "working" });
+  for (const id of ids) store.lineage(id);
+  const parse = spyOn(JSON, "parse");
+  const reads: string[] = [];
+  const db = store.db as any;
+  const real = db.query.bind(db);
+  db.query = (sql: string) => { if (/FROM events WHERE session_id = \? (ORDER|AND seq)/.test(sql)) reads.push(sql); return real(sql); };
+  try {
+    // Three rounds of one step each: the branch is read, a reply and a result are appended, it is read again.
+    for (let round = 0; round < 3; round++) {
+      for (const id of ids) {
+        const before = store.lineage(id);
+        const a = store.append(id, "assistant", { blocks: [{ type: "text", text: `step ${round}` }] });
+        const b = store.append(id, "tool_result", { results: [] });
+        const after = store.lineage(id);
+        expect(after.length).toBe(before.length + 2);
+        expect(after.slice(-2).map((e) => e.id)).toEqual([a.id, b.id]);
+        expect(store.events(id, a.seq).map((e) => e.id)).toEqual([b.id]);
+      }
+    }
+    // Nothing of a session was read from the table, and only the appended events were parsed (their own round trip).
+    expect(reads).toEqual([]);
+    expect(parse).toHaveBeenCalledTimes(3 * 12 * 2);
+  } finally {
+    db.query = real;
+    parse.mockRestore();
+  }
+  expect(store.keptEvents().sessions).toBe(12);
+  // What is held is what the table holds.
+  const cold = new Store(store.stateDir);
+  for (const id of ids) expect(store.lineage(id)).toEqual(cold.lineage(id));
+});
+
+test("kept events are bounded by their bytes, and idle sessions go first", () => {
+  const dir = scratch();
+  const seed = new Store(dir);
+  const text = "x".repeat(1000);
+  const make = () => {
+    const s = seed.createSession({ model: "m", workspace: "/" });
+    for (let i = 0; i < 300; i++) seed.append(s.id, "user", { text });
+    return s.id;
+  };
+  const [a, w, b, c] = [make(), make(), make(), make()];
+  seed.updateSession(w, { phase: "working" });
+  // Room for two of the four (each is a little over 300 kB of stored events).
+  const kept = process.env.KEEL_EVENTS_MEMORY_MB;
+  process.env.KEEL_EVENTS_MEMORY_MB = "0.7";
+  let store: Store;
+  try { store = new Store(dir); } finally { if (kept === undefined) delete process.env.KEEL_EVENTS_MEMORY_MB; else process.env.KEEL_EVENTS_MEMORY_MB = kept; }
+  const held = () => [...((store as any).kept as Map<string, unknown>).keys()];
+  store.lineage(w);
+  store.lineage(a);
+  expect(held()).toEqual([w, a]);
+  // A third does not fit: the idle one goes, though the working one was read before it.
+  store.lineage(b);
+  expect(held()).toEqual([w, b]);
+  store.lineage(c);
+  expect(held()).toEqual([w, c]);
+  expect(store.keptEvents().bytes).toBeLessThanOrEqual(store.keptEvents().budget);
+  // An append counts: the working session grows past the budget with the idle one, which goes.
+  for (let i = 0; i < 100; i++) store.append(w, "user", { text });
+  expect(held()).toEqual([w]);
+  expect(store.lineage(w).length).toBe(400);
+  // Only working sessions left and over the budget: the one in hand stays, the other goes.
+  store.updateSession(a, { phase: "working" });
+  store.lineage(a);
+  expect(held()).toEqual([a]);
+  // A deleted session is not kept.
+  store.deleteSession(a);
+  expect(store.keptEvents()).toEqual({ sessions: 0, bytes: 0, budget: 0.7e6 });
+  // What was dropped reads the same again.
+  expect(store.lineage(c).length).toBe(300);
 });
 
 test("the session list reads its partition in order from an index, with the same sessions in the same order", () => {
