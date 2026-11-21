@@ -336,12 +336,14 @@ Context bytes count UTF-8 text after Keel's cap, before its memory wrapper.
 Transcript metrics count reused versions, appends (a branch that only grew
 gets its new events appended), rebuilds, failures, files removed with their
 session, elapsed milliseconds, and bytes written. Reuse writes no bytes.
-Each hook also counts `late`: calls a turn waited its full wait for and went
-on without. `tools` counts tool calls the store was not asked about
+Each hook also counts `late`: calls that did not answer within the hook's
+wait. `tools` counts tool calls the store was not asked about
 (`never_answered`: a call it answers with nothing whatever it holds;
-`known_nothing`: it had nothing for the same call of the same session within
-the last minute) and `not_held`: results not held for an answer that had not
-come, because the call changed nothing.
+`known_nothing`: a read it had nothing for in the same session within the
+last 5 s), `not_held`: results of reads not held for an answer that had not
+come, and `request_waits` with `request_wait_ms`: requests that waited for
+such an answer, and how long in all. `degraded` says which kinds of call
+had a quarter of their last 20 answers late.
 `processes` counts hook processes: the most alive at once and their limit,
 calls not made because one of the same session and hook was still out
 unanswered, and probes. `owed_dropped` counts lines dropped because more was
@@ -376,17 +378,24 @@ The probe is asked only while calls of that kind are being made. After a
 summary or a clear the store is told, so what it gave before can come again;
 what was owed from before a clear is not carried into the fresh context.
 
-Before a tool the store is asked only when it can have something. An edit of
-a file in no checkout and an empty command are never asked about (the store
-answers them with nothing whatever it holds). An empty answer is remembered
-per session for a minute for the same call (the same file, the same command
-line, the same MCP tool), since the store's own follower looks for changes
-at least that often; a summary, a clear or a new start forgets it. Calls the
-store records as steps in themselves (its own tools, its command line in a
-shell) are always passed to it. A tool's result is held for the answer only
-when the call changes something (an edit, a write, a shell command that is
-not a read, an MCP tool its server does not call read-only); a read's rule
-follows with the next request.
+Before a tool the store is asked unless its answer is known to be nothing,
+and a rule it gives is in the request the model answers by acting. An edit
+of a file in no checkout (by the file's real path) and an empty command are
+never asked about: the store answers them with nothing whatever it holds. A
+call that changes something (an edit, a write, a shell command that is not a
+read or has an output redirect, an MCP tool its server does not call
+read-only) is always asked, and its result is held for the answer, so the
+rule is in that result. A read is asked too, without holding its result: the
+session's next request waits for the answer (what is left of the hook's
+wait), so a rule that came with a read is there before the model acts on
+what it read. A read's empty answer is remembered per session for 5 s (the
+store's follower merges a change within 1 to 5 s) and only when it took as
+long as the store's searches do; a summary, a clear or a new start forgets
+it. Calls the store records as steps in themselves (its own tools, its
+command line in a shell) are always passed to it. A store that is late now
+and then without ever missing twice in a row is said once per session
+("Memory is answering slowly") while a quarter of its last 20 answers of a
+kind were late.
 
 `GET /api/telemetry/memory?since_ms=&until_ms=&session_id=` reports what memory
 cost the turns and whether they used it, kept across restarts for 90 days: per
@@ -395,8 +404,9 @@ with a tool call and carried to a later step; the helper's records) how often
 it was asked and how that ended, the facts and tokens it added, the facts the
 turn's reply or tool calls named (an estimate that reads low: a fact can shape
 a reply without being named), the lines not added again because the context
-held them, the lines carried to a later step, and the time turns waited.
-Counts, tokens and times only. Settings, then Usage, shows it as the Memory
+held them, the lines carried to a later step, and the time turns waited;
+and under `store`, the kinds of call the store is not answering in time or
+answers slowly right now. Counts, tokens and times only. Settings, then Usage, shows it as the Memory
 panel.
 
 `bun scripts/bench/memory.ts` measures the same on generated data, with a

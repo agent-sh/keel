@@ -560,14 +560,24 @@ exit 0
   const { added } = addedBy(w.store, s.id, [...inputs, { ref: "q99", who: "owner", tools: [], text: "" }]);
   const reached = new Set(added.flatMap((a) => a.entries.map(nameOf)));
   const given = readFileSync(join(dir, `seen-${s.id}`), "utf8").trim().split("\n").filter(Boolean);
-  const lost = given.filter((g) => !reached.has(g)).length;
+  // What a run that asks the store about every call gets: each rule whose trigger a call holds.
+  const all = inputs.flatMap((i) => i.tools);
+  const expected = triggers.map((t, i) => ({ t, name: `rule-${i}-${t}` })).filter((r) => all.some((c) => c.includes(r.t)));
+  const lost = expected.filter((r) => !reached.has(r.name)).length;
+  // A rule must be in the request the model answers after the call it came with: before its next action.
+  const turns = w.sent.filter((r) => r.session === s.id && r.purpose === "turn").map((r) => r.messages.join("\n"));
+  const inTime = expected.filter((r) => {
+    const after = turns.find((m) => /"type":"tool_use"/.test(m) && new RegExp(`"(command|file_path)":"[^"]*${r.t}`).test(m));
+    return !!after && after.includes(`- ${r.name}:`);
+  }).length;
   const m = meterOf?.(w.store).report({ session: s.id });
   const held = m?.paths.find((p: any) => p.path === "store_tool")?.wait_ms ?? NaN;
+  const waitedReq = st.tools?.request_wait_ms ?? 0;
   console.log(`\nBefore a tool: ${TURNS_T} turns, ${calls} tool calls (${(calls / TURNS_T).toFixed(1)} a turn), a store that takes 0.2 s a call`);
-  console.log(`  calls made to the store: ${made} of ${calls}${st.tools ? ` (not asked: ${st.tools.known_nothing} known to be nothing, ${st.tools.never_answered} it never answers)` : ""}; store process time ${ms(pre.duration_ms.total)} ms`);
-  console.log(`  tool results held for the store: ${ms(held)} ms in all, ${ms(held / calls)} ms a tool call${st.tools ? `; not held for an answer still to come: ${st.tools.not_held}` : ""}; the session took ${ms(wall)} ms`);
-  console.log(`  rules the store gave: ${given.length}; in a request: ${given.length - lost}; lost: ${lost}`);
-  result.tools = { turns: TURNS_T, calls, made, process_ms: pre.duration_ms.total, held_ms: held, wall_ms: wall, given: given.length, lost, not_asked: st.tools ?? null };
+  console.log(`  calls made to the store: ${made} of ${calls}${st.tools ? ` (not asked: ${st.tools.known_nothing} reads known to get nothing, ${st.tools.never_answered} calls it never answers)` : ""}; store process time ${ms(pre.duration_ms.total)} ms`);
+  console.log(`  time added: ${ms(held + waitedReq)} ms in all, ${ms((held + waitedReq) / calls)} ms a tool call (results held ${ms(held)} ms${st.tools ? `, ${st.tools.request_waits} requests waited ${ms(waitedReq)} ms for a read's answer` : ""}); the session took ${ms(wall)} ms`);
+  console.log(`  rules a run that asks about every call gets: ${expected.length}; given by the store: ${given.length}; in a request: ${expected.length - lost}; in the request right after their call: ${inTime}; lost: ${lost}`);
+  result.tools = { turns: TURNS_T, calls, made, process_ms: pre.duration_ms.total, held_ms: held, request_wait_ms: waitedReq, wall_ms: wall, expected: expected.length, given: given.length, in_time: inTime, lost, not_asked: st.tools ?? null };
   w.close();
 }
 

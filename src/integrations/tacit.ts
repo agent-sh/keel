@@ -34,9 +34,12 @@
 //   source), so what it gave before the context was replaced can come again;
 // - one call a turn stopped waiting for is one late call, counted and no
 //   more: an outage is a pattern, two such calls of a kind in a row;
-// - before a tool the store is asked only when it can have something, and a
-//   tool's result is held for the answer only when the call changes
-//   something (tacit-tools.ts).
+// - before a tool the store is asked unless its answer is known to be
+//   nothing; a call that changes something has its result held for the
+//   answer, and after a read the session's next request waits for it, so a
+//   rule is in the request the model answers by acting (tacit-tools.ts);
+// - a store that often answers late without ever missing twice in a row is
+//   said too: once per session while a quarter of its last calls were late.
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { delimiter, dirname, join } from "node:path";
@@ -52,7 +55,7 @@ import { lineage } from "../core/tree.ts";
 import { toClaudeRecords, toJsonl } from "./claude-format.ts";
 import { readText } from "../core/proc.ts";
 import { asksMemory, factLines, factOf, memoryMeter, type MemoryMeter, type MemoryPath } from "./memory-meter.ts";
-import { callKey, changesSomething, namesStore, neverAnswered, Nothing } from "./tacit-tools.ts";
+import { callKey, changesSomething, namesStore, neverAnswered, Nothing, Searches } from "./tacit-tools.ts";
 
 export function findBin(envVar: string, name: string, env = process.env): string | null {
   const given = env[envVar]?.trim();
@@ -117,6 +120,8 @@ export function tacitToolCall(tool: string, args: any): { tool_name: string; too
     const q = s("tool");
     return q ? { tool_name: `mcp__${q}`, tool_input: args?.arguments ?? {} } : null;
   }
+  // An MCP tool called by its own name: the store matches areas on it, and logs its own tools.
+  if (lower.startsWith("mcp__")) return { tool_name: tool, tool_input: args ?? {} };
   return null;
 }
 
@@ -147,6 +152,13 @@ export const STORE_TOOL_BUDGET_MS = 400;
 // stopped waiting for. One is a slow call (a loaded machine): it is counted,
 // its answer still follows, and nothing else changes.
 export const SPELL_AFTER = 2;
+// A store that is slow now and then never misses twice in a row. It is said
+// (one line per session, and `degraded` in the stats) while this share of a
+// kind's last calls were late. A quarter: a late call costs its full wait,
+// an answered one under half of it (the store's own budget), so from there
+// the late calls cost turns as much as all the answered ones together.
+export const DEGRADED_WINDOW = 20;
+export const DEGRADED_LATE = 5;
 // While a kind of call is not answering, its probe is asked again after that
 // kind's wait, then after twice as long each time, up to this: a store that
 // came back is noticed within a minute.
@@ -260,6 +272,8 @@ function writeTranscript(path: string, bytes: Buffer) {
 }
 
 type HookResult = { outcome: HookOutcome; text: string | null; ms?: number };
+// The answers one request waits for; `counted`: their lateness was counted.
+type StepAnswers = { answers: { call: Running; owed: Promise<unknown> }[]; counted?: boolean };
 // A hook call that may still be running: `got` is set when it ended; `at`: when it was made.
 type Running = { got?: HookResult; done: Promise<HookResult>; at: number };
 const running = (done: Promise<HookResult>): Running => {
@@ -311,8 +325,19 @@ export class Tacit {
   private startOwed = new Set<string>();
   // Calls of each kind in a row that a turn stopped waiting for.
   private misses: Record<Kind, number> = { ask: 0, tool: 0 };
-  // Per session, the tool calls the store had nothing for (tacit-tools.ts).
+  // Per session, the reads the store had nothing for (tacit-tools.ts), and
+  // a count that moves when they are forgotten: an answer asked for before
+  // that is not remembered after it.
   private nothing = new SessionMap<Nothing>(256);
+  private forgot = new Map<string, number>();
+  // How long the store's before-a-tool calls take: what tells a search from a fast empty answer.
+  private searches = new Searches();
+  // Per session, the answers of one step's reads still on their way: its
+  // next request waits for them. One step's late answers are one missed wait.
+  private toolAnswers = new Map<string, StepAnswers>();
+  // Whether each kind's last calls were late, newest last; sessions told that it answers slowly.
+  private recent: Record<Kind, boolean[]> = { ask: [], tool: [] };
+  private slowTold = new Set<string>();
   // Hook processes alive, and the calls waiting for a place.
   private procs = 0;
   private waiting: (() => void)[] = [];
@@ -342,7 +367,9 @@ export class Tacit {
     // Tool calls the store was not asked about (it never answers such a call;
     // it had nothing for the same call a moment ago), and results not held
     // for an answer that had not come (the call changed nothing).
-    tools: { never_answered: 0, known_nothing: 0, not_held: 0 },
+    // `request_waits`: requests that waited for a read's answer still on its
+    // way, and how long in all.
+    tools: { never_answered: 0, known_nothing: 0, not_held: 0, request_waits: 0, request_wait_ms: 0 },
   };
 
   constructor(private store: Store, private bus: Bus, private errors: ErrorTracker, bin = findBin("TACIT_BIN", "tacit")) {
@@ -360,9 +387,10 @@ CREATE INDEX IF NOT EXISTS memory_owed_session ON memory_owed(session_id, id);
 CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, checkpoint TEXT);`);
   }
 
-  // `out`: the kinds of call the store is not answering in time right now.
+  // `out`: the kinds of call the store is not answering in time right now;
+  // `degraded`: the kinds a quarter of whose last calls were late.
   stats() {
-    return { ...this.metrics, out: { ...this.out } };
+    return { ...this.metrics, out: { ...this.out }, degraded: { ask: this.degraded("ask"), tool: this.degraded("tool") } };
   }
 
   flags(id: string): Flags {
@@ -501,11 +529,38 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
     return { outcome, text, ms };
   }
 
-  // A turn stopped waiting for a call: one late call, counted. Two of a kind
-  // in a row, with no answer in time between them, open an outage.
-  private miss(kind: Kind, hook: Hook) {
+  // A call did not answer within its wait: one late call, counted. Two of a
+  // kind in a row, with no answer in time between them, open an outage. Many
+  // among answered ones are said to the session they held up (`session`).
+  private miss(kind: Kind, hook: Hook, session?: string) {
     this.metrics.hooks[hook].late++;
+    this.seen(kind, true);
     if (++this.misses[kind] >= SPELL_AFTER) this.markOut(kind);
+    else if (session && this.degraded(kind) && !this.slowTold.has(session)) {
+      this.slowTold.add(session);
+      const late = this.recent[kind].filter(Boolean).length;
+      this.bus.emit({ t: "event", event: this.store.append(session, "note", { kind: "memory_slow", text: `Memory is answering slowly: ${late} of its last ${DEGRADED_WINDOW} ${kind === "ask" ? "answers to prompts" : "answers before a tool"} came later than a turn waits. Turns go on without the late ones; what they answer follows.` }) });
+    }
+  }
+  private seen(kind: Kind, late: boolean) {
+    const r = this.recent[kind];
+    r.push(late);
+    if (r.length > DEGRADED_WINDOW) r.shift();
+    if (!this.degraded(kind)) this.slowTold.clear();
+  }
+  private degraded(kind: Kind): boolean {
+    return this.recent[kind].length >= DEGRADED_WINDOW && this.recent[kind].filter(Boolean).length >= DEGRADED_LATE;
+  }
+  // The answers a request may wait for came late: one missed wait, however
+  // many they are, whoever finds out first (the request, or their own clock).
+  private lateOnce(session: string, group: StepAnswers) {
+    if (group.counted) return;
+    group.counted = true;
+    this.miss("tool", "pre-tool", session);
+  }
+  private forgetNothing(id: string) {
+    this.nothing.delete(id);
+    this.forgot.set(id, (this.forgot.get(id) ?? 0) + 1);
   }
 
   // A kind of call is out: recorded once, and its probe starts.
@@ -525,6 +580,7 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
     // Late, or ended by the store's own timeout: whoever waited for it counted it.
     if (outcome === "timeout" || !inTime || outcome === "skipped") return;
     this.misses[kind] = 0;
+    this.seen(kind, false);
     if (outcome === "failure") {
       if (!this.failing[kind]) this.errors.capture("server", new Error("the memory store failed to answer: turns go on without it"), { at: "tacit hook" });
       this.failing[kind] = true;
@@ -582,14 +638,13 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
 
   // A call of a session. With its kind out it is made and not waited for,
   // one at a time per session and hook: what it answers is owed to the session.
-  // `waited`: something may wait for its answer (it then queues for a
-  // process place; a call nothing waits for is not made when none is free).
-  private call(s: Session, hook: OwedHook, payload: Record<string, unknown>, waited = true): Running {
+  // While its kind answers, a call queues for a process place: it is never left out.
+  private call(s: Session, hook: OwedHook, payload: Record<string, unknown>): Running {
     const kind = kindOf(hook)!;
     this.called[kind] = true;
     // The fields in the order they always had (a prompt before its transcript).
     const body = hook === "prompt" ? { session_id: s.id, cwd: s.workspace, ...payload, transcript_path: this.transcript(s) } : { session_id: s.id, cwd: s.workspace, transcript_path: this.transcript(s), ...payload };
-    if (!this.out[kind]) return running(this.hook(hook, body, s.id, waited));
+    if (!this.out[kind]) return running(this.hook(hook, body, s.id));
     // Out with nobody probing (no call was made for a while): this call starts it again.
     this.probe(kind);
     const key = `${s.id} ${hook}`;
@@ -605,7 +660,7 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
     if (p) return p;
     p = this.call(s, "session-start", { source: "startup" });
     if (p === SKIPPED) { this.startOwed.add(s.id); return p; }
-    this.nothing.delete(s.id);
+    this.forgetNothing(s.id);
     this.start.set(s.id, p);
     p.done.then((r) => {
       if (r.outcome === "skipped") { this.start.delete(s.id); this.startOwed.add(s.id); } else this.startOwed.delete(s.id);
@@ -691,8 +746,8 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
   }
 
   // A call nothing waited for: what it answers, when it does, is owed.
-  private oweLater(id: string, hook: OwedHook, call: Running) {
-    call.done.then((r) => { if (r.text) this.owe(id, hook, r.text.trim().split("\n").filter((l) => l.trim())); }).catch(() => {});
+  private oweLater(id: string, hook: OwedHook, call: Running): Promise<unknown> {
+    return call.done.then((r) => { if (r.text) this.owe(id, hook, r.text.trim().split("\n").filter((l) => l.trim())); }).catch(() => {});
   }
 
   // One block as the turn gets it, and its row in the measurements: the lines
@@ -775,7 +830,10 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
     this.transcriptVersions.delete(id);
     this.told.delete(id);
     this.startOwed.delete(id);
-    this.nothing.delete(id);
+    this.forgetNothing(id);
+    this.forgot.delete(id);
+    this.toolAnswers.delete(id);
+    this.slowTold.delete(id);
     this.meter.forget(id);
   }
 
@@ -806,6 +864,25 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
         // or side request sent first keeps its own messages: rebuilding them
         // from the branch would drop its ask and send the prompt in its place.
         if (req.purpose !== "turn" || !t.bin || !t.flags(s.id).use_memory) return req;
+        // The answers of the last step's reads still on their way: the model
+        // is about to act on what it read, so a rule that came with a read
+        // must be in this request. Each is waited for what is left of the
+        // hook's wait since its call was made (it ran beside its tool, so
+        // usually nothing is left to wait).
+        const pending = t.toolAnswers.get(s.id);
+        if (pending) {
+          t.toolAnswers.delete(s.id);
+          if (!t.out.tool) {
+            const t0 = performance.now();
+            await Promise.all(pending.answers.map((e) => Promise.race([e.owed, Bun.sleep(Math.max(0, TOOL_WAIT_MS - (performance.now() - e.call.at)))])));
+            t.metrics.tools.request_waits++;
+            t.metrics.tools.request_wait_ms += performance.now() - t0;
+            if (pending.answers.some((e) => !e.call.got)) {
+              t.lateOnce(s.id, pending);
+              if (t.out.tool) t.tell(s.id, "tool", "timeout");
+            }
+          }
+        }
         const events = t.lineage(s.id);
         const began = performance.now();
         const blocks: string[] = [];
@@ -829,7 +906,7 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
           again = t.call(s, "session-start", { source });
           if (again !== SKIPPED) {
             // The store counts nothing as given from here: what it had nothing for may now have something.
-            t.nothing.delete(s.id);
+            t.forgetNothing(s.id);
             // Told once the call answered: one that did not is made again with the next request.
             again.done.then((r) => { if (r.outcome === "hit" || r.outcome === "empty") t.setCheckpoint(s.id, checkpoint.id); }).catch(() => {});
             // After a clear the store counts nothing as given and gives it
@@ -871,7 +948,7 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
             // and not there in time, it starts an outage of asking.
             // Measured as a timeout when the turn waited its full wait for it,
             // as late when it did not wait at all (asking was already out).
-            if (waits) t.miss("ask", hook);
+            if (waits) t.miss("ask", hook, s.id);
             t.meter.record(s.id, PATH_OF[hook], { outcome: waits ? "timeout" : "late", waitMs });
             t.oweLater(s.id, hook, c);
             if (t.out.ask) t.tell(s.id, "ask", "timeout");
@@ -895,29 +972,37 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
         // A call the store records as a step in itself is always made.
         const always = namesStore(input);
         const key = callKey(s.workspace, input);
+        // Whether the call changes something, where that is known now (a
+        // dispatched MCP tool's server says so a moment later: until then it counts as a change).
+        const direct = input.tool_name.startsWith("mcp__") && !call.tool.target;
+        const changes = call.tool.target ? true : direct ? !call.tool.readOnly : changesSomething(input);
         if (!always) {
           // Not asked when the answer is known to be nothing: the store never
-          // answers such a call, or it just had nothing for this very call.
+          // answers such a call, or it just had nothing for this very read.
+          // A call that changes something is always asked.
           const never = neverAnswered(s.workspace, input);
-          if (never || t.nothing.get(s.id)?.known(key)) {
+          if (never || (!changes && t.nothing.get(s.id)?.known(key))) {
             t.metrics.tools[never ? "never_answered" : "known_nothing"]++;
             return void t.meter.record(s.id, "store_tool", { outcome: "skipped" });
           }
         }
-        // Whether the result is held for the answer: only for a call that
-        // changes something (an MCP tool's server says so, a moment later).
-        const changes = call.tool.target ? undefined : changesSomething(input);
-        const holds = call.tool.target ? call.tool.target(call.input).then((x) => changesSomething(input, x), () => true) : Promise.resolve(changes!);
-        // Runs beside the tool; its answer joins the result, or follows.
-        const p = t.call(s, "pre-tool", input, changes !== false);
-        // An empty answer, given within the store's own budget for it (past
-        // that it prints nothing whatever it has), is remembered a while.
-        if (!always) p.done.then((r) => {
-          if (r.outcome !== "empty" || (r.ms ?? Infinity) >= STORE_TOOL_BUDGET_MS) return;
+        // Runs beside the tool; its answer joins the result, or the next request.
+        const p = t.call(s, "pre-tool", input);
+        const asked = t.forgot.get(s.id) ?? 0;
+        p.done.then((r) => {
+          if (r.ms === undefined || r.outcome === "skipped" || r.outcome === "timeout") return;
+          // A read's empty answer is remembered a while when it came from a
+          // search (not at once from a stale index, not past the store's own
+          // budget for the hook) and nothing was forgotten since it was asked.
+          const searched = t.searches.searched(r.ms) && r.ms < STORE_TOOL_BUDGET_MS;
+          t.searches.add(r.ms);
+          if (always || changes || r.outcome !== "empty" || !searched || asked !== (t.forgot.get(s.id) ?? 0)) return;
           let known = t.nothing.get(s.id);
           if (!known) t.nothing.set(s.id, (known = new Nothing()));
           known.remember(key);
         }).catch(() => {});
+        // Whether the result is held for the answer: only for a call that changes something.
+        const holds = call.tool.target ? call.tool.target(call.input).then((x) => changesSomething(input, x), () => true) : Promise.resolve(changes);
         t.preTool.set(call.id, { call: p, holds });
       },
       async afterTool(s, call, result) {
@@ -926,32 +1011,39 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
         t.preTool.delete(call.id);
         const p = entry.call;
         if (p === SKIPPED) return void t.meter.record(s.id, "store_tool", { outcome: "skipped" });
-        // The tool is done. Its result is held for the answer, the hook's own
-        // wait, when the call changed something and the store is answering
-        // its tool calls in time; else an answer already there is used. One
-        // still to come is owed either way, and is in a later request.
+        // The tool is done. A call that changed something has its result held
+        // for the answer, the hook's own wait, while the store answers its
+        // tool calls in time: its rule is in that result. A read's result is
+        // not held: an answer already there is used, one still to come is
+        // owed, and the session's next request waits for it.
         const began = performance.now();
         const holds = p.got ? false : await entry.holds;
         const waits = holds && !t.out.tool;
         if (waits) await within(p, TOOL_WAIT_MS);
         if (p.got?.outcome === "skipped") return void t.meter.record(s.id, "store_tool", { outcome: "skipped" });
-        // A call slower than the hook's wait is a late call whoever waited:
-        // counted when its wait runs out, held for or not (a store that hangs
-        // is found out as soon by reads as by calls that change something).
+        // A call slower than the hook's wait is a late call whoever waited.
         const slow = (r: HookResult) => r.outcome === "timeout" || (r.outcome !== "skipped" && (r.ms ?? 0) > TOOL_WAIT_MS);
         if (!p.got) {
-          if (waits) t.miss("tool", "pre-tool");
-          else {
-            if (!holds) t.metrics.tools.not_held++;
-            within(p, Math.max(0, TOOL_WAIT_MS - (performance.now() - p.at))).then(() => { if (!p.got || slow(p.got)) t.miss("tool", "pre-tool"); }).catch(() => {});
-          }
           t.meter.record(s.id, "store_tool", { outcome: waits ? "timeout" : "late", waitMs: performance.now() - began });
-          t.oweLater(s.id, "pre-tool", p);
-          if (t.out.tool && holds) t.tell(s.id, "tool", "timeout");
+          const owed = t.oweLater(s.id, "pre-tool", p);
+          if (waits) {
+            t.miss("tool", "pre-tool", s.id);
+            if (t.out.tool) t.tell(s.id, "tool", "timeout");
+            return;
+          }
+          if (!holds) t.metrics.tools.not_held++;
+          // Counted as late when its wait runs out, by the next request or, with none, by its own clock.
+          let group: StepAnswers = { answers: [] };
+          if (!holds && !t.out.tool) {
+            group = t.toolAnswers.get(s.id) ?? group;
+            group.answers.push({ call: p, owed });
+            t.toolAnswers.set(s.id, group);
+          }
+          within(p, Math.max(0, TOOL_WAIT_MS - (performance.now() - p.at))).then(() => { if (!p.got || slow(p.got)) t.lateOnce(s.id, group); }).catch(() => {});
           return;
         }
         const got = p.got;
-        if (slow(got)) t.miss("tool", "pre-tool");
+        if (slow(got)) t.miss("tool", "pre-tool", s.id);
         t.tell(s.id, "tool", got.outcome);
         const shown = got.text ? t.shownIn(s.id, t.lineage(s.id)) : new Set<string>();
         const block = t.admit(s.id, "pre-tool", got, shown, performance.now() - began);

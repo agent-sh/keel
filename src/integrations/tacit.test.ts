@@ -198,13 +198,15 @@ esac
 // lagtool and latetool (a tool call is answered after 0.4 s and 1.3 s), slowstart and slowstart7
 // (the start block takes 2.5 s and 7 s). A file `slow-once` naming a hook
 // makes the next call of that hook take 3 s, once. A name listed in `hidden`
-// is a fact the store does not hold yet.
+// is a fact the store does not hold yet. `toollag` seconds is what a tool
+// call's search takes; a file `stale` makes tool calls answer with nothing at
+// once (an index that is being rebuilt).
 // No e2e can hold a store back for one call and release it for the next.
 function standIn(dir: string) {
   const sd = join(dir, "standin");
   mkdirSync(sd, { recursive: true });
   const set = (k: string, v: string | number) => writeFileSync(join(sd, k), String(v));
-  set("mode", "ok"); set("len", 40); set("calls", ""); set("hidden", "");
+  set("mode", "ok"); set("len", 40); set("calls", ""); set("hidden", ""); set("toollag", 0);
   const bin = join(sd, "store.sh");
   writeFileSync(bin, `#!/bin/bash
 dir=${JSON.stringify(sd)}
@@ -230,7 +232,9 @@ case "$hook" in
     for w in $(grep -o 'kw[0-9]*' <<<"$q" | sort -u -V); do give "fact-$w"; done
     [ -n "$out" ] && printf '# store: facts matching this request\\n%b' "$out" ;;
   pre-tool)
+    [ -f "$dir/stale" ] && exit 0
     case "$mode" in slow|slowtool) exec sleep 8 ;; lagtool) sleep 0.4 ;; latetool) sleep 1.3 ;; esac
+    lag=$(cat "$dir/toollag"); [ "$lag" != 0 ] && sleep "$lag"
     cmd=$(sed -n 's/.*"command":"\\([^"]*\\)".*/\\1/p' <<<"$input")
     file=$(sed -n 's/.*"file_path":"\\([^"]*\\)".*/\\1/p' <<<"$input")
     for w in $(grep -o 'kw[0-9]*' <<<"$cmd $file" | sort -u -V); do give "rule-$w"; done
@@ -267,7 +271,8 @@ function memoryWorld(dir: string, bin: string) {
         return { blocks: [{ type: "tool_use", id: `c${++n}`, name: "Bash", input: { command: Buffer.from(/cmd=([\w+/=]+)/.exec(JSON.stringify(req.messages[given]))![1]!, "base64").toString() } }], usage, stop: "tool_use", model: "m" };
       const at = req.messages.findLastIndex((m: any) => isPrompt(m) && /tools=/.test(JSON.stringify(m)));
       if (at >= 0 && at === req.messages.findLastIndex(isPrompt)) {
-        const plan = /tools=([\w,]+)/.exec(JSON.stringify(req.messages[at]))![1]!.split(",");
+        // The newest list: after a summary one message holds the earlier prompts' words too.
+        const plan = [...JSON.stringify(req.messages[at]).matchAll(/tools=([\w,]+)/g)].at(-1)![1]!.split(",");
         const done = req.messages.slice(at + 1).filter((m: any) => m.role === "assistant").length;
         const step = plan[done];
         if (step) {
@@ -568,108 +573,187 @@ test("during an outage: the probe stops with nobody asking; a new session's task
   expect(w.tacit.owed(b)).toBe(0);
 }), 60_000);
 
-// Before a tool: asked only when the store can have something, held only
-// when the call changes something, and never at the cost of a fact.
-test("before a tool: not asked when the answer is known to be nothing, asked again when it may have changed; a read is not held", () => inWorld("tools", async (w, st, dir) => {
+// Before a tool. Two things bind it: no rule the store would have given is
+// lost, and a rule about an action is in the request the model answers by
+// acting, when the store answers in time.
+test("before a tool: a change is always asked; a file in no checkout never; a rule that comes with a read is in the next request", () => inWorld("tools", async (w, st, dir) => {
   const s = w.session();
   const asked = () => st.calls("pre-tool").filter((l) => l.includes(s)).length;
   const tools = () => w.tacit.stats().tools;
-  // A command the store has a rule for: asked, and the rule is in its result.
+  // A call that changes something is asked every time, whatever the store answered before.
   await w.say(s, "one tools=1");
-  expect(asked()).toBe(1);
   expect(w.names(w.last(s))).toContain("rule-kw1");
-  // The same command again: the store gave its rule, so its answer is empty now: asked, and that is remembered.
-  await w.say(s, "two tools=1");
-  expect(asked()).toBe(2);
-  // From here the same call is not asked about: the answer is known to be nothing.
-  await w.say(s, "three tools=1,1,1");
-  expect(asked()).toBe(2);
-  expect(tools().known_nothing).toBe(3);
-  // Another call is its own question.
-  await w.say(s, "four tools=2");
-  expect(asked()).toBe(3);
-  expect(w.names(w.last(s))).toContain("rule-kw2");
-
-  // The store gains a fact for a call it had nothing for. While "nothing" is
-  // believed it is not asked; once the store may have changed it is, and the fact arrives: late, never lost.
+  await w.say(s, "two tools=1,1,1");
+  expect(asked()).toBe(4);
+  expect(tools().known_nothing).toBe(0);
+  // The store gains a rule for a change it had nothing for: the very next such call gets it, in its result.
   st.set("hidden", "rule-kw7");
-  await w.say(s, "five tools=7");
-  await w.say(s, "six tools=7");
-  expect(asked()).toBe(4);
+  await w.say(s, "three tools=7");
   st.set("hidden", "");
-  await w.say(s, "seven tools=7");
-  expect(asked()).toBe(4);
-  expect(w.names(w.last(s))).not.toContain("rule-kw7");
-  // (The time an empty answer is believed has passed.)
-  for (const m of [(w.tacit as any).nothing.get(s).until as Map<string, number>]) for (const k of m.keys()) m.set(k, 0);
-  await w.say(s, "eight tools=7");
-  expect(asked()).toBe(5);
-  expect(w.names(w.last(s))).toContain("rule-kw7");
-
-  // A summary: the store counts nothing as given and gives again, so what it had nothing for is asked again.
-  await w.say(s, "nine tools=1");
-  expect(asked()).toBe(6); // asked again like every call after that time; nothing, remembered again
-  await w.say(s, "nine again tools=1");
+  await w.say(s, "four tools=7");
   expect(asked()).toBe(6);
-  await w.engine.compactNow(s, { trigger: "owner" });
-  await w.say(s, "ten tools=1");
-  expect(asked()).toBe(7);
-  expect(w.copies(s, "rule-kw1")).toBe(1);
+  expect(w.names(w.last(s))).toContain("rule-kw7");
+  const results = () => w.store.events(s).filter((e) => e.kind === "tool_result").map((e) => JSON.stringify(e.data.results));
+  expect(results().at(-1)).toContain("rule-kw7");
 
   // A file in no checkout: the store answers an edit only from the file's repository. Never asked.
   // (Unless the test's own folder sits in a checkout, where it is asked like any other.)
   const { inCheckout } = await import("./tacit-tools.ts");
   const before = asked();
-  await w.say(s, "eleven tools=w20,w21,g22");
-  if (!inCheckout(join(dir, "out", "x"))) {
+  await w.say(s, "five tools=w20,w21,g22");
+  if (!inCheckout(dir, "out/x")) {
     expect(asked()).toBe(before + 1);
     expect(tools().never_answered).toBe(2);
   }
   expect(w.names(w.last(s))).toContain("rule-kw22");
   expect(w.names(w.last(s))).not.toContain("rule-kw20");
 
-  // A read against a call that changes something, with a store that takes 0.4 s to answer:
-  // the read's result is not held, and its rule is in a later request of the same turn;
-  // the change's result is held, and its rule is in that result.
+  // The store's own steps (its command line in a shell) are always passed to it.
+  const nav = w.session();
+  for (let i = 0; i < 3; i++) await w.run(nav, "true; tacit fact some-name");
+  expect(st.calls("pre-tool").filter((l) => l.includes(nav)).length).toBe(3);
+
+  // A read that brings the rule about the change that follows it (the store
+  // gives a script's rule when the script is read, and marks it given), with
+  // a store that takes 0.4 s. The read's result is not held; the request the
+  // model answers by making the change waits for the answer and carries the rule.
   st.set("mode", "lagtool");
   const read = w.session();
-  await w.say(read, "warm tools=r90"); // the session's first call starts its transcript
-  let t0 = performance.now();
-  await w.say(read, "reads tools=r30,r31,r32,r33,r34,r35");
-  const reads = performance.now() - t0;
-  t0 = performance.now();
-  await w.say(read, "changes tools=40,41,42,43,44,45");
-  const changes = performance.now() - t0;
-  expect(reads).toBeLessThan(1_500);
-  expect(changes).toBeGreaterThan(6 * 350);
-  expect(tools().not_held).toBeGreaterThanOrEqual(6);
-  // Every rule the store gave is in the context: the reads' rules followed, the changes' were in their results.
-  await until(() => w.tacit.owed(read) > 0 || [30, 31, 32, 33, 34, 35].every((k) => w.names(w.last(read)).includes(`rule-kw${k}`)));
-  await w.say(read, "and then");
-  const all = w.names(w.last(read));
-  for (const k of [30, 31, 32, 33, 34, 35, 40, 41, 42, 43, 44, 45]) expect(all).toContain(`rule-kw${k}`);
-  for (const k of [30, 35, 40, 45]) expect(w.copies(read, `rule-kw${k}`)).toBe(1);
+  await w.say(read, "warm tools=r90");
+  const from = w.asked.filter((r) => r.session === read).length;
+  await w.say(read, "notice tools=r30,31,r32");
+  const reqs = w.asked.filter((r) => r.session === read).slice(from);
+  // Request 1 asks for the read; request 2 is answered by the change; request 3 by the next read.
+  expect(w.names(reqs[0]!.messages)).not.toContain("rule-kw30");
+  expect(w.names(reqs[1]!.messages)).toContain("rule-kw30");
+  expect(w.names(reqs[2]!.messages)).toEqual(expect.arrayContaining(["rule-kw30", "rule-kw31"]));
+  expect(w.names(reqs[3]!.messages)).toContain("rule-kw32");
+  // The read's rule came as a note beside its result, the change's in its own result; each once.
+  const of = (id: string) => w.store.events(id).filter((e) => e.kind === "tool_result").map((e) => JSON.stringify(e.data.results));
+  expect(of(read).some((r) => r.includes("rule-kw30"))).toBe(false);
+  expect(of(read).some((r) => r.includes("rule-kw31"))).toBe(true);
+  for (const k of [30, 31, 32]) expect(w.copies(read, `rule-kw${k}`)).toBe(1);
+  expect(tools().request_waits).toBeGreaterThanOrEqual(2);
   expect(w.tacit.owed(read)).toBe(0);
-  // The store's own steps (its command line in a shell) are always passed to it, whatever is remembered.
-  const nav = w.session();
-  const navAsked = () => st.calls("pre-tool").filter((l) => l.includes(nav)).length;
-  st.set("mode", "ok");
-  for (let i = 0; i < 3; i++) await (w as any).run(nav, "true; tacit fact some-name");
-  expect(navAsked()).toBe(3);
 
-  // A tool hook slower than a turn would wait, and only reads: nobody waits
-  // for it, and two such calls in a row are still an outage of tool calls
-  // (so calls go out one at a time), with no note: no result was held.
+  // A tool hook slower than a turn waits, and only reads: the next request
+  // waits the hook's wait for each, twice in a row is an outage, said once.
   st.set("mode", "latetool");
   const only = w.session();
-  t0 = performance.now();
-  await w.say(only, "reads tools=r70,r71");
-  expect(performance.now() - t0).toBeLessThan(1_000);
-  expect(w.tacit.stats().out.tool).toBe(false);
-  await until(() => w.tacit.stats().out.tool, 10_000);
-  expect(w.told(only)).toBe(0);
+  const t0 = performance.now();
+  await w.say(only, "reads tools=r70,r71,r72,r73");
+  expect(w.tacit.stats().out.tool).toBe(true);
+  // Two waits, then none.
+  expect(performance.now() - t0).toBeGreaterThan(1_600);
+  expect(performance.now() - t0).toBeLessThan(3_200);
+  expect(w.told(only)).toBe(1);
   expect(w.captured.filter((m) => m.includes("did not answer a tool call in time"))).toHaveLength(1);
 }), 120_000);
+
+// A read's empty answer is remembered for a few seconds, for that very read
+// of that session, once it is known how long the store's searches take.
+// (What is asserted is what Keel knows and skips, not how many calls the
+// stand-in logged by a given moment: on a loaded machine one of its answers
+// can take longer than the store's budget, and is then rightly not remembered.)
+test("a read the store had nothing for is not asked again for a few seconds, unless the answer came too fast to be a search", () => inWorld("reads", async (w, st, dir) => {
+  st.set("toollag", 0.05);
+  const s = w.session();
+  const { callKey } = await import("./tacit-tools.ts");
+  const tools = () => w.tacit.stats().tools;
+  const nothing = () => (w.tacit as any).nothing.get(s) as { known(key: string): boolean; until: Map<string, number> } | undefined;
+  const known = (k: number) => !!nothing()?.known(callKey(dir, { tool_name: "Bash", tool_input: { command: `echo kw${k}` } }));
+  // Reads kwN until its empty answer is remembered (an answer slower than the store's budget is not).
+  const settle = async (k: number) => { for (let i = 0; i < 6 && !known(k); i++) await w.say(s, `read tools=r${k}`); expect(known(k)).toBe(true); };
+  const elapse = () => { for (const k of nothing()?.until.keys() ?? []) nothing()!.until.set(k, 0); };
+  // Nothing is remembered before enough of the store's calls were seen.
+  await w.say(s, "one tools=r1,r1,r1");
+  expect(known(1)).toBe(false);
+  expect(tools().known_nothing).toBe(0);
+  await w.say(s, `warm tools=${seq(101, 120).map((k) => `r${k}`).join(",")}`);
+  // From here an empty answer to a read is remembered: the same read is not asked again.
+  await settle(1);
+  let skipped = tools().known_nothing;
+  let made = w.tacit.stats().hooks["pre-tool"];
+  let calls = Object.values(made.outcomes).reduce((a, b) => a + b, 0);
+  await w.say(s, "three tools=r1,r1");
+  expect(tools().known_nothing).toBe(skipped + 2);
+  expect(Object.values(w.tacit.stats().hooks["pre-tool"].outcomes).reduce((a, b) => a + b, 0)).toBe(calls);
+  // The same command line is asked when it is another read, and always when it changes something.
+  expect(known(2)).toBe(false);
+  calls = Object.values(w.tacit.stats().hooks["pre-tool"].outcomes).reduce((a, b) => a + b, 0);
+  await w.say(s, "four tools=1,1");
+  expect(Object.values(w.tacit.stats().hooks["pre-tool"].outcomes).reduce((a, b) => a + b, 0)).toBe(calls + 2);
+
+  // The store gains a rule for a read it had nothing for. While "nothing" is
+  // believed the read is not asked; once the few seconds have passed it is, and the rule arrives.
+  st.set("hidden", "rule-kw5");
+  await settle(5);
+  st.set("hidden", "");
+  skipped = tools().known_nothing;
+  await w.say(s, "six tools=r5");
+  expect(tools().known_nothing).toBe(skipped + 1);
+  expect(w.names(w.last(s))).not.toContain("rule-kw5");
+  elapse();
+  await w.say(s, "seven tools=r5");
+  expect(w.names(w.last(s))).toContain("rule-kw5");
+
+  // An index being rebuilt answers with nothing at once. That is no "nothing": the read is asked again.
+  st.set("stale", "1");
+  st.set("hidden", "rule-kw6");
+  await w.say(s, "eight tools=r6,r6");
+  expect(known(6)).toBe(false);
+  rmSync(join(st.bin, "..", "stale"));
+  st.set("hidden", "");
+  await w.say(s, "nine tools=r6");
+  expect(w.names(w.last(s))).toContain("rule-kw6");
+
+  // A summary: the store counts nothing as given and gives again, so what was remembered is forgotten.
+  await settle(1);
+  await w.engine.compactNow(s, { trigger: "owner" });
+  expect(known(1)).toBe(true); // until the store is told, with the next request
+  await w.say(s, "eleven tools=r1");
+  expect(w.copies(s, "rule-kw1")).toBe(1);
+  // An answer asked for before the summary and arriving after it is not remembered (it is from before the store forgot).
+  const t = w.tacit as any;
+  expect(t.forgot.get(s)).toBeGreaterThan(0);
+}), 120_000);
+
+// A store that is late now and then never misses twice in a row. It is said
+// all the same, once per session, while a quarter of its last calls were late.
+// (Fed with late and answered calls directly: real waits on a loaded machine
+// make an answered call late now and then, which is what this rule is for.)
+test("a store that is slow every few calls opens no outage and is said once per session while it lasts", () => inWorld("degraded", async (w) => {
+  const s = w.session();
+  await w.say(s, "start");
+  const t = w.tacit as any;
+  const late = () => t.miss("tool", "pre-tool", s);
+  const answered = () => t.ended("tool", "empty", true, s);
+  const slow = () => w.store.events(s).filter((e) => e.kind === "note" && e.data.kind === "memory_slow");
+  // Twenty calls, every fourth late: no two in a row.
+  for (let i = 0; i < 20; i++) {
+    if (i === 19) expect(w.tacit.stats().degraded.tool).toBe(false);
+    if (i % 4 === 3) late(); else answered();
+  }
+  expect(w.tacit.stats().out.tool).toBe(false);
+  expect(w.captured.filter(memoryError)).toEqual([]);
+  expect(w.tacit.stats().hooks["pre-tool"].late).toBe(5);
+  expect(w.tacit.stats().degraded.tool).toBe(true);
+  // Said at the late call that made it a quarter of the last twenty: a line for the owner, once.
+  expect(slow()).toHaveLength(1);
+  expect(slow()[0]!.data.model).toBeUndefined();
+  expect(String(slow()[0]!.data.text)).toContain("5 of its last 20");
+  answered(); late(); answered(); late();
+  expect(slow()).toHaveLength(1);
+  expect(w.told(s)).toBe(0);
+  // It answers again for a while: no longer said to be slow, and said anew if it comes back.
+  for (let i = 0; i < 20; i++) answered();
+  expect(w.tacit.stats().degraded.tool).toBe(false);
+  for (let i = 0; i < 20; i++) { if (i % 3 === 2) late(); else answered(); }
+  expect(slow()).toHaveLength(2);
+  // Two in a row are an outage, as ever.
+  late(); late();
+  expect(w.tacit.stats().out.tool).toBe(true);
+}), 30_000);
 
 test("a session's first prompt waits for the start block; a start slower than the wait is not killed, and its block follows", () => inWorld("start", async (w, st) => {
   st.set("mode", "slowstart");

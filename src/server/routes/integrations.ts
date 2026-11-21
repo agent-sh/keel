@@ -61,7 +61,9 @@ export const integrationRoutes: RouteModule = (deps) => {
         if ([since, until].some((v) => v !== undefined && !Number.isFinite(v))) return bad("a bound is not a number");
         const session = q.get("session_id") || undefined;
         if (session && !store.session(session)) return bad("no such session", 404);
-        return Response.json(memoryMeter(store).report({ since, until, session }), { headers: { "cache-control": "no-store" } });
+        // `store`: how the memory store answers right now (the kinds of call that are out, or often late).
+        const { out, degraded } = tacit.stats();
+        return Response.json({ ...memoryMeter(store).report({ since, until, session }), store: { out, degraded } }, { headers: { "cache-control": "no-store" } });
       },
     },
     "/api/momentum": { GET: async () => json(await momentumReport()) },
