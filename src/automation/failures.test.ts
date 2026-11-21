@@ -146,3 +146,93 @@ test("a held parent gets the notice after the owner's next turn, not before", as
   expect(got[0]).toContain(a.id);
   expect(got[0]).toContain(b.id);
 });
+
+// Re-review P2-1: a wait returns one report. The failure of an earlier task of
+// the same agent is not that report, so it is still told.
+const done = (a: agents.AgentRecord, text = "task two is done") => {
+  store.append(a.session_id, "assistant", { blocks: [{ type: "text", text }] });
+  store.append(a.session_id, "turn_end", { reason: "end_turn" });
+  agents.onTurnEnd(a.session_id, "end_turn");
+};
+const waited = (p: { id: string }, a: agents.AgentRecord) => agents.ackWaited(p.id, [{ id: a.id, report: agents.reportId(agents.get(a.id)!) }]);
+
+test("a wait that returns an agent's later report does not clear its earlier failure", async () => {
+  const p = parentOf("Two tasks");
+  busy.add(p.id);
+  const a = await spawn(p.id, "Lane");
+  fail(a); // task 1 fails, with no words of its own
+  await settled();
+  await agents.send(a.id, "try the other way"); // task 2
+  done(agents.get(a.id)!);
+  await settled();
+  waited(p, a); // wait_agent returned task 2's report
+  busy.delete(p.id);
+  flush(p.id);
+  const got = to(p.id);
+  expect(got).toHaveLength(1);
+  expect(got[0]).toContain(`1 agent failed (quota), with no report of its own: ${a.id} "Lane"`);
+  expect(got[0]).not.toContain("<subagent_result"); // the wait holds task 2's report
+});
+
+test("a wait that returns a second failure, on another cause, leaves the first one owed", async () => {
+  const p = parentOf("Two causes");
+  busy.add(p.id);
+  const a = await spawn(p.id, "Lane");
+  fail(a);
+  await settled();
+  await agents.send(a.id, "try the other way");
+  fail(agents.get(a.id)!, "HTTP 529: the model is overloaded");
+  await settled();
+  waited(p, a); // the wait returned the second failure
+  busy.delete(p.id);
+  flush(p.id);
+  const got = to(p.id);
+  expect(got).toHaveLength(1);
+  expect(got[0]).toContain(`1 agent failed (quota), with no report of its own: ${a.id} "Lane"`);
+  expect(got[0]).not.toContain("overloaded");
+  expect(owedRows(p.id)).toBe(0);
+});
+
+test("an input with a report and a notice says once how many agents still run, and leaves a reporting agent's tool failure to its report", async () => {
+  const p = parentOf("One sentence");
+  busy.add(p.id);
+  const a = await spawn(p.id, "Lane");
+  const b = await spawn(p.id, "Worker");
+  await spawn(p.id, "Slow"); // still running when the input goes
+  misses(b.session_id, 3);
+  fail(a);
+  await settled();
+  done(b, "the work is done");
+  await settled();
+  busy.delete(p.id);
+  flush(p.id);
+  const got = to(p.id);
+  expect(got).toHaveLength(1);
+  expect(got[0]).toContain(`<subagent_result agent_id="${b.id}"`);
+  expect(got[0]).toContain("1 agent failed (quota)");
+  expect(got[0]!.match(/still running/g)).toHaveLength(1);
+  expect(got[0]).not.toContain("Read failed");
+  expect(owedRows(p.id)).toBe(0);
+  // The notice reads last, after the report it came with.
+  expect(got[0]!.indexOf("<failures>")).toBeGreaterThan(got[0]!.indexOf("</subagent_result>"));
+});
+
+test("a prune that fails after the failure is written does not bring the report back", async () => {
+  const p = parentOf("Prune");
+  busy.add(p.id);
+  const a = await spawn(p.id, "Lane");
+  const query = store.db.query.bind(store.db);
+  (store.db as any).query = (sql: string) => { if (sql.startsWith("DELETE FROM session_failures")) throw new Error("the prune failed"); return query(sql); };
+  try {
+    fail(a, "HTTP 500: a cause this session has not seen");
+    await settled();
+  } finally {
+    (store.db as any).query = query;
+  }
+  busy.delete(p.id);
+  flush(p.id);
+  const got = to(p.id);
+  expect(got).toHaveLength(1);
+  expect(got[0]).toContain(`1 agent failed (server), with no report of its own: ${a.id} "Lane"`);
+  expect(got[0]).not.toContain("<subagent_result");
+});

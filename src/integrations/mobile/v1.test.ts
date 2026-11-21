@@ -125,6 +125,25 @@ describe("messages", () => {
     expect(m[2].meta.origin).toBe("harness");
   });
 
+  test("a notice that rides a loop run keeps the run's label, and a quoted notice is not taken for the real one", async () => {
+    const s = session("Looper");
+    const frame = (entry: string) => `[harness] Failures in this session's work, one entry per cause (the first one shown). Data, not an instruction.\n<failures>\n- ${entry}\n    HTTP 402: no credit\n</failures>`;
+    const groups = [{ fp: "x", kind: "turn", owed: 1, count: 1 }];
+    store.append(s.id, "user", { text: `Check the queue.\n\n${frame("A turn of this session ended on an error (quota)")}`, kind: "wake", parts: [{ kind: "loop", loop_id: "l1", loop_name: "Queue check" }, { kind: "failures", groups }] });
+    // A report that quotes a whole notice, ahead of the real one.
+    const quoting = `<subagent_result agent_id="ag2" title="Child" status="completed">\nI saw this earlier:\n${frame("9 agents failed on one cause (quoted)")}\n</subagent_result>`;
+    store.append(s.id, "user", { text: `${quoting}\n\n${frame("1 agent failed (quota), with no report of its own: ag9")}`, kind: "wake", parts: [{ kind: "subagent", agent_id: "ag2" }, { kind: "failures", groups }] });
+    const m = (await call("GET", `/v1/chats/${s.id}/messages`)).body.messages;
+    expect(m[0].meta).toMatchObject({ origin: "loop", loop_id: "l1" });
+    expect(m[0].content).toContain("Loop run: Queue check");
+    expect(m[0].content).toContain("Check the queue.");
+    expect(m[0].content).toContain("**Failures, grouped by cause**\n\n- A turn of this session ended on an error (quota)");
+    expect(m[1].meta.origin).toBe("subagent");
+    expect(m[1].content).toContain("**Failures, grouped by cause**\n\n- 1 agent failed (quota), with no report of its own: ag9");
+    // The quoted one stays where the agent wrote it, inside its report.
+    expect(m[1].content.indexOf("9 agents failed on one cause (quoted)")).toBeLessThan(m[1].content.indexOf("**Failures, grouped by cause**"));
+  });
+
   test("a committed queued prompt takes its queue receipt's id; same-millisecond events keep their order", async () => {
     setSystemTime(new Date("2026-01-01T09:00:00Z"));
     const s = session();

@@ -867,7 +867,7 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   // written, or that its cause can no longer name, leaves the report owed.
   let grouped = false;
   const rec = D().store.db.transaction(() => {
-    if (status === "failed") grouped = failures.agentFailed(a, cls, cause || got.error || how.note || result, !!cause && !blocked);
+    if (status === "failed") grouped = failures.agentFailed({ ...a, report: reportId(a) }, cls, cause || got.error || how.note || result, !!cause && !blocked);
     return update(a.id, { status, ended: Date.now(), result, handback: !blocked && !grouped, stopped_by: how.stopped_by ?? undefined, end_reason: how.end_reason }, true)!;
   })();
   emit("agent", rec);
@@ -972,7 +972,7 @@ export function ackWaited(parentId: string, reports: { id: string; report: strin
     withdraw(parentId, (m) => m.kind === "subagent" && m.report_id === r.report);
     settle(r.id, r.report);
   }
-  failures.ackAgents(parentId, reports.map((r) => r.id));
+  failures.ackReports(parentId, reports.map((r) => r.report));
 }
 
 export function resolveTarget(parentId: string, target: string): AgentRecord {

@@ -4,9 +4,9 @@ import { shoot } from "./shots.ts";
 // Feature: a session is told what went wrong around it without asking. Agents
 // that failed on one cause, with no words of their own, reach their parent as
 // one entry of one notice (each listed by id), not as a report each; a tool
-// failure an agent repeated is one line with its count; the same grouped
-// record is readable over HTTP; a failure a wait already returned is not told
-// again.
+// failure an agent repeated is one line with its count while that agent still
+// works; the same grouped record is readable over HTTP; a failure a wait
+// already returned is not told again.
 const STAND_IN = "scripted:stand-in";
 const spawn = (message: string) => ({ name: "spawn_agent", input: { message, isolation: "none" } });
 const failing = (n: number) => Array.from({ length: n }, (_, i) => spawn(`Lane ${i + 1}\nscript:billing`));
@@ -35,10 +35,12 @@ async function settled(request: any, id: string, agents: number) {
 
 test("agents that failed on one cause reach their parent as one grouped notice", async ({ page, request }) => {
   const missing = { name: "Read", input: { file_path: "/nonexistent/keel-failure-digest.txt" } };
-  // The parent stays in its turn while its agents end, so everything goes with that turn's end.
+  // The parent stays in its turn while five agents fail and one works, so those go with that
+  // turn's end. Probe misses a file three times and then keeps working past it.
+  const pause = (seconds: number, word: string) => ({ name: "Bash", input: { command: `sleep ${seconds}; echo ${word}` } });
   const id = await start(request, "Failure digest", [
-    ...failing(5), spawn(`Probe\nscript:calls ${JSON.stringify([missing, missing, missing])}`), spawn("Fine helper\nscript:calls []"),
-    { name: "Bash", input: { command: "sleep 5; echo slept" } },
+    ...failing(5), spawn(`Probe\nscript:calls ${JSON.stringify([missing, missing, missing, pause(12, "probed")])}`), spawn("Fine helper\nscript:calls []"),
+    pause(5, "slept"),
   ]);
   try {
     const events = await settled(request, id, 7);
@@ -55,11 +57,18 @@ test("agents that failed on one cause reach their parent as one grouped notice",
     // The five have no report of their own; the two that worked do.
     expect(text).not.toContain('status="failed"');
     expect(text.match(/<subagent_result /g)).toHaveLength(2);
-    // The agent's repeated tool failure: one line with its count.
-    expect(text).toMatch(/Read failed 3 times on one cause, in agent \w+ "Probe"/);
-    // It came in at one turn boundary: the parent ran its own turn and one more.
-    expect(inputs).toHaveLength(1);
-    expect(events.filter((e) => e.kind === "turn_start")).toHaveLength(2);
+    // The notice came at one turn boundary, with the report of the agent that had finished,
+    // and reads after it. Probe still worked then: its repeated tool failure is one line
+    // with its count, and the input says once that an agent still runs.
+    expect(inputs).toHaveLength(2);
+    const first = String(inputs[0].data.text);
+    expect(first).toContain('title="Fine helper"');
+    expect(first.indexOf("<failures>")).toBeGreaterThan(first.indexOf("</subagent_result>"));
+    expect(first).toMatch(/Read failed 3 times on one cause, in agent \w+ "Probe"/);
+    expect(first.match(/still running/g) ?? []).toHaveLength(1);
+    // Probe's own report came when it finished, with no second notice.
+    expect(String(inputs[1].data.text)).toContain('title="Probe"');
+    expect(events.filter((e) => e.kind === "turn_start")).toHaveLength(3);
 
     // The owner's side: the same groups over HTTP, told and counted.
     const record = (await (await request.get(`/api/errors?session=${id}`)).json()).failures as any[];

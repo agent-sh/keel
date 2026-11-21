@@ -147,10 +147,14 @@ an entry shows the first one.
 - Text is redacted like everything stored, an entry holds at most three lines
   and twenty ids, and a notice at most eight causes; more causes go with the
   next notice.
+- A tool failure gets no line when the agent's own report is in the same
+  input, and an input says once how many agents still run.
+- A wait that returned an agent's report clears the failure that stood in for
+  that report only. An earlier task's failure of the same agent is still told.
 - Counted but never sent: the session's own tool failures (it has their
   results), the failures of a reviewer or verifier agent (their results never
-  enter the conversation), failed model requests (retried ones too) and timed
-  out waits.
+  enter the conversation), failed model requests (retried ones too), timed out
+  waits and a loop's failed run (the turn's own failure is what is told).
 
 The same rows are read at `GET /api/errors?session=<id>` (`failures`, the
 newest 200 causes), with the Errors rows that last happened in that session or

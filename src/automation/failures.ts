@@ -84,15 +84,24 @@ export function record(sessionId: string, f: Failure, from = sessionId): boolean
     const { store } = D();
     if (!store.session(sessionId)) return false;
     const clean = (s: string) => String(store.redact(from, "error", s));
-    const safe: Failure = { ...f, cls: clip(clean(f.cls), CLASS_CHARS), message: clean(f.message), ref: f.ref && { id: f.ref.id, label: f.ref.label && clean(f.ref.label) } };
+    const safe: Failure = { ...f, cls: clip(clean(f.cls), CLASS_CHARS), message: clean(f.message), ref: f.ref && { ...f.ref, label: f.ref.label && clean(f.ref.label) } };
     const had = one(sessionId, fingerprintOf(safe.kind, safe.cls, safe.message));
     const named = safe.tell !== "wake" || room(had, safe.ref?.id ?? SELF);
     save(sessionId, add(had, named ? safe : { ...safe, tell: undefined }, Date.now()));
-    if (!had) store.db.query("DELETE FROM session_failures WHERE session_id = ?1 AND owed = 0 AND fp NOT IN (SELECT fp FROM session_failures WHERE session_id = ?1 ORDER BY last_ts DESC LIMIT ?2)").run(sessionId, KEEP);
+    // The row is written: a prune that fails does not change what the caller is told.
+    if (!had) prune(sessionId);
     return named;
   } catch (e) {
     capture(e, { at: "failures", session: sessionId });
     return false;
+  }
+}
+
+function prune(sessionId: string) {
+  try {
+    D().store.db.query("DELETE FROM session_failures WHERE session_id = ?1 AND owed = 0 AND fp NOT IN (SELECT fp FROM session_failures WHERE session_id = ?1 ORDER BY last_ts DESC LIMIT ?2)").run(sessionId, KEEP);
+  } catch (e) {
+    capture(e, { at: "failures prune", session: sessionId });
   }
 }
 
@@ -152,11 +161,12 @@ export function seen(sessionId: string, kind: FailureKind, cls: string, message:
 }
 
 // An agent ended as failed. `standsIn`: it wrote nothing of its own, so the
-// grouped notice can be its report; otherwise its own report (or the blocking
-// call's result) carries the failure and this only counts it. True when the
-// notice does stand in for its report: the failure is written and names it.
-export function agentFailed(a: { id: string; parent_id: string; session_id: string; title: string }, cls: string, message: string, standsIn: boolean): boolean {
-  return record(a.parent_id, { kind: "agent", cls, message, ref: { id: a.id, label: a.title }, tell: standsIn ? "wake" : undefined }, a.session_id) && standsIn;
+// grouped notice can be its report (`report`: that report's id); otherwise its
+// own report (or the blocking call's result) carries the failure and this only
+// counts it. True when the notice does stand in for its report: the failure
+// is written and names it.
+export function agentFailed(a: { id: string; parent_id: string; session_id: string; title: string; report: string }, cls: string, message: string, standsIn: boolean): boolean {
+  return record(a.parent_id, { kind: "agent", cls, message, ref: { id: a.id, label: a.title, report: a.report }, tell: standsIn ? "wake" : undefined }, a.session_id) && standsIn;
 }
 
 // A sentence that goes with the session's next notice (a timer cancelled now
@@ -166,15 +176,21 @@ const notes = new Map<string, string>();
 const AGENTS_LEFT = "SELECT COUNT(*) AS n FROM agents WHERE parent_id = ? AND status IN ('running', 'waiting') AND type != 'reviewer'";
 
 // The notice for what the session is owed now, read from the table when it is
-// sent: whatever happened until then is in it, each cause once.
-function notice(sessionId: string): Pending | undefined {
+// sent: whatever happened until then is in it, each cause once. `parts`: the
+// meta of what goes in the same input. An agent's report there is the account
+// of its work, so its repeated tool failure gets no line, and a report says
+// how many agents still run, so the notice does not say it again.
+function notice(sessionId: string, parts: Record<string, unknown>[] = []): Pending | undefined {
   const { store } = D();
-  const r = render(owedOf(sessionId), Date.now());
+  const reports = parts.filter((p) => p.kind === "subagent");
+  const r = render(owedOf(sessionId), Date.now(), new Set(reports.map((p) => String(p.agent_id))));
   if (!r) return undefined;
+  if (r.text === null) return void settle(sessionId, r.told); // all of it is in the reports going now
   let tail = "";
   if (r.agents) {
     const left = store.db.query<{ n: number }, [string]>(AGENTS_LEFT).get(sessionId)!.n;
-    tail = left ? `\n${left} more of your agents ${left === 1 ? "is" : "are"} still running; ${left === 1 ? "its report wakes" : "their reports wake"} you when ready, so end your turn unless you have other work.` : (notes.get(sessionId) ?? "");
+    if (!left) tail = notes.get(sessionId) ?? "";
+    else if (!reports.length) tail = `\n${left} more of your agents ${left === 1 ? "is" : "are"} still running; ${left === 1 ? "its report wakes" : "their reports wake"} you when ready, so end your turn unless you have other work.`;
   }
   return {
     text: r.text + tail,
@@ -197,9 +213,9 @@ function settle(sessionId: string, told: Pick<Told, "fp" | "count" | "refs">[]) 
 // The notice as it goes when its time comes, or nothing: a session held after
 // the owner's Stop starts no turn for it (it goes after the owner's next turn),
 // and one with no failure worth a turn left (a wait returned it) has none.
-function live(sessionId: string): Pending | undefined {
+function live(sessionId: string, parts?: Record<string, unknown>[]): Pending | undefined {
   if (D().engine.isHeld(sessionId)) return undefined;
-  if (owedWake(sessionId)) return notice(sessionId);
+  if (owedWake(sessionId)) return notice(sessionId, parts);
   notes.delete(sessionId);
   return undefined;
 }
@@ -207,20 +223,24 @@ function live(sessionId: string): Pending | undefined {
 // What is owed and worth a turn goes out: one input, however many failures.
 // Called when such a failure lands, after every turn of the session and at a
 // start (`boot`: a session whose cut turn the engine is about to continue gets
-// it when that turn ends, not ahead of it, like a wait's wake).
+// it when that turn ends, not ahead of it, like a wait's wake; that covers the
+// notice sent from recover() only: one an agent settled at the start owes, like
+// its report, goes on the usual timer).
 export function wake(sessionId: string, note?: string, boot = false) {
   if (note) notes.set(sessionId, note);
   if (isPending(sessionId, (m) => m.kind === "failures")) return; // on its way: it is read again when sent
   const first = live(sessionId);
-  if (first) deliver(sessionId, first.text, first.meta, { ...(boot && cutTurn(sessionId) ? { hold: true } : { coalesceMs: 300 }), refresh: () => live(sessionId) });
+  if (first) deliver(sessionId, first.text, first.meta, { ...(boot && cutTurn(sessionId) ? { hold: true } : { coalesceMs: 300 }), refresh: (parts) => live(sessionId, parts) });
 }
 
 // Whether a failure that stands in for a report is still to be told (asked on every tick of a command that stays).
 export const owedWake = (sessionId: string) => !!D().store.db.query("SELECT 1 FROM session_failures WHERE session_id = ? AND owed > 0 AND wake = 1 LIMIT 1").get(sessionId);
 
-// The session got these agents' failures in a stored wait_agent result.
-export function ackAgents(sessionId: string, agentIds: string[]) {
-  const ids = new Set(agentIds);
+// The session got these reports in a stored wait_agent result: a failure that
+// stood in for one of them is told. By report, not by agent: the failure of an
+// earlier task stays owed when the wait returned a later task's report.
+export function ackReports(sessionId: string, reportIds: string[]) {
+  const ids = new Set(reportIds);
   for (const g of owedOf(sessionId, "agent")) {
     const next = acked(g, ids);
     if (next !== g) save(sessionId, next);
@@ -231,11 +251,15 @@ export function ackAgents(sessionId: string, agentIds: string[]) {
 // After a start: a notice stored just before the stop settles what it told
 // (its send and its settling are two writes; a failure that landed between
 // them stays owed), then what is still owed goes. Every owed row is one a
-// notice would tell, so only sessions with something to tell are looked at.
+// notice would tell, so only sessions with something to tell are looked at,
+// and an archived one gets its notice when it is restored. A stop can fall
+// between the two writes only right after the send, so the notice it left
+// unsettled is the session's newest input: that one row is read, not the history.
 export function recover() {
   const { store } = D();
-  for (const { session_id } of store.db.query<{ session_id: string }, []>("SELECT DISTINCT session_id FROM session_failures WHERE owed > 0").all()) {
-    const last = store.db.query<{ data: string }, [string]>(`SELECT data FROM events WHERE session_id = ? AND kind = 'user' AND data LIKE '%"kind":"failures"%' ORDER BY seq DESC LIMIT 1`).get(session_id);
+  const owing = store.db.query<{ session_id: string }, []>("SELECT DISTINCT f.session_id FROM session_failures f JOIN sessions s ON s.id = f.session_id WHERE f.owed > 0 AND s.archived = 0").all();
+  for (const { session_id } of owing) {
+    const last = store.db.query<{ data: string }, [string]>("SELECT data FROM events WHERE session_id = ? AND kind = 'user' ORDER BY seq DESC LIMIT 1").get(session_id);
     const data = last ? JSON.parse(last.data) : undefined;
     for (const part of (data?.parts ?? (data ? [data] : [])) as any[]) {
       if (part?.kind !== "failures") continue;
@@ -248,5 +272,5 @@ export function recover() {
 
 // With any other input of the session: what is owed goes along, at no turn of its own.
 export function init() {
-  rider.get = (sessionId, has) => (has("failures") ? undefined : notice(sessionId));
+  rider.get = (sessionId, parts) => (parts.some((p) => p.kind === "failures") ? undefined : notice(sessionId, parts));
 }

@@ -51,12 +51,14 @@ export function cursor(before: string | null | undefined): { ts: number; id: str
 // is busy. Inputs waiting together arrive as one message.
 type Input = { text: string; meta: Record<string, unknown> };
 // `hold`: the input waits for the session's next turn to end (a turn the engine is about to continue).
-// refresh: the part as it is when sent (its text, and what sending it settles), or nothing when it no longer holds.
-type Delivery = { coalesceMs?: number; hold?: boolean; onSent?: (e: StoredEvent) => void; refresh?: () => (Input & { onSent?: (e: StoredEvent) => void }) | undefined };
+// refresh: the part as it is when sent (its text, and what sending it settles), or nothing when it no
+// longer holds. `parts`: the meta of everything lined up with it, itself included.
+type Parts = Record<string, unknown>[];
+type Delivery = { coalesceMs?: number; hold?: boolean; onSent?: (e: StoredEvent) => void; refresh?: (parts: Parts) => (Input & { onSent?: (e: StoredEvent) => void }) | undefined };
 export type Pending = Input & Omit<Delivery, "coalesceMs">;
 // A part that never starts a turn of its own and goes with whatever is sent
-// next (the failure notice). `has`: whether a part of that kind is already in.
-export const rider: { get?: (sessionId: string, has: (kind: string) => boolean) => Pending | undefined } = {};
+// next (the failure notice). `parts`: the meta of what is being sent.
+export const rider: { get?: (sessionId: string, parts: Parts) => Pending | undefined } = {};
 const pending = new Map<string, Pending[]>();
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -105,14 +107,18 @@ export function flush(sessionId: string) {
   try {
     // Live statuses can change while the recipient is busy. Recheck them
     // before grouping the parts; a withdrawn status must not start a turn.
+    const lined = list.map((p) => p.meta);
     const current = list.flatMap((p) => {
       if (!p.refresh) return [p];
-      const next = p.refresh();
+      const next = p.refresh(lined);
       return next ? [{ ...p, ...next }] : [];
     });
     if (!current.length) return;
-    const extra = rider.get?.(sessionId, (kind) => current.some((p) => p.meta.kind === kind));
+    const extra = rider.get?.(sessionId, current.map((p) => p.meta));
     if (extra) current.push(extra);
+    // The failure notice reads last, after the reports and wakes it comes with
+    // (what shows it finds it there, whatever a report quotes).
+    current.sort((a, b) => Number(a.meta.kind === "failures") - Number(b.meta.kind === "failures"));
     const kinds = [...new Set(current.map((p) => p.meta.kind))];
     const meta = current.length === 1 ? current[0]!.meta : { kind: kinds.length === 1 ? kinds[0] : "wake", parts: current.map((p) => p.meta) };
     const r = D().engine.send(sessionId, current.map((p) => p.text).join("\n\n"), { meta });

@@ -15,7 +15,10 @@ export type FailureKind = "agent" | "turn" | "provider" | "tool" | "wait" | "loo
 // Where it happened: an agent of the session (its id and title), or the session
 // itself. `n`: its occurrences. `owed`: the ones the session's model is still to
 // be given. `told`: the ones it was given, or that stopped mattering.
-export type FailureRef = { id: string; label?: string; n: number; owed: number; told?: number };
+// `reports`: for an agent, the report each owed failure stands in for (one per
+// task it was given), oldest first: a wait that returned one report clears
+// that failure only, never an earlier task's.
+export type FailureRef = { id: string; label?: string; n: number; owed: number; told?: number; reports?: string[] };
 export const SELF = "self";
 // `count`: every occurrence. `owed`: the sum of its refs' owed, so nothing is
 // owed that a notice cannot name. `wake`: an owed one is worth a turn of its
@@ -36,9 +39,11 @@ export type FailureGroup = {
 };
 // tell: "wake" starts a turn for it, "ride" goes with the session's next input;
 // nothing means the session already has it (its own tool result, a wait's wake).
-export type Failure = { kind: FailureKind; cls: string; message: string; ref?: { id: string; label?: string }; tell?: "wake" | "ride" };
-// What a notice told of one group: how much of each ref, and the group's count then.
-export type Told = { fp: string; kind: FailureKind; owed: number; count: number; refs: Record<string, number> };
+export type Failure = { kind: FailureKind; cls: string; message: string; ref?: { id: string; label?: string; report?: string }; tell?: "wake" | "ride" };
+// What a notice told of one group: how much of each ref, and the group's count
+// then. `said`: how many of those its entry names (the rest are in a report
+// that went with it).
+export type Told = { fp: string; kind: FailureKind; owed: number; said: number; count: number; refs: Record<string, number> };
 
 // A tool failure is worth a line once one agent repeated it this often; one
 // call that failed once is work.
@@ -102,7 +107,10 @@ export function add(g: FailureGroup | undefined, f: Failure, now: number): Failu
     const fresh = at.n - (at.told ?? 0);
     // A tool failure is owed once this agent repeated it REPEAT times since it was last told.
     if (f.kind === "tool") at.owed = f.tell && fresh >= REPEAT ? fresh : at.owed;
-    else if (f.tell) at.owed++;
+    else if (f.tell) {
+      at.owed++;
+      if (f.ref?.report) at.reports = [...(at.reports ?? []), f.ref.report];
+    }
   }
   const owed = sum(refs);
   return { ...base, count: base.count + 1, owed, wake: owed > 0 && (base.wake || (f.tell === "wake" && !!at)), last_ts: now, refs };
@@ -113,7 +121,7 @@ export function add(g: FailureGroup | undefined, f: Failure, now: number): Failu
 export function settledBy(g: FailureGroup, t: Pick<Told, "count" | "refs">): FailureGroup {
   const refs = g.refs.map((r) => {
     const took = Math.min(r.owed, t.refs[r.id] ?? 0);
-    return took ? { ...r, owed: r.owed - took, told: (r.told ?? 0) + took } : r;
+    return took ? { ...r, owed: r.owed - took, told: (r.told ?? 0) + took, reports: r.reports?.slice(took) } : r;
   });
   const owed = sum(refs);
   return { ...g, owed, wake: g.wake && owed > 0, told: Math.max(g.told, t.count), refs };
@@ -124,10 +132,21 @@ export const settled = (g: FailureGroup): FailureGroup => settledBy(g, { count: 
 // Nothing of this group is owed any more (it stopped mattering: the session went on).
 export const cleared = (g: FailureGroup): FailureGroup => settledBy(g, { count: 0, refs: owing(g) });
 
-// The session got these agents' failures another way (a wait_agent result).
-export function acked(g: FailureGroup, ids: Set<string>): FailureGroup {
-  const refs = Object.fromEntries(g.refs.filter((r) => r.owed > 0 && ids.has(r.id)).map((r) => [r.id, r.owed]));
-  return Object.keys(refs).length ? settledBy(g, { count: 0, refs }) : g;
+// The session got these reports another way (a wait_agent result): the failures
+// that stood in for exactly those reports are no longer owed. Another task's
+// failure of the same agent, on this cause or another, stays owed.
+export function acked(g: FailureGroup, reports: Set<string>): FailureGroup {
+  let any = false;
+  const refs = g.refs.map((r) => {
+    const rest = (r.reports ?? []).filter((x) => !reports.has(x));
+    const took = Math.min(r.owed, (r.reports?.length ?? 0) - rest.length);
+    if (!took) return r;
+    any = true;
+    return { ...r, owed: r.owed - took, told: (r.told ?? 0) + took, reports: rest };
+  });
+  if (!any) return g;
+  const owed = sum(refs);
+  return { ...g, owed, wake: g.wake && owed > 0, refs };
 }
 
 // The groups a notice would tell now, the ones worth a turn first.
@@ -137,18 +156,20 @@ export const due = (groups: FailureGroup[]) =>
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const ago = (ms: number) => (ms < 3_600_000 ? `${Math.round(ms / 60_000)} min ago` : `${Math.round(ms / 3_600_000)} h ago`);
 
-function entry(g: FailureGroup, now: number): string {
+// `skip`: agents whose own report is in the same input (see render).
+function entry(g: FailureGroup, now: number, skip: Set<string>): string {
   const cls = g.cls && g.cls !== "other" ? ` (${g.cls})` : "";
-  const refs = g.refs.filter((r) => r.owed > 0 && r.id !== SELF);
+  const refs = g.refs.filter((r) => r.owed > 0 && r.id !== SELF && !skip.has(r.id));
   const ids = refs.map((r) => `${r.id}${r.label ? ` "${r.label}"` : ""}`).join(", ");
   const n = refs.length;
-  const before = g.count > g.owed ? `, ${g.count} so far` : "";
+  const owed = g.kind === "tool" ? sum(refs) : g.owed;
+  const before = g.count > owed ? `, ${g.count} so far` : "";
   let head: string;
   if (g.kind === "agent") {
     // Agents, not occurrences: one that failed twice is one agent.
     head = `${plural(n, "agent")} failed${n > 1 ? " on one cause" : ""}${cls}${g.owed > n ? `, ${g.owed} times` : ""}${before}, with no report of ${n === 1 ? "its" : "their"} own: ${ids}`;
   } else if (g.kind === "tool") {
-    head = `${g.cls} failed ${plural(g.owed, "time")} on one cause${before}, in ${n === 1 ? `agent ${ids}` : `${n} agents: ${ids}`}`;
+    head = `${g.cls} failed ${plural(owed, "time")} on one cause${before}, in ${n === 1 ? `agent ${ids}` : `${n} agents: ${ids}`}`;
   } else if (g.kind === "turn") {
     const age = now - g.last_ts >= 60_000 ? `, last ${ago(now - g.last_ts)}` : "";
     head = `A turn of this session ended on an error${cls}${g.owed > 1 ? `, ${g.owed} times` : ""}${before}${age}`;
@@ -162,17 +183,23 @@ export const NOTICE_HEAD = "[harness] Failures in this session's work, one entry
 
 // One notice for everything due: each cause once, with its count and where it
 // happened. `told`: what the notice settles when it is sent. Causes over the
-// bound stay owed for the next notice.
-export function render(groups: FailureGroup[], now: number): { text: string; told: Told[]; wake: boolean; agents: boolean } | undefined {
+// bound stay owed for the next notice. `reported`: the agents whose own report
+// goes in the same input: a tool failure such an agent repeated gets no line
+// (its report is the account of its work) and is settled with the rest.
+// `text` is null when that leaves nothing to say.
+export function render(groups: FailureGroup[], now: number, reported = new Set<string>()): { text: string | null; told: Told[]; wake: boolean; agents: boolean } | undefined {
   const all = due(groups);
   if (!all.length) return undefined;
-  const shown = all.slice(0, MAX_GROUPS);
-  const left = all.length - shown.length;
-  const body = shown.map((g) => entry(g, now)).join("\n");
+  const saidOf = (g: FailureGroup) => (g.kind === "tool" ? sum(g.refs.filter((r) => !reported.has(r.id))) : g.owed);
+  const said = (g: FailureGroup) => saidOf(g) > 0;
+  const loud = all.filter(said);
+  const shown = loud.slice(0, MAX_GROUPS);
+  const left = loud.length - shown.length;
+  const body = shown.map((g) => entry(g, now, reported)).join("\n");
   const text = `${NOTICE_HEAD}\n<failures>\n${inert(body, "failures")}\n</failures>${left ? `\n${plural(left, "more cause")} of failure ${left === 1 ? "is" : "are"} not listed here.` : ""}`;
   return {
-    text,
-    told: shown.map((g) => ({ fp: g.fp, kind: g.kind, owed: g.owed, count: g.count, refs: owing(g) })),
+    text: shown.length ? text : null,
+    told: [...shown, ...all.filter((g) => !said(g))].map((g) => ({ fp: g.fp, kind: g.kind, owed: g.owed, said: saidOf(g), count: g.count, refs: owing(g) })),
     wake: shown.some((g) => g.wake),
     agents: shown.some((g) => g.kind === "agent"),
   };

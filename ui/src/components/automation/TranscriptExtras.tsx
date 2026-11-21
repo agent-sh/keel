@@ -46,17 +46,20 @@ function reports(text: string, meta?: Record<string, any>): Report[] {
 
 // The failure notice inside an input (src/automation/failures.ts): its entries,
 // the lines after them, and the input's text without it.
-const FAILURES = /\[harness\] Failures in this session's work[^\n]*\n<failures>\n([\s\S]*?)\n<\/failures>((?:\n(?!\n)[^\n]*)*)/;
+const FAILURES = /\[harness\] Failures in this session's work[^\n]*\n<failures>\n([\s\S]*?)\n<\/failures>((?:\n(?!\n)[^\n]*)*)/g;
 function failuresOf(text: string, meta: Record<string, any>) {
   const part = ((meta.parts ?? [meta]) as Record<string, any>[]).find((p) => p.kind === "failures");
-  const m = part && text.match(FAILURES);
+  if (!part) return undefined;
+  // The last one: the notice goes after what it comes with, so a report that quotes one is not taken for it.
+  const m = [...text.matchAll(FAILURES)].at(-1);
   if (!m) return undefined;
-  const groups = (part.groups ?? []) as { owed: number }[];
-  const n = groups.reduce((s, g) => s + (g.owed ?? 0), 0);
+  // What the entries name: a failure left to a report in the same input is not counted here.
+  const groups = ((part.groups ?? []) as { owed: number; said?: number }[]).map((g) => g.said ?? g.owed ?? 0).filter((n) => n > 0);
+  const n = groups.reduce((s, g) => s + g, 0);
   return {
     body: unframe(m[1]!, "failures"),
     after: m[2]!.trim(),
-    rest: text.replace(m[0], "").trim(),
+    rest: (text.slice(0, m.index) + text.slice(m.index! + m[0].length)).trim(),
     sub: `${n} failure${n === 1 ? "" : "s"}, ${groups.length} cause${groups.length === 1 ? "" : "s"}`,
   };
 }
