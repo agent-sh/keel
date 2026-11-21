@@ -4,7 +4,7 @@ import type { PromptBlock, Session } from "../../../src/core/types.ts";
 import { slash, type SlashItem } from "../lib/extend.ts";
 import { loadMcpPrompts } from "../lib/tools-ui.ts";
 import { fromBlock, toAttachment, toBlock, type Attachment } from "../lib/images.ts";
-import { fuzzy, isMac, keyLabel, QUEUE_KEYS } from "../lib/keys.ts";
+import { fuzzy, isMac, keyLabel, QUEUE_KEYS, SEND_KEYS } from "../lib/keys.ts";
 import { splitId } from "../lib/fleet-ids.ts";
 import { draftGone, draftHere, dropImage, fromServer, getDraft, isKeeping, keepImage, textTaken, typing, type Draft } from "../lib/drafts.ts";
 import { hasSavedImage, messageRefused, savedImages, sendDrafts, setSendDraft, setSendImage, shelfKey, shown, unread, useSendDrafts, type SendDraft } from "../lib/send-drafts.ts";
@@ -714,7 +714,7 @@ function SessionComposer({
             data-testid="send"
             onClick={() => submit()}
             disabled={!canSend}
-            title={working ? "Steer into the running turn" : enterSends ? "Send (Enter)" : "Send (Ctrl Enter)"}
+            title={working ? "Steer into the running turn" : `Send (${keyLabel(SEND_KEYS(enterSends).send).join(" ")})`}
             aria-label="Send"
             className={cn(
               "grid size-8 place-items-center rounded-full bg-accent text-accent-fg transition-[background-color,opacity,transform] duration-150",

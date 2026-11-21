@@ -31,6 +31,8 @@ export const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
 
 // The message box's own keys, named once for the box and the shortcut sheet.
 export const QUEUE_KEYS = "mod+shift+enter";
+// What sends and what makes a new line, by the owner's "Send with" setting.
+export const SEND_KEYS = (enterSends: boolean) => (enterSends ? { send: "enter", newline: "shift+enter" } : { send: "mod+enter", newline: "enter" });
 
 function matches(e: KeyboardEvent, spec: string): boolean {
   const parts = spec.toLowerCase().split("+");

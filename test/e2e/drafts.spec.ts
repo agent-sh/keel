@@ -96,7 +96,7 @@ test("session draft", async ({ page, request }) => {
   await expect(page.getByTestId("queue-item")).toHaveCount(2);
   expect(posts).toHaveLength(2);
   await page.keyboard.press("Control+/");
-  const row = page.getByTestId("shortcuts").locator("div", { hasText: /^Queue for after the running turn/ }).last();
+  const row = page.getByTestId("shortcuts").locator("div", { hasText: /^Queue for after the turn/ }).last();
   await expect(row.locator("kbd")).toHaveText(["Ctrl", "Shift", "Enter"]);
   await shoot(page, "draft-02b-queue-key-in-sheet");
   await page.keyboard.press("Escape");

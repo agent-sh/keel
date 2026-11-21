@@ -1,15 +1,16 @@
 import { Dialog } from "@base-ui/react/dialog";
 import { X } from "lucide-react";
 import { useSyncExternalStore } from "react";
-import { allCommands, commandsVersion, onCommands, QUEUE_KEYS } from "../lib/keys.ts";
+import { allCommands, commandsVersion, onCommands, QUEUE_KEYS, SEND_KEYS } from "../lib/keys.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { Kbd } from "./Kbd.tsx";
 
-// Keys that are not commands of the registry but work everywhere.
-const FIXED: [string, string, string][] = [
-  ["Message box", "Send", "enter"],
-  ["Message box", "New line", "shift+enter"],
-  ["Message box", "Queue for after the running turn", QUEUE_KEYS],
+// Keys that are not commands of the registry but work everywhere. Send and
+// New line follow the owner's "Send with" setting (SEND_KEYS in keys.ts).
+const fixed = (enterSends: boolean): [string, string, string][] => [
+  ["Message box", "Send", SEND_KEYS(enterSends).send],
+  ["Message box", "New line", SEND_KEYS(enterSends).newline],
+  ["Message box", "Queue for after the turn", QUEUE_KEYS],
   ["Message box", "Commands", "/"],
   ["Message box", "Mention a file", "@"],
   ["Conversation", "Go to the end and follow", "end"],
@@ -17,9 +18,10 @@ const FIXED: [string, string, string][] = [
 
 export function ShortcutList() {
   useSyncExternalStore(onCommands, commandsVersion);
+  const enterSends = useUI((s) => s.enterSends);
   const rows: [string, string, string][] = [
     ...allCommands().filter((c) => c.keys).map((c) => [c.group ?? "General", c.label, c.keys!] as [string, string, string]),
-    ...FIXED,
+    ...fixed(enterSends),
   ];
   const groups = [...new Set(rows.map((r) => r[0]))];
   return (

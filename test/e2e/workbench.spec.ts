@@ -448,3 +448,35 @@ test("the message box names its suggestions and the active one", async ({ page, 
     await expect(box).toBeFocused();
   } finally { await request.delete(`/api/sessions/${session.id}`); }
 });
+
+// The shortcut sheet names the keys that send and that make a new line as
+// the "Send with" setting has them now, not as they are by default.
+test("the shortcut sheet follows the Send with setting", async ({ page }) => {
+  await page.goto("/settings/general");
+  const sendWith = page.getByRole("radiogroup", { name: "Send with" });
+  const sheet = page.getByTestId("shortcuts");
+  const keys = (label: string) => sheet.locator("div.h-8", { hasText: new RegExp(`^${label}`) }).locator("kbd");
+  const open = async () => { await page.keyboard.press("Control+/"); await expect(sheet).toBeVisible(); };
+  const close = async () => { await page.keyboard.press("Escape"); await expect(sheet).toBeHidden(); };
+
+  await open();
+  await expect(keys("Send")).toHaveText(["Enter"]);
+  await expect(keys("New line")).toHaveText(["Shift", "Enter"]);
+  await close();
+  await sendWith.getByRole("radio", { name: "Ctrl Enter" }).click();
+  await open();
+  await expect(keys("Send")).toHaveText(["Ctrl", "Enter"]);
+  await expect(keys("New line")).toHaveText(["Enter"]);
+  await keys("Send").first().scrollIntoViewIfNeeded();
+  await shoot(page, "wb-17-shortcuts-send-with");
+  await close();
+  // The setting's own page lists the same keys.
+  await page.goto("/settings/keyboard");
+  await expect(page.locator("div.h-8", { hasText: /^Send/ }).locator("kbd")).toHaveText(["Ctrl", "Enter"]);
+  await page.goto("/settings/general");
+  await sendWith.getByRole("radio", { name: "Enter", exact: true }).click();
+  await open();
+  await expect(keys("Send")).toHaveText(["Enter"]);
+  await expect(keys("New line")).toHaveText(["Shift", "Enter"]);
+  await close();
+});
