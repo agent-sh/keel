@@ -228,3 +228,21 @@ test("a job holds its answer against the parts its readers read: a quote from a 
   expect(o.parts.map((p) => p.state)).toEqual(["read", "unread"]);
   expect(o.checked).toMatchObject({ quotes: 2, verbatim: 1, atLine: 1, refs: 2, valid: 1, missing: ["bbbb 3 xxxxxxxxxxxxx"] });
 });
+
+test("parts no reader read are listed in part order, whichever failed first", async () => {
+  const h: ReaderHost = {
+    models: async () => [big], current: async () => big, capture: () => {}, env: { KEEL_READERS_AT_ONCE: "3" },
+    ask: async (_m, prompt) => {
+      const k = /part (\d+) of/.exec(prompt)![1];
+      // Part 1 fails last, part 3 first.
+      if (k === "1") { await Bun.sleep(30); throw new Error("throttled"); }
+      if (k === "3") throw new Error("throttled");
+      return { text: "found it at b.log:3", usage: { input: 1000, output: 20, cache_read: 0, cache_write: 0 } };
+    },
+  };
+  const o = await readMaterial(h, ["a.log", "b.log", "c.log"].map((source) => ({ source, text: lines(3_500) })), "q", new AbortController().signal);
+  expect(o.unread.map((u) => u.split(" ")[0])).toEqual(["a.log", "c.log"]);
+  const note = coverageNote(o, 3);
+  expect(note.indexOf("- a.log (every reader failed")).toBeGreaterThan(0);
+  expect(note.indexOf("- a.log (every reader failed")).toBeLessThan(note.indexOf("- c.log (every reader failed"));
+});

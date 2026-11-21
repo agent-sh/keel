@@ -141,7 +141,6 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
     if ("error" in r) {
       p.state = "unread";
       p.error = r.error;
-      unread.push(`${p.covers} (every reader failed; last: ${r.error})`);
     } else if (chunks.length > 1 && r.text.replace(/[.\s]+$/, "").toUpperCase() === NOTHING) {
       p.state = "nothing";
     } else {
@@ -158,6 +157,8 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
   };
   await sideBySide(chunks.length, (i) => readOne(chunks[i]!, i));
   found.sort((a, b) => a.k - b.k);
+  // In part order, whichever failed first, and before the material past the cap, which follows every part.
+  unread.unshift(...parts.filter((p) => p.state === "unread").map((p) => `${p.covers} (every reader failed; last: ${p.error})`));
 
   // The findings compiled into one answer. One request when it holds them all
   // (as much as one part: what the readers' windows were sized for); else
