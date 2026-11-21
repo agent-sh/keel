@@ -16,7 +16,7 @@ import type { Providers } from "../providers/registry.ts";
 import { configDir } from "../providers/config.ts";
 import type { ModelInfo, Provider, ProviderRequest, ProviderResult } from "../providers/types.ts";
 import { asksOwner, toolsFor } from "../tools/registry.ts";
-import { allPendingQuestions } from "../tools/interact.ts";
+import { QUESTION_CUT, allPendingQuestions } from "../tools/interact.ts";
 import { dropCallEnv } from "../tools/jobs.ts";
 import { isDeferError, loadsNatively, refuseDefer, withCatalog } from "../tools/defer.ts";
 import { allHooks, type ExternalTurn, type ToolAuthorization, type ToolCall } from "./hooks.ts";
@@ -35,8 +35,9 @@ import { RETRY, RETRY_WAIT_MAX_MS, RetryTooLong, backoffMs, errorText, retryable
 
 // What the model is told about a tool call a daemon restart cut.
 export const RESTART_CUT = "Interrupted by a daemon restart while this tool ran. It may have partly run: check its effects before running it again.";
-// A question cut by a restart did nothing: no answer was recorded.
-export const QUESTION_CUT = "No answer was recorded before the daemon restarted: the question expired. Ask it again if the decision still matters.";
+// A question or a plan a restart cut did nothing, and is asked again on its
+// card (owedCalls). QUESTION_CUT is said only of one that could not be put back.
+export { QUESTION_CUT };
 // A call cut while it waited for the owner's approval never ran.
 export const APPROVAL_CUT = "The daemon restarted while this call waited for the owner's approval: it did not run. Call it again if it is still needed.";
 const CUT = new Set([RESTART_CUT, QUESTION_CUT, APPROVAL_CUT]);
@@ -51,24 +52,29 @@ const cutText = (session: string, u: { id: string; name: string }) => {
   const o = outcomeOf(session, u.id);
   return o === "not_run" || o === "waiting" ? APPROVAL_CUT : o ? o.denied : RESTART_CUT;
 };
+// A call that waits on the owner and has done nothing yet: one whose approval
+// card is open (Gate), a question, a plan put up for approval. A restart does
+// not answer it: it keeps no result and waits on the same card afterwards.
+const waitsOnOwner = (session: string, u: { id: string; name: string }) => asksOwner(u.name) || outcomeOf(session, u.id) === "waiting";
 // A call a restart cut while its card was open has no result: the next turn
-// runs it again on that card (Gate). These are such calls of the branch.
+// runs it again on that card. These are such calls of the branch.
 const owedCalls = (session: string, line: readonly StoredEvent[]): ToolUseBlock[] => {
   const done = new Set(line.flatMap((e) => (e.kind === "tool_result" ? e.data.results.map((r: any) => r.tool_use_id) : [])));
   return line.slice(checkpointAt(line).keepFrom).flatMap((e) => (e.kind === "assistant" ? e.data.blocks : []))
-    .filter((b: any) => b.type === "tool_use" && !done.has(b.id) && outcomeOf(session, b.id) === "waiting");
+    .filter((b: any) => b.type === "tool_use" && !done.has(b.id) && waitsOnOwner(session, b));
 };
 
 // The message that continues a turn a restart cut. Each cut call's result says
 // what became of it (it may have partly run, or did not run); a call that
-// waited for the owner's approval is asked again on the same card.
+// waited for the owner (an approval, a question, a plan) is asked again on
+// the same card.
 export function restartText(cut: number, owed: number, unstarted = false): string {
   // The prompt was stored and the daemon went down before its turn began.
   if (unstarted) return "[harness] The daemon restarted before this turn began: none of it ran. Go on with what was asked above.";
   const parts = [
     cut === 1 ? "the result of the 1 tool call it cut says what became of it" : cut ? `the results of the ${cut} tool calls it cut say what became of each` : "",
-    owed === 1 ? "1 call that waited for the owner's approval was asked again, and its result is the owner's answer"
-      : owed ? `${owed} calls that waited for the owner's approval were asked again, and their results are the owner's answers` : "",
+    owed === 1 ? "1 call that waited for the owner was asked again, and its result is the owner's answer"
+      : owed ? `${owed} calls that waited for the owner were asked again, and their results are the owner's answers` : "",
   ].filter(Boolean);
   return `[harness] The daemon restarted during your previous turn${parts.length ? `; ${parts.join("; ")}` : ""}. Continue where it left off.`;
 }
@@ -1150,7 +1156,8 @@ export class Engine {
     // step's results back in call order. A call whose open card a stop
     // parks gets none: the next daemon asks on that card again.
     const settle = (u: ToolUseBlock) => (r: ToolResultBlock) => {
-      if (this.parking.has(id) && outcomeOf(id, u.id) === "waiting") return;
+      // (A question the owner answered as the stop came keeps its answer.)
+      if (this.parking.has(id) && (outcomeOf(id, u.id) === "waiting" || (asksOwner(u.name) && r.content === QUESTION_CUT))) return;
       toolResults++;
       const how = this.verdicts.get(r);
       if (how === "denied") toolDenied++;
@@ -1171,7 +1178,9 @@ export class Engine {
       const owed = owedCalls(id, this.lineage(id));
       if (owed.length) {
         this.status(id, { kind: "tool", since: Date.now(), names: [...new Set(owed.map((u) => u.name))] });
-        await Promise.all(owed.map((u) => this.runTool(session, st.tools, u, ctx).then(settle(u))));
+        // A question whose tool the session's model no longer has cannot be put back: it expired.
+        const gone = (u: ToolUseBlock) => asksOwner(u.name) && !st.tools.some((t) => t.name === u.name);
+        await Promise.all(owed.map((u) => (gone(u) ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: QUESTION_CUT }) : this.runTool(session, st.tools, u, ctx)).then(settle(u))));
         this.status(id, { kind: "idle" });
         if (signal.aborted) throw signal.reason;
       }
@@ -1898,7 +1907,7 @@ export class Engine {
         if (lastStart > lastEnd) {
           const results = new Set(line.slice(lastStart).flatMap((e) => (e.kind === "tool_result" ? e.data.results.map((r: any) => r.tool_use_id) : [])));
           // A call whose card is still open is left for the continued turn (owedCalls).
-          const cut = line.slice(lastStart).flatMap((e) => (e.kind === "assistant" ? e.data.blocks.filter((b: any) => b.type === "tool_use" && !results.has(b.id) && outcomeOf(id, b.id) !== "waiting") : []));
+          const cut = line.slice(lastStart).flatMap((e) => (e.kind === "assistant" ? e.data.blocks.filter((b: any) => b.type === "tool_use" && !results.has(b.id) && !waitsOnOwner(id, b)) : []));
           if (cut.length) closing.push(this.store.append(id, "tool_result", { results: cut.map((u: any) => ({ type: "tool_result", tool_use_id: u.id, content: cutText(id, u), is_error: true })) }));
           closing.push(this.store.append(id, "turn_end", { reason: "restart", usage: emptyUsage(), ms: Date.now() - line[lastStart]!.ts, crashed: true }));
         } else if (owedTurn(line.slice(lastEnd + 1))) {

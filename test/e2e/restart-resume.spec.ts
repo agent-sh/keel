@@ -455,7 +455,7 @@ test("an approval pending at a crash or a stop is shown again after the restart"
     expect(ev.filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).toEqual(["restart", "restart", "end_turn"]);
     const users = ev.filter((e) => e.kind === "user");
     expect(users.map((e) => e.data.origin ?? "owner")).toEqual(["owner", "restart", "restart"]);
-    for (const u of users.slice(1)) expect(u.data.text).toContain("1 call that waited for the owner's approval was asked again");
+    for (const u of users.slice(1)) expect(u.data.text).toContain("1 call that waited for the owner was asked again");
     const results = ev.filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results);
     const uses = ev.filter((e) => e.kind === "assistant").flatMap((e) => e.data.blocks).filter((b: any) => b.type === "tool_use");
     expect(uses).toHaveLength(2);
@@ -496,6 +496,111 @@ test("an approval pending at a crash or a stop is shown again after the restart"
     expect(errs.filter((e) => e.context?.at !== "listing")).toEqual([]);
     await page.getByTestId("errors-button").click();
     await expect(page.getByTestId("errors-panel").getByTestId("error-row")).toHaveCount(errs.length);
+  } finally {
+    d.proc.kill("SIGKILL");
+  }
+});
+
+// Feature: what waits on the owner survives a restart. A question (the
+// owner's session's and a subagent's) and a plan put up for approval are
+// still open on the same cards after a crash and after a stop, answerable,
+// with no result written for them meanwhile; the inbox keeps the question as
+// a decision, not as a finished turn.
+test("a question and a plan waiting at a crash or a stop still wait after the restart", async ({ page }) => {
+  const state = join(ROOT, `restart-waits-${Date.now()}`);
+  made.push(state);
+  mkdirSync(state, { recursive: true });
+  const bin = join(state, "keel");
+  const built = spawnSync("bun", ["scripts/build.ts", bin], { encoding: "utf8" });
+  expect(built.status, built.stderr).toBe(0);
+  const port = await new Promise<number>((r) => { const s = createServer().listen(0, "127.0.0.1", () => { const p = (s.address() as any).port; s.close(() => r(p)); }); });
+  const at = { bin, bind: `127.0.0.1:${port}` };
+  let d = await daemon(state, {}, at);
+  try {
+    const call = (path: string, body?: unknown, method = "POST") =>
+      fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then(async (r) => ({ status: r.status, ...(await r.json() as any) }));
+    const question = { name: "AskUserQuestion", input: { questions: [{ header: "Color", question: "Which color should I use?", options: [{ label: "Teal" }, { label: "Amber" }], multiSelect: false }] } };
+    const plan = "## Retry policy\n\n1. Read the importer.\n2. Change the retry policy.";
+    const make = async (title: string, mode: string, calls: unknown[]) => {
+      const { session } = await call("/api/sessions", { model: "scripted:stand-in", title });
+      await call(`/api/sessions/${session.id}/permissions`, { mode }, "PUT");
+      await call(`/api/sessions/${session.id}/messages`, { text: `script:calls ${JSON.stringify(calls)}` });
+      return session.id as string;
+    };
+    const asker = await make("Pick an accent color", "ask", [question]);
+    const planner = await make("Plan the retry policy", "plan", [{ name: "present_plan", input: { plan } }]);
+    const parent = await make("Parent of an asking agent", "full-auto", [{ name: "spawn_agent", input: { message: `Color helper\nscript:calls ${JSON.stringify([question])}` } }]);
+    const pending = async (id: string) => (await call(`/api/sessions/${id}/questions`, undefined, "GET")).pending as string[];
+    const plans = async () => ((await call(`/api/sessions/${planner}/plan`, undefined, "GET")).open as { id: string }[]).map((c) => c.id);
+    const events = async (id: string) => (await call(`/api/sessions/${id}`, undefined, "GET")).events as any[];
+    await expect.poll(async () => (await call(`/api/sessions/${parent}/agents`, undefined, "GET")).agents?.[0]?.session_id, { timeout: 30_000 }).toBeTruthy();
+    const child = (await call(`/api/sessions/${parent}/agents`, undefined, "GET")).agents[0].session_id as string;
+    await expect.poll(() => pending(asker), { timeout: 30_000 }).toHaveLength(1);
+    await expect.poll(() => pending(child), { timeout: 30_000 }).toHaveLength(1);
+    await expect.poll(plans, { timeout: 30_000 }).toHaveLength(1);
+    const [askId] = await pending(asker), [childId] = await pending(child), [planId] = await plans();
+
+    await page.goto(`${d.url}/s/${asker}`);
+    const card = page.getByTestId("question");
+    await expect(card).toHaveAttribute("data-state", "open");
+    const waits = async () => [await pending(asker), await pending(child), await plans()];
+
+    // A crash: the same three cards wait again, by themselves, and nothing was recorded as their result.
+    d.proc.kill("SIGKILL");
+    await exited(d.proc);
+    d = await daemon(state, {}, at);
+    await expect.poll(waits, { timeout: 60_000 }).toEqual([[askId], [childId], [planId]]);
+    await expect(page.getByTestId("sync-state")).toHaveCount(0, { timeout: 30_000 });
+    await expect(card).toHaveAttribute("data-state", "open", { timeout: 30_000 });
+    await expect(card).toHaveCount(1);
+    await expect(page.getByTestId("station-word")).toHaveText("Needs you"); // the continued turn waits on it
+    await shoot(page, "restart-06-question-after-crash");
+    for (const id of [asker, child, planner]) expect((await events(id)).filter((e) => e.kind === "tool_result")).toEqual([]);
+    // The inbox keeps the question as a decision the owner owes; the cut turn is not filed as finished.
+    const filed = async (id: string) => ((await call("/api/alerts?with_unread", undefined, "GET")).alerts as any[]).filter((a) => a.session_id === id).map((a) => a.kind);
+    expect(await filed(asker)).toEqual(["question"]);
+    await page.getByTestId("inbox-button").click();
+    const item = page.getByTestId("inbox-item").filter({ hasText: "Pick an accent color" });
+    await expect(item).toHaveCount(1);
+    await expect(item.getByTestId("inbox-state")).toContainText("Question");
+    await shoot(page, "restart-07-question-in-inbox");
+    await page.keyboard.press("Escape");
+
+    // A stop parks the turns: the cards are open across it too.
+    d.proc.kill("SIGTERM");
+    await exited(d.proc);
+    d = await daemon(state, {}, at);
+    await expect.poll(waits, { timeout: 60_000 }).toEqual([[askId], [childId], [planId]]);
+    await expect(page.getByTestId("sync-state")).toHaveCount(0, { timeout: 30_000 });
+    await expect(card).toHaveAttribute("data-state", "open", { timeout: 30_000 });
+    expect(await filed(asker)).toEqual(["question"]);
+
+    // Answerable: the owner's answer is the question's one result.
+    await card.getByRole("radio", { name: "Amber" }).click();
+    await card.getByTestId("question-submit").click();
+    await expect(card).toHaveAttribute("data-state", "answered", { timeout: 15_000 });
+    await expect(page.getByTestId("assistant-text").last()).toContainText("Amber", { timeout: 15_000 });
+    const ev = await events(asker);
+    expect(ev.filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).toEqual(["restart", "restart", "end_turn"]);
+    const results = ev.filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results);
+    expect(results.map((r: any) => [r.tool_use_id, !!r.is_error])).toEqual([[askId, false]]);
+    for (const u of ev.filter((e) => e.kind === "user" && e.data.origin === "restart")) expect(u.data.text).toContain("1 call that waited for the owner was asked again");
+
+    // The plan card is on its session's page, and approving it moves the work on.
+    await page.goto(`${d.url}/s/${planner}`);
+    const planCard = page.getByTestId("plan-card");
+    await expect(planCard).toHaveCount(1, { timeout: 15_000 });
+    await expect(planCard.getByTestId("plan-text")).toContainText("Change the retry policy");
+    await shoot(page, "restart-08-plan-after-restarts");
+    await planCard.getByTestId("plan-approve").click();
+    await expect(planCard).toHaveCount(0, { timeout: 15_000 });
+    await expect(page.getByTestId("assistant-text").last()).toContainText("The owner approved the plan", { timeout: 15_000 });
+    expect((await events(planner)).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results).map((r: any) => [r.tool_use_id, !!r.is_error])).toEqual([[planId, false]]);
+
+    // The agent's question takes its answer too, and the agent ends with it.
+    expect((await call(`/api/sessions/${child}/questions/${childId}`, { answers: { "0": { picked: ["Teal"] } } })).status).toBe(200);
+    await expect.poll(async () => (await events(child)).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results).map((r: any) => [r.tool_use_id, !!r.is_error]), { timeout: 15_000 }).toEqual([[childId, false]]);
+    await expect.poll(async () => (await call(`/api/sessions/${parent}/agents`, undefined, "GET")).agents[0].status, { timeout: 30_000 }).toBe("completed");
   } finally {
     d.proc.kill("SIGKILL");
   }

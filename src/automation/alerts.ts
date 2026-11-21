@@ -2,7 +2,7 @@ import * as activity from "./activity.ts";
 import { D, alertHook, capture, clip, cursor, emit } from "./core.ts";
 import * as snooze from "./snooze.ts";
 import * as perm from "../server/routes/permissions.ts";
-import { pendingQuestions, questionsWaitingFor } from "../tools/interact.ts";
+import { QUESTION_CUT, pendingQuestions, questionsWaitingFor } from "../tools/interact.ts";
 import { readText } from "../core/proc.ts";
 import { lockedDaemon } from "../admin/daemon.ts";
 import { openUrl } from "../cli/client.ts";
@@ -554,6 +554,16 @@ export function onTurnEnd(sessionId: string, reason: string, opts: { subagent: b
   }
   if (reason === "max_tokens") { raise("failed", sessionId, `Cut off: ${title}`, "The reply reached the model's output limit."); return; }
   if (reason === "interrupted" || opts.loopRun) return;
+  // A question that expired unanswered in this turn, with none answered after
+  // it: the owner still owes that decision, so the turn is not filed as finished.
+  const results = evs.flatMap((e) => (e.kind === "tool_result" ? (e.data.results as any[]).map((r) => ({ r, answered: !!e.data.shown?.[r.tool_use_id]?.answers })) : []));
+  const expired = results.findLast((x) => x.r.content === QUESTION_CUT);
+  if (expired && !results.slice(results.indexOf(expired) + 1).some((x) => x.answered)) {
+    const use = all.flatMap((e) => (e.kind === "assistant" ? (e.data.blocks as any[]) : [])).find((b) => b.type === "tool_use" && b.id === expired.r.tool_use_id);
+    const q = use?.input?.questions?.[0]?.question ?? use?.input?.question ?? use?.input?.prompt;
+    raise("question", sessionId, `Unanswered question: ${title}`, q ? `Expired before you answered: ${q}` : "A question expired before you answered it.", { call_id: expired.r.tool_use_id, open_session: sessionId, expired: true });
+    return;
+  }
   let text = "";
   let event: string | undefined;
   for (let i = evs.length - 1; i >= 0 && !text; i--) {

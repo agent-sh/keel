@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
-import { ask, answer } from "../tools/interact.ts";
+import { QUESTION_CUT, ask, answer } from "../tools/interact.ts";
 import * as activity from "./activity.ts";
 import * as alerts from "./alerts.ts";
 import { clip, setDeps } from "./core.ts";
@@ -177,6 +177,30 @@ test("a finished notice quotes this turn's reply and names it, or none", () => {
   expect(two.a.data.event_id).toBe(two.e!.id);
   expect(three.a.body).toBe("The turn finished.");
   expect(three.a.data?.event_id).toBeUndefined();
+});
+
+// A question a restart could not put back expired unanswered: the turn that
+// went on without it is filed as a decision the owner owes, not as finished.
+test("a turn whose question expired unanswered is filed as a question, not as finished", () => {
+  const { store, session } = scratch();
+  const s = session("Pick a color");
+  store.append(s, "turn_start", { model: "m" });
+  store.append(s, "assistant", { blocks: [{ type: "tool_use", id: "q1", name: "AskUserQuestion", input: { questions: [{ question: "Which color?" }] } }] });
+  store.append(s, "turn_end", { reason: "restart" });
+  const turn = (after: () => void) => {
+    store.append(s, "turn_start", { model: "m" });
+    store.append(s, "tool_result", { results: [{ type: "tool_result", tool_use_id: "q1", is_error: true, content: QUESTION_CUT }] });
+    after();
+    store.append(s, "assistant", { blocks: [{ type: "text", text: "Went on with teal." }] });
+    alerts.onTurnEnd(s, "end_turn", { subagent: false, loopRun: false, more: false });
+    return alerts.list({ limit: 1 })[0]!;
+  };
+  const a = turn(() => {});
+  expect([a.kind, a.title, a.body, a.read]).toEqual(["question", "Unanswered question: Pick a color", "Expired before you answered: Which color?", false]);
+  expect(a.data).toMatchObject({ call_id: "q1", expired: true });
+  // Asked again and answered in the same turn: nothing is owed, the turn finished.
+  const b = turn(() => store.append(s, "tool_result", { results: [{ type: "tool_result", tool_use_id: "q2", content: "answered" }], shown: { q2: { answers: { "0": { picked: ["Teal"] } } } } }));
+  expect([b.kind, b.body]).toEqual(["finished", "Went on with teal."]);
 });
 
 test("the desktop gets what needs the owner; a routine finish stays in the inbox, one row per session", async () => {

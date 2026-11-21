@@ -5,6 +5,11 @@
 import type { PendingQuestion } from "../core/types.ts";
 import type { ToolContext } from "./types.ts";
 
+// What the model is told of a question a daemon restart cut that could not be
+// put back on its card (the session's model no longer has the tool). Nothing
+// was answered: the inbox files it as a decision the owner still owes.
+export const QUESTION_CUT = "No answer was recorded before the daemon restarted: the question expired. Ask it again if the decision still matters.";
+
 export type Question = {
   id: string;
   header?: string;

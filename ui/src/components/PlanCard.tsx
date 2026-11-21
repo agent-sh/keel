@@ -18,11 +18,22 @@ const MODES = [
 export function PlanCards({ sessionId }: { sessionId: string }) {
   const [cards, setCards] = useState<Card[]>([]);
   useEffect(() => {
-    api<{ open: Card[] }>(`/api/sessions/${sessionId}/plan`).then((r) => setCards(r.open)).catch(reportError);
+    type F = { state: "open" | "closed"; card: Card };
+    const step = (l: Card[], f: F) => (f.state === "open" ? [...l.filter((c) => c.id !== f.card.id), f.card] : l.filter((c) => c.id !== f.card.id));
+    // Frames that came while a load was on its way are newer than its answer: applied on top of it.
+    let since: F[] | null = null;
+    const load = () => {
+      const mine: F[] = (since = []);
+      api<{ open: Card[] }>(`/api/sessions/${sessionId}/plan`).then((r) => setCards(mine.reduce(step, r.open))).catch(reportError).finally(() => { if (since === mine) since = null; });
+    };
+    load();
     return onFeature({
+      // A plan put back up after a daemon restart may have opened before this socket did.
+      reconnect: load,
       frame: (f) => {
         if (f.name !== "plan" || f.session_id !== sessionId) return;
-        setCards((l) => (f.data.state === "open" ? [...l.filter((c) => c.id !== f.data.card.id), f.data.card] : l.filter((c) => c.id !== f.data.card.id)));
+        since?.push(f.data);
+        setCards((l) => step(l, f.data));
       },
     });
   }, [sessionId]);

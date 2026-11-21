@@ -223,14 +223,14 @@ test("instruction files: each source once, an unreadable one named", async () =>
 // denial and reason, "did not run" for a card nothing answered, and "may have
 // partly run" only for an allowed call or one with no card. Also state from
 // before results were stored per call: a denial whose result was never stored.
-test("a restart cut: questions expire, approval outcomes are kept, only a call that may have run warns", async () => {
+test("a restart cut: questions and open cards wait, approval outcomes are kept, only a call that may have run warns", async () => {
   const { mkdtempSync } = await import("node:fs");
   const { join } = await import("node:path");
   const { Store } = await import("../core/store.ts");
   const { Bus } = await import("../core/bus.ts");
   const { Gate } = await import("../safety/gate.ts");
   const { registerHooks } = await import("./hooks.ts");
-  const { Engine, QUESTION_CUT, RESTART_CUT } = await import("./turn.ts");
+  const { Engine, RESTART_CUT } = await import("./turn.ts");
   const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "recover-"));
   const store = new Store(dir);
   const bus = new Bus();
@@ -263,11 +263,11 @@ test("a restart cut: questions expire, approval outcomes are kept, only a call t
   await engine.recover([s.id], none);
   await engine.recover([s.id], none); // a second boot adds nothing
   const cut = store.events(s.id).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results);
-  // The call with an open card has no result: the continued turn asks on that card again.
-  expect(cut).toHaveLength(8);
+  // The call with an open card and the questions have no result: the continued turn asks on the same cards again.
+  expect(cut).toHaveLength(5);
   expect(gate.callOutcome(s.id, "p1")).toBe("waiting");
   expect(Object.fromEntries(cut.map((r: any) => [r.tool_use_id, r.content]))).toEqual({
-    q1: QUESTION_CUT, q2: QUESTION_CUT, q3: QUESTION_CUT, w1: RESTART_CUT, a1: RESTART_CUT,
+    w1: RESTART_CUT, a1: RESTART_CUT,
     d1: "The owner denied this call: leave d1 alone",
     d2: "The owner denied this call. Do not retry it; take another way or ask.",
     d3: "Refused by the rule: no touching here.",

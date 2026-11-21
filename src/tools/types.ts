@@ -83,7 +83,9 @@ export type Tool = ToolSpec & {
   target?(input: any): Promise<{ name: string; readOnly: boolean; input: any; cls?: CallClass; source?: string; shape?: string } | null>;
   // A shared tool offered only to these families (default: every family).
   families?: string[];
-  // It waits on the owner's answer (a question): a restart expires it, it did nothing.
+  // It only waits on the owner's answer (a question, a plan to approve): a
+  // restart leaves it without a result, and the continued turn runs it again
+  // with the same call id, so the same card waits.
   asksOwner?: boolean;
   // Every call goes to the owner on a card of its own (a mail sent as them),
   // in every mode: no grant, mode or reviewer settles it. `shown`: the card's text.
