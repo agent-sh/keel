@@ -129,7 +129,7 @@ CREATE INDEX IF NOT EXISTS agents_parent ON agents(parent_id);
 CREATE INDEX IF NOT EXISTS agents_session ON agents(session_id);`);
   store.migrate(OWED_SCHEMA);
   failures.migrate(); // a failed agent with no words of its own is owed there, not in agent_owed
-  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"], ["stopped_by", "TEXT"], ["end_reason", "TEXT"], ["call_id", "TEXT"], ["park_told", "INTEGER"]] as const) {
+  for (const [col, type] of [["worktree", "TEXT"], ["branch", "TEXT"], ["machine", "TEXT"], ["output_schema", "TEXT"], ["schema_tries", "INTEGER NOT NULL DEFAULT 0"], ["stopped_by", "TEXT"], ["end_reason", "TEXT"], ["call_id", "TEXT"], ["park_told", "INTEGER"], ["task", "TEXT"]] as const) {
     if (!store.columnExists("agents", col)) store.migrate(`ALTER TABLE agents ADD COLUMN ${col} ${type}`);
   }
 }
@@ -141,10 +141,11 @@ const wts = () => (wtsCache ??= new Worktrees(D().store, join(D().store.stateDir
 
 // `restarts`: a column from when a restart count decided an agent's end; unused.
 // `park_told`: the task (its first_seq) whose park the parent has been told of.
-type Row = Omit<AgentRecord, "background" | "handback" | "structured"> & { background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number; restarts?: number; park_told: number | null };
+// `task`: its first prompt, kept until it is in its session (sendTask).
+type Row = Omit<AgentRecord, "background" | "handback" | "structured"> & { background: number; handback: number; def: string | null; output_schema: string | null; schema_tries: number; restarts?: number; park_told: number | null; task: string | null };
 const toRec = (r: Row): AgentRecord => {
-  const { def, output_schema, schema_tries, restarts, park_told, ...rest } = r;
-  void def; void schema_tries; void restarts; void park_told;
+  const { def, output_schema, schema_tries, restarts, park_told, task, ...rest } = r;
+  void def; void schema_tries; void restarts; void park_told; void task;
   return { ...rest, background: !!r.background, handback: !!r.handback, structured: !!output_schema };
 };
 
@@ -585,11 +586,6 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
 
   const now = Date.now();
   const schema = input.output_schema === undefined ? null : JSON.stringify(input.output_schema);
-  store.db.query(
-    "INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def, worktree, branch, machine, output_schema, call_id) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)",
-  ).run(id, parentId, child.id, title, def.name, model, input.background === false ? 0 : 1, now, JSON.stringify(def), iso?.wt.path ?? placed?.worktree ?? null, iso?.wt.branch ?? placed?.branch ?? null, placed?.machine ?? null, schema, input.call_id ?? null);
-  release(); // the persisted running row now occupies the slot
-  activity.record("agent", "started", parentId, `Started agent "${title}" (${def.name} on ${model}${placed ? `, its tools on ${placed.name}` : ""})`, { agent_id: id, child_session: child.id });
   const task = [
     PREAMBLE, def.body,
     input.fork ? "The conversation above is your parent's, up to the moment it started you." : "",
@@ -598,6 +594,16 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
     schema ? `Your final message must be only one JSON value that matches this JSON schema, with no other text:\n${schema}` : "",
     `Task:\n${input.prompt}`,
   ].filter(Boolean).join("\n\n");
+  // The assignment is stored with the running record, before the start may
+  // wait for the first agent's cache: a daemon stopped in that wait starts
+  // the agent with all of it (recover), not on a bare "continue".
+  // task_at: where the parent's own words start, so the page shows them verbatim.
+  store.db.query(
+    "INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created, def, worktree, branch, machine, output_schema, call_id, task) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(id, parentId, child.id, title, def.name, model, input.background === false ? 0 : 1, now, JSON.stringify(def), iso?.wt.path ?? placed?.worktree ?? null, iso?.wt.branch ?? placed?.branch ?? null, placed?.machine ?? null, schema, input.call_id ?? null,
+    JSON.stringify({ text: task, task_at: task.length - input.prompt.length }));
+  release(); // the persisted running row now occupies the slot
+  activity.record("agent", "started", parentId, `Started agent "${title}" (${def.name} on ${model}${placed ? `, its tools on ${placed.name}` : ""})`, { agent_id: id, child_session: child.id });
   const waited = await stagger(parentId, model, child.id, signal);
   if (waited) activity.record("agent", "staggered", parentId, `Agent "${title}" started ${Math.round(waited / 100) / 10} s after the first one on ${model}, to read its prompt cache`, { agent_id: id });
   if (settling.has(id) || get(id)?.status !== "running") return get(id)!; // stopped while it waited
@@ -607,12 +613,8 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
     await ended;
     return get(id)!;
   }
-  // task_at: where the parent's own words start, so the page shows them verbatim.
-  // traceparent: the spawn call's span, so the child's turns trace under it.
-  const context = input.call_id ? spawnContext(store, parentId, input.call_id) : null;
-  const tp = context ? { traceparent: context } : {};
-  const ev = engine.send(child.id, task, { meta: { kind: "task", agent_id: id, task_at: task.length - input.prompt.length, ...tp } }).event!;
-  const rec = update(id, { first_seq: ev.seq - 1 })!;
+  sendTask(get(id)!); // a start that recovery made meanwhile is not made twice
+  const rec = get(id)!;
   if (input.background === false) {
     const onAbort = () => { cutCalls.add(id); stop(id, "parent_turn"); };
     signal?.addEventListener("abort", onAbort, { once: true });
@@ -624,6 +626,26 @@ async function startSpawn(parent: Session, input: SpawnInput, def: AgentDef, rel
     return get(id)!;
   }
   return rec;
+}
+
+// The agent's first prompt goes into its session, once: from the start that
+// stored it, or from the next daemon when that one stopped first. False when
+// there was nothing left to send.
+function sendTask(a: AgentRecord): boolean {
+  const { store, engine } = D();
+  const row = store.db.query<{ task: string | null }, [string]>("SELECT task FROM agents WHERE id = ?").get(a.id);
+  if (!row?.task) return false;
+  // Stored but not yet taken off the record (a stop between the two writes): it is not sent again.
+  const there = store.events(a.session_id).some((e) => e.kind === "user" && e.data.kind === "task" && e.data.agent_id === a.id);
+  if (!there) {
+    const { text, task_at } = JSON.parse(row.task) as { text: string; task_at: number };
+    // traceparent: the spawn call's span, so the child's turns trace under it.
+    const context = a.call_id ? spawnContext(store, a.parent_id, a.call_id) : null;
+    const ev = engine.send(a.session_id, text, { meta: { kind: "task", agent_id: a.id, task_at, ...(context ? { traceparent: context } : {}) } }).event!;
+    update(a.id, { first_seq: ev.seq - 1 });
+  }
+  store.db.query("UPDATE agents SET task = NULL WHERE id = ?").run(a.id);
+  return !there;
 }
 
 // A child another module started (the reviewer): listed with its parent's
@@ -976,6 +998,7 @@ export async function send(id: string, message: string, interrupt = false): Prom
   cutCalls.delete(id); // new work, in the background: nothing holds its report
   const last = store.events(a.session_id).at(-1)?.seq ?? 0;
   update(id, { status: "running", ended: null, first_seq: last, handback: false, background: true, stopped_by: null, end_reason: null });
+  sendTask(get(id)!); // stopped before its start: the assignment it never got goes first
   deliver(a.session_id, text, { kind: "steer", agent_id: id });
   return get(id)!;
 }
@@ -1135,6 +1158,9 @@ export function recover() {
     const ended = endedTurn(a.session_id);
     if (ended) { onTurnEnd(a.session_id, ended); continue; }
     update(a.id, { background: true, status: "running" });
+    // Its assignment never reached its session (the daemon stopped while its
+    // start waited for the first agent's cache): it starts now, with all of it.
+    if (sendTask(a)) continue;
     // No turn to continue (its task was stored and never started): start it.
     if (!waits.cutTurn(a.session_id)) deliver(a.session_id, "[harness] The daemon restarted while you worked. Continue your task from where you stopped, then report.", { kind: "harness", agent_id: a.id });
   }

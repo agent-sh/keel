@@ -649,3 +649,39 @@ test("repeat parks of one agent wake the parent once and then ride its next inpu
   expect(p.to()[4]).toContain(`Agent ${c.id} parked on timer wait ${w6.id}`);
   waits.cancel(w6.id);
 });
+
+// A daemon stopped while an agent waited for the first one's prompt cache,
+// before its task was in its session: the next daemon starts it once with the
+// whole assignment and its report schema, never on a bare "continue". One
+// stopped while it waited stays stopped.
+test("an agent whose start was staggered starts once with its whole assignment after a restart", async () => {
+  const p = store.createSession({ model: parent.model, workspace: dir, title: "cold parent" }); // no reply yet: later agents wait behind the first
+  const start = (prompt: string, o: Partial<agents.SpawnInput> = {}) => agents.spawn(p.id, { prompt, isolation: "none", background: true, ...o });
+  const lead = await start("lead");
+  const schema = { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } };
+  const second = start("the second assignment", { output_schema: schema });
+  const third = start("the stopped one");
+  await settled();
+  const [, b, c] = agents.list(p.id);
+  const to = (a: agents.AgentRecord) => sends.filter((x) => x.id === a.session_id).map((x) => x.text);
+  expect([to(b!), to(c!)]).toEqual([[], []]);
+  agents.stop(c!.id, "parent");
+  await settled();
+  agents.recover(); // the next daemon
+  await settled();
+  expect(to(b!)).toHaveLength(1);
+  expect(to(b!)[0]).toStartWith("You are a subagent of a Keel session.");
+  expect(to(b!)[0]).toContain(JSON.stringify(schema));
+  expect(to(b!)[0]).toEndWith("Task:\nthe second assignment");
+  expect(store.events(b!.session_id).find((e) => e.kind === "user")!.data).toMatchObject({ kind: "task", agent_id: b!.id, task_at: to(b!)[0]!.length - "the second assignment".length });
+  expect(agents.get(c!.id)).toMatchObject({ status: "stopped", stopped_by: "parent" });
+  expect(to(c!)).toEqual([]);
+  // In a daemon that did not stop, the start that waited goes on when the first agent answers: it sends nothing twice.
+  bus.emit({ t: "event", event: store.append(lead.session_id, "assistant", { blocks: [] }) } as any);
+  await Promise.all([second, third]);
+  expect(to(b!)).toHaveLength(1);
+  expect(to(c!)).toEqual([]);
+  // A message that continues the stopped one gives it the assignment it never got, then the message.
+  await agents.send(c!.id, "go on");
+  expect(to(c!).map((t) => t.split("\n").at(-1))).toEqual(["the stopped one", "go on"]);
+});
