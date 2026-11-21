@@ -110,7 +110,9 @@ export function App() {
       if (!el.contains(document.activeElement) && tries++ < 12) raf = requestAnimationFrame(enter);
     };
     enter();
+    let picked = 0;
     const f = (e: KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") picked = Date.now();
       const at = document.activeElement;
       if (at instanceof HTMLElement && !el.contains(at) && at.closest('[role="menu"], [role="dialog"], [role="listbox"]')) return;
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); return closeDrawer(); }
@@ -122,7 +124,20 @@ export function App() {
       if (e.shiftKey ? out || at === first : out || at === last) { e.preventDefault(); (e.shiftKey ? last : first).focus(); }
     };
     addEventListener("keydown", f, true);
-    return () => { cancelAnimationFrame(raf); removeEventListener("keydown", f, true); };
+    return () => {
+      cancelAnimationFrame(raf);
+      removeEventListener("keydown", f, true);
+      // A session picked in the drawer by a key closed it: the keys go on in
+      // the session's pane (not into its message box: no keyboard pops up).
+      if (Date.now() - picked > 1000) return;
+      requestAnimationFrame(() => {
+        if (document.activeElement && document.activeElement !== document.body) return;
+        const pane = document.querySelector<HTMLElement>(".k-station[data-helm]");
+        if (!pane) return;
+        pane.tabIndex = -1;
+        pane.focus({ preventScroll: true });
+      });
+    };
   }, [drawer]);
   const page = route.name === "settings" || route.name === "project";
   return (

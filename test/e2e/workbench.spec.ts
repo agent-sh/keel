@@ -447,6 +447,13 @@ test.describe("at a phone's width", () => {
       await expect(opener).toBeFocused();
       await expect(composer).toHaveValue("a draft that Escape must leave alone");
       await expect(page).toHaveURL(new RegExp(`/s/${s.id}$`));
+      // A session picked in the drawer with Enter: the drawer closes and the keys are in that session's pane.
+      await opener.focus();
+      await page.keyboard.press("Enter");
+      await expect(drawer.locator(`[data-testid="session-row"][data-session="${s.id}"]`)).toBeFocused();
+      await page.keyboard.press("Enter");
+      await expect(drawer).not.toBeInViewport();
+      expect(await page.evaluate(() => document.activeElement?.closest("[data-station]")?.getAttribute("data-station"))).toBe(s.id);
     } finally {
       await request.delete(`/api/sessions/${s.id}`);
     }
