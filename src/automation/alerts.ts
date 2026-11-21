@@ -2,8 +2,10 @@ import * as activity from "./activity.ts";
 import { D, alertHook, capture, clip, cursor, emit } from "./core.ts";
 import * as snooze from "./snooze.ts";
 import * as perm from "../server/routes/permissions.ts";
-import { pendingQuestions, questionsWaitingFor } from "../tools/interact.ts";
+import { pendingQuestions } from "../tools/interact.ts";
 import { QUESTION_CUT } from "../core/stops.ts";
+import { planWaits } from "../server/routes/plan.ts";
+import { sessionState } from "./state.ts";
 import { readText } from "../core/proc.ts";
 import { lockedDaemon } from "../admin/daemon.ts";
 import { openUrl } from "../cli/client.ts";
@@ -94,6 +96,7 @@ export const currentRev = () => D().store.db.query<{ n: number }, []>("SELECT n 
 // Whether the owner still has to decide what this alert is about.
 function stillOpen(a: Pick<Alert, "kind" | "session_id" | "data">): boolean {
   if (a.kind === "approval") return !!a.data?.approval_id && perm.gate?.approval(a.data.approval_id)?.state === "pending";
+  if (a.kind === "question" && a.data?.plan_id) return planWaits(a.data.plan_id);
   if (a.kind === "question") return !!a.data?.call_id && pendingQuestions(a.data.open_session ?? a.session_id ?? "").includes(a.data.call_id);
   return false;
 }
@@ -374,11 +377,10 @@ export function tickSnoozes() {
 }
 
 // Whether the session (or one of its agents) has a card only the owner can
-// answer: a pending approval, or a question not yet answered.
+// answer: a pending approval, a question not yet answered, a plan to approve.
 export function hasOpenCard(sessionId: string): boolean {
-  const kids = D().store.db.query<{ id: string }, [string]>("SELECT id FROM sessions WHERE parent_id = ?").all(sessionId).map((r) => r.id);
-  if ([sessionId, ...kids].some((id) => (perm.gate?.approvals({ session: id, pending: true }).length ?? 0) > 0)) return true;
-  return questionsWaitingFor(sessionId);
+  const s = D().store.session(sessionId);
+  return !!s && sessionState(s).watch === "need";
 }
 
 // Reads alerts: these ids, one session's, or all. `seen` is the inbox revision

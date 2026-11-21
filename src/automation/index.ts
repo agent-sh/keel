@@ -15,7 +15,7 @@ import * as agents from "./agents.ts";
 import * as alerts from "./alerts.ts";
 import * as failures from "./failures.ts";
 import * as snooze from "./snooze.ts";
-import { afterCallOff, afterTurn, capture, D, hasPending, setDeps } from "./core.ts";
+import { afterCallOff, afterTurn, capture, clip, D, hasPending, setDeps } from "./core.ts";
 import * as loops from "./loops.ts";
 import { parseLoopCommand } from "./schedule.ts";
 import { automationTools, extendTaskStop, waitAckHooks } from "./tools.ts";
@@ -191,6 +191,15 @@ function init(deps: Deps) {
         const s = deps.store.session(j.session_id);
         alerts.raise("refused", j.session_id, `Refused in ${s?.title || "a session"}`, `${j.tool}: ${j.summary}`.slice(0, 200) + ` (${j.reason})`.slice(0, 300), { blocked_id: j.blocked_id, open_session: j.session_id });
       }
+      return;
+    }
+    // A plan presented for approval waits on the owner like a question: an alert until it is answered.
+    if (f.t === "feature" && f.name === "plan") {
+      const { card, state } = f.data as { card: { id: string; session_id: string; title?: string; plan: string }; state: "open" | "closed" };
+      if (state === "open") {
+        const first = card.plan.split("\n").find((l) => l.trim())?.replace(/^[#\s>*-]+/, "") ?? "";
+        alerts.raise("question", card.session_id, `Plan to approve: ${deps.store.session(card.session_id)?.title || "a session"}`, clip(card.title || first || "The model presents its plan.", 300), { plan_id: card.id, open_session: card.session_id });
+      } else alerts.readWhere("plan_id", card.id);
       return;
     }
     if (f.t !== "feature" || f.name !== "approval") return;

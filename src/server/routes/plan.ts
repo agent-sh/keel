@@ -15,6 +15,9 @@ export type PlanCard = { id: string; session_id: string; plan: string; title?: s
 type Answer = { approved: true; mode: string; plan: string; note?: string } | { approved: false; feedback?: string };
 const waiting = new Map<string, PlanCard & { resolve: (a: Answer) => void }>();
 let emit: (c: PlanCard, state: "open" | "closed") => void = () => {};
+// The plans that wait for the owner now: a session with one needs them (src/automation/state.ts).
+export const plansWaiting = (): PlanCard[] => Array.from(waiting.values(), ({ resolve: _r, ...c }) => c);
+export const planWaits = (id: string) => waiting.has(id);
 
 async function present(input: any, ctx: ToolContext) {
   const plan = String(input?.plan ?? "").trim();

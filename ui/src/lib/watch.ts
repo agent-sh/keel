@@ -1,17 +1,20 @@
-// What each session needs from the owner, derived from the stores: the one
-// word every shell shows first (needs you, working, failed, done), the line
-// of what it is doing now, and its turns over time for the wake chart.
-import { useEffect, useMemo } from "react";
+// What each session needs from the owner: the one word every shell shows
+// first (needs you, working, failed, done), why, and since when. The daemon
+// works the state out (src/core/watch.ts, src/automation/state.ts) and sends
+// it; this file keeps what it sent and adds the one thing only this browser
+// knows, a message it could not send. Also the line of what a session is
+// doing now, and its turns over time for the wake chart.
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { ownerPrompt } from "../../../src/core/owner.ts";
 import type { Session, StoredEvent } from "../../../src/core/types.ts";
-import { agentLive, liveAgentCounts, watchLabel, watchOf as sharedWatch, type Watch } from "../../../src/core/watch.ts";
+import { agentLive, liveAgentCounts, stateOf, watchLabel, type SessionState, type Watch } from "../../../src/core/watch.ts";
 import { useAuto } from "./automation.ts";
 import { useSafety } from "./safety.ts";
 import { unsentOf, useShelfVersion, useUnsent } from "./send-drafts.ts";
-import { actions, getState, reportError, useStore } from "./store.ts";
+import { actions, api, getState, newer, onFeature, reportError, useStore } from "./store.ts";
 import { shortPath, stripAnsi, toolKind, type ToolKind } from "./tools.ts";
 
-export { WATCH_LABEL, WATCH_RANK, watchLabel, type Watch } from "../../../src/core/watch.ts";
+export { WATCH_LABEL, WATCH_RANK, watchLabel, type SessionState, type Watch } from "../../../src/core/watch.ts";
 
 // Agents still at work, per parent session (the automation store keeps every live one).
 export function useAgentCounts(): Record<string, number> {
@@ -21,59 +24,87 @@ export function useAgentCounts(): Record<string, number> {
 export const useAgentCount = (id: string | undefined) =>
   useAuto((x) => { let n = 0; if (id) for (const a of Object.values(x.agents)) if (a.parent_id === id && agentLive(a)) n++; return n; });
 
-// The branch the session shows, from the events the page holds of it. The
-// held list also has the other versions of the branch's prompts (and, for a
-// session read whole, every other branch), so its last event is not always
-// the branch's: a session's word and its last line are read from the branch.
-// Walked back from the head once per state of the list.
-const branches = new WeakMap<StoredEvent[], { head: string | null; line: StoredEvent[] }>();
-export function branchOf(events: StoredEvent[] | undefined, head: string | null | undefined): StoredEvent[] | undefined {
-  if (!events) return undefined;
-  const had = branches.get(events);
-  if (had && had.head === (head ?? null)) return had.line;
-  const out: StoredEvent[] = [];
-  let want = head ?? null;
-  for (let i = events.length - 1; i >= 0 && want; i--) {
-    const e = events[i]!;
-    if (e.id !== want) continue;
-    out.push(e);
-    want = e.parent;
-  }
-  // A head the page does not hold yet (its part is on its way): the list as it is.
-  const line = !out.length || out.length === events.length ? events : out.reverse();
-  branches.set(events, { head: head ?? null, line });
-  return line;
+// The states the daemon told, by session: a snapshot when the page loads or
+// reconnects, a frame for every change after it. The newer of the two wins.
+let told: Record<string, SessionState> = {};
+const subs = new Set<() => void>();
+const setTold = (next: Record<string, SessionState>) => { told = next; subs.forEach((f) => f()); };
+const subscribe = (f: () => void) => (subs.add(f), () => void subs.delete(f));
+function useTold<T>(sel: (x: Record<string, SessionState>) => T): T {
+  return useSyncExternalStore(subscribe, () => sel(told));
 }
+export async function loadStates() {
+  const r = await api<{ states: Record<string, SessionState>; rev?: number }>("/api/state");
+  const next = { ...told };
+  for (const [id, st] of Object.entries(r.states)) if (newer(`${id}:state`, r.rev, true)) next[id] = st;
+  setTold(next);
+}
+onFeature({
+  frame(f) {
+    if (f.name !== "state" || !f.session_id || !newer(`${f.session_id}:state`, f.rev)) return;
+    if (f.data) return setTold({ ...told, [f.session_id]: f.data as SessionState });
+    const { [f.session_id]: _gone, ...rest } = told;
+    setTold(rest);
+  },
+  reconnect: () => void loadStates().catch(reportError),
+});
+loadStates().catch(reportError);
 
 // A message this browser keeps because it was not sent, or nobody confirmed
 // it, waits for the owner like a question does: the session needs them.
-export function useWatch(s: Session | undefined): Watch {
-  const held = useStore((x) => (s ? x.events[s.id] : undefined));
-  const events = branchOf(held, s?.head);
+const UNSENT_LINE = { refused: "A message was not sent", unconfirmed: "A message's delivery is unconfirmed" } as const;
+function withUnsent(st: SessionState, unsent: "refused" | "unconfirmed" | null): SessionState {
+  if (!unsent) return st;
+  if (st.watch === "need") return { ...st, asks: (st.asks ?? 1) + 1 };
+  return { watch: "need", agents: st.agents, why: "unsent", text: UNSENT_LINE[unsent], asks: 1 };
+}
+
+// A session the daemon has not told of (another machine's before its first
+// frame, a page that just opened): read from its row and what the page holds.
+type Held = { events?: StoredEvent[]; approvals?: number; asking?: boolean; agents?: number };
+const fromHeld = (s: Session, h: Held): SessionState => stateOf(s, h.events, { approvals: h.approvals, asking: h.asking, agents: h.agents });
+
+export function useSessionState(s: Session | undefined): SessionState {
+  const state = useTold((x) => (s ? x[s.id] : undefined));
+  const events = useStore((x) => (s && !state ? x.events[s.id] : undefined));
   const n = useSafety((x) => (s ? x.approvals[s.id]?.length ?? 0 : 0));
   const asking = useStore((x) => !!s && !!(x.questionCalls[s.id]?.length || x.questionChildren[s.id]?.length));
   const unsent = useUnsent(s?.id);
   const agents = useAgentCount(s?.id);
-  return s ? sharedWatch(s, events, { approvals: n, asking: asking || !!unsent, agents }) : "idle";
+  return useMemo(
+    () => (s ? withUnsent(state ?? fromHeld(s, { events, approvals: n, asking, agents }), unsent) : { watch: "idle", agents: 0 }),
+    [s, state, events, n, asking, agents, unsent],
+  );
 }
+export const useWatch = (s: Session | undefined): Watch => useSessionState(s).watch;
 
 // The word as shown, with the agents that keep it working.
 export function useWatchLabel(s: Session | undefined): string {
-  const w = useWatch(s);
-  return watchLabel(w, useAgentCount(s?.id));
+  const st = useSessionState(s);
+  return watchLabel(st.watch, st.agents);
 }
 
-// All sessions' watch words in one pass (for boards and lists).
-export function useWatches(list: Session[]): Record<string, Watch> {
+// All sessions' states in one pass (for boards and lists).
+export function useSessionStates(list: Session[]): Record<string, SessionState> {
+  const states = useTold((x) => x);
   const events = useStore((x) => x.events);
   const calls = useStore((x) => x.questionCalls);
   const children = useStore((x) => x.questionChildren);
   const approvals = useSafety((x) => x.approvals);
   const agents = useAgentCounts();
-  useShelfVersion();
-  const out: Record<string, Watch> = {};
-  for (const s of list) out[s.id] = sharedWatch(s, branchOf(events[s.id], s.head), { approvals: approvals[s.id]?.length, asking: !!(calls[s.id]?.length || children[s.id]?.length || unsentOf(s.id)), agents: agents[s.id] });
-  return out;
+  const shelf = useShelfVersion();
+  return useMemo(() => {
+    const out: Record<string, SessionState> = {};
+    for (const s of list) {
+      const st = states[s.id] ?? fromHeld(s, { events: events[s.id], approvals: approvals[s.id]?.length, asking: !!(calls[s.id]?.length || children[s.id]?.length), agents: agents[s.id] });
+      out[s.id] = withUnsent(st, unsentOf(s.id));
+    }
+    return out;
+  }, [list, states, events, calls, children, approvals, agents, shelf]);
+}
+export function useWatches(list: Session[]): Record<string, Watch> {
+  const states = useSessionStates(list);
+  return useMemo(() => Object.fromEntries(Object.entries(states).map(([id, st]) => [id, st.watch])), [states]);
 }
 
 // Loads the events of sessions an overview shows, once each.
