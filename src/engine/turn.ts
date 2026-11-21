@@ -16,7 +16,8 @@ import type { Providers } from "../providers/registry.ts";
 import { configDir } from "../providers/config.ts";
 import type { ModelInfo, Provider, ProviderRequest, ProviderResult } from "../providers/types.ts";
 import { asksOwner, toolsFor } from "../tools/registry.ts";
-import { QUESTION_CUT, allPendingQuestions } from "../tools/interact.ts";
+import { allPendingQuestions } from "../tools/interact.ts";
+import { APPROVAL_CUT, QUESTION_CUT, RESTART_CUT, STOPPED_BEFORE, STOPPED_WHILE, stopKind } from "../core/stops.ts";
 import { dropCallEnv } from "../tools/jobs.ts";
 import { isDeferError, loadsNatively, refuseDefer, withCatalog } from "../tools/defer.ts";
 import { allHooks, type ExternalTurn, type ToolAuthorization, type ToolCall } from "./hooks.ts";
@@ -33,19 +34,10 @@ import { imageLimits, imageRefusal, requestTooLarge } from "../providers/image-l
 import { resolveAttachments } from "./attachments.ts";
 import { RETRY, RETRY_WAIT_MAX_MS, RetryTooLong, backoffMs, errorText, retryable, sleep } from "./retry.ts";
 
-// What the model is told about a tool call a daemon restart cut.
-export const RESTART_CUT = "Interrupted by a daemon restart while this tool ran. It may have partly run: check its effects before running it again.";
-// A question or a plan a restart cut did nothing, and is asked again on its
-// card (owedCalls). QUESTION_CUT is said only of one that could not be put back.
-export { QUESTION_CUT };
-// A call cut while it waited for the owner's approval never ran.
-export const APPROVAL_CUT = "The daemon restarted while this call waited for the owner's approval: it did not run. Call it again if it is still needed.";
-const CUT = new Set([RESTART_CUT, QUESTION_CUT, APPROVAL_CUT]);
-// What a call's result says when the owner's stop reached it.
-const STOPPED_BEFORE = "Interrupted by the user before this tool ran.";
-const STOPPED_WHILE = "Interrupted by the user while this tool ran.";
+// What a result says of a call a restart cut or the owner's stop reached (src/core/stops.ts).
+export { APPROVAL_CUT, QUESTION_CUT, RESTART_CUT };
 // A result that says the turn was stopped or cut under the call, not that the call failed.
-export const isStopResult = (content: unknown) => typeof content === "string" && (CUT.has(content) || content === STOPPED_BEFORE || content === STOPPED_WHILE);
+export const isStopResult = (content: unknown) => stopKind(content) !== undefined;
 const outcomeOf = (session: string, callId: string) => allHooks().map((h) => h.callOutcome?.(session, callId)).find(Boolean);
 const cutText = (session: string, u: { id: string; name: string }) => {
   if (asksOwner(u.name)) return QUESTION_CUT;
@@ -2004,7 +1996,7 @@ export class Engine {
       const stalled = owed ? 0 : stalledContinuations(line);
       const verdict = allHooks().map((h) => h.cutTurn?.(s, { stalled })).find(Boolean);
       if (verdict !== "continue" && (verdict || stalled >= STALLED_MAX)) return held(verdict ? verdict.hold : `This turn was continued after a daemon restart ${stalled} times in a row, and each time the daemon went down again before a tool call finished, so it was not continued again. Continue when you want it to go on.`);
-      const cutTools = line.slice(line.findLastIndex((e) => e.kind === "turn_start")).flatMap((e) => (e.kind === "tool_result" ? e.data.results.filter((r: any) => CUT.has(r.content)) : [])).length;
+      const cutTools = line.slice(line.findLastIndex((e) => e.kind === "turn_start")).flatMap((e) => (e.kind === "tool_result" ? e.data.results.filter((r: any) => stopKind(r.content) === "cut") : [])).length;
       try {
         await waitModel(s.model);
       } catch (e) {
@@ -2134,7 +2126,7 @@ export function stalledContinuations(line: readonly StoredEvent[]): number {
     const start = line.findLastIndex((x, i) => i < end && x.kind === "turn_start");
     const prompt = line.findLastIndex((x, i) => i < start && x.kind === "user");
     if (prompt < 0 || line[prompt]!.data.origin !== "restart") break;
-    if (line.slice(start, end).some((x) => x.kind === "tool_result" && x.data.results.some((r: any) => !CUT.has(r.content)))) break;
+    if (line.slice(start, end).some((x) => x.kind === "tool_result" && x.data.results.some((r: any) => stopKind(r.content) !== "cut"))) break;
     n++;
     end = prompt - 1;
   }

@@ -4,6 +4,7 @@ import { ChevronRight, ListChecks, Square, SquareTerminal } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { lineage } from "../../../src/core/tree.ts";
 import { actions, liveNow, reportError, useStore, type JobView } from "../lib/store.ts";
+import { stopKind } from "../../../src/core/stops.ts";
 import { loadSkillCommands } from "../lib/tools-ui.ts";
 import { planItems, toolKind } from "../lib/tools.ts";
 import { cn } from "../lib/utils.ts";
@@ -43,6 +44,8 @@ export function SessionDock({ sessionId }: { sessionId: string }) {
   const working = useStore((s) => s.sessions[sessionId]?.phase === "working");
   const workspace = useStore((s) => s.sessions[sessionId]?.workspace);
   useEffect(() => { if (workspace) loadSkillCommands(workspace); }, [workspace]);
+  // The calls a daemon restart cut: a command of one may have gone on by itself.
+  const cut = useMemo(() => new Set((events ?? []).flatMap((e) => (e.kind === "tool_result" ? e.data.results.filter((r: { content: unknown }) => stopKind(r.content) === "cut").map((r: { tool_use_id: string }) => r.tool_use_id) : []))), [events]);
   // The newest plan the tool accepted on the branch the next reply goes to:
   // a rejected update (or one still on its way) leaves the one before standing.
   const plan = useMemo(() => {
@@ -90,7 +93,10 @@ export function SessionDock({ sessionId }: { sessionId: string }) {
           <span className="min-w-0 max-w-[40%] shrink-0 truncate">{j.description ?? j.command}</span>
           <span className="min-w-0 flex-1 truncate font-mono text-micro text-muted" title={j.last} data-testid="dock-job-last">{j.last}</span>
           <span className="shrink-0 text-micro tabular-nums text-faint">
-            {j.running ? since(j.started) : j.stop_reason === "was stopped by the owner" ? "Stopped by you" : j.stop_reason ? j.stop_reason.replace(/^was /, "") : j.signal ? `killed by ${j.signal}` : j.exit_code == null ? "ended, exit unknown" : `exit ${j.exit_code}`}
+            {j.running ? since(j.started) : j.stop_reason === "was stopped by the owner" ? "Stopped by you" : j.stop_reason ? j.stop_reason.replace(/^was /, "") : j.signal ? `killed by ${j.signal}`
+              // Its call was cut by a restart and the command went on without it: said as that, not as a bare exit code beside "cut".
+              : j.call_id && cut.has(j.call_id) ? (j.exit_code == null ? "went on after the restart, then ended" : j.exit_code === 0 ? "went on after the restart and finished" : `went on after the restart and failed (exit ${j.exit_code})`)
+              : j.exit_code == null ? "ended, exit unknown" : `exit ${j.exit_code}`}
           </span>
           {j.running && (
             <button

@@ -31,6 +31,7 @@ export type ChoiceChange = { pin?: string[]; unpin?: string[]; provider?: string
 export type JobView = {
   id: string; num: number; command: string; description?: string; cwd: string; pty: boolean; log: string;
   started: number; ended?: number; exit_code?: number | null; signal?: string | null; background: boolean; bytes: number; running: boolean; last?: string; stop_reason?: string;
+  call_id?: string; // the tool call that started it
 };
 
 export type DraftBlock = { kind: "text" | "thinking" | "tool_input"; text: string; name?: string };

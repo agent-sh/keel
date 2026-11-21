@@ -264,3 +264,28 @@ test("a queued draft's first line stays visible on a narrow screen", async ({ pa
   await request.post(`/api/sessions/${sid}/interrupt`);
   await request.delete(`/api/sessions/${sid}`);
 });
+
+// A tool the owner's stop reached did not fail: its row says stopped, in the
+// color of a stop, and the turn reads as stopped.
+test("a tool the owner stopped reads stopped, not failed", async ({ page, request }) => {
+  test.skip(!(await (await request.get("/api/models")).json()).models.some((m: { id: string }) => m.id === "scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "A stopped command" } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+  try {
+    await page.goto(`/s/${session.id}`);
+    await page.getByTestId("composer").fill("script:long-tool");
+    await page.getByTestId("composer").press("Enter");
+    const call = page.getByTestId("tool-call");
+    await expect(page.getByTestId("working")).toContainText("Running Bash", { timeout: 15_000 });
+    await page.getByTestId("stop").click();
+    await expect(call).toHaveAttribute("data-state", "stopped", { timeout: 15_000 });
+    await expect(call.getByTestId("tool-ended")).toHaveText("stopped");
+    await expect(call).not.toContainText("failed");
+    await expect(page.getByTestId("turn-reason")).toHaveText(/Stopped/);
+    await call.click();
+    await shoot(page, "turn-09-stopped-tool");
+  } finally {
+    await request.post(`/api/sessions/${session.id}/interrupt`);
+    await request.delete(`/api/sessions/${session.id}`);
+  }
+});

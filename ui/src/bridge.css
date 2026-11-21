@@ -418,6 +418,8 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-tool-call[data-state="running"], .k-tool-call[data-state="live"] { border-left-color: var(--st-work); }
 .k-tool-call[data-state="error"] { border-left-color: var(--st-fail); }
 .k-tool-call[data-state="ok"] { border-left-color: var(--line-strong); }
+/* Ended under the call (the owner's stop, a restart): not a failure. */
+.k-tool-call[data-state="stopped"], .k-tool-call[data-state="cut"] { border-left-color: var(--st-idle); }
 .k-tool-call > button > .k-tool-name { font-weight: 600; font-size: var(--text-caption); }
 .k-terminal, .k-diff > div { border-radius: 0.1875rem; }
 .k-turn-end, .k-session-usage { font-size: var(--text-micro); }

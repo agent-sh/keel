@@ -9,6 +9,7 @@ import { setUI, useUI } from "../lib/ui.ts";
 import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { diffLines, splitLines } from "../../../src/tools/diff.ts";
 import { actions, failed, useStore } from "../lib/store.ts";
+import { stopKind } from "../../../src/core/stops.ts";
 import { allowRetry, refusedBy, useBlocked } from "../lib/blocked.ts";
 import {
   patchFiles, planItems, questions, resultImages, resultText, shellBody, splitMemory, splitNested, shellStatus, shortPath, toolKind,
@@ -90,7 +91,9 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input }: Props &
   const { text: out, nested, memory } = useMemo(() => { const m = splitMemory(resultText(result)); return { ...splitNested(m.text), memory: m.memory }; }, [result]);
   const images = resultImages(result);
   const refused = useBlocked(sessionId).find((b) => b.calls?.includes(use.id));
-  const state = !result ? "running" : refused ? "refused" : result.is_error ? "error" : "ok";
+  // A call the owner's stop or a daemon restart ended did not fail: it reads "stopped" or "cut".
+  const ended = result?.is_error ? stopKind(result.content) : undefined;
+  const state = !result ? "running" : refused ? "refused" : ended ?? (result.is_error ? "error" : "ok");
   const diff = useMemo(() => editDiff(kind, input), [kind, input]);
   const shell = kind === "shell" || kind === "stdin" ? shellStatus(out) : {};
   // Diffs are what the owner wants to see: small ones start open.
@@ -123,6 +126,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input }: Props &
           {shell.session && <span className="rounded-full bg-accent-soft px-1.5 py-px text-accent-ink">session {shell.session}</span>}
           {state === "running" && <span className="size-1.5 rounded-full bg-brass animate-pulse-dot" />}
           {state === "error" && <span className="text-danger">{shell.exit !== undefined ? `exit ${shell.exit}` : "failed"}</span>}
+          {ended && <span className="text-warn" data-testid="tool-ended" title={ended === "cut" ? "A daemon restart cut this call. It may have partly run." : "You stopped the turn while this call ran."}>{ended === "cut" ? "cut by a restart" : "stopped"}</span>}
           {state === "refused" && <span className="text-danger" data-testid="tool-refused">refused</span>}
           <ChevronRight className="size-3.5 text-faint transition-transform group-data-[open]/tool:rotate-90" />
         </span>
@@ -154,7 +158,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input }: Props &
           <Copyable text={out} label="Copy the output" testid="copy-output" className="m-2.5">
             <pre className={cn(
               "max-h-80 overflow-auto rounded-md border border-line bg-code p-2.5 pr-9 font-mono text-caption leading-relaxed whitespace-pre-wrap break-all",
-              result?.is_error ? "text-danger" : "text-muted",
+              result?.is_error && !ended ? "text-danger" : "text-muted",
             )}>{out}</pre>
           </Copyable>
         )}
@@ -420,7 +424,7 @@ function QuestionCard({ use, result, sessionId }: Props) {
           </div>
         )}
         {result && !given && (
-          <p className={cn("whitespace-pre-wrap break-words text-caption", result.is_error ? "text-danger" : "text-muted")} data-testid="question-result">
+          <p className={cn("whitespace-pre-wrap break-words text-caption", result.is_error && !stopKind(result.content) ? "text-danger" : "text-muted")} data-testid="question-result">
             {resultText(result)}
           </p>
         )}

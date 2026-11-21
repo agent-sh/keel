@@ -64,7 +64,16 @@ test("a turn cut by a daemon restart continues by itself", async ({ page }) => {
     await expect(page.getByTestId("restart-note")).toHaveCount(1, { timeout: 60_000 });
     await expect(page.getByTestId("assistant-text").last()).toHaveText("Continued after the restart.", { timeout: 15_000 });
     await expect(page.getByTestId("turn-end")).toHaveCount(2);
+    // The call the crash cut reads as cut, not as failed.
+    const cutCall = page.getByTestId("tool-call").first();
+    await expect(cutCall).toHaveAttribute("data-state", "cut");
+    await expect(cutCall.getByTestId("tool-ended")).toHaveText("cut by a restart");
+    await expect(cutCall).not.toContainText("failed");
     await shoot(page, "restart-01-resumed-after-crash");
+    // Its command outlived the daemon: the dock says it went on, not a bare "exit 0" beside "cut".
+    await expect(page.getByTestId("dock-job").first()).toContainText("went on after the restart and finished", { timeout: 45_000 });
+    await expect(page.getByTestId("dock-job").first()).not.toContainText("exit 0");
+    await shoot(page, "restart-14-cut-command-went-on");
 
     // A graceful stop while the tool runs: parked, then continued.
     await page.getByTestId("composer").fill("script:long-tool");
