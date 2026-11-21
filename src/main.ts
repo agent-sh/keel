@@ -4,16 +4,18 @@ import { commands } from "./cli/index.ts";
 import { topHelp, unknownCommand } from "./cli/help.ts";
 import { startDaemon } from "./server/start.ts";
 
+const SERVE_USAGE = "keel serve [--bind HOST:PORT] [--state-dir DIR] [--workspace DIR] [--dev]\n  Runs the daemon: the agent loop, the HTTP API and the workbench (default bind 127.0.0.1:47960).";
 const sub = Bun.argv[2];
 if (sub === undefined || sub === "-h" || sub === "--help" || sub === "help") {
   const of = sub === "help" ? Bun.argv[3] : undefined;
   if (of && commands[of]) process.exit(await commands[of](["--help"]));
+  // serve is not a client command: its usage is printed here, and no daemon starts.
+  if (of === "serve") process.exit((console.log(SERVE_USAGE), 0));
   process.exit((console.log(topHelp()), 0));
 }
 // Client commands (keel run, keel send, keel pair, ...) parse their own options.
 if (sub && commands[sub]) process.exit(await commands[sub](Bun.argv.slice(3)));
 
-const SERVE_USAGE = "keel serve [--bind HOST:PORT] [--state-dir DIR] [--workspace DIR] [--dev]\n  Runs the daemon: the agent loop, the HTTP API and the workbench (default bind 127.0.0.1:47960).";
 const args = Bun.argv.slice(2);
 if (args[0] && args[0] !== "serve" && !args[0].startsWith("-")) process.exit(unknownCommand(args[0]));
 let parsed;

@@ -6,7 +6,7 @@
 // KEEL_CLI_SCRATCH names it (default: one per process, removed at the end).
 // KEEL_CLI_BIN runs a binary built before instead of building one.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const ROOT = join(import.meta.dir, "../..");
@@ -75,6 +75,16 @@ describe("help, usage and completion", () => {
     const [words, flags] = probe.stdout.toString().trim().split("\n");
     expect(words).toContain("run");
     expect(flags).toBe("--output-format");
+  });
+});
+
+describe("keel help serve", () => {
+  const state = join(SCRATCH, "state-help-serve");
+  test("prints the serve usage, as serve --help does, and starts no daemon", async () => {
+    const viaHelp = await keel(["help", "serve"], { state });
+    const viaFlag = await keel(["serve", "--help"], { state });
+    expect([viaHelp.code, viaHelp.out, viaFlag.code, existsSync(state)]).toEqual([0, viaFlag.out, 0, false]);
+    expect(viaHelp.out).toStartWith("keel serve [--bind HOST:PORT]");
   });
 });
 
