@@ -757,6 +757,7 @@ export class Engine {
     // Every image within what the model's host takes (a history may hold a
     // larger one from before images were scaled when stored): a refused image
     // would fail this request and every later one of the session.
+    this.sayImages(id, purpose);
     const set = this.store.session(id)?.settings;
     let limits = imageLimits(st.info.family, set?.image_edge);
     let out = new Set(set?.images_out ?? []);
@@ -848,7 +849,20 @@ export class Engine {
       ? `The provider refused a request over this session's images (${errorText(fixed.cause).slice(0, 160)}). ${n === 1 ? "The image" : `The ${n} images`} sent so far ${n === 1 ? "is" : "are"} left out of what the model reads from here; new images are sent as before.`
       : `The provider takes images of at most ${fixed.edge} px a side here: larger ones in this session are sent scaled down from now on.`;
     this.errors.capture("provider", fixed.cause, { session: id, then: n ? `${n} images left out for this session` : `images scaled to ${fixed.edge} px for this session` });
-    if (purpose !== "reader") this.append(id, "note", { kind: "images", text });
+    this.imageNotes.set(id, text);
+    this.sayImages(id, purpose);
+  }
+
+  // The transcript's line about it is written only inside a turn's own
+  // request. A summary request (a compaction is bound to the head it read: a
+  // note appended while it runs would have it thrown away with the summary
+  // paid for), a side answer and a reader leave it for the next turn's request.
+  private imageNotes = new SessionMap<string>(256);
+  private sayImages(id: string, purpose: ProviderRequest["purpose"]) {
+    const text = purpose === "turn" ? this.imageNotes.get(id) : undefined;
+    if (!text) return;
+    this.imageNotes.delete(id);
+    this.append(id, "note", { kind: "images", text });
   }
 
   // A subagent's cache lifetime, where the route offers a choice. It starts
