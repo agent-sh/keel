@@ -77,11 +77,13 @@ test("a line longer than a part is cut into pieces under its own number", () => 
   expect(rows.reduce((n, r) => n + r.length - 2, 0)).toBe(30_000);
 });
 
-const host = (fail: Set<string>, seen: string[]): ReaderHost => ({
+const host = (fail: Set<string>, seen: string[], refuse = new Set<string>()): ReaderHost => ({
   models: async () => all, current: async () => big, capture: (_e, c) => void seen.push(`captured ${c.model} ${c.part}`), env: { KEEL_READERS_AT_ONCE: "2" },
   ask: async (model, prompt) => {
     seen.push(`${model.id} ${prompt.startsWith("Readers each") ? "compile" : (/part (\d+) of/.exec(prompt)?.[1] ?? "1")}`);
     if (fail.has(model.id)) throw new Error("throttled");
+    // A refusal is an answer the provider bills.
+    if (refuse.has(model.id)) return { text: "", stop: "refusal", usage: { input: prompt.startsWith("Readers each") ? 10 : 1000, output: 0, cache_read: 0, cache_write: 0, cost: 0.002 } };
     if (prompt.startsWith("Readers each")) return { text: "compiled answer", usage: { input: 10, output: 5, cache_read: 0, cache_write: 0, cost: 0.001 } };
     return { text: prompt.includes("MARKER") ? "found it at a.log:3" : NOTHING, usage: { input: 1000, output: 20, cache_read: 0, cache_write: 0, cost: 0.002 } };
   },
@@ -100,6 +102,18 @@ test("a failed reader hands its part to the next choice; the findings are compil
   expect(o.models).toEqual(["older"]);
   expect(o.parts.filter((p) => p.state === "read").length).toBe(2);
   expect(o.cost).toBeGreaterThan(0);
+
+  // A reader that refuses is billed, and the job's usage says so; what the
+  // working model would take in to read the same material once is the same.
+  const files = [{ source: "a.log", text: text(true) }, { source: "b.log", text: text(true) }];
+  const plain = await readMaterial(host(new Set(), []), files, "where is the marker?", new AbortController().signal);
+  const refused = await readMaterial(host(new Set(), [], new Set(["p:small"])), files, "where is the marker?", new AbortController().signal);
+  expect(plain.models).toEqual(["small"]);
+  expect(refused.models).toEqual(["older"]);
+  expect(plain.working!.tokens).toBe(plain.parts.length * 1000);
+  expect(refused.working!.tokens).toBe(plain.working!.tokens);
+  expect(refused.working!.cost).toBe(plain.working!.cost);
+  expect(refused.usage.input).toBe(plain.usage.input + plain.parts.length * 1000 + 10);
 
   const none: string[] = [];
   const all3 = await readMaterial(host(new Set(["p:tiny", "p:small", "p:older", "p:big"]), none), [{ source: "a.log", text: text(false) }], "q", new AbortController().signal);

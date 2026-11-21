@@ -100,15 +100,17 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
   const chunks = chunkMaterial(kept, perRequest);
   const parts: PartState[] = chunks.map((c, i) => ({ k: i + 1, covers: c.parts.map(partRef).join(", "), chars: c.chars, state: "waiting" }));
   let usage = emptyUsage();
-  // Prompt tokens of the readers' part requests, as the provider counted them:
-  // about what the working model would take in to read the same material.
+  // Prompt tokens of the request that read each part, as the provider counted
+  // them: about what the working model would take in to read the same material
+  // once. An attempt that failed or refused is the readers' own cost (`usage`),
+  // not something the working model would pay.
   let partTokens = 0;
   const used = new Set<string>();
   const billed = new Set<string>();
   const tell = (compiling = false) => { try { host.progress?.({ parts: parts.map((p) => ({ ...p })), compiling }); } catch (e) { host.capture(e, { at: "reader progress" }); } };
 
   // One request, through the choices in order; the failure of each is captured once.
-  const ask = async (prompt: string, what: Record<string, unknown>, onModel?: (m: ModelInfo) => void, counted = false): Promise<{ text: string; model: ModelInfo } | { error: string }> => {
+  const ask = async (prompt: string, what: Record<string, unknown>, onModel?: (m: ModelInfo) => void): Promise<{ text: string; model: ModelInfo; input: number } | { error: string }> => {
     let last = "no reader model";
     for (const m of choices) {
       if (signal.aborted) throw Object.assign(new Error("interrupted"), { name: "AbortError" });
@@ -117,12 +119,11 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
       try {
         const r = await host.ask(m, prompt, signal);
         usage = addUsage(usage, r.usage);
-        if (counted) partTokens += r.usage.input + r.usage.cache_read + r.usage.cache_write;
         const text = r.text.trim();
         if (r.stop === "refusal" || !text) throw new Error(`the reader (${m.name}) ${r.stop === "refusal" ? "refused" : "gave no answer"}`);
         used.add(m.name);
         billed.add(m.billing);
-        return { text, model: m };
+        return { text, model: m, input: r.usage.input + r.usage.cache_read + r.usage.cache_write };
       } catch (e) {
         if (signal.aborted) throw e;
         last = `${m.name}: ${short(e)}`;
@@ -137,7 +138,8 @@ export async function readMaterial(host: ReaderHost, items: Material[], question
     const p = parts[i]!;
     p.state = "reading";
     tell();
-    const r = await ask(partPrompt(c, question, i + 1, chunks.length), { part: `${i + 1}/${chunks.length}` }, (m) => { p.model = m.name; tell(); }, true);
+    const r = await ask(partPrompt(c, question, i + 1, chunks.length), { part: `${i + 1}/${chunks.length}` }, (m) => { p.model = m.name; tell(); });
+    if (!("error" in r)) partTokens += r.input;
     if ("error" in r) {
       p.state = "unread";
       p.error = r.error;
