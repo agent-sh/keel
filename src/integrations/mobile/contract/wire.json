@@ -5,7 +5,8 @@
   "signing: the bytes each side signs or verifies, from the same inputs.",
   "fields: per shape, the fields the app reads, name to JSON type. A dot goes into an object. `?` marks a field the daemon may leave out; `|null` one that may be null.",
   "examples: per shape, answers and frames as the daemon sends them (for send and answer: bodies as the app sends them).",
-  "The daemon may add fields to any shape; the app ignores a field it does not know. Renaming or dropping a listed field, or changing the signed bytes, breaks one of the two checks."
+  "The daemon may add fields to any shape; the app ignores a field it does not know. Renaming or dropping a listed field, or changing the signed bytes, breaks one of the two checks.",
+  "upload: the answer to POST /v1/upload?name=<name>&mime=<type> with the file's bytes as the body (the example is the answer for a 1x1 PNG named photo.png). A prompt names what it carries in `attachments` by the upload's id; the stored message lists them in meta.attachments, an image under a `media` id that GET /v1/media/<media> serves."
  ],
  "signing": {
   "request": [
@@ -92,7 +93,8 @@
    "meta.card": "string?",
    "meta.command": "string?",
    "meta.state": "string?",
-   "meta.origin": "string?"
+   "meta.origin": "string?",
+   "meta.attachments": "array?"
   },
   "step": {
    "tool": "string",
@@ -202,11 +204,31 @@
   "send": {
    "text": "string",
    "mode": "string",
-   "client_id": "string"
+   "client_id": "string",
+   "attachments": "array?"
   },
   "answer": {
    "choice": "string",
    "answers": "object?"
+  },
+  "attachment": {
+   "kind": "string",
+   "media": "string",
+   "mime": "string",
+   "file_name": "string?",
+   "size": "number?"
+  },
+  "upload": {
+   "id": "string",
+   "kind": "string",
+   "mime": "string",
+   "file_name": "string",
+   "size": "number"
+  },
+  "upload_ref": {
+   "id": "string",
+   "mime": "string",
+   "file_name": "string"
   }
  },
  "examples": {
@@ -326,6 +348,32 @@
     },
     "ts": 1795194998.0008,
     "seq": 0
+   },
+   {
+    "id": "e-7",
+    "chat_id": "s-1",
+    "role": "user",
+    "kind": "text",
+    "content": "look",
+    "meta": {
+     "images": 2,
+     "attachments": [
+      {
+       "kind": "image",
+       "media": "img-0-e-7",
+       "mime": "image/png"
+      },
+      {
+       "kind": "file",
+       "media": "9f2c000000000000000000000000000000000000000000000000000000000000",
+       "mime": "text/plain",
+       "file_name": "notes.txt",
+       "size": 12
+      }
+     ]
+    },
+    "ts": 1795195006.0,
+    "seq": 48
    }
   ],
   "step": [
@@ -1354,6 +1402,18 @@
     "text": "ship it",
     "mode": "queue",
     "client_id": "3f0c6a52-6a0e-4a43-9d8e-1f6c0f8f2b11"
+   },
+   {
+    "text": "look",
+    "mode": "send",
+    "client_id": "0b0d5a0e-2f39-4b57-8a53-0c1f7e1d9a44",
+    "attachments": [
+     {
+      "id": "c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77",
+      "mime": "image/png",
+      "file_name": "photo.png"
+     }
+    ]
    }
   ],
   "answer": [
@@ -1369,6 +1429,37 @@
    },
    {
     "choice": "deny"
+   }
+  ],
+  "attachment": [
+   {
+    "kind": "image",
+    "media": "img-0-e-7",
+    "mime": "image/png"
+   },
+   {
+    "kind": "file",
+    "media": "9f2c000000000000000000000000000000000000000000000000000000000000",
+    "mime": "text/plain",
+    "file_name": "notes.txt",
+    "size": 12
+   }
+  ],
+  "upload": [
+   {
+    "id": "c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77",
+    "media": "c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77",
+    "kind": "image",
+    "mime": "image/png",
+    "file_name": "photo.png",
+    "size": 70
+   }
+  ],
+  "upload_ref": [
+   {
+    "id": "c414cd0e204de974f73753c7e28d7638e7b3691bb8b1a2bab6b25bb7fed7ce77",
+    "mime": "image/png",
+    "file_name": "photo.png"
    }
   ]
  }

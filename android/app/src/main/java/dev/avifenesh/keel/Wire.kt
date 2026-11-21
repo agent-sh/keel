@@ -50,9 +50,32 @@ object Wire {
     fun sendId(keptId: String, keptText: String, text: String, fresh: () -> String = { java.util.UUID.randomUUID().toString() }): String =
         if (keptId.isNotEmpty() && keptText == text) keptId else fresh()
 
-    /** A prompt as the daemon takes it (POST /v1/chats/:id/messages). mode: send, steer or queue. */
-    fun sendBody(text: String, mode: String, clientId: String): JSONObject =
-        JSONObject().put("text", text).put("mode", mode).put("client_id", clientId)
+    /**
+     * A prompt as the daemon takes it (POST /v1/chats/:id/messages). mode: send,
+     * steer or queue. uploads: what the prompt carries, each already stored by
+     * /v1/upload and named by the id its answer gave.
+     */
+    fun sendBody(text: String, mode: String, clientId: String, uploads: List<Upload> = emptyList()): JSONObject {
+        val body = JSONObject().put("text", text).put("mode", mode).put("client_id", clientId)
+        if (uploads.isNotEmpty()) body.put("attachments", JSONArray().apply {
+            uploads.forEach { put(JSONObject().put("id", it.id).put("mime", it.mime).put("file_name", it.fileName)) }
+        })
+        return body
+    }
+
+    /**
+     * What a draft's send is known by: its words and the ids of what it
+     * carries. The same again is the same send (sendId); anything else is new.
+     */
+    fun sendKey(text: String, uploads: List<Upload>): String = (listOf(text) + uploads.map { it.id }).joinToString("\u0000")
+
+    /**
+     * Whether a draft may be sent. Every file picked for it must be stored on
+     * the daemon first: with one still uploading or failed nothing goes, so the
+     * words never arrive without what they are about.
+     */
+    fun sendable(text: String, picked: Int, uploads: List<Upload>): Boolean =
+        uploads.size == picked && (text.isNotBlank() || uploads.isNotEmpty())
 
     /** A card's answer as the daemon takes it (POST /v1/approvals/:id). answers: by question id, one label or a list of them. */
     fun answerBody(choice: String, answers: Map<String, Any>?): JSONObject {
@@ -132,10 +155,26 @@ fun stateOf(chat: Chat, pendingCard: Boolean, working: Boolean): State = when {
 
 data class Step(val tool: String, val what: String)
 
+/** What a stored prompt carried: an image (GET /v1/media/<media> gives its bytes) or a file by name. */
+data class Attachment(val kind: String, val media: String, val mime: String, val fileName: String = "", val size: Long = 0) {
+    val image get() = kind == "image"
+    companion object {
+        fun of(o: JSONObject) = Attachment(o.str("kind", "file"), o.str("media"), o.str("mime"), o.str("file_name"), o.optLong("size", 0))
+    }
+}
+
+/** A file stored for the next prompt: the answer of POST /v1/upload. kind "image" means the model sees it as one. */
+data class Upload(val id: String, val kind: String, val mime: String, val fileName: String, val size: Long) {
+    companion object {
+        fun of(o: JSONObject) = Upload(o.str("id"), o.str("kind", "file"), o.str("mime"), o.str("file_name"), o.optLong("size", 0))
+    }
+}
+
 data class Msg(
     val id: String, val chatId: String, val role: String, val kind: String, val content: String, val ts: Double,
     val model: String = "", val steps: List<Step> = emptyList(), val approvalId: String? = null, val outcome: String = "",
     val cardKind: String = "", val cardCommand: String = "", val cardState: String = "", val origin: String = "",
+    val attachments: List<Attachment> = emptyList(),
 ) {
     val mine get() = role == "user"
     companion object {
@@ -147,6 +186,7 @@ data class Msg(
                 ts = o.optDouble("ts", 0.0), model = meta.str("model"), steps = steps, approvalId = meta.str("approval_id").takeIf { it.isNotBlank() },
                 outcome = meta.str("outcome"), cardKind = meta.str("card"), cardCommand = meta.str("command"), cardState = meta.str("state"),
                 origin = meta.str("origin"),
+                attachments = meta.optJSONArray("attachments")?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map(Attachment::of) }.orEmpty(),
             )
         }
     }

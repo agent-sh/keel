@@ -45,8 +45,11 @@ class ContractTest {
     // --- what the app sends --------------------------------------------------------
 
     @Test fun theAppSendsTheBodiesOfTheContract() {
-        val send = examples("send").first()
-        assertEquals(canon(send), canon(Wire.sendBody(send.getString("text"), send.getString("mode"), send.getString("client_id"))))
+        for (send in examples("send")) {
+            // What a prompt carries is named by its upload's answer: here, the contract's own.
+            val uploads = if (send.has("attachments")) examples("upload").map(Upload::of) else emptyList()
+            assertEquals(canon(send), canon(Wire.sendBody(send.getString("text"), send.getString("mode"), send.getString("client_id"), uploads)))
+        }
         for (answer in examples("answer")) {
             assertEquals(canon(answer), canon(Wire.answerBody(answer.getString("choice"), answer.optJSONObject("answers")?.let(::answersOf))))
         }
@@ -75,6 +78,8 @@ class ContractTest {
         "chat" to { o -> Chat.of(o).toString() },
         "message" to { o -> Msg.of(o).toString() },
         "step" to { o -> Msg.of(JSONObject().put("meta", JSONObject().put("steps", JSONArray().put(o)))).steps.toString() },
+        "attachment" to { o -> Msg.of(JSONObject().put("meta", JSONObject().put("attachments", JSONArray().put(o)))).attachments.toString() },
+        "upload" to { o -> Upload.of(o).toString() },
         "card" to { o -> Card.of(o).toString() },
         "question" to { o -> Card.of(JSONObject().put("questions", JSONArray().put(o))).questions.toString() },
         "picked" to { o -> Card.of(JSONObject().put("answers", JSONObject().put("q", o))).answers.toString() },
@@ -105,7 +110,7 @@ class ContractTest {
 
     @Test fun theAppReadsEveryFieldOfTheContractUnderItsName() {
         // Every shape the daemon sends has a reader here; `send` and `answer` are what the app sends.
-        assertEquals(fields.keys().asSequence().toSet() - setOf("send", "answer"), reads.keys)
+        assertEquals(fields.keys().asSequence().toSet() - setOf("send", "answer", "upload_ref"), reads.keys)
         for ((shape, read) in reads) for (path in fields.getJSONObject(shape).keys()) {
             // Without the field, the app must make something else of at least one example that has it.
             val read1 = examples(shape).any { ex -> has(ex, path) && read(copy(ex)) != read(without(ex, path)) }

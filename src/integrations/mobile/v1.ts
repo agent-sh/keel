@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { basename } from "node:path";
 import { ATTACHMENT_MAX, attachmentPath, saveAttachment } from "../../engine/attachments.ts";
+import { imageType } from "../../engine/images.ts";
 import type { Server } from "bun";
 import type { Session, StoredEvent } from "../../core/types.ts";
 import type { Approval, Gate } from "../../safety/gate.ts";
@@ -149,6 +150,10 @@ function originOf(e: StoredEvent, titleOf: (sid: string) => string | undefined, 
 // (stored inline in the prompt, so its id names the event and its place), a
 // file by its stored id.
 const PROMPT_IMAGE = /^img-(\d+)-(.+)$/;
+// The image types a model reads inline. A file that claims one of them and is
+// not one by its bytes is stored as plain bytes.
+const INLINE_IMAGES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+const IMAGE_CLAIM = /^image\/(png|jpeg|gif|webp)$/;
 function promptFiles(e: StoredEvent) {
   return ((e.data.images ?? []) as any[]).map((b, i) => b.type === "image"
     ? { kind: "image", media: `img-${i}-${e.id}`, mime: b.media_type }
@@ -348,8 +353,11 @@ export function mobileApi(ctx: MobileCtx) {
     const auth = req.headers.get("authorization") ?? "";
     const dev = mobile.deviceForToken(auth.replace(/^bearer\s+/i, ""));
     if (!dev) return err("unauthorized", 401);
+    // Said before the body is read when the request says its size, checked after in any case.
+    const tooLarge = () => err(limit === ATTACHMENT_MAX ? `a file can be at most ${ATTACHMENT_MAX / 1024 / 1024} MiB` : "body too large", 413);
+    if (Number(req.headers.get("content-length") ?? 0) > limit) return tooLarge();
     const body = new Uint8Array(await req.arrayBuffer());
-    if (body.length > limit) return err("body too large", 413);
+    if (body.length > limit) return tooLarge();
     const u = new URL(req.url);
     const ts = req.headers.get("x-hm-ts") ?? "";
     const msg = canonicalMessage(req.method, u.pathname + u.search, ts, body);
@@ -717,6 +725,8 @@ export function mobileApi(ctx: MobileCtx) {
           device: { id: dev.id, name: dev.name, created: dev.created }, name: host(), profile: "keel", model, agent_name: "Keel", user_name: "owner",
           models, profiles: ["default"], public_url: mobile.setting("public_url") ?? "",
           features: { radar: false, fleet: false, wake_wa: false, projects: false, rooms: false }, security: { signature_replay: REPLAY_VERSION },
+          // What /v1/upload takes, so the app can say no before it sends the bytes.
+          uploads: { max_bytes: ATTACHMENT_MAX, inline_images: INLINE_IMAGES },
         });
       }),
     },
@@ -784,9 +794,14 @@ export function mobileApi(ctx: MobileCtx) {
           const id = ids[i]!;
           const path = attachmentPath(id);
           if (!path) return err(`attachment ${id.slice(0, 80) || "(no id)"} is not stored here; upload it again`, 400);
-          const mime = String(r?.mime ?? Bun.file(path).type ?? "");
           const bytes = readFileSync(path);
-          images.push(/^image\/(png|jpeg|gif|webp)$/.test(mime) ? { type: "image", media_type: mime, data: bytes.toString("base64") } : saveAttachment(bytes, String(r?.file_name ?? r?.name ?? basename(path)), mime));
+          // An image is what its bytes are, not what the request calls it: a
+          // file that only claims to be one goes as a file, never as an image
+          // block a provider would refuse the whole request for.
+          const image = imageType(bytes);
+          const mime = image ?? String(r?.mime ?? Bun.file(path).type ?? "").split(";")[0]!.trim();
+          images.push(image ? { type: "image", media_type: image, data: bytes.toString("base64") }
+            : saveAttachment(bytes, String(r?.file_name ?? r?.name ?? basename(path)), IMAGE_CLAIM.test(mime) ? "application/octet-stream" : mime));
         }
         if (!text && !images.length) return err("empty", 400);
         const s = chat(req.params.cid!);
@@ -854,14 +869,19 @@ export function mobileApi(ctx: MobileCtx) {
     },
     "/v1/approvals/:aid": { POST: signed(withBody(approve)) },
     // A file for the next message: stored by content, sent with the message
-    // that names it (attachments: [{ id }]).
+    // that names it (attachments: [{ id }]). At most ATTACHMENT_MAX bytes
+    // (`/v1/me` says it). `kind` says how the model gets it: "image" for a
+    // PNG, JPEG, GIF or WebP by its bytes (the model sees it), "file" for
+    // anything else (text inline, the rest by its saved path), a photo in
+    // another format included.
     "/v1/upload": {
       POST: signed((req, _d, body) => {
         if (!body.length) return err("the file is empty", 400);
         const q = new URL(req.url).searchParams;
-        const mime = (q.get("mime") || req.headers.get("content-type") || "application/octet-stream").split(";")[0]!.trim();
-        const a = saveAttachment(body, q.get("name") || "file", mime);
-        return json({ id: a.id, media: a.id, mime: a.media_type, file_name: a.name, size: a.size });
+        const image = imageType(body);
+        const claimed = (q.get("mime") || req.headers.get("content-type") || "application/octet-stream").split(";")[0]!.trim();
+        const a = saveAttachment(body, q.get("name") || "file", image ?? (IMAGE_CLAIM.test(claimed) ? "application/octet-stream" : claimed));
+        return json({ id: a.id, media: a.id, kind: image ? "image" : "file", mime: a.media_type, file_name: a.name, size: a.size });
       }, ATTACHMENT_MAX),
     },
     "/v1/media/:id": {

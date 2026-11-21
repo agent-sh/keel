@@ -23,6 +23,17 @@ export function withoutImages(messages: Message[], model: string): Message[] {
   return changed ? out : messages;
 }
 
+// What an image's first bytes say it is, for the four formats a model reads
+// inline; undefined for anything else, whatever its name or declared type says.
+export function imageType(u: Uint8Array): "image/png" | "image/jpeg" | "image/gif" | "image/webp" | undefined {
+  const tag = (at: number, n: number) => String.fromCharCode(...u.subarray(at, at + n));
+  if (u.length >= 8 && u[0] === 0x89 && tag(1, 3) === "PNG") return "image/png";
+  if (u.length >= 3 && u[0] === 0xff && u[1] === 0xd8 && u[2] === 0xff) return "image/jpeg";
+  if (u.length >= 6 && (tag(0, 6) === "GIF87a" || tag(0, 6) === "GIF89a")) return "image/gif";
+  if (u.length >= 12 && tag(0, 4) === "RIFF" && tag(8, 4) === "WEBP") return "image/webp";
+  return undefined;
+}
+
 // Tokens an image costs, estimated from its pixel size before any reply has
 // measured it: Claude's documented rule is one visual token per 28x28 patch
 // (ceil(w/28) * ceil(h/28)); a model that downscales large images costs less,

@@ -22,6 +22,21 @@ class WireTest {
         assertEquals(listOf("ship it", "steer", "id-1"), listOf(body.getString("text"), body.getString("mode"), body.getString("client_id")))
     }
 
+    @Test fun aDraftGoesOnlyWithEverythingItCarries() {
+        val photo = Upload("a1", "image", "image/png", "photo.png", 70)
+        // One of two picked files is not stored yet (still uploading, or its upload failed): nothing is sent.
+        assertEquals(false, Wire.sendable("look at these", picked = 2, uploads = listOf(photo)))
+        assertEquals(true, Wire.sendable("look at these", picked = 1, uploads = listOf(photo)))
+        // A photo may go without words; nothing at all may not.
+        assertEquals(true, Wire.sendable("", picked = 1, uploads = listOf(photo)))
+        assertEquals(false, Wire.sendable("  ", picked = 0, uploads = emptyList()))
+        // The send's id stays with the same words and files, and changes with either.
+        val key = Wire.sendKey("look", listOf(photo))
+        assertEquals("kept", Wire.sendId("kept", key, Wire.sendKey("look", listOf(photo))) { "fresh" })
+        assertEquals("fresh", Wire.sendId("kept", key, Wire.sendKey("look", emptyList())) { "fresh" })
+        assertEquals("fresh", Wire.sendId("kept", key, Wire.sendKey("look", listOf(photo.copy(id = "b2")))) { "fresh" })
+    }
+
     @Test fun pairLinks() {
         val l = Wire.parsePair("keel://pair?u=https%3A%2F%2Fkeel.example.test&c=abc123&n=desk%20one")!!
         assertEquals(Wire.PairLink("https://keel.example.test", "abc123", "desk one"), l)

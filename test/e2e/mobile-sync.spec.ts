@@ -6,7 +6,8 @@ import { Phone } from "./fixtures/phone-app.ts";
 // model. A send whose answer was lost is sent again under its id and stays one
 // prompt. A stream cut in the middle of the work opens again from the phone's
 // cursor and starts with what it missed. A branch picked on the desktop
-// replaces the phone's transcript, live and after a reconnect.
+// replaces the phone's transcript, live and after a reconnect. A photo goes
+// with its caption and is there when the conversation is opened again.
 
 const MODEL = "scripted:stand-in";
 
@@ -120,5 +121,37 @@ test("the phone's transcript follows the branch shown on the desktop", async ({ 
   await expect.poll(() => level.frames[0]?.type).toBe("hello");
   expect([level.frames[0].sync.reset, level.frames[0].sync.messages]).toEqual([undefined, []]);
   level.close();
+  await request.delete(`/api/mobile/devices/${phone.id}`);
+});
+
+test("a photo from the phone goes with its caption and shows when the chat is opened again", async ({ request }) => {
+  const phone = await new Phone(request).pair();
+  const { session } = await (await request.post("/api/sessions", { data: { model: MODEL, title: "Phone photo" } })).json();
+  const png = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="), (c) => c.charCodeAt(0));
+  const limits = (await (await phone.call("GET", "/v1/me")).json()).uploads;
+  expect(limits.inline_images).toContain("image/png");
+  const path = `/v1/chats/${session.id}/messages`;
+
+  // An upload that did not arrive: the caption does not go alone.
+  const lost = await phone.call("POST", path, { text: "look at this", client_id: "p-1", attachments: [{ id: "f".repeat(64), mime: "image/png", file_name: "photo.png" }] });
+  expect(lost.status()).toBe(400);
+  expect((await (await request.get(`/api/sessions/${session.id}`)).json()).events).toHaveLength(0);
+
+  // Stored, then sent under the same send id.
+  const up = await (await phone.upload("/v1/upload?name=photo.png&mime=image/png", png, "image/png")).json();
+  expect(up).toMatchObject({ kind: "image", mime: "image/png", file_name: "photo.png", size: png.length });
+  const sent = await phone.call("POST", path, { text: "look at this", client_id: "p-1", attachments: [{ id: up.id, mime: up.mime, file_name: up.file_name }] });
+  expect(sent.status()).toBe(200);
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).running).toBe(false);
+
+  // Opened again: the prompt names its photo, and the daemon serves the same bytes.
+  const page = await (await phone.call("GET", `${path}?paged=1&limit=150`)).json();
+  const mine = page.messages.find((m: any) => m.role === "user");
+  expect([mine.content, mine.meta.attachments.map((a: any) => [a.kind, a.mime])]).toEqual(["look at this", [["image", "image/png"]]]);
+  const media = await phone.call("GET", `/v1/media/${mine.meta.attachments[0].media}`);
+  expect([media.status(), media.headers()["content-type"], Buffer.compare(await media.body(), Buffer.from(png))]).toEqual([200, "image/png", 0]);
+  // The model was sent the image with the words.
+  const prompt = (await (await request.get(`/api/sessions/${session.id}`)).json()).events.find((e: any) => e.kind === "user");
+  expect(prompt.data.images.map((b: any) => [b.type, b.media_type])).toEqual([["image", "image/png"]]);
   await request.delete(`/api/mobile/devices/${phone.id}`);
 });

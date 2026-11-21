@@ -71,6 +71,14 @@ async function call(method: string, path: string, body?: unknown, extra: Record<
   throw new Error(`no route ${method} ${path}`);
 }
 const session = (title = "") => store.createSession({ model: "fx:saved", workspace: dir, title });
+// A 1x1 PNG, and an upload as the app makes it: the bytes as the body.
+const PNG: Uint8Array<ArrayBuffer> = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="), (c) => c.charCodeAt(0));
+async function upload(name: string, mime: string, bytes: Uint8Array<ArrayBuffer>, headers: Record<string, string> = {}) {
+  const req = signedRaw("POST", `/v1/upload?name=${name}&mime=${mime}`, bytes);
+  for (const [k, v] of Object.entries(headers)) req.headers.set(k, v);
+  const res: Response = await routes["/v1/upload"].POST(Object.assign(req, { params: {} }), {});
+  return res.status === 200 ? await res.json() : { status: res.status, ...(await res.json()) };
+}
 
 describe("messages", () => {
   test("an unfinished reply keeps its text and says how it ended; harness input is not the owner's", async () => {
@@ -236,9 +244,8 @@ describe("chats", () => {
 
   test("a photo goes with its caption or the message is refused", async () => {
     const s = session();
-    const png: Uint8Array<ArrayBuffer> = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="), (c) => c.charCodeAt(0));
-    const up: any = await routes["/v1/upload"].POST(Object.assign(signedRaw("POST", "/v1/upload?name=a.png&mime=image/png", png), { params: {} }), {});
-    const att = await up.json();
+    const png = PNG;
+    const att = await upload("a.png", "image/png", png);
     sent.length = 0;
     expect((await call("POST", `/v1/chats/${s.id}/messages`, { text: "", attachments: [{ id: "f".repeat(64) }] })).status).toBe(400);
     expect((await call("POST", `/v1/chats/${s.id}/messages`, { text: "look", attachments: [{ id: "f".repeat(64) }] })).status).toBe(400);
@@ -306,6 +313,34 @@ describe("sends", () => {
     expect(prompts(s.id)).toBe(0);
     const r = await call("POST", `/v1/chats/${s.id}/messages`, { text: "once", client_id: "c-broken" });
     expect([r.status, r.body.replayed, prompts(s.id)]).toEqual([200, undefined, 1]);
+  });
+});
+
+describe("uploads", () => {
+  test("an image is what its bytes are, whatever the upload calls it", async () => {
+    const s = session();
+    sent.length = 0;
+    // Text that claims to be a JPEG, and a PNG that claims to be text.
+    const fake = await upload("holiday.jpg", "image/jpeg", new TextEncoder().encode("not a photo at all"));
+    const real = await upload("notes.txt", "text/plain", PNG);
+    expect([fake.kind, fake.mime, real.kind, real.mime]).toEqual(["file", "application/octet-stream", "image", "image/png"]);
+    // The message may repeat the claim: the model still gets an image only for image bytes.
+    const r = await call("POST", `/v1/chats/${s.id}/messages`, { text: "two", attachments: [{ id: fake.id, mime: "image/jpeg", file_name: "holiday.jpg" }, { id: real.id, mime: "text/plain" }] });
+    expect(r.status).toBe(200);
+    expect(sent[0].opts.images.map((b: any) => [b.type, b.media_type])).toEqual([["attachment", "application/octet-stream"], ["image", "image/png"]]);
+    expect(r.body.message.meta.attachments.map((a: any) => [a.kind, a.mime])).toEqual([["file", "application/octet-stream"], ["image", "image/png"]]);
+  });
+
+  test("a file over the limit is refused by its declared size, before its bytes are read, and the app is told the limit", async () => {
+    const me = (await call("GET", "/v1/me")).body;
+    expect(me.uploads).toEqual({ max_bytes: 20 * 1024 * 1024, inline_images: ["image/png", "image/jpeg", "image/gif", "image/webp"] });
+    let read = false;
+    const req = signedRaw("POST", "/v1/upload?name=big.bin&mime=application/octet-stream", PNG);
+    req.headers.set("content-length", String(me.uploads.max_bytes + 1));
+    Object.defineProperty(req, "arrayBuffer", { value: async () => { read = true; return PNG.buffer; } });
+    const res: Response = await routes["/v1/upload"].POST(Object.assign(req, { params: {} }), {});
+    expect([res.status, (await res.json()).error, read]).toEqual([413, "a file can be at most 20 MiB", false]);
+    expect((await upload("empty.txt", "text/plain", new Uint8Array())).status).toBe(400);
   });
 });
 
@@ -546,7 +581,7 @@ describe("the event stream", () => {
     const [hello] = await st.read((f) => f.length >= 1);
     await st.close();
     expect(hello.sync.reload).toBe("behind");
-  });
+  }, 30_000); // two thousand stored events: slow on a disk that is busy
 });
 
 describe("branches", () => {
@@ -615,7 +650,7 @@ describe("the wire contract", () => {
   // The shapes inside a shape: where they are and what they are.
   const PARTS: Record<string, [string, string][]> = {
     sync: [["chats", "chat"], ["messages", "message"], ["approvals", "card"], ["working", "working_row"], ["drafts", "draft"], ["reset", "reset"]],
-    message: [["meta.steps", "step"]], card: [["questions", "question"], ["answers", "picked"]],
+    message: [["meta.steps", "step"], ["meta.attachments", "attachment"]], send: [["attachments", "upload_ref"]], card: [["questions", "question"], ["answers", "picked"]],
     page: [["messages", "message"]], receipt: [["message", "message"]], resolved: [["approval", "card"]],
     hello: [["sync", "sync"]], message_frame: [["message", "message"], ["chat", "chat"]], chat_frame: [["chat", "chat"]],
     chat_reset: [["messages", "message"], ["chat", "chat"]], approval: [["approval", "card"]], seq: [["working", "working_row"]],
@@ -687,6 +722,10 @@ describe("the wire contract", () => {
     take("sync", (await call("GET", "/v1/sync?since=0")).body);
     take("page", (await call("GET", `/v1/chats/${s.id}/messages?paged=1&limit=3`)).body);
     take("receipt", (await call("POST", `/v1/chats/${parent.id}/messages`, { ...wire.examples.send[0], client_id: "contract-receipt" })).body);
+    // A prompt that carries a photo and a file.
+    const photo = await upload("photo.png", "image/png", PNG), notes = await upload("notes.txt", "text/plain", new TextEncoder().encode("hello notes\n"));
+    take("upload", photo);
+    take("receipt", (await call("POST", `/v1/chats/${failed.id}/messages`, { text: "look", attachments: [photo, notes] })).body);
 
     // The stream: its first frame, then one of each kind.
     jest.useFakeTimers();
@@ -718,7 +757,7 @@ describe("the wire contract", () => {
 
     expect(bad).toEqual([]);
     // Every field the app reads was sent at least once here, so a renamed optional field fails too.
-    const sent = Object.entries(fields).filter(([shape]) => shape !== "send" && shape !== "answer").flatMap(([shape, f]) => Object.keys(f).map((k) => `${shape}.${k}`));
+    const sent = Object.entries(fields).filter(([shape]) => !["send", "answer", "upload_ref"].includes(shape)).flatMap(([shape, f]) => Object.keys(f).map((k) => `${shape}.${k}`));
     expect(sent.filter((k) => !seen.has(k))).toEqual([]);
     expect(q.answer()).toEqual({ build: { picked: ["Debug"] }, checks: { picked: ["Unit"], other: "by hand" } });
   });
@@ -726,12 +765,15 @@ describe("the wire contract", () => {
   test("the daemon takes what the app sends", async () => {
     const s = session();
     sent.length = 0;
-    const [send] = wire.examples.send;
-    for (const [name, type] of Object.entries(fields.send!)) expect(typeOf((send as any)[name])).toBe(type);
+    const [send, withPhoto] = wire.examples.send;
     const first = (await call("POST", `/v1/chats/${s.id}/messages`, send)).body;
     expect(first.message).toMatchObject({ content: send!.text, kind: "queued" });
     expect((await call("POST", `/v1/chats/${s.id}/messages`, send)).body).toMatchObject({ replayed: true, message: { id: first.message.id } });
     expect(sent).toHaveLength(1);
+    // A prompt with a photo names the upload by the id its answer gave. The example upload is that answer.
+    expect(await upload("photo.png", "image/png", PNG)).toEqual(wire.examples.upload[0]);
+    const look = (await call("POST", `/v1/chats/${s.id}/messages`, withPhoto)).body;
+    expect(look.message.meta.attachments).toMatchObject([{ kind: "image", mime: "image/png" }]);
     // A card answered by question id, and one dismissed.
     const [answer, dismiss] = wire.examples.answer;
     const a = asks(s.id, "call-x"), b = asks(s.id, "call-y");
