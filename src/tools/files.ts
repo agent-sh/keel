@@ -236,7 +236,8 @@ async function readNotebook(p: string, ctx: ToolContext): Promise<ReadResult> {
       else if (o.data?.["text/plain"]) text += srcText(o.data["text/plain"]) + "\n";
       else if (o.ename) text += `${o.ename}: ${o.evalue}\n`;
       if (o.data?.["image/png"]) {
-        blocks.push({ type: "text", text });
+        // (A cell's second image has no text before it: an empty text block is refused by the Anthropic wire.)
+        if (text) blocks.push({ type: "text", text });
         text = "";
         blocks.push({ type: "image", media_type: "image/png", data: String(o.data["image/png"]).replace(/\s/g, "") });
       }

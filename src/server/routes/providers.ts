@@ -3,6 +3,7 @@
 import { registerHooks } from "../../engine/hooks.ts";
 import type { RouteModule } from "../app.ts";
 import { CLOSE_PERCENT, isClose } from "../../providers/limits.ts";
+import { recordRepairs } from "../../providers/project.ts";
 import { Check } from "../../providers/plugins/check.ts";
 import { readPlugins } from "../../providers/plugins/config.ts";
 
@@ -13,13 +14,17 @@ const hiddenIn = (c: { hidden: Record<string, string[]>; hidden_providers?: stri
   return !!c.hidden_providers?.includes(p) || !!c.hidden[p]?.includes(m);
 };
 
-export const providersRoutes: RouteModule = ({ providers, store }) => {
+export const providersRoutes: RouteModule = ({ providers, store, errors }) => {
   // The session's speed, read before each request so a change applies from
   // the next one, also in the middle of a turn. The registry turns it into the
   // offer's fields; a model without that offer runs at standard.
   registerHooks({
     beforeRequest: (s, req) => ({ ...req, speed: store.session(s.id)?.settings.speed }),
   });
+
+  // A request that had to be repaired so its wire takes it is recorded once
+  // per session and kind, as a warning (src/providers/project.ts).
+  recordRepairs(errors);
 
   const report = async () => {
     await providers.plugins.freshen();

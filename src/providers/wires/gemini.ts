@@ -70,6 +70,7 @@ export function geminiWire(o: GeminiOpts = {}, systemPrefix?: string): WireCodec
       let stop = "end_turn";
       let finished = false;
       let calls = 0;
+      const started = Date.now().toString(36);
       return {
         get finished() { return finished; },
         event(e) {
@@ -98,7 +99,10 @@ export function geminiWire(o: GeminiOpts = {}, systemPrefix?: string): WireCodec
               thoughtParts.push(p);
             } else if (p.functionCall) {
               const k = calls++;
-              const id = p.functionCall.id ?? `call_${k}_${Bun.hash(JSON.stringify(p.functionCall)).toString(36)}`;
+              // A server that sends no id gets one of this reply's own: the same
+              // call made again in a later step is another call (two calls with
+              // one id are refused by the wires that pair results by id).
+              const id = p.functionCall.id ?? `call_${started}_${k}_${Bun.hash(JSON.stringify(p.functionCall)).toString(36)}`;
               onDelta({ kind: "tool_input", index: 2 + k, text: JSON.stringify(p.functionCall.args ?? {}), name: p.functionCall.name });
               out.push({ type: "tool_use", id, name: p.functionCall.name, input: p.functionCall.args ?? {}, signature: p.thoughtSignature, origin: ctx.origin });
             } else if (typeof p.text === "string") {

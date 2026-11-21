@@ -15,26 +15,15 @@ import { parseArgs, parseJson, type WireCodec, type WireCtx, type WireParser } f
 export const CACHE_TTL: "5m" | "1h" = "1h";
 const CACHE: { type: "ephemeral"; ttl: "5m" | "1h" } = { type: "ephemeral", ttl: CACHE_TTL };
 
-function imageMediaType(b: ImageBlock): string {
-  // Tool MIME labels may come from a file extension or an MCP server. Repair
-  // known mismatches here so replay works without rewriting stored results.
-  // 16 base64 characters cover the longest signature (12 bytes for WebP).
-  let head: string;
-  try { head = atob(b.data.slice(0, 16)); } catch { return b.media_type; }
-  if (head.startsWith("\x89PNG\r\n\x1a\n")) return "image/png";
-  if (head.startsWith("\xff\xd8\xff")) return "image/jpeg";
-  if (head.startsWith("GIF87a") || head.startsWith("GIF89a")) return "image/gif";
-  if (head.startsWith("RIFF") && head.startsWith("WEBP", 8)) return "image/webp";
-  return b.media_type;
-}
-
-const image = (b: ImageBlock) => ({ type: "image", source: { type: "base64", media_type: imageMediaType(b), data: b.data } });
+// (The projection labels an image by its bytes, src/providers/project.ts.)
+const image = (b: ImageBlock) => ({ type: "image", source: { type: "base64", media_type: b.media_type, data: b.data } });
 
 // History to the wire. Cache breakpoints: tools + system are frozen (one
 // breakpoint on the system), and a rolling breakpoint on the last user message
 // so each request reads the whole previous prefix from cache.
-export function toWire(messages: Message[], ctx: Pick<WireCtx, "origin" | "legacyIsMine">, mark: typeof CACHE | null | undefined = CACHE, toolRefs = false): any[] {
-  const out: any[] = project(messages, { ...ctx, toolRefs }).map((m) => ({
+// `part`: one reply's block, not a request (its calls are not paired with results).
+export function toWire(messages: Message[], ctx: Pick<WireCtx, "origin" | "legacyIsMine"> & { sessionKey?: string }, mark: typeof CACHE | null | undefined = CACHE, toolRefs = false, part = false): any[] {
+  const out: any[] = project(messages, { origin: ctx.origin, legacyIsMine: ctx.legacyIsMine, sessionKey: ctx.sessionKey, toolRefs, part }).map((m) => ({
     role: m.role,
     content: m.content.map((b): any => {
       switch (b.type) {
@@ -184,7 +173,7 @@ export const anthropicWire: WireCodec = {
         // Each thinking block keeps the fingerprint of what came before it, in the form it is sent back.
         const b = binders.get(req);
         if (b) for (const x of out) {
-          const wire = toWire([{ role: "assistant", content: [x] }], ctx, undefined)[0]?.content[0];
+          const wire = toWire([{ role: "assistant", content: [x] }], ctx, undefined, false, true)[0]?.content[0];
           if (!wire) continue;
           const bind = bindReply(b, [wire])[0];
           if (bind) (x as any).bind = bind;

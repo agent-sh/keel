@@ -190,3 +190,16 @@ test("a glob that reaches the scan ceiling says the scan was cut, unlike one tha
     rmSync(root, { recursive: true, force: true });
   }
 }, 60_000);
+
+test("a notebook cell with two images gives no empty text block between them", async () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? ".", "nb-"));
+  try {
+    const p = join(root, "plots.ipynb");
+    writeFileSync(p, JSON.stringify({ cells: [{ cell_type: "code", source: "plot()", outputs: [{ data: { "image/png": "iVBORw0KGgo=" } }, { data: { "image/png": "iVBORw0KGgo=" } }] }] }));
+    const blocks = (await readFile(p, { seen: new Map(), cwd: root } as any, {})).content as any[];
+    expect(blocks.map((b) => b.type)).toEqual(["text", "image", "image"]);
+    expect(blocks.every((b) => b.type !== "text" || b.text)).toBe(true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

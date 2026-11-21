@@ -5,7 +5,7 @@
 import type { AssistantBlock } from "../../core/types.ts";
 import { emptyUsage } from "../../core/types.ts";
 import { ProviderError } from "../http.ts";
-import { project } from "../project.ts";
+import { project, refText } from "../project.ts";
 import type { ProviderRequest } from "../types.ts";
 import { effortFor, parseArgs, parseJson, type WireCodec, type WireCtx, type WireParser } from "./common.ts";
 
@@ -43,9 +43,20 @@ const rawInput = (input: unknown) => (typeof input === "string" ? input : typeof
 // as functions of its namespace (mcp__<server>), as Codex does it. The items
 // stay in the history, so a loaded tool stays loaded and the prefix stays.
 const searchOf = (req: ProviderRequest) => req.tools.find((t) => t.search);
-// The Responses backend reserves `web` for its own tools. Keep custom tools
-// from that group as individual deferred functions with their full names.
-const namespaceOf = (t: { namespace?: string }) => t.namespace === "web" ? undefined : t.namespace;
+// Namespaces the Responses backend keeps for its own tools: a function sent
+// inside one is refused ("Function 'web.websearch' is not allowed in reserved
+// namespace 'web'"), which fails every request that declares or replays it.
+// The list is Codex's (RESERVED_RESPONSES_NAMESPACES in openai/codex,
+// codex-rs/core/src/config/mod.rs and app-server thread_processor.rs, as of
+// 2026-11-21) plus `collaboration`, which the backend keeps for models with
+// their own agent tools (openai/codex issues 31864 and 55495). The API
+// reference lists none of them. A tool grouped under one of these goes as a
+// function of its own with its full name.
+export const RESERVED_NAMESPACES = new Set([
+  "api_tool", "browser", "collaboration", "computer", "container", "file_search", "functions", "image_gen",
+  "multi_tool_use", "python", "python_user_visible", "submodel_delegator", "terminal", "tool_search", "web",
+]);
+const namespaceOf = (t: { namespace?: string }) => (t.namespace && RESERVED_NAMESPACES.has(t.namespace) ? undefined : t.namespace);
 const memberOf = (name: string, namespace?: string) => namespace ? name.slice(namespace.length + 2) : name;
 // A function call's tool, by its namespace and name there.
 const calledName = (it: { name?: string; namespace?: string }) =>
@@ -103,7 +114,8 @@ export function responsesBody(req: ProviderRequest, ctx: WireCtx, dialect: Respo
         flush();
         const output = typeof b.content === "string"
           ? b.content
-          : b.content.map((c) => (c.type === "image" ? { type: "input_image", image_url: dataUrl(c) } : { type: "input_text", text: c.type === "text" ? c.text : "" }));
+          // (A loaded tool named in a result that is not this wire's search, one another family wrote: a line of text.)
+          : b.content.map((c) => (c.type === "image" ? { type: "input_image", image_url: dataUrl(c) } : { type: "input_text", text: c.type === "text" ? c.text : refText(c.tool_name) }));
         input.push({ type: customCalls.has(b.tool_use_id) ? "custom_tool_call_output" : "function_call_output", call_id: b.tool_use_id, output });
       }
     }
