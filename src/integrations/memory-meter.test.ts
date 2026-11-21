@@ -31,12 +31,25 @@ test("a block adds the lines the context lacks, whole, within its cap; what does
   // What is owed, offered again, goes on where the block stopped.
   const next = fitMemory(tight.owed.join("\n"), new Set(tight.lines), 10_000);
   expect(next).toMatchObject({ lines: ["- beta-rule: Keep the second thing", "- gamma-rule: Keep the third thing"], owed: [] });
-  // One line longer than a block: its start, and a line that says it was cut.
-  const long = fitMemory(`- huge: ${"x".repeat(500)}\n- small: fits`, new Set(), 200);
-  expect(long.text).toContain("[the line above is cut: it is longer than a block]");
-  expect(long.text!.length).toBeLessThanOrEqual(200);
-  expect(long.owed).toEqual(["- small: fits"]);
-  expect(fitMemory("x".repeat(500), new Set(), 100).text!.startsWith("xxxxxxxx")).toBe(true);
+  // One line longer than a block goes in parts: its start here with a line
+  // saying it goes on, and the rest owed first, so nothing of it is dropped.
+  const huge = `- huge: ${"x".repeat(300)}${"y".repeat(300)}`;
+  const long = fitMemory(`${huge}\n- small: fits`, new Set(), 250);
+  expect(long.text).toContain("[the line above goes on with the next step: it is longer than a block]");
+  expect(long.text!.length).toBeLessThanOrEqual(250);
+  expect(long.owed.length).toBe(2);
+  expect(long.owed[1]).toBe("- small: fits");
+  expect(long.text!.split("\n")[0]! + long.owed[0]!.replace("(continued) ", "")).toBe(huge);
+  // The rest, offered again, goes on in parts until it is through.
+  let rest = long.owed, got = long.text!.split("\n")[0]!, rounds = 0;
+  while (rest.length && rounds++ < 10) {
+    const f = fitMemory(rest.join("\n"), new Set(), 250);
+    for (const l of f.text!.split("\n")) if (l.startsWith("(continued) ")) got += l.replace("(continued) ", "");
+    rest = f.owed;
+  }
+  expect(got).toBe(huge);
+  expect(rest).toEqual([]);
+  expect(fitMemory("x".repeat(500), new Set(), 200).text!.startsWith("xxxxxxxx")).toBe(true);
 });
 
 test("the lines a context holds are read from its memory blocks only", () => {

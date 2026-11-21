@@ -264,20 +264,37 @@ Transcript metrics count reused versions, appends (a branch that only grew
 gets its new events appended), rebuilds, failures, files removed with their
 session, elapsed milliseconds, and bytes written. Reuse writes no bytes.
 `processes` counts hook processes: the most alive at once and their limit,
-calls not made because one of the same session was still out unanswered, and
-probes. `out` names the kinds of call (asking, tool) the store is not
-answering in time right now.
+calls not made because one of the same session and hook was still out
+unanswered, and probes. `owed_dropped` counts lines dropped because more was
+waiting for a session than may wait. `out` names the kinds of call (asking,
+tool) the store is not answering in time right now.
 The endpoint includes no prompts, transcripts, facts, or session identifiers.
 Poll it and compare counter deltas to track changes over time.
 
+What to look at on the first day with a real store: `hooks["session-start"]`
+in that report. A session's start call makes the store sync its clone, and
+the first request of every new session waits for it up to 6 s.
+`duration_ms.max` says how long the slowest start took (over 6,000 means a
+first request went without the start block, which then followed late).
+`outcomes.timeout` counts starts that ran into the store's own 15 s hook
+timeout and were ended there. `context_bytes.max` is the largest start block
+a session was given.
+
 The store gives a session each fact once, so a fact it printed always reaches
-the model: a block holds at most one hook's cap in whole lines, and the lines
-it had no room for are kept in the state and follow with the turn's next
-request or the next prompt. A call that misses its deadline starts an outage
-of its kind: the session is told once, later calls of that kind are made but
-not waited for (what they answer follows the same way), and a probe that asks
-the store nothing ends the outage when it answers again. After a summary or a
-clear the store is told, so what it gave before can come again.
+the model: a block holds at most one hook's cap in whole lines (a longer line
+goes in parts), and the lines it had no room for are kept in the state and
+follow with the turn's next request or the next prompt. What may wait for a
+session is ten blocks' worth; past it a line says how many were dropped.
+A turn waits for a call only so long (6 s for a start block, 2.2 s for a
+prompt, 0.9 s for a tool call), and no store process is ended before the
+store's own 15 s hook timeout: what it answers after the turn went on follows
+like a line that did not fit. A call a turn stopped waiting for starts an
+outage of its kind: the session is told once, later calls of that kind are
+made but not waited for, and a probe that asks the store nothing ends the
+outage when it answers within the wait again. The probe is asked only while
+calls of that kind are being made. After a summary or a clear the store is
+told, so what it gave before can come again; what was owed from before a
+clear is not carried into the fresh context.
 
 `GET /api/telemetry/memory?since_ms=&until_ms=&session_id=` reports what memory
 cost the turns and whether they used it, kept across restarts for 90 days: per

@@ -165,7 +165,8 @@ esac
     expect(stats.hooks["session-start"].outcomes.empty).toBe(2); // told of the summary, then asked here
     expect(stats.hooks["pre-compact"].outcomes.ok).toBe(1);
     const preTool = stats.hooks["pre-tool"];
-    expect(preTool.outcomes).toEqual({ hit: 1, empty: 1, failure: 2, timeout: 1, ok: 0 });
+    // The call that outlasts the tool hook's wait is given up on, not killed: it has not ended yet.
+    expect(preTool.outcomes).toEqual({ hit: 1, empty: 1, failure: 2, timeout: 0, ok: 0 });
     expect(preTool.context_bytes).toEqual({ total: MEMORY_CAP * 2, max: MEMORY_CAP * 2 });
     expect(preTool.duration_ms.max).toBeGreaterThan(0);
     expect(preTool.duration_ms.total).toBeGreaterThan(preTool.duration_ms.max);
@@ -192,8 +193,9 @@ esac
 // fact Keel drops is gone for that session; told of a summary or a clear
 // (session-start with that source) it forgets what it gave. A prompt or a
 // command names facts by words kwN: a prompt gets fact-kwN, a command
-// rule-kwN, each `len` characters long. `mode`: slow (nothing is answered),
-// slowtool (tool calls are not), slowstart (the start block takes 2.5 s).
+// rule-kwN, each `len` characters long. `mode`: slow (nothing is answered
+// for 8 s), slowtool (tool calls are not), slowstart and slowstart7 (the
+// start block takes 2.5 s and 7 s).
 // No e2e can hold a store back for one call and release it for the next.
 function standIn(dir: string) {
   const sd = join(dir, "standin");
@@ -215,7 +217,7 @@ out=""
 give() { grep -qx "$1" "$seen" && return; echo "$1" >> "$seen"; out+="- $1: the text of $1 $pad\\n"; }
 case "$hook" in
   session-start)
-    case "$mode" in slow) exec sleep 8 ;; slowstart) sleep 2.5 ;; esac
+    case "$mode" in slow) exec sleep 8 ;; slowstart) sleep 2.5 ;; slowstart7) sleep 7 ;; esac
     case "$src" in compact|clear) : > "$seen" ;; startup) ;; *) exit 0 ;; esac
     give start-rule; printf '# store: standing rules\\n%b' "$out" ;;
   prompt)
@@ -358,6 +360,29 @@ test("a fact the store gave is never dropped for size: what a block cannot hold 
   const after = w.names(w.last(one));
   for (const k of seq(200, 240)) expect(after).toContain(`fact-kw${k}`);
   expect(w.tacit.owed(one)).toBe(0);
+
+  // A clear: the store forgets what it gave and would give it again, so what
+  // was owed from before does not follow into the fresh context.
+  const cleared = w.session();
+  await w.say(cleared, `only ${seq(300, 340).map((k) => `kw${k}`).join(" ")}`);
+  expect(w.tacit.owed(cleared)).toBeGreaterThan(0);
+  w.engine.clear(cleared);
+  await w.say(cleared, "fresh kw1");
+  expect(w.tacit.owed(cleared)).toBe(0);
+  expect(w.names(w.last(cleared))).toEqual(["start-rule", "fact-kw1"]);
+
+  // What may wait for a session is bounded, and a line says what was dropped past it.
+  const flooded = w.session();
+  const owe = (lines: string[]) => (w.tacit as any).owe(flooded, "prompt", lines);
+  owe(seq(1, 12).map((k) => `- big-${k}: ${"z".repeat(9_990)}`));
+  const rows = () => w.store.db.query<{ line: string }, [string]>("SELECT line FROM memory_owed WHERE session_id = ? ORDER BY id").all(flooded).map((r) => r.line);
+  // Ten of the twelve fit in what ten blocks hold; one line stands for the two that did not.
+  expect(rows().length).toBe(11);
+  expect(rows().at(-1)).toBe("[2 more lines from memory were dropped: more was waiting than ten blocks hold]");
+  owe(["- one-more: x".padEnd(9_000, "x"), "- and-another: y"]);
+  expect(rows().filter((l) => l.includes("were dropped")).length).toBe(1);
+  expect(rows().at(-1)).toBe("[4 more lines from memory were dropped: more was waiting than ten blocks hold]");
+  expect(w.tacit.stats().owed_dropped).toBe(4);
 }), 60_000);
 
 // A store that answers prompts and never answers tool calls (the reviewer's
@@ -405,10 +430,16 @@ test("a store that hangs: the deadline once, said once, no wait after; a probe o
   expect(notes()).toHaveLength(1);
   expect(notes()[0]!.data.model).toBeUndefined(); // a line for the owner, not sent to the model
   expect(w.last(s)).not.toContain("Memory did not answer");
+  // Measured as a timeout: the turn waited its full wait and went on without memory.
+  const { memoryMeter } = await import("./memory-meter.ts");
+  const measured = () => memoryMeter(w.store).report({ session: s }).paths.find((p) => p.path === "store_prompt")!;
+  expect(measured()).toMatchObject({ timeouts: 1, late: 0 });
   // The next prompts do not wait; the session's calls go out one at a time;
   // one line in the session, though both its prompts and its tool calls hang.
   for (const k of [4, 5, 6]) expect(await w.say(s, `more kw${k} tools=${k}`)).toBeLessThan(1_000);
   expect(notes()).toHaveLength(1);
+  // Not waited for: one call made and still out, the next two not made while it is.
+  expect(measured()).toMatchObject({ timeouts: 1, late: 1, skipped: 2 });
   expect(w.captured.filter((m) => m.includes("did not answer in time: turns"))).toHaveLength(1);
   const p = w.tacit.stats().processes;
   expect(p.not_started).toBeGreaterThan(0);
@@ -424,30 +455,36 @@ test("a store that hangs: the deadline once, said once, no wait after; a probe o
   expect(w.store.events(s).filter((e) => e.kind === "turn_end").every((e) => e.data.reason === "end_turn")).toBe(true);
 }), 90_000);
 
-test("a call the turn did not wait for: its answer is kept in the state and joins the next request, after a restart too", () => inWorld("late", async (w, st) => {
+test("during an outage: the probe stops with nobody asking; a new session's task is asked beside its start call; late answers are kept in the state", () => inWorld("late", async (w, st) => {
   const s = w.session();
   await w.say(s, "first kw1");
-  // One hung call counts the store out; its probe starts while it still hangs.
+  // One hung call counts asking out; its probe starts while the store still hangs.
   st.set("mode", "slow");
   await w.say(s, "hung kw2");
   await until(() => st.calls("prompt").some((l) => l.includes("keel-probe")));
   st.set("mode", "ok");
+  // Nobody asks anything: after its wait the probe is not asked again.
+  await Bun.sleep(2 * 2_200 + 600);
+  expect(w.tacit.stats().processes.probes).toBe(1);
   expect(w.tacit.stats().out.ask).toBe(true);
-  // This prompt's call is made and not waited for: its fact is not in its (one step) turn.
-  expect(await w.say(s, "late kw3")).toBeLessThan(1_000);
-  expect(w.names(w.last(s))).not.toContain("fact-kw3");
-  // The store answered and marked the fact as given: it is owed, in the state.
-  await until(() => w.tacit.owed(s) > 0);
-  expect(w.tacit.stats().out.ask).toBe(false); // an answer in time ends the outage too
+  // A new session's task while asking is still counted out: its request does
+  // not wait, and both its start call and its prompt go to the store.
+  const b = w.session();
+  expect(await w.say(b, "task kw5", { kind: "task", agent_id: "x" })).toBeLessThan(1_000);
+  expect(w.names(w.last(b))).toEqual([]);
+  await until(() => st.calls("prompt").some((l) => l.includes(b)) && st.calls("session-start").some((l) => l.includes(b)));
+  // What they answer is owed, in the state; an answer within the wait ends the outage.
+  await until(() => w.tacit.owed(b) >= 2);
+  expect(w.tacit.stats().out.ask).toBe(false);
   // A restart: a new instance on the same state still owes it.
-  expect(new Tacit(w.store, w.bus, { capture: () => ({ message: "" }) } as any, st.bin).owed(s)).toBe(w.tacit.owed(s));
-  await w.say(s, "next kw4 tools=9");
-  expect(w.names(w.last(s))).toEqual(expect.arrayContaining(["fact-kw3", "fact-kw4", "rule-kw9"]));
-  expect(w.copies(s, "fact-kw3")).toBe(1);
-  expect(w.tacit.owed(s)).toBe(0);
+  expect(new Tacit(w.store, w.bus, { capture: () => ({ message: "" }) } as any, st.bin).owed(b)).toBe(w.tacit.owed(b));
+  await w.say(b, "next kw4 tools=9");
+  expect(w.names(w.last(b))).toEqual(expect.arrayContaining(["start-rule", "fact-kw5", "fact-kw4", "rule-kw9"]));
+  for (const name of ["start-rule", "fact-kw5"]) expect(w.copies(b, name)).toBe(1);
+  expect(w.tacit.owed(b)).toBe(0);
 }), 60_000);
 
-test("a session's first prompt waits for the start block up to the start hook's own deadline", () => inWorld("start", async (w, st) => {
+test("a session's first prompt waits for the start block; a start slower than the wait is not killed, and its block follows", () => inWorld("start", async (w, st) => {
   st.set("mode", "slowstart");
   const s = w.session();
   // An agent's task, sent at once: the standing rules are in its first request.
@@ -456,7 +493,24 @@ test("a session's first prompt waits for the start block up to the start hook's 
   expect(waited).toBeLessThan(START_WAIT_MS);
   expect(w.names(w.asked.find((r) => r.session === s)!.messages)).toEqual(["start-rule", "fact-kw1"]);
   expect(w.told(s)).toBe(0);
-}), 30_000);
+
+  // A start that takes 7 s (a slow sync): the request goes after the wait
+  // without the block, and the process is left to finish.
+  st.set("mode", "slowstart7");
+  const slow = w.session();
+  const held = await w.say(slow, "another task: kw2", { kind: "task", agent_id: "y" });
+  expect(held).toBeGreaterThanOrEqual(START_WAIT_MS - 50);
+  expect(held).toBeLessThan(7_000);
+  expect(w.names(w.last(slow))).toEqual(["fact-kw2"]);
+  expect(w.told(slow)).toBe(1);
+  // It answers after the turn went on: not killed, and its block is owed.
+  await until(() => w.tacit.owed(slow) > 0);
+  expect(w.tacit.stats().hooks["session-start"].outcomes.timeout).toBe(0);
+  st.set("mode", "ok");
+  await w.say(slow, "and then kw3");
+  expect(w.names(w.last(slow))).toEqual(expect.arrayContaining(["start-rule", "fact-kw2", "fact-kw3"]));
+  expect(w.copies(slow, "start-rule")).toBe(1);
+}), 60_000);
 
 test("after a summary or a clear the store is told, and what it gave before comes again", () => inWorld("checkpoint", async (w, st) => {
   for (const how of ["summary", "clear"] as const) {

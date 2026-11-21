@@ -41,9 +41,11 @@ export const MEMORY_PATHS: MemoryPath[] = ["store_start", "store_prompt", "store
 export const KEEP_MS = 90 * 86_400_000;
 // added: the turn got a block; empty: the store had nothing; repeat: all of it
 // was in the context already; skipped: not asked (an input that is not a
-// request, or one of the session's calls was still out); late: the turn did
-// not wait for its answer (the store was not answering in time; what it
-// answers joins a later request as store_owed); timeout and failure: the store's.
+// request, or one of the session's calls was still out); timeout: the turn
+// waited its full wait and went on without the answer; late: the turn did
+// not wait at all (the store was already not answering in time). What a
+// call answers after its turn went on joins a later request as store_owed.
+// failure: the store's.
 export type MemoryOutcome = "added" | "empty" | "repeat" | "skipped" | "late" | "timeout" | "failure";
 export type Fact = { names: string[]; text: string };
 
