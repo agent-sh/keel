@@ -124,6 +124,29 @@ const CHANGES: string[] = [
   // Quoting that hides a write from a careless reader.
   "echo 'a' > f 'b'", 'echo "a" > f "b"', "echo a\\ > f", "echo a #x\n> f", "echo a `# c` > f", 'echo "a\\"" > f', "echo 'it'\\''s' > f", 'echo "$(echo \')\' > f)"',
   "echo $'a\\'b' > f \\'", 'echo "${x:-"\'$(touch f)\'"}"', "echo $(echo '\\') > f ; echo ')' \"'\"", "echo \\\\$(touch f)", 'echo "\\\\$(touch f)"',
+  // Found by running every line the classifier calls a read under bash in a sandbox (169,000 generated
+  // lines): each of these changed the folder, opened a connection or emptied the job's own log.
+  // A brace expansion in a word that holds a character bash does not split on (form feed, vertical tab, CR, no-break space).
+  "sort {-o,out\f} a", "sort {-o,out\v} a", "sort {-o,out\r} a", "sort {-o,out\u00a0} a", "sort {-o,out\u2003} a", "find {d,-delete,-name,x\u00a0}", "git log --{output=f,s\ufefftat}",
+  // A here-document delimiter is the text as written (quotes removed): $(..), `..` and $'..' in it are not expanded.
+  "cat <<$(true)\nx\n$(true)\ntouch f", 'cat <<"$(true)"\nx\n$(true)\ntouch f', "cat <<`true`\nx\n`true`\ntouch f", "cat <<$'\\x45'\nx\nE\ntouch f",
+  // Bash joins a body line that ends in a backslash with the next before it compares a line to the delimiter.
+  "cat <<EOF\nx\nE\\\nOF\ntouch f", "cat <<EOF\nE\\\nOF\ntouch f\nEOF", "cat <<~\nx\n~\\\n\ntouch f",
+  // A line continuation between two characters of one operator or expansion.
+  'echo "$\\\n(touch f)"', "echo $\\\n{ touch f; }", "find . $\\\n'\\x2ddelete'", "for x in -delete; do find . $\\\nx; done", "cat <<EOF\n$\\\n(touch f)\nEOF",
+  "cat <<\\\n-EOF\n\tx\n\tEOF\ntouch f", "for ls in 'a[$(touch f)]'; do (\\\n(ls)); done",
+  // A digit in an option cluster (-0 is an option of file and fd).
+  "file -0C -m magic", "fd -0x rm", "fd -0X rm", "git grep -2O'touch f' a", "git grep -n1O'touch f' a",
+  // A cut-short long option git accepts.
+  "git grep --open='touch f' a", "git grep --ope='touch f' a", "git grep --open-files-in-pa='touch f' a",
+  // $"..." is the string with the $ dropped (a locale string): the word is what is inside.
+  'find . $"-delete"', 'sort $"-o" out a', 'file $"-C" -m magic', 'git log $"--output=f"',
+  // A path made by an expansion that opens a connection.
+  "cat < /dev/$(echo tcp)/203.0.113.9/80", "for h in /dev/tcp/203.0.113.9/80; do cat <$h; done", "echo /dev/tcp/203.0.113.9/80; cat < $_",
+  // A glob that opens a word can expand to a file named like an option (a file named -ofoo.txt, -delete, --output=x).
+  "sort *.txt", "find ?delete", "git diff *", "git log -1 *", "sed -n p *", "tree *", "file *",
+  // /dev/stdout is the job's own log file, and opening it for writing empties it.
+  "echo a > /dev/stdout", "ls 2> /dev/stderr",
 ];
 
 // Reads the rules could prove, as they are written every day.

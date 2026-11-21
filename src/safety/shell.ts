@@ -19,7 +19,7 @@ const OPS = ["&&", "||", "|&", ";;", ";", "|", "&", "\n"];
 // Leading words that are syntax, not commands.
 const CONTROL = /^(if|then|else|elif|fi|do|done|while|until|esac|\{|\}|!|time)$/;
 // What a redirect may write to without changing anything.
-const SINK = /^\/dev\/(null|stdout|stderr)$/;
+const SINK = /^\/dev\/null$/;
 type Redirect = ">" | ">&" | "<" | "<&" | "<<<" | "<<" | "<<-";
 
 // Split on shell operators outside quotes. Command and process substitutions
@@ -28,6 +28,8 @@ type Redirect = ">" | ">&" | "<" | "<&" | "<<<" | "<<" | "<<-";
 // redirect with no target). A line with text and no part comes back as one
 // unknown part, never as nothing.
 export function splitCommand(cmd: string): Simple[] | null {
+  // A line continuation right after $ < > & ( is read by bash before it reads the operator: not followed here.
+  if (/[$<>&(]\\\n/.test(cmd)) return null;
   const r = scan(cmd, 0, false);
   if (!r) return null;
   if (!r.parts.length && cmd.trim()) return [{ words: [], text: cmd.trim(), redirects: false, unknown: true }];
@@ -36,7 +38,14 @@ export function splitCommand(cmd: string): Simple[] | null {
 
 // The commands from `start`: to the end of the text, or (`inner`) to the `)`
 // that closes the substitution they are in.
+// Nesting deeper than this is not followed: the cost of reading it grows with the square of its depth.
+let level = 0;
 function scan(cmd: string, start: number, inner: boolean): { parts: Simple[]; end: number } | null {
+  if (level >= 64) return null;
+  level++;
+  try { return scanIn(cmd, start, inner); } finally { level--; }
+}
+function scanIn(cmd: string, start: number, inner: boolean): { parts: Simple[]; end: number } | null {
   const out: Simple[] = [];
   let words: string[] = [];
   let dyn: number[] = [];
@@ -58,8 +67,8 @@ function scan(cmd: string, start: number, inner: boolean): { parts: Simple[]; en
   const target = (kind: Redirect, w: string) => {
     if (kind === ">") redirects ||= made || !SINK.test(w); // >, >>, >|, &>, &>> and <> (opened for writing too)
     else if (kind === ">&") redirects ||= made || (!/^(\d+-?|-)$/.test(w) && !SINK.test(w)); // >&2 copies a descriptor; >&file writes it
-    else if (kind === "<") { inputs.push(w); redirects ||= /^\/dev\/(tcp|udp)\//.test(w); } // /dev/tcp opens a connection
-    else if (kind === "<<" || kind === "<<-") docs.push({ delim: w, tabs: kind === "<<-", quoted });
+    else if (kind === "<") { inputs.push(w); redirects ||= made || /^\/dev\/(tcp|udp)\//.test(w); } // /dev/tcp opens a connection
+    else if (kind === "<<" || kind === "<<-") { if (made) bad = true; docs.push({ delim: w, tabs: kind === "<<-", quoted }); } // bash takes the delimiter as written: $(..) in it is text
   };
   const flushWord = () => {
     if (!inWord) return;
@@ -113,7 +122,8 @@ function scan(cmd: string, start: number, inner: boolean): { parts: Simple[]; en
   // and can run what a value holds.
   const dollar = (j: number, inDouble: boolean) => {
     const n = cmd[j + 1] ?? "";
-    if (n === "[") unknown = true;
+    if (n === '"' && !inDouble) made = true; // $"..." is the string with the $ dropped: the word is not what it reads
+    else if (n === "[") unknown = true;
     else if (n === "{") {
       made = true;
       splits ||= !inDouble;
@@ -154,6 +164,7 @@ function scan(cmd: string, start: number, inner: boolean): { parts: Simple[]; en
       }
       // An unquoted delimiter: the shell runs the substitutions in the text.
       if (!d.quoted) {
+        if (cmd.slice(first, last).includes("\\\n")) return null; // bash joins the lines before it compares one to the delimiter
         const word = [made, splits];
         for (let k = first; k < last; k++) {
           if (cmd[k] === "\\") { k++; continue; }
@@ -294,6 +305,8 @@ function scan(cmd: string, start: number, inner: boolean): { parts: Simple[]; en
     // {a,b} and {1..3} become several words.
     if (c === "{" && cmd[i - 1] !== "$" && braceExpands(cmd, i)) made = splits = true;
     if (c === "}" && param) param--;
+    // A glob that opens a word can expand to an option (a file named -o): not known from the text.
+    if ((c === "*" || c === "?" || c === "[") && !want && !words.every((w) => CONTROL.test(w)) && (word === "" || word.startsWith("-"))) made = splits = true;
     word += c; inWord = true; text += c;
   }
   flushCmd();
@@ -307,7 +320,9 @@ const nestedIn = (sub: Simple[]): Simple[] => sub.map((s) => ({ ...s, nested: tr
 function braceExpands(cmd: string, i: number): boolean {
   let depth = 0;
   let list = false;
+  // A word of more than 512 characters is not followed to its end (that is quadratic over many braces): taken as an expansion.
   for (let j = i; j < cmd.length; j++) {
+    if (j - i > 512) return true;
     const c = cmd[j]!;
     if (c === "\\") { j++; continue; }
     if (c === "'") { j = cmd.indexOf("'", j + 1); if (j < 0) return true; continue; }
@@ -316,7 +331,7 @@ function braceExpands(cmd: string, i: number): boolean {
       continue;
     }
     if (c === "$" || c === "`" || ((c === "<" || c === ">") && cmd[j + 1] === "(")) return true;
-    if (/[\s;&|<>()]/.test(c)) return false;
+    if (/[ \t\n;&|<>()]/.test(c)) return false;
     if (c === "{") depth++;
     else if (c === "}") { if (--depth === 0) return list; }
     else if (c === "," || (c === "." && cmd[j + 1] === ".")) list = true;
@@ -523,7 +538,7 @@ function gitReadOnly(args: string[]): boolean {
   const rest = args.slice(i + 1);
   if (rest.some((a) => a.startsWith("--output") || a === "--ext-diff")) return false;
   // git grep -O / --open-files-in-pager runs the pager it names on the hits.
-  if (sub === "grep" && rest.some((a) => /^-[a-zA-Z]*O/.test(a) || a.startsWith("--open-files-in-pager"))) return false;
+  if (sub === "grep" && rest.some((a) => /^-[a-zA-Z0-9]*O/.test(a) || long(a, "open-files-in-pager") || a.startsWith("--open-files-in-pager"))) return false;
   if (sub === "branch") return rest.every((a) => /^(-a|-r|-v|-vv|--list|--all|--show-current|--contains|--merged|--no-merged)$/.test(a) || !a.startsWith("-") && rest.includes("--list"));
   if (sub === "remote") return rest.length === 0 || (rest.length === 1 && rest[0] === "-v") || rest[0] === "get-url";
   if (sub === "tag") return rest.every((a) => (a.startsWith("-") ? GIT_TAG_LIST.test(a) : rest.includes("-l") || rest.includes("--list")));
@@ -554,12 +569,12 @@ export function isReadOnly(s: Simple): boolean {
   if (prog === "date") return !dateSets(args);
   if (prog === "find") return !args.some((a) => /^-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/.test(a));
   // Flags that write a file or run another program.
-  if (prog === "sort") return !args.some((a) => /^-[a-zA-Z]*o/.test(a) || long(a, "output", "compress-program"));
+  if (prog === "sort") return !args.some((a) => /^-[a-zA-Z0-9]*o/.test(a) || long(a, "output", "compress-program"));
   if (prog === "rg") return !args.some((a) => /^--(pre|hostname-bin)(=|$)/.test(a));
-  if (prog === "fd") return !args.some((a) => /^-[a-zA-Z]*[xX]/.test(a) || /^--exec(-batch)?(=|$)/.test(a));
-  if (prog === "tree") return !args.some((a) => /^-[a-zA-Z]*[oR]/.test(a) || a.startsWith("--output")); // -R writes 00Tree.html in each folder
+  if (prog === "fd") return !args.some((a) => /^-[a-zA-Z0-9]*[xX]/.test(a) || /^--exec(-batch)?(=|$)/.test(a));
+  if (prog === "tree") return !args.some((a) => /^-[a-zA-Z0-9]*[oR]/.test(a) || a.startsWith("--output")); // -R writes 00Tree.html in each folder
   if (prog === "uniq") return uniqOperands(args) <= 1 && !args.some((a) => /[*?[]/.test(a)); // a second operand is the file it writes
-  if (prog === "file") return !args.some((a) => /^-[a-zA-Z]*C/.test(a) || long(a, "compile"));
+  if (prog === "file") return !args.some((a) => /^-[a-zA-Z0-9]*C/.test(a) || long(a, "compile"));
   if (prog === "sed") return sedReadOnly(args);
   if (prog === "awk" || prog === "gawk" || prog === "mawk" || prog === "nawk") return awkReadOnly(args);
   if (prog === "git") return gitReadOnly(args);
