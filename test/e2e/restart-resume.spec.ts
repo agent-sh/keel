@@ -813,9 +813,9 @@ test("a rate-limited turn continues by itself at the time the provider named", a
     await composer.fill("script:rate-limit-long");
     await composer.press("Enter");
     await expect(box).toContainText(/asked to wait until \d\d:\d\d/, { timeout: 15_000 });
-    const due = box.getByTestId("continue-at");
-    await expect(due).toContainText(/Continues by itself at \d\d:\d\d/);
-    await expect(due.getByTestId("continue-in")).toHaveText(/^in \ds$/);
+    const due = box.getByTestId("resume-at");
+    await expect(due).toContainText(/Resumes by itself at \d\d:\d\d/);
+    await expect(due.getByTestId("resume-in")).toHaveText(/^in \ds$/);
     await shoot(page, "restart-13-continues-at");
     expect((await view()).session.settings.continue_at.at).toBeGreaterThan(Date.now());
     await expect(page.getByTestId("assistant-text").last()).toHaveText(answer, { timeout: 20_000 });
@@ -838,7 +838,7 @@ test("a rate-limited turn continues by itself at the time the provider named", a
     await composer.fill("script:rate-limit-long once more");
     await composer.press("Enter");
     await expect(due).toHaveCount(1, { timeout: 15_000 });
-    await due.getByTestId("continue-cancel").click();
+    await due.getByTestId("resume-cancel").click();
     await expect(due).toHaveCount(0);
     await page.waitForTimeout(4_000);
     expect(await ends()).toEqual(["error", "end_turn", "error", "end_turn", "error"]);
@@ -848,7 +848,7 @@ test("a rate-limited turn continues by itself at the time the provider named", a
     await composer.fill("script:rate-limit-long, the last");
     await composer.press("Enter");
     await expect(due).toHaveCount(1, { timeout: 15_000 });
-    await due.getByTestId("continue-now").click();
+    await due.getByTestId("resume-now").click();
     await expect.poll(async () => (await ends()).length, { timeout: 15_000 }).toBeGreaterThanOrEqual(7);
 
     // A provider that asks for the wait every time: three rounds, each twice as long, then it stops and says so.
@@ -859,9 +859,9 @@ test("a rate-limited turn continues by itself at the time the provider named", a
     await composer.press("Enter");
     await expect(due).toHaveCount(1, { timeout: 15_000 });
     await expect(box.first()).not.toContainText("Continue after that");
-    await expect(due.getByTestId("continue-round")).toHaveText("after 1 try, waiting longer each time", { timeout: 15_000 });
-    const stopped = page.getByTestId("continue-stopped");
-    await expect(stopped).toHaveText("It continued by itself 3 times and the provider asked for the wait each time, so it is not continued again.", { timeout: 40_000 });
+    await expect(due.getByTestId("resume-round")).toHaveText("after 1 try, waiting longer each time", { timeout: 15_000 });
+    const stopped = page.getByTestId("resume-stopped");
+    await expect(stopped).toHaveText("It resumed by itself 3 times and the provider asked for the wait each time, so it is not resumed again.", { timeout: 40_000 });
     await expect(due).toHaveCount(0);
     await expect(box.last().getByTestId("try-again")).toBeVisible();
     await shoot(page, "restart-15-continue-stopped");
@@ -936,6 +936,67 @@ test("cards that wait on the owner hold neither a drain nor the turns continued 
     await expect.poll(async () => (await view()).some((e) => e.kind === "user" && e.data.origin === "restart"), { timeout: 15_000 }).toBe(true);
     console.log(`working session continued ${Date.now() - up} ms after the daemon was up`);
     await expect.poll(() => open([late]), { timeout: 15_000 }).toEqual(four);
+  } finally {
+    d.proc.kill("SIGKILL");
+  }
+});
+
+// The other waits on the owner hold no drain either: a secret the model asked
+// for, a call that blocks on an agent whose own question waits, and a card of
+// a call a program made. The secret's card and the agent's question are open
+// again after each restart. The program's card closes at the stop (the
+// program is gone with the daemon, so an answer would run nothing).
+test("a secret card, a call blocked on an asking agent and a program's card do not hold a drain", async () => {
+  const state = join(ROOT, `restart-waits-more-${Date.now()}`);
+  made.push(state);
+  mkdirSync(state, { recursive: true });
+  const env = { KEEL_DRAIN_MS: "20000" };
+  let d = await daemon(state, env);
+  try {
+    const call = (path: string, body?: unknown, method = "POST") =>
+      fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then(async (r) => ({ status: r.status, ...(await r.json() as any) }));
+    const question = { name: "AskUserQuestion", input: { questions: [{ header: "Color", question: "Which color should I use?", options: [{ label: "Teal" }, { label: "Amber" }], multiSelect: false }] } };
+    const calls = (list: unknown[]) => `script:calls ${JSON.stringify(list)}`;
+    const make = async (title: string, mode: string, text: string) => {
+      const { session } = await call("/api/sessions", { model: "scripted:stand-in", title });
+      await call(`/api/sessions/${session.id}/permissions`, { mode }, "PUT");
+      await call(`/api/sessions/${session.id}/messages`, { text });
+      return session.id as string;
+    };
+    const wait = { name: "wait_agent", input: {} };
+    const secret = await make("Asks for a secret", "full-auto", calls([{ name: "request_secret", input: { name: "SPEC_TOKEN", purpose: "a spec" } }]));
+    const parent = await make("Blocked on its agent", "full-auto", calls([{ name: "spawn_agent", input: { message: `Color helper\n${calls([question])}` } }, wait, wait, wait, wait]));
+    const coder = await make("A card inside a program", "ask", calls([{ name: "run_code", input: { code: `await tools.Bash({ command: "echo ran >> ${join(state, "code.txt")}" }); return "done";` } }]));
+    const secrets = async () => ((await call(`/api/sessions/${secret}/secrets`, undefined, "GET")).requests as { id: string }[]).map((r) => r.id);
+    const cardsOf = async (all = false) => ((await call(`/api/sessions/${coder}/approvals${all ? "?all" : ""}`, undefined, "GET")).approvals as { id: string; state: string; tool: string }[]);
+    await expect.poll(async () => (await call(`/api/sessions/${parent}/agents`, undefined, "GET")).agents?.[0]?.session_id, { timeout: 30_000 }).toBeTruthy();
+    const child = (await call(`/api/sessions/${parent}/agents`, undefined, "GET")).agents[0].session_id as string;
+    const asked = async () => (await call(`/api/sessions/${child}/questions`, undefined, "GET")).pending as string[];
+    // The parent's wait_agent calls so far: it blocks in the last one.
+    const waitsOf = async () => ((await call(`/api/sessions/${parent}`, undefined, "GET")).events as any[]).filter((e) => e.kind === "assistant" && e.data.blocks.some((b: any) => b.type === "tool_use" && b.name === "wait_agent")).length;
+    // The program is let run; the card that then waits is the one of the command it runs.
+    await expect.poll(async () => (await cardsOf()).map((a) => a.tool), { timeout: 30_000 }).toEqual(["run_code"]);
+    expect((await call(`/api/sessions/${coder}/approvals/${(await cardsOf())[0]!.id}`, { choice: "once" })).status).toBe(200);
+    await expect.poll(async () => [(await secrets()).length, (await asked()).length, (await cardsOf()).map((a) => a.tool), await waitsOf()], { timeout: 30_000 }).toEqual([1, 1, ["Bash"], 1]);
+    const [secretId] = await secrets(), [askedId] = await asked(), [inner] = await cardsOf();
+
+    // Three stops in a row, each with twenty seconds for running turns: none waits.
+    for (let round = 1; round <= 3; round++) {
+      const t0 = Date.now();
+      d.proc.kill("SIGTERM");
+      await exited(d.proc);
+      const took = Date.now() - t0;
+      console.log(`drain ${round} with a secret card, a blocked parent and a program's card: ${took} ms`);
+      expect(took).toBeLessThan(3_000);
+      d = await daemon(state, env);
+      // The secret's card and the agent's question are back under the same ids; the parent blocks on its agent again.
+      await expect.poll(async () => [await secrets(), await asked(), await waitsOf()], { timeout: 30_000 }).toEqual([[secretId], [askedId], round + 1]);
+      // The program's card closed at the first stop, nothing ran, and an answer says so.
+      expect(await cardsOf()).toEqual([]);
+      expect((await cardsOf(true)).filter((a) => a.tool === "Bash").map((a) => [a.id, a.state])).toEqual([[inner!.id, "cancelled"]]);
+      expect(existsSync(join(state, "code.txt"))).toBe(false);
+    }
+    expect((await call(`/api/sessions/${coder}/approvals/${inner!.id}`, { choice: "once" })).status).toBe(409);
   } finally {
     d.proc.kill("SIGKILL");
   }

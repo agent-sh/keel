@@ -2,16 +2,16 @@
 // in plain words, gives the provider's own words under that with any address
 // in them as a link, and offers what fits the failure as labelled buttons:
 // the page that fixes it (billing, the provider's settings), another model,
-// trying again. A turn the provider asked to wait long for continues by
-// itself when the wait is over; the box says when, counts down, and lets the
-// owner go on now or call it off.
+// trying again. A turn the provider asked to wait long for resumes by itself
+// when the wait is over; the box says when, counts down, and lets the owner
+// resume it now or call it off.
 import { CircleAlert, Clock, ExternalLink, Play, RotateCw } from "lucide-react";
 import { Fragment, useState } from "react";
 import type { Session, StoredEvent } from "../../../src/core/types.ts";
 import { actions, reportError } from "../lib/store.ts";
 import { switchSession } from "../lib/switch.ts";
 import { navigate } from "../lib/ui.ts";
-import { cn, fmtWait } from "../lib/utils.ts";
+import { clock, cn, fmtWait } from "../lib/utils.ts";
 import { useNow } from "./Mark.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
 
@@ -54,7 +54,6 @@ function Linked({ text }: { text: string }) {
   );
 }
 
-const clock = (ms: number) => new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 const button = "flex h-7 items-center gap-1.5 rounded-md px-2.5 text-caption font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40";
 const primary = "bg-accent text-accent-fg hover:bg-accent-hover";
 const plain = "border border-line bg-raised text-fg hover:bg-hover";
@@ -79,7 +78,7 @@ export function TurnFailure({ e, s, live }: { e: StoredEvent; s: Session; live: 
   const fix = kind === "quota" && url ? { label: "Open billing", href: url }
     : kind === "auth" ? { label: "Open provider settings", run: () => navigate({ name: "settings", section: "providers" }) } : undefined;
   const page = !fix && url ? url : undefined;
-  // It continued by itself this many times and the provider asked for the wait again each time.
+  // It resumed by itself this many times and the provider asked for the wait again each time.
   const gaveUp = typeof e.data.continued === "number" ? e.data.continued : 0;
   const round = s.settings.continue_at?.round ?? 0;
   return (
@@ -97,26 +96,26 @@ export function TurnFailure({ e, s, live }: { e: StoredEvent; s: Session; live: 
         </div>
       </div>
       {due !== undefined && (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pl-[1.625rem] text-fg" data-testid="continue-at">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pl-[1.625rem] text-fg" data-testid="resume-at">
           <span className="flex items-center gap-1.5">
             <Clock className="size-3.5 shrink-0 text-muted" />
-            <span>Continues by itself at <span className="font-medium tabular-nums">{clock(due)}</span></span>
-            <span className="tabular-nums text-muted" data-testid="continue-in">{due > now ? `in ${fmtWait(due - now)}` : "now"}</span>
-            {round > 0 && <span className="text-muted" data-testid="continue-round">after {round} {round === 1 ? "try" : "tries"}, waiting longer each time</span>}
+            <span>Resumes by itself at <span className="font-medium tabular-nums">{clock(due)}</span></span>
+            <span className="tabular-nums text-muted" data-testid="resume-in">{due > now ? `in ${fmtWait(due - now)}` : "now"}</span>
+            {round > 0 && <span className="text-muted" data-testid="resume-round">after {round} {round === 1 ? "try" : "tries"}, waiting longer each time</span>}
           </span>
           <span className="flex items-center gap-1">
-            <button type="button" data-testid="continue-now" className={cn(button, primary)} onClick={again}>
-              <Play className="size-3" /> Continue now
+            <button type="button" data-testid="resume-now" className={cn(button, primary)} onClick={again}>
+              <Play className="size-3" /> Resume now
             </button>
-            <button type="button" data-testid="continue-cancel" className={cn(button, "text-muted hover:bg-hover hover:text-fg")} onClick={() => actions.cancelContinue(s.id).catch(reportError)}>
-              Do not continue
+            <button type="button" data-testid="resume-cancel" className={cn(button, "text-muted hover:bg-hover hover:text-fg")} onClick={() => actions.cancelContinue(s.id).catch(reportError)}>
+              Do not resume
             </button>
           </span>
         </div>
       )}
       {gaveUp > 0 && (
-        <p className="pl-[1.625rem] text-fg" data-testid="continue-stopped">
-          It continued by itself {gaveUp} times and the provider asked for the wait each time, so it is not continued again.
+        <p className="pl-[1.625rem] text-fg" data-testid="resume-stopped">
+          It resumed by itself {gaveUp} times and the provider asked for the wait each time, so it is not resumed again.
         </p>
       )}
       {live && due === undefined && (

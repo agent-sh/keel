@@ -5,10 +5,10 @@
 import { RotateCw, Unplug } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, downSince, onFeature, reportError, useStore } from "../lib/store.ts";
+import { clock } from "../lib/utils.ts";
 
 // A drop this short is a blip (the socket opened again at once): nothing is said.
 const AWAY_AFTER_MS = 1_000;
-const clock = (ms: number) => new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 
 export function AdminBand() {
   const [draining, setDraining] = useState<{ restart: boolean } | null>(null);
