@@ -3,11 +3,11 @@
 // every read of the transcript counted. A list reads no log of a job it leaves
 // out, and a second list reads nothing that did not change.
 import { afterAll, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../../core/store.ts";
 import { io, ownerRun, stopOne, waitOne } from "../../tools/terminal.ts";
-import { terminalRoutes, type TermEntry } from "./terminal.ts";
+import { COMMANDS_KEPT, terminalRoutes, type TermEntry } from "./terminal.ts";
 
 const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "terminal-routes-"));
 const store = new Store(dir);
@@ -30,9 +30,9 @@ io.openSync = ((p: string, ...a: any[]) => { opened.push(p); return (openSync as
 io.readFileSync = ((p: string, ...a: any[]) => { read.push(p); return (readFileSync as any)(p, ...a); }) as typeof io.readFileSync;
 const events = store.events.bind(store);
 store.events = (id: string, after = 0) => { const got = events(id, after); asked.push({ after, got: got.length }); return got; };
-const list = async () => {
+const list = async (id = s.id) => {
   opened.length = read.length = asked.length = 0;
-  const r = (await routes["/api/sessions/:id/terminal"].GET({ params: { id: s.id } })) as Response;
+  const r = (await routes["/api/sessions/:id/terminal"].GET({ params: { id } })) as Response;
   expect(r.status).toBe(200);
   return ((await r.json()) as { commands: TermEntry[] }).commands;
 };
@@ -122,4 +122,43 @@ test("a list reads no log it leaves out, and a second one only what changed", as
   result("call-open", "done");
   expect((await list()).at(-1)).toMatchObject({ call_id: "call-open", state: "ok", output: "done" });
   expect(asked).toEqual([{ after: 45, got: 1 }]);
+});
+
+test("what a list keeps is not trusted past what it can tell: another file, an exit code not written yet, a long history", async () => {
+  // A log replaced by another file of the same size and time is read again.
+  const log = logOf(jobId(300));
+  const at = new Date(Date.now() - 60_000);
+  utimesSync(log, at, at);
+  expect((await list()).find((e) => e.job_id === jobId(300))).toMatchObject({ last: "output of job 300" });
+  const before = statSync(log);
+  writeFileSync(`${log}.new`, `${"z".repeat(200)}\nOUTPUT of job 300\n`);
+  utimesSync(`${log}.new`, at, at);
+  renameSync(`${log}.new`, log);
+  expect([statSync(log).size, statSync(log).mtimeMs]).toEqual([before.size, before.mtimeMs]);
+  expect((await list()).find((e) => e.job_id === jobId(300))).toMatchObject({ last: "OUTPUT of job 300" });
+  expect(logsOpened()).toEqual([log]);
+
+  // A job no daemon saw end: its wrapper's exit file is there before the code is in it.
+  const orphan = "borphan1";
+  writeFileSync(join(jobs, `${orphan}.json`), JSON.stringify({ id: orphan, num: 999, sessionId: s.id, command: "make deploy", cwd: dir, started: Date.now(), background: true, pid: 1, by: "owner" }));
+  writeFileSync(logOf(orphan), "deploying\n");
+  writeFileSync(`${logOf(orphan)}.exit`, "");
+  expect((await list()).find((e) => e.job_id === orphan)).toMatchObject({ state: "stopped", exit_code: null });
+  writeFileSync(`${logOf(orphan)}.exit`, "7\n");
+  expect((await list()).find((e) => e.job_id === orphan)).toMatchObject({ state: "failed", exit_code: 7 });
+  await list();
+  expect(read.filter((p) => p.endsWith(".exit"))).toEqual([]); // the code is final once read
+
+  // A session whose commands outgrow what is kept is read from its events for each list.
+  const long = store.createSession({ workspace: dir, model: "p:m" });
+  const big = Math.ceil(COMMANDS_KEPT / 4);
+  for (let i = 0; i < 5; i++) {
+    store.append(long.id, "assistant", { blocks: [{ type: "tool_use", id: `long-${i}`, name: "Bash", input: { command: `echo ${i} ${"#".repeat(big)}` } }] });
+    store.append(long.id, "tool_result", { results: [{ tool_use_id: `long-${i}`, content: `said ${i}` }] });
+  }
+  for (const _ of [1, 2]) {
+    const all = await list(long.id);
+    expect(all.map((e) => e.output)).toEqual([0, 1, 2, 3, 4].map((i) => `said ${i}`));
+    expect(asked).toEqual([{ after: 0, got: 10 }]);
+  }
 });

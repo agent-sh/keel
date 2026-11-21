@@ -49,8 +49,13 @@ const EXIT = /(?:exit(?:ed with)? code|Exit code:?|Process exited with code)\s*(
 // second or two does not walk the whole conversation each time.
 type Call = { id: string; tool: string; command: string; description?: string; started: number; machine?: string };
 type Result = { error: boolean; ts: number; code?: number; output: string; from: number };
-export type Commands = { seq: number; calls: Call[]; ids: Set<string>; results: Map<string, Result> };
-export const noCommands = (): Commands => ({ seq: 0, calls: [], ids: new Set(), results: new Map() });
+// `chars`: the command texts and result ends held, for the bound on what is kept.
+export type Commands = { seq: number; calls: Call[]; ids: Set<string>; results: Map<string, Result>; chars: number };
+export const noCommands = (): Commands => ({ seq: 0, calls: [], ids: new Set(), results: new Map(), chars: 0 });
+// The commands of a session are kept between lists up to this many characters
+// of text. A session with more is read from its events for each list, as
+// every session was before: slower for it, and nothing grows without end.
+export const COMMANDS_KEPT = 4 * 1024 * 1024;
 
 export function readCommands(c: Commands, events: StoredEvent[]): Commands {
   for (const e of events) {
@@ -61,6 +66,7 @@ export function readCommands(c: Commands, events: StoredEvent[]): Commands {
         const command = commandOf(b.input);
         if (command === null) continue;
         c.ids.add(b.id);
+        c.chars += command.length;
         c.calls.push({ id: b.id, tool: b.name, command, description: b.input?.description, started: e.ts, machine: b.name === "keel__run_on" ? String(b.input?.machine ?? "") : undefined });
       }
     } else if (e.kind === "tool_result") {
@@ -70,6 +76,7 @@ export function readCommands(c: Commands, events: StoredEvent[]): Commands {
         const text = textOf(r.content);
         const code = text.match(EXIT)?.[1];
         const output = text.length > TAIL ? text.slice(-TAIL) : text;
+        c.chars += output.length - (c.results.get(r.tool_use_id)?.output.length ?? 0);
         c.results.set(r.tool_use_id, { error: !!r.is_error, ts: e.ts, code: code === undefined ? undefined : Number(code), output, from: text.length - output.length });
       }
     }
@@ -117,8 +124,10 @@ export const terminalRoutes: RouteModule = (deps) => {
   const commands = new SessionMap<Commands>(8);
   const commandsOf = (id: string) => {
     const c = commands.get(id) ?? noCommands();
-    commands.set(id, c);
-    return readCommands(c, store.events(id, c.seq));
+    readCommands(c, store.events(id, c.seq));
+    if (c.chars > COMMANDS_KEPT) commands.delete(id);
+    else commands.set(id, c);
+    return c;
   };
 
   // The session's machine, when its tools run on one of the fleet.

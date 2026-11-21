@@ -29,24 +29,25 @@ export const io = { readdirSync, readFileSync, openSync, statSync };
 
 // What the last list of a session read from its files, kept while they stay
 // as they were: the record of a job that ended is final, a record still open
-// and a log are read again only when the file's size or time moved. A list
+// and a log are read again only when the file's size or time moved, or it is
+// another file under the same name (a copy put in its place). A list
 // is asked for every second or two while a command runs; without this each
 // one read every record and every log of the session again. Dropped with
 // the session, or when more sessions than this were listed since.
 type Seen = {
-  metas: Map<string, { m: Meta; size: number; mtime: number }>;
-  tails: Map<string, { size: number; mtime: number; text: string; from: number; last?: string }>;
-  exits: Map<string, number | null>;
+  metas: Map<string, { m: Meta; size: number; mtime: number; ino: number }>;
+  tails: Map<string, { size: number; mtime: number; ino: number; text: string; from: number; last?: string }>;
+  exits: Map<string, number>;
 };
 const seen = new SessionMap<Seen>(16);
 
 // The end of a log and its last line, read once per state of the file.
 // Undefined: the log is gone.
 function tailOf(c: Seen, log: string) {
-  let st: { size: number; mtimeMs: number };
+  let st: { size: number; mtimeMs: number; ino: number };
   try { st = io.statSync(log); } catch { c.tails.delete(log); return undefined; }
   const had = c.tails.get(log);
-  if (had && had.size === st.size && had.mtime === st.mtimeMs) return had;
+  if (had && had.size === st.size && had.mtime === st.mtimeMs && had.ino === st.ino) return had;
   let fd: number | undefined;
   try {
     fd = io.openSync(log, "r");
@@ -54,7 +55,7 @@ function tailOf(c: Seen, log: string) {
     const from = Math.max(0, size - TAIL);
     const buf = Buffer.alloc(size - from);
     readSync(fd, buf, 0, buf.length, from);
-    const t = { size, mtime: st.size === size ? st.mtimeMs : -1, text: buf.toString("utf8"), from, last: lastLineOf(buf.subarray(-4096).toString("utf8")) };
+    const t = { size, mtime: st.size === size ? st.mtimeMs : -1, ino: st.ino, text: buf.toString("utf8"), from, last: lastLineOf(buf.subarray(-4096).toString("utf8")) };
     c.tails.set(log, t);
     return t;
   } catch {
@@ -70,9 +71,10 @@ function exitOf(c: Seen, log: string): number | null | undefined {
   let text: string;
   try { text = io.readFileSync(`${log}.exit`, "utf8"); } catch { return undefined; }
   const n = Number.parseInt(text, 10);
-  const code = Number.isFinite(n) ? n : null;
-  c.exits.set(log, code);
-  return code;
+  // A file read before its wrapper wrote the code holds none yet: read again next time.
+  if (!Number.isFinite(n)) return null;
+  c.exits.set(log, n);
+  return n;
 }
 
 export function listJobs(spillRoot: string, sessionId: string): TermJob[] {
@@ -92,7 +94,7 @@ export function listJobs(spillRoot: string, sessionId: string): TermJob[] {
     if (!k || k.m.ended === undefined) {
       try {
         const st = io.statSync(join(dir, f));
-        if (!k || k.size !== st.size || k.mtime !== st.mtimeMs) c.metas.set(f, (k = { m: JSON.parse(io.readFileSync(join(dir, f), "utf8")), size: st.size, mtime: st.mtimeMs }));
+        if (!k || k.size !== st.size || k.mtime !== st.mtimeMs || k.ino !== st.ino) c.metas.set(f, (k = { m: JSON.parse(io.readFileSync(join(dir, f), "utf8")), size: st.size, mtime: st.mtimeMs, ino: st.ino }));
       } catch { c.metas.delete(f); continue; }
     }
     const m = k.m;
