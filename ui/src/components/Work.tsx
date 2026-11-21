@@ -1,20 +1,26 @@
 // The work of a turn in the transcript: its tool calls as a rail of steps, a
 // line each (lib/work.ts makes the steps and what each line says). A step of
-// one call is that call's own line; a step of several opens to its calls. A
-// call that failed or still runs shows under its step without opening it.
+// one call is that call's own line; a step of several opens to its calls.
+// What needs a look shows under a closed step: a call that runs, waits,
+// failed or was cut, and every call the daemon marks (lib/marks.ts), each on
+// a line of its own, so nothing that matters is behind "+N".
 import { Collapsible } from "@base-ui/react/collapsible";
-import { Brain, ChevronDown, ChevronRight } from "lucide-react";
-import { memo, useEffect, useState, type KeyboardEvent, type MouseEvent } from "react";
+import { Brain, ChevronDown } from "lucide-react";
+import { Fragment, memo, useEffect, useMemo, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import type { Row } from "../lib/rows.ts";
-import { callsOf, callState, sentence, summarize, type Step, type StepSummary, type WorkItem } from "../lib/work.ts";
+import { useBlocked } from "../lib/blocked.ts";
+import { useCallsLive } from "../lib/call-live.ts";
+import { marksOf, useMarked } from "../lib/marks.ts";
+import { resultText, splitDiagnostics, toolKind } from "../lib/tools.ts";
+import { besideOf, callsOf, carriedOut, edgeOf, isTable, lookOf, sentence, stateWords, summarize, type Live, type Step, type StepSummary, type WorkItem } from "../lib/work.ts";
 import { useUI } from "../lib/ui.ts";
 import { Markdown } from "./Markdown.tsx";
-import { Delta, ToolCall } from "./ToolCall.tsx";
+import { Delta, hookOf, ToolCall } from "./ToolCall.tsx";
 
 export function Thinking({ text, live }: { text: string; live?: boolean }) {
   if (!text.trim() && !live) return null;
   return (
-    <details className="group/think text-ui text-muted" open={live}>
+    <details className="group/think text-ui text-muted" open={live} data-testid="thinking">
       <summary className="inline-flex cursor-default list-none items-center gap-1.5 rounded-sm py-0.5 pr-1 select-none hover:text-fg">
         <Brain className="size-3.5" />
         <span className={live ? "animate-pulse-dot" : ""}>{live ? "Thinking" : "Thought"}</span>
@@ -36,90 +42,167 @@ function lineKeys(e: KeyboardEvent<HTMLElement>) {
   const open = at.getAttribute("aria-expanded") === "true";
   if ((e.key === "ArrowRight" && !open) || (e.key === "ArrowLeft" && open)) { e.preventDefault(); at.click(); return; }
   if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-  const all = [...(at.closest(".k-transcript") ?? document).querySelectorAll<HTMLElement>(".k-line")];
+  // (Every line that takes the keyboard: one that only says something, a question that waits, is passed over.)
+  const all = [...(at.closest(".k-transcript") ?? document).querySelectorAll<HTMLElement>("button.k-line")];
   const to = all[all.indexOf(at) + (e.key === "ArrowDown" ? 1 : -1)];
   if (!to) return;
   e.preventDefault();
   to.focus();
 }
 
-const ROLE_VERB: Record<string, [string, string]> = {
-  Explored: ["Exploring", "Explored"], Read: ["Reading", "Read"], Searched: ["Searching", "Searched"], Listed: ["Listing", "Listed"],
-  "Searched the web": ["Searching the web", "Searched the web"], Fetched: ["Fetching", "Fetched"], Edited: ["Editing", "Edited"], Wrote: ["Writing", "Wrote"],
-  Ran: ["Running", "Ran"], Used: ["Using", "Used"],
+// A step's verb while a call of it still runs, and for a step none of whose calls was carried out.
+const RUNNING: Record<string, string> = {
+  Explored: "Exploring", Read: "Reading", Searched: "Searching", Listed: "Listing", "Searched the web": "Searching the web", Fetched: "Fetching",
+  Edited: "Editing", Wrote: "Writing", Ran: "Running", Used: "Using",
+};
+const PLAIN: Record<string, string> = {
+  Explored: "Explore", Read: "Read", Searched: "Search", Listed: "List", "Searched the web": "Web search", Fetched: "Fetch",
+  Edited: "Edit", Wrote: "Write", Ran: "Run", Used: "Use",
 };
 
-function SummaryWords({ s }: { s: StepSummary }) {
+// A mark on a closed line: the model thought on the way to it, and what it thought opens with the line.
+export const ThoughtMark = () => <Brain className="k-line-thought" role="img" aria-label="Holds what the model thought" data-testid="thought-mark" />;
+
+// The targets of a line, told apart by a hairline on the page and by a comma in a copied selection.
+export function Targets({ list }: { list: string[] }) {
+  return <>{list.map((t, i) => <Fragment key={i}>{i > 0 && <span className="k-sep">, </span>}<span className="k-line-target">{t}</span></Fragment>)}</>;
+}
+
+// What a step did: its verb, how much, how it stands, and to what. Every target named is whole on the page
+// (the line takes another row for them), and "+N" is exactly what is not named.
+function StepLine({ s, words }: { s: StepSummary; words: ReturnType<typeof stateWords> }) {
   return (
-    <>
-      <span className="k-line-verb">{s.running ? ROLE_VERB[s.label]?.[0] ?? s.label : s.label}</span>
-      {s.counts && <span className="k-line-count">{s.counts}</span>}
-      <span className="k-line-what" data-words={s.code ? undefined : ""}>
-        {s.targets.map((t, i) => <span key={i} className="k-line-target">{t}</span>)}
-        {s.more > 0 && <span className="k-line-rest">+{s.more}</span>}
-      </span>
-    </>
+    <span className="k-line-text" data-wrap="">
+      <span className="k-line-verb">{s.looks.running ? RUNNING[s.label] ?? s.label : carriedOut(s) ? s.label : PLAIN[s.label] ?? s.label}</span>{" "}
+      {s.counts && <><span className="k-line-count">{s.counts}</span>{" "}</>}
+      {words.map((w) => <Fragment key={w.text}><span className="k-line-state" data-tone={w.tone} data-testid="step-state">{w.text}</span>{" "}</Fragment>)}
+      <span className="k-line-what" data-words={s.code ? undefined : ""}><Targets list={s.targets} /></span>
+      {s.more > 0 && <>{" "}<span className="k-line-rest" data-more="">+{s.more} more</span></>}
+    </span>
   );
 }
 
-const Lead = ({ items, sid }: { items: WorkItem[]; sid: string }) => (
-  <>
-    {items.map((i) => (i.t === "thought" ? <Thinking key={i.id} text={i.text} /> : i.t === "note" ? <div key={i.id} className="k-aside"><Markdown text={i.text} sessionId={sid} /></div> : null))}
-  </>
-);
+const Thoughts = ({ items }: { items: WorkItem[] }) => <>{items.map((i) => (i.t === "thought" ? <Thinking key={i.id} text={i.text} /> : null))}</>;
 
-const StepView = memo(function StepView({ step, sid, cwd, remote, all }: { step: Step; sid: string; cwd?: string; remote: boolean; all: All }) {
+// What shows of a closed step's calls, each on a line of its own: every one that waits, was turned away, was
+// cut or is marked, every change a language server found something in, and the first few that run or failed
+// (the rest are counted, by what they are). Calls marked for the same reason stand together under that
+// reason, said once.
+const PEEK = 3;
+type Call = ReturnType<typeof callsOf>[number];
+function peekOf(calls: Call[], live: Live, marks: (id: string) => string) {
+  const alone: Call[] = [];
+  const groups = new Map<string, Call[]>();
+  let running = 0, failed = 0;
+  for (const c of calls) {
+    const look = lookOf(c, live);
+    const why = marks(c.id);
+    if (why && (look === "ok" || look === "unfinished")) groups.set(why, [...(groups.get(why) ?? []), c]);
+    else if (why || look === "waiting" || look === "cut" || look === "denied" || look === "refused" || found(c)) alone.push(c);
+    else if (look === "running") { if (running++ < PEEK) alone.push(c); }
+    else if (look === "error") { if (failed++ < PEEK) alone.push(c); }
+  }
+  // A reason only one call has is said on that call's own line.
+  const same: { why: string; calls: Call[] }[] = [];
+  for (const [why, list] of groups) { if (list.length > 1) same.push({ why, calls: list }); else alone.push(list[0]!); }
+  const order = new Map(calls.map((c, i) => [c.id, i]));
+  alone.sort((a, b) => order.get(a.id)! - order.get(b.id)!);
+  return { alone, same, running: Math.max(0, running - PEEK), failed: Math.max(0, failed - PEEK) };
+}
+// A change whose result carries what a language server found after it.
+const found = (c: Call) => { const t = c.result ? resultText(c.result) : ""; return t.includes("<diagnostics server=") && splitDiagnostics(t).diagnostics.some((d) => d.lines.length > 0); };
+
+// `table`: the run is set as a table, so a few words stand beside this step's line.
+const StepView = memo(function StepView({ step, sid, cwd, remote, all, table }: { step: Step; sid: string; cwd?: string; remote: boolean; all: All; table: boolean }) {
   const calls = callsOf(step);
-  const s = summarize(step);
+  const { working, waiting } = useCallsLive(sid, calls);
+  const marked = useMarked(sid, calls);
+  const blocked = useBlocked(sid);
+  // What the page knows of the step's calls beyond their records: which wait on a card, which were refused.
+  const live: Live = useMemo(() => {
+    const mine = new Set(calls.map((c) => c.id));
+    const refused = new Set(blocked.flatMap((b) => b.calls ?? []).filter((id) => mine.has(id)));
+    return { working, waiting: new Set(waiting.split(" ").filter(Boolean)), refused, cwd };
+  }, [working, waiting, blocked, cwd, step]);
+  // Why a call is marked, in the daemon's few words, or by a hook of the owner's (that rides with its result).
+  const markOf = useMemo(() => {
+    const by = new Map<string, string>();
+    for (const c of calls) {
+      const words = [...(marked.includes(c.id) ? marksOf(sid, c.id).filter((m) => m.kind !== "denied").map((m) => m.short) : []), ...(hookOf(c.result) ? [hookOf(c.result)!.input !== undefined ? "changed by a hook" : "allowed by a hook"] : [])];
+      if (words.length) by.set(c.id, words.join(", "));
+    }
+    return (id: string) => by.get(id) ?? "";
+  }, [marked, step, sid]);
   const [open, setOpen] = useState(false);
   useEffect(() => { if (all.n) setOpen(all.open); }, [all]);
   // A search hit inside a folded step opens it; the call's own line takes it from there.
   const hit = useUI((u) => !!u.focusCall && calls.some((c) => c.id === u.focusCall));
   useEffect(() => { if (hit) setOpen(true); }, [hit]);
   const events = [...new Set(step.items.map((i) => i.event))].join(" ");
-  // What the model said on the way is on the page; what it thought opens with the step.
-  const notes = step.items.filter((i) => i.t === "note");
+  // What the model said on the way is on the page: a few words beside the line, more above it.
+  const beside = table ? besideOf(step) : undefined;
+  const said: ReactNode[] = step.items.filter((i) => i.t === "note").map((n) => (
+    <div key={n.id} className={n === beside ? "k-aside k-said" : "k-aside"} data-testid="assistant-text"><Markdown text={(n as { text: string }).text} sessionId={remote ? undefined : sid} /></div>
+  ));
   const thoughts = step.items.filter((i) => i.t === "thought");
-  const said = notes.map((n) => <div key={n.id} className="k-aside" data-testid="assistant-text"><Markdown text={n.text} sessionId={remote ? undefined : sid} /></div>);
-  if (!calls.length) return <div className="k-step" data-events={events}>{said}{thoughts.length > 0 && <div className="k-step-lead"><Lead items={thoughts} sid={sid} /></div>}</div>;
+  if (!calls.length) return <div className="k-step" data-events={events}>{said}{thoughts.length > 0 && <div className="k-step-lead"><Thoughts items={thoughts} /></div>}</div>;
   if (calls.length === 1) {
     const c = calls[0]!;
+    const one = summarize(step, live);
+    // A card of its own (an agent, a question, code, readers) has what the model thought on the rail above it.
+    const card = step.family === "card";
+    // (A question that waits is the owner's: its part of the rail says so, not that something runs.)
+    const edge = card && toolKind(c.use.name) === "ask" && !c.result ? "need" : edgeOf(one.looks, one.soft);
     return (
-      <div className="k-step" data-events={events} data-state={callState(c.result)}>
+      <div className="k-step" data-events={events} data-state={edge}>
         {said}
-        <ToolCall use={c.use} result={c.result} sessionId={sid} cwd={cwd} lead={thoughts.length ? <Lead items={thoughts} sid={sid} /> : undefined} />
+        <div className="k-did">
+          {card && thoughts.length > 0 && <div className="k-step-lead"><Thoughts items={thoughts} /></div>}
+          <ToolCall use={c.use} result={c.result} sessionId={sid} cwd={cwd} event={c.event} auto lead={!card && thoughts.length ? <Thoughts items={thoughts} /> : undefined} />
+        </div>
       </div>
     );
   }
-  const state = s.running ? "running" : s.failed ? "error" : "ok";
-  // Closed, a step still shows the calls that need a look: the one that runs, the ones that failed.
-  const peek = open ? [] : calls.filter((c) => { const st = callState(c.result); return st === "running" || st === "error"; });
+  const peek = open ? null : peekOf(calls, live, markOf);
+  // Closed, the line names what has no line of its own under it; opened, every call is under it.
+  const s = summarize(step, peek ? { ...live, own: new Set([...peek.alone, ...peek.same.flatMap((g) => g.calls)].map((c) => c.id)) } : live);
+  const edge = edgeOf(s.looks, s.soft);
+  const words = stateWords(s);
   return (
-    <div className="k-step" data-events={events} data-state={state}>
+    <div className="k-step" data-events={events} data-state={edge}>
       {said}
-      <Collapsible.Root open={open} onOpenChange={setOpen} data-testid="work-step" data-family={step.family} data-state={state} data-calls={calls.length}>
-        <Collapsible.Trigger className="k-line" data-all="" aria-label={sentence(s)}>
-          <SummaryWords s={s} />
-          <span className="k-line-end">
-            {(s.added > 0 || s.removed > 0) && <Delta added={s.added} removed={s.removed} />}
-            {s.running > 0 && <span className="k-line-run" aria-hidden="true" />}
-            {s.failed > 0 && <span className="text-danger" data-testid="step-failed">{s.failed === s.calls ? "failed" : `${s.failed} failed`}</span>}
-            {s.stopped > 0 && !s.failed && <span className="text-warn">stopped</span>}
-            <ChevronRight className="k-line-chev" />
-          </span>
-        </Collapsible.Trigger>
-        {peek.length > 0 && (
-          <div className="k-step-calls" data-testid="step-peek">
-            {peek.slice(0, 3).map((c) => <ToolCall key={c.id} use={c.use} result={c.result} sessionId={sid} cwd={cwd} />)}
-            {peek.length > 3 && <p className="k-line-why">and {peek.length - 3} more failed</p>}
-          </div>
-        )}
-        <Collapsible.Panel className="k-tool-panel overflow-hidden">
-          <div className="k-step-calls">
-            {step.items.map((i) => (i.t === "call" ? <ToolCall key={i.id} use={i.use} result={i.result} sessionId={sid} cwd={cwd} /> : i.t === "thought" ? <Thinking key={i.id} text={i.text} /> : null))}
-          </div>
-        </Collapsible.Panel>
-      </Collapsible.Root>
+      <div className="k-did">
+        <Collapsible.Root open={open} onOpenChange={setOpen} data-testid="work-step" data-family={step.family} data-state={edge} data-calls={calls.length}>
+          <Collapsible.Trigger className="k-line" data-all="" data-step="" aria-label={sentence(s, words)}>
+            <StepLine s={s} words={words} />
+            <span className="k-line-end">
+              {s.thoughts > 0 && <ThoughtMark />}
+              {(s.added > 0 || s.removed > 0) && <Delta added={s.added} removed={s.removed} />}
+              {s.looks.running > 0 && <span className="k-line-run" aria-hidden="true" />}
+            </span>
+          </Collapsible.Trigger>
+          {peek && (peek.alone.length > 0 || peek.same.length > 0 || peek.running > 0 || peek.failed > 0) && (
+            <div className="k-step-calls" data-testid="step-peek">
+              {/* The reason once, the calls it is said of under it. */}
+              {peek.same.map((g) => (
+                <div key={g.why} className="k-peek-same" data-testid="peek-same">
+                  <p className="k-peek-why"><span className="k-line-count">{g.calls.length} calls</span><span className="k-line-state k-line-mark" data-tone="warn" data-testid="call-mark">{g.why}</span></p>
+                  {g.calls.map((c) => <ToolCall key={c.id} use={c.use} result={c.result} sessionId={sid} cwd={cwd} peek auto quiet />)}
+                </div>
+              ))}
+              {/* A copy of the call while the step is closed: a search hit is taken by the call itself, once the step opens. */}
+              {peek.alone.map((c) => <ToolCall key={c.id} use={c.use} result={c.result} sessionId={sid} cwd={cwd} peek auto />)}
+              {peek.running > 0 && <p className="k-line-more" data-testid="peek-more">and {peek.running} more running</p>}
+              {peek.failed > 0 && <p className="k-line-more" data-tone={s.soft ? "note" : "fail"} data-testid="peek-more">and {peek.failed} more failed</p>}
+            </div>
+          )}
+          <Collapsible.Panel className="k-tool-panel overflow-hidden">
+            <div className="k-step-calls">
+              {step.items.map((i) => (i.t === "call" ? <ToolCall key={i.id} use={i.use} result={i.result} sessionId={sid} cwd={cwd} /> : i.t === "thought" ? <Thinking key={i.id} text={i.text} /> : null))}
+            </div>
+          </Collapsible.Panel>
+        </Collapsible.Root>
+      </div>
     </div>
   );
 });
@@ -133,14 +216,15 @@ export function Work({ row, sid, cwd, remote }: { row: Row; sid: string; cwd?: s
     e.preventDefault();
     setAll((a) => ({ n: a.n + 1, open: line.getAttribute("aria-expanded") !== "true" }));
   };
+  const table = isTable(row.steps!);
   return (
-    <div id={`e-${row.e.id}`} data-event-id={row.e.id} className="k-work row-cv" data-testid="work" role="group" aria-label="What the model did" onClickCapture={onAll} onKeyDownCapture={onAll} onKeyDown={lineKeys}>
-      {row.steps!.map((st) => <StepView key={st.key} step={st} sid={sid} cwd={cwd} remote={remote} all={all} />)}
+    <div className="k-work row-cv" data-testid="work" data-run={row.id} data-said={table ? "" : undefined} role="group" aria-label="What the model did" onClickCapture={onAll} onKeyDownCapture={onAll} onKeyDown={lineKeys}>
+      {row.steps!.map((st) => <StepView key={st.key} step={st} sid={sid} cwd={cwd} remote={remote} all={all} table={table} />)}
     </div>
   );
 }
 
 // The line of a call whose input is still being written: a rail of its own under the reply so far.
-export function LiveWork({ children }: { children: React.ReactNode }) {
-  return <div className="k-work" data-testid="work-live"><div className="k-step" data-state="running">{children}</div></div>;
+export function LiveWork({ children }: { children: ReactNode }) {
+  return <div className="k-work" data-testid="work-live"><div className="k-step" data-state="running"><div className="k-did">{children}</div></div></div>;
 }

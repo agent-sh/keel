@@ -6,10 +6,11 @@ import { auto, isLive, openSession, useAuto, type AgentRecord } from "../../lib/
 import { machineName } from "../../lib/fleet.ts";
 import { reportError, useStore } from "../../lib/store.ts";
 import { resultText } from "../../lib/tools.ts";
+import { callState, failureLine, type CallState } from "../../lib/work.ts";
+import { Apart, Under } from "../ToolCall.tsx";
 import { savePref } from "../../lib/ui.ts";
 import { cn } from "../../lib/utils.ts";
 import { useToldState } from "../../lib/watch.ts";
-import { Mark } from "../Mark.tsx";
 import { Markdown } from "../Markdown.tsx";
 import { AgentStatus, agentWhy, IconButton, STATUS_LABEL, StopIcon } from "./bits.tsx";
 
@@ -255,6 +256,8 @@ export function InputNotice({ e }: { e: StoredEvent }) {
 
 
 // The card of an Agent / spawn_agent call: the child's live state, open, stop.
+const ENDED_WORD: Partial<Record<CallState, string>> = { error: "failed", denied: "denied by you", refused: "refused", stopped: "stopped", cut: "cut by a restart" };
+
 export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: ToolResultBlock; live?: boolean }) {
   const input: any = use.input ?? {};
   const out = resultText(result);
@@ -271,62 +274,70 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
   const report = agent && !isLive(agent) ? agent.result : undefined;
   const state = useToldState(agent?.session_id);
   const asking = agent && isLive(agent) && state?.watch === "need" ? state : undefined;
+  // An agent that failed says so beside its name, with the reason under its line.
+  const failedAgent = !!agent && !isLive(agent) && agent.status !== "completed" && agent.status !== "stopped";
+  const why = agent ? agentWhy(agent) : undefined;
+  const name = agent?.title ?? title;
+  // With no agent the page knows of: how the call itself ended.
+  const ended = !agent && result?.is_error ? callState(result) : undefined;
 
   return (
-    <Collapsible.Root className="group/agent animate-in rounded-lg border border-line bg-raised shadow-1" data-testid="agent-call">
-      <div className="flex items-center gap-2.5 px-3 py-2 text-ui">
-        <span className="grid size-6 shrink-0 place-items-center rounded-md bg-accent-soft text-accent"><Bot className="size-3.5" /></span>
-        <span className="font-medium shrink-0">Agent</span>
-        <span className="shrink-0 rounded bg-sunken px-1.5 py-px text-micro text-muted">{type}</span>
-        <span className="min-w-0 truncate text-muted" data-testid="agent-call-title">{agent?.title ?? title}</span>
-        {agent?.branch && (
-          <span data-testid="agent-call-branch" title={`Its own worktree: ${agent.worktree}`} className="flex shrink-0 items-center gap-1 rounded bg-sunken px-1.5 py-px font-mono text-micro text-muted">
-            <GitBranch className="size-3" />{agent.branch}
+    <Collapsible.Root className="k-tool-call group/agent" data-testid="agent-call" data-state={failedAgent || (!agent && ended === "error") ? "error" : undefined}>
+      {/* A line of the rail, as every call is: what it is, how it stands, its task; it opens to the task and the
+          report. What can be done with the agent stands at the line's end, quiet until the line is pointed at. */}
+      <div className="k-line-agent">
+        <Collapsible.Trigger className="k-line">
+          {/* (The words carry the title's name: what is cut, when the line is too narrow, is these words.) */}
+          <span className="k-line-text" data-testid="agent-call-title">
+            <span className="k-line-verb">Agent</span>{" "}
+            {/* How it stands, beside the verb as on every line: it asks the owner, it runs, it failed, it was stopped.
+                A finished agent needs no word on the page (it is said to a screen reader). */}
+            {agent && (asking
+              ? <span className="k-line-state" data-tone="need" data-testid="agent-call-status" data-asking title={asking.text}>Asks you</span>
+              : (
+                <span className={agent.status === "completed" ? "sr-only" : "k-line-state"} data-tone={failedAgent ? "fail" : "idle"} data-testid="agent-call-status" title={why}>
+                  {STATUS_LABEL[agent.status]}{agent.background && isLive(agent) ? " in background" : ""}{why ? <span className="sr-only"> · {why}</span> : null}
+                </span>
+              ))}
+            {/* A call that started no agent the page knows of says how it ended, by its result's own words. */}
+            {!agent && ended && <span className="k-line-state" data-tone={ended === "error" ? "fail" : ended === "denied" ? "own" : ended === "stopped" ? "idle" : "warn"} data-testid="agent-call-ended">{ENDED_WORD[ended]}</span>}
+            {" "}<span className="k-line-what" data-words="">{name}</span>
           </span>
-        )}
-        {(agent?.machine || input.machine) && (
-          <span data-testid="agent-call-machine" title="Its tools run on this machine" className="flex shrink-0 items-center gap-1 rounded bg-sunken px-1.5 py-px text-micro text-muted">
-            <Network className="size-3" />{machineName(agent?.machine) ?? String(input.machine)}
-          </span>
-        )}
-        {agent?.structured && <span data-testid="agent-call-structured" className="shrink-0 rounded bg-sunken px-1.5 py-px font-mono text-micro text-muted">json</span>}
-        {/* What its parent sent and it has not read yet, kept in its queue. On a
-            narrow line its words go before the agent's title is cut: it shrinks
-            to the icon and the count, and its tooltip says the rest. The shrink
-            factor is that large so the title's share of the squeeze rounds to
-            nothing (any part of a pixel would put an ellipsis on it). */}
-        {!!agent?.messages_waiting && (
-          <span
-            className="ml-auto flex min-w-[2.25rem] shrink-[1000000] items-center gap-1 overflow-hidden whitespace-nowrap rounded bg-sunken px-1.5 py-px text-micro text-muted"
-            data-testid="agent-call-waiting"
-            title={`${agent.messages_waiting === 1 ? "1 message" : `${agent.messages_waiting} messages`} sent to this agent and kept in its queue: it reads ${agent.messages_waiting === 1 ? "it" : "them"} at its next step, or when it goes on`}
-          >
-            <Mail className="size-3 shrink-0" /><span className="shrink-0">{agent.messages_waiting}</span><span className="min-w-0 truncate">{agent.messages_waiting === 1 ? "message waiting" : "messages waiting"}</span>
-          </span>
-        )}
-        <span className={cn("flex shrink-0 items-center gap-1.5", !agent?.messages_waiting && "ml-auto")}>
-          {agent ? (
-            <>
-              {/* An agent that waits on the owner says so, in their colour: it is not just running. */}
-              {asking ? <span className="grid size-3.5 shrink-0 place-items-center"><Mark w="need" className="size-2" /></span> : <AgentStatus status={agent.status} />}
-              {asking
-                ? <span className="text-micro font-medium text-st-need" data-testid="agent-call-status" data-asking title={asking.text}>Asks you</span>
-                : <span className="text-micro text-faint" data-testid="agent-call-status" title={agentWhy(agent)}>{STATUS_LABEL[agent.status]}{agent.background && isLive(agent) ? " in background" : ""}{agentWhy(agent) ? ` · ${agentWhy(agent)}` : ""}</span>}
-              {isLive(agent) && <IconButton title="Stop agent" danger onClick={() => auto.stopAgent(agent).catch(reportError)} testid="agent-call-stop"><StopIcon /></IconButton>}
-              {!isLive(agent) && agent.branch && !agent.machine && (
-                <IconButton title="Review this agent's work" onClick={() => auto.reviewAgent(agent).then(() => savePref("panel", "review")).catch(reportError)} testid="agent-call-review"><ScanSearch className="size-3.5" /></IconButton>
-              )}
-              <IconButton title="Open the agent's session" onClick={() => openSession(agent.session_id)} testid="agent-call-open"><ExternalLink className="size-3.5" /></IconButton>
-            </>
-          ) : (
-            live && <span className="size-1.5 rounded-full bg-brass animate-pulse-dot" />
+          {/* What its parent sent and it has not read yet, kept in its queue. On a
+              narrow line its words go before the agent's title is cut: it shrinks
+              to the icon and the count, and its tooltip says the rest. */}
+          {!!agent?.messages_waiting && (
+            <span
+              className="k-chip k-chip-gives"
+              data-testid="agent-call-waiting"
+              title={`${agent.messages_waiting === 1 ? "1 message" : `${agent.messages_waiting} messages`} sent to this agent and kept in its queue: it reads ${agent.messages_waiting === 1 ? "it" : "them"} at its next step, or when it goes on`}
+            >
+              <Mail className="size-3 shrink-0" /><span className="shrink-0">{agent.messages_waiting}</span><span className="min-w-0 truncate">{agent.messages_waiting === 1 ? "message waiting" : "messages waiting"}</span>
+            </span>
           )}
-          <Collapsible.Trigger className="grid size-6 place-items-center rounded-md text-faint outline-none hover:bg-hover hover:text-fg" aria-label="Details">
-            <ChevronRight className="size-3.5 transition-transform group-data-[open]/agent:rotate-90" />
-          </Collapsible.Trigger>
-        </span>
+          <span className="k-line-end">
+            <Apart />
+            <span className="k-chip">{type}</span>
+            {agent?.branch && <span className="k-chip" data-code="" data-testid="agent-call-branch" title={`Its own worktree: ${agent.worktree}`}><GitBranch className="size-3" />{agent.branch}</span>}
+            {(agent?.machine || input.machine) && <span className="k-chip" data-testid="agent-call-machine" title="Its tools run on this machine"><Network className="size-3" />{machineName(agent?.machine) ?? String(input.machine)}</span>}
+            {agent?.structured && <span className="k-chip" data-code="" data-testid="agent-call-structured">json</span>}
+            {(agent ? isLive(agent) && !asking : live) && <span className="k-line-run" aria-hidden="true" />}
+          </span>
+        </Collapsible.Trigger>
+        {agent && (
+          <span className="k-line-acts">
+            {isLive(agent) && <IconButton title={`Stop agent ${name}`} danger onClick={() => auto.stopAgent(agent).catch(reportError)} testid="agent-call-stop"><StopIcon /></IconButton>}
+            {!isLive(agent) && agent.branch && !agent.machine && (
+              <IconButton title={`Review the work of agent ${name}`} onClick={() => auto.reviewAgent(agent).then(() => savePref("panel", "review")).catch(reportError)} testid="agent-call-review"><ScanSearch className="size-3.5" /></IconButton>
+            )}
+            <IconButton title={`Open the session of agent ${name}`} onClick={() => openSession(agent.session_id)} testid="agent-call-open"><ExternalLink className="size-3.5" /></IconButton>
+          </span>
+        )}
       </div>
-      <Collapsible.Panel className={cn("overflow-hidden border-t border-line")}>
+      {/* Why it ended as it did, under its line: a failure's reason in its ink, a stop's quietly. */}
+      {agent && !isLive(agent) && why && <div className="k-under"><Under tone={failedAgent ? "fail" : "note"} testid="agent-call-why">{why}</Under></div>}
+      {!agent && ended === "error" && <div className="k-under"><Under code tone="fail" testid="agent-call-why">{failureLine(result)}</Under></div>}
+      <Collapsible.Panel className="k-tool-panel overflow-hidden">
         <div className="k-label px-3 pt-2.5">Task</div>
         <p className="px-3 pt-1 text-ui whitespace-pre-wrap text-muted">{input.prompt ?? input.message}</p>
         {(report || out) && (

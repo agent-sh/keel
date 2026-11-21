@@ -183,7 +183,9 @@ export const terminalRoutes: RouteModule = (deps) => {
         const from = Number(new URL(req.url).searchParams.get("from") ?? 0);
         // Here: among every record the session's jobs left. On another machine: among the jobs its list carries.
         const job = placed(s) ? (((await onPeer(s, "list")).jobs ?? []) as TermJob[]).findLast((j) => j.call_id === req.params.call)?.id : jobOfCall(spillRoot, s.id, req.params.call);
-        if (!job) return json({ error: "no command of this call" }, 404);
+        // A follower asks before the command has started (its call waits its turn, or on the owner): that is
+        // an answer with nothing in it yet, not an error on the page.
+        if (!job) return new URL(req.url).searchParams.get("follow") === "1" ? json({ text: "", from, to: from, size: from, none: true }) : json({ error: "no command of this call" }, 404);
         const r = placed(s) ? (await onPeer(s, "log", { job, from })).log : readJobLog(spillRoot, s.id, job, from);
         return r ? json({ ...r, job }) : json({ error: "no such job" }, 404);
       }),

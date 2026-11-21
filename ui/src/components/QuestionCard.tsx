@@ -13,8 +13,11 @@
 // secret is sent only once the owner ticked "send anyway", by whatever key
 // or press the answer comes; what is typed on such a card never goes on to
 // the message box.
+import { Collapsible } from "@base-ui/react/collapsible";
 import { MessageCircleQuestion } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { Under } from "./ToolCall.tsx";
+import { NEEDS_ANSWER } from "../lib/work.ts";
 import { stopKind } from "../../../src/core/stops.ts";
 import type { Asked, ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { SETTLE_MS } from "../lib/approvals.ts";
@@ -47,59 +50,73 @@ const Legend = ({ q }: { q: UiQuestion }) => (
   </legend>
 );
 
-// In the conversation. A question that waits is a line (its card is above the
-// message box); one that was answered, stopped or cut is its record.
+// In the conversation a question is a line of the rail, as every call is. One
+// that waits says so in the owner's color (its card is above the message box);
+// one that was answered, stopped or cut says what was asked and what was
+// answered, and opens to its record.
 export function QuestionCard({ use, result, sessionId }: { use: ToolUseBlock; result?: ToolResultBlock; sessionId?: string }) {
+  const [show, setShow] = useState(false);
   const qs = questions(use.name, use.input);
   const answered = !!result && !result.is_error;
   const open = useStore((s) => !result && !!sessionId && !!s.questionCalls[sessionId]?.includes(use.id));
   // What the owner answered, by question (stored with the result); older records have only the result text.
   const given = (result as (ToolResultBlock & { shown?: { answers?: Record<string, { picked: string[]; other?: string }> } }) | undefined)?.shown?.answers;
+  const first = qs[0];
   if (open) {
     return (
-      <div className="flex items-center gap-2 rounded-lg border border-line bg-raised px-3.5 py-2 text-ui" data-testid="question-asked">
-        <MessageCircleQuestion className="size-3.5 shrink-0 text-accent-ink" />
-        <span className="shrink-0 font-medium">Asking you</span>
-        <span className="min-w-0 truncate text-muted">{qs[0]?.question}{qs.length > 1 ? ` and ${qs.length - 1} more` : ""}</span>
+      <div className="k-tool-call" data-testid="question-asked" data-state="waiting">
+        <div className="k-line">
+          <span className="k-line-text">
+            <span className="k-line-verb">Asks</span>{" "}
+            <span className="k-line-state" data-tone="need">{NEEDS_ANSWER}</span>{" "}
+            <span className="k-line-what" data-words="">{first?.question ?? ""}</span>
+            {qs.length > 1 && <>{" "}<span className="k-line-rest">+{qs.length - 1}</span></>}
+          </span>
+        </div>
       </div>
     );
   }
+  const said = first && given ? [...(given[first.id]?.picked ?? []), ...(given[first.id]?.other?.trim() ? [given[first.id]!.other!.trim()] : [])].join(", ") : "";
+  const ended = result?.is_error ? stopKind(result.content) : undefined;
   return (
-    <div className="k-question rounded-lg border border-line bg-raised shadow-1 animate-in" data-testid="question" data-state={answered ? "answered" : "closed"}>
-      <Head open={false} answered={answered} />
-      <div className="flex flex-col gap-4 px-3.5 py-3">
+    <Collapsible.Root open={show} onOpenChange={setShow} className="k-tool-call k-question" data-testid="question" data-state={answered ? "answered" : "closed"}>
+      <Collapsible.Trigger className="k-line">
+        <span className="k-line-text">
+          <span className="k-line-verb">{answered ? "Asked" : "Question"}</span>{" "}
+          {!answered && <><span className="k-line-state" data-tone={ended === "cut" ? "warn" : "idle"}>{ended === "cut" ? "cut by a restart" : ended === "stopped" ? "stopped" : "not answered"}</span>{" "}</>}
+          <span className="k-line-what" data-words="">{first?.question ?? ""}</span>
+          {qs.length > 1 && <>{" "}<span className="k-line-rest">+{qs.length - 1}</span></>}
+          {said && <>{" "}<span className="k-line-answer" data-testid="question-line-answer">{said}</span></>}
+        </span>
+        <span className="k-line-end" />
+      </Collapsible.Trigger>
+      <Collapsible.Panel className="k-tool-panel overflow-hidden">
+      {/* The record, in the rail's own rows: what was asked with what it offered (what was chosen marked), and what the owner said. */}
+      <div className="k-under k-question-record">
         {qs.map((q) => (
-          <fieldset key={q.id} className="flex flex-col gap-2">
-            <Legend q={q} />
-            {q.options.length > 0 && (
-              <div className="grid gap-1.5 sm:grid-cols-2" role={q.multi ? "group" : "radiogroup"}>
-                {q.options.map((o) => {
-                  const on = (given?.[q.id]?.picked ?? NONE).includes(o.label);
-                  return (
-                    <button key={o.label} type="button" role={q.multi ? "checkbox" : "radio"} aria-checked={on} disabled data-testid="question-option"
-                      className={cn("flex cursor-default flex-col items-start gap-0.5 rounded-md border px-3 py-2 text-left opacity-80", on ? "border-accent bg-accent-soft" : "border-line bg-sunken")}>
-                      <span className="text-ui font-medium">{o.label}</span>
-                      {o.description && <span className="text-caption leading-snug text-muted">{o.description}</span>}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
+          <Fragment key={q.id}>
+            <Under name={q.header || "Asked"}>
+              {q.question}
+              {q.options.length > 0 && (
+                <span className="k-opts" role={q.multi ? "group" : "radiogroup"}>
+                  {q.options.map((o) => {
+                    const on = (given?.[q.id]?.picked ?? NONE).includes(o.label);
+                    return <span key={o.label} role={q.multi ? "checkbox" : "radio"} aria-checked={on} aria-disabled="true" className="k-opt" data-on={on ? "" : undefined} data-testid="question-option" title={o.description}>{o.label}</span>;
+                  })}
+                </span>
+              )}
+            </Under>
             {given && (
-              <p className="whitespace-pre-wrap break-words text-caption text-muted" data-testid="question-answer">
-                <span className="font-medium text-fg">Answered: </span>
+              <Under name="You" testid="question-answer">
                 {[...(given[q.id]?.picked ?? []), ...(given[q.id]?.other?.trim() ? [given[q.id]!.other!.trim()] : [])].join(", ") || "no answer"}
-              </p>
+              </Under>
             )}
-          </fieldset>
+          </Fragment>
         ))}
-        {result && !given && (
-          <p className={cn("whitespace-pre-wrap break-words text-caption", result.is_error && !stopKind(result.content) ? "text-danger" : "text-muted")} data-testid="question-result">
-            {resultText(result)}
-          </p>
-        )}
+        {result && !given && <Under name={result.is_error && !stopKind(result.content) ? "Failed" : "Result"} tone={result.is_error && !stopKind(result.content) ? "fail" : undefined} testid="question-result">{resultText(result)}</Under>}
       </div>
-    </div>
+      </Collapsible.Panel>
+    </Collapsible.Root>
   );
 }
 
@@ -136,12 +153,15 @@ export function AskedUnder({ use, sessionId, children }: { use: ToolUseBlock; se
   const asked = useStore((s) => (sessionId ? at(s.questionAsks[sessionId], use.id) : undefined));
   if (!asked) return children;
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col">
       {children}
-      <div className="flex items-center gap-2 rounded-lg border border-line bg-raised px-3.5 py-2 text-ui" data-testid="question-asked">
-        <MessageCircleQuestion className="size-3.5 shrink-0 text-accent-ink" />
-        <span className="shrink-0 font-medium">Asking you</span>
-        <span className="min-w-0 truncate text-muted">MCP server {asked.from}: {asked.message || "a question"}</span>
+      {/* A line of the rail, as the call above it is. */}
+      <div className="k-line" data-testid="question-asked">
+        <span className="k-line-text">
+          <span className="k-line-verb">Asks</span>{" "}
+          <span className="k-line-state" data-tone="need">{NEEDS_ANSWER}</span>{" "}
+          <span className="k-line-what" data-words="">MCP server {asked.from}: {asked.message || "a question"}</span>
+        </span>
       </div>
     </div>
   );

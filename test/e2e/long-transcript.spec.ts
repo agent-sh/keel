@@ -454,3 +454,70 @@ test("the reader's place is found by halving and holds under the branch banner",
     rmSync(state, { recursive: true, force: true });
   }
 });
+
+test("reading up through a run of calls longer than a part keeps the reader at the step they read", async ({ page }) => {
+  // One turn of 300 calls with a short line before each: the page holds its newest part, and the run begins before it.
+  const { state, ids: [id] } = seeded("run", 300, "run", "A run of three hundred calls");
+  const d = await daemon(state);
+  try {
+    await page.goto(`${d.url}/s/${id}`);
+    const said = page.locator('[data-testid="work"] .k-said');
+    await expect(said.last()).toContainText("Step 300:", { timeout: 30_000 });
+    const firstStep = async () => Number((await said.first().textContent())!.match(/Step (\d+):/)![1]);
+    const opened = await firstStep();
+    // The page holds the newest part and no more: a run of a hundred steps fills the view many times over,
+    // though it is one row.
+    await page.waitForTimeout(1200);
+    expect(await firstStep()).toBe(opened);
+    expect(opened).toBeGreaterThan(195);
+    // What was said stands in one column down the run, as wide as the longest of them and no wider than its bound.
+    const column = await page.evaluate(() => {
+      const steps = [...document.querySelectorAll<HTMLElement>('[data-testid="work"] > .k-step')];
+      const at = (el: Element) => Math.round(el.getBoundingClientRect().left);
+      const did = [...new Set(steps.map((st) => at(st.querySelector(".k-did")!)))];
+      const said = steps.map((st) => st.querySelector(".k-said")!.getBoundingClientRect());
+      const widest = Math.max(...steps.map((st) => st.querySelector(".k-said p")!.getBoundingClientRect().width));
+      const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
+      return { did, cell: Math.round(said[0]!.width), widest: Math.round(widest), bound: 15 * rem };
+    });
+    expect(column.did).toHaveLength(1);
+    expect(column.cell).toBeGreaterThanOrEqual(column.widest);
+    expect(column.cell).toBeLessThanOrEqual(Math.min(column.bound, column.widest + 24));
+    const run = page.locator('[data-testid="work"]').last();
+    const name = await run.getAttribute("data-run");
+    // The reader goes to a step in the upper part of what is held, and reads up from it.
+    const marker = opened + 20;
+    const place = () => page.evaluate((m) => {
+      const sc = document.querySelector(".k-reading")!;
+      const el = [...document.querySelectorAll('[data-testid="work"] .k-said')].find((x) => x.textContent!.startsWith(`Step ${m}:`));
+      return el ? Math.round(el.getBoundingClientRect().top - sc.getBoundingClientRect().top) : null;
+    }, marker);
+    await page.evaluate((m) => {
+      const sc = document.querySelector(".k-reading")!;
+      const el = [...document.querySelectorAll('[data-testid="work"] .k-said')].find((x) => x.textContent!.startsWith(`Step ${m}:`))!;
+      sc.scrollTop += el.getBoundingClientRect().top - sc.getBoundingClientRect().top - 200;
+    }, marker);
+    await page.waitForTimeout(600);
+    const before = (await place())!;
+    expect(Math.abs(before - 200)).toBeLessThan(4);
+    const box = (await page.locator(".k-reading").boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + 300);
+    let wheel = 0;
+    for (let i = 0; i < 4; i++) { await page.mouse.wheel(0, -60); wheel += 60; await page.waitForTimeout(200); }
+    // The older part of the run is read in above.
+    await expect.poll(firstStep, { timeout: 20_000 }).toBeLessThan(opened);
+    await page.waitForTimeout(1200);
+    // The step is where the wheel left it: it moved by the wheel and by nothing else, and the reader is not at the end.
+    const after = await place();
+    expect(after).not.toBeNull();
+    expect(Math.abs(after! - (before + wheel))).toBeLessThan(24);
+    await expect(page.getByTestId("jump-latest")).toBeVisible();
+    // The run is the row it was, with its older steps in it, not another row put in its place.
+    await expect(page.locator('[data-testid="work"]')).toHaveCount(1);
+    expect(await run.getAttribute("data-run")).toBe(name);
+    await shoot(page, "long-transcript-04-run-read-up");
+  } finally {
+    d.proc.kill();
+    await exited(d.proc);
+  }
+});

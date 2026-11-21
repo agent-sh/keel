@@ -37,81 +37,213 @@
   border-left: 1px solid var(--line-strong); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18rem; overflow-y: auto; color: var(--muted);
 }
 
-/* What a hook of the owner's did to a call, under the call's line: always on the page, opened or not. */
-.k-line-hook { display: flex; align-items: flex-start; gap: 0.5rem; padding: 0.125rem 0.375rem 0.375rem; font-size: var(--text-caption); line-height: 1.45; color: var(--warn-ink); }
-
-/* What a language server found after an edit, under the call's line: the server and what it says, then a row a finding. */
-.k-line-diag { display: flex; flex-direction: column; padding: 0 0.375rem 0.25rem; font-size: var(--text-caption); line-height: 1.5; color: var(--muted); }
-.k-line-diag > div { display: flex; align-items: baseline; gap: 0.5rem; min-width: 0; }
-.k-diag-name { flex-shrink: 0; font-weight: 500; white-space: nowrap; }
-.k-diag-name[data-code], .k-diag-what[data-code] { font-family: var(--font-mono); font-weight: 400; }
-.k-diag-what { min-width: 0; overflow-wrap: anywhere; color: var(--fg); }
-.k-line-diag[data-state="errors"] > div:first-child > .k-diag-what, .k-line-diag > div[data-severity="error"] > .k-diag-what { color: var(--danger-ink); }
-.k-line-diag[data-state="warnings"] > div:first-child > .k-diag-what, .k-line-diag > div[data-severity="warning"] > .k-diag-what { color: var(--warn-ink); }
-
 /* ---------- The rail of work ---------- */
-.k-work { display: flex; flex-direction: column; min-width: 0; }
-.k-step { --k-edge: var(--line-strong); min-width: 0; padding-left: 0.625rem; border-left: 0.1875rem solid var(--k-edge); transition: border-left-color 400ms var(--ease-out); }
+/* `--k-verb`: the verbs' column; `--k-hang`: where a line's words start, and where its later rows do
+   (a line outside a run of work, the question above the message box, stands at the same two). */
+.k-work { --k-verb: 4.25rem; --k-hang: calc(var(--k-verb) + 0.5rem); display: flex; flex-direction: column; min-width: 0; }
+/* The rail carries a step's state, so it is drawn to be seen (3:1 against the page in both themes). */
+.k-step { --k-edge: var(--st-idle); min-width: 0; padding-left: 0.625rem; border-left: 0.1875rem solid var(--k-edge); transition: border-left-color 400ms var(--ease-out); }
+/* The step's part of the rail is its state: what most needs a look. */
+.k-step[data-state="need"] { --k-edge: var(--st-need); }
 .k-step[data-state="running"] { --k-edge: var(--st-work); }
 .k-step[data-state="error"] { --k-edge: var(--st-fail); }
-.k-step[data-state="stopped"], .k-step[data-state="cut"] { --k-edge: var(--st-idle); }
+.k-step[data-state="warn"] { --k-edge: var(--warn); }
+.k-did { min-width: 0; }
 
-/* A line of the rail: what was done, to what, and how it went. */
+/* A run where the model says a few words before a call is a table: what it
+   said on the left, what it did on the right, a row a call. Longer words
+   stand above their line, across both. The column of what was said is as
+   wide as the longest of them, up to a bound: one column down the whole run. */
+.k-work[data-said] { display: grid; grid-template-columns: fit-content(10.5rem) minmax(0, 1fr); column-gap: 0.5rem; }
+.k-work[data-said] > .k-step { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: start; }
+.k-work[data-said] > .k-step > :where(.k-aside, .k-step-lead) { grid-column: 1 / -1; }
+.k-work[data-said] > .k-step > .k-said { grid-column: 1; }
+.k-work[data-said] > .k-step > .k-did { grid-column: 2; }
+
+/* A line of the rail: its words, then what stands at its end. */
 .k-line {
-  display: flex; align-items: center; gap: 0.5rem; width: 100%; min-width: 0; min-height: var(--spacing-ctl-md); padding: 0.125rem 0.25rem 0.125rem 0.375rem;
+  display: flex; align-items: baseline; gap: 0.5rem; width: 100%; min-width: 0; padding: 0.3125rem 0.25rem 0.3125rem 0.375rem;
   border-radius: var(--radius-sm); text-align: left; font-size: var(--text-ui); line-height: 1.45; color: var(--muted);
 }
-.k-line:hover { background: var(--hover); }
+.k-line:is(button):hover { background: var(--hover); }
 .k-line:focus-visible { outline-offset: -2px; }
+/* The words of a line are one run of text: what was done, how it stands, to what. They are selected and copied
+   as a line. A call's own line is one row, cut at its end; a step's line, and a marked call's, wrap, so every
+   target named is whole, under the column the first row's targets stand in. */
+.k-line-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: var(--k-hang, 4.75rem); text-indent: calc(-1 * var(--k-hang, 4.75rem)); }
+.k-line-text[data-wrap] { flex: 1 1 0; overflow: visible; white-space: normal; overflow-wrap: anywhere; }
 /* The verbs stand in a column, so what each was done to lines up down the rail. */
-.k-line-verb { flex-shrink: 0; min-width: 4.25rem; font-weight: 600; color: var(--fg); white-space: nowrap; }
-.k-line-count { flex-shrink: 0; white-space: nowrap; }
-.k-line-what { min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: var(--text-caption); }
+.k-line-verb { display: inline-block; min-width: var(--k-verb, 4.25rem); margin-right: 0.25rem; font-weight: 600; color: var(--fg); text-indent: 0; white-space: nowrap; }
+/* How it stands, beside the verb and at the line's own size, each in its tone: it waits on the owner; it ran
+   and failed; it failed while only looking (a note); the owner denied it; the policy refused it, or a restart
+   cut it, or it is marked; it was stopped or never answered. */
+.k-line-state { margin-right: 0.25rem; font-weight: 500; white-space: nowrap; }
+.k-line-state[data-tone="need"] { color: var(--st-need-ink); }
+.k-line-state[data-tone="fail"] { color: var(--danger-ink); }
+.k-line-state[data-tone="warn"] { color: var(--warn-ink); }
+.k-line-state[data-tone="own"] { color: var(--fg); }
+.k-line-state:is([data-tone="idle"], [data-tone="note"]) { color: var(--muted); font-weight: 400; }
+/* A mark's few words may take a second row in a narrow pane; a state word never breaks. */
+.k-line-mark { white-space: normal; }
+/* How many: never given up for room, at any width. */
+.k-line-count { margin-right: 0.25rem; white-space: nowrap; }
+.k-line-what { font-family: var(--font-mono); font-size: var(--text-caption); }
 .k-line-what[data-words] { font-family: var(--font-sans); font-size: var(--text-ui); }
-/* Several targets on a line are told apart by a hairline, not by a mark that reads as part of a command. */
-.k-line-target:where(:not(:first-child)) { margin-left: 0.5rem; padding-left: 0.5rem; border-left: 1px solid var(--line-strong); }
-.k-line-rest { margin-left: 0.5rem; font-family: var(--font-sans); color: var(--faint); }
+/* Several targets on a line are told apart by a hairline on the page, and by a comma in a copied selection:
+   the comma is there as text, set outside what its box shows, and the box draws the hairline. */
+.k-sep {
+  display: inline-block; width: 1rem; height: 1lh; overflow: hidden; white-space: pre; text-indent: -4rem; vertical-align: bottom;
+  background: linear-gradient(var(--line-strong), var(--line-strong)) center / 1px 62% no-repeat;
+}
+/* Between a line's words and its end: nothing to see, a break in a copied selection. */
+.k-apart { width: 1px; margin-right: calc(-0.5rem - 1px); overflow: hidden; white-space: pre; }
+/* What is not named ("+3"), and the lines of a command after its first ("+2 lines"). */
+.k-line-rest { white-space: nowrap; color: var(--faint); }
+/* After the targets it counts on, in the words' face: it is not one more target. */
+.k-line-rest[data-more] { margin-left: 0.375rem; font-family: var(--font-sans); font-size: var(--text-caption); }
+.k-line-answer { font-weight: 500; color: var(--fg); }
 .k-line-end { display: flex; flex-shrink: 0; align-items: center; gap: 0.5rem; margin-left: auto; padding-left: 0.5rem; font-size: var(--text-micro); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.k-line-chev { width: 0.875rem; height: 0.875rem; color: var(--faint); opacity: 0; transition: transform 180ms var(--ease-out), opacity 120ms; }
-.k-line:is(:hover, :focus-visible, [aria-expanded="true"]) .k-line-chev { opacity: 1; }
-.k-line[aria-expanded="true"] .k-line-chev { transform: rotate(90deg); }
-@media (hover: none) { .k-line { min-height: var(--spacing-ctl-lg); } .k-line-chev { opacity: 1; } }
+/* The mark that a line opens: there before the pointer is. Drawn by the line's end, so a rail of a
+   hundred lines holds no element for it. */
+button.k-line > .k-line-end::after {
+  content: ""; flex-shrink: 0; width: 0.3125rem; height: 0.3125rem; margin: 0 0.3125rem 0 0.125rem; border: solid var(--faint); border-width: 1.5px 1.5px 0 0;
+  opacity: 0.7; transform: rotate(45deg); transition: transform 180ms var(--ease-out), opacity 120ms;
+}
+button.k-line:is(:hover, :focus-visible, [aria-expanded="true"]) > .k-line-end::after { opacity: 1; }
+button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135deg); }
+@media (hover: none) { .k-line { padding-block: 0.625rem; } button.k-line > .k-line-end::after { opacity: 1; } }
 .k-line-run { width: 0.375rem; height: 0.375rem; border-radius: 50%; background: var(--st-work); animation: var(--animate-pulse-dot); }
+.k-line-thought { width: 0.8125rem; height: 0.8125rem; color: var(--faint); }
 .k-delta { font-family: var(--font-mono); }
-.k-chip { padding: 0 0.375rem; border-radius: var(--radius-sm); background: var(--sunken); color: var(--muted); box-shadow: inset 0 0 0 1px var(--line); }
+.k-chip { display: inline-flex; flex-shrink: 0; align-items: center; gap: 0.25rem; padding: 0 0.375rem; border-radius: var(--radius-sm); background: var(--sunken); color: var(--muted); font-size: var(--text-micro); box-shadow: inset 0 0 0 1px var(--line); }
+.k-chip[data-code] { font-family: var(--font-mono); }
+/* A chip that gives way before the words beside it are cut: down to its icon and count. (The shrink factor is that
+   large so the words' share of the squeeze rounds to nothing: any part of a pixel would put an ellipsis on them.) */
+.k-chip-gives { min-width: 2.25rem; flex-shrink: 1000000; margin-left: auto; overflow: hidden; white-space: nowrap; }
+.k-chip-gives + .k-line-end { margin-left: 0; }
 /* A plan's steps as marks. */
 .k-line-plan { display: inline-flex; align-items: center; gap: 0.375rem; color: var(--muted); }
 .k-pips { display: inline-flex; gap: 2px; }
-.k-pips > i { width: 0.3125rem; height: 0.625rem; border-radius: 1px; background: var(--line-strong); }
+.k-pips > i { width: 0.3125rem; height: 0.625rem; border-radius: 1px; background: var(--st-idle); }
 .k-pips > i[data-done] { background: var(--st-done); }
-/* Why a call failed, under its line while it is closed. */
-.k-line-why { padding: 0 0.375rem 0.25rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: var(--text-caption); line-height: 1.4; color: var(--danger-ink); }
-/* What the model said on the way to a step: its own words, quiet, in the text face. */
-.k-aside { padding: 0.25rem 0.375rem; color: var(--muted); }
+
+/* A call the daemon marks (the policy rates it high risk, it writes outside the
+   folder, it left the sandbox, a rule or a hook let it run): its line says why
+   in a few words in the warning ink (the sentence is their title, and stands in
+   the opened call), and what it was made on is whole on the page in that ink,
+   every line of it: never cut by the line's end and never inside a "+N". */
+.k-tool-call[data-marked] > .k-line .k-line-what { color: var(--warn-ink); white-space: pre-wrap; }
+.k-step-calls .k-tool-call[data-marked], .k-peek-same { box-shadow: inset 1px 0 0 var(--warn); }
+.k-peek-same > .k-tool-call[data-marked] { box-shadow: none; }
+/* Calls marked for one reason: the reason once, with how many, and the calls under it. */
+.k-peek-why { display: flex; align-items: baseline; gap: 0.25rem; padding: 0.25rem 0.375rem 0; font-size: var(--text-ui); line-height: 1.45; color: var(--muted); }
+/* In an opened call: the sentence of what it is marked for. */
+.k-mark-why { font-size: var(--text-caption); line-height: 1.45; color: var(--warn-ink); }
+
+/* The agent's line speaks as the others do: its state beside the verb, in the line's case. What can be done
+   with the agent stands at the line's end, outside the line's own button, and is quiet until the line is
+   pointed at or holds the keyboard. */
+.k-line-agent { display: flex; align-items: center; min-width: 0; border-radius: var(--radius-sm); }
+.k-line-agent > .k-line { flex: 1 1 0; }
+.k-line-agent:hover { background: var(--hover); }
+.k-line-agent .k-line-state { text-transform: lowercase; }
+.k-line-acts { display: flex; flex-shrink: 0; align-items: center; gap: 0.125rem; padding-right: 0.125rem; }
+/* With a pointer they take the place of the line's chips while the line is pointed at or holds the keyboard
+   (the line's end keeps room for them), so the mark that the line opens stays in the rail's own column. */
+@media (hover: hover) {
+  .k-line-agent { position: relative; }
+  .k-line-agent .k-line-end { min-width: 3.5rem; justify-content: flex-end; }
+  .k-line-acts { position: absolute; top: 50%; right: 1.375rem; padding-right: 0; opacity: 0; transform: translateY(-50%); transition: opacity 120ms; }
+  .k-line-agent:is(:hover, :focus-within) > .k-line-acts { opacity: 1; }
+  .k-line-agent:is(:hover, :focus-within) .k-line-end > :is(.k-chip, .k-line-run) { visibility: hidden; }
+}
+
+/* Under a call's line, opened or not: rows of who said or did something about it, and what. One grammar for
+   a failure's reason, the owner's denial, a refusal, a hook, a language server, a question's record: the name
+   stands in the verbs' column, the words after it, under the column of what the line was made on. */
+.k-under { display: flex; flex-direction: column; padding: 0 0.25rem 0.25rem 0.375rem; font-size: var(--text-ui); line-height: 1.45; color: var(--muted); }
+/* (What can be done about it, the one retry, goes to a row of its own before the words are squeezed.) */
+.k-under-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 0.5rem; min-width: 0; }
+.k-under-name { flex: 0 0 auto; min-width: var(--k-verb, 4.25rem); font-weight: 500; white-space: nowrap; }
+.k-under-what { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; color: var(--fg); }
+.k-under-what[data-code], .k-under-code { font-family: var(--font-mono); font-size: var(--text-caption); }
+/* A reason in the call's own output: whole on a wide line, at most three rows where it wraps. */
+.k-under-what[data-code] { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.k-under-what[data-tone="fail"] { color: var(--danger-ink); }
+.k-under-what[data-tone="warn"] { color: var(--warn-ink); }
+.k-under-what[data-tone="note"] { color: var(--muted); }
+.k-under-where { color: var(--faint); }
+.k-under-act { display: inline-flex; flex-shrink: 0; align-items: center; gap: 0.25rem; margin-left: auto; color: var(--faint); }
+/* A question's record: what it offered, with what was chosen marked. */
+.k-opts { display: inline-flex; flex-wrap: wrap; gap: 0.25rem; margin-left: 0.5rem; vertical-align: baseline; }
+.k-opt { padding: 0 0.375rem; border-radius: var(--radius-sm); color: var(--faint); box-shadow: inset 0 0 0 1px var(--line); }
+.k-opt[data-on] { background: var(--accent-soft); color: var(--accent-ink); font-weight: 500; box-shadow: none; }
+/* Under a closed line: how many more like it there are, what a small change changed. */
+.k-line-more { padding: 0.125rem 0.375rem 0.25rem; font-size: var(--text-caption); color: var(--faint); }
+.k-line-more[data-tone="fail"] { color: var(--danger-ink); }
+.k-line-change { margin: 0 0.25rem 0.3125rem calc(var(--k-hang) + 0.375rem); overflow: hidden; border-radius: var(--radius-xs); font-family: var(--font-mono); font-size: var(--text-caption); line-height: 1.5; color: var(--fg); }
+.k-line-change > div { padding: 0 0.5rem 0 0.25rem; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.k-line-change > div > span { display: inline-block; width: 1rem; text-align: center; color: var(--muted); user-select: none; }
+.k-line-change > div[data-kind="add"] { background: color-mix(in oklab, var(--ok) 10%, transparent); }
+.k-line-change > div[data-kind="del"] { background: color-mix(in oklab, var(--danger-soft) 70%, transparent); }
+
+/* What the model said on the way to a step, in its own words. More than a few
+   words stand above the line in the text's own ink, a size under a reply:
+   they may carry a decision. A few words stand beside the line, quiet. */
+.k-aside { padding: 0.25rem 0.375rem; color: var(--fg); }
 .k-aside .prose-keel { font-size: var(--text-base); line-height: 1.5; }
-.k-step:where(:not(:first-child)) > .k-aside:first-child { padding-top: 0.5rem; }
+.k-said { padding: 0.3125rem 0.375rem; color: var(--muted); }
+.k-said .prose-keel { font-size: var(--text-ui); line-height: 1.45; }
+.k-step:where(:not(:first-child)) > .k-aside:not(.k-said):first-child { padding-top: 0.5rem; }
 .k-step-lead { padding: 0.125rem 0.375rem; }
 /* The calls of a step, under its line: a rule of their own, a step in. */
 .k-step-calls { display: flex; flex-direction: column; margin-left: 0.375rem; padding-left: 0.5rem; border-left: 1px solid var(--line); }
+.k-step-calls .k-line { padding-block: 0.1875rem; }
 .k-step-calls .k-line-verb { font-weight: 500; color: var(--muted); }
-.k-step-calls .k-tool-call[data-state="error"] .k-line-verb { color: var(--danger-ink); }
+/* A call that ran and failed says so in its verb too; one that failed while only looking does not. */
+.k-step-calls .k-tool-call[data-state="error"]:not([data-soft]) .k-line-verb { color: var(--danger-ink); }
 /* What a call holds, opened. */
 .k-tool-body { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.25rem 0.25rem 0.625rem 0.375rem; min-width: 0; }
 .k-out { margin: 0; padding: 0.5rem 2.25rem 0.5rem 0.625rem; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--code-bg); font-family: var(--font-mono); font-size: var(--text-caption); line-height: 1.55; white-space: pre-wrap; word-break: break-all; }
 .k-terminal { border-radius: var(--radius-sm); }
+/* The command's copy button beside the output's. */
+.k-copy-corner.k-copy-second { right: 2.25rem; }
 /* An output shown in part: what is shown, and the way to the whole. */
 .k-out-more { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.75rem; padding: 0.25rem 0.625rem; border-top: 1px solid var(--line); font-family: var(--font-sans); font-size: var(--text-caption); color: var(--faint); }
 .k-out-more:where(:not(:last-child)) { border-bottom: 1px solid var(--line); }
-.k-out-link { display: inline-flex; align-items: center; min-height: var(--spacing-ctl-sm); padding: 0 0.375rem; border-radius: var(--radius-sm); font-weight: 500; color: var(--accent-ink); }
+.k-out-link { display: inline-flex; align-items: center; gap: 0.25rem; min-height: var(--spacing-ctl-sm); padding: 0 0.375rem; border-radius: var(--radius-sm); font-weight: 500; color: var(--accent-ink); }
 .k-out-link:hover { background: var(--accent-soft); }
 .k-out-gap { display: block; margin: 0.375rem -0.625rem; padding: 0.125rem 0.625rem; border-block: 1px dashed var(--line-strong); font-family: var(--font-sans); color: var(--faint); }
 /* Steps and calls open and close at their own height (Base UI sets the variable). */
 .k-tool-panel { height: var(--collapsible-panel-height); transition: height 180ms var(--ease-out); }
 .k-tool-panel[data-starting-style], .k-tool-panel[data-ending-style] { height: 0; }
 
-/* A pane too narrow for the reading size: the rail's lines keep to one row, the counts give way first. */
+/* The way to the end of the conversation, while an earlier part is read: a
+   strip of its own under the text, so it never lies over a line being read. */
+.k-latest-bar { position: absolute; inset: auto var(--sbw, 0px) 0 0; display: flex; align-items: center; justify-content: center; height: 2.375rem; border-top: 1px solid var(--line); background: var(--bg); }
+.k-station[data-helm] .k-latest-bar { background: var(--raised); }
+
+/* A pane too narrow for the table (four panes, a phone): what was said stands above what was done, and a
+   line's words wrap from the pane's own edge. */
+@container reading (max-width: 36rem) {
+  .k-work[data-said] { display: flex; }
+  .k-work[data-said] > .k-step { display: block; }
+  /* A call's own line takes a second row there before its words are cut: how it stands is never cut. */
+  .k-line-text:not([data-wrap]) { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; overflow-wrap: anywhere; }
+  .k-under-what[data-code] { -webkit-line-clamp: 5; }
+}
+/* A pane too narrow for the reading size: the reply is a size down, and so are the words on the rail. */
 @container reading (max-width: 28rem) {
-  .k-line-count { display: none; }
-  .k-line-verb { min-width: 3.875rem; }
+  .k-work { --k-verb: 3.75rem; }
   .k-owner-words { font-size: var(--text-base); }
+  .k-aside .prose-keel { font-size: var(--text-ui); }
+}
+/* A pane with no room for a column of verbs (a phone at a large text size): a line is its words in
+   a row, later rows a step in; a reason under it starts at the line's own edge. */
+@container reading (max-width: 20rem) {
+  .k-work { --k-verb: 0rem; --k-hang: 0.875rem; }
+  .k-line-verb { margin-right: 0.125rem; }
+  .k-under-name:empty { display: none; }
+  .k-under-row { padding-left: 0.875rem; }
+  .k-under-name { margin-right: 0.125rem; }
 }

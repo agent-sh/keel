@@ -1,17 +1,21 @@
 import { Collapsible } from "@base-ui/react/collapsible";
 import { Ansi } from "./Ansi.tsx";
-import { Brain, Check, ChevronRight, Circle, CircleDot, Link2, RotateCcw, Webhook, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Brain, Check, Circle, CircleDot, Link2, RotateCcw, SquareTerminal, X } from "lucide-react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { setUI, useUI } from "../lib/ui.ts";
 import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { diffLines, splitLines } from "../../../src/tools/diff.ts";
 import type { PatchLine } from "../../../src/safety/patch.ts";
 import { actions, api, failed, reportError } from "../lib/store.ts";
 import { bounded } from "../lib/scrollback.ts";
-import { changeOf, failureLine } from "../lib/work.ts";
+import { callState, changeOf, commandText, failureLine, familyOf, moreLines, NEEDS_APPROVAL, ranOf, refusalOf, smallChange } from "../lib/work.ts";
+import { useCallsLive } from "../lib/call-live.ts";
+import { marksOf, useMarked } from "../lib/marks.ts";
+import { commandOf } from "../../../src/core/command.ts";
+import { ThoughtMark } from "./Work.tsx";
 import { CallDiff, type CallFile } from "./DiffView.tsx";
-import { stopKind } from "../../../src/core/stops.ts";
-import { allowRetry, refusedBy, useBlocked } from "../lib/blocked.ts";
+import { denialReason, stopKind } from "../../../src/core/stops.ts";
+import { allowRetry, useBlocked } from "../lib/blocked.ts";
 import {
   patchFiles, planItems, resultImages, resultText, shellBody, splitMemory, splitNested, shellStatus, shortPath, toolKind, type PlanItem,
   type ToolKind,
@@ -29,21 +33,28 @@ import { splitDiagnostics, type ResultDiagnostics } from "../lib/tools.ts";
 // The file a call names, for its copy line.
 const pathOf = (input: any): string | undefined => { const p = input?.file_path ?? input?.path ?? input?.notebook_path; return typeof p === "string" && p ? p : undefined; };
 
-// What a call did, as its line begins: one word while it runs, one when it is over.
-const LABEL: Partial<Record<ToolKind, [string, string]>> = {
-  shell: ["Running", "Ran"], stdin: ["Sending input", "Sent input"], stop: ["Stopping", "Stopped"], read: ["Reading", "Read"], edit: ["Editing", "Edited"],
-  write: ["Writing", "Wrote"], patch: ["Patching", "Patched"], notebook: ["Editing", "Edited"], search: ["Searching", "Searched"], glob: ["Finding", "Found"],
-  list: ["Listing", "Listed"], web: ["Searching the web", "Searched the web"], fetch: ["Fetching", "Fetched"], plan: ["Plan", "Plan"], ask: ["Question", "Question"],
-  skill: ["Loading skill", "Skill"],
+// What a call did, as its line begins: one word while it runs, one when it is over, and the plain
+// verb for a call that did neither (it waits, failed, was cut or stopped: the word beside it says which).
+// (The third: the plain verb, for a call that was not carried out: it waits, was turned away or never got a result.)
+const LABEL: Partial<Record<ToolKind, [string, string, string]>> = {
+  shell: ["Running", "Ran", "Run"], stdin: ["Sending input", "Sent input", "Input"], stop: ["Stopping", "Stopped", "Stop"], read: ["Reading", "Read", "Read"],
+  edit: ["Editing", "Edited", "Edit"], write: ["Writing", "Wrote", "Write"], patch: ["Patching", "Patched", "Patch"], notebook: ["Editing", "Edited", "Edit"],
+  search: ["Searching", "Searched", "Search"], glob: ["Finding", "Found", "Find"], list: ["Listing", "Listed", "List"], web: ["Searching the web", "Searched the web", "Web search"],
+  fetch: ["Fetching", "Fetched", "Fetch"], plan: ["Plan", "Plan", "Plan"], ask: ["Question", "Question", "Question"], skill: ["Loading skill", "Skill", "Skill"],
 };
 
 // `lead`: what the model thought on the way to it, shown when the call is opened.
-type Props = { use: ToolUseBlock; result?: ToolResultBlock; live?: boolean; sessionId?: string; cwd?: string; lead?: ReactNode };
+// `auto`: the call stands on the rail by itself (a step of one call, or a call shown under its closed
+// step): a command that runs is open there, and its output follows. In an opened step it is a line.
+// `peek`: a copy of the call shown while its step is closed: a search hit is not taken by it.
+// `quiet`: why the call is marked is said once above it, for every call marked the same: its own line does not repeat it.
+// `event`: the event the call is of (a program asks for its marks again as it makes calls).
+type Props = { use: ToolUseBlock; result?: ToolResultBlock; live?: boolean; sessionId?: string; cwd?: string; lead?: ReactNode; auto?: boolean; peek?: boolean; quiet?: boolean; event?: string };
 
 function summary(kind: ToolKind, name: string, input: any, cwd?: string): string {
   switch (kind) {
     // The command itself: what the model calls it is the model's word for it (the line's tooltip).
-    case "shell": return String(input.cmd ?? input.command ?? "").split("\n").find((l) => l.trim())?.trim() ?? "";
+    case "shell": return (commandOf(input) ?? "").split("\n").find((l) => l.trim())?.trim() ?? "";
     case "stdin": return input.chars ? JSON.stringify(input.chars) : `poll session ${input.session_id ?? ""}`;
     case "stop": return input.task_id ?? input.shell_id ?? "";
     case "read": {
@@ -79,40 +90,52 @@ function planSummary(items: PlanItem[]): string {
 // What the owner's hooks did to a call rides with its result: the input they
 // gave it in place of the model's, and an allow that answered its ask.
 type HookMark = { input?: any; allowed?: string };
-const hookOf = (result: ToolResultBlock | undefined) => (result as (ToolResultBlock & { shown?: { hook?: HookMark } }) | undefined)?.shown?.hook;
+export const hookOf = (result: ToolResultBlock | undefined) => (result as (ToolResultBlock & { shown?: { hook?: HookMark } }) | undefined)?.shown?.hook;
 
-// The line that says so, under the call's own: the call shows the input that ran, this names what the model asked for.
-function HookRow({ hook, asked, name, cwd }: { hook: HookMark; asked: any; name: string; cwd?: string }) {
+// Under a call's line, opened or not: rows of who said or did something about
+// it, and what. One grammar for every such row (a failure's reason, the
+// owner's denial, a refusal, a hook, a language server): the name stands in
+// the verbs' column, the words after it.
+// Between a line's words and what stands at its end: nothing on the page, a break in a copied selection
+// (the two are parts of a flex row, which a selection joins with nothing between them).
+export const Apart = () => <span className="k-apart" aria-hidden="true">{"  "}</span>;
+
+export function Under({ name, tone, code, testid, act, children }: { name?: string; tone?: "fail" | "warn" | "note"; code?: boolean; testid?: string; act?: ReactNode; children: ReactNode }) {
   return (
-    <div className="k-line-hook" data-testid="tool-hook">
-      <Webhook className="mt-0.5 size-3.5 shrink-0" />
-      <p className="min-w-0 flex-1">
-        {hook.input !== undefined && <>A hook changed this call before it was judged. The model asked for <span className="font-mono text-micro break-all text-fg" data-testid="tool-asked">{summary(toolKind(name), name, asked ?? {}, cwd) || JSON.stringify(asked ?? {}).slice(0, 400)}</span>. </>}
-        {hook.allowed !== undefined && <span data-testid="tool-hook-allowed">A hook allowed it without asking you{hook.allowed ? `: ${hook.allowed}` : ""}.</span>}
-      </p>
+    <div className="k-under-row" data-testid={testid}>
+      <span className="k-under-name">{name}</span>
+      <span className="k-under-what" data-tone={tone} data-code={code ? "" : undefined}>{children}</span>
+      {act}
+    </div>
+  );
+}
+
+// What a hook of the owner's did: what the model had asked for (the call shows
+// the input that ran), and the hook that let it through, in its own words.
+function HookRows({ hook, asked, name, cwd }: { hook: HookMark; asked: any; name: string; cwd?: string }) {
+  if (hook.input === undefined && !hook.allowed) return null;
+  return (
+    <div className="k-under" data-testid="tool-hook">
+      {hook.input !== undefined && <Under name="Model">asked for <span className="k-under-code" data-testid="tool-asked">{summary(toolKind(name), name, asked ?? {}, cwd) || JSON.stringify(asked ?? {}).slice(0, 400)}</span></Under>}
+      {/* Said on the call's own line when the hook changed nothing and gave no reason. */}
+      {hook.allowed !== undefined && (hook.input !== undefined || hook.allowed) && <Under name="Hook" testid="tool-hook-allowed">allowed it{hook.allowed ? `: ${hook.allowed}` : ""}</Under>}
     </div>
   );
 }
 
 // The calls that change files: only they show what a language server found.
 const EDITS = new Set<ToolKind>(["edit", "write", "patch", "notebook"]);
+// The calls that only look around: one that failed is a note on the page, not an alarm.
+const LOOKS = new Set<ToolKind>(["read", "search", "glob", "list", "web", "fetch"]);
 
-// What a language server found after the edit, as the model was told it: under
-// the call's line, opened or not. The server and what it says, then a row a finding.
-function DiagnosticsRow({ d }: { d: ResultDiagnostics }) {
+// What a language server found after the edit, as the model was told it: the
+// server and what it says, then a row a finding.
+function DiagnosticsRows({ d }: { d: ResultDiagnostics }) {
   const errors = d.lines.some((l) => l.severity === "error");
   return (
-    <div className="k-line-diag" data-testid="tool-diagnostics" data-state={errors ? "errors" : d.lines.length ? "warnings" : d.pending ? "pending" : "fixed"}>
-      <div>
-        <span className="k-diag-name">{d.server || "Diagnostics"}</span>
-        <span className="k-diag-what" data-testid="tool-diagnostics-head">{d.late ? "from an earlier edit: " : ""}{d.head}</span>
-      </div>
-      {d.lines.map((l, i) => (
-        <div key={i} data-testid="tool-diagnostic" data-severity={l.severity}>
-          <span className="k-diag-name" data-code="">{l.where}</span>
-          <span className="k-diag-what" data-code="">{l.text}</span>
-        </div>
-      ))}
+    <div className="k-under" data-testid="tool-diagnostics" data-state={errors ? "errors" : d.lines.length ? "warnings" : d.pending ? "pending" : "fixed"}>
+      <Under name={d.server || "Diagnostics"} tone={errors ? "fail" : d.lines.length ? "warn" : undefined}><span data-testid="tool-diagnostics-head">{d.late ? "from an earlier edit: " : ""}{d.head}</span></Under>
+      {d.lines.map((l, i) => <Under key={i} code tone={l.severity === "error" ? "fail" : "warn"} testid="tool-diagnostic"><span className="k-under-where">{l.where}</span> {l.text}</Under>)}
     </div>
   );
 }
@@ -134,41 +157,57 @@ function useSpillRemoved(sessionId: string | undefined, out: string): boolean {
   return gone;
 }
 
-export function ToolCall({ use: asked, result, live, sessionId, cwd, lead }: Props) {
+export function ToolCall({ use: asked, result, live, sessionId, cwd, lead, auto, peek, quiet, event }: Props) {
   const hook = hookOf(result);
   // Every call shows the input that ran.
   const use = hook?.input !== undefined ? { ...asked, input: hook.input } : asked;
-  const beside = (card: ReactNode) => (hook ? <div className="flex flex-col">{card}<HookRow hook={hook} asked={asked.input} name={use.name} cwd={cwd} /></div> : card);
+  const beside = (card: ReactNode) => (hook ? <div className="flex flex-col">{card}<HookRows hook={hook} asked={asked.input} name={use.name} cwd={cwd} /></div> : card);
   if (AGENT_TOOLS.has(use.name)) return beside(<AgentCall use={use} result={result} live={live} />);
-  if (use.name === "run_code") return beside(<CodeCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} />);
+  if (use.name === "run_code") return beside(<CodeCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} event={event} />);
   if (use.name === "AskReaders" || use.name === "ask_readers") return beside(<ReadersCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} />);
   const kind = toolKind(use.name);
   const input: any = use.input ?? {};
   if (kind === "ask" && !live) return beside(<QuestionCard use={use} result={result} sessionId={sessionId} />);
-  const call = <GenericCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} kind={kind} input={input} lead={lead} hook={hook} asked={asked.input} />;
+  const call = <GenericCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} kind={kind} input={input} lead={lead} auto={auto} peek={peek} quiet={quiet} hook={hook} asked={asked.input} />;
   // A server asked the owner something while this call runs: a line says so under the call.
   return result ? call : <AskedUnder use={use} sessionId={sessionId}>{call}</AskedUnder>;
 }
 
-function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, hook, asked }: Props & { kind: ToolKind; input: any; hook?: HookMark; asked?: any }) {
+// A command longer than this, or of more than one line, is shown whole where the call is opened; a shorter one is all on its line.
+const LINE_COMMAND = 72;
+const NO_CALLS: { id: string; result?: unknown }[] = [];
+
+function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, auto, peek, quiet, hook, asked }: Props & { kind: ToolKind; input: any; hook?: HookMark; asked?: any }) {
   const { text: out, nested, memory, diagnostics } = useMemo(() => { const m = splitMemory(resultText(result)); const d = EDITS.has(kind) ? splitDiagnostics(m.text) : { text: m.text, diagnostics: [] }; return { ...splitNested(d.text), memory: m.memory, diagnostics: d.diagnostics }; }, [result, kind]);
   const images = resultImages(result);
   const spillGone = useSpillRemoved(sessionId, out);
   const refused = useBlocked(sessionId).find((b) => b.calls?.includes(use.id));
-  // A call the owner's stop or a daemon restart ended did not fail: it reads "stopped" or "cut".
+  // With no result it runs only while its session works, and waits while its approval card is open.
+  const mine = useMemo(() => (result || live ? NO_CALLS : [{ id: use.id }]), [result, live, use.id]);
+  const { working, waiting } = useCallsLive(sessionId, mine);
+  const marked = useMarked(sessionId, [use]);
+  const marks = marked ? marksOf(sessionId, use.id) : [];
+  // How it stands: a call the owner's stop or a restart ended did not fail, and neither did one that was
+  // turned away before it ran, by the owner on its card or by the policy, the reviewer or the judge.
   const ended = result?.is_error ? stopKind(result.content) : undefined;
-  const state = !result ? "running" : refused ? "refused" : ended ?? (result.is_error ? "error" : "ok");
+  const said = callState(result);
+  const state = live ? "live" : !result ? (waiting ? "waiting" : working || !sessionId ? "running" : "unfinished")
+    : refused ? "refused" : said === "error" && marks.some((m) => m.kind === "denied") ? "denied" : said;
+  // Whether it was carried out, in whole or in part: its verb says it ran only then.
+  const ran = state === "live" || ranOf(state, result, familyOf(use.name) === "change");
+  // A call that only looks around and failed (a file that is not there) is a note, not an alarm.
+  const soft = LOOKS.has(kind);
   const isShell = kind === "shell" || kind === "stdin";
   const shell = isShell ? shellStatus(out) : {};
   const plan = kind === "plan" ? planItems(use.name, input) : null;
   // Closed until asked for: its line says what it did. A command that runs is
   // open while it does, so its output shows as it arrives.
   const [picked, setPicked] = useState<boolean | null>(null);
-  const open = picked ?? (kind === "shell" && state === "running" && !live && !!sessionId);
+  const open = picked ?? (!!auto && kind === "shell" && state === "running" && !!sessionId);
   const files = useMemo(() => (open ? callFiles(kind, use, cwd, (result as { shown?: { line?: number } } | undefined)?.shown?.line) : null), [open, kind, use, cwd, result]);
   const change = useMemo(() => (kind === "edit" || kind === "write" || kind === "patch" ? changeOf(use) : null), [kind, use]);
   // A search hit on this call or its output opens this card (not a sibling call of the same reply).
-  const focused = useUI((s) => s.focusCall === use.id);
+  const focused = useUI((s) => !peek && s.focusCall === use.id);
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!focused) return;
@@ -178,50 +217,89 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, hoo
     requestAnimationFrame(() => requestAnimationFrame(() => { root.current?.scrollIntoView({ block: "center" }); root.current?.classList.add("flash"); setTimeout(() => root.current?.classList.remove("flash"), 1600); }));
   }, [focused]);
   const rejected = plan && result?.is_error && !ended ? resultText(result) : undefined;
-  // Why it failed, in a line of its own output, while the call is closed.
+  // Why it failed, in a line of its own output, while the call is closed. A call that was turned away says
+  // who turned it away and why: the words written for the model are not the reason.
   const why = state === "error" && !open && !rejected ? shortPaths(failureLine(result), cwd) : "";
+  const ownReason = state === "denied" ? denialReason(resultText(result)) : "";
+  const turned = state === "refused" && !refused ? refusalOf(result) : null;
   // A plan update says where the plan stands: the step in progress, and how many are done.
   const planNow = plan?.find((i) => i.status === "in_progress");
   const planDone = plan?.filter((i) => i.status === "completed").length ?? 0;
-  const what = plan ? (planNow ? planNow.active ?? planNow.text : plan.length && planDone === plan.length ? "Every step done" : plan.length ? "Not started" : "No steps") : summary(kind, use.name, input, cwd);
+  const command = isShell ? commandText(use) : "";
+  // A marked command is on its line whole, every line of it: it is never cut by the line's end.
+  const isMarked = marks.length > 0 || !!hook;
+  const whole = isMarked && kind === "shell";
+  // (A plan update that was not applied says so as its verb, with the reason under its line: no state word, no step.)
+  const what = rejected ? "" : plan ? (planNow ? planNow.active ?? planNow.text : plan.length && planDone === plan.length ? "Every step done" : plan.length ? "Not started" : "No steps") : whole ? command.trim() : summary(kind, use.name, input, cwd);
+  const more = kind === "shell" && !whole ? moreLines(use) : 0;
   const words = kind === "plan" || kind === "skill" || kind === "other" || kind === "mcp" || kind === "stop";
+  const verb = rejected ? "Plan update not applied" : LABEL[kind]?.[state === "running" || state === "live" ? 0 : ran ? 1 : 2] ?? FLEET_LABEL[use.name] ?? use.name;
+  // What a change that was made, is being made or waits to be made adds and removes: one that failed or was turned away changed nothing.
+  const changed = state === "ok" || state === "running" || state === "live" || state === "waiting";
+  // A small change shows its lines under the closed line, as a failure shows its reason.
+  const small = useMemo(() => (!open && !peek && change && changed ? smallChange(use) : null), [open, peek, change, changed, use]);
   return (
-    <Collapsible.Root ref={root} open={open} onOpenChange={setPicked} className="k-tool-call group/tool" data-testid="tool-call" data-call={use.id} data-tool={use.name} data-state={live ? "live" : state} data-kind={kind}>
+    <Collapsible.Root ref={root} open={open} onOpenChange={setPicked} className="k-tool-call group/tool" data-testid="tool-call" data-call={use.id} data-tool={use.name} data-state={state} data-kind={kind} data-marked={isMarked ? "" : undefined} data-soft={soft ? "" : undefined}>
       <Collapsible.Trigger className="k-line" title={isShell && input.description ? `The model's note: ${input.description}` : undefined}>
-        <span className="k-line-verb">{rejected ? "Plan update not applied" : LABEL[kind]?.[state === "running" ? 0 : 1] ?? FLEET_LABEL[use.name] ?? use.name}</span>
-        <span className="k-line-what" data-words={words ? "" : undefined}>{what}</span>
+        {/* The line's words, as one run of text: the verb, how it stands, why it is marked, what it was made on.
+            A marked call's words wrap, so what it was made on is whole on the page. */}
+        <span className="k-line-text" data-wrap={isMarked ? "" : undefined}>
+          <span className="k-line-verb">{verb}</span>{" "}
+          {state === "waiting" && <><span className="k-line-state" data-tone="need" data-testid="call-state">{NEEDS_APPROVAL}</span>{" "}</>}
+          {state === "error" && !rejected && <><span className="k-line-state" data-tone={soft ? "note" : "fail"} data-testid="call-state">{shell.exit !== undefined ? `exit ${shell.exit}` : "failed"}</span>{" "}</>}
+          {state === "denied" && <><span className="k-line-state" data-tone="own" data-testid="call-state">denied by you</span>{" "}</>}
+          {state === "refused" && <><span className="k-line-state" data-tone="warn" data-testid="tool-refused">refused</span>{" "}</>}
+          {ended && <><span className="k-line-state" data-tone={ended === "cut" ? "warn" : "idle"} data-testid="tool-ended" title={ended === "cut" ? "A daemon restart cut this call. It may have partly run." : "You stopped the turn while this call ran."}>{ended === "cut" ? "cut by a restart" : "stopped"}</span>{" "}</>}
+          {state === "unfinished" && <><span className="k-line-state" data-tone="idle" data-testid="call-state" title="The turn ended before this call had a result.">no result</span>{" "}</>}
+          {/* Why it is marked, in a few words; the sentence is its title and stands in the opened call. */}
+          {!quiet && marks.filter((m) => m.kind !== "denied").map((m) => <Fragment key={m.kind}><span className="k-line-state k-line-mark" data-tone="warn" data-testid="call-mark" data-mark={m.kind} title={m.why}>{m.short}</span>{" "}</Fragment>)}
+          {hook?.input !== undefined && <><span className="k-line-state k-line-mark" data-tone="warn" data-testid="tool-rewritten">changed by a hook</span>{" "}</>}
+          {hook?.allowed !== undefined && hook.input === undefined && <><span className="k-line-state k-line-mark" data-tone="warn" title="A hook of yours allowed it without asking you.">allowed by a hook</span>{" "}</>}
+          <span className="k-line-what" data-words={words ? "" : undefined} data-whole={whole ? "" : undefined}>{what}</span>
+        </span>
         <span className="k-line-end">
+          {(more > 0 || (plan && plan.length > 0) || (change && changed) || nested.length > 0 || shell.background || shell.session) && <Apart />}
+          {/* The lines of a command after its first: at the line's end, where nothing cuts it. */}
+          {more > 0 && <span className="k-line-rest" data-testid="more-lines">+{more} {more === 1 ? "line" : "lines"}</span>}
           <MachineBadge sessionId={sessionId} callId={use.id} />
           {plan && plan.length > 0 && !rejected && <span className="k-line-plan" data-testid="plan-count"><Pips done={planDone} total={plan.length} />{planDone}/{plan.length}</span>}
-          {change && (change.added > 0 || change.removed > 0) && <Delta added={change.added} removed={change.removed} />}
+          {change && changed && (change.added > 0 || change.removed > 0) && <Delta added={change.added} removed={change.removed} />}
           {nested.length > 0 && <span className="k-chip" data-testid="tool-nested" title={nested.map((n) => n.path).join("\n")}>+ {nested.length === 1 ? shortPath(nested[0]!.path, cwd) : `${nested.length} instruction files`}</span>}
-          {hook?.input !== undefined && <span className="k-chip" data-testid="tool-rewritten">changed by a hook</span>}
           {shell.background && <span className="k-chip" data-testid="tool-background">background</span>}
           {shell.session && <span className="k-chip">session {shell.session}</span>}
-          {state === "running" && <span className="k-line-run" aria-label="running" />}
-          {state === "error" && <span className="text-danger">{shell.exit !== undefined ? `exit ${shell.exit}` : "failed"}</span>}
-          {ended && <span className="text-warn" data-testid="tool-ended" title={ended === "cut" ? "A daemon restart cut this call. It may have partly run." : "You stopped the turn while this call ran."}>{ended === "cut" ? "cut by a restart" : "stopped"}</span>}
-          {state === "refused" && <span className="text-danger" data-testid="tool-refused">refused</span>}
-          <ChevronRight className="k-line-chev" />
+          {lead && <ThoughtMark />}
+          {(state === "running" || state === "live") && <span className="k-line-run" aria-label="running" />}
         </span>
       </Collapsible.Trigger>
-      {why && <p className="k-line-why" data-testid="tool-why">{why}</p>}
-      {rejected && <p className="k-line-why" data-testid="plan-rejected">{rejected} The plan before it stays.</p>}
-      {refused && sessionId && (
-        // A refused call says so where it sits: who refused it, why, and the retry the owner can let through.
-        <div className="flex items-start gap-3 py-1.5 pl-2.5 pr-2" data-testid="tool-refusal">
-          <p className="min-w-0 flex-1 text-caption text-muted"><span className="font-medium text-danger">{refusedBy(refused)}.</span> {refused.reason}</p>
-          {refused.retry
-            ? <span className="shrink-0 text-caption text-faint" data-testid="tool-retry-allowed">Retry allowed</span>
-            : <button data-testid="tool-retry" onClick={() => allowRetry(sessionId, refused.id)} className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-line px-2.5 text-caption hover:bg-hover"><RotateCcw className="size-3" /> Allow one retry</button>}
+      {(why || rejected || ownReason || turned || (refused && sessionId)) && (
+        <div className="k-under">
+          {why && <Under code tone={soft ? "note" : "fail"} testid="tool-why">{why}</Under>}
+          {rejected && <Under tone="fail" testid="plan-rejected">{rejected} The plan before it stays.</Under>}
+          {/* The owner's own words with their denial; none given, none shown. */}
+          {ownReason && <Under name="You" testid="tool-denial">{ownReason}</Under>}
+          {turned && <Under name={turned.by} testid="tool-refusal">{shortPaths(turned.why, cwd)}</Under>}
+          {refused && sessionId && (
+            // Who refused it and why, once, and the retry the owner can let through.
+            <Under name={refused.by === "reviewer" ? "Reviewer" : refused.by === "streak" ? "Keel" : "Judge"} testid="tool-refusal" act={refused.retry
+              ? <span className="k-under-act" data-testid="tool-retry-allowed">Retry allowed</span>
+              : <button type="button" data-testid="tool-retry" onClick={() => allowRetry(sessionId, refused.id)} className="k-under-act k-out-link"><RotateCcw className="size-3" /> Allow one retry</button>}>
+              {refused.by === "unavailable" ? "could not review it: " : refused.by === "streak" ? "refused it after repeated refusals: " : ""}{refused.reason}
+            </Under>
+          )}
         </div>
       )}
-      {hook && <HookRow hook={hook} asked={asked} name={use.name} cwd={cwd} />}
-      {diagnostics.map((d, i) => <DiagnosticsRow key={i} d={d} />)}
+      {small && (
+        <div className="k-line-change" data-testid="small-change" aria-hidden="true">
+          {small.map((l, i) => <div key={i} data-kind={l.t === "+" ? "add" : "del"}><span>{l.t}</span>{l.text || " "}</div>)}
+        </div>
+      )}
+      {hook && <HookRows hook={hook} asked={asked} name={use.name} cwd={cwd} />}
+      {diagnostics.map((d, i) => <DiagnosticsRows key={i} d={d} />)}
       <Collapsible.Panel className="k-tool-panel overflow-hidden">
         <div className="k-tool-body">
+          {marks.length > 0 && <p className="k-mark-why" data-testid="mark-why">{marks.map((m) => m.why).join(" ")}</p>}
           {lead}
-          {isShell && <Terminal name={use.name} input={input} out={out} error={state === "error"} running={state === "running" && !live} sessionId={sessionId} callId={use.id} />}
+          {isShell && <Terminal name={use.name} input={input} command={command} whole={whole} out={out} running={state === "running"} sessionId={sessionId} callId={use.id} />}
           {plan && plan.length > 0 && <div className={rejected ? "opacity-60" : undefined}><PlanCard items={plan} explanation={input.explanation} /></div>}
           {files && (
             <CallDiff files={files} actions={(f) => (
@@ -327,38 +405,41 @@ function callFiles(kind: ToolKind, use: ToolUseBlock, cwd?: string, start?: numb
 const TOO_LARGE = /^Output too large \(([\d.]+ ?KB)\)\. Full output saved to: \S+\n\nPreview \(first ([\d.]+ ?KB)\):\n([\s\S]*?)\n\.\.\.\n?([\s\S]*)$/;
 const CUT = /\n\n\[\.\.\. (\d+) (?:characters|chars) cut[^\]]*\]\n\n/;
 
-function Terminal({ name, input, out, error, running, sessionId, callId }: { name: string; input: any; out: string; error: boolean; running?: boolean; sessionId?: string; callId?: string }) {
-  const cmd = input.cmd ?? input.command;
-  // Output keeps the program's colors, as in a terminal (a test run's red and green).
+// The output of a command, in the program's own colors (a test run's red and green): a failed
+// command's passing lines are not red. The command stands above it only where the call's line
+// cannot hold it (several lines, or a long one); `whole`: the line shows all of it already.
+function Terminal({ name, input, command, whole: onLine, out, running, sessionId, callId }: { name: string; input: any; command: string; whole: boolean; out: string; running?: boolean; sessionId?: string; callId?: string }) {
   const body = shellBody(name, out).trimEnd();
   const big = TOO_LARGE.exec(body);
   const cut = big ? null : CUT.exec(body);
   const shown = big ? big[3]! : body;
   const [whole, setWhole] = useState(false);
-  const tone = error ? "text-danger" : "text-muted";
+  const above = !!command && !onLine && (command.includes("\n") || command.length > LINE_COMMAND);
   return (
-    <div className="k-terminal overflow-hidden rounded-md border border-line bg-code font-mono text-caption leading-relaxed" data-testid="terminal">
-      {cmd && (
-        <Copyable text={String(cmd)} label="Copy the command" testid="copy-command">
-          <pre className="border-b border-line px-2.5 py-2 pr-9 whitespace-pre-wrap break-all text-fg">
-            <span className="select-none text-accent-ink">$ </span>{cmd}
+    <div className="k-terminal k-copyable overflow-hidden rounded-md border border-line bg-code font-mono text-caption leading-relaxed" data-testid="terminal">
+      {above && (
+        <Copyable text={command} label="Copy the command" testid="copy-command">
+          <pre className="border-b border-line px-2.5 py-2 pr-9 whitespace-pre-wrap break-all text-fg" data-testid="terminal-command">
+            <span className="select-none text-accent-ink">$ </span>{command}
           </pre>
         </Copyable>
       )}
       {name === "write_stdin" && input.chars && <pre className="border-b border-line px-2.5 py-1.5 text-accent-ink">{JSON.stringify(input.chars)}</pre>}
       {running && sessionId && callId ? <CallLog sessionId={sessionId} callId={callId} follow />
         : whole && sessionId && callId ? <CallLog sessionId={sessionId} callId={callId} onLeave={() => setWhole(false)} />
-        : shown && (
+        : shown ? (
           <Copyable text={() => stripAnsiText(shown)} label="Copy the output" testid="copy-output">
             {cut ? (
-              <pre className={cn("max-h-80 overflow-auto px-2.5 py-2 pr-9 whitespace-pre-wrap break-all", tone)}>
+              <pre className="max-h-80 overflow-auto px-2.5 py-2 pr-16 whitespace-pre-wrap break-all text-muted">
                 <Ansi text={shown.slice(0, cut.index)} />
                 <span className="k-out-gap" data-testid="output-gap">{Number(cut[1]).toLocaleString("en-US")} characters not shown here</span>
                 <Ansi text={shown.slice(cut.index + cut[0].length)} />
               </pre>
-            ) : <pre className={cn("max-h-80 overflow-auto px-2.5 py-2 pr-9 whitespace-pre-wrap break-all", tone)}><Ansi text={shown} /></pre>}
+            ) : <pre className="max-h-80 overflow-auto px-2.5 py-2 pr-16 whitespace-pre-wrap break-all text-muted"><Ansi text={shown} /></pre>}
           </Copyable>
-        )}
+        ) : !running && <p className="px-2.5 py-2 pr-16 font-sans text-faint" data-testid="no-output">No output.</p>}
+      {/* The command is on the call's line: its copy button stands with the output's. */}
+      {!above && command && <CopyButton text={command} label="Copy the command" testid="copy-command" icon={<SquareTerminal />} className="k-copy-corner k-copy-second" />}
       {(big || cut) && !whole && !running && (
         <div className="k-out-more" data-testid="output-more">
           <span>{big ? `The first ${big[2]} of ${big[1]} of output.` : "The start and the end of a long output."}</span>
@@ -372,15 +453,19 @@ function Terminal({ name, input, out, error, running, sessionId, callId }: { nam
 
 // The output of a call's command from its log: followed while it runs (the
 // newest part, as the Terminal pane keeps it), or read from its start a part
-// at a time. Until the command has a log the call says that nothing came yet.
-type LogPart = { text: string; from: number; to: number; size: number; running?: boolean; job?: string };
+// at a time. Followed only while the page is in view: a log that is not there
+// yet is asked for less and less often, and any other failure is said once and
+// ends the following (the result has the output when the command ends).
+// `none`: no command of the call has started yet (a follower's answer).
+type LogPart = { text: string; from: number; to: number; size: number; running?: boolean; job?: string; none?: boolean };
+const POLL_MS = 1000, POLL_MAX_MS = 15_000;
 function CallLog({ sessionId, callId, follow, onLeave }: { sessionId: string; callId: string; follow?: boolean; onLeave?: () => void }) {
   const [text, setText] = useState("");
   const [part, setPart] = useState<{ from: number; to: number; size: number; before: number[] } | null>(null);
   const [gone, setGone] = useState(false);
   const pre = useRef<HTMLPreElement>(null);
   const job = useRef<string | null>(null);
-  const read = (from: number) => api<LogPart>(job.current ? `/api/sessions/${sessionId}/terminal/${job.current}/log?from=${from}` : `/api/sessions/${sessionId}/terminal/call/${encodeURIComponent(callId)}/log?from=${from}`)
+  const read = (from: number) => api<LogPart>(job.current ? `/api/sessions/${sessionId}/terminal/${job.current}/log?from=${from}` : `/api/sessions/${sessionId}/terminal/call/${encodeURIComponent(callId)}/log?from=${from}${follow ? "&follow=1" : ""}`)
     .then((r) => { if (r.job) job.current = r.job; return r; });
   useEffect(() => {
     let stop = false;
@@ -389,21 +474,33 @@ function CallLog({ sessionId, callId, follow, onLeave }: { sessionId: string; ca
       read(0).then((r) => { if (!stop) { setText(r.text); setPart({ ...r, before: [] }); } }).catch((e) => ((e as { status?: number }).status === 404 ? setGone(true) : reportError(e, { at: "call log" })));
       return () => { stop = true; };
     }
-    let at = 0;
+    let at = 0, wait = POLL_MS;
     const pull = async () => {
+      t = undefined;
+      // Not while the page is hidden: it goes on when the page shows again.
+      if (document.hidden) return;
       try {
         // Caught up in a few reads; far behind, the newest part is what a follower shows.
         for (let n = 0; !stop && n < 8; n++) {
           const r = await read(at);
+          // No command of this call yet: asked again later, each time later.
+          if (r.none) { wait = Math.min(wait * 2, POLL_MAX_MS); break; }
+          wait = POLL_MS;
           if (r.to > at) { const add = r.text; setText((m) => bounded(m + add, 64 * 1024).text); at = r.to; }
           if (r.to >= r.size) break;
           if (n === 7) at = Math.max(at, r.size - 32 * 1024);
         }
-      } catch (e) { if ((e as { status?: number }).status !== 404) reportError(e, { at: "call log" }); }
-      if (!stop) t = setTimeout(pull, 1000);
+      } catch (e) {
+        // No command of this call yet (it has not started, or it is not a command of this machine): asked again later, each time later.
+        if ((e as { status?: number }).status === 404) wait = Math.min(wait * 2, POLL_MAX_MS);
+        else { reportError(e, { at: "call log" }); return; }
+      }
+      if (!stop) t = setTimeout(pull, wait);
     };
+    const shown = () => { if (!document.hidden && !stop && t === undefined) t = setTimeout(pull, 0); };
+    document.addEventListener("visibilitychange", shown);
     t = setTimeout(pull, 150);
-    return () => { stop = true; clearTimeout(t); };
+    return () => { stop = true; clearTimeout(t); document.removeEventListener("visibilitychange", shown); };
   }, [sessionId, callId, follow]);
   useEffect(() => { const p = pre.current; if (p && follow) p.scrollTop = p.scrollHeight; }, [text, follow]);
   const go = (from: number, before: number[]) => read(from).then((r) => { setText(r.text); setPart({ ...r, before }); if (pre.current) pre.current.scrollTop = 0; }).catch((e) => reportError(e, { at: "call log" }));
@@ -418,7 +515,7 @@ function CallLog({ sessionId, callId, follow, onLeave }: { sessionId: string; ca
           {onLeave && <button type="button" data-testid="output-leave" className="k-out-link" onClick={onLeave}>Show less</button>}
         </div>
       )}
-      <pre ref={pre} data-testid={follow ? "live-output" : "whole-output"} aria-live={follow ? "off" : undefined} className={cn("overflow-auto px-2.5 py-2 whitespace-pre-wrap break-all text-muted", follow ? "max-h-56" : "max-h-96")}>
+      <pre ref={pre} data-testid={follow ? "live-output" : "whole-output"} aria-live={follow ? "off" : undefined} className={cn("overflow-auto px-2.5 py-2 pr-9 whitespace-pre-wrap break-all text-muted", follow ? "max-h-56" : "max-h-96")}>
         {text ? <Ansi text={text} /> : <span className="text-faint">{follow ? "No output yet." : part ? "Nothing here." : "Reading the log."}</span>}
       </pre>
     </>

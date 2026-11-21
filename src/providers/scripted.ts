@@ -121,7 +121,10 @@ export class ScriptedProvider implements Provider {
       usage.output = tokens(text);
       return { blocks: [{ type: "text", text }, ...extra], usage, stop, model: req.model };
     };
-    const reply = (text: string, stop = "end_turn", extra: any[] = []) => paced(text, 40, 5, stop, extra);
+    // `script:pace <ms>` on a later line of the prompt: a reply's parts come that far apart (5 ms
+    // without it, at most 200), for a spec that acts while a reply streams.
+    let pace = 5;
+    const reply = (text: string, stop = "end_turn", extra: any[] = []) => paced(text, 40, pace, stop, extra);
 
     // Permission fixture: decide from the proposed action, not other actions
     // named in the owner message. The real judge path still parses the reply.
@@ -148,6 +151,7 @@ export class ScriptedProvider implements Provider {
       return kept ?? (/^(\[harness\]|<)/.test(b.text) ? "" : b.text);
     }).filter(Boolean).at(-1);
     const owner = [...msgs].reverse().filter((m) => m.role === "user").map(own).find((t) => t !== undefined) ?? "";
+    pace = Math.min(200, Math.max(1, Number(owner.match(/\nscript:pace[ \t]+(\d+)/)?.[1] ?? 5)));
     // Refusals over images. The word is in the owner's newest prompt, or in a
     // compaction's focus (so the summary request is the one refused):
     //   script:image-limit N  a request with an image over N px a side is
@@ -231,7 +235,8 @@ export class ScriptedProvider implements Provider {
         if (next) {
           // `after_ms` on a call: the model takes that long before it makes it, as a real one does (at most 10 s).
           if (typeof next.after_ms === "number") await Bun.sleep(Math.max(0, Math.min(next.after_ms, 10_000)));
-          return reply(`Step ${done + 1} of ${calls.length}.`, "tool_use", [{ type: "tool_use", id: `call-${msgs.length}-${done}`, name: String(next.name), input: next.input ?? {} }]);
+          // `say` on a call: the words of the reply that makes it, in place of "Step N of M."
+          return reply(typeof next.say === "string" ? next.say : `Step ${done + 1} of ${calls.length}.`, "tool_use", [{ type: "tool_use", id: `call-${msgs.length}-${done}`, name: String(next.name), input: next.input ?? {} }]);
         }
         const lastResult = (last?.content as any[] | undefined)?.find((b) => b.type === "tool_result");
         const said = typeof lastResult?.content === "string" ? lastResult.content : (lastResult?.content as any[] | undefined)?.map((b: any) => b.text ?? "").join("\n") ?? "";
@@ -460,7 +465,7 @@ function numberWords(n: number): string {
 }
 
 // The JSON list that follows `script:calls` (or `word`) in a text.
-function callsAfter(text: string, word = "script:calls"): { name: unknown; input?: unknown; after_ms?: unknown }[] {
+function callsAfter(text: string, word = "script:calls"): { name: unknown; input?: unknown; after_ms?: unknown; say?: unknown }[] {
   const i = text.indexOf(word);
   const start = text.indexOf("[", i);
   if (i < 0 || start < 0) return [];

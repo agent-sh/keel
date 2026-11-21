@@ -5,17 +5,20 @@
 // Pure: the same inputs give the same rows.
 import { lineage } from "../../../src/core/tree.ts";
 import type { StoredEvent, ToolResultBlock } from "../../../src/core/types.ts";
-import { addCall, addMeta, isAside, setResult, type Step } from "./work.ts";
+import { addCall, addMeta, byFamily, isAside, sameStep, setResult, type Step } from "./work.ts";
 
 export type RowKind = "harness" | "input" | "user" | "checkpoint" | "refusal" | "assistant" | "work" | "error" | "fork" | "peer_refused" | "images" | "model" | "note" | "end";
 export type Row = {
-  id: string; // the event's id; a run of tool calls is named by its first event, as `w:<id>`
+  // The event's id. A run of tool calls is `w:<id>` of the event that first began it on this page
+  // (it keeps that name, and `e`, when older events of the run are read in above); a second stretch
+  // of prose in one reply is `<id>:<block>`.
+  id: string;
   kind: RowKind;
   e: StoredEvent;
   vs?: StoredEvent[]; // user: the versions of the prompt
   undoable?: boolean; // checkpoint: a clear nothing the model reads came after
   handled?: boolean; // refusal: the fallback model took the request
-  prose?: number[]; // assistant: the blocks shown as the reply's own words (the rest are in the run of work after it)
+  prose?: number[]; // assistant: the blocks shown as the reply's own words (the rest are in the runs of work around it)
   steps?: Step[]; // work: the run's tool calls in steps (work.ts), with what was said and thought between them
   events?: string[]; // work: the events the run holds, in order
   reply?: string[]; // end: the texts of the turn's replies, for Copy
@@ -66,11 +69,7 @@ const sameRow = (a: Row, b: Row) =>
   a.times === b.times && a.folded === b.folded && a.after === b.after && a.partial === b.partial &&
   sameList(a.vs, b.vs) && sameList(a.prose, b.prose) && sameSteps(a.steps, b.steps) && sameList(a.events, b.events) && sameList(a.reply, b.reply) && sameList(a.notes, b.notes) && sameList(a.failures, b.failures);
 // Steps read again from the start are new objects with the same items: the row is the one it was.
-const sameSteps = (a: Step[] | undefined, b: Step[] | undefined) =>
-  a === b || (!!a && !!b && a.length === b.length && a.every((x, i) => x === b[i] || (x.family === b[i]!.family && x.items.length === b[i]!.items.length && x.items.every((it, k) => {
-    const o = b[i]!.items[k]!;
-    return it === o || (it.t === o.t && it.id === o.id && (it.t !== "call" || (it.use === (o as typeof it).use && it.result === (o as typeof it).result)));
-  }))));
+const sameSteps = (a: Step[] | undefined, b: Step[] | undefined) => a === b || (!!a && !!b && a.length === b.length && a.every((x, i) => sameStep(x, b[i]!)));
 
 // `input`: what an owner-side message is shown as when it is not a prompt
 // (a notice of the harness, a message from another session).
@@ -145,31 +144,57 @@ export function buildRows(prev: Built | undefined, events: StoredEvent[], siblin
     } else if (e.kind === "assistant") {
       const blocks = e.data.blocks as any[];
       for (const x of blocks) if (x.type === "text" && x.text.trim()) b.reply.push(x.text);
-      const calls = blocks.some((x) => x.type === "tool_use");
-      // A reply that calls no tool is all on the page. One that does keeps there
-      // only what it says at length; a line said in passing, a thought and the
-      // calls go to the run of work, in their order.
-      const prose = blocks.flatMap((x, k) => (calls ? x.type === "text" && x.text.trim() && !isAside(x.text) : x.type !== "tool_use") ? [k] : []);
-      if (!calls || prose.length) row("assistant", { prose });
-      if (calls) {
-        const shown = new Set(prose);
-        const was = b.work === null ? undefined : b.blocks[b.at.get(b.work)!]!.find((r) => r.id === b.work);
-        let steps = was?.steps ?? [];
-        blocks.forEach((x, k) => {
-          if (x.type === "tool_use") { steps = addCall(steps, x, e.id); b.uses.set(x.id, was?.id ?? `w:${e.id}`); }
-          else if (shown.has(k)) return;
-          else if (x.type === "text" && x.text.trim()) steps = addMeta(steps, { t: "note", id: `${e.id}:${k}`, text: x.text, event: e.id });
-          else if (x.type === "thinking" && x.thinking.trim()) steps = addMeta(steps, { t: "thought", id: `${e.id}:${k}`, text: x.thinking, event: e.id });
-        });
-        if (was) {
-          patch(was.id, (r) => ({ steps, events: [...r.events!, e.id] }));
-          b.at.set(e.id, b.at.get(was.id)!);
-        } else {
-          const id = `w:${e.id}`;
-          push({ id, kind: "work", e, steps, events: [e.id] });
-          b.at.set(e.id, b.at.get(id)!);
+      if (!blocks.some((x) => x.type === "tool_use")) {
+        // A reply that calls no tool is all on the page.
+        row("assistant", { prose: blocks.map((_x, k) => k) });
+      } else {
+        // One that does keeps there only what it says at length; a line said in
+        // passing, a thought and the calls go to the run of work. Each in the
+        // order the reply has it: prose after a call stands after its run.
+        let run: { id: string; steps: Step[]; events: string[] } | null = null;
+        const open = (k: number) => {
+          if (run) return run;
+          const was = b.work === null ? undefined : b.blocks[b.at.get(b.work)!]!.find((r) => r.id === b.work);
+          if (was) return (run = { id: was.id, steps: was.steps!, events: was.events!.at(-1) === e.id ? was.events! : [...was.events!, e.id] });
+          // A second run of the same reply (calls, prose, calls) is named by the block it begins at.
+          const id = b.at.has(`w:${e.id}`) ? `w:${e.id}:${k}` : `w:${e.id}`;
+          push({ id, kind: "work", e, steps: [], events: [e.id] });
           b.work = id;
-        }
+          return (run = { id, steps: [], events: [e.id] });
+        };
+        const close = () => {
+          if (!run) return;
+          const { id, steps, events: evs } = run;
+          patch(id, () => ({ steps, events: evs }));
+          if (!b.at.has(e.id)) b.at.set(e.id, b.at.get(id)!);
+          run = null;
+        };
+        let calls: any[] = [];
+        let at = 0; // the block the calls waiting to be added began at
+        let prose: number[] = [];
+        const said = () => {
+          if (!prose.length) return;
+          close();
+          // The first row of the event is named by it; a later stretch of prose by its first block.
+          push({ id: b.at.has(e.id) ? `${e.id}:${prose[0]}` : e.id, kind: "assistant", e, prose });
+          prose = [];
+        };
+        const called = () => {
+          if (!calls.length) return;
+          const r = open(at);
+          for (const u of byFamily(calls)) { r.steps = addCall(r.steps, u, e.id); b.uses.set(u.id, r.id); }
+          calls = [];
+        };
+        blocks.forEach((x, k) => {
+          if (x.type === "tool_use") { said(); if (!calls.length) at = k; calls.push(x); }
+          else if (x.type === "text" && x.text.trim()) {
+            if (!isAside(x.text)) { called(); prose.push(k); }
+            else { said(); called(); const r = open(k); r.steps = addMeta(r.steps, { t: "note", id: `${e.id}:${k}`, text: x.text, event: e.id }); }
+          } else if (x.type === "thinking" && x.thinking.trim()) { said(); called(); const r = open(k); r.steps = addMeta(r.steps, { t: "thought", id: `${e.id}:${k}`, text: x.thinking, event: e.id }); }
+        });
+        said();
+        called();
+        close();
       }
     } else if (e.kind === "tool_result") {
       for (const r of e.data.results as ToolResultBlock[]) {
@@ -213,6 +238,43 @@ export function buildRows(prev: Built | undefined, events: StoredEvent[], siblin
     }
   }
 
+  // Older events read in above a run of calls (a run longer than a part): the
+  // run now begins earlier, and it is still the row it was. It keeps the name
+  // and the place it had, so the page renders its new steps into the row the
+  // reader is in, instead of taking that row away and making another.
+  if (!append && prev) {
+    let moved = false;
+    for (let j = 0; j < b.blocks.length; j++) {
+      const k = b.blocks[j]!.findIndex((r) => r.kind === "work" && !prev.at.has(r.id) && r.events!.some((id, n) => n > 0 && prev.at.has(`w:${id}`)));
+      if (k < 0) continue;
+      const row = b.blocks[j]![k]!;
+      const name = row.events!.find((id, n) => n > 0 && prev.at.has(`w:${id}`))!;
+      const e = events.find((x) => x.id === name);
+      if (!e || b.at.has(`w:${name}`)) continue;
+      // Its place is the block of the event that names it. Nothing was made between its first
+      // event and that one, so it is the last row of its block and comes first in the other.
+      const key = e.seq >> BLOCK_BITS;
+      const here = key === blockKey(b.blocks[j]!);
+      if (!here && k !== b.blocks[j]!.length - 1) continue;
+      const named: Row = { ...row, id: `w:${name}`, e };
+      if (b.work === row.id) b.work = named.id;
+      for (const st of row.steps!) for (const it of st.items) if (it.t === "call") b.uses.set(it.id, named.id);
+      b.at.delete(row.id);
+      b.at.set(named.id, j);
+      if (here) { b.blocks[j]![k] = named; continue; }
+      b.blocks[j]!.pop();
+      const to = b.blocks.findIndex((rows, n) => n > j && rows.length > 0 && blockKey(rows) >= key);
+      if (to >= 0 && blockKey(b.blocks[to]!) === key) b.blocks[to]!.unshift(named);
+      else b.blocks.splice(to < 0 ? b.blocks.length : to, 0, [named]);
+      moved = true;
+    }
+    if (moved) {
+      b.blocks = b.blocks.filter((rows) => rows.length);
+      b.at = new Map();
+      b.blocks.forEach((rows, j) => { for (const r of rows) { b.at.set(r.id, j); if (r.kind === "work") for (const id of r.events!) if (!b.at.has(id)) b.at.set(id, j); } });
+    }
+  }
+
   // Read from the start (another branch, older events loaded): a row that came
   // out as it was before is the object it was, and so is a block of such rows.
   if (!append && prev) {
@@ -223,6 +285,11 @@ export function buildRows(prev: Built | undefined, events: StoredEvent[], siblin
         const pj = prev.at.get(rows[k]!.id);
         const old = pj === undefined ? undefined : prev.blocks[pj]!.find((r) => r.id === rows[k]!.id);
         if (old && sameRow(old, rows[k]!)) { rows[k] = old; was ??= prev.blocks[pj!]; }
+        // A run that changed keeps the steps that did not: the page renders only the others.
+        else if (old?.steps && rows[k]!.steps) {
+          const by = new Map(old.steps.map((st) => [st.key, st]));
+          rows[k] = { ...rows[k]!, steps: rows[k]!.steps!.map((st) => { const o = by.get(st.key); return o && sameStep(o, st) ? o : st; }) };
+        }
       }
       if (was && sameList(was, rows)) b.blocks[j] = was;
     }

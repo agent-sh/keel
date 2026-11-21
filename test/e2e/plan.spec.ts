@@ -102,15 +102,20 @@ test("a rejected plan update and answered questions read right", async ({ page, 
   await expect(card).toHaveAttribute("data-state", "answered", { timeout: 20_000 });
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 20_000 });
   await expect(card).not.toContainText("no question is waiting");
+  // Answered, the question is a line of the rail: what was asked and the first answer. It opens to the card.
+  await expect(card.getByTestId("question-line-answer")).toHaveText('Yes, use "weekly" copies');
+  await card.locator(".k-line").click();
   const answers = card.getByTestId("question-answer");
-  await expect(answers.nth(0)).toHaveText('Answered: Yes, use "weekly" copies');
-  await expect(answers.nth(1)).toHaveText("Answered: No");
+  // The record is rows of the rail: what was asked with what it offered, and what the owner said.
+  await expect(answers.nth(0)).toHaveText('YouYes, use "weekly" copies');
+  await expect(answers.nth(1)).toHaveText("YouNo");
   await expect(card.getByTestId("question-option").nth(0)).toHaveAttribute("aria-checked", "true");
   await expect(card.getByTestId("question-option").nth(3)).toHaveAttribute("aria-checked", "true");
   await shoot(page, "plan-02-rejected-and-answered");
   // Reopened, the same.
   await page.reload();
-  await expect(page.getByTestId("question-answer").nth(0)).toHaveText('Answered: Yes, use "weekly" copies');
+  await page.getByTestId("question").locator(".k-line").click();
+  await expect(page.getByTestId("question-answer").nth(0)).toHaveText('YouYes, use "weekly" copies');
   await expect(page.getByTestId("question-option").nth(3)).toHaveAttribute("aria-checked", "true");
   await request.delete(`/api/sessions/${session.id}`);
 });

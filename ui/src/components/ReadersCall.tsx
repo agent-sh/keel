@@ -1,5 +1,5 @@
 import { Collapsible } from "@base-ui/react/collapsible";
-import { BookOpenText, ChevronRight } from "lucide-react";
+import { BookOpenText } from "lucide-react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import type { PartState, ReadProgress } from "../../../src/engine/readers.ts";
@@ -55,28 +55,26 @@ export function ReadersCall({ use, result, live, sessionId, cwd }: Props) {
   const oneModel = new Set(parts.map((p) => p.model).filter(Boolean)).size <= 1;
   const other = shown?.working && !(shown.models?.length === 1 && shown.models[0] === shown.working.model);
   return (
-    <Collapsible.Root open={open} onOpenChange={setOpen} className="k-tool-call group/tool rounded-lg border border-line bg-raised shadow-1 animate-in" data-testid="tool-call" data-call={use.id} data-tool={use.name} data-state={state} data-kind="readers">
-      <Collapsible.Trigger className="flex h-10 w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-ui hover:bg-hover">
-        <span className={cn("grid size-6 shrink-0 place-items-center rounded-sm", state === "error" ? "bg-danger-soft text-danger" : state === "running" || state === "live" ? "bg-brass-soft text-brass" : "bg-sunken text-muted")}>
-          <BookOpenText className="size-3.5" />
+    <Collapsible.Root open={open} onOpenChange={setOpen} className="k-tool-call group/tool" data-testid="tool-call" data-call={use.id} data-tool={use.name} data-state={state} data-kind="readers">
+      <Collapsible.Trigger className="k-line">
+        <span className="k-line-text">
+          <span className="k-line-verb">Readers</span>{" "}
+          {state === "error" && <><span className="k-line-state" data-tone="fail">failed</span>{" "}</>}
+          <span className="k-line-what" data-words="">{input.question ?? ""}</span>
         </span>
-        <span className="k-tool-name shrink-0 font-medium">Readers</span>
-        <span className="min-w-0 truncate text-muted">{input.question ?? ""}</span>
-        <span className="ml-auto flex shrink-0 items-center gap-2 text-micro tabular-nums">
+        <span className="k-line-end">
           {parts.length > 0 && (
-            <span className="rounded-full bg-sunken px-1.5 py-px text-muted" data-testid="readers-parts">
+            <span className="k-chip" data-testid="readers-parts">
               {result ? `${parts.length} part${parts.length === 1 ? "" : "s"}` : `${done}/${parts.length} read${now?.compiling ? " · compiling" : ""}`}
             </span>
           )}
           {shown?.models?.length ? <span className="text-muted">{shown.models.join(", ")}</span> : null}
           {shown?.cost !== undefined ? <span className="font-mono text-muted" data-testid="readers-cost">{fmtCost(shown.cost)}</span> : shown?.plan ? <span className="text-muted" data-testid="readers-cost">on plan</span> : null}
           {shown?.unread?.length ? <span className="text-danger" data-testid="readers-unread">{shown.unread_sources ?? shown.unread.length} unread</span> : null}
-          {(state === "running" || state === "live") && <span className="size-1.5 rounded-full bg-brass animate-pulse-dot" />}
-          {state === "error" && <span className="text-danger">failed</span>}
-          <ChevronRight className="size-3.5 text-faint transition-transform group-data-[open]/tool:rotate-90" />
+          {(state === "running" || state === "live") && <span className="k-line-run" aria-label="running" />}
         </span>
       </Collapsible.Trigger>
-      <Collapsible.Panel className="k-tool-panel overflow-hidden border-t border-line" data-testid="readers-panel">
+      <Collapsible.Panel className="k-tool-panel overflow-hidden" data-testid="readers-panel">
         <div className="flex flex-col gap-2.5 p-2.5">
           {sources.length > 0 && <div className="truncate font-mono text-micro text-faint" title={sources.join("\n")}>{sources.map((x) => shortPath(x, cwd)).join("  ")}</div>}
           {shown && (

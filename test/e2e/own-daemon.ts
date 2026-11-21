@@ -30,7 +30,7 @@ export function daemon(state: string, port = 0, dev = false): Promise<{ proc: Ch
 export const exited = (p: ChildProcess) => new Promise<void>((r) => (p.exitCode !== null ? r() : p.once("exit", () => r())));
 
 // A state folder with sessions that already hold a long transcript (fixtures/long-transcript.ts).
-export function seeded(name: string, events: number, shape: "notes" | "turns", ...titles: string[]) {
+export function seeded(name: string, events: number, shape: "notes" | "turns" | "run", ...titles: string[]) {
   const state = join(ROOT, `${name}-${Date.now()}`);
   mkdirSync(state, { recursive: true });
   const ids = JSON.parse(execFileSync("bun", [join(import.meta.dirname, "fixtures/long-transcript.ts"), state, state, String(events), ...titles], { encoding: "utf8", env: { ...process.env, KEEL_FIXTURE_SHAPE: shape, KEEL_CONFIG_DIR: join(state, "config") } })) as string[];

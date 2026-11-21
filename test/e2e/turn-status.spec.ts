@@ -31,7 +31,7 @@ test("turn status is announced once per change", async ({ page, request }) => {
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 120_000 });
   await expect(page.getByTestId("turn-announcer")).toHaveText("The turn ended.");
   const said = (await page.evaluate(() => (window as any).said)).filter(Boolean);
-  expect(said).toEqual(["Working.", "Waiting for your approval.", "Working.", "The turn ended."]);
+  expect(said).toEqual(["Working.", "Needs you: an approval.", "Working.", "The turn ended."]);
 
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
@@ -61,7 +61,7 @@ test("a pending question is announced once", async ({ page, request }) => {
     await page.keyboard.press("Enter");
     const card = page.getByTestId("question");
     await expect(card).toHaveAttribute("data-state", "open");
-    await expect(region).toHaveText("Waiting for your answer.");
+    await expect(region).toHaveText("Needs you: an answer.");
     await expect(page.getByTestId("working")).toHaveCount(0);
     await shoot(page, "turn-status-01-question");
     // The socket drops and comes back: the same question is sent again, and nothing new is said.
@@ -69,19 +69,19 @@ test("a pending question is announced once", async ({ page, request }) => {
     await expect(page.getByTestId("sync-state")).toHaveCount(1);
     await expect(page.getByTestId("sync-state")).toHaveCount(0, { timeout: 20_000 });
     await expect(card).toHaveAttribute("data-state", "open");
-    await expect(region).toHaveText("Waiting for your answer.");
+    await expect(region).toHaveText("Needs you: an answer.");
     await page.waitForTimeout(500);
-    expect(((await page.evaluate(() => (window as any).said)) as string[]).filter((t) => t === "Waiting for your answer.")).toHaveLength(1);
+    expect(((await page.evaluate(() => (window as any).said)) as string[]).filter((t) => t === "Needs you: an answer.")).toHaveLength(1);
 
     await card.getByRole("radio", { name: "Amber" }).click();
     await card.getByTestId("question-submit").click();
     await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 30_000 });
     await expect(region).toHaveText("The turn ended.");
     const said = ((await page.evaluate(() => (window as any).said)) as string[]).filter(Boolean);
-    expect(said.filter((t) => t === "Waiting for your answer.")).toHaveLength(1);
+    expect(said.filter((t) => t === "Needs you: an answer.")).toHaveLength(1);
     expect(said[0]).toBe("Working.");
     // After the answer: working again (a turn that ends at once may go straight to its end).
-    expect(["Working.", "The turn ended."]).toContain(said[said.indexOf("Waiting for your answer.") + 1]);
+    expect(["Working.", "The turn ended."]).toContain(said[said.indexOf("Needs you: an answer.") + 1]);
     expect(said.at(-1)).toBe("The turn ended.");
   } finally { await request.delete(`/api/sessions/${session.id}`); }
 });

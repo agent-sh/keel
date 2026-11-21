@@ -51,8 +51,9 @@ test("code mode", async ({ page, request }) => {
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 120_000 });
   expect(existsSync(join(ws, "keep.txt"))).toBe(true);
   await expect(program).toHaveAttribute("data-state", "ok");
-  await expect(program.getByTestId("code-call-count")).toContainText("2 calls");
-  await expect(program.getByTestId("code-call-count")).toContainText("1 failed");
+  // The owner's denial is not a failure of the program's call: it is said as theirs, under the program's line.
+  await expect(program.getByTestId("code-call-count")).toHaveText("2 calls");
+  await expect(program.getByTestId("code-peek").getByTestId("call-state")).toHaveText("denied by you");
 
   // Open it: the code, the two calls (the read ok, the command refused), and what went back.
   const trigger = program.getByRole("button").first();
@@ -61,7 +62,7 @@ test("code mode", async ({ page, request }) => {
   await expect(program.getByTestId("code-source")).toContainText("tools.Read");
   const inner = program.getByTestId("code-calls").getByTestId("tool-call");
   await expect(inner.nth(0)).toHaveAttribute("data-state", "ok");
-  await expect(inner.nth(1)).toHaveAttribute("data-state", "error");
+  await expect(inner.nth(1)).toHaveAttribute("data-state", "denied");
   const out = program.getByTestId("code-output");
   await expect(out).toContainText("found: MARKER-7731");
   await expect(out).toContainText("rm refused: ToolError");

@@ -60,7 +60,7 @@ test("a turn cut by a daemon restart continues by itself", async ({ page }) => {
     await exited(d.proc);
     d = await daemon(state);
     await page.goto(`${d.url}/s/${session.id}`);
-    await expect(page.getByTestId("turn-end").first()).toContainText("Cut by a daemon restart", { timeout: 60_000 });
+    await expect(page.getByTestId("turn-end").first()).toContainText("Stopped by a restart", { timeout: 60_000 });
     await expect(page.getByTestId("restart-note")).toHaveCount(1, { timeout: 60_000 });
     await expect(page.getByTestId("assistant-text").last()).toHaveText("Continued after the restart.", { timeout: 15_000 });
     await expect(page.getByTestId("turn-end")).toHaveCount(2);
@@ -906,7 +906,7 @@ test("a question and a plan waiting at a crash or a stop still wait after the re
     await expect(card).toHaveAttribute("data-state", "open", { timeout: 30_000 });
     expect(await alertsOf(asker)).toEqual([["question", true]]);
     // The two restarts under the waiting card read as one line, with their count.
-    await expect(page.getByTestId("turn-reason")).toHaveText("Cut by a daemon restart, 2 times");
+    await expect(page.getByTestId("turn-reason")).toHaveText("Stopped by a restart, 2 times");
     await expect(page.getByTestId("turn-end")).toHaveCount(1);
     // The parked turns are not filed as finished beside their open cards (nobody was watching these two).
     // The plan that waits is one inbox item, raised once: the kill and the stop under it raised no second.

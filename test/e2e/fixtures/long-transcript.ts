@@ -6,7 +6,9 @@
 //     tool call, its result, a closing reply, the turn's end), with an edited
 //     prompt a tenth of the way in (the first version and two turns under it
 //     stay as a side branch), ending on a summary checkpoint so the next turn
-//     fits the window.
+//     fits the window;
+//   run (KEEL_FIXTURE_SHAPE=run): one turn of <events> tool calls with a short
+//     line before each: a run of calls longer than the part a page holds.
 // Usage: bun long-transcript.ts <state-dir> <workspace> <events> <title>...
 // Prints the session ids as a JSON list, in the order of the titles.
 import { Store } from "../../../src/core/store.ts";
@@ -47,9 +49,26 @@ function turns(id: string, model: string) {
   add("compaction", { mode: "summary", summary: "Goal: a generated history. State: every step ran; next, answer the newest prompt.", auto: true, tokens_before: 6400 });
 }
 
+// One turn of N calls, a short line before each (KEEL_FIXTURE_SHAPE=run): a run
+// of tool calls longer than the part a page holds, ending on the reply.
+function run(id: string, model: string) {
+  store.append(id, "user", { text: `Go through the ${N} parts, one at a time.` });
+  store.append(id, "turn_start", { model });
+  for (let k = 1; k <= N; k++) {
+    store.append(id, "assistant", { model, usage, stop: "tool_use", blocks: [
+      { type: "text", text: `Step ${k}: part ${k}.` },
+      { type: "tool_use", id: `run-${k}`, name: "Bash", input: { command: `bun run check --part ${k}` } },
+    ] });
+    store.append(id, "tool_result", { results: [{ type: "tool_result", tool_use_id: `run-${k}`, content: `part ${k}: ${say(k, 6)}` }] });
+  }
+  store.append(id, "assistant", { model, usage, stop: "end_turn", blocks: [{ type: "text", text: `All ${N} parts are checked.` }] });
+  store.append(id, "turn_end", { reason: "end_turn", usage, ms: N * 900, steps: N + 1, tools: N });
+}
+
 const ids = titles.map((title) => {
   const s = store.createSession({ title, model: "scripted:stand-in", workspace: workspace! });
-  if (process.env.KEEL_FIXTURE_SHAPE === "turns") turns(s.id, s.model);
+  if (process.env.KEEL_FIXTURE_SHAPE === "run") run(s.id, s.model);
+  else if (process.env.KEEL_FIXTURE_SHAPE === "turns") turns(s.id, s.model);
   else for (let i = 1; i <= N; i++) {
     store.append(s.id, "note", { text: `Generated note ${i} of ${count}. ${"A line of an earlier turn that a reconnect must not send again. ".repeat(12)}` });
   }

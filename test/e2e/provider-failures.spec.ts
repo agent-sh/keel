@@ -86,7 +86,8 @@ test("retries, continuation, refusal and compaction as the owner sees them", asy
   // turn ends with the time it named.
   await send(page, "script:rate-limit-long", 8);
   await expect(page.getByTestId("turn-error").last()).toContainText(/asked to wait until \d\d:\d\d/);
-  await expect(page.getByTestId("turn-end").last()).toContainText("Failed");
+  // The turn goes on by itself when the wait is over: its footer says it waits, not that it failed.
+  await expect(page.getByTestId("turn-end").last()).toContainText("Waiting for the provider");
 
   // A refusal: the card with the category and explanation, then a retry on another listed model.
   await send(page, "script:refuse", 9);

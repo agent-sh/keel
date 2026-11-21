@@ -11,6 +11,7 @@ import { actions, api, dropSession, failed, forgetEvents, getState, keepEvents, 
 import { useSafety } from "../lib/safety.ts";
 import { getUI, navigate, seedComposer, setUI, useUI } from "../lib/ui.ts";
 import { announce } from "../lib/announce.ts";
+import { useToldState } from "../lib/watch.ts";
 import { composing } from "../lib/keys.ts";
 import { Kbd } from "./Kbd.tsx";
 import { clock, cn, fmtCost, fmtTokens, fmtWait, focusBox, scrollMotion } from "../lib/utils.ts";
@@ -22,6 +23,7 @@ import { ToolCall } from "./ToolCall.tsx";
 import { InputNotice, SYSTEM_INPUT } from "./automation/TranscriptExtras.tsx";
 import { LiveWork, Thinking, Work } from "./Work.tsx";
 import { OwnerWords, ToldModel, toldOf } from "./Words.tsx";
+import { ensureMarks } from "../lib/marks.ts";
 import { isPeerMessage, PeerMessage, RefusedNote } from "./FleetMessages.tsx";
 
 function ActionButton({ label, onClick, children, testid, idle }: { label: string; onClick: () => void; children: ReactNode; testid?: string; idle?: boolean }) {
@@ -450,12 +452,15 @@ function Working({ since, sessionId }: { since?: number; sessionId: string }) {
   useEffect(() => { const t = setInterval(() => tick((n) => n + 1), 1000); return () => clearInterval(t); }, []);
   const from = st?.kind === "model" || st?.kind === "tool" ? st.since : since;
   const s = from ? Math.max(0, Math.round((liveNow() - from) / 1000)) : 0; // stopped while the daemon is unreachable
-  const what = approving ? "Waiting for your approval" : st?.kind === "model" ? (st.preparing === "images" ? `Scaling images for ${st.model}` : st.connected ? `Connected to ${st.model}, no output yet` : `Waiting on ${st.model}`) : st?.kind === "tool" ? `Running ${st.names.join(", ")}` : "Working";
+  // What waits on the owner is said as that, in the words every surface uses: an approval, a plan to
+  // approve, a secret to give. (A tool that asks is not a tool that runs.)
+  const needs = approving ? "an approval" : st?.kind === "tool" ? st.names.map((n) => ASKS[n]).find(Boolean) : undefined;
+  const what = needs ? `Needs you: ${needs}` : st?.kind === "model" ? (st.preparing === "images" ? `Scaling images for ${st.model}` : st.connected ? `Connected to ${st.model}, no output yet` : `Waiting on ${st.model}`) : st?.kind === "tool" ? `Running ${st.names.join(", ")}` : "Working";
   return (
     <div className="flex items-center gap-2.5 py-1 text-ui text-muted" data-testid="working">
       <span className="flex gap-1">
         {/* Waiting on the owner is their color and does not pulse: nothing runs until they answer. */}
-        {[0, 1, 2].map((i) => <span key={i} className={cn("size-1.5 rounded-full", approving ? "bg-st-need" : "bg-brass animate-pulse-dot")} style={approving ? undefined : { animationDelay: `${i * 160}ms` }} />)}
+        {[0, 1, 2].map((i) => <span key={i} className={cn("size-1.5 rounded-full", needs ? "bg-st-need" : "bg-brass animate-pulse-dot")} style={needs ? undefined : { animationDelay: `${i * 160}ms` }} />)}
       </span>
       <span data-testid="working-what">{what}</span>
       {s >= 2 ? <span className="tabular-nums text-faint">{s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`}</span> : null}
@@ -463,7 +468,11 @@ function Working({ since, sessionId }: { since?: number; sessionId: string }) {
   );
 }
 
-const REASONS: Record<string, string> = { interrupted: "Stopped", max_tokens: "Cut at the output limit", refusal: "Declined", error: "Failed", restart: "Cut by a daemon restart" };
+// How a turn ended, in the words of the one state vocabulary: Stopped (by whom), Failed (its
+// class), Declined. A turn Keel goes on with by itself is not a failure: it waits.
+const REASONS: Record<string, string> = { interrupted: "Stopped", max_tokens: "Failed: output limit", refusal: "Declined", error: "Failed", restart: "Stopped by a restart" };
+// The tools that ask the owner for something: what the turn needs while one of them is out.
+const ASKS: Record<string, string> = { present_plan: "a plan", ExitPlanMode: "a plan", exit_plan_mode: "a plan", request_secret: "a secret" };
 
 // `boxed`: the turn failed and its failure box is shown above. The box has the
 // way on (try again, the fix), and a turn with no reply has nothing to copy,
@@ -479,6 +488,10 @@ function TurnFooter({ e, reply, prompt, sid, notes, boxed = false, times = 1, pa
   const u = e.data.usage;
   const input = u ? u.input + u.cache_read + u.cache_write : 0;
   const cached = u && input ? Math.round((100 * u.cache_read) / input) : 0;
+  // The session's own state, for the last footer: a turn that ended on a failure or a restart and
+  // that Keel goes on with by itself (the provider asked for a wait, a restart cut it) waits.
+  const told = useToldState(last ? sid : undefined);
+  const waits = !last || e.data.reason === "interrupted" || e.data.reason === "refusal" ? "" : told?.watch === "resume" ? "Waiting to resume" : told?.watch === "wait" && told.why === "resume" ? "Waiting for the provider" : "";
   return (
     <div className="k-turn-foot group/foot -mt-1 flex h-7 items-center gap-0.5" data-quiet={!last || undefined}>
       {(reply.length > 0 || partial) && <CopyButton text={() => (partial ? actions.reply(sid, { before: e.seq, head: tailOf.get().other }) : reply.join("\n\n"))} label="Copy the reply" testid="copy-reply" className="size-7" />}
@@ -490,7 +503,9 @@ function TurnFooter({ e, reply, prompt, sid, notes, boxed = false, times = 1, pa
       {!(boxed && !reply.length) && <Extra on="assistant" e={e} />}
       <TurnNotes notes={notes} working={working} />
       <span className="k-turn-end ml-2 flex gap-3 text-micro tabular-nums text-faint select-none" data-testid="turn-end">
-        {REASONS[e.data.reason] && <span className={e.data.reason === "error" ? "text-st-fail" : "text-warn"} data-testid="turn-reason">{REASONS[e.data.reason]}{STOP_BY[e.data.stopped_by] ?? ""}{times > 1 ? `, ${times} times` : ""}</span>}
+        {REASONS[e.data.reason] && (waits
+          ? <span className="text-muted" data-testid="turn-reason">{waits}</span>
+          : <span className={e.data.reason === "error" || e.data.reason === "max_tokens" ? "text-st-fail" : "text-warn"} data-testid="turn-reason">{REASONS[e.data.reason]}{STOP_BY[e.data.stopped_by] ?? ""}{times > 1 ? `, ${times} times` : ""}</span>)}
         <span>{(e.data.ms / 1000).toFixed(1)}s</span>
         {u && <span>{fmtTokens(input)} in{cached ? `, ${cached}% cached` : ""}</span>}
         {u && <span>{fmtTokens(u.output)} out</span>}
@@ -513,9 +528,9 @@ function Announcer({ sessionId, working, asking }: { sessionId: string; working:
   const approving = useSafety((x) => (x.approvals[sessionId]?.length ?? 0) > 0);
   const said = useRef<string | null>(null);
   let text = "";
-  if (approving) text = "Waiting for your approval.";
+  if (approving) text = "Needs you: an approval.";
   // A question card takes the place of the working line: the region says what the turn waits on.
-  else if (asking) text = "Waiting for your answer.";
+  else if (asking) text = "Needs you: an answer.";
   else if (st?.kind === "retry") text = `The provider failed: ${st.message}. Retrying, attempt ${st.attempt} of ${st.max}.`;
   else if (st?.kind === "compacting") text = `Compacting the context${compactPlan(st.plan)}.`;
   else if (working) text = "Working.";
@@ -583,7 +598,8 @@ const TranscriptRow = memo(function TranscriptRow({ row, sid }: { row: Row; sid:
     case "refusal":
       return <Refusal e={e} sid={sid} handled={row.handled} />;
     case "assistant":
-      return <div id={`e-${e.id}`} className="row-cv flex flex-col gap-3 rounded-lg" data-event-id={e.id}><AssistantBlocks blocks={e.data.blocks} prose={row.prose!} sid={sid} /></div>;
+      // The first row of a reply carries its event's id; a later stretch of its prose is found by the event all the same.
+      return <div id={row.id === e.id ? `e-${e.id}` : undefined} className="row-cv flex flex-col gap-3 rounded-lg" data-event-id={e.id}><AssistantBlocks blocks={e.data.blocks} prose={row.prose!} sid={sid} /></div>;
     case "work":
       return <WorkRow row={row} sid={sid} />;
     case "error":
@@ -657,6 +673,96 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   useEffect(() => { if (view?.other && preview !== view.event) setView(null); }, [preview, view]);
   const short = useRef(false); // the run shown stops short of its branch's end
   short.current = !!reading?.end;
+  // While a turn works, the conversation never gets shorter under the reader:
+  // the tallest it has stood is kept as its least height, so when something
+  // folds (a command's card as it ends), the height it gave up stays as room
+  // at the foot, which what comes next fills. Otherwise every line on screen
+  // would drop by that much in one frame. The layout itself keeps the height
+  // (a least height, not a size written when a fold is seen), so there is no
+  // frame, and no reading of the layout, in which the lines stand lower.
+  // The room is never more than a third of the view, and it closes over a
+  // moment, not in a frame: to that third while the turn works, and whole when
+  // the turn ends. `high`: the height held, 0 when none is.
+  const high = useRef(0);
+  const closing = useRef(0); // the timer of a room that is closing
+  const capping = useRef(0); // the frame in which room over the cap starts to close
+  const working = useRef(false);
+  working.current = session.phase === "working";
+  const holds = () => !short.current && (working.current || high.current > 0);
+  // The conversation's own height: to the end of its last child in the flow (the line said to a
+  // screen reader stands outside it), with the foot's padding.
+  const ownHeight = (c: HTMLElement) => {
+    let last = c.lastElementChild;
+    while (last && getComputedStyle(last).position === "absolute") last = last.previousElementSibling;
+    return last ? Math.ceil(last.getBoundingClientRect().bottom - c.getBoundingClientRect().top + parseFloat(getComputedStyle(c).paddingBottom)) : 0;
+  };
+  // The height held is set: `to` 0 holds none. `over`: it closes to that over a moment (a least height
+  // written from the size observer's own call, when it changes a size, is an error to the browser: a
+  // closing room is always written a frame later).
+  const CLOSE_MS = 150;
+  const setHeld = (c: HTMLElement, to: number, over = false) => {
+    clearTimeout(closing.current);
+    cancelAnimationFrame(capping.current);
+    closing.current = capping.current = 0;
+    const done = () => { closing.current = 0; c.style.transition = ""; c.style.minHeight = to ? `${to}px` : ""; };
+    high.current = to;
+    if (!over || matchMedia("(prefers-reduced-motion: reduce)").matches) return done();
+    c.style.transition = `min-height ${CLOSE_MS}ms linear`;
+    c.style.minHeight = `${to || ownHeight(c)}px`;
+    closing.current = window.setTimeout(done, CLOSE_MS + 30);
+  };
+  // At the frame's layout: the height held follows the content up (set no higher than the content
+  // stands, so it changes no size), and room over a third of the view starts to close.
+  const holdHeight = () => {
+    const c = content.current, el = scroller.current;
+    if (!c || !el || closing.current || capping.current || !holds()) return;
+    const h = Math.floor(c.getBoundingClientRect().height);
+    if (h > high.current) { high.current = h; c.style.minHeight = `${h}px`; return; }
+    if (!working.current) return;
+    const over = high.current - ownHeight(c) - Math.floor(el.clientHeight / 3);
+    if (over > 1) { const to = high.current - over; capping.current = requestAnimationFrame(() => { capping.current = 0; if (high.current > to) setHeld(c, to, true); }); }
+  };
+  // The turn ended, or the reader came back to its end after it did: the room closes, and the
+  // conversation ends at the message box again.
+  const closeRoom = () => {
+    const c = content.current;
+    if (c && high.current && !working.current && !closing.current && !capping.current) setHeld(c, 0, c.getBoundingClientRect().height - ownHeight(c) > 1);
+  };
+  // The reader left the end: the room below the view goes, and what of it is in view stays until it
+  // is scrolled out (taking it away under the view would move the lines being read). `now`: all of
+  // it at once (another run of events is shown).
+  const letGo = (now = false) => {
+    const el = scroller.current, c = content.current;
+    if (!c || !high.current) return;
+    if (now || !el) return setHeld(c, 0);
+    const own = ownHeight(c);
+    const seen = Math.floor(el.getBoundingClientRect().bottom - c.getBoundingClientRect().top);
+    if (seen <= own) setHeld(c, 0);
+    else if (seen < high.current) setHeld(c, seen);
+  };
+  // The rows an event added at the end, and the last row whatever it is (an event may have joined
+  // it), are drawn at their own height at once: they take the place of the reply as it streamed, and
+  // standing at an estimated or an earlier height until they are seen would move every line under
+  // the reader, or leave the reply off the screen for good. (A row's size is remembered from then on,
+  // so off the screen it skips layout as every other row does.) `lastRow`: the last row seen so far.
+  const lastRow = useRef<Element | null>(null);
+  const drawNew = (first: boolean) => {
+    const c = content.current;
+    if (!c) return;
+    const fresh: HTMLElement[] = [];
+    let end: Element | null = null;
+    for (let el = c.lastElementChild; el && fresh.length < 12; el = el.previousElementSibling) {
+      if (!el.classList.contains("row-cv")) continue;
+      end ??= el;
+      if (first) break;
+      if (el === lastRow.current) { if (el === end) fresh.push(el as HTMLElement); break; }
+      fresh.push(el as HTMLElement);
+    }
+    lastRow.current = end;
+    if (!fresh.length) return;
+    for (const el of fresh) el.style.contentVisibility = "visible";
+    requestAnimationFrame(() => requestAnimationFrame(() => { for (const el of fresh) el.style.contentVisibility = ""; }));
+  };
   // The branch shown, its prompts' versions and its rows, each from the one
   // before: an event added at the end is read alone (see rows.ts).
   const line = useRef<LineageOf | undefined>(undefined);
@@ -684,7 +790,10 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   // crossing the top of the view, and its offset there. A
   // size change above it (a report opening, an image loading, rows rendering
   // in) moves the scroll by as much, so the words stay under the eyes.
-  const anchor = useRef<{ el: Element; top: number } | null>(null);
+  // `ev`: the event that element shows, and where its row or step stood: when
+  // the element itself is taken away (its step was made again as older events
+  // joined it), the place is found again by the event.
+  const anchor = useRef<{ el: Element; top: number; ev?: string; evTop?: number } | null>(null);
   const remember = () => {
     const el = scroller.current;
     const c = content.current;
@@ -710,8 +819,11 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       if (!inner) break;
       part = inner;
     }
-    anchor.current = { el: part, top: part.getBoundingClientRect().top - top };
+    const holder = part.closest<HTMLElement>("[data-events], [data-event-id]");
+    const ev = holder ? holder.dataset.eventId ?? holder.dataset.events!.split(" ")[0] : undefined;
+    anchor.current = { el: part, top: part.getBoundingClientRect().top - top, ev, evTop: holder ? holder.getBoundingClientRect().top - top : undefined };
   };
+  const holderOf = (ev: string) => content.current?.querySelector<HTMLElement>(`[data-event-id="${CSS.escape(ev)}"], [data-events~="${CSS.escape(ev)}"]`);
 
   // The earlier part read leaves with its view: the events the page holds of
   // the session's own branch are the ones that reach its end.
@@ -761,8 +873,19 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     const from = events?.[0]?.id;
     const same = shownFrom.current !== undefined && shownFrom.current === from;
     shownFrom.current = from;
+    // Another run of events: no height of the one before is held.
+    if (!same) letGo(true);
+    drawNew(!same);
     if (el && !same && stick.current && !reading?.end) pin(el);
   }, [events]);
+  // The turn ended: once its last rows stand (two frames), the room kept at the foot closes if the
+  // reader is at the end; elsewhere it goes as it leaves the view.
+  useEffect(() => {
+    if (session.phase === "working" || !high.current) return;
+    let second = 0;
+    const first = requestAnimationFrame(() => { second = requestAnimationFrame(() => (stick.current ? closeRoom() : letGo())); });
+    return () => { cancelAnimationFrame(first); cancelAnimationFrame(second); };
+  }, [session.phase === "working"]);
   useEffect(() => {
     const c = content.current;
     if (!c) return;
@@ -780,8 +903,19 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       const box = el.closest<HTMLElement>(".k-session");
       const sbw = `${el.offsetWidth - el.clientWidth}px`;
       if (box && box.style.getPropertyValue("--sbw") !== sbw) { cancelAnimationFrame(late); late = requestAnimationFrame(() => box.style.setProperty("--sbw", sbw)); }
+      holdHeight();
       if (stick.current && !short.current) pin(el);
-      else if (anchor.current?.el.isConnected) {
+      else if (anchor.current && !anchor.current.el.isConnected && anchor.current.ev && holderOf(anchor.current.ev)) {
+        // The element read was made again: its event's row or step is put back where it stood.
+        const a = anchor.current;
+        const moved = holderOf(a.ev!)!.getBoundingClientRect().top - el.getBoundingClientRect().top - a.evTop!;
+        if (Math.abs(moved) >= 0.5) {
+          const was = el.scrollTop;
+          el.scrollTop += moved;
+          settling.current = el.scrollTop !== was;
+          lastTop.current = el.scrollTop;
+        }
+      } else if (anchor.current?.el.isConnected) {
         // The anchor stays the one the reader chose by scrolling: after rows
         // are added above it (an earlier part read), the row now at the top is
         // one of those, still at its estimated height, and holding on to it
@@ -863,11 +997,18 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     outside.current = { key, before: r.before, after: r.after };
     return outside.current;
   };
-  // A page that does not fill the view asks for the one before it.
+  // A page that does not fill the view asks for the one before it. Measured by
+  // the height the rows have once they are drawn, not by how many there are:
+  // until its first frame a row stands at an estimate (content-visibility), and
+  // a page of a few tall rows (one long run of work) read as a short one.
   useEffect(() => {
-    const el = scroller.current;
-    if (more && el && el.scrollHeight <= el.clientHeight) older(true);
-  }, [events]);
+    if (!more) return;
+    let second = 0;
+    const first = requestAnimationFrame(() => {
+      second = requestAnimationFrame(() => { const el = scroller.current; if (el && el.scrollHeight <= el.clientHeight) reads.current.older(true); });
+    });
+    return () => { cancelAnimationFrame(first); cancelAnimationFrame(second); };
+  }, [events, more]);
 
   // An event to show that is not on the run shown (a search hit, a jump from
   // the timeline or the branch tree, a link): the part of its branch around
@@ -906,24 +1047,34 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   // It reaches what is in the page too, and folded work is not: a step's calls
   // and their output are there once it is opened. The app's search reads them.
   const partial = more || !!reading?.end;
+  // (Said each time, with how much is folded: how many calls of how many steps Find will not look in.)
   const folded = !!events?.some((e) => e.kind === "tool_result");
-  const [findNote, setFindNote] = useState(false);
+  const [findNote, setFindNote] = useState<false | "part" | { calls: number; steps: number }>(false);
   useEffect(() => {
     if (!partial && !folded) return setFindNote(false);
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") return setFindNote(false);
       if (e.key.toLowerCase() !== "f" || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
-      // In the pane with the keys, or the only one.
+      // In the pane with the keys; with the keys in no pane, the one at the helm (or the only one).
+      const mine = scroller.current?.closest("[data-station]");
       const at = document.activeElement?.closest("[data-station]");
-      if (at && at !== scroller.current?.closest("[data-station]")) return;
-      setFindNote(true);
+      if (at ? at !== mine : !!mine && !mine.hasAttribute("data-helm")) return;
+      if (partial) return setFindNote("part");
+      // The calls of the closed steps that have no line of their own under them.
+      let calls = 0, steps = 0;
+      for (const st of content.current?.querySelectorAll<HTMLElement>('[data-testid="work-step"]') ?? []) {
+        if (st.querySelector(':scope > .k-line[aria-expanded="true"]')) continue;
+        const hidden = Number(st.dataset.calls ?? 0) - st.querySelectorAll('[data-testid="step-peek"] [data-testid="tool-call"]').length;
+        if (hidden > 0) { calls += hidden; steps++; }
+      }
+      if (calls) setFindNote({ calls, steps });
     };
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
   }, [partial, folded]);
   useEffect(() => {
     if (!findNote) return;
-    const t = setTimeout(() => setFindNote(false), 12_000);
+    const t = setTimeout(() => setFindNote(false), findNote === "part" ? 12_000 : 7_000);
     return () => clearTimeout(t);
   }, [findNote]);
 
@@ -939,7 +1090,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       const stay = getUI().focusStay === focus;
       setUI({ focusEvent: null, focusStay: null });
       // An event inside a run of work is its step there.
-      const el = document.getElementById(`e-${focus}`) ?? content.current?.querySelector<HTMLElement>(`[data-events~="${CSS.escape(focus)}"]`);
+      // Its row, or its step in a run of work: whichever comes first on the page.
+      const el = content.current?.querySelector<HTMLElement>(`[id="e-${CSS.escape(focus)}"], [data-events~="${CSS.escape(focus)}"]`) ?? document.getElementById(`e-${focus}`);
       if (!el) return; // folded into a turn's notes: the session opens at its end as usual
       stick.current = false;
       // Centered in the transcript's own scroller (scrollIntoView would also move clipped ancestors).
@@ -1048,6 +1200,14 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     return () => { cancelAnimationFrame(raf); clearTimeout(t); };
   }, [at]);
 
+  // What the daemon marks on the calls shown (lib/marks.ts): asked for once per reply that calls a tool.
+  useEffect(() => {
+    if (!events) return;
+    const ids: string[] = [];
+    for (const e of events) if (e.kind === "assistant" && e.data.stop !== "refusal" && (e.data.blocks as { type: string }[]).some((b) => b.type === "tool_use")) ids.push(e.id);
+    if (ids.length) ensureMarks(sessionId, ids);
+  }, [events, sessionId]);
+
   // A question card waiting on the owner says so itself; no "Working" under it.
   const asking = useStore((s) => !!s.questionCalls[sessionId]?.length);
   if (!events || !built) return <div className="flex-1" />;
@@ -1089,12 +1249,14 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           if (near) stick.current = !reading?.end;
           else if (up) stick.current = false;
           lastTop.current = el.scrollTop;
+          if (stick.current && down) closeRoom();
           if (away === stick.current) setAway(!stick.current);
           // The scroll this transcript made itself to hold the anchor in place is not the reader's.
           if (settling.current) settling.current = false;
           else remember();
           // The reader moving toward an edge reads the part beyond it (not a
           // scroll that only followed the content changing size).
+          if (!stick.current) letGo();
           if (!stick.current && up && el.scrollTop < el.clientHeight) older(true);
           if (near && down) later(true);
         }}
@@ -1143,24 +1305,27 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       )}
       {findNote && (
         <div role="status" data-testid="find-note" className="absolute left-1/2 top-3 z-10 flex max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-2 rounded-lg border border-line bg-raised px-3 py-1.5 text-caption text-muted shadow-2 animate-pop">
-          <span>{partial ? "Find in page reaches only the messages loaded here." : "Find in page does not reach inside folded steps."}</span>
-          <button type="button" data-testid="find-note-search" onClick={() => { setFindNote(false); setUI({ palette: true }); }} className="h-7 shrink-0 rounded-md px-2 font-medium text-accent-ink hover:bg-accent-soft">{partial ? "Search the whole conversation" : "Search the conversation"}</button>
+          <span>{findNote === "part" ? "Find in page reaches only the messages loaded here." : `Find in page does not reach ${findNote.calls === 1 ? "1 call" : `${findNote.calls} calls`} in ${findNote.steps === 1 ? "1 folded step" : `${findNote.steps} folded steps`}.`}</span>
+          <button type="button" data-testid="find-note-search" onClick={() => { setFindNote(false); setUI({ palette: true }); }} className="h-7 shrink-0 rounded-md px-2 font-medium text-accent-ink hover:bg-accent-soft">{findNote === "part" ? "Search the whole conversation" : "Search the conversation"}</button>
         </div>
       )}
       {(away || earlier) && (
-        <button
-          type="button"
-          onClick={() => toEnd(true)}
-          data-testid="jump-latest"
-          data-live={session.phase === "working" || undefined}
-          title="Go to the latest messages"
-          className="absolute bottom-3 left-1/2 flex h-8 -translate-x-1/2 items-center gap-1.5 rounded-full border border-line bg-raised px-3 text-caption font-medium text-muted shadow-2 animate-pop hover:text-fg"
-        >
-          {/* A reply being written below the view (a prompt sent from elsewhere moves no reader): the way there says so. */}
-          {session.phase === "working"
-            ? <><span className="size-1.5 rounded-full bg-brass animate-pulse-dot" aria-hidden="true" /> A reply is being written</>
-            : <><ArrowDown className="size-3.5" /> Latest</>}
-        </button>
+        // A strip of its own under the conversation: the way to the end never lies over a line being read.
+        <div className="k-latest-bar">
+          <button
+            type="button"
+            onClick={() => toEnd(true)}
+            data-testid="jump-latest"
+            data-live={session.phase === "working" || undefined}
+            title="Go to the latest messages"
+            className="flex h-7 items-center gap-1.5 rounded-full border border-line bg-raised px-3 text-caption font-medium text-muted animate-pop hover:text-fg"
+          >
+            {/* A reply being written below the view (a prompt sent from elsewhere moves no reader): the way there says so. */}
+            {session.phase === "working"
+              ? <><span className="size-1.5 rounded-full bg-brass animate-pulse-dot" aria-hidden="true" /> A reply is being written</>
+              : <><ArrowDown className="size-3.5" /> Latest</>}
+          </button>
+        </div>
       )}
     </div>
   );

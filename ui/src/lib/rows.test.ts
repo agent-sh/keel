@@ -154,3 +154,78 @@ test("a footer whose turn began before the events shown says its reply is not al
   expect(rows.get(all.at(-1)!.id)!.prompt).toBe(next);
   expect(buildRows(undefined, line, nextSiblings(undefined, line).map, false, input).blocks.flat().find((r) => r.id === end.id)!.partial).toBeUndefined();
 });
+
+// A run of calls longer than the part a page holds: `n` replies, each a short line and a call.
+function longRun(n: number) {
+  const from = all.length;
+  ev("user", { text: "a long run" });
+  ev("turn_start", {});
+  for (let k = 1; k <= n; k++) {
+    ev("assistant", { blocks: [{ type: "text", text: `Step ${k}.` }, { type: "tool_use", id: `run${seq}`, name: "Bash", input: { command: `echo ${k}` } }] });
+    ev("tool_result", { results: [{ type: "tool_result", tool_use_id: `run${seq - 1}`, content: `${k}` }] });
+  }
+  return all.slice(from);
+}
+
+test("a run of calls keeps its name, its place and its unchanged steps when older events of it are read in above", () => {
+  const events = longRun(120);
+  const sib = nextSiblings(undefined, events).map;
+  // The page holds the end of the run first (its start is in a part not held), then an older part, then the whole.
+  const tail = events.slice(-60), mid = events.slice(-140);
+  const first = buildRows(undefined, tail, sib, false, input);
+  const run = flat(first).find((r) => r.kind === "work")!;
+  expect(run.id).toBe(`w:${tail[0]!.id}`);
+  const more = buildRows(first, mid, sib, false, input);
+  const grown = flat(more).filter((r) => r.kind === "work");
+  expect(grown.length).toBe(1);
+  // The same row: its name and the event that names it, in the block that event is in.
+  expect(grown[0]!.id).toBe(run.id);
+  expect(grown[0]!.e).toBe(run.e);
+  expect(more.blocks[more.at.get(run.id)!]!.includes(grown[0]!)).toBe(true);
+  expect(more.blocks.every((rows) => rows.length > 0 && rows.every((r) => (r.e.seq >> 5) === (rows[0]!.e.seq >> 5)))).toBe(true);
+  expect(new Set(more.blocks.map((rows) => rows[0]!.e.seq >> 5)).size).toBe(more.blocks.length);
+  // It begins earlier now, and the steps it had are the objects they were (but the one the older events joined).
+  expect(grown[0]!.steps!.length).toBe(70);
+  const had = new Set(run.steps);
+  expect(grown[0]!.steps!.filter((st) => had.has(st)).length).toBe(run.steps!.length);
+  // A result that lands later still finds the run under its name.
+  const call = (grown[0]!.steps!.at(-1)!.items.find((i) => i.t === "call") as { id: string }).id;
+  const late = [...mid, { ...mid.at(-1)!, id: "late", seq: seq + 1, kind: "tool_result" as const, data: { results: [{ type: "tool_result", tool_use_id: call, content: "again" }] } }];
+  const after = flat(buildRows(more, late, sib, false, input)).find((r) => r.kind === "work")!;
+  expect(after.id).toBe(run.id);
+  expect((after.steps!.at(-1)!.items.find((i) => i.t === "call") as { result?: { content: unknown } }).result!.content).toBe("again");
+  // Read in whole, it is still that row; built with nothing before it, it is named by its own first event.
+  const whole = flat(buildRows(more, events, sib, false, input)).find((r) => r.kind === "work")!;
+  expect([whole.id, whole.steps!.length]).toEqual([run.id, 120]);
+  expect(flat(buildRows(undefined, events, sib, false, input)).find((r) => r.kind === "work")!.id).toBe(`w:${events[2]!.id}`);
+});
+
+test("a reply's words and calls stand in the order it has them, each row with a name of its own", () => {
+  const from = all.length;
+  const long = "A reply long enough to stand on the page as a reply of its own: it explains what was found, at some length, and why the next call is made. ".repeat(2);
+  ev("user", { text: "order" });
+  ev("turn_start", {});
+  const e = ev("assistant", { blocks: [
+    { type: "text", text: "A few words." }, { type: "tool_use", id: "o1", name: "Read", input: { file_path: "/w/a.ts" } },
+    { type: "text", text: long }, { type: "tool_use", id: "o2", name: "Bash", input: { command: "ls" } },
+    { type: "thinking", thinking: "and then" }, { type: "text", text: `${long} Again.` },
+  ] });
+  const rows = flat(buildRows(undefined, all.slice(from), nextSiblings(undefined, all).map, false, input)).filter((r) => r.e === e);
+  expect(rows.map((r) => [r.kind, r.id])).toEqual([["work", `w:${e.id}`], ["assistant", `${e.id}:2`], ["work", `w:${e.id}:3`], ["assistant", `${e.id}:5`]]);
+  expect(rows[0]!.steps!.map((st) => st.items.map((i) => i.t))).toEqual([["note", "call"]]);
+  expect(rows[1]!.prose).toEqual([2]);
+  expect(rows[2]!.steps!.map((st) => st.items.map((i) => i.t))).toEqual([["call", "thought"]]);
+  expect(rows[3]!.prose).toEqual([5]);
+  expect(new Set(rows.map((r) => r.id)).size).toBe(4);
+});
+
+test("the calls of one reply are grouped by what they do, however the model ordered them", () => {
+  const from = all.length;
+  ev("user", { text: "parallel" });
+  ev("turn_start", {});
+  const names = ["Bash", "Read", "Grep", "Edit"];
+  const blocks = Array.from({ length: 100 }, (_, k) => ({ type: "tool_use", id: `p${k}`, name: names[k % 4]!, input: names[k % 4] === "Edit" ? { file_path: `/w/f${k}.ts`, old_string: "a", new_string: "b" } : { command: "ls", file_path: `/w/f${k}.ts`, pattern: "x" } }));
+  ev("assistant", { blocks });
+  const run = flat(buildRows(undefined, all.slice(from), nextSiblings(undefined, all).map, false, input)).find((r) => r.kind === "work")!;
+  expect(run.steps!.map((st) => [st.family, st.items.length])).toEqual([["run", 25], ["explore", 50], ["change", 25]]);
+});
