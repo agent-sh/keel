@@ -28,6 +28,11 @@
 //           and a restart waits on its backup. They are done after it, by
 //           the daemon (Storage.checkBackups), and written beside the
 //           manifest (checked.json): until then the list says "pages".
+//           A delta that fails that check, or whose database fails SQLite's
+//           check at that time, is marked and never called whole; nothing
+//           more is built on its full backup, and a full backup is made at
+//           once, so the newest backup known whole (`newest_whole` in the
+//           list) is never older than the last check.
 // Every file a backup writes is synced to disk, then its folder, before the
 // folder gets its name.
 import { Database } from "bun:sqlite";
@@ -41,8 +46,9 @@ import { GRANT_FILES, writeAll } from "../core/ownfile.ts";
 // over, and `base_missing` when that one is gone (it cannot be restored).
 // `checked`: what it was checked for (see the top of this file), "whole" also
 // once the later check read it back; `failed`: that check found it does not
-// read back, and why.
-export type Backup = { name: string; path: string; created_ms: number | null; reason: string; sessions: number | null; events: number | null; bytes: number | null; unreadable?: string; config?: string; kind?: "full" | "delta"; base?: string; base_missing?: true; checked?: "whole" | "pages"; failed?: string };
+// read back, and why. `newest_whole`: the newest backup of the list that is
+// known whole (itself, and for a delta the full backup it is read over).
+export type Backup = { name: string; path: string; created_ms: number | null; reason: string; sessions: number | null; events: number | null; bytes: number | null; unreadable?: string; config?: string; kind?: "full" | "delta"; base?: string; base_missing?: true; checked?: "whole" | "pages"; failed?: string; newest_whole?: true };
 
 // The later check of a backup, written beside its manifest.
 export const CHECKED = "checked.json";
@@ -94,7 +100,7 @@ const stampMs = (name: string) => {
 // hiding the others, and is never pruned: nothing says what it holds.
 export function listBackups(root: string): Backup[] {
   if (!existsSync(root)) return [];
-  return readdirSync(root)
+  const list = readdirSync(root)
     .filter((d) => d.startsWith("keel-") && existsSync(join(root, d, "manifest.json")))
     .map((name): Backup => {
       const path = join(root, name);
@@ -117,6 +123,11 @@ export function listBackups(root: string): Backup[] {
     // By the folder's own stamp (when the backup began, the same clock for a
     // readable manifest and a damaged one), then its -N suffix.
     .sort((a, b) => (stampMs(b.name) ?? b.created_ms ?? 0) - (stampMs(a.name) ?? a.created_ms ?? 0) || order(b.name) - order(a.name));
+  // A plain copy (a keel before this one) was checked whole when it was made.
+  const whole = (b: Backup) => !b.unreadable && !b.failed && !b.base_missing && (b.checked ?? "whole") === "whole";
+  const newest = list.find((b) => whole(b) && (!b.base || list.some((f) => f.name === b.base && whole(f))));
+  if (newest) newest.newest_whole = true;
+  return list;
 }
 
 // The files of a config folder a backup carries, as paths inside it: every
@@ -244,7 +255,8 @@ const counts = (db: Database) => ({
 // folder under the backups folder `root`, renamed by the daemon once it is
 // whole). `config`: the owner's config folder, carried with the state.
 // `keep`: how many backups the owner keeps, which sets how large a delta may be.
-export type BackupJob = { stateDir: string; root: string; tmp: string; reason: string; config?: string; keep?: number };
+// `full`: a full backup whatever changed (the one made after a failed check).
+export type BackupJob = { stateDir: string; root: string; tmp: string; reason: string; config?: string; keep?: number; full?: true };
 export type BackupDone = { sessions: number; events: number; skipped: { name: string; why: string }[]; config?: string };
 
 // The database as it is at one moment, for the length of a backup.
@@ -421,18 +433,20 @@ export function makeBackup(job: BackupJob, snap?: Snapshot): BackupDone {
   return { sessions: made.sessions, events: made.events, skipped: carried?.skipped ?? [], ...(carried ? { config: carried.dir } : {}) };
 }
 
-// The check that follows a backup: each of `dirs` read back whole (a delta
-// over its full backup) against the SHA-256 its manifest names, and, with
-// `stateDir`, SQLite's integrity check of the store as it is now. Run in the
-// worker; the daemon writes each result beside the manifest it is of.
+// The check that follows a backup, run in a process of its own
+// (backup-check.ts). First SQLite's
+// integrity check of the store as it is now (with `stateDir`). Then each of
+// `check`, a delta, read back whole over its full backup against the SHA-256
+// its manifest names; `each` is told as one is done, so a check that is cut
+// keeps what it found. A store that fails its check fails every delta of
+// this run with that reason, unread: its pages were taken as they were, and
+// nothing says they are from before the damage. For a delta that does not
+// read back, its full backup is read back too (once), which says whether
+// that one is what is damaged: `bases`.
 export type CheckJob = { check: string[]; stateDir?: string };
-export type CheckDone = { backups: { dir: string; ok: boolean; why?: string }[]; store?: { ok: boolean; why?: string } };
-export function checkBackups(job: CheckJob): CheckDone {
-  const backups = job.check.map((dir) => {
-    let r: ReturnType<typeof verify>;
-    try { r = verify(dir); } catch (e) { r = { ok: false, why: (e as Error).message }; }
-    return r.ok ? { dir, ok: true } : { dir, ok: false, why: r.why };
-  });
+export type CheckResult = { dir: string; ok: boolean; why?: string };
+export type CheckDone = { backups: CheckResult[]; bases: CheckResult[]; store?: { ok: boolean; why?: string } };
+export function checkBackups(job: CheckJob, each?: (r: CheckResult) => void): CheckDone {
   let store: CheckDone["store"];
   if (job.stateDir) {
     let db: Database | undefined;
@@ -447,7 +461,27 @@ export function checkBackups(job: CheckJob): CheckDone {
       db?.close();
     }
   }
-  return { backups, ...(store ? { store } : {}) };
+  const read = (dir: string): CheckResult => {
+    let r: ReturnType<typeof verify>;
+    try { r = verify(dir); } catch (e) { r = { ok: false, why: (e as Error).message }; }
+    return r.ok ? { dir, ok: true } : { dir, ok: false, why: r.why };
+  };
+  const bases = new Map<string, CheckResult>();
+  const backups = job.check.map((dir) => {
+    let r: CheckResult;
+    if (store && !store.ok) r = { dir, ok: false, why: `the database did not pass SQLite's check when this backup was checked (${store.why}); it holds the pages as they were, so it may hold the damage` };
+    else {
+      r = read(dir);
+      if (!r.ok) try {
+        const base = (JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as Manifest).database?.base;
+        const at = base ? join(dirname(dir), base) : undefined;
+        if (at && !bases.has(at) && existsSync(join(at, "manifest.json"))) bases.set(at, read(at));
+      } catch {} // its manifest is what is damaged: `r` says so
+    }
+    each?.(r);
+    return r;
+  });
+  return { backups, bases: [...bases.values()], ...(store ? { store } : {}) };
 }
 
 // ---- the database of a backup ----
@@ -478,10 +512,13 @@ function frame(fd: number, data: Uint8Array, frames: number[]) {
 }
 
 // The newest full backup a delta can be read over: its page hashes are there
-// and are the ones its manifest names, and its pages are this size.
+// and are the ones its manifest names, and its pages are this size. Not one
+// that failed a later check, nor one with a delta that did (the full backup's
+// file or its page hashes may be what is wrong: nothing more is built on it).
 function findBase(root: string, size: number): { name: string; info: DbInfo; hashes: Buffer } | undefined {
-  const b = listBackups(root).find((b) => !b.unreadable && b.kind === "full");
-  if (!b || b.failed) return;
+  const list = listBackups(root);
+  const b = list.find((b) => !b.unreadable && b.kind === "full");
+  if (!b || b.failed || list.some((d) => d.base === b.name && d.failed)) return;
   try {
     const m = JSON.parse(readFileSync(join(b.path, "manifest.json"), "utf8")) as Manifest;
     const info = m.database!, idx = m.files.find((f) => f.name === PAGES), db = m.files.find((f) => f.name === FULL);
@@ -520,7 +557,7 @@ function writeDatabase(path: string, size: number, pages: number, source: DbInfo
     };
 
     const keep = job.keep ?? 1;
-    const base = source === "file" && keep > 1 ? findBase(job.root, size) : undefined;
+    const base = source === "file" && keep > 1 && !job.full ? findBase(job.root, size) : undefined;
     if (base) {
       const changed: number[] = [];
       for (let p = 0; p < pages; p++) {

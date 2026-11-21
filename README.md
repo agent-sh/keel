@@ -316,11 +316,18 @@ What a backup was checked for before it got its name:
   backup's file has the SHA-256 it was written with. It is not read back
   whole and SQLite's check is not run then: both take time in proportion to
   the store, and a restart waits on its backup.
-- The daemon does both after: two minutes after it starts, and right after
-  a backup that was asked for. It reads each such delta back whole and runs
-  the integrity check on the store. The list says "pages checked" until
-  then. A backup that does not read back is shown as such and reported in
-  Errors, and the next backup is a full one.
+- The daemon does both after, in a process of its own: twenty seconds after
+  a start that finds such backups, and right after a backup that was asked
+  for. It runs the integrity check on the store and reads each such delta
+  back whole. The list says "pages checked" until then. A restart that is
+  asked for meanwhile ends the check, which keeps what it found and runs
+  again after the restart.
+- A delta that does not read back is marked, and its full backup with it
+  when that is what is damaged. Nothing more is built on that full backup,
+  and a full backup is made at once. A store that fails the integrity check
+  marks every delta of that check instead: none is called whole, and a full
+  backup of it is refused. Either is reported in Errors once.
+- The list names the newest backup known whole.
 
 Every file a backup writes is synced to disk, then its folder, before the
 folder gets its name; a restore syncs what it writes and its renames.

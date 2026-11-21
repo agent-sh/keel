@@ -6,15 +6,16 @@
 import { createHash } from "node:crypto";
 import { closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { writeOwnFile } from "../core/ownfile.ts";
-import { CHECKED, checkDatabase, checkedOf, configFiles, DB_FILES, listBackups, materialize, syncPath, verify, verifyFiles, type Backup, type BackupDone, type BackupJob, type CheckDone, type CheckJob, type Checked } from "./backup.ts";
+import { CHECKED, checkDatabase, checkedOf, configFiles, DB_FILES, listBackups, materialize, syncPath, verify, verifyFiles, type Backup, type BackupDone, type BackupJob, type CheckDone, type CheckJob, type CheckResult, type Checked } from "./backup.ts";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
 import type { Store } from "../core/store.ts";
 import type { Engine } from "../engine/turn.ts";
 import { jobsOf, leftText, jobLive, stopJob, stopJobs } from "../tools/jobs.ts";
 import { daysOrNull, registerSettings, settings } from "./settings.ts";
-import { readText } from "../core/proc.ts";
+import { pumpLines, readText } from "../core/proc.ts";
 import { readsOf } from "../server/reads.ts";
 
 export { backupConfig, configFiles, HASH_CHUNK, hashFile, verify } from "./backup.ts";
@@ -350,13 +351,20 @@ export class Storage {
   // worker: the daemon goes on answering while the database is copied, hashed
   // and checked. One at a time; it settles once the backup is whole, checked
   // and has its name, or fails with nothing left behind.
+  // A later check that runs gives way to it (a restart waits on its backup):
+  // its process is ended, what it had found is kept, and it is asked for
+  // again once this process has had the time a restart takes.
   backup(reason: string): Promise<Backup> {
-    const run = this.backing.then(() => this.backupNow(reason));
+    this.cancelCheck?.();
+    this.asked++; // a check that has not begun yet does not begin before this backup
+    const run = this.backing.then(() => (this.asked--, this.backupNow(reason)));
     this.backing = run.catch(() => {});
     return run;
   }
+  private asked = 0;
 
-  private async backupNow(reason: string): Promise<Backup> {
+  // `full`: a full backup whatever changed.
+  private async backupNow(reason: string, full = false): Promise<Backup> {
     // Two backups in the same millisecond get distinct names (-1, -2, ...).
     const base = `keel-${new Date().toISOString().replace(/[:.]/g, "-")}`;
     let stamp = base.slice(5);
@@ -372,7 +380,7 @@ export class Storage {
       // while a read of it runs: its reads are held until the worker has its
       // snapshot (a read already running is waited for, ten seconds at most).
       const release = await readsOf(this.store).hold(READS_HOLD_MS);
-      const done = await inWorker<BackupDone>({ stateDir: this.dir, root: this.backupRoot, tmp, reason, keep: settings().backup.keep, ...(this.config ? { config: resolve(this.config) } : {}) }, checkpoint, release).finally(release);
+      const done = await inWorker<BackupDone>({ stateDir: this.dir, root: this.backupRoot, tmp, reason, keep: settings().backup.keep, ...(full ? { full: true as const } : {}), ...(this.config ? { config: resolve(this.config) } : {}) }, { checkpoint, snapped: release }).finally(release);
       if (done.skipped.length) this.errors.capture?.("server", new Error(`the backup left out ${done.skipped.length} config file${done.skipped.length === 1 ? "" : "s"} it could not read: ${done.skipped.map((s) => s.name).join(", ")}`), { at: "backup config", dir: done.config });
       renameSync(tmp, final);
       syncPath(this.backupRoot); // the name itself is on disk
@@ -385,40 +393,101 @@ export class Storage {
     return this.backups().find((b) => b.name === basename(final))!;
   }
 
+  // The backups a later check is owed: deltas that were checked for their pages only.
+  private unchecked() {
+    return this.backups().filter((b) => !b.unreadable && b.kind && b.checked === "pages" && !b.failed && !b.base_missing);
+  }
+
+  // The later check, `ms` from now (one timer: a later call moves it).
+  checkLater(ms = CHECK_AFTER_BACKUP_MS) {
+    if (this.stopped) return;
+    clearTimeout(this.checkTimer);
+    this.checkTimer = setTimeout(() => {
+      this.checkTimer = undefined;
+      this.checkBackups().catch((e) => this.errors.capture?.("server", e, { at: "backup check" }));
+    }, ms);
+    this.checkTimer.unref?.();
+  }
+  // At a start: backups an earlier process left unchecked (it restarted
+  // right after making one, or was killed before its check) are checked
+  // soon, so restarts close together do not leave them unchecked for good.
+  checkLeft() {
+    if (this.unchecked().length) this.checkLater(CHECK_AT_START_MS);
+  }
+  // No check is started or left running by this one (a hot reload makes another).
+  stopChecks() {
+    this.stopped = true;
+    clearTimeout(this.checkTimer);
+    this.checkTimer = undefined;
+    this.cancelCheck?.();
+  }
+  private stopped = false;
+  private checkTimer?: ReturnType<typeof setTimeout>;
+  private cancelCheck?: () => void;
+
   // The check that follows a backup (src/admin/backup.ts says which backup
-  // was checked for what): each kept backup that was not read back whole yet
-  // is, in the worker, and the store passes SQLite's integrity check as it
-  // is now. The result is written beside each manifest; a backup that does
-  // not read back is captured, shown in the list, and never built on, so the
-  // next backup is a full one. Run by the daemon a while after its start
-  // and after a backup that was asked for: never while a restart waits.
-  checkBackups(): Promise<{ checked: number; failed: string[]; store_ok: boolean | null }> {
-    const run = this.backing.then(async () => {
-      const due = this.backups().filter((b) => !b.unreadable && b.kind && b.checked === "pages" && !b.failed && !b.base_missing);
-      if (!due.length) return { checked: 0, failed: [], store_ok: null };
-      const done = await inWorker<CheckDone>({ check: due.map((b) => b.path), stateDir: this.dir });
-      const failed: string[] = [];
-      const write = (dir: string, c: Checked) => { writeFileSync(join(dir, CHECKED), JSON.stringify(c), { mode: 0o600 }); syncPath(join(dir, CHECKED)); };
-      for (const r of done.backups) {
-        if (!existsSync(join(r.dir, "manifest.json"))) continue; // pruned meanwhile
-        write(r.dir, { checked_ms: Date.now(), ok: r.ok, ...(r.why ? { why: r.why } : {}) });
-        if (r.ok) continue;
-        failed.push(basename(r.dir));
-        // The full backup it is read over, when that is what is damaged: marked, so nothing more is built on it.
-        const base = due.find((b) => b.path === r.dir)?.base;
-        const baseDir = base ? join(this.backupRoot, base) : undefined;
-        if (baseDir && existsSync(join(baseDir, "manifest.json")) && !checkedOf(baseDir)) {
-          const v = verify(baseDir);
-          if (!v.ok) write(baseDir, { checked_ms: Date.now(), ok: false, why: v.why });
-        }
-        this.errors.capture?.("server", new Error(`the backup ${basename(r.dir)} does not read back: ${r.why}. The next backup is a full one.`), { at: "backup check" });
-      }
-      if (done.store && !done.store.ok) this.errors.capture?.("server", new Error(`the database did not pass SQLite's integrity check: ${done.store.why}. Backups made since the last full one may hold the damage.`), { at: "backup check" });
-      this.diskStale = true;
-      return { checked: done.backups.length, failed, store_ok: done.store?.ok ?? null };
-    });
+  // was checked for what), all of it in a process of its own
+  // (backup-check.ts): SQLite's integrity check of the store as it is now,
+  // then each kept backup that was not read back whole yet. Each result is
+  // written beside its manifest as it comes.
+  // - A backup that does not read back is marked, and so is its full backup
+  //   when that is what is damaged; nothing more is built on that full
+  //   backup, and a full backup is made at once, so a backup known whole
+  //   exists again without waiting for the next restart.
+  // - A store that fails SQLite's check: every delta of this run is marked
+  //   with that (never called whole), and no full backup is tried: it would
+  //   be refused for the same reason.
+  // Either is reported in Errors once a run. Run a while after a start that
+  // finds backups unchecked, after a backup that was asked for, and never
+  // while a restart waits: a backup that is asked for ends it (`cut`).
+  checkBackups(): Promise<{ checked: number; failed: string[]; store_ok: boolean | null; full?: string; cut?: true }> {
+    const run = this.backing.then(() => this.checkNow());
     this.backing = run.catch(() => {});
     return run;
+  }
+
+  private async checkNow(): Promise<{ checked: number; failed: string[]; store_ok: boolean | null; full?: string; cut?: true }> {
+    const due = this.unchecked();
+    if (!due.length) return { checked: 0, failed: [], store_ok: null };
+    // Again once the backup it gives way to is made, where its restart did not come.
+    const cut = (checked: number) => {
+      if (checked) this.diskStale = true;
+      this.checkLater(CHECK_AFTER_BACKUP_MS);
+      return { checked, failed: [], store_ok: null, cut: true as const };
+    };
+    if (this.asked) return cut(0);
+    const write = (dir: string, c: Checked) => {
+      if (!existsSync(join(dir, "manifest.json"))) return; // pruned meanwhile
+      writeFileSync(join(dir, CHECKED), JSON.stringify(c), { mode: 0o600 });
+      syncPath(join(dir, CHECKED));
+    };
+    let checked = 0;
+    const part = (r: CheckResult) => { checked++; write(r.dir, { checked_ms: Date.now(), ok: r.ok, ...(r.why ? { why: r.why } : {}) }); };
+    let done: CheckDone;
+    try {
+      done = await checkInProcess({ check: due.map((b) => b.path), stateDir: this.dir }, part, (end) => (this.cancelCheck = end));
+    } catch (e) {
+      if (!(e instanceof Cancelled)) throw e;
+      return cut(checked);
+    } finally {
+      this.cancelCheck = undefined;
+    }
+    const failed = done.backups.filter((r) => !r.ok);
+    for (const b of done.bases) if (!b.ok) write(b.dir, { checked_ms: Date.now(), ok: false, ...(b.why ? { why: b.why } : {}) });
+    this.diskStale = true;
+    const names = failed.map((r) => basename(r.dir));
+    let full: Backup | undefined;
+    if (done.store && !done.store.ok) {
+      this.errors.capture?.("server", new Error(`the database did not pass SQLite's integrity check: ${done.store.why}. ${names.length === 1 ? `The backup ${names[0]} holds` : `${names.length} backups (${names.join(", ")}) hold`} its pages as they were and may hold the damage: marked, and not counted as whole. No full backup can be made of the database as it is: one is refused, and so is a restart that waits on it.`), { at: "backup check" });
+    } else if (failed.length) {
+      let why: string | undefined;
+      try { full = await this.backupNow("after a backup failed its check", true); } catch (e) { why = (e as Error).message; }
+      const whole = this.backups().find((b) => b.newest_whole)?.name;
+      this.errors.capture?.("server", new Error(
+        `${names.length === 1 ? `the backup ${names[0]} does` : `${names.length} backups (${names.join(", ")}) do`} not read back: ${failed[0]!.why}. `
+        + (full ? `A full backup was made now: ${full.name}.` : `A full backup could not be made now: ${why}. ${whole ? `The newest backup known whole is ${whole}.` : "No backup is known whole."}`)), { at: "backup check" });
+    }
+    return { checked: done.backups.length, failed: names, store_ok: done.store?.ok ?? null, ...(full ? { full: full.name } : {}) };
   }
 
   private prune() {
@@ -438,16 +507,60 @@ export class Storage {
 // file to start a worker from; run from source, the worker is its file.
 declare const __KEEL_BACKUP_WORKER_JS__: string | undefined;
 
-// Runs one job in a worker of its own and ends the worker. A worker that
+// A backup's worker, or a check's process, that gives no answer in this
+// long is ended. (The slowest backup measured on a 1.7 GB store under load
+// took two and a half minutes; the limit is ten times that.)
+const WORKER_MS = 30 * 60_000;
+const HOLD_MS = 25;
+const READS_HOLD_MS = 10_000;
+// The later check, after a start that finds backups an earlier process left
+// unchecked: once the turns the start continued have their requests out.
+const CHECK_AT_START_MS = 20_000;
+// And after a backup made by this process: a restart that waited on it has
+// ended the process long before, so the check runs only where none came.
+const CHECK_AFTER_BACKUP_MS = 120_000;
+// A check that was ended for a backup: not a failure.
+class Cancelled extends Error {}
+
+// The later check in a process of its own (backup-check.ts says why not a
+// thread): this program again, with the job on its stdin. `part`: one
+// backup's result, as it comes. `cancel` is given what ends it at once; the
+// promise then fails with Cancelled.
+async function checkInProcess(job: CheckJob, part: (r: CheckResult) => void, cancel: (end: () => void) => void): Promise<CheckDone> {
+  // The binary is its own program; run from source, the program is main.ts.
+  const self = typeof __KEEL_BACKUP_WORKER_JS__ === "string" ? [process.execPath] : [process.execPath, fileURLToPath(new URL("../main.ts", import.meta.url))];
+  const p = Bun.spawn([...self, "backup-check"], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  let cancelled = false;
+  cancel(() => { cancelled = true; p.kill("SIGKILL"); });
+  const limit = setTimeout(() => p.kill("SIGKILL"), WORKER_MS);
+  try {
+    p.stdin.write(JSON.stringify(job));
+    await p.stdin.end();
+    const said = readText(p.stderr).catch(() => "");
+    let done: CheckDone | undefined, failed: string | undefined;
+    await pumpLines(p.stdout, (line) => {
+      if (!line || cancelled) return; // a line the end cut is not read
+      const m = JSON.parse(line) as { t: "part"; part: CheckResult } | { t: "done"; done: CheckDone } | { t: "failed"; error: string };
+      if (m.t === "part") part(m.part);
+      else if (m.t === "done") done = m.done;
+      else failed = m.error;
+    }, "backup check").catch((e) => { if (!cancelled) throw e; });
+    const code = await p.exited;
+    if (cancelled) throw new Cancelled("ended for a backup");
+    if (done) return done;
+    throw new Error(failed ?? `the backup check ended without an answer (${p.signalCode ?? `exit ${code}`})${(await said).trim() ? `: ${(await said).trim().slice(-300)}` : ""}`);
+  } finally {
+    clearTimeout(limit);
+  }
+}
+
+// Runs a backup in a worker of its own and ends the worker. A worker that
 // dies without an answer, or gives none within WORKER_MS, fails the job: a
 // restart that waits on its backup is then called off, not left waiting.
-// (The slowest backup measured on a 1.7 GB store under load took two and a
-// half minutes; the limit is ten times that.)
-const HOLD_MS = 25;
-const WORKER_MS = 30 * 60_000;
-const READS_HOLD_MS = 10_000;
+// `checkpoint`: asked by the worker, to empty the log.
 // `snapped`: called once the worker has tried its snapshot (it has it, or will make the backup from a copy).
-function inWorker<T>(job: BackupJob | CheckJob, checkpoint?: () => void, snapped?: () => void): Promise<T> {
+function inWorker<T>(job: BackupJob, on: { checkpoint?: () => void; snapped?: () => void } = {}): Promise<T> {
+  const { checkpoint, snapped } = on;
   return new Promise((ok, fail) => {
     const built = typeof __KEEL_BACKUP_WORKER_JS__ === "string" ? URL.createObjectURL(new Blob([__KEEL_BACKUP_WORKER_JS__], { type: "text/javascript" })) : undefined;
     const w = new Worker(built ?? new URL("./backup-worker.ts", import.meta.url).href);

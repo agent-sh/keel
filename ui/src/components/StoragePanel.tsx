@@ -22,7 +22,7 @@ type Report = {
   orphan_checkpoints: number;
 };
 type CheckpointSession = { id: string; title: string; archived: boolean; subagent: boolean; checkpoints: number; checkpoint_bytes: number; updated_ms: number };
-type Backup = { name: string; path: string; created_ms: number | null; reason: string; sessions: number | null; events: number | null; bytes: number | null; unreadable?: string; kind?: "full" | "delta"; base?: string; base_missing?: true; checked?: "whole" | "pages"; failed?: string };
+type Backup = { name: string; path: string; created_ms: number | null; reason: string; sessions: number | null; events: number | null; bytes: number | null; unreadable?: string; kind?: "full" | "delta"; base?: string; base_missing?: true; checked?: "whole" | "pages"; failed?: string; newest_whole?: true };
 type Due = { spill: { before_ms: number | null; files: number; bytes: number; sessions: number; session_ids: string[]; busy_sessions: number; pinned_sessions: number }; usage: { before_ms: number | null; calls: number; tools: number }; next_ms: number };
 type Proposed = { spill_days: number; usage_days: number; due: Due };
 type Candidate = { id: string; title: string; updated_ms: number; bytes: number; family_updated_ms: number; subagents: { id: string; title: string }[] };
@@ -314,10 +314,11 @@ export function StoragePanel() {
             ) : (
               <>
                 <span className="text-caption text-faint">{b.reason}</span>
-                {b.failed ? <span className="min-w-0 truncate text-caption text-danger" title={b.failed} data-testid="backup-failed">does not read back; the next backup is a full one</span>
+                {b.failed ? <span className="min-w-0 truncate text-caption text-danger" title={b.failed} data-testid="backup-failed">not known whole: failed its check</span>
                   : b.checked === "pages" && !b.base_missing && <span className="text-caption text-faint" title="Its pages were checked when it was made. It is read back whole over its full backup a little later." data-testid="backup-pages">pages checked</span>}
                 {b.base_missing ? <span className="min-w-0 truncate text-caption text-danger" title={`It holds the changes since ${b.base}, which is gone.`} data-testid="backup-base-missing">its full backup is gone; cannot be restored</span>
                   : b.base && <span className="min-w-0 truncate text-caption text-faint" title={`The changes since ${b.base}`} data-testid="backup-delta">changes only</span>}
+                {b.newest_whole && <span className="text-caption text-muted" title="The newest backup that was read back whole and is the database that was backed up." data-testid="backup-newest-whole">newest known whole</span>}
                 <span className="ml-auto text-caption tabular-nums text-muted">{b.sessions} sessions</span>
                 <span className="w-16 text-right text-caption tabular-nums text-muted">{fmtBytes(b.bytes ?? 0)}</span>
               </>

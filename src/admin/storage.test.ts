@@ -181,15 +181,27 @@ test("a delta without its full backup is refused, and the next backup is whole a
     writeFileSync(join(full.path, "keel.db.zst"), damaged);
     const last = deltas.at(-1)!;
     expect(verify(last.path).ok).toBe(false);
-    // The check that follows a backup finds it: the deltas kept are said not to read back, and their full backup with them.
+    // The check that follows a backup finds it: the deltas kept are said not to read back, and their full backup
+    // with them (read back in the worker, not here). A full backup is made at once and is the newest known whole.
     const captured: string[] = [];
     (storage as any).errors = { capture: (_s: string, e: Error) => void captured.push(e.message) };
     const found = await storage.checkBackups();
-    expect(found).toMatchObject({ checked: 5, store_ok: true });
+    expect([found.checked, found.store_ok, found.full?.startsWith("keel-")]).toEqual([5, true, true]);
     expect(found.failed.sort()).toEqual(deltas.slice(1).map((d) => d.name).sort());
-    expect(storage.backups().map((b) => [b.reason, !!b.failed])).toEqual([["delta 5", true], ["delta 4", true], ["delta 3", true], ["delta 2", true], ["delta 1", true], ["full", true]]);
-    expect(captured[0]).toContain("does not read back");
-    expect(captured[0]).toContain("The next backup is a full one.");
+    expect(storage.backups().map((b) => [b.reason, !!b.failed, !!b.newest_whole])).toEqual([
+      ["after a backup failed its check", false, true], ["delta 5", true, false], ["delta 4", true, false], ["delta 3", true, false], ["delta 2", true, false], ["full", true, false],
+    ]);
+    expect(storage.backups()[0]).toMatchObject({ name: found.full, kind: "full", checked: "whole" });
+    // Told once, with what was done about it.
+    expect(captured).toEqual([expect.stringContaining("5 backups (")]);
+    expect(captured[0]).toContain("do not read back");
+    expect(captured[0]).toContain(`A full backup was made now: ${found.full}.`);
+    // The next backup holds the changes since the new full backup, and reads back.
+    say("after the check");
+    const onNew = await storage.backup("on the new one");
+    expect([onNew.kind, onNew.base, verify(onNew.path).ok]).toEqual(["delta", found.full!, true]);
+    rmSync(onNew.path, { recursive: true });
+    rmSync(join(src.stateDir, "backups", found.full!), { recursive: true });
     for (const b of storage.backups()) rmSync(join(b.path, "checked.json"), { force: true });
     const refused = await restoredBy(last.path, dst);
     expect(refused.code).not.toBe(0);
@@ -206,7 +218,7 @@ test("a delta without its full backup is refused, and the next backup is whole a
 
     // Gone altogether: the list marks what was read over it.
     rmSync(full.path, { recursive: true });
-    expect(storage.backups().filter((b) => b.base_missing).map((b) => b.reason)).toEqual(["delta 5", "delta 4", "delta 3", "delta 2"]);
+    expect(storage.backups().filter((b) => b.base_missing).map((b) => b.reason)).toEqual(["delta 5", "delta 4", "delta 3"]);
     expect((await restoredBy(last.path, dst)).said).toContain(`the pages that changed since the backup ${full.name}, and that one is gone`);
     expect(titles(join(dst, "keel.db"))).toEqual(["in use"]);
   } finally {
@@ -796,3 +808,192 @@ test("a command that opens the state by itself does not make an empty database i
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// A delta is given its name on a cheap check; what that check cannot see is
+// found by the later one. Whatever it finds, a backup known whole must exist
+// again at once, nothing more may be built on the full backup the failure
+// was found on, and a delta of a store that fails SQLite's check is never
+// called whole.
+test("a delta that fails its later check: a full backup is made at once, and nothing more is built on that full backup", async () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
+  const sha = (b: Uint8Array) => createHash("sha256").update(b).digest();
+  const manifestOf = (dir: string) => JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+  const world = (name: string) => {
+    const src = new Store(join(root, name));
+    const s = src.createSession({ model: "p:m", workspace: root, title: "kept" });
+    const say = (n: number) => src.db.transaction(() => { for (let i = 0; i < n; i++) src.append(s.id, "user", { text: `${name} ${i} `.padEnd(16) + "x".repeat(3000) }); })();
+    say(400);
+    const captured: string[] = [];
+    const storage = new Storage(src, {} as any, new Bus(), { capture: (_s: string, e: Error) => void captured.push(e.message) } as any);
+    return { src, say, storage, captured };
+  };
+  try {
+    // 1. A delta whose file is damaged after it was made, beside one that is whole.
+    {
+      const { src, say, storage, captured } = world("damaged-delta");
+      const full = await storage.backup("full");
+      say(3);
+      const good = await storage.backup("good delta");
+      expect(await storage.checkBackups()).toEqual({ checked: 1, failed: [], store_ok: true });
+      say(3);
+      const bad = await storage.backup("bad delta");
+      const z = Buffer.from(readFileSync(join(bad.path, "keel.db.delta.zst")));
+      z[z.length >> 1]! ^= 1;
+      writeFileSync(join(bad.path, "keel.db.delta.zst"), z);
+      const found = await storage.checkBackups();
+      expect([found.checked, found.failed, found.store_ok, found.full?.startsWith("keel-")]).toEqual([1, [bad.name], true, true]);
+      // The full backup read back whole in the worker: it is not what is damaged, and stays unmarked; the delta checked before stays whole.
+      expect(storage.backups().map((b) => [b.reason, b.kind, b.checked, !!b.failed, !!b.newest_whole])).toEqual([
+        ["after a backup failed its check", "full", "whole", false, true], ["bad delta", "delta", "pages", true, false], ["good delta", "delta", "whole", false, false], ["full", "full", "whole", false, false],
+      ]);
+      expect(captured).toEqual([expect.stringContaining(`the backup ${bad.name} does not read back`)]);
+      expect(captured[0]).toContain(`A full backup was made now: ${found.full}.`);
+      // Without the new one, a delta would not be made on the old full backup either: one of its deltas failed.
+      rmSync(join(src.stateDir, "backups", found.full!), { recursive: true });
+      say(3);
+      const next = await storage.backup("next");
+      expect([next.kind, verify(next.path).ok]).toEqual(["full", true]);
+      // A later check with nothing wrong reports nothing more.
+      expect(await storage.checkBackups()).toEqual({ checked: 0, failed: [], store_ok: null });
+      expect(captured.length).toBe(1);
+      src.db.close();
+    }
+
+    // 2. The full backup's page hashes name the new content of a page that changed: the delta leaves that page out.
+    {
+      const { src, say, storage, captured } = world("hidden-page");
+      const full = await storage.backup("full");
+      say(40);
+      src.db.run("PRAGMA wal_checkpoint(TRUNCATE)");
+      const fm = manifestOf(full.path);
+      const size = fm.database.page_size as number;
+      const now = readFileSync(join(src.stateDir, "keel.db"));
+      const idx = Buffer.from(readFileSync(join(full.path, "keel.db.pages")));
+      const changed: number[] = [];
+      for (let p = 1; p < Math.min(now.length / size, fm.database.pages); p++) if (sha(now.subarray(p * size, (p + 1) * size)).compare(idx, p * 16, p * 16 + 16, 0, 16) !== 0) changed.push(p);
+      expect(changed.length).toBeGreaterThan(0);
+      const hidden = changed[changed.length >> 1]!;
+      sha(now.subarray(hidden * size, (hidden + 1) * size)).copy(idx, hidden * 16, 0, 16);
+      writeFileSync(join(full.path, "keel.db.pages"), idx);
+      fm.files.find((f: any) => f.name === "keel.db.pages").sha256 = sha(idx).toString("hex");
+      writeFileSync(join(full.path, "manifest.json"), JSON.stringify(fm, null, 2));
+      // It gets its name (every page it holds is right), and does not read back whole.
+      const missed = await storage.backup("misses a page");
+      expect([missed.kind, missed.checked, verify(missed.path).ok]).toEqual(["delta", "pages", false]);
+      const found = await storage.checkBackups();
+      expect(found).toMatchObject({ checked: 1, failed: [missed.name], store_ok: true });
+      expect(captured.length).toBe(1);
+      // Every backup after it is read over the new full backup and reads back: none on the full backup with the wrong hashes.
+      for (let i = 0; i < 3; i++) {
+        say(5);
+        const b = await storage.backup(`next ${i}`);
+        expect([b.kind, b.base, verify(b.path).ok]).toEqual(["delta", found.full!, true]);
+        expect(await storage.checkBackups()).toEqual({ checked: 1, failed: [], store_ok: true });
+      }
+      expect(captured.length).toBe(1);
+      expect(storage.backups().find((b) => b.newest_whole)?.reason).toBe("next 2");
+      src.db.close();
+    }
+
+    // 3. The store itself fails SQLite's check (a damaged index leaf) when a delta is made of it.
+    {
+      const { src, say, storage: before } = world("damaged-store");
+      const full = await before.backup("full");
+      say(20);
+      src.db.run("PRAGMA wal_checkpoint(TRUNCATE)");
+      const index = src.db.query<{ name: string; rootpage: number }, []>("SELECT name, rootpage FROM sqlite_schema WHERE type = 'index' AND tbl_name = 'events' ORDER BY name LIMIT 1").get()!;
+      const size = src.db.query<{ page_size: number }, []>("PRAGMA page_size").get()!.page_size;
+      const dir = src.stateDir;
+      src.db.close();
+      const fd = fs.openSync(join(dir, "keel.db"), "r+");
+      const page = (n: number) => { const b = Buffer.alloc(size); fs.readSync(fd, b, 0, size, (n - 1) * size); return b; };
+      let pn = index.rootpage, pg = page(pn);
+      while (pg[0] === 0x02) { pn = pg.readUInt32BE(pg.readUInt16BE(12)); pg = page(pn); }
+      const cell = pg.readUInt16BE(8);
+      for (let i = 0; i < 12; i++) pg[cell + 6 + i]! ^= 0x5a;
+      fs.writeSync(fd, pg, 0, size, (pn - 1) * size);
+      fs.closeSync(fd);
+      const store = new Store(dir);
+      expect(store.db.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()!.integrity_check).not.toBe("ok");
+      const captured: string[] = [];
+      const storage = new Storage(store, {} as any, new Bus(), { capture: (_s: string, e: Error) => void captured.push(e.message) } as any);
+      const delta = await storage.backup("of a damaged store");
+      expect([delta.kind, delta.base, delta.checked]).toEqual(["delta", full.name, "pages"]);
+      // The later check: the delta is marked with the store's failure, never called whole, and the store is named in Errors once.
+      expect(await storage.checkBackups()).toEqual({ checked: 1, failed: [delta.name], store_ok: false });
+      const listed = storage.backups().find((b) => b.name === delta.name)!;
+      expect(listed.checked).toBe("pages");
+      expect(listed.failed).toContain("the database did not pass SQLite's check when this backup was checked");
+      expect(storage.backups().map((b) => [b.reason, !!b.newest_whole])).toEqual([["of a damaged store", false], ["full", true]]);
+      expect(captured).toEqual([expect.stringContaining("the database did not pass SQLite's integrity check")]);
+      expect(captured[0]).toContain(`The backup ${delta.name} holds its pages as they were and may hold the damage`);
+      // No full backup was tried, and the next one is a full one, which is refused.
+      expect(await storage.backup("next").then((b) => b.kind, (e: Error) => e.message)).toContain("the database did not check out");
+      expect(await storage.checkBackups()).toEqual({ checked: 0, failed: [], store_ok: null });
+      expect(captured.length).toBe(1);
+      store.db.close();
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 60_000);
+
+// The later check never holds a restart up: a backup asked for while it runs
+// ends its worker (what it had found is kept), one asked for before it
+// began goes first, and the check is asked for again. A start that finds
+// backups an earlier process left unchecked checks them soon.
+test("a backup asked for while the later check runs ends the check, which is scheduled again", async () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
+  try {
+    const src = new Store(join(root, "src"));
+    const s = src.createSession({ model: "p:m", workspace: root, title: "kept" });
+    const say = (n: number) => src.db.transaction(() => { for (let i = 0; i < n; i++) src.append(s.id, "user", { text: `e ${i} `.padEnd(16) + "x".repeat(3000) }); })();
+    say(6000); // about 20 MB: the check takes long enough to be met while it runs
+    const storage = new Storage(src, {} as any, new Bus(), {} as any);
+    const timer = () => (storage as any).checkTimer as ReturnType<typeof setTimeout> | undefined;
+    await storage.backup("full");
+    // Nothing left unchecked: a start schedules no check.
+    storage.checkLeft();
+    expect(timer()).toBeUndefined();
+    say(3);
+    const delta = await storage.backup("delta");
+    expect(timer()).toBeUndefined();
+
+    // While it runs: ended, and the backup does not wait for it.
+    const check = storage.checkBackups();
+    for (let i = 0; i < 2000 && !(storage as any).cancelCheck; i++) await new Promise((r) => setTimeout(r, 1));
+    expect((storage as any).cancelCheck).toBeDefined();
+    say(3);
+    const made = await storage.backup("asked while it checks");
+    expect(await check).toMatchObject({ failed: [], store_ok: null, cut: true });
+    expect(made.kind).toBe("delta");
+    expect(timer()).toBeDefined(); // asked for again
+    clearTimeout(timer());
+    (storage as any).checkTimer = undefined;
+
+    // Before it began (it waits behind a backup): the next backup goes first.
+    say(3);
+    const first = storage.backup("first");
+    const queued = storage.checkBackups();
+    const second = storage.backup("second");
+    expect(await queued).toEqual({ checked: 0, failed: [], store_ok: null, cut: true });
+    await Promise.all([first, second]);
+    expect(timer()).toBeDefined();
+
+    // Left alone, it checks every one of them.
+    expect(await storage.checkBackups()).toEqual({ checked: 4, failed: [], store_ok: true });
+    expect(storage.backups().map((b) => b.checked)).toEqual(["whole", "whole", "whole", "whole", "whole"]);
+
+    // A start (another Storage on the same state) that finds one unchecked asks for the check; one that finds none does not.
+    storage.stopChecks();
+    expect(timer()).toBeUndefined();
+    rmSync(join(delta.path, "checked.json"));
+    const started = new Storage(src, {} as any, new Bus(), {} as any);
+    started.checkLeft();
+    expect((started as any).checkTimer).toBeDefined();
+    started.stopChecks();
+    src.db.close();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 60_000);

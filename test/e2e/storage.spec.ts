@@ -60,6 +60,11 @@ test("storage, cleanup and backups", async ({ page, request }) => {
   await expect.poll(async () => (await (await request.get("/api/backups")).json()).backups.length).toBeGreaterThan(1);
   // The second holds only the pages that changed since the first, and its row says so.
   await expect(panel.getByTestId("backup-delta").first()).toHaveText("changes only");
+  // It was asked for, so it is read back whole right after: its row then names it as the newest backup known whole.
+  await expect.poll(async () => (await (await request.get("/api/backups")).json()).backups[0], { timeout: 30_000 }).toMatchObject({ kind: "delta", checked: "whole", newest_whole: true });
+  await page.reload();
+  await expect(panel.getByTestId("backup-row").first().getByTestId("backup-newest-whole")).toHaveText("newest known whole");
+  await expect(panel.getByTestId("backup-newest-whole")).toHaveCount(1);
   await panel.getByTestId("backup-delta").first().scrollIntoViewIfNeeded();
   await shoot(page, "storage-03a-backup-delta");
   const damaged = (await (await request.get("/api/backups")).json()).backups[0];

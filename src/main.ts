@@ -7,6 +7,8 @@ import { startDaemon } from "./server/start.ts";
 
 const SERVE_USAGE = "keel serve [--bind HOST:PORT] [--state-dir DIR] [--workspace DIR] [--dev]\n  Runs the daemon: the agent loop, the HTTP API and the workbench (default bind 127.0.0.1:47960).";
 const sub = Bun.argv[2];
+// The daemon's own helper process (src/admin/backup-check.ts): no command of the owner's, no state folder claimed.
+if (sub === "backup-check") process.exit(await (await import("./admin/backup-check.ts")).main());
 if (sub === undefined || sub === "-h" || sub === "--help" || sub === "help") {
   const of = sub === "help" ? Bun.argv[3] : undefined;
   if (of && commands[of]) process.exit(await commands[of](["--help"]));

@@ -194,13 +194,13 @@ const cleanup = wrap("keel cleanup --older-than DAYS [--yes] [--leftovers] [--re
 
 const backup = wrap("keel backup [--url URL]  A checked copy of the database, the settings and the config folder's files, kept under <state>/backups.", {}, async (v) => {
   const r = await call(urlOf(v.url), "/api/backups", { method: "POST" });
-  console.log(`${r.backup.path}  ${mb(r.backup.bytes)}, ${r.backup.sessions} sessions, ${r.backup.events} events, checked${r.backup.base ? ` (the changes since ${r.backup.base})` : ""}`);
+  console.log(`${r.backup.path}  ${mb(r.backup.bytes)}, ${r.backup.sessions} sessions, ${r.backup.events} events, ${r.backup.checked === "pages" ? `its pages checked (the changes since ${r.backup.base}); it is read back whole in a moment` : "checked"}`);
   return 0;
 });
 
 const backups = wrap("keel backups [--url URL] [--json]", {}, async (v) => {
   const r = await call(urlOf(v.url), "/api/backups");
-  out(r, !!v.json, () => r.backups.map((b: any) => b.unreadable ? `${b.name}  ${b.created_ms ? time(b.created_ms) : "time unknown"}  ${b.unreadable}` : `${b.name}  ${time(b.created_ms)}  ${mb(b.bytes).padStart(9)}  ${b.sessions} sessions  (${b.reason})${b.base ? `  the changes since ${b.base}${b.base_missing ? ", which is gone: this one cannot be restored" : ""}` : ""}${b.failed ? `  DOES NOT READ BACK: ${b.failed}` : b.checked === "pages" ? "  its pages checked; not yet read back whole" : ""}`).join("\n") || "no backups");
+  out(r, !!v.json, () => r.backups.map((b: any) => b.unreadable ? `${b.name}  ${b.created_ms ? time(b.created_ms) : "time unknown"}  ${b.unreadable}` : `${b.name}  ${time(b.created_ms)}  ${mb(b.bytes).padStart(9)}  ${b.sessions} sessions  (${b.reason})${b.base ? `  the changes since ${b.base}${b.base_missing ? ", which is gone: this one cannot be restored" : ""}` : ""}${b.failed ? `  NOT KNOWN WHOLE: ${b.failed}` : b.checked === "pages" ? "  its pages checked; not yet read back whole" : ""}${b.newest_whole ? "  (newest known whole)" : ""}`).join("\n") || "no backups");
   return 0;
 });
 

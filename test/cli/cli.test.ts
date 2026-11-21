@@ -735,7 +735,7 @@ describe("a backup made and restored by the binary", () => {
       const first = json((await k(["run", "--json", "kept by the first backup"])).out).session_id;
       const made = await k(["backup"]);
       expect([made.code, made.err]).toEqual([0, ""]);
-      expect(made.out).toContain("checked");
+      expect(made.out).toContain("events, checked");
       const second = json((await k(["run", "--json", "kept by the second backup"])).out).session_id;
       // The second holds only what changed since the first, and says so.
       const delta = await k(["backup"]);
@@ -743,8 +743,18 @@ describe("a backup made and restored by the binary", () => {
       const later = json((await k(["run", "--json", "written after both"])).out).session_id;
       const [b2, b1] = json((await k(["backups", "--json"])).out).backups;
       expect([b1.kind, b2.kind, b2.base]).toEqual(["full", "delta", b1.name]);
-      expect(delta.out).toContain(`the changes since ${b1.name}`);
+      // A delta says what it was checked for: its pages, not the whole.
+      expect(delta.out).toContain(`its pages checked (the changes since ${b1.name})`);
+      expect(delta.out).not.toContain("events, checked");
       expect((await k(["backups"])).out).toContain(`the changes since ${b1.name}`);
+      // It was asked for, so the daemon reads it back whole right after, in a process of its own (the binary again).
+      let read: any;
+      for (let i = 0; i < 100 && read?.checked !== "whole"; i++) {
+        await Bun.sleep(100);
+        read = json((await k(["backups", "--json"])).out).backups[0];
+      }
+      expect(read).toMatchObject({ name: b2.name, checked: "whole", newest_whole: true });
+      expect((await k(["backups"])).out).toContain("(newest known whole)");
       for (const [b, want] of [[b2, [true, true, false]], [b1, [true, false, false]]] as const) {
         d.kill("SIGTERM");
         await d.exited;

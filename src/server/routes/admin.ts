@@ -65,6 +65,7 @@ export const adminRoutes: RouteModule = (deps) => {
   const prev = G.__keelAdmin;
   prev?.awake.stopAll();
   prev?.retention?.stop();
+  prev?.storage?.stopChecks();
   clearInterval(prev?.daily);
   clearInterval(prev?.hourly);
   const daemon = new Daemon(deps);
@@ -74,6 +75,8 @@ export const adminRoutes: RouteModule = (deps) => {
   const awake = new Awake(bus, (e, ctx) => errors.capture("server", e, ctx));
   const retention = new Retention(store, deps.engine, errors);
   daemon.onExit(() => awake.stopAll());
+  // A check of the backups that runs does not outlive the daemon.
+  daemon.onExit(() => storage.stopChecks());
   // The backup before a restart is made once the running turns had their
   // time and before the rest are parked (a backup that fails calls the
   // restart off with no turn cut). So it does not hold what a turn the
@@ -82,16 +85,18 @@ export const adminRoutes: RouteModule = (deps) => {
   // it as cut and continues it.
   // It is made in a worker and the restart waits for it: the daemon answers
   // meanwhile (it is draining, so nothing new starts).
+  // A check of earlier backups that runs then is ended for it (Storage.backup).
   daemon.onRestart(async () => {
     if (!settings().backup.before_restart) return;
     try { await storage.backup("before a restart"); } catch (e) { throw new Error(`The backup before the restart failed: ${(e as Error).message}`, { cause: e }); }
+    // Where the restart does not come after all, the backup is still read back.
+    finally { storage.checkLater(); }
   });
-  // The check that follows a backup (a delta made before a restart is read
-  // back whole by the daemon that starts after it): a while after the start,
-  // when the turns it continued have their first requests out.
-  const checkLater = (ms: number) => { const t = setTimeout(() => storage.checkBackups().catch((e) => errors.capture("server", e, { at: "backup check" })), ms); (t as any).unref?.(); return t; };
-  clearTimeout(prev?.checking);
-  const checking = prev || runMode.client ? undefined : checkLater(120_000);
+  // The check that follows a backup. A delta made before a restart is read
+  // back whole by the daemon that starts after it: a start that finds
+  // backups left unchecked checks them twenty seconds later, when the turns
+  // it continued have their first requests out.
+  if (!runMode.client) storage.checkLeft();
   onSettings(() => awake.update());
   const policy = () => storage.applyPolicy().catch((e) => errors.capture("server", e, { at: "archive policy" }));
   const daily = setInterval(policy, 86_400_000);
@@ -102,7 +107,7 @@ export const adminRoutes: RouteModule = (deps) => {
   const keep = () => retention.tick().then((r) => { if (r) storage.stale(); }, (e) => errors.capture("server", e, { at: "retention" }));
   const hourly = setInterval(keep, 3_600_000);
   (hourly as any).unref?.();
-  G.__keelAdmin = { awake, daily, hourly, daemon, retention, checking };
+  G.__keelAdmin = { awake, daily, hourly, daemon, retention, storage };
   // The record of this start (src/admin/life.ts): the page follows it as the
   // cut turns are decided, and when it is whole it is the log's account of the
   // restart, and one Activity row when the owner has something to look at (the
@@ -122,7 +127,10 @@ export const adminRoutes: RouteModule = (deps) => {
   // A stop by signal drains in main.ts; new work is turned away meanwhile.
   if (!G.__keelAdminSignals) {
     G.__keelAdminSignals = true;
-    for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => G.__keelAdmin?.daemon.refuseWork());
+    for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => {
+      G.__keelAdmin?.daemon.refuseWork();
+      G.__keelAdmin?.storage?.stopChecks(); // a check's process ends with the daemon
+    });
   }
   bus.on((f) => {
     if (f.t === "feature" && f.name === "daemon") awake.draining = !!f.data.draining;
@@ -229,7 +237,7 @@ export const adminRoutes: RouteModule = (deps) => {
       POST: async () => {
         const backup = await storage.backup("asked for");
         // Read back whole after the answer (a delta is checked for its pages before it has its name).
-        checkLater(0);
+        storage.checkLater(0);
         return json({ backup }, 201);
       },
     },
