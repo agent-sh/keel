@@ -35,6 +35,7 @@ import { anyOver, damagedImages, fitForWire, fitToolImages, imageKeys } from "./
 import { imageLimits, imageRefusal, requestTooLarge } from "../providers/image-limits.ts";
 import { resolveAttachments } from "./attachments.ts";
 import { RETRY, RETRY_WAIT_MAX_MS, RetryTooLong, backoffMs, errorText, retryable, sleep } from "./retry.ts";
+import { capResult, OUTPUT_CAP } from "../tools/spill.ts";
 
 // What a result says of a call a restart cut or the owner's stop reached (src/core/stops.ts).
 export { APPROVAL_CUT, QUESTION_CUT, RESTART_CUT };
@@ -1664,14 +1665,17 @@ export class Engine {
       run.catch(() => {});
       const out = await Promise.race([run, stopped]);
       if (!out) return ran(interrupted(), "interrupted");
-      // An image enters the history within what every provider takes.
-      result = { type: "tool_result", tool_use_id: u.id, content: await fitToolImages(out.content, ctx.spillDir, !!runCtx.dispatch), is_error: out.is_error || undefined };
+      // No tool stores more text than the cap (its own, when it bounds its
+      // result itself): the rest is in a file the result names. An image
+      // enters the history within what every provider takes.
+      const held = await capResult(out.content, tool.resultCap ?? OUTPUT_CAP, runCtx.dispatch ? undefined : ctx.spillDir, u.name);
+      result = { type: "tool_result", tool_use_id: u.id, content: await fitToolImages(held, ctx.spillDir, !!runCtx.dispatch), is_error: out.is_error || undefined };
       if (out.shown !== undefined) this.shown.set(u.id, out.shown);
       ran(result, result.is_error ? "error" : "ok");
     } catch (e) {
       if (ctx.signal.aborted) return t0 === undefined ? interrupted() : ran(interrupted(), "interrupted");
       const err = e instanceof Error ? e : new Error(String(e));
-      const failed: ToolResultBlock = { type: "tool_result", tool_use_id: u.id, content: `Tool failed: ${err.message}`, is_error: true };
+      const failed: ToolResultBlock = { type: "tool_result", tool_use_id: u.id, content: `Tool failed: ${err.message}`.slice(0, OUTPUT_CAP), is_error: true };
       // Measured before it is captured: the call's span exists by then and has
       // named itself on the error, so the error row and the span point at each other.
       if (t0 !== undefined) ran(failed, "error", err);

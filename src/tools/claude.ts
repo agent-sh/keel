@@ -95,6 +95,10 @@ const TaskStop: Tool = {
 const Read: Tool = {
   name: "Read",
   readOnly: true,
+  // It pages the file itself (READ_CHARS a page, the range the model asked
+  // for, more only with allow_large and room for it): a cut middle with a
+  // copy of the file in the spill would serve worse than the next page.
+  resultCap: Infinity,
   description:
     "Read a file by absolute path. Text comes back with line numbers (cat -n style); by default up to 2000 lines " +
     "from the start, use offset and limit for other parts of long files. Images (PNG, JPEG, GIF, WebP) come back " +

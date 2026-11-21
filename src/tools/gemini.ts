@@ -55,6 +55,7 @@ const run_shell_command: Tool = {
 const read_file: Tool = {
   name: "read_file",
   readOnly: true,
+  resultCap: Infinity, // it pages the file itself, as Read does
   description: "Reads and returns the content of a specified file. Use start_line and end_line for targeted reads of long files. Handles text, images and PDF files.",
   input_schema: obj({
     file_path: { type: "string", description: "The path to the file to read." },

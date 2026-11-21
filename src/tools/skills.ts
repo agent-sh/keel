@@ -359,6 +359,7 @@ registerHooks({
 export const skillTool = (name: string, nameKey: string, argsKey: string | null, description?: string): Tool => ({
   name,
   readOnly: true,
+  resultCap: Infinity, // instructions to follow: they come whole, or their middle is missing
   description: description ?? "Load a skill listed in the system prompt by name. Its instructions come back as the result; follow them.",
   input_schema: {
     type: "object",

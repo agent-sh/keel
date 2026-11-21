@@ -100,6 +100,10 @@ export type Tool = ToolSpec & {
   // Every call goes to the owner on a card of its own (a mail sent as them),
   // in every mode: no grant, mode or reviewer settles it. `shown`: the card's text.
   confirm?: { why: string; shown(input: any): string };
+  // The most characters of text its result may hold, when that is not the
+  // one cap of every tool (OUTPUT_CAP, which the engine enforces through the
+  // spill): set only by a tool that bounds its result itself, with the reason.
+  resultCap?: number;
   run(input: any, ctx: ToolContext): Promise<ToolOutput>;
 };
 

@@ -29,3 +29,28 @@ export async function spill(text: string, dir: string, label: string): Promise<s
   const lines = text.split("\n").length;
   return `${head}\n\n[... ${text.length - head.length - tail.length} chars cut; full output (${lines} lines) saved to ${path} ...]\n\n${tail}`;
 }
+
+const NOTE_ROOM = 2_000;
+
+// The one cap every tool's result is held to, enforced by the engine on what
+// a tool returned (the tool may have cut its output already: a result within
+// the cap passes as it is). Text past it goes through the spill: the model
+// gets the head, the tail and the file. A tool that bounds its own result
+// for a stated reason names another cap (Tool.resultCap): a file reader pages
+// what it returns, a skill's instructions come whole.
+// `dir` undefined (the call ran on another machine, where this file could
+// not be read): the middle is cut with nothing saved, and the result says so.
+export async function capResult<B extends { type: string }>(content: string | B[], cap: number, dir: string | undefined, label: string): Promise<string | B[]> {
+  // A tool that cut its output to the cap adds a line or two around it (the
+  // exit code, the folder it ended in, where the log is): those pass.
+  cap += NOTE_ROOM;
+  const hold = async (text: string) => {
+    if (text.length <= cap) return text;
+    if (dir) return spill(text, dir, label);
+    const head = text.slice(0, OUTPUT_CAP * 0.6), tail = text.slice(-OUTPUT_CAP * 0.3);
+    return `${head}\n\n[... ${text.length - head.length - tail.length} chars cut and not kept: narrow the call to see them ...]\n\n${tail}`;
+  };
+  if (typeof content === "string") return hold(content);
+  if (!content.some((b) => b.type === "text" && ((b as unknown as { text: string }).text?.length ?? 0) > cap)) return content;
+  return Promise.all(content.map(async (b) => (b.type === "text" ? { ...b, text: await hold((b as unknown as { text: string }).text ?? "") } : b)));
+}

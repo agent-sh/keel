@@ -25,6 +25,12 @@ function truncate(text: string, maxTokens: number, log?: string): { text: string
   return { text: `${head}\n…${Math.ceil((text.length - budget) / 4)} tokens truncated${log ? ` (the whole output is in ${log})` : ""}…\n${tail}`, original: Math.ceil(text.length / 4) };
 }
 
+// The model names its own output budget in tokens (max_output_tokens, 10,000
+// by default and at most MAX_TOKENS): the result is cut to it here, with the
+// log named, so the engine's cap is that budget plus the few lines around it.
+const MAX_TOKENS = 50_000;
+const EXEC_CAP = MAX_TOKENS * 4 + 1000;
+
 function execResult(job: Job, t0: number, maxTokens: number): string {
   const raw = takeUnread(job);
   const cut = truncate(job.pty ? cleanTerm(raw) : raw, maxTokens, job.log);
@@ -56,6 +62,7 @@ const execShell = (input: any): string => (typeof input?.shell === "string" && i
 
 const exec_command: Tool = {
   name: "exec_command",
+  resultCap: EXEC_CAP,
   readOnly: false,
   kind: "shell",
   cwdOf: execCwd,
@@ -93,12 +100,13 @@ const exec_command: Tool = {
       argv: [shell, input.login === false ? "-c" : "-lc", cmd], env: toolEnv(ctx.sessionId, { PAGER: "cat", GIT_PAGER: "cat" }), wrap: ctx.wrapSpawn, callId: ctx.callId,
     });
     await waitJob(job, clamp(input.yield_time_ms, 10_000, 250, 30_000), ctx.signal);
-    return ok(execResult(job, t0, clamp(input.max_output_tokens, 10_000, 100, 50_000)));
+    return ok(execResult(job, t0, clamp(input.max_output_tokens, 10_000, 100, MAX_TOKENS)));
   },
 };
 
 const write_stdin: Tool = {
   name: "write_stdin",
+  resultCap: EXEC_CAP,
   readOnly: false,
   kind: "control",
   description: "Writes characters to an existing unified exec session and returns recent output.",
@@ -118,7 +126,7 @@ const write_stdin: Tool = {
     const t0 = Date.now();
     const wait = chars ? clamp(input.yield_time_ms, 250, 0, 30_000) : clamp(input.yield_time_ms, 5_000, 5_000, 300_000);
     await waitJob(job, wait, ctx.signal);
-    return ok(execResult(job, t0, clamp(input.max_output_tokens, 10_000, 100, 50_000)));
+    return ok(execResult(job, t0, clamp(input.max_output_tokens, 10_000, 100, MAX_TOKENS)));
   },
 };
 
