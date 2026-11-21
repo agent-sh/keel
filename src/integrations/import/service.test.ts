@@ -5,16 +5,20 @@ import { afterAll, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Store } from "../../core/store.ts";
-import { offered, page, type ListQuery } from "./offer.ts";
-import { Imports } from "./service.ts";
+import type { ListQuery } from "./offer.ts";
 import type { Found } from "./types.ts";
 
 const root = mkdtempSync(join(tmpdir(), "keel-import-service-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
-// The stores a walk reads are scratch ones, never this machine's own.
+// Nothing of this machine's own is read or written: the config folder and
+// the stores a walk reads are scratch ones, named before any Keel source loads.
+process.env.KEEL_CONFIG_DIR = join(root, "config");
 for (const k of ["CLAUDE_DIR", "CODEX_DIR", "AGY_DIR", "HERMES_DIR"]) process.env[`KEEL_IMPORT_${k}`] = join(root, "stores", k.toLowerCase());
 process.env.KEEL_IMPORT_KEEL_DB = join(root, "stores", "keel.db");
+const { Store } = await import("../../core/store.ts");
+const { CursorError, offered, page } = await import("./offer.ts");
+const { Imports } = await import("./service.ts");
+type Imports = InstanceType<typeof Imports>;
 
 let n = 0;
 const T0 = Date.UTC(2024, 2, 5, 10, 0, 0);
@@ -184,8 +188,12 @@ test("the index pages, counts and looks up like a pass over every session, and d
   // An index written before the columns existed is filled from its rows when the daemon starts.
   store.db.exec("UPDATE import_index SET sid = NULL, kind = NULL, cwd = NULL, title = NULL, updated_ms = NULL, size_bytes = NULL, hay = NULL, offered = NULL, kh = NULL");
   expect(imports.list({}).total).toBe(side.length);
+  // Rows that cannot be read (cut text, text that is not a session) do not stop the start: their files are read again by the next walk.
+  const raw = store.db.query("INSERT INTO import_index (path, harness, size, mtime, found, v) VALUES (?, 'claude', 1, 1, ?, 2)");
+  for (const [path, found] of [["/idx/cut.jsonl", '{"harness":"claude","id":"x'], ["/idx/text.jsonl", '"just text"'], ["/idx/null.jsonl", "null"]]) raw.run(path!, found!);
   imports = new Imports(store);
   stub(imports);
+  expect(store.db.query<{ found: string | null; v: number }, []>("SELECT found, v FROM import_index WHERE path IN ('/idx/cut.jsonl', '/idx/text.jsonl', '/idx/null.jsonl')").all()).toEqual([{ found: null, v: 0 }, { found: null, v: 0 }, { found: null, v: 0 }]);
   both({ q: "שלום", sort: "title" });
   both({ offered: true, limit: 200 });
 }, 60_000); // ten thousand rows written and read many ways: a busy machine takes its time

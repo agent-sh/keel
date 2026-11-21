@@ -101,11 +101,22 @@ export class Imports {
     if (!store.columnExists("import_index", "v")) store.db.exec("ALTER TABLE import_index ADD COLUMN v INTEGER NOT NULL DEFAULT 0");
     for (const c of COLUMNS) if (!store.columnExists("import_index", c.split(" ")[0]!)) store.db.exec(`ALTER TABLE import_index ADD COLUMN ${c}`);
     store.db.exec("CREATE INDEX IF NOT EXISTS import_index_sid ON import_index(harness, sid)");
+    // The order the list is read in most (newest first, ties by path): a page is the next rows of this index.
+    store.db.exec("CREATE INDEX IF NOT EXISTS import_index_order ON import_index(updated_ms DESC, path, harness, sid)");
     // An index written before these columns: filled once from the rows it holds, no file is read again.
+    // A row whose serialized form cannot be read is marked for the walk to read its file again.
     const old = store.db.query<{ path: string; found: string }, []>("SELECT path, found FROM import_index WHERE found IS NOT NULL AND kh IS NULL").all();
     if (old.length) {
       const set = store.db.query(`UPDATE import_index SET ${COLUMNS.map((c) => `${c.split(" ")[0]} = ?`).join(", ")} WHERE path = ?`);
-      store.db.transaction(() => { for (const r of old) set.run(...columns(JSON.parse(r.found)), r.path); })();
+      const again = store.db.query("UPDATE import_index SET found = NULL, v = 0 WHERE path = ?");
+      store.db.transaction(() => {
+        for (const r of old) {
+          let cols: ReturnType<typeof columns> | undefined;
+          try { const f = JSON.parse(r.found); if (f && typeof f === "object" && typeof f.id === "string" && typeof f.path === "string") cols = columns(f); } catch {}
+          if (cols) set.run(...cols, r.path);
+          else again.run(r.path);
+        }
+      })();
     }
   }
 
@@ -320,18 +331,24 @@ export class Imports {
       keys = all.slice(at, at + limit);
     } else if (indexed) {
       const col = sort === "size" ? "size_bytes" : "updated_ms";
-      total = db.query<{ n: number }, any[]>(`SELECT COUNT(*) AS n FROM import_index WHERE ${W}`).get(...args)!.n;
       // After the cursor's row: a lower sort value, or the same one and a later path (then harness and id).
       const AFTER = `(${col} < ? OR (${col} = ? AND (path > ? OR (path = ? AND (harness > ? OR (harness = ? AND sid > ?))))))`;
       const v = c ? (sort === "size" ? c.row.size_bytes : c.row.updated_ms) : 0;
       const at = c ? [v, v, c.row.path, c.row.path, c.row.harness, c.row.harness, c.row.id] : [];
-      if (c) {
-        const b = db.query<{ n: number; s: number }, any[]>(`SELECT COUNT(*) AS n, COALESCE(SUM(kh), 0) AS s FROM import_index WHERE ${W} AND NOT ${AFTER}`).get(...args, ...at)!;
-        before = b.n;
-        sum = b.s;
-      }
+      // One pass counts the rows of the listing and, with a cursor, those at or before it and the sum of their keys.
+      const n = c
+        ? db.query<{ n: number; b: number; s: number }, any[]>(`SELECT COUNT(*) AS n, COALESCE(SUM(NOT ${AFTER}), 0) AS b, COALESCE(SUM(CASE WHEN NOT ${AFTER} THEN kh END), 0) AS s FROM import_index WHERE ${W}`).get(...at, ...at, ...args)!
+        : { ...db.query<{ n: number }, any[]>(`SELECT COUNT(*) AS n FROM import_index WHERE ${W}`).get(...args)!, b: 0, s: 0 };
+      total = n.n;
+      before = n.b;
+      sum = n.s;
       after = total - before;
-      keys = db.query<IndexKey, any[]>(`SELECT ${KEY} FROM import_index WHERE ${W}${c ? ` AND ${AFTER}` : ""} ORDER BY ${col} DESC, path, harness, sid LIMIT ?`).all(...args, ...at, limit);
+      // The page itself: the next rows in the list's order. `col <= ?` lets
+      // the index of that order start at the cursor instead of at the top.
+      // A search reads every row for its words whatever the order: one pass over
+      // the table and a sort of the few that match is quicker than the index's row-by-row walk.
+      const from = wordsOf(q.q).length ? "import_index NOT INDEXED" : "import_index";
+      keys = db.query<IndexKey, any[]>(`SELECT ${KEY} FROM ${from} WHERE ${W}${c ? ` AND ${col} <= ? AND ${AFTER}` : ""} ORDER BY ${col} DESC, path, harness, sid LIMIT ?`).all(...args, ...(c ? [v] : []), ...at, limit);
     }
 
     // The other stores' sessions take their places by the same order.
