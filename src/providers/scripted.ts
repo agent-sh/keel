@@ -185,6 +185,15 @@ export class ScriptedProvider implements Provider {
     }
     if (req.model === "stand-in-backup") return reply("The backup model took the request.");
 
+    // `script:replies ["...", "..."]`: these texts, one per reply, in order,
+    // the last one from then on. Later prompts that name no script get the
+    // next text too, so a spec can see what a follow-up prompt is answered.
+    const repliesAt = msgs.findLastIndex((m) => m.role === "user" && textOf(m).includes("script:replies"));
+    if (repliesAt >= 0 && !/script:(?!replies)[a-z-]+/.test(owner)) {
+      const texts = callsAfter(textOf(msgs[repliesAt]), "script:replies").map(String);
+      const said = msgs.slice(repliesAt + 1).filter((m) => m.role === "assistant").length;
+      return reply(texts[Math.min(said, texts.length - 1)] ?? "Scripted reply.");
+    }
     const scenario = owner.match(/script:([a-z-]+)/)?.[1] ?? "";
     const compacted = msgs.some((m) => textOf(m).startsWith("[harness] This conversation was compacted"));
 

@@ -246,6 +246,57 @@ describe("keel run with no daemon", () => {
     const none = await keel(["-p"], { state });
     expect(none.code).toBe(3);
   }, 60_000);
+
+  // --json-schema: the answer is one JSON value checked against the schema.
+  // It is printed alone, or as structured_output of the result object; an
+  // answer that does not match is sent back, and one that never matches
+  // exits non-zero with no structured_output.
+  test("an answer checked against a JSON schema", async () => {
+    const schema = { type: "object", required: ["count"], properties: { count: { type: "integer" } }, additionalProperties: false };
+    const file = join(SCRATCH, "schema.json");
+    writeFileSync(file, JSON.stringify(schema));
+    const replies = (...texts: string[]) => `script:replies ${JSON.stringify(texts)}`;
+
+    // The schema from a file; the value alone on standard output.
+    const text = await keel(["run", "-p", "--json-schema", file, replies('{"count": 3}')], { state });
+    expect(text.err).not.toContain("never matched");
+    expect(text.code).toBe(0);
+    expect(text.out).toBe('{"count":3}\n');
+
+    // The schema inline; the value in the result object, read out of a fenced answer.
+    const one = await keel(["run", "--output-format", "json", "--json-schema", JSON.stringify(schema), replies('Here it is:\n```json\n{"count": 4}\n```')], { state });
+    expect(one.code).toBe(0);
+    expect(json(one.out)).toMatchObject({ subtype: "success", is_error: false, structured_output: { count: 4 }, num_turns: 1 });
+
+    // A first answer that does not match is sent back with what is wrong; the second matches.
+    const fixed = await keel(["run", "--stream-json", "--output-schema", file, replies('{"count": "three"}', '{"count": 3}')], { state });
+    expect(fixed.code).toBe(0);
+    const ls = lines(fixed.out);
+    expect(ls.at(-1)).toMatchObject({ type: "result", subtype: "success", structured_output: { count: 3 }, num_turns: 2 });
+    const asked = ls.filter((l) => l.type === "user").map((l) => l.message.content[0].text as string);
+    expect(asked).toHaveLength(2);
+    expect(asked[0]).toContain(`must be only one JSON value that matches this JSON schema, with no other text:\n${JSON.stringify(schema)}`);
+    expect(asked[1]).toBe("Your answer does not match the JSON schema you were given: $.count: expected integer, got string. Reply with only the JSON value, nothing else.");
+
+    // One that never matches: non-zero, no structured_output, nothing but the reason.
+    const never = await keel(["run", "--output-format", "json", "--json-schema", file, replies("I would rather not.")], { state });
+    expect(never.code).toBe(3);
+    const n = json(never.out);
+    expect(n).toMatchObject({ subtype: "error_max_structured_output_retries", is_error: true, num_turns: 3 });
+    expect(n.structured_output).toBeUndefined();
+    const plain = await keel(["run", "-p", "--json-schema", file, replies("Still no.")], { state });
+    expect(plain.code).toBe(3);
+    expect(plain.out).toBe("");
+    expect(plain.err).toContain("the answer never matched the schema (the answer is not JSON)");
+
+    // A schema that is none is refused before anything is sent.
+    const bad = await keel(["run", "-p", "--json-schema", "{not json", "x"], { state });
+    expect(bad.code).toBe(3);
+    expect(bad.err).toContain("--json-schema is not JSON");
+    const missing = await keel(["run", "-p", "--json-schema", join(SCRATCH, "no-such.json"), "x"], { state });
+    expect(missing.code).toBe(3);
+    expect(missing.err).toContain("--json-schema is a JSON schema or a file that holds one");
+  }, 120_000);
 });
 
 describe("client commands against a running daemon", () => {

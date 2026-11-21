@@ -3,7 +3,9 @@
 // answer (text, one JSON object, or JSON lines); with --wait it stays for the
 // turn's outcome; otherwise it returns at once. With no daemon answering it
 // starts one inside this process (runMode.client) and stops it at the end.
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { check as checkSchema, extractJson, validSchema } from "../automation/schema.ts";
 import { lockedDaemon } from "../admin/daemon.ts";
 import type { StoredEvent } from "../core/types.ts";
 import { startDaemon, type Started } from "../server/start.ts";
@@ -20,6 +22,9 @@ export const RUN_USAGE = `keel run [PROMPT] [options]       (also: keel -p is ke
       --stream-json           same as --output-format stream-json
       --include-partial-messages  with stream-json: text as it streams
       --json                  one JSON object (alone: the session id; with -p or --wait: the result)
+      --json-schema SCHEMA    the answer is one JSON value that matches this JSON schema (the
+                              schema itself, or a file that holds it; implies -p). Printed alone,
+                              or as structured_output of the result object. Also: --output-schema
       --wait                  stay until the turn has ended and print its outcome
   -r, --session, --resume ID  send to this session (any unique prefix of its id)
   -c, --continue              send to the newest session of the directory
@@ -41,13 +46,16 @@ export const RUN_USAGE = `keel run [PROMPT] [options]       (also: keel -p is ke
       --archived              archive the session when the run has ended
       --url URL, --state-dir DIR   which daemon (default: the one the state folder records)
 
-  Exit codes: 0 done, 2 the session needs the owner, 3 error, 124 timeout, 130/143 signal.`;
+  Exit codes: 0 done, 2 the session needs the owner, 3 error (or an answer that never
+  matched --json-schema), 124 timeout, 130/143 signal.`;
 
 export const RUN_OPTIONS = {
   print: { type: "boolean", short: "p" },
   "output-format": { type: "string" },
   "stream-json": { type: "boolean" },
   "include-partial-messages": { type: "boolean" },
+  "json-schema": { type: "string" },
+  "output-schema": { type: "string" },
   wait: { type: "boolean" },
   session: { type: "string", short: "r" },
   resume: { type: "string" },
@@ -95,7 +103,7 @@ export type Watch = {
 };
 
 export type Watched = {
-  subtype: "success" | "needs_input" | "error_during_execution" | "cancelled" | "timeout";
+  subtype: "success" | "needs_input" | "error_during_execution" | "cancelled" | "timeout" | "error_max_structured_output_retries";
   outcome: Outcome;
   answer: string;
   errors: string[];
@@ -252,7 +260,31 @@ export async function watch(w: Watch): Promise<Watched> {
 export const exitOf = (w: Watched) =>
   w.subtype === "success" ? EXIT.ok : w.subtype === "needs_input" ? EXIT.owner : w.subtype === "timeout" ? EXIT.timeout : EXIT.error;
 
-export function resultObject(w: Watched, x: { sessionId: string; url: string; ms: number; onAsk: string; replayed?: boolean }) {
+// --json-schema: the schema as given, or the file that holds it.
+export function schemaArg(arg: string): { schema: Record<string, unknown> } | { error: string } {
+  let text = arg.trim();
+  if (!text.startsWith("{")) {
+    try { text = readFileSync(resolve(arg), "utf8"); } catch (e) { return { error: `--json-schema is a JSON schema or a file that holds one: ${(e as Error).message}` }; }
+  }
+  let schema: unknown;
+  try { schema = JSON.parse(text); } catch (e) { return { error: `--json-schema is not JSON: ${(e as Error).message}` }; }
+  const bad = validSchema(schema);
+  return bad ? { error: bad.replace("output_schema", "--json-schema") } : { schema: schema as Record<string, unknown> };
+}
+// What the prompt is told, and what an answer that does not match is told
+// (the words a subagent with an output schema gets).
+export const schemaAsk = (schema: unknown) => `Your final message must be only one JSON value that matches this JSON schema, with no other text:\n${JSON.stringify(schema)}`;
+// How often an answer that does not match is sent back (as a subagent's report is).
+const SCHEMA_TRIES = 2;
+// The value an answer holds when it matches the schema, else what is wrong with it.
+export function structured(schema: Record<string, unknown>, answer: string): { value: unknown } | { error: string } {
+  const got = extractJson(answer);
+  if ("error" in got) return { error: "the answer is not JSON" };
+  const why = checkSchema(schema, got.value);
+  return why ? { error: why } : got;
+}
+
+export function resultObject(w: Watched, x: { sessionId: string; url: string; ms: number; onAsk: string; replayed?: boolean; structured?: { value: unknown } }) {
   const failed = w.subtype !== "success";
   return {
     type: "result",
@@ -267,6 +299,7 @@ export function resultObject(w: Watched, x: { sessionId: string; url: string; ms
     outcome: w.outcome,
     url: x.url,
     on_ask: x.onAsk,
+    ...(x.structured ? { structured_output: x.structured.value } : {}),
     ...(x.replayed ? { replayed: true } : {}),
     ...(w.subtype === "timeout" ? { timed_out: true } : {}),
     ...(w.pending ? { pending_approvals: w.pending } : {}),
@@ -299,7 +332,11 @@ export async function daemonFor(c: Client, found: Found, workspace: string): Pro
 
 export async function runPrompt(v: any, pos: string[], c0: Client, found: Found, name = "run"): Promise<number> {
   const t0 = Date.now();
-  const format = v["stream-json"] ? "stream-json" : v["output-format"] ?? (v.print ? (v.json ? "json" : "text") : undefined);
+  const schemaFlag = v["json-schema"] ?? v["output-schema"];
+  const parsed = schemaFlag === undefined ? undefined : schemaArg(schemaFlag);
+  if (parsed && "error" in parsed) return usageError(name, parsed.error, RUN_USAGE);
+  const schema = parsed?.schema;
+  const format = v["stream-json"] ? "stream-json" : v["output-format"] ?? (v.print || schema ? (v.json ? "json" : "text") : undefined);
   if (format && !["text", "json", "stream-json"].includes(format)) return usageError(name, `--output-format is text, json or stream-json, not ${format}`, RUN_USAGE);
   const print = !!format;
   const onAskFlag = v["on-ask"];
@@ -343,8 +380,9 @@ export async function runPrompt(v: any, pos: string[], c0: Client, found: Found,
 
   try {
     const files = v.attach?.length ? await promptFiles(c, v.attach) : { images: [], files: [] };
+    const sentText = schema ? `${prompt}\n\n${schemaAsk(schema)}` : prompt;
     const sent = await c.post<any>("/api/run", {
-      text: prompt,
+      text: sentText,
       images: [...files.images, ...files.files],
       session_id: sessionArg,
       continue: v.continue,
@@ -378,15 +416,39 @@ export async function runPrompt(v: any, pos: string[], c0: Client, found: Found,
       console.log(JSON.stringify({ type: "system", subtype: "init", session_id: sessionId, cwd: s.workspace, model: s.model, provider: String(s.model).split(":")[0], permission_mode: perm?.perm?.mode ?? null, keel_version: "bun", url }));
     }
     const partial = stream && v["include-partial-messages"];
-    const w = await watch({
-      c, sessionId, afterSeq: sent.after_seq, eventId: sent.event_id, queueId: sent.queue_id, prompt, stay, onAsk, timeoutS,
+    const follow = (at: { after_seq: number; event_id: string | null; queue_id?: string | null }, text: string) => watch({
+      c, sessionId: sessionId!, afterSeq: at.after_seq, eventId: at.event_id, queueId: at.queue_id, prompt: text, stay: stay!, onAsk, timeoutS,
       onEvent: stream ? (e) => console.log(JSON.stringify(streamLine(e))) : undefined,
       onDelta: partial ? (d) => console.log(JSON.stringify({ type: "stream_event", session_id: sessionId, event: { type: "content_block_delta", delta: { type: d.kind === "thinking" ? "thinking_delta" : d.kind === "text" ? "text_delta" : "input_json_delta", text: d.text } } })) : undefined,
       t0,
     });
+    const w = await follow(sent, sentText);
+    // An answer that does not match the schema is sent back with what is
+    // wrong, as a subagent's report is; one that never matches is a failure.
+    let match = schema && w.subtype === "success" ? structured(schema, w.answer) : undefined;
+    for (let tries = 0; schema && match && "error" in match && w.subtype === "success"; tries++) {
+      if (tries >= SCHEMA_TRIES) {
+        w.subtype = "error_max_structured_output_retries";
+        w.errors.push(`the answer never matched the schema (${match.error})`);
+        break;
+      }
+      const text = `Your answer does not match the JSON schema you were given: ${match.error}. Reply with only the JSON value, nothing else.`;
+      const again = await follow(await c.post<any>("/api/run", { text, session_id: sessionId }), text);
+      w.subtype = again.subtype;
+      w.outcome = again.outcome;
+      w.answer = again.answer;
+      w.errors.push(...again.errors);
+      w.turns += again.turns;
+      for (const k of Object.keys(w.usage) as (keyof Watched["usage"])[]) w.usage[k] += again.usage[k];
+      w.pending = again.pending;
+      w.refused += again.refused;
+      w.held = again.held;
+      match = again.subtype === "success" ? structured(schema, again.answer) : undefined;
+    }
+    const value = match && "value" in match ? match : undefined;
     if (w.subtype === "timeout" && own) await c.post(`/api/sessions/${sessionId}/interrupt`).catch(() => {});
     if (v.archived) await c.patch(`/api/sessions/${sessionId}`, { archived: true }).catch((e) => console.error(`keel ${name}: the session was not archived: ${e.message}`));
-    const res = resultObject(w, { sessionId, url, ms: Date.now() - t0, onAsk, replayed: sent.replayed });
+    const res = resultObject(w, { sessionId, url, ms: Date.now() - t0, onAsk, replayed: sent.replayed, structured: value });
 
     if (w.refused) console.error(`keel ${name}: refused ${w.refused} approval card${w.refused === 1 ? "" : "s"} or question${w.refused === 1 ? "" : "s"} (--on-ask deny)`);
     if (w.pending) console.error(`keel ${name}: the session waits for the owner (${w.pending} open); answer with keel approve ${sessionId}`);
@@ -396,7 +458,9 @@ export async function runPrompt(v: any, pos: string[], c0: Client, found: Found,
 
     if (stream || format === "json" || (v.json && !print)) console.log(stream ? JSON.stringify(res) : JSON.stringify(res, null, 2));
     else if (print) {
-      if (w.answer) out(clean(w.answer) + "\n");
+      // With a schema the answer printed is the value itself, nothing around it.
+      if (value) out(JSON.stringify(value.value) + "\n");
+      else if (w.answer && !schema) out(clean(w.answer) + "\n");
     } else {
       console.log(`session ${sessionId}\noutcome ${w.outcome ?? w.subtype}\nsummary ${JSON.stringify(clean(w.answer))}`);
     }
