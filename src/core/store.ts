@@ -10,6 +10,10 @@ const SCHEMA = `
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
 PRAGMA foreign_keys = ON;
+-- The write-ahead log is checkpointed at 1,000 pages (4.1 MB) and grows past
+-- that only while a long read holds it (the read thread, a backup). This
+-- gives the file back to that size at the first write after such a read.
+PRAGMA journal_size_limit = 4194304;
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL DEFAULT '',
