@@ -34,6 +34,19 @@ const steps = (v: unknown) => {
   return v as number;
 };
 
+// The failure a session is in now: when it failed. One the page knows only from the session's
+// events (no mark was made of it) has this stamp, which does not move with the session's activity.
+export const NO_FAIL_MARK = -1;
+export const failStamp = (s: Pick<Session, "settings">) => s.settings.failed_ms ?? NO_FAIL_MARK;
+// A device says it showed the session's failure: kept only when it names the failure the session is in
+// now (one that failed again meanwhile is news again).
+export const failSeen = (s: Pick<Session, "settings">, stamp: unknown) => (stamp === failStamp(s) && s.settings.fail_seen_ms !== stamp ? { fail_seen_ms: stamp } : null);
+// At the first start with the mark: a failure from before it counts as seen, unless its alert is
+// still unread and it happened after the owner's last prompt in any session (older than that, the
+// owner has been at the page since and went on with other work: it is not news).
+export const failSeenBefore = (s: Pick<Session, "settings">, unreadAlert: boolean, lastPrompt = 0) =>
+  (s.settings.failed_ms && s.settings.fail_seen_ms === undefined ? { fail_seen_ms: unreadAlert && s.settings.failed_ms >= lastPrompt ? 0 : s.settings.failed_ms } : null);
+
 export const marksOf = (s: Session, unread: number) => ({
   session_id: s.id,
   pinned: !!s.settings.pinned_ms,
@@ -54,12 +67,13 @@ export const marksRoutes: RouteModule = ({ store, bus }) => {
 
   registerSessionPatch({
     id: "marks",
-    fields: ["pinned", "tags", "done", "max_steps"],
+    fields: ["pinned", "tags", "done", "max_steps", "fail_seen"],
     check(_s, b) {
       if (b.pinned !== undefined && typeof b.pinned !== "boolean") throw refuse("pinned is true or false");
       if (b.done !== undefined && typeof b.done !== "boolean") throw refuse("done is true or false");
       if (b.tags !== undefined) cleanTags(b.tags);
       if (b.max_steps !== undefined) steps(b.max_steps);
+      if (b.fail_seen !== undefined && !Number.isFinite(b.fail_seen)) throw refuse("fail_seen is the time of the failure that was shown");
     },
     apply(s, b) {
       const patch: Record<string, unknown> = {};
@@ -67,6 +81,7 @@ export const marksRoutes: RouteModule = ({ store, bus }) => {
       if (b.tags !== undefined) patch.tags = cleanTags(b.tags).length ? cleanTags(b.tags) : null;
       if (b.done !== undefined) patch.done_ms = b.done ? Date.now() : null;
       if (b.max_steps !== undefined) patch.max_steps = steps(b.max_steps) || null;
+      if (b.fail_seen !== undefined) Object.assign(patch, failSeen(s, b.fail_seen));
       store.mergeSettings(s.id, patch);
     },
   });
@@ -90,20 +105,49 @@ export const marksRoutes: RouteModule = ({ store, bus }) => {
   };
   // How the last turn ended, for lists that have no events: a stopped turn
   // and one waiting to resume after a restart are not "done".
+  const unreadFailure = (id: string) => {
+    try { return !!store.db.query<{ n: number }, [string]>("SELECT 1 AS n FROM alerts WHERE session_id = ? AND read = 0 AND kind IN ('failed', 'limit', 'loop_failed') LIMIT 1").get(id); } catch { return false; }
+  };
+  // When the owner last wrote a prompt, in any session: read once, and only when a failure needs it.
+  // The newest sessions are looked at, each by its own index: no pass over every event.
+  let prompted: number | undefined;
+  const lastPrompt = () => {
+    if (prompted !== undefined) return prompted;
+    prompted = 0;
+    const q = store.db.query<{ ts: number; origin: string | null; k: string | null }, [string]>(
+      "SELECT ts, json_extract(data, '$.origin') AS origin, json_extract(data, '$.kind') AS k FROM events WHERE session_id = ? AND kind = 'user' ORDER BY seq DESC LIMIT 20");
+    for (const s of [...store.sessions(), ...store.sessions({ archived: true })].sort((a, b) => b.updated - a.updated).slice(0, 60)) {
+      const own = q.all(s.id).find((e) => e.origin !== "harness" && e.origin !== "restart" && !e.k);
+      if (own && own.ts > prompted) prompted = own.ts;
+    }
+    return prompted;
+  };
   const lastEnd = (id: string) =>
     store.db.query<{ reason: string | null }, [string]>("SELECT json_extract(data, '$.reason') AS reason FROM events WHERE session_id = ? AND kind = 'turn_end' ORDER BY seq DESC LIMIT 1").get(id)?.reason ?? null;
   for (const s of [...store.sessions(), ...store.sessions({ archived: true })]) {
     // Also a turn closed at this start before this module listened (a cut turn's restart end).
     { const r = lastEnd(s.id); if (r && r !== s.settings.last_end) store.mergeSettings(s.id, { last_end: r }); }
-    if (s.settings.failed_ms) continue;
-    const at = failedAt(s.id);
-    if (at) store.mergeSettings(s.id, { failed_ms: at });
+    const at = s.settings.failed_ms ?? failedAt(s.id);
+    if (!at) continue;
+    if (!s.settings.failed_ms) store.mergeSettings(s.id, { failed_ms: at });
+    // Whether the owner has looked at a failure is kept with it (fail_seen_ms), so every device agrees.
+    if (s.settings.fail_seen_ms !== undefined) continue;
+    const unread = unreadFailure(s.id);
+    const before = failSeenBefore({ settings: { ...s.settings, failed_ms: at } }, unread, unread ? lastPrompt() : 0);
+    if (before) store.mergeSettings(s.id, before);
   }
   bus.on((f) => {
     if (f.t !== "event") return;
     const { kind, session_id: id, data, ts } = f.event;
-    if (kind === "turn_start" && store.session(id)?.settings.failed_ms) store.mergeSettings(id, { failed_ms: null });
-    else if (kind === "error" || (kind === "turn_end" && data.reason === "error")) store.mergeSettings(id, { failed_ms: ts, ...(kind === "turn_end" ? { last_end: "error" } : {}) });
+    const had = store.session(id)?.settings;
+    if (kind === "turn_start" && (had?.failed_ms || had?.fail_seen_ms !== undefined)) store.mergeSettings(id, { failed_ms: null, fail_seen_ms: null });
+    else if (kind === "turn_start") return;
+    else if (kind === "error" || (kind === "turn_end" && data.reason === "error")) {
+      // A failure is news: nobody has looked at this one. A turn's error and its end are one failure:
+      // the end does not make it news again.
+      const same = kind === "turn_end" && !!had?.failed_ms && ts - had.failed_ms < 5000;
+      store.mergeSettings(id, { ...(same ? {} : { failed_ms: ts, fail_seen_ms: 0 }), ...(kind === "turn_end" ? { last_end: "error" } : {}) });
+    }
     else if (kind === "turn_end" && data.reason) store.mergeSettings(id, { last_end: String(data.reason) });
     else return;
     emit(id);

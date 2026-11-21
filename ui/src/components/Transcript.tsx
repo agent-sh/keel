@@ -491,7 +491,7 @@ function TurnFooter({ e, reply, prompt, sid, notes, boxed = false, times = 1, pa
       </span>
       {last && !working && REASONS[e.data.reason] && !boxed && (
         <button type="button" data-testid="resume" onClick={() => actions.resume(sid).catch(reportError)} className="ml-2 flex h-6 items-center gap-1 rounded-sm px-1.5 text-caption font-medium text-accent-ink hover:bg-accent-soft">
-          <Play className="size-3" /> Continue
+          <Play className="size-3" /> Resume
         </button>
       )}
     </div>
@@ -755,6 +755,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     const c = content.current;
     if (!c) return;
+    let late = 0;
     const ro = new ResizeObserver(() => {
       // A size change queued before the transcript left the page lands after it: nothing to measure.
       const el = scroller.current;
@@ -762,9 +763,12 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       // The message box keeps the column's edges: it gets the scroll bar's width as padding.
       // Set on this session's own column, and only when it changes: a write on the
       // document restyled every station's transcript at each streamed line.
+      // It is written a frame later: it changes the width of what other observers watch (the
+      // message box's tray, the list of requests), and a size changed from inside an observer's
+      // call, which they cannot be told of in the same pass, is reported by the browser as an error.
       const box = el.closest<HTMLElement>(".k-session");
       const sbw = `${el.offsetWidth - el.clientWidth}px`;
-      if (box && box.style.getPropertyValue("--sbw") !== sbw) box.style.setProperty("--sbw", sbw);
+      if (box && box.style.getPropertyValue("--sbw") !== sbw) { cancelAnimationFrame(late); late = requestAnimationFrame(() => box.style.setProperty("--sbw", sbw)); }
       if (stick.current && !short.current) pin(el);
       else if (anchor.current?.el.isConnected) {
         // The anchor stays the one the reader chose by scrolling: after rows
@@ -786,7 +790,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     // End is for the pane worked in: the command names its session.
     const onEnd = (e: Event) => { if ((e as CustomEvent<string>).detail === sessionId) toEnd(true); };
     addEventListener("keel:end", onEnd);
-    return () => { ro.disconnect(); removeEventListener("keel:end", onEnd); };
+    return () => { ro.disconnect(); cancelAnimationFrame(late); removeEventListener("keel:end", onEnd); };
   }, [!!events, sessionId]);
 
   // History read away from the end stays whole in the store meanwhile.
@@ -1063,7 +1067,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
               <span className="min-w-0 flex-1 text-muted">You are reading another branch. Replies still go to the current one.</span>
               <button type="button" data-testid="preview-continue" disabled={session.phase === "working"} title={session.phase === "working" ? "Possible when the turn ends" : undefined}
                 onClick={() => actions.setHead(sessionId, preview!, true).then(() => setUI({ preview: null })).catch(reportError)}
-                className="h-7 rounded-md bg-accent px-2.5 text-caption font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40">Continue from this branch</button>
+                className="h-7 rounded-md bg-accent px-2.5 text-caption font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-40">Reply from this branch</button>
               <button type="button" data-testid="preview-back" onClick={() => setUI({ preview: null })} className="h-7 rounded-md px-2.5 text-caption text-muted hover:bg-hover hover:text-fg">Back to the current one</button>
             </div>
           )}

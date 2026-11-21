@@ -478,8 +478,64 @@ html[data-resizing] iframe { pointer-events: none; }
    top third where the eye already is, the folder's recent sessions with
    their state marks below. */
 .k-station-new h1 { font-family: var(--font-sans); font-stretch: 100%; font-size: var(--text-title); font-weight: 600; letter-spacing: -0.018em; }
-.k-station-new .k-start-box { margin-top: 11vh; }
-.k-station-new .k-recent-session .k-mark { width: 0.5rem; height: 0.5rem; }
+
+/* ---------- Home: the watch over every session ----------
+   The headline is the sessions' state in the state words, each a count that
+   opens the first session in it. The lists under the start box are rows of a
+   mark, a title, the state word and one line. */
+.k-home-state { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 1.5rem; row-gap: 0.125rem; margin-bottom: 0.5rem; font-family: var(--font-sans); font-size: var(--text-title); font-weight: 600; line-height: 1.25; letter-spacing: -0.018em; color: var(--fg); }
+.k-home-count { display: inline-flex; align-items: center; gap: 0.5625rem; border-radius: 0.25rem; color: var(--muted); }
+.k-home-count .k-mark { width: 0.6875rem; height: 0.6875rem; }
+.k-home-count[data-watch="need"] { color: var(--st-need); }
+.k-home-count[data-watch="work"] { color: var(--st-work-ink); }
+.k-home-count[data-watch="fail"] { color: var(--st-fail); }
+.k-home-count:hover { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 0.22em; }
+.k-home-count:focus-visible { outline: 2px solid var(--ring); outline-offset: 0.1875rem; }
+.k-home-sec { margin-top: 1.875rem; }
+.k-home-list { display: flex; flex-direction: column; margin-top: 0.5rem; border-top: 1px solid var(--line); }
+/* A row. Its first line opens the session: the mark, the title in the width it has, where and
+   when. Its second says what kind of thing waits and what it is, with the row's one action. */
+.k-home-row { display: flex; flex-direction: column; padding: 0.5rem 0 0.625rem; border-bottom: 1px solid var(--line); }
+.k-home-row-main { display: flex; align-items: baseline; gap: 0.75rem; min-width: 0; text-align: left; border-radius: 0.25rem; }
+.k-home-row-main:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.k-home-row-mark { display: grid; place-items: center; align-self: center; flex-shrink: 0; width: 1rem; height: 1.3125rem; }
+.k-home-row-mark .k-mark { width: 0.5rem; height: 0.5rem; }
+.k-home-row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; font-size: var(--text-base); line-height: 1.3125rem; font-weight: 500; color: var(--fg); }
+.k-home-row-main:hover .k-home-row-title { text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 0.2em; }
+.k-home-row-meta { display: flex; align-items: baseline; gap: 0.75rem; flex-shrink: 0; }
+/* (The empty pane caps its folder at a share of the row; here it has the width it needs.) */
+.k-home-row-meta .k-pane-empty-in { max-width: 9rem; }
+.k-home-row-what { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0.375rem 0.5rem; margin-top: 0.25rem; padding-left: 1.75rem; font-size: var(--text-caption); line-height: 1.5; }
+/* The kind of thing that waits (a command, a question, a failure): said once, in the state's ink. */
+.k-home-row-word { flex-shrink: 0; padding: 0.125rem 0; font-weight: 600; color: var(--muted); }
+.k-home-row[data-watch="need"] .k-home-row-word { color: var(--st-need); }
+.k-home-row[data-watch="work"] .k-home-row-word { color: var(--st-work-ink); }
+.k-home-row[data-watch="fail"] .k-home-row-word { color: var(--st-fail); }
+/* A request the gate rates high risk says so beside its kind. */
+.k-home-row-risk { flex-shrink: 0; padding: 0.125rem 0.375rem; border-radius: 0.1875rem; background: var(--danger-soft); font-weight: 600; color: var(--danger); }
+.k-home-row-line { flex: 1 1 8rem; min-width: 0; padding: 0.125rem 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; color: var(--muted); }
+/* A command the owner may allow from here: all of it, wrapped, never cut. */
+.k-home-row-cmd { flex: 0 1 auto; min-width: 0; max-width: 100%; padding: 0.125rem 0.375rem; border-radius: 0.1875rem; background: var(--sunken); font-family: var(--font-mono); font-size: var(--text-caption); white-space: pre-wrap; overflow-wrap: anywhere; text-align: left; color: var(--fg); }
+.k-home-acts { display: flex; align-items: center; gap: 0.375rem; flex-shrink: 0; margin-left: auto; }
+/* One action leads the screen (the first row's); the others are outlined, a way out is plain words. */
+.k-home-act { height: var(--spacing-ctl-md); padding: 0 0.625rem; border-radius: 0.25rem; box-shadow: inset 0 0 0 1px var(--line-strong); font-size: var(--text-caption); font-weight: 500; white-space: nowrap; color: var(--fg); }
+.k-home-act:hover:not(:disabled) { background: var(--hover); }
+.k-home-act:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.k-home-act:disabled, .k-home-act[aria-disabled="true"] { opacity: 0.5; cursor: default; }
+/* A press that did nothing yet: the ring the approval card uses closes on the button (it does not move: a move would start its wait again). */
+.k-home-act[data-nudge] { opacity: 1; outline: 2px solid var(--warn); outline-offset: 1px; animation: k-nudge 320ms var(--ease-out); }
+.k-home-act-lead { box-shadow: none; background: var(--accent); color: var(--accent-fg); }
+.k-home-act-lead:hover:not(:disabled) { background: var(--accent-hover); }
+.k-home-act[data-quiet] { padding: 0 0.375rem; box-shadow: none; color: var(--muted); }
+.k-home-row-note { margin-top: 0.25rem; padding-left: 1.75rem; font-size: var(--text-caption); line-height: 1.4; color: var(--warn-ink); }
+.k-home-more { margin-top: 0.5rem; font-size: var(--text-caption); color: var(--accent-ink); text-align: left; }
+.k-home-more:hover { text-decoration: underline; text-underline-offset: 0.2em; }
+/* Recent: a session's state in a word when it is not simply done (it joins the state face by its class). */
+.k-home-recent .k-mark { width: 0.5rem; height: 0.5rem; }
+.k-home-recent-word { flex-shrink: 0; font-weight: 700; font-size: var(--text-micro); line-height: 1.1875rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--faint); }
+.k-home-recent[data-watch="need"] .k-home-recent-word { color: var(--st-need); }
+.k-home-recent[data-watch="work"] .k-home-recent-word { color: var(--st-work-ink); }
+.k-home-recent[data-watch="fail"] .k-home-recent-word { color: var(--st-fail); }
 
 /* ---------- Components in the Bridge language ---------- */
 .prose-keel { font-size: var(--text-read); line-height: 1.65; }

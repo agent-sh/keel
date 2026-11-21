@@ -13,6 +13,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEven
 import type { Session } from "../../../src/core/types.ts";
 import { registerCommand } from "../lib/keys.ts";
 import { callsigns, paneMin, panesMax, usePanelSide, useWidth } from "../lib/rail.ts";
+import { useSeenFailure } from "./Attention.tsx";
 import { byAttention, getStations, opened, shares, stations, target, useStations } from "../lib/stations.ts";
 import { getState, useStore } from "../lib/store.ts";
 import { getUI, navigate, savePref, setUI, useUI } from "../lib/ui.ts";
@@ -160,6 +161,8 @@ function useDrop(slot: number | undefined) {
 
 function Station({ s, helm, slot, grow }: { s: Session; helm: boolean; slot?: number; grow?: number }) {
   const w = useWatch(s);
+  // A pane of a desk is on screen; of a phone's pages (which have no slot) only the helm is.
+  useSeenFailure(s, w, slot !== undefined || helm);
   const agents = useAgentCount(s.id);
   const ref = useRef<HTMLElement>(null);
   const drop = useDrop(slot);
@@ -195,12 +198,13 @@ function Station({ s, helm, slot, grow }: { s: Session; helm: boolean; slot?: nu
   );
 }
 
-function NewStation({ slot, grow }: { slot?: number; grow?: number }) {
+// `beside`: other panes stand next to it, which show the sessions themselves: this one is the start box alone.
+function NewStation({ slot, grow, beside }: { slot?: number; grow?: number; beside?: boolean }) {
   const drop = useDrop(slot);
   return (
     <section className="k-station k-station-new" data-slot={slot} data-helm style={grow === undefined ? undefined : { flexGrow: grow }} aria-label="New session" {...drop}>
       <div className="k-band" aria-hidden="true" />
-      <StartBox />
+      <StartBox only={beside} />
     </section>
   );
 }
@@ -252,7 +256,7 @@ function PhoneDock({ list, helm }: { list: Session[]; helm: string | null }) {
   const sessions = useStore((x) => x.sessions);
   const codes = useMemo(() => callsigns(Object.values(sessions).filter((s) => !s.archived && !s.settings.helper)), [sessions]);
   return (
-    <nav className="k-dock" aria-label="Stations">
+    <nav className="k-dock" aria-label="Panes">
       <button type="button" className="k-dock-btn" aria-label="All sessions" onClick={() => savePref("sidebar", true)}><ListTree /></button>
       <ol className="k-dock-list">
         {list.map((s) => (
@@ -264,7 +268,8 @@ function PhoneDock({ list, helm }: { list: Session[]; helm: string | null }) {
           </li>
         ))}
       </ol>
-      {need > 0 && <span className="k-dock-need" data-testid="dock-need" aria-live="polite">{need} {need === 1 ? "needs" : "need"} you</span>}
+      {/* The home screen's headline already says it. */}
+      {need > 0 && !fresh && <span className="k-dock-need" data-testid="dock-need" aria-live="polite">{need} {need === 1 ? "needs" : "need"} you</span>}
       <button type="button" className="k-dock-btn" aria-label="New session" aria-current={fresh ? "page" : undefined} onClick={() => navigate({ name: "new" })}><Plus /></button>
     </nav>
   );
@@ -372,7 +377,7 @@ export function Bridge() {
         {/* One keyed list for both layouts: a session keeps its pane (and what its panel shows) when the window crosses phone width. */}
         {[...(phone ? pages.map((s) => <Station key={s.id} s={s} helm={s.id === helm} />) : []), ...slots.flatMap(({ id, i }, n) => {
           const grow = focus ? 1 : weights[i]!;
-          const pane = i === startAt ? <NewStation key={`new-${i}`} slot={i} grow={grow} />
+          const pane = i === startAt ? <NewStation key={`new-${i}`} slot={i} grow={grow} beside={!focus && slots.length > 1} />
             : id && sessions[id] && !gone(id) ? <Station key={id} s={sessions[id]!} helm={id === helm} slot={i} grow={grow} />
             : id && id === helm ? missing(id, i, grow)
             : <EmptyPane key={`empty-${i}`} slot={i} grow={grow} next={!fresh && target(st) === i} />;

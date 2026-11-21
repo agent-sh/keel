@@ -2,7 +2,7 @@
 // editor command becomes, image kinds by bytes, a recap reply's shape, tags.
 import { describe, expect, test } from "bun:test";
 import { parseDigest } from "./convo.ts";
-import { cleanTags } from "./marks.ts";
+import { cleanTags, failSeen, failSeenBefore } from "./marks.ts";
 import { imageKind, openPlan } from "./places.ts";
 
 describe("openPlan", () => {
@@ -129,4 +129,24 @@ describe("a summary is bound to the branch it was written from", async () => {
     ok.release();
     expect((await done).kind).toBe("compaction");
   });
+});
+
+test("a failure is seen when a device showed that failure, and old ones count as seen unless their alert is unread", () => {
+  const s = (settings: object, updated = 50) => ({ updated, settings } as any);
+  expect(failSeen(s({ failed_ms: 100, fail_seen_ms: 0 }), 100)).toEqual({ fail_seen_ms: 100 });
+  // The page showed an older failure: this one is still news. Seen already: nothing to write.
+  expect(failSeen(s({ failed_ms: 200, fail_seen_ms: 0 }), 100)).toBeNull();
+  expect(failSeen(s({ failed_ms: 100, fail_seen_ms: 100 }), 100)).toBeNull();
+  // A failure known from the events alone has a stamp of its own, which the session's activity does not move.
+  expect(failSeen(s({}, 70), -1)).toEqual({ fail_seen_ms: -1 });
+  expect(failSeen(s({ fail_seen_ms: -1 }, 99), -1)).toBeNull();
+  expect(failSeen(s({}, 70), 70)).toBeNull();
+  // The first start with the mark.
+  expect(failSeenBefore(s({ failed_ms: 100 }), false)).toEqual({ fail_seen_ms: 100 });
+  expect(failSeenBefore(s({ failed_ms: 100 }), true)).toEqual({ fail_seen_ms: 0 });
+  // An unread alert of a failure older than the owner's last prompt anywhere: seen. Newer than it: news.
+  expect(failSeenBefore(s({ failed_ms: 100 }), true, 500)).toEqual({ fail_seen_ms: 100 });
+  expect(failSeenBefore(s({ failed_ms: 600 }), true, 500)).toEqual({ fail_seen_ms: 0 });
+  expect(failSeenBefore(s({ failed_ms: 100, fail_seen_ms: 0 }), false)).toBeNull();
+  expect(failSeenBefore(s({}), false)).toBeNull();
 });

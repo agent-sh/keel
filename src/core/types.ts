@@ -135,6 +135,7 @@ export type SessionSettings = {
   tags?: string[];
   done_ms?: number;    // the owner marked the work finished; their next prompt clears it
   failed_ms?: number;  // the last turn ended in a failure; the next turn's start clears it
+  fail_seen_ms?: number; // the failure (its failed_ms) the owner has looked at, on any device; 0: not looked at
   last_end?: string;   // why the last turn ended (turn_end's reason: end_turn, interrupted, restart, error...)
   accept_messages?: boolean; // false: messages from other sessions are refused
   peer_turns?: number; // turns other sessions may start before the owner speaks here again

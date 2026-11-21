@@ -11,7 +11,7 @@ test.use({ permissions: ["clipboard-read", "clipboard-write"] });
 test("workbench", async ({ page, request }) => {
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   await page.goto("/");
-  await expect(page.getByText("What should we work on?")).toBeVisible();
+  await expect(page.getByTestId("home-watch")).toBeVisible();
   await shoot(page, "wb-01-home");
 
   // Folder picker: browse to this repository by typing its path.

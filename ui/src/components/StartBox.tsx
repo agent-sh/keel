@@ -1,24 +1,29 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, Fragment } from "react";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { navigate, savePref, setUI, useUI } from "../lib/ui.ts";
-import { ago, when } from "../lib/utils.ts";
+import { ago, cn, when } from "../lib/utils.ts";
 import { useAgentCounts, useWatches, watchLabel } from "../lib/watch.ts";
 import { MachineSep, machineRuns } from "./Where.tsx";
-import { Mark } from "./Mark.tsx";
+import { Mark, folderOf } from "./Mark.tsx";
 import { Composer } from "./Composer.tsx";
 import { FirstSteps, SetupProviders } from "./Onboarding.tsx";
 import { Kbd } from "./Kbd.tsx";
 import { SidebarButton } from "./SessionHeader.tsx";
 import { WorkspacePicker } from "./WorkspacePicker.tsx";
+import { WatchHeadline, WatchLists, openWaiting, useAttended } from "./HomeWatch.tsx";
 import { ProjectPicker, startProject } from "./ProjectPicker.tsx";
 import { MachineBlocked, MachinePicker, RemoteFolderPicker, useNewMachine } from "./Fleet.tsx";
 import { fleet, useFleet } from "../lib/fleet.ts";
+import { useRail, useWidth } from "../lib/rail.ts";
 import { createInWorktree, isGitFolder, useStartInWorktree } from "../lib/worktree.ts";
 
 const WorktreeToggle = lazy(() => import("./WorktreeChip.tsx").then((m) => ({ default: m.WorktreeToggle })));
 
-// The start box: the folder, the model and the first message of a new session.
-export function StartBox() {
+// The home screen: the state of every session as its headline, the start box
+// (the folder, the model and the first message of a new session), then the
+// sessions that need the owner and the ones at work, then the folder's recent ones.
+// `only`: the start box alone, for a pane that stands beside others (they and the rail show the sessions).
+export function StartBox({ only }: { only?: boolean } = {}) {
   const defaultModel = useStore((s) => s.defaultModel);
   const sessions = useStore((s) => s.sessions);
   const newModel = useUI((s) => s.newModel);
@@ -45,11 +50,14 @@ export function StartBox() {
   const loaded = useStore((s) => s.loaded);
   const noModels = useStore((s) => s.loaded.models && s.models.length === 0);
   const firstRun = loaded.sessions && !Object.values(sessions).some((s) => !s.archived);
-  const recent = useMemo(
-    () => Object.values(sessions).filter((s) => !s.archived && !s.parent_id && s.workspace === workspace).sort((a, b) => b.updated - a.updated).slice(0, 5),
-    [sessions, workspace],
-  );
-  const watches = useWatches(recent);
+  // The newest sessions anywhere, without the ones the rows of what needs the owner show.
+  const attended = useAttended();
+  const rail = useRail();
+  const listed = useWidth() >= 768 && rail.list;
+  const live = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id && !attended.has(s.id)).sort((a, b) => b.updated - a.updated), [sessions, attended]);
+  const watches = useWatches(live);
+  // The six newest, and any failed session older than those: a red mark in the list has its row here, whatever its age.
+  const recent = useMemo(() => [...live.slice(0, 6), ...live.slice(6).filter((s) => watches[s.id] === "fail").slice(0, 3)], [live, watches]);
   const agents = useAgentCounts();
   // Auto is shown as where it would place the session now: a folder of this
   // machine when it stays here, the other machine's directory when it goes.
@@ -62,10 +70,14 @@ export function StartBox() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-12 shrink-0 items-center px-2 md:px-4"><SidebarButton /></div>
-      <div className="flex flex-1 flex-col items-center overflow-y-auto px-4 pb-[max(1rem,env(safe-area-inset-bottom))] md:px-6">
-        <div className="k-start-box mt-auto w-full max-w-[46rem] pb-[8vh] pt-6 md:mb-auto md:mt-[18vh] md:pb-0 md:pt-0">
-          <h1 className="mb-1.5 text-display font-semibold tracking-[-0.025em] text-fg">What should we work on?</h1>
-          <p className="mb-6 text-base text-muted">{autoThere ? `Keel works on ${place!.machine}, in its granted directory.` : sshMachine ? `Keel works in the folder below, on ${sshMachine.name}.` : machine && machine !== "auto" ? `Keel works on ${pickedName ?? "the machine you picked"}, in its granted directory.` : "Keel works in the folder below."} Paste screenshots, mention files with @, and steer while it runs.</p>
+      {/* One column in a narrow pane or on a phone: the headline, the start box, what needs the
+          owner, the recent sessions. With the width for it, what needs the owner stands beside
+          the start box, so nothing under it moves the box. */}
+      <div className="@container flex flex-1 flex-col items-center overflow-y-auto px-4 pb-[max(1rem,env(safe-area-inset-bottom))] md:px-6">
+        <div className="k-home mt-auto grid w-full max-w-[46rem] grid-cols-1 pb-[8vh] pt-6 md:mb-auto md:mt-[9vh] md:pb-8 md:pt-0 @[74rem]:max-w-[88rem] @[74rem]:grid-cols-[minmax(0,46rem)_minmax(0,1fr)] @[74rem]:gap-x-14">
+        <div className="min-w-0" data-testid="home-start">
+          {only ? <h1 className="k-home-state" data-testid="home-watch" data-quiet>What should we work on?</h1> : <WatchHeadline />}
+          <h2 className="k-pane-empty-word mb-2.5 mt-5">Start a session{machine && <span>{autoThere ? `on ${place!.machine}, in its granted directory` : sshMachine ? `on ${sshMachine.name}` : machine !== "auto" ? `on ${pickedName ?? "the machine you picked"}, in its granted directory` : ""}</span>}</h2>
           <div className="mb-2.5 flex flex-wrap items-center gap-2">
             <MachinePicker />
             {(!machine || (machine === "auto" && !autoThere)) && <WorkspacePicker value={workspace} onChange={(p) => savePref("newWorkspace", p)} />}
@@ -109,21 +121,30 @@ export function StartBox() {
             <span className="flex items-center gap-1.5"><Kbd keys="mod+/" /> all shortcuts</span>
           </div>
           {firstRun && <FirstSteps />}
-          {recent.length > 0 && !autoThere && (
-            <section className="mt-10">
-              <h2 className="mb-2 k-label">Recent in {workspace.split("/").pop()}</h2>
-              <div className="flex flex-col">
+        </div>
+        {!autoThere && !only && <WatchLists className="min-w-0 @[74rem]:col-start-2 @[74rem]:row-span-2 @[74rem]:row-start-1 @[74rem]:[&>section:first-child]:mt-[4.25rem]" />}
+          {/* Recent is for where the titled list is not on screen (a phone, a rail folded to its marks): beside the list it would say the same sessions again. */}
+          {recent.length > 0 && !autoThere && !only && !listed && (
+            <section className="k-home-sec min-w-0 @[74rem]:col-start-1">
+              <h2 className="k-pane-empty-word">Recent</h2>
+              <div className="mt-2 flex flex-col border-t border-line">
                 {machineRuns(recent).map((run, ri, runs) => (<Fragment key={run.machine ?? "local"}>{runs.length > 1 && <MachineSep machine={run.machine} count={run.list.length} />}{run.list.map((s) => (
                   <button
                     key={s.id}
                     type="button"
-                    onClick={() => navigate({ name: "session", id: s.id })}
+                    onClick={() => openWaiting(s.id)}
                     data-testid="recent-session"
-                    className="k-recent-session group flex h-10 items-center gap-3 border-b border-line text-left text-ui text-muted last:border-0 hover:text-fg"
+                    data-session={s.id}
+                    data-watch={watches[s.id] ?? "idle"}
+                    // A phone lists the working ones above; a desk has them here, with their state.
+                    className={cn("k-home-recent group flex h-10 items-center gap-3 border-b border-line text-left text-ui text-muted last:border-0 hover:text-fg", watches[s.id] === "work" && "max-md:hidden")}
                   >
-                    <span className="grid w-4 place-items-center" title={watchLabel(watches[s.id] ?? "idle", agents[s.id])}><Mark w={watches[s.id] ?? "idle"} /></span>
-                    <span className="min-w-0 flex-1 truncate">{s.title || "New session"}</span>
-                    <span className="text-caption tabular-nums text-faint" title={when(s.updated)}>{ago(s.updated)}</span>
+                    <span className="grid w-4 place-items-center"><Mark w={watches[s.id] ?? "idle"} /></span>
+                    <span dir="auto" className="min-w-0 flex-1 truncate text-left">{s.title || "New session"}</span>
+                    {/* The state in a word when it is not simply done; then where, and when. */}
+                    {(watches[s.id] ?? "idle") !== "done" && <span className="k-face-state k-home-recent-word">{watchLabel(watches[s.id] ?? "idle", agents[s.id])}</span>}
+                    <span className={cn("k-pane-empty-in", (watches[s.id] ?? "idle") !== "done" && "max-sm:hidden")} data-testid="recent-folder">{folderOf(s)}</span>
+                    <span className="k-pane-empty-time tabular-nums" title={when(s.updated)}>{ago(s.updated)}</span>
                   </button>
                 ))}</Fragment>))}
               </div>

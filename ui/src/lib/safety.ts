@@ -6,7 +6,8 @@ import type { Rule, Suggest } from "../../../src/safety/policy.ts";
 import { api, newer, onFeature, reportError } from "./store.ts";
 
 export type { Approval, Rule, SessionPerm, Suggest };
-export type ModeInfo = { id: SessionPerm["mode"]; name: string; description: string };
+export type ModeInfo = { id: SessionPerm["mode"]; name: string; description: string; group?: string; summary?: string };
+export type ModeGroup = { id: string; name: string };
 export type SandboxInfo = { available: boolean; reason?: string };
 
 type State = {
@@ -14,10 +15,11 @@ type State = {
   perms: Record<string, SessionPerm>;
   grants: Rule[];
   modes: ModeInfo[];
+  modeGroups: ModeGroup[];
   sandbox: SandboxInfo | null;
 };
 
-let state: State = { approvals: {}, perms: {}, grants: [], modes: [], sandbox: null };
+let state: State = { approvals: {}, perms: {}, grants: [], modes: [], modeGroups: [], sandbox: null };
 const subs = new Set<() => void>();
 const subscribe = (f: () => void) => {
   subs.add(f);
@@ -28,6 +30,8 @@ const set = (patch: Partial<State>) => {
   subs.forEach((f) => f());
 };
 export const getSafetyModes = () => state.modes;
+// The store as it is now, for an action that reads it once (a navigation).
+export const getSafety = () => state;
 export function useSafety<T>(sel: (s: State) => T): T {
   return useSyncExternalStore(subscribe, () => sel(state));
 }
@@ -100,8 +104,8 @@ export const safety = {
     set({ approvals: Object.fromEntries(Object.entries(by).map(([k, list]) => [k, replay(list, seen, k)])) });
   },
   async loadSettings() {
-    const r = await api<{ modes: ModeInfo[]; sandbox?: SandboxInfo }>("/api/permissions/settings");
-    set({ modes: r.modes, sandbox: r.sandbox ?? null });
+    const r = await api<{ modes: ModeInfo[]; mode_groups?: ModeGroup[]; sandbox?: SandboxInfo }>("/api/permissions/settings");
+    set({ modes: r.modes, modeGroups: r.mode_groups ?? [], sandbox: r.sandbox ?? null });
   },
   async loadGrants() {
     const r = await api<{ grants: Rule[] }>("/api/permissions/grants");
