@@ -1,6 +1,6 @@
 import { expect, test } from "./isolate.ts";
-import { peerProblem } from "./peer.ts";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { emptyKeel, peerProblem } from "./peer.ts";
+import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { HAIKU, shoot, choose } from "./shots.ts";
 
@@ -26,6 +26,7 @@ function claudeSession(root: string, cwd: string, id: string, fruit: string) {
     { type: "ai-title", aiTitle: `Name the ${fruit} fixture`, sessionId: id },
   ];
   writeFileSync(join(dir, `${id}.jsonl`), recs.map((r) => JSON.stringify(r)).join("\n") + "\n");
+  return join(dir, `${id}.jsonl`);
 }
 
 test("fleet transcripts: another machine's sessions, imported to go on there", async ({ page, request }) => {
@@ -94,5 +95,64 @@ test("fleet transcripts: another machine's sessions, imported to go on there", a
     expect(errors.slice(0, errors.length - errorsBefore).filter((e: any) => e.source !== "provider")).toEqual([]);
   } finally {
     if (made) await request.delete(`/api/sessions/${made}`);
+  }
+});
+
+// A machine with more transcripts than a page, some under a credentials
+// folder and many written in the same second: the pages give every offered
+// one once and none of the others, and a session that starts there while the
+// list is read never hides one (the page after it says the list changed).
+// The other machine is a daemon this spec starts on a scratch store.
+test("fleet transcripts: a long list is paged whole", async ({ request }) => {
+  const tag = Date.now().toString(36);
+  const dir = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `fleet-long-${tag}`);
+  const other = await emptyKeel(dir);
+  const store = join(dir, "stores/claude");
+  const root = join(dir, "work");
+  const id = (i: number) => `22222222-3333-4444-8555-${String(i).padStart(12, "0")}`;
+  const N = 640, HIDDEN = 40;
+  const t0 = Math.floor(Date.now() / 1000) - 10_000;
+  const offeredIds: string[] = [];
+  for (let i = 0; i < N; i++) {
+    // Every 16th sits under a credentials folder; the files are stamped 20 to the second.
+    const hidden = i % 16 === 5;
+    const cwd = join(root, hidden ? ".ssh" : "proj", `d${i % 7}`);
+    const p = claudeSession(store, cwd, id(i), `fig-${tag}-${i}`);
+    utimesSync(p, t0 + Math.floor(i / 20), t0 + Math.floor(i / 20));
+    if (!hidden) offeredIds.push(id(i));
+  }
+  expect(N - offeredIds.length).toBe(HIDDEN);
+  expect(offeredIds.length).toBeGreaterThan(500);
+
+  const added = await (await request.post("/api/fleet/machines", { data: { name: `long-${tag}`, daemon_url: other.url, workspace_root: root } })).json();
+  const mid = added.id as string;
+  try {
+    const got: string[] = [];
+    const flags: boolean[] = [];
+    let cursor: string | undefined;
+    let total = 0;
+    for (let n = 1; ; n++) {
+      const u = new URLSearchParams({ q: `fig-${tag}`, limit: "200" });
+      if (cursor) u.set("cursor", cursor);
+      if (n === 1 || n === 3) u.set("refresh", "1");
+      const r = await (await request.get(`/api/fleet/machines/${mid}/transcripts?${u}`)).json();
+      got.push(...r.sessions.map((s: any) => s.id));
+      flags.push(!!r.changed);
+      total = r.total;
+      if (!(cursor = r.next_cursor)) break;
+      // After the second page a session starts there, newer than every one listed.
+      if (n === 2) claudeSession(store, join(root, "proj", "late"), id(900_000), `fig-${tag}-late`);
+    }
+    expect(new Set(got).size).toBe(got.length);
+    expect(got.filter((x) => x !== id(900_000)).sort()).toEqual([...offeredIds].sort());
+    expect(total).toBe(offeredIds.length + 1);
+    expect(flags).toEqual([false, false, true]);
+    // A reader that starts again after the signal sees the new session first.
+    const again = await (await request.get(`/api/fleet/machines/${mid}/transcripts?q=${encodeURIComponent(`fig-${tag}`)}&limit=5`)).json();
+    expect(again.sessions[0].id).toBe(id(900_000));
+  } finally {
+    await request.delete(`/api/fleet/machines/${mid}`);
+    await other.stop();
+    rmSync(dir, { recursive: true, force: true });
   }
 });

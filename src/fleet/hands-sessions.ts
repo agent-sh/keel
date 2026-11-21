@@ -23,7 +23,7 @@ import { classify, groupsUnder, tailReader, type Activity, type Group, type Proc
 import { claudeFiles, claudeFound, claudeRoot, readClaude } from "../integrations/import/claude.ts";
 import { codexFiles, codexFound, codexHome, readCodex } from "../integrations/import/codex.ts";
 import { linesBack } from "../integrations/import/files.ts";
-import { offered, scrub, select, tail as lastMessages } from "../integrations/import/offer.ts";
+import { cursorGiven, CursorError, offered, page as pageOf, scrub, tail as lastMessages } from "../integrations/import/offer.ts";
 import type { Found, Harness } from "../integrations/import/types.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -311,20 +311,24 @@ export function sessionRoutes() {
         const u = new URL(req.url).searchParams;
         const harness = u.get("harness") || undefined;
         // `peek`: a look at what runs now (asked every few seconds); the stores are not walked again for it.
-        await fresh(u.has("refresh") ? 10_000 : 1000, !u.has("peek") && (u.has("refresh") || !Number(u.get("cursor") ?? 0)));
+        await fresh(u.has("refresh") ? 10_000 : 1000, !u.has("peek") && (u.has("refresh") || !cursorGiven(u.get("cursor"))));
         const index = { complete, building: !!walking };
         if (harness && !isHere(harness)) return json({ sessions: [], total: 0, index, harnesses: harnesses(transcripts()), tools_present: tools() });
         const all = transcripts();
-        const rows = select(all, { harness: harness as Harness | undefined, q: u.get("q") ?? undefined, show: u.get("show") ?? undefined, sort: (u.get("sort") as any) || undefined });
-        const limit = Math.min(Number(u.get("limit") ?? 50) || 50, 200);
-        const at = Number(u.get("cursor") ?? 0) || 0;
+        let rows;
+        try {
+          rows = pageOf(all, { harness: harness as Harness | undefined, q: u.get("q") ?? undefined, show: u.get("show") ?? undefined, sort: (u.get("sort") as any) || undefined, limit: Number(u.get("limit") ?? 50) || 50, cursor: u.get("cursor") ?? undefined }, { max: 200, scope: "offered" });
+        } catch (e) {
+          if (e instanceof CursorError) return bad(e.message);
+          throw e;
+        }
         const running = await now();
         const page = [];
-        for (const f of rows.slice(at, at + limit)) {
+        for (const f of rows.sessions) {
           const a = await activityOf(f, running);
           page.push({ ...scrub(f), ...(a.state === "ended" ? {} : { original: { state: a.state, why: a.why, brief: a.brief, in_flight: a.in_flight.length, jobs: a.in_flight.filter((i) => i.kind === "job").length } }) });
         }
-        return json({ sessions: page, total: rows.length, next_cursor: at + limit < rows.length ? at + limit : undefined, index, harnesses: harnesses(all), tools_present: tools() });
+        return json({ sessions: page, total: rows.total, next_cursor: rows.next_cursor, changed: rows.changed, index, harnesses: harnesses(all), tools_present: tools() });
       },
     },
     "/api/fleet/hands/transcript": {

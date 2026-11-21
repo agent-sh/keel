@@ -31,11 +31,15 @@ async function list(c: Client, v: any) {
   const q = new URLSearchParams();
   for (const k of ["harness", "cwd", "show", "sort", "limit"] as const) if (v[k]) q.set(k, k === "cwd" ? resolve(v[k]) : v[k]);
   if (v.query) q.set("q", v.query);
-  let cursor = v.cursor ? Number(v.cursor) : 0;
-  const rows: any[] = [];
-  for (;;) {
-    q.set("cursor", String(cursor));
+  let cursor: string | undefined = v.cursor || undefined;
+  let rows: any[] = [];
+  for (let tries = 0; ; ) {
+    if (cursor) q.set("cursor", cursor);
+    else q.delete("cursor");
     const r = await c.get<any>(`/api/import/sessions?${q}`);
+    // Sessions arrived, left or moved above this page while the list was read.
+    if (r.changed && v.all && v.json && ++tries < 4) { rows = []; cursor = undefined; continue; }
+    if (r.changed) console.error("the list changed above this page since the pages before it: read it again from the start to see every session");
     rows.push(...r.sessions);
     if (!v.json) for (const f of r.sessions) console.log(listRow(f));
     if (r.next_cursor === undefined) break;
@@ -74,12 +78,21 @@ export const importCmd = command("import", USAGE, {
       return EXIT.ok;
     }
     case "folders": {
-      const q = new URLSearchParams({ limit: "100000", show: "all" });
+      const q = new URLSearchParams({ limit: "500", show: "all" });
       if (v.harness) q.set("harness", v.harness);
       if (v.query) q.set("q", v.query);
-      const r = await c.get<any>(`/api/import/sessions?${q}`);
+      // Every page: a store holds more sessions than one page gives.
+      let sessions: any[] = [];
+      for (let tries = 0, cursor: string | undefined; ; ) {
+        if (cursor) q.set("cursor", cursor);
+        else q.delete("cursor");
+        const r = await c.get<any>(`/api/import/sessions?${q}`);
+        if (r.changed && ++tries < 4) { sessions = []; cursor = undefined; continue; }
+        sessions.push(...r.sessions);
+        if (!(cursor = r.next_cursor)) break;
+      }
       const by = new Map<string, { cwd: string; sessions: number; newest_ms: number; harnesses: Set<string> }>();
-      for (const f of r.sessions) {
+      for (const f of sessions) {
         const k = f.cwd ?? "";
         const e = by.get(k) ?? { cwd: k, sessions: 0, newest_ms: 0, harnesses: new Set<string>() };
         e.sessions++;

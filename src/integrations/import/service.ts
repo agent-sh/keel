@@ -13,7 +13,7 @@ import { keelDb, keelSessions, readKeel } from "./keel.ts";
 import { agyHome, agySessions, readAgy } from "./agy.ts";
 import { hermesDb, hermesPending, hermesSessions, readHermes } from "./hermes.ts";
 import type { Found, Harness, Read } from "./types.ts";
-import { select, type ListQuery } from "./offer.ts";
+import { offered, page, type ListQuery } from "./offer.ts";
 import * as perm from "../../server/routes/permissions.ts";
 
 export const HARNESSES: { harness: Harness; label: string; store: () => string; resume?: string }[] = [
@@ -218,12 +218,13 @@ export class Imports {
     });
   }
 
-  list(q: ListQuery) {
-    const rows = select(this.all(q.harness), q);
-    const limit = Math.min(Math.max(q.limit ?? 50, 1), 500);
-    const at = q.cursor ?? 0;
-    const page = rows.slice(at, at + limit).map((f) => ({ ...f, imported: this.importedAs(f) }));
-    return { sessions: page, total: rows.length, next_cursor: at + limit < rows.length ? at + limit : undefined, index: { complete: this.complete, building: !!this.building } };
+  // One page of the list. `offered`: only what this machine gives another
+  // one (never a transcript under a credentials folder or name), left out
+  // before the rows are counted and cut into pages.
+  list(q: ListQuery & { offered?: boolean }, max = 500) {
+    const all = this.all(q.harness);
+    const p = page(q.offered ? all.filter(offered) : all, q, { max, scope: q.offered ? "offered" : "" });
+    return { ...p, sessions: p.sessions.map((f) => ({ ...f, imported: this.importedAs(f) })), index: { complete: this.complete, building: !!this.building } };
   }
 
   find(harness: Harness, id: string): Found | undefined {

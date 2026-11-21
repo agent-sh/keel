@@ -1,8 +1,9 @@
 import { expect, test } from "./isolate.ts";
-import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import type { APIRequestContext } from "@playwright/test";
+import { emptyKeel } from "./peer.ts";
 import { HAIKU, shoot } from "./shots.ts";
 
 // The Claude Code session gains a question and an answer.
@@ -272,32 +273,6 @@ async function say(request: APIRequestContext, id: string, text: string, images?
   const before = await ends();
   expect((await request.post(`/api/sessions/${id}/messages`, { data: { text, images } })).ok()).toBe(true);
   await expect.poll(ends, { timeout: 30_000 }).toBe(before + 1);
-}
-
-// Another Keel with nothing in it: a state folder of its own, scratch stores, the stand-in provider.
-async function emptyKeel(dir: string): Promise<{ url: string; state: string; stop: () => Promise<void> }> {
-  for (const d of ["state", "work", "config", "home", "stores"]) mkdirSync(join(dir, d), { recursive: true });
-  const proc: ChildProcess = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", join(dir, "state"), "--workspace", join(dir, "work")], {
-    env: {
-      ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DEFAULT_MODEL: SCRIPTED, KEEL_CONFIG_DIR: join(dir, "config"), KEEL_MCP_CONFIG: join(dir, "mcp.json"),
-      KEEL_IMPORT_HOME: join(dir, "home"), KEEL_IMPORT_CLAUDE_DIR: join(dir, "stores/claude"), KEEL_IMPORT_CODEX_DIR: join(dir, "stores/codex"), KEEL_IMPORT_AGY_DIR: join(dir, "stores/agy"),
-      KEEL_IMPORT_KEEL_DB: join(dir, "stores/keel.db"), KEEL_IMPORT_HERMES_DIR: join(dir, "stores/hermes"), KEEL_DESKTOP_NOTIFY: "off", TACIT_BIN: resolve("test/e2e/fixtures/tacit-standin.sh"),
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  const url = await new Promise<string>((done, reject) => {
-    let out = "";
-    const t = setTimeout(() => reject(new Error(`no listen line:\n${out}`)), 30_000);
-    const on = (d: Buffer) => {
-      out += d;
-      const m = out.match(/keel listening on (http:\/\/\S+?)\/? /);
-      if (m) { clearTimeout(t); done(m[1]!.replace(/\/$/, "")); }
-    };
-    proc.stdout!.on("data", on);
-    proc.stderr!.on("data", on);
-  });
-  const stop = () => new Promise<void>((r) => { if (proc.exitCode !== null) return r(); proc.once("exit", () => r()); proc.kill("SIGTERM"); });
-  return { url, state: join(dir, "state"), stop };
 }
 
 // A Keel file with its attached files inside opens whole in a Keel that never

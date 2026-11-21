@@ -7,7 +7,7 @@ import { lineage } from "../../core/tree.ts";
 import { sharedDrive } from "../../drive/drive.ts";
 import { exportTo, parseKeelJsonl, redact, redactDeep, rowsOf, toKeelJsonl, toMarkdown } from "../../integrations/export.ts";
 import { HARNESSES, modelFor as pickModel, sharedImports, sourceMachine, WENT_ON } from "../../integrations/import/service.ts";
-import { offered, scrub, tail } from "../../integrations/import/offer.ts";
+import { cursorGiven, CursorError, offered, scrub, tail } from "../../integrations/import/offer.ts";
 import type { Found, Harness, Read } from "../../integrations/import/types.ts";
 import { callerOf, LinkError, proven } from "../../fleet/link.ts";
 import { contains } from "../../core/paths.ts";
@@ -65,6 +65,11 @@ export const importRoutes: RouteModule = (deps) => {
     return imports.find(b.harness, b.id) ?? (imports.invalidate(), imports.find(b.harness, b.id)) ?? bad(`${b.harness} has no session ${b.id}`, 404);
   };
 
+  // A page of a listing; a cursor this list did not give is the caller's mistake (400).
+  const listed = <T,>(f: () => T): T | Response => {
+    try { return f(); } catch (e) { if (e instanceof CursorError) return bad(e.message); throw e; }
+  };
+
   // ---- transcripts on another machine of the fleet (its daemon reads them)
 
   // What a paired daemon may ask: this machine's transcripts, read only,
@@ -93,15 +98,16 @@ export const importRoutes: RouteModule = (deps) => {
         const u = new URL(req.url).searchParams;
         const harness = u.get("harness") || undefined;
         if (harness && !isHarness(harness)) return bad(`unknown harness ${harness}`);
-        await imports.fresh(u.has("refresh") ? 10_000 : 1000, u.has("refresh") || !Number(u.get("cursor") ?? 0));
-        const limit = Math.min(Number(u.get("limit") ?? 50) || 50, 200);
-        const r = imports.list({ harness: harness as Harness | undefined, q: u.get("q") ?? undefined, show: u.get("show") ?? undefined, sort: (u.get("sort") as any) || undefined, limit: 500, cursor: 0 });
-        const rows = r.sessions.filter(offered);
-        const at = Number(u.get("cursor") ?? 0) || 0;
+        const cursor = cursorGiven(u.get("cursor"));
+        await imports.fresh(u.has("refresh") ? 10_000 : 1000, u.has("refresh") || !cursor);
+        // Only what this machine offers is counted and cut into pages: a row
+        // left out never takes a place in a page, however long the list.
+        const r = listed(() => imports.list({ harness: harness as Harness | undefined, q: u.get("q") ?? undefined, show: u.get("show") ?? undefined, sort: (u.get("sort") as any) || undefined, limit: Number(u.get("limit") ?? 50) || 50, cursor, offered: true }, 200));
+        if (r instanceof Response) return r;
         const tools = ["claude", "codex", "agy"].filter((t) => Bun.which(t));
         return json({
-          sessions: rows.slice(at, at + limit).map(({ imported: _, ...f }) => scrub(f as Found)),
-          total: rows.length, next_cursor: at + limit < rows.length ? at + limit : undefined,
+          sessions: r.sessions.filter(offered).map(({ imported: _, ...f }) => scrub(f as Found)),
+          total: r.total, next_cursor: r.next_cursor, changed: r.changed,
           index: r.index, harnesses: imports.harnesses().map(({ store: _, ...h }) => h), tools_present: tools,
         });
       }),
@@ -138,7 +144,7 @@ export const importRoutes: RouteModule = (deps) => {
               wait: resumes?.waitOf(m.id, f.harness, f.id),
             };
           }),
-          total: r.total, next_cursor: r.next_cursor, index: r.index, harnesses: r.harnesses,
+          total: r.total, next_cursor: r.next_cursor, changed: r.changed, index: r.index, harnesses: r.harnesses,
         });
       },
     },
@@ -200,10 +206,12 @@ export const importRoutes: RouteModule = (deps) => {
         if (u.has("refresh")) imports.invalidate();
         // Opening the list walks the stores again; a search typed key by key or
         // the next page reads the index the opening built.
-        await imports.fresh(u.has("refresh") ? 10_000 : 1000, u.has("refresh") || (!u.get("q") && !Number(u.get("cursor") ?? 0)));
+        const cursor = cursorGiven(u.get("cursor"));
+        await imports.fresh(u.has("refresh") ? 10_000 : 1000, u.has("refresh") || (!u.get("q") && !cursor));
         const limit = u.get("limit") ? Number(u.get("limit")) : undefined;
         if (limit !== undefined && !(limit > 0)) return bad("limit must be a number above 0");
-        const r = imports.list({ harness: harness as Harness | undefined, q: u.get("q") ?? undefined, cwd: u.get("cwd") ?? undefined, show: u.get("show") ?? undefined, sort: sort as any, limit, cursor: Number(u.get("cursor") ?? 0) || 0 });
+        const r = listed(() => imports.list({ harness: harness as Harness | undefined, q: u.get("q") ?? undefined, cwd: u.get("cwd") ?? undefined, show: u.get("show") ?? undefined, sort: sort as any, limit, cursor }));
+        if (r instanceof Response) return r;
         return json({ ...r, harnesses: imports.harnesses() });
       },
     },

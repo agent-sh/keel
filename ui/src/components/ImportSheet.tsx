@@ -227,10 +227,11 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
   const [all, setAll] = useState(false);
   const [rows, setRows] = useState<Row[] | null>(null);
   const [total, setTotal] = useState(0);
-  const [next, setNext] = useState<number | undefined>();
+  const [next, setNext] = useState<string | undefined>();
   const [sel, setSel] = useState<Row | null>(null);
   const [building, setBuilding] = useState(false);
   const seq = useRef(0);
+  const shown = useRef(0); // how many rows the list holds
   const [bulk, setBulk] = useState("");
   // The filter the shown rows and count came from.
   const [shownFor, setShownFor] = useState<{ q: string; all: boolean }>({ q: "", all: false });
@@ -251,12 +252,16 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
     const u = new URLSearchParams({ harness, limit: "500" });
     if (shownFor.q) u.set("q", shownFor.q);
     if (shownFor.all) u.set("show", "all");
-    const items: Item[] = [];
-    for (let cursor: number | undefined = 0; cursor !== undefined; ) {
-      u.set("cursor", String(cursor));
-      const r: { sessions: Row[]; next_cursor?: number } = await api(`/api/import/sessions?${u}`);
+    // Read to the end; a list that changed above a page while it was read is read again whole.
+    let items: Item[] = [];
+    for (let tries = 0, cursor: string | undefined, done = false; !done; ) {
+      if (cursor) u.set("cursor", cursor);
+      else u.delete("cursor");
+      const r: { sessions: Row[]; next_cursor?: string; changed?: boolean } = await api(`/api/import/sessions?${u}`);
+      if (r.changed && ++tries < 4) { items = []; cursor = undefined; continue; }
       for (const x of r.sessions) if (!x.imported) items.push({ ...ident(x), title: x.title });
       cursor = r.next_cursor;
+      done = cursor === undefined;
     }
     if (items.length) setConfirm(items);
     else setBulk("Every session this list shows was imported before");
@@ -276,23 +281,27 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
     }
     setFails(missed);
     setBulk(`Imported ${done}${missed.length ? `; ${missed.length} not imported` : ""}`);
-    load(0);
+    load();
   };
 
-  const load = useCallback(async (cursor = 0, refresh = false) => {
+  const load = useCallback(async (cursor?: string, refresh = false, want = 60): Promise<void> => {
     const n = ++seq.current;
-    const u = new URLSearchParams({ harness, limit: "60", cursor: String(cursor) });
+    const u = new URLSearchParams({ harness, limit: String(Math.min(want, 500)) });
+    if (cursor) u.set("cursor", cursor);
     if (q.trim()) u.set("q", q.trim());
     if (all) u.set("show", "all");
     if (refresh) u.set("refresh", "1");
     try {
-      const r = await api<{ sessions: Row[]; total: number; next_cursor?: number; harnesses: HarnessState[]; index: { building: boolean } }>(`${paths(from).list}?${u}`);
+      const r = await api<{ sessions: Row[]; total: number; next_cursor?: string; changed?: boolean; harnesses: HarnessState[]; index: { building: boolean } }>(`${paths(from).list}?${u}`);
       if (n !== seq.current) return;
+      // A session arrived, left or moved above this page since the pages before
+      // it were read: the list is read again from the top, as far as it was shown.
+      if (cursor && r.changed) return load(undefined, false, shown.current + 60);
       setHarnesses(r.harnesses);
       setTotal(r.total);
       setNext(r.next_cursor);
       setBuilding(r.index.building);
-      setRows((prev) => (cursor ? [...(prev ?? []), ...r.sessions] : r.sessions));
+      setRows((prev) => { const rows = cursor ? [...(prev ?? []), ...r.sessions] : r.sessions; shown.current = rows.length; return rows; });
       if (from) noteRows(from, r.sessions);
       // The row on show is taken from the fresh listing, so its preview reads
       // again (a copy made since the last listing shows) even when it was
@@ -306,13 +315,13 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
 
   useEffect(() => {
     if (!open) return;
-    const t = setTimeout(() => load(0), q ? 180 : 0);
+    const t = setTimeout(() => load(), q ? 180 : 0);
     return () => clearTimeout(t);
   }, [open, load, q]);
   // The first listing of a large store goes on in the background: look again until it is whole.
   useEffect(() => {
     if (!open || !building) return;
-    const t = setTimeout(() => load(0), 1500);
+    const t = setTimeout(() => load(), 1500);
     return () => clearTimeout(t);
   }, [open, building, load]);
   useEffect(() => { setSel(null); setRows(null); setConfirm(null); setFails([]); setBulk(""); setIntent(null); }, [harness, from]);
@@ -370,7 +379,7 @@ export function ImportSheet({ open, onOpenChange }: { open: boolean; onOpenChang
                 </Select>
               </label>
             )}
-            <button type="button" title="Read the stores again" onClick={() => load(0, true)} className={cn(!linked.length && "ml-auto", "grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg")}>
+            <button type="button" title="Read the stores again" onClick={() => load(undefined, true)} className={cn(!linked.length && "ml-auto", "grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg")}>
               <RefreshCw className={cn("size-3.5", building && "animate-spin")} />
             </button>
             <Dialog.Close className="grid size-7 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg"><X className="size-4" /></Dialog.Close>

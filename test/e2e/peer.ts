@@ -3,7 +3,10 @@
 // default peer port), or a daemon started on a copy of this one's state, has
 // the same daemon id, and a daemon is never paired with itself.
 import type { APIRequestContext } from "@playwright/test";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createHmac, randomUUID } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -44,4 +47,32 @@ export function standInDaemon(name: string) {
   });
   const close = () => new Promise<void>((resolve) => { server!.close(() => resolve()); server!.closeAllConnections(); });
   return { open, close, url: () => `http://127.0.0.1:${port}` };
+}
+
+// Another Keel with nothing in it, started for one spec and stopped by it: a
+// state folder of its own under `dir`, scratch stores of the other harnesses
+// (`dir`/stores), the stand-in provider.
+export async function emptyKeel(dir: string): Promise<{ url: string; state: string; stop: () => Promise<void> }> {
+  for (const d of ["state", "work", "config", "home", "stores"]) mkdirSync(join(dir, d), { recursive: true });
+  const proc: ChildProcess = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", join(dir, "state"), "--workspace", join(dir, "work")], {
+    env: {
+      ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DEFAULT_MODEL: "scripted:stand-in", KEEL_CONFIG_DIR: join(dir, "config"), KEEL_MCP_CONFIG: join(dir, "mcp.json"),
+      KEEL_IMPORT_HOME: join(dir, "home"), KEEL_IMPORT_CLAUDE_DIR: join(dir, "stores/claude"), KEEL_IMPORT_CODEX_DIR: join(dir, "stores/codex"), KEEL_IMPORT_AGY_DIR: join(dir, "stores/agy"),
+      KEEL_IMPORT_KEEL_DB: join(dir, "stores/keel.db"), KEEL_IMPORT_HERMES_DIR: join(dir, "stores/hermes"), KEEL_DESKTOP_NOTIFY: "off", TACIT_BIN: resolve("test/e2e/fixtures/tacit-standin.sh"),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const url = await new Promise<string>((done, reject) => {
+    let out = "";
+    const t = setTimeout(() => reject(new Error(`no listen line:\n${out}`)), 30_000);
+    const on = (d: Buffer) => {
+      out += d;
+      const m = out.match(/keel listening on (http:\/\/\S+?)\/? /);
+      if (m) { clearTimeout(t); done(m[1]!.replace(/\/$/, "")); }
+    };
+    proc.stdout!.on("data", on);
+    proc.stderr!.on("data", on);
+  });
+  const stop = () => new Promise<void>((r) => { if (proc.exitCode !== null) return r(); proc.once("exit", () => r()); proc.kill("SIGTERM"); });
+  return { url, state: join(dir, "state"), stop };
 }
