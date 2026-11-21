@@ -179,7 +179,7 @@ export function TerminalPanel({ session }: { session: Session }) {
             key={f}
             value={f}
             data-testid={`term-filter-${f}`}
-            className={cn("inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-caption capitalize", filter === f ? "bg-accent-soft text-fg" : "text-muted hover:bg-hover hover:text-fg")}
+            className={cn("inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-caption capitalize", filter === f ? "bg-raised text-fg shadow-1" : "text-muted hover:bg-hover hover:text-fg")}
           >
             {f}
             <span className={cn("tabular-nums text-micro", f === "failed" && counts.failed ? "text-danger" : "text-faint")}>{counts[f]}</span>
@@ -187,7 +187,8 @@ export function TerminalPanel({ session }: { session: Session }) {
         ))}
       </Tabs.List>
       {note && <p className="border-b border-line px-3 py-1.5 text-micro text-warn">{note}</p>}
-      <Tabs.Panel value={filter} className="k-ring-in min-h-0 flex-1 overflow-auto">
+      {/* The list is no Tab stop of its own: the next Tab goes from the filters to its first row. */}
+      <Tabs.Panel value={filter} tabIndex={-1} className="min-h-0 flex-1 overflow-auto outline-none">
       <ul data-testid="term-list">
         {list && !shown.length && (
           <li className="flex flex-col items-center gap-2 px-6 py-10 text-center text-ui text-faint">

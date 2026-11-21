@@ -76,9 +76,13 @@ test("terminal pane: commands, output, filters, stop, copy and re-run", async ({
     await expect(rows).toHaveCount(1);
     await expect(rows.first().getByTestId("term-ending")).toHaveText("exit 3");
     await shoot(page, "terminal-03-filter-by-keyboard");
-    // The next Tab leaves the filters; coming back lands on the one chosen.
+    // The next Tab leaves the filters for the list's first control (the list is no stop of its own); coming back lands on the one chosen.
     await page.keyboard.press("Tab");
     await expect(filters.locator(":focus")).toHaveCount(0);
+    await expect(rows.first().locator(":focus")).toHaveCount(1);
+    // The filter chosen is marked as the settings' choices are: raised, with a shadow.
+    await expect(filter("failed")).toHaveCSS("box-shadow", /rgb|oklch|oklab/);
+    await expect(filter("all")).toHaveCSS("box-shadow", "none");
     await tabInto(page, filters);
     await expect(filter("failed")).toBeFocused();
     await page.keyboard.press("ArrowLeft");

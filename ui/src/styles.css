@@ -230,8 +230,6 @@ input:focus-visible, textarea:focus-visible { outline: none; }
 /* A diff line under the keyboard has one ring, on the row; its comment button draws none over the line number. */
 .k-diff-line:has([data-line]:focus-visible) { outline: 2px solid var(--ring); outline-offset: -2px; }
 [data-line]:focus-visible { outline: none; }
-/* The ring inside the control, where the control's edge is its container's and a ring outside would be cut. */
-.k-ring-in:focus-visible { outline-offset: -2px; }
 button { cursor: default; }
 /* A sent image's size toggle: the pointer says which way it goes, and its ring keeps the image's corners. */
 .k-image-toggle { cursor: zoom-in; border-radius: var(--radius-lg); }
