@@ -48,6 +48,7 @@ export const digestOf = (events: { kind: string; data: any }[]) => String(Bun.ha
 
 // An update or an open refused for a reason the owner can act on.
 const refuse = (message: string) => Object.assign(new Error(message), { status: 409 });
+export const WENT_ON = "the Keel session went on since it was copied, so it is not updated: open it, or make a new copy";
 
 export type { ListQuery } from "./offer.ts";
 
@@ -311,33 +312,51 @@ export class Imports {
     // by another session since is not copied under the first one's name.
     if (r.found.id !== f.id) throw refuse(`the file now holds another session (${r.found.id}), not ${f.id}: look at the list again`);
     const st = (o.from ? undefined : sourceStat(f)) ?? { size: f.size_bytes, mtime: f.updated_ms };
+    // From here to the return nothing waits: what was true before the read
+    // (the copies, a copy's head and link) is looked at again, and the events
+    // and the link are written as one transaction or not at all.
     if (prior && o.mode === "update") {
-      const s = this.store.session(prior.session_id)!;
+      const s = this.store.session(prior.session_id);
+      const link = this.link(prior.session_id);
+      if (!s || !link) throw refuse("the copy was removed while its original was read");
+      // A turn that started while the original was read: its later turns would land after the copy's own.
+      if (this.wentOn(s.id)) throw Object.assign(refuse(WENT_ON), { session_id: s.id, reason: "went_on" });
       // Only a source that kept what was copied and went on is updated; one
       // that rewound or switched branch would splice two conversations.
-      if (!prior.digest) throw Object.assign(refuse("this copy was made before Keel kept a record of what it copied, so an update cannot be checked: open the copy, or make a new one"), { session_id: s.id });
-      if (prior.digest !== digestOf(r.events.slice(0, prior.items)))
+      if (!link.digest) throw Object.assign(refuse("this copy was made before Keel kept a record of what it copied, so an update cannot be checked: open the copy, or make a new one"), { session_id: s.id });
+      if (link.digest !== digestOf(r.events.slice(0, link.items)))
         throw Object.assign(refuse("the original changed what was copied before (it rewound or went on another branch), so its later turns are not appended: open the copy, or make a new one"), { session_id: s.id });
-      if (r.events.length === prior.items) return { action: "opened", session: s, imported_events: 0, read: r };
-      const more = r.events.slice(prior.items);
-      for (const e of more) this.store.append(s.id, e.kind, e.data);
-      this.store.db.query("UPDATE import_links SET items = ?, digest = ?, source_size = ?, source_mtime = ?, synced_ms = ? WHERE session_id = ?").run(r.events.length, digestOf(r.events), st.size, st.mtime, Date.now(), s.id);
+      // Nothing new, also when another update took the same events while this one read.
+      if (r.events.length <= link.items) return { action: "opened", session: s, imported_events: 0, read: r };
+      const more = r.events.slice(link.items);
+      this.store.atomic(s.id, () => {
+        for (const e of more) this.store.append(s.id, e.kind, e.data);
+        this.store.db.query("UPDATE import_links SET items = ?, digest = ?, source_size = ?, source_mtime = ?, synced_ms = ? WHERE session_id = ?").run(r.events.length, digestOf(r.events), st.size, st.mtime, Date.now(), s.id);
+      });
       return { action: "updated", session: this.store.session(s.id)!, imported_events: more.length, read: r };
     }
+    // A second copy is made only when asked for: an import that found none
+    // before its read opens the one another import made meanwhile.
+    const made = o.mode === "new" ? undefined : this.links(f.harness, f.id, f.path, o.from?.machine)[0];
+    if (made) return { action: "opened", session: this.store.session(made.session_id)!, imported_events: 0, read: r };
     const label = HARNESSES.find((h) => h.harness === f.harness)!.label;
     const found = r.found;
-    const s = this.store.createSession({ title: o.title ?? found.title, model: o.model, workspace: o.workspace });
-    if (o.from) this.store.db.query("UPDATE sessions SET machine = ? WHERE id = ?").run(o.from.machine, s.id);
-    // It goes on in the permission mode it ran in at the source (high-risk commands still ask in every mode).
-    if (found.perm_mode) perm.gate?.setPerm(s.id, { mode: found.perm_mode });
-    for (const e of r.events) this.store.append(s.id, e.kind, e.data);
-    const counts = r.counts;
-    const summary = `Imported from ${label}${o.from ? " on another machine" : ""} (${f.id}): ${counts.prompts} prompts, ${counts.assistant_messages} replies, ${counts.tool_calls} tool calls. The original is unchanged.`;
-    this.store.append(s.id, "note", { text: [summary, ...r.notes].join(" "), imported: true });
-    const now = Date.now();
-    this.store.db
-      .query("INSERT INTO import_links (session_id, harness, source_id, source_path, items, digest, source_size, source_mtime, imported_ms, synced_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(s.id, f.harness, f.id, o.from ? `${o.from.machine}:${f.path}` : f.path, r.events.length, digestOf(r.events), st.size, st.mtime, now, now);
-    return { action: "created", session: this.store.session(s.id)!, imported_events: r.events.length, read: r };
+    const id = this.store.db.transaction(() => {
+      const s = this.store.createSession({ title: o.title ?? found.title, model: o.model, workspace: o.workspace });
+      if (o.from) this.store.db.query("UPDATE sessions SET machine = ? WHERE id = ?").run(o.from.machine, s.id);
+      for (const e of r.events) this.store.append(s.id, e.kind, e.data);
+      const counts = r.counts;
+      const summary = `Imported from ${label}${o.from ? " on another machine" : ""} (${f.id}): ${counts.prompts} prompts, ${counts.assistant_messages} replies, ${counts.tool_calls} tool calls. The original is unchanged.`;
+      this.store.append(s.id, "note", { text: [summary, ...r.notes].join(" "), imported: true });
+      const now = Date.now();
+      this.store.db
+        .query("INSERT INTO import_links (session_id, harness, source_id, source_path, items, digest, source_size, source_mtime, imported_ms, synced_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(s.id, f.harness, f.id, o.from ? `${o.from.machine}:${f.path}` : f.path, r.events.length, digestOf(r.events), st.size, st.mtime, now, now);
+      // It goes on in the permission mode it ran in at the source (high-risk commands still ask in every mode).
+      // Last, so nothing is told of a session that is then undone.
+      if (found.perm_mode) perm.gate?.setPerm(s.id, { mode: found.perm_mode });
+      return s.id;
+    })();
+    return { action: "created", session: this.store.session(id)!, imported_events: r.events.length, read: r };
   }
 }

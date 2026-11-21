@@ -6,7 +6,7 @@ import type { RouteModule } from "../app.ts";
 import { lineage } from "../../core/tree.ts";
 import { sharedDrive } from "../../drive/drive.ts";
 import { exportTo, parseKeelJsonl, redact, redactDeep, toKeelJsonl, toMarkdown } from "../../integrations/export.ts";
-import { HARNESSES, modelFor as pickModel, sharedImports, sourceMachine } from "../../integrations/import/service.ts";
+import { HARNESSES, modelFor as pickModel, sharedImports, sourceMachine, WENT_ON } from "../../integrations/import/service.ts";
 import { offered, scrub, tail } from "../../integrations/import/offer.ts";
 import type { Found, Harness, Read } from "../../integrations/import/types.ts";
 import { callerOf, LinkError, proven } from "../../fleet/link.ts";
@@ -171,8 +171,15 @@ export const importRoutes: RouteModule = (deps) => {
         const model = b.model || (await modelFor(f));
         if (!model) return bad("no model is available: no provider has credentials", 409);
         const workspace = f.cwd && r.session.cwd_exists && contains(m.workspace_root!, f.cwd) ? f.cwd : m.workspace_root!;
-        const out = await imports.import(f, { mode: b.mode, model, workspace, title: b.title, from: { machine: m.id, read: r.read } });
-        if (workspace !== f.cwd) store.append(out.session.id, "note", { text: `Its folder ${f.cwd ?? "(none)"} is not inside the directory granted on ${m.name}; it goes on in ${workspace} there.` });
+        let out;
+        try {
+          out = await imports.import(f, { mode: b.mode, model, workspace, title: b.title, from: { machine: m.id, read: r.read } });
+        } catch (e) {
+          // The copy went on while that machine read its transcript, or the transcript rewound.
+          if ((e as any)?.status === 409) return json({ error: (e as Error).message, session_id: (e as any).session_id, reason: (e as any).reason }, 409);
+          throw e;
+        }
+        if (out.action === "created" && workspace !== f.cwd) store.append(out.session.id, "note", { text: `Its folder ${f.cwd ?? "(none)"} is not inside the directory granted on ${m.name}; it goes on in ${workspace} there.` });
         bus.emit({ t: "session", session: store.session(out.session.id)! });
         // A copy of a conversation whose harness still runs there is told so.
         if (out.action === "created" && fleet!.isSsh(m)) await resumes?.copied(m, out.session.id, b.harness, String(b.id));
@@ -243,7 +250,7 @@ export const importRoutes: RouteModule = (deps) => {
         if (prior && !b.mode) return json({ error: "this session was imported before: open it, update it, or make a new copy", session_id: prior.session_id }, 409);
         if (!prior && (b.mode === "update" || b.mode === "open")) return bad("this session was never imported", 404);
         // The original's later turns would land after the copy's own.
-        if (prior && b.mode === "update" && takeover?.wentOn(prior.session_id)) return json({ error: "the Keel session went on since it was copied, so it is not updated: open it, or make a new copy", session_id: prior.session_id }, 409);
+        if (prior && b.mode === "update" && takeover?.wentOn(prior.session_id)) return json({ error: WENT_ON, session_id: prior.session_id, reason: "went_on" }, 409);
         const model = b.mode === "open" ? "" : b.model || (await modelFor(f));
         if (!model && b.mode !== "open") return bad("no model is available: no provider has credentials", 409);
         if (b.cwd && !isDir(b.cwd)) return bad(`not a directory: ${b.cwd}`);
@@ -251,7 +258,7 @@ export const importRoutes: RouteModule = (deps) => {
         try {
           r = await imports.import(f, { mode: b.mode, model, workspace: workspaceOf(f, b.cwd), title: b.title });
         } catch (e) {
-          if ((e as any)?.status === 409) return json({ error: (e as Error).message, session_id: (e as any).session_id }, 409);
+          if ((e as any)?.status === 409) return json({ error: (e as Error).message, session_id: (e as any).session_id, reason: (e as any).reason }, 409);
           throw e;
         }
         bus.emit({ t: "session", session: r.session });
@@ -284,7 +291,7 @@ export const importRoutes: RouteModule = (deps) => {
             const prior = imports.links(f.harness, f.id, f.path)[0];
             const mode = prior ? (b.mode === "new" ? "new" : b.mode === "update" ? "update" : "open") : "new";
             // The same rule as one import: a copy that went on is not updated.
-            if (prior && mode === "update" && takeover?.wentOn(prior.session_id)) { fail(409, "the Keel session went on since it was copied, so it is not updated: open it, or make a new copy", { session_id: prior.session_id, reason: "went_on" }); continue; }
+            if (prior && mode === "update" && takeover?.wentOn(prior.session_id)) { fail(409, WENT_ON, { session_id: prior.session_id, reason: "went_on" }); continue; }
             const model = mode === "open" && prior ? "" : b.model ?? (await modelFor(f));
             if (!model && !(mode === "open" && prior)) { fail(409, "no model is available: no provider has credentials", { reason: "no_model" }); continue; }
             const r = await imports.import(f, { mode: prior ? mode : undefined, model, workspace: workspaceOf(f) });
@@ -292,7 +299,7 @@ export const importRoutes: RouteModule = (deps) => {
             results.push({ harness: f.harness, id: f.id, title: f.title, ok: true, action: r.action, session_id: r.session.id, imported_events: r.imported_events });
             counts[r.action] = (counts[r.action] ?? 0) + 1;
           } catch (e) {
-            if ((e as any)?.status === 409) { fail(409, (e as Error).message, (e as any).session_id ? { session_id: (e as any).session_id } : {}); continue; }
+            if ((e as any)?.status === 409) { fail(409, (e as Error).message, { ...((e as any).session_id ? { session_id: (e as any).session_id } : {}), ...((e as any).reason ? { reason: (e as any).reason } : {}) }); continue; }
             fail(500, (e as Error).message);
             deps.errors.capture("server", e, { at: "import batch", harness: f.harness, id: f.id });
           }
