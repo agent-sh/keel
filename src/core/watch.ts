@@ -67,6 +67,11 @@ export type StuckMark = { what: "stream" | "model" | "tool" | "step"; text: stri
 export type SessionState = {
   watch: Watch;
   agents: number;   // agents of the session still at work
+  // Every agent the session started, and of them the ones that failed and the ones that wait
+  // on a wake of their own (absent when none): a row can say "12 agents, 4 failed, 1 waiting".
+  agents_total?: number;
+  agents_failed?: number;
+  agents_waiting?: number;
   // need: the kind of the first thing that waits (approval, question, plan, secret, resume, unsent, owner);
   // work: tool, model, stalled (a stream that went silent), retry, compacting, turn, agents;
   // wait: timer, wait, command, agent, resume (the turn continues by itself), send (a message waits for the daemon);

@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { didText, overviewText, TEXT_TOKENS, tokensOf, topTwo, type Overview, type OverviewRow } from "./overview.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { Store } from "../core/store.ts";
+import type { Watch } from "../core/watch.ts";
+import { didText, overview, overviewText, TEXT_TOKENS, tokensOf, topTwo, totalsText, type Overview, type OverviewRow } from "./overview.ts";
 
 const AT = Date.UTC(2026, 0, 5, 12, 0, 0);
 const sid = (n: number) => `01a1fd4b-73d5-7478-a92a-${String(n).padStart(12, "0")}`;
@@ -90,4 +94,83 @@ test("twenty heavy rows fit the bound, in the report and in the tool's form", ()
   // The count from the shape, against what a local BPE (o200k) counted for the same lines: never under.
   expect(tokensOf('  "Release notes": an approval waits, for 639 ms; $0.0002  [session=2024d43914ab]')).toBeGreaterThanOrEqual(28);
   expect(tokensOf("0x1f2e3d4cf3a9c1e2 9f8e7d6c5b4a 2026-11-10 4096 1337 deadbeef1")).toBeGreaterThanOrEqual(31);
+});
+
+// What a coordinator's report says in numbers is read from every row, not from the rows it lists.
+test("the report counts every agent with the failed ones first, and reads who spent most and who is quietest over every session", () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "overview-"));
+  const store = new Store(dir);
+  try {
+    store.migrate(`ALTER TABLE sessions ADD COLUMN parent_id TEXT;
+      CREATE TABLE telemetry_turns (id INTEGER PRIMARY KEY, session_id TEXT, ts INTEGER, ms INTEGER, outcome TEXT, turn_event TEXT);
+      CREATE TABLE telemetry_calls (id INTEGER PRIMARY KEY, session_id TEXT, ts INTEGER, cost REAL, unpriced INTEGER, turn_event TEXT, outcome TEXT, error_class TEXT);
+      CREATE TABLE agents (id TEXT PRIMARY KEY, parent_id TEXT, session_id TEXT, status TEXT, created INTEGER, ended INTEGER);`);
+    const now = Date.now();
+    const watch = new Map<string, Watch>();
+    const mk = (title: string, w: Watch, turns: number, cost: number, parent?: string) => {
+      const s = store.createSession({ model: "fixture:m", workspace: dir, title });
+      if (parent) store.db.query("UPDATE sessions SET parent_id = ? WHERE id = ?").run(parent, s.id);
+      watch.set(s.id, w);
+      for (let i = 0; i < turns; i++) store.db.query("INSERT INTO telemetry_turns (session_id, ts, ms, outcome, turn_event) VALUES (?, ?, 5, 'ok', ?)").run(s.id, now - 60_000 - i, `${s.id}-t${i}`);
+      if (cost) store.db.query("INSERT INTO telemetry_calls (session_id, ts, cost, unpriced, outcome) VALUES (?, ?, ?, 0, 'ok')").run(s.id, now - 60_000, cost);
+      return s.id;
+    };
+    const lead = mk("Dozen lanes", "wait", 2, 0.004);
+    // Twelve agents: eight that reported, then four that failed first of all.
+    const statuses = [...Array(4).fill("failed"), ...Array(7).fill("completed"), "waiting"];
+    statuses.forEach((st, i) => {
+      const id = mk(`Lane ${i + 1}`, st === "failed" ? "fail" : st === "waiting" ? "wait" : "done", 1, 0.001, lead);
+      store.db.query("INSERT INTO agents (id, parent_id, session_id, status, created, ended) VALUES (?, ?, ?, ?, ?, ?)").run(`agent${i}`, lead, id, st, now - 50_000 + i, st === "waiting" ? null : now - 40_000 + i);
+    });
+    mk("Needs approval", "need", 0, 0.0003);
+    mk("Asks a question", "need", 0, 0.0002);
+    // Done, and the one that did most: it ended before the small ones, so by its time alone it would be the first left out.
+    mk("Many turns", "done", 1200, 2.9);
+    for (const t of ["Docs pass", "Lint config", "Changelog"]) mk(t, "done", 1, 0.0002);
+    const cutOnly = mk("Only cut", "need", 0, 0);
+    for (let i = 0; i < 2; i++) store.db.query("INSERT INTO telemetry_turns (session_id, ts, ms, outcome, turn_event) VALUES (?, ?, 5, 'cut', ?)").run(cutOnly, now - 30_000 - i, `cut${i}`);
+    const from = {
+      store, counts: () => new Map<string, number>(), now: () => ({ state: "idle" as const, lines: [] }),
+      state: (x: { id: string }) => ({ watch: watch.get(x.id)!, agents: 0 }),
+    };
+    const o = overview(from, { since: now - 3_600_000, of: lead, max: 14 });
+    // All twelve are counted; the rows hold ten, and every failed one is among them. It read "Your agents (10)" with two failed left out.
+    expect(o.agents_total).toBe(12);
+    expect(o.agents!.length).toBe(10);
+    expect(o.agents!.filter((r) => r.agent!.status === "failed").length).toBe(4);
+    expect(o.agents_unlisted).toEqual({ completed: 2 });
+    // Four rows are left for the sessions: the three that need the owner, and of the done ones the one that did most.
+    expect(o.sessions.map((r) => r.title).sort()).toEqual(["Asks a question", "Many turns", "Needs approval", "Only cut"]);
+    expect(o.hidden).toBe(3);
+    expect(o.hidden_did).toEqual({ turns: 3, cost: expect.closeTo(0.0006, 6) });
+    // The most spent is read over every session, the asking one with its agents' spend too.
+    expect(o.top!.map((t) => [t.title, Number(t.cost.toFixed(4))])).toEqual([["Many turns", 2.9], ["Dozen lanes", 0.016], ["Needs approval", 0.0003]]);
+    // A turn a restart cut is not one that ended.
+    expect(o.sessions.find((r) => r.title === "Only cut")!.did).toMatchObject({ turns: 0, cut: 2 });
+    expect(o.totals).toMatchObject({ turns: 1205, cut: 2 });
+    const text = overviewText(o).split("\n");
+    expect(text[1]).toBe("Your agents (12; 2 not listed: 2 reported):");
+    expect(text.find((l) => l.includes('"Only cut"'))).toContain("; 2 cut by a restart");
+    expect(text.at(-2)).toBe("3 more sessions not listed, the quietest (3 turns, $0.0006 since then).");
+    expect(text.at(-1)).toBe('Most spent since then: "Many turns" $2.90, "Dozen lanes" $0.02, "Needs approval" $0.0003.');
+    // With two rows for the sessions the busiest done one is left out: the line says what the left-out ones did, and it still leads the spend.
+    const two = overviewText(overview(from, { since: now - 3_600_000, of: lead, max: 12 })).split("\n");
+    expect(two.at(-2)).toBe("5 more sessions not listed: 4 done, 1 needs you (1203 turns, $2.90 since then).");
+    expect(two.at(-1)).toStartWith('Most spent since then: "Many turns" $2.90');
+    expect(totalsText({ turns: 3, cut: 2, failed: 1, agents: {}, cost: 0 })).toBe("3 of the sessions' own turns ended, 1 failed, 2 cut by a restart; $0.00 spent in all");
+  } finally {
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a row that says how long itself is given one duration, and a cut turn is said apart from the ended ones", () => {
+  const text = overviewText(page({ sessions: [
+    row(1, { title: "Silent", watch: "work", line: "step 1, the model is answering, no output for 26 s", from: AT - 120_000 }),
+    row(2, { title: "Streams", watch: "work", line: "step 1, the model is answering", from: AT - 3_000 }),
+  ] })).split("\n");
+  expect(text[2]).toBe('  "Silent": step 1, the model is answering, no output for 26 s  [session=000000000001]');
+  expect(text[3]).toBe('  "Streams": step 1, the model is answering, for 3 s  [session=000000000002]');
+  expect(didText({ turns: 1, cut: 2, failed: {}, agents: {}, cost: 0 })).toBe("1 turn; 2 cut by a restart");
+  expect(didText({ turns: 0, cut: 2, failed: {}, agents: {}, cost: 0 })).toBe("2 cut by a restart");
 });

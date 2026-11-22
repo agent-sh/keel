@@ -18,22 +18,15 @@ import { awayGap, bindPresence, digest, digestText, Presence, TICK_MS, type Away
 import { bindOverview, DEFAULT_SINCE, overview, overviewText, tooFarBack, type From } from "../../admin/overview.ts";
 import { dur } from "../../admin/timeline-rows.ts";
 import { parseSince, Timeline } from "../../admin/timeline.ts";
-import { hasPending } from "../../automation/core.ts";
 import { agentCounts, sessionState } from "../../automation/state.ts";
-import { allPendingQuestions } from "../../tools/interact.ts";
+import { liveOf } from "./timeline.ts";
 import type { RouteModule } from "../app.ts";
 
 const bad = (error: string, status = 400) => Response.json({ error }, { status });
 
 export const overviewRoutes: RouteModule = ({ store, engine }) => {
-  const timeline = new Timeline(store, {
-    isRunning: (id) => engine.isRunning(id),
-    turnOf: (id) => engine.turnOf(id),
-    statusOf: (id) => engine.statusOf(id),
-    isHeld: (id) => engine.isHeld(id),
-    owed: hasPending,
-    questions: allPendingQuestions,
-  });
+  // The same "now" the timeline tells; the state word is this report's own read, so it is not read again a row.
+  const timeline = new Timeline(store, { ...liveOf({ store, engine }), watchOf: undefined });
   const from: From = {
     store,
     counts: () => agentCounts({ store }),

@@ -23,7 +23,7 @@
 // and titles, never a prompt, a tool's input or output or an error's message.
 import { buildBundle } from "../../admin/bundle.ts";
 import { sessionRef, sessionRefs } from "../../admin/session-ref.ts";
-import { ONLY, PAGE, PAGE_MAX, parseSince, Timeline, type Only } from "../../admin/timeline.ts";
+import { ONLY, PAGE, PAGE_MAX, parseSince, Timeline, type Live, type Only } from "../../admin/timeline.ts";
 import { timelineText } from "../../admin/timeline-rows.ts";
 import { hasPending } from "../../automation/core.ts";
 import { sessionState } from "../../automation/state.ts";
@@ -33,31 +33,36 @@ import { secretsWaiting } from "./secrets.ts";
 import { allPendingQuestions } from "../../tools/interact.ts";
 import { registerShared } from "../../tools/registry.ts";
 import { fail, ok, type Tool } from "../../tools/types.ts";
-import type { RouteModule } from "../app.ts";
+import type { Deps, RouteModule } from "../app.ts";
 import { tracer } from "./observe.ts";
 
 const bad = (error: string, status = 400) => Response.json({ error }, { status });
 
+// What a timeline asks of the running daemon, the same for every reader of
+// "now" (this route, its tool, the report across sessions): one that lacked a
+// part said less than the others ("between steps" for a reply being streamed).
+export const liveOf = ({ store, engine }: Pick<Deps, "store" | "engine">): Live => ({
+  isRunning: (id) => engine.isRunning(id),
+  turnOf: (id) => engine.turnOf(id),
+  statusOf: (id) => engine.statusOf(id),
+  outputOf: (id) => engine.outputOf(id),
+  plans: plansWaiting,
+  secrets: secretsWaiting,
+  jobs: (id) => jobsOf(id).filter((j) => j.background && running(j)).map((j) => ({ id: j.id, started: j.started })),
+  watchOf: (id) => { const s = store.session(id); return s ? sessionState(s, { from: { store, engine } }).watch : undefined; },
+  // What a waiting agent waits on: the wait due first (a timer at its wake time), else its oldest.
+  parkedOn: (id) => {
+    const rows = store.db.query<{ kind: string; spec: string }, [string]>("SELECT kind, spec FROM waits WHERE status = 'active' AND session_id = ? ORDER BY created").all(id);
+    const timers = rows.filter((w) => w.kind === "timer").map((w) => { try { return Number(JSON.parse(w.spec).at_ms) || 0; } catch { return 0; } }).filter(Boolean).sort((a, b) => a - b);
+    return timers.length ? { kind: "timer", until: timers[0] } : rows[0] ? { kind: rows[0].kind } : undefined;
+  },
+  isHeld: (id) => engine.isHeld(id),
+  owed: hasPending,
+  questions: allPendingQuestions,
+});
+
 export const timelineRoutes: RouteModule = ({ store, engine }) => {
-  const timeline = new Timeline(store, {
-    isRunning: (id) => engine.isRunning(id),
-    turnOf: (id) => engine.turnOf(id),
-    statusOf: (id) => engine.statusOf(id),
-    outputOf: (id) => engine.outputOf(id),
-    plans: plansWaiting,
-    secrets: secretsWaiting,
-    jobs: (id) => jobsOf(id).filter((j) => j.background && running(j)).map((j) => ({ id: j.id, started: j.started })),
-    watchOf: (id) => { const s = store.session(id); return s ? sessionState(s, { from: { store, engine } }).watch : undefined; },
-    // What a waiting agent waits on: the wait due first (a timer at its wake time), else its oldest.
-    parkedOn: (id) => {
-      const rows = store.db.query<{ kind: string; spec: string }, [string]>("SELECT kind, spec FROM waits WHERE status = 'active' AND session_id = ? ORDER BY created").all(id);
-      const timers = rows.filter((w) => w.kind === "timer").map((w) => { try { return Number(JSON.parse(w.spec).at_ms) || 0; } catch { return 0; } }).filter(Boolean).sort((a, b) => a - b);
-      return timers.length ? { kind: "timer", until: timers[0] } : rows[0] ? { kind: rows[0].kind } : undefined;
-    },
-    isHeld: (id) => engine.isHeld(id),
-    owed: hasPending,
-    questions: allPendingQuestions,
-  });
+  const timeline = new Timeline(store, liveOf({ store, engine }));
   // The text form as a tool, for a session with no shell to ask the route:
   // its own timeline, or that of an agent it started, and no other session's.
   const SessionTimeline: Tool = {

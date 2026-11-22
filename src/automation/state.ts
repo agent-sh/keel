@@ -112,7 +112,15 @@ function heldOf(d: From, s: Session): { text?: string; since?: number } | undefi
 // everything a session waits on, the live agents of each parent, and (worked
 // out once, when something waits on the owner) which asking sessions are under which.
 type Kid = { session_id: string; title: string; status: string; type: string };
-export type Lens = { d: From; asks: Map<string, Ask[]>; counts: Map<string, number>; pending: Map<string, Pending[]>; kids: Map<string, Kid[]>; under?: Map<string, { id: string; title: string }[]> };
+// `tally`: every agent a session started and how many of them failed, read when first asked.
+export type Lens = { d: From; asks: Map<string, Ask[]>; counts: Map<string, number>; pending: Map<string, Pending[]>; kids: Map<string, Kid[]>; under?: Map<string, { id: string; title: string }[]>; tally?: Map<string, { n: number; failed: number }> };
+function tallyOf(l: Lens, id: string): { n: number; failed: number } | undefined {
+  if (!l.tally) {
+    l.tally = new Map();
+    if (hasTable(l.d.store, "agents")) for (const r of l.d.store.db.query<{ parent_id: string; n: number; failed: number }, []>("SELECT parent_id, COUNT(*) AS n, SUM(status = 'failed') AS failed FROM agents GROUP BY parent_id").all()) l.tally.set(r.parent_id, r);
+  }
+  return l.tally.get(id);
+}
 // The sessions with something that waits on the owner, by each session above them: a walk up
 // from the few that ask, never a search down from every session.
 function askingUnder(l: Lens): Map<string, { id: string; title: string }[]> {
@@ -266,6 +274,13 @@ export function sessionState(s: Session, o: { counts?: Map<string, number>; from
   // A running step that has made no progress past its limit is marked: the one answer to "is anything stuck".
   const stuck = st.watch === "work" ? stuckOf(progressOf(s, l, facts), Date.now(), o.after ?? stuckAfter()) : null;
   if (stuck) st.stuck = stuck;
+  // Its agents in numbers, the ended ones too: a failed agent stays on its parent's row.
+  const all = tallyOf(l, s.id);
+  if (all) {
+    st.agents_total = all.n;
+    if (all.failed) st.agents_failed = all.failed;
+    if (facts.parked) st.agents_waiting = facts.parked;
+  }
   return { ...st, label: watchLabel(st.watch, st.agents), word: stateWord(st) };
 }
 

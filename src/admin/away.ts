@@ -15,7 +15,7 @@
 // The daemon's own time not running (it was down, or the machine slept) is no
 // absence: nothing happened in it, and no report could arrive.
 import { WATCH_LABEL, WATCH_RANK, type Watch } from "../core/watch.ts";
-import { agentsText, costText, failedText, fitted, MAX, name, plural, shortId, SINCE_MAX_MS, titleAt, usd, type Overview, type OverviewRow } from "./overview.ts";
+import { agentsText, costText, cutText, failedText, fitted, MAX, name, plural, shortId, SINCE_MAX_MS, titleAt, usd, type Overview, type OverviewRow } from "./overview.ts";
 import { dur } from "./timeline-rows.ts";
 
 // The gap that makes an absence. Longer than the 20 s between a page's reports.
@@ -111,7 +111,8 @@ export type DigestRow = {
   id: string;
   title: string;
   watch: Watch;
-  turns: number;
+  turns: number; // its own turns that ended
+  cut?: number;  // those a daemon restart cut: they did not end
   failed: Record<string, number>;
   agents: Record<string, number>;
   approvals: number;
@@ -131,18 +132,20 @@ export type Digest = {
   sessions: DigestRow[]; // the sessions in which something happened while the owner was away
   quiet: number; // the other sessions
   // `turns`, `failed`: the sessions' own turns. `agents`: how their agents ended, by outcome.
-  totals: { turns: number; failed: number; agents: Record<string, number>; approvals: number; parked: number; cost: number; unpriced?: true };
+  totals: { turns: number; cut?: number; failed: number; agents: Record<string, number>; approvals: number; parked: number; cost: number; unpriced?: true };
 };
 
 const waits = (n: number) => (n ? `${plural(n, "approval")} ${n === 1 ? "waits" : "wait"}` : "");
 const parked = (n: number) => (n ? `${plural(n, "agent")} parked` : "");
-type Facts = Pick<DigestRow, "turns" | "failed" | "agents" | "approvals" | "parked" | "cost" | "unpriced">;
+type Facts = Pick<DigestRow, "turns" | "cut" | "failed" | "agents" | "approvals" | "parked" | "cost" | "unpriced">;
 // A row's facts in words; `level`: how much is left out to fit (overview.ts).
 function factsText(r: Facts, level = 0): { text: string; bad?: string } {
   const failed = failedText(r.failed, level >= 3);
   const ended = level >= 1 ? (r.agents.failed ? agentsText({ failed: r.agents.failed }) : "") : agentsText(r.agents);
   const text = [
     r.turns ? `${plural(r.turns, "turn")} ended${failed ? `, ${failed}` : ""}` : "",
+    // A turn a restart cut did not end: said apart ("2 turns cut by a restart" for a session that only waited).
+    r.cut ? (r.turns ? cutText(r.cut) : `${plural(r.cut, "turn")} cut by a restart`) : "",
     ended, waits(r.approvals), parked(r.parked), level >= 4 ? "" : costText(r),
   ].filter(Boolean).join("; ");
   return { text, ...(failed ? { bad: failed } : r.agents.failed ? { bad: `${r.agents.failed} failed` } : {}) };
@@ -151,7 +154,7 @@ function factsText(r: Facts, level = 0): { text: string; bad?: string } {
 function digestRow(r: OverviewRow): DigestRow | null {
   // Something happened in it while the owner was away: a turn ended, an agent ended, or it spent.
   if (!r.did) return null;
-  const facts: Facts = { turns: r.did.turns, failed: r.did.failed, agents: r.did.agents, approvals: r.approvals, parked: r.parked, cost: r.did.cost, ...(r.did.unpriced ? { unpriced: true as const } : {}) };
+  const facts: Facts = { turns: r.did.turns, ...(r.did.cut ? { cut: r.did.cut } : {}), failed: r.did.failed, agents: r.did.agents, approvals: r.approvals, parked: r.parked, cost: r.did.cost, ...(r.did.unpriced ? { unpriced: true as const } : {}) };
   return { id: r.id, title: r.title, watch: r.watch, ...facts, ...factsText(facts) };
 }
 
@@ -168,7 +171,7 @@ export function digest(o: Overview, w: AwayWindow): Digest | null {
     from: w.spans[0]!.from, to: w.spans.at(-1)!.to, spans: w.spans, away_ms: w.spans.reduce((n, s) => n + (s.to - s.from), 0), present: w.present, as_of: o.as_of,
     sessions: rows, quiet: o.sessions.length + o.hidden - rows.length,
     totals: {
-      turns: sum((r) => r.turns), failed: sum((r) => Object.values(r.failed).reduce((n, x) => n + x, 0)), agents, approvals: sum((r) => r.approvals), parked: sum((r) => r.parked),
+      turns: sum((r) => r.turns), ...(sum((r) => r.cut ?? 0) ? { cut: sum((r) => r.cut ?? 0) } : {}), failed: sum((r) => Object.values(r.failed).reduce((n, x) => n + x, 0)), agents, approvals: sum((r) => r.approvals), parked: sum((r) => r.parked),
       cost: sum((r) => r.cost), ...(rows.some((r) => r.unpriced) ? { unpriced: true as const } : {}),
     },
   };
@@ -179,7 +182,7 @@ export function digestTotals(d: Digest): string {
   const t = d.totals;
   const busy = d.sessions.filter((r) => r.turns).length;
   return [
-    `${t.turns} of the sessions' own turns ended${t.turns ? ` in ${plural(busy, "session")}` : ""}${t.failed ? `, ${t.failed} failed` : ""}`,
+    `${t.turns} of the sessions' own turns ended${t.turns ? ` in ${plural(busy, "session")}` : ""}${t.failed ? `, ${t.failed} failed` : ""}${t.cut ? `, ${cutText(t.cut)}` : ""}`,
     agentsText(t.agents), waits(t.approvals), parked(t.parked),
     `${usd(t.cost)}${t.unpriced ? " + unpriced" : ""} spent in all`,
   ].filter(Boolean).join("; ");
@@ -188,7 +191,7 @@ export function digestTotals(d: Digest): string {
 // The same in a few words, for one line: "6 turns ended, 2 failed; 1 agent failed; 1 approval waits".
 export function digestBrief(d: Digest): string {
   const t = d.totals;
-  return [`${plural(t.turns, "turn")} ended${t.failed ? `, ${t.failed} failed` : ""}`, t.agents.failed ? `${plural(t.agents.failed, "agent")} failed` : "", waits(t.approvals)].filter(Boolean).join("; ");
+  return [`${plural(t.turns, "turn")} ended${t.failed ? `, ${t.failed} failed` : ""}${t.cut ? `, ${cutText(t.cut)}` : ""}`, t.agents.failed ? `${plural(t.agents.failed, "agent")} failed` : "", waits(t.approvals)].filter(Boolean).join("; ");
 }
 
 // The text form. Times are UTC, as the timeline's. `since`: the window was

@@ -16,11 +16,12 @@ import { WATCH_LABEL, WATCH_RANK, type Watch } from "../core/watch.ts";
 import { CLASS, dur, type Refs, type TimelineNow, type TimelineRow } from "./timeline-rows.ts";
 
 // What a row did since the asked time. `turns`: its own turns that ended.
-// `failed`: those that did not end well, by class (a turn a daemon restart cut
-// is not one: it is continued, and one that was not shows in the state).
+// `cut`: those a daemon restart cut, which did not end: they are continued
+// (one that was not shows in the state), so they are counted apart.
+// `failed`: the ended ones that did not end well, by class.
 // `agents`: how its agents ended, by outcome. `cost`: its requests and its
 // agents', in dollars.
-export type Did = { turns: number; failed: Record<string, number>; agents: Record<string, number>; cost: number; unpriced?: true };
+export type Did = { turns: number; cut?: number; failed: Record<string, number>; agents: Record<string, number>; cost: number; unpriced?: true };
 export type OverviewRow = {
   id: string;
   title: string;
@@ -43,10 +44,18 @@ export type Overview = {
   since: number;
   until: number;
   sessions: OverviewRow[];
-  agents?: OverviewRow[]; // the asking session's own agents
-  hidden: number; // sessions past the listed ones
-  // `turns`, `failed`: the sessions' own turns, not their agents'. `agents`: how their agents ended.
-  totals: { turns: number; failed: number; agents: Record<string, number>; cost: number; unpriced?: true };
+  agents?: OverviewRow[]; // the asking session's own agents: the failed ones first, then those at work, then the rest
+  // Every agent it has at work or that started or ended in the window, and the ones past the listed rows by status.
+  agents_total?: number;
+  agents_unlisted?: Record<string, number>;
+  hidden: number; // sessions past the listed ones: within a state, the ones that did least in the window
+  // What the hidden ones did in the window, when any did; and their states, when one is not at rest.
+  hidden_did?: { turns: number; cost: number };
+  hidden_by?: Record<string, number>;
+  // The sessions that spent most in the window, over every session (the hidden ones and the asking one too), their agents' spend in each.
+  top?: { id: string; title: string; cost: number }[];
+  // `turns`, `failed`: the sessions' own turns, not their agents'. `cut`: those a restart cut. `agents`: how their agents ended.
+  totals: { turns: number; cut?: number; failed: number; agents: Record<string, number>; cost: number; unpriced?: true };
 };
 
 // What the builder asks of the running daemon.
@@ -120,6 +129,8 @@ export function overview(from: From, opts: OverviewOpts): Overview {
         `SELECT session_id, outcome, ${tables.calls ? `CASE WHEN outcome = 'error' THEN ${CLS} END` : "NULL"} AS cls, COUNT(*) AS n FROM telemetry_turns t
          WHERE ts >= ? AND ts < ? AND ${within("ts + COALESCE(ms, 0)")} GROUP BY session_id, outcome, cls`).all(lo - LOOKBACK, hi, ...edges)) {
         const d = of(t.session_id);
+        // A turn a restart cut did not end: it is continued.
+        if (t.outcome === "cut") { d.cut = (d.cut ?? 0) + t.n; continue; }
         d.turns += t.n;
         const w = why(t.outcome, t.cls);
         if (w) d.failed[w] = (d.failed[w] ?? 0) + t.n;
@@ -149,9 +160,9 @@ export function overview(from: From, opts: OverviewOpts): Overview {
     const own = did.get(id);
     const below = under(id).map((k) => did.get(k)).filter((d): d is Did => !!d);
     if (!own && !below.length) return undefined;
-    const out: Did = { turns: own?.turns ?? 0, failed: own?.failed ?? {}, agents: own?.agents ?? {}, cost: own?.cost ?? 0, ...(own?.unpriced ? { unpriced: true as const } : {}) };
+    const out: Did = { turns: own?.turns ?? 0, ...(own?.cut ? { cut: own.cut } : {}), failed: own?.failed ?? {}, agents: own?.agents ?? {}, cost: own?.cost ?? 0, ...(own?.unpriced ? { unpriced: true as const } : {}) };
     for (const d of below) { out.cost += d.cost; if (d.unpriced) out.unpriced = true; }
-    return out.turns || out.cost || out.unpriced || Object.keys(out.agents).length ? out : undefined;
+    return out.turns || out.cut || out.cost || out.unpriced || Object.keys(out.agents).length ? out : undefined;
   };
 
   // --- what waits now
@@ -199,32 +210,54 @@ export function overview(from: From, opts: OverviewOpts): Overview {
   };
   const ranked = (rows: OverviewRow[]) => rows.sort((a, b) => WATCH_RANK[a.watch] - WATCH_RANK[b.watch] || (b.from ?? b.failed?.ts ?? b.last ?? 0) - (a.from ?? a.failed?.ts ?? a.last ?? 0));
 
-  // The asking session's agents: those still at work, and those that ended in the window.
+  // The asking session's agents: those still at work, and those that started
+  // or ended in the window. Every one is counted; the rows are the failed
+  // ones first (a failure is what a coordinator must not miss), then those at
+  // work, then the rest, the newest first, and the others are counted by status.
   let mine: OverviewRow[] | undefined;
+  let agentsTotal: number | undefined;
+  let agentsUnlisted: Record<string, number> | undefined;
   if (opts.of && tables.agents) {
     mine = [];
-    for (const a of db.query<{ id: string; session_id: string; status: string; ended: number | null }, [string, number, number]>(
-      "SELECT id, session_id, status, ended FROM agents WHERE parent_id = ? AND (status IN ('running', 'waiting') OR ended >= ?) ORDER BY (status IN ('running', 'waiting')) DESC, created DESC LIMIT ?").all(opts.of, since, Math.min(Math.max(opts.agentsMax ?? AGENTS_MAX, 1), 40))) {
+    const all = db.query<{ id: string; session_id: string; status: string; ended: number | null }, [string, number, number]>(
+      "SELECT id, session_id, status, ended FROM agents WHERE parent_id = ? AND (status IN ('running', 'waiting') OR ended >= ? OR created >= ?) ORDER BY (status = 'failed') DESC, (status IN ('running', 'waiting')) DESC, COALESCE(ended, created) DESC").all(opts.of, since, since);
+    agentsTotal = all.length;
+    const shown = Math.min(Math.max(opts.agentsMax ?? AGENTS_MAX, 1), 40);
+    for (const a of all.slice(0, shown)) {
       const s = from.store.session(a.session_id);
       if (!s) continue;
       const r = { ...row(s), agent: { id: a.id, status: a.status } };
       if (ENDED.includes(a.status)) r.last = a.ended ?? s.updated;
       mine.push(r);
     }
+    for (const a of all.slice(shown)) (agentsUnlisted ??= {})[a.status] = (agentsUnlisted[a.status] ?? 0) + 1;
     ranked(mine);
   }
 
   const all = from.store.sessions().filter((s) => !s.parent_id && s.id !== opts.of);
   // The asking session's agents are rows of the same answer: they count toward the bound.
   const max = Math.max(Math.min(Math.max(opts.max ?? MAX, 1), 200) - (mine?.length ?? 0), 1);
-  // Past the bound the quiet ones go first: a session that needs the owner is never the one left out.
+  // Past the bound the quiet ones go first: a session that needs the owner is
+  // never the one left out, and within a state the ones left out are those
+  // that did least in the window (a session of a thousand turns that just
+  // ended is not "quiet" because four small ones ended after it).
   const rows = ranked(all.map(row));
+  const busy = (r: OverviewRow) => (r.did ? r.did.turns + (r.did.cut ?? 0) + 1 : 0);
+  const kept = new Set([...rows].sort((a, b) => WATCH_RANK[a.watch] - WATCH_RANK[b.watch] || busy(b) - busy(a)).slice(0, max));
+  const listed = rows.filter((r) => kept.has(r)), left = rows.filter((r) => !kept.has(r));
+  const leftDid = { turns: left.reduce((n, r) => n + (r.did?.turns ?? 0), 0), cost: left.reduce((n, r) => n + (r.did?.cost ?? 0), 0) };
+  const leftBy: Record<string, number> = {};
+  if (left.some((r) => r.watch !== "done" && r.watch !== "idle")) for (const r of left) leftBy[r.watch] = (leftBy[r.watch] ?? 0) + 1;
+  // Who spent most, over every session: a row's place in the list says nothing about its spend.
+  const top = from.store.sessions().filter((s) => !s.parent_id).map((s) => ({ id: s.id, title: s.title, cost: rolled(s.id)?.cost ?? 0 }))
+    .filter((r) => r.cost > 0).sort((a, b) => b.cost - a.cost).slice(0, 3);
   // The sessions' own turns and their agents' ends (the hidden sessions' too); the spend is everyone's.
   const totals: Overview["totals"] = { turns: 0, failed: 0, agents: {}, cost: 0 };
   for (const s of from.store.sessions().filter((x) => !x.parent_id)) {
     const d = did.get(s.id);
     if (!d) continue;
     totals.turns += d.turns;
+    if (d.cut) totals.cut = (totals.cut ?? 0) + d.cut;
     totals.failed += Object.values(d.failed).reduce((n, x) => n + x, 0);
     for (const [k, n] of Object.entries(d.agents)) totals.agents[k] = (totals.agents[k] ?? 0) + n;
   }
@@ -232,7 +265,11 @@ export function overview(from: From, opts: OverviewOpts): Overview {
     totals.cost += d.cost;
     if (d.unpriced) totals.unpriced = true;
   }
-  return { as_of, since, until, sessions: rows.slice(0, max), ...(mine ? { agents: mine } : {}), hidden: Math.max(rows.length - max, 0), totals };
+  return {
+    as_of, since, until, sessions: listed, ...(mine ? { agents: mine, agents_total: agentsTotal, ...(agentsUnlisted ? { agents_unlisted: agentsUnlisted } : {}) } : {}),
+    hidden: left.length, ...(leftDid.turns || leftDid.cost ? { hidden_did: leftDid } : {}), ...(Object.keys(leftBy).length ? { hidden_by: leftBy } : {}),
+    ...(top.length ? { top } : {}), totals,
+  };
 }
 
 // --- the text form. Times are UTC, as the timeline's. Kept short for a
@@ -302,20 +339,24 @@ export function agentsText(agents: Record<string, number>): string {
 }
 export const costText = (d: { cost: number; unpriced?: true }) => (d.cost || d.unpriced ? `${usd(d.cost)}${d.unpriced ? " + unpriced" : ""}` : "");
 
-// "3 turns, 1 failed (rate limit); agents: 2 reported; $0.12". `level`: how much is left out to fit (see TEXT_TOKENS).
+// "2 turns cut by a restart": said apart from the turns that ended, since a cut turn goes on.
+export const cutText = (n: number | undefined) => (n ? `${n} cut by a restart` : "");
+// "3 turns, 1 failed (rate limit); 2 cut by a restart; agents: 2 reported; $0.12". `level`: how much is left out to fit (see TEXT_TOKENS).
 export function didText(d: Did, level = 0): string {
   const bad = failedText(d.failed, level >= 3);
-  return [d.turns ? `${plural(d.turns, "turn")}${bad ? `, ${bad}` : ""}` : "", level >= 1 ? "" : agentsText(d.agents), level >= 4 ? "" : costText(d)].filter(Boolean).join("; ");
+  return [d.turns ? `${plural(d.turns, "turn")}${bad ? `, ${bad}` : ""}` : "", cutText(d.cut), level >= 1 ? "" : agentsText(d.agents), level >= 4 ? "" : costText(d)].filter(Boolean).join("; ");
 }
 export const titleAt = (level: number) => (level >= 2 ? 24 : TITLE);
 
+const SAYS_HOW_LONG = / for \d+ (ms|s|min|h|d)\b[^,]*$/;
 // What a row says after its title.
 function what(r: OverviewRow, at: number, level = 0): string {
   const ago = (ts: number) => `${dur(Math.max(at - ts, 0))} ago`;
   if (r.agent && r.last !== undefined && AGENT_WORD[r.agent.status]) return `${AGENT_WORD[r.agent.status]} ${ago(r.last)}${r.failed ? `: ${r.failed.why}` : ""}`;
   if (r.failed) return `${r.failed.why}, ${ago(r.failed.ts)}`;
   const line = r.line && level >= 2 && r.line.length > LINE ? `${r.line.slice(0, LINE - 1)}…` : r.line;
-  if (line) return `${line}${r.from !== undefined ? `, for ${dur(at - r.from)}` : ""}${r.until ? (r.until > at ? `, due in ${dur(r.until - at)}` : ", due now") : ""}`;
+  // A line that says how long itself (a stream gone silent) is not given the turn's time after it: one duration.
+  if (line) return `${line}${r.from !== undefined && !SAYS_HOW_LONG.test(line) ? `, for ${dur(at - r.from)}` : ""}${r.until ? (r.until > at ? `, due in ${dur(r.until - at)}` : ", due now") : ""}`;
   if (r.watch === "stop") return `stopped${r.last ? ` ${ago(r.last)}` : ""}`;
   if (r.watch === "done") return `finished${r.last ? ` ${ago(r.last)}` : ""}`;
   return WATCH_LABEL[r.watch].toLowerCase();
@@ -324,7 +365,7 @@ function what(r: OverviewRow, at: number, level = 0): string {
 // "15 of the sessions' own turns ended, 3 failed; agents: 4 reported, 1 failed; $0.42 spent in all".
 export function totalsText(t: Overview["totals"]): string {
   return [
-    `${t.turns} of the sessions' own turns ended${t.failed ? `, ${t.failed} failed` : ""}`,
+    `${t.turns} of the sessions' own turns ended${t.failed ? `, ${t.failed} failed` : ""}${t.cut ? `, ${cutText(t.cut)}` : ""}`,
     agentsText(t.agents),
     `${usd(t.cost)}${t.unpriced ? " + unpriced" : ""} spent in all`,
   ].filter(Boolean).join("; ");
@@ -342,7 +383,10 @@ function overviewAt(o: Overview, opts: { ids?: boolean }, level: number): string
   const line = (r: OverviewRow) => `  ${title(r)}: ${what(r, at, level)}${did(r)}${ids(r)}`;
   const out: string[] = [`Sessions, read ${stamp(at)} UTC: ${o.sessions.length + o.hidden} open. Since ${clock(o.since, at)} (${dur(at - o.since)}): ${totalsText(o.totals)}.`];
   if (o.agents) {
-    out.push(o.agents.length ? `Your agents (${o.agents.length}):` : "Your agents: none at work, none ended since then.");
+    // Every agent is counted, also the ones past the rows: what those are is said by status.
+    const total = o.agents_total ?? o.agents.length;
+    const rest = o.agents_unlisted ? `; ${count(o.agents_unlisted)} not listed: ${topTwo(o.agents_unlisted, (k) => AGENT_WORD[k] ?? (k === "running" ? "at work" : k))}` : "";
+    out.push(total ? `Your agents (${total}${rest}):` : "Your agents: none at work, none ended since then.");
     for (const r of o.agents) out.push(line(r));
   }
   const groups = new Map<Watch, OverviewRow[]>();
@@ -354,8 +398,13 @@ function overviewAt(o: Overview, opts: { ids?: boolean }, level: number): string
     for (const r of told) out.push(line(r));
     if (told.length && quiet.length) out.push(`  nothing since then: ${quiet.map(title).join(", ")}`);
   }
-  if (o.hidden) out.push(`${plural(o.hidden, "more session")} not listed, the quietest.`);
-  const spent = [...o.sessions, ...(o.agents ?? [])].filter((r) => (r.did?.cost ?? 0) > 0).sort((a, b) => b.did!.cost - a.did!.cost);
-  if (spent.length > 1) out.push(`Most spent since then: ${spent.slice(0, 3).map((r) => `${title(r)} ${usd(r.did!.cost)}`).join(", ")}.`);
+  if (o.hidden) {
+    // What the ones left out are, from all of them: at rest and the least busy, or by state when one is not; and what they did.
+    const did = o.hidden_did ? ` (${[o.hidden_did.turns ? plural(o.hidden_did.turns, "turn") : "", o.hidden_did.cost ? usd(o.hidden_did.cost) : ""].filter(Boolean).join(", ")} since then)` : "";
+    out.push(`${plural(o.hidden, "more session")} not listed${o.hidden_by ? `: ${topTwo(o.hidden_by, (k) => WATCH_LABEL[k as Watch].toLowerCase())}` : ", the quietest"}${did}.`);
+  }
+  // Over every session, the hidden ones too (see `top`).
+  const spent = o.top ?? [];
+  if (spent.length > 1) out.push(`Most spent since then: ${spent.map((r) => `${name(r.title, undefined, titleAt(level))} ${usd(r.cost)}`).join(", ")}.`);
   return out.join("\n");
 }
