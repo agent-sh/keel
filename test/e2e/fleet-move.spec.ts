@@ -282,6 +282,9 @@ test("fleet move: the carry ref is the carried commit also when the machine alre
     const r = await (await request.post("/api/fleet/machines", { data: { name: "devbox", daemon_url: PEER, workspace_root: ROOT } })).json();
     first = r.machines.find((m: any) => m.id === r.id);
   }
+  // The folder a moved session lands under is the machine's, set by whichever spec paired it first:
+  // the portal spec names its site. This test reads the repository the move made, so the folder is its own.
+  if (first.workspace_root !== ROOT) expect((await request.patch(`/api/fleet/machines/${first.id}`, { data: { workspace_root: ROOT } })).ok()).toBe(true);
   const home = `${process.env.HOME}/.cache/keel-work/bun/e2e-ws/move-ref-${Date.now().toString(36)}`;
   const repo = `${ROOT}/${basename(home)}`;
   mkdirSync(home, { recursive: true });
