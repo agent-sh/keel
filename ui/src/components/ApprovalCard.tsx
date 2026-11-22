@@ -5,7 +5,7 @@ import { shownInPart } from "../../../src/safety/summary.ts";
 import { batches, batchName, coverName, hold, nextAction, pressable, READ_MS, sawLines, settled, SETTLE_MS, spentAction, stand, unseenLines, type Action, type Batch, type Hold, type Lines, type Stand } from "../lib/approvals.ts";
 import { arrivalOf, arriving } from "../lib/automation.ts";
 import { wasBrought } from "../lib/shell.ts";
-import { hasHidden, hasRtl, spellHidden } from "../lib/hidden-chars.ts";
+import { hasHidden, hasRtl, lookAlikes, spellHidden } from "../lib/hidden-chars.ts";
 import { dropRepeats, keyRefused, keysSettled, mayTake, noteAnswer, sequenceAt, takeKeys, typeToBox, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
 import { safety, useSafety, type Approval, type Suggest } from "../lib/safety.ts";
@@ -828,6 +828,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   // The whole of what the daemon kept of the input, when the card shows only its start.
   const kept = part ? (typeof a.input?._clipped === "string" ? a.input._clipped : JSON.stringify(a.input ?? {}, null, 2)) : "";
   const short = !whole && (cut || part);
+  const alike = lookAlikes(whole && part ? kept : a.summary);
   const summary = (
     <>
       <pre
@@ -851,6 +852,14 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
       {hasHidden(a.summary, "\n\t") && (
         <p className={cn("mt-1 text-micro text-danger", !dense && "mx-4")} data-testid="approval-hidden">
           This text holds characters that do not show as written. Each is spelled out and marked.
+        </p>
+      )}
+      {/* Letters that are not plain ASCII and are not hidden either: named, since one can pass for a plain one. */}
+      {alike.length > 0 && (
+        <p className={cn("mt-1 text-micro text-warn", !dense && "mx-4")} data-testid="approval-nonascii">
+          Not all of it is plain ASCII, and some of these can pass for plain letters:{" "}
+          <span className="font-mono">{alike.slice(0, 6).map((c) => (c.shown ? `${c.shown} ${c.code}` : c.code)).join(", ")}</span>
+          {alike.length > 6 ? `, and ${alike.length - 6} more` : ""}.
         </p>
       )}
       {hasRtl(whole && part ? kept : a.summary) && (
@@ -1016,7 +1025,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
             Allow once
           </button>
           {nudge.line}
-          {a.risk === "low" && a.suggest.length > 0 && <AlwaysButton a={a} busy={busy} live={grant && !mustOpen} armed={() => !unread.current && armed("grant")} refusal={refusalOf} onGrant={(rules, session) => answer({ choice: session ? "session" : "always", rules })} />}
+          {a.risk === "low" && a.suggest.length > 0 && <AlwaysButton a={a} busy={busy} live={grant && !mustOpen} armed={() => !unread.current && armed("grant")} refusal={refusalOf} unread={mustOpen} onGrant={(rules, session) => { if (!unread.current) answer({ choice: session ? "session" : "always", rules }); }} />}
           <button
             disabled={busy}
             data-testid="deny"
@@ -1042,9 +1051,12 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
 const KIND_LABEL = { shell: "Commands", edit: "Edits under", tool: "Tool" } as const;
 
 // `live` and `armed`: as the card's Allow once, the grant does not open within the settle time.
-function AlwaysButton({ a, busy, live, armed, refusal, onGrant }: { a: Approval; busy: boolean; live: boolean; armed: () => boolean; refusal: (stood: boolean, key: Element | null) => string; onGrant: (rules: Suggest[], session: boolean) => void }) {
+// `unread`: the card is not all read: a grant opened while it was (the window was resized since,
+// and the text wraps anew or is cut) closes, and grants nothing.
+function AlwaysButton({ a, busy, live, armed, refusal, unread, onGrant }: { a: Approval; busy: boolean; live: boolean; armed: () => boolean; refusal: (stood: boolean, key: Element | null) => string; unread: boolean; onGrant: (rules: Suggest[], session: boolean) => void }) {
   const [rules, setRules] = useState<Suggest[]>(a.suggest);
   const [open, setOpen] = useState(false);
+  useEffect(() => { if (unread) setOpen(false); }, [unread]);
   const pressed = usePress(armed, (ok) => ok);
   const nudge = useNudge();
   const trigger = useRef<HTMLButtonElement>(null);

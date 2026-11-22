@@ -348,3 +348,34 @@ test("a card that must be opened leads with opening it, and Enter on the list do
     await drop(request, [cut.id, odd.id]);
   }
 });
+
+// Letters from another alphabet that look like plain ones are not hidden, so
+// they are not spelled out: the card names them. And an answer is never given
+// from a popup the card opened while it was whole, once it is not.
+test("look-alike letters are named, and a grant popup closes when its card is no longer read", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  const alike = await asking(request, "Read: a look-alike letter", [bash("touch p\u0430ss.txt")]);
+  // One line of 800 characters: whole in the card's box at a desk, cut in a narrow window.
+  const wide = await asking(request, "Read: whole at a desk, cut when narrow", [bash(`echo ${"word ".repeat(158)}> wide.txt`)]);
+  try {
+    for (const s of [alike, wide]) await waits(request, s.id);
+    await page.goto(`/s/${alike.id}`);
+    const c = page.getByTestId("approval").first();
+    await expect(c.getByTestId("approval-nonascii")).toContainText("U+0430");
+    await expect(c.getByTestId("approval-hidden")).toHaveCount(0);
+    await shoot(page, "approval-read-10-look-alike");
+
+    await page.goto(`/s/${wide.id}`);
+    const card = page.getByTestId("approval").first();
+    await expect(card).not.toHaveAttribute("data-must-open", "true", { timeout: 10_000 });
+    await expect(card).toHaveAttribute("data-live", "true", { timeout: 10_000 });
+    await card.getByTestId("allow-always").click();
+    await expect(page.getByTestId("grant-session")).toBeVisible();
+    await page.setViewportSize({ width: 820, height: 1040 });
+    await expect(card).toHaveAttribute("data-must-open", "true");
+    await expect(page.getByTestId("grant-session")).toHaveCount(0);
+    expect(await states(request, wide.id)).toBe("pending");
+  } finally {
+    await drop(request, [alike.id, wide.id]);
+  }
+});

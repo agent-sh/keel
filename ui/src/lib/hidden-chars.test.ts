@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { hasHidden, hasRtl, plainAscii, rtlRuns, spellHidden } from "./hidden-chars.ts";
+import { hasHidden, hasRtl, lookAlikes, plainAscii, rtlRuns, spellHidden } from "./hidden-chars.ts";
 
 test("hidden characters are found and spelled out", () => {
   expect(hasHidden("git add -A && git commit -m 'x'")).toBe(false);
@@ -34,4 +34,16 @@ test("letters written right to left are cut into their runs: each word by itself
   // Nothing written right to left: one piece, as it is.
   expect(rtlRuns("ls -la")).toEqual([{ text: "ls -la" }]);
   expect(rtlRuns("")).toEqual([]);
+});
+
+test("characters outside plain ASCII that draw as letters are named: they can pass for plain ones", () => {
+  // A Cyrillic a in an ASCII word, fullwidth letters, a combining mark, a musical symbol: each once, in order.
+  expect(lookAlikes("touch p\u0430ss.txt && p\u0430ss")).toEqual([{ shown: "\u0430", code: "U+0430" }]);
+  expect(lookAlikes("\uff52\uff4d -rf x").map((c) => c.code)).toEqual(["U+FF52", "U+FF4D"]);
+  expect(lookAlikes("a\u0338b \u{1d159}")).toEqual([{ shown: "", code: "U+0338" }, { shown: "\u{1d159}", code: "U+1D159" }]);
+  expect(lookAlikes("echo caf\u00e9")).toEqual([{ shown: "\u00e9", code: "U+00E9" }]);
+  // Plain text, and what the card already spells out or says of right-to-left letters: nothing more to name.
+  expect(lookAlikes("git commit -m 'x'\n\tls")).toEqual([]);
+  expect(lookAlikes("rm -rf out\u00a0build \u200b")).toEqual([]);
+  expect(lookAlikes("cp \u05d0 1 2 \u05d1")).toEqual([]);
 });

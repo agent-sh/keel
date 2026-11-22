@@ -36,6 +36,23 @@ export function rtlRuns(text: string): { text: string; rtl?: true }[] {
   return out;
 }
 
+const code = (cp: number) => `U+${cp.toString(16).toUpperCase().padStart(4, "0")}`;
+
+// Characters outside plain ASCII that draw as something: a letter of another alphabet that
+// looks like a plain one (a Cyrillic a, a fullwidth r), an accent that sits on its neighbour.
+// They are not hidden, so they are not spelled out: a place that shows the whole text names
+// them. Each once, in the order they come; what is hidden, and letters written right to left,
+// are said in their own ways and left out. `shown`: the character, where it draws by itself.
+export function lookAlikes(text: string): { shown: string; code: string }[] {
+  const rtl = new RegExp(`[${RTL}]`, "u");
+  const out = new Map<string, { shown: string; code: string }>();
+  for (const ch of text) {
+    if (/^[\x20-\x7E\n\t]$/.test(ch) || HIDDEN.test(ch) || rtl.test(ch)) continue;
+    out.set(ch, { shown: /\p{M}/u.test(ch) ? "" : ch, code: code(ch.codePointAt(0)!) });
+  }
+  return [...out.values()];
+}
+
 // `allow`: characters of those classes that are plain here (a newline and a tab in a text of many lines).
 export const hasHidden = (text: string, allow = ""): boolean => {
   for (const ch of text) if (HIDDEN.test(ch) && !allow.includes(ch)) return true;
@@ -51,7 +68,6 @@ const NAMES: Record<number, string> = {
   0xfffc: "object replacement character", 0x2800: "braille blank", 0x00a0: "no-break space", 0x3000: "ideographic space", 0x202f: "narrow no-break space", 0x2009: "thin space", 0x2003: "em space", 0x2002: "en space", 0x180e: "Mongolian vowel separator",
   0x00ad: "soft hyphen", 0x2028: "line separator", 0x2029: "paragraph separator", 0x1b: "escape", 0x7f: "delete", 0x00: "null", 0x08: "backspace", 0x0d: "carriage return", 0x09: "tab",
 };
-const code = (cp: number) => `U+${cp.toString(16).toUpperCase().padStart(4, "0")}`;
 
 // The text in pieces: what is plain as it is, and each hidden character as its
 // code point (`shown`, as "<U+202E>") with its name for a tooltip.
