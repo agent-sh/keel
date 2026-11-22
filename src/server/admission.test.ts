@@ -133,3 +133,41 @@ test("the real table names this process as the holder of its own connections, on
     server.close();
   }
 });
+
+// The line of a connection is found by a plain search for its local end, and
+// the pattern that decides is tried on that line alone. The answer is the one
+// the pattern gives when it is matched against the whole table: over tables of
+// thousands of sockets with lines that differ from the one looked for in one
+// field each.
+test("the holder found by searching for the line is the one the pattern finds over the whole table", async () => {
+  const hex4 = (p: number) => p.toString(16).toUpperCase().padStart(4, "0");
+  // As it was: the pattern over every line of both tables.
+  const whole = (tables: Tables, peer: { address: string; port: number }, server: { address?: string; port: number }) => {
+    const from = tableAddresses(peer.address), to = server.address ? tableAddresses(server.address) : [];
+    if (!from.length || (server.address && !to.length)) return "unlisted";
+    const line = new RegExp(`^\\s*\\d+: (?:${from.join("|")}):${hex4(peer.port)} ${to.length ? `(?:${to.join("|")})` : "[0-9A-F]+"}:${hex4(server.port)} (?:\\S+\\s+){4}(\\d+)`, "gm");
+    const uids = new Set<number>();
+    for (const t of tables) if (t !== null) for (const m of (t as string).matchAll(line)) uids.add(Number(m[1]));
+    return uids.size === 0 ? "unlisted" : uids.size === 1 ? [...uids][0]! : "shared";
+  };
+  let rnd = 5;
+  const rand = (n: number) => ((rnd = (rnd * 1103515245 + 12345) & 0x7fffffff) % n);
+  const v4 = ["127.0.0.1", "127.0.0.2", "10.0.0.7"], v6 = ["::1", "::ffff:127.0.0.1", "fe80::1:2"];
+  const rows4: string[] = [], rows6: string[] = [];
+  for (let n = 0; n < 4000; n++) {
+    const six = rand(3) === 0;
+    // Few addresses and ports, so every line shares fields with others, and some all four with another account's.
+    (six ? rows6 : rows4).push(line(n, (six ? v6 : v4)[rand(3)]!, 40000 + rand(900), (six ? v6 : v4)[rand(3)]!, 8080 + rand(3), 1000 + rand(3)));
+  }
+  const tables: Tables = [HEAD + rows4.join(""), HEAD + rows6.join("")];
+  const uid = uidLookup(async () => tables, () => 0, true);
+  const seen = new Set<string>();
+  for (let n = 0; n < 1500; n++) {
+    const peer = { address: [...v4, ...v6][rand(6)]!, port: 40000 + rand(905) };
+    const server = { address: rand(4) === 0 ? undefined : [...v4, ...v6][rand(6)]!, port: 8080 + rand(4) };
+    const want = whole(tables, peer, server);
+    expect({ peer, server, owner: await uid(peer, server) }).toEqual({ peer, server, owner: want });
+    seen.add(typeof want === "number" ? "one" : want);
+  }
+  expect([...seen].sort()).toEqual(["one", "shared", "unlisted"]);
+});

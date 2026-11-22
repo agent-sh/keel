@@ -93,10 +93,19 @@ export const peerIsRemote = (req: Request) => peers.get(req)?.loopback === false
 // by a read that started after its request arrived: the ones that arrive
 // while a read runs share the read that follows it. An answer is kept for a
 // second; what the loop does for a new connection is the search.
-export type Tables = (string | null)[];
+export type Tables = (string | Uint8Array | null)[];
+// A table as it is searched: its bytes, and how many characters an address takes in it (8 in the IPv4 table, 32 in the IPv6 one).
+type Table = { bytes: Buffer; width: number } | null;
+function tableOf(t: string | Uint8Array | null): Table {
+  if (t === null) return null;
+  const bytes = typeof t === "string" ? Buffer.from(t, "latin1") : Buffer.from(t.buffer, t.byteOffset, t.byteLength);
+  // The first line after the heading: its number, ": ", then the local address up to its ":".
+  const at = bytes.indexOf(": ", bytes.indexOf("\n") + 1);
+  return { bytes, width: at < 0 ? 0 : bytes.indexOf(":", at + 2) - at - 2 };
+}
 export type End = { address: string; port: number };
 export type Owner = number | "unlisted" | "shared" | "unreadable" | undefined;
-const readTables = (): Promise<Tables> => Promise.all(["/proc/net/tcp", "/proc/net/tcp6"].map((t) => readFile(t, "utf8").catch(() => null)));
+const readTables = (): Promise<Tables> => Promise.all(["/proc/net/tcp", "/proc/net/tcp6"].map((t) => readFile(t).catch(() => null)));
 
 // The 16 bytes of an IPv6 address, or the 4 of an IPv4 one; null when it is neither.
 function addressBytes(address: string): number[] | null {
@@ -126,7 +135,18 @@ function addressBytes(address: string): number[] | null {
 // An address as the table writes it, in each table that can list it: an IPv4
 // address is in the IPv4 table and, as its mapped form, in the IPv6 one. The
 // kernel prints each 32-bit word of an address in the machine's byte order.
+// (An address is written the same way every time, and the same few addresses
+// come with every connection: each is worked out once.)
+const written = new Map<string, string[]>();
 export function tableAddresses(address: string): string[] {
+  let forms = written.get(address);
+  if (!forms) {
+    if (written.size >= 256) written.clear();
+    written.set(address, (forms = tableForms(address)));
+  }
+  return forms;
+}
+function tableForms(address: string): string[] {
   const b = addressBytes(address);
   if (!b) return [];
   const word = (x: number[]) => [...x].reverse().map((n) => n.toString(16).toUpperCase().padStart(2, "0")).join("");
@@ -139,10 +159,10 @@ export function tableAddresses(address: string): string[] {
 export function uidLookup(read: () => Promise<Tables> = readTables, now: () => number = Date.now, linux = process.platform === "linux") {
   const cache = new Map<string, { owner: Exclude<Owner, undefined>; at: number }>();
   // The read under way, and the one that starts when it ends.
-  let reading: Promise<Tables> | undefined;
-  let next: Promise<Tables> | undefined;
-  const start = () => (reading = read().finally(() => (reading = undefined)));
-  const fresh = (): Promise<Tables> => {
+  let reading: Promise<Table[]> | undefined;
+  let next: Promise<Table[]> | undefined;
+  const start = () => (reading = read().then((tables) => tables.map(tableOf)).finally(() => (reading = undefined)));
+  const fresh = (): Promise<Table[]> => {
     if (!reading) return start();
     const after = () => { next = undefined; return start(); };
     return (next ??= reading.then(after, after));
@@ -152,13 +172,29 @@ export function uidLookup(read: () => Promise<Tables> = readTables, now: () => n
   // remote end is ours: the eighth field is the uid. `server.address` is the
   // address the daemon listens on; with none (it listens on every address)
   // any remote address matches.
-  const find = (tables: Tables, peer: End, server: { address?: string; port: number }): Owner => {
+  const find = (tables: Table[], peer: End, server: { address?: string; port: number }): Owner => {
     if (tables.every((t) => t === null)) return linux ? "unreadable" : undefined;
     const from = tableAddresses(peer.address), to = server.address ? tableAddresses(server.address) : [];
     if (!from.length || (server.address && !to.length)) return "unlisted";
-    const line = new RegExp(`^\\s*\\d+: (?:${from.join("|")}):${hex(peer.port)} ${to.length ? `(?:${to.join("|")})` : "[0-9A-F]+"}:${hex(server.port)} (?:\\S+\\s+){4}(\\d+)`, "gm");
+    // The same pattern as ever decides, a line at a time. The lines it is
+    // tried on are found by their local end as the table writes it (a plain
+    // search of the table's bytes, for the form of the address that table
+    // can hold): a table of thousands of sockets is not matched against the
+    // pattern line by line for each new connection.
+    const line = new RegExp(`^\\s*\\d+: (?:${from.join("|")}):${hex(peer.port)} ${to.length ? `(?:${to.join("|")})` : "[0-9A-F]+"}:${hex(server.port)} (?:\\S+\\s+){4}(\\d+)`);
     const uids = new Set<number>();
-    for (const t of tables) if (t !== null) for (const m of t.matchAll(line)) uids.add(Number(m[1]));
+    for (const t of tables) {
+      if (t === null) continue;
+      for (const f of from) {
+        if (f.length !== t.width) continue;
+        const local = `: ${f}:${hex(peer.port)} `;
+        for (let at = t.bytes.indexOf(local); at >= 0; at = t.bytes.indexOf(local, at + 1)) {
+          const end = t.bytes.indexOf("\n", at);
+          const m = line.exec(t.bytes.toString("latin1", t.bytes.lastIndexOf("\n", at) + 1, end < 0 ? t.bytes.length : end));
+          if (m) uids.add(Number(m[1]));
+        }
+      }
+    }
     return uids.size === 0 ? "unlisted" : uids.size === 1 ? [...uids][0]! : "shared";
   };
   return (peer: End, server: { address?: string; port: number }): Owner | Promise<Owner> => {
