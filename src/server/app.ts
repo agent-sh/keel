@@ -16,7 +16,7 @@ import { Live } from "./live.ts";
 import { readsOf } from "./reads.ts";
 import { lastCall } from "./routes/calls-read.ts";
 import index from "../../ui/index.html";
-import { speedOffer } from "../providers/registry.ts";
+import { ModelLookupError, speedOffer } from "../providers/registry.ts";
 import { carrySettings, commitSwitch, resolveSwitchModel } from "./switch.ts";
 import { bundleRoutes, codingOf, compressJson } from "./compress.ts";
 import { daemonApi, embeddedBuilt, stamp, UiBundles } from "./ui-bundle.ts";
@@ -327,7 +327,11 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
             }
             const info = moving ?? (await providers.models()).find((m) => m.id === s.model);
             if (body.settings.effort && settings.effort && info && !info.efforts.includes(settings.effort)) return bad(`${info.name} does not take effort ${settings.effort}`);
-            if (settings.fallback) await providers.resolve(settings.fallback);
+            if (settings.fallback !== undefined) {
+              if (typeof settings.fallback !== "string") return bad("fallback must be a model ID");
+              try { await providers.resolve(settings.fallback); }
+              catch (e) { if (e instanceof ModelLookupError) return bad(e.message); throw e; }
+            }
             if (body.settings.speed && info && !speedOffer(info, settings.speed)) return bad(`${info.name} has no ${settings.speed} speed on ${info.provider}`);
             if (settings.compact_at !== undefined && !(Number(settings.compact_at) > 0)) return bad("compact_at must be a number of tokens above 0");
           }

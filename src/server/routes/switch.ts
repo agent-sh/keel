@@ -15,7 +15,7 @@ export const switchRoutes: RouteModule = ({ store, engine, providers }) => ({
       const q = new URL(req.url).searchParams;
       const want = q.get("model") || s.model;
       const moving = want !== s.model;
-      if (q.has("model") && !moving && !q.has("effort")) return json({ unchanged: true, cached_tokens: 0, warning: null, running: engine.isRunning(s.id) });
+      const unchanged = q.has("model") && !moving && !q.has("effort");
       const to = await resolveSwitchModel(providers, want);
       const running = engine.isRunning(s.id);
       const effort = q.has("effort") ? q.get("effort") || undefined : moving ? carrySettings(s.settings, to).effort : s.settings.effort;
@@ -33,7 +33,7 @@ export const switchRoutes: RouteModule = ({ store, engine, providers }) => ({
         from: providers.cachedModel(ranOn),
         toWire: providers.get(to.provider)?.wire ?? "anthropic_messages",
         fromWire: providers.get(ranOn.slice(0, ranOn.indexOf(":")))?.wire ?? "anthropic_messages",
-      }), fit, running, can_compact_first: moving && !running && !switchCompactionBlock(providers, s.model) });
+      }), fit, running, ...(unchanged ? { unchanged: true } : {}), can_compact_first: moving && !running && !switchCompactionBlock(providers, s.model) });
     },
   },
 });

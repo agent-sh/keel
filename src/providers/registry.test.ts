@@ -28,11 +28,37 @@ const make = (state: string, ps: Provider[]) => {
 };
 const ids = (r: Providers, id: string) => r.listing(id).models.map((m) => m.model);
 
+test("concurrent picks share their provider's listing without waiting for other providers", async () => {
+  const target = fake("target");
+  const other = fake("other");
+  const r = make(dir(), [target.p, other.p]);
+  const picks = () => Array.from({ length: 4 }, () => r.resolve("target:next", { scoped: true }));
+  const first = picks();
+  await Bun.sleep(0);
+  expect(target.calls).toHaveLength(1);
+  expect(other.calls).toHaveLength(0);
+  target.calls[0]!.resolve([{ model: "next" }]);
+  for (const { info } of await Promise.all(first)) expect(info.id).toBe("target:next");
+
+  const next = make(dir(), [target.p, other.p]);
+  const full = next.models(true);
+  await Bun.sleep(0);
+  const during = next.resolve("target:next", { scoped: true });
+  await Bun.sleep(0);
+  expect(target.calls).toHaveLength(2);
+  expect(other.calls).toHaveLength(1);
+  target.calls[1]!.resolve([{ model: "next" }]);
+  expect((await during).info.id).toBe("target:next");
+  other.calls[0]!.resolve([]);
+  await full;
+});
+
 test("an older failed refresh does not undo a newer listing", async () => {
   const f = fake("p");
   const r = make(dir(), [f.p]);
   const first = r.refresh("p");
   await Bun.sleep(0);
+  f.who.v = "b";
   const second = r.refresh("p");
   await Bun.sleep(0);
   f.calls[1]!.resolve([{ model: "new" }]);

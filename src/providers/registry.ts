@@ -65,6 +65,7 @@ export class Providers {
   private started = new Map<string, number>();
   private applied = new Map<string, number>();
   private pending: Promise<void> | null = null;
+  private refreshing = new Map<string, { identity?: string; done: Promise<void> }>();
   private fixed: Provider[] | null;
   readonly limits = new Limits();
   private usageAt = new Map<string, number>();
@@ -203,6 +204,14 @@ export class Providers {
     return l;
   }
 
+  listingFailure(id: string): string | undefined {
+    const error = this.listing(id).error;
+    if (!error) return;
+    const label = this.get(id)?.label ?? id;
+    const prefix = `${label}: `;
+    return `${label}'s model listing failed: ${error.startsWith(prefix) ? error.slice(prefix.length) : error}`;
+  }
+
   // Every provider has looked for its key once: from here on available()
   // is what was found, not the benefit of the doubt a key gets before its
   // first read. A report of the providers waits for this, for `withinMs` at
@@ -223,47 +232,62 @@ export class Providers {
     if (!only && !this.fixed) this.plugins.load();
     if (!this.fixed) await this.plugins.settled();
     const asked = this.all().filter((p) => !only || p.id === only);
-    await Promise.all(asked.map(async (p) => {
-      // Its first look has ended (it began above).
-      if (p.look) await p.look();
-      // A key found missing before is looked for again: one saved since makes its
-      // provider available. Not one found missing a moment ago (by the look above).
-      await p.recheck?.(JUST_LOOKED_MS);
-      if (!p.available()) return;
-      const seq = (this.started.get(p.id) ?? 0) + 1;
-      this.started.set(p.id, seq);
-      const identity = p.identity?.();
-      try {
-        const models = p instanceof EndpointProvider && p.cfg.listing === false ? this.sectionModels(p) : await p.list();
-        if ((this.applied.get(p.id) ?? 0) > seq) return;
-        this.applied.set(p.id, seq);
-        this.listings.set(p.id, { state: "ok", fetched: Date.now(), models, identity });
-        this.cleared(p.id, "listing");
-      } catch (e) {
-        // A newer answer already landed: this older failure says nothing about it.
-        if ((this.applied.get(p.id) ?? 0) > seq) return;
-        this.applied.set(p.id, seq);
-        if (e instanceof NoKey) {
-          // The first read of its key found none: the provider is not set up
-          // (available() says so from here on). Nothing failed, nothing was
-          // refused, so no error is recorded and an earlier one is dropped.
-          const last = this.listing(p.id);
-          if (last.models.length) this.listings.set(p.id, { ...last, state: "saved", error: undefined });
-          else this.listings.delete(p.id);
-          this.cleared(p.id, "listing");
-          return;
-        }
-        const error = (e as Error).message;
-        // The last good list as it is now (not as it was when this refresh began).
-        const prev = this.listing(p.id);
-        this.listings.set(p.id, { state: "failed", fetched: prev.fetched, error, models: prev.models, identity: prev.identity ?? identity });
-        // Recorded once: the same failure on every refresh is one error.
-        if (prev?.error !== error) this.capture(e, { provider: p.id, at: "listing" });
-        this.note(p.id, e, "listing");
-      }
-    }));
+    await Promise.all(asked.map((p) => this.refreshProvider(p)));
     if (!only) this.refreshedAt = Date.now();
     try { this.persist(); } catch (e) { this.capture(e, { at: "saving model-listings.json" }); }
+  }
+
+  // A scoped refresh joins the same provider's work in a full refresh, not
+  // the whole batch. After an account or endpoint changes, its old answer
+  // still has to race by generation, not serve the new identity.
+  private async refreshProvider(p: Provider): Promise<void> {
+    // Its first look has ended (it began above).
+    if (p.look) await p.look();
+    // A key found missing before is looked for again: one saved since makes its
+    // provider available. Not one found missing a moment ago (by the look above).
+    await p.recheck?.(JUST_LOOKED_MS);
+    if (!p.available()) return;
+    const identity = p.identity?.();
+    const active = this.refreshing.get(p.id);
+    if (active && active.identity === identity) return active.done;
+    const done = this.fetchListing(p, identity).finally(() => {
+      if (this.refreshing.get(p.id)?.done === done) this.refreshing.delete(p.id);
+    });
+    this.refreshing.set(p.id, { identity, done });
+    await done;
+  }
+
+  private async fetchListing(p: Provider, identity?: string): Promise<void> {
+    const seq = (this.started.get(p.id) ?? 0) + 1;
+    this.started.set(p.id, seq);
+    try {
+      const models = p instanceof EndpointProvider && p.cfg.listing === false ? this.sectionModels(p) : await p.list();
+      if ((this.applied.get(p.id) ?? 0) > seq) return;
+      this.applied.set(p.id, seq);
+      this.listings.set(p.id, { state: "ok", fetched: Date.now(), models, identity });
+      this.cleared(p.id, "listing");
+    } catch (e) {
+      // A newer answer already landed: this older failure says nothing about it.
+      if ((this.applied.get(p.id) ?? 0) > seq) return;
+      this.applied.set(p.id, seq);
+      if (e instanceof NoKey) {
+        // The first read of its key found none: the provider is not set up
+        // (available() says so from here on). Nothing failed, nothing was
+        // refused, so no error is recorded and an earlier one is dropped.
+        const last = this.listing(p.id);
+        if (last.models.length) this.listings.set(p.id, { ...last, state: "saved", error: undefined });
+        else this.listings.delete(p.id);
+        this.cleared(p.id, "listing");
+        return;
+      }
+      const error = (e as Error).message;
+      // The last good list as it is now (not as it was when this refresh began).
+      const prev = this.listing(p.id);
+      this.listings.set(p.id, { state: "failed", fetched: prev.fetched, error, models: prev.models, identity: prev.identity ?? identity });
+      // Recorded once: the same failure on every refresh is one error.
+      if (prev?.error !== error) this.capture(e, { provider: p.id, at: "listing" });
+      this.note(p.id, e, "listing");
+    }
   }
 
   // An endpoint without a listing offers the models of its catalog section
@@ -431,8 +455,8 @@ export class Providers {
     }
     if (!info) {
       if (scoped) {
-        const error = this.listing(pid).error;
-        if (error) throw new ModelLookupError(`${label}'s model listing failed: ${error}`, true);
+        const failure = this.listingFailure(pid);
+        if (failure) throw new ModelLookupError(failure, true);
         if (!this.get(pid)?.available()) throw new ModelLookupError(`provider ${label} is not available`);
       }
       throw new ModelLookupError(`model ${id} is not in ${label}'s listing`);

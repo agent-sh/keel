@@ -149,12 +149,15 @@ test("a stale switch pick distinguishes a failed listing from a missing model", 
     state = "failed";
     const failure = page.waitForResponse((r) => r.url().includes("/switch-warning?"));
     await option.click();
-    const message = /No model switch was made: Switch fixture.*listing.*fixture listing offline/i;
+    const message = "No model switch was made: Switch fixture's model listing failed: HTTP 502: fixture listing offline";
     await expect(page.locator(".k-tip[data-open]")).toHaveText(message, { timeout: 6000 });
     await expect(page.getByTestId("announce-alert")).toHaveText(message);
     await shoot(page, "modelswitch-06-listing-failed");
     expect((await failure).status()).toBe(409);
     expect((await (await request.get(path)).json()).session.model).toBe(source);
+    const fallback = await request.patch(path, { data: { settings: { fallback: "unknown:target" } } });
+    expect(fallback.status()).toBe(400);
+    expect(await fallback.json()).toEqual({ error: "provider unknown is not available" });
 
     state = "empty";
     const absent = await preview(target);
@@ -178,10 +181,10 @@ test("a stale switch pick distinguishes a failed listing from a missing model", 
     // compact on that route or to block leaving it.
     state = "failed";
     expect((await request.post("/api/providers/refresh", { data: { provider: "switch-fixture" } })).ok()).toBe(true);
-    expect(await (await preview(target)).json()).toMatchObject({ unchanged: true, warning: null });
+    expect(await (await preview(target)).json()).toMatchObject({ unchanged: true, fit: { over: expect.any(Boolean) } });
     expect(await (await preview(source)).json()).toMatchObject({ can_compact_first: false });
     const compact = await request.post(`${path}/compact`, { data: { for_model: source } });
-    expect(await compact.json()).toMatchObject({ error: expect.stringMatching(/cannot compact.*Switch fixture/i) });
+    expect(await compact.json()).toMatchObject({ error: "Cannot compact before switching: Switch fixture's model listing failed: HTTP 502: fixture listing offline" });
     expect(compact.status()).toBe(409);
     expect((await request.patch(path, { data: { model: source } })).ok()).toBe(true);
     expect(calls).toBe(0);

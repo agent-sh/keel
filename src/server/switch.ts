@@ -25,8 +25,8 @@ export async function resolveSwitchModel(providers: Providers, id: string): Prom
 export function switchCompactionBlock(providers: Providers, model: string): string | undefined {
   const pid = model.slice(0, model.indexOf(":"));
   const label = providers.get(pid)?.label ?? pid;
-  const error = providers.listing(pid).error;
-  if (error) return `${label}'s model listing failed: ${error}`;
+  const failure = providers.listingFailure(pid);
+  if (failure) return failure;
   const problem = providers.problem(pid);
   if (problem) return `${label}: ${problem.message}`;
   if (!providers.cachedModel(model)) return `the current model ${model} is unavailable`;
