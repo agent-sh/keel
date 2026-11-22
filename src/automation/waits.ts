@@ -7,6 +7,9 @@ import * as failures from "./failures.ts";
 import { readStat } from "../core/pid.ts";
 import { pumpText, readText } from "../core/proc.ts";
 import { lastDown, lateWords, LATE_MS, span } from "../core/late.ts";
+import { sayAt, waitEndLine, waitSetLine } from "../admin/daemon-log.ts";
+import { zonedClock } from "../core/clock.ts";
+import { waitsFor } from "../core/state-words.ts";
 
 // Zero-token waits: the daemon probes, the model is not called until the
 // condition holds, the deadline passes or the wait is cancelled. Each of those
@@ -283,6 +286,8 @@ export function create(sessionId: string, spec: WaitSpec, opts: { timeout_second
   if (spec.kind === "websocket") startSocket(rec);
   emit("wait", get(rec.id));
   activity.record("wait", "set", sessionId, `Wait ${rec.kind}${rec.note ? ` "${rec.note}"` : ""} set`, { wait_id: rec.id });
+  // (Its kind only: a wait's note, path or command is not the log's to keep.)
+  sayAt({ session: sessionId }, waitSetLine({ id: rec.id, on: waitsFor(rec.kind), due: spec.kind === "timer" ? spec.at_ms! : deadline, timer: spec.kind === "timer", title: s.title, clock: zonedClock }));
   return get(rec.id)!;
 }
 
@@ -321,6 +326,7 @@ function settle(id: string, status: WaitRecord["status"], outcome: string, wake 
   const rec = get(id)!;
   emit("wait", rec);
   activity.record("wait", status, w.session_id, `Wait ${w.kind}${w.note ? ` "${w.note}"` : ""} ${status}${lateness.late ? ` ${lateness.late}` : ""}: ${outcome.split("\n")[0]!.slice(0, 200)}`, { wait_id: id, ...(lateness.late ? { late: lateness.late } : {}) });
+  sayAt({ session: w.session_id }, waitEndLine({ id, on: waitsFor(w.kind), status, ms: (rec.ended ?? Date.now()) - w.created, late: lateness.late, title: D().store.session(w.session_id)?.title }), status === "timeout" ? "warn" : "info");
   if (status === "timeout") failures.seen(w.session_id, "wait", w.kind, outcome);
   if (wake) sendWake(rec, boot);
   return true;

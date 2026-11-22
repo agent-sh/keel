@@ -105,3 +105,29 @@ test("a kept failure is redacted like a stored one, folded by kind, and bounded 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// An outage tried again ten times read as ten log lines of the same failure, a session's each. Its first
+// try is said, the tries after it on the same failure are counted in the row and said by the retry lines.
+test("a request tried again on the same failure is said once on the console, and counted each time", () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-errors-"));
+  const store = new Store(dir);
+  const errors = new ErrorTracker(store, new Bus());
+  const said: string[] = [];
+  const was = console.error;
+  console.error = (...a: unknown[]) => void said.push(a.join(" "));
+  try {
+    const s = store.createSession({ model: "m", workspace: dir });
+    const t = store.createSession({ model: "m", workspace: dir });
+    for (let i = 1; i <= 4; i++) errors.capture("provider", new Error("Lab: Unable to connect"), { session: s.id, retry: i, wait_ms: 500 });
+    errors.capture("provider", new Error("Lab: Unable to connect"), { session: t.id, retry: 1, wait_ms: 500 });
+    errors.capture("provider", new Error("Lab: 429 rate limited"), { session: s.id, retry: 5, wait_ms: 500 });
+    // The last try fails for good: said, whatever came before.
+    errors.capture("provider", new Error("Lab: Unable to connect"), { session: s.id });
+    expect(said).toEqual(["[provider] Lab: Unable to connect", "[provider] Lab: Unable to connect", "[provider] Lab: 429 rate limited", "[provider] Lab: Unable to connect"]);
+    expect(errors.list().find((e) => e.message === "Lab: Unable to connect")?.count).toBe(6);
+  } finally {
+    console.error = was;
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

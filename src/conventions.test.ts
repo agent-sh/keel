@@ -95,3 +95,18 @@ test("the store's files are named in few places and opened outside SQLite only t
   ]) expect([bad, caught(bad)]).toEqual([bad, true]);
   for (const fine of ["const p = storePath(d);\nconst st = statSync(p);", "const fd = storeFd(storePath(dir));", 'new Database(storePath(dir), { readonly: true })', 'openSync(join(tmp, "keel.db.raw"), "r")']) expect([fine, caught(fine)]).toEqual([fine, false]);
 });
+
+// The daemon's log tells what happened without what was said or run: its own lines (say, sayAt of
+// src/admin/daemon-log.ts) are made of names, kinds, states and the harness's words, never of a
+// prompt, a reply, a command, its output or a wait's note.
+test("the daemon's own log lines carry no prompt, command, output or note", () => {
+  const src = files(join(ROOT, "src"), /\.ts$/).filter((f) => !f.endsWith(".test.ts"));
+  // (A failure's message is the provider's or the runtime's words, not the session's: it may be said, scrubbed.)
+  const bad = /\b(stdout|stderr|summary|blocks)\b|\.(text|input|prompt|note|command|output|outcome|tail)\b/;
+  const lines = src.flatMap((f) => {
+    const text = readFileSync(f, "utf8");
+    if (!/from "[./]*(admin\/)?daemon-log\.ts"/.test(text)) return [];
+    return text.split("\n").flatMap((l, i) => (/\bsay(At)?\(/.test(l) && !/^\s*(\/\/|export function say|private say)/.test(l) && bad.test(l.replace(/\/\/.*$/, "")) ? [`${relative(ROOT, f)}:${i + 1}`] : []));
+  });
+  expect(lines).toEqual([]);
+});

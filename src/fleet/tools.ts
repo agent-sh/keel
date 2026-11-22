@@ -9,6 +9,7 @@ import { fail, ok, type Tool } from "../tools/types.ts";
 import type { Fleet } from "./fleet.ts";
 import { HttpError, type Messages } from "./messages.ts";
 import { remoteExec } from "./remote.ts";
+import { messageLine, sayAt } from "../admin/daemon-log.ts";
 
 let fleet: Fleet | undefined;
 let messages: Messages | undefined;
@@ -148,7 +149,11 @@ const sessionSend: Tool = {
       const title = r.machine === "local" ? sessionOf(r.session)?.title : fleet?.remoteSessions(r.machine).sessions.find((x) => x.id === r.session)?.title;
       return ok(`${r.text} ${notices!.watch(me.id, { machine: r.machine, machine_name: name, session: r.session, title }, r.message_id)}`);
     } catch (e) {
-      if (e instanceof HttpError) return fail(e.message);
+      if (e instanceof HttpError) {
+        // A send that was refused is a message that went nowhere: the log says so, with why.
+        sayAt({ session: me.id }, messageLine({ id: "", from: me.title, to: to.length > 40 ? `${to.slice(0, 39)}…` : to, state: "refused", why: e.message, sent: true }), "warn");
+        return fail(e.message);
+      }
       if (e instanceof Error && /active waits/.test(e.message)) return fail(e.message);
       throw e;
     }

@@ -13,6 +13,7 @@ import { Hooks, hookContext, namesOf, ownerHooksPath, parseHooks, projectRoot, r
 import type { Gate } from "../../safety/gate.ts";
 import { gate as daemonGate, presence } from "./permissions.ts";
 import { ownerStop, replaced } from "../../core/stoppers.ts";
+import { hookLine, sayAt } from "../../admin/daemon-log.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -138,7 +139,10 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
         startEvent === "SubagentStart" ? fire("SubagentStart", s, () => ({}), [agentType(s)]) : startEvent ? fire("SessionStart", s, () => ({ source }), [source!]) : null,
         fire("UserPromptSubmit", s, () => ({ prompt: text })),
       ]);
-      if (prompt.block) throw Object.assign(new Error(`A hook refused this prompt: ${prompt.block}`), { expected: true });
+      if (prompt.block) {
+        sayAt({ session: s.id }, hookLine({ event: "UserPromptSubmit", did: "refused the prompt", reason: prompt.block, title: s.title }), "warn");
+        throw Object.assign(new Error(`A hook refused this prompt: ${prompt.block}`), { expected: true });
+      }
       const lines = [...(start?.context ?? []), ...prompt.context];
       if (!lines.length) return req;
       note(s.id, start?.context.length ? `${startEvent}, UserPromptSubmit` : "UserPromptSubmit", lines);
@@ -158,7 +162,10 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
       const c: Followed = { session: s.id, name, input, names: namesOf(name, input, call.tool.name) };
       calls.set(callKey(s.id, call.id), c);
       const r = await fire("PreToolUse", s, () => ({ tool_name: name, tool_input: input, tool_use_id: call.id }), c.names, srcs);
-      if (r.block) return { deny: `A hook blocked this call: ${r.block}` };
+      if (r.block) {
+        sayAt({ session: s.id }, hookLine({ event: "PreToolUse", did: `refused ${name}`, reason: r.block, title: s.title }), "warn");
+        return { deny: `A hook blocked this call: ${r.block}` };
+      }
       if (r.context.length) c.context = r.context;
       if (r.ask) c.ask = r.ask;
       const changed = r.input === undefined ? undefined : changedInput(call.input, input, r.input);
@@ -196,6 +203,7 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
       // A hook that blocks here ends the turn before the next model request, as a stop of the owner's does.
       if (r.block) {
         note(s.id, "PostToolBatch", [`A hook stopped the turn: ${r.block}`]);
+        sayAt({ session: s.id }, hookLine({ event: "PostToolBatch", did: "stopped the turn", reason: r.block, title: s.title }), "warn");
         void engine.interrupt(s.id, "hook").catch((e) => errors.capture("server", e, { at: "hook PostToolBatch", session: s.id }));
       }
     },
@@ -262,7 +270,10 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
     const c = calls.get(callKey(s.id, call.id));
     if (!c) return;
     const r = await fire("PermissionRequest", s, () => ({ tool_name: c.name, tool_input: c.input, keel_risk: ask.risk, keel_reason: ask.why ?? null, keel_rule: ask.rule ?? null }), c.names);
-    if (r.block) return { deny: `A hook denied this request: ${r.block}` };
+    if (r.block) {
+      sayAt({ session: s.id }, hookLine({ event: "PermissionRequest", did: `denied ${c.name}`, reason: r.block, title: s.title }), "warn");
+      return { deny: `A hook denied this request: ${r.block}` };
+    }
     if (r.allow !== undefined) return { allow: true };
   };
 

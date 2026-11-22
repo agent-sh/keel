@@ -97,3 +97,67 @@ export function agentLine(a: Pick<AgentRecord, "title" | "type" | "status" | "cr
   }
   return null;
 }
+
+// ---- What happened in a session, one bounded line each, so an incident reads from the log alone.
+// Under the session's ids (logs.ts logAt) and with its title. Never a prompt, a reply, a command, its
+// output or a wait's note: a tool's name, a kind, a state, a class and the harness's own words.
+const reason = (r: unknown, n = 160) => { const s = val(r); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
+const inTitle = (t: string | undefined) => ` in ${title(t)}`;
+const card = (id: string) => ` [card ${val(id).slice(-8)}]`;
+
+// A hook's refusal or stop, with the hook's own reason: "[hook] PreToolUse hook refused Bash in "Lane": no pushes".
+export const hookLine = (o: { event: string; did: string; reason: string; title?: string }) =>
+  clip(`[hook] ${val(o.event)} hook ${val(o.did)}${inTitle(o.title)}: ${reason(o.reason) || "no reason given"}`);
+
+// An approval asked and answered: who answered, and from where (the page, the phone, the command line, an editor).
+type Card = { id: string; tool: string; risk: string; state: string; choice?: string; reason?: string; created: number; resolved?: number; by?: { client: string; device?: string; peer?: string } };
+const CHOICE: Record<string, string> = { once: "allowed once", session: "allowed for the session", always: "allowed always", deny: "denied" };
+export function approvalLine(a: Card, from: string | undefined, sessionTitle: string | undefined): string | null {
+  if (a.state === "pending") return clip(`[approval] asked: ${val(a.tool)}${a.risk === "high" ? ", high risk" : ""}${inTitle(sessionTitle)}${card(a.id)}`);
+  const took = a.resolved && a.resolved >= a.created ? ` after ${dur(a.resolved - a.created)}` : "";
+  if (a.state === "cancelled") return clip(`[approval] closed without an answer${took}: ${val(a.tool)}${inTitle(sessionTitle)}${a.reason ? ` (${reason(a.reason, 120)})` : ""}${card(a.id)}`);
+  const said = CHOICE[a.choice ?? ""] ?? (a.state === "denied" ? "denied" : "allowed");
+  // The owner's reason for a denial is their own words: said to be there, not quoted.
+  return clip(`[approval] ${said}${from ? ` from ${val(from)}` : ""}${took}: ${val(a.tool)}${inTitle(sessionTitle)}${a.state === "denied" && a.reason ? ", with a reason" : ""}${card(a.id)}`);
+}
+
+// A call the reviewing judge settled without a card. The judge's own reason is not quoted (it may restate the call).
+const JUDGED: Record<string, string> = {
+  judge: "the judge allowed", refused: "the judge refused", repeat: "refused again (the same call was refused before)",
+  streak: "refused without review (too many refused in a row)", unavailable: "refused: the judge could not review it", retry: "let one retry through (the owner's)",
+};
+export const judgedLine = (j: { outcome: string; tool: string; model?: string }, sessionTitle: string | undefined) =>
+  JUDGED[j.outcome] ? clip(`[approval] ${JUDGED[j.outcome]} ${val(j.tool)}${j.model && j.outcome !== "repeat" && j.outcome !== "streak" ? ` (${val(j.model)})` : ""}${inTitle(sessionTitle)}`) : null;
+
+// A session's turn that failed, with the class of its failure.
+// `tried`: the request was tried that many times over that long before the turn gave up.
+export const failedLine = (o: { cls?: string; status?: number; title?: string; steps?: number; tried?: { tries: number; ms: number } }) =>
+  clip(`[turn] failed: ${val(o.cls || "an error")}${o.status ? ` (HTTP ${o.status})` : ""}${inTitle(o.title)}${o.steps ? `, after ${o.steps} step${o.steps === 1 ? "" : "s"}` : ""}${o.tried ? `, the request given up after ${o.tried.tries} tries over ${dur(Math.max(0, o.tried.ms))}` : ""}`);
+
+// A message between sessions: sent, with where it stands, and later delivered or not.
+const MSG: Record<string, string> = { refused: "not sent", queued: "queued", delivered: "delivered", handled: "handled", held: "held for the owner", outbound: "waiting for its daemon to fetch it", dropped: "not delivered" };
+export const messageLine = (o: { id: string; from?: string; to?: string; machine?: string; state: string; why?: string | null; sent?: boolean }) =>
+  clip(`[message] ${o.sent ? `sent from ${title(o.from)} to ${title(o.to)}${o.machine ? ` on ${val(o.machine)}` : ""}` : `to ${title(o.to)} from ${title(o.from)}`}: ${MSG[o.state] ?? val(o.state)}${o.why ? ` (${reason(o.why, 120)})` : ""}${o.id ? ` [message ${val(o.id).slice(-8)}]` : ""}`);
+
+// A wait set and settled: its kind, when it is due, how it ended, and when it was told late.
+export const waitSetLine = (o: { id: string; on: string; due: number; title?: string; clock: (ms: number) => string; timer: boolean }) =>
+  clip(`[wait] set on ${val(o.on)}${inTitle(o.title)}, ${o.timer ? "due" : "gives up"} at ${o.clock(o.due)} [wait ${val(o.id)}]`);
+const SETTLED: Record<string, string> = { fired: "fired", timeout: "timed out", cancelled: "was cancelled", ended: "ended" };
+export const waitEndLine = (o: { id: string; on: string; status: string; ms: number; late?: string; title?: string }) =>
+  clip(`[wait] on ${val(o.on)} ${SETTLED[o.status] ?? val(o.status)} after ${dur(Math.max(0, o.ms))}${o.late ? `, ${val(o.late)}` : ""}${inTitle(o.title)} [wait ${val(o.id)}]`);
+
+// A loop's run that ended, or one that did not run.
+export const loopLine = (o: { name: string; said: string; title?: string }) => clip(`[loop] ${title(o.name)} run ${reason(o.said, 200)}${inTitle(o.title)}`);
+
+// A model request that is being tried again, and the provider answering again after it.
+export const retryLine = (o: { attempt: number; max: number; inMs: number; message: string; title?: string }) =>
+  clip(`[provider] retrying the model request${inTitle(o.title)}: try ${o.attempt + 1} of ${o.max + 1} in ${dur(Math.max(0, o.inMs))} after ${reason(o.message, 160)}`);
+export const answeredLine = (o: { tries: number; ms: number; title?: string }) =>
+  clip(`[provider] answered again${inTitle(o.title)} after ${o.tries} tr${o.tries === 1 ? "y" : "ies"} over ${dur(Math.max(0, o.ms))}`);
+
+// What became of a command a restart cut: the first sentence of what its call was told, without the paths.
+export function cutCommandLine(text: string, sessionTitle: string | undefined): string {
+  const body = text.replace(/^The daemon restarted while this command ran\.\s*/, "");
+  const first = (body.match(/^.*?\.(?=\s|$)/)?.[0] ?? body).replace(/ Its output (is|up to then is|is being written to) .*$/, "");
+  return clip(`[turn] the command a restart cut${inTitle(sessionTitle)}: ${reason(first.replace(/\/\S+/g, "(a file)"), 240)}`);
+}

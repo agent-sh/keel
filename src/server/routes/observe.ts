@@ -25,6 +25,7 @@ import { atSession } from "../../core/error-sites.ts";
 import { gitSync } from "../../core/git.ts";
 import { cutWhere } from "../../admin/life-rows.ts";
 import { agentLine, say, sayAt, stopLine } from "../../admin/daemon-log.ts";
+import { bindStory } from "../../admin/story.ts";
 import { installLogs, LEVELS, logAt, logDir, logLines, onLog } from "../../admin/logs.ts";
 import { newestTurn } from "../../admin/marks.ts";
 import { registerHooks } from "../../engine/hooks.ts";
@@ -153,7 +154,7 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
   // line under the session and turn it is about: cut (a stop parked it, or the
   // daemon went down under it), what became of it, and compacted.
   registerHooks({
-    turnCut: (s, cut) => logAt({ session: s.id, turn: cut.turn_event }, `[turn] cut ${cutWhere(cut)}: ${cut.crashed ? "the daemon went down" : "a daemon stop parked it"}`, cut.crashed ? "warn" : "info"),
+    turnCut: (s, cut) => logAt({ session: s.id, turn: cut.turn_event }, `[turn] cut ${cutWhere(cut)} in ${s.title ? `"${s.title.replace(/\s+/g, " ").slice(0, 48)}"` : "an untitled session"}${s.parent_id ? " (an agent)" : ""}: ${cut.crashed ? "the daemon went down" : "a daemon stop parked it"}`, cut.crashed ? "warn" : "info"),
     turnCutSettled: (s, cut, state, why) => logAt({ session: s.id, turn: cut.turn_event },
       state === "continued" ? "[turn] continued after the restart" : state === "held" ? `[turn] not continued after the restart: ${why ?? "held for the owner"}` : `[turn] ${why ?? "went on by other means"} after the restart`, state === "held" ? "warn" : "info"),
   });
@@ -162,12 +163,18 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
     const e = f.event;
     const at = () => ({ session: e.session_id, turn: engine.turnOf(e.session_id) ?? newestTurn(store, e.session_id)?.id });
     if (e.kind === "turn_end" && e.data?.reason === "restart" && !e.data.crashed) logAt(at(), "[turn] parked for a daemon stop");
-    else if (e.kind === "turn_end" && e.data?.reason === "interrupted") sayAt(at(), stopLine(e.data.stopped_by));
+    // (A hook's stop is said by the hook's own line, with its reason: src/server/routes/hooks.ts.)
+    else if (e.kind === "turn_end" && e.data?.reason === "interrupted" && e.data.stopped_by !== "hook") sayAt(at(), stopLine(e.data.stopped_by));
     else if (e.kind === "compaction") {
       const n = e.data?.tokens_before;
       logAt({ session: e.session_id, turn: engine.turnOf(e.session_id) }, `[turn] context ${e.data?.mode === "clear" ? "cleared" : e.data?.trigger === "model" ? "started fresh by the model" : e.data?.auto ? "compacted by itself" : "compacted by the owner"}${typeof n === "number" && n > 0 ? `, from ${n} tokens` : ""}`);
     }
   });
+
+  // Approvals, the judge, failed turns, messages and retries, one line each (src/admin/story.ts).
+  const SG = globalThis as { __keelStoryOff?: () => void };
+  SG.__keelStoryOff?.();
+  SG.__keelStoryOff = bindStory({ store, bus });
 
   // An agent's start and end, each once, on its parent's session (the line names the agent).
   const agentState = (G.__keelAgentStates ??= new Map<string, string>()) as Map<string, string>;

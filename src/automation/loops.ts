@@ -6,6 +6,7 @@ import { checkZone, localZone, nextCron, nextRuns, parseCron, parseSchedule, YEA
 import * as activity from "./activity.ts";
 import * as failures from "./failures.ts";
 import { stopSays } from "../core/stoppers.ts";
+import { loopLine, sayAt } from "../admin/daemon-log.ts";
 
 // Loops: a prompt that runs again in its session on an interval, a calendar
 // schedule, its own pace (the model names the next delay), or a webhook. The
@@ -351,6 +352,7 @@ function skip(l: LoopRecord, due: number, reason: string) {
   db().query("INSERT INTO loop_runs (id, loop_id, session_id, due_ms, ended_ms, skip_reason) VALUES (?, ?, ?, ?, ?, ?)")
     .run(Bun.randomUUIDv7(), l.id, l.session_id, due, Date.now(), reason);
   activity.record("loop", "skip", l.session_id, `Loop "${l.name}" did not run: ${reason}`, { loop_id: l.id });
+  sayAt({ session: l.session_id }, loopLine({ name: l.name, said: `skipped: ${reason}`, title: D().store.session(l.session_id)?.title }));
 }
 
 function runText(l: LoopRecord, extra?: string): string {
@@ -540,6 +542,7 @@ function settleLoop(l: LoopRecord, r: RunRow, outcome: NonNullable<RunRecord["ou
   const next = patch(l.id, out)!;
   const said = outcome === "ok" ? "ended" : outcome === "stopped" ? "was stopped" : outcome === "incomplete" ? `did not finish: ${why}` : `failed: ${why}`;
   activity.record("loop", outcome === "ok" ? "ok" : outcome, l.session_id, `Loop "${l.name}" run ${said}`, { loop_id: l.id, run_id: r.id });
+  sayAt({ session: l.session_id }, loopLine({ name: l.name, said: `${said}${next.enabled ? "" : `; the loop is off: ${next.disabled_reason}`}`, title: D().store.session(l.session_id)?.title }), bad ? "warn" : "info");
   if (outcome === "failed") failures.seen(l.session_id, "loop", l.name, why);
   if (bad) alertHook.raise?.("loop_failed", l.session_id, `Loop ${outcome === "failed" ? "failed" : "did not finish"}: ${l.name}`, `${why}${next.enabled ? "" : ` · ${next.disabled_reason}`}`, { loop_id: l.id, run_id: r.id });
   if (l.max_runs && next.runs >= l.max_runs && next.enabled) patch(l.id, { enabled: false, next_ms: null, disabled_reason: `ran its ${l.max_runs} runs` });

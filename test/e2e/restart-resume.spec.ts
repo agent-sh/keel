@@ -291,8 +291,10 @@ test("the log names each line's session and turn, and is read across a restart",
     const mine = await lines(`&session=${running}`);
     expect(mine.every((l) => l.session === running)).toBe(true);
     expect(mine.map((l) => [l.level, l.turn, l.text])).toEqual(expect.arrayContaining([
-      ["warn", cutTurn, expect.stringMatching(/^\[turn\] cut at step 1, during Bash, after \d+ m?s: the daemon went down$/)],
+      // The cut line names its session, and what became of the command it was running is a line of its own.
+      ["warn", cutTurn, expect.stringMatching(/^\[turn\] cut at step 1, during Bash, after \d+ m?s in "Cut by the kill": the daemon went down$/)],
       ["info", cutTurn, "[turn] continued after the restart"],
+      ["info", undefined, expect.stringMatching(/^\[turn\] the command a restart cut in "Cut by the kill": The command was not interrupted: it still runs in the background \(ID: \w+\)\.$/)],
     ]));
     expect(after.filter((l) => l.text.startsWith("[daemon] The daemon went down without stopping")).length).toBe(1);
 

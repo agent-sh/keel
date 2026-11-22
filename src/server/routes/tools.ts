@@ -14,6 +14,7 @@ import type { RouteModule } from "../app.ts";
 import { pumpLines } from "../../core/proc.ts";
 import { newestTurn } from "../../admin/marks.ts";
 import { deliver } from "../../automation/core.ts";
+import { cutCommandLine, sayAt } from "../../admin/daemon-log.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
@@ -52,12 +53,22 @@ export const toolRoutes: RouteModule = (deps) => {
     adoptJobs(join(deps.store.stateDir, "spill"), (file, why) =>
       deps.errors.capture("tool", new Error(`A record of a background command was not taken over at this start: ${why}. Nothing was signalled for it. The record: ${file}`), { at: "adopt jobs" }, { group: "a job's record was not taken over" }));
   } catch (e) { deps.errors.capture("tool", e, { at: "adopt jobs" }); }
+  const toldCut = new Set<string>();
   registerHooks({
     // A call a restart cut while it ran a command: its result says what became
     // of the command (the engine stores the text as the call's result, an
     // error like every cut call's, under the name the hook has for such a text).
     // The command is the cut turn's own: one started since that turn began (a server that repeats call ids across turns).
-    callOutcome: (sessionId, callId) => { const text = cutCommand(sessionId, callId, { since: newestTurn(deps.store, sessionId)?.ts }); return text ? { denied: text } : undefined; },
+    callOutcome: (sessionId, callId) => {
+      const text = cutCommand(sessionId, callId, { since: newestTurn(deps.store, sessionId)?.ts });
+      // Said once a call: the engine asks again when it writes the call's result.
+      if (text && !toldCut.has(`${sessionId}\u0000${callId}`)) {
+        toldCut.add(`${sessionId}\u0000${callId}`);
+        if (toldCut.size > 500) toldCut.delete(toldCut.values().next().value!);
+        sayAt({ session: sessionId }, cutCommandLine(text, deps.store.session(sessionId)?.title));
+      }
+      return text ? { denied: text } : undefined;
+    },
     beforeRequest(s, req) {
       // A job's end already stored (a restart came between storing it and
       // marking it reported) is not said twice.

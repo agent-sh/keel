@@ -4,7 +4,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { SECRET_KINDS } from "../core/conceal.test.ts";
-import { agentLine, backupLine, drainLine, exitLine, mcpLine, providersLine, say, sayAt, settingsChanges, settingsLine, startLine, stopLine } from "./daemon-log.ts";
+import { agentLine, answeredLine, approvalLine, backupLine, cutCommandLine, drainLine, exitLine, failedLine, hookLine, judgedLine, loopLine, mcpLine, messageLine, providersLine, retryLine, say, sayAt, settingsChanges, settingsLine, startLine, stopLine, waitEndLine, waitSetLine } from "./daemon-log.ts";
 import { runMode } from "../core/runmode.ts";
 import { installLogs, logAt, parseLines } from "./logs.ts";
 
@@ -102,6 +102,13 @@ test("no secret reaches the log file or standard output, in any field a line car
         // Reasons, a backup's name and failure, the folders of a start, who stopped a turn.
         [drainLine({ restart: true, running: 1, timeoutMs: 1000, reason: `asked with ${secret}` })], [backupLine({ ok: false, ms: 1, error: `cannot write: ${secret}` }), "warn"], [backupLine({ ok: true, ms: 1, name: secret })],
         [exitLine({ restart: true, parked: 0, upMs: 1, reason: secret })], [startLine({ revision: "r", pid: 1, url: "http://127.0.0.1:1", state: `/state/${secret}`, config: "/c" })],
+        // What a session went through: titles, a hook's reason, a tool's name, a loop's reason, a provider's message.
+        [hookLine({ event: "PreToolUse", did: "refused Bash", reason: `no pushes with ${secret}`, title: `Lane ${secret}` }), "warn"],
+        [approvalLine({ id: "a1", tool: `Bash ${secret}`, risk: "high", state: "pending", created: 1 }, undefined, `Lane ${secret}`)!],
+        [failedLine({ cls: "rate limit", status: 429, title: `Lane ${secret}` }), "warn"],
+        [messageLine({ id: "m1", from: `From ${secret}`, to: `To ${secret}`, state: "dropped", why: `refused: ${secret}` }), "warn"],
+        [loopLine({ name: `Nightly ${secret}`, said: `failed: ${secret}`, title: `Lane ${secret}` })],
+        [retryLine({ attempt: 1, max: 9, inMs: 1000, message: `401 invalid credentials: ${secret}`, title: `Lane ${secret}` }), "warn"],
       ];
       for (const [text, level] of texts) { say(text, level); lines++; }
       // (A stopper is one of a fixed set of words: one that is not is said as a stop, and never printed.)
@@ -181,4 +188,33 @@ test("inside a command's process no line of the daemon's own reaches standard ou
     if (had) G.__keelLogs = had; else delete G.__keelLogs;
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// The lines an incident is read from: an approval asked and answered with where from, the judge, a
+// failed turn's class, a hook's reason, a message's state, a wait (late or not), a loop, a retry and the
+// provider answering again, a cut command's fate. None quotes what was said or run.
+test("what a session went through is one bounded line each, in plain words", () => {
+  const card = { id: "01a2-card-e7a066d2", tool: "Bash", risk: "low", state: "pending", created: 1_000, reason: "the owner's own words" };
+  expect(approvalLine(card, undefined, "Deny lane")).toBe('[approval] asked: Bash in "Deny lane" [card e7a066d2]');
+  expect(approvalLine({ ...card, state: "denied", choice: "deny", resolved: 121_000 }, "the command line", "Deny lane")).toBe('[approval] denied from the command line after 2 min: Bash in "Deny lane", with a reason [card e7a066d2]');
+  expect(approvalLine({ ...card, state: "allowed", choice: "session", resolved: 4_000, reason: undefined }, "the phone (Pixel)", "Allow lane")).toBe('[approval] allowed for the session from the phone (Pixel) after 3 s: Bash in "Allow lane" [card e7a066d2]');
+  expect(judgedLine({ outcome: "refused", tool: "Bash", model: "judge-model" }, "Auto lane")).toBe('[approval] the judge refused Bash (judge-model) in "Auto lane"');
+  expect(judgedLine({ outcome: "rule", tool: "Bash" }, "Auto lane")).toBeNull();
+  expect(failedLine({ cls: "rate limit", status: 429, title: "Quota lane 1", steps: 1 })).toBe('[turn] failed: rate limit (HTTP 429) in "Quota lane 1", after 1 step');
+  expect(hookLine({ event: "PostToolBatch", did: "stopped the turn", reason: "  the audit\nhook said stop  ", title: "Coordinator" })).toBe('[hook] PostToolBatch hook stopped the turn in "Coordinator": the audit hook said stop');
+  expect(messageLine({ id: "01a2-msg-0000aaaa", from: "Msg sender", to: "Msg busy receiver", state: "queued", sent: true })).toBe('[message] sent from "Msg sender" to "Msg busy receiver": queued [message 0000aaaa]');
+  expect(messageLine({ id: "01a2-msg-0000aaaa", from: "Msg sender", to: "Receiver", machine: "peerbox", state: "delivered", sent: true })).toBe('[message] sent from "Msg sender" to "Receiver" on peerbox: delivered [message 0000aaaa]');
+  expect(messageLine({ id: "01a2-msg-0000aaaa", from: "Msg sender", to: "Gone", state: "dropped", why: "its session was archived before it was read" })).toBe('[message] to "Gone" from "Msg sender": not delivered (its session was archived before it was read) [message 0000aaaa]');
+  expect(messageLine({ id: "", from: "Msg sender", to: "01a2046f-97f2", state: "refused", why: "that session is archived", sent: true })).toBe('[message] sent from "Msg sender" to "01a2046f-97f2": not sent (that session is archived)');
+  expect(waitSetLine({ id: "9bd7cddf21cf", on: "a timer", due: 0, timer: true, title: "Parked lane 2", clock: () => "20:52" })).toBe('[wait] set on a timer in "Parked lane 2", due at 20:52 [wait 9bd7cddf21cf]');
+  expect(waitEndLine({ id: "9bd7cddf21cf", on: "a timer", status: "fired", ms: 54 * 60_000, late: "14 min late: the daemon was down from 20:23 to 21:06", title: "Parked lane 2" }))
+    .toBe('[wait] on a timer fired after 54 min, 14 min late: the daemon was down from 20:23 to 21:06 in "Parked lane 2" [wait 9bd7cddf21cf]');
+  expect(loopLine({ name: "Broke loop", said: "failed: billing", title: "Loop home" })).toBe('[loop] "Broke loop" run failed: billing in "Loop home"');
+  expect(retryLine({ attempt: 1, max: 9, inMs: 1000, message: "Lab: Unable to connect.", title: "Lab lane 5a" })).toBe('[provider] retrying the model request in "Lab lane 5a": try 2 of 10 in 1 s after Lab: Unable to connect.');
+  expect(answeredLine({ tries: 6, ms: 62_000, title: "Lab lane 5a" })).toBe('[provider] answered again in "Lab lane 5a" after 6 tries over 1 min');
+  expect(failedLine({ cls: "provider out of reach", title: "Lab lane 5a", tried: { tries: 10, ms: 127_000 } })).toBe('[turn] failed: provider out of reach in "Lab lane 5a", the request given up after 10 tries over 2 min');
+  expect(cutCommandLine("The daemon restarted while this command ran. The command was not interrupted: it still runs in the background (ID: b8q9t5). Its output is being written to /home/x/spill/s/jobs/b8q9t5.log. Do not start it again: you are told when it ends.", "Long tool"))
+    .toBe('[turn] the command a restart cut in "Long tool": The command was not interrupted: it still runs in the background (ID: b8q9t5).');
+  expect(cutCommandLine("The daemon restarted while this command ran. The command was not interrupted: it exited with code 0 after 4 min; it ended at 20:27, while the daemon was down. Its output is in /x/y.log. Do not run it again for its result.", "Long tool"))
+    .toBe('[turn] the command a restart cut in "Long tool": The command was not interrupted: it exited with code 0 after 4 min; it ended at 20:27, while the daemon was down.');
 });

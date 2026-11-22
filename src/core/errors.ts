@@ -162,9 +162,15 @@ export class ErrorTracker {
     for (const listener of this.captures) {
       try { listener({ id: rec.id, source, context, turnSession: scope?.session }); } catch {}
     }
-    console.error(`[${source}] ${rec.message}`);
+    // A request tried again on the same failure is said on the console once, at its first try: the
+    // daemon's own lines say the retrying, and how it ended (src/admin/story.ts). The row counts each.
+    const retry = (context as any)?.retry;
+    const again = typeof retry === "number" && retry > 1 && !!session_id && this.retrySaid.get(session_id) === rec.message;
+    if (typeof retry === "number" && session_id) { this.retrySaid.delete(session_id); this.retrySaid.set(session_id, rec.message); if (this.retrySaid.size > 500) this.retrySaid.delete(this.retrySaid.keys().next().value!); }
+    if (!again) console.error(`[${source}] ${rec.message}`);
     return rec;
   }
+  private retrySaid = new Map<string, string>();
 
   // Failures the store could not take, the newest last: at most KEPT_MAX
   // kinds, a repeat counted on its kind. They are in the list the Errors
