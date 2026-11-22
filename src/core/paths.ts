@@ -1,4 +1,4 @@
-import { lstatSync, readlinkSync, realpathSync } from "node:fs";
+import { closeSync, constants, existsSync, lstatSync, openSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -115,4 +115,21 @@ export function canonical(p: string): boolean {
     }
   }
   return true;
+}
+
+// The names in a folder, read from the folder itself: it is opened without following a link at its name, what was
+// opened is checked to be the folder the path names (the descriptor's own path), and the names are read through
+// the descriptor. A folder that is a link, or became one, lists nothing. Where the descriptor's path cannot be
+// read (no /proc), only a folder with no link in its path is listed, by its name.
+export function namesIn(dir: string): string[] | null {
+  if (!existsSync("/proc/self/fd")) { try { return canonical(dir) ? readdirSync(dir) : null; } catch { return null; } }
+  let fd: number | undefined;
+  try {
+    fd = openSync(dir, 0o10000000 | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    return readlinkSync(`/proc/self/fd/${fd}`) === dir ? readdirSync(`/proc/self/fd/${fd}`) : null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) try { closeSync(fd); } catch {} // closed already
+  }
 }

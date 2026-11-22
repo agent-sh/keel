@@ -5,6 +5,7 @@
 // agent writes its sessions, logs and caches under home (opencode in the XDG
 // folders, Kimi in ~/.kimi-code, Claude Code in ~/.claude and ~/.claude.json, Codex
 // in ~/.codex, Gemini in ~/.gemini), and npx or uvx their package caches.
+import { configRefused } from "../core/named-config.ts";
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
@@ -49,6 +50,7 @@ export function agentFolders(agent: Pick<AcpAgent, "id" | "run">, make = true, h
 // Kept as written (~ stays ~), each one checked here.
 export const foldersPath = () => process.env.KEEL_ACP_FOLDERS ?? join(configDir(), "acp-folders.json");
 export function readFolders(path = foldersPath()): Record<string, string[]> {
+  if (configRefused("KEEL_ACP_FOLDERS", path)) return {};
   if (!existsSync(path)) return {};
   const raw = JSON.parse(readFileSync(path, "utf8"));
   const out: Record<string, string[]> = {};

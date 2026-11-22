@@ -3,7 +3,7 @@
 // once cannot both get it, and it ends with the process however it dies, so
 // there is no stale claim to take over. Kept per process: a hot reload has it.
 import { Database } from "bun:sqlite";
-import { mkdirSync, realpathSync } from "node:fs";
+import { mkdirSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
 const CLAIM = "daemon.claim";
@@ -35,8 +35,15 @@ export function isClaimFile(path: string): boolean {
   if (!claims.size) return false;
   const real = (p: string) => { try { return realpathSync(p); } catch { return resolve(p); } };
   const p = real(path);
-  if (basename(p) !== CLAIM) return false;
-  for (const dir of claims.keys()) if (real(dir) === dirname(p)) return true;
+  // By its name in a claimed folder, or as the same file under another name (a hard link): closing a descriptor of
+  // either drops the lock.
+  let st: { ino: number; dev: number } | undefined;
+  try { st = statSync(p); } catch {} // not there: only its name can say
+  for (const dir of claims.keys()) {
+    if (basename(p) === CLAIM && real(dir) === dirname(p)) return true;
+    if (!st) continue;
+    try { const own = statSync(join(dir, CLAIM)); if (own.ino === st.ino && own.dev === st.dev) return true; } catch {} // no claim file there
+  }
   return false;
 }
 export const claimNote = (path: string) => `${path} is the daemon's claim on its state folder. It is empty, and it is not opened from inside the daemon.`;

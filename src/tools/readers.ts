@@ -4,7 +4,7 @@
 // answer comes back compiled, with exact quotes and path:line references and
 // what was not covered (src/engine/readers.ts). Claude gets a Claude Code
 // style name, the other families a snake_case one.
-import { mkdirSync, statSync } from "node:fs";
+import { lstatSync, mkdirSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { atCwd, canonical, realOf } from "../core/paths.ts";
 import { hold, type HoldContext } from "./files.ts";
@@ -28,27 +28,41 @@ const GLOB = /[*?[{]/;
 const skipDir = (f: string) => f.includes("/node_modules/") || f.includes("/.git/");
 
 // Every file git does not ignore under `dir`, else every file under it.
-async function filesIn(dir: string, signal: AbortSignal): Promise<string[]> {
+// The folder is held while it is listed (files.ts hold): what is listed is the folder the gate judged. git lists
+// by the folder's name, so its list is taken only when the name is still that folder afterwards; the plain scan
+// goes through the folder's handle.
+async function filesIn(dir: string, signal: AbortSignal, ctx: HoldContext): Promise<string[] | { skip: string }> {
+  const h = hold(dir, ctx, "read");
+  if ("refused" in h) return { skip: "it changed while it was read" };
   try {
-    const r = await git(dir, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], { read: true, signal });
-    if (r.code === 0) return r.out.split("\0").filter(Boolean).map((f) => join(dir, f)).sort();
-  } catch {}
-  // A stop killed the listing: no scan in its place.
-  if (signal.aborted) throw Object.assign(new Error("interrupted"), { name: "AbortError" });
-  const out: string[] = [];
-  for await (const f of new Bun.Glob("**/*").scan({ cwd: dir, absolute: true, onlyFiles: true })) if (!skipDir(f)) out.push(f);
-  return out.sort();
+    if (!h.existed) return [];
+    const same = () => { try { const a = statSync(h.io), b = lstatSync(dir); return b.isDirectory() && a.dev === b.dev && a.ino === b.ino; } catch { return false; } };
+    try {
+      const r = await git(dir, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], { read: true, signal });
+      if (r.code === 0) return same() ? r.out.split("\0").filter(Boolean).map((f) => join(dir, f)).sort() : { skip: "it changed while it was listed" };
+    } catch {}
+    // A stop killed the listing: no scan in its place.
+    if (signal.aborted) throw Object.assign(new Error("interrupted"), { name: "AbortError" });
+    const out: string[] = [];
+    for await (const f of new Bun.Glob("**/*").scan({ cwd: h.io, absolute: true, onlyFiles: true })) { const at = dir + f.slice(h.io.length); if (!skipDir(at)) out.push(at); }
+    return out.sort();
+  } finally { h.close(); }
 }
 
-async function globbed(pattern: string, cwd: string): Promise<string[]> {
-  // The fixed folders before the first wildcard are where the scan starts.
+async function globbed(pattern: string, cwd: string, ctx: HoldContext): Promise<string[]> {
+  // The fixed folders before the first wildcard are where the scan starts: that folder, where it is, held while
+  // it is scanned (files.ts hold).
   const segs = pattern.split("/");
   const at = segs.findIndex((s) => GLOB.test(s));
-  const base = resolve(cwd, segs.slice(0, at).join("/") || ".");
+  const base = realOf(atCwd(cwd, segs.slice(0, at).join("/") || "."));
   const rest = segs.slice(at).join("/");
-  const out: string[] = [];
-  for await (const f of new Bun.Glob(rest).scan({ cwd: base, absolute: true, onlyFiles: true })) if (!skipDir(f)) out.push(f);
-  return out.sort();
+  const h = hold(base, ctx, "read");
+  if ("refused" in h || !h.existed) { if (!("refused" in h)) h.close(); return []; }
+  try {
+    const out: string[] = [];
+    for await (const f of new Bun.Glob(rest).scan({ cwd: h.io, absolute: true, onlyFiles: true })) { const name = base + f.slice(h.io.length); if (!skipDir(name)) out.push(name); }
+    return out.sort();
+  } finally { h.close(); }
 }
 
 const show = (f: string, cwd: string) => { const r = relative(cwd, f); return r && !r.startsWith("..") && !isAbsolute(r) ? r : f; };
@@ -61,7 +75,8 @@ async function textOf(f: string, max: number, ctx: HoldContext): Promise<{ text:
   if (isStoreFile(f)) return { skip: "the daemon's own store, which is not opened from inside the daemon" };
   // The file itself, held: a link found inside a folder (to a file somewhere else) is not read through.
   const h = hold(f, ctx, "read");
-  if ("refused" in h) return { skip: canonical(f) ? "it changed while it was read" : "a link, or a path with one in it: read what it points at by its own path" };
+  if ("refused" in h) return { skip: !canonical(f) ? "a link, or a path with one in it: read what it points at by its own path" : /, not a file:/.test(h.refused) ? "a named pipe, a socket or a device, not a file" : "it changed while it was read" };
+  if (!h.existed) { h.close(); return { skip: "not found" }; }
   try {
     const file = Bun.file(h.io);
     const cut = file.size > max;
@@ -102,7 +117,7 @@ export async function gather(input: { paths?: unknown; urls?: unknown }, ctx: To
   for (const p of list(input.paths)) {
     stop();
     if (GLOB.test(p)) {
-      const got = await globbed(p, ctx.cwd);
+      const got = await globbed(p, ctx.cwd, ctx);
       if (!got.length) skipped.push(`${p} (no file matches)`);
       files.push(...got);
       continue;
@@ -110,7 +125,7 @@ export async function gather(input: { paths?: unknown; urls?: unknown }, ctx: To
     const full = realOf(atCwd(ctx.cwd, p));
     let st;
     try { st = statSync(full); } catch { skipped.push(`${p} (not found)`); continue; }
-    if (st.isDirectory()) files.push(...await filesIn(full, ctx.signal));
+    if (st.isDirectory()) { const got = await filesIn(full, ctx.signal, ctx); if ("skip" in got) skipped.push(`${p} (${got.skip})`); else files.push(...got); }
     else if (st.isFile()) files.push(full);
     else skipped.push(`${p} (not a regular file)`);
   }

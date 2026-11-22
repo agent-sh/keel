@@ -31,6 +31,9 @@ export type ToolContext = {
   // Set by a beforeTool hook: the files and folders this call was judged for, where they are (no link in a path).
   // A file tool opens nothing else (src/tools/files.ts hold).
   judged?: string[];
+  // With it: the file each of those names was at the gate's look (device and inode), or null for a name that was
+  // not there. A name that is another file by the time of the open is not what was judged.
+  looked?: Record<string, string | null>;
   // The tool_use id of the call being run (set per call by the engine).
   callId?: string;
   // Set on a call a program made (run_code): the id of the turn's call that runs the program.

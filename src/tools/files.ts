@@ -1,7 +1,7 @@
 // File operations every family's tools share: reading pages of text, images,
 // PDFs and notebooks; exact-string edits with the quote and line-ending
 // tolerance models need; the read-before-overwrite guard; glob and ripgrep.
-import { chmodSync, closeSync, constants, existsSync, mkdirSync, openSync, readFileSync, readlinkSync, statSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readlinkSync, statSync } from "node:fs";
 import { mkdir, open, readdir } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { atCwd, canonical, contains, realOf } from "../core/paths.ts";
@@ -22,52 +22,127 @@ export const mtime = (p: string) => { try { return statSync(p).mtimeMs; } catch 
 
 // Between the gate's look at a path and a tool's open of it, a command that
 // runs beside the call can change what the name is: a file becomes a link to
-// a key, a folder above it becomes a link. So a file tool never opens a name
-// and hopes: it holds the file.
+// a key, a folder above it becomes a link, a named pipe takes its place. So
+// after the gate's look a file tool does no I/O on a name. It holds the file:
 //
 // - The path must be canonical (no link, `.` or `..` in it: what realOf
 //   answers for a path the kernel takes) and one the gate judged for this
-//   call (`ctx.judged`: the files the call's class named, where they are).
-// - Its folder is opened and what was opened is compared with the path (the
-//   descriptor's own path, /proc/self/fd): a folder swapped for a link is
-//   not the folder that was judged.
-// - The file is opened inside that folder without following a link at its
-//   name (O_NOFOLLOW), or created there and only there (O_EXCL).
-// - What the tool then reads and writes is that descriptor (`io`, the
-//   descriptor's path: every read and write of this module goes through
-//   ioOf), so no name is looked up again.
+//   call (`ctx.judged`: the files the call's class named, where they are,
+//   each with the file it was then).
+// - Its folder is opened by descriptor and what was opened is compared with
+//   the path (the descriptor's own path, in /proc): a folder swapped for a
+//   link is not the folder that was judged. A folder a write has to make is
+//   made step by step under the deepest folder that exists, each step
+//   inside a held descriptor, never by a path of names.
+// - The file is opened inside that folder as a bare handle that follows no
+//   link (O_PATH | O_NOFOLLOW), or created there and only there (O_EXCL).
+//   What the handle is, is read from the handle: a link is refused, and so
+//   is anything that is not a regular file or a folder (a named pipe, a
+//   socket, a device: opening one can hang the call, or the daemon), and a
+//   file that is not the one the gate saw under that name (another file's
+//   hard link moved there).
+// - What the tool then reads and writes is that handle's own path in /proc
+//   (`io`: every read and write of this module goes through ioOf), which
+//   names the file itself and looks no name up again. A file that is not
+//   there ends the call with the tool's own words for that: its `io` is a
+//   path that never exists.
 //
-// Where the descriptor's path cannot be read (no /proc: not Linux) the path
-// is checked to be canonical and judged, and then opened by its name.
+// Where /proc is missing (not Linux) the path is checked to be canonical
+// and judged, the name's kind is read without following a link, and it is
+// then opened by its name: the gap is narrowed there, not closed.
+type Judged = { path: string; id?: string | null };
 export type Held = { path: string; io: string; existed: boolean; beside(name: string): string; close(): void };
 const PROC = existsSync("/proc/self/fd");
+const O_PATH = 0o10000000;
+// (By this process's id: a program the tool starts is given the same path.)
+const fdPath = (fd: number) => `/proc/${process.pid}/fd/${fd}`;
+const NOWHERE = `/proc/${process.pid}/fd/not-there`;
 const held = new Map<string, string[]>();
-// The path to do I/O on for a file a call holds: its descriptor's. A path nothing holds is itself.
+// The path to do I/O on for a file a call holds: its handle's. A path nothing holds is itself.
 export const ioOf = (p: string) => held.get(p)?.at(-1) ?? p;
+// The file a name is now, as the gate records it and the hold compares it: nothing for a name that is not there.
+export function fileId(p: string): string | null {
+  try { const st = lstatSync(p); return `${st.dev}:${st.ino}`; } catch { return null; }
+}
 const moved = (p: string, how: string) => ({ refused: `${p} is not the file this call was checked for: ${how}. Nothing was read or written. If the file changed while the call ran, call again.` });
+const KINDS: [(st: { isFIFO(): boolean; isSocket(): boolean; isCharacterDevice(): boolean; isBlockDevice(): boolean }) => boolean, string][] =
+  [[(st) => st.isFIFO(), "a named pipe"], [(st) => st.isSocket(), "a socket"], [(st) => st.isCharacterDevice() || st.isBlockDevice(), "a device"]];
 
-// What the gate judged lately for each session: the paths of the calls it let run, for a moment. A caller that runs
-// a tool for a session without the context the gate's hook made (no `judged`) is held to these: a tool run for a
-// session opens nothing its gate did not just clear.
+// The gate's latest look at each path, for a moment: the file it was then (device and inode; null: not there).
+const looks = new Map<string, { until: number; id: string | null }>();
+export function noteLook(path: string, id: string | null) {
+  if (looks.size > 4096) { const now = Date.now(); for (const [k, v] of looks) if (v.until < now) looks.delete(k); if (looks.size > 4096) looks.clear(); }
+  looks.set(path, { until: Date.now() + LATELY_MS, id });
+}
+const latestLook = (path: string): string | null | undefined => { const l = looks.get(path); return l && l.until >= Date.now() ? l.id : undefined; };
+
+// What the gate judged lately for each session: the paths of the calls it let run, for a moment, by what the call
+// does (read or write). A caller that runs a tool for a session without the context the gate's hook made (no
+// `judged`) is held to these: a tool run for a session opens nothing its gate did not just clear for that.
 const LATELY_MS = 30_000;
-const lately = new Map<string, Map<string, number>>();
-export function noteJudged(sessionId: string, paths: string[]) {
+const lately = new Map<string, Map<string, { until: number; id?: string | null }>>();
+export function noteJudged(sessionId: string, cls: "read" | "write", judged: { path: string; id?: string | null }[]) {
   const now = Date.now();
   let m = lately.get(sessionId);
   if (!m) { if (lately.size > 512) lately.clear(); lately.set(sessionId, (m = new Map())); }
-  if (m.size > 256) for (const [k, at] of m) if (at < now) m.delete(k);
-  for (const p of paths) m.set(p, now + LATELY_MS);
+  if (m.size > 256) for (const [k, v] of m) if (v.until < now) m.delete(k);
+  for (const j of judged) m.set(`${cls}\0${j.path}`, { until: now + LATELY_MS, id: j.id });
 }
-function clearedFor(ctx: HoldContext, p: string): boolean {
-  const within = (paths: Iterable<string>) => { for (const j of paths) if (j === p || contains(j, p)) return true; return false; };
-  if (ctx.judged) return within(ctx.judged);
+// The judged entry that clears a path: itself, or a folder that holds it. Nothing when none does.
+function clearedBy(ctx: HoldContext, p: string, cls: "read" | "write"): Judged | "open" | undefined {
+  const find = (list: Judged[]) => list.find((j) => j.path === p) ?? list.find((j) => contains(j.path, p));
+  // (A path with no look recorded for it is held to its name alone.)
+  if (ctx.judged) return find(ctx.judged.map((path) => ({ path, ...(ctx.looked && path in ctx.looked ? { id: ctx.looked[path] } : {}) })));
   // (No gate has judged a file for this session in this process: nothing to hold the call to.)
   const m = ctx.sessionId ? lately.get(ctx.sessionId) : undefined;
-  if (!m) return true;
-  const now = Date.now();
-  return within([...m].filter(([, at]) => at >= now).map(([k]) => k));
+  if (!m) return "open";
+  const now = Date.now(), head = `${cls}\0`;
+  return find([...m].filter(([k, v]) => v.until >= now && k.startsWith(head)).map(([k, v]) => ({ path: k.slice(head.length), id: v.id })));
 }
-export type HoldContext = { judged?: string[]; sessionId?: string };
+export type HoldContext = { judged?: string[]; looked?: Record<string, string | null>; sessionId?: string };
+
+// A folder by its descriptor: opened without following a link at its name, and the same folder the path names
+// (the descriptor's own path). `make`: its missing parts are made, each inside the descriptor of the part above.
+function openFolder(dir: string, make: boolean): { fd: number } | { missing: true } | { moved: string } {
+  const flags = O_PATH | constants.O_DIRECTORY | constants.O_NOFOLLOW;
+  const open = (path: string): number | NodeJS.ErrnoException => { try { return openSync(path, flags); } catch (e) { return e as NodeJS.ErrnoException; } };
+  const is = (fd: number, path: string) => { try { return readlinkSync(fdPath(fd)) === path; } catch { return false; } };
+  const whole = open(dir);
+  if (typeof whole === "number") {
+    if (is(whole, dir)) return { fd: whole };
+    closeSync(whole);
+    return { moved: "its folder is somewhere else now (a link took the place of a folder)" };
+  }
+  if (whole.code !== "ENOENT") return { moved: whole.code === "ELOOP" || whole.code === "ENOTDIR" ? "its folder is a link or a file now" : `its folder cannot be opened (${whole.code ?? "it failed"})` };
+  if (!make) return { missing: true };
+  // The deepest folder that exists, held; then one part at a time under it.
+  const parts: string[] = [];
+  let at = dir, fd = -1;
+  for (;;) {
+    const up = dirname(at);
+    if (up === at) return { moved: "no folder of its path can be opened" };
+    parts.unshift(basename(at));
+    at = up;
+    const got = open(at);
+    if (typeof got === "number") {
+      if (!is(got, at)) { closeSync(got); return { moved: "a folder of its path is somewhere else now" }; }
+      fd = got;
+      break;
+    }
+    if (got.code !== "ENOENT") return { moved: `a folder of its path cannot be opened (${got.code ?? "it failed"})` };
+  }
+  for (const part of parts) {
+    const child = `${fdPath(fd)}/${part}`;
+    try { mkdirSync(child); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "EEXIST") { closeSync(fd); return { moved: `a folder of its path cannot be made (${(e as NodeJS.ErrnoException).code ?? "it failed"})` }; } }
+    const next = open(child);
+    closeSync(fd);
+    if (typeof next !== "number") return { moved: "a folder of its path became a link or a file while it was made" };
+    fd = next;
+  }
+  if (is(fd, dir)) return { fd };
+  closeSync(fd);
+  return { moved: "its folder is somewhere else now" };
+}
 
 export function hold(given: string, ctx: HoldContext, how: "read" | "write" | "folder"): Held | { refused: string } {
   // (A caller that names the file through a link: where it is. The tools pass what realOf answered already.)
@@ -78,43 +153,71 @@ export function hold(given: string, ctx: HoldContext, how: "read" | "write" | "f
   if (!canonical(p)) {
     // (A path the kernel refuses is answered by realOf as it was given: say what the kernel says of it.)
     let why = "its path holds a link or a `..`";
-    try { statSync(p); } catch (e) { why = `the path cannot be opened (${(e as NodeJS.ErrnoException).code ?? "it failed"})`; }
+    try { lstatSync(p); } catch (e) { why = `the path cannot be opened (${(e as NodeJS.ErrnoException).code ?? "it failed"})`; }
     return moved(p, why);
   }
-  const cleared = clearedFor(ctx, p);
-  // (A read of a name that is not there says so in the tool's own words.)
-  if (!cleared && (how !== "read" || existsSync(p))) return moved(p, "the path it names changed between the check and the open");
-  const none = (): Held => ({ path: p, io: p, existed: false, beside: (name) => join(dirname(p), name), close() {} });
-  if (!PROC) return { ...none(), existed: existsSync(p) };
+  // (A file that is not there is held as nowhere for as long as the call holds it: ioOf never falls back to its name.)
+  const absent = (): Held => {
+    const names = [...new Set([p, given])];
+    for (const n of names) held.set(n, [...(held.get(n) ?? []), NOWHERE]);
+    return { path: p, io: NOWHERE, existed: false, beside: () => NOWHERE, close() { for (const n of names) { const l = held.get(n); if (l) { const i = l.lastIndexOf(NOWHERE); if (i >= 0) l.splice(i, 1); if (!l.length) held.delete(n); } } } };
+  };
+  const entry = clearedBy(ctx, p, how === "read" ? "read" : "write");
+  // (Also for a name that is not there: what the tool would say of it, a hint of near names among it, is about a
+  // folder nobody judged.)
+  if (!entry) return moved(p, "the path it names changed between the check and the open");
+  // The file the gate saw under this name: the look the call carries, else the gate's latest look at the path.
+  const judged = entry === "open" ? undefined : entry.path !== p ? undefined : entry.id !== undefined ? entry.id : latestLook(p);
+  if (!PROC) {
+    // No descriptor's path to read: the name's kind, without following a link, and then the name.
+    let st: ReturnType<typeof lstatSync> | undefined;
+    try { st = lstatSync(p); } catch {} // not there
+    if (st?.isSymbolicLink()) return moved(p, "it is a link now");
+    const odd = st && KINDS.find(([is]) => is(st!));
+    if (odd) return { refused: `${p} is ${odd[1]}, not a file: nothing is read from it or written to it.` };
+    if (st && typeof judged === "string" && `${st.dev}:${st.ino}` !== judged) return moved(p, "another file has its name now");
+    if (!st && how === "read") return absent();
+    if (how !== "read") mkdirSync(dirname(p), { recursive: true });
+    return { path: p, io: p, existed: !!st, beside: (name) => join(dirname(p), name), close() {} };
+  }
   const dir = dirname(p), base = basename(p);
   const fds: number[] = [];
   const close = () => { for (const fd of fds.splice(0)) try { closeSync(fd); } catch {} };
   try {
-    if (how !== "read") mkdirSync(dir, { recursive: true });
-    let dfd: number;
-    try { dfd = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY); } catch (e) {
-      if (how === "read" && (e as NodeJS.ErrnoException).code === "ENOENT") return none();
-      throw e;
-    }
-    fds.push(dfd);
-    if (readlinkSync(`/proc/self/fd/${dfd}`) !== dir) { close(); return moved(p, "its folder is somewhere else now (a link took the place of a folder)"); }
-    const beside = (name: string) => `/proc/self/fd/${dfd}/${name}`;
+    const folder = openFolder(dir, how !== "read");
+    if ("missing" in folder) return absent();
+    if ("moved" in folder) return moved(p, folder.moved);
+    fds.push(folder.fd);
+    const beside = (name: string) => `${fdPath(folder.fd)}/${name}`;
     let io = beside(base), existed = true;
     if (how !== "folder") {
       let fd: number | undefined;
-      // (O_NONBLOCK: a pipe with no writer does not hold the call; a regular file is not affected.)
-      try { fd = openSync(beside(base), (how === "read" ? constants.O_RDONLY : constants.O_RDWR) | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch (e) {
+      // A bare handle on whatever has the name, a link itself included: nothing is followed, nothing blocks.
+      try { fd = openSync(beside(base), O_PATH | constants.O_NOFOLLOW); } catch (e) {
         const code = (e as NodeJS.ErrnoException).code;
-        if (code === "ELOOP" || code === "EMLINK") { close(); return moved(p, "it is a link now"); }
-        if (code !== "ENOENT") {
-          // (A folder for a write, a file that may not be read or written: the tool says it in its own words, by the name inside the held folder.)
-          existed = existsSync(beside(base));
-        } else {
-          existed = false;
-          if (how === "write") fd = openSync(beside(base), constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o666);
-        }
+        if (code !== "ENOENT") { close(); return code === "ELOOP" ? moved(p, "it is a link now") : { refused: `${p} could not be opened: ${(e as Error).message}` }; }
       }
-      if (fd !== undefined) { fds.push(fd); io = `/proc/self/fd/${fd}`; }
+      if (fd === undefined) {
+        existed = false;
+        if (how === "read") { close(); return absent(); }
+        if (typeof judged === "string") { close(); return moved(p, "it is gone"); }
+        // Made here and only here: a name that appeared meanwhile, a link among them, is not written through.
+        try { fd = openSync(beside(base), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o666); } catch (e) {
+          close();
+          return (e as NodeJS.ErrnoException).code === "EEXIST" ? moved(p, "something took its name while the call ran") : { refused: `${p} could not be made: ${(e as Error).message}` };
+        }
+        fds.push(fd);
+      } else {
+        fds.push(fd);
+        const st = fstatSync(fd);
+        if (st.isSymbolicLink()) { close(); return moved(p, "it is a link now"); }
+        const odd = KINDS.find(([is]) => is(st));
+        if (odd) { close(); return { refused: `${p} is ${odd[1]}, not a file: nothing is read from it or written to it.` }; }
+        // The file the gate saw under this name, when it saw one: another file moved there (a hard link of one) is not it.
+        if (typeof judged === "string" && `${st.dev}:${st.ino}` !== judged) { close(); return moved(p, "another file has its name now"); }
+        if (judged === null) { close(); return moved(p, "it was not there when the call was checked"); }
+      }
+      io = fdPath(fd);
     }
     const names = [...new Set([p, given])];
     for (const n of names) held.set(n, [...(held.get(n) ?? []), io]);
@@ -256,6 +359,8 @@ export async function readFile(p: string, ctx: ToolContext, o: { offset?: number
   // The file is held for the whole read: what is read is the file that was judged (hold).
   const h = hold(p, ctx, "read");
   if ("refused" in h) return { content: h.refused, error: true };
+  // A spilled output the storage retention removed is said to be that, not a file that never was.
+  if (!h.existed) { h.close(); return { content: removedNote(p, ctx.spillDir) ?? notFound(p, ctx.cwd), error: true }; }
   try { return await readHeld(p, ctx, o); } finally { h.close(); }
 }
 async function readHeld(p: string, ctx: ToolContext, o: { offset?: number; limit?: number; pages?: string; large?: boolean }): Promise<ReadResult> {
@@ -322,12 +427,14 @@ async function run(argv: string[]): Promise<{ out: string; err: string; code: nu
 // range as images of those pages, for layout, figures and scans.
 async function readPdf(p: string, ctx: ToolContext, pages?: string): Promise<ReadResult> {
   if (!Bun.which("pdfinfo")) return { content: "Reading PDFs needs poppler-utils (pdfinfo, pdftotext, pdftoppm).", error: true };
-  const info = await run(["pdfinfo", p]);
+  // (The programs are given the held file's own path, not its name.)
+  const at = ioOf(p);
+  const info = await run(["pdfinfo", at]);
   const count = Number(/Pages:\s+(\d+)/.exec(info.out)?.[1] ?? 0);
   ctx.seen.set(p, mtime(p));
   if (!pages) {
     if (count > 10) return { content: `${p} has ${count} pages. Read it in ranges with pages, e.g. "1-5" (at most 20 at a time).`, error: true };
-    const t = await run(["pdftotext", "-layout", "-enc", "UTF-8", p, "-"]);
+    const t = await run(["pdftotext", "-layout", "-enc", "UTF-8", at, "-"]);
     if (t.code !== 0) return { content: `pdftotext failed: ${t.err.trim()}`, error: true };
     if (t.out.trim()) return { content: `PDF, ${count} pages, as text:\n\n${numbered(t.out, 1, undefined, false).body}` };
     pages = `1-${Math.max(1, count)}`; // a scan: no text layer, so look at it
@@ -337,7 +444,7 @@ async function readPdf(p: string, ctx: ToolContext, pages?: string): Promise<Rea
   if (!Bun.which("pdftoppm")) return { content: "pdftoppm is not installed (poppler-utils).", error: true };
   const dir = join(ctx.spillDir, "pdf", `${Bun.hash(p + mtime(p)).toString(36)}`);
   await mkdir(dir, { recursive: true });
-  const t = await run(["pdftoppm", "-png", "-r", "100", "-f", String(r[0]), "-l", String(r[1]), p, join(dir, "p")]);
+  const t = await run(["pdftoppm", "-png", "-r", "100", "-f", String(r[0]), "-l", String(r[1]), at, join(dir, "p")]);
   if (t.code !== 0) return { content: `pdftoppm failed: ${t.err.trim()}`, error: true };
   const files = (await readdir(dir)).filter((f) => f.endsWith(".png")).sort();
   const blocks: (TextBlock | ImageBlock)[] = [{ type: "text", text: `PDF ${p}, pages ${r[0]}-${r[1]} of ${count}:` }];
@@ -382,7 +489,7 @@ async function readNotebook(p: string, ctx: ToolContext): Promise<ReadResult> {
 
 // Overwriting a whole file the model has not seen loses work it does not know
 // about: the first try shows the file and marks it seen, so the next applies.
-export function guardOverwrite(p: string, ctx: ToolContext): string | null {
+export async function guardOverwrite(p: string, ctx: ToolContext): Promise<string | null> {
   const m = mtime(p);
   if (m === -1) return heldWrite(p) ?? null;
   { const held = heldWrite(p); if (held) return held; }
@@ -392,7 +499,11 @@ export function guardOverwrite(p: string, ctx: ToolContext): string | null {
     let head = "";
     const h = hold(p, ctx, "read");
     if ("refused" in h) return h.refused;
-    try { head = readFileSync(h.io, "utf8").slice(0, 2000); } catch {} finally { h.close(); }
+    // (Its start only, and never a read that holds the loop: the file is a session's to name.)
+    try {
+      const fh = await open(h.io, "r");
+      try { const buf = Buffer.alloc(8192); const { bytesRead } = await fh.read(buf, 0, buf.length, 0); head = buf.subarray(0, bytesRead).toString("utf8").slice(0, 2000); } finally { await fh.close(); }
+    } catch {} finally { h.close(); }
     return `${p} exists and was not read in this session. Its start is below; write again to replace it.\n\n${head}`;
   }
   if (seen !== m) return `${p} changed on disk since it was read. Read it again before replacing it.`;
@@ -554,6 +665,7 @@ export async function editFile(p: string, oldS: string, newS: string, all: boole
   { const held = heldWrite(p); if (held) return { error: held }; }
   const h = hold(p, ctx, "read");
   if ("refused" in h) return { error: h.refused };
+  if (!h.existed) { h.close(); return { error: notFound(p, ctx.cwd) }; }
   let bytes: Uint8Array;
   try { bytes = new Uint8Array(await Bun.file(h.io).arrayBuffer()); } finally { h.close(); }
   if (!isUtf8(bytes)) return { error: `${p} is not valid UTF-8; change it with a shell command that keeps its encoding.` };
@@ -581,28 +693,40 @@ function isUtf8(b: Uint8Array): boolean {
 // having more matches than are shown (`truncated`): matches were never looked at, so
 // some may be missing and the newest of all may not be among them. `ceiling` says so.
 export const GLOB_SCAN_MAX = 20_000;
-export async function globFiles(pattern: string, root: string, cwd: string, cap = 100): Promise<{ files: string[]; truncated: boolean; stopped?: string; ceiling?: string } | { error: string }> {
+// `ctx`: the call's context. The folder is held and scanned from its handle (hold): a folder that became a link
+// between the gate's look and the scan is not listed.
+export async function globFiles(pattern: string, root: string, cwd: string, cap = 100, ctx?: HoldContext): Promise<{ files: string[]; truncated: boolean; stopped?: string; ceiling?: string } | { error: string }> {
+  const h = ctx ? hold(root, ctx, "read") : undefined;
+  if (h && "refused" in h) return { error: h.refused };
+  try { return await globHeld(pattern, root, h?.io ?? root, cwd, cap); } finally { h?.close(); }
+}
+async function globHeld(pattern: string, root: string, at: string, cwd: string, cap: number): Promise<{ files: string[]; truncated: boolean; stopped?: string; ceiling?: string } | { error: string }> {
   let st;
-  try { st = statSync(root); } catch { return { error: notFound(root, cwd, "Directory") }; }
+  try { st = statSync(at); } catch { return { error: notFound(root, cwd, "Directory") }; }
   if (!st.isDirectory()) return { error: `${root} is a file, not a directory. Search in ${dirname(root)}.` };
   const files: { p: string; m: number }[] = [];
   let stopped: string | undefined;
   let ceiling: string | undefined;
   try {
-    for await (const f of new Bun.Glob(pattern).scan({ cwd: root, absolute: true, onlyFiles: true, dot: true })) {
+    for await (const found of new Bun.Glob(pattern).scan({ cwd: at, absolute: true, onlyFiles: true, dot: true })) {
+      // (Scanned from the folder's handle: named as the folder's own path.)
+      const f = at === root ? found : root + found.slice(at.length);
       if (f.includes("/node_modules/") || f.includes("/.git/")) continue;
       // One match past the ceiling proves the scan was cut, not that it ended exactly there.
       if (files.length >= GLOB_SCAN_MAX) {
         ceiling = `The scan stopped after ${GLOB_SCAN_MAX} matches, before it had examined them all: files that match may be missing here, and newest first holds only among the ${GLOB_SCAN_MAX} examined. Use a narrower path or pattern.`;
         break;
       }
-      files.push({ p: f, m: mtime(f) });
+      files.push({ p: f, m: mtime(found) });
     }
   } catch (e) {
     stopped = `The search stopped before it covered every folder, so this list is incomplete: ${(e as Error).message}`;
   }
   files.sort((a, b) => b.m - a.m);
-  return { files: files.slice(0, cap).map((f) => f.p), truncated: files.length > cap, stopped, ceiling };
+  // A match reached through a folder that is a link (a literal part of the pattern that became one) is not in
+  // this folder: it is left out.
+  const within = files.filter((f) => canonical(dirname(f.p)));
+  return { files: within.slice(0, cap).map((f) => f.p), truncated: within.length > cap, stopped, ceiling };
 }
 
 export type RgOpts = {

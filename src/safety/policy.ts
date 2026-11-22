@@ -53,7 +53,8 @@ export type CallClass =
   // `paths`: the files and folders a read names (readPaths), for the one
   // thing a read is held to: in a sandboxed session it asks before it reads
   // where the owner's credentials or Keel's own files are kept.
-  | { kind: "read"; paths?: string[] }
+  // `unnamed`: a reading tool known only by its flag (an MCP server's) whose input names no file.
+  | { kind: "read"; paths?: string[]; unnamed?: true }
   // `interpreter`: the program that runs the command when it is not bash. The
   // rules read a command as bash does, so none of it is then taken for a read.
   | { kind: "shell"; command: string; escalate?: boolean; cwd?: string; interpreter?: string }
@@ -375,10 +376,11 @@ const HOLDS_RUNS_LATER = /(^|\/)\.(github|gitlab|circleci|buildkite|forgejo|gite
 // The files and folders a reading tool's input names: its path keys, a
 // relative one from the call's folder, and any other string that is an
 // absolute path (a pattern that starts at one).
-const PATH_KEY = /^(file_?path|path|paths|dir_?path|directory|absolute_path|notebook_path|file|filename|folder|root)$/i;
+const PATH_KEY = /^(file_?path|path|paths|dir_?path|directory|absolute_path|notebook_path|file|files|filename|folder|root|target|source|src|dest|destination)$/i;
 // A key that holds a pattern of names: read from the tool's folder key when it has one (Glob's `path`), else as a
 // path when it starts at one. A pattern that reaches a store by a wildcard-free start is that store's.
 const PATTERN_KEY = /^(pattern|patterns|glob|include|includes)$/i;
+const MANY_KEY = /^(paths|files)$/i;
 export function readPaths(input: unknown, cwd: string): string[] {
   const out = new Set<string>();
   const whole = (v: string) => (v === "~" ? homedir() : v.startsWith("~/") ? join(homedir(), v.slice(2)) : v);
@@ -386,7 +388,7 @@ export function readPaths(input: unknown, cwd: string): string[] {
   // in). A path key's value is a path whole, whatever characters its names hold (a link can be named `l[x`).
   const add = (v: unknown, base = cwd, pattern = false) => {
     if (typeof v !== "string" || !v || v.length > 4096) return;
-    let t = whole(v);
+    let t = whole(fileUrl(v) ?? v);
     if (pattern) { const wild = t.search(/[*?[{]/); if (wild >= 0) t = dirname(`${t.slice(0, wild)}x`); }
     // (With its `..` kept: where it leads is the walk's to say, realOf.)
     out.add(atCwd(base, t));
@@ -395,7 +397,13 @@ export function readPaths(input: unknown, cwd: string): string[] {
     const entries = Object.entries(input);
     const each = (v: unknown, f: (x: unknown) => void) => { if (Array.isArray(v)) for (const x of v.slice(0, 32)) f(x); else f(v); };
     const bases: string[] = [];
-    for (const [k, v] of entries) if (PATH_KEY.test(k)) each(v, (x) => { add(x); if (typeof x === "string" && x) bases.push(atCwd(cwd, whole(x))); });
+    for (const [k, v] of entries) if (PATH_KEY.test(k)) each(v, (x) => {
+      add(x);
+      // (A list of paths takes patterns too, AskReaders' and read_many_files' among them: such an entry is read as
+      // the name it is and as the folder its pattern looks in.)
+      if (MANY_KEY.test(k) && typeof x === "string" && /[*?[{]/.test(x)) add(x, cwd, true);
+      if (typeof x === "string" && x) bases.push(atCwd(cwd, whole(x)));
+    });
     for (const [k, v] of entries) if (PATTERN_KEY.test(k)) each(v, (x) => {
       if (typeof x !== "string" || !x) return;
       // The part before the first wildcard names where the pattern looks.
@@ -407,14 +415,27 @@ export function readPaths(input: unknown, cwd: string): string[] {
   return [...out].slice(0, 32);
 }
 
+// The path a file: URL names, or nothing for any other string.
+export function fileUrl(v: string): string | undefined {
+  if (!/^file:/i.test(v)) return undefined;
+  try { const u = new URL(v); return u.protocol === "file:" && (u.hostname === "" || u.hostname === "localhost") ? decodeURIComponent(u.pathname) : undefined; } catch { return undefined; }
+}
+
 // The strings of a tool's input that are a path by themselves (an MCP file
-// server's `path`), for a tool whose input the gate cannot read otherwise.
+// server's `path`, at any depth) or a file: URL, for a tool whose input the
+// gate cannot read otherwise.
 export function pathsNamed(input: unknown): string[] {
   const out: string[] = [];
   let seen = 0;
   const walk = (v: unknown, depth: number) => {
     if (++seen > 200 || depth > 4 || out.length >= 32) return;
-    if (typeof v === "string") { if (v.length < 4096 && /^(?:~|\/)[^\s]*$/.test(v)) out.push(v); }
+    if (typeof v === "string") {
+      if (v.length >= 4096) return;
+      // A path by itself, or a file: URL (an MCP server's `uri`).
+      const file = fileUrl(v);
+      if (file) out.push(file);
+      else if (/^(?:~|\/)[^\s]*$/.test(v)) out.push(v);
+    }
     else if (Array.isArray(v)) for (const x of v) walk(x, depth + 1);
     else if (v && typeof v === "object") for (const x of Object.values(v)) walk(x, depth + 1);
   };
@@ -465,6 +486,14 @@ export function decide(c: CallClass, f: Facts): Decision {
     // what its commands read (the sandbox's view) and nothing else without
     // the owner, in every mode. Where no owner is asked (Full auto) such a
     // read is refused.
+    // A reading tool that runs outside the sandbox and names no file reads where it chooses: nothing here can say
+    // what. The owner is asked once (the answer stands for the tool, as for any tool known by its name).
+    if (f.sandboxed && c.unnamed && f.mode !== "read-only" && f.mode !== "plan") {
+      if (f.rules.some((r) => r.kind === "tool" && r.pattern === f.tool && (!r.bind || r.bind === f.bind))) return { allow: true };
+      // (No owner is asked in Full auto: it runs there only under an answer that already stands.)
+      if (f.mode === "full-auto") return { deny: `Refused: ${f.tool} is a reading tool that names no file: it runs outside this session's sandbox and reads where it chooses. In Full auto nobody is asked, so it runs only once the owner has allowed the tool (in an asking mode: Ask, Auto edits or Auto, where the answer can stand). Go on with the rest.` };
+      return { ask: { risk: "low", why: `${f.tool} is a reading tool that names no file: it runs outside this session's sandbox and reads where it chooses`, rule: "reads where it chooses", suggest: [{ kind: "tool", pattern: f.tool, ...(f.bind ? { bind: f.bind } : {}) }] } };
+    }
     if (f.sandboxed && f.shown) for (const p of c.paths ?? []) {
       const v = f.shown(p);
       if (v.shown) continue;

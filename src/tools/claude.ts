@@ -1,5 +1,6 @@
 // The tool profile Claude models are trained on: Claude Code's current names,
 // argument shapes and result wording (code.claude.com/docs/en/tools-reference).
+import { realOf } from "../core/paths.ts";
 import { heldWrite } from "../core/store-files.ts";
 import { abs, editFile, editShown, globFiles, guardOverwrite, hold, mtime, readFile, ripgrep, writeFile } from "./files.ts";
 import { answerText, ask, type Question } from "./interact.ts";
@@ -137,7 +138,7 @@ const Write: Tool = {
     const p = abs(String(input.file_path ?? ""), ctx);
     const content = String(input.content ?? "");
     const existed = mtime(p) !== -1;
-    const g = guardOverwrite(p, ctx);
+    const g = await guardOverwrite(p, ctx);
     if (g) return fail(g);
     if (existed && content.includes("�")) return fail("The content holds U+FFFD, the mark of bytes that did not decode; write the real characters.");
     { const no = await writeFile(p, content, ctx); if (no) return fail(no); }
@@ -188,6 +189,7 @@ const NotebookEdit: Tool = {
     let nb: any;
     const h = hold(p, ctx, "read");
     if ("refused" in h) return fail(h.refused);
+    if (!h.existed) { h.close(); return fail(`${p} does not exist.`); }
     try { nb = JSON.parse(await Bun.file(h.io).text()); } catch (e) { return fail(`Cannot parse the notebook: ${(e as Error).message}`); } finally { h.close(); }
     const cells: any[] = nb.cells ?? [];
     const mode = input.edit_mode ?? "replace";
@@ -223,7 +225,8 @@ const Glob: Tool = {
   }, ["pattern"]),
   async run(input, ctx) {
     const root = input.path ? abs(input.path, ctx) : ctx.cwd;
-    const r = await globFiles(String(input.pattern ?? ""), root, ctx.cwd);
+    // (The session's own folder when no path is given: held as itself.)
+    const r = await globFiles(String(input.pattern ?? ""), root, ctx.cwd, 100, input.path ? ctx : { judged: [realOf(root)] });
     if ("error" in r) return fail(r.error);
     const stopped = r.stopped ? `\n(${r.stopped})` : "";
     if (!r.files.length) return ok(`No files found${stopped}`);

@@ -4,6 +4,7 @@
 // <config>/acp-agents.json (Zed's custom agents: command, args, env). Nothing
 // is hard-coded: a registry agent counts when its binary is on PATH; one the
 // registry ships through npx or uvx is offered to add (it downloads on first run).
+import { configRefused } from "../core/named-config.ts";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { configDir } from "../providers/config.ts";
@@ -59,6 +60,8 @@ export function joinAgents(reg: Registry | null, custom: Record<string, CustomAg
 }
 
 export function readCustom(path = agentsPath()): Record<string, CustomAgent> {
+  // (A file a variable puts inside a folder a session works in is not loaded: src/core/named-config.ts.)
+  if (configRefused("KEEL_ACP_AGENTS", path)) return {};
   if (!existsSync(path)) return {};
   const raw = JSON.parse(readFileSync(path, "utf8"));
   const agents = raw.agents ?? raw.agent_servers ?? {};

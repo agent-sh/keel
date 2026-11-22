@@ -12,7 +12,7 @@
 // fs/read_text_file, fs/write_text_file toward the client).
 import { heldFile, heldWrite } from "../core/store-files.ts";
 import type { AgentConfinement } from "./confine.ts";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { atCwd, realOf } from "../core/paths.ts";
 import { hold } from "../tools/files.ts";
@@ -343,11 +343,13 @@ export class AcpRunner {
         const v = await this.judge(s, { id: crypto.randomUUID(), name: "Read", cls: { kind: "read", paths: [path] }, input: { file_path: path }, signal });
         if (v) throw Object.assign(new Error(v.deny), { code: -32000 });
         { const held = heldFile(path); if (held) throw Object.assign(new Error(held), { code: -32000 }); }
-        // (The file that was judged, held: not whatever the name is by now.)
+        // (The file that was judged, held: the one the gate saw under the name at its look, not whatever the name is
+        // by now. Read off the loop: an agent names the file.)
         const h = hold(path, { judged: [path] }, "read");
         if ("refused" in h) throw Object.assign(new Error(h.refused), { code: -32000 });
+        if (!h.existed) { h.close(); throw Object.assign(new Error(`${path} does not exist`), { code: -32000 }); }
         let text: string;
-        try { text = readFileSync(h.io, "utf8"); } finally { h.close(); }
+        try { text = await readFile(h.io, "utf8"); } finally { h.close(); }
         if (p.line || p.limit) {
           const lines = text.split("\n");
           const from = Math.max(0, Number(p.line ?? 1) - 1);
@@ -364,7 +366,7 @@ export class AcpRunner {
         { const held = heldWrite(path); if (held) throw Object.assign(new Error(held), { code: -32000 }); }
         const h = hold(path, { judged: [path] }, "write");
         if ("refused" in h) throw Object.assign(new Error(h.refused), { code: -32000 });
-        try { writeFileSync(h.io, String(p.content ?? "")); } finally { h.close(); }
+        try { await writeFile(h.io, String(p.content ?? "")); } finally { h.close(); }
         return null;
       }
       default:

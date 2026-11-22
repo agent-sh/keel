@@ -2,6 +2,7 @@
 // configs hold (sources.ts reads them) that the owner imports in one step.
 // Import copies and keeps the copy in step with its source; the source file
 // is never written.
+import { configRefused } from "../core/named-config.ts";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -44,6 +45,8 @@ export const configPath = () => process.env.KEEL_MCP_CONFIG ?? join(configDir(),
 
 // Throws with the parser's reason; the caller keeps the old config then.
 export function readConfig(path: string): McpConfigFile {
+  // (A file a variable puts inside a folder a session works in is not loaded: src/core/named-config.ts.)
+  if (configRefused("KEEL_MCP_CONFIG", path)) return { servers: {} };
   if (!existsSync(path)) return { servers: {} };
   return parseConfig(readFileSync(path, "utf8"));
 }

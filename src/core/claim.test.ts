@@ -1,7 +1,7 @@
 // The claim on a state folder is a kernel lock another process cannot see
 // from a page: whether a second process gets the folder is asked of a child.
 import { afterAll, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFile } from "../tools/files.ts";
@@ -26,10 +26,12 @@ test("the daemon's own Read does not open its claim file, so the claim holds", a
   const claim = claimState(dir)!;
   try {
     expect(claimIn(dir).out).toBe("held");
-    // By its name and through a link to it.
+    // By its name, through a link to it, and as the same file under another name (a hard link).
     const link = join(scratch(), "notes.txt");
     symlinkSync(join(dir, "daemon.claim"), link);
-    for (const p of [join(dir, "daemon.claim"), link]) {
+    const hard = join(dir, "..", `hard-${Date.now()}.txt`);
+    linkSync(join(dir, "daemon.claim"), hard);
+    for (const p of [join(dir, "daemon.claim"), link, hard]) {
       expect(isClaimFile(p)).toBe(true);
       const r = await readFile(p, { cwd: dir, seen: new Map() } as any);
       expect(r).toMatchObject({ error: true });

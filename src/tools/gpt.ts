@@ -50,7 +50,7 @@ function execResult(job: Job, t0: number, maxTokens: number): string {
 
 async function runPatch(text: string, base: string, ctx: ToolContext) {
   try {
-    const r = await applyPatch(ctx.cwd, text, { base, judged: ctx.judged, sessionId: ctx.sessionId });
+    const r = await applyPatch(ctx.cwd, text, { base, judged: ctx.judged, looked: ctx.looked, sessionId: ctx.sessionId });
     for (const f of r.files) ctx.seen.set(resolve(base, f.path), Date.now());
     return ok(r.summary);
   } catch (e) {

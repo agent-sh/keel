@@ -13,7 +13,7 @@
 // - In a sandboxed Full auto session a file tool writes only inside the
 //   session's writable folders, by where the file really is.
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Bus } from "../core/bus.ts";
@@ -278,6 +278,19 @@ test("a reading tool known only by its flag (an MCP server's, an ACP agent's rea
   expect(await ask(mcpRead({ path: join(ws, "src/a.ts") }), {})).toBe("ran");
   gate.setPerm(session.id, { mode: "full-auto", sandbox: "workspace-write" });
   expect(await ask(mcpRead({ path: join(home, ".ssh/id_ed25519") }), {})).toBe("refused");
+  // Every string of the input that names a file is judged: a file: URL, a key no list knows, a value nested inside.
+  gate.setPerm(session.id, { mode: "auto-edits", sandbox: "workspace-write" });
+  const key = join(home, ".ssh/id_ed25519");
+  for (const input of [{ uri: `file://${key}` }, { url: `file://${key}` }, { target: key }, { source: key }, { files: [key] }, { options: { path: key } }, { anything: { deep: [{ at: key }] } }, { path: "keys/../.ssh/id_ed25519" }]) {
+    expect([JSON.stringify(input), await ask(mcpRead(input), {})]).toEqual([JSON.stringify(input), expect.stringMatching(/^card: it reads .*\.ssh/)]);
+  }
+  // One that names no file reads where it chooses: the owner is asked, and in Full auto it runs only under an
+  // answer that stands.
+  expect(await ask(mcpRead({ query: "KEY" }), {})).toMatch(/^card: files__read_file is a reading tool that names no file/);
+  gate.setPerm(session.id, { mode: "full-auto", sandbox: "workspace-write" });
+  expect(await ask(mcpRead({ query: "KEY" }), {})).toBe("refused");
+  gate.setPerm(session.id, { mode: "full-auto", sandbox: "off" });
+  expect(await ask(mcpRead({ query: "KEY" }), {})).toBe("ran");
   // An ACP agent's read names its files in its locations and its raw input.
   expect(classOf({ kind: "read", locations: [{ path: join(home, ".ssh/id_ed25519") }] }, ws)).toEqual({ kind: "read", paths: [join(home, ".ssh/id_ed25519")] });
   expect(classOf({ kind: "search", rawInput: { path: "keys" } }, ws)).toEqual({ kind: "read", paths: [join(ws, "keys")] });
@@ -386,4 +399,83 @@ test("a name that changes between the gate's look and the tool's open: the tool 
     rmSync(flip, { force: true });
     for (const t of ["t1", "t2"]) rmSync(join(ws, t), { force: true });
   }
+}, 120_000);
+
+test("after the gate's look a tool does no I/O on a name: a file that cannot be opened, a folder that is not there, a pipe, another file's hard link, a replaced session folder", async () => {
+  gate.setPerm(session.id, { mode: "auto-edits", sandbox: "workspace-write" });
+  const key = join(home, ".ssh/id_ed25519"), name = join(ws, "swap.txt");
+  const fresh = () => { rmSync(name, { force: true }); writeFileSync(name, "plain\n"); };
+  // A file nobody may read stands at the name when the gate looks; a link to the key takes its place before the open.
+  fresh();
+  chmodSync(name, 0o000);
+  for (const tool of ["Read", "read_file"]) {
+    const got = await judgedThenRun(session, tool, { file_path: name }, () => { rmSync(name, { force: true }); symlinkSync(key, name); }).catch((e) => ({ gate: "ran", out: String(e) }));
+    expect([tool, got.out.includes("KEY")]).toEqual([tool, false]);
+    rmSync(name, { force: true });
+    writeFileSync(name, "plain\n");
+    chmodSync(name, 0o000);
+  }
+  rmSync(name, { force: true });
+  // The folder is not there when the gate looks; it is a link to the key folder by the time of the open.
+  const dir = join(ws, "later");
+  for (const [tool, input] of [["Read", { file_path: join(dir, "id_ed25519") }], ["read_file", { file_path: join(dir, "id_ed25519") }], ["view_image", { path: join(dir, "id_ed25519") }]] as [string, Record<string, unknown>][]) {
+    rmSync(dir, { recursive: true, force: true });
+    const got = await judgedThenRun(session, tool, input, () => symlinkSync(join(home, ".ssh"), dir));
+    expect([tool, got.gate, got.out.includes("KEY")]).toEqual([tool, "ran", false]);
+  }
+  rmSync(dir, { force: true });
+  // A folder that is there when the gate looks and a link to the key folder at the open: not listed (Glob,
+  // list_directory), and a missing file's hint names nothing in it.
+  for (const [tool, input] of [["Glob", { pattern: "*", path: dir }], ["list_directory", { dir_path: dir }], ["Read", { file_path: join(dir, "id_ed2551") }]] as [string, Record<string, unknown>][]) {
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir);
+    const got = await judgedThenRun(session, tool, input, () => { rmSync(dir, { recursive: true }); symlinkSync(join(home, ".ssh"), dir); });
+    expect([tool, got.gate, got.out.includes("id_ed25519") ? got.out : ""]).toEqual([tool, "ran", ""]);
+  }
+  rmSync(dir, { force: true });
+  // A write to a new file in a folder that is not there yet: the folder is made under the session's own folder, never
+  // through a link that took a name of the way.
+  const outside = join(root, "outside-tree");
+  mkdirSync(outside, { recursive: true });
+  const way = join(ws, "deep");
+  const made = await judgedThenRun(session, "Write", { file_path: join(way, "a/b/new.txt"), content: "x" }, () => symlinkSync(outside, way));
+  expect([made.gate, readdirSync(outside)]).toEqual(["ran", []]);
+  rmSync(way, { force: true });
+  const plain = await judgedThenRun(session, "Write", { file_path: join(way, "a/b/new.txt"), content: "x" });
+  expect([plain.gate, readFileSync(join(way, "a/b/new.txt"), "utf8")]).toEqual(["ran", "x"]);
+  rmSync(way, { recursive: true, force: true });
+  // A named pipe at the name: every tool answers at once, and says what it is.
+  const pipe = join(ws, "pipe.ts");
+  Bun.spawnSync(["mkfifo", pipe]);
+  for (const [tool, input] of [["Read", { file_path: pipe }], ["read_file", { file_path: pipe }], ["view_image", { path: pipe }], ["Write", { file_path: pipe, content: "x" }], ["Edit", { file_path: pipe, old_string: "a", new_string: "b" }], ["write_file", { file_path: pipe, content: "x" }]] as [string, Record<string, unknown>][]) {
+    const t0 = performance.now();
+    const got = await Promise.race([judgedThenRun(session, tool, input), Bun.sleep(3_000).then(() => ({ gate: "hung", out: "" }))]);
+    expect([tool, got.gate, got.out, performance.now() - t0 < 1_000]).toEqual([tool, "ran", expect.stringContaining("is a named pipe, not a file"), true]);
+  }
+  rmSync(pipe, { force: true });
+  // Another file's hard link takes the name after the gate looked: not the file that was judged.
+  const elsewhere = join(root, "outside-tree/secret.txt");
+  writeFileSync(elsewhere, "OUTSIDE-SECRET\n");
+  for (const [tool, input] of [["Read", { file_path: name }], ["Write", { file_path: name, content: "PLANTED" }], ["Edit", { file_path: name, old_string: "OUTSIDE", new_string: "PLANTED" }]] as [string, Record<string, unknown>][]) {
+    fresh();
+    const got = await judgedThenRun(session, tool, input, () => { rmSync(name); linkSync(elsewhere, name); });
+    expect([tool, got.gate, got.out.includes("OUTSIDE-SECRET"), readFileSync(elsewhere, "utf8")]).toEqual([tool, "ran", false, "OUTSIDE-SECRET\n"]);
+    expect([tool, got.out]).toEqual([tool, expect.stringContaining("is not the file this call was checked for")]);
+  }
+  rmSync(name, { force: true });
+  // The session's folder itself is replaced by a link to the key folder: nothing runs in it any more.
+  const folder = join(root, "moving-ws");
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "id_ed25519"), "plain\n");
+  const moving = store.createSession({ model: "fixture:m", workspace: folder });
+  gate.setPerm(moving.id, { mode: "auto-edits", sandbox: "workspace-write" });
+  expect((await judgedThenRun(moving, "Read", { file_path: join(folder, "id_ed25519") })).out).toContain("plain");
+  renameSync(folder, `${folder}.was`);
+  symlinkSync(join(home, ".ssh"), folder);
+  const after = await judgedThenRun(moving, "Read", { file_path: join(folder, "id_ed25519") });
+  expect([after.gate, after.out]).toEqual(["refused", ""]);
+  expect(await through(moving, "Read", { file_path: join(folder, "id_ed25519") })).toMatch(/^refused: .*this session's folder is not the folder the session was made in/);
+  rmSync(folder, { force: true });
+  renameSync(`${folder}.was`, folder);
+  expect((await judgedThenRun(moving, "Read", { file_path: join(folder, "id_ed25519") })).out).toContain("plain");
 }, 120_000);

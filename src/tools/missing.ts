@@ -3,12 +3,14 @@
 // named differently), a folder that was removed or moved (a worktree), or a
 // path written from the wrong root. Each of those is answered with the place
 // to look instead, so the next call lands without a directory listing.
-import { readdirSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
+import { namesIn } from "../core/paths.ts";
 import { basename, dirname, extname, join, relative, isAbsolute } from "node:path";
 import { placeholdersIn } from "../safety/secrets.ts";
 
 const exists = (p: string) => { try { statSync(p); return true; } catch { return false; } };
-const list = (dir: string): string[] | null => { try { return readdirSync(dir); } catch { return null; } };
+// (Read from the folder itself, never through a link that took its name: a hint names nothing of another folder.)
+const list = (dir: string): string[] | null => namesIn(dir);
 
 export function notFound(p: string, cwd: string, what: "File" | "Directory" = "File"): string {
   const out = [`${what} does not exist: ${p}`];

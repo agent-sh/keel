@@ -21,8 +21,8 @@ import { realPrograms } from "./shims.ts";
 import { readOnlyCommand, shimmedPrograms, splitCommand } from "./shell.ts";
 import { report, watch, type Watch } from "./refwatch.ts";
 import { configDir } from "../providers/config.ts";
-import { artifactsDir, contains, realOf } from "../core/paths.ts";
-import { applyEdit, noteJudged } from "../tools/files.ts";
+import { artifactsDir, atCwd, contains, realOf } from "../core/paths.ts";
+import { applyEdit, fileId, noteJudged, noteLook } from "../tools/files.ts";
 import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
 import { agoSaid, cardForm, refusal, whereSaid, type AnsweredBy, type CardForm, type Hold } from "./card.ts";
 import { classify, decide, isMode, ownPath, pathsNamed, readPaths, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
@@ -184,14 +184,33 @@ const inputSha = (input: unknown) => new Bun.CryptoHasher("sha256").update(JSON.
 
 function callClass(call: ToolCall, target: Target): CallClass {
   // (A reading tool known only by its flag, an MCP server's among them, is a read of the files its input names.)
-  const reads = (input: unknown): CallClass => { const paths = readPaths(input, cwdOf(call) ?? call.ctx.cwd); return paths.length ? { kind: "read", paths } : { kind: "read" }; };
+  // Its path keys, and every string anywhere in the input that is a path or a file: URL by itself.
+  const reads = (input: unknown): CallClass => { const paths = [...new Set([...readPaths(input, cwdOf(call) ?? call.ctx.cwd), ...pathsNamed(input).map((p) => atCwd(call.ctx.cwd, p.replace(/^~(?=\/|$)/, homedir())))])]; return paths.length ? { kind: "read", paths } : { kind: "read", unnamed: true }; };
   const cls = target ? target.cls ?? (target.readOnly ? reads(target.input) : { kind: "other" }) : classifyCall(call);
   // A tool the gate knows only by name is given the paths its input names (an MCP file server's write).
   if (cls.kind === "other" && !cls.paths) {
     const paths = pathsNamed(target ? target.input : call.input);
     if (paths.length) return { ...cls, paths };
   }
-  return entriesChanged(landing(cls.kind === "shell" && !cls.cwd ? { ...cls, cwd: cwdOf(call) } : cls), target ? undefined : call.input);
+  const landed = entriesChanged(landing(cls.kind === "shell" && !cls.cwd ? { ...cls, cwd: cwdOf(call) } : cls), target ? undefined : call.input);
+  // The file each named path is at this look (what the tool's open is later compared with: src/tools/files.ts hold).
+  // One look for everything the call is judged by: the file itself, and whether it has another name (hardLink).
+  if ((landed.kind === "edit" || landed.kind === "read" || landed.kind === "other") && landed.paths?.length) lookedAt.set(landed, landed.paths.map(look));
+  return landed;
+}
+const lookedAt = new WeakMap<object, { path: string; id: string | null; linked: boolean }[]>();
+// (One stat for both answers: two would be two moments.)
+function look(path: string): { path: string; id: string | null; linked: boolean } {
+  let seen: { path: string; id: string | null; linked: boolean };
+  try {
+    const st = lstatSync(path);
+    seen = { path, id: `${st.dev}:${st.ino}`, linked: (st.isFile() && st.nlink > 1) || !!heldFile(path) };
+  } catch {
+    seen = { path, id: null, linked: !!heldFile(path) };
+  }
+  // (Kept a moment by path: a caller that holds the file without this look beside it is held to it all the same.)
+  noteLook(path, seen.id);
+  return seen;
 }
 
 // An edit of a file that can name a program (policy.ts NAMES_PROGRAM), read
@@ -267,6 +286,9 @@ export class Gate {
 
   constructor(private store: Store, private bus: Bus, private sandboxed: (s: Session, p: SessionPerm) => boolean = () => false) {
     store.migrate(SCHEMA);
+    store.migrate("CREATE TABLE IF NOT EXISTS session_roots (session_id TEXT NOT NULL, workspace TEXT NOT NULL, real TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY (session_id, workspace))");
+    // (Pinned when the session is made; one made before this was here, at its first sight.)
+    store.onCreated((s) => void this.rootMoved(s));
     if (!store.columnExists("perm_rules", "bind")) store.migrate("ALTER TABLE perm_rules ADD COLUMN bind TEXT");
     const db = store.db;
     // Restart: an open card waits for its call to come back (callOutcome "waiting").
@@ -368,7 +390,23 @@ export class Gate {
   readOpts(session: Session, profile?: SessionPerm["sandbox"]): ReadOpts {
     if (session.machine) return readOptsFor(sandboxScope(session.workspace));
     const artifacts = this.scope(session).scratch;
-    return { ...readOptsFor(sandboxScope(session.workspace)), own: [...attachmentsGiven(session.id), ...(profile === "workspace-write" ? [] : artifacts)] };
+    // (The worktrees Keel made for the session's own agents: theirs to work in, the session's to read and merge.)
+    const worktrees = this.agentTrees(session.id);
+    const root = (this.rootOf(session), this.pins.get(`${session.id}\0${session.workspace}`)?.id);
+    return { ...readOptsFor(sandboxScope(session.workspace)), own: [...attachmentsGiven(session.id), ...(profile === "workspace-write" ? [] : artifacts)], ...(worktrees.length ? { worktrees } : {}), ...(root ? { root } : {}) };
+  }
+  // (Read from the store at most every two seconds per session: a turn asks for it at every call.)
+  private trees = new Map<string, { at: number; list: string[] }>();
+  private agentTrees(sessionId: string): string[] {
+    const have = this.trees.get(sessionId);
+    if (have && Date.now() - have.at < 2_000) return have.list;
+    const made = realOf(join(this.store.stateDir, "worktrees"));
+    let list: string[] = [];
+    // (No agents are known where nothing that starts them has made its table.)
+    try { list = this.store.descendants(sessionId).map((id) => this.store.session(id)?.workspace).filter((w): w is string => !!w && contains(made, realOf(w))); } catch {}
+    if (this.trees.size > 512) this.trees.clear();
+    this.trees.set(sessionId, { at: Date.now(), list });
+    return list;
   }
   // The outputs kept for a session and for the sessions it started or was started by (an agent's report names its files).
   private spills(session: Session): string[] {
@@ -539,7 +577,7 @@ export class Gate {
   private scope(session: Session) {
     let root = session;
     for (let n = 0; root.parent_id && !root.machine && n < 32; n++) root = this.store.session(root.parent_id) ?? root;
-    return { workspace: realOf(session.workspace), scratch: session.machine ? [] : [realOf(artifactsDir(this.store.stateDir, root.id))] };
+    return { workspace: this.rootOf(session), scratch: session.machine ? [] : [realOf(artifactsDir(this.store.stateDir, root.id))] };
   }
 
   // What the read thread judges this session's stored calls on (marks.ts):
@@ -550,7 +588,7 @@ export class Gate {
     return {
       workspace: session.workspace, scope: this.scope(session), machine: !local, home: realOf(homedir()),
       config: local ? [...ownConfig(), ...(this.hookFiles?.(session) ?? [])] : [],
-      bins: local ? workspaceBins(process.env.PATH ?? "", realOf(session.workspace)) : [],
+      bins: local ? workspaceBins(process.env.PATH ?? "", this.rootOf(session)) : [],
       rules: this.rules(session), shell: process.env.SHELL,
     };
   }
@@ -564,13 +602,14 @@ export class Gate {
     const edit = cls.kind === "edit";
     let own: { home: string; config: string[]; bins: string[]; land: (p: string) => string[] } | undefined;
     return decide(cls, {
-      mode: p.mode, workspace: edit ? workspace : session.workspace, sandboxed: this.sandboxed(session, p), rules: before === undefined ? this.rules(session) : this.rules(session).filter((r) => r.created <= before), tool: name, bind, scratch, real: facts?.real, looked: facts?.looked,
+      mode: p.mode, workspace: edit || !session.machine ? workspace : session.workspace, sandboxed: this.sandboxed(session, p), rules: before === undefined ? this.rules(session) : this.rules(session).filter((r) => r.created <= before), tool: name, bind, scratch, real: facts?.real, looked: facts?.looked,
       // (On this machine's disk: a session whose tools run elsewhere reads and writes that machine's files.)
-      ...(session.machine || cls.kind !== "read" ? {} : { shown: (path: string) => shownTo(path, session.workspace, this.readOpts(session, "read-only"), this.spills(session)) }),
+      ...(session.machine || cls.kind !== "read" ? {} : { shown: (path: string) => shownTo(path, workspace, this.readOpts(session, "read-only"), this.spills(session), true) }),
       ...(session.machine || cls.kind === "read" ? {} : {
         keel: (path: string) => { const k = this.keelOwn(path, workspace, scratch); return k?.where === "state" ? k.why : null; },
         keelConfig: (path: string) => { const k = this.keelOwn(path, workspace, scratch); return k?.where === "config" ? k.why : null; },
-        linked: hardLink,
+        // (As it was at the gate's one look at the call's files: the file the tool then opens is compared with that look.)
+        linked: (path: string) => lookedAt.get(cls)?.find((l) => l.path === path)?.linked ?? hardLink(path),
       }),
       // What Keel itself runs things from: a change there is the owner's alone
       // (on this machine's disk). With it, the scripts the owner's hooks and a
@@ -579,7 +618,7 @@ export class Gate {
       ...(session.machine ? {} : { own: () => (own ??= {
         home: realOf(homedir()), config: [...ownConfig(), ...(this.hookFiles?.(session) ?? [])],
         // The PATH the session's commands get is the daemon's own (toolEnv).
-        bins: workspaceBins(process.env.PATH ?? "", realOf(session.workspace)),
+        bins: workspaceBins(process.env.PATH ?? "", this.rootOf(session)),
         land: (x: string) => [...new Set([x, join(realOf(dirname(x)), basename(x)), realOf(x)])],
       }) }),
     });
@@ -645,9 +684,13 @@ export class Gate {
     }
     // The files the call was judged for, where they are: a file tool opens nothing else (src/tools/files.ts hold).
     // A name can change between this look and the tool's open; what is opened is compared with this.
-    const judged = !session.machine && (r.cls.kind === "edit" || r.cls.kind === "read" || r.cls.kind === "other") && r.cls.paths?.length ? { judged: [...r.cls.paths] } : undefined;
-    // (Also kept for a moment by session: a caller that runs the tool without this context is held to it too.)
-    if (judged) { ctx = { ...ctx, ...judged }; noteJudged(session.id, judged.judged); }
+    // (Each with the file it is now: a name that is another file by the time of the open is not what was judged.)
+    const looks = !session.machine && (r.cls.kind === "edit" || r.cls.kind === "read" || r.cls.kind === "other") && r.cls.paths?.length ? lookedAt.get(r.cls) ?? r.cls.paths.map((path) => ({ path, id: fileId(path) })) : undefined;
+    // (Also kept for a moment by session and by what the call does: a caller that runs the tool without this context is held to it too.)
+    if (looks) {
+      ctx = { ...ctx, judged: looks.map((l) => l.path), looked: Object.fromEntries(looks.map((l) => [l.path, l.id])) };
+      noteJudged(session.id, r.cls.kind === "read" ? "read" : "write", looks);
+    }
     if (!r.authorization) return ctx ? { ctx } : undefined;
     const auth = r.authorization;
     const wrap = ctx?.wrapSpawn ?? call.ctx.wrapSpawn;
@@ -677,10 +720,44 @@ export class Gate {
 
   // A dispatcher (mcp_call) is judged as the tool it runs: its own read flag,
   // and grants for that tool alone. Returns the class it judged.
+  // The folder a session was made in is pinned: where it is, and the folder it is (device and inode). A session
+  // whose folder's name leads somewhere else now (a link took its place), or is another folder under the same
+  // name, runs nothing: every rule here is about "the session's folder", and that would be a folder nobody chose.
+  // A sandboxed command cannot make this change (its own folder is a mount point there); a command outside one can.
+  // Keel's own worktrees are made again under their name by Keel: those are pinned anew.
+  private pins = new Map<string, { real: string; id: string }>();
+  // Where the session's folder is: where it was when the session was made (the pin), not where its name leads at
+  // this moment.
+  private rootOf(session: Session): string {
+    if (session.machine) return realOf(session.workspace);
+    return this.pins.get(`${session.id}\0${session.workspace}`)?.real ?? (this.rootMoved(session), this.pins.get(`${session.id}\0${session.workspace}`)?.real) ?? realOf(session.workspace);
+  }
+  private rootMoved(session: Session): string | undefined {
+    if (session.machine) return undefined;
+    const key = `${session.id}\0${session.workspace}`;
+    const real = realOf(session.workspace), id = fileId(real);
+    if (id === null) return undefined; // gone: the tools say so
+    let pin = this.pins.get(key);
+    if (!pin) {
+      const row = this.store.db.query<{ real: string; id: string }, [string, string]>("SELECT real, id FROM session_roots WHERE session_id = ? AND workspace = ?").get(session.id, session.workspace);
+      pin = row ?? undefined;
+    }
+    const mine = contains(realOf(join(this.store.stateDir, "worktrees")), real);
+    if (!pin || (pin.real === real && pin.id !== id && mine)) {
+      pin = { real, id };
+      this.store.db.query("INSERT INTO session_roots (session_id, workspace, real, id) VALUES (?, ?, ?, ?) ON CONFLICT(session_id, workspace) DO UPDATE SET real = excluded.real, id = excluded.id").run(session.id, session.workspace, real, id);
+    }
+    if (this.pins.size > 2048) this.pins.clear();
+    this.pins.set(key, pin);
+    if (pin.real === real && pin.id === id) return undefined;
+    return `Refused: this session's folder is not the folder the session was made in. ${session.workspace} ${pin.real !== real ? `leads to ${real} now (it was ${pin.real})` : "is another folder under the same name now"}. Nothing runs in it. If the owner replaced the folder, a new session there works.`;
+  }
+
   async check(session: Session, call: ToolCall): Promise<CheckResult> {
     try { return await this.checked(session, call); } finally { this.checking.delete(callKey(session.id, call.id)); }
   }
   private async checked(session: Session, call: ToolCall): Promise<CheckResult> {
+    { const moved = this.rootMoved(session); if (moved) return { deny: moved }; }
     if (call.tool.confirm) return (await this.askOnce(session, call, call.tool.name, call.tool.confirm.why, call.tool.confirm.shown(call.input))) ?? { cls: { kind: "other" } };
     const target = call.tool.target ? await call.tool.target(call.input, session.id) : null;
     const name = target?.name ?? call.tool.name;

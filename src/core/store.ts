@@ -858,10 +858,15 @@ export class Store {
       this.fresh.add(id);
       if (this.fresh.size > 1_000) this.fresh.delete(this.fresh.values().next().value!);
     } else this.keep(id, []);
-    return this.session(id)!;
+    const made = this.session(id)!;
+    for (const f of this.made) try { f(made); } catch {} // a listener's trouble is its own
+    return made;
   }
   // Sessions made in this process inside a transaction that was still open: not kept as empty yet.
   private fresh = new Set<string>();
+  // What is told of a session the moment it is made (the gate pins its folder then).
+  private made: ((s: Session) => void)[] = [];
+  onCreated(f: (s: Session) => void) { this.made.push(f); }
 
   session(id: string): Session | undefined {
     const r = this.db.query<SessionRow, [string]>("SELECT * FROM sessions WHERE id = ?").get(id);

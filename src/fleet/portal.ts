@@ -9,6 +9,8 @@
 // session's portal. Portals live in memory: none is open after a restart.
 import { readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { sessionRoots } from "../tools/jobs.ts";
+import { IN_SANDBOX } from "../safety/net-proxy.ts";
+const RELAY = IN_SANDBOX.relay;
 
 // `ns`: the process is in a network namespace of its own (a sandboxed command's): the port is on that namespace's
 // loopback, and the daemon reaches it through reachInto (src/safety/net-proxy.ts).
@@ -76,6 +78,8 @@ export function sessionPorts(roots: Map<string, number[]> = sessionRoots()): Map
         todo.push(...(kids.get(pid) ?? []));
         try {
           if (uid !== undefined && statSync(`/proc/${pid}`).uid !== uid) continue;
+          // (The sandbox's own relay listens there for the command's proxy variables: not a server of the session's.)
+          if (readFileSync(`/proc/${pid}/cmdline`, "latin1").split("\0")[1] === RELAY) continue;
           const { ns, byInode } = tableOf(String(pid));
           if (!byInode.size) continue;
           for (const fd of readdirSync(`/proc/${pid}/fd`)) {

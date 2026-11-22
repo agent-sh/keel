@@ -1,6 +1,7 @@
 // The tool profile Gemini models are trained on: Gemini CLI's names and
 // shapes (packages/core/src/tools/definitions/model-family-sets/gemini-3.ts).
 import { readdirSync, statSync } from "node:fs";
+import { realOf } from "../core/paths.ts";
 import { heldFile } from "../core/store-files.ts";
 import { decodeText } from "../core/text.ts";
 import { join } from "node:path";
@@ -72,6 +73,7 @@ const read_file: Tool = {
       // (The file is held for the read: what is read is the file that was judged.)
       const h = hold(p, ctx, "read");
       if ("refused" in h) return fail(h.refused);
+      if (!h.existed) { h.close(); return fail(notFound(p, ctx.cwd)); }
       try {
       const limit = e ? e - (s ?? 1) + 1 : undefined;
       if (limit !== undefined && limit < 1) return fail(`end_line ${e} is before start_line ${s}: no line is in that range. Leave end_line out to read on from start_line.`);
@@ -109,7 +111,7 @@ const write_file: Tool = {
   async run(input, ctx) {
     const p = abs(String(input.file_path ?? ""), ctx);
     const existed = mtime(p) !== -1;
-    const g = guardOverwrite(p, ctx);
+    const g = await guardOverwrite(p, ctx);
     if (g) return fail(g);
     { const no = await writeFile(p, String(input.content ?? ""), ctx); if (no) return fail(no); }
     return ok(existed ? `Successfully overwrote file: ${p}.` : `Successfully created and wrote to new file: ${p}.`);
@@ -154,7 +156,7 @@ const glob: Tool = {
   }, ["pattern"]),
   async run(input, ctx) {
     const root = input.dir_path ? abs(input.dir_path, ctx) : ctx.cwd;
-    const r = await globFiles(String(input.pattern ?? ""), root, ctx.cwd, 200);
+    const r = await globFiles(String(input.pattern ?? ""), root, ctx.cwd, 200, input.dir_path ? ctx : { judged: [realOf(root)] });
     if ("error" in r) return fail(r.error);
     const stopped = r.stopped ? `\n(${r.stopped})` : "";
     if (!r.files.length) return ok(`No files found matching pattern "${input.pattern}" within ${root}${stopped}`);
@@ -205,14 +207,20 @@ const list_directory: Tool = {
   }, ["dir_path"]),
   async run(input, ctx) {
     const dir = abs(String(input.dir_path ?? "."), ctx);
-    let names: string[];
-    try { names = readdirSync(dir); } catch { return fail(`Directory not found or not readable: ${dir}`); }
-    const ign = (input.ignore ?? []).map((g: string) => new Bun.Glob(g));
-    const rows = names.filter((n) => !ign.some((g: any) => g.match(n))).map((n) => {
-      let d = false;
-      try { d = statSync(join(dir, n)).isDirectory(); } catch {}
-      return { n, d };
-    }).sort((a, b) => Number(b.d) - Number(a.d) || a.n.localeCompare(b.n));
+    // (The folder is held while it is listed: the folder that was judged, not what its name is by now.)
+    const h = hold(dir, input.dir_path ? ctx : { judged: [dir] }, "read");
+    if ("refused" in h) return fail(h.refused);
+    let rows: { n: string; d: boolean }[];
+    try {
+      let names: string[];
+      try { names = readdirSync(h.io); } catch { return fail(`Directory not found or not readable: ${dir}`); }
+      const ign = (input.ignore ?? []).map((g: string) => new Bun.Glob(g));
+      rows = names.filter((n) => !ign.some((g: any) => g.match(n))).map((n) => {
+        let d = false;
+        try { d = statSync(join(h.io, n)).isDirectory(); } catch {}
+        return { n, d };
+      }).sort((a, b) => Number(b.d) - Number(a.d) || a.n.localeCompare(b.n));
+    } finally { h.close(); }
     return ok(`Directory listing for ${dir}:\n${rows.map((r) => (r.d ? `[DIR] ${r.n}` : r.n)).join("\n")}`);
   },
 };

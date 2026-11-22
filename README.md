@@ -379,7 +379,9 @@ network is on. It reads, by design:
 - the other checkouts of the same repository (the main checkout and its
   worktrees), read-only. A checkout counts when it and the repository name
   each other: its own `.git` file points back at the repository's entry for
-  it. An entry a command wrote into the git directory shows nothing;
+  it. An entry a command wrote into the git directory shows nothing. Of
+  the worktrees Keel made, a session sees its own agents', not another
+  session's;
 - the system: `/usr`, `/etc`, `/opt` and the like, as unix permissions allow;
 - your toolchains, read-only: the well-known folders (the `bin` folders of
   cargo, bun, go and `~/.local`, `~/.rustup`, `~/.nvm` and their kin), the
@@ -459,7 +461,10 @@ a URL with a sign-in (a password, or a token alone, as in `GOPROXY` or
 `PIP_INDEX_URL`) goes in without the sign-in, so the registry setting stays
 and the token does not. git settings given through the environment
 (`GIT_CONFIG_COUNT` and its pairs) all go when one of them carries a
-sign-in, an Authorization header among them. The environment is cleaned
+sign-in, an Authorization header among them. A kept variable whose value
+carries a sign-in that is not a URL's own goes whole: a header, a token in
+a URL's query, a netrc line, a field of JSON, a flag that sets one (what a
+value hides by encoding it cannot be told). The environment is cleaned
 before bubblewrap starts: bubblewrap is the first process inside, and what
 it was started with can be read there. You can name more variables to pass
 on in Settings; a variable a tool adds for one call (a secret you gave the
@@ -515,7 +520,11 @@ held to the sandbox by the same rule:
   by where the file really is. A file that has another name elsewhere (a
   hard link) is not written; in the asking modes it is your card.
 - A reading tool Keel knows only by its flag (an MCP server's, an ACP
-  agent's) is judged by the files its input names, the same way.
+  agent's) is judged by the files its input names, the same way: its path
+  keys, and every string anywhere in the input that is a path or a `file:`
+  URL by itself. One that names no file at all runs outside the sandbox and
+  reads where it chooses: you are asked once, the answer stands for the
+  tool, and in Full auto it runs only under such an answer.
 
 A path is judged where it is, and what is judged is what is opened:
 
@@ -527,14 +536,36 @@ A path is judged where it is, and what is judged is what is opened:
 - A name is a name whatever characters it holds: a link called `l[x` is a
   link. Only a pattern (Glob's, Grep's) is read up to its first wildcard.
 - The gate looks, then the tool opens, and a command running beside the
-  call can change what a name is in between. So a file tool holds the file:
-  it opens the folder the gate judged and checks that what it opened is
-  that folder, opens the file inside it without following a link at its
-  name (or creates it there and only there), and reads and writes that
-  descriptor. A name that became a link, or a folder that became one, is
-  refused with "not the file this call was checked for". This needs
-  `/proc` (Linux); elsewhere the path is checked again right before the
-  open, which narrows the gap and does not close it.
+  call can change what a name is in between. So after the gate's look a
+  file tool does no I/O on a name. It opens the folder the gate judged by
+  descriptor and checks that what it opened is that folder; takes a bare
+  handle on the file inside it that follows no link (or creates the file
+  there and only there); reads what the handle is from the handle; and
+  reads and writes through the handle's own path. Refused, with "not the
+  file this call was checked for": a name that became a link, a folder that
+  became one, a file that is not the one the gate saw under that name
+  (another file's hard link moved there). A folder a write has to make is
+  made one step at a time under the deepest folder that exists, each step
+  inside a held descriptor. Glob and the readers list a folder from its
+  handle the same way.
+- A named pipe, a socket or a device at the name is not a file: nothing is
+  read from it or written to it, and the tool says what it is. Opening one
+  can hang a call, so none is opened.
+- A file that is a hard link when the gate looks (it has another name
+  somewhere) is a file of the folder it is in: a read of it runs, as a
+  command's would, and a write of it in a sandboxed session is your card.
+  Package managers that link files from a store make many such files.
+- The folder a session was made in is pinned. If its name leads somewhere
+  else later, or it is another folder under the same name, nothing runs in
+  that session: every rule here is about "the session's folder". A sandboxed
+  command cannot do this to its own folder; a command outside a sandbox
+  can. A sandboxed command checks the folder it was given against the pin
+  once more inside the sandbox, before it runs, where no name can change
+  any more. A worktree Keel made is pinned anew when Keel makes it again.
+
+This needs `/proc` (Linux). Elsewhere the path is checked again right
+before the open and the name's kind is read without following a link, which
+narrows the gap and does not close it.
 
 Keel's own folders have a rule each, in every mode, sandboxed or not, for
 every tool and for a command's plain write, by path, through a link,
@@ -551,11 +582,19 @@ through a hard link or through `..`:
   says to do it in an asking mode or in Settings.
 - A file of that configuration you keep somewhere else by a variable
   (`KEEL_HOOKS`, `KEEL_MCP_CONFIG`, `KEEL_ACP_AGENTS`, `KEEL_ACP_FOLDERS`)
-  has the config folder's rule. When it is inside a session's folder it is
-  read-only in that session's sandbox. One that does not exist yet cannot
-  be closed that way (a bind needs the file): what a command makes of it is
-  moved to quarantine after the call, and until then Keel may read it. Keep
-  such a file outside the folders your sessions work in.
+  has the config folder's rule, and one more: it is never loaded from a
+  folder a session works in. A command there could have written it, and
+  Keel would run what it names outside any sandbox. Such a file is not
+  read at all: Errors says so once, and Settings, Permissions shows it
+  ("KEEL_HOOKS points inside a session's folder ... it is not loaded").
+  Keep it outside the folders your sessions work in. (Where it exists it is
+  also read-only in that session's sandbox, and what a command makes of a
+  missing one is moved to quarantine after the call.)
+- A repository's own `.keel/hooks.json` is another matter: it runs only
+  while it is exactly the file you pinned, scripts included, so what a
+  command writes there runs nothing until you read it and pin it again.
+  Skills, agent definitions and instruction files in a folder are words
+  for the model, not programs Keel runs.
 
 These rules hold for a session's tools. A command that runs outside a
 sandbox (a session with the sandbox off, or a command you let leave it) has

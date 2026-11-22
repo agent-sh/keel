@@ -220,7 +220,9 @@ esac
     tacit.install();
     hookRoutes({ store, bus, engine, providers, errors, workspace: dir });
 
-    const s = store.createSession({ model: "p:m", workspace: dir });
+    // (The session works in a folder of its own: the owner's hooks file is not loaded from a session's folder.)
+    mkdirSync(join(dir, "ws"), { recursive: true });
+    const s = store.createSession({ model: "p:m", workspace: join(dir, "ws") });
     store.updateSession(s.id, { settings: { compact_at: 2_000 } });
     store.append(s.id, "user", { text: "go" });
     store.append(s.id, "assistant", { blocks: [{ type: "text", text: "x".repeat(20_000) }], model: "p:m", stop: "end_turn", usage: { ...usage, input: 6_000 } });

@@ -6,6 +6,7 @@ import { sandboxSaid } from "../../safety/refwatch.ts";
 import { gitShut, linkedWorktree } from "../../safety/sandbox.ts";
 import { hiddenSaid, hiddenSettings, ownerHome, sandboxBytes, sandboxScope, shownPaths, tendSandboxes, toolchainPaths, warmOverlays } from "../../safety/sandbox-view.ts";
 import { proxiesClosed, refusedSince } from "../../safety/net-proxy.ts";
+import { configRefused, refusedConfigs, refusedSentence } from "../../core/named-config.ts";
 import { sandboxConfig, setSandboxConfig } from "../../safety/sandbox-config.ts";
 import { escapeOf } from "../../safety/policy.ts";
 import * as activity from "../../automation/activity.ts";
@@ -108,7 +109,9 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
     const home = ownerHome();
     const short = (p: string) => (p === home ? "~" : p.startsWith(`${home}/`) ? `~/${p.slice(home.length + 1)}` : p);
     const scopes = [...new Set([...Object.keys(sandboxConfig().workspaces), ...store.sessions().filter((s) => !s.machine && !s.archived).map((s) => sandboxScope(s.workspace))])].sort();
-    return { ...sandboxConfig(), scopes, shown: toolchainPaths().map(short), hidden_settings: hiddenSettings(), bytes: sandboxSize.bytes, available: sandboxStatus().available };
+    // (Each of the owner's configuration files a variable names is looked at now: one inside a session's folder is not loaded.)
+    for (const [name, path] of [["KEEL_HOOKS", process.env.KEEL_HOOKS], ["KEEL_MCP_CONFIG", process.env.KEEL_MCP_CONFIG], ["KEEL_ACP_AGENTS", process.env.KEEL_ACP_AGENTS], ["KEEL_ACP_FOLDERS", process.env.KEEL_ACP_FOLDERS]] as const) if (path) configRefused(name, path);
+    return { ...sandboxConfig(), scopes, shown: toolchainPaths().map(short), hidden_settings: hiddenSettings(), config_refused: refusedConfigs().map(refusedSentence), bytes: sandboxSize.bytes, available: sandboxStatus().available };
   };
   // What the sandboxes hold on disk (their cache layers and temp files): measured off the loop, at most once a minute.
   const sandboxSize = { bytes: 0, at: 0, busy: false };

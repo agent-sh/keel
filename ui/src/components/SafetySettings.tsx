@@ -90,7 +90,7 @@ function PolicyBox({ value, onSave }: { value: string; onSave: (v: string) => vo
 
 type SandboxReads = {
   read: string[]; env: string[]; workspaces: Record<string, { read?: string[]; ssh_agent?: boolean }>; scopes: string[]; shown: string[];
-  hidden_settings: { path: string; note?: string }[]; bytes: number; available: boolean;
+  hidden_settings: { path: string; note?: string }[]; config_refused?: string[]; bytes: number; available: boolean;
 };
 
 // What a sandboxed command may read. The card says what every sandbox
@@ -113,6 +113,9 @@ function SandboxReadsCard() {
   return (
     <div className="k-after-card flex flex-col gap-2" data-testid="sandbox-reads">
       <h3 className="px-1 text-ui font-medium text-muted">Sandbox: what commands can read</h3>
+      {(v.config_refused ?? []).map((line) => (
+        <p key={line} role="alert" data-testid="config-refused" className="rounded-lg border border-danger/40 bg-raised px-3 py-2 text-ui break-words text-danger">{line}</p>
+      ))}
       <Card>
         <div className="border-b border-line py-4">
           <div className="text-base font-medium">Every folder</div>

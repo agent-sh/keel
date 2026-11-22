@@ -64,6 +64,12 @@ export type ReadOpts = {
   own?: string[];
   // More names of environment variables a command keeps (envDropped).
   env?: string[];
+  // The folder the session was made in, as the gate pinned it (device and inode): a sandboxed command checks the
+  // folder it was given against it before it runs (sandbox.ts compose).
+  root?: string;
+  // The worktrees Keel made that this session may read: its own agents'. Another session's worktree of the same
+  // repository, in Keel's state, is not one of the repository's checkouts to this session.
+  worktrees?: string[];
 };
 
 // The folders at the top of a Linux file system that hold the system.
@@ -486,7 +492,7 @@ export const offeredPaths = () => [...new Set(offered.flatMap((f) => { try { ret
 // its linked worktrees (an agent's among them, which its parent reads and
 // merges). One repository is one place to work in: they are shown
 // read-only, and git's own list of worktrees stays true inside.
-export function siblings(workspace: string): string[] {
+export function siblings(workspace: string, worktrees: string[] = []): string[] {
   try {
     const at = locate(workspace);
     if (!at) return [];
@@ -516,8 +522,9 @@ export function siblings(workspace: string): string[] {
       try { dot = readFileSync(join(dir, "gitdir"), "utf8").trim(); } catch { continue; }
       if (!back(dot, dir)) continue;
       const folder = real(dirname(dot));
-      // In Keel's own state only a worktree Keel made: a folder directly in its worktrees folder.
-      if (contains(state, folder) && dirname(folder) !== join(state, "worktrees")) continue;
+      // In Keel's own state only a worktree Keel made for this session's own agents (the store knows which: the
+      // caller names them): another session's is that session's.
+      if (contains(state, folder) && !(dirname(folder) === join(state, "worktrees") && worktrees.some((w) => real(w) === folder))) continue;
       out.add(folder);
     }
     // (Not the session's folder, a folder around it, or one inside it: that one is the session's own.)
@@ -649,6 +656,10 @@ const ENV_KEPT = /^(PATH|HOME|USER|LOGNAME|SHELL|PWD|OLDPWD|SHLVL|HOSTNAME|LANG|
 const ENV_SECRET = /TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|APIKEY|API_KEY|PRIVATE_KEY|ACCESS_KEY|(^|_)AUTH(_|$)|(^|_)KEY$/i;
 // A URL that carries a sign-in before its host: a user and a password, or a token alone (https://token@host).
 const URL_SIGN_IN = /(\b[a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi;
+// A value that carries a sign-in under a name a build keeps: a header (Authorization: ..., Bearer ...), a token
+// in a URL's query, a netrc line, a field of JSON, a flag that sets one (GOFLAGS -X main.token=...). Such a
+// variable goes whole: there is no telling what of it is safe.
+const VALUE_SECRET = /\b(proxy-)?authorization\s*:|\b(bearer|basic)\s+[A-Za-z0-9._~+\/=-]{8,}|\b(login|password|passwd)\s+\S+\s*$|\bpassword\s+\S|[?&;.\s"'{,_-](access[_-]?token|auth[_-]?token|token|api[_-]?key|apikey|secret|password|passwd|credentials?)["']?\s*[=:]\s*["']?[^\s"'&]/i;
 // git settings given through the environment (GIT_CONFIG_COUNT, GIT_CONFIG_KEY_n, GIT_CONFIG_VALUE_n): a pair that
 // carries a sign-in (an Authorization header, a credential helper, a URL with one).
 const GIT_PAIR_SECRET = /authorization\s*:|\b(bearer|basic)\s+\S|token|passw|secret|credential/i;
@@ -674,6 +685,8 @@ export function envPlan(env: Record<string, string | undefined> = process.env, m
     // (A name the owner listed is theirs to pass whole.)
     if (owners) continue;
     const plain = value.replace(URL_SIGN_IN, "$1");
+    // (A sign-in that is not a URL's own: nothing of the value is kept.)
+    if (VALUE_SECRET.test(plain) && !/^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(name)) { drop.push(name); continue; }
     if (plain !== value) set.push([name, plain]);
   }
   return { drop, set };
@@ -725,9 +738,11 @@ export function forgetViews() { found.clear(); laid.clear(); hiddenKept = undefi
 
 // The lists a view is made from, for a workspace: also what the file tools' rule reads (shownTo).
 type Lists = { home: string; ws: string; listed: string[]; links: string[]; tools: string[]; offers: string[]; beside: string[]; mine: string[] };
-function listsOf(workspace: string, o: ReadOpts, env: Record<string, string | undefined>, offers = offeredPaths()): Lists {
+// `at`: where the folder is, when the caller holds that already (the gate's pin of a session's folder): its name is
+// not walked again, since it may lead somewhere else by now.
+function listsOf(workspace: string, o: ReadOpts, env: Record<string, string | undefined>, offers = offeredPaths(), at?: string): Lists {
   const home = ownerHome();
-  const ws = real(workspace);
+  const ws = at ?? real(workspace);
   // What the owner added. An entry in one of Keel's own folders is never taken (one that holds them has them hidden
   // in it, below); a credential store is, when the entry names it.
   const entries = (o.read ?? []).map((e) => readPath(e, home)).filter((p): p is string => !!p && kind(p) !== "none");
@@ -738,7 +753,7 @@ function listsOf(workspace: string, o: ReadOpts, env: Record<string, string | un
   // The toolchains: nothing in or followed from what the sandbox writes.
   const tools = toolchainPaths(home, env, [ws]).filter((p) => !listed.some((l) => contains(l, p)));
   // The repository's other checkouts: not one inside a credential store.
-  const beside = siblings(workspace).filter((p) => { const s = storeOf(p, home); return !s || s.own; });
+  const beside = siblings(workspace, o.worktrees).filter((p) => { const s = storeOf(p, home); return !s || s.own; });
   const mine = (o.own ?? []).filter(isDir).map(real);
   return { home, ws, listed, links, tools, offers, beside, mine };
 }
@@ -914,8 +929,9 @@ const CONFIG_OPEN = /^(skills|commands|agents|[^/]+\.md)$/;
 // the path is in a credential store or one of Keel's own folders, which no
 // mode reads without the owner. `scratch`: the session's own writable
 // folders in Keel's state (its outputs, its artifacts).
-export function shownTo(path: string, workspace: string, o: ReadOpts = {}, scratch: string[] = []): { shown: true } | { shown: false; store: boolean; why: string } {
-  const L = listsOf(workspace, o, process.env);
+// `pinned`: the workspace is given as where it is (the gate's pin): it is not resolved again.
+export function shownTo(path: string, workspace: string, o: ReadOpts = {}, scratch: string[] = [], pinned = false): { shown: true } | { shown: false; store: boolean; why: string } {
+  const L = listsOf(workspace, o, process.env, undefined, pinned ? workspace : undefined);
   const { home, ws, listed } = L;
   // (The path whole, whatever characters its names hold: a pattern was cut where it was read, readPaths.)
   const p = real(path);

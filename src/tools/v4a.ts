@@ -492,6 +492,7 @@ export type ApplyOptions = {
   base?: string;             // where relative paths start (default: cwd)
   allowOutside?: string[];   // real paths outside the workspace a gate cleared
   judged?: string[];         // the files the call was judged for (ToolContext.judged): nothing else is opened
+  looked?: Record<string, string | null>; // and the file each was at the gate's look (ToolContext.looked)
   sessionId?: string;        // the session the patch is applied for (what its gate cleared lately holds a call with no `judged`)
 };
 

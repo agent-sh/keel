@@ -14,6 +14,7 @@
 // that answers the call's low-risk ask in the owner's place and nothing more
 // (src/safety/gate.ts: no high-risk card, no never-allowed command, nothing in
 // Read only or Plan).
+import { configRefused, sessionFoldersOf } from "../core/named-config.ts";
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -414,6 +415,9 @@ export class Hooks {
 
   private ownerSource(root: string): Source | undefined {
     const path = ownerHooksPath();
+    // A hooks file a variable puts inside a folder a session works in is not the owner's to Keel: a command there
+    // could have written it (src/core/named-config.ts).
+    if (configRefused("KEEL_HOOKS", path, sessionFoldersOf(this.store))) { this.owner = undefined; return undefined; }
     const newest = { ms: 0 };
     const t0 = Date.now();
     const mark = diskMark(path, newest);

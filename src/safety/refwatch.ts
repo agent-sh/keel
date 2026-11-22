@@ -150,6 +150,8 @@ const NETWORK = /Could not resolve host|Could not resolve hostname|Temporary fai
 const GIT_WRITE = /\.lock'?: Read-only file system|\.git\/[^\n']*'?: Read-only file system|insufficient permission for adding an object|could not (lock|write) config file/;
 // With the network on: what the sandbox's proxy refused while the command ran, and what a command says when it
 // went around the proxy (a name it resolved itself, another protocol, this machine's localhost).
+// What a program says when the proxy it was pointed at is not there.
+const PROXY_GONE = /Proxy CONNECT aborted|CONNECT tunnel failed|proxy.*(refused|closed|reset)|Failed to connect to 127\.0\.0\.1 port|ECONNREFUSED|ECONNRESET|socket hang up|Connection refused|Connection reset/i;
 const NETWORK_ON = /Could not resolve host|Could not resolve hostname|Temporary failure in name resolution|Name or service not known|Network is unreachable|No route to host|ENETUNREACH|EHOSTUNREACH|EAI_AGAIN|ENOTFOUND|Failed to connect to (localhost|127\.0\.0\.1|\[?::1\]?)|connect ECONNREFUSED (127\.0\.0\.1|::1)/i;
 export function sandboxSaid(output: string, at: { linked: boolean; network: boolean; escape: string; shut?: () => string | undefined; refused?: () => { host: string; port: number; why: string }[]; closed?: () => boolean }): string[] {
   const said: string[] = [];
@@ -161,7 +163,7 @@ export function sandboxSaid(output: string, at: { linked: boolean; network: bool
   const onlyDeleted = /^Deleted branch /m.test(output) && !/fatal:|unable to write upstream/.test(output);
   if (!shut && CONFIG.test(output) && !onlyDeleted) said.push(`The repository's config is read-only in a sandboxed session (git runs what it names). What writes it fails or is half done: git config, git remote add, git branch -u, git push -u and --track; git branch -m renames the branch and then exits 128, because the branch's settings cannot be moved; deleting a branch leaves its settings behind. Branches made in this session track nothing. ${at.escape}`);
   if (!at.network && NETWORK.test(output)) said.push(`This session's network is off, so fetch, pull, push and whatever else needs the network fail in its sandbox. The owner turns it on in the session's permissions ("Network in the sandbox"). ${at.escape}`);
-  if (at.network && at.closed?.() && (NETWORK.test(output) || NETWORK_ON.test(output))) said.push("Keel's sandbox proxy is not running: its thread kept failing and was not started again, so nothing leaves a sandbox until the daemon is restarted. The owner sees why in Errors.");
+  if (at.network && at.closed?.() && (NETWORK.test(output) || NETWORK_ON.test(output) || PROXY_GONE.test(output))) said.push("Keel's sandbox proxy is not running: its thread kept failing and was not started again, so nothing leaves a sandbox until the daemon is restarted. The owner sees why in Errors.");
   else if (at.network) {
     const refused = at.refused?.() ?? [];
     const named = [...new Set(refused.map((r) => `${r.host}:${r.port}`))].slice(0, 8);

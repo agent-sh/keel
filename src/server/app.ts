@@ -29,6 +29,7 @@ import { inFlight, timed } from "../admin/stall.ts";
 import { moduleTook } from "../core/start-trace.ts";
 import { routeTable } from "./stable-api.ts";
 import { onProxyTrouble, ownPort } from "../safety/net-proxy.ts";
+import { onConfigRefused, refusedSentence, sessionFoldersOf, setSessionFolders } from "../core/named-config.ts";
 
 // The seqs of the prompts of a branch, kept while the branch is the same array
 // (the store gives a new one when the branch grows or the head moves).
@@ -659,5 +660,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
   ownPort(server.port);
   // What goes wrong with the proxies' thread is in the Errors panel.
   onProxyTrouble((e, at) => errors.capture("server", e, { at }));
+  // A configuration file a variable puts inside a session's folder is not loaded (src/core/named-config.ts): said once.
+  setSessionFolders(() => sessionFoldersOf(store));
+  onConfigRefused((r) => errors.capture("server", new Error(refusedSentence(r)), { at: "config" }));
   return server;
 }

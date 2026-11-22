@@ -63,11 +63,11 @@ afterAll(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-const run = (script: string, o: { sandbox?: "workspace-write" | "read-only"; at?: string; read?: string[]; sshAgent?: boolean; env?: Record<string, string>; keep?: string[] } = {}) => {
+const run = (script: string, o: { sandbox?: "workspace-write" | "read-only"; at?: string; read?: string[]; sshAgent?: boolean; env?: Record<string, string>; keep?: string[]; worktrees?: string[] } = {}) => {
   const at = o.at ?? ws;
   // (Each command of a test reads the disk as it is now.)
   forgetProfiles();
-  const r = Bun.spawnSync(confine(["bash", "-c", script], { sandbox: o.sandbox ?? "workspace-write", network: false }, at, undefined, { read: o.read, sshAgent: o.sshAgent, env: o.keep }), {
+  const r = Bun.spawnSync(confine(["bash", "-c", script], { sandbox: o.sandbox ?? "workspace-write", network: false }, at, undefined, { read: o.read, sshAgent: o.sshAgent, env: o.keep, worktrees: o.worktrees }), {
     cwd: at, stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", ...o.env } as Record<string, string>,
   });
   return (r.stdout.toString() + r.stderr.toString()).replaceAll(home, "~");
@@ -287,6 +287,13 @@ test.skipIf(!sandboxStatus().available)("a sandboxed command's environment holds
     expect(envDropped({ PATH: "/bin", GOPATH: "/g", CARGO_HOME: "/c", LC_ALL: "C", GIT_SSH_COMMAND: "ssh", SSH_AUTH_SOCK: "/s", KEEL_SESSION: "x", FOO: "1", GH_TOKEN: "t", CARGO_REGISTRY_TOKEN: "t", UV_INDEX_URL: "https://u:p@x/simple", PIP_INDEX_URL: "https://x/simple", GIT_ASKPASS: "a", API_KEY: "k", MONKEY: "banana" }))
       .toEqual(["FOO", "GH_TOKEN", "CARGO_REGISTRY_TOKEN", "API_KEY", "MONKEY"]);
     expect(envPlan({ UV_INDEX_URL: "https://u:p@x/simple", GOPROXY: "https://tok@a.example,https://b.example", PIP_INDEX_URL: "https://x/simple", PATH: "/bin" }).set).toEqual([["UV_INDEX_URL", "https://x/simple"], ["GOPROXY", "https://a.example,https://b.example"]]);
+    // A value that carries a sign-in under a kept name goes whole: a header, a token in a URL's query, a netrc
+    // line, a field of JSON, a flag that sets one.
+    const carried = { PIP_EXTRA_INDEX_URL: "https://pip.example/simple?token=abc123", CARGO_HTTP_USER_AGENT: "Authorization: Bearer abcdef123456", LESS: "machine x login y password zzz", XDG_CONFIG_JSON: '{"token":"abc"}', GOFLAGS: "-ldflags=-X=main.token=abc", NODE_OPTIONS: "--require ./x.js --api-key=abc", UV_INDEX: "https://x/simple?a=1&access_token=abc" };
+    expect(envPlan({ ...carried, PATH: "/bin", LANG: "C" }).drop.sort()).toEqual(Object.keys(carried).sort());
+    // What a build sets every day stays.
+    const plain = { PATH: "/usr/bin:/bin", GOFLAGS: "-mod=mod -tags=netgo", LESS: "-R -F", NODE_OPTIONS: "--max-old-space-size=4096", CARGO_TERM_COLOR: "always", PIP_INDEX_URL: "https://pypi.org/simple", MAKEFLAGS: "-j8", LDFLAGS: "-L/usr/local/lib -Wl,-rpath=/x", CMAKE_PREFIX_PATH: "/opt/key=value", GIT_SSH_COMMAND: "ssh -o BatchMode=yes" };
+    expect(envPlan(plain)).toEqual({ drop: [], set: [] });
     // git's settings stay when none carries a sign-in.
     expect(envPlan({ GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.quotepath", GIT_CONFIG_VALUE_0: "off" }).drop).toEqual([]);
     expect(envPlan({ GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "url.https://tok@github.com/.insteadof", GIT_CONFIG_VALUE_0: "https://github.com/" }).drop).toEqual(["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"]);
@@ -507,6 +514,19 @@ test.skipIf(!sandboxStatus().available)("another checkout is taken only when it 
     const mine = run(`mkdir -p made-wt .git/worktrees/mine && echo "gitdir: $PWD/.git/worktrees/mine" > made-wt/.git && echo "$PWD/made-wt/.git" > .git/worktrees/mine/gitdir; echo ok`, { at: repo });
     expect(mine).toBe("ok\n");
     expect(siblings(repo)).toEqual([linked]);
+    // A worktree Keel made, in its state, is one of the repository's checkouts only to the session whose agent's it
+    // is: another session's worktree of the same repository is that session's.
+    const kept = join(state(), "worktrees");
+    mkdirSync(kept, { recursive: true });
+    git(repo, "worktree", "add", "-q", join(kept, "agent-1"));
+    git(repo, "worktree", "add", "-q", join(kept, "other-session"));
+    writeFileSync(join(kept, "other-session/notes.txt"), "OTHER-SESSION\n");
+    expect(siblings(repo)).toEqual([linked]);
+    expect(siblings(repo, [join(kept, "agent-1")]).sort()).toEqual([linked, join(kept, "agent-1")].sort());
+    expect(run(`cat ${join(kept, "other-session/notes.txt")} 2>&1 | grep -c 'No such file'; ls ${join(kept, "agent-1")} | head -1`, { at: repo, worktrees: [join(kept, "agent-1")] })).toBe("1\na.txt\n");
+    expect(shownTo(join(kept, "other-session/notes.txt"), repo, { worktrees: [join(kept, "agent-1")] }).shown).toBe(false);
+    git(repo, "worktree", "remove", "--force", join(kept, "agent-1"));
+    git(repo, "worktree", "remove", "--force", join(kept, "other-session"));
     // A session whose folder says it is a worktree of a repository that does not name it has no other checkouts.
     const stray = join(home, "repos/stray");
     mkdirSync(stray, { recursive: true });

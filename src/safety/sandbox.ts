@@ -541,14 +541,14 @@ function profileOf(bwrap: string, perm: Pick<SessionPerm, "sandbox" | "network">
         void asked.then((view) => {
           // (No answer: the kept one stays for another round.)
           if (profiles.get(key) !== have) return;
-          if (view) profiles.set(key, { at: Date.now(), argv: compose(bwrap, p, workspace, scratch, view, flock) });
+          if (view) profiles.set(key, { at: Date.now(), argv: compose(bwrap, p, workspace, scratch, view, flock, read.root) });
           else { have.busy = false; have.at = Date.now(); }
         });
-      } else profiles.set(key, { at: Date.now(), argv: compose(bwrap, p, workspace, scratch, readView(workspace, p.sandbox, read, process.env, layered), flock) });
+      } else profiles.set(key, { at: Date.now(), argv: compose(bwrap, p, workspace, scratch, readView(workspace, p.sandbox, read, process.env, layered), flock, read.root) });
     }
     return profiles.get(key)!.argv;
   }
-  const argv = compose(bwrap, p, workspace, scratch, readView(workspace, p.sandbox, read, process.env, layered), flock);
+  const argv = compose(bwrap, p, workspace, scratch, readView(workspace, p.sandbox, read, process.env, layered), flock, read.root);
   if (profiles.size > 256) profiles.clear();
   profiles.set(key, { at: Date.now(), argv });
   return argv;
@@ -558,7 +558,9 @@ function profileOf(bwrap: string, perm: Pick<SessionPerm, "sandbox" | "network">
 // command can read: the system, the owner's toolchains and a home of the
 // sandbox's own; the package caches layered when a lock program is there to
 // hold a layer by).
-function compose(bwrap: string, perm: Perm, workspace: string, scratch: string[], view: View, flock: string | null): string[] {
+// `root`: the folder the session was made in, as the gate pinned it (device and inode): checked inside, after the
+// folder is bound, so a command never runs in a folder that took the session folder's name.
+function compose(bwrap: string, perm: Perm, workspace: string, scratch: string[], view: View, flock: string | null, root?: string): string[] {
   // A network namespace of its own, always: the host's loopback (Keel's own API among the listeners there), the
   // local network and the display's abstract sockets are not in it. With the session's network on, what leaves
   // goes through the proxy this process runs for the repository (src/safety/net-proxy.ts).
@@ -572,12 +574,17 @@ function compose(bwrap: string, perm: Perm, workspace: string, scratch: string[]
   // ("Bad owner or permissions"). The folder is emptied, and holds the sandbox's own snippet when the network is on.
   const snippets = isDir(SSH_SNIPPETS);
   if (snippets) b.push("--tmpfs", SSH_SNIPPETS);
-  let prelude = "";
+  // bubblewrap binds the session's folder by its name, at the moment it starts. A link that took that name between
+  // the gate's look and this start (something outside a sandbox made it) would be bound in its place: the folder
+  // bound is compared with the pin before the command runs, where no name can change any more.
+  let prelude = root && /^\d+:\d+$/.test(root)
+    ? `[ "$(stat -c %d:%i -- ${shq(workspace)} 2>/dev/null)" = ${shq(root)} ] || { echo "keel: this session's folder is not the folder the session was made in (${workspace.replace(/[^\w./ -]/g, "?")} leads somewhere else now): nothing runs in it." >&2; exit 75; }; `
+    : "";
   if (perm.network) {
     const files = relayFiles(sandboxRoot());
     b.push("--ro-bind", proxyDir(scopeDir(sandboxScope(workspace))), IN_SANDBOX.net, "--ro-bind", process.execPath, IN_SANDBOX.exe, "--ro-bind", files.relay, IN_SANDBOX.relay);
     if (snippets) b.push("--ro-bind", files.ssh, join(SSH_SNIPPETS, "keel-proxy.conf"));
-    prelude = RELAY_START;
+    prelude += RELAY_START;
   }
   // git settings for every confined command, after any the owner's
   // environment already carries (git-config(1), GIT_CONFIG_COUNT).
