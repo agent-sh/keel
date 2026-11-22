@@ -22,7 +22,7 @@ import { CodeCall } from "./CodeCall.tsx";
 import { ReadersCall } from "./ReadersCall.tsx";
 import { Copyable } from "./CopyButton.tsx";
 import { stripAnsiText } from "../../../src/core/ansi.ts";
-import { QuestionCard } from "./QuestionCard.tsx";
+import { AskedUnder, QuestionCard } from "./QuestionCard.tsx";
 
 // The file a call names, for its copy line.
 const pathOf = (input: any): string | undefined => { const p = input?.file_path ?? input?.path ?? input?.notebook_path; return typeof p === "string" && p ? p : undefined; };
@@ -121,7 +121,9 @@ export function ToolCall({ use: asked, result, live, sessionId, cwd }: Props) {
   const input: any = use.input ?? {};
   if (kind === "ask" && !live) return beside(<QuestionCard use={use} result={result} sessionId={sessionId} />);
   if (kind === "plan" && !live) return beside(<PlanCard items={planItems(use.name, input)} explanation={input.explanation} rejected={result?.is_error ? resultText(result) : undefined} />);
-  return <GenericCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} kind={kind} input={input} hook={hook} asked={asked.input} />;
+  const call = <GenericCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} kind={kind} input={input} hook={hook} asked={asked.input} />;
+  // A server asked the owner something while this call runs: a line says so under the call.
+  return result ? call : <AskedUnder use={use} sessionId={sessionId}>{call}</AskedUnder>;
 }
 
 function GenericCall({ use, result, live, sessionId, cwd, kind, input, hook, asked }: Props & { kind: ToolKind; input: any; hook?: HookMark; asked?: any }) {

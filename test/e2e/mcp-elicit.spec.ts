@@ -168,8 +168,32 @@ test("an MCP server's question is a card the owner answers, declines or leaves",
     await expect(words).toContainText("First question: go on?", { timeout: 30_000 });
     const firstQuestion = await k.asked(id);
     const [twice] = await k.pending(id);
-    await card.getByTestId("question-option").filter({ hasText: "Yes" }).click();
-    await card.getByTestId("question-submit").click();
+    // The keyboard: a server's card takes none by itself, and what was typed
+    // ahead of it (a number, Enter) goes to the message box and answers nothing.
+    const box = page.getByTestId("composer");
+    await expect(box).toBeFocused();
+    expect(await card.evaluate((el) => el.contains(document.activeElement))).toBe(false);
+    await page.keyboard.press("1");
+    await expect(box).toHaveValue("1");
+    await box.fill("");
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(400);
+    expect(await k.pending(id)).toEqual([twice]);
+    await expect(card.locator('[aria-checked="true"]')).toHaveCount(0);
+    // The owner goes to the card. A number picks there, and does not answer:
+    // this card is one question with one choice, which on the agent's own
+    // question one number answers.
+    await page.keyboard.press("Shift+Tab"); // (the card stands before the message box)
+    await expect.poll(() => card.evaluate((el) => el.contains(document.activeElement))).toBe(true);
+    await page.waitForTimeout(400);
+    await page.keyboard.press("1");
+    await expect(card.getByTestId("question-option").filter({ hasText: "Yes" })).toHaveAttribute("aria-checked", "true");
+    await page.waitForTimeout(300);
+    expect(await k.pending(id)).toEqual([twice]);
+    // Enter on Answer sends what is shown chosen. (The keyboard came in on the card's last button, Decline: Answer is before it.)
+    await page.keyboard.press("Shift+Tab");
+    await expect(card.getByTestId("question-submit")).toBeFocused();
+    await page.keyboard.press("Enter");
     await expect(words).toContainText("Second question: which name?");
     // The first answer sent again (a double click, a retry) does not answer the second question unseen.
     expect((await k.call(`/api/sessions/${id}/questions/${twice}`, { answers: { ok: { picked: ["Yes"] } }, question: firstQuestion })).status).toBe(409);
@@ -204,6 +228,20 @@ test("an MCP server's question is a card the owner answers, declines or leaves",
     await field(1).fill("hunter2-not-kept");
     await expect(card.getByTestId("question-submit")).toBeDisabled();
     const [open] = await k.pending(id);
+    // No key gets past the gate: Enter in a field or on the card says what is
+    // missing and sends nothing, and letters typed on the card (not in a
+    // field) are dropped, not passed on to the message box.
+    await field(2).fill("key-not-kept");
+    await field(1).click(); // (the owner's own press: the keyboard is theirs there)
+    await page.waitForTimeout(400);
+    await page.keyboard.press("Enter");
+    await expect(card.getByTestId("question-nudge")).toHaveText('Tick "Send anyway" first, or decline');
+    await card.getByTestId("question-from").click();
+    await page.keyboard.type("s3cret");
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(400);
+    await expect(page.getByTestId("composer")).toHaveValue("");
+    expect(await k.pending(id)).toEqual([open]);
     const question = await k.asked(id);
     const typed = { answers: { user: { picked: [], other: "ada" }, password: { picked: [], other: "x" } } };
     // Not sent without the owner's word, and that word is for this question only.
@@ -217,14 +255,16 @@ test("an MCP server's question is a card the owner answers, declines or leaves",
     await ends(9);
     await expect(last).toContainText('secret: {"action":"decline"}');
 
-    // 11. A form of twenty fields scrolls inside the card: the buttons stay in reach.
+    // 11. A form of twenty fields scrolls in the region above the message box,
+    // under the card's own row of buttons: Answer and Decline stay in reach.
     await run(page, "asker__tall");
     await expect(words).toContainText("A long form.", { timeout: 30_000 });
     await expect(card.locator("fieldset")).toHaveCount(20);
-    const fields = card.getByTestId("question-fields");
-    expect(await fields.evaluate((el) => el.scrollHeight > el.clientHeight + 100)).toBe(true);
-    expect((await card.boundingBox())!.height).toBeLessThan(900);
-    await card.getByTestId("question-submit").scrollIntoViewIfNeeded();
+    const tray = page.getByTestId("composer-tray");
+    expect(await tray.evaluate((el) => el.scrollHeight > el.clientHeight + 100)).toBe(true);
+    await expect(card.getByTestId("question-submit")).toBeInViewport();
+    await expect(card.getByTestId("question-decline")).toBeInViewport();
+    await card.locator("fieldset").nth(19).scrollIntoViewIfNeeded();
     await expect(card.getByTestId("question-submit")).toBeInViewport();
     await shoot(page, "mcp-elicit-07-long-form");
     await card.getByTestId("question-submit").click(); // every field is optional

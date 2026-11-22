@@ -4,15 +4,24 @@
 // it takes the keyboard when it opens, and it is answered from the keyboard:
 // a number picks an option, Enter sends, words go to the "own answer" field.
 // The conversation shows a line while it waits and the record afterwards.
+//
+// A question an MCP server asks while its call runs (elicitation) is the same
+// docked card, with what differs: it says which server asks and shows the
+// server's words as plain text, the owner can decline it, and it is stricter
+// with the keyboard. It never takes the keyboard by itself, a number only
+// picks (no one key answers it), and a form that asks for what looks like a
+// secret is sent only once the owner ticked "send anyway", by whatever key
+// or press the answer comes; what is typed on such a card never goes on to
+// the message box.
 import { MessageCircleQuestion } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { stopKind } from "../../../src/core/stops.ts";
-import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
+import type { Asked, ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { SETTLE_MS } from "../lib/approvals.ts";
 import { dropRepeats, keyRefused, keysSettled, noteAnswer, owned, typeToBox, useAskKeys, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
 import { actions, failed, getState, useStore } from "../lib/store.ts";
-import { questions, resultText, type UiQuestion } from "../lib/tools.ts";
+import { askedQuestions, questions, resultText, type UiQuestion } from "../lib/tools.ts";
 import { cn } from "../lib/utils.ts";
 
 type Picked = Record<string, string[]>;
@@ -20,12 +29,15 @@ type Picked = Record<string, string[]>;
 // switch, a remount) until the question settles. Never sent by themselves.
 const answerDrafts = new Map<string, { picked: Picked; other: Record<string, string> }>();
 const NONE: string[] = [];
+// A question's id can be any name a server gives a field (`__proto__`,
+// `constructor`): only an entry the record itself holds is its answer.
+const at = <T,>(o: Record<string, T> | undefined, k: string): T | undefined => (o && Object.hasOwn(o, k) ? o[k] : undefined);
 
-const Head = ({ open, answered }: { open: boolean; answered: boolean }) => (
+const Head = ({ open, answered, from }: { open: boolean; answered: boolean; from?: string }) => (
   <div className="flex items-center gap-2 border-b border-line px-3.5 py-2 text-ui">
-    <MessageCircleQuestion className={cn("size-3.5", open ? "text-accent-ink" : "text-muted")} />
-    <span className="font-medium">{open ? "The agent is asking" : answered ? "Answered" : "Question"}</span>
-    {open && <span className="ml-auto size-1.5 rounded-full bg-accent animate-pulse-dot" />}
+    <MessageCircleQuestion className={cn("size-3.5 shrink-0", open ? "text-accent-ink" : "text-muted")} />
+    <span className="min-w-0 truncate font-medium" data-testid="question-from">{from !== undefined ? `MCP server ${from} is asking` : open ? "The agent is asking" : answered ? "Answered" : "Question"}</span>
+    {open && <span className="ml-auto size-1.5 shrink-0 rounded-full bg-accent animate-pulse-dot" />}
   </div>
 );
 const Legend = ({ q }: { q: UiQuestion }) => (
@@ -104,8 +116,35 @@ export function Questions({ sessionId }: { sessionId: string }) {
     }
     return calls.map((id) => found.get(id)).filter((u): u is ToolUseBlock => !!u);
   }, [calls, events]);
+  // What a server asked on a call that runs (the call's input is not the question).
+  const asks = useStore((s) => s.questionAsks[sessionId]);
   if (!uses.length) return null;
-  return <div className="mb-2 flex flex-col gap-2">{uses.map((u, i) => <Docked key={u.id} use={u} sessionId={sessionId} first={i === 0} />)}</div>;
+  return (
+    <div className="mb-2 flex flex-col gap-2">
+      {uses.map((u, i) => {
+        const asked = at(asks, u.id);
+        // (A card of its own per question: a server's next one on the same call starts empty and takes an answer.)
+        return <Docked key={asked ? `${u.id}:${asked.id}` : u.id} use={u} sessionId={sessionId} first={i === 0} asked={asked} />;
+      })}
+    </div>
+  );
+}
+
+// In the conversation, under a call whose server asks the owner something: a
+// line that says so (the card is above the message box).
+export function AskedUnder({ use, sessionId, children }: { use: ToolUseBlock; sessionId?: string; children: ReactNode }) {
+  const asked = useStore((s) => (sessionId ? at(s.questionAsks[sessionId], use.id) : undefined));
+  if (!asked) return children;
+  return (
+    <div className="flex flex-col gap-2">
+      {children}
+      <div className="flex items-center gap-2 rounded-lg border border-line bg-raised px-3.5 py-2 text-ui" data-testid="question-asked">
+        <MessageCircleQuestion className="size-3.5 shrink-0 text-accent-ink" />
+        <span className="shrink-0 font-medium">Asking you</span>
+        <span className="min-w-0 truncate text-muted">MCP server {asked.from}: {asked.message || "a question"}</span>
+      </div>
+    </div>
+  );
 }
 
 // The docked card is held to the one rule of lib/asks.ts. The keyboard comes
@@ -116,9 +155,10 @@ export function Questions({ sessionId }: { sessionId: string }) {
 // answers with it, if that option is whole in view. Enter sends what is shown
 // chosen. No key answers within the settle time of the keyboard arriving, by
 // being held, or under a dialog.
-function Docked({ use, sessionId, first }: { use: ToolUseBlock; sessionId: string; first: boolean }) {
-  const qs = questions(use.name, use.input);
-  const key = `${sessionId}:${use.id}`;
+// `asked`: the question is not the call's input but what a server asked while the call ran.
+function Docked({ use, sessionId, first, asked }: { use: ToolUseBlock; sessionId: string; first: boolean; asked?: Asked }) {
+  const qs = useMemo(() => (asked ? askedQuestions(asked) : questions(use.name, use.input)), [asked, use.name, use.input]);
+  const key = asked ? `${sessionId}:${use.id}:${asked.id}` : `${sessionId}:${use.id}`;
   const [picked, setPicked] = useState<Picked>(() => answerDrafts.get(key)?.picked ?? {});
   const [other, setOther] = useState<Record<string, string>>(() => answerDrafts.get(key)?.other ?? {});
   const [sending, setSending] = useState(false);
@@ -127,11 +167,20 @@ function Docked({ use, sessionId, first }: { use: ToolUseBlock; sessionId: strin
   const [nudge, setNudge] = useState("");
   const root = useRef<HTMLDivElement>(null);
   // The first question of a session takes the keyboard as it appears; one behind it waits its turn.
-  const held = useAskKeys(root, first);
+  // A server's question never takes it: the owner goes to it.
+  const held = useAskKeys(root, first && !asked);
   const hold = useHold(root);
+  // A form that asks for what looks like a secret is sent only on the owner's word.
+  const [sendAnyway, setSendAnyway] = useState(false);
   useEffect(() => {
-    if (Object.keys(picked).length || Object.values(other).some((t) => t)) answerDrafts.set(key, { picked, other });
-  }, [key, picked, other]);
+    // (What was typed into a masked field is not kept past the card.)
+    if (Object.keys(picked).length || Object.values(other).some((t) => t)) answerDrafts.set(key, { picked, other: Object.fromEntries(Object.entries(other).filter(([id]) => !qs.find((q) => q.id === id)?.secret)) });
+  }, [key, picked, other, qs]);
+  // A question asked again (the answer did not fit) takes an answer again, with what was typed still there.
+  useEffect(() => {
+    inflight.current = false;
+    setSending(false);
+  }, [asked?.round]);
   // A card that leaves because its pane closed keeps its draft; one whose question is settled drops it.
   useEffect(() => () => { if (!getState().questionCalls[sessionId]?.includes(use.id)) answerDrafts.delete(key); }, []);
   // An answer on its way is over when the daemon went away under it: the card
@@ -148,22 +197,43 @@ function Docked({ use, sessionId, first }: { use: ToolUseBlock; sessionId: strin
     return () => window.clearTimeout(t);
   }, [nudge]);
 
-  const has = (p: Picked, q: UiQuestion) => (p[q.id]?.length ?? 0) > 0 || !!(other[q.id] ?? "").trim();
-  const ready = qs.every((q) => has(picked, q));
+  const has = (p: Picked, q: UiQuestion) => (at(p, q.id)?.length ?? 0) > 0 || !!(at(other, q.id) ?? "").trim();
+  // Every part that needs an answer has one (a server's form may leave some optional).
+  const complete = (p: Picked) => qs.every((q) => q.optional || has(p, q));
+  // The gate of a form that asks for what looks like a secret: no key and no press sends it unticked.
+  const gated = !!asked?.sensitive && !sendAnyway;
+  const ready = !gated && complete(picked);
   const toggled = (p: Picked, q: UiQuestion, label: string): Picked => {
-    const cur = p[q.id] ?? [];
+    const cur = at(p, q.id) ?? [];
     return { ...p, [q.id]: q.multi ? (cur.includes(label) ? cur.filter((x) => x !== label) : [...cur, label]) : [label] };
   };
   // One answer per question card: Enter and the button share the guard while it is on its way.
   const submit = async (p: Picked = picked) => {
-    if (inflight.current) return;
+    if (inflight.current || gated) return;
     inflight.current = true;
     held.current = !!root.current?.contains(document.activeElement);
     noteAnswer(use.id);
     setSending(true);
     setErr("");
     try {
-      await actions.answer(sessionId, use.id, Object.fromEntries(qs.map((q) => [q.id, { picked: p[q.id] ?? [], other: other[q.id] }])));
+      await actions.answer(sessionId, use.id, Object.fromEntries(qs.map((q) => [q.id, { picked: at(p, q.id) ?? [], other: at(other, q.id) }])), !!asked?.sensitive && sendAnyway, asked?.id);
+    } catch (e) {
+      setErr(failed(e, { at: "QuestionCard" }));
+      setSending(false);
+      inflight.current = false;
+    }
+  };
+  // A server's question can be declined. `no`: why the key that asked may not answer now (lib/asks.ts).
+  const decline = async (no = "") => {
+    if (no) return setNudge(no);
+    if (!asked || inflight.current) return;
+    inflight.current = true;
+    held.current = !!root.current?.contains(document.activeElement);
+    noteAnswer(use.id);
+    setSending(true);
+    setErr("");
+    try {
+      await actions.declineQuestion(sessionId, use.id, asked.id);
     } catch (e) {
       setErr(failed(e, { at: "QuestionCard" }));
       setSending(false);
@@ -173,13 +243,15 @@ function Docked({ use, sessionId, first }: { use: ToolUseBlock; sessionId: strin
   // Sends, or says why not. `no`: why the key that asked may not answer now (lib/asks.ts).
   const send = (p: Picked = picked, no = "") => {
     if (no) return setNudge(no);
-    if (!qs.every((q) => has(p, q))) return setNudge(qs.length > 1 ? "Choose an answer for each question first" : "Choose an answer or type one first");
+    if (!complete(p)) return setNudge(qs.length > 1 ? "Choose an answer for each question first" : "Choose an answer or type one first");
+    if (gated) return setNudge("Tick \"Send anyway\" first, or decline");
     setNudge("");
     void submit(p);
   };
 
   // One number answers a card that is one question with one choice to make.
-  const oneKey = qs.length === 1 && !qs[0]!.multi && qs[0]!.options.length > 0;
+  // (Never a server's question: there a number picks, and Enter or Answer sends what is shown.)
+  const oneKey = !asked && qs.length === 1 && !qs[0]!.multi && qs[0]!.options.length > 0;
   const most = Math.min(9, Math.max(0, ...qs.map((q) => q.options.length)));
   const digits = most > 1 ? `1 to ${most}` : "1";
   // Numbers are the card's own only once the owner put the keyboard on it and it has been there for
@@ -205,7 +277,7 @@ function Docked({ use, sessionId, first }: { use: ToolUseBlock; sessionId: strin
     const field = t.tagName === "INPUT";
     // Up and Down move through the options, the own-answer fields and Answer, from any of them.
     if ((e.key === "ArrowDown" || e.key === "ArrowUp") && !e.shiftKey) {
-      const stops = [...e.currentTarget.querySelectorAll<HTMLElement>('[data-testid="question-option"], [data-testid="question-other"], [data-testid="question-submit"]:not(:disabled)')];
+      const stops = [...e.currentTarget.querySelectorAll<HTMLElement>('[data-testid="question-option"], [data-testid="question-other"], [data-testid="question-send-anyway"], [data-testid="question-submit"]:not(:disabled), [data-testid="question-decline"]')];
       const i = stops.indexOf(t);
       const to = i < 0 ? (e.key === "ArrowDown" ? stops[0] : stops.at(-1)) : stops[i + (e.key === "ArrowDown" ? 1 : -1)];
       if (!to) return;
@@ -217,7 +289,7 @@ function Docked({ use, sessionId, first }: { use: ToolUseBlock; sessionId: strin
     const at = t.closest<HTMLElement>("fieldset[data-q]")?.dataset.q;
     const q = qs.find((x) => x.id === at) ?? qs[0];
     if (e.key === "Enter") {
-      if (t.dataset.testid === "question-submit") return; // the button's own press
+      if (t.dataset.testid === "question-submit" || t.dataset.testid === "question-decline") return; // the button's own press
       e.preventDefault();
       // On an option of a part that has no choice yet, Enter takes it. What is sent is what the card shows chosen.
       const label = t.closest<HTMLElement>('[data-testid="question-option"]')?.dataset.label;
@@ -244,7 +316,13 @@ function Docked({ use, sessionId, first }: { use: ToolUseBlock; sessionId: strin
       else el?.scrollIntoView({ block: "nearest" });
       return;
     }
-    // Anything else typed on the card is for the message box.
+    // Anything else typed on the card is for the message box. Not on a form
+    // that asks for what looks like a secret: a word typed there would land
+    // in the plain box, and Enter would send it to the model.
+    if (asked?.sensitive) {
+      if (e.key.length === 1 && e.key !== " ") { e.preventDefault(); setNudge("Tab goes to the fields"); }
+      return;
+    }
     typeToBox(e);
   };
 
@@ -253,7 +331,7 @@ function Docked({ use, sessionId, first }: { use: ToolUseBlock; sessionId: strin
       ref={root}
       tabIndex={-1}
       role="group"
-      aria-label={`The agent is asking: ${qs[0]?.question ?? ""}`}
+      aria-label={asked ? `MCP server ${asked.from} is asking: ${asked.message}` : `The agent is asking: ${qs[0]?.question ?? ""}`}
       className="k-question group/card rounded-lg border border-accent/50 bg-raised shadow-2 outline-none animate-in"
       data-testid="question"
       data-state="open"
@@ -266,15 +344,24 @@ function Docked({ use, sessionId, first }: { use: ToolUseBlock; sessionId: strin
       onKeyDownCapture={dropRepeats}
       onKeyDown={onKeyDown}
     >
-      <Head open answered={false} />
+      <Head open answered={false} from={asked?.from} />
       <div className="flex flex-col gap-4 px-3.5 pt-3">
+        {asked && (
+          // The server's own words: plain text set apart from the card's, never markup or a link.
+          <div className="flex flex-col gap-1 border-l-2 border-line-strong pl-3" data-testid="question-message">
+            <span className="k-label">From the server</span>
+            <p className="whitespace-pre-wrap break-words text-read leading-snug">{asked.message || "The server gave no message."}</p>
+          </div>
+        )}
+        {asked?.notes?.map((n) => <p key={n} className="text-caption text-warn" data-testid="question-notes">{n}</p>)}
+        {asked?.note && <p className="text-caption text-warn" data-testid="question-note">{asked.note}</p>}
         {qs.map((q) => (
           <fieldset key={q.id} data-q={q.id} className="flex flex-col gap-2">
             <Legend q={q} />
             {q.options.length > 0 && (
               <div className="grid gap-1.5 sm:grid-cols-2" role={q.multi ? "group" : "radiogroup"}>
                 {q.options.map((o, i) => {
-                  const on = (picked[q.id] ?? NONE).includes(o.label);
+                  const on = (at(picked, q.id) ?? NONE).includes(o.label);
                   return (
                     <button
                       key={o.label}
@@ -308,8 +395,10 @@ function Docked({ use, sessionId, first }: { use: ToolUseBlock; sessionId: strin
               </div>
             )}
             <input
-              value={other[q.id] ?? ""}
+              value={at(other, q.id) ?? ""}
               onChange={(e) => setOther((o) => ({ ...o, [q.id]: e.target.value }))}
+              type={q.secret ? "password" : "text"}
+              autoComplete="off"
               disabled={sending}
               aria-label={q.options.length ? `Your own answer to: ${q.question}` : `Your answer to: ${q.question}`}
               placeholder={q.options.length ? "Or type your own answer" : "Type your answer"}
@@ -318,6 +407,12 @@ function Docked({ use, sessionId, first }: { use: ToolUseBlock; sessionId: strin
             />
           </fieldset>
         ))}
+        {asked?.sensitive && (
+          <label className="flex items-start gap-2 text-ui">
+            <input type="checkbox" checked={sendAnyway} disabled={sending} onChange={(e) => setSendAnyway(e.target.checked)} className="mt-0.5 accent-[var(--accent)]" data-testid="question-send-anyway" />
+            <span>Send anyway <span className="text-muted">(the answer goes to the server {asked.from}; declining is the safe answer)</span></span>
+          </label>
+        )}
         {/* Answer stays at the card's lower edge while a long question scrolls under it. */}
         <div className="sticky bottom-0 -mx-3.5 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-b-lg border-t border-line bg-raised px-3.5 py-2.5" data-testid="question-foot">
           <button
@@ -328,8 +423,20 @@ function Docked({ use, sessionId, first }: { use: ToolUseBlock; sessionId: strin
             data-testid="question-submit"
             className="h-8 rounded-md bg-accent px-3.5 text-ui font-medium text-accent-fg transition-opacity hover:bg-accent-hover disabled:opacity-40"
           >
-            {sending ? "Sending" : "Answer"}
+            {sending ? "Sending" : asked && !qs.length ? "Confirm" : "Answer"}
           </button>
+          {asked && (
+            <button
+              type="button"
+              disabled={sending}
+              // (A key on it declines as a key on any answer answers: not as the keyboard arrives, not under a dialog.)
+              onClick={(e) => void decline(e.detail === 0 ? keyRefused(e.currentTarget) : "")}
+              data-testid="question-decline"
+              className="h-8 rounded-md border border-line px-3.5 text-ui hover:bg-hover disabled:opacity-40"
+            >
+              Decline
+            </button>
+          )}
           {err && <span className="text-caption text-danger" role="alert">{err}</span>}
           {/* Why a key did nothing, else what the keys do while the card has the keyboard. */}
           {nudge ? <span className="ml-auto text-micro text-warn" role="status" data-testid="question-nudge">{nudge}</span>
