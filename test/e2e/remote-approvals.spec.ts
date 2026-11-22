@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -55,8 +56,8 @@ test("a phone, a notification and the API: an allow of unread text is held by th
   // --- the one form, as any client reads it
   const form = async (a: any) => (await (await request.get(`/api/sessions/${id}/approvals/${a.id}`)).json()).card;
   expect(await form(long)).toMatchObject({ text: LONG, lines: 41, chars: LONG.length, risk: "low", hold: ["long"], marks: { hidden: 0, rtl: false, alike: [] } });
-  expect(await form(short)).toMatchObject({ text: "echo short > short.txt", lines: 1, hold: [], choices: ["once", "session", "always", "deny"] });
-  expect(await form(marked)).toMatchObject({ text: MARKED, hold: ["long", "marked"], marks: { hidden: 1 } });
+  expect(await form(short)).toMatchObject({ text: "echo short > short.txt", lines: 1, hold: [], choices: ["once", "session", "always", "deny"], grants: ["echo *"], line: "Bash: echo short > short.txt", glance: true });
+  expect(await form(marked)).toMatchObject({ text: MARKED, hold: ["marked"], marks: { hidden: 1 }, glance: false });
   expect(await form(risky)).toMatchObject({ hold: ["risk"], choices: ["once", "deny"] });
   expect((await form(risky)).reason).toMatch(/^High risk/);
   expect((await form(long)).machine.far).toBe(false);
@@ -66,7 +67,8 @@ test("a phone, a notification and the API: an allow of unread text is held by th
   const cards = Object.fromEntries(((await (await phone.call("GET", `/v1/chats/${id}/run`)).json()).approvals as any[]).map((a) => [a.id, a]));
   expect(cards[long.id]).toMatchObject({ command: LONG, text: LONG, lines: 41, cut: false, hold: ["long"] });
   expect(cards[short.id]).toMatchObject({ text: "echo short > short.txt", hold: [] });
-  expect(cards[marked.id]).toMatchObject({ command: "echo txt.r <U+202E>> marked.txt", text: "echo txt.r <U+202E>> marked.txt", hold: ["long", "marked"] });
+  expect(cards[marked.id]).toMatchObject({ command: "echo txt.r <U+202E>> marked.txt", text: "echo txt.r <U+202E>> marked.txt", hold: ["marked"] });
+  expect(cards[short.id].actions).toEqual([["Approve", "once", "primary"], ["Allow echo * for this session", "session", ""], ["Deny", "deny", "danger"]]);
   expect(cards[marked.id].notes.join(" ")).toContain("characters that do not show as written");
   expect(cards[risky.id].hold).toEqual(["risk"]);
 
@@ -78,10 +80,10 @@ test("a phone, a notification and the API: an allow of unread text is held by th
     const { push } = await (await request.get(`/api/mobile/alerts/${alert.id}/push`)).json();
     return { opts: JSON.parse(push.data.opts), hold: push.data.hold, body: push.data.body };
   };
-  expect(await pushOf(short)).toMatchObject({ opts: ["once", "session", "deny"], hold: "" });
+  expect(await pushOf(short)).toMatchObject({ opts: ["once", "deny"], hold: "", body: "Bash: echo short > short.txt" });
   expect(await pushOf(long)).toMatchObject({ opts: ["deny"], hold: "long" });
   expect(await pushOf(other)).toMatchObject({ opts: ["deny"], hold: "long" });
-  expect(await pushOf(marked)).toMatchObject({ opts: ["deny"], hold: "long,marked", body: "Bash: echo txt.r <U+202E>> marked.txt" });
+  expect(await pushOf(marked)).toMatchObject({ opts: ["deny"], hold: "marked", body: "Bash: echo txt.r <U+202E>> marked.txt" });
   expect(await pushOf(risky)).toMatchObject({ opts: ["deny"], hold: "risk" });
 
   // --- a 41-line command cannot be allowed without `seen`: the sentence, and the card stays open
@@ -141,6 +143,143 @@ test("a phone, a notification and the API: an allow of unread text is held by th
 
   await request.delete(`/api/mobile/devices/${phone.id}`);
   expect((await (await request.get("/api/errors")).json()).errors.length).toBe(errorsBefore);
+});
+
+// The review's steps. One reply asks for three commands that all suggest the rule `echo *`: a
+// short one, a 41-line one and one with U+202E. A standing answer on the short card must not
+// allow the other two, by any route; and a notification gives no standing answer at all.
+const TRIO = (ws: string) => [
+  { name: "Bash", input: { command: "echo short > short.txt" } },
+  { name: "Bash", input: { command: Array.from({ length: 41 }, (_, i) => `echo step ${i + 1} >> long.txt`).join("\n") } },
+  { name: "Bash", input: { command: "echo txt.r \u202e> rlo.txt" } },
+].map((c) => ({ ...c, ws }));
+
+test("a standing answer on a short card leaves the held cards beside it open, on every route", async ({ request }) => {
+  const model = await scripted(request);
+  test.skip(!model, "requires a scripted scratch daemon");
+  const phone = await new Phone(request).pair("Pixel stand-in");
+  const start = async (title: string) => {
+    const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `remote-approvals-${title.replace(/\W+/g, "-")}-${Date.now()}`);
+    mkdirSync(ws, { recursive: true });
+    const { session } = await (await request.post("/api/sessions", { data: { title, model, workspace: ws } })).json();
+    const id = session.id as string;
+    await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:batch ${JSON.stringify(TRIO(ws).map(({ ws: _w, ...c }) => c))}` } });
+    const all = async () => (await (await request.get(`/api/sessions/${id}/approvals?all`)).json()).approvals as any[];
+    await expect.poll(async () => (await all()).length, { timeout: 30_000 }).toBe(3);
+    const [short, long, marked] = await all();
+    expect([short, long, marked].map((a) => a.suggest.map((r: any) => r.pattern))).toEqual([["echo *"], ["echo *"], ["echo *"]]);
+    return { id, ws, all, short, long, marked };
+  };
+  // After the answer: the short one ran, the two held ones still wait and nothing of theirs was written.
+  const heldStill = async (s: Awaited<ReturnType<typeof start>>, by: Record<string, unknown>) => {
+    await expect.poll(() => existsSync(join(s.ws, "short.txt")), { timeout: 20_000 }).toBe(true);
+    await new Promise((r) => setTimeout(r, 1000));
+    const [short, long, marked] = await s.all();
+    expect([short.state, short.choice, short.by]).toEqual(["allowed", "session", by]);
+    expect([long.state, marked.state]).toEqual(["pending", "pending"]);
+    expect([existsSync(join(s.ws, "long.txt")), existsSync(join(s.ws, "rlo.txt"))]).toEqual([false, false]);
+    // The rule is stored, for the calls that come after.
+    const grants = (await (await request.get("/api/permissions/grants")).json()).grants as any[];
+    expect(grants.some((g) => g.session_id === s.id && g.pattern === "echo *" && g.lifetime === "session")).toBe(true);
+    // Each held one takes its own answer: a deny here, so nothing of them ever runs.
+    for (const a of [long, marked]) expect((await request.post(`/api/sessions/${s.id}/approvals/${a.id}`, { data: { choice: "deny" } })).status()).toBe(200);
+    await expect.poll(async () => (await (await request.get(`/api/cli/state/${s.id}`)).json()).running, { timeout: 30_000 }).toBe(false);
+    expect([existsSync(join(s.ws, "long.txt")), existsSync(join(s.ws, "rlo.txt"))]).toEqual([false, false]);
+  };
+
+  // 1. The phone app's "Allow echo * for this session" on the short card, with no word of having shown anything.
+  const a = await start("Standing from the phone");
+  expect((await answer(request, phone, a.short.id, { choice: "session" })).status()).toBe(200);
+  await heldStill(a, { client: "phone", device: "Pixel stand-in" });
+
+  // 2. From a notification: no standing answer is taken at all, and nothing is settled.
+  const b = await start("Standing from a notification");
+  const fromNote = await answer(request, phone, b.short.id, { choice: "session", via: "notification" });
+  expect([fromNote.status(), (await fromNote.json()).error]).toEqual([409, "A notification allows once or denies. Open the request to give a standing answer."]);
+  expect((await b.all()).map((x) => x.state)).toEqual(["pending", "pending", "pending"]);
+  expect(existsSync(join(b.ws, "short.txt"))).toBe(false);
+  // (Its Allow once on the short card is still taken.)
+  expect((await answer(request, phone, b.short.id, { choice: "once", via: "notification" })).status()).toBe(200);
+  for (const x of [b.long, b.marked]) await request.post(`/api/sessions/${b.id}/approvals/${x.id}`, { data: { choice: "deny" } });
+
+  // 3. keel approve --choice session --yes on the short card.
+  const c = await start("Standing from the command line");
+  const cli = spawnSync("bun", ["src/main.ts", "approve", c.id, "--approval", c.short.id, "--choice", "session", "--yes", "--url", process.env.KEEL_URL!], { encoding: "utf8", timeout: 60_000 });
+  expect([cli.status, cli.stdout]).toEqual([0, expect.stringContaining("allowed (session: echo *): Bash echo short > short.txt")]);
+  // It names the rule it stores before it stores it.
+  expect(cli.stdout).toContain("Allow echo * for this session: every later call the rule covers runs unasked.");
+  await heldStill(c, { client: "cli" });
+
+  // 4. The plain API, with rules of the caller's own.
+  const d = await start("Standing from the API");
+  expect((await request.post(`/api/sessions/${d.id}/approvals/${d.short.id}`, { data: { choice: "session", rules: [{ kind: "shell", pattern: "echo *" }] } })).status()).toBe(200);
+  await heldStill(d, { client: "api" });
+
+  await request.delete(`/api/mobile/devices/${phone.id}`);
+});
+
+// The review's steps. A notification's Allow covers what its collapsed line shows, and no more:
+// 160 plain characters with the tail padded out of sight, a command 42 characters long, and a
+// command for another machine are not held, or are held for where they run, and none of them
+// is a notification's to allow.
+test("a notification allows only what its collapsed line shows whole, and says where a command runs", async ({ request }) => {
+  const model = await scripted(request);
+  test.skip(!model, "requires a scripted scratch daemon");
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `remote-approvals-note-${Date.now()}`);
+  mkdirSync(ws, { recursive: true });
+  const { session } = await (await request.post("/api/sessions", { data: { title: "Notification bound", model, workspace: ws } })).json();
+  const id = session.id as string;
+  await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+  const padded = `echo ok${" ".repeat(160 - "echo ok".length - "; echo tail > t.txt".length)}; echo tail > t.txt`;
+  expect(padded.length).toBe(160);
+  const calls = [
+    { name: "Bash", input: { command: padded } },
+    { name: "Bash", input: { command: "echo a-plain-line-of-text > wide-enough.txt" } },
+    { name: "Bash", input: { command: "echo fits > fits.txt" } },
+    { name: "keel__run_on", input: { machine: "build-box", command: "rm -rf build", cwd: "/srv/app" } },
+  ];
+  await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:batch ${JSON.stringify(calls)}` } });
+  const all = async () => (await (await request.get(`/api/sessions/${id}/approvals?all`)).json()).approvals as any[];
+  await expect.poll(async () => (await all()).length, { timeout: 30_000 }).toBe(calls.length);
+  const [tail, wide, fits, far] = await all();
+  const form = async (a: any) => (await (await request.get(`/api/sessions/${id}/approvals/${a.id}`)).json()).card;
+  const alerts = (await (await request.get("/api/alerts?limit=200")).json()).alerts as any[];
+  const pushOf = async (a: any) => {
+    const { push } = await (await request.get(`/api/mobile/alerts/${alerts.find((x) => x.data?.approval_id === a.id).id}/push`)).json();
+    return { opts: JSON.parse(push.data.opts), hold: push.data.hold, body: push.data.body as string };
+  };
+  // Not held (a card shows them whole), but not a notification's: the line is longer than a collapsed one shows.
+  expect(await form(tail)).toMatchObject({ hold: [], glance: false, chars: 160 });
+  expect(await form(wide)).toMatchObject({ hold: [], glance: false });
+  expect((await form(wide)).line.length).toBeGreaterThan(40);
+  expect(await form(fits)).toMatchObject({ hold: [], glance: true, line: "Bash: echo fits > fits.txt" });
+  expect(await pushOf(tail)).toMatchObject({ opts: ["deny"], hold: "" });
+  expect(await pushOf(wide)).toMatchObject({ opts: ["deny"], hold: "" });
+  expect(await pushOf(fits)).toMatchObject({ opts: ["once", "deny"], hold: "", body: "Bash: echo fits > fits.txt" });
+  // A command for another machine: read first, and the notification's line names the machine and the folder.
+  expect(await form(far)).toMatchObject({ hold: ["where"], glance: false, machine: { name: "build-box", cwd: "/srv/app", far: true } });
+  expect(await pushOf(far)).toMatchObject({ opts: ["deny"], hold: "where", body: "keel__run_on on build-box in /srv/app: rm -rf build" });
+
+  const phone = await new Phone(request).pair("Pixel stand-in");
+  const card = ((await (await phone.call("GET", `/v1/chats/${id}/run`)).json()).approvals as any[]).find((x) => x.id === far.id);
+  expect(card).toMatchObject({ hold: ["where"], notes: ["Runs on build-box, in /srv/app."], machine: "build-box" });
+  // A notification's Allow of each: refused, the card left open, nothing run.
+  const refused = await answer(request, phone, tail.id, { choice: "once", via: "notification" });
+  expect([refused.status(), (await refused.json()).error]).toEqual([409, "Open the request to read it first: a notification shows only its start."]);
+  expect((await answer(request, phone, wide.id, { choice: "once", via: "notification", seen: "whole" })).status()).toBe(409);
+  const there = await answer(request, phone, far.id, { choice: "once", via: "notification" });
+  expect([there.status(), (await there.json()).error]).toEqual([409, "Open the request to read it first: it runs on build-box."]);
+  expect((await answer(request, phone, far.id, { choice: "once" })).status()).toBe(409);
+  expect((await all()).map((x) => x.state)).toEqual(["pending", "pending", "pending", "pending"]);
+  expect(existsSync(join(ws, "t.txt"))).toBe(false);
+  // What its line shows whole, it allows; the app's card, which shows the text whole, allows the wide one.
+  expect((await answer(request, phone, fits.id, { choice: "once", via: "notification" })).status()).toBe(200);
+  expect((await answer(request, phone, wide.id, { choice: "once" })).status()).toBe(200);
+  for (const x of [tail, far]) expect((await answer(request, phone, x.id, { choice: "deny", via: "notification" })).status()).toBe(200);
+  await expect.poll(async () => (await (await request.get(`/api/cli/state/${id}`)).json()).running, { timeout: 30_000 }).toBe(false);
+  expect([existsSync(join(ws, "fits.txt")), existsSync(join(ws, "wide-enough.txt")), existsSync(join(ws, "t.txt"))]).toEqual([true, true, false]);
+  await request.delete(`/api/mobile/devices/${phone.id}`);
 });
 
 // The page keeps working as it did: its card says it showed the text, and that is taken.
