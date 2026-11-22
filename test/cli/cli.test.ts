@@ -1691,7 +1691,13 @@ describe("a session out of memory is never read whole on the loop", () => {
       throw new Error(`${id} did not come to rest`);
     };
     const calls = (...c: [string, unknown][]) => `script:calls ${JSON.stringify(c.map(([name, input]) => ({ name, input })))}`;
-    const agents = (seconds: number, n: number) => calls(...Array.from({ length: n }, (_, k) => ["spawn_agent", { message: `Part ${k + 1}\n${calls(["Bash", { command: `sleep ${seconds}` }])}`, isolation: "none" }] as [string, unknown]));
+    // Each agent's command says that it runs and then waits for a file: nothing here depends on how fast the machine is.
+    const gate = (name: string) => join(SCRATCH, `cold-reads-${name}`);
+    const agents = (name: string, n: number) => calls(...Array.from({ length: n }, (_, k) => ["spawn_agent", { message: `Part ${k + 1}\n${calls(["Bash", { command: `touch ${gate(name)}.runs-${k}; while [ ! -e ${gate(name)} ]; do sleep 0.1; done` }])}`, isolation: "none" }] as [string, unknown]));
+    const running = async (name: string, n: number) => { for (let i = 0; i < 600; i++) { if (Array.from({ length: n }, (_, k) => existsSync(`${gate(name)}.runs-${k}`)).every(Boolean)) return; await Bun.sleep(50); } throw new Error(`the agents' commands (${name}) did not start`); };
+    // The sessions kept in memory (asking reads no session): at most `n` are, once the others were given back.
+    const kept = async () => (await d.api("/api/resources")).daemon.kept_events.sessions as number;
+    const givenBack = async (n: number) => { for (let i = 0; i < 600; i++) { if ((await kept()) <= n) return; await Bun.sleep(50); } throw new Error(`${await kept()} sessions are still kept, more than ${n}`); };
     try {
       await put("/api/permissions/settings", { default_mode: "full-auto" });
       const coordinator = (await d.api("/api/sessions", { title: "Coordinator" })).session.id as string;
@@ -1705,23 +1711,29 @@ describe("a session out of memory is never read whole on the loop", () => {
         for (const p of paths) await fetch(d.url + p).then((r) => r.arrayBuffer());
       };
       // Agents work past the time their coordinator's rows are kept; nothing reads it meanwhile. Each report finds it out of memory.
-      await d.api(`/api/sessions/${coordinator}/messages`, { text: agents(3, 3) });
-      await Bun.sleep(6_000);
+      await d.api(`/api/sessions/${coordinator}/messages`, { text: agents("first", 3) });
+      await running("first", 3);
+      // (Only the three agents at work are kept: the coordinator's rows were given back.)
+      await givenBack(3);
+      writeFileSync(gate("first"), "");
       await idle(coordinator);
       expect((await d.api(`/api/sessions/${coordinator}`)).events.filter((e: any) => e.kind === "user" && /Part \d/.test(JSON.stringify(e.data))).length).toBeGreaterThanOrEqual(1);
       // Given back again, then read by every view.
-      await Bun.sleep(2_500);
+      await givenBack(0);
       await views();
       const first = await cold();
       // A restart with agents at work: everything is out of memory, their cut turns go on, and their reports come in.
-      await d.api(`/api/sessions/${coordinator}/messages`, { text: agents(4, 2) });
-      await Bun.sleep(1_000);
+      await d.api(`/api/sessions/${coordinator}/messages`, { text: agents("second", 2) });
+      await running("second", 2);
       await d.graceful();
-      await Bun.sleep(7_000);
+      // (The start brings the sessions used lately into memory; they are given back again before the commands end.)
+      for (let i = 0; i < 60 && !(await kept()); i++) await Bun.sleep(50);
+      await givenBack(2);
+      writeFileSync(gate("second"), "");
       await idle(coordinator);
       await views();
       // And a prompt of the owner's to a session nothing has read since the start.
-      await Bun.sleep(2_500);
+      await givenBack(0);
       await d.api(`/api/sessions/${other}/messages`, { text: "script:render please" });
       await idle(other);
       // (Both daemons' counts, each with who asked: one line says where a read came from.)
@@ -1732,18 +1744,6 @@ describe("a session out of memory is never read whole on the loop", () => {
     }
   }, 120_000);
 
-  // Every other reader of a session that may be out of memory, one at a time:
-  // the phone's routes, a message from another session and where it stands, a
-  // loop's run, the helper's report on a session, the judge reading what the
-  // owner asked for, the whole session asked for at once, and what a start
-  // reads to go on (reports owed, agents at work, loops with a run open).
-  // Each used to read the session whole on the loop.
-  test("the phone, a message between sessions, a loop, the helper, the judge and a start each read a session out of memory: no such read", async () => {
-    const { key, sig } = await import("../e2e/fixtures/phone-app.ts");
-    const { createHash } = await import("node:crypto");
-    // (A session's rows are given back after a second and a half unread here, not an hour.)
-    const d = await restartable(join(SCRATCH, "state-cold-sweep"), { KEEL_EVENTS_IDLE_MS: "50", KEEL_MAIL_STANDIN: join(SCRATCH, "sweep-mail") });
-    const cold = async () => (await d.api("/api/resources")).daemon.kept_events.cold_reads as { n: number; rows: number; by: { who: string; n: number; rows: number }[]; start: { n: number; rows: number; by: { who: string; n: number; rows: number }[] } };
   // A store from before the index of its events' rows (src/core/bare-index.ts): the daemon listens first
   // and builds the index with the daemon answering. Built in the open, a large store's first start was
   // down for as long as its disk took to read every event.
@@ -1791,6 +1791,18 @@ describe("a session out of memory is never read whole on the loop", () => {
     }
   }, 120_000);
 
+  // Every other reader of a session that may be out of memory, one at a time:
+  // the phone's routes, a message from another session and where it stands, a
+  // loop's run, the helper's report on a session, the judge reading what the
+  // owner asked for, the whole session asked for at once, and what a start
+  // reads to go on (reports owed, agents at work, loops with a run open).
+  // Each used to read the session whole on the loop.
+  test("the phone, a message between sessions, a loop, the helper, the judge and a start each read a session out of memory: no such read", async () => {
+    const { key, sig } = await import("../e2e/fixtures/phone-app.ts");
+    const { createHash } = await import("node:crypto");
+    // (A session's rows are given back after a second and a half unread here, not an hour.)
+    const d = await restartable(join(SCRATCH, "state-cold-sweep"), { KEEL_EVENTS_IDLE_MS: "50", KEEL_MAIL_STANDIN: join(SCRATCH, "sweep-mail") });
+    const cold = async () => (await d.api("/api/resources")).daemon.kept_events.cold_reads as { n: number; rows: number; by: { who: string; n: number; rows: number }[]; start: { n: number; rows: number; by: { who: string; n: number; rows: number }[] } };
     const send = (method: string, path: string, body?: unknown) => fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
     const idle = async (id: string) => {
       for (let i = 0; i < 600; i++) { const st = await d.api(`/api/cli/state/${id}`); if (!st.running && (st.queue === 0 || st.held)) return; await Bun.sleep(50); }

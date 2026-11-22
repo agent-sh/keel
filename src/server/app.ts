@@ -149,7 +149,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           const url = new URL(req.url);
           // (Nor for the whole session, which the read thread writes from the table.)
           const whole = req.method === "GET" && url.pathname === `/api/sessions/${sid}` && !(Number(url.searchParams.get("page")) > 0);
-          if (url.pathname.startsWith("/api/sessions/") && url.searchParams.get("events") !== "0" && !url.searchParams.has("after") && !whole && store.session(sid)) await store.warm(sid, false);
+          // (Nor before a session is deleted.)
+          if (req.method !== "DELETE" && url.pathname.startsWith("/api/sessions/") && url.searchParams.get("events") !== "0" && !url.searchParams.has("after") && !whole && store.session(sid)) await store.warm(sid, false);
         }
         // Who asks, for a read that holds the loop all the same: the route as it is registered, its values left out (src/core/asker.ts).
         const res = await asAsker(routeOf(req), () => timed(label, () => h(req, srv)));

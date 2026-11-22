@@ -197,10 +197,11 @@ type Kept = {
 // What a kept event costs in memory, measured on generated sessions of 30,000
 // events with every body read: resident memory grew by 2.4 to 2.5 times the
 // characters of the stored JSON (the parsed objects, their strings, and what
-// a parse leaves behind), and an event without its body takes about a quarter
-// of a kilobyte.
+// a parse leaves behind). An event without its body takes 370 bytes of
+// resident memory (280 of them on the heap), measured over ten such sessions
+// brought in one after another.
 const BODY_COST = 2.5;
-const BARE_COST = 256;
+const BARE_COST = 368;
 
 // How much memory kept events may take: a thirty-second of the memory this
 // process may use (the machine's, or its control group's limit when that is
@@ -221,7 +222,7 @@ export function eventsBudget(): number {
 // - Its events without their bodies (the rows every reader walks: a
 //   branch, a count, the last event): for as long as anything reads the
 //   session, and BARE_KEPT_MS after its last read. They cost BARE_COST an
-//   event (15 MB for a session of 60,000), and bringing them back is a read
+//   event (22 MB for a session of 60,000), and bringing them back is a read
 //   of the whole session's index, on the loop when the reader cannot wait.
 //   A session others keep reading (a coordinator its agents report to every
 //   few seconds, with nobody at its page) is therefore never given back
@@ -343,9 +344,9 @@ export class Store {
   private keptBytes = 0;
   private budget = eventsBudget();
   private sweeper: ReturnType<typeof setInterval> | undefined;
-  // Counts body reads: a run's `used` is the count when it was last read.
   // About how many events the index of the events' rows is still to be built over (0: it is there).
   indexOwed = 0;
+  // Counts body reads: a run's `used` is the count when it was last read.
   private tick = 0;
   // What dropped sessions were charged since the last whole collection.
   private owed = 0;
@@ -778,11 +779,18 @@ export class Store {
     this.db
       .query("INSERT INTO sessions (id, title, model, workspace, created, updated, settings) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run(id, this.redact(null, "title", s.title ?? ""), s.model, s.workspace, now, now, JSON.stringify(s.settings ?? {}));
-    // (It has no event: that is kept, so its first reader reads nothing.)
-    this.keep(id, []);
+    // It has no event: that is kept, so its first reader reads nothing. Not inside a transaction of
+    // the caller's, which may still be undone: there the session is only known as new, and the read
+    // that finds it empty is not counted as a whole-session read (held).
+    if (this.db.inTransaction) {
+      this.fresh.add(id);
+      if (this.fresh.size > 1_000) this.fresh.delete(this.fresh.values().next().value!);
+    } else this.keep(id, []);
     return this.session(id)!;
   }
 
+  // Sessions made in this process inside a transaction that was still open: not kept as empty yet.
+  private fresh = new Set<string>();
   session(id: string): Session | undefined {
     const r = this.db.query<SessionRow, [string]>("SELECT * FROM sessions WHERE id = ?").get(id);
     return r ? this.phased(rowToSession(r)) : undefined;
@@ -1154,6 +1162,8 @@ export class Store {
     const rows = asking(who, () => this.db.query<Bare, [string]>("SELECT id, seq, parent, kind, ts FROM events WHERE session_id = ? ORDER BY seq").all(session_id));
     const ms = performance.now() - t0;
     // (Before the daemon answers, a read holds nobody: those are counted apart.)
+    // (A session made a moment ago, found empty: no read of a session.)
+    if (this.fresh.delete(session_id) && !rows.length) return this.keep(session_id, rows);
     const c = this.serving ? this.cold : this.coldStart;
     c.n++; c.rows += rows.length; c.ms += ms;
     const by = c.by.get(who) ?? { n: 0, rows: 0, ms: 0 };
@@ -1371,7 +1381,7 @@ export class Store {
   // reader that needs to know how the session stands (its last turn ended,
   // and how) and not what was said in it.
   headEvent(session_id: string): StoredEvent | undefined {
-    const r = this.db.query<EventRow, [string]>("SELECT e.* FROM sessions s JOIN events e ON e.id = s.head WHERE s.id = ?").get(session_id);
+    const r = this.db.query<EventRow, [string]>("SELECT e.* FROM sessions s JOIN events e ON e.id = s.head AND e.session_id = s.id WHERE s.id = ?").get(session_id);
     return r ? rowToEvent(r) : undefined;
   }
 

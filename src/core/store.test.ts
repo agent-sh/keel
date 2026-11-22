@@ -139,7 +139,7 @@ test("kept events are bounded by the memory they take: idle sessions go first, t
   const [a, w, v, c] = [make(), make(), make(), make()];
   seed.updateSession(w, { phase: "working" });
   seed.updateSession(v, { phase: "working" });
-  // Each session's bodies are charged about 0.8 MB (320 kB of stored text at two and a half times), its events alone about 80 kB.
+  // Each session's bodies are charged about 0.8 MB (320 kB of stored text at two and a half times), its events alone about 120 kB.
   const kept = process.env.KEEL_EVENTS_MEMORY_MB;
   process.env.KEEL_EVENTS_MEMORY_MB = "1.2";
   let store: Store;
@@ -154,7 +154,7 @@ test("kept events are bounded by the memory they take: idle sessions go first, t
   store.lineage(w);
   store.lineage(a);
   expect(held()).toEqual([w, a]);
-  expect(store.keptEvents().bytes).toBe(2 * 320 * 256);
+  expect(store.keptEvents().bytes).toBe(2 * 320 * 368);
   expect([runs(w), runs(a)]).toEqual([0, 0]);
   expect(bodies(a)).toEqual(want);
   expect(runs(a)).toBe(5);
