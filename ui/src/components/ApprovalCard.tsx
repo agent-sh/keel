@@ -1,6 +1,6 @@
 import { Popover } from "@base-ui/react/popover";
 import { Check, CheckCheck, ChevronDown, FilePen, Globe, MessageSquareShare, ShieldAlert, SquareTerminal, Wrench, X } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
 import { shownInPart } from "../../../src/safety/summary.ts";
 import { batches, batchName, coverName, hold, nextAction, paintedReader, pressable, READ_MS, sawLines, settled, SETTLE_MS, spentAction, stand, unseenLines, type Action, type Batch, type Hold, type Lines, type PaintedReader, type Stand } from "../lib/approvals.ts";
 import { arrivalOf, arriving } from "../lib/automation.ts";
@@ -300,6 +300,8 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
     tick,
     waiting,
     setHot: (tool: string, on: boolean) => { if (on) st.current.hot.add(tool); else st.current.hot.delete(tool); tick(); },
+    // The owner's key moves the region (End, Space): read as their own scroll, step by step.
+    own: () => { st.current.input = true; st.current.inputAt = performance.now(); },
     // The action answered these: they wait no more, and it starts again from what is ready, after a beat.
     spend: (tool: string, ids: string[]) => {
       for (const id of ids) st.current.spent.add(id);
@@ -324,7 +326,7 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
 export function Approvals({ sessionId, asker }: { sessionId: string; asker?: string }) {
   const cards = useSafety((s) => s.approvals[sessionId] ?? EMPTY);
   const list = useRef<HTMLDivElement>(null);
-  const { view, tick, waiting, setHot, spend } = useReadings(list, cards);
+  const { view, tick, waiting, setHot, spend, own } = useReadings(list, cards);
   // How the list holds the keyboard (lib/asks.ts): said on it for the page and its tests.
   const hold = useHold(list);
   const groups = batches(waiting, view.read, new Set([...view.cut, ...waiting.filter((c) => shownOf(c).flagged).map((c) => c.id)]));
@@ -416,6 +418,9 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
       if (!e.repeat && !e.shiftKey && shut[0] && !keyRefused(e.currentTarget)) { e.preventDefault(); setWhole(shut[0].id, true); takeKeys(e.currentTarget, true); }
       return;
     }
+    // Reading on through a long text by keys, while some of it was never in view: End reads to the
+    // end of the card, Space a page on. (Once all of it was in view they are what they always are.)
+    if ((e.key === "End" || e.key === " ") && !e.shiftKey && readOn(t, e.key === "End")) { e.preventDefault(); return; }
     // Words typed while a card has the keyboard are for the message box: they go there, and so does the Enter after them.
     if (typeToBox(e)) return;
     // Up and Down move between the list's stops: the "allow all" action, then each card's first answer.
@@ -432,6 +437,36 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
     if (!to) return;
     e.preventDefault();
     to.focus();
+  };
+  // Moves the region above the message box on through the text of the card the keyboard is on
+  // (on the list itself: the first card with lines not seen), a step at a time, each step read as
+  // the owner's own scroll: what it passes is in view. A step is under the region's height, so
+  // the views overlap and no line is jumped over. `end`: on to the card's end, else one step.
+  // Not for a card whose text must be opened first (Enter opens it): its lines are in its box.
+  const readOn = (from: HTMLElement, end: boolean): boolean => {
+    const el = list.current, tray = el?.closest<HTMLElement>('[data-testid="composer-tray"]');
+    if (!el || !tray) return false;
+    const unread = (c: HTMLElement) => (view.unseen.get(c.dataset.approvalId!)?.n ?? 0) > 0 && !shut.some((x) => x.id === c.dataset.approvalId);
+    const own_ = from.closest<HTMLElement>('[data-testid="approval"]');
+    const card = own_ ? (unread(own_) ? own_ : null) : [...el.querySelectorAll<HTMLElement>(':scope > [data-testid="approval"]')].find(unread);
+    const text = card?.querySelector<HTMLElement>('[data-testid="approval-summary"]');
+    if (!card || !text) return false;
+    const left = () => {
+      const foot = card.hasAttribute("data-foot") ? card.querySelector<HTMLElement>(":scope > .k-ask-foot")?.offsetHeight ?? 0 : 0;
+      return text.getBoundingClientRect().bottom - (tray.getBoundingClientRect().bottom - foot);
+    };
+    const stepBy = () => Math.max(16, Math.round(tray.clientHeight * 0.6));
+    const go = () => {
+      const rest = left();
+      if (rest <= 1 || tray.scrollTop + tray.clientHeight >= tray.scrollHeight - 1) return false;
+      own();
+      tray.scrollTop += Math.min(stepBy(), Math.ceil(rest) + 1);
+      tick();
+      return true;
+    };
+    if (!go()) return false;
+    if (end) { const next = () => { if (go()) requestAnimationFrame(next); }; requestAnimationFrame(next); }
+    return true;
   };
   const onFocus = (e: ReactFocusEvent<HTMLDivElement>) => {
     const t = e.target as HTMLElement;
@@ -741,6 +776,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   const count = (n: number) => `${n} ${unit}${n === 1 ? "" : "s"}`;
   const leftText = `${count(left)} not seen yet`;
   const shut = mustBeOpened(a, whole, cut, unseen);
+  // Where the keyboard is on this card or its list, the key that reads on is named with it (the list's End and Space).
+  const readKey = !touch && keysOn !== "" && !shut;
   const shutNow = useRef(shut);
   shutNow.current = shut;
   const firstNow = useRef(first);
@@ -933,6 +970,12 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
     : hold.take && moved.current !== hold.at && (!wasBrought() || chosen.current) ? "Enter allows once in a moment"
     : "";
 
+  // How long the arming line takes to fill: what is left of the settle time of the keyboard's
+  // arrival, counted from when the line came. (It fills by then and stays full until Enter works.)
+  const armFrom = useRef<number | null>(null);
+  if (!arming) armFrom.current = null;
+  else armFrom.current ??= performance.now();
+  const armFor = Math.round(Math.max(200, Math.min(SETTLE_MS, (hold.at || armFrom.current!) + SETTLE_MS - armFrom.current!)));
   const answer = async (body: { choice: string; reason?: string; rules?: Suggest[] }) => {
     noteAnswer(a.id);
     // (The grant's popup is the card's own, drawn outside it: an answer given there held the keyboard too.)
@@ -1177,6 +1220,9 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
             disabled={busy}
             aria-disabled={!live || mustOpen || undefined}
             data-nudge={nudge.mark}
+            // The read-first latch is arming: Enter allows once in a moment (a line fills under the label meanwhile).
+            data-arming={arming && !mustOpen ? "" : undefined}
+            style={arming && !mustOpen ? ({ "--k-arm": `${armFor}ms` } as CSSProperties) : undefined}
             data-testid="allow-once"
             data-stop={shut ? undefined : "card"}
             onPointerDown={pressed.onPointerDown}
@@ -1215,7 +1261,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
               <span className="ml-auto grid justify-items-end text-micro text-warn">
                 {dense && cut && <span className="invisible col-start-1 row-start-1" aria-hidden="true">{`${touch ? tapSays : enterOpens ? enterSays : openFirst}.`.length >= `${count(unseen?.total ?? 0)} not seen yet`.length ? `${touch ? tapSays : enterOpens ? enterSays : openFirst}.` : `${count(unseen?.total ?? 0)} not seen yet`}</span>}
                 {shut ? <span className="col-start-1 row-start-1" role="status" data-testid="approval-open-first">{touch ? tapSays : enterOpens ? enterSays : openFirst}.</span>
-                  : left > 0 ? <span className="col-start-1 row-start-1 tabular-nums" role="status" data-testid="approval-left">{leftText}</span> : null}
+                  : left > 0 ? <span className="col-start-1 row-start-1 tabular-nums" role="status" data-testid="approval-left">{leftText}{readKey && <span className="text-faint" data-testid="approval-read-key">. End reads on</span>}</span> : null}
               </span>
             )
             // What Enter does, true at every moment. "Enter allows once" stands only while its Allow has

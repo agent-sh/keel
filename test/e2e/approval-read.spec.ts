@@ -312,6 +312,55 @@ test("a long command opened by one click is read once its lines have been in vie
   }
 });
 
+// A long command read by keys alone: Enter opens it, End reads on to its end (every line passes
+// through view, a step at a time, as the owner's own scroll), and Enter allows: three keys. Space
+// reads a page on, and stays the card's while lines are left (it does not go to the message box).
+// The line that counts what is left names the key.
+test("a long command is read by keys: Enter opens it, End reads it to its end, Enter allows; Space reads on", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  const a = await asking(request, "Read by keys: End", [bash(LONG)]);
+  const b = await asking(request, "Read by keys: Space", [bash(LONG)]);
+  try {
+    await waits(request, a.id);
+    await waits(request, b.id);
+    for (const [s, key] of [[a, "End"], [b, " "]] as const) {
+      await page.goto(`/s/${s.id}`);
+      const list = page.getByTestId("approvals"), card = list.getByTestId("approval").first();
+      await expect(list).toBeFocused();
+      await expect(card).toHaveAttribute("data-must-open", "true");
+      await expect(list).toHaveAttribute("data-keys", "ready");
+      let keys = 0;
+      const press = async (k: string) => { keys++; await page.keyboard.press(k); };
+      await press("Enter");
+      await expect(card.getByTestId("approval-left")).toContainText("not seen yet. End reads on");
+      const unseen = async () => Number(await card.getAttribute("data-unseen"));
+      expect(await unseen()).toBeGreaterThan(5);
+      if (key === "End") {
+        await shoot(page, "approval-read-14-end-reads-on");
+        await press("End");
+      } else {
+        const first = await unseen();
+        await press(" ");
+        await expect.poll(unseen).toBeLessThan(first);
+        await expect(page.getByTestId("composer")).toHaveValue("");
+        await expect(list).toBeFocused();
+        for (let i = 0; i < 6 && (await unseen()) > 0; i++) { await press(" "); await page.waitForTimeout(250); }
+      }
+      await expect.poll(unseen, { timeout: 5000 }).toBe(0);
+      expect(await states(request, s.id)).toBe("pending");
+      // Read: Allow once takes the keyboard once it stood, and Enter allows.
+      await expect(card.getByTestId("allow-once")).toBeFocused({ timeout: 8000 });
+      await expect(card).toHaveAttribute("data-live", "true");
+      await press("Enter");
+      await expect.poll(() => states(request, s.id)).toBe("allowed/once");
+      if (key === "End") expect(keys).toBe(3);
+      await expect(page.getByTestId("composer")).toHaveValue("");
+    }
+  } finally {
+    await drop(request, [a.id, b.id]);
+  }
+});
+
 // The step a card asks for first is the one it leads with. A card that must be
 // opened shows that as its first button, says why its Allow once waits before
 // anything was pressed, and Enter on the list of requests opens it: two keys,

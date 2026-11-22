@@ -872,6 +872,12 @@ test("the hint says Enter allows once exactly when it would, and says so quietly
   // Seen within the settle time: it says what is coming, and an Enter now allows nothing.
   await expect(arming).toHaveText("Enter allows once in a moment");
   await expect(hint).toBeHidden();
+  // And the Allow itself shows it arming: a line fills under its label for what is left of the settle time.
+  await expect(allow).toHaveAttribute("data-arming", "");
+  const line = await allow.evaluate((el) => { const a = getComputedStyle(el, "::after"); return { name: a.animationName, ms: parseFloat(a.animationDuration) * 1000, h: a.height }; });
+  expect(line.name).toBe("k-arm");
+  expect(line.ms).toBeGreaterThan(150);
+  expect(line.ms).toBeLessThanOrEqual(1000);
   const where = async () => (await card.getByTestId("approval-actions").locator("button").evaluateAll((els) => els.map((el) => Math.round(el.getBoundingClientRect().left)))).join();
   const before = await where(), height = Math.round((await card.boundingBox())!.height);
   await page.keyboard.press("Enter");
@@ -880,6 +886,7 @@ test("the hint says Enter allows once exactly when it would, and says so quietly
   // The line turns exactly when Enter would act: from then one press allows.
   await expect(hint).toBeVisible();
   await expect(arming).toHaveCount(0);
+  await expect(allow).not.toHaveAttribute("data-arming");
   await expect(allow).toBeFocused();
   await expect(card).toHaveAttribute("data-live", "true");
   expect(await where()).toBe(before);

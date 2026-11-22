@@ -979,6 +979,12 @@ h1.k-home-state[data-quiet] { font-size: var(--text-title); font-weight: 600; le
    The control itself does not move: a move would start its wait again. */
 :is(.k-allow, .k-allow-all, .k-grant)[data-nudge] { outline: 2px solid var(--warn); outline-offset: 1px; animation: k-nudge var(--dur-settle) var(--ease-out); }
 @keyframes k-nudge { from { outline-offset: 0.4375rem; outline-color: transparent; } }
+/* The read-first latch arming: a line fills under Allow once for what is left of the settle
+   time, and stays full until Enter allows (the card's hint says "in a moment" meanwhile). */
+.k-allow { position: relative; }
+.k-allow[data-arming]::after { content: ""; position: absolute; inset: auto 0.5rem 0.25rem; height: 2px; border-radius: 1px; background: currentColor; opacity: 0.6; transform-origin: left center; animation: k-arm var(--k-arm, 1000ms) linear both; pointer-events: none; }
+@keyframes k-arm { from { transform: scaleX(0); } }
+@media (prefers-reduced-motion: reduce) { .k-allow[data-arming]::after { animation: none; opacity: 0.35; } }
 /* Rows brought into view stop under their list's bar, not behind it (its height is set by the list). */
 .k-ask-list > .k-approval, .k-ask-list > .k-approval * { scroll-margin-top: var(--k-ask-bar, 0px); }
 .k-question { border-radius: var(--radius-md); box-shadow: none; }
