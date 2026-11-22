@@ -80,7 +80,17 @@ CREATE INDEX IF NOT EXISTS waits_status ON waits(status, session_id);`);
   // stored in the transcript. A restart sends what is still owed.
   if (!D().store.columnExists("waits", "wake")) D().store.migrate("ALTER TABLE waits ADD COLUMN wake INTEGER NOT NULL DEFAULT 0");
   D().store.migrate("CREATE INDEX IF NOT EXISTS waits_wake ON waits(wake) WHERE wake = 1"); // the few owed ones, read at start
+  // A monitor's batches its session has not been given yet, the newest
+  // EVENTS_KEPT of them: a busy session gets them when its turn ends, and a
+  // restart in that time loses none (they leave the table in the write that
+  // stores their prompt).
+  D().store.migrate("CREATE TABLE IF NOT EXISTS wait_events (wait_id TEXT NOT NULL REFERENCES waits(id) ON DELETE CASCADE, n INTEGER NOT NULL, text TEXT NOT NULL, PRIMARY KEY (wait_id, n)) WITHOUT ROWID");
 }
+
+// How many batches of one monitor are kept for a session that does not take
+// them (the default number a monitor delivers before it stops): of more, the
+// oldest go and the next event says how many.
+export const EVENTS_KEPT = 20;
 
 type Row = Omit<WaitRecord, "spec" | "tail"> & { spec: string; state: string | null; wake: number };
 const toRec = (r: Row): WaitRecord => {
@@ -343,8 +353,9 @@ export function cancelText(id: string, r: ReturnType<typeof cancel>): string {
 
 export function cancelForSession(sessionId: string) {
   for (const w of list(sessionId, 0)) if (w.status === "active") settle(w.id, "cancelled", "Cancelled with its session.", false);
-  // A stopped or archived session gets no wake of an earlier wait either.
+  // A stopped or archived session gets no wake of an earlier wait either, and no batch of its monitors.
   D().store.db.query("UPDATE waits SET wake = 0 WHERE session_id = ? AND wake = 1").run(sessionId);
+  D().store.db.query("DELETE FROM wait_events WHERE wait_id IN (SELECT id FROM waits WHERE session_id = ?)").run(sessionId);
 }
 
 // The last probe's error, of a wait still active (a probe that answers after
@@ -618,12 +629,51 @@ function flushMonitor(id: string, force = false) {
     text += l + "\n";
   }
   const events = w.events + 1;
-  D().store.db.query("UPDATE waits SET events = ?, state = json_set(COALESCE(state, '{}'), '$.tail', json(?)) WHERE id = ?")
-    .run(events, JSON.stringify(st.tail ?? []), id);
+  const db = D().store.db;
+  // The batch is stored before it is on its way: it is owed until its prompt is.
+  db.transaction(() => {
+    db.query("UPDATE waits SET events = ?, state = json_set(COALESCE(state, '{}'), '$.tail', json(?)) WHERE id = ?").run(events, JSON.stringify(st.tail ?? []), id);
+    db.query("INSERT INTO wait_events (wait_id, n, text) VALUES (?, ?, ?)")
+      .run(id, events, `<monitor_event id="${w.id}" batch="${events}"${w.note ? ` note="${attr(w.note)}"` : ""}>\n${inert(text, "monitor_event")}${left ? `[${left} more lines left out]\n` : ""}</monitor_event>`);
+    db.query("DELETE FROM wait_events WHERE wait_id = ? AND n <= ?").run(id, events - EVENTS_KEPT);
+  })();
   emit("wait", get(id));
   const s = w.spec as Extract<WaitSpec, { kind: "monitor" }>;
-  deliver(w.session_id, `<monitor_event id="${w.id}" batch="${events}"${w.note ? ` note="${attr(w.note)}"` : ""}>\n${inert(text, "monitor_event")}${left ? `[${left} more lines left out]\n` : ""}</monitor_event>`, { kind: "wait", wait_id: w.id, outcome: "event" }, { coalesceMs: 100 });
+  sendEvents(w);
   if (events >= (s.max_events ?? 20)) settle(id, "ended", `The monitor delivered its ${events} batches and stopped.`);
+}
+
+// A monitor's batches the session is still owed, as one part of its next
+// input, read from the table when it is sent: every batch kept, in order, as
+// it was written, and how many older ones went. Sending it takes them off the
+// table in the same write.
+const isEvents = (id: string) => (m: Record<string, unknown>) => m.wait_id === id && m.outcome === "event";
+function eventsOwed(id: string) {
+  const db = D().store.db;
+  const rows = db.query<{ n: number; text: string }, [string]>("SELECT n, text FROM wait_events WHERE wait_id = ? ORDER BY n").all(id);
+  if (!rows.length) return undefined;
+  const sent = db.query<{ sent: number | null }, [string]>("SELECT json_extract(state, '$.sent') AS sent FROM waits WHERE id = ?").get(id)?.sent ?? 0;
+  const dropped = rows[0]!.n - sent - 1;
+  const texts = rows.map((r) => r.text);
+  // Said inside the first batch that is left, after its opening line.
+  if (dropped > 0) texts[0] = texts[0]!.replace("\n", `\n[${dropped} earlier ${dropped === 1 ? "batch" : "batches"} of this monitor ${dropped === 1 ? "was" : "were"} dropped: more than ${EVENTS_KEPT} waited for this session]\n`);
+  const last = rows.at(-1)!.n;
+  return {
+    text: texts.join("\n\n"),
+    meta: { kind: "wait", wait_id: id, outcome: "event" },
+    onSent: () => {
+      db.query("DELETE FROM wait_events WHERE wait_id = ? AND n <= ?").run(id, last);
+      db.query("UPDATE waits SET state = json_set(COALESCE(state, '{}'), '$.sent', ?) WHERE id = ?").run(last, id);
+    },
+  };
+}
+function sendEvents(w: WaitRecord, boot = false) {
+  if (isPending(w.session_id, isEvents(w.id))) return; // on its way: it is read again when it is sent
+  const first = eventsOwed(w.id);
+  if (!first) return;
+  const when = !boot ? { coalesceMs: 100 } : cutTurn(w.session_id) ? { hold: true } : { coalesceMs: BOOT_COALESCE };
+  // An archived session runs no monitors: nothing is owed to it.
+  if (!deliver(w.session_id, first.text, first.meta, { ...when, refresh: () => eventsOwed(w.id) })) D().store.db.query("DELETE FROM wait_events WHERE wait_id = ?").run(w.id);
 }
 
 const timedOut = (w: WaitRecord, last?: string | null) => `Timed out after ${Math.round((w.deadline - w.created) / 1000)} s.${last ? ` Last probe: ${last}` : ""}`;
@@ -702,6 +752,11 @@ export function cutTurn(sessionId: string): boolean {
 // they are still the same processes); other waits keep going. A wake the last
 // daemon owed (settled, not yet in the transcript) is sent now, once.
 export function recover() {
+  // The batches a monitor delivered that never reached its session go first, before the wake that says it ended.
+  for (const { wait_id } of D().store.db.query<{ wait_id: string }, []>("SELECT DISTINCT wait_id FROM wait_events").all()) {
+    const w = get(wait_id);
+    if (w) sendEvents(w, true);
+  }
   const owed = D().store.db.query<Row, []>("SELECT * FROM waits WHERE wake = 1 AND status != 'active' ORDER BY ended, created").all().map(toRec);
   for (const w of owed) {
     if (isPending(w.session_id, (m) => m.wait_id === w.id && m.outcome === w.status)) continue; // already on its way

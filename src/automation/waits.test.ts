@@ -409,3 +409,41 @@ test("a daemon that stops also stops the probe that is out", async () => {
     waits.cancel(w.id);
   }
 });
+
+// A monitor's batches for a session that is busy are kept in the table until
+// their prompt is stored: a restart in that time loses none and sends none
+// twice. Only the newest EVENTS_KEPT are kept, and the event says how many
+// older ones went.
+test("a monitor's batches for a busy session survive a restart, once, and only the newest are kept", async () => {
+  const mine = (text: string) => text.includes(`<monitor_event id="${w.id}"`);
+  const inputs = () => store.events(s.id).filter((e) => e.kind === "user" && mine(String(e.data.text))).map((e) => String(e.data.text));
+  busy.add(s.id); // a turn runs in the session for as long as the monitor writes
+  // One matching line every 100 ms: each tick delivers what came since the last one as a batch.
+  const lines = 32;
+  const w = waits.create(s.id, waits.normalize({ kind: "monitor", command: `for i in $(seq 1 ${lines}); do echo "READY line-$i."; sleep 0.1; done; sleep 30`, match: "READY", coalesce_ms: 0, max_events: 200 }, dir), { timeout_seconds: 60 });
+  const all = () => store.db.query<{ n: number }, [string]>("SELECT n FROM wait_events WHERE wait_id = ? ORDER BY n").all(w.id).map((r) => r.n);
+  for (let i = 0; i < 400 && !store.db.query("SELECT 1 FROM wait_events WHERE wait_id = ? AND instr(text, ?) > 0").get(w.id, `line-${lines}.`); i++) { await waits.tick(); await Bun.sleep(25); }
+  const batches = waits.get(w.id)!.events;
+  expect(batches).toBeGreaterThan(waits.EVENTS_KEPT);
+  // Nothing reached the busy session, and the table holds the newest batches only.
+  expect(inputs()).toEqual([]);
+  expect(all()).toEqual(Array.from({ length: waits.EVENTS_KEPT }, (_, i) => batches - waits.EVENTS_KEPT + 1 + i));
+
+  // The daemon restarts: the kept batches arrive in one input, in order, before the wake that says the monitor ended.
+  restart();
+  restart();
+  expect(inputs()).toHaveLength(1);
+  const said = inputs()[0]!;
+  const numbers = [...said.matchAll(/<monitor_event id="[^"]+" batch="(\d+)"/g)].map((m) => Number(m[1]));
+  expect(numbers).toEqual(Array.from({ length: waits.EVENTS_KEPT }, (_, i) => batches - waits.EVENTS_KEPT + 1 + i));
+  const dropped = batches - waits.EVENTS_KEPT;
+  expect(said).toContain(`[${dropped} earlier ${dropped === 1 ? "batch" : "batches"} of this monitor`);
+  expect(said).toContain(`line-${lines}.`);
+  expect(said).not.toContain("line-1.");
+  expect(said.match(new RegExp(`line-${lines}\\.`, "g"))).toHaveLength(1);
+  expect(said.indexOf(`line-${lines}.`)).toBeLessThan(said.indexOf("The daemon restarted and stopped this monitor"));
+  expect(all()).toEqual([]);
+  // Nothing is left to send at a later start.
+  restart();
+  expect(inputs()).toHaveLength(1);
+}, 60_000);
