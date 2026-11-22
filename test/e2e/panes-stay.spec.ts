@@ -579,13 +579,18 @@ test("Escape goes back in a look and never stops the pane's own turn right after
   await page.keyboard.press("Escape");
   await expect.poll(() => phase(request, coord), { timeout: 15_000 }).not.toBe("working");
 
-  // On a card of a look Escape is the card's key, from the first moment: the look stays, and its bar does not offer the key.
+  // On a card of a look Escape is the card's key, from the first moment: the look stays, and its bar does not offer
+  // that key. It names the one that leads back from a card instead: Shift Escape.
   const run = await asksToRun(request, "Rotate the staging certificates", ws, "certs");
   await expect(row(page, run)).toHaveAttribute("data-watch", "need");
   await row(page, run).click();
   const card = cardIn(page, run, "approval");
+  const escKey = slot(page, 0).getByTestId("look-back").locator(".k-look-esc"), shiftKey = slot(page, 0).getByTestId("look-back").locator(".k-look-shift");
   await expect(card).toBeFocused();
-  await expect(slot(page, 0).getByTestId("look-back").locator("kbd")).toBeHidden();
+  await expect(escKey).toBeHidden();
+  await expect(shiftKey).toBeVisible();
+  await expect(shiftKey).toHaveText("ShiftEsc");
+  await shoot(page, "panes-stay-18-bar-names-shift-esc");
   await page.keyboard.press("Escape");
   await expect(slot(page, 0)).toHaveAttribute("data-station", run);
   await expect(card.getByTestId("approval")).toHaveAttribute("data-live", "true");
@@ -594,18 +599,115 @@ test("Escape goes back in a look and never stops the pane's own turn right after
   expect(await waiting(request, run)).toBe(1);
   // From the look's message box Escape goes back, and the bar says so.
   await slot(page, 0).locator('.k-view[data-view="look"]').getByTestId("composer").click();
-  await expect(slot(page, 0).getByTestId("look-back").locator("kbd")).toBeVisible();
+  await expect(escKey).toBeVisible();
+  await expect(shiftKey).toBeHidden();
   // The bar offers Escape only where it leads back. Not while the keyboard is in a field that keeps Escape for
   // itself: in the list's filter Escape leaves the look where it is.
   await page.getByTestId("list-filter").focus();
-  await expect(slot(page, 0).getByTestId("look-back").locator("kbd")).toBeHidden();
+  await expect(escKey).toBeHidden();
+  await expect(shiftKey).toBeHidden();
   await page.keyboard.press("Escape");
   await expect(slot(page, 0)).toHaveAttribute("data-station", run);
   await slot(page, 0).locator('.k-view[data-view="look"]').getByTestId("composer").click();
-  await expect(slot(page, 0).getByTestId("look-back").locator("kbd")).toBeVisible();
+  await expect(escKey).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(slot(page, 0)).toHaveAttribute("data-station", coord);
+  // From a card, the key the bar names leads back in one press, and the request still waits.
+  await row(page, run).click();
+  await expect(card).toBeFocused();
+  await expect(shiftKey).toBeVisible();
+  await page.keyboard.press("Shift+Escape");
+  await expect(slot(page, 0)).toHaveAttribute("data-station", coord);
+  await expect(slot(page, 0).getByTestId("look-bar")).toHaveCount(0);
+  expect(await waiting(request, run)).toBe(1);
+  // And from its reason field, once the denial was begun.
+  await row(page, run).click();
+  await expect(card).toBeFocused();
+  await card.getByTestId("deny").click();
+  await expect(card.getByTestId("deny-reason")).toBeFocused();
+  await expect(shiftKey).toBeVisible();
+  await page.keyboard.press("Shift+Escape");
+  await expect(slot(page, 0)).toHaveAttribute("data-station", coord);
+  expect(await waiting(request, run)).toBe(1);
   await drop(request, coord, reader, other, run);
+});
+
+// Escape that follows the close of a palette, a menu or the slash menu by a key is the same double
+// press: within the settle time it stops nothing and says how to stop. So is the first Escape after
+// a press that brought another pane to the helm to read it: it says how first. Once said, the next
+// Escape after the settle time stops the turn, as in any pane.
+test("Escape right after a palette, a menu or the slash menu closed, or a click to read another pane, stops nothing and says how", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const ws = folder("panes-stay-esc-close");
+  const mine = await long(request, "The pane I am in", ws);
+  const beside = await long(request, "The other pane", ws);
+  await works(request, mine, ws);
+  await works(request, beside, ws);
+  await open(page, [mine, beside]);
+  const box = slot(page, 0).getByTestId("composer");
+  await box.click();
+  // The palette, with words typed, closed by Escape; Escape again 200 ms later.
+  await page.keyboard.press("Control+k");
+  await expect(page.getByTestId("palette-input")).toBeVisible();
+  await page.keyboard.type("abc");
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("palette-input")).toBeHidden();
+  await page.waitForTimeout(200);
+  await page.keyboard.press("Escape");
+  await expect(tip(page)).toHaveText(HELD);
+  await page.waitForTimeout(700);
+  expect(await phase(request, mine), "Escape 200 ms after the palette closed").toBe("working");
+  expect(await phase(request, beside)).toBe("working");
+  await shoot(page, "panes-stay-19-esc-after-palette");
+  // Said, and meant: after the settle time the next Escape stops the turn.
+  await expect(tip(page)).toHaveText(AGAIN, { timeout: 3000 });
+  await page.keyboard.press("Escape");
+  await expect.poll(() => phase(request, mine), { timeout: 15_000 }).not.toBe("working");
+  expect(await phase(request, beside)).toBe("working");
+  // The slash menu of the message box, closed by Escape; Escape again 200 ms later.
+  await works(request, mine, ws);
+  await box.click();
+  await page.keyboard.type("/");
+  await expect(page.getByTestId("slash-menu")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("slash-menu")).toBeHidden();
+  await page.waitForTimeout(200);
+  await page.keyboard.press("Escape");
+  await expect(tip(page)).toHaveText(HELD);
+  await page.waitForTimeout(700);
+  expect(await phase(request, mine), "Escape 200 ms after the slash menu closed").toBe("working");
+  await expect(box).toHaveValue("/");
+  await box.fill("");
+  // A menu (the session's) closed by Escape, then Escape again.
+  await slot(page, 0).getByTestId("session-menu").click();
+  await expect(page.getByRole("menu")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("menu")).toBeHidden();
+  await page.waitForTimeout(200);
+  await page.keyboard.press("Escape");
+  await expect(tip(page)).toHaveText(HELD);
+  await page.waitForTimeout(700);
+  expect(await phase(request, mine), "Escape 200 ms after a menu closed").toBe("working");
+  // A click in the other pane's conversation, to read it: its first Escape says how to stop, and stops nothing.
+  await page.waitForTimeout(1200);
+  const reading = slot(page, 1).locator(".k-reading").first();
+  const r = (await reading.boundingBox())!;
+  await page.mouse.click(r.x + r.width / 2, r.y + Math.min(300, r.height / 2));
+  await expect(slot(page, 1)).toHaveAttribute("data-helm", "true");
+  await page.waitForTimeout(300);
+  await page.keyboard.press("Escape");
+  await expect(tip(page)).toHaveText(HELD);
+  await page.waitForTimeout(700);
+  expect(await phase(request, beside), "Escape after a click to read the other pane").toBe("working");
+  expect(await phase(request, mine)).toBe("working");
+  // A press on its message box is going there to work: Escape stops its turn.
+  await page.waitForTimeout(1200);
+  await slot(page, 1).getByTestId("composer").click();
+  await page.keyboard.press("Escape");
+  await expect.poll(() => phase(request, beside), { timeout: 15_000 }).not.toBe("working");
+  expect(await phase(request, mine)).toBe("working");
+  await drop(request, mine, beside);
 });
 
 test("the first pane is drawn once, a double click places only the row it began on, and what the owner starts is placed", async ({ page, request }) => {

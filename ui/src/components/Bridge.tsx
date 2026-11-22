@@ -222,8 +222,9 @@ function AimTag({ slot }: { slot?: number }) {
 // session the pane holds (its mark is live, and it says so in words when it
 // needs the owner or failed under the look), then the way back and, for a
 // look, the way to keep it. Escape is offered only where it leads back: not
-// while the keyboard is on a card of the look or in a field that keeps Escape
-// for itself (bridge.css). Where room is short the
+// while the keyboard is on a card of the look, where Escape is the card's own
+// key and Shift Escape leads back (the bar says that one there), or in a field
+// that keeps Escape for itself (bridge.css). Where room is short the
 // first sentence gives way (the header under the bar names the session looked
 // at), then "This pane holds", and the held session's name is cut last. While
 // a row of the list aims at the pane, the bar says what a click there will do
@@ -231,15 +232,17 @@ function AimTag({ slot }: { slot?: number }) {
 // nothing, and the sentences stay (the pane's band marks it).
 // Whether the bar offers Escape (bridge.css): not while the keyboard is on a card of the look,
 // where it is the card's own key, nor in a field that keeps it. Read off the focus when it moves.
-function useEscOffered(bar: RefObject<HTMLDivElement | null>) {
+function useEscOffered(bar: RefObject<HTMLDivElement | null>, isLook: boolean) {
   useEffect(() => {
     const look = () => {
       const el = bar.current;
       if (!el) return;
       const at = document.activeElement;
-      const off = !!at && at !== document.body
-        && ((!!at.closest("[data-ask-card]") && !!el.closest(".k-view")?.contains(at)) || (at.matches("input, textarea, [contenteditable]") && !at.matches(".k-composer-box textarea")));
+      const card = !!at && at !== document.body && (!!at.closest("[data-ask-card]") || !!at.closest("[data-ask-part]")) && !!el.closest(".k-view")?.contains(at.closest("[data-ask-card]") ?? at);
+      const off = card || (!!at && at !== document.body && at.matches("input, textarea, [contenteditable]") && !at.matches(".k-composer-box textarea"));
       el.toggleAttribute("data-esc-off", off);
+      // On a card the way back is Shift Escape (lib/builtins.ts, look-back-card): the bar says that key there.
+      el.toggleAttribute("data-esc-card", card && isLook);
     };
     look();
     document.addEventListener("focusin", look);
@@ -250,7 +253,7 @@ function useEscOffered(bar: RefObject<HTMLDivElement | null>) {
 
 function LookBar({ under, looking, slot, onBack, keep }: { under: Session; looking?: Session; slot?: number; onBack: () => void; keep?: () => void }) {
   const bar = useRef<HTMLDivElement>(null);
-  useEscOffered(bar);
+  useEscOffered(bar, !!keep);
   const st = useSessionState(under);
   const w = st.watch;
   const how = useAim(slot);
@@ -272,7 +275,7 @@ function LookBar({ under, looking, slot, onBack, keep }: { under: Session; looki
         )}
       </p>
       <button type="button" className="k-look-act" data-testid="look-back" title={`Back to ${title}, the session this pane holds`} aria-label={`Back to ${title}${state ? `, ${state}` : ""}, the session this pane holds`} onClick={onBack}>
-        <ArrowLeft aria-hidden="true" />Back<Kbd keys="escape" className="k-look-esc" />
+        <ArrowLeft aria-hidden="true" />Back<Kbd keys="escape" className="k-look-esc" /><Kbd keys="shift+escape" className="k-look-shift" />
       </button>
       {keep && <button type="button" className="k-look-act k-look-keep" data-testid="look-keep" title={`This becomes the pane's session, in place of ${title} (a double click on its row does the same)`} onClick={keep}>Keep here<Kbd keys="alt+k" /></button>}
     </div>

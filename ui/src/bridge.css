@@ -590,6 +590,8 @@
    the page by a selector (`:has` over the look and over the body), the question was asked
    again for every row a reply drew, and a look cost three times a pane's style time. */
 .k-look-bar[data-esc-off] .k-look-esc { display: none; }
+/* On a card the way back is Shift Escape, and the bar names that key in Escape's place. */
+.k-look-bar:not([data-esc-card]) .k-look-shift { display: none; }
 /* A line at the pane's foot for a few seconds: what left the pane, and where it is. It lies
    in the room under the message box and leaves air between the two. */
 .k-pane-note { position: absolute; z-index: 32; inset: auto 0 0; height: 1rem; padding: 0 0.75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--fg); font-size: var(--text-micro); font-weight: 500; line-height: 1rem; text-align: center; color: var(--bg); pointer-events: none; animation: k-note-in var(--dur-move) var(--ease-out); }

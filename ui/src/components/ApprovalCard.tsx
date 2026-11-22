@@ -1086,7 +1086,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
       onKeyDown={(e) => {
         if (denying || closed || (e.target as HTMLElement).tagName === "INPUT") return;
         // (Not an Escape pressed as the keyboard arrived: it was meant for where the keyboard was.)
-        if (e.key === "Escape" && keysSettled(e.currentTarget)) { e.preventDefault(); setDenying(true); }
+        // (Shift Escape is not the card's: in a look it leads back, lib/builtins.ts.)
+        if (e.key === "Escape" && !e.shiftKey && keysSettled(e.currentTarget)) { e.preventDefault(); setDenying(true); }
       }}
     >
       {dense ? (
@@ -1133,7 +1134,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
             data-testid="deny-reason"
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Escape" && !composing(e)) { e.preventDefault(); e.stopPropagation(); leaveDeny(); } }}
+            onKeyDown={(e) => { if (e.key === "Escape" && !e.shiftKey && !composing(e)) { e.preventDefault(); e.stopPropagation(); leaveDeny(); } }}
             aria-label="Why you deny it (optional)"
             placeholder="Tell the model why, or what to do instead (optional)"
             className="k-field min-w-[min(100%,14rem)] flex-1"

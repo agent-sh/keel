@@ -22,9 +22,16 @@
 // again: a press in that pane (the owner went there), or anything else they
 // do once the settle time has passed. A key that lands sooner was on its way
 // before they saw the pane change, and ends nothing.
+//
+// The same hold, with the same words, follows two more moves: a palette, a menu
+// or the message box's slash menu closed by a key (a second Escape there is the
+// same double press, not a Stop), and a press that brings another pane to the
+// helm to read it (on its conversation, not on its box or a control): that
+// pane's next Escape says how to stop first.
 import { useSyncExternalStore } from "react";
 import { announce } from "./announce.ts";
 import { SETTLE_MS } from "./approvals.ts";
+import { modalOpen } from "./overlay.ts";
 import { getStations, paneOf, stations, target, useStations } from "./stations.ts";
 import { getState, useStore } from "./store.ts";
 import { tipChange, tipSay } from "./tips.ts";
@@ -40,6 +47,8 @@ export const tellSwap = (detail: PaneSwap): void => {
 const helm = () => { const r = getUI().route; return r.name === "session" ? r.id : null; };
 const DESK = "(min-width: 768px)";
 const BOX = '[data-testid="composer"]';
+// Where a press in a pane is work there, not reading: its message box, a field, a control.
+const WORK = 'textarea, input, select, button, a[href], [role="button"], [role="menuitem"], [contenteditable="true"], [data-ask-card]';
 // Not under a view that lies over it (those are inert).
 const live = (el: Element | null | undefined): el is HTMLElement => el instanceof HTMLElement && el.isConnected && !el.closest("[inert]") && el.getClientRects().length > 0;
 const paneEl = (session: string) => document.querySelector<HTMLElement>(`[data-station="${CSS.escape(session)}"]`);
@@ -60,12 +69,25 @@ if (typeof window !== "undefined") {
     const id = el.closest<HTMLElement>("[data-station]")?.dataset.station;
     if (id) last.set(id, el);
   }, true);
-  addEventListener("pointerdown", (e) => acted((e.target as Element | null)?.closest?.<HTMLElement>("[data-station]")?.dataset.station), true);
-  addEventListener("keydown", (e) => { const k = (e as KeyboardEvent).key; if (k !== "Escape" && !["Shift", "Control", "Alt", "Meta"].includes(k)) acted(); }, true);
+  addEventListener("pointerdown", (e) => {
+    const t = e.target as Element | null;
+    const id = t?.closest?.<HTMLElement>("[data-station]")?.dataset.station;
+    acted(id);
+    // A press that brings another pane to the helm to read it, not to type or to use a control there.
+    if (id && id !== helm() && !t?.closest(WORK)) uncovered(id);
+  }, true);
+  addEventListener("keydown", (e) => {
+    const k = (e as KeyboardEvent).key;
+    // A palette, a dialog or a menu that this key closes: the next press is the same double press.
+    if ((k === "Escape" || k === "Enter") && modalOpen()) { const id = helm(); if (id) uncovered(id); return; }
+    if (k !== "Escape" && !["Shift", "Control", "Alt", "Meta"].includes(k)) acted();
+  }, true);
 }
 // A pane's session shows again (said as it happens, and again when the page has drawn it).
 // Each time counts from now: what was said about an earlier time it showed is over.
 export const uncovered = (session: string) => { bare.set(session, { at: performance.now(), told: false }); };
+// A menu of the message box (its slash menu) was closed by a key: the same hold as a dialog's.
+export const menuClosed = (session: string) => uncovered(session);
 const SOON = "Esc stops the turn in a moment";
 const AGAIN = "Esc again stops the turn";
 let soon = 0;

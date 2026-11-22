@@ -133,6 +133,9 @@ registerCommand(
   // it is the card's own key (the look's bar does not offer it there). The press after that, in the
   // pane that was uncovered, does not stop that pane's turn either: it says how to (stopHeld).
   { id: "look-back", label: "Back to the session the pane holds", group: "Bridge", keys: "escape", words: "leave look return", when: () => !!lookNow() && !document.activeElement?.closest("[data-ask-card]"), run: () => { const l = lookNow(); if (l) leaveLook(l.id); } },
+  // From a card of the look (where Escape is the card's own key: an approval's denial) Shift Escape
+  // leads back, in one press. The look's bar names that key while the keyboard is on a card.
+  { id: "look-back-card", label: "Back to the session the pane holds, from a card", group: "Bridge", keys: "shift+escape", inInput: true, words: "leave look return card", when: () => !!lookNow() && !!(document.activeElement?.closest("[data-ask-card]") || document.activeElement?.closest("[data-ask-part]")), run: () => { const l = lookNow(); if (l) leaveLook(l.id); } },
   { id: "home-back", label: "Back to the session the pane holds", group: "Bridge", keys: "escape", when: () => !!underHome(), run: () => void leaveHome() },
   { id: "stop", label: "Stop the turn", group: "Session", keys: "escape", when: () => current()?.phase === "working" && !current()?.parent_id && !lookNow(), run: () => { if (!stopHeld(current()!.id)) void stopHere(current()!); } },
   { id: "to-parent", label: "Back to the session that started this agent", group: "Session", keys: "escape", when: () => !!current()?.parent_id && !lookNow(), run: () => navigate({ name: "session", id: current()!.parent_id! }) },

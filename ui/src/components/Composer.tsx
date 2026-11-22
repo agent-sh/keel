@@ -12,7 +12,7 @@ import { daemonAway, hasSavedImage, messageRefused, namedSends, savedImages, sen
 import { sendWaitingSoon } from "../lib/resend.ts";
 import { getState, onFeature, reportError, reportUnlessGone, useStore, failed, whileHeard } from "../lib/store.ts";
 import { openFocus } from "../lib/self-focus.ts";
-import { stopHeld } from "../lib/looks.ts";
+import { menuClosed, stopHeld } from "../lib/looks.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { lineage } from "../../../src/core/tree.ts";
 import { promptToEdit } from "../lib/edit-last.ts";
@@ -907,7 +907,8 @@ const SessionComposer = memo(function SessionComposer({
             if (e.key === "ArrowDown") { e.preventDefault(); setSel((s) => (s + 1) % options.length); return; }
             if (e.key === "ArrowUp") { e.preventDefault(); setSel((s) => (s - 1 + options.length) % options.length); return; }
             if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) { e.preventDefault(); options[sel]?.apply(); return; }
-            if (e.key === "Escape") { e.preventDefault(); closed.current = `${menu.kind} ${menu.start}`; setMenu(null); return; }
+            // (The next Escape, within the settle time, is the same double press: it stops nothing and says how to.)
+            if (e.key === "Escape") { e.preventDefault(); closed.current = `${menu.kind} ${menu.start}`; setMenu(null); if (session) menuClosed(session.id); return; }
           }
           const mod = e.metaKey || e.ctrlKey;
           // An empty box has no caret to move: End, Page Up and Page Down are the
