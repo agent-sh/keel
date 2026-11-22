@@ -13,6 +13,7 @@ import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
 import { gitSync } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
+import { storeFd, storePath } from "../core/store-files.ts";
 import type { Engine } from "../engine/turn.ts";
 import { jobsOf, leftText, jobLive, stopJob, stopJobs } from "../tools/jobs.ts";
 import { daysOrNull, registerSettings, settings } from "./settings.ts";
@@ -596,7 +597,11 @@ function inWorker<T>(job: BackupJob, on: { checkpoint?: () => void; snapped?: ()
       } else end(() => (m.t === "done" ? ok(m.done) : fail(new Error(m.error))));
     };
     w.onerror = (e) => end(() => fail(new Error(`the backup worker failed: ${e.message}`)));
-    w.postMessage({ job, gate });
+    // The database file is read through this process's kept descriptor (src/core/store-files.ts):
+    // a thread made per backup opens none of its own. No file yet: the worker's read fails as it did.
+    let dbFd: number | undefined;
+    try { dbFd = storeFd(storePath(job.stateDir)); } catch {}
+    w.postMessage({ job: { ...job, dbFd }, gate });
   });
 }
 

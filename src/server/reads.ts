@@ -8,8 +8,8 @@
 // an idle daemon holds neither it nor its page cache. Where the thread cannot
 // run (it does not start, or dies before its first answer), reads run on the
 // loop, as before.
-import { join } from "node:path";
 import type { Store } from "../core/store.ts";
+import { storePath } from "../core/store-files.ts";
 import { tasks, type TaskName, type Tasks } from "./read-tasks.ts";
 
 declare const __KEEL_READS_JS__: string | undefined;
@@ -127,7 +127,7 @@ export class Reads {
     // The thread is gone: it threw, it ended by itself, or a read got no answer.
     w.onerror = (ev: ErrorEvent) => this.ended(w, ev.message);
     w.addEventListener("close", () => this.ended(w, "it ended"));
-    w.postMessage({ open: join(this.store.stateDir, "keel.db") });
+    w.postMessage({ open: storePath(this.store.stateDir) });
     return (this.worker = w);
   }
 

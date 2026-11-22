@@ -39,10 +39,10 @@
 // thread's connection syncs the log before it copies and the database after,
 // as the daemon's own did. Where the thread cannot run, or stops answering,
 // SQLite checkpoints and syncs in the commit, as before.
-import { closeSync, openSync, readSync } from "node:fs";
+import { readSync } from "node:fs";
 import { endianness } from "node:os";
-import { join } from "node:path";
 import type { Database } from "bun:sqlite";
+import { storeFd, storePath } from "./store-files.ts";
 
 declare const __KEEL_CHECKPOINT_JS__: string | undefined;
 
@@ -102,7 +102,6 @@ export class Checkpointer {
   // The thread has checkpointed once: the daemon's connection leaves the near checkpoints to it.
   private proved = false;
   private off = false;
-  private shm = -1;
   private changes = -1;
   private buf = Buffer.alloc(100);
   // What was asked of the thread and how it ended (tests read it).
@@ -130,7 +129,6 @@ export class Checkpointer {
     this.timer = undefined;
     clearTimeout(this.idle);
     this.end();
-    if (this.shm >= 0) { try { closeSync(this.shm); } catch {} this.shm = -1; }
     this.own(false);
     this.proved = false;
   }
@@ -167,10 +165,10 @@ export class Checkpointer {
   }
 
   waiting(): number | undefined {
-    if (this.shm < 0) {
-      try { this.shm = openSync(join(this.store.stateDir, "keel.db-shm"), "r"); } catch { return undefined; }
-    }
-    return framesWaiting(this.shm, this.buf);
+    // The index's descriptor is the process's kept one: never closed, and never one of this object's own (store-files.ts).
+    let shm: number;
+    try { shm = storeFd(`${storePath(this.store.stateDir)}-shm`); } catch { return undefined; }
+    return framesWaiting(shm, this.buf);
   }
 
   // `checkpoint` false: the log is synced only.
@@ -216,7 +214,7 @@ export class Checkpointer {
     };
     w.onerror = (ev: ErrorEvent) => this.failed(w, new Error(`the checkpoint thread failed: ${ev.message}`));
     w.addEventListener("close", () => { if (this.worker === w) this.failed(w, new Error("the checkpoint thread ended")); });
-    w.postMessage({ open: join(this.store.stateDir, "keel.db") });
+    w.postMessage({ open: storePath(this.store.stateDir) });
     return (this.worker = w);
   }
 

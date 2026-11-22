@@ -4,14 +4,13 @@
 // daemon's connection never waits for this one; the syncs (the log, and
 // after a copy the database) are this thread's to wait for.
 import { Database } from "bun:sqlite";
-import { fsyncSync, openSync } from "node:fs";
+import { fsyncSync } from "node:fs";
+import { storeFd } from "./store-files.ts";
 
 declare var self: Worker;
 
 let db: Database | undefined;
 let path = "";
-// The log file, opened once it exists: syncing it puts every committed frame on the disk.
-let log = -1;
 
 self.onmessage = (ev: MessageEvent) => {
   const m = ev.data as { open: string } | { id: number; passes: number };
@@ -27,8 +26,8 @@ self.onmessage = (ev: MessageEvent) => {
     if (!db) throw new Error("the checkpoint thread has no database");
     if (!m.passes) {
       // No log file: nothing was written since the database was last closed.
-      if (log < 0) { try { log = openSync(`${path}-wal`, "r"); } catch {} }
-      if (log >= 0) fsyncSync(log);
+      // The log's descriptor is kept for the life of the process and never closed (store-files.ts).
+      try { fsyncSync(storeFd(`${path}-wal`)); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
       postMessage({ id: m.id, passes: 0 });
       return;
     }

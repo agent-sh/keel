@@ -40,6 +40,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { GRANT_FILES, writeAll } from "../core/ownfile.ts";
+import { storeFd, storePath } from "../core/store-files.ts";
 
 // `config`: the config folder the backup carries files of, when it carries any.
 // `kind`: how it holds the database; `base`: the full backup a delta is read
@@ -256,7 +257,8 @@ const counts = (db: Database) => ({
 // whole). `config`: the owner's config folder, carried with the state.
 // `keep`: how many backups the owner keeps, which sets how large a delta may be.
 // `full`: a full backup whatever changed (the one made after a failed check).
-export type BackupJob = { stateDir: string; root: string; tmp: string; reason: string; config?: string; keep?: number; full?: true };
+// `dbFd`: the daemon's kept descriptor of the database file (src/core/store-files.ts), for a backup made on a thread of its own.
+export type BackupJob = { stateDir: string; root: string; tmp: string; reason: string; config?: string; keep?: number; full?: true; dbFd?: number };
 export type BackupDone = { sessions: number; events: number; skipped: { name: string; why: string }[]; config?: string };
 
 // The database as it is at one moment, for the length of a backup.
@@ -277,7 +279,7 @@ export class Snapshot {
   readonly path: string;
   readonly db: Database;
   constructor(stateDir: string) {
-    this.path = join(stateDir, "keel.db");
+    this.path = storePath(stateDir);
     this.db = new Database(this.path, { readonly: true });
     this.db.run("PRAGMA cache_size = -32768"); // 32 MiB: the check walks every table and index
   }
@@ -343,7 +345,7 @@ export function makeBackup(job: BackupJob, snap?: Snapshot): BackupDone {
   }
   if (!made) {
     const raw = join(tmp, "keel.db.raw");
-    const src = snap?.db ?? new Database(join(stateDir, "keel.db"), { readonly: true });
+    const src = snap?.db ?? new Database(storePath(stateDir), { readonly: true });
     try {
       if (snap) try { src.run("ROLLBACK"); } catch {} // VACUUM runs outside a transaction
       src.run(`VACUUM INTO '${raw.replace(/'/g, "''")}'`);
@@ -451,7 +453,7 @@ export function checkBackups(job: CheckJob, each?: (r: CheckResult) => void): Ch
   if (job.stateDir) {
     let db: Database | undefined;
     try {
-      db = new Database(join(job.stateDir, "keel.db"), { readonly: true });
+      db = new Database(storePath(job.stateDir), { readonly: true });
       db.run("PRAGMA cache_size = -32768");
       const why = integrity(db);
       store = why ? { ok: false, why } : { ok: true };
@@ -542,7 +544,12 @@ function writeDatabase(path: string, size: number, pages: number, source: DbInfo
   const buf = Buffer.allocUnsafe(per * size);
   const hashes = Buffer.allocUnsafe(pages * PAGE_HASH);
   const whole = createHash("sha256");
-  const fd = openSync(path, "r");
+  // The store's own file is read through the descriptor the process keeps and
+  // is never closed: closing one would drop every lock this process holds on
+  // the store (src/core/store-files.ts). A copy made for this backup is a
+  // file of its own, opened and closed here.
+  const live = source === "file";
+  const fd = live ? job.dbFd ?? storeFd(path) : openSync(path, "r");
   try {
     for (let p = 0; p < pages; p += per) {
       const block = readPages(fd, size, p, Math.min(per, pages - p), buf);
@@ -611,7 +618,7 @@ function writeDatabase(path: string, size: number, pages: number, source: DbInfo
     if (!reads(info)) throw new Error("the backup did not check out: the database does not read back as it was written");
     return { info, files: [FULL, PAGES] };
   } finally {
-    closeSync(fd);
+    if (!live) closeSync(fd);
   }
 }
 

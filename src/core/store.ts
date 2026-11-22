@@ -5,6 +5,7 @@ import type { ErrorRecord, EventKind, ImageBlock, QueueItem, Session, StoredEven
 import { addUsage, emptyUsage } from "./types.ts";
 import { totalmem } from "node:os";
 import { forgetSession } from "./session-map.ts";
+import { holdStore, storePath } from "./store-files.ts";
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -238,7 +239,9 @@ export class Store {
 
   constructor(readonly stateDir: string) {
     mkdirSync(stateDir, { recursive: true });
-    this.db = new Database(join(stateDir, "keel.db"), { create: true, strict: true });
+    // From here this process holds locks on the store's files: nothing but SQLite opens them (store-files.ts).
+    holdStore(stateDir);
+    this.db = new Database(storePath(stateDir), { create: true, strict: true });
     this.db.exec(SCHEMA);
     // The event tree (edit, fork, branches) and per-session settings. One
     // transaction: a start that fails part way leaves the database as it was,

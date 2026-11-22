@@ -50,3 +50,24 @@ test("git is run through src/core/git.ts", () => {
   expect(gh.map((f) => relative(ROOT, f)).sort()).toEqual(["src/automation/waits.ts", "src/mcp/connectors.ts", "src/worktree/manager.ts"]);
   for (const f of gh) expect([relative(ROOT, f), /\bgitEnv\(/.test(readFileSync(f, "utf8"))]).toEqual([relative(ROOT, f), true]);
 });
+
+// SQLite's locks on the store belong to the process: closing any descriptor
+// of keel.db or of its log's index gives every one of them up, and another
+// process can then take the log from under the daemon (src/core/store-files.ts).
+// So the store's files are opened by SQLite and by storeFd only, and who
+// names them is a short list: a file that joins it reads this first.
+test("the store's files are named in few places and opened outside SQLite only through storeFd", () => {
+  const src = files(join(ROOT, "src"), /\.ts$/).filter((f) => !f.endsWith(".test.ts"));
+  const names = /["'`]keel\.db|keel\.db-(wal|shm)|\}-(wal|shm)[`"']/;
+  expect(offenders(src, names).sort()).toEqual([
+    "src/admin/backup.ts",          // a backup's own files (keel.db.zst, a copy made for it), the restored copy, the log's size by stat
+    "src/admin/stall-cause.ts",     // the words a stall row uses for them
+    "src/admin/storage.ts",         // their sizes by stat, and a restore that moves them aside with no daemon on the folder
+    "src/core/checkpoint-worker.ts", // the log's kept descriptor, to sync it
+    "src/core/checkpoint.ts",       // the index's kept descriptor, to read how many frames wait
+    "src/core/store-files.ts",
+  ]);
+  // No call of node:fs or Bun.file that opens a file is given one of their paths.
+  const opens = /\b(openSync|open|readFileSync|readFile|createReadStream|copyFileSync|copyFile|Bun\.file)\([^\n]*(["'`]keel\.db["'`]|keel\.db-(wal|shm)|-(wal|shm)[`"']|storePath\()/;
+  expect(offenders(src.filter((f) => !f.endsWith("core/store-files.ts")), opens)).toEqual([]);
+});

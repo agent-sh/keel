@@ -1,7 +1,7 @@
 // The tool profile Gemini models are trained on: Gemini CLI's names and
 // shapes (packages/core/src/tools/definitions/model-family-sets/gemini-3.ts).
 import { readdirSync, statSync } from "node:fs";
-import { claimNote, isClaimFile } from "../core/claim.ts";
+import { heldFile } from "../core/store-files.ts";
 import { decodeText } from "../core/text.ts";
 import { join } from "node:path";
 import { notFound } from "./missing.ts";
@@ -68,7 +68,7 @@ const read_file: Tool = {
     const e = Number(input.end_line) || undefined;
     if (s || e) {
       if (mtime(p) === -1) return fail(notFound(p, ctx.cwd));
-      if (isClaimFile(p)) return fail(claimNote(p));
+      { const held = heldFile(p); if (held) return fail(held); }
       const limit = e ? e - (s ?? 1) + 1 : undefined;
       if (limit !== undefined && limit < 1) return fail(`end_line ${e} is before start_line ${s}: no line is in that range. Leave end_line out to read on from start_line.`);
       if (Bun.file(p).size > WHOLE_FILE_BYTES) {

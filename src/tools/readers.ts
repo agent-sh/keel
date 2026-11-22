@@ -9,6 +9,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { READ_WHOLE_CHARS, readersAtOnce, wholeText, type Material } from "../engine/reader.ts";
 import { coverageNote } from "../engine/readers.ts";
 import { isClaimFile } from "../core/claim.ts";
+import { isStoreFile } from "../core/store-files.ts";
 import { conceal } from "../core/conceal.ts";
 import { git } from "../core/git.ts";
 import { spill } from "./spill.ts";
@@ -55,6 +56,7 @@ const show = (f: string, cwd: string) => { const r = relative(cwd, f); return r 
 // `cut` says the file is longer.
 async function textOf(f: string, max: number): Promise<{ text: string; cut: boolean } | { skip: string }> {
   if (isClaimFile(f)) return { skip: "the daemon's claim on its state folder" };
+  if (isStoreFile(f)) return { skip: "the daemon's own store, which is not opened from inside the daemon" };
   const file = Bun.file(f);
   const cut = file.size > max;
   const b = await (cut ? file.slice(0, max) : file).bytes();

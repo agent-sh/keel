@@ -4,6 +4,7 @@
 // artifacts folder (a folder of its own the prompt names for reports, charts and
 // pages). A preview reads the file when asked. The pages are told at once
 // ("artifacts" frames), so the list grows while the session works.
+import { heldFile } from "../../core/store-files.ts";
 import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { basename, extname, join, relative } from "node:path";
 import { artifactsDir, contains, realOf } from "../../core/paths.ts";
@@ -170,6 +171,7 @@ export const artifactRoutes: RouteModule = ({ store, bus, errors }) => {
         const u = new URL(req.url);
         const path = allowed(s, u.searchParams.get("path"));
         if (!path) return bad("not an artifact of this session", 404);
+        { const held = heldFile(path); if (held) return bad(held, 403); }
         const f = Bun.file(path);
         if (!existsSync(path) || statSync(path).isDirectory()) return bad("the file is gone", 404);
         const e = extname(path).toLowerCase();

@@ -1,80 +1,183 @@
-// keel pair | devices | revoke | notify: the phone from a terminal. Pairing and
-// the device list open the store directly (it is safe beside a running daemon);
-// a test push asks the daemon, which holds the push key.
+// keel pair | devices | revoke | notify: the phone from a terminal.
+//
+// The store has one process that writes it: the daemon. While a daemon holds
+// the state folder these commands ask it (its address is in the folder's
+// lock); they open the store themselves only when no daemon does, and hold
+// the folder's claim for as long as they have it open, so none starts in the
+// middle. A second process that opens the store read-write and closes it is
+// the one that can take the log from under a daemon whose locks were lost
+// (src/core/store-files.ts): no command is that process.
 import { Database } from "bun:sqlite";
 import { existsSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { renderSVG, renderUnicodeCompact } from "uqr";
-import { claimState } from "../admin/daemon.ts";
+import { claimState, lockedDaemon } from "../admin/daemon.ts";
 import { undoCutRestore } from "../admin/storage.ts";
 import { Store } from "../core/store.ts";
+import { storePath } from "../core/store-files.ts";
 import { MobileStore } from "../integrations/mobile/store.ts";
 import { pairLink } from "../integrations/mobile/v1.ts";
 import { defaultStateDir } from "../core/paths.ts";
+import { authHeaders } from "./client.ts";
 
 const stateDirOf = (v?: string) => (v ? resolve(v) : defaultStateDir());
-// The daemon may be running: open the database without the daemon's start-up
-// work (its schema changes, its list of the sessions left working).
-function open(dir?: string): MobileStore {
-  const state = stateDirOf(dir);
-  const path = join(state, "keel.db");
-  if (!existsSync(path)) {
-    // No database: a new folder, or one a restore has moved its database out
-    // of for a moment. Only the holder of the folder's claim makes one, after
-    // a restore that was cut is undone (which can bring the database back).
-    const claim = claimState(state);
-    if (!claim) throw new Error(`${state} has no database yet and is in use (a restore, or a daemon starting): run the command again in a moment`);
+
+type Device = { id: string; name: string; nolock: unknown; revoked: unknown; push: { registered: boolean; warning?: unknown; unacknowledged?: number } };
+type Paired = { code: string; link: string; hermes: string; svg: string };
+// What the three commands need, from the daemon or from the store.
+type Phone = {
+  remembers: boolean; // the address the phone reaches this machine at is kept on the other side (the daemon's)
+  publicUrl(): string | undefined;
+  pair(url: string, ttl: number): Promise<Paired> | Paired;
+  devices(): Promise<Device[]> | Device[];
+  revoke(id: string): Promise<boolean> | boolean;
+  close(): void;
+};
+
+class NoAddress extends Error {}
+
+// The daemon of the folder, asked over its API.
+function viaDaemon(base: string): Phone {
+  const call = async (method: string, path: string, body?: unknown) => {
+    let r: Response;
     try {
-      undoCutRestore(state);
-      if (!existsSync(path)) return new MobileStore(new Store(state));
-    } finally {
-      claim.release();
+      r = await fetch(base + path, { method, headers: { "content-type": "application/json", ...authHeaders() }, body: body === undefined ? undefined : JSON.stringify(body) });
+    } catch (e) {
+      throw new Error(`the daemon at ${base} did not answer: ${(e as Error).message}`);
     }
+    const b: any = await r.json().catch(() => ({}));
+    return { ok: r.ok, status: r.status, body: b };
+  };
+  return {
+    remembers: true,
+    publicUrl: () => undefined,
+    pair: async (url, ttl) => {
+      const r = await call("POST", "/api/mobile/pair", { ...(url ? { public_url: url } : {}), ttl_seconds: ttl });
+      if (r.status === 400 && !url) throw new NoAddress();
+      if (!r.ok) throw new Error(String(r.body.error ?? `HTTP ${r.status}`));
+      return { code: r.body.code, link: r.body.pair_link, hermes: r.body.hermes_link, svg: r.body.qr_svg };
+    },
+    devices: async () => {
+      const r = await call("GET", "/api/mobile/devices");
+      if (!r.ok) throw new Error(String(r.body.error ?? `HTTP ${r.status}`));
+      return r.body.devices as Device[];
+    },
+    revoke: async (id) => {
+      const r = await call("DELETE", `/api/mobile/devices/${encodeURIComponent(id)}`);
+      if (r.status === 404) return false;
+      if (!r.ok) throw new Error(String(r.body.error ?? `HTTP ${r.status}`));
+      return true;
+    },
+    close: () => {},
+  };
+}
+
+// The store itself, with the folder's claim held: no daemon runs on it. The
+// database is opened without a daemon's start-up work (its schema changes,
+// its list of the sessions left working); a folder with none gets a store.
+function viaStore(state: string, claim: { release: () => void }): Phone {
+  let m: MobileStore;
+  let db: Database;
+  try {
+    const path = storePath(state);
+    // A restore that was cut is undone first (which can bring the database back).
+    if (!existsSync(path)) undoCutRestore(state);
+    if (existsSync(path)) {
+      db = new Database(path, { strict: true });
+      db.exec("PRAGMA busy_timeout = 5000");
+      const conn = db;
+      m = new MobileStore({ db: conn, migrate: (sql: string) => void conn.exec(sql) });
+    } else {
+      const store = new Store(state);
+      db = store.db;
+      m = new MobileStore(store);
+    }
+  } catch (e) {
+    claim.release();
+    throw e;
   }
-  const db = new Database(path, { strict: true });
-  db.exec("PRAGMA busy_timeout = 5000");
-  return new MobileStore({ db, migrate: (sql: string) => void db.exec(sql) });
+  return {
+    remembers: false,
+    publicUrl: () => m.setting("public_url") ?? undefined,
+    pair: (url, ttl) => {
+      m.setPublicUrl(url);
+      const code = m.createPairCode(ttl);
+      const link = pairLink(url, code);
+      return { code, link, hermes: pairLink(url, code, "hermes"), svg: renderSVG(link, { border: 2 }) };
+    },
+    devices: () => m.devices().map((d) => ({ id: d.id, name: d.name, nolock: d.nolock, revoked: d.revoked, push: m.pushStatus(d.id) })),
+    revoke: (id) => !!m.revoke(id),
+    close: () => {
+      try { db.close(); } finally { claim.release(); }
+    },
+  };
+}
+
+function open(dir?: string): Phone {
+  const state = stateDirOf(dir);
+  // The claim says whether a daemon holds the folder, whatever its lock file says.
+  const claim = claimState(state);
+  if (claim) return viaStore(state, claim);
+  const url = lockedDaemon(state)?.url;
+  if (!url) throw new Error(`${state} is in use (a daemon starting, or a restore): run the command again in a moment`);
+  return viaDaemon(url.replace(/\/+$/, ""));
 }
 
 async function pair(argv: string[]): Promise<number> {
   const { values } = parseArgs({ args: argv, options: { url: { type: "string" }, ttl: { type: "string", default: "600" }, "state-dir": { type: "string" }, help: { type: "boolean" } } });
   if (values.help) return (console.log("keel pair --url <address the phone reaches this machine at> [--ttl seconds]"), 0);
   const m = open(values["state-dir"]);
-  const url = (values.url ?? process.env.MOBILE_PUBLIC_URL ?? m.setting("public_url") ?? "").trim().replace(/\/+$/, "");
-  if (!/^https?:\/\/[^\s/]+/.test(url)) {
-    console.error("keel pair: pass --url (or set MOBILE_PUBLIC_URL) with the address the phone reaches this daemon at");
-    return 2;
+  try {
+    const url = (values.url ?? process.env.MOBILE_PUBLIC_URL ?? m.publicUrl() ?? "").trim().replace(/\/+$/, "");
+    const ttl = Math.min(86_400, Math.max(60, Number(values.ttl) || 600));
+    const needs = "keel pair: pass --url (or set MOBILE_PUBLIC_URL) with the address the phone reaches this daemon at";
+    // No address here: a daemon uses the one it remembers, and says so when it has none.
+    if (url ? !/^https?:\/\/[^\s/]+/.test(url) : !m.remembers) return (console.error(needs), 2);
+    let made: Paired;
+    try {
+      made = await m.pair(url, ttl);
+    } catch (e) {
+      if (!(e instanceof NoAddress)) throw e;
+      return (console.error(needs), 2);
+    }
+    const svg = join(stateDirOf(values["state-dir"]), "pair-qr.svg");
+    writeFileSync(svg, made.svg);
+    console.log(renderUnicodeCompact(made.link, { border: 2 }));
+    console.log(`Pair link (Keel app): ${made.link}\nFor the Hermes app: ${made.hermes}\nSaved QR SVG: ${svg}\nThe code is good once, for ${ttl} s.`);
+    return 0;
+  } finally {
+    m.close();
   }
-  m.setPublicUrl(url);
-  const ttl = Math.min(86_400, Math.max(60, Number(values.ttl) || 600));
-  const code = m.createPairCode(ttl);
-  const link = pairLink(url, code);
-  const svg = join(stateDirOf(values["state-dir"]), "pair-qr.svg");
-  writeFileSync(svg, renderSVG(link, { border: 2 }));
-  console.log(renderUnicodeCompact(link, { border: 2 }));
-  console.log(`Pair link (Keel app): ${link}\nFor the Hermes app: ${pairLink(url, code, "hermes")}\nSaved QR SVG: ${svg}\nThe code is good once, for ${ttl} s.`);
-  return 0;
 }
 
 async function devices(argv: string[]): Promise<number> {
   const { values } = parseArgs({ args: argv, options: { "state-dir": { type: "string" }, help: { type: "boolean" } } });
   if (values.help) return (console.log("keel devices [--state-dir DIR]\n  Lists the paired phones: id, name, whether it was revoked, and its push registration."), 0);
   const m = open(values["state-dir"]);
-  for (const d of m.devices()) {
-    const p = m.pushStatus(d.id);
-    // Names come from the phone: printed as data.
-    console.log(`${d.id}  ${JSON.stringify(d.name).padEnd(24)}  nolock=${d.nolock}  revoked=${d.revoked}  push=${p.registered ? "registered" : "none"}${p.warning ? ` (${p.unacknowledged} unconfirmed)` : ""}`);
+  try {
+    for (const d of await m.devices()) {
+      const p = d.push;
+      // Names come from the phone: printed as data.
+      console.log(`${d.id}  ${JSON.stringify(d.name).padEnd(24)}  nolock=${d.nolock}  revoked=${d.revoked}  push=${p.registered ? "registered" : "none"}${p.warning ? ` (${p.unacknowledged} unconfirmed)` : ""}`);
+    }
+    return 0;
+  } finally {
+    m.close();
   }
-  return 0;
 }
 
 async function revoke(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { "state-dir": { type: "string" }, help: { type: "boolean" } } });
   if (values.help) return (console.log("keel revoke <device id> [--state-dir DIR]\n  Revokes a paired phone (keel devices lists the ids)."), 0);
   if (!positionals[0]) return (console.error("usage: keel revoke <device id>"), 2);
-  console.log(open(values["state-dir"]).revoke(positionals[0]) ? "revoked" : "unknown device");
-  return 0;
+  const m = open(values["state-dir"]);
+  try {
+    console.log((await m.revoke(positionals[0])) ? "revoked" : "unknown device");
+    return 0;
+  } finally {
+    m.close();
+  }
 }
 
 async function notify(argv: string[]): Promise<number> {
