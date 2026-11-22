@@ -52,7 +52,7 @@ export function settingsChanges(before: Record<string, any>, after: Record<strin
     for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
       if (JSON.stringify(a[k]) === JSON.stringify(b[k])) continue;
       const plain = (v: unknown) => !SECRETISH.test(k) && (typeof v === "number" || typeof v === "boolean" || v === null);
-      out.push(plain(a[k]) && plain(b[k]) ? `${section}.${k} ${shown(k, a[k])} -> ${shown(k, b[k])}` : `${section}.${k} ${b[k] === undefined || b[k] === "" ? "removed" : a[k] === undefined || a[k] === "" ? "set" : "changed"}${plain(b[k]) ? ` to ${shown(k, b[k])}` : ""}`);
+      out.push(plain(a[k]) && plain(b[k]) ? `${section}.${k} ${shown(k, a[k])} -> ${shown(k, b[k])}` : `${section}.${k} ${b[k] == null || b[k] === "" ? "removed" : a[k] == null || a[k] === "" ? "set" : "changed"}${plain(b[k]) && b[k] !== null ? ` to ${shown(k, b[k])}` : ""}`);
     }
   }
   return out;

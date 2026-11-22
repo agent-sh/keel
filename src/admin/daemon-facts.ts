@@ -30,8 +30,9 @@ export function daemonFacts(db: Database, spans: { from: number; to: number }[])
   const restarts = !has(db, "daemon_starts") ? [] : db
     .query<{ data: string }, [number, number]>("SELECT data FROM daemon_starts WHERE up_ms >= ? AND up_ms <= ? ORDER BY up_ms").all(lo, hi + 7 * 86_400_000)
     .map((r) => JSON.parse(r.data) as Restart)
-    // A first start, or one that knows nothing of the daemon before it, is told by its own time.
-    .filter((r) => touches(r.before?.down_ms ?? r.up_ms, r.up_ms));
+    // A start that knows nothing of a daemon before it and found no turn cut (a first start) went through nothing: it is not told.
+    // One that found cut turns without knowing how the daemon before it ended is told by its own time.
+    .filter((r) => (r.before || r.turns.length > 0) && touches(r.before?.down_ms ?? r.up_ms, r.up_ms));
   const stalls = !has(db, "daemon_stalls") ? [] : db
     .query<StallFact, [number, number]>("SELECT ts_ms, ms, what, kind FROM daemon_stalls WHERE ts_ms >= ? AND ts_ms <= ? ORDER BY ts_ms").all(lo, hi)
     .filter((s) => touches(s.ts_ms, s.ts_ms));

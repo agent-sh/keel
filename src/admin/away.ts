@@ -188,7 +188,9 @@ export function daemonBrief(f: DaemonFacts | undefined): string {
   if (!f || (!f.restarts.length && !f.stalls.length)) return "";
   const cut = f.restarts.reduce((n, r) => n + r.turns.filter((t) => !t.earlier).length, 0);
   const last = f.restarts.at(-1);
-  const went = !last ? "" : `the daemon ${f.restarts.length > 1 ? `went down ${f.restarts.length} times` : downWords(last)}${cut ? `, ${plural(cut, "turn")} cut` : ""}`;
+  // (A start that does not know how the daemon before it ended is a start, not a time it went down.)
+  const downs = f.restarts.filter((r) => r.before).length;
+  const went = !last ? "" : `the daemon ${f.restarts.length > 1 ? (downs === f.restarts.length ? `went down ${downs} times` : `started ${f.restarts.length} times`) : downWords(last)}${cut ? `, ${plural(cut, "turn")} cut` : ""}`;
   const stalled = f.stalls.length ? `${went ? "" : "the daemon was "}unresponsive ${f.stalls.length === 1 ? "once" : `${f.stalls.length} times`}` : "";
   return [went, stalled].filter(Boolean).join("; ");
 }

@@ -34,6 +34,9 @@ test("a settings change names what changed and never shows a text or a secret-sh
   expect(line).not.toContain("planted");
   // A number under a secret-shaped name is not shown either; a removed text says removed.
   expect(settingsChanges({ a: { token_ttl: 5, name: "x" } }, { a: { token_ttl: 6 } })).toEqual(["a.token_ttl changed", "a.name removed"]);
+  // A setting that was not set (null) and now holds a text is set; back to null it is removed.
+  expect(settingsChanges({ observe: { otlp_endpoint: null } }, { observe: { otlp_endpoint: "http://collector:4318/v1/traces" } })).toEqual(["observe.otlp_endpoint set"]);
+  expect(settingsChanges({ observe: { otlp_endpoint: "http://collector:4318/v1/traces" } }, { observe: { otlp_endpoint: null } })).toEqual(["observe.otlp_endpoint removed"]);
   expect(settingsChanges(before, before)).toEqual([]);
 });
 
