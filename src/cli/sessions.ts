@@ -23,9 +23,12 @@ const SEARCH_USAGE = `keel search QUERY [options]
   The query takes its limits in its own words, or as options:
     in:commands (--commands)      only shell commands a session ran
     in:prompts | in:replies | in:output | in:summaries (--in KIND)
-    since:1h | since:2d | since:yesterday | since:today | since:2026-11-20 (--since, --until)
+    since:1h | since:2d | since:yesterday | since:2026-11-20 (--since)   from then on
+    until:... (--until)                                                 up to then
+    on:yesterday | on:today | on:2026-11-20 (--on)                      that day alone
     state:failed | state:done | state:working | state:needs-you (--state)   the session's state now
-  keel search "git push" --commands --since yesterday      which session ran git push yesterday
+  A limit that is not understood is refused with what it takes, never searched as a word.
+  keel search "git push" --commands --on yesterday      which session ran git push yesterday
 
   -a, --all          archived sessions too
       --subagents    subagents' sessions too
@@ -35,7 +38,7 @@ const SEARCH_USAGE = `keel search QUERY [options]
 
 const search = command("search", SEARCH_USAGE, {
   all: { type: "boolean", short: "a" }, subagents: { type: "boolean" }, limit: { type: "string", short: "n" }, best: { type: "boolean" },
-  commands: { type: "boolean" }, in: { type: "string" }, since: { type: "string" }, until: { type: "string" }, state: { type: "string" },
+  commands: { type: "boolean" }, in: { type: "string" }, since: { type: "string" }, until: { type: "string" }, on: { type: "string" }, state: { type: "string" },
 }, async (v, pos, c) => {
   const limit = v.limit ? Number(v.limit) : 20;
   if (!(limit > 0)) return usageError("search", "--limit is a number above 0", SEARCH_USAGE);
@@ -46,7 +49,7 @@ const search = command("search", SEARCH_USAGE, {
   if (!v.subagents) p.set("roots", "1");
   if (!v.all) p.set("archived", "0");
   if (v.commands || v.in) p.set("in", v.commands ? "commands" : v.in);
-  for (const k of ["since", "until", "state"] as const) if (v[k]) p.set(k, v[k]);
+  for (const k of ["since", "until", "on", "state"] as const) if (v[k]) p.set(k, v[k]);
   const r = await c.get<{ query: string; hits: any[]; limits?: string[] }>(`/api/search?${p}`);
   const hits = r.hits.filter((h) => h.kind !== "title");
   if (v.json) return (printJson({ ...r, hits }), EXIT.ok);

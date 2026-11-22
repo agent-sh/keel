@@ -11,7 +11,7 @@ const GROUPS: [string, [string, string][]][] = [
   ]],
   ["Sessions", [
     ["sessions", "list or search sessions (also: ls)"],
-    ["search", "what was said and done in any session, with when; --commands, --since, --state"],
+    ["search", "what was said and done in any session, with when; --commands, --since, --on, --state"],
     ["stuck", "the turns, tools and agents that made no progress for too long"],
     ["show", "a session and its transcript"],
     ["logs", "a session's events; -f follows them"],

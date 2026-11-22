@@ -280,14 +280,27 @@ test("after a kill, the errors, the digest, the log, spend, activity, times, sea
     // --- 6: search
     const hits = (q: string) => call(`/api/search?q=${encodeURIComponent(q)}&limit=20`);
     const pushed = await hits("git push in:commands since:today");
-    expect(pushed.limits).toEqual(["commands", expect.stringMatching(/^since \d{4}-\d\d-\d\d 00:00$/)]);
+    expect(pushed.limits).toEqual(["commands", expect.stringMatching(/^since \d{4}-\d\d-\d\d 00:00 UTC([+-]\d\d:\d\d)?$/)]);
+    // since: is from then on: what since:today finds, since:yesterday finds too, in either order of the limits.
+    const n = async (q: string) => (await hits(q)).hits.length;
+    expect([await n("git push since:yesterday"), await n("git push since:yesterday until:today"), await n("git push until:today since:yesterday")]).toEqual(Array(3).fill(await n("git push since:today")));
+    expect(await n("git push since:today")).toBeGreaterThan(1);
+    // on: is the day alone: nothing happened yesterday on this daemon.
+    expect([await n("git push on:yesterday"), await n("git push on:today")]).toEqual([0, await n("git push since:today")]);
+    // A limit that is not understood is refused with what it takes, not searched as a word.
+    for (const q of ["git push since:lastweek", "git push state:bogus", "git push since:99999999999d"]) {
+      const r = await fetch(`${d.url}/api/search?q=${encodeURIComponent(q)}`);
+      const body = await r.json();
+      expect([q, r.status, body.limit, /NaN/.test(body.error)]).toEqual([q, 400, true, false]);
+      expect(body.error).toMatch(/is not a limit this search knows\. (since: and until: take|state: takes) /);
+    }
     expect(pushed.hits.map((h: any) => [h.session_id, h.kind, h.ts >= since])).toEqual([[ids.Push, "tool_use", true]]);
     expect((await hits("git push")).hits.length).toBeGreaterThan(1); // the prompt and the output too
     expect((await hits("git push in:commands until:2026-01-01")).hits).toEqual([]);
     expect((await hits("git push in:commands state:done")).hits.map((h: any) => h.session_id)).toEqual([ids.Push]);
     expect((await hits("git push in:commands state:failed")).hits).toEqual([]);
     const found = keel("search", "git push", "--commands", "--since", "today");
-    expect(found.out).toMatch(/^1 hit for "git push", limited to commands, since \d{4}-\d\d-\d\d 00:00, the newest first\. Times are local \(UTC[+-]?[\d:]*\)\.\n\d{4}-\d\d-\d\d \d\d:\d\d:\d\d  \$ Bash git push origin main/);
+    expect(found.out).toMatch(/^1 hit for "git push", limited to commands, since \d{4}-\d\d-\d\d 00:00 UTC([+-]\d\d:\d\d)?, the newest first\. Times are local \(UTC[+-]?[\d:]*\)\.\n\d{4}-\d\d-\d\d \d\d:\d\d:\d\d  \$ Bash git push origin main/);
     expect(found.out).toContain(`Push  [session=${ids.Push!.slice(-12)}]`);
 
     mark("the pages");
@@ -311,6 +324,9 @@ test("after a kill, the errors, the digest, the log, spend, activity, times, sea
     await expect(hit).toContainText(/\d\d:\d\d · Command · Push/);
     await expect(page.getByTestId("palette-limits")).toContainText("Limited to commands, since");
     await shoot(page, "past-truth-02-search");
+    // A limit half typed is a hint in the list, and no client error.
+    await page.getByTestId("palette-input").fill("git push since:lastweek");
+    await expect(page.getByTestId("palette-refused")).toContainText("since:lastweek is not a limit this search knows");
     await page.getByTestId("palette-input").fill("activity");
     await page.getByRole("option", { name: /Show activity/ }).click();
     await expect(page.getByTestId("activity-item").first()).toBeVisible();

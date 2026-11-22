@@ -6,7 +6,7 @@
 import type { Database } from "bun:sqlite";
 import type { RouteModule } from "../app.ts";
 import { readsOf } from "../reads.ts";
-import { searchLimits, SHELL_TOOLS, STATE_WORDS } from "../search-query.ts";
+import { searchLimits, SHELL_TOOLS } from "../search-query.ts";
 import { board } from "./state.ts";
 
 // How much of one tool call's input or output is indexed (the rest is not
@@ -140,7 +140,8 @@ export const searchRoutes: RouteModule = ({ store }) => {
       // [&roots=1: no subagent sessions] [&archived=0|1: one partition]
       // [&cwd=folder] [&sessions=1: one hit per session, the best]
       // What it is limited to, in the query itself or as parameters (search-query.ts):
-      //   in:commands (in=commands), since:yesterday (since=), until: (until=), state:failed (state=).
+      //   in:commands (in=commands), since:yesterday (since=), until: (until=), on:yesterday (on=), state:failed (state=).
+      //   A limit that is not understood: 400 with `limit: true` and what its name takes.
       // Every hit has `ts`, when it happened; the answer's `limits` says what the search was limited to, in words.
       // [&newest=1: the newest hits first, not the best]
       GET: async (req: Request) => {
@@ -149,10 +150,10 @@ export const searchRoutes: RouteModule = ({ store }) => {
         if (asked.length > 500) return Response.json({ error: "query over 500 bytes" }, { status: 400 });
         const limit = Math.min(Number(u.searchParams.get("limit") ?? 20) || 20, 100);
         // The limits a parameter names are the same as the ones written in the query.
-        const params = ["in", "since", "until", "state"].map((k) => (u.searchParams.get(k) ? `${k}:${u.searchParams.get(k)!.trim().replace(/\s+/g, "-")}` : "")).filter(Boolean);
+        const params = ["in", "since", "until", "on", "state"].map((k) => (u.searchParams.get(k) ? `${k}:${u.searchParams.get(k)!.trim().replace(/\s+/g, "-")}` : "")).filter(Boolean);
         const lim = searchLimits([asked, ...params].join(" "));
-        const bad = params.find((p) => lim.words.split(" ").includes(p));
-        if (bad) return Response.json({ error: `${bad.replace(":", " is not a limit this search knows: ")} (in: commands, prompts, replies, output, summaries; since and until: 1h, 2d, yesterday, today, a date; state: ${Object.keys(STATE_WORDS).join(", ")})` }, { status: 400 });
+        // A limit that was not understood is refused with what its name takes (`limit`: the page shows it as a hint, not a failure).
+        if (lim.error) return Response.json({ error: lim.error, limit: true }, { status: 400 });
         const q = lim.words;
         const match = ftsQuery(q);
         if (!match) return Response.json({ query: q, hits: [], ...(lim.said.length ? { limits: lim.said } : {}) });

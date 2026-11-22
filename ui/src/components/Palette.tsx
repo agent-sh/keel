@@ -66,7 +66,8 @@ export function Palette() {
   // The daemon's answer for one query: rows of an older query are never shown
   // or opened under a newer one.
   // `limits`: what the daemon limited the search to, in words (in:commands, since:yesterday, state:failed in the query).
-  const [search, setSearch] = useState<{ q: string; hits: Hit[]; failed?: string; limits?: string[] }>({ q: "", hits: [] });
+  // `refused`: a limit in the query was not understood; the daemon's words say what its name takes.
+  const [search, setSearch] = useState<{ q: string; hits: Hit[]; failed?: string; refused?: string; limits?: string[] }>({ q: "", hits: [] });
   const [attempt, setAttempt] = useState(0);
   useEffect(() => { if (open) { setQ(""); setSelKey(null); setSearch({ q: "", hits: [] }); } }, [open]);
   const wantsSearch = q.trim().length >= 2;
@@ -78,6 +79,8 @@ export function Palette() {
       fetch(`/api/search?q=${encodeURIComponent(q)}&limit=12`, { signal: ctl.signal })
         .then(async (r) => {
           const body = await r.json().catch(() => ({}));
+          // A limit that is half typed or misspelled is a hint to the person typing, not a failure.
+          if (r.status === 400 && body.limit) return setSearch({ q, hits: [], refused: String(body.error ?? "") });
           if (!r.ok) throw Object.assign(new Error(body.error ?? `HTTP ${r.status}`), { status: r.status, body });
           setSearch({ q, hits: body.hits ?? [], limits: body.limits });
         })
@@ -92,6 +95,7 @@ export function Palette() {
   const searching = wantsSearch && search.q !== q;
   const hits = search.q === q ? search.hits : [];
   const searchFailed = wantsSearch && search.q === q ? search.failed : undefined;
+  const searchRefused = wantsSearch && search.q === q ? search.refused : undefined;
   const limits = wantsSearch && search.q === q ? search.limits : undefined;
 
   const entries = useMemo(() => {
@@ -226,7 +230,8 @@ export function Palette() {
             />
           </div>
           <div ref={list} id="palette-list" className="flex-1 overflow-y-auto overscroll-contain p-1.5" role="listbox" aria-label="Results" aria-busy={searching || undefined}>
-            {entries.length === 0 && !searching && !searchFailed && <p className="k-empty px-3 py-4">Nothing matches "{q}"{limits?.length ? ` (${limits.join(", ")})` : ""}.</p>}
+            {searchRefused && <p className="px-3 py-3 text-ui text-muted" role="status" data-testid="palette-refused">{searchRefused}</p>}
+            {entries.length === 0 && !searching && !searchFailed && !searchRefused && <p className="k-empty px-3 py-4">Nothing matches "{q}"{limits?.length ? ` (${limits.join(", ")})` : ""}.</p>}
             {entries.map((e, i) => (
               <div key={e.key}>
                 {(i === 0 || entries[i - 1]!.group !== e.group) && (
@@ -270,7 +275,7 @@ export function Palette() {
             {/* What a search can be limited to, said where a search is typed; once it is, what it was limited to. */}
             {wantsSearch && (
               <span className="ml-auto min-w-0 truncate" data-testid="palette-limits">
-                {limits?.length ? <>Limited to <span className="text-muted">{limits.join(", ")}</span></> : <>Limit a search: <span className="font-mono">in:commands since:yesterday state:failed</span></>}
+                {limits?.length ? <>Limited to <span className="text-muted">{limits.join(", ")}</span></> : <>Limit a search: <span className="font-mono">in:commands on:yesterday state:failed</span></>}
               </span>
             )}
           </div>
