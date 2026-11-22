@@ -8,6 +8,9 @@ let deps: Deps | undefined;
 // What a module set up against the parts before these (the failure notice's
 // rider reads its store's table) goes with them: it is set up again for these.
 export const setDeps = (d: Deps) => {
+  // A flush that waits under the dependencies before these never runs under these.
+  for (const t of timers.values()) clearTimeout(t);
+  timers.clear();
   deps = d;
   rider.get = undefined;
 };
