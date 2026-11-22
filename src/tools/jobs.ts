@@ -380,7 +380,8 @@ export function adoptJobs(spillRoot: string): number {
         finishStop(j);
         // A terminal the daemon held is gone with it. What ignored the hangup (the daemon was killed, so
         // nothing ended it as an exit does) is ended here, as a daemon that exits ends its terminals' commands.
-        if (m.pty && m.ended === undefined) j.swept = sweep(j);
+        // (Looked at once: the record says it ended, so a later start does not look for it again.)
+        if (m.pty && m.ended === undefined) { j.swept = sweep(j); patchMeta(log, { ended: m.started }); }
         continue;
       }
       let resolve!: () => void;

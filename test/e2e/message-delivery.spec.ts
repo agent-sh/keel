@@ -163,6 +163,8 @@ test("a message waiting for a working agent survives a kill of the daemon", asyn
     const { parent, child, agent } = await withAgent(r, "Killed holder", [r.hold(a)]);
     const id = (await agent()).id as string;
     await r.call(`/api/sessions/${parent}/agents/${id}/message`, { message: `Kept through the kill. script:calls ${JSON.stringify([r.hold(b)])}` });
+    // The first command is really running when the daemon is killed (the call was made a moment before its command starts).
+    await expect.poll(async () => ((await r.call(`/api/sessions/${child}/jobs`, undefined, "GET")).jobs ?? []).filter((j: any) => j.running).length, { timeout: 30_000 }).toBe(1);
     await r.restart("SIGKILL");
     await expect.poll(async () => (await r.commands(child)).length, { timeout: 60_000 }).toBe(2);
     const ev = await r.events(child);
