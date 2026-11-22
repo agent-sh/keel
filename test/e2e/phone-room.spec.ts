@@ -107,4 +107,73 @@ test.describe("on a phone", () => {
       await expect.poll(turns, { timeout: 60_000 }).toBe(3);
     } finally { await request.delete(`/api/sessions/${session.id}`); }
   });
+  // A press on a mark in the dock or a row of the list ends on the conversation pressed, with motion on: the glide
+  // to it passes other pages, and none of them is taken for the one the owner swiped to.
+  // The owner's own swipe (a wheel here) still takes the page it comes to.
+  test("a press in the dock or a row of the list lands where pressed, with motion on and off", async ({ page, request }) => {
+    const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+    test.skip(!models.includes("scripted:stand-in"), "requires the scripted provider");
+    const tag = Math.random().toString(36).slice(2, 6);
+    const ids: string[] = [];
+    try {
+      for (let i = 1; i <= 5; i++) {
+        const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: `Dock ${tag} ${i}` } })).json();
+        ids.push(session.id);
+        await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:say page ${i}` } });
+      }
+      await page.emulateMedia({ reducedMotion: "no-preference" });
+      await page.goto(`/s/${ids[0]}`);
+      const mark = (n: number) => page.locator(`.k-dock-mark[aria-label^="Dock ${tag} ${n},"]`);
+      // The page in the middle of the track, the address and the dock's current mark.
+      const where = () => page.evaluate(() => {
+        const t = document.querySelector(".k-stations")!.getBoundingClientRect();
+        const p = document.elementFromPoint(t.left + t.width / 2, t.top + t.height / 3)?.closest<HTMLElement>("[data-station]");
+        const label = (el: Element | null | undefined) => el?.getAttribute("aria-label")?.split(",")[0] ?? null;
+        return { shown: label(p), at: location.pathname.slice(3), mark: label(document.querySelector(".k-dock-mark[aria-current]")) };
+      });
+      const lands = async (n: number) => {
+        const want = { shown: `Dock ${tag} ${n}`, at: ids[n - 1], mark: `Dock ${tag} ${n}` };
+        await expect.poll(where, { timeout: 10_000 }).toEqual(want);
+        // And stays there once the glide is over.
+        await page.waitForTimeout(800);
+        expect(await where()).toEqual(want);
+      };
+      await expect(mark(5)).toBeVisible();
+      for (const n of [4, 2, 5, 1, 3]) {
+        await mark(n).tap();
+        await lands(n);
+      }
+      await shoot(page, "phone-04-dock-press");
+      // The owner's wheel over the track takes the next page.
+      const was = (await where()).at;
+      await page.mouse.move(200, 400);
+      await page.mouse.wheel(390, 0);
+      await expect.poll(async () => (await where()).at, { timeout: 10_000 }).not.toBe(was);
+      const now = await where();
+      expect([now.shown, now.mark]).toEqual([`Dock ${tag} ${ids.indexOf(now.at) + 1}`, `Dock ${tag} ${ids.indexOf(now.at) + 1}`]);
+      // From the start page a row of the list opens the session tapped, and the next message is stored there.
+      for (const n of [3, 5, 2, 4, 1, 3]) {
+        await page.goto("/");
+        await page.getByRole("button", { name: "All sessions" }).first().tap();
+        await page.locator(`[data-testid="session-row"][data-session="${ids[n - 1]}"]`).tap();
+        await lands(n);
+      }
+      const box = page.locator(".k-station[data-helm]").getByTestId("composer");
+      await box.tap();
+      await box.fill(`script:say stored in ${tag} 3`);
+      await page.locator(".k-station[data-helm]").getByTestId("send").tap();
+      const said = async (id: string) => (await (await request.get(`/api/sessions/${id}`)).json()).events.some((e: any) => e.kind === "user" && JSON.stringify(e.data).includes(`stored in ${tag} 3`));
+      await expect.poll(() => said(ids[2]!), { timeout: 30_000 }).toBe(true);
+      for (const id of ids.filter((_, i) => i !== 2)) expect(await said(id)).toBe(false);
+      // Without motion the press lands as well.
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      for (const n of [5, 2]) {
+        await mark(n).tap();
+        await lands(n);
+      }
+    } finally {
+      await page.emulateMedia({ reducedMotion: "no-preference" });
+      for (const id of ids) await request.delete(`/api/sessions/${id}`);
+    }
+  });
 });

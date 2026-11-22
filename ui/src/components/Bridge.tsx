@@ -640,18 +640,53 @@ export function Bridge() {
   const track = useRef<HTMLElement>(null);
   // Where the owner is follows the panes: the row tells when one comes, goes, changes size or scrolls (lib/automation.ts).
   useEffect(() => { watchPanes(track.current); return () => watchPanes(null); }, []);
+  // A page comes into view as the helm only while the owner moves the track: a finger on it or
+  // a wheel over it, until the scroll they started ends. A scroll made by the page (to the
+  // page a dock mark names, smooth when motion is on) passes other pages on its way, and
+  // each was taken for the one swiped to: the press ended on another conversation.
+  const swipe = useRef({ owned: false, fingers: 0, moved: false, to: null as string | null });
+  // The helm changed by anything but a swipe (a mark, a row, a key): the scroll that follows is the page's.
+  useLayoutEffect(() => { if (helm !== swipe.current.to) { swipe.current.owned = false; swipe.current.to = null; } }, [helm]);
   useEffect(() => {
-    if (!phone || !track.current) return;
+    const el = track.current;
+    if (!phone || !el) return;
+    const sw = swipe.current;
+    const take = (id: string | undefined) => {
+      if (!sw.owned || !id || id === helmNow()) return;
+      sw.to = id;
+      navigate({ name: "session", id }, true);
+    };
     const io = new IntersectionObserver((es) => {
       for (const e of es) {
-        const id = (e.target as HTMLElement).dataset.station;
         // A page with no width is not in view (a window that has no size yet): every page of
         // such a track "intersects", and each would take the helm from the last, without end.
-        if (e.isIntersecting && e.intersectionRect.width > 0 && id && id !== helmNow()) navigate({ name: "session", id }, true);
+        if (e.isIntersecting && e.intersectionRect.width > 0) take((e.target as HTMLElement).dataset.station);
       }
-    }, { root: track.current, threshold: 0.6 });
-    track.current.querySelectorAll(":scope > [data-station]").forEach((el) => io.observe(el));
-    return () => io.disconnect();
+    }, { root: el, threshold: 0.6 });
+    el.querySelectorAll(":scope > [data-station]").forEach((p) => io.observe(p));
+    const own = () => { sw.owned = true; sw.moved = false; };
+    const down = (e: TouchEvent) => { sw.fingers = e.touches.length; own(); };
+    const up = (e: TouchEvent) => { sw.fingers = e.touches.length; if (!sw.fingers && !sw.moved) sw.owned = false; };
+    const moved = () => { sw.moved = true; };
+    // Where the owner's scroll came to rest is the helm (the observer may not have said so yet).
+    const rest = () => {
+      if (!sw.owned || sw.fingers) return;
+      const r = el.getBoundingClientRect();
+      const at = [...el.querySelectorAll<HTMLElement>(":scope > [data-station]")].find((p) => { const b = p.getBoundingClientRect(); return b.width > 0 && b.left <= r.left + r.width / 2 && b.right > r.left + r.width / 2; });
+      take(at?.dataset.station);
+      sw.owned = false;
+    };
+    el.addEventListener("touchstart", down, { passive: true });
+    el.addEventListener("touchend", up, { passive: true });
+    el.addEventListener("touchcancel", up, { passive: true });
+    el.addEventListener("wheel", own, { passive: true });
+    el.addEventListener("scroll", moved, { passive: true });
+    el.addEventListener("scrollend", rest);
+    return () => {
+      io.disconnect();
+      el.removeEventListener("touchstart", down); el.removeEventListener("touchend", up); el.removeEventListener("touchcancel", up);
+      el.removeEventListener("wheel", own); el.removeEventListener("scroll", moved); el.removeEventListener("scrollend", rest);
+    };
   }, [phone, pages.map((s) => s.id).join()]);
 
   // A divider between two panes moves width from one to the other; the rest keep theirs.
