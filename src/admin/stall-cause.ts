@@ -380,6 +380,12 @@ export function kernelWork(d: { faults: number; read: number; written: number; r
   return calls >= KERNEL_CALLS ? `for ${calls.toLocaleString("en-US")} small reads and writes of its own` : "for system calls of its own";
 }
 
+// The kind of that work, with no number in it: what stalls of one cause share.
+export function kernelKind(d: { faults: number; read: number; written: number; reads: number; writes: number }): string {
+  const kinds = [d.read >= KERNEL_BYTES ? "read" : "", d.written >= KERNEL_BYTES ? "write" : "", d.faults >= KERNEL_FAULTS ? "memory" : ""].filter(Boolean);
+  return kinds.length ? kinds.join("+") : d.reads + d.writes >= KERNEL_CALLS ? "calls" : "";
+}
+
 export function decide(samples: Sample[], around: Around, stallMs: number, windowMs = stallMs): Cause {
   let run = 0, wait = 0, user = 0, sys = 0, seen = 0;
   // While it ran: page faults, and bytes and calls read and written.
@@ -433,7 +439,8 @@ export function decide(samples: Sample[], around: Around, stallMs: number, windo
   // Most of its time on a processor inside one statement of the store: the statement is the code.
   const [busiest, inIt] = [...inStatement].sort((x, y) => y[1] - x[1])[0] ?? [undefined, 0];
   const computed = busiest && inIt >= ran / 2 ? busiest : undefined;
-  if (run > 0) shares.push({ kind: "compute", key: "compute", what: `${kernel ? `on a processor in the kernel, ${kernelWork(did)}` : "in its own code"}${computed ? `, in the statement: ${computed}` : ""}`, ms: run });
+  // (A stall in the kernel is one cause for each kind of work: reading, writing and taking memory are not one row.)
+  if (run > 0) shares.push({ kind: "compute", key: kernel ? `compute kernel${kernelKind(did) ? ` ${kernelKind(did)}` : ""}` : "compute", what: `${kernel ? `on a processor in the kernel, ${kernelWork(did)}` : "in its own code"}${computed ? `, in the statement: ${computed}` : ""}`, ms: run });
   if (wait > 0) {
     const bits = [
       around.load !== undefined ? `machine load ${Math.round(around.load)}` : "",

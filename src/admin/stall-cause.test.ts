@@ -158,7 +158,8 @@ test("the parts of a stall do not overlap: time on a processor, a wait for one f
   for (let i = 81; i <= 160; i++) big.push({ t: i * 100, ep: 1, state: "D", run_ns: 80 * 99e6, wait_ns: 80e6, user_ticks: 0, sys_ticks: 800, call: sync });
   big[160]!.state = "R";
   const w = decide(big, { load: 18, pressure: { cpu: 4, io: 38 } }, 16_000);
-  expect(shares(w)).toEqual([["fsync store log", 8000], ["compute", 7920], ["cpu_wait", 80]]);
+  // (Processor time in the kernel is a cause of its own, apart from the daemon's own code.)
+  expect(shares(w)).toEqual([["fsync store log", 8000], ["compute kernel", 7920], ["cpu_wait", 80]]);
   expect(w.text).toBe("8.0 s in fsync of the store's log (keel.db-wal) (IO pressure 38%), 7.9 s on a processor in the kernel, for system calls of its own");
 
   // More seen than the stall can hold (an idle loop measures short; the samples reach back before it): the parts sum to the stall.
@@ -277,6 +278,15 @@ test("a thread on a processor the whole time computed, and the watcher says it c
   expect(busy({ io: io(5_000 + 40_000_000, 100 + 2_000_000, 40 + 9, 3 + 4), stat: faulting(30_000) })).toBe("0.9 s on a processor in the kernel, reading 40 MB in 9 calls, writing 2 MB in 4 calls, taking memory (30,000 page faults, about 123 MB)");
   expect(busy({ io: io(5_000 + 300_000, 100 + 9_000, 40 + 6_000, 3 + 500) })).toBe("0.9 s on a processor in the kernel, for 6,500 small reads and writes of its own");
   expect(busy({ io: io(5_000 + 300, 100, 40 + 2, 3) })).toBe("0.9 s on a processor in the kernel, for system calls of its own");
+  // Each kind of work is a cause of its own, with no number in what names it: stalls of one kind are one row.
+  const key = (files: Files) => decide(samples([
+    [0, { stat: stat("R", 1, 9), schedstat: "111040514 736246 16\n", syscall: "running\n", io: io(5_000, 100, 40, 3) }],
+    [1000, { stat: stat("R", 1, 97), schedstat: "990456032 15829160 291\n", syscall: "running\n", ...files }],
+  ]), {}, 1000).key;
+  expect([key({ io: io(5_000 + 1_900_000_000, 100, 70, 3) }), key({ io: io(5_000 + 3_000_000, 100, 44, 3) })]).toEqual(["compute kernel read", "compute kernel read"]);
+  expect([key({ io: io(5_000, 100 + 171_000_000, 40, 4) }), key({ io: io(5_000, 100, 40, 3), stat: faulting(120_000) }), key({ io: io(5_000 + 40_000_000, 100, 49, 3), stat: faulting(30_000) })])
+    .toEqual(["compute kernel write", "compute kernel memory", "compute kernel read+memory"]);
+  expect([key({ io: io(5_000 + 300_000, 100, 6_040, 503) }), key({ io: io(5_300, 100, 42, 3) }), decide(got, { load: 9 }, 3000).key]).toEqual(["compute kernel calls", "compute kernel", "compute"]);
 });
 
 test("a stopped thread, a stopped process and a suspended machine are told apart", () => {

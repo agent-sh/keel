@@ -170,6 +170,9 @@ export type Stall = {
 };
 
 const defined = <T extends object>(o: T): T => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && !(v && typeof v === "object" && !Array.isArray(v) && Object.values(v).every((x) => x === undefined)))) as T;
+// What the kernel's time was for, in the watcher's own words (reading, writing, taking memory), when it saw.
+const kernelWords = (c: Cause | undefined) => c?.shares?.find((x) => x.kind === "compute" && x.what.startsWith("on a processor in the kernel"))?.what ?? "on a processor in the kernel, for system calls of its own";
+
 // The session a request path names, so the row is filed under it.
 const sessionIn = (label: string) => /\/api\/sessions\/([0-9a-f-]{36})(?:[/ ]|$)/.exec(label)?.[1];
 
@@ -198,7 +201,7 @@ export function describeStall(s: Stall): { message: string; context: Record<stri
   const what = busy
     ? s.during
       ? ` while ${s.during.label}${also}`
-      : `: ${kernel ? "on a processor in the kernel, for system calls of its own" : "blocked by its own code"}, ${s.work?.length ? `with ${s.work.join(" and ")} in progress` : "outside anything it times"}${also}`
+      : `: ${kernel ? kernelWords(known) : "blocked by its own code"}, ${s.work?.length ? `with ${s.work.join(" and ")} in progress` : "outside anything it times"}${also}`
     : known
       ? `: ${known.text}${s.waited ? `: ${s.waited.label}` : ""}${slept ? ` while ${slept.label}` : ""}`
       : `: its process was not running (a blocking call, or a stopped or starved machine)${c ? `; ${c.text}` : ""}`;

@@ -338,3 +338,25 @@ test("an idle daemon's timer sleeps until the next thing is due, and a stall the
   expect(m.unsaid(100)).toBeUndefined();
   expect(noted.length).toBe(1);
 });
+
+// A stall on a processor in the kernel: the row says what the kernel's time was for, in the
+// watcher's own words, and each kind of work is a row of its own in the Errors panel.
+test("a stall in the kernel says what it was for, and reading, writing and taking memory are rows apart", () => {
+  const stall = (key: string, what: string): Stall => ({
+    ms: 2_000, busy_ms: 1_900, in_flight: [], turns: [],
+    cause: { kind: "compute", key, text: `1.9 s ${what}`, sampled_ms: 2_000, run_ms: 1_900, kernel_ms: 1_800, wait_ms: 0, shares: [{ kind: "compute", key, what, ms: 1_900 }] },
+  } as unknown as Stall);
+  const read = describeStall(stall("compute kernel read", "on a processor in the kernel, reading 1.9 GB in 30 calls"));
+  const again = describeStall(stall("compute kernel read", "on a processor in the kernel, reading 64 MB in 2 calls"));
+  const faults = describeStall(stall("compute kernel memory", "on a processor in the kernel, taking memory (120,000 page faults, about 492 MB)"));
+  const bare = describeStall(stall("compute kernel", "on a processor in the kernel, for system calls of its own"));
+  expect(read.message).toBe("Daemon unresponsive for 2.0 s: on a processor in the kernel, reading 1.9 GB in 30 calls, outside anything it times");
+  expect(faults.message).toBe("Daemon unresponsive for 2.0 s: on a processor in the kernel, taking memory (120,000 page faults, about 492 MB), outside anything it times");
+  expect(bare.message).toBe("Daemon unresponsive for 2.0 s: on a processor in the kernel, for system calls of its own, outside anything it times");
+  expect(read.what).toBe("on a processor in the kernel, reading 1.9 GB in 30 calls, outside anything it times");
+  // One row for the reads whatever their size, another for the memory, another for what is not known.
+  expect([read.group, again.group, faults.group, bare.group]).toEqual(["stall compute kernel read untimed", "stall compute kernel read untimed", "stall compute kernel memory untimed", "stall compute kernel untimed"]);
+  // A cause from a watcher that names no share keeps the words it had.
+  const old = describeStall({ ms: 2_000, busy_ms: 1_900, in_flight: [], turns: [], cause: { kind: "compute", key: "compute", text: "x", sampled_ms: 2_000, run_ms: 1_900, kernel_ms: 1_800, wait_ms: 0 } } as unknown as Stall);
+  expect(old.message).toBe("Daemon unresponsive for 2.0 s: on a processor in the kernel, for system calls of its own, outside anything it times");
+});
