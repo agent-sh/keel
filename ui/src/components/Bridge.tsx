@@ -23,6 +23,7 @@ import { focusBox } from "../lib/utils.ts";
 import { branchOf, lastLine, useAgentCount, useAgentCounts, useSessionState, useWatch, watchLabel, type Watch } from "../lib/watch.ts";
 import { MachineSep, machineRuns, whereWords } from "./Where.tsx";
 import { isPinned, pin as pinSession } from "../lib/sessops.ts";
+import { soloWindow } from "../lib/shell.ts";
 import { reportError } from "../lib/store.ts";
 import { Grip } from "./Grip.tsx";
 import { PaneMenu } from "./PaneMenu.tsx";
@@ -324,7 +325,8 @@ export function Bridge() {
   const startAt = fresh ? target(st) : -1; // the pane a new session is started in
   const weights = shares(st);
   const slots = phone ? [] : st.slots.map((id, i) => ({ id, i })).filter((x) => !focus || x.i === (fresh ? startAt : st.active));
-  const pages = useMemo(() => (phone ? [...(helm && sessions[helm] ? [sessions[helm]!] : []), ...byAttention(list, watches).filter((s) => s.id !== helm)].slice(0, PHONE_PAGES) : []), [phone, list, watches, helm, sessions]);
+  // (A session in a window of its own is that session alone, however narrow the window.)
+  const pages = useMemo(() => (phone ? [...(helm && sessions[helm] ? [sessions[helm]!] : []), ...(soloWindow ? [] : byAttention(list, watches).filter((s) => s.id !== helm))].slice(0, PHONE_PAGES) : []), [phone, list, watches, helm, sessions]);
   const onScreen = phone ? pages.map((s) => s.id) : slots.map((x) => x.id).filter((x): x is string => !!x && !gone(x));
   useEffect(() => stations.setShown(onScreen));
 
@@ -353,7 +355,9 @@ export function Bridge() {
     const io = new IntersectionObserver((es) => {
       for (const e of es) {
         const id = (e.target as HTMLElement).dataset.station;
-        if (e.isIntersecting && id && id !== helmNow()) navigate({ name: "session", id }, true);
+        // A page with no width is not in view (a window that has no size yet): every page of
+        // such a track "intersects", and each would take the helm from the last, without end.
+        if (e.isIntersecting && e.intersectionRect.width > 0 && id && id !== helmNow()) navigate({ name: "session", id }, true);
       }
     }, { root: track.current, threshold: 0.6 });
     track.current.querySelectorAll("[data-station]").forEach((el) => io.observe(el));
