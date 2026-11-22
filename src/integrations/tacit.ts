@@ -46,6 +46,7 @@ import { availableParallelism } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
+import { writeAll } from "../core/ownfile.ts";
 import { SessionMap } from "../core/session-map.ts";
 import type { Store } from "../core/store.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
@@ -270,6 +271,12 @@ function writeTranscript(path: string, bytes: Buffer) {
 
 // How many events of a transcript written whole are encoded and written in one piece of the loop's time.
 const WHOLE_SLICE = 256;
+
+// A branch of this many events and more has a transcript that must be written whole written in parts
+// (transcriptInParts), this many events at a time: about a megabyte, a few milliseconds.
+const PARTS_FROM = 2_000;
+const PART_EVENTS = 256;
+
 type TranscriptMark = { head: Session["head"]; model: string; workspace: string; stamp: string; last: string | null };
 type HookResult = { outcome: HookOutcome; text: string | null; ms?: number };
 // The answers one request waits for; `counted`: their lateness was counted.
@@ -541,6 +548,67 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
       this.wholes.delete(id);
       if (fd !== undefined) try { closeSync(fd); } catch {}
       try { rmSync(tmp, { force: true }); } catch {}
+    }
+  }
+
+  // A long branch whose transcript has to be written whole (there is no file
+  // yet, or the file is not this branch's: an import, a session from before
+  // transcripts were kept, another model or folder) is encoded and written a
+  // part at a time here, with the loop turning in between: in one piece, a
+  // history of tens of megabytes held the loop for as long as its encoding
+  // took and stood in memory three times over (its records, their text, the
+  // bytes). The parts are the records `transcript` would write, each part's
+  // first record following the last of the part before, as when events are
+  // appended to a file that is there. The file gets its name whole, with its
+  // mark: the call of `transcript` that follows finds it and appends what
+  // came since. A short branch, or a file that only needs its newest events,
+  // is left to that call.
+  async transcriptInParts(s: Session): Promise<void> {
+    if (!this.flags(s.id).feed_memory) return;
+    const path = this.transcriptFile(s.id);
+    let tmp: string | undefined;
+    try {
+      const current = this.store.session(s.id);
+      if (!current) return;
+      const line = this.store.lineage(s.id);
+      if (line.length < PARTS_FROM) return;
+      const { model, workspace } = current;
+      const stamp = fileStamp(path);
+      const cached = stamp === undefined ? undefined : this.markOf(s.id);
+      if (cached && cached.model === model && cached.workspace === workspace && cached.stamp === stamp) {
+        for (let i = line.length - 1; i >= 0; i--) if (line[i]!.id === cached.head) return;
+      }
+      const started = performance.now();
+      mkdirSync(dirname(path), { recursive: true });
+      tmp = `${path}.${crypto.randomUUID()}.tmp`;
+      const fd = openSync(tmp, "wx", 0o600);
+      let last: string | null = null, bytes = 0;
+      try {
+        for (let i = 0; i < line.length; i += PART_EVENTS) {
+          const records = toClaudeRecords(current, line.slice(i, i + PART_EVENTS), s.id, { parent: last });
+          const part = Buffer.from(toJsonl(records));
+          if (part.length) writeAll(fd, part);
+          bytes += part.length;
+          last = (records.at(-1)?.uuid as string | undefined) ?? last;
+          await new Promise<void>((ok) => setImmediate(ok));
+        }
+      } finally {
+        closeSync(fd);
+      }
+      // Hooks may already be reading this path: a complete file at once.
+      renameSync(tmp, path);
+      tmp = undefined;
+      const written = fileStamp(path);
+      // (The branch as it was read: what was appended to it meanwhile is appended to the file by the next call.)
+      if (written !== undefined) this.setMark(s.id, { head: line.at(-1)?.id ?? null, model, workspace, stamp: written, last });
+      const stat = this.metrics.transcript;
+      stat.rebuilt++;
+      add(stat.bytes, bytes);
+      add(stat.duration_ms, performance.now() - started);
+    } catch (e) {
+      // Left to `transcript`, which writes it in one piece or says why it cannot.
+      if (tmp) try { rmSync(tmp, { force: true }); } catch {}
+      this.dropMark(s.id);
     }
   }
 
@@ -828,6 +896,7 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
   async preCompact(s: Session) {
     if (!this.bin || !this.flags(s.id).use_memory || !this.flags(s.id).feed_memory) return;
     await this.warmTranscript(s);
+    await this.transcriptInParts(s);
     await within(running(this.hook("pre-compact", { session_id: s.id, cwd: s.workspace, transcript_path: this.transcript(s) })), this.waitOf("pre-compact"));
   }
 
@@ -1027,6 +1096,10 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
         // or side request sent first keeps its own messages: rebuilding them
         // from the branch would drop its ask and send the prompt in its place.
         if (req.purpose !== "turn" || !t.bin || !t.flags(s.id).use_memory) return req;
+        // (A long branch with no transcript yet: written in parts before the calls below hand its path out,
+        // its bodies read off the loop first.)
+        await t.warmTranscript(s);
+        await t.transcriptInParts(s);
         // The answers of the last step's reads still on their way: the model
         // is about to act on what it read, so a rule that came with a read
         // must be in this request. Each is waited for what is left of the

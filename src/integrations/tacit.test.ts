@@ -999,3 +999,61 @@ test("a long session's transcript is written whole in slices: the same records, 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// A long branch with no transcript yet (an import): written whole in one
+// piece it was encoded on the loop, megabytes at once. In parts it is the
+// same file, the loop turns while it is written, and the call that hands the
+// path out finds it and appends only what came since.
+test("a long branch's first transcript is written in parts: the same bytes, the loop turning, then found and appended to", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "tacit-transcript-parts-"));
+  const store = new Store(dir);
+  try {
+    const errors = { capture: () => ({ message: "" }) } as unknown as ErrorTracker;
+    const s = store.createSession({ model: "fixture:model", workspace: dir });
+    for (let i = 0; i < 900; i++) {
+      store.append(s.id, "user", { text: `Prompt ${i}` });
+      store.append(s.id, "assistant", { blocks: [{ type: "thinking", thinking: "t".repeat(200), signature: "sig" }, { type: "text", text: `Reply ${i}` }, { type: "tool_use", id: `t${i}`, name: "Bash", input: { command: `ls ${i}` } }] });
+      store.append(s.id, "tool_result", { results: [{ type: "tool_result", tool_use_id: `t${i}`, content: "x".repeat(1500) }] });
+    }
+    // In one piece, as before: what the file must be.
+    const whole = new Tacit(store, new Bus(), errors, null);
+    const path = whole.transcript(s);
+    // (Record ids and times are made as a record is: the two files are compared without them.)
+    const shape = (text: string) => text.trim().split("\n").map((l) => JSON.parse(l)).map((r, i, all) => ({ ...r, uuid: i, parentUuid: r.parentUuid === null ? null : all.findIndex((x) => x.uuid === r.parentUuid) }));
+    const want = shape(readFileSync(path, "utf8"));
+    expect(want.length).toBeGreaterThan(2700);
+    rmSync(path);
+    rmSync(join(dir, "transcripts", `${s.id}.mark`), { force: true });
+
+    const parts = new Tacit(store, new Bus(), errors, null);
+    // (Counted by a job that runs once each turn of the loop, not by a clock: eleven parts, a turn after each.)
+    let turns = 0, writing = true;
+    const turn = () => { turns++; if (writing) setImmediate(turn); };
+    setImmediate(turn);
+    await parts.transcriptInParts(s);
+    writing = false;
+    expect(turns).toBeGreaterThanOrEqual(10);
+    const got = shape(readFileSync(path, "utf8"));
+    expect(got).toEqual(want);
+    // Each record follows the one before it, across the parts.
+    expect(got.map((r) => r.parentUuid)).toEqual([null, ...got.slice(0, -1).map((r) => r.uuid)]);
+    expect(parts.stats().transcript).toMatchObject({ rebuilt: 1, appended: 0, reused: 0 });
+    // The call that hands the path out writes nothing more; an event that came since is appended.
+    expect(parts.transcript(s)).toBe(path);
+    expect(parts.stats().transcript).toMatchObject({ rebuilt: 1, appended: 0, reused: 1 });
+    store.append(s.id, "user", { text: "After the parts" });
+    await parts.transcriptInParts(s);
+    parts.transcript(s);
+    expect(parts.stats().transcript).toMatchObject({ rebuilt: 1, appended: 1, reused: 1 });
+    expect(JSON.parse(readFileSync(path, "utf8").trim().split("\n").at(-1)!).message.content).toBe("After the parts");
+    expect(readdirSync(join(dir, "transcripts")).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+    // A short branch is left to the call itself.
+    const short = store.createSession({ model: "fixture:model", workspace: dir });
+    store.append(short.id, "user", { text: "hi" });
+    await parts.transcriptInParts(short);
+    expect(existsSync(join(dir, "transcripts", `${short.id}.jsonl`))).toBe(false);
+  } finally {
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
