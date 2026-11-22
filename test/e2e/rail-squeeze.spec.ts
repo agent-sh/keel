@@ -129,7 +129,7 @@ test("the session list fits at every width its edge can be dragged to", async ({
     };
 
     for (const scale of [1, 1.5, 0.9]) {
-      // The session on screen has no request waiting: a request's card takes the keyboard a moment after it is drawn, also from the separator.
+      // The session on screen has no request waiting (a request's card takes the keyboard from an empty message box).
       await page.goto(`/s/${wait}`);
       await page.evaluate((s) => { localStorage.setItem("keel.textScale", JSON.stringify(s)); localStorage.removeItem("keel.listW"); }, scale);
       await page.reload();
@@ -144,15 +144,22 @@ test("the session list fits at every width its edge can be dragged to", async ({
       expect(first.width / first.rem).toBeCloseTo(18.75, 1);
       if (scale === 1) await shoot(page, "rail-squeeze-01-default");
 
-      // The edge, a step at a time with the keys the separator takes, down to the narrowest.
+      // The page has settled once its message box has the keyboard: it takes it by itself as the
+      // page loads, and never from a control focused after that (lib/self-focus.ts).
+      await expect(page.getByTestId("composer")).toBeFocused();
+      // The edge, a step at a time with the keys the separator takes, down to the narrowest (14.5rem).
       await grip.focus();
       let last = first.width;
       const width = () => side.evaluate((el) => el.getBoundingClientRect().width);
-      for (let i = 0; i < 12; i++) {
+      for (let i = 0; last > 14.5 * first.rem + 1; i++) {
+        expect(i, "the edge is at its narrowest within a dozen steps").toBeLessThan(12);
         await page.keyboard.press("ArrowLeft");
-        // The step is drawn (a step at the narrowest changes nothing).
         const was = last;
-        if (!(await expect.poll(width, { timeout: 1000 }).not.toBe(was).then(() => true, () => false))) break;
+        // A step that does nothing fails here, with where the keyboard is.
+        if (!(await expect.poll(width, { timeout: 2000 }).toBeLessThan(was).then(() => true, () => false))) {
+          const on = await page.evaluate(() => { const a = document.activeElement; return a && a !== document.body ? `${a.tagName.toLowerCase()}[${a.getAttribute("data-testid") ?? a.getAttribute("aria-label") ?? ""}]` : "nothing"; });
+          throw new Error(`Step ${i + 1} to the left did nothing at text size ${scale}: the list is still ${Math.round(was)}px wide and the keyboard is on ${on}, not on the separator.`);
+        }
         last = (await check(`text size ${scale}, step ${i + 1} to the left`)).width;
       }
       expect(last / first.rem, "the narrowest the edge goes").toBeCloseTo(14.5, 1);
