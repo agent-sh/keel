@@ -1109,13 +1109,17 @@ test("the page says the daemon is unreachable and stops its clocks", async ({ pa
 // Feature: a turn the provider asked to wait long for continues by itself.
 // The failure says when, with a countdown; at that time the turn goes on with
 // nobody pressing anything, also when the daemon restarted meanwhile; the
-// owner can go on at once or call it off. (These daemons take a wait of a few
-// seconds for a long one, so the spec does not sit for minutes.)
+// owner can go on at once or call it off. (This daemon takes a wait over a
+// second for a long one, and each prompt names its own wait: a few seconds
+// where the spec watches the turn come back, ten minutes where it acts during
+// the wait, so nothing here has to be done inside a window of time.)
 test("a rate-limited turn continues by itself at the time the provider named", async ({ page }) => {
+  test.setTimeout(300_000);
   const state = join(ROOT, `restart-ratelimit-${Date.now()}`);
   made.push(state);
   mkdirSync(state, { recursive: true });
-  const env = { KEEL_RETRY_WAIT_MAX_MS: "1000", KEEL_SCRIPTED_RATE_WAIT_MS: "2000" };
+  const env = { KEEL_RETRY_WAIT_MAX_MS: "1000", KEEL_SCRIPTED_RATE_WAIT_MS: "3000" };
+  const LONG = 600_000;
   let d = await daemon(state, env);
   try {
     const call = (path: string, body?: unknown, method = "POST") =>
@@ -1126,50 +1130,57 @@ test("a rate-limited turn continues by itself at the time the provider named", a
     const ends = async () => ((await view()).events as any[]).filter((e) => e.kind === "turn_end").map((e) => e.data.reason);
     const composer = page.getByTestId("composer");
     const box = page.getByTestId("turn-error");
+    const due = box.getByTestId("resume-at");
     const answer = "Answered after the wait the provider asked for.";
 
-    // The failure names the time and counts down; the turn then goes on unprompted.
+    // The failure names the time, and the turn then goes on unprompted.
     await page.goto(`${d.url}/s/${sid}`);
-    await composer.fill("script:rate-limit-long");
+    await composer.fill("script:rate-limit-long 4000");
     await composer.press("Enter");
-    await expect(box).toContainText(/asked to wait until \d\d:\d\d/, { timeout: 15_000 });
-    const due = box.getByTestId("resume-at");
-    await expect(due).toContainText(/Resumes by itself at \d\d:\d\d/);
-    await expect(due.getByTestId("resume-in")).toHaveText(/^in \ds$/);
-    await shoot(page, "restart-13-continues-at");
-    expect((await view()).session.settings.continue_at.at).toBeGreaterThan(Date.now());
-    await expect(page.getByTestId("assistant-text").last()).toHaveText(answer, { timeout: 20_000 });
+    await expect(page.getByTestId("assistant-text").last()).toHaveText(answer, { timeout: 60_000 });
+    await expect(box).toContainText(/asked to wait until \d\d:\d\d/);
     await expect(due).toHaveCount(0);
     expect(await ends()).toEqual(["error", "end_turn"]);
     expect((await view()).session.settings.continue_at).toBeUndefined();
 
-    // A daemon that restarts during the wait still continues it.
-    await composer.fill("script:rate-limit-long again");
+    // A daemon that restarts during the wait still continues it. The daemon is gone before the
+    // time the provider named (a wait of twenty seconds), so the turn that follows is the next daemon's.
+    await composer.fill("script:rate-limit-long 20000 again");
     await composer.press("Enter");
     await expect(due).toHaveCount(1, { timeout: 15_000 });
+    const named = (await view()).session.settings.continue_at.at as number;
     d.proc.kill("SIGKILL");
     await exited(d.proc);
+    expect(Date.now(), "the daemon was stopped before the wait was over").toBeLessThan(named);
     d = await daemon(state, env);
     await page.goto(`${d.url}/s/${sid}`);
-    await expect(page.getByTestId("assistant-text")).toHaveCount(2, { timeout: 30_000 });
+    await expect(page.getByTestId("assistant-text")).toHaveCount(2, { timeout: 60_000 });
     expect(await ends()).toEqual(["error", "end_turn", "error", "end_turn"]);
 
-    // Called off: nothing continues, and the owner's Continue is still there.
-    await composer.fill("script:rate-limit-long once more");
+    // A wait of ten minutes: the time is kept with the session and counted down on the failure.
+    await composer.fill(`script:rate-limit-long ${LONG} once more`);
     await composer.press("Enter");
     await expect(due).toHaveCount(1, { timeout: 15_000 });
+    await expect(box.last()).toContainText(/asked to wait until \d\d:\d\d/);
+    await expect(due).toContainText(/Resumes by itself at \d\d:\d\d/);
+    await expect(due.getByTestId("resume-in")).toHaveText(/^in \dm \d+s$/);
+    await shoot(page, "restart-13-continues-at");
+    expect((await view()).session.settings.continue_at.at).toBeGreaterThan(Date.now() + LONG / 2);
+    // Called off: nothing is kept that would continue it, and the owner's Continue is still there.
     await due.getByTestId("resume-cancel").click();
     await expect(due).toHaveCount(0);
-    await page.waitForTimeout(4_000);
+    await expect.poll(async () => (await view()).session.settings.continue_at ?? null).toBeNull();
     expect(await ends()).toEqual(["error", "end_turn", "error", "end_turn", "error"]);
     expect((await call(`/api/sessions/${sid}/resume`, undefined, "DELETE")).cancelled).toBe(false);
+    await expect(box.last().getByTestId("try-again")).toBeVisible();
 
-    // Continue now does not wait for the time.
-    await composer.fill("script:rate-limit-long, the last");
+    // Resume now does not wait for the time: the turn runs again with the ten minutes still ahead
+    // (and ends as the provider answers it: the stand-in asks for the wait again).
+    await composer.fill(`script:rate-limit-long ${LONG}, the last`);
     await composer.press("Enter");
     await expect(due).toHaveCount(1, { timeout: 15_000 });
     await due.getByTestId("resume-now").click();
-    await expect.poll(async () => (await ends()).length, { timeout: 15_000 }).toBeGreaterThanOrEqual(7);
+    await expect.poll(async () => (await ends()).length, { timeout: 30_000 }).toBeGreaterThanOrEqual(7);
 
     // A provider that asks for the wait every time: three rounds, each twice as long, then it stops and says so.
     const stuck = (await call("/api/sessions", { model: "scripted:stand-in", title: "Limited every time" })).session.id as string;
@@ -1179,16 +1190,16 @@ test("a rate-limited turn continues by itself at the time the provider named", a
     await composer.press("Enter");
     await expect(due).toHaveCount(1, { timeout: 15_000 });
     await expect(box.first()).not.toContainText("Continue after that");
-    await expect(due.getByTestId("resume-round")).toHaveText("after 1 try, waiting longer each time", { timeout: 15_000 });
+    // The last round waits longest (four times the three seconds asked for): its count is on screen for that long.
+    await expect(due.getByTestId("resume-round")).toHaveText("after 2 tries, waiting longer each time", { timeout: 60_000 });
     const stopped = page.getByTestId("resume-stopped");
-    await expect(stopped).toHaveText("It resumed by itself 3 times and the provider asked for the wait each time, so it is not resumed again.", { timeout: 40_000 });
+    await expect(stopped).toHaveText("It resumed by itself 3 times and the provider asked for the wait each time, so it is not resumed again.", { timeout: 60_000 });
     await expect(due).toHaveCount(0);
     await expect(box.last().getByTestId("try-again")).toBeVisible();
     await shoot(page, "restart-15-continue-stopped");
     const errs = await errorsOf();
     expect(errs.map((e) => e.continued)).toEqual([undefined, undefined, undefined, 3]);
     expect((await call(`/api/sessions/${stuck}`, undefined, "GET")).session.settings.continue_at).toBeUndefined();
-    await page.waitForTimeout(3_000);
     expect(await errorsOf()).toHaveLength(4);
   } finally {
     d.proc.kill("SIGKILL");

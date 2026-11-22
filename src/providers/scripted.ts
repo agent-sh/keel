@@ -45,7 +45,13 @@ const textOf = (m: Message | undefined) =>
 const tokens = (v: unknown) => Math.ceil(JSON.stringify(v).length / 4);
 // The wait is 15 minutes unless a spec's daemon names a shorter one (with KEEL_RETRY_WAIT_MAX_MS below it).
 const LONG_WAIT_MS = Number(process.env.KEEL_SCRIPTED_RATE_WAIT_MS) || 15 * 60_000;
-const longRateLimit = () => new ProviderError("rate", `Scripted: 429 rate limited, retry after ${LONG_WAIT_MS >= 60_000 ? `${Math.round(LONG_WAIT_MS / 60_000)} min` : `${Math.round(LONG_WAIT_MS / 1000)} s`}`, 429, LONG_WAIT_MS);
+// `script:rate-limit-long <ms>` and `script:rate-limit-always <ms>` name the wait themselves: a spec
+// that acts during a wait (calls it off, goes on at once, restarts the daemon) asks for one it
+// cannot outlast, and one that watches the turn come back asks for a short one.
+const longRateLimit = (prompt = "") => {
+  const ms = Number(prompt.match(/script:rate-limit-(?:long|always)[ \t]+(\d+)\b/)?.[1]) || LONG_WAIT_MS;
+  return new ProviderError("rate", `Scripted: 429 rate limited, retry after ${ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`}`, 429, ms);
+};
 
 export class ScriptedProvider implements Provider {
   readonly id = "scripted";
@@ -290,11 +296,11 @@ export class ScriptedProvider implements Provider {
       }
       case "rate-limit-always":
         // A provider that asks for the long wait however often it is asked.
-        throw longRateLimit();
+        throw longRateLimit(owner);
       case "rate-limit-long":
         // Refused until the engine comes back by itself when the wait is over.
         if (lastText.includes("[harness] The wait the provider asked for is over")) return reply("Answered after the wait the provider asked for.");
-        throw longRateLimit();
+        throw longRateLimit(owner);
       case "rate-limit":
         if (attempt === 0) throw new ProviderError("rate", "Scripted: 429 rate limited, retry after 4 s", 429, 4_000);
         return reply("Answered after the rate limit passed.");
