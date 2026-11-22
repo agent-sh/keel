@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { AcpBridge, permissionRequest, promptOf } from "./bridge.ts";
+import { cardForm } from "../safety/card.ts";
 
 test("an editor's permission request carries the card's reason", () => {
   const card = { session_id: "s", call_id: "c", tool: "Bash", summary: "git push --force", input: { command: "git push --force" }, risk: "high", why: "the command rewrites or deletes history on a remote", suggest: [] };
@@ -9,6 +10,24 @@ test("an editor's permission request carries the card's reason", () => {
   const low = permissionRequest({ ...card, risk: "low", why: undefined, notice: "Reviewer unavailable: no reviewer is set up. The owner answers this one.", suggest: [{ kind: "shell", pattern: "git push *" }] }, "Bash");
   expect(low.toolCall.content[0].content.text).toContain("Reviewer unavailable");
   expect(low.options.map((o: any) => o.optionId)).toEqual(["once", "always", "deny"]);
+});
+
+test("an editor's request for a card that is read first carries the whole text in its content", () => {
+  const command = Array.from({ length: 41 }, (_, i) => `echo step ${i + 1}`).join("\n") + "\necho ``` \u202e";
+  const a = { id: "a1", session_id: "s", call_id: "c", tool: "Bash", kind: "shell", state: "pending", summary: command, input: { command }, risk: "low", suggest: [] } as any;
+  const held = permissionRequest(a, "Bash", cardForm(a));
+  // A line for the title: the editor shows a title as one line.
+  expect(held.toolCall.title).toBe("Bash: echo step 1 ... (42 lines: the whole request is below)");
+  const [notes, text] = held.toolCall.content.map((c: any) => c.content.text);
+  expect(notes).toContain("characters that do not show as written");
+  // All of it, each hidden character written out, in a fence the text cannot close.
+  expect(text.startsWith("````\necho step 1\n")).toBe(true);
+  expect(text.endsWith("echo ``` <U+202E>\n````")).toBe(true);
+  expect(text.split("\n").length).toBe(44);
+  // A request one line shows whole is the line it was.
+  const short = { ...a, summary: "npm test", input: { command: "npm test" } };
+  expect(permissionRequest(short, "Bash", cardForm(short)).toolCall).toMatchObject({ title: "npm test" });
+  expect(permissionRequest(short, "Bash", cardForm(short)).toolCall.content).toBeUndefined();
 });
 
 // A daemon stand-in: sessions, their events, a model listing, and the frame stream.

@@ -13,6 +13,8 @@ import { contextTokens } from "../engine/compact.ts";
 import { questions } from "../../ui/src/lib/tools.ts";
 import { lineage } from "../core/tree.ts";
 import type { StoredEvent } from "../core/types.ts";
+import { cardLines, type CardForm } from "../safety/card.ts";
+import { spelled } from "../safety/chars.ts";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -66,18 +68,35 @@ export function toolDetail(name: string, input: Json): { locations?: Json[]; con
 // TodoWrite / update_plan as an ACP plan.
 // The editor's permission request for a gate card: what the card shows the
 // owner, its reason (why only once is offered, why the owner is asked) included.
-export function permissionRequest(a: Json, name: string): Json {
+// `form`: the card as the daemon gives it to every client (src/safety/card.ts).
+// With it the request carries the whole text to judge in its content, each
+// hidden character written out, with what in it can mislead, where it runs and
+// whether only its start is kept: an editor shows a request's content in full,
+// and a title only as a line. An allow then says the text was shown (`seen`).
+export function permissionRequest(a: Json, name: string, form?: CardForm): Json {
   const options = [
     { optionId: "once", name: "Allow once", kind: "allow_once" },
     ...(a.risk !== "high" && a.suggest?.length ? [{ optionId: "always", name: `Always allow ${a.suggest.map((s: Json) => s.pattern).join(", ")}`, kind: "allow_always" }] : []),
     { optionId: "deny", name: "Deny", kind: "reject_once" },
   ];
-  const why = [a.risk === "high" ? `High risk${a.why ? `: ${a.why}` : ""}.` : a.why ? `${a.why}.` : "", a.notice ?? ""].filter(Boolean).join(" ");
+  const l = form ? cardLines(form) : undefined;
+  const why = l ? l.notes.join(" ") : [a.risk === "high" ? `High risk${a.why ? `: ${a.why}` : ""}.` : a.why ? `${a.why}.` : "", a.notice ?? ""].filter(Boolean).join(" ");
+  const held = !!form?.hold.length;
+  // A fence no run of backticks in the text can close.
+  const fence = "`".repeat(Math.max(3, ...(l?.text.match(/`+/g) ?? []).map((r) => r.length + 1)));
+  const first = (l?.text.split("\n")[0] ?? "").slice(0, 120);
+  const title = held && form && l
+    ? `${name}: ${first}${form.lines > 1 || first.length < l.text.length ? " ..." : ""} (${form.lines > 1 ? `${form.lines} lines` : `${form.chars} characters`}: the whole request is below)`
+    : (l ? spelled(a.summary ?? "") : a.summary) || toolTitle(name, a.input);
+  const content = [
+    ...(why ? [{ type: "content", content: { type: "text", text: why } }] : []),
+    ...(held && l ? [{ type: "content", content: { type: "text", text: `${fence}\n${l.text}\n${fence}` } }] : []),
+  ];
   return {
     sessionId: a.session_id,
     toolCall: {
-      toolCallId: a.call_id, title: a.summary || toolTitle(name, a.input), kind: toolKind(name), status: "pending", rawInput: a.input,
-      ...(why ? { content: [{ type: "content", content: { type: "text", text: why } }] } : {}),
+      toolCallId: a.call_id, title, kind: toolKind(name), status: "pending", rawInput: a.input,
+      ...(content.length ? { content } : {}),
     },
     options,
   };
@@ -692,14 +711,19 @@ export class AcpBridge {
   // stays answerable in the workbench too; whichever answers first wins.
   private async ask(a: Json) {
     const name = this.tools.get(a.call_id) ?? a.tool;
-    const msg = await this.request("session/request_permission", permissionRequest(a, name), a.id);
+    // The card as the daemon gives it to every client. Without it (a daemon
+    // from before the form) the request is the summary, and no allow says the
+    // text was shown: the daemon then takes one only for a short request.
+    const form: CardForm | undefined = await this.daemon.get(`/api/sessions/${a.session_id}/approvals/${a.id}`).then((r) => r?.card, () => undefined);
+    const msg = await this.request("session/request_permission", permissionRequest(a, name, form), a.id);
     if (msg.answered) return; // the workbench answered first
     this.asking.delete(a.id);
     const outcome = msg.result?.outcome;
-    const choice = outcome?.outcome === "selected" ? outcome.optionId : "deny";
+    const picked = outcome?.outcome === "selected" ? outcome.optionId : "deny";
+    const choice = ["once", "always", "deny"].includes(picked) ? picked : "deny";
     if (choice !== "deny") this.notify(a.session_id, { sessionUpdate: "tool_call_update", toolCallId: a.call_id, status: "in_progress" });
     await this.daemon
-      .send("POST", `/api/sessions/${a.session_id}/approvals/${a.id}`, { choice: ["once", "always", "deny"].includes(choice) ? choice : "deny", reason: outcome?.outcome === "cancelled" ? "the editor cancelled the request" : undefined })
+      .send("POST", `/api/sessions/${a.session_id}/approvals/${a.id}`, { choice, reason: outcome?.outcome === "cancelled" ? "the editor cancelled the request" : undefined, via: "acp", ...(form && choice !== "deny" ? { seen: "whole" } : {}) })
       .catch((e) => this.log(`approval ${a.id}: ${(e as Error).message}`)); // answered in the workbench first
   }
 }
