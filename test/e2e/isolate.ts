@@ -87,11 +87,10 @@ async function sessionIds(request: APIRequestContext) {
 
 // What else of the daemon outlives a test: the lists a spec adds to and a later
 // spec reads (an MCP server, a project, a session folder, a paired machine, a
-// placement rule, a loop). They are not removed here (a spec that pairs a
-// machine once for its tests means to), but a test that leaves one more than
-// it found is named with what it left, in the run's summary: a spec that
-// fails only after another one is found there. Unread alerts are read: a
-// later spec counts them.
+// placement rule, a loop). A machine a test paired is unpaired, and alerts it
+// left unread are read: later specs see both. The rest is not removed, but a
+// test that leaves one more than it found is named with what it left, in the
+// run's summary: a spec that fails only after another one is found there.
 const LISTS: { path: string; what: string; of: (b: any) => unknown[] }[] = [
   { path: "/api/mcp/servers", what: "MCP servers", of: (b) => b.servers ?? [] },
   { path: "/api/projects", what: "projects", of: (b) => b.projects ?? [] },
@@ -109,6 +108,12 @@ async function lists(request: APIRequestContext): Promise<Record<string, string[
   }));
   return out;
 }
+// The machines paired with the daemon (not the daemon's own, not the ssh hosts it only knows of).
+const machines = async (request: APIRequestContext): Promise<string[]> => {
+  const r = await request.get("/api/fleet/machines", { timeout: 10_000 }).catch(() => null);
+  const all = r?.ok() ? (((await r.json().catch(() => ({}))).machines ?? []) as { id: string; daemon_url?: string | null }[]) : [];
+  return all.filter((m) => m.id !== "local" && !m.id.startsWith("ssh:") && m.daemon_url).map((m) => m.id);
+};
 const unreadAlerts = async (request: APIRequestContext) => {
   const r = await request.get("/api/alerts?limit=1", { timeout: 10_000 }).catch(() => null);
   return r?.ok() ? Number((await r.json().catch(() => ({}))).unread?.total ?? 0) : 0;
@@ -128,8 +133,12 @@ export const test = base.extend<{ daemonSettings: void; ownSessions: void; leftB
   leftBehind: [
     async ({ request }, use, info) => {
       if (!(await scratchDaemon(request))) return use();
-      const [before, unread] = await Promise.all([lists(request), unreadAlerts(request)]);
+      const [before, unread, paired] = await Promise.all([lists(request), unreadAlerts(request), machines(request)]);
       await use();
+      // A machine the test paired goes with it: every spec that needs one pairs it when it is not there, and a
+      // paired machine changes what the next spec sees (a machine chip in every session's header, the folder a
+      // moved session lands under). One that cannot be removed is named with the rest.
+      for (const id of await machines(request)) if (!paired.includes(id)) await request.delete(`/api/fleet/machines/${id}`, { timeout: 15_000 }).catch(() => null);
       const after = await lists(request);
       const left = Object.entries(after).flatMap(([what, names]) => {
         const had = [...(before[what] ?? [])];
