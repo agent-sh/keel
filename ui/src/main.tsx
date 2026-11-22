@@ -1,5 +1,6 @@
 import "./lib/fonts.ts";
 import "./lib/shell.ts";
+import "./lib/frames.ts";
 import "./lib/tips.ts";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.tsx";

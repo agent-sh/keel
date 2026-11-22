@@ -202,7 +202,7 @@ function Preview({ a }: { a: Listed }) {
         {!a.exists ? <p className="p-4 text-ui text-faint">The file is gone from disk.</p>
           : view === "diff" ? <div className="p-3">{diff ? <DiffView files={diff.files} patch={diff.diff} truncated={diff.truncated} empty="No change of this file is in the session's checkpoints." /> : <p className="text-caption text-faint">Loading…</p>}</div>
           : view === "show" && a.kind === "image" ? <div className="grid place-items-center p-4"><img src={raw(a)} alt={a.name} className="max-h-full max-w-full rounded-md border border-line bg-[repeating-conic-gradient(var(--color-sunken)_0_25%,transparent_0_50%)] bg-[length:1rem_1rem]" data-testid="artifact-image" /></div>
-          : view === "show" && a.kind === "html" ? <iframe title={a.name} src={raw(a)} sandbox="allow-scripts" referrerPolicy="no-referrer" className="block h-full min-h-[12rem] w-full bg-white" data-testid="artifact-frame" />
+          : view === "show" && a.kind === "html" ? <iframe title={a.name} src={raw(a)} sandbox="allow-scripts" referrerPolicy="no-referrer" className="block h-full min-h-[12rem] w-full bg-white" data-testid="artifact-frame" data-content-frame="" />
           : view === "show" && a.kind === "markdown" ? <div className="px-5 py-4">{text === null ? null : <Markdown text={text} />}</div>
           : text === null ? <p className="p-4 text-caption text-faint">Loading…</p>
           : <pre className="p-3 font-mono text-caption leading-relaxed" data-testid="artifact-code">{html ? <code dangerouslySetInnerHTML={{ __html: html }} /> : <code>{text}</code>}</pre>}

@@ -197,3 +197,62 @@ fetch("/api/sessions").then(() => document.body.append(" reached the daemon"), (
   await request.delete(`/api/projects/${p.id}`);
   await request.delete(`/api/sessions/${s.id}`);
 });
+
+// A page a session wrote gets the keyboard by the owner's own act (a press over it, Tab into
+// it), never by asking for it. The review's page: once clicked in, it asks for the focus again
+// and again from a timer; the owner then clicks the message box and types or pastes, and the
+// words landed in the page's field.
+test("artifacts: a page takes the keyboard only by the owner's press or Tab", async ({ page, request }) => {
+  const word = `fr${Date.now().toString(36)}`;
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", word);
+  mkdirSync(ws, { recursive: true });
+  const s = (await (await request.post("/api/sessions", { data: { workspace: ws, model: "scripted:stand-in", title: `Frame ${word}` } })).json()).session;
+  await request.put(`/api/sessions/${s.id}/permissions`, { data: { mode: "full-auto" } });
+  const { dir } = await (await request.get(`/api/sessions/${s.id}/artifacts`)).json();
+  const steal = `<!doctype html><textarea id="t" style="width:90%;height:6rem"></textarea><script>
+const t = document.getElementById("t");
+document.addEventListener("click", (e) => { if (e.isTrusted) for (let i = 1; i <= 60; i++) setTimeout(() => t.focus(), i * 70); });
+</script>`;
+  try {
+    await page.goto(`/s/${s.id}`);
+    await openPanel(page, "artifacts");
+    await request.post(`/api/sessions/${s.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Write", input: { file_path: `${dir}/steal.html`, content: steal } }])}` } });
+    const rows = page.getByTestId("artifact-row");
+    await expect(rows).toHaveCount(1, { timeout: 30_000 });
+    await rows.first().click();
+    const frame = page.frameLocator('[data-testid="artifact-frame"]');
+    const field = frame.locator("#t");
+    await expect(field).toBeVisible();
+    const inFrame = () => page.evaluate(() => document.activeElement?.getAttribute("data-testid") === "artifact-frame");
+
+    // The owner's press in the page: it has the keyboard, and what they type lands in it.
+    await field.click();
+    await page.keyboard.type("in the page");
+    await expect(field).toHaveValue("in the page");
+    expect(await inFrame()).toBe(true);
+
+    // The owner goes to the message box. The page asks for the focus sixty times over four seconds.
+    const box = page.getByTestId("composer");
+    await box.click();
+    await page.keyboard.type("the owner's words, typed while the page asks for the keyboard", { delay: 45 });
+    await expect(box).toHaveValue("the owner's words, typed while the page asks for the keyboard");
+    await expect(field).toHaveValue("in the page");
+    await page.waitForTimeout(1500); // the rest of the page's asking
+    expect(await inFrame()).toBe(false);
+    await expect(box).toBeFocused();
+    await shoot(page, "artifacts-05-keyboard-stays");
+
+    // Tab from the control before it still reaches the page.
+    await page.evaluate(() => {
+      const frame = document.querySelector<HTMLElement>('[data-testid="artifact-frame"]')!;
+      const stops = [...document.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input, textarea, [tabindex]:not([tabindex="-1"]), iframe')].filter((el) => el.offsetParent !== null);
+      stops[stops.indexOf(frame) - 1]!.focus();
+    });
+    await page.keyboard.press("Tab");
+    await expect.poll(inFrame).toBe(true);
+    await page.waitForTimeout(400);
+    expect(await inFrame()).toBe(true);
+  } finally {
+    await request.delete(`/api/sessions/${s.id}`).catch(() => {});
+  }
+});

@@ -79,6 +79,7 @@ export function PreviewPanel({ session }: { session: Session }) {
           src={cur.url}
           title={`Preview of port ${cur.port}`}
           data-testid="preview-frame"
+          data-content-frame=""
           sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads"
           className="min-h-0 flex-1 bg-white"
         />
