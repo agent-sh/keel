@@ -22,7 +22,9 @@ export const PEER_TURNS = Number(process.env.KEEL_PEER_TURNS ?? 50); // turns ot
 
 export type Sender = { session_id: string; title?: string; daemon_id: string; machine?: string; mode?: string; sandbox?: string; limited?: boolean; outbox_id?: string };
 export type Message = {
-  id: string; created_ms: number; state: "delivered" | "queued" | "held" | "outbound" | "dropped";
+  // The state is kept true as the message moves (message-state.ts): queued until the receiver reads it,
+  // delivered once it is in the receiver's history, handled when the turn that read it has ended.
+  id: string; created_ms: number; state: "delivered" | "queued" | "handled" | "held" | "outbound" | "dropped";
   to_session: string; to_daemon?: string | null; text: string; wake: boolean; from: Sender; reason?: string | null;
   to_title?: string | null; // a refused outbox message: its session's title on the receiving daemon
 };
@@ -314,6 +316,8 @@ export class Messages {
     if (!m) return { state: "unknown", handled: false };
     const s = this.store.session(m.to_session);
     if (!s) return { state: m.state, handled: false, reason: "its session is gone" };
+    // The store's own word: the turn that read it has ended.
+    if (m.state === "handled") return { state: m.state, handled: s.phase !== "working" && !this.engine.isRunning(s.id), session: s.id, phase: s.phase, reason: m.reason ?? undefined };
     if (m.state !== "delivered" && m.state !== "queued") return { state: m.state, handled: false, session: s.id, phase: s.phase, reason: m.reason ?? undefined };
     const tag = `message_id="${id}"`;
     const waiting = this.store.queue(s.id).some((q) => q.text.includes(tag));

@@ -22,7 +22,11 @@ import { bindNotices } from "../../fleet/notice.ts";
 import { registerSendFiles, RemoteAgents } from "../../fleet/agents.ts";
 import { setRemotePlacer } from "../../automation/agents.ts";
 import { HttpError, type Message, Messages } from "../../fleet/messages.ts";
+import { MessageStates, peerMessageLines, peerMessages } from "../../fleet/message-state.ts";
 import { OutboxDrain } from "../../fleet/outbox.ts";
+import { localStamp, zoneNote } from "../../core/clock.ts";
+import type { QueueItem } from "../../core/types.ts";
+import { readsOf } from "../reads.ts";
 import * as alerts from "../../automation/alerts.ts";
 import { contains } from "../../core/paths.ts";
 import type { Deps, RouteModule } from "../app.ts";
@@ -58,6 +62,16 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     alerts.raise("agent", s.id, `Message waiting: ${s.title || "a session"}`, `From ${m.from.title || m.from.session_id}${m.from.daemon_id !== f.id ? ` on ${m.from.machine ?? m.from.daemon_id}` : ""}: ${m.reason}. ${m.text.slice(0, 300)}`, { open_session: s.id, message_id: m.id });
   });
   bindFleetTools(f, msgs, (id) => store.session(id), bindNotices(f, msgs, store, engine));
+  // The state of each message as it moves: read, handled, dropped (message-state.ts).
+  const gs = globalThis as { __keelMessageStates?: MessageStates };
+  gs.__keelMessageStates?.stop();
+  const states = (gs.__keelMessageStates = new MessageStates({
+    store, bus, isRunning: (id) => engine.isRunning(id), read: (sql, args) => readsOf(store).sql(sql, args),
+    capture: (e, ctx) => errors.capture("server", e, ctx),
+  }));
+  // Queued input that named a sender left a queue unread: where the engine tells of it, the message is dropped with the engine's reason.
+  const dropHook: Record<string, unknown> = { inputDropped: (rows: QueueItem[], why: string) => states.dropped(rows, why) };
+  registerHooks(dropHook as Parameters<typeof registerHooks>[0]);
   const moves = new Handoffs(store, bus, engine, f);
   const remoteAgents = new RemoteAgents(store, f, errors, (id) => gate?.perm(id).sandbox ?? "off");
   setRemotePlacer(remoteAgents);
@@ -504,6 +518,21 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         if (placed) store.append(s.id, "note", { text: `Placed on ${m.name} by ${placed.reason}.` });
         if (b.text || b.images?.length) await fitted(s.id, b.images, (images) => engine.send(s.id, String(b.text ?? "").trim(), { images }));
         return json({ session: store.session(s.id), placed }, 201);
+      },
+    },
+
+    // What a session sent to other sessions and received from them, newest first, each with its state
+    // (queued, delivered, handled, dropped, held for the owner, waiting for its daemon) and when it reached it.
+    // format=text: a line each.
+    "/api/sessions/:id/peer-messages": {
+      GET: (req: any) => {
+        if (!store.session(req.params.id)) return bad("no such session", 404);
+        const q = new URL(req.url).searchParams;
+        const limit = q.get("limit") ? Number(q.get("limit")) : 50;
+        if (!Number.isInteger(limit) || limit < 1) return bad("limit is a whole number from 1 up");
+        const messages = peerMessages(store.db, req.params.id, limit);
+        if (q.get("format") === "text") return new Response([`Messages between sessions, newest first. ${zoneNote()}.`, ...(messages.length ? peerMessageLines(messages, localStamp) : ["None."])].join("\n") + "\n", { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+        return json({ messages });
       },
     },
 

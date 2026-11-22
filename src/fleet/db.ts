@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS fleet_pairs (daemon_id TEXT PRIMARY KEY, name TEXT, k
 CREATE TABLE IF NOT EXISTS fleet_messages (
   id TEXT PRIMARY KEY,
   created_ms INTEGER NOT NULL,
-  state TEXT NOT NULL,             -- delivered | queued | held | outbound | dropped
+  state TEXT NOT NULL,             -- queued | delivered | handled | held | outbound | dropped (message-state.ts)
   to_session TEXT NOT NULL,
   to_daemon TEXT,                  -- set for outbound messages
   text TEXT NOT NULL,

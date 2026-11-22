@@ -6,6 +6,7 @@
 // chain of cause, with the way into its trace, its error and its place in the
 // conversation.
 import { STATE_WORD, stateLabel } from "../../../src/core/state-words.ts";
+import { PeerMessages } from "./PeerMessages.tsx";
 import {
   Anchor, ArrowLeftRight, Bot, ClipboardCopy, CornerDownRight, FileClock, Flag, FoldVertical, Gauge, Hand, ListEnd, MessageCircleQuestionMark, MessagesSquare, Power, Repeat,
   Route, Timer, TriangleAlert, X, type LucideIcon,
@@ -330,6 +331,8 @@ function Panel({ session }: { session: Session }) {
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="timeline-panel">
       <Now now={now} session={id} onTurn={(t) => { setApart(null); setAsked(t); }} />
+      {/* What this session sent other sessions and received from them, each with its one state. */}
+      <PeerMessages sessionId={id} />
       <div className="flex shrink-0 items-center gap-3 border-b border-line px-3 py-2">
         <Seg label="Show" value={only} onChange={setOnly} options={FILTERS.map(([v, label]) => ({ value: v, label, testid: `timeline-only-${v || "all"}` }))} />
       </div>
