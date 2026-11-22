@@ -31,8 +31,9 @@ export function ago(ts: number): string {
 // Every time on screen is on the 24-hour clock, and these two write it: no
 // surface formats a time of its own (src/ui-conventions.test.ts).
 // Full time for tooltips.
-export const when = (ts: number) =>
-  new Date(ts).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+// (One formatter for the page: made anew at each call, a list of rows that is drawn again spent more on it than on the rows.)
+const WHEN = new Intl.DateTimeFormat(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+export const when = (ts: number) => (Number.isFinite(ts) ? WHEN.format(ts) : String(new Date(ts)));
 // A time of day (09:30), with its seconds, its weekday or its date when asked, in a zone other than the browser's when named.
 export const clock = (ts: number, o: { seconds?: boolean; weekday?: boolean; date?: boolean; zone?: string } = {}) =>
   new Date(ts).toLocaleString(undefined, {

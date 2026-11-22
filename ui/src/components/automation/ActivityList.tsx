@@ -2,7 +2,7 @@ import { Bell, Bot, Brain, Coffee, Hand, Moon, Power, ReceiptText, Repeat, Searc
 import { useEffect, useRef, useState } from "react";
 import { activityTarget, auto, openSession, placeName, useAuto, type Activity, type Alert } from "../../lib/automation.ts";
 import { onInboxView, takeInboxView } from "../../lib/inbox-view.ts";
-import { reportError, useStore } from "../../lib/store.ts";
+import { reportError, scope, useStore } from "../../lib/store.ts";
 import { saidOf } from "../../../../src/automation/activity-words.ts";
 import { openReceipt } from "../../lib/timeline.ts";
 import { ago, cn, when } from "../../lib/utils.ts";
@@ -57,6 +57,8 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     auto.activitySessions().then((r) => setPlaces(r.sessions)).catch(reportError);
   }, []);
+  // New rows of every session are sent to this page while the list is up (lib/scope.ts).
+  useEffect(() => scope.feed("activity"), []);
 
   useEffect(() => {
     const gen = ++query.current.gen;

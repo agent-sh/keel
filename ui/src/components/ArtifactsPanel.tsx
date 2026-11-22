@@ -14,7 +14,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import type { Session } from "../../../src/core/types.ts";
 import type { Artifact } from "../../../src/server/routes/artifacts.ts";
 import { copyOrSay } from "../lib/copy.ts";
-import { api, onFeature, reportError, reportUnlessGone } from "../lib/store.ts";
+import { api, onFeature, reportError, reportUnlessGone, scope } from "../lib/store.ts";
 import { ago, cn, when } from "../lib/utils.ts";
 import { DiffView, type FileChange } from "./DiffView.tsx";
 import { Markdown } from "./Markdown.tsx";
@@ -38,14 +38,17 @@ const button = "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border 
 // The artifacts of a session or a project, kept current by "artifacts" frames
 // and read again on a reconnect: one deleted while the page was cut off is a
 // state, no failure.
-export function useArtifacts(url: string, sessions: (id: string | undefined) => boolean) {
+// `across`: the list is of several sessions, shown or not: their changes are sent while it is up (lib/scope.ts).
+export function useArtifacts(url: string, sessions: (id: string | undefined) => boolean, across = false) {
   const [list, setList] = useState<Listed[] | null>(null);
   const mine = useRef(sessions);
   mine.current = sessions;
   const load = useCallback(() => api<{ artifacts: Listed[] }>(url).then((r) => setList(r.artifacts), reportUnlessGone), [url]);
   useEffect(() => {
     load();
-    return onFeature({ frame: (f) => { if (f.name === "artifacts" && mine.current(f.session_id)) load(); }, reconnect: load });
+    const off = onFeature({ frame: (f) => { if (f.name === "artifacts" && mine.current(f.session_id)) load(); }, reconnect: load });
+    const heard = across ? scope.feed("artifacts") : undefined;
+    return () => { off(); heard?.(); };
   }, [load]);
   return list;
 }

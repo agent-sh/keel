@@ -189,7 +189,7 @@ function Body({ p }: { p: Project }) {
 
 // Everything the project's sessions made, newest first.
 function ProjectArtifacts({ p, members }: { p: Project; members: Record<string, string> }) {
-  const list = useArtifacts(`/api/projects/${p.id}/artifacts`, (id) => !!id && members[id] === p.id);
+  const list = useArtifacts(`/api/projects/${p.id}/artifacts`, (id) => !!id && members[id] === p.id, true);
   return (
     <Block title="Artifacts" hint="What the project's sessions made: files they created or changed, and what they put in their artifacts folders." testid="project-artifacts" className="@4xl/page:col-span-2">
       <div className="-mx-5 -mb-4 h-[34rem] border-t border-line"><ArtifactBrowser list={list} testid="project-artifacts-list" withSession /></div>

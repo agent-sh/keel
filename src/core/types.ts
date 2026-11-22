@@ -202,9 +202,18 @@ export type SocketFrame =
   | { t: "replayed"; cursors: Record<string, number> }
   | { t: "draft"; session_id: string; blocks: DraftBlocks; rev?: number }
   | { t: "pong"; nonce?: number };
-// What a client sends: catch up on these sessions after `seq` (events wait
-// for the first resume), or ask for a pong.
-export type ClientFrame = { op: "resume"; cursors: Record<string, number> } | { op: "ping"; nonce?: number };
+// What a client sends. `resume`: each named session is caught up after `seq`.
+// With `only` these are the sessions the socket hears in full from now on;
+// `watch` names more of them that need no catching up (their snapshot is on
+// its way, or they are another daemon's) and `feeds` the feeds of
+// src/server/scope.ts. Without `only` the socket hears every session's
+// stream, as every client did before: a page of an earlier build, a script.
+// `sub` adds to what the socket hears, `unsub` takes away. `ping` asks for a pong.
+export type ClientFrame =
+  | { op: "resume"; cursors: Record<string, number>; only?: boolean; watch?: string[]; feeds?: string[] }
+  | { op: "sub"; cursors?: Record<string, number>; watch?: string[]; feeds?: string[] }
+  | { op: "unsub"; watch?: string[]; feeds?: string[] }
+  | { op: "ping"; nonce?: number };
 
 // One kind of failure: `ts` is its last time, `count` how often it happened
 // since `first_ts`; `session_id`, `turn_event` (the turn_start event) and

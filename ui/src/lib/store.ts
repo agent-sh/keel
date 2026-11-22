@@ -11,6 +11,7 @@ import { servedUi } from "./hotui.ts";
 import { dropOrphans, dropSendDrafts } from "./send-drafts.ts";
 import { setRatio } from "../../../src/engine/compact.ts";
 import { answerMakesTry, askGap, askLife, ASKS, BEAT_MS, GRACE_MS, HIDDEN_RESYNC_MS, look, PING, rttOf, SLEPT_MS, SLOW_BEAT_MS, socketBound, step, tripped, type Beat, type Trips } from "./heartbeat.ts";
+import { Scope } from "./scope.ts";
 
 export type ProvidersReport = {
   keys_read?: boolean; // false: a key is still being looked for, and an "available" may be unconfirmed
@@ -486,6 +487,24 @@ function headSoon(id: string) {
   }, 400));
 }
 
+// What this page's socket is asked for (lib/scope.ts): the whole stream of the
+// sessions a view shows, and of no other. A session no view shows any more is
+// let go of: its events, its draft and what its turn was doing. Its row, its
+// queue and its state stay, as for a session this page never opened.
+function unhold(id: string) {
+  if (!state.events[id] && !state.drafts[id] && !state.status[id]) return;
+  const { [id]: _e, ...events } = state.events;
+  const { [id]: _d, ...drafts } = state.drafts;
+  const { [id]: _s, ...status } = state.status;
+  forgot(id);
+  set({ events, drafts, status });
+}
+export const scope = new Scope({
+  cursor: (id) => (state.events[id] ? seen.get(id) ?? state.events[id]!.at(-1)?.seq ?? 0 : undefined),
+  drop: unhold,
+  far: (id) => !!splitId(id),
+});
+
 // Views that read a session's history away from its end (scrolled up, another
 // branch, an earlier part) keep it whole meanwhile.
 const keepers = new Map<string, number>();
@@ -701,6 +720,8 @@ export function apply(f: Frame) {
       return;
     }
     if (!state.sessions[s.id] && s.archived) return;
+    // A turn ended in a session whose events this page is not sent: it may have moved a window too.
+    if (state.sessions[s.id]?.phase === "working" && s.phase !== "working") limitsSoon();
     set({ sessions: { ...state.sessions, [s.id]: s } });
     headSoon(s.id);
   } else if (f.t === "event") {
@@ -762,10 +783,18 @@ export function apply(f: Frame) {
   }
 }
 
+// Read a moment after the turn, and once for all the turns that end within LIMITS_EVERY_MS:
+// a page that hears one session's turns end every few seconds read the limits after each.
+const LIMITS_EVERY_MS = 20_000;
 let limitsTimer: ReturnType<typeof setTimeout> | undefined;
+let limitsRead = 0;
 function limitsSoon() {
-  clearTimeout(limitsTimer);
-  limitsTimer = setTimeout(() => actions.loadLimits().catch((e) => reportError(e, { at: "limits" })), 1500);
+  if (limitsTimer) return;
+  limitsTimer = setTimeout(() => {
+    limitsTimer = undefined;
+    limitsRead = Date.now();
+    actions.loadLimits().catch((e) => reportError(e, { at: "limits" }));
+  }, Math.max(1500, limitsRead + LIMITS_EVERY_MS - Date.now()));
 }
 
 // Snapshots on their way, with the events that came meanwhile.
@@ -1117,7 +1146,7 @@ function sync(ws: WebSocket, quiet = false, again = 0) {
   if (!quiet) set({ connected: true, synced: false, drafts: Object.fromEntries(Object.entries(state.drafts).filter(([id]) => splitId(id))) });
   watch();
   replaying = new Set(Object.keys(cursors));
-  ws.send(JSON.stringify({ op: "resume", cursors }));
+  ws.send(JSON.stringify(scope.resume(cursors, (m) => ws.readyState === WebSocket.OPEN && (ws.send(JSON.stringify(m)), true))));
   // What the page loads at start is loaded again: a first load the daemon
   // was not up for (a restart under the page) comes in now, quietly.
   const reload = () => {

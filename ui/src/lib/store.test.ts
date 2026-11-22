@@ -97,7 +97,7 @@ test("a head moved back while the page was away stays where the daemon has it", 
   listed = [row("a", "a-e3")];
   const now = snapshot(row("a", "a-e3"), undefined, 200);
   await reconnect();
-  expect(sock.sent[0]).toEqual({ op: "resume", cursors: { a: 3 } });
+  expect(sock.sent[0]).toEqual({ op: "resume", cursors: { a: 3 }, only: true });
   // The answer without a transcript is given the moment the page asks for it.
   const early = [await answer("/api/sessions/a?events=0", now)];
   await rest();
@@ -227,7 +227,7 @@ test("a session that shows an older branch resumes from the session's newest seq
   await openPaged(row("h", head), shown, 12, 900);
   await reconnect();
   // The cursor is what the snapshot said the session's newest seq is.
-  expect(sock.sent[0]).toEqual({ op: "resume", cursors: expect.objectContaining({ h: 12 }) });
+  expect(sock.sent[0]).toEqual({ op: "resume", cursors: expect.objectContaining({ h: 12 }), only: true });
   // A daemon that replayed from the page's own last event (4) would send 5 to
   // 12 here: they are of the other branch, below the cursor, and are not taken.
   for (let n = 5; n <= 12; n++) await frame({ t: "event", event: ev(n, n === 5 ? 2 : n - 1) });
@@ -473,7 +473,7 @@ test("a socket that went silent and speaks again is read against, with no event 
     t += 6500;
     expect(staleSince(getState())).toBe(lostAt);
     expect(liveNow()).toBe(lostAt);
-    expect(sock.sent.slice(at).find((m) => m.op === "resume")).toEqual({ op: "resume", cursors: { z: 3 } });
+    expect(sock.sent.slice(at).find((m) => m.op === "resume")).toEqual({ op: "resume", cursors: { z: 3 }, only: true });
     expect(Socket.all.at(-1)).toBe(tried); // and no other try was made
     expect(getState().events.z!.map((e) => e.seq)).toEqual([1, 2, 3]);
     for (const n of [4, 5, 6]) await frame({ t: "event", event: event("z", n) });

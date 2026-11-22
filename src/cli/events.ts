@@ -183,7 +183,7 @@ export class Follower {
         ws.onopen = () => {
           opened = true;
           this.wsSeq = this.seq;
-          ws.send(JSON.stringify({ op: "resume", cursors: { [this.sessionId]: this.seq } }));
+          ws.send(JSON.stringify({ op: "resume", cursors: { [this.sessionId]: this.seq }, only: true })); // this session's stream, no other's
           resolve();
         };
         ws.onerror = () => resolve(); // reading by seq still works

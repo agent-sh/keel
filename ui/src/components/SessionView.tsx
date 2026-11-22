@@ -13,7 +13,7 @@ import { openPanel, SidePanel, usePanelSheet } from "./SidePanel.tsx";
 import { LiveSourceBanner } from "./TakeOver.tsx";
 import { TranscriptLoading } from "./TranscriptLoading.tsx";
 import { switchSession } from "../lib/switch.ts";
-import { actions, reportError, useStore } from "../lib/store.ts";
+import { actions, reportError, scope, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { whenIdle } from "../lib/utils.ts";
 import { machineName, useFleet } from "../lib/fleet.ts";
@@ -49,10 +49,12 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
   const connected = useStore((s) => s.connected);
   const gone = useStore((s) => s.gone[id]);
   const loaded = useStore((s) => !!s.events[id]);
+  // The page's socket is asked for this session's stream while the view is up (lib/scope.ts).
+  useEffect(() => scope.show(id), [id]);
   useEffect(() => {
     setMissing(null);
     if (unreached === id && !connected) return;
-    actions.loadSession(id).then(() => setUnreached(null), (e) => {
+    actions.loadSession(id).then(() => { scope.loaded(id); setUnreached(null); }, (e) => {
       const status = (e as { status?: number }).status;
       if (status === 404) setMissing(id);
       else if (status === undefined && e instanceof TypeError) setUnreached(id);

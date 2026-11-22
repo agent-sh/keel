@@ -5,7 +5,7 @@ import { CircleAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 import { adoptAllBuilds } from "../lib/builtins.ts";
 import { composing } from "../lib/keys.ts";
-import { actions, api, onFeature, reportError, useStore, type BuildPins } from "../lib/store.ts";
+import { actions, api, onFeature, reportError, scope, useStore, type BuildPins } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
 import { ago, cn, fmtTokens, when } from "../lib/utils.ts";
 import { type Restart, restartSummary, restartTurnLine } from "../../../src/admin/life-rows.ts";
@@ -105,7 +105,8 @@ export function DaemonPanel() {
       reconnect: load,
     });
     const iv = setInterval(load, 10_000);
-    return () => { off(); clearInterval(iv); };
+    const heard = scope.feed("awake"); // what keeps the machine awake is sent while this panel is up (lib/scope.ts)
+    return () => { off(); clearInterval(iv); heard(); };
   }, []);
 
   const restart = async () => {
