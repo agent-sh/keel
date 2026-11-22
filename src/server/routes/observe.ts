@@ -108,15 +108,26 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
   }));
   // The spans a kill cut: the daemon before this one exported their children as they ended and went down
   // before these ended. They go out now, closed as interrupted, so no exported span lacks its parent.
-  const left = t.closedAtStart();
-  if (left.length) detached(() => {
-    for (const s of left) {
-      exporter.push(s);
-      if (metricsOut.state.endpoint) spanMetrics(meter, s);
-      const e = eventsOut.state.endpoint ? spanEvent(s) : null;
+  // They stay owed in the store until the collector answers a batch that holds them: a daemon that
+  // goes down again first hands them out again at its next start.
+  exporter.onSent = (batch) => t.exported(batch.map((s) => s.span_id));
+  const owed = t.owedAtStart();
+  if (owed.length) detached(() => {
+    const first = owed.filter((o) => o.first).length, again = owed.length - first;
+    if (!exporter.state.endpoint) {
+      t.forget();
+      if (first) say(`[daemon] ${first} span${first === 1 ? "" : "s"} the last daemon left running ${first === 1 ? "was" : "were"} closed as interrupted`);
+      return;
+    }
+    for (const { span, first: fresh } of owed) {
+      exporter.push(span);
+      // Counted once: a span handed out again was measured the first time.
+      if (!fresh) continue;
+      if (metricsOut.state.endpoint) spanMetrics(meter, span);
+      const e = eventsOut.state.endpoint ? spanEvent(span) : null;
       if (e) eventsOut.push(e);
     }
-    say(`[daemon] ${left.length} span${left.length === 1 ? "" : "s"} the last daemon left running ${left.length === 1 ? "was" : "were"} closed as interrupted${exporter.state.endpoint ? " and sent to the collector" : ""}`);
+    say(`[daemon] ${first ? `${first} span${first === 1 ? "" : "s"} the last daemon left running ${first === 1 ? "was" : "were"} closed as interrupted` : "no span was left running by the last daemon"}${again ? `; ${again} from an earlier start ${again === 1 ? "was" : "were"} still owed to the collector` : ""}; ${owed.length} queued for the collector`);
   });
   // What no span holds: a prompt arriving, and what a turn cost.
   const offBus = bus.on((f) => {

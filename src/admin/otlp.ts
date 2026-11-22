@@ -174,6 +174,8 @@ export class OtlpExporter<T = Span> {
   private target: Target<T> | null = null;
   private source: HeaderSource | null = null;
   state: ExportState = { endpoint: null, from: null, headers: null, sent: 0, dropped: 0, failures: 0, last_ok_ms: null, last_error: null, queued: 0 };
+  // A batch the collector took (it answered 2xx): what was owed of it is owed no more.
+  onSent?: (batch: T[]) => void;
 
   // read: a source's value (providers/creds.ts key(), which caches a keyring read a few minutes).
   constructor(
@@ -242,6 +244,7 @@ export class OtlpExporter<T = Span> {
       this.state.sent += batch.length;
       this.state.last_ok_ms = Date.now();
       this.state.last_error = null;
+      try { this.onSent?.(batch); } catch (e) { this.onFail(e instanceof Error ? e : new Error(String(e))); }
     } catch (e) {
       if (!current()) return;
       t.queue.unshift(...batch);

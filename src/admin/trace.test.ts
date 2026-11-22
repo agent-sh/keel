@@ -253,8 +253,10 @@ test("a retry is replayable only while the span that kept its request is", () =>
 });
 
 // A kill cuts a turn: its ended children went to the collector, the turn and the tool it ran under did not.
-// The next start closes them as interrupted and hands them out once, so no exported span lacks its parent.
-test("the spans a kill left running are closed as interrupted and handed out once at the next start", () => {
+// The next start closes them as interrupted and owes them to the collector, so no exported span lacks its
+// parent. They are owed in the store: a daemon that goes down again before the collector answered still
+// owes them, and one answer ends it.
+test("the spans a kill left running are owed to the collector until it takes them, across a second kill", () => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "trace-test-"));
   const store = new Store(dir);
   const first = new Tracer(store, new Bus(), () => false);
@@ -269,24 +271,43 @@ test("the spans a kill left running are closed as interrupted and handed out onc
   add("4444444444444444", "3333333333333333", "wait", "ok", old + 700, old + 900); // exported before the kill
   // A span of this process (a hot reload makes a new tracer while a turn runs) is nobody's left-over.
   add("5555555555555555", null, "turn", "running", Date.now(), null);
-  expect(first.closedAtStart()).toEqual([]);
+  expect(first.owedAtStart()).toEqual([]);
   const exported = new Map<string, Span>([["2222222222222222", first.span("2222222222222222")!], ["4444444444444444", first.span("4444444444444444")!]]);
   const orphans = () => [...exported.values()].filter((s) => s.parent_id && !exported.has(s.parent_id)).map((s) => s.span_id);
   expect(orphans()).toEqual(["2222222222222222", "4444444444444444"]);
+  const start = () => { const t = new Tracer(store, new Bus(), () => false); drop(); return t; };
+  const ids = (t: Tracer) => t.owedAtStart().map((o) => [o.span.span_id, o.span.status, o.span.end_ms !== null, o.first]);
 
-  const next = new Tracer(store, new Bus(), () => false);
-  drop();
   try {
-    const left = next.closedAtStart();
-    expect(left.map((s) => [s.span_id, s.status, s.end_ms !== null])).toEqual([["1111111111111111", "interrupted", true], ["3333333333333333", "interrupted", true]]);
-    for (const s of left) exported.set(s.span_id, s);
+    // The next start: both are owed, closed as interrupted, each for the first time. Handed out once per process.
+    const second = start();
+    expect(ids(second)).toEqual([["1111111111111111", "interrupted", true, true], ["3333333333333333", "interrupted", true, true]]);
+    expect(second.owedAtStart()).toEqual([]);
+    // It is killed before the collector answered. The start after it still owes them, not as new ones.
+    const third = start();
+    const left = third.owedAtStart();
+    expect(left.map((o) => [o.span.span_id, o.first])).toEqual([["1111111111111111", false], ["3333333333333333", false]]);
+    // The collector takes one batch with the first of them (and spans that were never owed).
+    third.exported(["1111111111111111", "2222222222222222"]);
+    expect(ids(start())).toEqual([["3333333333333333", "interrupted", true, false]]);
+    // It takes the other: nothing is owed at any later start.
+    const fifth = start();
+    for (const o of fifth.owedAtStart()) exported.set(o.span.span_id, o.span);
+    exported.set("1111111111111111", left[0]!.span);
+    fifth.exported(["3333333333333333"]);
     expect(orphans()).toEqual([]);
-    // Once: a second ask hands out nothing, and the collector is told they were cut, not that they failed or passed.
-    expect(next.closedAtStart()).toEqual([]);
-    const sent = toOtlp(left, {}).resourceSpans[0]!.scopeSpans[0]!.spans;
+    expect(ids(start())).toEqual([]);
+    // The collector is told they were cut, not that they failed or passed.
+    const sent = toOtlp(left.map((o) => o.span), {}).resourceSpans[0]!.scopeSpans[0]!.spans;
     expect(sent.map((s: any) => [s.spanId, s.parentSpanId ?? "", s.status, s.attributes.some((a: any) => a.key === "keel.interrupted" && a.value.boolValue === true)])).toEqual([
       ["1111111111111111", "", {}, true], ["3333333333333333", "1111111111111111", {}, true],
     ]);
+    // With no collector set nothing is owed: nobody got their children.
+    add("6666666666666666", null, "turn", "running", old, null);
+    const sixth = start();
+    expect(sixth.owedAtStart()).toHaveLength(1);
+    sixth.forget();
+    expect(ids(start())).toEqual([]);
   } finally {
     store.db.close();
     rmSync(dir, { recursive: true, force: true });

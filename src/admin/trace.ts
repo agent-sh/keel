@@ -60,7 +60,11 @@ CREATE TABLE IF NOT EXISTS spans (
 CREATE INDEX IF NOT EXISTS spans_trace ON spans(trace_id, start_ms);
 CREATE INDEX IF NOT EXISTS spans_session ON spans(session_id, start_ms);
 CREATE INDEX IF NOT EXISTS spans_start ON spans(start_ms);
+CREATE TABLE IF NOT EXISTS spans_owed (span_id TEXT PRIMARY KEY, first INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS trace_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `;
+// The scrub the stored failure texts were last passed through (conceal.ts): raised when its rules change.
+const SCRUB_VERSION = "2";
 
 export const SPAN_DAYS = 14;
 // A prompt that waited in the queue this long has that wait in its turn's trace; a shorter one is no wait to speak of.
@@ -218,15 +222,27 @@ export class Tracer {
     store.migrate(SCHEMA);
     // A span still running when the daemon stopped did not end on its own: it
     // ran until the daemon went down, when that is known (src/admin/life.ts).
-    // The ones a daemon before this process left (they began before it did) are handed once to whoever
-    // exports spans (closedAtStart): a collector that got their children gets them too, closed as interrupted.
-    this.left = store.db.query<{ span_id: string }, [number]>("SELECT span_id FROM spans WHERE status = 'running' AND start_ms < ? ORDER BY start_ms").all(Math.floor(performance.timeOrigin)).map((r) => r.span_id);
-    store.db.run("UPDATE spans SET status = 'interrupted', end_ms = COALESCE(end_ms, MAX(start_ms, ?)) WHERE status = 'running'", [wentDownAt() ?? 0]);
+    // The ones a daemon before this process left (they began before it did) are owed to whoever exports
+    // spans: a collector that got their children gets them too, closed as interrupted. Owed in the
+    // store, not in this process: a daemon that goes down again before the collector took them
+    // still owes them at its next start (owedAtStart, exported).
+    const left = store.db.query<{ span_id: string }, [number]>("SELECT span_id FROM spans WHERE status = 'running' AND start_ms < ? ORDER BY start_ms").all(Math.floor(performance.timeOrigin)).map((r) => r.span_id);
+    store.db.transaction(() => {
+      const owe = store.db.query("INSERT OR IGNORE INTO spans_owed (span_id, first) VALUES (?, 1)");
+      for (const id of left) owe.run(id);
+      store.db.run("UPDATE spans SET status = 'interrupted', end_ms = COALESCE(end_ms, MAX(start_ms, ?)) WHERE status = 'running'", [wentDownAt() ?? 0]);
+    })();
     this.prune();
     // Failure text an older build kept as it was: anything that reads as a secret becomes a placeholder.
-    for (const r of store.db.query<{ span_id: string; error: string }, []>("SELECT span_id, error FROM spans WHERE error IS NOT NULL").all()) {
-      const shown = scrubbed(r.error);
-      if (shown !== r.error) store.db.run("UPDATE spans SET error = ? WHERE span_id = ?", [shown, r.span_id]);
+    // Once per version of the scrub, not at every start: new text is scrubbed where it is captured.
+    if (store.db.query<{ value: string }, []>("SELECT value FROM trace_meta WHERE key = 'scrubbed'").get()?.value !== SCRUB_VERSION) {
+      store.db.transaction(() => {
+        for (const r of store.db.query<{ span_id: string; error: string }, []>("SELECT span_id, error FROM spans WHERE error IS NOT NULL").all()) {
+          const shown = scrubbed(r.error);
+          if (shown !== r.error) store.db.run("UPDATE spans SET error = ? WHERE span_id = ?", [shown, r.span_id]);
+        }
+        store.db.run("INSERT OR REPLACE INTO trace_meta (key, value) VALUES ('scrubbed', ?)", [SCRUB_VERSION]);
+      })();
     }
     // The error row a failed span became: linked both ways.
     bus.on((f) => {
@@ -267,12 +283,34 @@ export class Tracer {
     });
   }
 
-  // The spans the daemon before this one left running, as this start closed them. Given once.
-  private left: string[] = [];
-  closedAtStart(): Span[] {
-    const ids = this.left;
-    this.left = [];
-    return ids.map((id) => this.span(id)).filter((s): s is Span => !!s);
+  // The spans daemons before this one left running, closed as interrupted, that no collector has
+  // taken yet: the ones this start closed (`first`: counted in the metrics once) and the ones an
+  // earlier start owed and went down before a batch with them was answered. Handed out once per
+  // process; they stay owed until `exported` says a collector took them, or `forget` that there is none.
+  private handed = false;
+  owedAtStart(): { span: Span; first: boolean }[] {
+    if (this.handed) return [];
+    this.handed = true;
+    // A span that was pruned meanwhile is owed to nobody.
+    this.store.db.run("DELETE FROM spans_owed WHERE span_id NOT IN (SELECT span_id FROM spans)");
+    const rows = this.store.db.query<{ span_id: string; first: number }, []>("SELECT o.span_id, o.first FROM spans_owed o JOIN spans s ON s.span_id = o.span_id ORDER BY s.start_ms").all();
+    this.store.db.run("UPDATE spans_owed SET first = 0");
+    this.owed = rows.length;
+    return rows.map((r) => ({ span: this.span(r.span_id), first: !!r.first })).filter((x): x is { span: Span; first: boolean } => !!x.span);
+  }
+  // How many are owed, known without a read: the exporter says this of every batch it sends.
+  private owed = 0;
+  // A collector took these spans: the owed ones among them are owed no more.
+  exported(ids: string[]) {
+    if (!this.owed || !ids.length) return;
+    const del = this.store.db.query("DELETE FROM spans_owed WHERE span_id = ?");
+    this.store.db.transaction(() => { for (const id of ids) this.owed -= del.run(id).changes; })();
+    this.owed = Math.max(0, this.owed);
+  }
+  // No collector is set: nothing got their children, so nothing is owed.
+  forget() {
+    this.store.db.run("DELETE FROM spans_owed");
+    this.owed = 0;
   }
 
   onEnd(f: (s: Span) => void) {
