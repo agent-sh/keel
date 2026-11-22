@@ -2,14 +2,13 @@ import { expect, test } from "./isolate.ts";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
-import { HAIKU, openPanel, shoot, SCRIPTED } from "./shots.ts";
+import { ask, HAIKU, openPanel, shoot } from "./shots.ts";
 
 // Feature: Settings > Storage measures what is on disk, lists archived
 // sessions archived long ago and deletes them only after the list is
 // confirmed (one changed in between is skipped), saves the archive policy,
 // makes a checked backup, and lists what is past the retention before it goes.
 test("storage, cleanup and backups", async ({ page, request }) => {
-  test.skip(SCRIPTED, "needs a real model: it has to write a file from a plain prompt, which makes the checkpoint counted");
   const mk = async (title: string) => (await (await request.post("/api/sessions", { data: { model: HAIKU, title } })).json()).session;
   const old1 = await mk("Old archived one");
   const old2 = await mk("Old archived two");
@@ -167,14 +166,15 @@ test("storage, cleanup and backups", async ({ page, request }) => {
   await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
   const wsDir = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `storage-${Date.now()}`);
   mkdirSync(wsDir, { recursive: true });
-  const w = (await (await request.post("/api/sessions", { data: { model: HAIKU, workspace: wsDir, title: "Wrote a file", text: "Create the file notes-storage-check.txt with the text hello, using your file writing tool. Then reply done." } })).json()).session;
+  const w = (await (await request.post("/api/sessions", { data: { model: HAIKU, workspace: wsDir, title: "Wrote a file", text: ask("Create the file notes-storage-check.txt with the text hello, using your file writing tool. Then reply done.", `script:calls ${JSON.stringify([{ name: "Write", input: { file_path: join(wsDir, "notes-storage-check.txt"), content: "hello\n" } }])}`) } })).json()).session;
   await expect.poll(async () => (await (await request.get(`/api/sessions/${w.id}`)).json()).events.some((e: any) => e.kind === "turn_end"), { timeout: 120_000 }).toBe(true);
   await request.put("/api/permissions/settings", { data: { default_mode: prev } });
   expect((await (await request.get(`/api/sessions/${w.id}/checkpoints`)).json()).turns.length).toBeGreaterThan(0);
   await page.reload();
   // Any session's checkpoints can be dropped from its folder, however small the
   // session is next to the others (a busy daemon has many larger ones).
-  const folder = panel.getByTestId("checkpoint-folder").filter({ has: page.getByTitle(w.workspace, { exact: true }) });
+  // (Found by the path it shows, not by its tooltip: the page takes an element's title while the pointer is on it.)
+  const folder = panel.getByTestId("checkpoint-folder").filter({ hasText: w.workspace });
   await folder.getByRole("button").first().click();
   const row = folder.locator(`[data-testid="checkpoint-session"][data-id="${w.id}"]`);
   await row.scrollIntoViewIfNeeded();
