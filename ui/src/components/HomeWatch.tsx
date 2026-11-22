@@ -35,7 +35,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type
 import type { Session } from "../../../src/core/types.ts";
 import { READ_MS, SETTLE_MS, settled, stand, type Stand } from "../lib/approvals.ts";
 import { focusAsk } from "../lib/asks.ts";
-import { focusApproval } from "../lib/automation.ts";
+import { focusApproval, useAuto } from "../lib/automation.ts";
 import { pickRows, rowKind, rowLine, sayMore, watchSummary, wholeCommand, withAgentFailures } from "../lib/home.ts";
 import { getSafety, safety, useSafety, type Approval } from "../lib/safety.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
@@ -271,11 +271,29 @@ function List({ title, rows, most, testid, className }: { title: string; rows: {
 
 // What needs the owner. On a phone, which has no rail beside the page, the
 // sessions at work are listed too.
+// What finished since the owner last looked: the sessions with a finish not read yet, counted, a press
+// from the Inbox that lists them. With the lists, not the headline: a finish that comes moves no start box.
+function Finished() {
+  const sessions = useStore((x) => x.sessions);
+  const done = useAuto((x) => [...new Set(x.alerts.filter((a) => a.kind === "finished" && !a.read && a.session_id).map((a) => a.session_id!))].join(" "));
+  const n = done ? done.split(" ").filter((id) => sessions[id] && !sessions[id]!.archived).length : 0;
+  if (!n) return null;
+  return (
+    <p className="k-home-finished" data-testid="home-finished">
+      <button type="button" className="k-home-count" data-watch="done" data-testid="home-count-finished" title={`${n} ${n === 1 ? "session" : "sessions"} finished since you last looked: open the Inbox`} onClick={() => dispatchEvent(new Event("keel:inbox"))}>
+        <Mark w="done" />{n} {STATE_WORD.done.toLowerCase()} since you looked
+      </button>
+    </p>
+  );
+}
+
 export function WatchLists({ className }: { className?: string }) {
   const { attention, working } = useHome();
-  if (!attention.length && !working.length) return null;
+  const finished = useAuto((x) => x.alerts.some((a) => a.kind === "finished" && !a.read));
+  if (!attention.length && !working.length && !finished) return null;
   return (
     <div className={className} data-testid="home-lists">
+      <Finished />
       <List title={STATE_WORD.need} rows={attention} most={MOST.attention} testid="home-attention" className="k-home-sec" />
       <List title={working.every((r) => r.w === "work") ? STATE_WORD.work : `${STATE_WORD.work} and ${STATE_WORD.wait.toLowerCase()}`} rows={working} most={MOST.working} testid="home-working" className="k-home-sec md:hidden" />
     </div>

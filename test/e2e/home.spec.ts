@@ -618,3 +618,36 @@ test("home: a whole short command reached by its row's title takes Enter after t
     await drop(request, [s.id]);
   }
 });
+
+// Feature: back after a while, the start page says what finished since the owner looked, with how many,
+// beside what waits and what failed; a press opens the Inbox, where they are.
+test("the start page says what finished since you looked", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const made: string[] = [];
+  try {
+    await page.goto("/");
+    await expect(page.getByTestId("home-watch")).toBeVisible();
+    // Two sessions finish while the start page is on screen: neither is looked at.
+    for (const t of ["Tidy the release notes", "Check the mirror"]) {
+      const s = await make(request, `${t} ${Date.now().toString(36)}`);
+      made.push(s.id);
+      await request.post(`/api/sessions/${s.id}/messages`, { data: { text: "script:say Done, nothing else to change." } });
+    }
+    const finished = page.getByTestId("home-count-finished");
+    await expect(finished).toBeVisible({ timeout: 20_000 });
+    await expect(finished).toHaveText(/^\d+ done since you looked$/);
+    const n = Number((await finished.innerText()).split(" ")[0]);
+    expect(n).toBeGreaterThanOrEqual(2);
+    await shoot(page, "home-finished-since");
+    await finished.click();
+    await expect(page.getByTestId("inbox-panel")).toBeVisible();
+    // A phone: the same line on its start page.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+    await expect(page.getByTestId("home-count-finished")).toBeVisible();
+    await shoot(page, "home-finished-since-390");
+  } finally {
+    for (const id of made) await request.delete(`/api/sessions/${id}`);
+  }
+});
