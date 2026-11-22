@@ -38,9 +38,9 @@ const EMPTY: Approval[] = [];
 // - `cut`: its text is longer than the box that shows it.
 // - `unseen`: the rows of its text, as it wraps now, that have not been in view (`n`, of `total`),
 //   and how many of those the owner has to bring into view (`out`: lib/approvals.ts, sawLines).
-//   A card is answered when none is left.
+//   A card is answered when none is left. `long`: the text is over three times the region's height.
 // - `acts`: each "allow all" action, by tool: what it covers and whether it can be pressed.
-type Unseen = { n: number; out: number; begun: boolean; total: number };
+type Unseen = { n: number; out: number; begun: boolean; total: number; long: boolean };
 type View = { read: Set<string>; live: Set<string>; grant: Set<string>; ripe: Set<string>; cut: Set<string>; unseen: Map<string, Unseen>; acts: Map<string, Action>; key: string };
 const NO_VIEW: View = { read: new Set(), live: new Set(), grant: new Set(), ripe: new Set(), cut: new Set(), unseen: new Map(), acts: new Map(), key: "" };
 // The text a card shows of a request (its summary and, for an edit, what the edit writes:
@@ -213,7 +213,8 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
       else if (!f) s.lines.set(id, { ...l, view: null, since: now });
     }
     const read = new Set<string>(), live = new Set<string>(), grant = new Set<string>(), ripe = new Set<string>(), cut = new Set<string>(), unseen = new Map<string, Unseen>();
-    for (const [id, l] of s.lines) unseen.set(id, { ...unseenLines(l), total: l.total });
+    const room = f ? f.shown.bottom - f.shown.top : 0;
+    for (const [id, l] of s.lines) unseen.set(id, { ...unseenLines(l), total: l.total, long: room > 0 && l.total * l.line > 3 * room });
     for (const [id, r] of seen) {
       const old = now - r.born >= SETTLE_MS;
       if (settled(r.sum, now)) read.add(id);
@@ -229,7 +230,7 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
     const alone = new Set([...cut, ...s.cards.filter((c) => shownOf(c).flagged).map((c) => c.id)]);
     for (const g of batches(s.cards, read, alone)) acts.set(g.tool, nextAction(s.acts.get(g.tool), g.ids, s.hot.has(g.tool), now, open));
     s.acts = acts;
-    const key = JSON.stringify([[...read], [...live], [...grant], [...ripe], [...cut], [...unseen].map(([id, u]) => [id, u.n, u.out, u.begun, u.total]), [...acts].map(([tool, a]) => [tool, a.covered, a.live])]);
+    const key = JSON.stringify([[...read], [...live], [...grant], [...ripe], [...cut], [...unseen].map(([id, u]) => [id, u.n, u.out, u.begun, u.total, u.long]), [...acts].map(([tool, a]) => [tool, a.covered, a.live])]);
     if (key !== s.view.key) setView((s.view = { read, live, grant, ripe, cut, unseen, acts, key }));
     return s.view;
   }, [list]);
@@ -884,6 +885,10 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   const unreadLines = unseen?.out ?? 0;
   const notYet = unreadLines > 0 ? `Not yet: ${count(unreadLines)} not seen yet` : ripe ? "Not yet: it moved a moment ago" : "Not yet: it has only just arrived";
   const refused = () => { if (unreadLines > 0) setTold(true); };
+  // A text over three screens long says so, with the way that is not an allow: reading all of
+  // it is the price of allowing it, and denying it costs nothing. (The line stays once the text
+  // was read, in its other words: nothing moves under the hand as the answers come alive.)
+  const longLine = !unseen?.long ? "" : mustOpen ? `Long ${thing}: ${count(unseen.total)}. Deny, or scroll through to allow.` : `Long ${thing}: ${count(unseen.total)}, all seen.`;
   // What the hint line may say (see where it is drawn): `ready` exactly when Enter on its Allow
   // would answer; `arming` while the page is about to make that so, or how to get there.
   const ready = keysOn === "once" && live && !mustOpen && hold.keys === "ready";
@@ -1114,6 +1119,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
       ) : (
         // The three answers keep their order and wrap when the card is narrow: none is cut, Deny least of all.
         <div className={cn(FOOT, "flex flex-wrap items-center gap-1.5", dense ? "px-3 py-2" : "px-4 py-3")} data-testid="approval-actions">
+          {longLine && <span className="order-first basis-full text-micro text-muted" role="status" data-testid="approval-long">{longLine}</span>}
           {/* A card that must be opened leads with the control that opens it: the step it asks for first. */}
           {slot.current && (
             <button

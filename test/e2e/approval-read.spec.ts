@@ -276,10 +276,15 @@ test("a long command opened by one click is read once its lines have been in vie
     await page.goto(`/s/${s.id}`);
     const card = page.getByTestId("approval").first();
     await expect(card).toHaveAttribute("data-must-open", "true");
-    // One click opens it, and the region jumps to its end: the first and the last screen were on show, the middle never.
+    // Over three screens of text: the card says how long it is, and the way that is not an allow.
+    await expect(card.getByTestId("approval-long")).toHaveText("Long command: 161 lines. Deny, or scroll through to allow.");
+    // One click opens it. The text stays where it was read, its first screen on show, and the
+    // answers stay in the region with the count: the region does not jump to the text's end.
     await card.getByTestId("approval-expand").click();
     await page.waitForTimeout(1500);
     await expect(card).toHaveAttribute("data-must-open", "true");
+    await expect(card).toHaveAttribute("data-foot", "");
+    expect(await card.getByTestId("approval-summary").evaluate((el) => { const t = el.closest('[data-testid="composer-tray"]')!.getBoundingClientRect(), r = el.getBoundingClientRect(); return r.top >= t.top && r.bottom > t.bottom; })).toBe(true);
     const left = Number((await card.getByTestId("approval-left").innerText()).match(/\d+/)![0]);
     expect(left).toBeGreaterThan(80);
     await card.getByTestId("allow-once").focus();
@@ -289,9 +294,16 @@ test("a long command opened by one click is read once its lines have been in vie
     await shoot(page, "approval-read-06-lines-left");
     // Scrolled through by the owner, top to bottom: every line has been in view.
     await wheel(page, -400, 14);
-    await wheel(page, 70, 70);
+    // (Where the answers stand in their own row: the row is as tall read as unread.)
+    const row = async () => { const f = (await card.getByTestId("approval-actions").boundingBox())!, b = (await card.getByTestId("allow-once").boundingBox())!; return [Math.round(f.height), Math.round(b.y - f.y), Math.round(b.x - f.x)].join(); };
+    await wheel(page, 70, 30);
+    const before = await row();
+    await wheel(page, 70, 60);
     await expect(card).not.toHaveAttribute("data-must-open", "true", { timeout: 10_000 });
+    // Read: the line says so in its place, and the answers did not move in their row as they came alive.
+    await expect(card.getByTestId("approval-long")).toHaveText("Long command: 161 lines, all seen.");
     await card.getByTestId("allow-once").scrollIntoViewIfNeeded();
+    expect(await row()).toBe(before);
     await expect(card).toHaveAttribute("data-live", "true", { timeout: 10_000 });
     await card.getByTestId("allow-once").click();
     await expect.poll(() => states(request, s.id)).toBe("allowed/once");
