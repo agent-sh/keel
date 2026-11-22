@@ -1,8 +1,8 @@
 // The follower between its two sources, in orders a real daemon gives only by
 // chance: a stand-in daemon whose stored events and socket frames the test sets.
 import { afterEach, expect, test } from "bun:test";
-import { Client } from "./client.ts";
-import { Follower } from "./events.ts";
+import { clean, Client, jsonText } from "./client.ts";
+import { Follower, textLines } from "./events.ts";
 
 const SID = "s1";
 const ev = (seq: number, kind: string, text?: string) => ({ id: `e${seq}`, session_id: SID, seq, kind, ts: 0, data: text ? { blocks: [{ type: "text", text }] } : {} });
@@ -58,4 +58,22 @@ test("what a callback throws on a socket frame comes out of the next read", asyn
   stored.push(ev(1, "turn_end"));
   await frames({ t: "event", event: stored[0] });
   await expect(f.read()).rejects.toThrow("the output is closed");
+});
+
+// What a terminal is shown of a call, and what a JSON output carries: nothing
+// that reorders the line, and nothing of a command dropped without a mark.
+test("a call's line spells what does not show as written, and JSON output escapes it", () => {
+  const command = "echo txt.r \u202e> x.txt; printf '\u001b[2K\rsafe' \u009b";
+  const [call] = textLines({ kind: "assistant", data: { blocks: [{ type: "tool_use", id: "c", name: "Ba\u202esh", input: { command } }] } } as any, {});
+  expect(call).toBe("  -> Ba<U+202E>sh  echo txt.r <U+202E>> x.txt; printf '<U+001B>[2K<U+000D>safe' <U+009B>");
+  // Prose and a program's output: colors and carriage returns go, as before; what reorders the line is written out.
+  expect(clean("\u001b[31mred\u001b[0m\r done \u202eenod \u2066x\u2069")).toBe("red done <U+202E>enod <U+2066>x<U+2069>");
+  expect(clean("plain, caf\u00e9, \ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67")).toBe("plain, caf\u00e9, \ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67");
+  // JSON: the same value, with each such character as its escape.
+  const v = { summary: `a\u202eb\u009bc\u200bd\u2028e`, plain: "caf\u00e9 \"q\"\n" };
+  const text = jsonText(v, 2);
+  expect(text).toContain('"a\\u202eb\\u009bc\\u200bd\\u2028e"');
+  expect(/[\u007f-\u009f\u200b-\u200f\u2028-\u202e]/.test(text)).toBe(false);
+  expect(JSON.parse(text)).toEqual(v);
+  expect(jsonText({ a: 1 })).toBe('{"a":1}');
 });

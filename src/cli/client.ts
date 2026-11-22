@@ -2,6 +2,7 @@
 // parsing options with a usage on error, printing model text safely, and the
 // exit codes of every client command.
 import { fstatSync } from "node:fs";
+import { spelled, spellHidden } from "../safety/chars.ts";
 import { join } from "node:path";
 import { parseArgs, type ParseArgsConfig } from "node:util";
 import { lockedDaemon, servicedDaemon } from "../admin/daemon.ts";
@@ -18,9 +19,19 @@ export class ApiError extends Error {
 }
 
 // Text from a model, a tool or a prompt never reaches a terminal raw: escape
-// sequences and control characters other than newline and tab are removed.
+// sequences and control characters other than newline and tab are removed
+// (a program's colors and carriage returns are noise in a transcript), and a
+// character that changes the order text is read in (a right-to-left override,
+// an isolate, a line separator) is written out as its code point, so a line
+// never reads as something it is not.
+const REORDERS = /[\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g;
 export const clean = (s: unknown) =>
-  String(s ?? "").replace(/\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[@-_]/g, "").replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "");
+  String(s ?? "").replace(/\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[@-_]/g, "").replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "")
+    .replace(REORDERS, (ch) => `<U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}>`);
+// What a call is asked to do (a command, a path, a tool's name): every
+// character that does not show as written is spelled out, none is dropped. An
+// escape or a carriage return in a command is part of what runs.
+export const shown = (s: unknown) => clean(spelled(String(s ?? "")));
 // One line: newlines shown as \n.
 export const line = (s: unknown) => clean(String(s ?? "").replace(/\r?\n/g, "\\n").replace(/\t/g, " "));
 
@@ -145,7 +156,12 @@ export async function pipedStdin(): Promise<string | null> {
 }
 
 export const out = (s: string) => process.stdout.write(s);
-export const printJson = (v: unknown) => console.log(JSON.stringify(v, null, 2));
+// JSON for a terminal or a pipe: the same value, with every character that
+// hides or reorders text written as its \u escape (JSON reads it back as the
+// character), so a field never shows as something it is not.
+export const jsonText = (v: unknown, indent?: number): string =>
+  spellHidden(JSON.stringify(v, null, indent) ?? "", "\n").map((p) => (p.hidden ? [...p.text].flatMap((ch) => ch.split("")).map((u) => `\\u${u.charCodeAt(0).toString(16).padStart(4, "0")}`).join("") : p.text)).join("");
+export const printJson = (v: unknown) => console.log(jsonText(v, 2));
 
 export const ago = (ms: number) => {
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));

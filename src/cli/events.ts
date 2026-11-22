@@ -4,18 +4,19 @@
 // text, and reads them by seq (ordered, never lost) when the socket is not
 // there or skipped one. A reply's event completes what streamed of it.
 import type { StoredEvent } from "../core/types.ts";
-import { authHeaders, clean, type Client } from "./client.ts";
+import { authHeaders, clean, shown, type Client } from "./client.ts";
 
-const short = (v: unknown, n = 160) => {
-  const s = clean(String(v ?? "")).replace(/\s+/g, " ").trim();
+const short = (v: unknown, n = 160, read = clean) => {
+  const s = read(String(v ?? "")).replace(/\s+/g, " ").trim();
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
 };
 
 // What a tool call is about, in one line.
+// (What the call is asked to do: nothing in it is dropped or left to reorder the line, see `shown`.)
 export function callSummary(name: string, input: any): string {
-  if (!input || typeof input !== "object") return short(input);
+  if (!input || typeof input !== "object") return short(input, 160, shown);
   const v = input.command ?? input.cmd ?? input.file_path ?? input.absolute_path ?? input.path ?? input.notebook_path ?? input.pattern ?? input.url ?? input.query ?? input.description ?? input.prompt;
-  return short(Array.isArray(v) ? v.join(" ") : v ?? JSON.stringify(input));
+  return short(Array.isArray(v) ? v.join(" ") : v ?? JSON.stringify(input), 160, shown);
 }
 
 const resultText = (c: unknown) => (typeof c === "string" ? c : Array.isArray(c) ? c.map((b: any) => (b.type === "text" ? b.text : `[${b.type}]`)).join("\n") : "");
@@ -38,7 +39,7 @@ export function textLines(e: StoredEvent, o: { thoughts?: boolean } = {}): strin
       for (const b of d.blocks ?? []) {
         if (b.type === "text" && b.text.trim()) out.push(...clean(b.text).split("\n"));
         else if (b.type === "thinking" && o.thoughts && b.thinking.trim()) out.push(...clean(b.thinking).split("\n").map((l: string) => `  (thinking) ${l}`));
-        else if (b.type === "tool_use") out.push(`  -> ${clean(b.name)}  ${callSummary(b.name, b.input)}`);
+        else if (b.type === "tool_use") out.push(`  -> ${shown(b.name)}  ${callSummary(b.name, b.input)}`);
       }
       return out;
     }

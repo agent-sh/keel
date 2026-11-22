@@ -1261,6 +1261,12 @@ describe("client commands against a running daemon", () => {
     expect(held.out).toContain("   | echo txt.r <U+202E>> approve-marked.txt");
     expect(held.out).toContain("characters that do not show as written");
     expect(held.out).not.toContain("\u202e");
+    // The list says it without the character itself: spelled in text, escaped in JSON (which reads back as it was).
+    const listed = await k(["approve", marked, "--list"]);
+    expect([listed.out.includes("\u202e"), listed.out]).toEqual([false, expect.stringContaining("echo txt.r <U+202E>> approve-marked.txt")]);
+    const listedJson = await k(["approve", marked, "--list", "--json"]);
+    expect([listedJson.out.includes("\u202e"), listedJson.out]).toEqual([false, expect.stringContaining("echo txt.r \\u202e> approve-marked.txt")]);
+    expect(json(listedJson.out).approvals[0].summary).toBe("echo txt.r \u202e> approve-marked.txt");
     expect((await k(["approve", marked, "--deny"])).code).toBe(0);
     expect((await cardsOf(marked))[0]).toMatchObject({ state: "denied", by: { client: "cli" } });
     // The call's result is the words a denial on the page gives: the transcript reads it as denied by the owner.
