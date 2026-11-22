@@ -1,7 +1,7 @@
 // The phone: pairing and the device list for the workbench (/api/mobile), the
 // Hermes Mobile API the phone app calls (/v1), and phone push as an alert channel.
 import { renderSVG } from "uqr";
-import { atDesk, registerChannel, type Alert } from "../../automation/alerts.ts";
+import { atDesk, get as alertOf, registerChannel, type Alert } from "../../automation/alerts.ts";
 import { holdThenSend, screenUnlocked } from "../../integrations/mobile/hold.ts";
 import * as push from "../../integrations/mobile/push.ts";
 import { hostOf, MobileStore } from "../../integrations/mobile/store.ts";
@@ -17,12 +17,23 @@ const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}
 
 // What an alert becomes on the phone: the kind the app's wake handler knows,
 // who asks and what may be answered from the notification.
-export function alertPush(a: Alert): push.PushMessage {
+// A notification shows one line. It carries Allow only for a request that
+// line shows whole (short, not cut, nothing in it that misleads, low risk:
+// src/safety/card.ts). Any other is held: `hold` says why, and `opts` leaves
+// Deny alone, so an app from before the rule offers no Allow for it either.
+// The app's own notification then leads with Open.
+// `hold`: the card's hold as the gate reads it now (else what the alert recorded).
+export function alertPush(a: Alert, hold?: string[]): push.PushMessage {
   const kind = a.kind === "question" ? "approval" : a.kind;
   const data: Record<string, string> = { title: a.title, body: a.body, ek: a.kind, pri: "", reply: a.kind === "finished" || a.kind === "question" ? "1" : "0" };
   const aid = a.data?.approval_id ?? (a.data?.call_id ? `q-${a.data.call_id}` : undefined);
   if (aid) data.aid = String(aid);
-  if (a.kind === "approval") data.opts = JSON.stringify(a.data?.risk === "high" ? ["once", "deny"] : ["once", "session", "deny"]);
+  if (a.kind === "approval") {
+    // An alert from before cards recorded their hold says nothing: high risk was held then too.
+    const held: string[] = hold ?? (Array.isArray(a.data?.hold) ? a.data.hold : a.data?.risk === "high" ? ["risk"] : []);
+    data.hold = held.join(",");
+    data.opts = JSON.stringify(held.length ? ["deny"] : ["once", "session", "deny"]);
+  }
   const high = ["approval", "question", "failed", "loop_failed", "limit", "test"].includes(a.kind);
   data.pri = high ? "high" : "normal";
   return { kind, session_id: a.session_id, high, data };
@@ -53,6 +64,11 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
     return json({ pushes });
   }
 
+  // An alert as the phone is sent it now: an approval's hold is read from its card as the gate reads it today.
+  const pushOf = (a: Alert) => {
+    const card = a.kind === "approval" && a.data?.approval_id ? gate?.approval(a.data.approval_id) : undefined;
+    return alertPush(a, card ? gate!.form(card).hold : undefined);
+  };
   // Sessions the phone holds a notification for, so a withdraw goes only there.
   const shown = new Set<string>();
   registerChannel({
@@ -78,7 +94,7 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
         atDesk: async () => atDesk() || (await screenUnlocked()),
         sleep: (ms) => Bun.sleep(ms),
         send: async () => {
-          const recs = await push.send(mobile, mobile.globalSeq(), alertPush(a));
+          const recs = await push.send(mobile, mobile.globalSeq(), pushOf(a));
           if (a.session_id && recs.some((r) => r.ok)) shown.add(a.session_id);
           for (const r of recs) if (!r.ok) errors.capture("server", new Error(`phone push failed: ${r.error}`), { alert: a.id, device: r.device_id });
           if (recs.length) changed();
@@ -114,6 +130,13 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
         const code = mobile.createPairCode(ttl);
         const pair_link = pairLink(url, code);
         return json({ code, public_url: url, pair_link, hermes_link: pairLink(url, code, "hermes"), qr_svg: renderSVG(pair_link, { border: 2 }), ttl_seconds: ttl, expires_ms: Date.now() + ttl * 1000 });
+      },
+    },
+    // What a phone would be sent for an alert: its words, and what its notification may answer.
+    "/api/mobile/alerts/:id/push": {
+      GET: (req: any) => {
+        const a = alertOf(req.params.id);
+        return a ? json({ push: pushOf(a) }) : bad("no such alert", 404);
       },
     },
     "/api/mobile/devices": { GET: () => json({ devices: deviceRows() }) },

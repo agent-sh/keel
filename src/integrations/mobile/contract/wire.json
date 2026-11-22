@@ -9,7 +9,8 @@
   "The daemon may add fields to any shape; the app ignores a field it does not know. Renaming or dropping a listed field, or changing the signed bytes, breaks one of the checks.",
   "The shapes by route: sync (GET /v1/sync, and `sync` in the stream's hello), page (GET /v1/chats/:id/messages?paged=1), receipt (POST /v1/chats/:id/messages), created (POST /v1/chats), resolved (POST /v1/approvals/:id), pulse (GET /v1/pulse), usage (GET /v1/chats/:id/usage), me (GET /v1/me), push_config (GET /v1/push-config), paired (POST /v1/pair), revoked (DELETE /v1/devices/:id), error (the body of any refusal), push (the data of one push), and the frames of GET /v1/events by their type.",
   "sync.more is false from this daemon; an app reads it for a daemon that pages its catch-up.",
-  "upload and upload_ref are the daemon's side of attaching a file: the answer to POST /v1/upload?name=<name>&mime=<type> with the file's bytes as the body (the example is the answer for a 1x1 PNG named photo.png), and how a prompt names it in `attachments`. The app does not attach yet, so it has no reader for them; the stored message lists what it carried in meta.attachments, an image under a `media` id that GET /v1/media/<media> serves."
+  "upload and upload_ref are the daemon's side of attaching a file: the answer to POST /v1/upload?name=<name>&mime=<type> with the file's bytes as the body (the example is the answer for a 1x1 PNG named photo.png), and how a prompt names it in `attachments`. The app does not attach yet, so it has no reader for them; the stored message lists what it carried in meta.attachments, an image under a `media` id that GET /v1/media/<media> serves.",
+  "A permission card that waits carries what the read-first rule needs (src/safety/card.ts, the one form every client gets): `text` is the whole text to judge with each hidden character written as its code point, `notes` say why it is asked, where it runs, what in the text can mislead and whether only its start is kept, `rtl` says it holds letters written right to left, and `hold` says why Allow needs the text shown whole first (long, cut, marked, risk). An empty `hold` means one line shows all of it. The app sends `seen: \"whole\"` with an allow once all of `text` was on its screen, and `via: \"notification\"` for an answer given from a notification (which never carries `seen`). An allow of a held card without `seen` is answered 409 with the sentence to show in `error`, and the card stays open: an app from before these fields shows that sentence. A push says the same in `hold` (the reasons, comma separated; empty when none), and its `opts` leave out `once` for a held card. A closed card says where it was answered in `from`."
  ],
  "signing": {
   "request": [
@@ -114,7 +115,16 @@
    "choice": "string|null",
    "ts": "number",
    "questions": "array?",
-   "answers": "object?"
+   "answers": "object?",
+   "text": "string?",
+   "notes": "array?",
+   "cut": "boolean?",
+   "total": "number|null?",
+   "lines": "number?",
+   "hold": "array?",
+   "rtl": "boolean?",
+   "machine": "string?",
+   "from": "string?"
   },
   "question": {
    "id": "string",
@@ -213,7 +223,9 @@
   },
   "answer": {
    "choice": "string",
-   "answers": "object?"
+   "answers": "object?",
+   "seen": "string?",
+   "via": "string?"
   },
   "attachment": {
    "kind": "string",
@@ -301,7 +313,8 @@
    "title": "string?",
    "body": "string?",
    "aid": "string?",
-   "opts": "string?"
+   "opts": "string?",
+   "hold": "string?"
   }
  },
  "examples": {
@@ -558,6 +571,80 @@
     "state": "pending",
     "choice": null,
     "ts": 1795195000.0
+   },
+   {
+    "id": "apr_10",
+    "chat_id": "s-2",
+    "session_key": "s-2",
+    "kind": "permission",
+    "command": "cd /srv/app\nrm -rf build<U+202E>\nnpm ci",
+    "description": "Bash",
+    "actions": [
+     [
+      "Approve",
+      "once",
+      "primary"
+     ],
+     [
+      "This session",
+      "session",
+      ""
+     ],
+     [
+      "Deny",
+      "deny",
+      "danger"
+     ]
+    ],
+    "state": "pending",
+    "choice": null,
+    "ts": 1795195001.0,
+    "text": "cd /srv/app\nrm -rf build<U+202E>\nnpm ci",
+    "notes": [
+     "Runs on build box.",
+     "This command holds characters that do not show as written. Each is spelled out (1 of them, as <U+...>)."
+    ],
+    "cut": true,
+    "total": 31000,
+    "lines": 3,
+    "chars": 39,
+    "risk": "low",
+    "rtl": true,
+    "machine": "build box",
+    "hold": [
+     "long",
+     "cut",
+     "marked"
+    ]
+   },
+   {
+    "id": "apr_8",
+    "chat_id": "s-2",
+    "session_key": "s-2",
+    "kind": "permission",
+    "command": "npm test",
+    "description": "Bash",
+    "actions": [
+     [
+      "Approve",
+      "once",
+      "primary"
+     ],
+     [
+      "This session",
+      "session",
+      ""
+     ],
+     [
+      "Deny",
+      "deny",
+      "danger"
+     ]
+    ],
+    "state": "approved",
+    "choice": "once",
+    "ts": 1795194990.0,
+    "from": "the phone (Pixel 8), its text shown whole"
    }
   ],
   "question": [
@@ -1563,6 +1650,14 @@
    },
    {
     "choice": "deny"
+   },
+   {
+    "choice": "once",
+    "seen": "whole"
+   },
+   {
+    "choice": "deny",
+    "via": "notification"
    }
   ],
   "attachment": [
@@ -1894,7 +1989,22 @@
     "pri": "high",
     "reply": "0",
     "aid": "apr_9",
-    "opts": "[\"once\",\"session\",\"deny\"]"
+    "opts": "[\"once\",\"session\",\"deny\"]",
+    "hold": ""
+   },
+   {
+    "t": "approval",
+    "c": "s-2",
+    "s": "46",
+    "n": "push_2a1b2c3d4e5f6a7b",
+    "title": "Review needs your approval",
+    "body": "Bash: cd /srv/app",
+    "ek": "approval",
+    "pri": "high",
+    "reply": "0",
+    "aid": "apr_10",
+    "opts": "[\"deny\"]",
+    "hold": "long,cut,marked"
    },
    {
     "t": "withdraw",

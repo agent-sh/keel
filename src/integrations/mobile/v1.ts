@@ -11,6 +11,8 @@ import { imageType } from "../../engine/images.ts";
 import type { Server } from "bun";
 import type { Session, StoredEvent } from "../../core/types.ts";
 import type { Approval, Gate } from "../../safety/gate.ts";
+import { cardLines, fromSaid, type CardForm } from "../../safety/card.ts";
+import { spelled } from "../../safety/chars.ts";
 import type { Deps } from "../../server/app.ts";
 import { answer, askedOf, closedQuestions, decline, pendingQuestions, type Answers } from "../../tools/interact.ts";
 import * as alerts from "../../automation/alerts.ts";
@@ -225,14 +227,35 @@ export function traceOf(e: StoredEvent, gseq: number) {
 
 const STATE: Record<string, string> = { pending: "pending", allowed: "approved", denied: "denied", cancelled: "expired" };
 
-export function approvalOf(a: Approval) {
+// A permission card. `command` and `description` are what an app from before
+// the read-first rule shows (the summary, each hidden character written out).
+// `form`, for a card that waits, adds what the rule needs, read from the one
+// form every client gets (src/safety/card.ts), ready for a screen that draws
+// plain text:
+// - `text`: the whole text to judge (the command, the paths and what the edit
+//   writes, the tool's input), each hidden character written as its code point;
+// - `notes`: why it is asked, where it runs when not here, what in the text can
+//   mislead, and that only its start is kept (`cut`, with `total` when known);
+// - `rtl`: it holds letters written right to left (the app keeps each run in place);
+// - `hold`: why Allow needs the text shown whole first (empty: one line shows
+//   all of it, and a notification may carry Allow).
+// The app sends `seen: "whole"` with an allow once all of `text` was on its
+// screen; without it the answer to a held card is a 409 with the sentence to
+// show, and the card stays open. A closed card says where it was answered (`from`).
+export function approvalOf(a: Approval, form?: CardForm) {
   const actions: string[][] = [["Approve", "once", "primary"]];
   if (a.risk !== "high") actions.push(["This session", "session", ""]);
   actions.push(["Deny", "deny", "danger"]);
+  const l = form && a.state === "pending" ? cardLines(form) : undefined;
   return {
     id: a.id, chat_id: a.session_id, session_key: a.session_id, kind: "permission",
-    command: a.summary, description: a.why ? `${a.tool}: ${a.why}` : a.tool,
+    command: spelled(a.summary), description: a.why ? `${a.tool}: ${a.why}` : a.tool,
     actions, state: STATE[a.state] ?? a.state, choice: a.choice ?? null, ts: secs(a.created),
+    ...(a.by ? { from: fromSaid(a.by) } : {}),
+    ...(form && l ? {
+      text: l.text, notes: l.notes, cut: !!form.cut, total: form.total ?? null, lines: form.lines, chars: form.chars,
+      risk: form.risk, rtl: form.marks.rtl, machine: form.machine?.far ? form.machine.name : "", hold: form.hold,
+    } : {}),
   };
 }
 
@@ -387,14 +410,16 @@ export function mobileApi(ctx: MobileCtx) {
     }
     return out;
   }
+  // A card with its form while it waits (the gate knows where the session's calls run).
+  const cardOf = (a: Approval) => approvalOf(a, a.state === "pending" ? ctx.gate()?.form(a) : undefined);
   const pendingApprovals = (sessionId?: string) => [
-    ...(ctx.gate()?.approvals({ session: sessionId, pending: true }) ?? []).map(approvalOf),
+    ...(ctx.gate()?.approvals({ session: sessionId, pending: true }) ?? []).map(cardOf),
     ...questions(sessionId),
   ];
   // Cards that closed after `sinceMs` (answered on the desktop, say): the app
   // keeps cards it saw until it hears they closed, and cancels their notification then.
   const closedCards = (sinceMs: number) => [
-    ...(ctx.gate()?.approvals() ?? []).filter((a) => a.state !== "pending" && (a.resolved ?? a.created) >= sinceMs).map(approvalOf),
+    ...(ctx.gate()?.approvals() ?? []).filter((a) => a.state !== "pending" && (a.resolved ?? a.created) >= sinceMs).map(cardOf),
     ...closedQuestions(sinceMs).map((q) => closedQuestion(q)),
   ];
 
@@ -513,9 +538,17 @@ export function mobileApi(ctx: MobileCtx) {
     if (!g || !a) return err("unknown approval", 404);
     if (text) return err("answer only applies to questions", 400);
     if (a.state !== "pending") return err(`this approval is already ${STATE[a.state] ?? a.state}`, 409);
-    const r = g.resolve(aid, a.session_id, { choice: choice as any, reason: choice === "deny" ? `denied from ${dev.name}` : undefined });
+    // `seen`: the app's word that its card showed the whole text. A
+    // notification shows one line, so an answer from one never carries it.
+    const notified = b.via === "notification";
+    const r = g.resolve(aid, a.session_id, {
+      choice: choice as any, reason: choice === "deny" ? `denied from ${dev.name}` : undefined,
+      seen: b.seen === "whole" && !notified ? "whole" : undefined, by: { client: notified ? "notification" : "phone", device: dev.name },
+    });
+    // Held: the card is still open. The sentence is what the app shows; `hold` and the card tell a newer app what to open.
+    if ("error" in r && r.hold) return json({ error: r.error, hold: r.hold, approval: cardOf(g.approval(aid)!) }, 409);
     if ("error" in r) return err(r.status === 409 ? `this approval is already ${STATE[g.approval(aid)?.state ?? ""] ?? "closed"}` : r.error, r.status);
-    return json({ approval: approvalOf(g.approval(aid)!), resolved: 1 });
+    return json({ approval: cardOf(g.approval(aid)!), resolved: 1 });
   }
 
   // The live stream. With `since` (the phone's cursor) it opens with what the
@@ -621,7 +654,7 @@ export function mobileApi(ctx: MobileCtx) {
                 if (s) send({ type: "chat", seq: mobile.globalSeq(), chat: chatFull(s) });
               }
               else if (f.t === "feature" && f.name === "approval") {
-                const a = approvalOf(f.data as Approval);
+                const a = cardOf(f.data as Approval);
                 send({ type: "approval", seq: mobile.globalSeq(), approval: a });
                 if (a.state === "pending") send({ type: "message", seq: mobile.globalSeq(), message: approvalMsg(a) });
                 // The chat's row says it needs the owner, then that it does not.

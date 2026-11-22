@@ -20,6 +20,7 @@ import { MobileStore } from "./store.ts";
 import { mobileApi } from "./v1.ts";
 import { pushData, testMessage } from "./push.ts";
 import { alertPush } from "../../server/routes/mobile.ts";
+import { Gate, type Approval } from "../../safety/gate.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "keel-mobile-"));
 // The daemon's config folder is this run's own: what a route reads there (the push files) is what a test put there.
@@ -49,7 +50,15 @@ const engine = {
   interrupt: async () => {},
 };
 const providers = { models: async () => [], marked: (m: any) => m, defaultModel: async () => "fx:default", resolve: async () => ({}) };
-const routes: any = mobileApi({ store, bus, engine, providers, errors: { capture() {} }, workspace: dir, mobile, gate: () => undefined, changed() {} } as any);
+// The permission gate over the same store. A card put in its table is listed at once; one put
+// there before a gate is made is open to an answer (as a card a restart left open is).
+let gate = new Gate(store, bus);
+const card = (a: Partial<Approval> & Pick<Approval, "id" | "session_id" | "summary">): Approval => {
+  const full: Approval = { call_id: `call-${a.id}`, tool: "Bash", kind: "shell", input: { command: a.summary }, risk: "low", suggest: [], state: "pending", created: Date.now(), ...a };
+  store.db.query("INSERT INTO approvals (id, session_id, state, data, created) VALUES (?, ?, ?, ?, ?)").run(full.id, full.session_id, full.state, JSON.stringify(full), full.created);
+  return full;
+};
+const routes: any = mobileApi({ store, bus, engine, providers, errors: { capture() {} }, workspace: dir, mobile, gate: () => gate, changed() {} } as any);
 afterAll(() => setSystemTime());
 
 const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
@@ -718,6 +727,10 @@ describe("the wire contract", () => {
     const failed = session("Failed");
     store.append(failed.id, "error", { message: "HTTP 402: no credit" });
     const q = asks(s.id, "call-w");
+    // Permission cards: one that waits and is held (long, its start alone kept, a hidden character,
+    // a command for another machine), and one that was answered from the phone.
+    card({ id: "apr-held", session_id: s.id, summary: `cd /srv\nrm -rf build\u202e\n${"x".repeat(21_000)}`, input: { command: "x", machine: "build box" } });
+    card({ id: "apr-done", session_id: s.id, summary: "npm test", state: "allowed", choice: "once", resolved: Date.now(), by: { client: "phone", device: "Pixel 8", seen: "whole" } });
     running.add(parent.id);
     bus.emit({ t: "delta", session_id: parent.id, kind: "text", index: 0, text: "Looking at the" } as any);
 
@@ -746,7 +759,7 @@ describe("the wire contract", () => {
     }));
     take("push_config", (await call("GET", "/v1/push-config?app=dev.avifenesh.keel")).body);
     // A push for an approval, as its data leaves for the phone.
-    take("push", pushData(alertPush({ id: "al1", ts: Date.now(), kind: "approval", session_id: s.id, title: "Fix the build needs your approval", body: "rm -rf build", read: false, data: { approval_id: "apr_9" }, channels: [] } as any), mobile.globalSeq(), "push_1"));
+    take("push", pushData(alertPush({ id: "al1", ts: Date.now(), kind: "approval", session_id: s.id, title: "Fix the build needs your approval", body: "rm -rf build", read: false, data: { approval_id: "apr_9", hold: [] }, channels: [] } as any), mobile.globalSeq(), "push_1"));
     take("push", pushData(testMessage(), mobile.globalSeq(), "push_2"));
     // A phone pairs, then unpairs.
     const k3 = generateKeyPairSync("ec", { namedCurve: "P-256" });
@@ -786,6 +799,7 @@ describe("the wire contract", () => {
     take("sync", (await call("GET", `/v1/sync?since=${st.frames[0].cursor}`)).body);
     take("sync", (await call("GET", `/v1/sync?since=${mobile.globalSeq() + 9}`)).body);
     running.delete(parent.id);
+    store.db.query("DELETE FROM approvals WHERE id IN ('apr-held', 'apr-done')").run();
 
     expect(bad).toEqual([]);
     // Every field the app reads was sent at least once here, so a renamed optional field fails too.
@@ -899,5 +913,66 @@ describe("pairing", () => {
     const again: Response = await routes["/v1/devices/:did"].DELETE(Object.assign(signedAs(paired.body.token, "DELETE", `/v1/devices/${id}`), { params: { did: id } }), {});
     expect(again.status).toBe(401);
     expect((await me(paired.body.token)).status).toBe(401);
+  });
+});
+
+// The read-first rule, from the phone: the card carries the whole text, an
+// allow says it was shown, and a notification allows only what one line shows.
+describe("permission cards", () => {
+  const LONG = Array.from({ length: 41 }, (_, i) => `echo step ${i + 1}`).join("\n");
+  const answer = (aid: string, body: any) => {
+    const ts = String(Math.floor(Date.now() / 1000));
+    const asig = sign("sha256", Buffer.from(approvalMessage(aid, body.choice, ts, true, "")), { key: akey.privateKey, dsaEncoding: "der" }).toString("base64");
+    return call("POST", `/v1/approvals/${aid}`, body, body.choice === "deny" ? {} : { "x-hm-asig": asig, "x-hm-asig-v": "2" });
+  };
+  const pushOf = (a: Approval) => pushData(alertPush({ id: "al", ts: 1, kind: "approval", session_id: a.session_id, title: "t", body: "b", read: false, data: { approval_id: a.id, risk: a.risk, hold: gate.form(a).hold }, channels: [] } as any), 1, "push_x");
+
+  test("a long command is allowed only once the app says it showed all of it; a deny and a short one need nothing", async () => {
+    const s = session("Cards");
+    const long = card({ id: "apr-long", session_id: s.id, summary: LONG });
+    const short = card({ id: "apr-short", session_id: s.id, summary: "npm test" });
+    const other = card({ id: "apr-other", session_id: s.id, summary: `${LONG}\necho more` });
+    const marked = card({ id: "apr-marked", session_id: s.id, summary: "echo txt.r \u202e< x.txt" });
+    const risky = card({ id: "apr-risky", session_id: s.id, summary: "sudo reboot", risk: "high", why: "the command runs as root" });
+    gate = new Gate(store, bus);
+    gate.machineOf = () => ({ name: "desk" });
+
+    // What the phone is given: the whole text, the count, and why it is held.
+    const cards = Object.fromEntries((await call("GET", `/v1/chats/${s.id}/run`)).body.approvals.map((a: any) => [a.id, a]));
+    expect(cards["apr-long"]).toMatchObject({ command: LONG, text: LONG, lines: 41, cut: false, total: null, hold: ["long"], notes: [], rtl: false, machine: "" });
+    expect(cards["apr-short"]).toMatchObject({ text: "npm test", lines: 1, hold: [] });
+    expect(cards["apr-marked"]).toMatchObject({ command: "echo txt.r <U+202E>< x.txt", text: "echo txt.r <U+202E>< x.txt", hold: ["long", "marked"] });
+    expect(cards["apr-marked"].notes[0]).toContain("characters that do not show as written");
+    expect(cards["apr-risky"]).toMatchObject({ hold: ["risk"], notes: ["High risk: the command runs as root."] });
+
+    // A notification's actions for each shape, as the daemon sends them.
+    expect([pushOf(short).opts, pushOf(short).hold]).toEqual(['["once","session","deny"]', ""]);
+    expect([pushOf(long).opts, pushOf(long).hold]).toEqual(['["deny"]', "long"]);
+    expect([pushOf(marked).opts, pushOf(marked).hold]).toEqual(['["deny"]', "long,marked"]);
+    expect([pushOf(risky).opts, pushOf(risky).hold]).toEqual(['["deny"]', "risk"]);
+    // An alert raised before cards recorded their hold: high risk offers no Allow, as before the rule it offered no standing one.
+    expect(alertPush({ id: "old", ts: 1, kind: "approval", session_id: s.id, title: "t", body: "b", read: false, data: { approval_id: "x", risk: "high" }, channels: [] } as any).data.opts).toBe('["deny"]');
+
+    // An app from before the rule sends no `seen`: the long card is held, with the sentence it shows, and stays open.
+    const held = await answer("apr-long", { choice: "once" });
+    expect([held.status, held.body.error, held.body.hold]).toEqual([409, "Open the request to read it first: it is 41 lines long.", ["long"]]);
+    expect(held.body.approval).toMatchObject({ state: "pending", text: LONG });
+    expect((await answer("apr-long", { choice: "session" })).status).toBe(409);
+    // A notification shows one line: its allow never counts as having shown the text, whatever it says.
+    expect((await answer("apr-long", { choice: "once", seen: "whole", via: "notification" })).status).toBe(409);
+    expect((await answer("apr-marked", { choice: "once" })).status).toBe(409);
+    expect((await answer("apr-risky", { choice: "once" })).status).toBe(409);
+    expect(gate.approval("apr-long")).toMatchObject({ state: "pending" });
+    // With the app's word it is taken, and the card says where it was answered.
+    const ok = await answer("apr-long", { choice: "once", seen: "whole" });
+    expect([ok.status, ok.body.approval.state, ok.body.approval.from]).toEqual([200, "approved", "the phone (phone), its text shown whole"]);
+    expect(gate.approval("apr-long")!.by).toEqual({ client: "phone", device: "phone", seen: "whole" });
+    // A short one is allowed as before, from the card or from a notification.
+    expect((await answer("apr-short", { choice: "once", via: "notification" })).status).toBe(200);
+    expect(gate.approval("apr-short")!.by).toEqual({ client: "notification", device: "phone" });
+    // A deny is taken at once, from anywhere.
+    expect((await answer("apr-other", { choice: "deny", via: "notification" })).status).toBe(200);
+    expect(gate.approval("apr-other")).toMatchObject({ state: "denied", by: { client: "notification", device: "phone" } });
+    expect((await answer("apr-risky", { choice: "deny" })).status).toBe(200);
   });
 });
