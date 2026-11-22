@@ -470,16 +470,18 @@ test("a card takes a one-time answer or a denial while the store takes no writes
 });
 
 // The risk classes read what git says of a folder a command deletes (risk.ts): the gate asks git before it decides.
-test("a delete inside the folder is high risk by what git keeps there, and a card that waits is judged again with the same answer", async () => {
+test("a delete inside the folder is high risk by what git cannot bring back there, and a card that waits is judged again with the same answer", async () => {
   const { g, session, call } = scratchGate();
   g.setSandboxCheck(() => false);
   const ws = session.workspace;
   const git = (...args: string[]) => Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: ws, stdout: "ignore", stderr: "ignore" });
   git("init", "-q");
-  for (const f of ["build/gen.sh", "build/pack.sh", "out/a.o", "out/b.o", "fresh/one.ts", "fresh/two.ts", "single/only.ts", "lib/nested/.git/HEAD"]) { mkdirSync(join(ws, f, ".."), { recursive: true }); writeFileSync(join(ws, f), "x\n"); }
+  for (const f of ["build/gen.sh", "build/pack.sh", "kept/a.ts", "kept/b.ts", "out/a.o", "out/b.o", "fresh/one.ts", "fresh/two.ts", "single/only.ts", "lib/nested/.git/HEAD"]) { mkdirSync(join(ws, f, ".."), { recursive: true }); writeFileSync(join(ws, f), "x\n"); }
   writeFileSync(join(ws, ".gitignore"), "out/\n");
-  git("add", "build", ".gitignore");
+  git("add", "build", "kept", ".gitignore");
   git("commit", "-q", "-m", "first");
+  // Two committed files changed since: git has the old ones only.
+  for (const f of ["build/gen.sh", "build/pack.sh"]) writeFileSync(join(ws, f), "changed\n");
   expect(existsSync(join(ws, ".git"))).toBe(true);
   g.setPerm("s1", { mode: "ask", sandbox: "off" });
   const open = () => g.approvals({ session: "s1", pending: true });
@@ -490,14 +492,16 @@ test("a delete inside the folder is high risk by what git keeps there, and a car
     return { a: a!, asked };
   };
   const answer = async (c: Awaited<ReturnType<typeof card>>) => { g.resolve(c.a.id, "s1", { choice: "deny" }); await c.asked; };
-  // A folder git ignores is build output; a tracked one, or new files nobody has added yet, is work; a repository of its own is.
-  for (const [command, risk, rule] of [["rm -rf out", "low", undefined], ["rm -rf build", "high", "destroys"], ["rm -rf fresh", "high", "destroys"], ["rm -rf single", "low", undefined], ["rm -rf lib/nested", "high", "destroys"],
-    ["find . -name '*.sh' -delete", "high", "destroys"], ["find . -name '*.o' -delete", "low", undefined]] as const) {
+  // A folder git ignores is build output, and one whose every file is committed and unchanged comes back from
+  // git; changed files, new ones nobody has added yet and a repository of its own do not.
+  const lost = "destroys work or data";
+  for (const [command, risk, rule] of [["rm -rf out", "low", undefined], ["rm -rf kept", "low", undefined], ["rm -rf build", "high", lost], ["rm -rf fresh", "high", lost], ["rm -rf single", "high", lost], ["rm -rf lib/nested", "high", lost],
+    ["find . -name '*.sh' -delete", "high", lost], ["find . -name '*.o' -delete", "low", undefined], ["find . -name '*.ts' -delete", "high", lost]] as const) {
     const c = await card(command);
     expect([command, c.a.risk, c.a.rule]).toEqual([command, risk, rule]);
     await answer(c);
   }
-  // The card for the tracked folder stays the owner's when a grant that names rm arrives, though its name alone reads as build output.
+  // The card for the changed folder stays the owner's when a grant that names rm arrives, though its name alone reads as build output.
   const held = await card("rm -rf build");
   const other = g.beforeTool(session, call(bash, { command: "rm stale.txt" }));
   for (let i = 0; i < 100 && open().length < 2; i++) await Bun.sleep(10);
@@ -511,6 +515,8 @@ test("a delete inside the folder is high risk by what git keeps there, and a car
   let judged: string[] = [];
   g.judge = async (r) => (judged.push(r.summary), { allow: true, risk: "high", reason: "fixture", model: "m" });
   g.setPerm("s1", { mode: "full-auto", sandbox: "off" });
-  for (const command of ["rm -rf out", "git reset --hard", "rm -rf build", "git reset --hard && npm publish"]) expect([command, await g.beforeTool(session, call(bash, { command }))]).toEqual([command, undefined]);
-  expect(judged).toEqual(["rm -rf build", "git reset --hard && npm publish"]);
+  // (The changed files are put back first: a reset over them is not the rules' to settle, and with them back the folder is git's to bring back.)
+  git("checkout", "--", "build");
+  for (const command of ["rm -rf out", "git reset --hard", "rm -rf build", "rm -rf fresh", "git reset --hard && npm publish"]) expect([command, await g.beforeTool(session, call(bash, { command }))]).toEqual([command, undefined]);
+  expect(judged).toEqual(["rm -rf fresh", "git reset --hard && npm publish"]);
 });

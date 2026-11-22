@@ -106,7 +106,7 @@ export function repoContext(command: string, cwd: string, home: string, session:
   const yes = (b: boolean | null) => (b === null ? "unknown" : b ? "yes" : "no");
   const risks = analyse(parts, { cwd, home, workspace: session.workspace });
   located(parts, cwd, home).forEach(({ s, dir }, i) => {
-    const risk = [...new Set(risks.per[i]!.map((r) => r.why))].join(" and ");
+    const risk = [...new Set((risks.per.get(i) ?? []).map((r) => r.why))].join(" and ");
     if (!risk) return;
     const g = gitCall(s.words, dir, home);
     const at = g?.dir ?? dir;

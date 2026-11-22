@@ -59,7 +59,7 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSy
 import { basename, dirname, join, resolve } from "node:path";
 import { privateHost } from "./hosts.ts";
 import { defaultStateDir } from "./paths.ts";
-import { readText } from "./proc.ts";
+import { chunks, readText } from "./proc.ts";
 
 export type GitResult = { code: number; out: string; err: string };
 export type GitOpts = {
@@ -618,6 +618,30 @@ export async function git(dir: string, args: string[], o: GitOpts = {}): Promise
     return { code, out, err: `${err.trim()}\nKeel does not push into a branch that is checked out in the repository it pushes to (updating the files there would run that repository's own programs): check out another branch there, or push to a bare repository.` };
   }
   return { code: proc.signalCode ? -1 : code, out, err };
+}
+
+// The first `max` names a listing prints (with -z), and no more: git is stopped there, so a listing over a very
+// large index costs what its first names cost. `none`: no repository here. `late`: it did not answer in time.
+// `failed`: git refused the call (a path outside the repository).
+export async function gitNames(dir: string, args: string[], max: number, timeout: number): Promise<{ names: string[]; none?: true; late?: true; failed?: true }> {
+  let p: Plan;
+  try { p = plan(dir, args, { read: true }); } catch { return { names: [], failed: true }; }
+  if ("fail" in p) return { names: [], none: true };
+  let proc: ReturnType<typeof Bun.spawn>;
+  try { proc = Bun.spawn(p.argv, { cwd: p.cwd, env: p.env, stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout, killSignal: "SIGKILL" }); } catch { return { names: [], failed: true }; }
+  const names: string[] = [];
+  const text = new TextDecoder();
+  let rest = "";
+  for await (const chunk of chunks(proc.stdout as ReadableStream<Uint8Array>)) {
+    rest += text.decode(chunk, { stream: true });
+    for (let at = rest.indexOf("\0"); at >= 0 && names.length < max; at = rest.indexOf("\0")) { names.push(rest.slice(0, at)); rest = rest.slice(at + 1); }
+    if (names.length >= max) { proc.kill("SIGKILL"); break; }
+    if (rest.length > 65_536) rest = rest.slice(-4_096); // one name longer than any path: not kept whole
+  }
+  const code = await proc.exited;
+  if (names.length >= max) return { names };
+  if (proc.signalCode) return { names, late: true };
+  return code === 0 ? { names } : { names: [], failed: true };
 }
 
 // Why a call in `dir` that may fetch as far as `fetch` fetches nothing, or nothing when it may.

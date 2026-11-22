@@ -5,6 +5,7 @@
 // (src/safety/policy.ts) on the daemon's rules for that folder.
 import { resolve } from "node:path";
 import { contains } from "../core/paths.ts";
+import { deciding } from "../safety/looked.ts";
 import { decide, isMode, MODES, type Rule } from "../safety/policy.ts";
 import { ago, command, EXIT, line, printJson, usageError } from "./client.ts";
 
@@ -58,12 +59,15 @@ export const rulesCmd = command("rules", USAGE, {
     if (!isMode(mode)) return usageError("rules", `--mode is one of ${MODES.map((m) => m.id).join(", ")}`, USAGE);
     const rules = rulesIn(grants, cwd, v.session);
     const cls = tool === "shell" ? { kind: "shell" as const, command: sample } : tool === "edit" ? { kind: "edit" as const, paths: [resolve(cwd, sample)] } : { kind: "other" as const };
-    const d = decide(cls, { mode, workspace: cwd, sandboxed: false, rules, tool: tool === "tool" ? sample : tool === "shell" ? "shell" : "edit" });
+    // (With what this folder's disk says of the paths the sample names, as the gate decides: what git cannot
+    // bring back under a delete, what an overwrite lands on, the files a patch or an archive writes.)
+    const { d } = await deciding(cwd, (looked) => decide(cls, { mode, workspace: cwd, sandboxed: false, rules, tool: tool === "tool" ? sample : tool === "shell" ? "shell" : "edit", looked }));
     const verdict = "allow" in d ? "allow" : "deny" in d ? "deny" : "ask";
     if (v.json) return (printJson({ sample, tool, mode, cwd, decision: verdict, detail: d, rules: rules.length }), EXIT.ok);
     const why = "allow" in d ? d.why : "deny" in d ? d.deny : d.ask.why;
     console.log(`${verdict}${"ask" in d ? ` (${d.ask.risk} risk${d.ask.rule ? `: ${d.ask.rule}` : ""})` : ""}: ${tool} ${line(sample)} in ${cwd}, mode ${mode}, ${rules.length} rule${rules.length === 1 ? "" : "s"} in scope`);
     if (why) console.log(`  ${why}`);
+    if ("ask" in d && d.ask.notice) console.log(`  ${d.ask.notice}`);
     if ("ask" in d && d.ask.suggest.length) console.log(`  an "always" would grant: ${d.ask.suggest.map((s) => `${s.kind} ${s.pattern}`).join(", ")}`);
     return EXIT.ok;
   }

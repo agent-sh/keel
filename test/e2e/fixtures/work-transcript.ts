@@ -307,7 +307,7 @@ let rt = turn(risk.id, now - 1800_000, { text: "Clean up the checkout before the
   ] },
   { calls: [
     edits("src/a.ts", 1), edits("src/b.ts", 2), edits("src/c.ts", 3), edits("src/d.ts", 4),
-    edits(".git/hooks/pre-commit", 5), edits(".github/workflows/ci.yml", 6), edits("/etc/hosts", 7), edits(`${ws}/../elsewhere/.bashrc`, 8),
+    edits(".git/hooks/pre-commit", 5), edits(".changes/notes.yml", 6), edits("/etc/hosts", 7), edits(`${ws}/../elsewhere/.bashrc`, 8),
   ] },
   { calls: [bash("cd build\nls -la\ndu -sh .", "total 8\n4.0K\t.")] },
   { calls: [bash("ls", "a.ts"), bash("make deploy", RESTART_CUT, { error: true }), bash("make notify", "sent")] },

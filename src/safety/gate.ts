@@ -8,13 +8,13 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, relative } from "node:path";
 import type { Bus } from "../core/bus.ts";
-import { git, locate } from "../core/git.ts";
+import { locate } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import type { ToolAuthorization, ToolCall, ToolGate } from "../engine/hooks.ts";
 import { preAllow } from "./autonomy.ts";
 import { lookRepo, repoContext } from "./repofacts.ts";
-import { keptAsks, risksOf } from "./risk.ts";
+import { looking, type Looked } from "./looked.ts";
 import { confine } from "./sandbox.ts";
 import { detect, placeholdersIn, vault } from "./secrets.ts";
 import { realPrograms } from "./shims.ts";
@@ -127,9 +127,10 @@ export const STREAK = 3;
 
 type Waiter = { resolve: (d: { allow: true } | { deny: string }) => void; call: ToolCall; cls: CallClass; session: Session; name: string; once?: boolean; bind?: string; facts?: CallFacts };
 // What the gate looked up for one call before it decided (the policy itself reads no disk): whether a program's
-// name is the program itself, and what git says of the paths a command deletes. A card that waits is judged again
-// with the same answers.
-type CallFacts = { real?: (program: string) => boolean; kept?: (specs: string[]) => number | null };
+// name is the program itself, and what this machine's disk says of the paths a command names (looked.ts). A card
+// that waits is judged again with the same answers. `settles`: every reason the call is high risk is one of git's
+// own forms, which the full-auto rules can settle.
+type CallFacts = { real?: (program: string) => boolean; looked?: Looked; settles?: boolean };
 type Target = Awaited<ReturnType<NonNullable<ToolCall["tool"]["target"]>>>;
 type AutoReview = { ask: Ask; cwd?: string; input: unknown; interpreter?: string; valid: () => Promise<boolean> };
 type AutoShell = { path: string; identity: string; interpreter: string };
@@ -211,6 +212,7 @@ function localShellDir(session: Session, call: ToolCall, target: Target, cls: Ca
 export class Gate {
   private lastCard = 0; // when the newest card was made
   private waiting = new Map<string, Waiter>();
+  private asking = new Map<string, Promise<void>>(); // per session: the last call still at its decision (see `checked`)
   private checking = new Map<string, CallFacts>(); // the facts of the calls being checked now, by session and call
   private roots = new Map<string, string>();
   private allowedCalls = new Set<string>();
@@ -479,7 +481,7 @@ export class Gate {
     const edit = cls.kind === "edit";
     let own: { home: string; config: string[]; bins: string[]; land: (p: string) => string[] } | undefined;
     return decide(cls, {
-      mode: p.mode, workspace: edit ? workspace : session.workspace, sandboxed: this.sandboxed(session, p), rules: before === undefined ? this.rules(session) : this.rules(session).filter((r) => r.created <= before), tool: name, bind, scratch, real: facts?.real, kept: facts?.kept,
+      mode: p.mode, workspace: edit ? workspace : session.workspace, sandboxed: this.sandboxed(session, p), rules: before === undefined ? this.rules(session) : this.rules(session).filter((r) => r.created <= before), tool: name, bind, scratch, real: facts?.real, looked: facts?.looked,
       // What Keel itself runs things from: a change there is the owner's alone
       // (on this machine's disk). With it, the scripts the owner's hooks and a
       // pinned repository's hooks run: no pin holds one outside .keel/. Read
@@ -503,30 +505,6 @@ export class Gate {
   private async real(names: string[]): Promise<(program: string) => boolean> {
     const found = await realPrograms(names);
     return (program) => found.get(program) === true;
-  }
-
-  // What git says of the paths a command would delete inside the session's folder: how many files it does not
-  // ignore each covers (none, one, more). Asked only for a line that deletes there, off the loop and within a
-  // deadline; what git does not answer in time is not known, and the policy then goes by the names. A folder that
-  // is a repository of its own is more than one file. Nothing is asked for a session on another machine.
-  private keptAsks(session: Session, cls: CallClass): string[][] {
-    if (cls.kind !== "shell" || session.machine) return [];
-    const parts = splitCommand(cls.command);
-    return parts ? keptAsks(parts, { cwd: cls.cwd ?? session.workspace, home: homedir(), workspace: session.workspace, scratch: this.scope(session).scratch }).slice(0, 16) : [];
-  }
-  private async kept(session: Session, asks: string[][]): Promise<CallFacts["kept"]> {
-    const found = new Map<string, number | null>();
-    await Promise.all(asks.map(async (specs) => {
-      const key = specs.join("\0");
-      if (found.has(key)) return;
-      found.set(key, null);
-      if (specs.some((x) => x.startsWith(":(literal)") && existsSync(join(x.slice(10), ".git")))) { found.set(key, 2); return; }
-      const r = await git(session.workspace, ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ...specs], { read: true, timeout: 1_500 });
-      if (r.code !== 0) return;
-      const first = r.out.indexOf("\0");
-      found.set(key, first < 0 ? 0 : r.out.indexOf("\0", first + 1) < 0 && !r.out.slice(0, first).endsWith("/") ? 1 : 2);
-    }));
-    return (specs) => found.get(specs.join("\0")) ?? null;
   }
 
   // Set by the hooks module: the files and folders the session's hooks run things from.
@@ -617,11 +595,35 @@ export class Gate {
     // Nothing is waited for unless the line names such a program.
     const names = this.shimmed(session, cls);
     const judged = cls.kind === "shell" && dir ? { ...cls, cwd: dir.path } : cls;
-    // Nor unless it deletes inside the folder.
-    const asks = this.keptAsks(session, judged);
-    const facts: CallFacts = { real: names.length ? await this.real(names) : undefined, kept: asks.length ? await this.kept(session, asks) : undefined };
+    // What the disk says of the paths a command names is asked off the loop, and only when the decision asked
+    // for it: the first reading of a line decides most of them. Nothing is asked for a session on another machine.
+    const facts: CallFacts = { real: names.length ? await this.real(names) : undefined };
+    // The calls of one reply are checked side by side, and their cards list in call order: a call goes on from
+    // here only after the calls before it have, however long the disk took over any of them.
+    const prior = this.asking.get(session.id);
+    const local = !session.machine && judged.kind === "shell";
+    const l = local ? looking(session.workspace) : null;
+    let asked = new Map<string, () => Promise<unknown>>();
+    let dNow = this.evaluate(session, name, judged, target?.source, l ? { ...facts, looked: l.view(asked) } : facts);
+    if (asked.size || prior) {
+      let done!: () => void;
+      const mine = new Promise<void>((r) => { done = r; });
+      this.asking.set(session.id, mine);
+      try {
+        for (let pass = 0; l && asked.size && pass < 3; pass++) {
+          await l.answer(asked);
+          asked = new Map();
+          dNow = this.evaluate(session, name, judged, target?.source, { ...facts, looked: l.view(asked) });
+        }
+      } finally {
+        await prior;
+        done();
+        if (this.asking.get(session.id) === mine) this.asking.delete(session.id);
+      }
+    }
+    if (l) facts.looked = l.view();
+    facts.settles = "ask" in dNow && !!dNow.ask.settles;
     this.checking.set(callKey(session.id, call.id), facts);
-    const dNow = this.evaluate(session, name, judged, target?.source, facts);
     // The call a restart cut while its card was open: that card again, settled
     // the way an open card is (the owner's answer, a grant or mode since, or waiting).
     const back = this.recovered(session.id, call, false) ?? (mode === "auto" ? this.recovered(session.id, call, true) : undefined);
@@ -770,8 +772,7 @@ export class Gate {
     if (!auto && cls.kind === "shell" && !cls.escalate) {
       const parts = splitCommand(cls.command);
       // The rules settle git's own forms from the repository's state. A line that is high risk for anything else goes to the judge.
-      const where = { cwd: cls.cwd ?? session.workspace, home: homedir(), workspace: session.workspace, scratch: this.scope(session).scratch, kept: this.checking.get(callKey(session.id, call.id))?.kept };
-      const rule = parts && risksOf(parts, where).every((r) => r.git) ? preAllow(parts, where.cwd, where.home, lookRepo) : null;
+      const rule = parts && this.checking.get(callKey(session.id, call.id))?.settles ? preAllow(parts, cls.cwd ?? session.workspace, homedir(), lookRepo) : null;
       if (rule) return ran("rule", rule), { cls };
     }
     // What is judged is what runs, whole: the judge is sent the start of a
@@ -832,7 +833,7 @@ export class Gate {
   }
 
   // Set by the hooks module: what the owner's PermissionRequest hooks answer for a card about to open.
-  requestHook?: (session: Session, call: ToolCall, name: string, ask: { risk: "high" | "low"; why?: string }) => Promise<{ allow: true } | { deny: string } | void>;
+  requestHook?: (session: Session, call: ToolCall, name: string, ask: { risk: "high" | "low"; why?: string; rule?: string }) => Promise<{ allow: true } | { deny: string } | void>;
 
   // Calls the owner allowed on a card (the protected-path sweep leaves their work alone).
   ownerAllowed(callId: string | undefined): boolean {
@@ -849,7 +850,7 @@ export class Gate {
     // A deny refuses the call. An allow answers the card where a PreToolUse
     // hook's allow would have (hookMayAnswer), and no other card.
     if (!parked && this.requestHook) {
-      const r = await this.requestHook(session, call, name, { risk: ask.risk, why: ask.why });
+      const r = await this.requestHook(session, call, name, { risk: ask.risk, why: ask.why, rule: ask.rule });
       if (r && "deny" in r) return r;
       if (r && "allow" in r && !once && !ask.autoOwner && this.hookMayAnswer(session, cls, ask)) {
         call.hook = { ...call.hook, allowed: call.hook?.allowed ?? "", skipped: true };

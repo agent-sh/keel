@@ -70,7 +70,12 @@ test("the risk rules and the grants read such a word in step with its length too
     "cat", "ssh -i", "mv", "mkfs.ext4", "git -C",
     // What the risk classes read (risk.ts): targets and patterns, a remote command, SQL, a nested script, code, a setting's key, a pattern of names, a file to send.
     "rm", "truncate -s 0", "find", "find . -name", "find . -delete -name", "xargs rm", "env", "timeout 5 rm -rf", "rsync --delete a", "ssh host", "kubectl delete", "aws s3", "psql -c", "sqlite3 a.db", "bash -c", "sh -c",
-    "eval", "node -e", "perl -e", "git config --global", "git -c", "git branch -D", "pkill -f", "kill -9", "crontab", "npm install", "pip install", "curl -d", "curl -X DELETE", "scp", "nc host 80", "make", "npm run", "export"];
+    "eval", "node -e", "perl -e", "git config --global", "git -c", "git branch -D", "pkill -f", "kill -9", "crontab", "npm install", "pip install", "curl -d", "curl -X DELETE", "scp", "nc host 80", "make", "npm run", "export",
+    // And what the second round of classes reads: git's pathspecs, a container's mounts, an archive, a patch, what gh posts, a runner's address, a registry, a unit, a move, an overwrite, a database, a wrapper's command.
+    "git checkout", "git checkout --", "git restore", "git rm -r", "git clean", "git clean -f", "git apply", "docker run -v", "docker run", "docker exec c", "kubectl exec pod --", "tar xzf", "tar xzf a.tgz -C", "unzip", "patch -i",
+    "gh gist create", "gh issue comment 1 --body-file", "npx", "bunx", "uvx --from", "uv run --with", "go run", "deno run", "pip install --index-url", "npm install --registry", "systemctl --user stop", "systemctl stop", "cp a",
+    "tee", "sed -i s/a/b/", "ln -sfn a", "dd of=a", "sqlite3", "redis-cli", "psql -h", "psql -f", "dropdb", "tmux new -d", "awk", "flock a", "strace -o a", "rsync -a --delete a", "rclone copy", "yq -i .a", "curl -o", "chmod 777",
+    "ssh -R", "python3 -m http.server --directory", "rimraf", "busybox rm -rf", "kill", "pkill"];
   for (const word of words) {
     for (const lead of RISKY) {
       const p = part([...lead.split(" "), word]);
@@ -93,11 +98,38 @@ test("a whole line of 100,000 characters is decided in step with its length", ()
   const slow: string[] = [];
   for (const u of ["a", "/", "{", "{a,", "}", "$x", "${x}", "\\\\", "*", "[", "a=b ", "' '", "a;", ">a ", ".ssh/"]) {
     const body = u.repeat(Math.ceil(N / u.length)).slice(0, N);
-    for (const lead of ["ls ", "rm -rf -"]) for (const mode of ["ask", "full-auto"] as const) {
+    // (After `ls` and `rm`, the programs whose words the policy reads for a file that runs later: for the long
+    // word each of them is handed. A line of 50,000 parts is the first two's case; it is the parser's time, the
+    // same after any program, and every further try at it is one more chance for a busy machine to stall one.)
+    const leads = ["ls ", "rm -rf -", ...(u.includes(";") ? [] : ["cp a ", "tar xzf a.tgz -C ", "git checkout -- ", "git apply ", "curl -o ", "yq -i .a ", "python3 -c ", "chmod 777 "])];
+    for (const lead of leads) for (const mode of ["ask", "full-auto"] as const) {
       let best = Infinity;
-      for (let k = 0; k < 3 && best > 5 * LIMIT; k++) { const t = performance.now(); decide({ kind: "shell", command: lead + body, cwd: "/w" }, facts(mode)); best = Math.min(best, performance.now() - t); }
+      // (The fastest of up to six tries: on a busy machine most of them are stalled, and the square is slow in every one.)
+      for (let k = 0; k < 6 && best > 5 * LIMIT; k++) { const t = performance.now(); decide({ kind: "shell", command: lead + body, cwd: "/w" }, facts(mode)); best = Math.min(best, performance.now() - t); }
       if (best > 5 * LIMIT) slow.push(`${mode}: ${lead}${JSON.stringify(u)}: ${best.toFixed(0)} ms`);
     }
+  }
+  expect(slow).toEqual([]);
+}, 120_000);
+
+// A here-document is one part a line. What a shell, another machine's shell or an interpreter is fed that way is
+// read once per command, and one longer than the rules read through is high risk for its length alone: 20,000
+// lines fed to bash held the loop for eleven seconds when each line looked back over the others.
+test("a here-document of 100,000 lines is decided in step with its length, whoever it feeds", () => {
+  const facts = (mode: "ask" | "full-auto") => ({ mode, workspace: "/w", sandboxed: false, tool: "Bash", home: "/h", rules: [] });
+  const slow: string[] = [];
+  const fed: [string, string][] = [["bash <<'EOF'", "touch a"], ["ssh host <<'EOF'", "touch a"], ["ssh host bash <<'EOF'", "rm -rf /srv/a"], ["python3 - <<'EOF'", "x = 1"], ["cat > f <<'EOF'", "some text"], ["psql <<'EOF'", "select 1;"],
+    ["kubectl exec -i pod -- sh <<'EOF'", "touch a"], ["bash -s <<'EOF' | bash <<'EOF2'", "touch a"]];
+  for (const [lead, line] of fed) for (const mode of ["ask", "full-auto"] as const) {
+    const command = `${lead}\n${`${line}\n`.repeat(N)}EOF`;
+    let best = Infinity, d: ReturnType<typeof decide> | undefined;
+    // (The parser alone takes 200 to 400 ms on 100,000 lines, and several times that on a busy machine: the
+    // bound is two seconds, which a square, minutes long at this size, cannot meet.)
+    for (let k = 0; k < 6 && best > 40 * LIMIT; k++) { const t = performance.now(); d = decide({ kind: "shell", command, cwd: "/w" }, facts(mode)); best = Math.min(best, performance.now() - t); }
+    if (best > 40 * LIMIT) slow.push(`${mode}: ${lead}: ${best.toFixed(0)} ms`);
+    // Fed to a shell, here or there, it is longer than the rules read: high risk. Text for a file is data.
+    const high = !!d && "ask" in d && d.ask.risk === "high";
+    if (high !== !/^(cat|python3|psql)/.test(lead)) slow.push(`${mode}: ${lead}: ${high ? "high risk" : "not high risk"}`);
   }
   expect(slow).toEqual([]);
 }, 120_000);

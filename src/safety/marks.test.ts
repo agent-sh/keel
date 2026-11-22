@@ -82,7 +82,7 @@ test("a command is marked for where it reaches: a path, a redirect, the folder i
   mkdirSync(jobs, { recursive: true });
   writeFileSync(join(jobs, "j1.json"), JSON.stringify({ id: "j1", call_id: "after-cd", cwd: "/srv/app" }));
   writeFileSync(join(jobs, "j2.json"), JSON.stringify({ id: "j2", call_id: "in-sub", cwd: join(ws, "packages/app") }));
-  const out = "outside: reaches outside the folder";
+  const out = "outside: reaches outside the folder", gone = "risk: destroys work or data";
   expect(table([
     sh("rm-out", "rm -rf /home/someone/projects/other"), sh("rm-up", "cd build\nrm -rf ../../*"), sh("cp-out", "cp notes.md ~/notes.md"), sh("cd-out", "cd /srv/app && make install"),
     sh("redirect", "echo x > /var/tmp/f"), sh("append", "date >> ~/log.txt"), sh("tee", "ls | tee /var/tmp/f"),
@@ -93,7 +93,8 @@ test("a command is marked for where it reaches: a path, a redirect, the folder i
     sh("rm-in", "rm -rf node_modules"), sh("cat-out", "cat /etc/hosts"), sh("null", "bun test > /dev/null"), sh("lines", "cd build\nls -la\ndu -sh ."),
     sh("redirect-in", "echo x > out.txt"), sh("in-sub", "rm -rf dist"), { id: "workdir-in", name: "exec_command", input: { cmd: "rm -rf dist", workdir: "packages/app" } },
     { id: "read-out", name: "exec_command", input: { cmd: "ls", workdir: "/srv/app" } },
-  ])).toEqual({ "rm-out": [out], "rm-up": [out], "cp-out": [out], "cd-out": [out], redirect: [out], append: [out], tee: [out], workdir: [out], "dir-path": [out], "after-cd": [out] });
+    // A delete that reaches outside is more than a reach: it is high risk, and marked as that (risk.ts).
+  ])).toEqual({ "rm-out": [gone], "rm-up": [gone], "cp-out": [out], "cd-out": [out], redirect: [out], append: [out], tee: [out], workdir: [gone], "dir-path": [gone], "after-cd": [gone] });
 });
 
 test("a tool known only by name, a tool run through the dispatcher and a command given as words are judged as the gate judges them", () => {
@@ -133,17 +134,20 @@ test("a file of the home folder that runs later is named for what it is, and its
 
 test("a standing rule is credited only when it stood before the call; a card the owner answered says how", () => {
   const { store, g, session, table } = scratch();
-  const rule = g.addRule(session, "shell", "npm publish", "always");
+  const rule = g.addRule(session, "shell", "npm pack", "always");
   const made = (at: number) => store.db.query("UPDATE perm_rules SET created = ? WHERE id = ?").run(at, rule.id);
   // The rule was made at 2000: a call at 1000 ran before it, a call at 3000 after.
   made(2000);
-  expect(table([sh("before", "npm publish")], {}, 1000)).toEqual({});
-  expect(table([sh("after", "npm publish"), sh("other", "npm run build")], {}, 3000)).toEqual({ after: ["rule: allowed by a rule"] });
+  expect(table([sh("before", "npm pack")], {}, 1000)).toEqual({});
+  expect(table([sh("after", "npm pack"), sh("other", "npm run build")], {}, 3000)).toEqual({ after: ["rule: allowed by a rule"] });
+  // A publish is high risk whatever rule names it (risk.ts): marked as that, never as a rule's.
+  g.addRule(session, "shell", "npm publish", "always");
+  expect(table([sh("out", "npm publish")], {}, Date.now() + 1000)).toEqual({ out: ["risk: changes another machine or a service"] });
   // Allowed on a card: that was the owner, not the rule. Denied: it says so.
   const row = (id: string, call_id: string, state: string) => store.db.query("INSERT INTO approvals (id, session_id, state, data, created) VALUES (?, ?, ?, ?, ?)").run(id, session.id, state, JSON.stringify({ id, call_id, state }), 1);
   row("a1", "allowed", "allowed");
   row("a2", "wipe", "denied");
-  expect(table([sh("allowed", "npm publish"), sh("wipe", "rm -rf build")], {}, 3000)).toEqual({ wipe: ["denied: denied by you"] });
+  expect(table([sh("allowed", "npm pack"), sh("wipe", "rm -rf build")], {}, 3000)).toEqual({ wipe: ["denied: denied by you"] });
 });
 
 test("a request's events are taken once each, at most a page of them, and only the session's own", () => {

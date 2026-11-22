@@ -261,7 +261,7 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
   if (gate) gate.requestHook = async (s, call, _name, ask) => {
     const c = calls.get(callKey(s.id, call.id));
     if (!c) return;
-    const r = await fire("PermissionRequest", s, () => ({ tool_name: c.name, tool_input: c.input, keel_risk: ask.risk, keel_reason: ask.why ?? null }), c.names);
+    const r = await fire("PermissionRequest", s, () => ({ tool_name: c.name, tool_input: c.input, keel_risk: ask.risk, keel_reason: ask.why ?? null, keel_rule: ask.rule ?? null }), c.names);
     if (r.block) return { deny: `A hook denied this request: ${r.block}` };
     if (r.allow !== undefined) return { allow: true };
   };

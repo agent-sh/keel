@@ -1,9 +1,11 @@
 // The permission decision for one tool call, from the session's mode and the
 // standing answers that apply. Pure: the gate supplies the facts.
 import { homedir } from "node:os";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { neverAllowed, neverAllowedText } from "./autonomy.ts";
-import { RULE_WORDS, risksOf } from "./risk.ts";
+import type { Looked } from "./looked.ts";
+import { RULE_WORDS, codeGiven, laid, risksOf } from "./risk.ts";
+import { name as baseName, untrailed, unwrap, type Run } from "./risk-words.ts";
 import { isReadOnly, matchRule, readForm, resolveVariables, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
 import { atCwd, contains } from "../core/paths.ts";
 import type { ToolKind } from "../tools/types.ts";
@@ -72,7 +74,9 @@ export type CallClass =
 // `rule`: the class of the rule that asks, in a few words (what a folded call is
 // marked with in the transcript); `why` is the sentence the approval card shows.
 // A high-risk command's class is one of five (risk.ts RULE_WORDS).
-export type Ask = { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; ownerOnly?: true; notice?: string };
+// `settles`: every reason it is high risk is one of git's own forms, which the full-auto rules can settle from
+// the repository's state before a judge is asked.
+export type Ask = { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; ownerOnly?: true; notice?: string; settles?: true };
 export type Decision =
   | { allow: true; why?: string }
   | { deny: string }
@@ -160,8 +164,9 @@ export function shellText(input: any): string | null {
 // harnesses, an editor's tasks, the folders commands and language servers are
 // found in, and the workflow files a CI host runs with the repository's
 // secrets at the next push (GitHub, GitLab, CircleCI, Azure, Bitbucket,
-// Buildkite, Jenkins, Forgejo, Gitea, Woodpecker, Drone, Travis and others).
-export const RUNS_LATER = /^(?:.*\/)?(?:\.git\/(?:hooks\/|config$)|\.envrc$|\.mcp\.json$|\.npmrc$|\.pypirc$|\.gitattributes$|\.gitmodules$|\.keel\/hooks\.json$|\.keel\/hooks\/|\.claude\/hooks\/|\.claude\/settings(?:\.local)?\.json$|\.codex\/config\.toml$|\.gemini\/settings\.json$|\.vscode\/(?:tasks|settings|launch)\.json$|\.husky\/|\.githooks\/|\.github\/(?:workflows|actions)\/|\.gitlab-ci\.yml$|\.gitlab\/ci\/|\.circleci\/|\.buildkite\/|\.forgejo\/workflows\/|\.gitea\/workflows\/|\.woodpecker(?:\.ya?ml$|\/)|\.drone\.ya?ml$|\.travis\.yml$|azure-pipelines\.ya?ml$|\.azure-pipelines\/|bitbucket-pipelines\.yml$|Jenkinsfile$|appveyor\.yml$|\.semaphore\/|\.teamcity\/|node_modules\/(?:\.bin|@typescript|typescript|typescript-language-server|pyright|basedpyright)\/|\.venv\/bin\/)/;
+// Buildkite, Jenkins, Forgejo, Gitea, Woodpecker, Drone, Travis, Cirrus, Tekton, Cloud Build, CodeBuild and others),
+// and the hook runners' own files (pre-commit, lefthook).
+export const RUNS_LATER = /^(?:.*\/)?(?:\.git\/(?:hooks\/|config$)|\.envrc$|\.mcp\.json$|\.npmrc$|\.pypirc$|\.gitattributes$|\.gitmodules$|\.keel\/hooks\.json$|\.keel\/hooks\/|\.claude\/hooks\/|\.claude\/settings(?:\.local)?\.json$|\.codex\/config\.toml$|\.gemini\/settings\.json$|\.vscode\/(?:tasks|settings|launch)\.json$|\.husky\/|\.githooks\/|\.github\/(?:workflows|actions)\/|\.gitlab-ci\.ya?ml$|\.gitlab\/ci\/|\.circleci\/|\.buildkite\/|\.forgejo\/workflows\/|\.gitea\/workflows\/|\.woodpecker(?:\.ya?ml$|\/)|\.drone\.ya?ml$|\.travis\.yml$|azure-pipelines\.ya?ml$|\.azure-pipelines\/|bitbucket-pipelines\.yml$|Jenkinsfile(?:\.[\w.-]+)?$|\.pre-commit-config\.ya?ml$|lefthook(?:-local)?\.ya?ml$|\.lefthook\.ya?ml$|cloudbuild\.ya?ml$|buildspec\.ya?ml$|\.cirrus\.ya?ml$|\.tekton\/|appveyor\.yml$|\.semaphore\/|\.teamcity\/|node_modules\/(?:\.bin|@typescript|typescript|typescript-language-server|pyright|basedpyright)\/|\.venv\/bin\/)/;
 
 // Files whose words can name a program a language server loads or runs
 // (src/lsp/servers.ts): a plugin in a TypeScript project file, the
@@ -271,19 +276,74 @@ function spelled(w: string, cwd: string, home: string): string | null {
 // the session's own): the forms that need no trick, so that a grant, the
 // reviewer or the judge does not answer for a start file in passing.
 const LAST_ARG = new Set(["cp", "install", "ln", "rsync", "scp"]);
-const EACH_ARG = new Set(["tee", "mv", "rm", "truncate", "shred"]);
-export function writesOf(p: Simple): string[] {
+const EACH_ARG = new Set(["tee", "mv", "rm", "truncate", "shred", "sponge", "yq", "patch"]);
+// The programs looked for anywhere among the words, as they always were, and the ones read only where the program stands.
+const WRITERS = /^(?:.*\/)?(?:cp|install|ln|rsync|scp|tee|mv|rm|truncate|shred|sed|dd)$/;
+const WRITER_NAMES = new Set(["cp", "install", "ln", "rsync", "scp", "tee", "mv", "rm", "truncate", "shred", "sed", "dd"]);
+const WRITERS_FIRST = /^(?:curl|wget|git|yq|perl|sponge|patch|chmod|chown|chgrp)$/;
+// `run`: the command the part runs, when the caller has worked it out already.
+export function writesOf(p: Simple, run?: Run): string[] {
   const out: string[] = [];
   if (p.redirects) for (const m of p.text.matchAll(/(?:&>>?|>>|>\||>)\s*("[^"]*"|'[^']*'|[^\s;|&<>()]+)/g)) out.push(m[1]!);
-  const i = p.words.findIndex((w) => /^(?:.*\/)?(?:cp|install|ln|rsync|scp|tee|mv|rm|truncate|shred|sed|dd)$/.test(w));
+  let i = p.words.findIndex((w) => WRITERS.test(w));
+  if (i < 0) { run ??= unwrap(p.words); if (WRITERS_FIRST.test((run.words[0] ?? "").replace(/^.*\//, ""))) i = run.at; }
   if (i < 0) return out;
   const name = p.words[i]!.replace(/^.*\//, ""), rest = p.words.slice(i + 1), args = rest.filter((a) => !a.startsWith("-"));
   if (LAST_ARG.has(name)) out.push(...args.slice(-1));
+  else if (name === "yq" || name === "perl") { if (rest.some((a) => /^-[a-zA-Z0-9]*i/.test(a) || a === "--inplace")) out.push(...args.slice(name === "perl" && !rest.some((a) => /^-[a-zA-Z0-9]*e/.test(a)) ? 0 : 1)); }
   else if (EACH_ARG.has(name)) out.push(...args);
+  // What a change of modes or ownership names, past the mode or the owner.
+  else if (name === "chmod" || name === "chown" || name === "chgrp") out.push(...args.slice(1));
   else if (name === "sed") { if (rest.some((a) => /^(?:-[a-zA-Z]*i|--in-place)/.test(a))) out.push(...args); }
-  else for (const a of rest) if (a.startsWith("of=")) out.push(a.slice(3));
+  else if (name === "curl" || name === "wget") {
+    // The file a download is written to: -o FILE, also at the end of a cluster (-sLo FILE), and --output=FILE.
+    rest.forEach((a, k) => {
+      if (/^(--output|--output-document|-[a-zA-Z]*[oO])$/.test(a) && rest[k + 1] !== undefined && !(name === "curl" && /O$/.test(a))) out.push(rest[k + 1]!);
+      else if (/^--(output|output-document)=/.test(a)) out.push(a.slice(a.indexOf("=") + 1));
+    });
+  } else if (name === "git") {
+    // The paths git writes from a commit: checkout and restore of pathspecs, and a rename's new name.
+    const sub = args[0], dd = rest.indexOf("--");
+    const named = rest.slice(rest.indexOf(sub!) + 1).filter((a, k, all) => !a.startsWith("-") && !/^(-s|--source|-b|-B)$/.test(all[k - 1] ?? ""));
+    if (sub === "checkout") out.push(...(dd >= 0 ? rest.slice(dd + 1) : named.length >= 2 ? named.slice(1) : []));
+    else if (sub === "restore") out.push(...named);
+    else if (sub === "mv") out.push(...named.slice(-1));
+  } else for (const a of rest) if (a.startsWith("of=")) out.push(a.slice(3));
   return out;
 }
+// The folders a command part puts files into under names of their own: where a copy, a move or a sync lands, and
+// where an archive is unpacked.
+function writesInto(run: string[]): string[] {
+  const name = (run[0] ?? "").replace(/^.*\//, "");
+  if (!/^(cp|install|mv|rsync|scp|ln|tar|bsdtar|unzip)$/.test(name)) return [];
+  const rest = run.slice(1), args = rest.filter((a) => !a.startsWith("-"));
+  if (name === "tar" || name === "bsdtar") { const k = rest.findIndex((a) => a === "-C" || a === "--directory"); return k >= 0 && rest[k + 1] ? [rest[k + 1]!] : rest.filter((a) => a.startsWith("--directory=")).map((a) => a.slice(12)); }
+  if (name === "unzip") { const k = rest.indexOf("-d"); return k >= 0 && rest[k + 1] ? [rest[k + 1]!] : []; }
+  return args.length >= 2 ? args.slice(-1) : [];
+}
+// A patch a command part applies, or an archive it unpacks, with the folder its files land in (relative to where
+// the part runs). `file` is not given when it reads the patch or the archive from another command.
+function applied(p: Simple, run: string[]): { kind: "patch" | "archive"; file?: string; into: string } | null {
+  const name = (run[0] ?? "").replace(/^.*\//, "");
+  if (!/^(git|patch|tar|bsdtar|unzip)$/.test(name)) return null;
+  const rest = run.slice(1), args = rest.filter((a) => !a.startsWith("-"));
+  if (name === "git") {
+    if (args[0] !== "apply" && args[0] !== "am") return null;
+    if (rest.some((a) => /^--(stat|numstat|summary|check)$/.test(a)) && !rest.includes("--apply")) return null;
+    return { kind: "patch", file: args[1], into: "." };
+  }
+  if (name === "patch") { const k = rest.findIndex((a) => a === "-i" || a === "--input"); const d = rest.findIndex((a) => a === "-d" || a === "--directory"); return { kind: "patch", file: k >= 0 ? rest[k + 1] : p.inputs?.[0], into: d >= 0 ? rest[d + 1] ?? "." : "." }; }
+  if (name === "unzip") { if (rest.some((a) => /^-[a-zA-Z]*[lZtvp]/.test(a))) return null; const k = rest.indexOf("-d"); return { kind: "archive", file: args[0], into: k >= 0 ? rest[k + 1] ?? "." : "." }; }
+  // tar: x, in its first word of letters or as an option; the archive after f.
+  if (!(/^-?[a-zA-Z]*x/.test(rest[0] ?? "") || rest.some((a) => a === "--extract" || a === "--get" || /^-[a-zA-Z]*x/.test(a)))) return null;
+  const f = rest.findIndex((a, k) => (k === 0 && /^[a-zA-Z]*f$/.test(a)) || /^-[a-zA-Z]*f$/.test(a) || a === "--file");
+  const c = rest.findIndex((a) => a === "-C" || a === "--directory");
+  const file = f >= 0 ? rest[f + 1] : rest.find((a) => a.startsWith("--file="))?.slice(7);
+  return { kind: "archive", file: file === "-" ? undefined : file, into: c >= 0 ? rest[c + 1] ?? "." : rest.find((a) => a.startsWith("--directory="))?.slice(12) ?? "." };
+}
+const LANDS = new Set(["cp", "install", "mv", "rsync", "scp", "ln", "tar", "bsdtar", "unzip", "git", "patch", "node", "nodejs", "bun", "deno", "perl", "ruby", "php"]);
+// A folder that holds folders of files that run later: something moved or copied under its name brings them.
+const HOLDS_RUNS_LATER = /(^|\/)\.(github|gitlab|circleci|buildkite|forgejo|gitea|woodpecker|tekton|husky|githooks|keel|claude|codex|gemini|vscode|azure-pipelines|semaphore|teamcity|git)$/;
 
 // The strings of a tool's input that are a path by themselves (an MCP file
 // server's `path`), for a tool whose input the gate cannot read otherwise.
@@ -313,9 +373,10 @@ export const ownPath = (p: string, f: Pick<Facts, "workspace" | "scratch">) => (
 export type Facts = {
   mode: Mode; workspace: string; sandboxed: boolean; rules: Rule[]; tool: string; bind?: string; scratch?: string[]; home?: string; config?: string[]; bins?: string[];
   own?: () => { home: string; config: string[]; bins?: string[]; land: (p: string) => string[] };
-  // How many files git does not ignore the pathspecs cover (risk.ts Where.kept): asked of git by the gate before it
-  // decides. Without it a recursive delete inside the folder is judged by the names of what it deletes.
-  kept?: (specs: string[]) => number | null;
+  // What this machine's disk says, asked by the gate before it decides (looked.ts): what git cannot bring back
+  // under a path, whether a path is there, the files a patch or an archive writes. Without it a delete inside the
+  // folder is judged by names, and a patch or an archive is not read.
+  looked?: Looked;
   // Whether a program's name on this machine is the program itself and not a version manager's shim (shims.ts):
   // looked up by the gate before it decides, so this only reads the answer. Without it the reading forms of such
   // programs (node --version) are not reads.
@@ -349,8 +410,13 @@ export function decide(c: CallClass, f: Facts): Decision {
   if (c.kind === "refused") return { deny: c.why };
   if (c.kind === "drive") return decideDrive(c, f);
   if (c.kind === "edit") {
-    if (f.mode === "full-auto") return { allow: true };
     if (f.mode === "read-only") return { deny: "This session is read-only: files cannot be changed. Say what you would change instead." };
+    // Full auto runs an edit unreviewed, but not one of a file that runs later (a hook, a CI workflow, a shell's
+    // start file, Keel's own configuration): that one is high risk and goes to its judge.
+    if (f.mode === "full-auto") {
+      for (const p of c.paths) { const o = ownerOnlyEdit(p, f); if (o) return { ask: { risk: "high", why: o.why, rule: o.rule, suggest: [] } }; }
+      return { allow: true };
+    }
     // A file something runs or reads its configuration from later (git hooks,
     // direnv, the project's hook and MCP files, Keel's own config, a shell's
     // start file, the login keys): the owner's call, one at a time. No grant,
@@ -396,22 +462,71 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
     return { ask: { risk: "high", why: "the command could not be parsed, so no rule can cover it", rule: "could not be parsed", suggest: [] } };
   }
   // A command whose plain shape writes a file that is the owner's alone to
-  // change (`echo x >> ~/.bashrc`, a cp into Keel's config): the owner's call,
-  // before any grant, the sandbox's allowance, the reviewer or the judge.
-  // (Full auto runs it as it runs such an edit; Read only refuses it below.)
-  if (f.mode !== "read-only" && f.mode !== "full-auto") for (const part of parts) if (interpreter !== undefined || !isReadOnly(part)) for (const w of writesOf(part)) {
-    const o = ownerOnlyNamed(w, cwd, f, "writes");
-    if (o) return onlyOwner(`the command: ${o.why}`, o.rule);
+  // change (`echo x >> ~/.bashrc`, a cp into Keel's config, a write into a CI
+  // workflow folder): the owner's call, before any grant, the sandbox's
+  // allowance, the reviewer or the judge. In Full auto, where nothing waits
+  // for the owner, it is high risk and goes to the judge. (Read only refuses
+  // it below.) Each part is read in the folder a `cd` before it leaves it in.
+  // (Each part's command and folder, worked out once for this and for the risk classes.)
+  const pre = laid(parts, cwd, home);
+  if (f.mode !== "read-only") {
+    const owners = (o: OwnerOnly): Decision => (f.mode === "full-auto" ? { ask: { risk: "high", why: `the command: ${o.why}`, rule: o.rule, suggest: [] } } : onlyOwner(`the command: ${o.why}`, o.rule));
+    const unread = (what: string): Decision => ({ ask: { risk: "high", why: `the command ${what}: it can put files where they run later`, rule: RULE_WORDS.hidden, suggest: [] } });
+    const asked = new Map<string, OwnerOnly | null>();
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i]!;
+      if (part.heredoc) continue;
+      const run = pre.runs[i]!;
+      // (Most parts redirect nothing and are none of the programs read here: they are passed before anything is asked of them.)
+      const first = baseName(run.words[0]), lands = LANDS.has(first) || first.startsWith("python");
+      if (!lands && !part.redirects && !WRITERS_FIRST.test(first) && !part.words.some((w) => WRITER_NAMES.has(baseName(w)))) continue;
+      if (interpreter === undefined && isReadOnly(part)) continue;
+      // A folder the rules cannot follow: only what is written out from the root or the home is read.
+      const at = pre.dirs[i] ?? null;
+      // (A path the line names again in the same folder is asked about once.)
+      const here = (w: string) => {
+        const key = `${at}\0${w}`;
+        let o = asked.get(key);
+        if (o === undefined) asked.set(key, (o = at !== null || /^(["']?)(\/|~|\$HOME|\$\{HOME\})/.test(w) ? ownerOnlyNamed(w, at ?? "/", f, "writes") : null));
+        return o;
+      };
+      for (const w of writesOf(part, run)) { const o = here(w); if (o) return owners(o); }
+      // (The rest reads only the programs that copy into a folder, apply a patch, unpack an archive or are handed code.)
+      if (!lands) continue;
+      for (const d of writesInto(run.words)) {
+        const o = here(join(d, "_")) ?? (HOLDS_RUNS_LATER.test(untrailed(d)) && at !== null ? { rule: "runs later, outside the sandbox", why: `it writes into ${d}, where files that run or configure things later are kept` } : null);
+        if (o) return owners(o);
+      }
+      // A patch or an archive: the files it writes are read from it, off the loop, before the decision.
+      const a = applied(part, run.words);
+      // (Only where its files can land in the session's folder or the home: elsewhere nothing of theirs runs later.)
+      const into = a && at !== null ? spelled(a.into, at, home) : null;
+      if (a && f.looked && into && (contains(f.workspace, into) || contains(home, into))) {
+        const what = a.kind === "patch" ? "applies a patch" : "unpacks an archive";
+        const file = a.file === undefined || /[$`*?]/.test(a.file) ? null : isAbsolute(a.file) ? a.file : resolve(at!, a.file);
+        // One that is not there unpacks nothing; one that is there and cannot be read is not known.
+        const files = file === null ? null : f.looked.exists(file) === "none" ? [] : f.looked.targets(a.kind, file);
+        if (!files) return unread(`${what} the rules could not read${a.file ? ` (${a.file})` : ""}`);
+        for (const t of files) { const o = ownerOnlyNamed(join(a.into, t), at!, f, "writes"); if (o) return owners(o); }
+      }
+      // Code given to an interpreter that names such a file in its text.
+      const code = codeGiven(run);
+      if (code) for (const m of code.matchAll(/["']([^"'\s]{3,300})["']/g)) { const o = /[\/.]/.test(m[1]!) ? here(m[1]!) : null; if (o) return owners(o); }
+    }
   }
-  const risks = risksOf(parts, { cwd, home, workspace: f.workspace, scratch: f.scratch, kept: f.kept, land: f.own && ((p) => f.own!().land(p)) });
+  const risks = risksOf(parts, { cwd, home, workspace: f.workspace, scratch: f.scratch, looked: f.looked, sandboxed: f.sandboxed, land: f.own && ((p) => f.own!().land(p)) }, pre);
+  const shellRules = f.rules.filter((r) => r.kind === "shell");
   if (risks.length) {
     if (f.mode === "read-only") return { deny: `This session is read-only, and the command ${risks[0]!.why}.` };
-    // (The rule is the first reason's class in its few words; a line of several classes says how many more.)
-    const classes = [...new Set(risks.map((r) => r.rule))];
-    return { ask: { risk: "high", why: `the command ${risks.map((r) => r.why).join(" and ")}`, rule: classes.length > 1 ? `${RULE_WORDS[classes[0]!]}, and ${classes.length - 1} more` : RULE_WORDS[classes[0]!], suggest: [] } };
+    // (The rule is the first reason in a few words: its own when it is that short, else its class's. A line of
+    // several says how many more.)
+    const classes = [...new Set(risks.map((r) => (r.said ? r.why : RULE_WORDS[r.rule])))];
+    // A standing rule of the owner's that names this command does not cover it, and the card says so.
+    const stands = shellRules.find((r) => parts.some((p) => !p.heredoc && p.words.length && matchRule(r.pattern, p)));
+    return { ask: { risk: "high", why: `the command ${risks.map((r) => r.why).join(" and ")}`, rule: classes.length > 1 ? `${classes[0]}, and ${classes.length - 1} more` : classes[0], suggest: [],
+      ...(risks.every((r) => r.git) ? { settles: true as const } : {}), ...(stands ? { notice: `Your rule "${stands.pattern}" does not cover this one: it ${risks[0]!.why}.` } : {}) } };
   }
   if (f.mode === "full-auto") return { allow: true };
-  const shellRules = f.rules.filter((r) => r.kind === "shell");
   // A variable the line's first words give a value is read as that value.
   const reads = (p: Simple) => { if (isReadOnly(p)) return true; const program = f.real && shimmedRead(p); return !!program && f.real!(program); };
   const open = resolveVariables(parts).filter((p) => (interpreter !== undefined || !reads(p)) && !shellRules.some((r) => matchRule(r.pattern, p)));
@@ -429,7 +544,10 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
   }
   if ((f.mode === "auto-edits" || f.mode === "auto") && f.sandboxed) return { allow: true, why: "sandboxed" };
   // A part with no command word (a redirect after a group, a loop or nothing) has no rule to suggest.
-  const suggest = [...new Set(open.filter((p) => p.words.length).map(suggestRule))].slice(0, 5).map((pattern) => ({ kind: "shell" as const, pattern }));
+  // (The first five different ones: a line of thousands of parts is not read past them.)
+  const patterns = new Set<string>();
+  for (const p of open) { if (p.words.length) patterns.add(suggestRule(p)); if (patterns.size >= 5) break; }
+  const suggest = [...patterns].map((pattern) => ({ kind: "shell" as const, pattern }));
   // One command asks, and only for its expansion: the card says the form that runs without asking.
   const notice = form && open.length === 1 ? `It reads, but one of its arguments comes from an expansion, which could add an option that writes. To run without asking: ${form}.` : undefined;
   return { ask: { risk: "low", suggest, ...(notice ? { notice } : {}) } };

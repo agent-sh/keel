@@ -321,6 +321,8 @@ test("PermissionRequest, PermissionDenied", async () => {
   const high = (engine as any).runTool(s, [bash], { type: "tool_use", id: "high", name: "Bash", input: { command: "sudo rm -rf /var/lib/w-allow" } }, { sessionId: s.id, cwd: ws, signal: stop.signal, spillDir: dir, seen: new Map() });
   for (let i = 0; i < 300 && !gate.approvals({ session: s.id, pending: true }).length; i++) await Bun.sleep(10);
   expect(gate.approvals({ session: s.id, pending: true })[0]).toMatchObject({ risk: "high" });
+  // The hook is told the risk, the reason and the rule's few words, as the card says them.
+  expect((await given("PermissionRequest", 5)).find((x) => x.tool_input.command.startsWith("sudo rm"))).toMatchObject({ keel_risk: "high", keel_rule: expect.stringMatching(/^runs as root/), keel_reason: expect.stringContaining("runs as root") });
   stop.abort();
   await high;
   // The judge refuses a call without the owner: the hook is told why.
