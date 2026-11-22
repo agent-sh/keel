@@ -618,7 +618,7 @@ test("repeat parks of one agent wake the parent once and then ride its next inpu
   const resume = (w: waits.WaitRecord) => { waits.cancel(w.id); agents.onTurnStart(a.session_id); };
   const w1 = park();
   expect(p.to()).toHaveLength(1);
-  expect(p.to()[0]).toContain(`Agent ${a.id} parked on timer wait ${w1.id}`);
+  expect(p.to()[0]).toMatch(new RegExp(`^\\[harness\\] Agent "[^"]+" \\(${a.id}\\) is parked on timer wait ${w1.id}, due in 1 min \\(at \\d\\d:\\d\\d\\)\\. It has not finished; its report comes when it does\\.$`));
   resume(w1);
   resume(park());
   const w3 = park();
@@ -632,7 +632,7 @@ test("repeat parks of one agent wake the parent once and then ride its next inpu
   expect(p.to()).toHaveLength(2);
   expect(p.to()[1]).toContain("report of B");
   expect(p.to()[1]!.split("parked on").length - 1).toBe(1);
-  expect(p.to()[1]).toContain(`Agent ${a.id} parked on timer wait ${w3.id}`);
+  expect(p.to()[1]).toContain(`(${a.id}) is parked on timer wait ${w3.id}`);
   // It parks again, then finishes: only the report goes, and it starts a turn.
   resume(w3);
   resume(park());
@@ -659,7 +659,7 @@ test("repeat parks of one agent wake the parent once and then ride its next inpu
   agents.onTurnEnd(p.id, "end_turn");
   flush(p.id);
   expect(p.to()).toHaveLength(5);
-  expect(p.to()[4]).toContain(`Agent ${c.id} parked on timer wait ${w6.id}`);
+  expect(p.to()[4]).toContain(`(${c.id}) is parked on timer wait ${w6.id}`);
   resume(w5);
   end(a, "end_turn", "second of A");
   await settled();
@@ -818,7 +818,8 @@ test("a report is said once: an earlier round a later one repeats is left out, a
     store.append(a.session_id, "user", { text: "[harness] go on", kind: "harness" });
   };
   const report = "The parser has three bugs:\n1. off by one\n2. a missed quote\n3. no end of file check";
-  const result = async (a: agents.AgentRecord) => { await settled(); return agents.get(a.id)!.result!; };
+  // Its words: the line of what it did, which follows them, is looked at once below.
+  const result = async (a: agents.AgentRecord) => { await settled(); return agents.get(a.id)!.result!.replace(/\n\n\(What it did: .*\.\)$/, ""); };
   const count = (text: string, part: string) => text.split(part).length - 1;
 
   // Cut before its answer, then the report, the same report again, and a final one that holds it.
@@ -834,6 +835,8 @@ test("a report is said once: an earlier round a later one repeats is left out, a
   expect(count(got, "Earlier reports, oldest first:")).toBe(1);
   // What it wrote before the tool call the restart cut is in no later round: it is all there.
   expect(got.endsWith(`Earlier reports, oldest first:\n\n(No final answer. Before its last tool call it wrote:)\n${thinking}`)).toBe(true);
+  // After its words, what it did (report-did.ts).
+  expect(agents.get(a.id)!.result!.endsWith(`${thinking}\n\n(What it did: 4 steps, 1 tool call.)`)).toBe(true);
 
   // Findings written before a tool call (save the report), the turn cut, and a short last word: the findings are whole.
   const findings = `Findings:\n${Array.from({ length: 40 }, (_, i) => `${i + 1}. parse.ts:${i * 7 + 3} drops the token after a quote`).join("\n")}`;

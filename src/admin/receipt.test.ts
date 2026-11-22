@@ -51,7 +51,7 @@ test("a turn with no end keeps its own inputs and leaves the next turn's opener 
       { event_id: first.id, origin: "owner", queue_id: null },
       { event_id: steer.id, origin: "steer", queue_id: null },
     ]);
-    expect(receipt.tools).toEqual([{ result_event_id: result.id, span_id: null, status: "ok" }]);
+    expect(receipt.tools).toEqual([{ result_event_id: result.id, span_id: null, status: "ok", name: null }]);
     expect(receipt.end).toBeNull();
     expect(JSON.stringify(receipt)).not.toContain("marker");
     expect(turnReceipt(t.store, t.tracer, later.id)).toMatchObject({
@@ -94,6 +94,40 @@ test("a long turn is followed to its end without parsing the session", () => {
     expect(receipt.end).toMatchObject({ event_id: end.id, reason: "max_steps" });
     // The store's parsed copy of the session was not made for it.
     expect((t.store as any).kept.get(t.s.id)).toBeUndefined();
+  } finally {
+    t.close();
+  }
+});
+
+test("a failed call is named by its tool, with the exit code a shell result gives and no word of its output", () => {
+  const t = setup();
+  try {
+    t.add("user", { text: "go" });
+    const start = t.add("turn_start");
+    t.span(start.id, "turn", {});
+    t.add("assistant", { blocks: [] });
+    const results = [
+      { tool_use_id: "c1", content: "ok-one" },
+      { tool_use_id: "c2", content: "Exit code 4\nfatal: output-marker", is_error: true },
+      { tool_use_id: "c3", content: "File does not exist: /path-marker", is_error: true },
+      { tool_use_id: "c4", content: "No tool named NoSuchTool.", is_error: true },
+      { tool_use_id: "c5", content: "Denied by the owner: reason-marker", is_error: true },
+    ];
+    const names = ["Bash", "Bash", "Read", "NoSuchTool"];
+    const spans = names.map((tool, i) => Object.assign(t.span(start.id, "tool", { tool, call_id: `c${i + 1}` }), { status: i ? "error" : "ok" }));
+    const result = t.add("tool_result", { results });
+    t.add("turn_end", { reason: "end_turn" });
+    const receipt = turnReceipt(t.store, t.tracer, start.id)!;
+    // It read "3 failed: call 1, call 2, call 3" where call 1 had passed.
+    expect(receipt.tools).toEqual([
+      { result_event_id: result.id, span_id: spans[0]!.span_id, status: "ok", name: "Bash" },
+      { result_event_id: result.id, span_id: spans[1]!.span_id, status: "error", name: "Bash", exit: 4 },
+      { result_event_id: result.id, span_id: spans[2]!.span_id, status: "error", name: "Read" },
+      { result_event_id: result.id, span_id: spans[3]!.span_id, status: "error", name: "NoSuchTool", unknown: true },
+      // A call a gate denied never ran: it has no span, and so no name.
+      { result_event_id: result.id, span_id: null, status: "error", name: null },
+    ]);
+    expect(JSON.stringify(receipt)).not.toContain("marker");
   } finally {
     t.close();
   }

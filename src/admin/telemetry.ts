@@ -2,6 +2,7 @@
 // tokens, cost, outcome) and one per tool call that ran (duration, failure).
 // Nothing leaves the machine. Rows are small and kept; a deleted session's
 // rows stay so the totals over time do not change.
+import { reasonLine } from "./reason.ts";
 import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
 import { SessionMap } from "../core/session-map.ts";
@@ -565,10 +566,7 @@ export function breakCause(b: { gapMs: number; lifeMs?: number | null; modelChan
   return b.diff ? "provider_miss" : "prefix_changed";
 }
 
-// One line of a failed result, at most 140 characters.
-function excerpt(content: unknown): string {
-  const text = typeof content === "string" ? content : Array.isArray(content) ? content.map((b: any) => (b.type === "text" ? b.text : "")).join(" ") : "";
-  const line = text.split("\n").map((l) => l.trim()).find(Boolean) ?? "";
-  return line.length > 140 ? line.slice(0, 139) + "..." : line;
-}
+// One line of a failed result, at most 140 characters: a shell failure's last
+// line that says something, any other's first (src/admin/reason.ts).
+const excerpt = (content: unknown): string => reasonLine(content, 140);
 type ToolRow = { ts: number; tool: string; ms: number | null; is_error: number };

@@ -2,7 +2,8 @@
 // debug bundle, the receipt never returns event data or span attrs wholesale.
 import type { Store } from "../core/store.ts";
 import type { StoredEvent } from "../core/types.ts";
-import { isStopResult } from "../engine/turn.ts";
+import { isNoSuchTool, isStopResult } from "../engine/turn.ts";
+import { exitOf } from "./reason.ts";
 import { traceIdOf, turnSpanId, type SpanStatus, type Tracer } from "./trace.ts";
 
 const origins = new Set(["owner", "queued", "steer", "harness", "restart", "voice", "hook", "momentum",
@@ -17,7 +18,12 @@ const input = (e: StoredEvent) => {
   return { event_id: e.id, origin: label(d?.origin ?? d?.kind ?? "owner", origins), queue_id: id(d?.queue_id) };
 };
 
-type ToolReceipt = { result_event_id: string | null; span_id: string | null; status: SpanStatus };
+// `name`: the tool the call named (from its span: a call that never ran has
+// none). `exit`: the exit code a failed shell result names. `unknown`: the
+// call named a tool the session does not have. So a failed call reads "Bash
+// (exit 4)" or "Read", not "call 2".
+type ToolReceipt = { result_event_id: string | null; span_id: string | null; status: SpanStatus; name: string | null; exit?: number; unknown?: true };
+const toolName = (v: unknown) => (typeof v === "string" && v.length <= 120 ? v : null);
 // An event's place in the tree, without its data.
 type Node = { id: string; parent: string | null; kind: string; seq: number };
 // Rows a read: most turns end within one.
@@ -86,11 +92,13 @@ export function turnReceipt(store: Store, tracer: Tracer, turnEvent: string) {
       const span = dispatched.get(r?.tool_use_id);
       dispatched.delete(r?.tool_use_id);
       // A call with no span that the turn's stop or a restart reached was stopped, not failed.
-      tools.push({ result_event_id: e.id, span_id: span?.span_id ?? null, status: span?.status ?? (r?.is_error === true ? (isStopResult(r.content) ? "interrupted" : "error") : "ok") });
+      const status = span?.status ?? (r?.is_error === true ? (isStopResult(r.content) ? "interrupted" : "error") : "ok");
+      const exit = status === "error" ? exitOf(r?.content) : undefined;
+      tools.push({ result_event_id: e.id, span_id: span?.span_id ?? null, status, name: toolName(span?.attrs.tool), ...(exit !== undefined ? { exit } : {}), ...(status === "error" && isNoSuchTool(r?.content) ? { unknown: true as const } : {}) });
     }
   }
   // Nested tools and parked calls can have a span but no result event.
-  for (const span of dispatched.values()) tools.push({ result_event_id: null, span_id: span.span_id, status: span.status });
+  for (const span of dispatched.values()) tools.push({ result_event_id: null, span_id: span.span_id, status: span.status, name: toolName(span.attrs.tool) });
   return {
     session_id: sid, turn_event: start.id, start_ms: start.ts,
     trace_id: turn?.trace_id ?? null, span_id: turn?.span_id ?? null,

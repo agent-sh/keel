@@ -595,7 +595,7 @@ function TurnReceipt({ turn, sessionId, facts, onRead }: { turn: string; session
           {r.tools.length ? (
             <>
               {count(r.tools.length, "tool call")}
-              {failedTools.length > 0 && <>, {failedTools.length} failed: {commas(failedTools.map((x, n) => span(x.span_id, `call ${n + 1}`, "receipt-failed-tool")))}</>}
+              {failedTools.length > 0 && <>, {failedTools.length} failed: {commas(failedTools.map((x, n) => span(x.span_id, x.name ? `${x.name}${x.exit !== undefined ? ` (exit ${x.exit})` : x.unknown ? " (no such tool)" : ""}` : `call ${n + 1}`, "receipt-failed-tool")))}</>}
               {neverRan > 0 && (
                 <span className="text-muted" data-testid="receipt-not-run">
                   {failedTools.length

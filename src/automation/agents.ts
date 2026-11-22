@@ -2,6 +2,9 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { lineage } from "../core/tree.ts";
+import { localTime } from "../core/clock.ts";
+import { dur } from "../admin/timeline-rows.ts";
+import { didLine } from "./report-did.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
 import { D, attr, capture, deliver, dropPending, emit, hasPending, inert, isPending, stillRunning, takeRiding, withdraw } from "./core.ts";
 import * as perm from "../server/routes/permissions.ts";
@@ -987,9 +990,13 @@ function parkNow(a: AgentRecord): { text: string; meta: Record<string, unknown> 
   if (!child || child.archived || get(a.id)?.status !== "waiting" || D().engine.isRunning(a.session_id)) return undefined;
   const on = waits.describeActive(a.session_id);
   if (!on) return undefined;
+  // A timer says when it is due: the first of them, as a span from now and as a time of day (the note is read later too).
+  const due = D().store.db.query<{ spec: string }, [string]>("SELECT spec FROM waits WHERE status = 'active' AND session_id = ? AND kind = 'timer'").all(a.session_id)
+    .map((w) => { try { return Number(JSON.parse(w.spec).at_ms) || 0; } catch { return 0; } }).filter(Boolean).sort((x, y) => x - y)[0];
+  const when = due ? `, due ${due > Date.now() ? `in ${dur(due - Date.now())}` : "now"} (at ${localTime(due).slice(0, 5)})` : "";
   return {
-    text: `[harness] Agent ${a.id} parked on ${on}. It has not finished; its report will arrive after it finishes.`,
-    meta: { kind: "harness", agent_id: a.id, status: "waiting", waiting_on: on },
+    text: `[harness] Agent ${attr(a.title) ? `"${attr(a.title)}" ` : ""}(${a.id}) is parked on ${on}${when}. It has not finished; its report comes when it does.`,
+    meta: { kind: "harness", agent_id: a.id, status: "waiting", waiting_on: on, title: a.title, ...(due ? { until: due } : {}) },
   };
 }
 
@@ -1087,6 +1094,9 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
       result = `The report never matched its schema (${why}). Its last answer:\n${text}`;
     }
   }
+  // What it did goes with its words: steps, calls, which tools failed, files edited (report-did.ts).
+  // A report read as a JSON value by its schema stays the value alone.
+  const did = row.output_schema && status === "completed" ? "" : didLine(D().store.events(a.session_id, a.first_seq));
   // Work it left behind is its own to report (an emptied worktree's note is not).
   const work = a.machine ? (remote ? await remote.finished(a) : "") : a.worktree ? await worktreeNote(a) : "";
   result += work;
@@ -1102,7 +1112,7 @@ async function finish(a: AgentRecord, status: AgentStatus, how: { stopped_by: St
   let grouped = false;
   const rec = D().store.db.transaction(() => {
     if (status === "failed") grouped = failures.agentFailed({ ...a, report: reportId(a) }, cls, cause || got.error || how.note || result, !!cause && !blocked);
-    return update(a.id, { status, ended: Date.now(), result, handback: !blocked && !grouped, stopped_by: how.stopped_by ?? undefined, end_reason: how.end_reason }, true)!;
+    return update(a.id, { status, ended: Date.now(), result: did ? `${result}${result ? "\n\n" : ""}${did}` : result, handback: !blocked && !grouped, stopped_by: how.stopped_by ?? undefined, end_reason: how.end_reason }, true)!;
   })();
   emit("agent", rec);
   const said = status === "completed" ? "reported" : status === "stopped" && how.stopped_by ? `stopped: ${STOP_TEXT[how.stopped_by]}` : status === "incomplete" ? `did not finish: ${END_TEXT[how.end_reason] ?? how.end_reason}` : status;

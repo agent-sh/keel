@@ -78,6 +78,10 @@ export function restartText(cut: number, owed: number, unstarted = false): strin
   return `[harness] The daemon restarted during your previous turn${parts.length ? `; ${parts.join("; ")}` : ""}. Continue where it left off.`;
 }
 
+// What a call that names a tool the session does not have is answered with.
+export const noSuchTool = (name: string) => `No tool named ${name}.`;
+export const isNoSuchTool = (content: unknown) => typeof content === "string" && /^No tool named .+\.$/.test(content);
+
 // What the model is told about a tool call cut by the output limit.
 export const CUT_CALL = "Not run: this call was cut at the output limit, so its input may be incomplete. Send it again whole if it is still needed.";
 
@@ -1763,7 +1767,14 @@ export class Engine {
     if (ctx.signal.aborted) return interrupted();
     const tool = tools.find((t) => t.name === u.name);
     // A tool an upgrade took away while the session ran says so: the model called it before.
-    if (!tool) return { type: "tool_result", tool_use_id: u.id, content: this.pins.removed(session.id, u.name) ? `${u.name} was removed by an upgrade of Keel and is no longer available. Use the tools you have now.` : `No tool named ${u.name}.`, is_error: true };
+    if (!tool) {
+      const none: ToolResultBlock = { type: "tool_result", tool_use_id: u.id, content: this.pins.removed(session.id, u.name) ? `${u.name} was removed by an upgrade of Keel and is no longer available. Use the tools you have now.` : noSuchTool(u.name), is_error: true };
+      // A failed call like any other: it has its span and its row in the tools
+      // table under the name the model gave, and the turn counts it.
+      this.measure(session.id, (h) => h.toolRan?.(session, { id: u.id, tool: { name: u.name, description: "", input_schema: {}, readOnly: true, run: async () => none } as Tool, input: u.input ?? {}, ctx: { ...ctx, callId: u.id } }, none, { ms: 0, outcome: "error" }));
+      this.verdicts.set(none, "failed");
+      return none;
+    }
     const callTool = (name: string, input: any, id: string): Promise<ToolResultBlock> => {
       // Nested calls have no question card of their own, and the program can
       // exit without awaiting its calls. Ask in a top-level call instead.
