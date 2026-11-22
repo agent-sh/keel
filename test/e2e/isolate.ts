@@ -11,8 +11,12 @@
 // at rest behind "N more" once enough others stand before them, so a later
 // spec's own row was not in the page; and a turn left running was counted by
 // a spec that counts what runs. Specs run one at a time, so a session that
-// was not there when a test began is that test's.
+// was not there when a test began is that test's: on a scratch daemon. On
+// any other (a KEEL_URL that names a daemon somebody works on) a session
+// made meanwhile may be theirs, so nothing is removed there (scratch.ts).
+// A removal the daemon refuses fails the test, as a refused restoration does.
 import { test as base, type APIRequestContext } from "@playwright/test";
+import { isScratch } from "./scratch.ts";
 
 export * from "@playwright/test";
 
@@ -81,13 +85,37 @@ async function sessionIds(request: APIRequestContext) {
   return ids;
 }
 
+// Asked once a worker: what the daemon says of itself.
+let scratch: Promise<boolean> | undefined;
+let warned = false;
+const scratchDaemon = (request: APIRequestContext) => (scratch ??= (async () => {
+  const get = async (path: string) => { const r = await request.get(path, { timeout: 10_000 }).catch(() => null); return r?.ok() ? await r.json() : {}; };
+  const [daemon, boot, models] = await Promise.all([get("/api/daemon"), get("/api/bootstrap"), get("/api/models")]);
+  return isScratch({ argv: daemon.argv, state_dir: daemon.state_dir, home: boot.home, providers: ((models.providers ?? []) as { id: string }[]).map((p) => p.id) });
+})());
+
 export const test = base.extend<{ daemonSettings: void; ownSessions: void }>({
   ownSessions: [
     async ({ request }, use) => {
+      if (!(await scratchDaemon(request))) {
+        if (!warned) console.warn("The daemon at KEEL_URL is not a scratch one (no scripted provider, not a dev daemon with a state folder of its own): the sessions the tests make are left there.");
+        warned = true;
+        return use();
+      }
       const before = await sessionIds(request);
       await use();
-      // (A session's agents go with it; one a test deleted itself answers 404.)
-      for (const id of await sessionIds(request)) if (!before.has(id)) await request.delete(`/api/sessions/${id}?stop_shells=1`, { timeout: 30_000 }).catch((e) => console.warn(`could not remove session ${id}: ${e}`));
+      const failed: string[] = [];
+      for (const id of await sessionIds(request)) {
+        if (before.has(id)) continue;
+        // (A session's agents go with it; one that went meanwhile answers 404.)
+        try {
+          const r = await request.delete(`/api/sessions/${id}?stop_shells=1`, { timeout: 30_000 });
+          if (!r.ok() && r.status() !== 404) failed.push(`DELETE /api/sessions/${id} answered ${r.status()}: ${(await r.text()).slice(0, 200)}`);
+        } catch (e) {
+          failed.push(`DELETE /api/sessions/${id} did not get through: ${(e as Error).message.split("\n")[0]}`);
+        }
+      }
+      if (failed.length) throw new Error(`The sessions this test made were not removed: ${failed.join("; ")}`);
     },
     { auto: true },
   ],
