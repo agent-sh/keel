@@ -144,3 +144,38 @@ test.describe("on a touch screen", () => {
     await request.delete(`/api/sessions/${s.id}`);
   });
 });
+
+// Feature: a session is filed from its row's menu in whatever way the list is grouped, in three
+// presses: the menu, Move to folder, the folder. No switch to "By my folders" and no drag.
+test("a session is filed from its row's menu in any grouping", async ({ page, request }) => {
+  const word = `mv${Date.now().toString(36)}`;
+  const s = (await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: `To file ${word}` } })).json()).session;
+  const folder = (await (await request.post("/api/session-folders", { data: { name: `Reading ${word}` } })).json()).folder;
+  const other = (await (await request.post("/api/session-folders", { data: { name: `Later ${word}` } })).json()).folder;
+  const filed = async () => (await (await request.get(`/api/sessions/${s.id}`)).json()).session.settings.folder_id ?? null;
+  try {
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto(`/s/${s.id}`);
+    const row = page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${s.id}"]`);
+    for (const [group, to] of [["folder", folder], ["project", other]] as const) {
+      await page.getByTestId("list-arrange").click();
+      await page.getByTestId(`arrange-group-${group}`).click();
+      await page.keyboard.press("Escape");
+      await row.click({ button: "right" });
+      await page.getByTestId("row-menu-move").click();
+      await page.getByTestId("row-menu-folders").locator(`[data-folder="${to.id}"]`).click();
+      await expect.poll(filed).toBe(to.id);
+      if (group === "folder") await shoot(page, "folders-07-filed-from-row");
+    }
+    // The folder it is in is checked, and it can be taken out again.
+    await row.click({ button: "right" });
+    await page.getByTestId("row-menu-move").click();
+    await expect(page.getByTestId("row-menu-folders").locator(`[data-folder="${other.id}"] svg`)).toHaveCount(1);
+    await shoot(page, "folders-08-row-menu-folders");
+    await page.getByTestId("row-menu-unfile").click();
+    await expect.poll(filed).toBe(null);
+  } finally {
+    await request.delete(`/api/sessions/${s.id}`);
+    for (const f of [folder, other]) await request.delete(`/api/session-folders/${f.id}`);
+  }
+});

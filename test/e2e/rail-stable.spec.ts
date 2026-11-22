@@ -449,7 +449,7 @@ test("with four panes the list is still titles, one line a session, and folds to
     const mine = Object.values(ids);
     const rows = await list.locator('[data-testid="session-row"]').evaluateAll((els, own) => els.filter((e) => own.includes(e.getAttribute("data-session")!)).map((e) => {
       const t = e.querySelector<HTMLElement>(".k-row-title")!;
-      return { title: t.textContent, shown: t.getBoundingClientRect().width, cut: getComputedStyle(t).textOverflow, height: e.getBoundingClientRect().height, lines: Math.round(t.getBoundingClientRect().height / parseFloat(getComputedStyle(t).lineHeight)) };
+      return { title: t.textContent, shown: t.getBoundingClientRect().width, cut: getComputedStyle(t).textOverflow, height: e.getBoundingClientRect().height, lines: Math.round(t.getBoundingClientRect().height / parseFloat(getComputedStyle(t).lineHeight)), reason: e.hasAttribute("data-reason") };
     }), mine);
     expect(rows).toHaveLength(12);
     const rem = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
@@ -458,8 +458,11 @@ test("with four panes the list is still titles, one line a session, and folds to
       expect(r.shown, `the title of "${r.title}" has room to be read`).toBeGreaterThan(4.5 * rem);
       expect([r.cut, r.lines]).toEqual(["ellipsis", 1]);
     }
-    expect(new Set(rows.map((r) => Math.round(r.height))).size, "rows of one height").toBe(1);
-    expect(rows[0]!.height).toBeLessThan(2 * rem);
+    // Rows of one height: one line each, and a row that calls the owner keeps its reason on a second line of its own.
+    const plain = rows.filter((r) => !r.reason);
+    expect(new Set(plain.map((r) => Math.round(r.height))).size, "rows of one height").toBe(1);
+    expect(plain[0]!.height).toBeLessThan(2 * rem);
+    for (const r of rows.filter((x) => x.reason)) expect(r.height, `the reason of "${r.title}" has a line of its own`).toBeLessThan(3 * rem);
     // The panes keep their narrowest width and nothing scrolls sideways for the list.
     expect(await fits()).toBe(true);
     // Its words are whole: the filter's hint is the short one, and neither tab is cut.
@@ -591,9 +594,11 @@ test("a session is pinned from its row by pointer, key and menu, and the pinned 
     await expect(row(d)).toBeVisible();
     await expect(page.getByTestId("pinned-group")).toHaveCount(0);
 
-    // By the pointer: Pin is among the actions a row shows under it. One press, from the list.
+    // By the pointer: Pin is among the actions a row shows under it. One press, from the list; the row
+    // takes its place among the pinned when the pointer has left the list (nothing moves under it).
     await row(a).hover();
     await row(a).getByTestId("row-pin").click();
+    await page.mouse.move(1200, 500);
     await expect.poll(pinned).toEqual([a]);
     // From the keyboard: Right goes to the row's actions, and Pin is the first. The keyboard stays with the row, in the group it went to.
     await row(b).focus();
@@ -639,10 +644,12 @@ test("a session is pinned from its row by pointer, key and menu, and the pinned 
     const marks = await Promise.all([b, a, c, d].map(async (id) => (await (await request.get(`/api/sessions/${id}?events=0`)).json()).session.settings.pinned_ms as number));
     expect(marks).toEqual([...marks].sort((x, y) => x - y));
     expect(new Set(marks).size).toBe(4);
-    // Unpinned from its row, the same way.
+    // Unpinned from its row, the same way: it leaves the pinned when the pointer has left the list.
     await row(d).hover();
     await expect(row(d).getByTestId("row-pin")).toHaveAttribute("aria-pressed", "true");
     await row(d).getByTestId("row-pin").click();
+    await expect(row(d).getByTestId("row-pin")).toHaveAttribute("aria-pressed", "false");
+    await page.mouse.move(1200, 500);
     await expect.poll(pinned).toEqual([b, a, c]);
   } finally {
     for (const id of made) await request.delete(`/api/sessions/${id}`).catch(() => {});
@@ -767,5 +774,89 @@ test("what changes elsewhere waits for the hand, is said at the list's foot, and
   } finally {
     for (const id of made) { await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); }
     if (folder) await request.delete(`/api/session-folders/${folder}`).catch(() => {});
+  }
+});
+
+// Feature: the list is quiet while sessions take short turns. A turn of a second is not a flash on
+// its row, and the line above the list, the filter box and the message boxes are not written again
+// for nothing: outside the conversations the page changes a few times a second at most. And a row
+// pinned with the pointer stays where it is, the others too, until the pointer leaves the list.
+test("a busy list is quiet, and a row pinned with the pointer moves when the pointer has left", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === MODEL), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const root = `${process.env.HOME}/.cache/keel-work/bun/e2e-ws/quiet-${Date.now().toString(36)}`;
+  mkdirSync(root, { recursive: true });
+  const made: string[] = [];
+  const mk = async (title: string) => {
+    const { session } = await (await request.post("/api/sessions", { data: { model: MODEL, title, workspace: root } })).json();
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+    made.push(session.id);
+    return session.id as string;
+  };
+  try {
+    const busy: string[] = [];
+    for (let i = 0; i < 5; i++) busy.push(await mk(`Quick turns ${i + 1}`));
+    const reader = await mk("Reading the notes");
+    const other = await mk("Notes for later");
+    for (const id of [reader, other]) await request.post(`/api/sessions/${id}/messages`, { data: { text: "script:say The notes are long." } });
+    await page.goto(`/s/${reader}`);
+    await page.evaluate((slots) => localStorage.setItem("keel.panes", JSON.stringify({ count: 2, slots, sizes: {}, active: 0 })), [reader, other]);
+    await page.goto(`/s/${reader}`);
+    await expect(page.locator("section.k-station")).toHaveCount(2);
+    await page.waitForTimeout(1500);
+    // Count what changes outside the conversations while a short turn starts somewhere every 500 ms (two quiet panes).
+    await page.evaluate(() => {
+      const w = window as unknown as { __muts: number; __by: Record<string, number> };
+      w.__muts = 0; w.__by = {};
+      new MutationObserver((recs) => {
+        for (const r of recs) {
+          const el = (r.target.nodeType === 1 ? r.target : r.target.parentElement) as HTMLElement | null;
+          if (!el || el.closest('[data-testid="transcript"]')) continue;
+          w.__muts++;
+          const k = el.closest("[data-testid]")?.getAttribute("data-testid") ?? el.tagName;
+          w.__by[k] = (w.__by[k] ?? 0) + 1;
+          const said = (w as unknown as { __said: Record<string, string[]> }).__said ??= {};
+          if ((said[k] ??= []).length < 3) said[k]!.push(`${r.type}${r.attributeName ? `[${r.attributeName}]` : ""} <${el.className.toString().slice(0, 20)}> ${(el.textContent ?? "").slice(0, 30)}`);
+        }
+      }).observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
+    });
+    let n = 0, on = true;
+    const t0 = Date.now();
+    const storm = (async () => { while (on) { void request.post(`/api/sessions/${busy[n++ % busy.length]}/messages`, { data: { text: `script:say Tick ${n}.` } }).catch(() => {}); await new Promise((r) => setTimeout(r, 500)); } })();
+    await page.waitForTimeout(10_000);
+    on = false;
+    await storm;
+    const { muts, by, said } = await page.evaluate(() => { const w = window as unknown as { __muts: number; __by: Record<string, number>; __said: Record<string, string[]> }; return { muts: w.__muts, by: w.__by, said: w.__said ?? {} }; });
+    const secs = (Date.now() - t0) / 1000;
+    const why = JSON.stringify(Object.entries(by).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, n]) => [k, n, said[k]]));
+    // A row says Working for a turn that ran longer than the list waits (on a busy machine a short turn can):
+    // what such a turn costs its row is allowed for, and nothing else of the list moves at all for the turns.
+    const long = (await Promise.all(busy.map(async (id) => ((await (await request.get(`/api/sessions/${id}`)).json()).events as { kind: string; ts: number; data: { ms?: number } }[]).filter((e) => e.kind === "turn_end" && e.ts >= t0 && (e.data.ms ?? 0) >= 1500).length))).reduce((a, b) => a + b, 0);
+    const rows = Object.entries(by).filter(([k]) => k === "session-row" || k === "row-time").reduce((n, [, v]) => n + v, 0);
+    expect(rows, why).toBeLessThanOrEqual(Math.max(8 * long, 3 * n) + 6);
+    // (A count that comes or gains a figure is fitted to its line again: a few writes, now and then.)
+    expect((muts - rows) / secs, why).toBeLessThanOrEqual(4);
+
+    // Pin a row with the pointer: nothing in the list moves while the pointer is on it.
+    await page.waitForTimeout(2000);
+    const rowOf = (id: string) => page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${id}"]`);
+    const target = rowOf(busy[3]!);
+    await target.scrollIntoViewIfNeeded();
+    const tops = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('[data-testid="session-list"] [data-testid="session-row"]')].map((e) => [e.getAttribute("data-session"), Math.round(e.getBoundingClientRect().top)])));
+    await target.hover();
+    const before = await tops();
+    await target.getByTestId("row-pin").click();
+    await expect(target).toHaveAttribute("data-pinned", "true");
+    await page.waitForTimeout(800);
+    const during = await tops();
+    for (const [id, y] of Object.entries(before)) if (id in during) expect(during[id], `row ${id}`).toBe(y);
+    await expect(page.getByTestId("pinned-group").locator(`[data-session="${busy[3]}"]`)).toHaveCount(0);
+    // The pointer leaves the list: the row takes its place among the pinned.
+    await page.mouse.move(1200, 500);
+    await expect(page.getByTestId("pinned-group").locator(`[data-session="${busy[3]}"]`)).toHaveCount(1, { timeout: 5000 });
+    await shoot(page, "rail-stable-09-pinned-after");
+  } finally {
+    for (const id of made) await request.delete(`/api/sessions/${id}`);
   }
 });

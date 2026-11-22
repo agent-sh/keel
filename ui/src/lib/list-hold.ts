@@ -38,6 +38,15 @@ export function listActed(id: string) {
   subs.forEach((f) => f());
 }
 export const actedOn = (id: string) => own.has(id);
+// An act of the owner's that leaves the row where it is while the hand is on the list (a pin with the
+// pointer): it is the owner's own act once the list lets go, so the row goes where the act puts it then,
+// and the list is not held around where it stood.
+const onLetGo = new Set<string>();
+export const actWhenLetGo = (id: string) => void onLetGo.add(id);
+export function letGo() {
+  for (const id of onLetGo) listActed(id);
+  onLetGo.clear();
+}
 // The list let go: what the owner did is in it now, and a fold that opened for a session they went to closes.
 export function forgetActed() {
   if (!own.size) return;
@@ -68,7 +77,8 @@ export function useHand() {
     if (a.focus && !(a.rows?.isConnected && a.rows.contains(document.activeElement))) a.focus = false;
     clearTimeout(a.timer);
     if (a.pointer || a.focus || a.kept > 0) setHeld(true);
-    else a.timer = setTimeout(() => setHeld(false), LEAVE_MS);
+    // (What the owner did in place while the hand was there is their own act from the moment the list lets go.)
+    else a.timer = setTimeout(() => { letGo(); setHeld(false); }, LEAVE_MS);
   }, []);
   // The pointer is a hand while it moves: at rest for IDLE_MS it holds nothing until it moves again.
   const stir = useCallback(() => {
@@ -85,6 +95,8 @@ export function useHand() {
     a.idle = setTimeout(look, IDLE_MS);
   }, [set]);
   const rest = useCallback(() => {
+    // The pointer left: what it did in place is the owner's own act now, also while the keyboard holds the list.
+    letGo();
     clearTimeout(at.current.idle);
     at.current.idle = undefined;
     set({ pointer: false });

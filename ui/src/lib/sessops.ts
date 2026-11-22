@@ -3,7 +3,7 @@
 // commands. The daemon keeps the marks; every client sees the same.
 import type { Session } from "../../../src/core/types.ts";
 import { confirmAction } from "../components/Confirm.tsx";
-import { listActed } from "./list-hold.ts";
+import { actWhenLetGo, listActed } from "./list-hold.ts";
 import { pinMark, pinMove, pinnedOrder } from "./list-order.ts";
 import { actions, api, getState } from "./store.ts";
 
@@ -18,8 +18,12 @@ export const marks = {
 export const isPinned = (s: Session | undefined) => !!s?.settings.pinned_ms;
 
 // A pinned session leads the list on every device.
-export async function pin(id: string, on: boolean) {
-  listActed(id); // the owner's own act: the list shows it at once, held or not
+// `stay`: pinned with the pointer from the row itself: the row stays where it is (its pin says it is
+// pinned) and the list takes its new order when the hand has left, as for any other change. From the
+// keyboard the row goes to its group at once, and the keyboard with it.
+export async function pin(id: string, on: boolean, stay = false) {
+  // The owner's own act: the list shows it at once, held or not; one made in place, once the hand has left.
+  if (stay) actWhenLetGo(id); else listActed(id);
   await actions.patch(id, { pinned: on } as any);
 }
 

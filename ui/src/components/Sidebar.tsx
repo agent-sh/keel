@@ -235,7 +235,7 @@ function RowOf({ s: given, active, where, gone }: { s: Session; active: boolean;
     }, reportError);
   };
   // Pinned or unpinned from the keyboard, the keyboard stays with the row, in the group it went to.
-  const togglePin = (keys = false) => pin(s.id, !pinned).then(() => { if (keys) focusRow(s.id); }, reportError);
+  const togglePin = (keys = false) => pin(s.id, !pinned, !keys).then(() => { if (keys) focusRow(s.id); }, reportError);
   const left = !gone ? null : deleted || (!live && !given.archived) ? "deleted" : given.archived ? "restored" : "archived";
   // The card beside the row is away while a menu of the row is open over it.
   useEffect(() => { if (over && row.current) card.onClick?.({ currentTarget: row.current }); }, [over]);
@@ -329,7 +329,7 @@ function RowOf({ s: given, active, where, gone }: { s: Session; active: boolean;
         {/* (Pressed with the pointer, it leaves the keyboard where it was: a focus the owner did not give
             the row would hold the list after the pointer left, and the pinned row would not take its place.) */}
         {!left && !restore && !phone() && (
-          <button type="button" tabIndex={-1} title={pinned ? "Unpin" : "Pin to the top of the list"} aria-label={pinned ? "Unpin" : "Pin"} aria-pressed={pinned} data-testid="row-pin" onClick={(e) => { e.stopPropagation(); togglePin(e.detail === 0); }} className="k-row-act hidden group-hover:grid group-focus-within:grid">
+          <button type="button" tabIndex={-1} title={pinned ? "Unpin" : "Pin to the top of the list"} aria-label={pinned ? "Unpin" : "Pin"} aria-pressed={pinned} data-testid="row-pin" onClick={(e) => { e.stopPropagation(); if (e.detail > 0) e.currentTarget.blur(); togglePin(e.detail === 0); }} className="k-row-act hidden group-hover:grid group-focus-within:grid">
             {pinned ? <PinOff /> : <Pin />}
           </button>
         )}
@@ -375,6 +375,7 @@ function RowOf({ s: given, active, where, gone }: { s: Session; active: boolean;
           onMove={pinnedNow().length > 1 ? move : undefined}
           onBeside={() => openBeside(s.id)}
           onArchive={() => { listActed(s.id); archive(s, !restore).catch(reportError); }}
+          session={s.machine ? undefined : { id: s.id, folder: s.settings.folder_id ?? null }}
         />
       )}
     </div>
@@ -454,7 +455,6 @@ function LateLine({ n, to }: { n: number; to: { current: HTMLElement | null } })
   );
 }
 
-// The pinned group, in the order of its pins. A session dragged over it is dropped where the line
 // What calls the owner and is out of the list's view: named at the list's foot, each a press away.
 // With many sessions the rows that need the owner or failed are below what the list shows (they are
 // never folded away, but a list of fifty rows is three screens): the line above the list counts them,
@@ -535,6 +535,7 @@ function NeedStrip({ nav, open }: { nav: { current: HTMLElement | null }; open: 
   );
 }
 
+// The pinned group, in the order of its pins. A session dragged over it is dropped where the line
 // shows: a pinned one moves there, another is pinned there (lib/sessops.ts: the order is stored
 // with the pins, the same on every device). Alt Up and Alt Down on a pinned row move it too.
 function PinnedGroup({ list, current, every }: { list: Session[]; current: string | null; every: boolean }) {
@@ -1099,9 +1100,9 @@ function Index({ current }: { current: string | null }) {
           </section>
         )}
       </nav>
-      {/* They are below what the list shows: said at its foot, and a press goes to them. */}
       {sections.length > 1 && <MachinesBelow nav={nav} machines={sections.filter((x) => x.machine).map((x) => ({ machine: x.machine!, count: x.list.length }))} />}
       <NeedStrip nav={nav} open={(id) => { navigate({ name: "session", id }); if (getStations().shown.includes(id)) intoBox(id); }} />
+      {/* They are below what the list shows: said at its foot, and a press goes to them. */}
       {waits && !lateSeen && <LateLine n={late.length} to={lateBox} />}
       </ListCtx.Provider>
       </div>
