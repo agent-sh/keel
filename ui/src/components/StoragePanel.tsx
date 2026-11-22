@@ -114,6 +114,8 @@ export function StoragePanel() {
   const [openFolder, setOpenFolder] = useState<string | null>(null);
   const [backups, setBackups] = useState<Backup[] | null>(null);
   const [backupsFailed, setBackupsFailed] = useState(false);
+  // The full backup the last restart did not wait for: the daemon makes it within a minute of its start.
+  const [owed, setOwed] = useState<{ since_ms: number; why: string } | null>(null);
   const [settings, patch, unreadable, resetSettings] = useSettings();
   const [due, setDue] = useState<Due | null>(null);
   const [kept, setKept] = useState<string | null>(null);
@@ -127,7 +129,7 @@ export function StoragePanel() {
     setBusy(true);
     return Promise.all([
       api<Report>(`/api/storage${refresh ? "?refresh=1" : ""}`).then(setR),
-      api<{ backups: Backup[] }>("/api/backups").then((b) => (setBackups(b.backups), setBackupsFailed(false)), (e) => { setBackupsFailed(true); throw e; }),
+      api<{ backups: Backup[]; owed?: { since_ms: number; why: string } | null }>("/api/backups").then((b) => (setBackups(b.backups), setOwed(b.owed ?? null), setBackupsFailed(false)), (e) => { setBackupsFailed(true); throw e; }),
     ]).catch(reportError).finally(() => setBusy(false));
   }, []);
   useEffect(() => { load(true); }, [load]);
@@ -307,7 +309,13 @@ export function StoragePanel() {
           <button type="button" className={btn} data-testid="backup-now" onClick={() => api("/api/backups", { method: "POST" }).then(() => load(true)).catch(reportError)}>Back up now</button>
         </div>
         {backupsFailed && <p className="py-4 text-ui text-danger" data-testid="backups-failed">The list of backups could not be read.</p>}
-        {!backupsFailed && backups?.length === 0 && <p className="k-empty py-4">No backups yet.</p>}
+        {!backupsFailed && owed && (
+          <div className="flex h-10 items-center gap-3 border-b border-line/60 text-ui" data-testid="backup-owed" title={`The restart at ${when(owed.since_ms)} did not wait for it: ${owed.why}.`}>
+            <span className="tabular-nums">{when(owed.since_ms)}</span>
+            <span className="min-w-0 truncate text-caption text-muted">a full backup is owed: made after the start</span>
+          </div>
+        )}
+        {!backupsFailed && !owed && backups?.length === 0 && <p className="k-empty py-4">No backups yet.</p>}
         {backups?.map((b) => (
           <div key={b.name} className="flex h-10 items-center gap-3 border-b border-line/60 text-ui last:border-0" data-testid="backup-row">
             <span className="tabular-nums">{b.created_ms ? when(b.created_ms) : b.name}</span>

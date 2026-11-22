@@ -121,11 +121,19 @@ test("a failed backup calls the restart off; the retry restarts", async ({ page 
     expect(ok.stdout).toContain(`restarted: pid ${last}`);
     expect((await call("/api/daemon")).restart_failed).toBeNull();
     expect((await call("/api/backups")).backups).toEqual([]);
-    await page.reload();
+    // The Storage page says so until the daemon has made it.
+    await page.goto(`${d.url}/settings/storage`);
+    await expect(page.getByTestId("backup-owed")).toContainText("a full backup is owed: made after the start", { timeout: 15_000 });
+    await page.getByTestId("backup-owed").scrollIntoViewIfNeeded();
+    await shoot(page, "restart-backup-03-owed");
+    await page.goto(`${d.url}/settings/daemon`);
     await expect(panel.getByTestId("daemon-status")).toContainText(`pid ${last}`, { timeout: 30_000 });
     await expect(panel.getByTestId("daemon-restart-failed")).toHaveCount(0);
     await shoot(page, "restart-backup-02-restarted");
     await expect.poll(async () => (await call("/api/backups")).backups, { timeout: 60_000 }).toMatchObject([{ reason: "after a restart", kind: "full", sessions: 3 }]);
+    await page.goto(`${d.url}/settings/storage`);
+    await expect(page.getByTestId("backup-row")).toHaveCount(1, { timeout: 15_000 });
+    await expect(page.getByTestId("backup-owed")).toHaveCount(0);
 
     // The next restart: its backup is made before it, from the pages the log named since that one.
     const more = await call("/api/sessions", { model: "scripted:stand-in", title: "Written between two restarts" });
