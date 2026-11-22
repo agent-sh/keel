@@ -18,7 +18,9 @@ test("tokens panel per turn", async ({ page, request }) => {
   await openPanel(page, "usage");
   const panel = page.getByTestId("tokens-panel");
   await expect(panel.getByTestId("usage-turn")).toHaveCount(2);
-  await expect(panel.getByTestId("usage-turn").nth(1)).toContainText("two");
+  // The newest turn first: the one the panel is opened about.
+  await expect(panel.getByTestId("usage-turn").first()).toContainText("two");
+  await expect(panel.getByTestId("usage-turn").first()).toHaveAttribute("data-turn", "2");
   await expect(panel.getByTestId("usage-read")).toContainText("%");
   await expect(panel.getByTestId("usage-cost")).toContainText("$");
 
@@ -33,7 +35,7 @@ test("tokens panel per turn", async ({ page, request }) => {
   await expect(panel.getByTestId("usage-cost")).toContainText("2 turns, 2 requests");
   expect(await panel.evaluate((el) => getComputedStyle(el).fontFamily)).not.toContain("Martian Mono");
   // A turn opens its requests as a table, one row a request; no tooltip of lines.
-  const turn = panel.getByTestId("usage-turn").nth(1);
+  const turn = panel.locator('[data-testid="usage-turn"][data-turn="2"]');
   expect(await turn.getAttribute("title")).toBeNull();
   await turn.getByRole("button").click();
   await expect(turn.getByTestId("usage-requests").locator("th")).toHaveText(["Request", "Cost", "Read", "Written", "New", "Out"]);

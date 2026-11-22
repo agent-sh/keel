@@ -151,7 +151,7 @@ test("usage compare: both sides and the change read together on a phone", async 
   await panel.getByRole("radio", { name: "Two ranges" }).click();
   await expect(table).toContainText("The range before");
   expect(await sideways()).toBeLessThanOrEqual(0);
-  // The seven views are wider than the pane: they go on to a second line, none cut, the chosen one in view.
+  // The eight views are wider than the pane: they go on to a second line, none cut, the chosen one in view.
   const views = panel.getByRole("radiogroup", { name: "View" });
   await pane.evaluate((el) => el.scrollTo(0, 0));
   expect(await views.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(false);

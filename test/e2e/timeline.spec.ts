@@ -349,6 +349,8 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     // An Activity row opens the turn it happened in: its own row, open and shown.
     await page.getByTestId("inbox-button").click();
     await page.getByTestId("tab-activity").click();
+    // Across sessions a session shows its newest rows and counts the rest: "N more" lists it alone, every row.
+    await page.getByTestId("activity-more").filter({ hasText: "Parser cleanup" }).click();
     const started = page.locator('[data-testid="activity-item"][data-kind="agent"]').filter({ hasText: "Started agent" });
     await started.getByTestId("activity-receipt").click();
     const spawned = panel.locator(`[data-testid="timeline-row"][data-id="${spawning.id}"]`);

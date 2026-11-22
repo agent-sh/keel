@@ -25,7 +25,6 @@ import { HttpError, type Message, Messages } from "../../fleet/messages.ts";
 import { MessageStates, peerMessageLines, peerMessages } from "../../fleet/message-state.ts";
 import { OutboxDrain } from "../../fleet/outbox.ts";
 import { localStamp, zoneNote } from "../../core/clock.ts";
-import type { QueueItem } from "../../core/types.ts";
 import { readsOf } from "../reads.ts";
 import * as alerts from "../../automation/alerts.ts";
 import { contains } from "../../core/paths.ts";
@@ -70,8 +69,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     capture: (e, ctx) => errors.capture("server", e, ctx),
   }));
   // Queued input that named a sender left a queue unread: where the engine tells of it, the message is dropped with the engine's reason.
-  const dropHook: Record<string, unknown> = { inputDropped: (rows: QueueItem[], why: string) => states.dropped(rows, why) };
-  registerHooks(dropHook as Parameters<typeof registerHooks>[0]);
+  registerHooks({ inputDropped: (rows, why) => states.dropped(rows, why) });
   const moves = new Handoffs(store, bus, engine, f);
   const remoteAgents = new RemoteAgents(store, f, errors, (id) => gate?.perm(id).sandbox ?? "off");
   setRemotePlacer(remoteAgents);

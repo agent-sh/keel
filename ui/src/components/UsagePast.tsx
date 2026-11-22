@@ -33,7 +33,7 @@ const open = (id: string) => navigate({ name: "session", id });
 // --- spend ranked
 type Bucket = { key: string; priced_cost_usd: number; unpriced_calls: number; calls: number; total_tokens: number; own_cost_usd?: number; agents?: number; agents_cost_usd?: number };
 type Ranked = { buckets: Bucket[]; has_more: boolean; total: { priced_cost_usd: number; calls: number }; sessions?: Record<string, { title: string; parent_id?: string; archived?: true }> };
-const ROWS = 8;
+const ROWS = 15;
 export function SpendRank({ range }: { range: Range }) {
   const [by, setBy] = useState<"session" | "tree">("session");
   const [all, setAll] = useState(false);
@@ -53,7 +53,7 @@ export function SpendRank({ range }: { range: Range }) {
     );
   };
   return (
-    <Panel plain title="By session" hint={by === "tree" ? "a session with the agents under it, dearest first" : "each session's own requests, dearest first"} testid="usage-rank"
+    <Panel plain title="Spend by session" hint={by === "tree" ? "a session with the agents under it, dearest first" : "each session's own requests, dearest first"} testid="usage-rank"
       aside={<Segmented<"session" | "tree"> label="Rank by" value={by} onChange={(v) => { setBy(v); setAll(false); }} options={[{ value: "session", label: "Sessions" }, { value: "tree", label: "Agent trees" }]} />}>
       {!r ? <p className="text-ui text-faint">Reading the ledger.</p> : !r.buckets.length ? <p className="k-empty">No requests in this range.</p> : (
         <>

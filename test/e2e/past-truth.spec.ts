@@ -323,8 +323,10 @@ test("after a kill, the errors, the digest, the log, spend, activity, times, sea
     await page.keyboard.press("Escape");
     // Usage: spend ranked by session, and two turns side by side.
     await page.goto(`${d.url}/settings/usage`);
+    await page.getByTestId("usage-go-sessions").click();
     await expect(page.getByTestId("usage-rank").getByTestId("rank-open").first()).toHaveText("Many turns");
-    await page.getByTestId("usage-rank").scrollIntoViewIfNeeded();
+    await page.getByRole("radio", { name: "Agent trees" }).click();
+    await expect(page.getByTestId("rank-agents")).toHaveText(/of it in 1 agent$/);
     await shoot(page, "past-truth-05-usage-rank");
     await page.getByTestId("usage-panel").getByRole("radio", { name: "Compare" }).click();
     await page.getByRole("radio", { name: "Two turns" }).click();

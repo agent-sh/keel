@@ -233,7 +233,7 @@ test("usage: the answer first, one stat component, one bucket reads as a value",
   await shoot(page, "usage-08-answer");
   await page.setViewportSize({ width: 390, height: 844 });
   await answer.scrollIntoViewIfNeeded();
-  // On a phone the seven views go on to a second line, none cut, and the two lists show the money with no sideways scroll.
+  // On a phone the eight views go on to a second line, none cut, and the two lists show the money with no sideways scroll.
   const strip = panel.getByRole("radiogroup", { name: "View" });
   expect(await strip.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
   for (const name of ["Overview", "Compare"]) await expect(strip.getByRole("radio", { name })).toBeInViewport({ ratio: 1 });
