@@ -1215,6 +1215,44 @@ the daemon across restarts and never stops it. Build it with
 the phone, paired with a one-time `keel://pair` code from Settings, then Phone.
 See `android/README.md`.
 
+## Approvals away from the page
+
+An approval is given only for text that was shown, whatever answers it. The
+daemon holds that rule, not one client. Every client reads a request in one
+form (`GET /api/sessions/:id/approvals/:aid`, `src/safety/card.ts`): the whole
+text to judge (the command, the paths and what an edit writes, a tool's input,
+up to 20,000 characters, with `cut` when only the start is kept), what in it
+can mislead (hidden characters, letters written right to left, letters that
+pass for plain ones), its risk, where it runs and why it is asked.
+
+A request that one line shows whole (160 printable ASCII characters, low
+risk, nothing cut) is allowed from anywhere. Any other is held: an allow of it
+is taken only with the client's word that it showed all of the text
+(`seen: "whole"`), and is otherwise answered `409` with a sentence to show,
+"Open the request to read it first", while the card stays open. A deny is
+taken from anywhere at once. Standing rules, modes and Full auto do not pass
+through a client's answer and are as they were.
+
+- The page sends the word when its own card was read.
+- The phone app shows the whole text and sends it once the text was scrolled
+  to its end. Its notification carries Allow only for a request the one line
+  shows whole, and Open and Deny for the rest. An app from before the rule
+  gets the sentence.
+- `keel approve ID` shows the request (through the pager when it is taller
+  than the terminal) and then asks. `--yes` skips the question for a request
+  one line shows whole; any other needs `--yes --seen`. With several open it
+  lists them and asks which, and without a terminal it lists and exits 2.
+  `keel attach` prints each request whole when it opens; `/approve` answers
+  the one it printed, and a held one by its id.
+- An editor over ACP is sent the whole text in the request's content.
+- A card of a session on another machine is judged by the daemon that owns
+  the session; the forwarding daemon passes the word through and adds none.
+
+The answer keeps who gave it: the kind of client, the phone's name, the
+machine it came through, and whether the text was said to be shown. The
+timeline, a trace's wait and the activity list say it ("allowed once from the
+phone").
+
 ## Memory observability
 
 `GET /api/integrations/tacit/stats` reports in-memory totals since `since_ms`
