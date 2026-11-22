@@ -10,7 +10,7 @@ import { splitId } from "../lib/fleet-ids.ts";
 import { draftGone, draftHere, dropImage, fromServer, getDraft, isKeeping, keepImage, textTaken, typing, type Draft } from "../lib/drafts.ts";
 import { daemonAway, hasSavedImage, messageRefused, namedSends, savedImages, sendDrafts, setSendDraft, setSendImage, shelfKey, shown, unread, useSendDrafts, type SendDraft } from "../lib/send-drafts.ts";
 import { sendWaitingSoon } from "../lib/resend.ts";
-import { getState, onFeature, reportError, reportUnlessGone, useStore, failed } from "../lib/store.ts";
+import { getState, onFeature, reportError, reportUnlessGone, useStore, failed, whileHeard } from "../lib/store.ts";
 import { openFocus } from "../lib/self-focus.ts";
 import { stopHeld } from "../lib/looks.ts";
 import { setUI, useUI } from "../lib/ui.ts";
@@ -513,6 +513,8 @@ const SessionComposer = memo(function SessionComposer({
   const named = namedSends(shelf);
   const blocked = (attachments: Attachment[]) => {
     if (offBranch) return OFF_BRANCH;
+    // A message this page cannot send again by itself (a new session, a session of another machine) is not sent into a link that is down.
+    if (!named && !getState().connected) return "Not sent: Keel is not reachable. Send it again when it is back.";
     if (switching) return "The model switch is not confirmed yet: nothing was sent.";
     if (hold) return hold;
     // A new screenshot for a model that says it reads none: nothing starts until
@@ -524,12 +526,22 @@ const SessionComposer = memo(function SessionComposer({
 
   const attempt = async (entry: SendDraft, fromBox: boolean) => {
     const { id, text, images, queue } = entry;
+    // Keel is not heard: the message waits on its shelf at once and goes out by itself, once, when
+    // it is back. (Sent into a link that says nothing, it was nowhere on the page until the link answered.)
+    if (named && !getState().connected) {
+      setSendDraft(shelf, id, { ...entry, state: "waiting", error: undefined });
+      return sendWaitingSoon();
+    }
     // Lock this snapshot before awaiting anything, including a rapid click
     // on Retry before React has disabled its button.
     setSendDraft(shelf, id, { ...entry, state: "sending" });
     try {
       const send = queue && onQueue ? onQueue : onSend;
-      await send(text.trim(), images.map(toBlock), id);
+      // A named send whose request is out when Keel stops being heard is not waited for (a request
+      // into a link that says nothing may hang as long as the link does): it waits on its shelf
+      // like one sent after, and goes out again under its id, which Keel takes once.
+      const out = send(text.trim(), images.map(toBlock), id);
+      await (named ? whileHeard(Promise.resolve(out)) : out);
     } catch (e) {
       // The daemon was away or restarting: the message waits on its shelf and
       // goes out by itself, once, when the daemon is back.
