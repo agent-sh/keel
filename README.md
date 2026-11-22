@@ -659,6 +659,27 @@ open across a daemon restart is closed when the call comes back with another
 input (a hook answered differently the second time, or not at all), and the
 call is judged as new. A card whose call went on without it is closed too.
 
+In the page a card is answered only for what was read. It keeps which lines
+of its text have been in view, and takes no answer until all of them have: a
+long text is opened and scrolled through first, and the card says how much is
+left. An edit's card shows what the edit writes, read the same way. The
+keyboard never lands on Allow once by itself where the request asks for a
+second look: high risk, an input shown in part, or a text with characters
+that are hidden, reorder it, are written right to left or can pass for plain
+letters. There the answer is one deliberate key away, and the card says which.
+
+That rule is the page's, not the daemon's. Two other ways to answer do not
+have it yet:
+
+- The phone app gets a request's summary alone: the first 400 characters of a
+  tool's input, with no sign that more was cut, and an edit's paths without
+  what it writes. An answer from the phone, or from its notification, is taken
+  as it is.
+- `keel approve ID` allows the oldest waiting request and prints its summary
+  after it did. `keel approve --list` shows the summaries first.
+
+Read a long or unusual request in the page before answering it from either.
+
 A changed input is the one the gate judges, the one an approval card shows
 and the one that runs. A changed shell command must be text: a list or an
 object there is refused. The session's history keeps what the model wrote. The
