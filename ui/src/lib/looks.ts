@@ -11,19 +11,23 @@
 // while it is still in the page).
 //
 // Escape. In a pane that shows a look Escape always goes back and never stops
-// a turn (Stop is a labeled button there); on a card of the look it is the
+// a turn (its Stop button does, the same one as in every pane); on a card of the look it is the
 // card's own key. In a pane with no look Escape stops the working turn, as
 // everywhere. Between the two: the press that follows a pane being uncovered
 // (a look left, the start page left, the return after an answer) never stops
 // that pane's turn, and no press does within the settle time of it. It says
-// "Esc again stops the turn" at the box and does nothing else; anything else
-// the owner does in between ends that, and Escape is Stop again.
+// how to stop at the box and does nothing else, in words that are true while
+// they show: "Esc stops the turn in a moment" within the settle time, "Esc
+// again stops the turn" from then on. What ends that, so that Escape is Stop
+// again: a press in that pane (the owner went there), or anything else they
+// do once the settle time has passed. A key that lands sooner was on its way
+// before they saw the pane change, and ends nothing.
 import { useSyncExternalStore } from "react";
 import { announce } from "./announce.ts";
 import { SETTLE_MS } from "./approvals.ts";
 import { getStations, paneOf, stations, target, useStations } from "./stations.ts";
 import { getState, useStore } from "./store.ts";
-import { tipSay } from "./tips.ts";
+import { tipChange, tipSay } from "./tips.ts";
 import { getUI, navigate } from "./ui.ts";
 import { useSessionStates } from "./watch.ts";
 
@@ -46,28 +50,39 @@ const titleOf = (id: string) => getState().sessions[id]?.title || "New session";
 const last = new Map<string, Element>();
 // Looks opened from the start page (a row of what needs the owner): one that is answered leads back to its list.
 const fromHome = new Set<string>();
-// The panes' sessions that were uncovered, until the owner's next act that is not Escape.
-const bare = new Map<string, { at: number; told: boolean }>();
+// The panes' sessions that were uncovered, until the owner's next act that ends it (see the head of the file).
+type Bare = { at: number; told: boolean };
+const bare = new Map<string, Bare>();
+const acted = (here?: string) => { for (const [id, b] of bare) if (id === here || performance.now() - b.at >= SETTLE_MS) bare.delete(id); };
 if (typeof window !== "undefined") {
   addEventListener("focusin", (e) => {
     const el = e.target as Element;
     const id = el.closest<HTMLElement>("[data-station]")?.dataset.station;
     if (id) last.set(id, el);
   }, true);
-  addEventListener("pointerdown", () => bare.clear(), true);
-  addEventListener("keydown", (e) => { const k = (e as KeyboardEvent).key; if (k !== "Escape" && !["Shift", "Control", "Alt", "Meta"].includes(k)) bare.clear(); }, true);
+  addEventListener("pointerdown", (e) => acted((e.target as Element | null)?.closest?.<HTMLElement>("[data-station]")?.dataset.station), true);
+  addEventListener("keydown", (e) => { const k = (e as KeyboardEvent).key; if (k !== "Escape" && !["Shift", "Control", "Alt", "Meta"].includes(k)) acted(); }, true);
 }
 // A pane's session shows again (said as it happens, and again when the page has drawn it).
-export const uncovered = (session: string) => { if (!bare.has(session)) bare.set(session, { at: performance.now(), told: false }); };
+// Each time counts from now: what was said about an earlier time it showed is over.
+export const uncovered = (session: string) => { bare.set(session, { at: performance.now(), told: false }); };
+const SOON = "Esc stops the turn in a moment";
+const AGAIN = "Esc again stops the turn";
+let soon = 0;
 // Escape was pressed to stop this session's turn: whether it is held (see the head of the
 // file). A held press says how to stop, at the session's message box.
 export function stopHeld(session: string): boolean {
   const b = bare.get(session);
   if (!b) return false;
-  if (b.told && performance.now() - b.at >= SETTLE_MS) { bare.delete(session); return false; }
+  const left = b.at + SETTLE_MS - performance.now();
+  if (b.told && left <= 0) { bare.delete(session); return false; }
   b.told = true;
-  tipSay(boxIn(session), "Esc again stops the turn", 2400);
-  announce("Esc again stops the turn");
+  clearTimeout(soon);
+  const words = left > 0 ? SOON : AGAIN;
+  tipSay(boxIn(session), words, 2400 + Math.max(0, left));
+  announce(words);
+  // The words stay true: from the moment Escape does stop the turn they say so, if they are still up.
+  if (left > 0) soon = window.setTimeout(() => { if (bare.get(session) === b && tipChange(SOON, AGAIN, 2400)) announce(AGAIN); }, left);
   return true;
 }
 
@@ -147,8 +162,9 @@ export const usePaneNote = (slot: number | undefined): string | null =>
 // in the look, they are in that session now, the keyboard where it was; the
 // browser's Back does not lead to the look again. `answered`: it is left
 // because what it asked was answered; one opened from the start page's list
-// then leads back to that list, where the next one is. A look whose turn is
-// still running says where it went.
+// then leads back to that list, where the next one is. A look that is left
+// with work of its own going on says where it went: that it still needs the
+// owner when it was left unanswered, else that it keeps working.
 export function leaveLook(id: string, answered = false): boolean {
   const st = getStations();
   const slot = st.over.indexOf(id);
@@ -158,9 +174,11 @@ export function leaveLook(id: string, answered = false): boolean {
   const home = fromHome.delete(id) && answered;
   const at = document.activeElement;
   const mine = !at || at === document.body || !!at.closest(`[data-station="${CSS.escape(id)}"]`);
+  const needs = !answered && paneEl(id)?.dataset.watch === "need";
   if (own) uncovered(own);
   stations.uncover(slot);
-  if (getState().sessions[id]?.phase === "working") paneSay(slot, `${titleOf(id)} keeps working, in the list`);
+  if (needs) paneSay(slot, `${titleOf(id)} still needs you, in the list`);
+  else if (getState().sessions[id]?.phase === "working") paneSay(slot, `${titleOf(id)} keeps working, in the list`);
   if (!was) return true;
   navigate(own && !home ? { name: "session", id: own } : { name: "new" }, true);
   if (own && !home && mine) focusBack(own);

@@ -106,6 +106,17 @@ export function tipSay(el: Element | null | undefined, text: string, ms: number)
   pinTimer = window.setTimeout(() => { if (saying) hide(); }, ms);
 }
 
+// Words that were said and are still up are replaced by others, for `ms` more (what they
+// said has changed while they showed). False when they are gone: nothing is put up again.
+export function tipChange(from: string, to: string, ms: number): boolean {
+  if (!saying || !tip?.isConnected || tip.textContent !== from) return false;
+  tip.textContent = to;
+  place();
+  clearTimeout(pinTimer);
+  pinTimer = window.setTimeout(() => { if (saying) hide(); }, ms);
+  return true;
+}
+
 const titled = (t: EventTarget | null) => (t instanceof Element ? t.closest("[title], [data-tip]") : null);
 
 // Touch has no hover: a long press there keeps what the browser does.
