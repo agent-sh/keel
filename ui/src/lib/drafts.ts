@@ -28,15 +28,28 @@ export async function fromServer(sid: string, f: DraftFile): Promise<Attachment 
 // A drop can come from a remounted composer, before the original keep has
 // finished. Let that write land first, so it cannot bring the image back.
 const keeping = new Map<string, Promise<unknown>>();
-export const isKeeping = (id: string) => keeping.has(id);
+// An image this page kept is the page's until a draft the daemon sends lists it. A draft made
+// before the keep landed does not have it and may still reach the page after the keep was
+// answered (a frame on the socket, which the answer does not wait for): it takes nothing from
+// the box. A keep that failed is not waited for.
+const unlisted = new Set<string>();
+export const isKeeping = (id: string) => keeping.has(id) || unlisted.has(id);
+export const draftListed = (ids: Iterable<string>) => { for (const id of ids) unlisted.delete(id); };
+// How many keeps this page started and finished: a draft read that a keep started or finished
+// under may be from before it, and is read again (keeps()).
+let moved = 0;
+export const keeps = () => moved;
 export function keepImage(sid: string, a: Attachment) {
+  moved++;
+  unlisted.add(a.id);
   const write = api(base(sid), { method: "POST", body: JSON.stringify({ images: [{ id: a.id, name: a.name, mime: a.media_type, data: a.data }], origin: "page" }) })
-    .catch((e) => reportError(e, { at: "draft keep" })).finally(() => keeping.delete(a.id));
+    .catch((e) => { unlisted.delete(a.id); reportError(e, { at: "draft keep" }); }).finally(() => { moved++; keeping.delete(a.id); });
   keeping.set(a.id, write);
   return write;
 }
 
 export const dropImage = async (sid: string, id: string) => {
+  unlisted.delete(id);
   await keeping.get(id);
   // keepalive: a send's or a discard's release still lands when the page reloads right after.
   await api(`${base(sid)}/files/${id}`, { method: "DELETE", keepalive: true }).catch(() => {}); // a file that was never kept is fine

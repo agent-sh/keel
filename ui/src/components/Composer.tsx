@@ -7,7 +7,7 @@ import { fromBlock, toAttachment, toBlock, type Attachment } from "../lib/images
 import { boxRefused, ownFocus } from "../lib/asks.ts";
 import { composing, fuzzy, isMac, keyLabel, QUEUE_KEYS, SEND_KEYS } from "../lib/keys.ts";
 import { splitId } from "../lib/fleet-ids.ts";
-import { draftGone, draftHere, dropImage, fromServer, getDraft, isKeeping, keepImage, textTaken, typing, type Draft } from "../lib/drafts.ts";
+import { draftGone, draftHere, dropImage, fromServer, getDraft, isKeeping, keepImage, keeps, draftListed, textTaken, typing, type Draft } from "../lib/drafts.ts";
 import { daemonAway, hasSavedImage, messageRefused, namedSends, savedImages, sendDrafts, setSendDraft, setSendImage, shelfKey, shown, unread, useSendDrafts, type SendDraft } from "../lib/send-drafts.ts";
 import { sendWaitingSoon } from "../lib/resend.ts";
 import { getState, onFeature, reportError, reportUnlessGone, useStore, failed, whileHeard } from "../lib/store.ts";
@@ -186,6 +186,7 @@ const SessionComposer = memo(function SessionComposer({
       }
       ids = new Set(d.attachments.map((f) => f.id));
       const now = ids;
+      draftListed(now);
       setImages((cur) => cur.filter((a) => a.file || now.has(a.id) || isKeeping(a.id)));
       for (const f of d.attachments) {
         if (have.current.has(f.id) || hasSavedImage(shelf, f.id)) continue;
@@ -200,10 +201,18 @@ const SessionComposer = memo(function SessionComposer({
         }
       }
     };
-    getDraft(sid).then(take).catch(reportError);
+    // A read answered after a keep of this page started or finished may be from before the keep
+    // (a fork puts a picture in a new box as the box reads its draft): it is read again, so the
+    // draft taken is one asked for with every keep known. A picture was lost from the box that way.
+    const read = async (): Promise<void> => {
+      const at = keeps();
+      const d = await getDraft(sid);
+      return live && keeps() !== at ? read() : take(d);
+    };
+    read().catch(reportError);
     const off = onFeature({
       frame: (f) => { if (f.name === "draft" && f.session_id === sid) take(f.data as Draft); },
-      reconnect: () => { getDraft(sid).then(take).catch(reportUnlessGone); },
+      reconnect: () => { read().catch(reportUnlessGone); },
     });
     return () => { live = false; off(); have.current.clear(); };
   }, [sid]);
