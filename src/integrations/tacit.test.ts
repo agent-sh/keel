@@ -1,6 +1,6 @@
 // What the e2e cannot see: the messages of a summary request that is the
 // first request of a turn, with the hooks that answer a new prompt installed.
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -75,17 +75,80 @@ test("Tacit reuses only the retained transcript of the same version", () => {
     expect(read(changedModel)).toBe(restored);
     expect(stats).toMatchObject({ rebuilt: 6, reused: 2 });
 
+    // Where the file stands is kept beside it: a session that dropped out of memory (archived, or
+    // the least recent of many) finds its file again and writes nothing.
+    expect(readdirSync(join(dir, "transcripts")).sort()).toEqual([`${s.id}.jsonl`, `${s.id}.mark`]);
     tacit.forget(s.id);
-    expect(read(changedModel)).not.toBe(restored);
+    expect(read(changedModel)).toBe(restored);
+    expect(stats).toMatchObject({ rebuilt: 6, reused: 3 });
+    // A session kept away from memory has no file to go on from when it is fed again.
     tacit.setFlags(s.id, { feed_memory: false });
     expect(existsSync(tacit.transcript(changedModel))).toBe(false);
-    expect(stats).toMatchObject({ rebuilt: 7, reused: 2 });
+    expect(stats).toMatchObject({ rebuilt: 6, reused: 3 });
     tacit.setFlags(s.id, { feed_memory: true });
-    read(changedModel);
-    expect(stats.rebuilt).toBe(8);
+    expect(read(changedModel)).not.toBe(restored);
+    expect(stats.rebuilt).toBe(7);
     store.deleteSession(s.id);
     expect(existsSync(tacit.transcript(changedModel))).toBe(false);
-    expect(stats).toMatchObject({ rebuilt: 8, reused: 2 });
+    expect(readdirSync(join(dir, "transcripts"))).toEqual([]);
+    expect(stats).toMatchObject({ rebuilt: 7, reused: 3 });
+  } finally {
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A daemon that starts holds no transcript in memory. Each session's file is
+// as the last daemon left it, and the mark beside it says up to where: the
+// file is found again and only what came since is appended. Without the mark
+// every session's transcript was encoded and written whole at its first hook
+// after each restart.
+test("after a restart a transcript is found as it was left: nothing is written for an unchanged session, and new events are appended", () => {
+  const dir = mkdtempSync(join(tmpdir(), "tacit-transcript-restart-"));
+  const store = new Store(dir);
+  try {
+    const errors = { capture: () => ({ message: "" }) } as unknown as ErrorTracker;
+    const s = store.createSession({ model: "fixture:model", workspace: dir });
+    for (let i = 0; i < 40; i++) {
+      store.append(s.id, "user", { text: `Prompt ${i}` });
+      store.append(s.id, "assistant", { blocks: [{ type: "text", text: `Reply ${i}` }, { type: "tool_use", id: `t${i}`, name: "Bash", input: { command: "ls" } }] });
+      store.append(s.id, "tool_result", { results: [{ type: "tool_result", tool_use_id: `t${i}`, content: "x" }] });
+    }
+    const first = new Tacit(store, new Bus(), errors, null);
+    const path = first.transcript(s);
+    const before = readFileSync(path);
+    expect(first.stats().transcript).toMatchObject({ rebuilt: 1, appended: 0 });
+
+    // The next daemon: the same store and files, nothing in memory.
+    const second = new Tacit(store, new Bus(), errors, null);
+    const events = spyOn(store, "events");
+    expect(second.transcript(s)).toBe(path);
+    expect(second.stats().transcript).toMatchObject({ rebuilt: 0, appended: 0, reused: 1 });
+    expect(readFileSync(path).equals(before)).toBe(true);
+    // What came since is appended under the file's last record; what was there keeps its bytes.
+    store.append(s.id, "user", { text: "After the restart" });
+    second.transcript(s);
+    expect(second.stats().transcript).toMatchObject({ rebuilt: 0, appended: 1, reused: 1 });
+    const after = readFileSync(path);
+    expect(after.subarray(0, before.length).equals(before)).toBe(true);
+    const records = after.toString().trim().split("\n").map((l) => JSON.parse(l));
+    expect(records.at(-1).message.content).toBe("After the restart");
+    expect(records.map((r) => r.parentUuid)).toEqual([null, ...records.slice(0, -1).map((r) => r.uuid)]);
+    // The place to append at is found on the branch the store keeps: no list of every event is made for it.
+    expect(events).toHaveBeenCalledTimes(0);
+    events.mockRestore();
+
+    // A file changed by anyone else since its mark was written is not appended to: written whole.
+    writeFileSync(path, "{}\n");
+    const third = new Tacit(store, new Bus(), errors, null);
+    third.transcript(s);
+    expect(third.stats().transcript).toMatchObject({ rebuilt: 1, appended: 0, reused: 0 });
+    expect(readFileSync(path, "utf8")).toContain("After the restart");
+    // And a mark that cannot be read is no mark.
+    writeFileSync(join(dir, "transcripts", `${s.id}.mark`), "{");
+    const fourth = new Tacit(store, new Bus(), errors, null);
+    fourth.transcript(s);
+    expect(fourth.stats().transcript).toMatchObject({ rebuilt: 1 });
   } finally {
     store.db.close();
     rmSync(dir, { recursive: true, force: true });
@@ -822,9 +885,11 @@ test("a deleted session's transcript file goes with it, and one left behind is r
   expect(existsSync(file(b))).toBe(true);
   // Left by a deletion while no daemon ran: gone when the next one starts.
   writeFileSync(file("01aaaaaa-0000-7000-8000-000000000000"), "{}\n");
+  writeFileSync(join(dir, "transcripts", "01aaaaaa-0000-7000-8000-000000000001.mark"), "{}");
   const fresh = new Tacit(w.store, w.bus, { capture: () => ({ message: "" }) } as any, st.bin);
   const hooks = allHooks().length;
   fresh.install();
   allHooks().length = hooks;
-  expect(readdirSync(join(dir, "transcripts"))).toEqual([`${b}.jsonl`]);
+  // (The kept session's file and the mark beside it stay.)
+  expect(readdirSync(join(dir, "transcripts")).sort()).toEqual([`${b}.jsonl`, `${b}.mark`]);
 }), 30_000);

@@ -16,7 +16,7 @@ const usageOf = (u: any) => ({
 
 // `parent`: the uuid the first record hangs under, when these events go on
 // from records already written (the memory tool's transcript grows by appending).
-export function toClaudeRecords(s: Session, events: StoredEvent[], sessionId: string = s.id, opts: { version?: string; parent?: string | null } = {}): ClaudeRecord[] {
+export function toClaudeRecords(s: Session, events: readonly StoredEvent[], sessionId: string = s.id, opts: { version?: string; parent?: string | null } = {}): ClaudeRecord[] {
   const out: ClaudeRecord[] = [];
   let parent: string | null = opts.parent ?? null;
   const base = (ts: number) => ({

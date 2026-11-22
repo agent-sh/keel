@@ -40,7 +40,7 @@
 //   the request the model answers by acting (tacit-tools.ts);
 // - a store that often answers late without ever missing twice in a row is
 //   said too: once per session while a quarter of its last calls were late.
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import type { Bus } from "../core/bus.ts";
@@ -51,7 +51,6 @@ import type { Session, StoredEvent } from "../core/types.ts";
 import { checkpointAt } from "../engine/compact.ts";
 import { registerHooks } from "../engine/hooks.ts";
 import { toMessages } from "../engine/turn.ts";
-import { lineage } from "../core/tree.ts";
 import { toClaudeRecords, toJsonl } from "./claude-format.ts";
 import { readText } from "../core/proc.ts";
 import { asksMemory, factLines, factOf, memoryMeter, type MemoryMeter, type MemoryPath } from "./memory-meter.ts";
@@ -268,6 +267,7 @@ function writeTranscript(path: string, bytes: Buffer) {
   }
 }
 
+type TranscriptMark = { head: Session["head"]; model: string; workspace: string; stamp: string; last: string | null };
 type HookResult = { outcome: HookOutcome; text: string | null; ms?: number };
 // The answers one request waits for; `counted`: their lateness was counted.
 type StepAnswers = { answers: { call: Running; owed: Promise<unknown> }[]; counted?: boolean };
@@ -342,10 +342,14 @@ export class Tacit {
     constructor(private gone: (id: string) => void) { super(1); }
     override delete(id: string) { this.gone(id); return super.delete(id); }
   })((id) => this.removeTranscript(id));
-  // One version per session, no transcript bytes kept here. Store deletion
-  // clears SessionMaps; evicting an idle one just costs a rebuild next time.
-  // `last`: the uuid of the file's last record, which the next ones hang under.
-  private transcriptVersions = new SessionMap<{ head: Session["head"]; model: string; workspace: string; stamp: string; last: string | null }>(64);
+  // What each session's transcript file holds: the branch end it was written
+  // up to, the model and folder it was encoded with, and the file as it was
+  // left (`stamp`). `last`: the uuid of the file's last record, which the next
+  // ones hang under. No transcript bytes are kept here. The same is kept on
+  // disk beside the file (`<id>.mark`), so a daemon that starts, or a session
+  // that dropped out of this map, goes on appending to the file it finds
+  // instead of encoding and writing the whole session again.
+  private transcriptVersions = new SessionMap<TranscriptMark>(64);
   private readonly metrics = {
     since_ms: Date.now(),
     hooks: { "session-start": hookStats(), prompt: hookStats(), "pre-tool": hookStats(), "pre-compact": hookStats() } satisfies Record<Hook, ReturnType<typeof hookStats>>,
@@ -402,7 +406,7 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
     this.store.db
       .query("INSERT INTO memory_flags (session_id, use_memory, feed_memory) VALUES (?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET use_memory = excluded.use_memory, feed_memory = excluded.feed_memory")
       .run(id, next.use_memory ? 1 : 0, next.feed_memory ? 1 : 0);
-    if (!next.feed_memory) this.transcriptVersions.delete(id);
+    if (!next.feed_memory) this.dropMark(id);
     this.bus.emit({ t: "feature", name: "memory", session_id: id, data: next });
     return next;
   }
@@ -417,6 +421,34 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
     return join(this.store.stateDir, "transcripts", id ? `${id}.jsonl` : "not-fed-to-memory");
   }
 
+  // Where the session's transcript stands: from memory, else from the mark
+  // beside the file (read once, then held here).
+  private markFile(id: string): string {
+    return join(this.store.stateDir, "transcripts", `${id}.mark`);
+  }
+  private markOf(id: string): TranscriptMark | undefined {
+    const held = this.transcriptVersions.get(id);
+    if (held) return held;
+    let m: any;
+    try { m = JSON.parse(readFileSync(this.markFile(id), "utf8")); } catch { return undefined; }
+    if (!m || typeof m.model !== "string" || typeof m.workspace !== "string" || typeof m.stamp !== "string" || (m.head !== null && typeof m.head !== "string") || (m.last !== null && typeof m.last !== "string")) return undefined;
+    const mark: TranscriptMark = { head: m.head, model: m.model, workspace: m.workspace, stamp: m.stamp, last: m.last };
+    this.transcriptVersions.set(id, mark);
+    return mark;
+  }
+  // Written after the file: a daemon killed between the two finds a mark
+  // that is not the file's, and writes the transcript whole.
+  private setMark(id: string, mark: TranscriptMark) {
+    this.transcriptVersions.set(id, mark);
+    try { writeFileSync(this.markFile(id), JSON.stringify(mark), { mode: 0o600 }); } catch {
+      // Without it the next daemon writes the transcript whole, as before marks were kept.
+    }
+  }
+  private dropMark(id: string) {
+    this.transcriptVersions.delete(id);
+    try { rmSync(this.markFile(id), { force: true }); } catch {}
+  }
+
   transcript(s: Session): string {
     if (!this.flags(s.id).feed_memory) return this.transcriptFile();
     const path = this.transcriptFile(s.id);
@@ -428,41 +460,48 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
       const current = this.store.session(s.id);
       if (!current) return this.transcriptFile();
       const { head, model, workspace } = current;
-      const cached = this.transcriptVersions.get(s.id);
-      if (cached && cached.head === head && cached.model === model && cached.workspace === workspace && cached.stamp === fileStamp(path)) {
+      const stamp = fileStamp(path);
+      const cached = stamp === undefined ? undefined : this.markOf(s.id);
+      const same = !!cached && cached.model === model && cached.workspace === workspace && cached.stamp === stamp;
+      if (cached && same && cached.head === head) {
         stat.reused++;
         return path;
       }
-      this.transcriptVersions.delete(s.id);
-      const line = lineage(this.store.events(s.id), head);
       // The branch only grew since the file was written (the usual case: a
       // prompt, a reply, a tool result): the new events are appended, as the
       // format's own writer does, and the file is not encoded and written
-      // whole again on every hook call.
-      const at = cached && cached.model === model && cached.workspace === workspace && cached.stamp === fileStamp(path) ? line.findLastIndex((e) => e.id === cached.head) : -1;
+      // whole again on every hook call. Where the file ends is looked for
+      // from the branch's end back, on the branch as the store keeps it: a
+      // call costs the events that came since, not the session's length.
+      const line = this.store.lineage(s.id);
+      let at = -1;
+      if (cached && same) for (let i = line.length - 1; i >= 0; i--) if (line[i]!.id === cached.head) { at = i; break; }
       if (cached && at >= 0) {
         const records = toClaudeRecords(current, line.slice(at + 1), s.id, { parent: cached.last });
         const bytes = Buffer.from(toJsonl(records));
         if (bytes.length) appendFileSync(path, bytes);
-        const stamp = fileStamp(path);
-        if (stamp !== undefined) this.transcriptVersions.set(s.id, { head, model, workspace, stamp, last: (records.at(-1)?.uuid as string | undefined) ?? cached.last });
+        const after = fileStamp(path);
+        if (after !== undefined) this.setMark(s.id, { head, model, workspace, stamp: after, last: (records.at(-1)?.uuid as string | undefined) ?? cached.last });
+        else this.dropMark(s.id);
         stat.appended++;
         add(stat.bytes, bytes.length);
         return path;
       }
+      this.dropMark(s.id);
       mkdirSync(dirname(path), { recursive: true });
       // Encode once for the write and reuse its byte length.
       const records = toClaudeRecords(current, line);
       const bytes = Buffer.from(toJsonl(records));
       writeTranscript(path, bytes);
-      const stamp = fileStamp(path);
-      if (stamp !== undefined) this.transcriptVersions.set(s.id, { head, model, workspace, stamp, last: (records.at(-1)?.uuid as string | undefined) ?? null });
+      const written = fileStamp(path);
+      if (written !== undefined) this.setMark(s.id, { head, model, workspace, stamp: written, last: (records.at(-1)?.uuid as string | undefined) ?? null });
       stat.rebuilt++;
       add(stat.bytes, bytes.length);
     } catch (e) {
       stat.failed++;
       this.errors.capture("server", e, { at: "tacit transcript", session: s.id });
       // Keep the hook fail-open without handing it a previous version.
+      this.dropMark(s.id);
       return this.transcriptFile();
     } finally {
       add(stat.duration_ms, performance.now() - started);
@@ -841,8 +880,9 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
     this.store.db.query("INSERT INTO memory_sessions (session_id, checkpoint) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET checkpoint = excluded.checkpoint").run(id, checkpoint);
   }
 
-  lineage(id: string) {
-    return lineage(this.store.events(id), this.store.session(id)?.head ?? null);
+  // The branch the session shows, as the store keeps it (the same events in the same order as a walk over every event).
+  lineage(id: string): readonly StoredEvent[] {
+    return this.store.lineage(id);
   }
 
   forget(id: string) {
@@ -861,6 +901,7 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
   private removeTranscript(id: string) {
     const path = this.transcriptFile(id);
     try {
+      rmSync(this.markFile(id), { force: true });
       if (!existsSync(path)) return;
       rmSync(path, { force: true });
       this.metrics.transcript.removed++;
@@ -871,7 +912,7 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
   private sweepTranscripts() {
     let names: string[];
     try { names = readdirSync(dirname(this.transcriptFile("x"))); } catch { return; }
-    for (const n of names) if (n.endsWith(".jsonl") && !this.store.session(n.slice(0, -".jsonl".length))) this.removeTranscript(n.slice(0, -".jsonl".length));
+    for (const n of names) for (const end of [".jsonl", ".mark"]) if (n.endsWith(end) && !this.store.session(n.slice(0, -end.length))) this.removeTranscript(n.slice(0, -end.length));
   }
 
   install() {
