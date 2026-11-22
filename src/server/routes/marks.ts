@@ -3,6 +3,7 @@
 // owner speaks here again. Daemon state in the session's settings, so every
 // client (the page, the phone, the command line) agrees; setting a mark does
 // not move the session in the list.
+import { ownerPrompt } from "../../core/owner.ts";
 import * as alerts from "../../automation/alerts.ts";
 import type { Session } from "../../core/types.ts";
 import { PEER_TURNS } from "../../fleet/messages.ts";
@@ -46,6 +47,20 @@ export const failSeen = (s: Pick<Session, "settings">, stamp: unknown) => (stamp
 // owner has been at the page since and went on with other work: it is not news).
 export const failSeenBefore = (s: Pick<Session, "settings">, unreadAlert: boolean, lastPrompt = 0) =>
   (s.settings.failed_ms && s.settings.fail_seen_ms === undefined ? { fail_seen_ms: unreadAlert && s.settings.failed_ms >= lastPrompt ? 0 : s.settings.failed_ms } : null);
+
+// When the owner last wrote a prompt, in any session: from each session's newest user events
+// (`read`, newest first). Only the owner's own words count (src/core/owner.ts): an agent's task, a
+// supervisor's nudge and a hook's prompt are written by the harness, minutes ago on a machine with
+// agents at work, and would file every failure since the owner left as seen. An agent's session
+// holds none of the owner's words. The newest sessions are looked at: no pass over every event.
+export function lastOwnerPrompt(sessions: Pick<Session, "id" | "parent_id" | "updated">[], read: (id: string) => { ts: number; origin?: unknown; kind?: unknown }[]): number {
+  let at = 0;
+  for (const s of sessions.filter((x) => !x.parent_id).sort((a, b) => b.updated - a.updated).slice(0, 60)) {
+    const own = read(s.id).find((e) => ownerPrompt({ kind: e.kind ?? undefined, origin: e.origin ?? undefined }));
+    if (own && own.ts > at) at = own.ts;
+  }
+  return at;
+}
 
 export const marksOf = (s: Session, unread: number) => ({
   session_id: s.id,
@@ -108,19 +123,14 @@ export const marksRoutes: RouteModule = ({ store, bus }) => {
   const unreadFailure = (id: string) => {
     try { return !!store.db.query<{ n: number }, [string]>("SELECT 1 AS n FROM alerts WHERE session_id = ? AND read = 0 AND kind IN ('failed', 'limit', 'loop_failed') LIMIT 1").get(id); } catch { return false; }
   };
-  // When the owner last wrote a prompt, in any session: read once, and only when a failure needs it.
-  // The newest sessions are looked at, each by its own index: no pass over every event.
+  // When the owner last wrote a prompt, in any session: read once, and only when a failure needs it
+  // (each session by its own index).
   let prompted: number | undefined;
   const lastPrompt = () => {
     if (prompted !== undefined) return prompted;
-    prompted = 0;
-    const q = store.db.query<{ ts: number; origin: string | null; k: string | null }, [string]>(
-      "SELECT ts, json_extract(data, '$.origin') AS origin, json_extract(data, '$.kind') AS k FROM events WHERE session_id = ? AND kind = 'user' ORDER BY seq DESC LIMIT 20");
-    for (const s of [...store.sessions(), ...store.sessions({ archived: true })].sort((a, b) => b.updated - a.updated).slice(0, 60)) {
-      const own = q.all(s.id).find((e) => e.origin !== "harness" && e.origin !== "restart" && !e.k);
-      if (own && own.ts > prompted) prompted = own.ts;
-    }
-    return prompted;
+    const q = store.db.query<{ ts: number; origin: string | null; kind: string | null }, [string]>(
+      "SELECT ts, json_extract(data, '$.origin') AS origin, json_extract(data, '$.kind') AS kind FROM events WHERE session_id = ? AND kind = 'user' ORDER BY seq DESC LIMIT 20");
+    return (prompted = lastOwnerPrompt([...store.sessions(), ...store.sessions({ archived: true })], (id) => q.all(id)));
   };
   const lastEnd = (id: string) =>
     store.db.query<{ reason: string | null }, [string]>("SELECT json_extract(data, '$.reason') AS reason FROM events WHERE session_id = ? AND kind = 'turn_end' ORDER BY seq DESC LIMIT 1").get(id)?.reason ?? null;

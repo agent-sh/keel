@@ -2,7 +2,7 @@
 // editor command becomes, image kinds by bytes, a recap reply's shape, tags.
 import { afterAll, describe, expect, test } from "bun:test";
 import { parseDigest } from "./convo.ts";
-import { cleanTags, failSeen, failSeenBefore } from "./marks.ts";
+import { cleanTags, failSeen, failSeenBefore, lastOwnerPrompt } from "./marks.ts";
 import { imageKind, openPlan } from "./places.ts";
 import { allHooks } from "../../engine/hooks.ts";
 
@@ -154,4 +154,20 @@ test("a failure is seen when a device showed that failure, and old ones count as
   expect(failSeenBefore(s({ failed_ms: 600 }), true, 500)).toEqual({ fail_seen_ms: 0 });
   expect(failSeenBefore(s({ failed_ms: 100, fail_seen_ms: 0 }), false)).toBeNull();
   expect(failSeenBefore(s({}), false)).toBeNull();
+});
+
+test("the owner's last prompt is one the owner wrote: not an agent's task, a nudge or a hook's", () => {
+  const sessions = [{ id: "a", updated: 900 }, { id: "kid", parent_id: "a", updated: 950 }, { id: "b", updated: 800 }] as any[];
+  const events: Record<string, { ts: number; origin?: string; kind?: string }[]> = {
+    // Newest first, as they are read.
+    a: [{ ts: 700, origin: "momentum" }, { ts: 650, origin: "hook" }, { ts: 600, kind: "wake" }, { ts: 400 }],
+    // An agent's session holds its task and what its parent sent, never the owner's words.
+    kid: [{ ts: 940 }, { ts: 930, kind: "task" }],
+    b: [{ ts: 520, origin: "harness" }, { ts: 510, origin: "restart" }, { ts: 500, origin: "queued" }, { ts: 300, origin: "voice" }],
+  };
+  const read = (id: string) => events[id] ?? [];
+  expect(lastOwnerPrompt(sessions, read)).toBe(500);
+  expect(lastOwnerPrompt(sessions.filter((s) => s.id !== "b"), read)).toBe(400);
+  for (const origin of ["steer", "cli", "voice", "queued"]) expect(lastOwnerPrompt([{ id: "x", updated: 1 }] as any[], () => [{ ts: 7, origin }])).toBe(7);
+  expect(lastOwnerPrompt([], read)).toBe(0);
 });
