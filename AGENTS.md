@@ -119,7 +119,11 @@ under `~/.cache/keel-work/bun/research/`.
   hold says who made it (`queue_holds.by`): nothing but the owner starts a
   session the owner stopped, so a message to it waits in its queue behind the
   hold and its sender is told, and a sender's message releases only a hold
-  that sender's own stop made. A message whose session can no longer read it
+  that sender's own stop made. A message read in the turn of an agent's final
+  answer does not replace that answer: an agent's report holds every final it
+  wrote since its task began, the newest first and the earlier ones whole as
+  far as the cap allows (`collect`, `fitReport` in `src/automation/agents.ts`).
+  A message whose session can no longer read it
   (deleted, archived, the row removed) is told to its sender as a failure in
   its scope (`src/automation/undelivered.ts`), never dropped in silence.
 - Every feature is researched first: how Claude Code, Codex, OpenCode and the

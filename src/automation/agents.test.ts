@@ -884,3 +884,122 @@ test("an agent's report under the agents' cap passes the engine's result cap who
   }
   expect(await capResult(report, OUTPUT_CAP, undefined, "Bash")).not.toBe(report);
 });
+
+// A message that reaches an agent as it finishes is read in the turn of its
+// final answer, at the step after it. What the agent answers then is a later
+// report; the one it had written is not replaced by it.
+test("a final answer is kept when the turn goes on with a message that arrived as it finished", async () => {
+  const say = (a: agents.AgentRecord, text: string, more: Record<string, unknown> = {}) => store.append(a.session_id, "assistant", { blocks: [{ type: "text", text }], ...more });
+  const message = (a: agents.AgentRecord, text: string) => store.append(a.session_id, "user", { text: `Message from the session that started you:\n${text}`, origin: "steer", kind: "steer", agent_id: a.id });
+  const result = async (a: agents.AgentRecord) => { await settled(); return agents.get(a.id)!.result!; };
+  const report = `The review of the parser.\n${"A finding on a line of its own.\n".repeat(300)}That is all of it.`;
+  expect(report.length).toBeGreaterThan(9_000);
+
+  // One message after the final answer: the reply, then the report whole.
+  const a = await spawn();
+  say(a, report);
+  message(a, "Also name the file.");
+  end(a, "end_turn", "The file is parse.ts.");
+  expect(await result(a)).toBe(`The file is parse.ts.\n\nEarlier reports, oldest first:\n\n${report}`);
+
+  // Two at once, and a third after the reply: every answer is there, the newest first, the rest oldest first.
+  const b = await spawn();
+  say(b, report);
+  message(b, "First question.");
+  message(b, "Second question.");
+  say(b, "Both answered: yes and no.");
+  message(b, "A third.");
+  end(b, "end_turn", "The third: maybe.");
+  expect(await result(b)).toBe(`The third: maybe.\n\nEarlier reports, oldest first:\n\n${report}\n\nBoth answered: yes and no.`);
+
+  // The same across a restart that cut the reply: the answer before the message is a report, the cut turn adds none.
+  const c = await spawn();
+  say(c, report);
+  message(c, "Also name the file.");
+  store.append(c.session_id, "turn_end", { reason: "restart" });
+  store.append(c.session_id, "user", { text: "[harness] The daemon restarted during your previous turn. Continue where it left off.", origin: "restart" });
+  end(c, "end_turn", "The file is parse.ts.");
+  expect(await result(c)).toBe(`The file is parse.ts.\n\nEarlier reports, oldest first:\n\n${report}`);
+
+  // An agent that parks between the two: what it had said is its result while it waits, and both are in its report.
+  const d = await spawn();
+  const w = waits.create(d.session_id, waits.normalize({ kind: "timer", seconds: 60 }, dir));
+  end(d, "end_turn", report);
+  expect(agents.get(d.id)).toMatchObject({ status: "waiting", result: report });
+  await agents.send(d.id, "Also name the file.");
+  end(d, "end_turn", "The file is parse.ts.");
+  expect(agents.get(d.id)).toMatchObject({ status: "waiting", result: `The file is parse.ts.\n\nEarlier reports, oldest first:\n\n${report}` });
+  waits.cancel(w.id);
+  agents.onTurnStart(d.session_id);
+  end(d, "end_turn", "The build passed.");
+  expect(await result(d)).toBe(`The build passed.\n\nEarlier reports, oldest first:\n\n${report}\n\nThe file is parse.ts.`);
+
+  // Input that is not after an answer makes no report: words before a tool call, and the harness's note in the turn.
+  const e = await spawn();
+  store.append(e.session_id, "assistant", { blocks: [{ type: "text", text: "Reading the file first." }, { type: "tool_use", id: "t", name: "Bash", input: {} }] });
+  store.append(e.session_id, "tool_result", { results: [{ type: "tool_result", tool_use_id: "t", content: "ok" }] });
+  message(e, "Do not forget the tests.");
+  store.append(e.session_id, "user", { text: "[harness] This is the last model step this turn may take.", origin: "harness" });
+  end(e, "end_turn", "Done, with the tests.");
+  expect(await result(e)).toBe("Done, with the tests.");
+
+  // A reply cut at the output limit and the one that continues it are one answer, not two reports.
+  const f = await spawn();
+  say(f, "The first part of the answer, cut right he", { stop: "max_tokens" });
+  store.append(f.session_id, "user", { text: "[harness] Your last reply was cut off at the output limit. Continue exactly where it stopped.", origin: "harness" });
+  end(f, "end_turn", "re, and its end.");
+  expect(await result(f)).toBe("The first part of the answer, cut right here, and its end.");
+});
+
+// Several answers joined in one report stay within the cap. What does not fit
+// goes from the oldest first (the first that does not fit keeps its start and
+// its end, the ones older than it go whole), the newest is whole, and each
+// cut says how many bytes it took.
+test("a report of several answers over the cap shortens the oldest first and says how much it left out", () => {
+  const CAP = 10_000;
+  const fill = (name: string, n: number) => `${name} starts. ${`${name} é line. `.repeat(Math.ceil(n / 12))}`.slice(0, n - name.length - 7) + ` ${name} ends.`.slice(0);
+  const left = (text: string) => [...text.matchAll(/\[\.\.\. (\d+) bytes left out here \.\.\.\]/g)].map((m) => Number(m[1]));
+  const newest = fill("Newest", 3_000);
+  const middle = fill("Middle", 3_000);
+  const oldest = fill("Oldest", 9_000);
+  const tail = "\n\nIt did not finish: it ran out of steps.";
+
+  // Under the cap: nothing is cut.
+  const whole = agents.fitReport(newest, [middle], tail, CAP);
+  expect(whole).toBe(`${newest}\n\nEarlier reports, oldest first:\n\n${middle}${tail}`);
+
+  // Over it: the oldest gives what is needed and keeps its start and its end; the others are whole.
+  const cut = agents.fitReport(newest, [oldest, middle], tail, CAP);
+  expect(cut.length).toBeLessThanOrEqual(CAP);
+  expect(cut.length).toBeGreaterThan(CAP - 60); // no more is cut than is needed
+  expect(cut.startsWith(`${newest}\n\nEarlier reports, oldest first:\n\nOldest starts.`)).toBe(true);
+  expect(cut.endsWith(`Oldest ends.\n\n${middle}${tail}`)).toBe(true);
+  const said = left(cut);
+  expect(said).toHaveLength(1);
+  // The bytes it names are the bytes that are not there (two a character for é).
+  const shown = cut.slice(newest.length + "\n\nEarlier reports, oldest first:\n\n".length, cut.length - middle.length - tail.length - 2);
+  const [head, rest] = shown.split(/\n\n\[\.\.\. \d+ bytes left out here \.\.\.\]\n\n/);
+  expect(oldest.startsWith(head!) && oldest.endsWith(rest!)).toBe(true);
+  expect(said[0]).toBe(Buffer.byteLength(oldest) - Buffer.byteLength(head!) - Buffer.byteLength(rest!));
+  expect(said[0]).toBeGreaterThan(oldest.length - head!.length - rest!.length);
+
+  // Many: the earlier ones nearest the newest are whole, and the oldest go whole, counted.
+  const many = Array.from({ length: 30 }, (_, i) => fill(`Report${i + 1}`, 900));
+  const lots = agents.fitReport(newest, many, tail, CAP);
+  expect(lots.length).toBeLessThanOrEqual(CAP);
+  expect(lots.startsWith(newest)).toBe(true);
+  expect(lots.endsWith(`${many.at(-1)}${tail}`)).toBe(true);
+  const gone = /\[(\d+) older reports left out whole: (\d+) bytes\]/.exec(lots)!;
+  expect(Number(gone[1])).toBeGreaterThan(15);
+  expect(Number(gone[2])).toBe(many.slice(0, Number(gone[1])).reduce((n, r) => n + Buffer.byteLength(r), 0));
+  expect(lots).not.toContain("Report1 starts.");
+  expect(lots).toContain(`Report${Number(gone[1]) + 1} starts.`);
+
+  // The newest alone over the cap: it is cut last, in its middle, and says so; a pair of characters is not split.
+  const long = `${"😀".repeat(6_001)} the end of the newest`;
+  const alone = agents.fitReport(long, [middle], tail, CAP);
+  expect(alone.length).toBeLessThanOrEqual(CAP);
+  expect(alone.startsWith("😀") && alone.endsWith(`the end of the newest\n\nEarlier reports, oldest first:\n\n[1 older report left out whole: ${Buffer.byteLength(middle)} bytes]${tail}`)).toBe(true);
+  expect(left(alone)).toHaveLength(1);
+  expect(alone.isWellFormed()).toBe(true);
+});

@@ -1,6 +1,6 @@
 import { expect, test } from "./isolate.ts";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { shoot } from "./shots.ts";
 
@@ -378,6 +378,77 @@ test("a message to an agent the owner stopped waits for the owner's Resume, and 
     expect(read.slice(1)).toEqual(["Sent before the stop.", "The owner's own queued prompt.", "Sent after the stop."]);
     expect((await queue()).held).toBe(false);
     await expect.poll(async () => (await agent()).status, { timeout: 30_000 }).toBe("completed");
+  } finally {
+    r.end();
+  }
+});
+
+// A message that reaches an agent as it finishes: the agent's turn goes on with
+// the message after its final answer, and what it answers then does not take
+// the place of the report it had just written. Its parent gets every final
+// the agent wrote since it last heard from it, in one report.
+test("an agent's finished report is not replaced by its reply to a message that arrived as it finished", async ({ page }) => {
+  const r = await rig("message-final");
+  try {
+    const FINAL = "The first half, streamed before the hold. The second half, after it.";
+    // An agent whose final answer streams half, then waits for a file: the moment a message can arrive "as it finishes".
+    const finisher = async (title: string) => {
+      const gate = join(r.state, `final-${title.replace(/\W+/g, "-")}`);
+      const parent = await r.session(`${title} parent`);
+      await r.call(`/api/sessions/${parent}/messages`, { text: `script:calls ${JSON.stringify([{ name: "spawn_agent", input: { message: `${title}\nscript:hold ${gate}`, isolation: "none" } }])}` });
+      const agent = async () => (await r.call(`/api/sessions/${parent}/agents`, undefined, "GET")).agents[0];
+      await expect.poll(async () => (await agent())?.session_id, { timeout: 30_000 }).toBeTruthy();
+      const child = (await agent()).session_id as string;
+      await expect.poll(async () => (await r.view(parent)).running, { timeout: 30_000 }).toBe(false);
+      // Its answer is being written.
+      await expect.poll(async () => { const v = await r.view(child); return v.running && v.events.some((e: any) => e.kind === "turn_start"); }, { timeout: 30_000 }).toBe(true);
+      await page.waitForTimeout(500);
+      const reports = async () => (await r.events(parent)).filter((e) => e.kind === "user" && String(e.data.text).includes("<subagent_result")).map((e) => String(e.data.text));
+      return { parent, child, agent, reports, finish: () => writeFileSync(gate, "") };
+    };
+    const count = (text: string, part: string) => text.split(part).length - 1;
+
+    // One message, sent while the final answer is written.
+    const one = await finisher("Finisher");
+    const id = (await one.agent()).id as string;
+    expect(await r.call(`/api/sessions/${one.parent}/agents/${id}/message`, { message: "Also name the file. script:say The file is parse.ts." })).toMatchObject({ waits: true });
+    one.finish();
+    await expect.poll(async () => (await one.reports()).length, { timeout: 60_000 }).toBe(1);
+    // The agent read the message in the turn of its final answer, after it, and answered.
+    const ev = (await r.events(one.child)).filter((e) => e.kind === "assistant" || e.kind === "user" || e.kind === "turn_end").map((e) => (e.kind === "assistant" ? e.data.blocks.find((b: any) => b.type === "text")?.text : e.kind === "user" ? `user:${e.data.kind}` : `end:${e.data.reason}`));
+    expect(ev).toEqual(["user:task", FINAL, "user:steer", "The file is parse.ts.", "end:end_turn"]);
+    // What the parent receives, and what the listing of its agents serves: the reply and the report before it.
+    const want = `The file is parse.ts.\n\nEarlier reports, oldest first:\n\n${FINAL}`;
+    expect((await one.reports())[0]).toContain(want);
+    expect((await one.agent()).result).toBe(want);
+    expect((await r.call(`/api/sessions/${one.parent}/background`, undefined, "GET")).agents[0].result).toBe(want);
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto(`${r.url()}/s/${one.parent}`);
+    await page.getByTestId("agent-report").first().click();
+    await expect(page.getByTestId("agent-report").first()).toContainText("The second half, after it.");
+    await shoot(page, "message-delivery-07-final-and-reply");
+
+    // Two messages as it finishes, and the daemon killed between its final answer and its reply.
+    const two = await finisher("Finisher killed");
+    const id2 = (await two.agent()).id as string;
+    await r.call(`/api/sessions/${two.parent}/agents/${id2}/message`, { message: "First extra question." });
+    await r.call(`/api/sessions/${two.parent}/agents/${id2}/message`, { message: "Second extra question. script:slow" });
+    two.finish();
+    // Both are read after the final answer; the reply takes a few seconds, and the daemon is killed in them.
+    await expect.poll(async () => (await r.events(two.child)).filter((e) => e.kind === "user" && e.data.kind === "steer").length, { timeout: 30_000 }).toBe(2);
+    await r.restart("SIGKILL");
+    await expect.poll(async () => (await two.reports()).length, { timeout: 90_000 }).toBe(1);
+    const got = (await two.reports())[0]!;
+    expect(count(got, "Answered after a slow start.")).toBe(1);
+    expect(count(got, FINAL)).toBe(1);
+    expect(got.indexOf("Answered after a slow start.")).toBeLessThan(got.indexOf("Earlier reports, oldest first:"));
+    expect(got.indexOf("Earlier reports, oldest first:")).toBeLessThan(got.indexOf(FINAL));
+    expect((await two.agent()).result).toContain(FINAL);
+    expect(await r.prompts(two.child, "First extra question.")).toHaveLength(1);
+    expect(await r.prompts(two.child, "Second extra question.")).toHaveLength(1);
+    expect((await two.agent()).status).toBe("completed");
+    // The first agent's report was not sent again by the restart.
+    expect(await one.reports()).toHaveLength(1);
   } finally {
     r.end();
   }

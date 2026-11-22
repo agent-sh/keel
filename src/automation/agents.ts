@@ -89,9 +89,10 @@ export type AgentDef = {
 const envLimit = Number(process.env.KEEL_MAX_SUBAGENTS);
 const MAX_LIVE = Number.isSafeInteger(envLimit) && envLimit >= 1 ? envLimit : 8;
 // The most characters of an agent's report that go back to its parent: past
-// it the report keeps its start and its end. The tools that return a report
-// name this as their result cap, so a report within it arrives whole (a
-// report in JSON still parses).
+// it the earlier reports are shortened, oldest first, then the newest keeps
+// its start and its end (fitReport). The tools that return a report name this
+// as their result cap, so a report within it arrives whole (a report in JSON
+// still parses).
 export const RESULT_CAP = 40_000;
 
 const BUILTIN: AgentDef[] = [
@@ -681,14 +682,21 @@ export function adopt(parentId: string, childId: string, o: { title: string; typ
 // report again) is left out, and so is one said twice. Nothing else of an
 // earlier round is cut: what an agent wrote before a tool call in a round a
 // restart cut may be its findings, and they reach the parent whole unless a
-// later round holds them. A long result keeps its start and its end. `own`:
-// the agent wrote something itself; `error`: the error its last turn ended on.
+// later round holds them. `own`: the agent wrote something itself; `error`:
+// the error its last turn ended on.
+// A round ends with its turn, and also where the turn took in new input after
+// a final answer: a message that reaches the agent as it finishes is read in
+// the same turn (a steer joins at the step after the answer), and what the
+// agent says to it is a later round, never a replacement of the report it had
+// just written. A reply cut at the output limit and the reply that continues
+// it are one answer.
 const NO_FINAL = "(No final answer. Before its last tool call it wrote:)\n";
 function collect(a: AgentRecord, end?: string): { text: string; own: boolean; error: string } {
   const evs = D().store.events(a.session_id, a.first_seq);
   const rounds: { text: string; note?: boolean }[] = [];
   let final = "";
   let before = "";
+  let carry = ""; // a reply cut at the output limit, until the reply that continues it
   let failure = "";
   let bad: any[] = []; // the failed results of the newest step
   let err = "";
@@ -700,8 +708,10 @@ function collect(a: AgentRecord, end?: string): { text: string; own: boolean; er
   for (const e of evs) {
     if (e.kind === "assistant") {
       bad = [];
-      const t = (e.data.blocks as any[]).filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
+      const whole = carry + (e.data.blocks as any[]).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+      const t = whole.trim();
       const usesTools = (e.data.blocks as any[]).some((b) => b.type === "tool_use");
+      carry = e.data.stop === "max_tokens" && !usesTools ? whole : "";
       if (t && !usesTools) final = t;
       else if (t) { before = t; final = ""; }
       else if (usesTools) final = "";
@@ -710,17 +720,72 @@ function collect(a: AgentRecord, end?: string): { text: string; own: boolean; er
       // A failure a later step got past is not the agent's last word.
       failure = bad.length ? bad.map((r) => (typeof r.content === "string" ? r.content : JSON.stringify(r.content))).join("\n").slice(0, 2000) : "";
     } else if (e.kind === "error") err = e.data.message;
-    else if (e.kind === "turn_end") close();
+    else if (e.kind === "turn_end") { close(); carry = ""; }
+    // Input the turn took in after a final answer: that answer is a report of
+    // its own. (Not the harness's word that a cut reply goes on: `carry`.)
+    else if (e.kind === "user" && final && !carry) close();
   }
   close();
   const last = rounds.at(-1);
   const earlier = rounds.slice(0, -1).filter((r, i) => !rounds.slice(i + 1).some((x) => x.text.includes(r.text)));
-  let text = last ? `${last.note ? NO_FINAL : ""}${last.text}` : "";
-  if (earlier.length) text += `\n\nEarlier reports, oldest first:\n\n${earlier.map((r) => `${r.note ? NO_FINAL : ""}${r.text}`).join("\n\n")}`;
-  if (end && END_TEXT[end]) text += `${text ? "\n\n" : ""}It did not finish: ${END_TEXT[end]}.${failure ? `\nIts last tool failure:\n${failure}` : ""}`;
-  if (err) text += `${text ? "\n\n" : ""}Error: ${err}`;
-  if (text.length > RESULT_CAP) text = `${text.slice(0, RESULT_CAP / 2)}\n\n[... cut ...]\n\n${text.slice(-RESULT_CAP / 2)}`;
+  const said = (r: { text: string; note?: boolean }) => `${r.note ? NO_FINAL : ""}${r.text}`;
+  let tail = "";
+  if (end && END_TEXT[end]) tail += `${last ? "\n\n" : ""}It did not finish: ${END_TEXT[end]}.${failure ? `\nIts last tool failure:\n${failure}` : ""}`;
+  if (err) tail += `${last || tail ? "\n\n" : ""}Error: ${err}`;
+  const text = fitReport(last ? said(last) : "", earlier.map(said), tail, RESULT_CAP - REPORT_ROOM);
   return { text: text || "(the agent ended without a report)", own: rounds.length > 0, error: err };
+}
+
+// What a report's frame and the notes after it may add (the agent's id and
+// title, where its work is, what it left unread): kept free under RESULT_CAP,
+// so a report at the cap still passes a tool's result cap whole.
+const REPORT_ROOM = 1_500;
+// The least an earlier report keeps when it is shortened: its start and its end.
+const STUB = 600;
+const EARLIER = "\n\nEarlier reports, oldest first:\n\n";
+const bytes = (s: string) => Buffer.byteLength(s);
+// The index nearest `i` that does not split a character in two.
+const wholeAt = (s: string, i: number) => (i > 0 && i < s.length && s.charCodeAt(i) >= 0xdc00 && s.charCodeAt(i) <= 0xdfff ? i - 1 : i);
+// A text within `max` characters: its start and its end, and between them how many bytes are not there.
+function shortened(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const room = Math.max(0, max - 48); // the line that says what went
+  const head = wholeAt(text, Math.ceil(room / 2));
+  const from = Math.max(head, wholeAt(text, text.length - Math.floor(room / 2)));
+  return `${text.slice(0, head)}\n\n[... ${bytes(text.slice(head, from))} bytes left out here ...]\n\n${text.slice(from)}`;
+}
+
+// The newest report, the earlier ones after it and the closing notes, within
+// `cap` characters. The newest is whole, and so are the earlier ones nearest
+// to it, as many as fit. The first that does not fit keeps its start and its
+// end in the room that is left, and the ones older than it go whole, counted
+// in one line. Only a newest report that is longer than the cap by itself is
+// cut, in its middle. Every cut says how many bytes it took, in its place, so
+// the parent knows what it did not get (the agent's session holds all of it).
+const NOTE_ROOM = 80; // the line that counts the reports left out whole
+export function fitReport(last: string, earlier: string[], tail: string, cap: number): string {
+  const join = (newest: string, list: string[]) => `${newest}${list.length ? `${EARLIER}${list.join("\n\n")}` : ""}${tail}`;
+  if (join(last, earlier).length <= cap) return join(last, earlier);
+  // `reserve`: room kept for the line that counts what went whole.
+  const pass = (reserve: number) => {
+    const head = earlier.length ? EARLIER.length + reserve : 0;
+    const newest = shortened(last, Math.max(STUB, cap - tail.length - head));
+    let room = cap - newest.length - tail.length - head;
+    const kept: string[] = [];
+    let i = earlier.length - 1;
+    for (; i >= 0; i--) {
+      const r = earlier[i]!;
+      const sep = kept.length ? 2 : 0;
+      if (r.length + sep <= room) { kept.unshift(r); room -= r.length + sep; continue; }
+      if (room - sep >= STUB) { kept.unshift(shortened(r, room - sep)); i--; }
+      break;
+    }
+    const gone = earlier.slice(0, i + 1);
+    const note = gone.length ? `[${gone.length} older report${gone.length === 1 ? "" : "s"} left out whole: ${gone.reduce((n, r) => n + bytes(r), 0)} bytes]` : "";
+    return { gone: gone.length, text: join(newest, [note, ...kept].filter(Boolean)) };
+  };
+  const first = pass(0);
+  return first.gone ? pass(NOTE_ROOM).text : first.text;
 }
 const collectResult = (a: AgentRecord, end?: string) => collect(a, end).text;
 
