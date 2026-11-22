@@ -382,6 +382,9 @@ export class Store {
   // ledgers, the activity list. `sideFailed`: told of one that could not be made (set by the daemon).
   readonly side: Side;
   sideFailed?: (e: unknown, what: string) => void;
+  // Set by the daemon (src/admin/stall.ts): a piece of the store's own work that can hold the
+  // loop runs inside it, so a stall it makes is named (the side rows' commit, a whole collection).
+  timed?: <T>(label: () => string, f: () => T) => T;
 
   // Told of each event as it is stored (the search index, src/server/routes/search.ts): its row
   // number in the table, and `bulk` for one stored with many others in a transaction still open.
@@ -724,7 +727,7 @@ export class Store {
     });
     this.readOwedKey();
     // Rows beside the conversation wait for the next commit instead of making one each (side.ts).
-    this.side = new Side(this.db, (e, what) => this.sideFailed?.(e, what));
+    this.side = new Side(this.db, (e, what) => this.sideFailed?.(e, what), undefined, (label, f) => (this.timed ? this.timed(label, f) : f()));
     // The event tree (edit, fork, branches) and per-session settings. One
     // transaction: a start that fails part way leaves the database as it was,
     // and the next start does all of it.
@@ -1195,7 +1198,7 @@ export class Store {
       let bodies = false;
       for (const k of this.kept.values()) if (k.runs.some(Boolean)) { bodies = true; break; }
       if (bodies) collect(false);
-      else { this.owed = 0; collect(true); }
+      else { this.owed = 0; this.collectWhole(); }
     }
   }
 
@@ -1207,12 +1210,18 @@ export class Store {
   // watched. So it is asked to look. No session has been read for two
   // minutes by then: a whole collection holds the loop some tens of
   // milliseconds while nobody waits on it.
+  // A whole collection, named should it hold the loop long (a large heap, memory given back to the machine).
+  private collectWhole() {
+    const run = () => collect(true);
+    if (this.timed) this.timed(() => "collecting the memory the kept events gave back", run); else run();
+  }
+
   private rest() {
     clearInterval(this.sweeper);
     this.sweeper = undefined;
     if (this.owed < GIVE_BACK_BYTES) return;
     this.owed = 0;
-    collect(true);
+    this.collectWhole();
   }
 
   // Under memory pressure (src/core/rest.ts): the kept events beyond `share`

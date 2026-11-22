@@ -95,6 +95,7 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   store.readOff = (sql, params) => readsOf(store).rowsOff<any>(sql, params);
   // A side row that could not be written is a gap in a ledger: said once a kind, never a failure of a turn.
   store.sideFailed = (e, what) => errors.capture("server", e, { at: "a side write", what });
+  store.timed = timed;
   // A daemon that ends writes what waits first, however it ends short of a kill.
   process.once("exit", () => { try { store.side.flush(); } catch {} });
   // And a compaction has its summary checked against the whole conversation there, not on the loop.

@@ -51,7 +51,8 @@ export class Side {
   readonly counts = { asked: 0, commits: 0, failed: 0 };
 
   // `failed`: told of a side write that could not be made (it is dropped: a gap in a ledger, never a failure of what asked).
-  constructor(private db: Database, private failed: (e: unknown, what: string) => void = () => {}, private ms = SIDE_MS) {
+  // `around`: runs the commit that is made for the waiting writes alone (the daemon names it for a stall's row).
+  constructor(private db: Database, private failed: (e: unknown, what: string) => void = () => {}, private ms = SIDE_MS, private around: <T>(label: () => string, f: () => T) => T = (_l, f) => f()) {
     aware(db, this);
   }
 
@@ -91,7 +92,7 @@ export class Side {
     const kept = this.waiting;
     try {
       if (this.db.inTransaction) return this.join();
-      this.db.transaction(() => this.join())();
+      this.around(() => `writing ${n} rows beside the conversation (spans, ledgers, the search index)`, () => this.db.transaction(() => this.join())());
       this.counts.commits++;
       this.tries = 0;
     } catch (e) {

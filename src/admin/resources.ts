@@ -6,6 +6,7 @@
 import { readdirSync, readFileSync, statfsSync } from "node:fs";
 import type { Bus } from "../core/bus.ts";
 import { liveJobs, type Job } from "../tools/jobs.ts";
+import { timed } from "./stall.ts";
 
 const TICK_MS = 10; // USER_HZ is 100 on Linux (getconf CLK_TCK)
 const ACTIVE_MS = 5_000;
@@ -168,7 +169,8 @@ export class Resources {
 
   private schedule(ms: number) {
     clearTimeout(this.timer);
-    this.timer = setTimeout(() => { try { this.sample(); } finally { this.schedule(this.busy.size ? ACTIVE_MS : IDLE_MS); } }, ms);
+    // (Read from /proc for every process under the daemon: named, should it ever hold the loop.)
+    this.timer = setTimeout(() => { try { timed(() => `sampling what the daemon's ${this.procs.length} processes use`, () => this.sample()); } finally { this.schedule(this.busy.size ? ACTIVE_MS : IDLE_MS); } }, ms);
     (this.timer as any).unref?.();
   }
 

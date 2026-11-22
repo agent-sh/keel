@@ -20,6 +20,7 @@ import { STUCK_AFTER, stuckOf, stuckText, type After, type StuckItem } from "../
 import { joinPulse } from "../../core/pulse.ts";
 import type { SessionState } from "../../core/watch.ts";
 import { registerSettings } from "../../admin/settings.ts";
+import { timed } from "../../admin/stall.ts";
 import { factsOf, lens, progressOf, sessionState, stuckAfter, type Lens } from "../../automation/state.ts";
 import type { Deps, RouteModule } from "../app.ts";
 
@@ -118,6 +119,9 @@ export class StateBoard {
     if (!this.dirty.size) return;
     const ids = [...this.dirty];
     this.dirty.clear();
+    return timed(() => `reading the state of ${ids.length} sessions for the pages`, () => this.tell(ids));
+  }
+  private tell(ids: string[]) {
     const l = lens(this.from());
     const at = Date.now();
     let again = Infinity;
