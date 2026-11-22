@@ -92,7 +92,10 @@ started: the first page says so.
   because it says it acknowledges them (`?acks=1`, then `POST /api/shell/ack`
   for each one shown, with the word its own stream's hello gave it): another
   reader of the stream holds none, and cannot acknowledge one handed to the
-  app. The routes are for the machine itself: a remote browser gets 403.
+  app. One shell takes the alerts, the one attached longest that
+  acknowledges; another is told it is not the one (`takes` in its hello) and
+  the app then says so in its tray menu. The routes are for the machine
+  itself: a remote browser gets 403.
 - The page knows it runs in the app from one small object, `window.keelShell`
   (`ui/src/lib/shell.ts`), never from its user agent. With it the page tells
   the app its colors, goes where the app asks without a reload, and can open
@@ -112,7 +115,8 @@ may use it:
 | Main-frame navigation | The page, to a place of the page at the daemon's origin (`/`, `/s/ID`, `/p/ID`, `/settings`). | Any other document, another origin's or one the daemon serves that is no page, is refused when its answer arrives, and the page stays as it was. A file of the daemon's to keep is saved instead; the page stays there too. |
 | A link out of the daemon's origin | The owner's click. A scripted click or `window.open` without one does nothing. | Opens in the browser: http and https only. |
 | A new window for a place of the page | The owner's click on a link to it, or the page's `window` message. | A window of the app, capped as above. |
-| Clipboard, read | The top frame, by a keyed `paste` message, within a second of the owner's own key or button press in that window: the paste key when the event carried nothing (a copied picture), or Paste in the page's menu. | The app reads the clipboard itself and hands its text and picture to that page. The engine reads it for nobody: its asynchronous clipboard is off and every permission request is refused, in every frame. |
+| Clipboard, read | The top frame, by a keyed `paste` message, within a second of the owner's own key or button press in that window: the paste key when the event carried nothing (a copied picture), or Paste in the page's menu. | The app reads the clipboard itself and hands its text and picture to that page, the picture no larger than the page keeps one (scaled and encoded off the main loop). The engine reads it for nobody: its asynchronous clipboard is off and every permission request is refused, in every frame. |
+| The keyboard, for a frame of content (an artifact's page, the preview of a port) | The owner: a press with the pointer over the frame, or Tab into it. | The page's side, in a tab too (`ui/src/lib/frames.ts`): a frame the owner left takes no keyboard until they come back to it, and a focus the frame asks for itself goes back to what had it. So a paste aimed at the message box does not land in a frame. |
 | Clipboard, write | The top frame, by a keyed `copying` message within a second of the owner's press, then `copy` with the text within thirty seconds, once. | The app writes the text. A copy no press announced is refused. A frame can still copy its own selection inside the owner's click in it, as in a browser. |
 | Permission requests (clipboard, location, camera, microphone, notifications, pointer lock) | Nobody. | Refused, always. |
 | Downloads | The page, and a frame the page allows downloads in (the preview of a port you opened). An HTML artifact's frame cannot. | Saved to the downloads folder under a free name: never over a file, never outside that folder, never into the home folder. |
@@ -211,6 +215,12 @@ machine's. With another
 app in front it checks focus: a launch that carries the desktop's activation
 token brings Keel's window to the front, and one without it, or with a
 made-up one, does not.
+
+`KEEL_DESKTOP_INSTANCE=Name` runs an app of another name beside yours: it
+owns `io.github.agent_sh.Keel.Name` on the session bus, so its launches never
+reach your running app, nor yours it. The check runs as one, beside a second
+app of the app's own name, and refuses to start without a session bus and a
+display of the hidden workspace's own.
 
 `KEEL_DESKTOP_LOG=FILE` makes the app write a line for each thing it does
 (the check reads it), and `KEEL_DESKTOP_NO_BROWSER=1` keeps it from opening
