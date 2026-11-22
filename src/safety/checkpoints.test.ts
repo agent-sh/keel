@@ -282,3 +282,50 @@ test("undoing a turn takes back its change around a later edit, and names an ove
   expect(t.read("B")).toBe(lines("owner"));
   expect(t.read("C")).toBe("new\n");
 });
+
+// A snapshot of a workspace where nothing differs from the last one is that
+// one's tree, found with one git process (the listing of what differs).
+// Before, each snapshot ran six, and a turn takes three or more.
+test("a snapshot of an unchanged workspace runs one git process and gives the last tree; any change is seen", async () => {
+  const { Shadow } = await import("./shadow.ts");
+  const dir = join(root, `case-${++n}`);
+  const ws = join(dir, "ws");
+  mkdirSync(join(ws, "src"), { recursive: true });
+  writeFileSync(join(ws, "a.txt"), "one\n");
+  writeFileSync(join(ws, "src/b.txt"), "two\n");
+  writeFileSync(join(ws, ".gitignore"), "*.log\n");
+  const sh = new Shadow(join(dir, "state", "checkpoints"), ws);
+  let runs: string[] = [];
+  const git = sh.git.bind(sh);
+  sh.git = (args, opts) => { runs.push(args[0]!); return git(args, opts); };
+  // What a store that has never seen the workspace makes of it: the whole work, every time.
+  let k = 0;
+  const whole = () => new Shadow(join(dir, `other-${++k}`, "checkpoints"), ws).snapshot();
+  const snap = async () => { runs = []; const tree = await sh.snapshot(); return { tree, runs: runs.length }; };
+
+  const first = await snap();
+  expect(first.runs).toBeGreaterThan(3);
+  expect(first.tree).toBe(await whole());
+  // Nothing changed: the same tree, for one process. A file git ignores changes nothing either.
+  expect(await snap()).toEqual({ tree: first.tree, runs: 1 });
+  writeFileSync(join(ws, "debug.log"), "ignored\n");
+  expect(await snap()).toEqual({ tree: first.tree, runs: 1 });
+  // Each kind of change is seen, and the tree is the one the whole work gives.
+  const changes: (() => void)[] = [
+    () => writeFileSync(join(ws, "a.txt"), "one, changed\n"),
+    () => writeFileSync(join(ws, "src/new.txt"), "new\n"),
+    () => rmSync(join(ws, "src/b.txt")),
+    () => chmodSync(join(ws, "a.txt"), 0o755),
+    () => writeFileSync(join(ws, ".gitignore"), "*.tmp\n"),
+    () => writeFileSync(join(ws, "a.txt"), "eno, changed\n"), // the same size as before
+  ];
+  let before = first.tree;
+  for (const change of changes) {
+    change();
+    const now = await snap();
+    expect(now.tree).not.toBe(before);
+    expect(now.tree).toBe(await whole());
+    expect(await snap()).toEqual({ tree: now.tree, runs: 1 });
+    before = now.tree;
+  }
+});

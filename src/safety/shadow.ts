@@ -101,12 +101,23 @@ export class Shadow {
     this.excludes = text;
   }
 
+  // The tree the private index was last written out as, while the index is
+  // still the one that tree was written from.
+  private last?: string;
+
   // Before a whole-workspace snapshot: files over the cap are left out (and
   // dropped if an earlier snapshot held them); a snapshot that would add too
-  // much falls back to written mode. Returns false for that fallback.
-  private async sizeUp(index: string): Promise<boolean> {
+  // much falls back to written mode. Returns false for that fallback, and
+  // "same" when nothing in the workspace differs from the private index (no
+  // file new to it, changed or gone): the snapshot is the tree that index was
+  // last written out as, and nothing more is run for it. Most snapshots are
+  // that one: a turn takes one before its first call that can change files,
+  // one after each such call and one at its end, and most calls change none.
+  private async sizeUp(index: string): Promise<boolean | "same"> {
     this.writeExcludes([]);
-    const list = (await this.git(["ls-files", "-z", "--others", "--modified", "--exclude-standard"], { index, timeout: 30_000 })).split("\0").filter(Boolean);
+    const list = (await this.git(["ls-files", "-z", "--others", "--modified", "--deleted", "--exclude-standard"], { index, timeout: 30_000 })).split("\0").filter(Boolean);
+    if (!list.length && this.last) { this.skipped = []; return "same"; }
+    this.last = undefined;
     const big: string[] = [];
     const cap = fileCap();
     let total = 0;
@@ -139,7 +150,9 @@ export class Shadow {
         if (this.gitDir) return this.realTree();
         const index = join(this.dir, "keel-index");
         try {
-          if (!(await this.sizeUp(index))) return this.writtenTree(paths ?? []);
+          const sized = await this.sizeUp(index);
+          if (!sized) return this.writtenTree(paths ?? []);
+          if (sized === "same") return this.last!;
           await this.addAll(index, 30_000);
         } catch (e) {
           // Too large or too slow to snapshot whole: fall back to the files the tools write.
@@ -147,7 +160,7 @@ export class Shadow {
           this.reason = `the whole workspace could not be snapshotted (${(e as Error).message.slice(0, 160)})`;
           return this.writtenTree(paths ?? []);
         }
-        return (await this.git(["write-tree"], { index })).trim();
+        return (this.last = (await this.git(["write-tree"], { index })).trim());
       }
       return this.writtenTree(paths ?? []);
     });
