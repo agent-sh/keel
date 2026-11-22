@@ -1,3 +1,4 @@
+import { onInboxView, peekInboxView } from "../../lib/inbox-view.ts";
 import { Dialog } from "@base-ui/react/dialog";
 import { Bell, CheckCheck, Settings2, X } from "lucide-react";
 import { useEffect, useId, useMemo, useState, useSyncExternalStore } from "react";
@@ -264,7 +265,13 @@ function Failed({ a }: { a: Alert }) {
 }
 
 export function InboxPanel({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
-  const [tab, setTab] = useState("inbox");
+  const [tab, setTab] = useState(() => peekInboxView()?.tab ?? "inbox");
+  // A command asked for one of the views (lib/inbox-view.ts): shown when the panel opens, or in place.
+  useEffect(() => {
+    const take = () => { const a = peekInboxView(); if (a) setTab(a.tab); };
+    if (open) take();
+    return onInboxView(take);
+  }, [open]);
   const panel = useId();
   const routes = useAuto((s) => s.settings?.routes);
   const channels = useAuto((s) => s.channels);

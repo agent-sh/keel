@@ -19,7 +19,7 @@ import { handShell, shellShows, tellShells } from "../server/shell.ts";
 // sent as a frame, and delivered to the channels the settings name for its
 // kind. A channel is anything with deliver(); phone push registers one later.
 
-export const KINDS = ["approval", "question", "finished", "failed", "limit", "loop_failed", "agent", "snooze_over", "regression", "refused"] as const;
+export const KINDS = ["approval", "question", "finished", "failed", "limit", "loop_failed", "agent", "snooze_over", "regression", "refused", "declined"] as const;
 export type AlertKind = (typeof KINDS)[number];
 // Each channel's handoff: pending until deliver() settles, then sent or failed.
 // Sent means the channel took it, not that the owner saw it.
@@ -729,6 +729,14 @@ export function onTurnEnd(sessionId: string, reason: string, opts: { subagent: b
     return;
   }
   if (reason === "max_tokens") { raise("failed", sessionId, `Cut off: ${title}`, "The reply reached the model's output limit."); return; }
+  // The model declined the turn: it did not finish, and it is not filed as finished. What it said, when it said anything.
+  if (reason === "refusal") {
+    if (opts.loopRun) return;
+    const said = evs.findLast((e) => e.kind === "assistant" && (e.data.blocks as any[]).some((b) => b.type === "text" && b.text.trim()));
+    const text = said ? (said.data.blocks as any[]).filter((b) => b.type === "text").map((b) => b.text).join(" ").trim() : "";
+    raise("declined", sessionId, `Declined: ${title}`, plainLine(text) || "The model declined the turn.", said ? { event_id: said.id } : undefined);
+    return;
+  }
   if (reason === "interrupted" || opts.loopRun) return;
   // A question that expired unanswered in this turn, with none answered after
   // it: the owner still owes that decision, so the turn is not filed as finished.

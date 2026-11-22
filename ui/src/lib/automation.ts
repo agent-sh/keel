@@ -154,8 +154,12 @@ export const auto = {
   unsnooze: (sessionId: string) => api(`/api/sessions/${sessionId}/snooze`, { method: "DELETE" }),
   snoozeAll: (until_ms: number) => api("/api/snooze", { method: "PUT", body: JSON.stringify({ until_ms }) }),
   unsnoozeAll: () => api("/api/snooze", { method: "DELETE" }),
-  activity: (q: { before?: string; kind?: string[]; session_id?: string; q?: string }, init?: RequestInit) => {
+  // `since`: a span back from now (1h, 1d). `failures`: only what went wrong. `cap`: rows a session across sessions.
+  activity: (q: { before?: string; kind?: string[]; session_id?: string; q?: string; since?: string; failures?: boolean; cap?: number }, init?: RequestInit) => {
     const p = new URLSearchParams({ limit: "50" });
+    if (q.since) p.set("since", q.since);
+    if (q.failures) p.set("only", "failures");
+    if (q.cap) p.set("cap", String(q.cap));
     if (q.before) p.set("before", q.before);
     if (q.kind?.length) p.set("kind", q.kind.join(","));
     if (q.session_id) p.set("session_id", q.session_id);

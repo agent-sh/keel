@@ -3,6 +3,7 @@ import { lazy } from "react";
 import { seeAllAgents } from "../../lib/agent-seen.ts";
 import { auto, setAdvisorSession } from "../../lib/automation.ts";
 import { panels, settingsSections, slash } from "../../lib/extend.ts";
+import { showInboxView } from "../../lib/inbox-view.ts";
 import { isMac, registerCommand } from "../../lib/keys.ts";
 import { actions, getState, ensureModels, reportError } from "../../lib/store.ts";
 import { getUI, navigate, savePref } from "../../lib/ui.ts";
@@ -20,6 +21,15 @@ registerCommand(
   { id: "mark-unread", label: "Mark this session unread", group: "Session", words: "come back later keep flag dot", when: () => !!onScreen(), run: () => void auto.unreadSession(onScreen()!.id).catch(reportError) },
   { id: "clear-unread", label: "Clear all unread", group: "General", words: "mark all read seen indicators dots bell inbox", run: () => { seeAllAgents(); auto.read().catch(reportError); } },
 );
+// What happened, across sessions: the Inbox's Activity view, from the palette (it had no command of its own).
+registerCommand({
+  id: "activity", label: "Show activity: what happened in every session", group: "General",
+  words: "activity history happened past log turns agents restarts timeline everything", run: () => showInboxView({ tab: "activity" }),
+});
+registerCommand({
+  id: "activity-failures", label: "Show what went wrong: failures in every session", group: "General",
+  words: "activity failures failed errors wrong declined refused problems", run: () => showInboxView({ tab: "activity", activity: { failures: true } }),
+});
 
 // The automation lane's entries in the workbench: /loop and Settings > Alerts.
 slash.add({

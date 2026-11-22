@@ -1,3 +1,7 @@
+import { localStamp } from "../core/clock.ts";
+import { parseSince } from "../admin/timeline.ts";
+import { sessionRef } from "../admin/session-ref.ts";
+import { readsOf } from "../server/reads.ts";
 import { awakeHolds, awakeReasons, recheckAwake } from "../admin/awake.ts";
 import type { Judged } from "../safety/gate.ts";
 import { registerHooks } from "../engine/hooks.ts";
@@ -48,7 +52,7 @@ function loopsDue(): string | undefined {
   const n = D().store.db.query<{ n: number }, [number]>("SELECT COUNT(*) AS n FROM loops WHERE enabled = 1 AND next_ms IS NOT NULL AND next_ms <= ?").get(Date.now() + LOOP_HORIZON)?.n ?? 0;
   return n ? `${n} loop${n > 1 ? "s" : ""} due within 15 minutes` : undefined;
 }
-const TURN_WORDS: Record<string, string> = { end_turn: "finished", error: "failed", interrupted: "stopped", max_tokens: "cut off at the output limit" };
+const TURN_WORDS: Record<string, string> = { end_turn: "finished", error: "failed", interrupted: "stopped", max_tokens: "cut off at the output limit", refusal: "declined by the model", restart: "parked for a daemon stop" };
 const QUESTION_TOOLS = new Set(["AskUserQuestion", "request_user_input", "ask_user"]);
 
 function init(deps: Deps) {
@@ -629,6 +633,11 @@ export const automationRoutes: RouteModule = (deps) => {
         return json({ ok: true, ended });
       },
     },
+    // GET /api/activity?kind=&session_id=&q=&since=&until=&only=failures&cap=&before=&limit=&format=text
+    //   since, until: a span back from now (90s, 30m, 1h, 2d), epoch milliseconds or an ISO time.
+    //   only=failures: what went wrong. cap: at most that many rows a session in a list across sessions
+    //   (the last one shown says how many more). One row a turn: the alert a turn's end raised is on the
+    //   turn's row (`said`). format=text: a line a row, for a terminal or a model.
     "/api/activity": {
       GET: (req: Request) => {
         const q = new URL(req.url).searchParams;
@@ -637,7 +646,24 @@ export const automationRoutes: RouteModule = (deps) => {
         const kinds = (q.get("kind") ?? "").split(",").map((k) => k.trim()).filter(Boolean);
         const unknown = kinds.find((k) => !activity.ACTIVITY_KINDS.includes(k as activity.ActivityKind));
         if (unknown) return bad(`unknown kind ${unknown}; kinds: ${activity.ACTIVITY_KINDS.join(", ")}`);
-        return attempt(async () => json({ ...activity.list({ before: q.get("before") ?? undefined, limit, kinds, session_id: q.get("session_id") ?? undefined, q: q.get("q") ?? undefined }), kinds: activity.ACTIVITY_KINDS }));
+        const only = q.get("only");
+        if (only && only !== "failures") return bad("only is failures");
+        const cap = q.get("cap") ? Number(q.get("cap")) : undefined;
+        if (cap !== undefined && !(Number.isInteger(cap) && cap >= 0)) return bad("cap is a whole number of rows a session (0: no cap)");
+        return attempt(async () => {
+          const now = Date.now();
+          const since = q.get("since") ? parseSince(q.get("since")!, now) : undefined;
+          const until = q.get("until") ? parseSince(q.get("until")!, now) : undefined;
+          const session_id = q.get("session_id") ? sessionRef(deps.store, q.get("session_id")!).id : undefined;
+          const opts: activity.ListOpts = { before: q.get("before") ?? undefined, limit, kinds, session_id, q: q.get("q") ?? undefined, since, until, failures: only === "failures", cap };
+          // Read off the loop: the cap is a window over every row of the range.
+          const sql = activity.listSql(opts, now);
+          const page = activity.listRows(await readsOf(deps.store).sql<any>(sql.sql, sql.args), sql.limit, session_id ? 0 : cap);
+          if (q.get("format") !== "text") return json({ ...page, kinds: activity.ACTIVITY_KINDS });
+          const what = [only ? "failures only" : "", session_id ? `in "${deps.store.session(session_id)?.title || session_id}"` : "", since !== undefined ? `since ${localStamp(since)}` : ""].filter(Boolean).join(", ");
+          const text = activity.activityText(page.items, { titleOf: (id) => deps.store.session(id)?.title, has_more: page.has_more, now, ids: q.get("ids") !== "0", what });
+          return new Response(text + "\n", { headers: { "cache-control": "no-store", "content-type": "text/plain; charset=utf-8" } });
+        });
       },
     },
     // The sessions the activity filter offers: those with activity, newest first.

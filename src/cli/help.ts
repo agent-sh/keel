@@ -34,7 +34,8 @@ const GROUPS: [string, [string, string][]][] = [
     ["restore", "put a backup in place (daemon stopped); --config for its config files"],
     ["report", "a redacted bundle about a problem"],
     ["debug", "a failure's debug bundle, the errors, traces and the daemon log"],
-    ["usage", "tokens, spend and timings"],
+    ["usage", "tokens, spend and timings; the spend ranked by session and agent tree; --slow: the slowest requests"],
+    ["activity", "what happened across sessions, newest first; --failures, --since, --session"],
     ["service", "write the systemd user unit"],
   ]],
   ["Devices and editors", [

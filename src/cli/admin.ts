@@ -274,7 +274,7 @@ const USAGE_USAGE = `keel usage [--days N | --hours N] [--top N] [--slow [N]] [-
 const usage = wrap(USAGE_USAGE, { days: { type: "string" }, hours: { type: "string" }, top: { type: "string" }, slow: { type: "boolean" } }, async (v, pos) => {
   if (v.days !== undefined && v.hours !== undefined) return (console.error(`keel usage: --days and --hours do not mix\n\n${USAGE_USAGE}`), 3);
   const n = v.hours !== undefined ? Number(v.hours) : v.days === undefined ? 7 : Number(v.days);
-  if (!(Number.isFinite(n) && n > 0)) return (console.error(`keel usage: --${v.hours !== undefined ? "hours" : "days"} is a number above 0\n\n${USAGE_USAGE}`), 3);
+  if (!(Number.isFinite(n) && n > 0)) return (console.error(`keel usage: --${v.hours !== undefined ? "hours is a number of hours" : "days is a number of days"} above 0\n\n${USAGE_USAGE}`), 3);
   const top = v.top === undefined ? 10 : Number(v.top);
   if (!(Number.isInteger(top) && top > 0)) return (console.error(`keel usage: --top is a whole number above 0\n\n${USAGE_USAGE}`), 3);
   const since = Date.now() - n * (v.hours !== undefined ? 3_600_000 : 86_400_000);
@@ -303,9 +303,38 @@ const usage = wrap(USAGE_USAGE, { days: { type: "string" }, hours: { type: "stri
     `cache hit ${t.total.cache_hit_ratio == null ? "none" : `${Math.round(t.total.cache_hit_ratio * 100)}%`}; first token ${ms(t.total.ttft_p50)} median, ${ms(t.total.ttft_p95)} p95; request ${ms(t.total.latency_p50)} median`,
     "",
     ...t.by_model.map((m: any) => `  ${m.model.padEnd(48)} ${String(m.calls).padStart(5)} calls  cache ${m.cache_hit_ratio == null ? "  -" : `${Math.round(m.cache_hit_ratio * 100)}%`.padStart(4)}  first token ${ms(m.ttft_p50)}`),
-    ...(bySession.buckets.length ? ["", `Spend by session, ${range}, dearest first:`, ...rankLines(bySession.buckets, title(bySession), top)] : []),
-    ...(byTree.buckets.some((b: any) => b.agents) ? ["", "Spend by agent tree (a session with the agents under it):", ...rankLines(byTree.buckets, title(byTree), top)] : []),
+    ...(bySession.buckets?.length ? ["", `Spend by session, ${range}, dearest first:`, ...rankLines(bySession.buckets, title(bySession), top)] : []),
+    ...(byTree.buckets?.some((b: any) => b.agents) ? ["", "Spend by agent tree (a session with the agents under it):", ...rankLines(byTree.buckets, title(byTree), top)] : []),
   ].join("\n"));
+  return 0;
+});
+
+// What happened, across sessions, as text: one line a turn, an agent, an alert, a restart.
+const ACTIVITY_USAGE = `keel activity [--since 1h] [--until 30m] [--failures] [--session ID] [--kind KIND[,KIND]] [--grep TEXT] [--limit N] [--all] [--before CURSOR] [--no-ids] [--url URL] [--json]
+  Everything the daemon and its sessions did, newest first, a line a row: a turn's end (one row a turn, with what it
+  said at its end), an agent started or settled, a loop run, a wait, an approval answered, a restart with the turns it cut.
+  --failures lists only what went wrong. --since and --until take a span back from now (90s, 30m, 1h, 2d) or an ISO time.
+  --session takes a session's id, a prefix of it or its last twelve characters. Kinds: alert, turn, agent, loop, wait,
+  approval, awake, snooze, daemon, memory. Across sessions a session is held to its 3 newest rows and the rest are
+  counted ("N more"); --all lists every row, and so does --session. Times are local, with the offset said once.`;
+const activityCmd = wrap(ACTIVITY_USAGE, {
+  since: { type: "string" }, until: { type: "string" }, failures: { type: "boolean" }, session: { type: "string" }, kind: { type: "string" }, grep: { type: "string" },
+  limit: { type: "string" }, all: { type: "boolean" }, before: { type: "string" }, "no-ids": { type: "boolean" },
+}, async (v) => {
+  const q = new URLSearchParams(Object.entries({
+    since: v.since, until: v.until, only: v.failures ? "failures" : undefined, session_id: v.session, kind: v.kind, q: v.grep, limit: v.limit ?? "60", before: v.before,
+    cap: v.all || v.session ? undefined : "3", format: v.json ? undefined : "text", ids: v["no-ids"] && !v.json ? "0" : undefined,
+  }).filter(([, x]) => x) as [string, string][]);
+  const url = urlOf(v.url);
+  let r: Response;
+  try {
+    r = await fetch(`${url}/api/activity?${q}`, { headers: authHeaders() });
+  } catch {
+    throw new Error(`no daemon answers at ${url} (pass --url or set KEEL_URL)`);
+  }
+  if (!r.ok) throw new Error(await refusal(url, r, await r.json().catch(() => ({}))));
+  // Titles and replies are a model's or the owner's words: no escape sequence of theirs reaches the terminal.
+  process.stdout.write(v.json ? JSON.stringify(await r.json(), null, 2) + "\n" : clean(await r.text()));
   return 0;
 });
 
@@ -375,5 +404,6 @@ export const adminCommands = {
   restore,
   report,
   usage,
+  activity: activityCmd,
   service,
 };

@@ -1,7 +1,9 @@
-import { Bell, Bot, Brain, Coffee, Hand, Moon, Power, ReceiptText, Repeat, Search, Timer, Workflow } from "lucide-react";
+import { Bell, Bot, Brain, Coffee, Hand, Moon, Power, ReceiptText, Repeat, Search, Timer, TriangleAlert, Workflow } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { activityTarget, auto, openSession, placeName, useAuto, type Activity, type Alert } from "../../lib/automation.ts";
+import { onInboxView, takeInboxView } from "../../lib/inbox-view.ts";
 import { reportError, useStore } from "../../lib/store.ts";
+import { saidOf } from "../../../../src/automation/activity-words.ts";
 import { openReceipt } from "../../lib/timeline.ts";
 import { ago, cn, when } from "../../lib/utils.ts";
 import { type Restart, restartSummary, restartTurnLine } from "../../../../src/admin/life-rows.ts";
@@ -21,15 +23,27 @@ const KIND: Record<Activity["kind"], { label: string; icon: typeof Bell }> = {
   memory: { label: "Memory", icon: Brain },
 };
 const KINDS = Object.keys(KIND) as Activity["kind"][];
+// The alerts a turn's end raises: each is on its turn's row (src/automation/activity.ts).
+const END_ALERTS = new Set(["finished", "failed", "limit", "declined"]);
 
-const bad = (a: Activity) => /fail|error|refused/.test(a.sub) || a.sub === "denied" || (a.kind === "daemon" && (a.sub === "killed" || a.sub === "crash"));
+// Across sessions a session shows its newest rows and counts the rest: one busy session does not fill the list.
+const CAP = 3;
+const SINCE: { value: string; label: string }[] = [{ value: "", label: "Any time" }, { value: "1h", label: "Last hour" }, { value: "1d", label: "Last day" }, { value: "7d", label: "Last week" }];
+const SINCE_MS: Record<string, number> = { "1h": 3_600_000, "1d": 86_400_000, "7d": 7 * 86_400_000 };
 
-// Everything that happened, across sessions, newest first: filter by kind,
-// session and words; a row opens its session (or the agent inside it).
+const bad = (a: Activity) => /fail|error|refused|refusal|declined/.test(a.sub) || a.sub === "denied" || (a.kind === "daemon" && (a.sub === "killed" || a.sub === "crash"));
+
+// Everything that happened, across sessions, newest first, one row a turn:
+// filter by kind, session, words, a time range and what went wrong; a row
+// opens its session (or the agent inside it).
 export function ActivityList({ onClose }: { onClose: () => void }) {
   const [kinds, setKinds] = useState<Activity["kind"][]>([]);
   const [sid, setSid] = useState("");
   const [q, setQ] = useState("");
+  // What a command asked the list to open on (the palette's "Show what went wrong").
+  const [failures, setFailures] = useState(() => !!takeInboxView()?.activity?.failures);
+  const [since, setSince] = useState("");
+  useEffect(() => onInboxView(() => { const a = takeInboxView(); if (a?.tab === "activity") setFailures(!!a.activity?.failures); }), []);
   const [items, setItems] = useState<Activity[]>([]);
   const [more, setMore] = useState(false);
   const [notes, setNotes] = useState<Record<string, { text: string; parent?: string | null }>>({});
@@ -37,7 +51,8 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
   const last = useAuto((s) => s.lastActivity);
   const sessions = useStore((s) => s.sessions);
   // The filter as one query: a reply is taken only while its query is current.
-  const query = useRef({ kinds, sid, q, gen: 0 });
+  const query = useRef({ kinds, sid, q, failures, since, gen: 0 });
+  const asked = (before?: string) => ({ kind: kinds, session_id: sid || undefined, q: q || undefined, since: since || undefined, failures, cap: sid ? undefined : CAP, before });
 
   useEffect(() => {
     auto.activitySessions().then((r) => setPlaces(r.sessions)).catch(reportError);
@@ -45,32 +60,50 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     const gen = ++query.current.gen;
-    query.current = { kinds, sid, q, gen };
+    query.current = { kinds, sid, q, failures, since, gen };
     const ctl = new AbortController();
     const t = setTimeout(() => {
-      auto.activity({ kind: kinds, session_id: sid || undefined, q: q || undefined }, { signal: ctl.signal })
+      auto.activity(asked(), { signal: ctl.signal })
         .then((r) => { if (query.current.gen === gen) { setItems(r.items); setMore(r.has_more); } })
         .catch((e) => { if (!ctl.signal.aborted) reportError(e); });
     }, q ? 200 : 0);
     return () => { clearTimeout(t); ctl.abort(); };
-  }, [kinds, sid, q]);
+  }, [kinds, sid, q, failures, since]);
 
   // A new row joins the list when it matches the filter; anything else leaves
-  // the loaded pages as they are.
+  // the loaded pages as they are. A turn's alert is on the turn's row: it
+  // joins that row and is no row of its own. A session held to its newest
+  // rows gives up its oldest shown and counts it.
   useEffect(() => {
     if (!last) return;
     const f = query.current;
+    const fold = !f.kinds.length || (f.kinds.includes("turn") && f.kinds.includes("alert"));
+    if (fold && last.kind === "alert" && END_ALERTS.has(last.sub) && last.turn_event) {
+      setItems((cur) => cur.map((x) => (x.kind === "turn" && x.turn_event === last.turn_event && x.session_id === last.session_id && !x.said ? { ...x, said: last.text } : x)));
+      return;
+    }
+    if (f.failures && !bad(last)) return;
+    if (f.since && last.ts < Date.now() - SINCE_MS[f.since]!) return;
     if (f.kinds.length && !f.kinds.includes(last.kind)) return;
     if (f.sid && last.session_id !== f.sid) return;
     if (f.q.trim() && !last.text.toLowerCase().includes(f.q.trim().toLowerCase())) return;
-    setItems((cur) => (cur.some((x) => x.id === last.id) ? cur : [last, ...cur]));
+    setItems((cur) => {
+      if (cur.some((x) => x.id === last.id)) return cur;
+      if (f.sid) return [last, ...cur];
+      // The rows shown of its session (or of its kind, for a row of no session), newest first.
+      const group = (x: Activity) => x.session_id ?? x.kind;
+      const mine = cur.filter((x) => group(x) === group(last));
+      if (mine.length < CAP) return [last, ...cur];
+      const drop = mine.at(-1)!, keep = mine.at(-2);
+      return [last, ...cur.filter((x) => x !== drop).map((x) => (x === keep ? { ...x, more: (drop.more ?? 0) + 1 } : x))];
+    });
     if (last.session_id && !places.some((p) => p.session_id === last.session_id)) setPlaces((p) => [{ session_id: last.session_id!, last: last.ts }, ...p]);
   }, [last]);
 
   const loadMore = () => {
     const gen = query.current.gen;
     const end = items.at(-1);
-    auto.activity({ kind: kinds, session_id: sid || undefined, q: q || undefined, before: end ? `${end.ts}:${end.id}` : undefined })
+    auto.activity(asked(end ? `${end.ts}:${end.id}` : undefined))
       .then((r) => {
         if (query.current.gen !== gen) return;
         setItems((cur) => { const have = new Set(cur.map((x) => x.id)); return [...cur, ...r.items.filter((x) => !have.has(x.id))]; });
@@ -107,6 +140,9 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
             <Search className="size-3.5 shrink-0 text-faint" />
             <input data-testid="activity-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search activity" className="min-w-0 flex-1 bg-transparent text-ui outline-none placeholder:text-faint" />
           </label>
+          <Select data-testid="activity-since" aria-label="Time range" value={since} onChange={(e) => setSince(e.target.value)} className="h-8 w-28 rounded-lg border border-line bg-bg px-2 text-caption text-muted outline-none focus:border-line-strong max-sm:hidden">
+            {SINCE.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </Select>
           <Select
             data-testid="activity-session"
             aria-label="Session"
@@ -119,6 +155,17 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
           </Select>
         </div>
         <div className="flex flex-wrap gap-1">
+          <button
+            type="button"
+            data-testid="activity-failures"
+            aria-pressed={failures}
+            onClick={() => setFailures(!failures)}
+            title="Only what went wrong: failed and declined turns, failed agents, loops and waits, refused calls, a daemon that went down"
+            className={cn("flex h-6 items-center gap-1 rounded-md border px-2 text-micro", failures ? "border-st-fail/50 bg-danger-soft text-fg" : "border-line text-muted hover:bg-hover")}
+          >
+            <TriangleAlert className="size-3" /> Failures
+          </button>
+          <span className="mx-0.5 w-px self-stretch bg-line" aria-hidden />
           {KINDS.map((k) => {
             const Icon = KIND[k].icon;
             const on = kinds.includes(k);
@@ -138,7 +185,7 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
         </div>
       </div>
       <ul className="min-h-0 flex-1 overflow-y-auto px-2 py-1.5" data-testid="activity-list">
-        {items.length === 0 && <li><Empty>Nothing yet.</Empty></li>}
+        {items.length === 0 && <li><Empty>{failures ? `Nothing went wrong${since ? ` in the ${SINCE.find((o) => o.value === since)!.label.toLowerCase()}` : ""}.` : kinds.length || sid || q || since ? "Nothing matches." : "Nothing yet."}</Empty></li>}
         {items.map((a) => {
           const Icon = KIND[a.kind]?.icon ?? Bell;
           const place = a.session_id ? placeName(sessions, a.session_id, a.data?.child_session, { child_title: a.data?.child_title }) : "";
@@ -150,6 +197,8 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
           const at = alert && title ? a.text.indexOf(`${title}: `) : -1;
           const cut = at >= 0 && at <= 40 ? a.text.slice(0, at) + a.text.slice(at + title!.length + 2) : a.text;
           const text = alert && cut.toLowerCase().startsWith(`${ALERT_LABEL[alert].toLowerCase()}: `) ? cut.slice(ALERT_LABEL[alert].length + 2) : cut;
+          // A turn's row carries what the turn said at its end (the alert its end raised is this row, not another).
+          const said = a.kind === "turn" ? saidOf(a, title) : "";
           const body = (
             <>
               {alert
@@ -157,6 +206,7 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
                 : <Icon className={cn("mt-0.5 size-3.5 shrink-0", bad(a) ? "text-danger" : "text-faint")} aria-hidden />}
               <span className="min-w-0 flex-1">
                 <span dir="auto" className="block text-caption leading-snug">{restart ? restartSummary(restart) : <>{alert && <span className="text-muted" data-testid="activity-word">{ALERT_LABEL[alert]} </span>}{text}</>}</span>
+                {said && <span dir="auto" className={cn("block truncate text-micro", bad(a) ? "text-st-fail" : "text-muted")} data-testid="activity-said">{said}</span>}
                 {restart?.turns.map((t) => (
                   <button
                     key={t.end_event}
@@ -197,6 +247,17 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
                 </div>
               ) : (
                 <div className="flex gap-2.5 px-2.5 py-1.5">{body}</div>
+              )}
+              {!!a.more && (
+                <button
+                  type="button"
+                  data-testid="activity-more"
+                  onClick={() => (a.session_id ? setSid(a.session_id) : setKinds([a.kind]))}
+                  title={a.session_id ? "Lists this session alone, every row" : "Lists this kind alone"}
+                  className="mb-1 ml-8 block rounded-md px-1.5 py-0.5 text-left text-micro text-muted underline decoration-line-strong underline-offset-2 outline-none hover:text-fg focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {a.more} more {a.session_id ? `in ${title || "this session"}` : `of this kind`}
+                </button>
               )}
               {n && (
                 <p role="status" data-testid="activity-note" className="flex items-center gap-2 px-2.5 pb-1.5 pl-8 text-caption text-muted">

@@ -15,7 +15,7 @@ import { D, emit } from "./core.ts";
 export type Snooze = { session_id: string; until_ms: number | null; until_needed: boolean; suspended: boolean; set_ms: number; muted: number };
 const GLOBAL = "*";
 const NEEDS_OWNER = new Set(["approval", "question"]);
-const ENDS = new Set(["failed", "limit"]);
+const ENDS = new Set(["failed", "limit", "declined"]);
 
 export function migrate() {
   D().store.migrate(`
@@ -114,7 +114,7 @@ function sessionFilter(kind: string, sessionId: string | null): { deliver: boole
     return { deliver: true };
   }
   if (ENDS.has(kind) || (s.until_needed && kind === "finished")) {
-    end(sessionId, kind === "finished" ? "its work is done" : kind === "limit" ? "it hit a usage limit" : "a turn failed");
+    end(sessionId, kind === "finished" ? "its work is done" : kind === "limit" ? "it hit a usage limit" : kind === "declined" ? "the model declined a turn" : "a turn failed");
     return { deliver: true };
   }
   if (s.suspended) return { deliver: true };

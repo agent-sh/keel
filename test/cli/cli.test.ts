@@ -405,7 +405,7 @@ describe("admin commands", () => {
     expect({ up: [up.code, up.out.split("\n").slice(0, 3)], re: [re.code, re.out], ran: [ran.code, ran.out, asked.at(-1)] }).toEqual({
       up: [0, ["keel upgrade [--timeout SECONDS] [--no-wait] [--url URL]", "  Restarts the daemon from the binary already at its path, the same as keel restart.", "  It installs nothing: put a new binary there first."]],
       re: [0, "keel restart [--timeout SECONDS] [--no-wait] [--url URL]\n  Stops new work, lets running turns finish (default 120 s), parks the rest so they continue after the start, then starts the daemon again from its binary.\n"],
-      ran: [0, "draining: 0 turns running, up to 5 s\n", 'POST /api/drain {"timeout_seconds":5,"restart":true}'],
+      ran: [0, "draining: 0 turns running, up to 5 s\n", 'POST /api/drain {"timeout_seconds":5,"restart":true,"reason":"keel upgrade from a terminal"}'],
     });
   }, 30_000);
 
@@ -420,10 +420,11 @@ describe("admin commands", () => {
     for (const bad of ["soon", "0", "-3", "Infinity", ""]) {
       asked.length = 0;
       const r = await k(["usage", `--days=${bad}`]);
-      got[`bad ${bad}`] = [r.code, asked.length, r.err.includes("--days is a number of days above 0") && r.err.includes("keel usage [--days N]")];
+      got[`bad ${bad}`] = [r.code, asked.length, r.err.includes("--days is a number of days above 0") && r.err.includes("keel usage [--days N | --hours N]")];
     }
     const refused = [3, 0, true];
-    expect(got).toEqual({ none: [0, 1, 168], two: [0, 1, 48], half: [0, 1, 12], "bad soon": refused, "bad 0": refused, "bad -3": refused, "bad Infinity": refused, "bad ": refused });
+    // Three reads a report: the measurements, the spend by session and by agent tree, all over the same range.
+    expect(got).toEqual({ none: [0, 3, 168], two: [0, 3, 48], half: [0, 3, 12], "bad soon": refused, "bad 0": refused, "bad -3": refused, "bad Infinity": refused, "bad ": refused });
   }, 60_000);
 });
 
