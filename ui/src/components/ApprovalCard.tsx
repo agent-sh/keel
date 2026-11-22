@@ -9,6 +9,7 @@ import { editBody, type EditBody } from "../lib/edit-body.ts";
 import { hasHidden, hasRtl, lookAlikes, spellHidden } from "../lib/hidden-chars.ts";
 import { dropRepeats, keyRefused, keysSettled, mayTake, noteAnswer, sequenceAt, takeKeys, typeToBox, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
+import { modalOpen } from "../lib/overlay.ts";
 import { safety, useSafety, type Approval, type Suggest } from "../lib/safety.ts";
 import { failed, reportError } from "../lib/store.ts";
 import { tipSay } from "../lib/tips.ts";
@@ -732,6 +733,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   const shut = mustBeOpened(a, whole, cut, unseen);
   const shutNow = useRef(shut);
   shutNow.current = shut;
+  const firstNow = useRef(first);
+  firstNow.current = first;
   const mustOpen = !unseen || unseen.n > 0 || shut;
   // All of a short text with marked characters is on the card: what its first control does is show the marks.
   const marks = shown.hidden;
@@ -781,12 +784,24 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
     if (!arrival) return false;
     asked.current = true;
     chosen.current = arrival.to === "allow";
+    // A card takes no keyboard under a dialog or a menu. What the owner asked from one (a row of
+    // the Inbox, the palette) is on its way out as the card hears of it: the arrival lands when it
+    // is gone, about a second at most.
+    let frames = 0;
+    const land = (target: () => Element | null, advance = true) => {
+      if (!root.current?.isConnected) return;
+      if (modalOpen() && ++frames < 60) return void requestAnimationFrame(() => land(target, advance));
+      takeKeys(target(), true, advance);
+    };
     if (arrival.to === "deny") { setReason((r) => r + arrival.typed); setDenying(true); }
-    else if (arrival.to === "card") takeKeys(list.current, true, false);
-    // (A card whose text must be opened is read on the list first, where Enter opens it; any other
-    // takes the keyboard itself, and its Allow takes it from there once the card is read.)
-    else if (shutNow.current) takeKeys(list.current, true);
-    else takeKeys(root.current, true);
+    else if (arrival.to === "card") land(() => list.current, false);
+    // One rule for every way the owner asks for a request (a row, the palette, a link, the key
+    // that goes to what waits): the keyboard lands on the list of requests, and after the settle
+    // time the Allow of the list's first card takes it if that card may hold it. So does a card
+    // whose text must be opened: Enter on the list opens it. Only a request that is named and is
+    // not the first of its list takes the keyboard itself (the card answers nothing there), so
+    // that its own Allow, not the first card's, is the one that takes it.
+    else land(() => (shutNow.current || firstNow.current ? list.current : root.current));
     return true;
   };
   useEffect(() => {

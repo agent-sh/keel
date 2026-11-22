@@ -109,8 +109,9 @@ function Inbox({ onClose }: { onClose: () => void }) {
       if (!page) return note(a.id, { text: "This session was deleted." });
       openSession(page);
       onClose();
-      // The row showed the request in short: it is read on its card, the keyboard on no answer.
-      focusApproval(a.data.approval_id, "card");
+      // As every way to a request: the keyboard lands on the list of requests, on no answer, and
+      // the card decides from there (a text that is not read keeps it off its answers).
+      focusApproval(a.data.approval_id, "allow");
       return;
     }
     if (t.child_deleted) return note(a.id, { text: "This agent was deleted.", parent: t.parent });

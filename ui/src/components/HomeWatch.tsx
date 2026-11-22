@@ -49,12 +49,13 @@ const MOST = { attention: 6, working: 4 };
 
 // Opens a session from the home screen: the session itself, or the agent's
 // session its first request waits in (`child`). With an approval waiting
-// there, its card is asked for its answer, and the card decides (lib/asks.ts,
-// ApprovalCard.tsx): a text that is not all read (cut, in part, marked, lines
-// never in view) keeps the keyboard on the list of requests, and one that is
-// whole takes it on Allow once after the settle time, never before. So a
-// short command needs no second look, and a key pressed on the way in answers
-// nothing.
+// there, the keyboard lands on the list of requests, as by every way to a
+// request (the palette opens a session through here too), and the card
+// decides from there (lib/asks.ts, ApprovalCard.tsx): a text that is not all
+// read (cut, in part, marked, lines never in view) keeps the keyboard off its
+// answers, and one that is whole takes it on Allow once after the settle
+// time, never before. So a short command needs no second look, and a key
+// pressed on the way in answers nothing.
 // With anything else waiting there (a question, a plan, a secret request) the
 // keyboard goes to that card, as the owner's own doing (lib/asks.ts): never to
 // an answer, and a secret's field takes it, since they came to give it.

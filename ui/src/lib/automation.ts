@@ -285,8 +285,8 @@ export const activityTarget = (id: string) => api<Target>(`/api/activity/${id}/t
 //   on an answer (lib/asks.ts),
 //   and a card whose text is not all shown never has it on one: there it
 //   stays on the list of requests.
-// - "card": on the list of requests, not on an answer, whatever the card
-//   holds (a row of the Inbox).
+// - "card": on the list of requests, not on an answer, and it stays there
+//   whatever the card holds (the desktop app bringing the owner to a session).
 // - "deny": the card opens its denial, the keyboard in the reason field. Never on Allow.
 // The card itself reads this when it is drawn (`arrivalOf`), however late that
 // is: an arrival is never forgotten in a way that lets the card take the

@@ -717,3 +717,88 @@ test("the region stays where a long text was read when the card's own words chan
     await drop(request, [s.id]);
   }
 });
+
+// One rule for every way the owner asks for a waiting session: a row of the rail, the palette, a
+// row of the home screen, an Inbox row, a link that names the request, the key that goes to what
+// waits; in one pane, and where the session is shown as a look over a pane that keeps its own
+// underneath. The keyboard lands on the list of requests, never on an answer; a key pressed on
+// the way in answers nothing; once the keyboard has been there for the settle time the Allow
+// once of a request that is whole, read and asks for no second look takes it, and Enter allows.
+test("every way to a waiting session lands the keyboard on its list, then on Allow once after the settle time", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  test.setTimeout(240_000);
+  // The page keeps what took the keyboard, and when: the list of requests, a card, an answer.
+  await page.addInitScript(() => {
+    const w = window as unknown as { __f: { at: number; on: string; view: string }[] };
+    w.__f = [];
+    addEventListener("focusin", (e) => {
+      const el = e.target as HTMLElement;
+      if (el.closest?.('[data-testid="approvals"]')) w.__f.push({ at: performance.now(), on: el.dataset.testid ?? el.tagName, view: el.closest<HTMLElement>("[data-view]")?.dataset.view ?? "" });
+    }, true);
+  });
+  const quiet = (await (await request.post("/api/sessions", { data: { model: MODEL, title: "Read: nothing waits here" } })).json()).session as { id: string };
+  const other = (await (await request.post("/api/sessions", { data: { model: MODEL, title: "Read: a second pane" } })).json()).session as { id: string };
+  const made = [quiet.id, other.id];
+  const one = async (word: string) => { const s = await asking(request, `Read: land ${word}`, [bash(`touch ${word}.txt`)]); made.push(s.id); await waits(request, s.id); return s; };
+  const panes = async (ids: string[]) => {
+    await page.goto("/api/daemon");
+    await page.evaluate((slots) => { localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.panes", JSON.stringify({ count: slots.length, slots, sizes: {}, active: 0 })); }, ids);
+  };
+  const palette = async (title: string) => {
+    await page.keyboard.press("Control+k");
+    await page.getByTestId("palette-input").fill(title);
+    await expect(page.getByTestId("palette").getByRole("option").first()).toContainText(title);
+    await page.keyboard.press("Enter");
+  };
+  // What the keyboard did after `act`: where it landed, what an Enter pressed there within the
+  // settle time did, when the Allow took it, and what Enter did then.
+  const lands = async (way: string, id: string, act: () => Promise<void>, view = "") => {
+    await act();
+    const card = page.locator(`[data-testid="approval"]:visible`).first();
+    await expect(card).toBeVisible();
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __f: unknown[] }).__f.length), { message: `${way}: the keyboard came to the list` }).toBeGreaterThan(0);
+    await page.keyboard.press("Enter");
+    await expect(card.getByTestId("allow-once")).toBeFocused({ timeout: 8000 });
+    const log = await page.evaluate(() => (window as unknown as { __f: { at: number; on: string; view: string }[] }).__f);
+    // It landed on the list of requests (in the look, where there is one), and stayed off the answers for the settle time.
+    expect(log[0]!.on, way).toBe("approvals");
+    if (view) expect(log[0]!.view, way).toBe(view);
+    const answer = log.find((x) => x.on.startsWith("allow"))!;
+    expect(answer.at - log[0]!.at, `${way}: when its Allow took the keyboard`).toBeGreaterThanOrEqual(950);
+    expect(await states(request, id), `${way}: an Enter on the way in`).toBe("pending");
+    await expect(card).toHaveAttribute("data-live", "true", { timeout: 8000 });
+    await page.keyboard.press("Enter");
+    await expect.poll(() => states(request, id), { message: way }).toBe("allowed/once");
+    table.push(`| ${way} | list of requests, then Allow once ${Math.round(answer.at - log[0]!.at)} ms later | Enter on the way in: pending; Enter after: allowed |`);
+    await page.evaluate(() => { (window as unknown as { __f: unknown[] }).__f.length = 0; });
+  };
+  try {
+    await panes([quiet.id]);
+    let s = await one("rail");
+    await lands("Rail row", s.id, async () => { await page.goto(`/s/${quiet.id}`); await page.getByTestId("sidebar").locator(`[data-session="${s.id}"]`).first().click(); });
+    s = await one("palette");
+    await lands("Palette", s.id, async () => { await page.goto(`/s/${quiet.id}`); await palette("Read: land palette"); });
+    s = await one("home");
+    await lands("Home row's title", s.id, async () => { await page.goto("/"); const r = page.locator(`[data-testid="home-session"][data-session="${s.id}"]`).getByTestId("home-open"); await r.focus(); await page.keyboard.press("Enter"); });
+    s = await one("inbox");
+    await lands("Inbox row", s.id, async () => { await page.goto(`/s/${quiet.id}`); await page.getByTestId("inbox-button").click(); await page.getByTestId("inbox-item").filter({ hasText: "Read: land inbox" }).first().locator("button").first().click(); });
+    s = await one("link");
+    const aid = (await (await request.get(`/api/sessions/${s.id}/approvals`)).json()).approvals[0].id as string;
+    await lands("?approval= link", s.id, async () => { await page.goto(`/s/${s.id}?approval=${aid}`); });
+    s = await one("key");
+    await lands("Alt+A", s.id, async () => { await page.goto(`/s/${quiet.id}`); await expect(page.getByTestId("composer").first()).toBeVisible(); await page.keyboard.press("Alt+a"); });
+    // Two panes: the palette opens the waiting session as a look over the pane worked in, which
+    // keeps its own session underneath. The keyboard is in the look.
+    await panes([quiet.id, other.id]);
+    s = await one("look");
+    await lands("Palette, as a look over a pane", s.id, async () => {
+      await page.goto(`/s/${quiet.id}`);
+      await expect(page.locator(`section.k-station[data-station="${other.id}"]`)).toBeVisible();
+      await palette("Read: land look");
+      await expect(page.locator('.k-view[data-view="look"]')).toBeVisible();
+    }, "look");
+  } finally {
+    await drop(request, made);
+    console.log(`\nPATH-TABLE-LANDS\n| Way | Keyboard | Keys |\n| --- | --- | --- |\n${table.filter((x) => x.includes("then Allow once")).join("\n")}\nPATH-TABLE-LANDS-END`);
+  }
+});
