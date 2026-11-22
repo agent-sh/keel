@@ -39,6 +39,16 @@ if (!g.__keelTunnelsExit) {
 const RELAY_MAX_BACKOFF = 60_000; // a relay cut as it opens is reopened after 1, 2, 4 s ... up to a minute
 // The wait before a machine that does not answer is asked again, from how long it has been out.
 export const relayRetry = (outMs: number) => Math.min(RELAY_MAX_BACKOFF, Math.max(1000, Math.round(outMs / 10)));
+// The wait before a lost stream is opened again.
+// - `cut`: the far daemon ended a stream that had just opened. That backs off twice as long each
+//   time (`times` so far): a reader it cuts again and again must not hammer it.
+// - Anything else is the link (the machine did not answer, or its stream went silent): asked
+//   again a tenth of the absence after the last try was made, not after it gave up. A try into a
+//   dead link takes its whole five seconds to say so, and waiting again after it left a machine
+//   out of reach for up to half a minute after its link was back (a silence was also counted as
+//   a cut, with the doubled wait).
+export const relayWait = (o: { cut: boolean; times: number; outMs: number; triedMs: number }) =>
+  o.cut ? Math.min(1000 * 2 ** o.times, RELAY_MAX_BACKOFF) : Math.max(250, relayRetry(o.outMs) - o.triedMs);
 // A stream's liveness. The far daemon says how often it pings (RELAY_PING_MS,
 // in its first frame): two pings missed and a second of grace, and the stream
 // is dead, so a machine that went silent without closing anything (its
@@ -541,6 +551,7 @@ export class Fleet {
     if (this.stopped) return; // a check that ended after a hot reload replaced this fleet opens nothing
     const relay: Relay = { abort: new AbortController(), sessions: prev?.sessions ?? new Map(), states: prev?.states ?? new Map(), statesRev: prev?.statesRev, live: false, stale: !!prev?.sessions.size, retry: prev?.retry ?? 0 };
     this.relays.set(id, relay);
+    const tried = Date.now();
     let opened = 0;
     // When the stream last said anything: a stream that goes silent was last heard then, not when it is given up.
     let heard = 0;
@@ -554,14 +565,17 @@ export class Fleet {
       // again and again) keeps backing off; one that held starts over.
       const held = opened && Date.now() - opened >= RELAY_STEADY_MS;
       if (held) relay.retry = 0;
-      relay.cut = opened && !held ? reason : undefined;
+      // Its own daemon ended it. A stream that went silent, or never opened, is the link's doing.
+      relay.cut = opened && !held && !silent ? reason : undefined;
       this.set(id, { state: "offline", reason, ...(silent && heard ? { offline_since: heard } : {}) });
       // A stream cut as it opens backs off twice as long each time. A machine
-      // that simply does not answer is asked again after a tenth of the time
-      // it has been out (a second at least): one that was out half a minute
-      // is heard within three seconds of its return, one out for hours once a minute.
+      // that simply does not answer is asked again a tenth of the time it has
+      // been out after the last try (a second at least): one that was out half
+      // a minute is heard within about five seconds of its return (the time a
+      // try made into the dead link takes to give up), one out for hours once a minute.
       const out = Date.now() - (this.row(id)?.offline_since ?? Date.now());
-      const wait = relay.cut ? Math.min(1000 * 2 ** relay.retry++, RELAY_MAX_BACKOFF) : (relay.retry++, relayRetry(out));
+      const wait = relayWait({ cut: !!relay.cut, times: relay.retry, outMs: out, triedMs: Date.now() - tried });
+      if (relay.cut) relay.retry++;
       relay.retryAt = Date.now() + wait;
       this.links.set(id, { ...this.links.get(id), state: "offline", reason, retry_at_ms: relay.retryAt });
       this.emitMachines();

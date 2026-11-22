@@ -18,7 +18,7 @@ const connection = await import("../automation/connection.ts");
 const { setDeps } = await import("../automation/core.ts");
 const snooze = await import("../automation/snooze.ts");
 const { bindFollow } = await import("./follow.ts");
-const { Fleet, relayRetry, relaySilence, RELAY_PING_MS, soundSession } = await import("./fleet.ts");
+const { Fleet, relayRetry, relaySilence, relayWait, RELAY_PING_MS, soundSession } = await import("./fleet.ts");
 const { plainReason, whyUnreached } = await import("./link.ts");
 
 // The waits are read when they are used, so they are set here, after every module is loaded
@@ -155,6 +155,15 @@ test("a stream is given up after two missed pings, and a machine is asked again 
   expect(relaySilence(undefined)).toBe(45_000); // a daemon that does not say keeps the long bound
   expect(relaySilence(5)).toBe(45_000);
   expect([0, 30_000, 300_000, 3_600_000].map(relayRetry)).toEqual([1_000, 3_000, 30_000, 60_000]);
+  // A link that died: each try into it takes five seconds to give up, and the next is made at
+  // once after it, not a wait later. So the machine is heard within about five seconds of its link.
+  expect(relayWait({ cut: false, times: 0, outMs: 12_000, triedMs: 5_000 })).toBe(250);
+  expect(relayWait({ cut: false, times: 4, outMs: 26_000, triedMs: 5_000 })).toBe(250); // whatever came before
+  // A try that is refused at once waits the tenth; a machine out for an hour is asked once a minute.
+  expect(relayWait({ cut: false, times: 0, outMs: 30_000, triedMs: 3 })).toBe(2_997);
+  expect(relayWait({ cut: false, times: 0, outMs: 3_600_000, triedMs: 5_000 })).toBe(55_000);
+  // A stream its own daemon ends as it opens backs off twice as long each time.
+  expect([0, 1, 2, 3, 9].map((times) => relayWait({ cut: true, times, outMs: 0, triedMs: 0 }))).toEqual([1_000, 2_000, 4_000, 8_000, 60_000]);
 });
 
 test("a link's failure is said in a person's words, and a session that is not whole is no session", () => {
