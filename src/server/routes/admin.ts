@@ -18,6 +18,7 @@
 // POST  /api/drain                         { timeout_seconds?, restart? } -> { ok, running, restart }
 // GET   /api/awake | POST { until_ms }     keep-awake state, a timed hold
 // POST  /api/report                        { session_id?, note?, dry_run? } -> { includes, path?, summary }
+import { checkpointerOf } from "../../core/checkpoint.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -80,6 +81,8 @@ export const adminRoutes: RouteModule = (deps) => {
   const awake = new Awake(bus, (e, ctx) => errors.capture("server", e, ctx));
   const retention = new Retention(store, deps.engine, errors);
   daemon.onExit(() => awake.stopAll());
+  // The checkpoint thread's connections close before the process ends: the daemon's is then the last, and its close empties the log.
+  daemon.onExit(() => checkpointerOf(store)?.close());
   // A check of the backups that runs does not outlive the daemon.
   daemon.onExit(() => storage.stopChecks());
   // The backup before a restart is made once the running turns had their
@@ -157,6 +160,8 @@ export const adminRoutes: RouteModule = (deps) => {
         pid: process.pid,
         started_ms: daemon.started,
         draining: daemon.draining,
+        // The store's disk does not answer (src/core/checkpoint.ts): the page says so across its top.
+        store: daemon.status().store,
         home: homedir(),
         default_cwd: deps.workspace,
         recent_cwds: store.db.query<{ workspace: string }, []>("SELECT workspace FROM sessions WHERE parent_id IS NULL GROUP BY workspace ORDER BY MAX(updated) DESC LIMIT 20").all().map((r) => r.workspace),
@@ -268,7 +273,9 @@ export const adminRoutes: RouteModule = (deps) => {
         // `reason`: why it was asked, a few words for the log (keel restart and the page say who asked).
         const reason = typeof b.reason === "string" && b.reason.trim() ? b.reason.replace(/\s+/g, " ").trim().slice(0, 120) : undefined;
         daemon.drain({ timeoutMs: (b.timeout_seconds ?? DRAIN_DEFAULT_S) * 1000, restart: !!b.restart, reason });
-        return json({ ok: true, running, restart: !!b.restart });
+        // (`notes`: what this stop or restart does not do, known as it begins: no backup when the store's disk does not answer.)
+        const notes = daemon.draining?.notes;
+        return json({ ok: true, running, restart: !!b.restart, ...(notes?.length ? { notes } : {}) });
       },
     },
 

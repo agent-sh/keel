@@ -104,6 +104,12 @@ const status = wrap(STATUS_USAGE, { sessions: { type: "boolean" }, away: { type:
   return 0;
 });
 
+// Each thing a daemon says of its stop or restart, printed once.
+const noted = new Set<string>();
+const note = (notes: unknown) => {
+  for (const n of Array.isArray(notes) ? notes : []) if (typeof n === "string" && !noted.has(n)) { noted.add(n); console.log(`note: ${n}`); }
+};
+
 // Waits for the daemon to go away (and, for a restart, to answer again). A
 // restart the daemon called off (its backup failed) ends the wait with its reason.
 async function follow(url: string, oldPid: number, back: boolean, limitMs: number) {
@@ -116,6 +122,9 @@ async function follow(url: string, oldPid: number, back: boolean, limitMs: numbe
   while (Date.now() < until) {
     await Bun.sleep(500);
     const d = await call(url, "/api/daemon").catch(() => null);
+    // What the stopping daemon says of this stop (no backup, what it could not save), and what the new one was left to say.
+    if (d && d.pid === oldPid) note(d.draining?.notes);
+    else if (d) note(d.start_notes);
     if (d && d.pid === oldPid && !d.draining && d.restart_failed) throw new Error(`the restart was called off, and the daemon (pid ${oldPid}) takes work again. ${d.restart_failed.error}`);
     if (d && d.pid === oldPid && d.draining) {
       until = Math.min(hard, Math.max(until, Date.now() + 90_000));
@@ -138,6 +147,7 @@ const drainCmd = (restart: boolean, upgrade = false) =>
       if (!(t >= 0)) throw new Error("--timeout is a number of seconds");
       const r = await call(url, "/api/drain", { method: "POST", body: JSON.stringify({ timeout_seconds: t, restart, reason: `keel ${upgrade ? "upgrade" : restart ? "restart" : "drain"} from a terminal` }) });
       console.log(`draining: ${r.running.length} turns running, up to ${t} s`);
+      note(r.notes);
       if (v["no-wait"]) return 0;
       const done = await follow(url, d.pid, restart, (t + 90) * 1000);
       if (!done) throw new Error(restart ? "the daemon did not come back in time" : "the daemon did not stop in time");

@@ -130,7 +130,12 @@ const METHODS = ["run", "get", "all", "values", "iterate"] as const;
 // Labels every statement of this connection. bun:sqlite gives each statement
 // object its own get, all, run, values and iterate: they are wrapped where
 // the statement is made (`query` keeps one statement a text, so once each).
-export function labelled(db: Database) {
+// `failed`: told of an error a statement or a transaction of this connection ended with (the store
+// looks for a write lock that was not had), before it is thrown on, with how many times this call
+// was tried again before. True: it is tried again (a wait for the write lock that is made a part at
+// a time: the error came before anything was done). An error: that one is thrown in its place.
+export function labelled(db: Database, failed?: (e: unknown, tries: number) => boolean | Error | void) {
+  const next = (e: unknown, tries: number): true | unknown => { const r = failed?.(e, tries); return r === true ? true : r instanceof Error ? r : e; };
   const d = db as unknown as Record<string, (...a: any[]) => any>;
   const cell = statementCell;
   const wrapped = new WeakSet<object>();
@@ -143,8 +148,10 @@ export function labelled(db: Database) {
       if (typeof f !== "function") continue;
       st[k] = function (...a: unknown[]) {
         const was = cell[0]!;
-        cell[0] = id;
-        try { return f.apply(st, a); } finally { cell[0] = inTransaction ? id : was; }
+        for (let tries = 0; ; tries++) {
+          cell[0] = id;
+          try { return f.apply(st, a); } catch (e) { const r = next(e, tries); if (r === true) continue; throw r; } finally { cell[0] = inTransaction ? id : was; }
+        }
       };
     }
     return st;
@@ -169,7 +176,9 @@ export function labelled(db: Database) {
   const transaction = d.transaction!.bind(db);
   d.transaction = (fn: (...a: unknown[]) => unknown) => {
     const t = transaction(fn) as ((...a: unknown[]) => unknown) & Record<string, (...a: unknown[]) => unknown>;
-    const within = (f: (...a: unknown[]) => unknown) => function (this: unknown, ...a: unknown[]) { return inTransactionOf(() => f.apply(this, a)); };
+    const within = (f: (...a: unknown[]) => unknown) => function (this: unknown, ...a: unknown[]) {
+      for (let tries = 0; ; tries++) { try { return inTransactionOf(() => f.apply(this, a)); } catch (e) { const r = next(e, tries); if (r === true) continue; throw r; } }
+    };
     return Object.assign(within(t), { deferred: within(t.deferred!), immediate: within(t.immediate!), exclusive: within(t.exclusive!) });
   };
   for (const m of ["run", "exec"] as const) {
@@ -177,8 +186,10 @@ export function labelled(db: Database) {
     d[m] = (sql: string, ...a: unknown[]) => {
       const was = cell[0]!;
       const id = labelId(sql);
-      cell[0] = id;
-      try { return call(sql, ...a); } finally { cell[0] = inTransaction ? id : was; }
+      for (let tries = 0; ; tries++) {
+        cell[0] = id;
+        try { return call(sql, ...a); } catch (e) { const r = next(e, tries); if (r === true) continue; throw r; } finally { cell[0] = inTransaction ? id : was; }
+      }
     };
   }
 }

@@ -5,7 +5,7 @@ import { chmodSync, readFileSync, statSync } from "node:fs";
 import { mkdir, open, readdir } from "node:fs/promises";
 import { dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { atCwd, realOf } from "../core/paths.ts";
-import { heldFile } from "../core/store-files.ts";
+import { heldFile, heldWrite } from "../core/store-files.ts";
 import type { ImageBlock, TextBlock } from "../core/types.ts";
 import { notFound } from "./missing.ts";
 import type { ToolContext } from "./types.ts";
@@ -261,8 +261,8 @@ async function readNotebook(p: string, ctx: ToolContext): Promise<ReadResult> {
 // about: the first try shows the file and marks it seen, so the next applies.
 export function guardOverwrite(p: string, ctx: ToolContext): string | null {
   const m = mtime(p);
-  if (m === -1) return null;
-  { const held = heldFile(p); if (held) return held; }
+  if (m === -1) return heldWrite(p) ?? null;
+  { const held = heldWrite(p); if (held) return held; }
   const seen = ctx.seen.get(p);
   if (seen === undefined) {
     ctx.seen.set(p, m);
@@ -275,7 +275,7 @@ export function guardOverwrite(p: string, ctx: ToolContext): string | null {
 }
 
 export async function writeFile(p: string, content: string, ctx: ToolContext) {
-  { const held = heldFile(p); if (held) throw new Error(held); }
+  { const held = heldWrite(p); if (held) throw new Error(held); }
   await mkdir(dirname(p), { recursive: true });
   let mode: number | undefined;
   try { mode = statSync(p).mode; } catch {}
@@ -419,7 +419,7 @@ export function editShown(before: string, oldS: string): { line: number } | unde
 export async function editFile(p: string, oldS: string, newS: string, all: boolean, ctx: ToolContext): Promise<{ ok: string; before: string; after: string } | { error: string }> {
   const m = mtime(p);
   if (m === -1) return { error: notFound(p, ctx.cwd) };
-  { const held = heldFile(p); if (held) return { error: held }; }
+  { const held = heldWrite(p); if (held) return { error: held }; }
   const bytes = new Uint8Array(await Bun.file(p).arrayBuffer());
   if (!isUtf8(bytes)) return { error: `${p} is not valid UTF-8; change it with a shell command that keeps its encoding.` };
   // A UTF-8 byte-order mark stays (the decoder drops it from the text).

@@ -341,7 +341,31 @@ export const awaited = (sessionId: string) => [...jobs.values()].filter((j) => j
 // that ended unreported is reported now. Ended ones come back as history, so
 // their logs open under the same IDs, and new jobs never reuse their numbers.
 // Returns how many were taken back to watch or report.
-export function adoptJobs(spillRoot: string): number {
+// Why a record of a job is not this daemon's to act on; undefined: it is. A record is read back
+// from a file, and a stop of its job signals the process and empties the cgroup it names, so it is
+// held against what a daemon really started: the process carries the job's mark in its environment
+// (startJob puts it there, and nothing else has it), it started when the record says, and the cgroup
+// is the job's own scope. A record whose process has ended names nothing to signal.
+function notOurs(m: Meta): string | undefined {
+  if (typeof m.id !== "string" || !/^[\w-]+$/.test(m.id) || !Number.isInteger(m.pid) || m.pid <= 1 || typeof m.started !== "number") return "it names no job and process a daemon could have started";
+  if (m.cgroup !== undefined && !new RegExp(`^/sys/fs/cgroup/[^\\0]*/keel-job-${m.id}-[a-z0-9]{1,8}\\.scope$`).test(m.cgroup)) return "the cgroup it names is not that job's scope";
+  if (m.cgroup?.split("/").includes("..")) return "the cgroup it names is not that job's scope";
+  if (process.platform !== "linux") return undefined;
+  const now = procStart(m.pid);
+  if (now === undefined) return undefined; // ended: nothing is signalled by pid
+  if (!m.boot) return `it does not say when process ${m.pid} started`;
+  if (now !== m.boot) return undefined; // another process has the number now: the job has ended (alive)
+  let env: Buffer;
+  try { env = procfs.environ(m.pid); } catch { return `process ${m.pid} cannot be read, so it cannot be told to be the job's`; }
+  const mark = Buffer.from(`${MARK}=${markOf(m)}`);
+  for (let at = env.indexOf(mark); at >= 0; at = env.indexOf(mark, at + 1)) {
+    if ((at === 0 || env[at - 1] === 0) && (at + mark.length === env.length || env[at + mark.length] === 0)) return undefined;
+  }
+  return `process ${m.pid} was not started as that job (it does not carry the job's mark)`;
+}
+
+// `refused`: told each record that is not adopted, with why.
+export function adoptJobs(spillRoot: string, refused?: (file: string, why: string) => void): number {
   let n = 0;
   let sessions: string[] = [];
   try { sessions = readdirSync(spillRoot); } catch { return 0; }
@@ -354,6 +378,9 @@ export function adoptJobs(spillRoot: string): number {
     for (const f of files) {
       let m: Meta;
       try { m = JSON.parse(readFileSync(join(dir, f), "utf8")); } catch { continue; }
+      if (!m || typeof m !== "object") continue;
+      const why = notOurs(m);
+      if (why) { refused?.(join(dir, f), why); continue; }
       counter = Math.max(counter, m.num ?? 0);
       if (jobs.has(m.id)) continue;
       const log = join(dir, `${m.id}.log`);

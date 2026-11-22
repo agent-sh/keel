@@ -205,6 +205,19 @@ test("the running spend total equals the summed ledger after random requests", (
   (store.db as any).query = query;
   expect(same().day.usd).toBeGreaterThan(0);
   expect(store.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM telemetry_calls").get()!.n).toBe(340);
+  // Another connection that commits something else (the checkpoint thread's own row) does not make the ledger be summed again.
+  const beside = new Database(join(store.stateDir, "keel.db"));
+  let again = 0;
+  (store.db as any).query = (sql: string) => { if (sql.includes("SUM(cost)")) again++; return query(sql); };
+  for (let n = 0; n < 5; n++) {
+    beside.run("UPDATE log_starts SET n = n + 1");
+    same();
+    send();
+  }
+  beside.close();
+  // (same() reads the ledger's sums itself, twice a call, to compare: none of them is the total's own.)
+  expect(again).toBe(5 * 2);
+  (store.db as any).query = query;
   // A row written by another connection (another process) is seen at the next check.
   const other = new Database(join(store.stateDir, "keel.db"));
   other.run("INSERT INTO telemetry_calls (session_id, ts, model, cost, unpriced, outcome) VALUES (?, ?, 'p:main', 5, 0, 'ok')", [s.id, Date.now()]);

@@ -253,7 +253,7 @@ export class Telemetry {
     const brk = r.outcome === "ok" && p.purpose === "turn" ? this.cacheBreak(p, u) : null;
     const x = p.prefix;
     const tag = armOf(this.store, p.session);
-    this.store.db
+    const row = this.store.db
       .query(`INSERT INTO telemetry_calls (session_id, ts, model, latency_ms, ttft_ms, input, output, cache_read, cache_write, cost, unpriced, outcome, stop, error, cache_break,
                 purpose, error_class, turn_event, z_tools, z_system, z_history, z_tail, attempt, step_ms, text_ms, compaction_event,
                 h_tools, h_system, n_msgs, h_msgs, h_kept, break_detail, cache_ms, exp_id, arm, toolset, speed, effort)
@@ -264,7 +264,7 @@ export class Telemetry {
         p.attempt, now - p.step0, p.text === undefined ? null : p.text - p.t0, p.compaction,
         x?.tools ?? null, x?.system ?? null, x?.n ?? null, x?.msgs ?? null, x?.kept ?? null, brk?.detail ?? null, p.cacheMs,
         tag?.exp_id ?? null, tag?.arm ?? null, p.toolset, u.speed ?? u.speed_asked ?? null, p.effort);
-    this.spent(p.t0, typeof u.cost === "number" ? u.cost : null, u.unpriced ? 1 : 0);
+    this.spent(p.t0, typeof u.cost === "number" ? u.cost : null, u.unpriced ? 1 : 0, Number(row.lastInsertRowid));
   }
 
   // A turn request that read less than half of what it and the last one of the
@@ -309,13 +309,19 @@ export class Telemetry {
 
   // Priced spend since local midnight and since the first of the month. A
   // budget is checked before every request, so the two sums are not read from
-  // the ledger each time: they are read once for the day (and again when
-  // another connection wrote to the database), and every request this daemon
-  // records after that is added to them (spent). Whatever else changes the
-  // ledger's rows of this month calls spendChanged.
-  private totals?: { day: number; month: number; version: number; sums: { usd: number; unpriced: number }[] };
+  // the ledger each time: they are read once for the day, and every request
+  // this daemon records after that is added to them (spent). They are read
+  // again when another connection added rows to the ledger: the store's
+  // version says that another connection committed something (the checkpoint
+  // thread does so each time it starts the log again), and the ledger's
+  // newest row then says whether it was to the ledger. Whatever else changes
+  // or removes the ledger's rows of this month calls spendChanged.
+  private totals?: { day: number; month: number; version: number; top: number; sums: { usd: number; unpriced: number }[] };
   private dataVersion(): number {
     return this.store.db.query<{ data_version: number }, []>("PRAGMA data_version").get()!.data_version;
+  }
+  private newest(): number {
+    return this.store.db.query<{ top: number | null }, []>("SELECT MAX(id) AS top FROM telemetry_calls").get()!.top ?? 0;
   }
   spend(now = new Date()) {
     const limits = this.limits();
@@ -323,9 +329,11 @@ export class Telemetry {
     const month = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
     const version = this.dataVersion();
     let t = this.totals;
+    // Another connection committed: to the ledger only if its newest row is not the one last seen here.
+    if (t && t.day === day && t.month === month && t.version !== version && this.newest() === t.top) t.version = version;
     if (!t || t.day !== day || t.month !== month || t.version !== version) {
       const s = spendOf(this.store.db, limits, now);
-      t = this.totals = { day, month, version, sums: [{ usd: s.day.usd, unpriced: s.day.unpriced_calls }, { usd: s.month.usd, unpriced: s.month.unpriced_calls }] };
+      t = this.totals = { day, month, version, top: this.newest(), sums: [{ usd: s.day.usd, unpriced: s.day.unpriced_calls }, { usd: s.month.usd, unpriced: s.month.unpriced_calls }] };
     }
     return {
       day: { since_ms: day, usd: t.sums[0]!.usd, unpriced_calls: t.sums[0]!.unpriced, limit_usd: limits.daily_usd },
@@ -333,9 +341,10 @@ export class Telemetry {
     };
   }
   // A request was recorded in the ledger with this start time, cost and unpriced mark.
-  private spent(ts: number, cost: number | null, unpriced: number) {
+  private spent(ts: number, cost: number | null, unpriced: number, id: number) {
     const t = this.totals;
     if (!t) return;
+    if (id > t.top) t.top = id;
     for (const [i, since] of [t.day, t.month].entries()) {
       if (ts < since) continue;
       t.sums[i]!.usd += cost ?? 0;

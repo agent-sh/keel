@@ -10,7 +10,7 @@
 // Spec: agentclientprotocol.com/protocol/v1 (initialize, session/new, load,
 // resume, prompt, cancel, close; session/update, session/request_permission,
 // fs/read_text_file, fs/write_text_file toward the client).
-import { heldFile } from "../core/store-files.ts";
+import { heldFile, heldWrite } from "../core/store-files.ts";
 import type { AgentConfinement } from "./confine.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
@@ -355,7 +355,7 @@ export class AcpRunner {
         const path = realOf(given);
         const v = await this.judge(s, { id: crypto.randomUUID(), name: "Write", cls: { kind: "edit", paths: [path] }, input: { file_path: path, content: String(p.content ?? "") }, signal });
         if (v) throw Object.assign(new Error(v.deny), { code: -32000 });
-        { const held = heldFile(path); if (held) throw Object.assign(new Error(held), { code: -32000 }); }
+        { const held = heldWrite(path); if (held) throw Object.assign(new Error(held), { code: -32000 }); }
         mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, String(p.content ?? ""));
         return null;

@@ -102,6 +102,8 @@ export const planRoutes: RouteModule = (deps: Deps) => {
         // Leaving plan mode lets the session do more: from a remote device, the owner's passkey.
         if (presence && !presence.allows(req, `plan:${w.id}`)) return json({ error: "this needs your passkey from a remote device", presence: { action: `plan:${w.id}` } }, 428);
         const plan = typeof b.plan === "string" ? b.plan.trim().slice(0, 40_000) : w.plan;
+        // (An approval changes the session's mode: not something owed to a store that takes no writes.)
+        if (store.refusing) return json({ error: "the daemon's store takes no writes right now, and a plan's approval changes the session's mode, which cannot be kept: approve it when the store takes writes again, or reject it now" }, 503);
         gate?.setPerm(w.session_id, { mode });
         const rec = { session_id: w.session_id, plan, approval_id: w.id, mode, approved_ms: Date.now() };
         store.db.query("INSERT INTO plans (session_id, data) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET data = excluded.data").run(w.session_id, JSON.stringify(rec));

@@ -2,7 +2,7 @@
 // that is waiting for running turns, a daemon the page cannot reach, and a
 // new build of the page after the daemon came back (the page asks before
 // reloading, so nothing typed is lost).
-import { RotateCw, Unplug } from "lucide-react";
+import { HardDrive, RotateCw, Unplug } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { shell } from "../lib/shell.ts";
 import { api, downSince, onFeature, readAtOpen, useStore } from "../lib/store.ts";
@@ -14,17 +14,20 @@ const AWAY_AFTER_MS = 1_000;
 
 export function AdminBand() {
   const [draining, setDraining] = useState<{ restart: boolean } | null>(null);
+  // The store's disk does not answer: since when, and whether nothing new is saved by now.
+  const [disk, setDisk] = useState<{ full?: { since_ms: number; free_mb?: number }; silent_since_ms?: number; refusing?: boolean; slow?: { since_ms: number; sync_ms: number; held_ms: number; refusing?: boolean } } | null>(null);
   const [updated, setUpdated] = useState(false);
   const build = useRef<string | null>(null);
   const connected = useStore((s) => s.connected);
   const shellAway = useUI((s) => s.shellAway);
   useEffect(() => {
-    const check = () => api<{ build_id: string; draining: any }>("/api/bootstrap").then((b) => {
+    const check = () => api<{ build_id: string; draining: any; store?: { full?: { since_ms: number; free_mb?: number }; silent_since_ms?: number; refusing?: boolean; slow?: { since_ms: number; sync_ms: number; held_ms: number; refusing?: boolean } } | null }>("/api/bootstrap").then((b) => {
       if (build.current && build.current !== b.build_id) setUpdated(true);
       build.current ??= b.build_id;
       setDraining(b.draining);
+      setDisk(b.store ?? null);
     });
-    return onFeature({ frame: (f) => { if (f.name === "daemon") setDraining(f.data.draining); }, reconnect: readAtOpen(check, "daemon status") });
+    return onFeature({ frame: (f) => { if (f.name === "daemon") { setDraining(f.data.draining); setDisk(f.data.store ?? null); } else if (f.name === "store") setDisk(f.data ?? null); }, reconnect: readAtOpen(check, "daemon status") });
   }, []);
   // A request the daemon turned away while draining (reportError says so): shown for a moment.
   const [refused, setRefused] = useState(false);
@@ -59,6 +62,56 @@ export function AdminBand() {
         <Unplug className="size-3.5 shrink-0 text-warn max-md:size-3" />
         <span className="inline-block whitespace-nowrap font-medium max-md:first-letter:uppercase"><span className="max-md:sr-only">Keel is </span>not reachable since {clock(away)}<span className="max-md:sr-only">. Reconnecting.</span></span>
         <span className="sr-only" data-testid="daemon-away-note">{note}</span>
+      </div>
+    );
+  }
+  // The disk is full: nothing is saved until there is room.
+  if (disk?.full && !updated) {
+    const free = disk.full.free_mb === undefined ? "" : `${disk.full.free_mb} MB free. `;
+    return (
+      <div role="alert" data-testid="store-full" className="flex min-h-9 shrink-0 items-center justify-center gap-3 border-b border-danger/40 bg-danger-soft px-4 py-1 text-ui animate-in">
+        <HardDrive className="size-3.5 shrink-0 text-danger" />
+        <span className="shrink-0 truncate font-medium max-md:hidden">Keel's disk is full since {clock(disk.full.since_ms)}: nothing new is saved.</span>
+        <span className="min-w-0 truncate text-caption text-muted max-md:hidden" data-testid="store-full-note">{free}Free some space: what you send waits and goes out by itself. You can still read sessions, stop a turn, answer a card and restart Keel.</span>
+        <span className="min-w-0 leading-snug md:hidden" data-testid="store-full-narrow">
+          <span className="font-medium">Disk full: nothing is saved.</span> <span className="text-muted">Free some space. Stop, answer and restart still work.</span>
+        </span>
+      </div>
+    );
+  }
+  // The disk is slow: saving waits seconds on it. Said while it is so; nothing is refused.
+  if (disk?.slow && disk.silent_since_ms === undefined && !updated) {
+    const s = (disk.slow.sync_ms / 1000).toFixed(1);
+    return (
+      <div role="status" data-testid="store-slow" className="flex min-h-9 shrink-0 items-center justify-center gap-3 border-b border-warn/40 bg-brass-soft px-4 py-1 text-ui animate-in">
+        <HardDrive className="size-3.5 shrink-0 text-warn" />
+        <span className="shrink-0 truncate font-medium max-md:hidden">{disk.slow.refusing ? `Keel's disk is slow since ${clock(disk.slow.since_ms)}: nothing is saved for some seconds.` : `Keel's disk is slow since ${clock(disk.slow.since_ms)}: saving waits on it.`}</span>
+        <span className="min-w-0 truncate text-caption text-muted max-md:hidden" data-testid="store-slow-note">{disk.slow.refusing ? `A sync of its store takes ${s} s. What you send waits and goes out by itself; running turns wait. See Errors.` : `A sync of its store takes ${s} s. Work goes on; answers come seconds late at times. See Errors.`}</span>
+        <span className="min-w-0 leading-snug md:hidden" data-testid="store-slow-narrow">
+          <span className="font-medium">{disk.slow.refusing ? "Disk slow: nothing saved for some seconds." : "Disk slow: saving waits."}</span> <span className="text-muted">{disk.slow.refusing ? "What you send waits and goes out by itself." : "Work goes on, seconds late at times."}</span>
+        </span>
+      </div>
+    );
+  }
+  // The store's disk does not answer: said plainly, with what still works. It stays above a restart's
+  // own words: the restart is one of the things that still work.
+  if (disk?.silent_since_ms !== undefined && !updated) {
+    return (
+      <div role="alert" data-testid="store-silent" className="flex min-h-9 shrink-0 items-center justify-center gap-3 border-b border-danger/40 bg-danger-soft px-4 py-1 text-ui animate-in">
+        <HardDrive className="size-3.5 shrink-0 text-danger" />
+        <span className="shrink-0 truncate font-medium max-md:hidden">
+          {disk.refusing ? `Keel's disk does not answer since ${clock(disk.silent_since_ms!)}: nothing new is saved.` : `Keel's disk does not answer since ${clock(disk.silent_since_ms!)}.`}
+        </span>
+        {/* A narrow screen: both halves in fewer words, on two lines when one does not hold them. */}
+        <span className="min-w-0 leading-snug md:hidden" data-testid="store-silent-narrow">
+          <span className="font-medium">{disk.refusing ? "Disk not answering: nothing is saved." : `Disk not answering since ${clock(disk.silent_since_ms!)}.`}</span>{" "}
+          <span className="text-muted">{disk.refusing ? "Stop, answer and restart still work." : "Work goes on, unsaved for now."}</span>
+        </span>
+        <span className="min-w-0 truncate text-caption text-muted max-md:hidden" data-testid="store-silent-note">
+          {disk.refusing
+            ? `You can still read sessions, stop a turn, answer a card and restart Keel${draining?.restart ? " (it is restarting)" : ""}. New prompts and settings are turned away.`
+            : "Work goes on for now; what it writes may not be on the disk. See Errors."}
+        </span>
       </div>
     );
   }

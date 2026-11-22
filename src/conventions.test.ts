@@ -63,10 +63,13 @@ test("the store's files are named in few places and opened outside SQLite only t
     "src/admin/backup.ts",          // a backup's own files (keel.db.zst, a copy made for it), the restored copy, the log's size by stat
     "src/admin/stall-cause.ts",     // the words a stall row uses for them
     "src/admin/storage.ts",         // their sizes by stat, and a restore that moves them aside with no daemon on the folder
-    "src/core/checkpoint-worker.ts", // the log's kept descriptor, to sync it
-    "src/core/checkpoint.ts",       // the index's kept descriptor, to read how many frames wait
+    "src/core/checkpoint-worker.ts", // the kept descriptors of the log (to sync it) and of its index (to read how far the copy is)
+    "src/core/checkpoint.ts",       // the index's kept descriptor, to see how long the log is while the thread is in a step
     "src/core/store-files.ts",
   ]);
+  // The file of owed writes is an instruction to the next start (src/core/owed.ts): the daemon alone
+  // reads and writes it, and who names it is shorter still.
+  expect(offenders(src, /owed-writes|\bOWED_FILE\b/).sort()).toEqual(["src/core/owed.ts", "src/core/store-files.ts", "src/core/store.ts"]);
   // No call of node:fs or Bun.file that opens a file is given one of their paths: written in the
   // call, through storePath or the names' constants, or through a variable that was given one.
   const OPENS = "openSync|open|readFileSync|readFile|createReadStream|createWriteStream|copyFileSync|copyFile|writeFileSync|writeFile|appendFileSync|appendFile|truncateSync|truncate|Bun\\.file|Bun\\.write";

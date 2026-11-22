@@ -50,7 +50,7 @@ type Section = { label: string; ms: number };
 // it: a call of its own, or a machine that did not run it).
 // `beat`: the number the watcher reads; `due`: when the next tick is due; `depth`: timed sections open.
 // `wake`: set while the timer is armed for its idle second: work that begins then brings the next tick forward.
-type State = { longest: Section | null; inside: Section | null; flights: Map<object, { label: () => string; t0: number }>; work: Map<string, boolean>; touched: number; beat?: Int32Array; seq: number; due: number; depth: number; wake?: () => void };
+type State = { longest: Section | null; inside: Section | null; waited?: Section | null; flights: Map<object, { label: () => string; t0: number }>; work: Map<string, boolean>; touched: number; beat?: Int32Array; seq: number; due: number; depth: number; wake?: () => void };
 const state = (): State => (G.__keelStall ??= { longest: null, inside: null, flights: new Map(), work: new Map(), touched: 0, seq: 0, due: 0, depth: 0 });
 // Tells the watcher the loop is alive and will say so again within `allowMs`.
 function beat(st: State, allowMs: number) {
@@ -99,6 +99,13 @@ export function timed<T>(label: () => string, f: () => T): T {
   }
 }
 
+// A wait the loop made inside a statement of the store (a write that waits for the write lock while
+// the log is started again): what it waited for, so the stall it made says so, whatever section it fell in.
+export function sleptIn(label: string, ms: number) {
+  const st = state();
+  if (ms >= NOTED_MS && ms >= (st.waited?.ms ?? 0)) st.waited = { label, ms };
+}
+
 // A request from its handler's start to its answer: what was in progress when a stall began.
 export function inFlight(key: object, label: () => string): () => void {
   const st = state();
@@ -122,6 +129,7 @@ export type Stall = {
   busy_ms: number;   // the processor time the daemon used meanwhile
   during?: Section;  // what held the loop, when it was timed
   within?: Section;  // a timed section the process slept in for most of it
+  waited?: Section;  // what a write of the loop waited for inside it (sleptIn)
   cause?: Cause;     // what the watcher saw the main thread do meanwhile
   in_flight: string[]; // requests taken shortly before it and still open: they waited for it to end
   work?: string[];     // the daemon's own passes in progress then (see during)
@@ -159,7 +167,7 @@ export function describeStall(s: Stall): { message: string; context: Record<stri
       ? ` while ${s.during.label}${also}`
       : `: ${kernel ? "on a processor in the kernel, for system calls of its own" : "blocked by its own code"}, ${s.work?.length ? `with ${s.work.join(" and ")} in progress` : "outside anything it times"}${also}`
     : known
-      ? `: ${known.text}${slept ? ` while ${slept.label}` : ""}`
+      ? `: ${known.text}${s.waited ? `: ${s.waited.label}` : ""}${slept ? ` while ${slept.label}` : ""}`
       : `: its process was not running (a blocking call, or a stopped or starved machine)${c ? `; ${c.text}` : ""}`;
   const ran = [
     s.turns.length ? `${s.turns.length} turn${s.turns.length > 1 ? "s were" : " was"} running` : "",
@@ -171,13 +179,14 @@ export function describeStall(s: Stall): { message: string; context: Record<stri
   return {
     message: `Daemon unresponsive for ${secs(ms)}${what}${ran ? ` (${ran})` : ""}`,
     ms: Math.round(ms),
-    group: `stall ${known?.key ?? (busy ? "compute" : "unknown")}${where ? ` ${where}` : ""}`,
+    group: `stall ${known?.key ?? (busy ? "compute" : "unknown")}${s.waited ? " the log's restart" : ""}${where ? ` ${where}` : ""}`,
     what: what.replace(/^:? /, ""),
     kind: known?.kind ?? (busy ? "compute" : "unknown"),
     context: {
       kind: "stall", ms: Math.round(ms), busy_ms: Math.round(s.busy_ms),
       ...(s.during ? { during: s.during.label, during_ms: Math.round(s.during.ms), ...(sessionIn(s.during.label) ? { session: sessionIn(s.during.label) } : {}) } : {}),
       ...(s.within ? { within: s.within.label, within_ms: Math.round(s.within.ms) } : {}),
+      ...(s.waited ? { waited: s.waited.label, waited_ms: Math.round(s.waited.ms) } : {}),
       ...(c ? { cause: defined({ ...c, ...(busy && !kernel && !c.note ? { note: UNSEEN } : {}) }) } : {}),
       ...(s.in_flight.length ? { in_flight: s.in_flight.slice(0, 8) } : {}),
       ...(s.work?.length ? { work: s.work } : {}),
@@ -325,6 +334,8 @@ export class StallMonitor {
     const busy = cpu - this.cpuLast;
     const longest = st.longest;
     const sleptIn = st.inside;
+    const waited = st.waited;
+    st.waited = null;
     const began = this.last;
     this.last = now;
     this.cpuLast = cpu;
@@ -344,6 +355,7 @@ export class StallMonitor {
       busy_ms: Math.min(busy, now - began),
       ...(during ? { during } : {}),
       ...(!during && sleptIn && sleptIn.ms >= late * 0.5 ? { within: sleptIn } : {}),
+      ...(waited && waited.ms >= late * 0.3 ? { waited } : {}),
       // Requests taken shortly before the stall began and still open: they waited for it to end.
       // One open for long before it (a stream, a long poll) did not.
       in_flight: [...st.flights.values()].filter((f) => f.t0 <= began + TICK_MS && began - f.t0 < WAITING_MS).map((f) => f.label()),

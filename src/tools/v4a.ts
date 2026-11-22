@@ -18,7 +18,7 @@ import { chmod, lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { buildDiff } from "./diff.ts";
 import { atCwd, contains, realOf } from "../core/paths.ts";
-import { heldFile } from "../core/store-files.ts";
+import { heldWrite } from "../core/store-files.ts";
 
 const BEGIN_PATCH = "*** Begin Patch";
 const END_PATCH = "*** End Patch";
@@ -506,8 +506,8 @@ export async function applyPatch(cwd: string, text: string, opts: ApplyOptions =
     // (Where the kernel reaches it: the path a gate judged, and the one opened below.)
     const real = realOf(atCwd(base, raw));
     if (!contains(root, real) && !allowed.has(real)) throw new Error(`patch path ${raw} resolves to ${real}, which is outside the workspace`);
-    // The daemon's own store and claim, by name or as the same file under another: never read, replaced or removed from here.
-    const held = heldFile(real);
+    // The daemon's own store and claim, by name or as the same file under another, and its state folder: never read, replaced or removed from here.
+    const held = heldWrite(real);
     if (held) throw new Error(held);
     return real;
   };

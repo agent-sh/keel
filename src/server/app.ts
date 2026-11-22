@@ -1,9 +1,10 @@
 import { existsSync, rmSync, statSync } from "node:fs";
 import { asAsker } from "../core/asker.ts";
+import { checkpointerOf } from "../core/checkpoint.ts";
 import { join, resolve } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
-import type { Store } from "../core/store.ts";
+import { diskFull, refusedWrite, STORE_REFUSES, type Store } from "../core/store.ts";
 import { firstAt, leafCount, lineage, pageOf, pageOfLine, replyBefore } from "../core/tree.ts";
 import { shownAsPrompt } from "../core/owner.ts";
 import type { StoredEvent } from "../core/types.ts";
@@ -154,6 +155,8 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
         const res = await asAsker(routeOf(req), () => timed(label, () => h(req, srv)));
         return await timed(label, () => compressJson(req, res));
       } catch (e) {
+        // A write the store refused (it takes none right now): the refusal's own answer, not a failure of the daemon's.
+        if (refusedWrite(e) || diskFull(e)) return json({ error: checkpointerOf(store)?.refusalSays ?? STORE_REFUSES, store_refusing: true }, 503);
         const st = (e as any)?.status;
         // `code`: a machine-readable reason, when the refusal has one (off_branch).
         if (typeof st === "number" && st >= 400 && st < 500) return json({ error: (e as Error).message, ...((e as any).code ? { code: (e as any).code } : {}) }, st);
@@ -566,7 +569,12 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
       // `?link`: a page asking whether it reaches the daemon at all while its socket says nothing.
       // That answer's connection is closed after it, so the next such question never goes into a
       // connection the browser kept from before a network changed, which would say nothing either.
-      "/api/health": { GET: (req: Request) => (new URL(req.url).searchParams.has("link") ? Response.json({ ok: true, pid: process.pid }, { headers: { connection: "close", "cache-control": "no-store" } }) : json({ ok: true, pid: process.pid })) },
+      // (`store`: the store's disk does not answer, or is slow: the same words the daemon's status has.)
+      "/api/health": { GET: (req: Request) => {
+        if (new URL(req.url).searchParams.has("link")) return Response.json({ ok: true, pid: process.pid }, { headers: { connection: "close", "cache-control": "no-store" } });
+        const disk = checkpointerOf(store)?.said;
+        return json({ ok: true, pid: process.pid, ...(disk ? { store: disk } : {}) });
+      } },
 
       // What this daemon serves, with the methods a script may rely on (stable-api.ts).
       "/api/routes": { GET: wrap(() => json(routeTable(routes))) },

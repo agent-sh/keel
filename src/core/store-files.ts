@@ -24,9 +24,10 @@
 // - nothing else opens them: the file tools and the routes that read a path
 //   ask `heldFile` first and leave these files alone. A stat is fine.
 // src/conventions.test.ts holds the list of files that may name them.
-import { fstatSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { type Dirent, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { claimNote, isClaimFile } from "./claim.ts";
+import { OWED_FILE } from "./owed.ts";
 
 export const STORE_DB = "keel.db";
 export const STORE_FILES = [STORE_DB, `${STORE_DB}-wal`, `${STORE_DB}-shm`] as const;
@@ -63,7 +64,34 @@ export function storeFd(path: string): number {
   return fd;
 }
 
+// The length of the store's log as the folder has it (0: none). No descriptor is opened for it.
+export function logBytes(stateDir: string): number {
+  try { return statSync(`${storePath(stateDir)}-wal`).size; } catch { return 0; }
+}
+
 const real = (p: string) => { try { return realpathSync(p); } catch { return resolve(p); } };
+// Where a path lands, also when nothing is there yet: its links followed as far as they go (a link
+// whose target does not exist lands where that target would be), then the folders above it.
+function landing(path: string): string {
+  let p = resolve(path);
+  for (let hop = 0; hop < 16; hop++) {
+    try { return realpathSync(p); } catch {}
+    let target: string | undefined;
+    try { if (lstatSync(p).isSymbolicLink()) target = readlinkSync(p); } catch {}
+    if (target === undefined) break;
+    p = resolve(dirname(p), target);
+  }
+  // Nothing there: the nearest folder that exists, as it really is, and the rest of the name under it.
+  const rest: string[] = [];
+  let dir = p;
+  for (;;) {
+    const up = dirname(dir);
+    if (up === dir) return p;
+    rest.unshift(basename(dir));
+    dir = up;
+    try { return join(realpathSync(dir), ...rest); } catch {}
+  }
+}
 
 // One of the store's three files, in a folder whose store this process has
 // open: by its name there, or by being the same file under another name (a
@@ -88,9 +116,87 @@ export function isStoreFile(path: string): boolean {
   return false;
 }
 
+// The file of owed writes of a store this process has open (src/core/owed.ts): by its name in the
+// state folder, also when it is not there yet and as where a link lands, or as the same file under
+// another name. The next start makes what it holds, so nothing but the daemon reads or writes it.
+export function isOwedFile(path: string): boolean {
+  if (!stores.size) return false;
+  const p = landing(path);
+  let st: { ino: number; dev: number } | undefined;
+  try { st = statSync(p); } catch {}
+  for (const s of stores) {
+    const dir = real(s);
+    if (dirname(p) === dir && basename(p) === OWED_FILE) return true;
+    if (!st) continue;
+    try {
+      const own = statSync(join(dir, OWED_FILE));
+      if (own.ino === st.ino && own.dev === st.dev) return true;
+    } catch {} // none is owed
+  }
+  return false;
+}
+
+// What a session may write inside the daemon's state folder: its files for the owner (artifacts)
+// and its own checkout (worktrees). Everything else there is the daemon's: what it reads back when
+// it starts and acts on (its settings, its keys and tokens, its plugins, the page it serves, its
+// records of a restart, its backups), and what it keeps as evidence.
+const SESSION_WRITES = ["artifacts", "worktrees"];
+// Why `path` is not written from a tool or a route that takes a path; undefined: it may be.
+// Besides what is never opened at all (heldFile): any file of a state folder this process has a
+// store open in, where it lands or, for a top-level file of the folder, as the same file under
+// another name (a hard link in a workspace).
+export function heldWrite(path: string): string | undefined {
+  const held = heldFile(path);
+  if (held) return held;
+  if (!stores.size) return undefined;
+  const p = landing(path);
+  let st: { ino: number; dev: number; nlink: number } | undefined;
+  try { st = statSync(p); } catch {}
+  for (const s of stores) {
+    const dir = real(s);
+    const said = `${path} is inside the daemon's own state folder (${dir}), which holds what the daemon reads back and acts on when it starts. A session writes there only under ${SESSION_WRITES.map((n) => `${n}/`).join(" and ")}.`;
+    if (p === dir) return said;
+    if (p.startsWith(dir + sep)) {
+      const top = p.slice(dir.length + 1).split(sep)[0]!;
+      if (!SESSION_WRITES.includes(top) || p === join(dir, top)) return said;
+      continue;
+    }
+    // Elsewhere, and a file with more than one name: one of the state folder's own files under
+    // another, at any depth (a job's record, a plugin's file). A name on another disk is no such file.
+    if (!st || st.nlink < 2) continue;
+    try { if (statSync(dir).dev !== st.dev) continue; } catch { continue; }
+    const own = sameFileBelow(dir, st, true);
+    if (own) return `${path} is the daemon's own ${own.slice(dir.length + 1)} under another name. It is not written from a session.`;
+  }
+  return undefined;
+}
+
+// The file below `dir` that is the file `st` (the same inode), if one is: every folder is looked
+// through, the ones a session writes left out (`top`: at the state folder's own level), and links
+// to folders not followed. Asked only for a file that has more than one name, which few have.
+function sameFileBelow(dir: string, st: { ino: number; dev: number }, top = false): string | undefined {
+  let names: Dirent[];
+  try { names = readdirSync(dir, { withFileTypes: true }); } catch { return undefined; }
+  for (const n of names) {
+    const at = join(dir, n.name);
+    if (n.isDirectory()) {
+      if (top && SESSION_WRITES.includes(n.name)) continue;
+      const found = sameFileBelow(at, st);
+      if (found) return found;
+    } else if (n.isFile()) {
+      try {
+        const own = lstatSync(at);
+        if (own.ino === st.ino && own.dev === st.dev) return at;
+      } catch {}
+    }
+  }
+  return undefined;
+}
+
 // What to say instead of opening `path` from inside the daemon; undefined: it may be opened.
 export function heldFile(path: string): string | undefined {
   if (isClaimFile(path)) return claimNote(path);
+  if (isOwedFile(path)) return `${path} is the daemon's own record of writes it owes its store. It is read and written by the daemon alone: what it holds is made when the daemon starts.`;
   if (isStoreFile(path)) return `${path} is the daemon's own store. It is not opened from inside the daemon: closing it there would drop the daemon's locks on it. Read it with a command (sqlite3 in read-only mode: sqlite3 -readonly), or ask the daemon's API.`;
   return undefined;
 }

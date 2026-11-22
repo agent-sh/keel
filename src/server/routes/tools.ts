@@ -48,7 +48,10 @@ export const toolRoutes: RouteModule = (deps) => {
     }, 0);
   };
   // Background commands a previous daemon started run on; take them back.
-  try { adoptJobs(join(deps.store.stateDir, "spill")); } catch (e) { deps.errors.capture("tool", e, { at: "adopt jobs" }); }
+  try {
+    adoptJobs(join(deps.store.stateDir, "spill"), (file, why) =>
+      deps.errors.capture("tool", new Error(`A record of a background command was not taken over at this start: ${why}. Nothing was signalled for it. The record: ${file}`), { at: "adopt jobs" }, { group: "a job's record was not taken over" }));
+  } catch (e) { deps.errors.capture("tool", e, { at: "adopt jobs" }); }
   registerHooks({
     // A call a restart cut while it ran a command: its result says what became
     // of the command (the engine stores the text as the call's result, an

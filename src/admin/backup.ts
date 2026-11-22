@@ -40,6 +40,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { GRANT_FILES, writeAll } from "../core/ownfile.ts";
+import { ASKED, HELD, logIndex, TRIED } from "../core/checkpoint-shared.ts";
 import { storeFd, storePath } from "../core/store-files.ts";
 
 // `config`: the config folder the backup carries files of, when it carries any.
@@ -53,7 +54,9 @@ export type Backup = { name: string; path: string; created_ms: number | null; re
 
 // The later check of a backup, written beside its manifest.
 export const CHECKED = "checked.json";
-export type Checked = { checked_ms: number; ok: boolean; why?: string };
+// `deep_ms`: when it was checked as a restore would take it (written out, SQLite's check, its counts).
+// `again_ms`: when it was read back to its hash again, long after it was made (the day's rotation).
+export type Checked = { checked_ms: number; ok: boolean; why?: string; deep_ms?: number; again_ms?: number };
 export function checkedOf(dir: string): Checked | undefined {
   try { return JSON.parse(readFileSync(join(dir, CHECKED), "utf8")) as Checked; } catch { return undefined; }
 }
@@ -187,21 +190,48 @@ export function hashFile(path: string, read: typeof readSync = readSync): string
 
 // Checks a backup: every file against the manifest, and the database. One
 // that holds the database compressed is read back whole (a delta over its
-// full backup) and must give the SHA-256 the manifest names: the bytes that
-// passed SQLite's integrity check when the backup was made. A plain copy
-// (and a folder with no manifest) is opened and checked itself.
-export function verify(dir: string): { ok: true; sessions: number; events: number } | { ok: false; why: string } {
+// full backup) and must give the SHA-256 the manifest names: the bytes the
+// snapshot held when the backup was made. Its counts and SQLite's check
+// were taken through that snapshot then, and the snapshot is known to have
+// read the file alone (Snapshot.begin, snapshotTry), so this is the routine
+// check and it writes nothing.
+// `deep`: as a restore would take it. The database is written out whole
+// beside the backups, must pass SQLite's integrity check, and must hold the
+// sessions and events the manifest counts: the three things a restore
+// refuses a backup for. It costs the store's size in writes, so the daemon
+// asks it of the newest backup once a day (Storage.checkNow), which is what
+// would find a count taken at another moment than the bytes. Where the copy
+// cannot be written (no room), the routine check stands.
+// A plain copy (and a folder with no manifest) is opened and checked itself.
+export function verify(dir: string, deep = false): { ok: true; sessions: number; events: number } | { ok: false; why: string } {
   const files = verifyFiles(dir);
   if (!files.ok) return files;
   const m = files.manifest;
   if (m?.database) {
-    try {
+    const routine = (): { ok: true; sessions: number; events: number } | { ok: false; why: string } => {
       const hash = createHash("sha256");
-      streamImage(dir, m.database, (b) => void hash.update(b));
-      if (hash.digest("hex") !== m.database.sha256) return { ok: false, why: "the database it holds does not read back as the one that was backed up" };
+      streamImage(dir, m.database!, (b) => void hash.update(b));
+      if (hash.digest("hex") !== m.database!.sha256) return { ok: false, why: "the database it holds does not read back as the one that was backed up" };
       return { ok: true, sessions: m.sessions, events: m.events };
+    };
+    if (!deep) {
+      try { return routine(); } catch (e) { return { ok: false, why: (e as Error).message }; }
+    }
+    const out = join(dirname(dir), `.check-${basename(dir)}-${process.pid}.partial`);
+    try {
+      try {
+        materialize(dir, m.database, out, false);
+      } catch (e) {
+        if (!/^(ENOSPC|EDQUOT|EROFS|EACCES|EPERM)$/.test((e as NodeJS.ErrnoException).code ?? "")) return { ok: false, why: (e as Error).message };
+        return routine();
+      }
+      const check = checkDatabase(out);
+      if (check.ok && (check.sessions !== m.sessions || check.events !== m.events)) return { ok: false, why: `it holds ${check.sessions} sessions and ${check.events} events, its manifest says ${m.sessions} and ${m.events}` };
+      return check;
     } catch (e) {
       return { ok: false, why: (e as Error).message };
+    } finally {
+      rmSync(out, { force: true });
     }
   }
   return checkDatabase(join(dir, "keel.db"));
@@ -258,27 +288,34 @@ const counts = (db: Database) => ({
 // `keep`: how many backups the owner keeps, which sets how large a delta may be.
 // `full`: a full backup whatever changed (the one made after a failed check).
 // `dbFd`: the daemon's kept descriptor of the database file (src/core/store-files.ts), for a backup made on a thread of its own.
-export type BackupJob = { stateDir: string; root: string; tmp: string; reason: string; config?: string; keep?: number; full?: true; dbFd?: number };
+// `shmFd`: its kept descriptor of the log's index, the same way.
+export type BackupJob = { stateDir: string; root: string; tmp: string; reason: string; config?: string; keep?: number; full?: true; dbFd?: number; shmFd?: number };
 export type BackupDone = { sessions: number; events: number; skipped: { name: string; why: string }[]; config?: string };
 
 // The database as it is at one moment, for the length of a backup.
 //
-// The daemon is the only writer. It empties the write-ahead log into the
-// database file (a TRUNCATE checkpoint: quick when the worker's flush left
-// it little, as long as the pages it must still write when the daemon is
-// writing hard) and holds still for the worker, at most 25 ms. The worker
-// begins a read transaction and looks at the log: still empty means the transaction
-// reads the database file and nothing else, and for as long as it is open
-// SQLite writes nothing into that file (a checkpoint may not overwrite a
-// page a reader can still see; what the daemon commits meanwhile waits in
-// the log). The file is then the snapshot, with every page where the last
-// backup saw it, which is what lets the next backup hold only the pages that
-// changed. A log that is not empty (the daemon wrote in between) is tried
+// A read transaction that begins while every frame of the write-ahead log
+// is in the database file reads that file and nothing else, and for as long
+// as it is open SQLite writes nothing into the file (a checkpoint may not
+// overwrite a page a reader can still see; what the daemon commits
+// meanwhile waits in the log). The file is then the snapshot, with every
+// page where the last backup saw it, which is what lets the next backup
+// hold only the pages that changed.
+//
+// The daemon's checkpoint thread makes that moment (src/core/checkpoint.ts):
+// it copies the log, holds the write lock so nothing is added, and tells the
+// worker to begin, for at most 25 ms. The daemon's loop is not held; a
+// write of its own waits that long at most. Where no such thread works the
+// daemon empties the log itself (a TRUNCATE checkpoint on its own
+// connection) and holds still for the worker, and the worker looks at the
+// log's file: still empty means its transaction reads the database file
+// alone. A try that did not get there (the daemon wrote in between) is made
 // again; `begin` says which.
 export class Snapshot {
   readonly path: string;
   readonly db: Database;
-  constructor(stateDir: string) {
+  // `shmFd`: the process's kept descriptor of the log's index, from the thread that keeps it.
+  constructor(stateDir: string, private shmFd?: number) {
     this.path = storePath(stateDir);
     this.db = new Database(this.path, { readonly: true });
     this.db.run("PRAGMA cache_size = -32768"); // 32 MiB: the check walks every table and index
@@ -294,18 +331,66 @@ export class Snapshot {
       try { w.run("PRAGMA wal_checkpoint(PASSIVE)"); } finally { w.close(); }
     } catch {} // the daemon's own checkpoint does it all
   }
-  begin(): boolean {
+  // `held`: the checkpoint thread has copied every frame of the log into the
+  // file and holds the write lock (src/core/checkpoint.ts): a read that
+  // begins now reads the file alone, whatever the log's file still holds.
+  // It is looked at all the same: a read that began with frames of the log
+  // not yet in the file reads through the log, and is not this snapshot.
+  // (That the lock was still held when the read began is the gate's to say:
+  // `snapshotTry` below.)
+  begin(held = false): boolean {
     this.db.run("BEGIN");
     this.db.query("SELECT COUNT(*) FROM sqlite_schema").get(); // the read snapshot starts with the first read
-    let wal = 0;
-    try { wal = statSync(`${this.path}-wal`).size; } catch {} // no log at all
-    if (wal === 0) return true;
-    this.db.run("ROLLBACK");
+    if (held) {
+      const at = this.index();
+      if (at && at.frames === at.copied) return true;
+    } else {
+      let wal = 0;
+      try { wal = statSync(`${this.path}-wal`).size; } catch {} // no log at all
+      if (wal === 0) return true;
+    }
+    this.end();
     return false;
+  }
+  // The read is given up: the next try begins another.
+  end() {
+    try { this.db.run("ROLLBACK"); } catch {}
+  }
+  private index() {
+    try { return logIndex(this.shmFd ?? storeFd(`${this.path}-shm`)); } catch { return undefined; }
   }
   close() {
     try { this.db.close(); } catch {}
   }
+}
+
+// One try of a backup's thread at its snapshot. `ask` asks the daemon to
+// empty the log and hold its writes (the checkpoint thread does, or the loop
+// where no thread works) and the answer comes on `gate`. True: `snap` holds
+// a read that reads the database file alone. Undefined: the daemon gave no
+// answer within `waitMs`.
+//
+// With the checkpoint thread the write lock is held for a moment only, and
+// this thread may be held up for longer than that (a busy machine): the
+// read begins first, and then one swap of the gate from HELD to TRIED says
+// whether the lock was still held (src/core/checkpoint-shared.ts). A swap
+// that is not this thread's means the hold ended first: the read is given
+// up, whatever it saw. `late`: a test's delay between the answer and the read.
+export function snapshotTry(snap: Snapshot, gate: Int32Array, ask: () => void, waitMs: number, late?: () => void): boolean | undefined {
+  Atomics.store(gate, 0, ASKED);
+  ask();
+  if (Atomics.wait(gate, 0, ASKED, waitMs) === "timed-out") return undefined;
+  const under = Atomics.load(gate, 0) === HELD;
+  late?.();
+  let held = snap.begin(under);
+  if (under) {
+    if (Atomics.compareExchange(gate, 0, HELD, TRIED) !== HELD && held) {
+      snap.end();
+      held = false;
+    }
+  } else Atomics.store(gate, 0, TRIED);
+  Atomics.notify(gate, 0);
+  return held;
 }
 
 const stamp = (path: string) => { const st = statSync(path); return `${st.size}:${st.mtimeMs}`; };
@@ -445,8 +530,11 @@ export function makeBackup(job: BackupJob, snap?: Snapshot): BackupDone {
 // nothing says they are from before the damage. For a delta that does not
 // read back, its full backup is read back too (once), which says whether
 // that one is what is damaged: `bases`.
-export type CheckJob = { check: string[]; stateDir?: string };
-export type CheckResult = { dir: string; ok: boolean; why?: string };
+// `deep`: the one backup of `check` that is checked as a restore would take it (see verify).
+// `known`: those of `check` that were known whole already and are read again (the day's
+// rotation, the day's deep check): what the store's own check says now is not held against them.
+export type CheckJob = { check: string[]; stateDir?: string; deep?: string; known?: string[] };
+export type CheckResult = { dir: string; ok: boolean; why?: string; deep?: true };
 export type CheckDone = { backups: CheckResult[]; bases: CheckResult[]; store?: { ok: boolean; why?: string } };
 export function checkBackups(job: CheckJob, each?: (r: CheckResult) => void): CheckDone {
   let store: CheckDone["store"];
@@ -465,13 +553,14 @@ export function checkBackups(job: CheckJob, each?: (r: CheckResult) => void): Ch
   }
   const read = (dir: string): CheckResult => {
     let r: ReturnType<typeof verify>;
-    try { r = verify(dir); } catch (e) { r = { ok: false, why: (e as Error).message }; }
-    return r.ok ? { dir, ok: true } : { dir, ok: false, why: r.why };
+    const deep = dir === job.deep;
+    try { r = verify(dir, deep); } catch (e) { r = { ok: false, why: (e as Error).message }; }
+    return { dir, ...(r.ok ? { ok: true } : { ok: false, why: r.why }), ...(deep ? { deep: true as const } : {}) };
   };
   const bases = new Map<string, CheckResult>();
   const backups = job.check.map((dir) => {
     let r: CheckResult;
-    if (store && !store.ok) r = { dir, ok: false, why: `the database did not pass SQLite's check when this backup was checked (${store.why}); it holds the pages as they were, so it may hold the damage` };
+    if (store && !store.ok && !job.known?.includes(dir)) r = { dir, ok: false, why: `the database did not pass SQLite's check when this backup was checked (${store.why}); it holds the pages as they were, so it may hold the damage` };
     else {
       r = read(dir);
       if (!r.ok) try {
@@ -694,14 +783,15 @@ export function streamImage(dir: string, info: DbInfo, sink: (b: Buffer) => void
 }
 
 // Writes the database a backup holds to `dest` and checks it is the one that
-// was backed up; a file that is not is removed.
-export function materialize(dir: string, info: DbInfo, dest: string) {
+// was backed up; a file that is not is removed. `sync` false: a copy made to
+// be looked at and removed.
+export function materialize(dir: string, info: DbInfo, dest: string, sync = true) {
   const hash = createHash("sha256");
   const fd = openSync(dest, "w", 0o644);
   try {
     try {
       streamImage(dir, info, (b) => { hash.update(b); writeAll(fd, b); });
-      fsyncSync(fd);
+      if (sync) fsyncSync(fd);
     } finally {
       closeSync(fd);
     }

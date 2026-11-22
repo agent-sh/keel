@@ -77,9 +77,18 @@ under `~/.cache/keel-work/bun/research/`.
   is counted with who asked (`coldReads`, in `/api/resources`), named in the
   stall row, and fails the command line e2e.
 - The loop waits for the disk as little as SQLite allows. The write-ahead log
-  is synced and checkpointed on a thread (`src/core/checkpoint.ts`): the log
-  is 16 to 64 MB under load, and the daemon's connection still checkpoints in
-  a commit about once per 16,000 pages. A statement's undo pages stay in
+  is synced, checkpointed and started again on a thread
+  (`src/core/checkpoint.ts`): while the thread works the daemon's connection
+  checkpoints nothing and syncs nothing, and the log holds 16,000 pages
+  (66 MB) and what is written while the thread copies and takes the write
+  lock (under 17,000 pages with twelve working sessions). A write of the
+  loop waits only for the write lock, for the moment the thread starts the
+  log again. The connection's transactions
+  begin as writers and it keeps 16 MB of pages in its own memory
+  (`src/core/store.ts`). A session that is not in memory has its pages read
+  by the read thread before the loop reads them (`store.warm`). A stall in
+  the database is named by its statement (`src/core/statement-label.ts`: a
+  label, never a value). A statement's undo pages stay in
   memory (`temp_store`), so a sort over a whole table belongs on the read
   thread. A start decides a session's idle timer from facts kept with its
   head, and the owner's hooks file is read again only when its mark on disk

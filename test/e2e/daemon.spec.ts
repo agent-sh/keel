@@ -193,3 +193,83 @@ test("a draining daemon still answers reads and the answers its running turns wa
     d.proc.kill("SIGKILL");
   }
 });
+
+// The store's disk does not answer (a sync that never returns: src/core/checkpoint.ts). The page says so
+// across its top, with what still works: first that work goes on unsaved, then, once the store takes no
+// writes, that sessions can be read, a turn stopped, a card answered and Keel restarted. (The daemon's own
+// answer is used with the state a silent disk reports: a spec cannot hang the daemon's disk.)
+test("the page says when the store's disk does not answer, and what still works", async ({ page, request }) => {
+  let store: { full?: { since_ms: number; free_mb?: number }; silent_since_ms?: number; refusing?: boolean; slow?: { since_ms: number; sync_ms: number; held_ms: number; refusing?: boolean } } | null = { silent_since_ms: Date.now() - 70_000, refusing: false };
+  await page.route(/\/api\/bootstrap(\?|$)/, async (route) => {
+    const answer = await route.fetch();
+    await route.fulfill({ response: answer, json: { ...(await answer.json()), store } });
+  });
+  await page.goto("/");
+  const band = page.getByTestId("store-silent");
+  await expect(band).toContainText(/Keel's disk does not answer since \d/);
+  await expect(page.getByTestId("store-silent-note")).toContainText("Work goes on for now");
+  await shoot(page, "daemon-06-disk-silent");
+  store = { silent_since_ms: Date.now() - 130_000, refusing: true };
+  await page.reload();
+  await expect(band).toContainText("nothing new is saved");
+  await expect(page.getByTestId("store-silent-note")).toContainText("You can still read sessions, stop a turn, answer a card and restart Keel");
+  await shoot(page, "daemon-07-store-refusing");
+  // A phone: both halves in fewer words, whole (on two lines when one does not hold them).
+  await page.setViewportSize({ width: 390, height: 844 });
+  const narrow = page.getByTestId("store-silent-narrow");
+  await expect(narrow).toHaveText("Disk not answering: nothing is saved. Stop, answer and restart still work.");
+  expect(await narrow.evaluate((n) => n.scrollWidth <= n.clientWidth && n.getBoundingClientRect().right <= innerWidth)).toBe(true);
+  await shoot(page, "daemon-08-store-refusing-phone");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  // A disk that answers, slowly (writes wait seconds while the log is started again): said in its own band, and nothing is refused.
+  store = { slow: { since_ms: Date.now() - 40_000, sync_ms: 4_100, held_ms: 9_300 } };
+  await page.reload();
+  const slow = page.getByTestId("store-slow");
+  await expect(slow).toContainText(/Keel's disk is slow since \d.*saving waits on it/);
+  await expect(page.getByTestId("store-slow-note")).toHaveText("A sync of its store takes 4.1 s. Work goes on; answers come seconds late at times. See Errors.");
+  await expect(band).toHaveCount(0);
+  await shoot(page, "daemon-09-disk-slow");
+  await page.setViewportSize({ width: 390, height: 844 });
+  const slowNarrow = page.getByTestId("store-slow-narrow");
+  await expect(slowNarrow).toHaveText("Disk slow: saving waits. Work goes on, seconds late at times.");
+  expect(await slowNarrow.evaluate((n) => n.scrollWidth <= n.clientWidth && n.getBoundingClientRect().right <= innerWidth)).toBe(true);
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  // The store takes no writes for the seconds of a slow start of its log: said as a slow disk, not a silent one.
+  // A prompt sent meanwhile is turned away by the daemon; it waits on its shelf and goes out by itself when the band clears.
+  const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Sent while the disk is slow" } })).json();
+  store = { slow: { since_ms: Date.now() - 40_000, sync_ms: 4_100, held_ms: 9_300, refusing: true } };
+  let turned = 0;
+  await page.route(/\/api\/sessions\/[^/]+\/messages$/, async (route) => {
+    if (route.request().method() !== "POST" || !store) return route.continue();
+    turned++;
+    await route.fulfill({ status: 503, json: { error: "the daemon's disk is slow (a sync of its store takes 4.1 s) and its store takes no writes until its log has started again, seconds from now.", store_refusing: true } });
+  });
+  await page.goto(`/s/${session.id}`);
+  await expect(slow).toContainText("nothing is saved for some seconds");
+  await expect(page.getByTestId("store-slow-note")).toHaveText("A sync of its store takes 4.1 s. What you send waits and goes out by itself; running turns wait. See Errors.");
+  await page.getByTestId("composer").fill(ask("Reply with the word kept.", "script:render"));
+  await page.getByTestId("composer").press("Enter");
+  const kept = page.getByTestId("saved-draft");
+  await expect(kept).toHaveAttribute("data-state", "waiting");
+  await expect(kept.getByTestId("saved-waiting")).toContainText("goes out by itself, once");
+  await shoot(page, "daemon-10-disk-slow-refusing");
+  expect(turned).toBe(1);
+  store = null;
+  await expect(kept).toHaveCount(0, { timeout: 30_000 });
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).events.filter((e: any) => e.kind === "user").length, { timeout: 30_000 }).toBe(1);
+  expect(turned).toBe(1);
+  // A disk with no room: said as that, with how much is free.
+  store = { full: { since_ms: Date.now() - 20_000, free_mb: 12 }, refusing: true };
+  await page.goto("/");
+  const full = page.getByTestId("store-full");
+  await expect(full).toContainText(/Keel's disk is full since \d.*nothing new is saved/);
+  await expect(page.getByTestId("store-full-note")).toHaveText("12 MB free. Free some space: what you send waits and goes out by itself. You can still read sessions, stop a turn, answer a card and restart Keel.");
+  await shoot(page, "daemon-11-disk-full");
+  // The disk answers again: the band goes.
+  store = null;
+  await page.reload();
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await expect(band).toHaveCount(0);
+  await expect(slow).toHaveCount(0);
+  await expect(full).toHaveCount(0);
+});

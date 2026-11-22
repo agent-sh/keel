@@ -87,7 +87,10 @@ test("a read past the cap keeps the start and the end, and says what it left out
 // A synthetic pid: nothing is signalled for real.
 test("an adopted job whose process is a zombie has ended; one with a thread left still runs", async () => {
   const pid = 987654322;
-  const real = { kill: process.kill, stat: procfs.stat };
+  const real = { kill: process.kill, stat: procfs.stat, environ: procfs.environ };
+  const started = Date.now();
+  // (The process carries its job's mark, as one a daemon started does.)
+  procfs.environ = (p: number) => (p === pid ? Buffer.from(`HOME=/\0KEEL_JOB=fixture-zombie.${started}\0`) : real.environ(p));
   let threads = 2;
   procfs.stat = (p: number) => { if (p !== pid) return real.stat(p); const f = Array(50).fill("0"); f[0] = "Z"; f[17] = String(threads); f[19] = "100"; return `${pid} (fixture) ${f.join(" ")}`; };
   process.kill = ((p: number, s: any = 0) => (Math.abs(p) === pid ? true : real.kill(p, s))) as typeof process.kill;
@@ -95,7 +98,7 @@ test("an adopted job whose process is a zombie has ended; one with a thread left
   const dir = join(root, "spill", "s-zombie", "jobs");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "fixture-zombie.log"), "");
-  writeFileSync(join(dir, "fixture-zombie.json"), JSON.stringify({ id: "fixture-zombie", num: 901, sessionId: "s-zombie", command: "nothing runs", cwd: root, started: Date.now(), background: true, pid, boot: "100" }));
+  writeFileSync(join(dir, "fixture-zombie.json"), JSON.stringify({ id: "fixture-zombie", num: 901, sessionId: "s-zombie", command: "nothing runs", cwd: root, started, background: true, pid, boot: "100" }));
   try {
     adoptJobs(join(root, "spill"));
     const job = jobsOf("s-zombie")[0]!;
@@ -106,6 +109,7 @@ test("an adopted job whose process is a zombie has ended; one with a thread left
   } finally {
     process.kill = real.kill;
     procfs.stat = real.stat;
+    procfs.environ = real.environ;
   }
 });
 
@@ -116,7 +120,7 @@ test("an adopted job whose process is a zombie has ended; one with a thread left
 test("a stop signals only the process the job started as", async () => {
   const pid = 987654321;
   const stat = (start: string) => { const f = Array(50).fill("0"); f[19] = start; return `${pid} (fixture) ${f.join(" ")}`; };
-  const real = { kill: process.kill, stat: procfs.stat };
+  const real = { kill: process.kill, stat: procfs.stat, environ: procfs.environ };
   for (const [name, atAdopt, atStop, signals] of [
     ["matched", "100", "100", ["SIGTERM"]],
     ["changed after adoption", "100", "200", []],
@@ -127,7 +131,9 @@ test("a stop signals only the process the job started as", async () => {
     mkdirSync(dir, { recursive: true });
     const id = `fixture-${name.replace(/ /g, "-")}`;
     writeFileSync(join(dir, `${id}.log`), "");
-    writeFileSync(join(dir, `${id}.json`), JSON.stringify({ id, num: 900, sessionId: `s-${name}`, command: "nothing runs", cwd: root, started: Date.now(), background: true, pid, boot: "100" }));
+    const started = Date.now();
+    writeFileSync(join(dir, `${id}.json`), JSON.stringify({ id, num: 900, sessionId: `s-${name}`, command: "nothing runs", cwd: root, started, background: true, pid, boot: "100" }));
+    procfs.environ = (p: number) => (p === pid ? Buffer.from(`KEEL_JOB=${id}.${started}\0`) : real.environ(p));
     let start: string = atAdopt;
     let alive = true;
     const sent: string[] = [];
@@ -149,7 +155,68 @@ test("a stop signals only the process the job started as", async () => {
     } finally {
       process.kill = real.kill;
       procfs.stat = real.stat;
+      procfs.environ = real.environ;
     }
+  }
+});
+
+// A job's record is a file, and a stop of its job signals the process and empties the cgroup it
+// names. One that does not match a process a daemon started as that job is not taken over: a
+// record written by hand cannot make the daemon signal another process. Synthetic pids and a kill
+// spy: nothing is signalled for real.
+test.skipIf(process.platform !== "linux")("a job's record that does not match its process is not adopted, and nothing is signalled for it", async () => {
+  const real = { kill: process.kill, stat: procfs.stat, environ: procfs.environ };
+  const pid = 987654400;
+  const started = Date.now();
+  const sent: string[] = [];
+  procfs.stat = (p: number) => { if (p < pid || p > pid + 9) return real.stat(p); const f = Array(50).fill("0"); f[19] = "100"; return `${p} (fixture) ${f.join(" ")}`; };
+  // Each process's environment: one carries another job's mark, one a mark that only begins like its job's, one its own.
+  const envs: Record<number, string> = {
+    [pid]: "HOME=/\0PATH=/bin\0",
+    [pid + 1]: `KEEL_JOB=another.${started}\0`,
+    [pid + 2]: `KEEL_JOB=forged-prefix.${started}9\0NOT_KEEL_JOB=forged-prefix.${started}\0`,
+    [pid + 3]: `KEEL_JOB=forged-cgroup.${started}\0`,
+    [pid + 4]: `KEEL_JOB=genuine.${started}\0`,
+    [pid + 5]: `KEEL_JOB=forged-no-boot.${started}\0`,
+  };
+  procfs.environ = (p: number) => (p in envs ? Buffer.from(envs[p]!) : real.environ(p));
+  process.kill = ((p: number, s: any = 0) => { if (Math.abs(p) < pid || Math.abs(p) > pid + 9) return real.kill(p, s); if (s !== 0) sent.push(`${s} ${p}`); return true; }) as typeof process.kill;
+  const root = mkdtempSync(join(process.env.TMPDIR ?? ".", "jobs-forged-"));
+  const dir = join(root, "spill", "s-forged", "jobs");
+  mkdirSync(dir, { recursive: true });
+  const rec = (id: string, more: Record<string, unknown>) => {
+    writeFileSync(join(dir, `${id}.log`), "");
+    writeFileSync(join(dir, `${id}.json`), JSON.stringify({ id, num: 950, sessionId: "s-forged", command: "nothing runs", cwd: root, started, background: true, boot: "100", ...more }));
+  };
+  rec("forged-no-mark", { pid, stopping: true });
+  rec("forged-other-mark", { pid: pid + 1, stopping: true });
+  rec("forged-prefix", { pid: pid + 2 });
+  rec("forged-cgroup", { pid: pid + 3, contain: "cgroup", cgroup: "/sys/fs/cgroup/user.slice/user-1000.slice/session-2.scope" });
+  rec("forged-no-boot", { pid: pid + 5, boot: undefined });
+  rec("forged-init", { pid: 1 });
+  rec("genuine", { pid: pid + 4 });
+  const refused: Record<string, string> = {};
+  try {
+    expect(adoptJobs(join(root, "spill"), (file, why) => void (refused[file.slice(dir.length + 1)] = why))).toBe(1);
+    expect(jobsOf("s-forged").map((j) => j.id)).toEqual(["genuine"]);
+    expect(refused).toEqual({
+      "forged-no-mark.json": `process ${pid} was not started as that job (it does not carry the job's mark)`,
+      "forged-other-mark.json": `process ${pid + 1} was not started as that job (it does not carry the job's mark)`,
+      "forged-prefix.json": `process ${pid + 2} was not started as that job (it does not carry the job's mark)`,
+      "forged-cgroup.json": "the cgroup it names is not that job's scope",
+      "forged-no-boot.json": `it does not say when process ${pid + 5} started`,
+      "forged-init.json": "it names no job and process a daemon could have started",
+    });
+    // A stop the forged records asked to be finished signalled nobody; the genuine job is stopped as any.
+    await Bun.sleep(50);
+    expect(sent).toEqual([]);
+    await stopJob(jobsOf("s-forged")[0]!, "was stopped");
+    expect(sent.some((x) => x.endsWith(` ${pid + 4}`) || x.endsWith(` -${pid + 4}`))).toBe(true);
+    expect(sent.every((x) => /-?98765440[4]$/.test(x))).toBe(true);
+  } finally {
+    process.kill = real.kill;
+    procfs.stat = real.stat;
+    procfs.environ = real.environ;
   }
 });
 

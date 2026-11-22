@@ -309,7 +309,7 @@ test("a stall inside a statement of the store names the statement", () => {
   expect(c.key).toBe("pread64 store");
 
   // A wait for the write lock: SQLite sleeps between its tries, in the transaction's own statement.
-  const lock = "BEGIN (the start of a transaction)";
+  const lock = "BEGIN (the start of a transaction: a write waits here for the store's write lock)";
   const waiting: Sample[] = [];
   for (let i = 0; i <= 10; i++) waiting.push({ t: i * 100, ep: 1, state: "S", run_ns: 0, wait_ns: 0, user_ticks: 0, sys_ticks: 0, call: { name: "clock_nanosleep" }, stmt: lock });
   waiting[10]!.state = "R";

@@ -2,7 +2,7 @@
 // events and an attachment, restore it into an empty state folder, and read
 // the same thing back from a fresh Store. A changed file fails the check.
 import { Database } from "bun:sqlite";
-import { expect, mock, setDefaultTimeout, test } from "bun:test";
+import { expect, mock, setDefaultTimeout, setSystemTime, test } from "bun:test";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -130,9 +130,18 @@ test("every kind of backup restores by itself", async () => {
     // A full backup is read back whole before it has its name; a delta is checked for its pages, and whole a little later.
     expect([full.checked, delta.checked, copied.checked]).toEqual(["whole", "pages", "whole"]);
     expect(manifestOf(delta.path).database.checked).toBe("pages");
-    expect(await storage.checkBackups()).toEqual({ checked: 1, failed: [], store_ok: true });
+    // The later check: the delta is read back whole to its hash. With the day's check: the backup read longest
+    // ago is read to its hash again, and the newest as a restore would take it.
+    expect(await storage.checkBackups(true)).toEqual({ checked: 3, failed: [], store_ok: true });
     expect(storage.backups().find((b) => b.name === delta.name)).toMatchObject({ checked: "whole" });
-    expect(JSON.parse(readFileSync(join(delta.path, "checked.json"), "utf8"))).toMatchObject({ ok: true });
+    const checkedOf = (b: { path: string }) => JSON.parse(readFileSync(join(b.path, "checked.json"), "utf8"));
+    expect(checkedOf(delta)).toMatchObject({ ok: true });
+    expect(checkedOf(delta).deep_ms).toBeUndefined();
+    expect(checkedOf(copied)).toMatchObject({ ok: true, deep_ms: expect.any(Number) });
+    expect(checkedOf({ path: older })).toMatchObject({ ok: true, again_ms: expect.any(Number) });
+    // Nothing was left beside the backups by it, and it is not made again within the day.
+    expect(readdirSync(join(src.stateDir, "backups")).filter((f) => f.startsWith(".check-"))).toEqual([]);
+    expect(await storage.checkBackups(true)).toEqual({ checked: 0, failed: [], store_ok: null });
     expect(await storage.checkBackups()).toEqual({ checked: 0, failed: [], store_ok: null });
     expect([manifestOf(full.path).database.source, manifestOf(delta.path).database.source, manifestOf(copied.path).database.source]).toEqual(["file", "file", "vacuum"]);
     // The delta holds the pages that changed, not the database: a few of its hundreds.
@@ -660,6 +669,31 @@ const stateOf = (dst: string) => ({
 });
 const IN_USE = { sessions: ["in use"], settings: JSON.stringify({ archive: { archive_idle_days: 7 } }), left: [] };
 
+// A restore refuses a backup whose database does not hold what its manifest counts. The check the
+// daemon makes of a backup after it is made compares the same, so such a backup is never called whole.
+test("the deep check of a backup refuses what a restore would refuse: counts that are not the database's", async () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-verify-"));
+  try {
+    const { backup, dst } = await backupAndState(root);
+    const before = verify(backup, true);
+    expect(before).toEqual({ ok: true, sessions: 1, events: before.ok ? before.events : -1 });
+    // The manifest counts four events more than the database holds (a count taken at a later moment than the bytes).
+    const mf = join(backup, "manifest.json");
+    const m = JSON.parse(readFileSync(mf, "utf8"));
+    writeFileSync(mf, JSON.stringify({ ...m, events: m.events + 4 }));
+    const said = `it holds 1 sessions and ${m.events} events, its manifest says 1 and ${m.events + 4}`;
+    // The routine check reads the bytes back to their hash and writes nothing: it does not see it.
+    expect(verify(backup).ok).toBe(true);
+    // The check a restore would make (the daemon makes it of the newest backup once a day) does.
+    expect(verify(backup, true)).toEqual({ ok: false, why: said });
+    expect(() => restore(dst, backup)).toThrow(said);
+    // Nothing is left beside the backups by the check.
+    expect(readdirSync(join(backup, "..")).filter((f) => f.startsWith(".check-"))).toEqual([]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a restore that fails while the backup goes in leaves the state as it was, and the retry restores", async () => {
   const root = mkdtempSync(join(tmpdir(), "keel-restore-"));
   try {
@@ -934,6 +968,9 @@ test("a delta that fails its later check: a full backup is made at once, and not
       expect(captured[0]).toContain(`The backup ${delta.name} holds its pages as they were and may hold the damage`);
       // No full backup was tried, and the next one is a full one, which is refused.
       expect(await storage.backup("next").then((b) => b.kind, (e: Error) => e.message)).toContain("the database did not check out");
+      // (The day's check of the newest backup still known whole, the full one: as a restore would take it, and it is. The store's damage is not held against it.)
+      expect(await storage.checkBackups(true)).toEqual({ checked: 1, failed: [], store_ok: null });
+      expect(storage.backups().map((b) => [b.reason, !!b.newest_whole])).toEqual([["of a damaged store", false], ["full", true]]);
       expect(await storage.checkBackups()).toEqual({ checked: 0, failed: [], store_ok: null });
       expect(captured.length).toBe(1);
       store.db.close();
@@ -957,7 +994,13 @@ test("a backup asked for while the later check runs ends the check, which is sch
     const storage = new Storage(src, {} as any, new Bus(), {} as any);
     const timer = () => (storage as any).checkTimer as ReturnType<typeof setTimeout> | undefined;
     await storage.backup("full");
-    // Nothing left unchecked: a start schedules no check.
+    // The day's check is owed (the newest backup was never read as a restore would take it): a start asks for it.
+    storage.checkLeft();
+    expect(timer()).toBeDefined();
+    clearTimeout(timer());
+    (storage as any).checkTimer = undefined;
+    expect(await storage.checkBackups(true)).toEqual({ checked: 1, failed: [], store_ok: null });
+    // Nothing left unchecked, and the day's check made: a start schedules no check.
     storage.checkLeft();
     expect(timer()).toBeUndefined();
     say(3);
@@ -997,6 +1040,77 @@ test("a backup asked for while the later check runs ends the check, which is sch
     started.checkLeft();
     expect((started as any).checkTimer).toBeDefined();
     started.stopChecks();
+
+    // The day's check as a restore would take it, cut by a backup: it is not begun again within the
+    // hour, however many backups are made meanwhile (each would write the store's size once more).
+    setSystemTime(new Date(Date.now() + 25 * 3_600_000));
+    try {
+      const day = new Storage(src, {} as any, new Bus(), {} as any);
+      const begun = day.checkBackups(true);
+      for (let i = 0; i < 2000 && !(day as any).cancelCheck; i++) await new Promise((r) => setTimeout(r, 1));
+      say(3);
+      const newest = await day.backup("asked while the day's check runs");
+      expect(await begun).toMatchObject({ cut: true });
+      clearTimeout((day as any).checkTimer);
+      const next = await day.checkBackups(true);
+      expect(next.failed).toEqual([]);
+      // The newest was read to its hash (it waited to be called whole), and not written out a second time.
+      expect(JSON.parse(readFileSync(join(newest.path, "checked.json"), "utf8")).deep_ms).toBeUndefined();
+      // An hour later it is.
+      setSystemTime(new Date(Date.now() + 3_700_000));
+      expect((await day.checkBackups(true)).failed).toEqual([]);
+      expect(JSON.parse(readFileSync(join(newest.path, "checked.json"), "utf8")).deep_ms).toBeGreaterThan(0);
+      day.stopChecks();
+    } finally {
+      setSystemTime();
+    }
+    src.db.close();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 60_000);
+
+// The day's check reads backups that were known whole: each kept backup's hash again in turn, one a
+// day. A file that went bad on the disk after its backup was checked is found then, not at a restore.
+test("the day's check reads every kept backup again in turn, and finds one that went bad on the disk", async () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
+  try {
+    const src = new Store(join(root, "src"));
+    const s = src.createSession({ model: "p:m", workspace: root, title: "kept" });
+    const say = (n: number) => src.db.transaction(() => { for (let i = 0; i < n; i++) src.append(s.id, "user", { text: `e ${i} `.padEnd(16) + "x".repeat(3000) }); })();
+    say(300);
+    const captured: string[] = [];
+    const storage = new Storage(src, {} as any, new Bus(), { capture: (_s: string, e: Error) => void captured.push(e.message) } as any);
+    const full = await storage.backup("full");
+    say(3);
+    const one = await storage.backup("delta one");
+    say(3);
+    const two = await storage.backup("delta two");
+    const stamp = (b: { path: string }) => JSON.parse(readFileSync(join(b.path, "checked.json"), "utf8"));
+    // The later check calls both deltas whole. The day's check: the backup read longest ago (the full
+    // one) to its hash again, and the newest as a restore would take it.
+    expect(await storage.checkBackups()).toEqual({ checked: 2, failed: [], store_ok: true });
+    expect(await storage.checkBackups(true)).toEqual({ checked: 2, failed: [], store_ok: null });
+    expect([stamp(full).again_ms > 0, stamp(two).deep_ms > 0, stamp(one).again_ms, stamp(one).deep_ms]).toEqual([true, true, undefined, undefined]);
+    // One byte goes bad in a backup that was checked and called whole.
+    const z = Buffer.from(readFileSync(join(one.path, "keel.db.delta.zst")));
+    z[z.length >> 1]! ^= 1;
+    writeFileSync(join(one.path, "keel.db.delta.zst"), z);
+    // Not looked at again the same day; the next day it is its turn.
+    expect(await storage.checkBackups(true)).toEqual({ checked: 0, failed: [], store_ok: null });
+    expect(storage.backups().find((b) => b.name === one.name)).toMatchObject({ checked: "whole" });
+    setSystemTime(new Date(Date.now() + 25 * 3_600_000));
+    try {
+      const found = await storage.checkBackups(true);
+      expect([found.checked, found.failed, found.full?.startsWith("keel-")]).toEqual([2, [one.name], true]);
+      expect(storage.backups().find((b) => b.name === one.name)!.failed).toBeDefined();
+      // (A backup that failed has no stamp of a check it passed.)
+      expect([stamp(one).ok, stamp(one).again_ms, stamp(one).deep_ms]).toEqual([false, undefined, undefined]);
+      expect(captured).toEqual([expect.stringContaining(`the backup ${one.name} does not read back`)]);
+    } finally {
+      setSystemTime();
+    }
+    storage.stopChecks();
     src.db.close();
   } finally {
     rmSync(root, { recursive: true, force: true });

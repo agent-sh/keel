@@ -1,15 +1,41 @@
 import { keyShaped, keyShapedDeep } from "./conceal.ts";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
+import { constants } from "node:fs";
+import { open, unlink } from "node:fs/promises";
+import { basename, join } from "node:path";
 import type { ErrorRecord, EventKind, ImageBlock, QueueItem, Session, StoredEvent, Usage } from "./types.ts";
 import { addUsage, emptyUsage } from "./types.ts";
 import { totalmem } from "node:os";
 import { forgetSession } from "./session-map.ts";
 import { asker, asking } from "./asker.ts";
 import { labelled } from "./statement-label.ts";
-import { holdStore, storePath } from "./store-files.ts";
+import { encodeOwed, OWED_FILE, OWED_FILE_MAX, OWED_V, owedLineKey, owedRefusal, owedSql, readOwed, type OwedLine, type OwedRecord, type OwedSql } from "./owed.ts";
+import { holdStore, logBytes, storePath } from "./store-files.ts";
 import type { SettleAsk, Settled } from "../engine/compact.ts";
+
+// Every transaction of this connection begins as a writer (BEGIN IMMEDIATE).
+// One that begins as a reader and writes later cannot wait for the write
+// lock: when another connection holds it, or committed since the read,
+// SQLite fails the write at once (isolation.html: SQLITE_BUSY_SNAPSHOT),
+// whatever the busy timeout. The checkpoint thread is such a connection
+// (checkpoint.ts). A transaction that begins as a writer waits for the lock
+// and then sees what was committed.
+export function immediate(db: Database) {
+  const begin = db.transaction.bind(db);
+  (db as { transaction: unknown }).transaction = (fn: (...args: unknown[]) => unknown) => {
+    const t = begin(fn);
+    const run = function (this: unknown, ...args: unknown[]) { return t.immediate.apply(this, args); };
+    return Object.assign(run, { deferred: t.deferred, immediate: t.immediate, exclusive: t.exclusive });
+  };
+}
+
+// How long a write of this connection waits for the write lock at a time. It waits a fifth of a
+// second and is tried again (the statement wrapper, in the constructor) for as long as the lock's
+// holder is not known to stand still (src/core/checkpoint.ts, lockedOut), thirty seconds in all:
+// the loop is never inside one wait for longer than this, and whoever watches the holder is asked
+// between the waits.
+export const BUSY_MS = 200;
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -37,9 +63,21 @@ PRAGMA cache_size = -16384;
 -- SQLite checkpoints it at 1,000 pages (4.1 MB), it grows past that only
 -- while a long read holds it (the read thread, a backup), and this gives the
 -- file back to that size at the first write after such a read. With the
--- thread the file is kept at 16 MB and holds up to 64 MB under load (the
--- thread raises this limit while it works and puts it back when it stops).
+-- thread the file is as long as the thread lets the log grow (its own
+-- connection's limit counts then, since it is the one that starts the log again).
 PRAGMA journal_size_limit = 4194304;
+-- A write waits for the write lock when another connection holds it (the
+-- checkpoint thread while it starts the log again, a command of the owner's
+-- that writes to the store): without this it fails at once.
+PRAGMA busy_timeout = ${BUSY_MS};
+-- The key the file of owed writes is marked with (src/core/owed.ts): made once, kept here, where
+-- the file tools never read and a sandboxed command cannot write.
+CREATE TABLE IF NOT EXISTS store_keys (name TEXT PRIMARY KEY, key BLOB NOT NULL);
+INSERT OR IGNORE INTO store_keys (name, key) VALUES ('owed', randomblob(32));
+INSERT OR IGNORE INTO store_keys (name, key) VALUES ('owed_generation', 0);
+-- The one row the checkpoint thread writes when it starts the log again (checkpoint.ts).
+CREATE TABLE IF NOT EXISTS log_starts (id INTEGER PRIMARY KEY CHECK (id = 1), n INTEGER NOT NULL DEFAULT 0, ts INTEGER NOT NULL DEFAULT 0);
+INSERT OR IGNORE INTO log_starts (id) VALUES (1);
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL DEFAULT '',
@@ -210,6 +248,33 @@ const NEWEST_PART = 32;
 const pause = () => new Promise<void>((r) => setImmediate(r));
 // KEEL_TRACE_COLD=1: each whole-session read made on the loop is a line of the log, with who asked; =stack: and its call stack.
 const TRACE_COLD = process.env.KEEL_TRACE_COLD;
+// SQLite's words for a write on a connection that takes none (PRAGMA query_only).
+export const refusedWrite = (e: unknown) => /readonly database|SQLITE_READONLY/i.test(`${(e as { code?: string })?.code ?? ""} ${(e as Error)?.message ?? e}`);
+// Writes owed while the store takes none: a turn's end, a card's answer, a phase. More than this many are not kept.
+const OWED_MAX = 10_000;
+// At a stop of the daemon: how long its file of owed writes may take to be written and given to the disk,
+// and how long one write that is tried a last time waits for the write lock.
+const OWED_EXIT_MS = 2_000;
+const OWED_BUSY_MS = 250;
+const BUSY_ALL_MS = 30_000;
+// A log longer than this at a start is said while it is read.
+const LOG_SAID_MB = 64;
+// The longest a turn holds a write for the checkpoint thread's hold of the write lock (Store.clear):
+// a start of the log on a slow disk is seven syncs, each of seconds. A thread that stands still for
+// half a minute ends the wait before this (Checkpointer.pacing).
+const PACE_MS = 300_000;
+// What a write is told when the store takes none (in SQLite's own words for it, so every reader of such a failure knows it).
+const refusedError = () => Object.assign(new Error("attempt to write a readonly database: the store takes no writes right now"), { code: "SQLITE_READONLY" });
+// What a request that would write is answered meanwhile.
+export const STORE_REFUSES = "the daemon's disk does not answer and its store takes no writes until it does or the daemon is restarted (see Errors). Sessions can still be read, a running turn stopped, a card answered and the daemon restarted.";
+// SQLite's words, and the system's, for a disk with no room.
+export const diskFull = (e: unknown) => /SQLITE_FULL|database or disk is full|ENOSPC|no space left/i.test(`${(e as { code?: string })?.code ?? ""} ${(e as Error)?.message ?? e}`);
+const busyWrite = (e: unknown) => /SQLITE_BUSY|database is locked/i.test(`${(e as { code?: string })?.code ?? ""} ${(e as Error)?.message ?? e}`);
+// `p`, or false when it has not settled within `ms`.
+const within = <T>(p: Promise<T>, ms: number): Promise<T | false> => {
+  let t: ReturnType<typeof setTimeout>;
+  return Promise.race([p, new Promise<false>((r) => { t = setTimeout(() => r(false), ms); })]).finally(() => clearTimeout(t));
+};
 
 export type ColdReads = { n: number; rows: number; ms: number; by: { who: string; n: number; rows: number; ms: number }[] };
 type SessionRow = Omit<Session, "archived" | "usage" | "settings"> & { archived: number; usage: string; settings: string };
@@ -290,14 +355,330 @@ export class Store {
   // daemon: without it the caller settles on the loop.
   settleOff?: (ask: SettleAsk) => Promise<Settled>;
 
+  // The store takes no writes for now: its disk does not answer and its log
+  // is at the ceiling, or the checkpoint thread holds the write lock in a
+  // call that does not return (src/core/checkpoint.ts). What the owner must
+  // always be able to do then (stop a turn, answer a card, stop or restart
+  // the daemon) acts in memory, and the writes that go with it are owed:
+  // `orLater` makes a write now, or keeps it when the store refuses it and
+  // makes it when the store takes writes again (`refuse(false)`), in the
+  // order they were owed.
+  //
+  // What is owed outlives the daemon that owes it. Each owed write that
+  // matters after a restart has its record, appended as it is owed to a
+  // small file in the state folder (src/core/owed.ts says what the file
+  // may hold and why the next start can trust it): a write through the
+  // operating system, off the loop, with no sync, so a restart or a kill
+  // of the daemon keeps it (a loss of power may not: the disk is not
+  // answering). A daemon that stops tries what it owes for a few seconds,
+  // each write waiting for the write lock a quarter of a second at most
+  // (the thread that does not return may hold it), and leaves the rest in
+  // the file. The next start makes them before it reads anything else
+  // (`applyOwed`), each once: an event is known by its id, a statement is
+  // one that can be made twice. Then the file is removed.
+  refusing = false;
+  // Set by the checkpoint thread's owner: a write of this connection waited for the write lock
+  // and did not get it. True: the store takes no writes from here (the holder stands still).
+  lockedOut?: (waitedMs: number) => boolean;
+  // Set by the checkpoint thread's owner: told when a write found the disk full.
+  full?: () => void;
+  // Set by the checkpoint thread's owner: true while a write would wait for the thread's hold of
+  // the write lock (a start of the log on a slow disk), or be refused because of it.
+  pacing?: () => boolean;
+  // A turn asks before it writes, at a place it can wait: resolves when the hold is over, at its
+  // stop, or after `ms` at the latest (the write is then made as any, and fails as any).
+  // What waits here does not hold the loop in SQLite's wait for the lock, and is not ended by a
+  // store that stopped taking writes for those seconds.
+  // `orRefusing`: also when the store stops taking writes meanwhile (the caller then owes its write, and asks again).
+  async clear(signal?: AbortSignal, ms = PACE_MS, orRefusing = false): Promise<void> {
+    const until = Date.now() + ms;
+    while (this.pacing?.() && !(orRefusing && this.refusing) && !signal?.aborted && Date.now() < until) await Bun.sleep(25);
+  }
+  // Something about the owed writes the owner should read (a record that was not kept): set by the daemon.
+  owedSaid?: (e: Error) => void;
+  private inLockedOut = false;
+  private flushing = false;
+  private busyFrom = 0;
+  private later: { what: string; write: () => void; records: OwedRecord[]; filed: boolean }[] = [];
+  // The file's writes, one after another; `journalFailed`: why one of them was not made.
+  private journalled: Promise<void> = Promise.resolve();
+  private journalFailed?: string;
+  private journalBytes = 0;
+  private notes: OwedLine[] = [];
+  // The key the file's lines are marked with, and this daemon's name in them.
+  private owedKey!: Uint8Array;
+  private readonly life = Bun.randomUUIDv7();
+  // Records that were not kept in memory (over OWED_MAX) or not filed (the file is full), since it was last said.
+  private unkept = { memory: 0, file: 0, said: false };
+  private madeAtStop = 0;
+  orLater(what: string, write: () => void, records: OwedRecord[] = []): boolean {
+    if (!this.refusing) {
+      // (A write that did not get the write lock is owed too when that made the store take no writes: `lockedOut`.)
+      try { write(); return true; } catch (e) { if (!refusedWrite(e) && !(busyWrite(e) && this.refusing)) throw e; }
+    }
+    if (this.later.length >= OWED_MAX) { this.unkept.memory++; this.sayUnkept(); return false; }
+    const filed = records.length ? this.journal(records.map((r) => ({ ...r, v: OWED_V, life: this.life, what }))) : false;
+    this.later.push({ what, write, records, filed });
+    if (records.length && !filed) { this.unkept.file++; this.sayUnkept(); }
+    return false;
+  }
+  // Said once for each time the store takes no writes: the count is in the words when the daemon stops.
+  private sayUnkept() {
+    if (this.unkept.said) return;
+    this.unkept.said = true;
+    queueMicrotask(() => {
+      const u = this.unkept;
+      this.owedSaid?.(new Error(u.memory
+        ? `More than ${OWED_MAX} writes are owed to the store while it takes none: the ones past that are not kept, and what they would have written is lost (a turn among them is closed as cut at the next start).`
+        : `The file of owed writes is full (${Math.round(OWED_FILE_MAX / 1048576)} MB): what is owed from here is kept in memory only, and is lost if the daemon stops before the store takes writes again.`));
+    });
+  }
+  // An event that is made now, or owed with the id and the time it has now. `then`: told the stored event (the bus).
+  appendOrLater(session: string, kind: EventKind, data: unknown, then: (e: StoredEvent) => void = () => {}): boolean {
+    const id = Bun.randomUUIDv7(), at = Date.now();
+    // (Redacted before it is owed: the file never holds what the table would not.)
+    data = this.redact(session, kind, data);
+    return this.orLater(`${kind === "turn_end" ? "a turn's end" : kind === "tool_result" ? "a tool's result" : `an event (${kind})`}`, () => then(this.append(session, kind, data, undefined, at, id)), [{ op: "event", id, session, kind, data, at }]);
+  }
+  // One of the statements that may be owed (src/core/owed.ts).
+  sqlOrLater(name: OwedSql, params: (string | number | null)[], what: string): boolean {
+    return this.orLater(what, () => void this.db.query(owedSql(name)!).run(...params), [{ op: "sql", name, params }]);
+  }
+  // Something the next start must say (a restart that made no backup): kept in the same file.
+  noteNext(text: string) {
+    const line: OwedLine = { op: "note", text, at: Date.now(), v: OWED_V, life: this.life };
+    this.notes.push(line);
+    this.journalAppend(encodeOwed(this.owedKey, line));
+  }
+  // False: the file is full, and these are not in it.
+  private journal(lines: OwedLine[]): boolean {
+    const text = lines.map((l) => encodeOwed(this.owedKey, l)).join("");
+    if (this.journalBytes + text.length > OWED_FILE_MAX) return false;
+    this.journalAppend(text);
+    return true;
+  }
+  // (Opened without following a link, made for its owner alone: the file is the daemon's.)
+  private journalAppend(text: string, replace = false) {
+    this.journalBytes = (replace ? 0 : this.journalBytes) + text.length;
+    const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW | (replace ? constants.O_TRUNC : constants.O_APPEND);
+    this.journalled = this.journalled.then(async () => {
+      const f = await open(join(this.stateDir, OWED_FILE), flags, 0o600);
+      try { await f.write(text); } finally { await f.close(); }
+      this.journalSync();
+    }).catch((e) => { this.journalFailed ??= (e as Error).message; });
+  }
+  // What was appended is synced, off the loop and beside the appends (one sync at a time; an append
+  // never waits for it): on a disk that answers, an owed write is on the disk moments after it was
+  // owed, so a loss of power before the store takes it does not lose it. On a disk that does not
+  // answer the sync does not return, the appends go on, and a stop says the disk has not confirmed
+  // the file (closeOwed).
+  private journalSyncing = false;
+  private journalUnsynced = false;
+  private journalSync() {
+    this.journalUnsynced = true;
+    if (this.journalSyncing) return;
+    this.journalSyncing = true;
+    void (async () => {
+      try {
+        while (this.journalUnsynced) {
+          this.journalUnsynced = false;
+          const f = await open(join(this.stateDir, OWED_FILE), constants.O_RDWR | constants.O_NOFOLLOW);
+          try { await f.sync(); } finally { await f.close(); }
+        }
+      } catch {} finally { this.journalSyncing = false; }
+    })();
+  }
+  // Set by the checkpoint thread's owner. Off: what is owed is made, in
+  // order. `failed`: a write that was owed and failed when it was made at
+  // last (it is dropped). `budgetMs`: at a stop of the daemon, how long
+  // this may take in all; a write the store still does not take (the lock
+  // is held, the time is up) stays owed with the ones after it, in the file.
+  refuse(on: boolean, failed: (e: unknown, what: string) => void = () => {}, budgetMs?: number) {
+    this.refusing = on;
+    if (on) return;
+    const until = budgetMs === undefined ? Infinity : Date.now() + budgetMs;
+    let full = false;
+    this.flushing = budgetMs !== undefined;
+    if (budgetMs !== undefined) try { this.db.exec(`PRAGMA busy_timeout = ${OWED_BUSY_MS}`); } catch {}
+    try {
+      while (this.later.length && Date.now() <= until) {
+        const o = this.later[0]!;
+        try { o.write(); if (budgetMs !== undefined && o.records.length) this.madeAtStop++; } catch (e) {
+          // (No room on the disk for it: it stays owed with the ones after it, and the store goes on taking no writes.)
+          if (diskFull(e)) { full = true; break; }
+          if (budgetMs !== undefined && (busyWrite(e) || refusedWrite(e))) break;
+          // (The store stopped taking writes again while these were made: the rest stays owed.)
+          if (this.refusing) break;
+          failed(e, o.what);
+        }
+        this.later.shift();
+      }
+    } finally {
+      this.flushing = false;
+      if (budgetMs !== undefined) try { this.db.exec(`PRAGMA busy_timeout = ${BUSY_MS}`); } catch {}
+    }
+    if (this.later.length) {
+      // The store still takes no writes (the daemon is stopping, and the write lock is still held;
+      // or the disk has no room): it says so for what is left of this process, so a later write
+      // fails at once, and is owed when it can be, instead of waiting for the lock on the loop.
+      if (budgetMs !== undefined || full) {
+        this.refusing = true;
+        try { this.db.exec("PRAGMA query_only = ON"); } catch {}
+        if (full && budgetMs === undefined) try { this.full?.(); } catch {}
+      }
+      return;
+    }
+    this.phases.clear();
+    this.unkept = { memory: 0, file: 0, said: false };
+    // Nothing is owed any more: the file goes, or holds only the words for the next start.
+    // The file is done with: the next one is marked with another key (owedLineKey), so a line of
+    // this one, kept and put back, is not made again.
+    try { this.nextOwedFile(); } catch {}
+    const path = join(this.stateDir, OWED_FILE), notes = this.notes.map((l) => encodeOwed(this.owedKey, l)).join("");
+    if (notes) this.journalAppend(notes, true);
+    else {
+      this.journalBytes = 0;
+      this.journalled = this.journalled.then(() => unlink(path)).then(() => { this.journalFailed = undefined; }, () => {});
+    }
+  }
+  get owes(): number { return this.later.length; }
+  // `f` with no wait for a lock at all: what it cannot have at once it does not get.
+  noWait<T>(f: () => T): T {
+    const was = this.flushing;
+    this.flushing = true;
+    try { this.db.exec("PRAGMA busy_timeout = 0"); return f(); } finally {
+      this.flushing = was;
+      try { this.db.exec(`PRAGMA busy_timeout = ${was ? OWED_BUSY_MS : BUSY_MS}`); } catch {}
+    }
+  }
+  // At a stop of the daemon, after the last try (`refuse(false, ..., ms)`):
+  // what is still owed is in its file, which is given to the disk when the
+  // disk takes it in time. `made`: what the last try wrote. `lost`: what is
+  // owed and in no file (the file could not be written, or was full), by
+  // what it was; the daemon says exactly that.
+  async closeOwed(ms = OWED_EXIT_MS): Promise<{ made: number; owed: number; synced: boolean; lost: string[] }> {
+    const left = this.later.filter((o) => o.records.length);
+    const made = this.madeAtStop;
+    if (!left.length && !this.notes.length) {
+      // (The file's last write, its removal included, is given its time.)
+      await within(this.journalled, ms);
+      return { made, owed: 0, synced: true, lost: [] };
+    }
+    const path = join(this.stateDir, OWED_FILE);
+    const written = (await within(this.journalled.then(() => true), ms)) && !this.journalFailed;
+    if (!written) return { made, owed: left.length, synced: false, lost: left.map((o) => o.what) };
+    // (Off the loop and bounded: a sync is what this disk may never answer.)
+    const synced = await within((async () => { const f = await open(path, constants.O_RDWR | constants.O_NOFOLLOW); try { await f.sync(); } finally { await f.close(); } return true; })().catch(() => false), ms);
+    return { made, owed: left.length, synced: !!synced, lost: left.filter((o) => !o.filed).map((o) => o.what) };
+  }
+  // A session's phase as it is in memory while its write is owed: what a list of sessions says.
+  private phases = new Map<string, Session["phase"]>();
+  phaseOwed(id: string, phase: Session["phase"]) { this.phases.set(id, phase); }
+  // What the daemon before this one owed, made at this start; what could not be made or was not taken, in words; and what it left to be said.
+  owedAtStart?: { made: number; failed: string[]; notes: { text: string; at: number }[] };
+  // The key the file's lines are marked with now, and the one of the file before it.
+  private owedBefore?: Uint8Array;
+  private readOwedKey() {
+    const key = this.db.query<{ key: Uint8Array }, []>("SELECT key FROM store_keys WHERE name = 'owed'").get()!.key;
+    const n = Number(this.db.query<{ key: number }, []>("SELECT key FROM store_keys WHERE name = 'owed_generation'").get()?.key ?? 0);
+    this.owedKey = owedLineKey(key, n);
+    this.owedBefore = n > 0 ? owedLineKey(key, n - 1) : undefined;
+  }
+  private nextOwedFile() {
+    this.db.query("UPDATE store_keys SET key = key + 1 WHERE name = 'owed_generation'").run();
+    if (!this.db.inTransaction) this.readOwedKey();
+  }
+  private applyOwed() {
+    const path = join(this.stateDir, OWED_FILE);
+    const read = readOwed(path, this.owedKey, this.owedBefore);
+    if (!read) return;
+    const done = { made: 0, failed: [] as string[], notes: [] as { text: string; at: number }[] };
+    // A file that is not the daemon's own to read (a link, a folder, far too large) is moved aside and said: it is not applied, and it does not stay in the next file's place.
+    const aside = (why: string) => {
+      const to = `${path}.refused-${Date.now()}`;
+      let moved = false;
+      try { renameSync(path, to); moved = true; } catch {}
+      done.failed.push(`the file of owed writes was not applied: ${why}${moved ? ` (it is kept as ${basename(to)})` : " (and it could not be moved aside: no new one can be written until it is removed)"}`);
+      this.owedAtStart = done;
+    };
+    if (read.why) return aside(read.why);
+    if (read.torn) done.failed.push(`${read.torn} line${read.torn === 1 ? "" : "s"} of the file of owed writes ${read.torn === 1 ? "was" : "were"} cut or not a record, and ${read.torn === 1 ? "was" : "were"} passed over`);
+    if (read.unmarked + read.others) done.failed.push(`${read.unmarked + read.others} line${read.unmarked + read.others === 1 ? "" : "s"} of the file of owed writes did not carry this store's mark and ${read.unmarked + read.others === 1 ? "was" : "were"} not applied: the daemon did not write ${read.unmarked + read.others === 1 ? "it" : "them"}`);
+    // (A file a start made and did not get to remove, or one of the run before put back: made already.)
+    if (read.made) console.log(`[store] ${read.made} line${read.made === 1 ? "" : "s"} of the file of owed writes ${read.made === 1 ? "was" : "were"} made before (the file of the run before this one): not made again`);
+    const records = read.lines.filter((r) => r.op !== "note");
+    for (const r of read.lines) if (r.op === "note" && typeof r.text === "string") done.notes.push({ text: r.text.slice(0, 2000), at: Number(r.at) || 0 });
+    if (records.length) console.log(`[store] applying ${records.length} write${records.length === 1 ? "" : "s"} the daemon before this one owed (${Math.round(read.bytes / 1024)} KB)`);
+    const known = this.db.query<{ n: number }, [string]>("SELECT 1 AS n FROM events WHERE id = ?");
+    // (A card's table is a module's: one that is not there yet has no card.)
+    const facts = {
+      session: (id: string) => !!this.db.query("SELECT 1 FROM sessions WHERE id = ?").get(id),
+      card: (id: string) => { try { return this.db.query<{ state: string; session_id: string; data: string }, [string]>("SELECT state, session_id, data FROM approvals WHERE id = ?").get(id) ?? undefined; } catch { return undefined; } },
+    };
+    // (No checkpoint in this commit: a daemon that stopped with its disk not answering may have left
+    // a long log, and copying it is the checkpoint thread's work once the daemon answers, not the start's.)
+    const auto = this.db.query<{ wal_autocheckpoint: number }, []>("PRAGMA wal_autocheckpoint").get()?.wal_autocheckpoint ?? 1000;
+    this.db.exec("PRAGMA wal_autocheckpoint = 0");
+    try { this.db.transaction(() => {
+      for (const r of records) {
+        try {
+          const why = owedRefusal(r, facts);
+          if (why === "made") continue;
+          if (why) throw new Error(why);
+          // (A part of the whole: one that fails leaves the others made.)
+          this.db.transaction(() => {
+            if (r.op === "event") {
+              if (known.get(r.id)) return;
+              this.append(r.session, r.kind, r.data, undefined, r.at, r.id);
+            } else if (r.op === "sql") {
+              this.db.query(owedSql(r.name, r.v)!).run(...r.params);
+            }
+            done.made++;
+          })();
+        } catch (e) {
+          done.failed.push(`${typeof r.what === "string" ? r.what.slice(0, 80) : r.op}: ${(e as Error).message}`);
+        }
+      }
+      // With them, in the one commit: this file is done with.
+      this.nextOwedFile();
+    })(); } finally { this.db.exec(`PRAGMA wal_autocheckpoint = ${auto}`); this.readOwedKey(); }
+    rmSync(path, { force: true });
+    this.owedAtStart = done;
+  }
+
   constructor(readonly stateDir: string) {
     mkdirSync(stateDir, { recursive: true });
     // From here this process holds locks on the store's files: nothing but SQLite opens them (store-files.ts).
     holdStore(stateDir);
+    // A long log left by a daemon that did not stop cleanly is read whole by this open, before the
+    // daemon listens (seconds from a cold disk): said as it begins and when it is over.
+    const logMb = Math.round(logBytes(stateDir) / 1_048_576);
+    const reading = logMb > LOG_SAID_MB ? performance.now() : 0;
+    if (reading) console.log(`[store] reading ${logMb} MB of the store's log, left by a daemon that did not stop cleanly`);
     this.db = new Database(storePath(stateDir), { create: true, strict: true });
     this.db.exec(SCHEMA);
+    if (reading) console.log(`[store] the log is read (${((performance.now() - reading) / 1000).toFixed(1)} s)`);
+    immediate(this.db);
     // Each statement says which one it is while it runs: a stall in the database is named by its query (statement-label.ts).
-    labelled(this.db);
+    // (And one that ends without the write lock it waited for is told to whoever watches the lock's holder: `lockedOut`.)
+    // The wait for the write lock is a fifth of a second at a time, made again (true) while its
+    // holder is not known to stand still, for thirty seconds in all.
+    labelled(this.db, (e, tries) => {
+      // (A disk with no room: said to whoever keeps the store's state, once.)
+      if (diskFull(e)) { try { this.full?.(); } catch {} return false; }
+      if (!busyWrite(e) || this.inLockedOut) return false;
+      const now = Date.now();
+      // (This write's wait began one wait ago, when it was first tried.)
+      if (tries === 0) this.busyFrom = now - BUSY_MS;
+      this.inLockedOut = true;
+      let out = false;
+      try { out = this.lockedOut?.(now - this.busyFrom) === true; } catch {} finally { this.inLockedOut = false; }
+      // The store takes no writes from here: this write is told so, as the ones after it are (not that the lock was not had).
+      if (out) return refusedError();
+      if (this.flushing || this.refusing) return false;
+      return now - this.busyFrom < BUSY_ALL_MS;
+    });
+    this.readOwedKey();
     // The event tree (edit, fork, branches) and per-session settings. One
     // transaction: a start that fails part way leaves the database as it was,
     // and the next start does all of it.
@@ -349,6 +730,8 @@ export class Store {
     // session's cut turn (Engine.closeCut, then bootSettled), so a daemon
     // killed during its own start leaves it for the next one; and whichever
     // build starts next clears it, so a mark is never older than one start.
+    // What the daemon before this one owed and could not write is made first: the turns it closed are closed.
+    try { this.applyOwed(); } catch (e) { this.owedAtStart = { made: 0, failed: [`the file of owed writes could not be applied: ${(e as Error).message}`], notes: [] }; }
     this.bootWorking = this.db.query<{ id: string }, []>("SELECT id FROM sessions WHERE phase = 'working'").all().map((r) => r.id);
   }
 
@@ -398,14 +781,20 @@ export class Store {
 
   session(id: string): Session | undefined {
     const r = this.db.query<SessionRow, [string]>("SELECT * FROM sessions WHERE id = ?").get(id);
-    return r ? rowToSession(r) : undefined;
+    return r ? this.phased(rowToSession(r)) : undefined;
   }
 
   sessions(opts: { archived?: boolean } = {}): Session[] {
-    return this.db
+    const all = this.db
       .query<SessionRow, [number]>("SELECT * FROM sessions WHERE archived = ? ORDER BY updated DESC")
       .all(opts.archived ? 1 : 0)
       .map(rowToSession);
+    return this.phases.size ? all.map((s) => this.phased(s)) : all;
+  }
+  // (A phase whose write is owed is the one in memory: a turn that ended while the store took no writes is not working.)
+  private phased(s: Session): Session {
+    const p = this.phases.get(s.id);
+    return p && p !== s.phase ? { ...s, phase: p } : s;
   }
 
   // The unarchived sessions whose shown branch ends in a turn a daemon
@@ -481,9 +870,10 @@ export class Store {
   // starts a new branch there: an edited prompt). It becomes the head.
   // `at`: when it happened, for an event copied from another store; the
   // session's last activity is still now.
-  append(session_id: string, kind: EventKind, data: unknown, parent?: string | null, at?: number): StoredEvent {
+  // (`at`, `as`: the time and the id of an event that was owed: Store.orLater.)
+  append(session_id: string, kind: EventKind, data: unknown, parent?: string | null, at?: number, as?: string): StoredEvent {
     data = this.redact(session_id, kind, data);
-    const id = Bun.randomUUIDv7();
+    const id = as ?? Bun.randomUUIDv7();
     const text = JSON.stringify(data);
     const now = Date.now();
     const ts = at ?? now;

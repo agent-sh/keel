@@ -3,6 +3,8 @@
 // in two steps (list, then delete what is still that old and unchanged),
 // leftovers of deleted sessions, the owner's archive policy, and backups of
 // the durable state that are checked when written and can be restored.
+import { checkpointerOf } from "../core/checkpoint.ts";
+import { NOT_EMPTIED, TRIED } from "../core/checkpoint-shared.ts";
 import { createHash } from "node:crypto";
 import { closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
@@ -82,6 +84,12 @@ async function du(paths: string[]): Promise<Map<string, number>> {
 
 export type StorageReport = Awaited<ReturnType<Storage["measure"]>>;
 type CheckpointSession = { id: string; title: string; archived: boolean; subagent: boolean; checkpoints: number; checkpoint_bytes: number; updated_ms: number };
+
+// The day's check (Storage.checkNow): how often it is made, how often it is looked at, and how
+// soon the check as a restore would take it is begun again after a backup cut it.
+const DAY_MS = 24 * 3_600_000;
+const DAY_LOOK_MS = 3_600_000;
+const DEEP_RETRY_MS = 3_600_000;
 
 export class Storage {
   private last?: StorageReport;
@@ -383,12 +391,19 @@ export class Storage {
       mkdirSync(tmp, { recursive: true });
       // The worker reads the database file itself once the write-ahead log is
       // emptied into it: asked for here, between two writes of the daemon.
-      const checkpoint = () => { try { this.store.db.run("PRAGMA wal_checkpoint(TRUNCATE)"); } catch {} }; // not emptied: the worker sees that
+      // Without a checkpoint thread the daemon's own connection empties the
+      // log, and gives up at once when a reader or a writer is in the way
+      // (its usual wait for a lock would hold the loop).
+      const checkpoint = () => {
+        try { this.store.noWait(() => this.store.db.run("PRAGMA wal_checkpoint(TRUNCATE)")); } catch {} // not emptied: the worker sees that
+      };
+      // With one, the thread copies the log and holds the daemon's writes back for the worker's snapshot: the loop is not held at all.
+      const viaThread = (gate: Int32Array) => checkpointerOf(this.store)?.snapshot(gate);
       // The read thread's connection would keep the log from being emptied
       // while a read of it runs: its reads are held until the worker has its
       // snapshot (a read already running is waited for, ten seconds at most).
       const release = await readsOf(this.store).hold(READS_HOLD_MS);
-      const done = await inWorker<BackupDone>({ stateDir: this.dir, root: this.backupRoot, tmp, reason, keep: settings().backup.keep, ...(full ? { full: true as const } : {}), ...(this.config ? { config: resolve(this.config) } : {}) }, { checkpoint, snapped: release }).finally(release);
+      const done = await inWorker<BackupDone>({ stateDir: this.dir, root: this.backupRoot, tmp, reason, keep: settings().backup.keep, ...(full ? { full: true as const } : {}), ...(this.config ? { config: resolve(this.config) } : {}) }, { checkpoint, viaThread, snapped: release }).finally(release);
       if (done.skipped.length) this.errors.capture?.("server", new Error(`the backup left out ${done.skipped.length} config file${done.skipped.length === 1 ? "" : "s"} it could not read: ${done.skipped.map((s) => s.name).join(", ")}`), { at: "backup config", dir: done.config });
       // What a backup still does on the loop after its worker: its name
       // (a sync of the folder), and below the removal of older ones.
@@ -416,19 +431,41 @@ export class Storage {
     clearTimeout(this.checkTimer);
     this.checkTimer = setTimeout(() => {
       this.checkTimer = undefined;
-      this.checkBackups().catch((e) => this.errors.capture?.("server", e, { at: "backup check" }));
+      this.checkBackups(true).catch((e) => this.errors.capture?.("server", e, { at: "backup check" }));
     }, ms);
     this.checkTimer.unref?.();
   }
   // At a start: backups an earlier process left unchecked (it restarted
   // right after making one, or was killed before its check) are checked
   // soon, so restarts close together do not leave them unchecked for good.
+  // And the day's check (checkNow) is looked at once an hour, whether or
+  // not a backup is made: a daemon that makes none for days still reads
+  // the ones it keeps.
   checkLeft() {
-    if (this.unchecked().length) this.checkLater(CHECK_AT_START_MS);
+    if (this.unchecked().length || this.dayDue()) this.checkLater(CHECK_AT_START_MS);
+    clearInterval(this.dayTimer);
+    this.dayTimer = setInterval(() => { if (!this.checkTimer && this.dayDue()) this.checkLater(0); }, DAY_LOOK_MS);
+    this.dayTimer.unref?.();
+  }
+  private dayTimer?: ReturnType<typeof setInterval>;
+  // Whether the day's check has something to do (the same facts checkNow decides from).
+  private dayDue(now = Date.now()): boolean {
+    const kept = this.backups().filter((b) => !b.unreadable && !b.failed && !b.base_missing);
+    if (!kept.length) return false;
+    const stamps = kept.map((b) => checkedOf(b.path));
+    const last = (k: "deep_ms" | "again_ms") => Math.max(0, ...stamps.map((c) => c?.[k] ?? 0));
+    return (now - last("deep_ms") >= DAY_MS && now - this.deepTried() >= DEEP_RETRY_MS) || (kept.length > 1 && now - last("again_ms") >= DAY_MS);
+  }
+  // When the check as a restore would take it was last begun (kept beside the backups: a restart does not forget it).
+  private deepTried(set?: number): number {
+    const path = join(this.backupRoot, ".deep-tried");
+    if (set !== undefined) { try { writeFileSync(path, String(set), { mode: 0o600 }); } catch {} return set; }
+    try { return Number(readFileSync(path, "utf8")) || 0; } catch { return 0; }
   }
   // No check is started or left running by this one (a hot reload makes another).
   stopChecks() {
     this.stopped = true;
+    clearInterval(this.dayTimer);
     clearTimeout(this.checkTimer);
     this.checkTimer = undefined;
     this.cancelCheck?.();
@@ -452,14 +489,35 @@ export class Storage {
   // Either is reported in Errors once a run. Run a while after a start that
   // finds backups unchecked, after a backup that was asked for, and never
   // while a restart waits: a backup that is asked for ends it (`cut`).
-  checkBackups(): Promise<{ checked: number; failed: string[]; store_ok: boolean | null; full?: string; cut?: true }> {
-    const run = this.backing.then(() => this.checkNow());
+  // `day`: with the day's check when it is due (the timers ask for it; see checkNow).
+  checkBackups(day = false): Promise<{ checked: number; failed: string[]; store_ok: boolean | null; full?: string; cut?: true }> {
+    const run = this.backing.then(() => this.checkNow(day));
     this.backing = run.catch(() => {});
     return run;
   }
 
-  private async checkNow(): Promise<{ checked: number; failed: string[]; store_ok: boolean | null; full?: string; cut?: true }> {
-    const due = this.unchecked();
+  private async checkNow(day: boolean): Promise<{ checked: number; failed: string[]; store_ok: boolean | null; full?: string; cut?: true }> {
+    const unchecked = this.unchecked();
+    // The day's check, besides the backups that wait to be called whole.
+    // Both read backups that were known whole: a file that went bad on the
+    // disk since is found within days, not at the restore that needs it.
+    // - The kept backup read longest ago is read back to its hash again,
+    //   one a day: every kept backup in turn, with nothing written.
+    // - The newest backup, of whatever kind, is checked as a restore would
+    //   take it (written out, SQLite's check, its counts): that costs the
+    //   store's size in writes, so it is made once a day, last in the run
+    //   (a backup that cuts the run cuts only it), and after a cut not
+    //   again within the hour, however many backups are made meanwhile.
+    const now = Date.now();
+    const kept = this.backups().filter((b) => !b.unreadable && !b.failed && !b.base_missing);
+    const stamp = new Map(kept.map((b) => [b.path, checkedOf(b.path)]));
+    const last = (k: "deep_ms" | "again_ms") => Math.max(0, ...kept.map((b) => stamp.get(b.path)?.[k] ?? 0));
+    const readAt = (b: Backup) => Math.max(stamp.get(b.path)?.checked_ms ?? 0, b.created_ms ?? 0);
+    const waits = (b: Backup) => unchecked.some((u) => u.path === b.path);
+    const newest = [...kept].sort((x, y) => (y.created_ms ?? 0) - (x.created_ms ?? 0))[0];
+    const deep = day && newest && now - last("deep_ms") >= DAY_MS && now - this.deepTried() >= DEEP_RETRY_MS ? newest : undefined;
+    const again = day && now - last("again_ms") >= DAY_MS ? kept.filter((b) => !waits(b) && b.path !== deep?.path).sort((x, y) => readAt(x) - readAt(y))[0] : undefined;
+    const due = [...unchecked.filter((b) => b.path !== deep?.path), ...(again ? [again] : []), ...(deep ? [deep] : [])];
     if (!due.length) return { checked: 0, failed: [], store_ok: null };
     // Again once the backup it gives way to is made, where its restart did not come.
     const cut = (checked: number) => {
@@ -470,14 +528,24 @@ export class Storage {
     if (this.asked) return cut(0);
     const write = (dir: string, c: Checked) => {
       if (!existsSync(join(dir, "manifest.json"))) return; // pruned meanwhile
-      writeFileSync(join(dir, CHECKED), JSON.stringify(c), { mode: 0o600 });
+      // (What an earlier check found of it stays: when it was last read as a restore would, and read again.)
+      const had = checkedOf(dir);
+      writeFileSync(join(dir, CHECKED), JSON.stringify({ ...(had?.deep_ms ? { deep_ms: had.deep_ms } : {}), ...(had?.again_ms ? { again_ms: had.again_ms } : {}), ...c }), { mode: 0o600 });
       syncPath(join(dir, CHECKED));
     };
     let checked = 0;
-    const part = (r: CheckResult) => { checked++; write(r.dir, { checked_ms: Date.now(), ok: r.ok, ...(r.why ? { why: r.why } : {}) }); };
+    // (A backup that failed has no stamp of a check it passed.)
+    const part = (r: CheckResult) => {
+      checked++;
+      const at = Date.now();
+      write(r.dir, { checked_ms: at, ok: r.ok, ...(r.why ? { why: r.why } : {}), ...(r.ok && r.deep ? { deep_ms: at } : {}), ...(r.ok && r.dir === again?.path ? { again_ms: at } : {}) });
+    };
     let done: CheckDone;
     try {
-      done = await checkInProcess({ check: due.map((b) => b.path), stateDir: this.dir }, part, (end) => (this.cancelCheck = end));
+      if (deep) this.deepTried(now);
+      // (The store's own check goes with the backups that wait to be called whole: a run made for the day's check alone does not repeat it.)
+      const known = [again, deep].filter((b): b is Backup => !!b && !waits(b)).map((b) => b.path);
+      done = await checkInProcess({ check: due.map((b) => b.path), ...(unchecked.length ? { stateDir: this.dir } : {}), ...(deep ? { deep: deep.path } : {}), ...(known.length ? { known } : {}) }, part, (end) => (this.cancelCheck = end));
     } catch (e) {
       if (!(e instanceof Cancelled)) throw e;
       return cut(checked);
@@ -571,8 +639,8 @@ async function checkInProcess(job: CheckJob, part: (r: CheckResult) => void, can
 // restart that waits on its backup is then called off, not left waiting.
 // `checkpoint`: asked by the worker, to empty the log.
 // `snapped`: called once the worker has tried its snapshot (it has it, or will make the backup from a copy).
-function inWorker<T>(job: BackupJob, on: { checkpoint?: () => void; snapped?: () => void } = {}): Promise<T> {
-  const { checkpoint, snapped } = on;
+function inWorker<T>(job: BackupJob, on: { checkpoint?: () => void; viaThread?: (gate: Int32Array) => Promise<boolean> | undefined; snapped?: () => void } = {}): Promise<T> {
+  const { checkpoint, viaThread, snapped } = on;
   return new Promise((ok, fail) => {
     const built = typeof __KEEL_BACKUP_WORKER_JS__ === "string" ? URL.createObjectURL(new Blob([__KEEL_BACKUP_WORKER_JS__], { type: "text/javascript" })) : undefined;
     const w = new Worker(built ?? new URL("./backup-worker.ts", import.meta.url).href);
@@ -591,22 +659,25 @@ function inWorker<T>(job: BackupJob, on: { checkpoint?: () => void; snapped?: ()
     w.onmessage = (e: MessageEvent<{ t: "checkpoint" } | { t: "done"; done: T } | { t: "failed"; error: string }>) => {
       const m = e.data;
       if (m.t === "checkpoint") {
-        // The one part of a backup the loop is held for: named, should it be long (src/admin/stall.ts).
+        const held = viaThread?.(gate);
+        if (held) { void held.then(() => { if (Atomics.load(gate, 0) === TRIED) snapped?.(); }); return; }
+        // No checkpoint thread: the one part of a backup the loop is held for, named should it be long (src/admin/stall.ts).
         timed(() => "emptying the store's log and holding still for a backup's snapshot", () => {
           checkpoint?.();
-          Atomics.store(gate, 0, 1);
+          Atomics.store(gate, 0, NOT_EMPTIED);
           Atomics.notify(gate, 0);
-          Atomics.wait(gate, 0, 1, HOLD_MS);
+          Atomics.wait(gate, 0, NOT_EMPTIED, HOLD_MS);
         });
-        if (Atomics.load(gate, 0) === 2) snapped?.();
+        if (Atomics.load(gate, 0) === TRIED) snapped?.();
       } else end(() => (m.t === "done" ? ok(m.done) : fail(new Error(m.error))));
     };
     w.onerror = (e) => end(() => fail(new Error(`the backup worker failed: ${e.message}`)));
     // The database file is read through this process's kept descriptor (src/core/store-files.ts):
     // a thread made per backup opens none of its own. No file yet: the worker's read fails as it did.
-    let dbFd: number | undefined;
+    let dbFd: number | undefined, shmFd: number | undefined;
     try { dbFd = storeFd(storePath(job.stateDir)); } catch {}
-    w.postMessage({ job: { ...job, dbFd }, gate });
+    try { shmFd = storeFd(`${storePath(job.stateDir)}-shm`); } catch {}
+    w.postMessage({ job: { ...job, dbFd, shmFd }, gate });
   });
 }
 

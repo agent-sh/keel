@@ -141,6 +141,12 @@ test("the row says what took the time, and the rows are one per cause whatever t
   const c = describeStall(stall(5_200, sync, { within: { label: "answering POST /api/sessions", ms: 5_150 } }));
   expect(c.message).toBe("Daemon unresponsive for 5.2 s: 5.1 s in fsync of the store's log (keel.db-wal) while answering POST /api/sessions");
   expect(c.group).toBe("stall fsync store log answering POST /api/sessions");
+  // A write of the loop that waited for the write lock while the log was started again on a slow disk: the row says so.
+  const sleep = decide([at(0, "S", 0, 0, { call: { name: "clock_nanosleep" }, stmt: "BEGIN IMMEDIATE" }), at(6_000, "R", 5, 0)], {}, 6_100);
+  const w = describeStall(stall(6_100, sleep, { within: { label: "answering POST /api/sessions/:id/messages", ms: 6_050 }, waited: { label: "the log's restart waits for the disk (the write lock held 6.0 s: 2 syncs made under the lock so far, the thread's last sync of its own took 4.1 s)", ms: 4_600 } }));
+  expect(w.message).toBe("Daemon unresponsive for 6.1 s: 6.0 s sleeping (clock_nanosleep), in the statement: BEGIN IMMEDIATE: the log's restart waits for the disk (the write lock held 6.0 s: 2 syncs made under the lock so far, the thread's last sync of its own took 4.1 s) while answering POST /api/sessions/:id/messages");
+  expect(w.group).toContain("the log's restart");
+  expect(w.context).toMatchObject({ waited_ms: 4_600 });
   // A machine that did not run the daemon inside a handler did not make that handler slow.
   expect(describeStall(stall(2_300, starved(2_100, 22), { within: { label: "answering GET /api/daemon", ms: 2_200 } })).message).not.toContain("while");
   // A section the daemon was busy in while it also waited for a processor is named, and the row stays the starved machine's.

@@ -1,20 +1,22 @@
 // Starting the daemon: `keel serve`, and the daemon a client command starts in
 // its own process when none answers (runMode.client).
+import { sleptIn } from "../admin/stall.ts";
 import { endStreams } from "./streams.ts";
 import { setGitViews } from "../core/git.ts";
 import { join, resolve } from "node:path";
 import { defaultStateDir } from "../core/paths.ts";
-import { acquireLock, recordUrl } from "../admin/daemon.ts";
+import { acquireLock, owedAtStop, recordUrl, startNotes, STORE_PASSES } from "../admin/daemon.ts";
 import { undoCutRestore } from "../admin/storage.ts";
 import { parseBind } from "../core/bind.ts";
 import { Bus } from "../core/bus.ts";
 import { ErrorTracker } from "../core/errors.ts";
 import { runMode } from "../core/runmode.ts";
-import { Checkpointer } from "../core/checkpoint.ts";
-import { Store } from "../core/store.ts";
+import { type Checkpointer, startCheckpointer } from "../core/checkpoint.ts";
+import { Store, STORE_REFUSES } from "../core/store.ts";
 import { storeLocked } from "../core/store-files.ts";
 import { Engine } from "../engine/turn.ts";
 import { Providers } from "../providers/registry.ts";
+import { addAdmission } from "./admission.ts";
 import { serve } from "./app.ts";
 import { readsOf } from "./reads.ts";
 import { routeModules } from "./routes/index.ts";
@@ -85,6 +87,8 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   store.offLoop = (sql, params) => readsOf(store).readAhead(sql, params);
   // And a compaction has its summary checked against the whole conversation there, not on the loop.
   store.settleOff = (ask) => readsOf(store).run("compact.settle", ask);
+  // (What the store has to say of writes it owes and could not keep.)
+  store.owedSaid = (e) => void errors.capture("server", e, { at: "owed writes" });
   // The daemon's lock on its store, looked at in the kernel's table twice a
   // minute: a lock that is gone (some code of this process closed a
   // descriptor of keel.db: src/core/store-files.ts) is said once, loudly.
@@ -98,7 +102,43 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   }
   const threads = globalThis as { __keelCheckpointer?: Checkpointer };
   threads.__keelCheckpointer?.stop();
-  (threads.__keelCheckpointer = new Checkpointer(store, (e) => errors.capture("server", e, { at: "checkpoint thread" }))).start();
+  const checkpointer = (threads.__keelCheckpointer = startCheckpointer(store, (e, group) => {
+    errors.capture("server", e, { at: "checkpoint thread" }, group ? { group } : {});
+    // The page's band about the store's disk: told at each change (it reads the same from /api/bootstrap when it opens).
+    bus.emit({ t: "feature", name: "store", data: threads.__keelCheckpointer?.said ?? null });
+  }));
+  // A disk that is slow (writes wait seconds for the log's restart) is said the same way, and a stall in such a wait is named by it.
+  checkpointer.onChange = () => bus.emit({ t: "feature", name: "store", data: checkpointer.said });
+  checkpointer.onWait = (label, ms) => sleptIn(label, ms);
+  // With the store's disk not answering and its log at the ceiling the store takes no writes
+  // (src/core/checkpoint.ts): what would write is turned away at the door, with why.
+  // What stops work or answers what waits is taken all the same (STORE_PASSES): a stop, a card's
+  // answer, a job's stop, a drain or a restart. Those act in memory and owe their writes.
+  addAdmission((req, path) => {
+    if (!checkpointer.refusing || req.method === "GET" || req.method === "HEAD" || STORE_PASSES.test(path)) return;
+    return Response.json({ error: checkpointer.refusalSays ?? STORE_REFUSES, store_refusing: true }, { status: 503 });
+  });
+  // What the daemon before this one owed its store was made when the store opened (Store.applyOwed);
+  // what it left to be said (a restart that made no backup, a write it could not keep) is said now,
+  // in Errors. (Its words came in the store's file, and with the process when it started this one.)
+  // After the checkpoint thread has the log: a row written before that could copy, on the loop, the
+  // long log a daemon whose disk did not answer left.
+  {
+    const before = store.owedAtStart;
+    let handed: unknown = [];
+    try { handed = JSON.parse(process.env.KEEL_START_NOTES ?? "[]"); } catch {}
+    delete process.env.KEEL_START_NOTES;
+    const notes = new Set([...(before?.notes.map((n) => n.text) ?? []), ...(Array.isArray(handed) ? handed.filter((n): n is string => typeof n === "string") : [])]);
+    startNotes.length = 0;
+    startNotes.push(...notes);
+    if (before?.made) console.log(`[store] ${before.made} write${before.made === 1 ? "" : "s"} the daemon before this one owed ${before.made === 1 ? "was" : "were"} made at this start`);
+    for (const n of notes) errors.capture("server", new Error(n), { at: "the daemon before this one" });
+    // (A word about the file itself is a sentence of its own; the rest are writes that were not made, each with why.)
+    for (const f of before?.failed ?? []) {
+      const file = /^(?:the file of owed writes|\d+ lines? of the file of owed writes)/.test(f);
+      errors.capture("server", new Error(file ? `At this start, ${f}.` : `A write the daemon before this one owed was not made at this start (${f}).`), { at: "the daemon before this one" });
+    }
+  }
   const providers = new Providers(stateDir, { capture: (source, e, ctx) => errors.capture(source, e, ctx) });
   const engine = new Engine(store, bus, providers, errors, join(stateDir, "spill"));
   engine.wentDown = life?.before?.down_ms;
@@ -193,6 +233,10 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
     off();
     say(exitLine({ restart: false, parked, upMs: up }));
     providers.shutdown();
+    // The thread's connections close first: the daemon's is then the last, and its close empties the log.
+    await checkpointer.close().catch((e) => errors.capture("server", e, { at: "closing the checkpoint thread" }));
+    // What the store still owes is in its file for the next start; what could not be kept there is said.
+    for (const n of (await owedAtStop(store, "stop")).notes) console.error(`[daemon] ${n}`);
     server.stop(true);
   };
   return { url, stateDir, engine, stop };

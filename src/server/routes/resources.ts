@@ -4,7 +4,10 @@
 // the state directory, and `history` minutes of samples (default 60, at most
 // a day). `refresh` samples first. `daemon.kept_events`: the sessions whose
 // events the daemon holds in memory, what they are charged and the budget.
+// `daemon.checkpoint`: the checkpoint thread's counts (passes, starts of the
+// log, how long it held the write lock, the most frames the log held).
 import { Resources } from "../../admin/resources.ts";
+import { checkpointerOf } from "../../core/checkpoint.ts";
 import type { RouteModule } from "../app.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
@@ -24,7 +27,9 @@ export const resourceRoutes: RouteModule = ({ store, bus }) => {
         if (session && !store.session(session)) return json({ error: "no such session" }, 404);
         const report = r.report({ session, historyMin: history === null ? undefined : Number(history), refresh: q.has("refresh") });
         // What the daemon holds of its sessions' events: how many sessions, the memory they are charged, and the budget.
-        return json({ ...report, daemon: { ...report.daemon, kept_events: store.keptEvents() } });
+        // And what its checkpoint thread did with the store's log (src/core/checkpoint.ts): absent when none works.
+        const checkpoint = checkpointerOf(store)?.counts;
+        return json({ ...report, daemon: { ...report.daemon, kept_events: store.keptEvents(), ...(checkpoint ? { checkpoint } : {}) } });
       },
     },
   };

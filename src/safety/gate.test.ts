@@ -440,3 +440,31 @@ test("one answer for several cards covers none that must be read alone", async (
   g.resolve(even.id, "s1", { choice: "deny" });
   await Promise.all([...asked, ...more]);
 });
+
+// While the store takes no writes a card is still answered (the answer is owed to the store), but
+// only for its one call or with a denial: an answer that would widen what the session may do from
+// here on is never owed, so it is refused with the reason, and the card waits.
+test("a card takes a one-time answer or a denial while the store takes no writes, and no standing one", async () => {
+  const { g, session, call } = scratchGate();
+  const store = (g as unknown as { store: Store }).store;
+  g.setSandboxCheck(() => false);
+  g.setPerm(session.id, { mode: "ask", sandbox: "off" });
+  const pending = g.check(session, call(bash, { command: "touch made.txt" }));
+  for (let n = 0; n < 200 && !g.approvals({ pending: true }).length; n++) await Bun.sleep(5);
+  const [a] = g.approvals({ pending: true });
+  store.db.exec("PRAGMA query_only = ON");
+  store.refuse(true);
+  for (const choice of ["always", "session"] as const) {
+    const r = g.resolve(a!.id, session.id, { choice, rules: [{ kind: "shell", pattern: "touch *" }] });
+    expect(r).toMatchObject({ status: 503 });
+    expect("error" in r ? r.error : "").toContain("a standing answer cannot be kept: allow this once, or deny it");
+  }
+  expect([g.approvals({ pending: true }).length, g.rules().length, store.owes]).toEqual([1, 0, 0]);
+  expect(g.resolve(a!.id, session.id, { choice: "once" })).toEqual({ ok: true });
+  expect(await pending).not.toHaveProperty("deny");
+  // The answer is owed, and made when the store takes writes again.
+  expect(store.owes).toBe(1);
+  store.db.exec("PRAGMA query_only = OFF");
+  store.refuse(false);
+  expect([store.owes, g.approval(a!.id)?.state]).toEqual([0, "allowed"]);
+});

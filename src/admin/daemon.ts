@@ -2,6 +2,8 @@
 // work away while the engine lets running turns finish and parks the rest,
 // and a restart that starts the same binary again. Continuing parked and
 // crash-cut turns is the engine's (Engine.recover, from main.ts).
+import { checkpointerOf, type StoreDisk } from "../core/checkpoint.ts";
+import type { Store } from "../core/store.ts";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -222,6 +224,52 @@ const DRAIN_PASSES = new RegExp(
   ")",
 );
 
+// What a daemon whose store takes no writes (src/core/checkpoint.ts) takes
+// besides GET: what stops work, what answers a running turn, and the way
+// out. Whatever the store's state, the owner can stop what runs, answer what
+// waits, and stop or restart the daemon. Each of these acts in memory and
+// owes its writes (Store.orLater). So are what the page asks by itself and
+// what keeps nothing in the store (which session the owner is at, a read
+// whose question is in the body): turned away, the page would only ask
+// again. What only writes (a draft, a setting, a new prompt) is turned away
+// with the reason.
+export const STORE_PASSES = new RegExp(
+  "^/api/(?:" +
+    "(?:errors|drain)(?:/|$)" +
+    "|presence$|storage/retention/removed$" +
+    "|owner-presence/authenticate/(?:start|finish)$" +
+    "|sessions/[^/]+/(?:" +
+      "files/exist|interrupt|as-agent/stop" +
+      "|(?:approvals|questions|plan|secrets)/[^/]+" +
+      "|(?:jobs|terminal|agents)/[^/]+/stop" +
+    ")$" +
+  ")",
+);
+
+// What the daemon before this one left to be said at this start (filled by the start: src/server/start.ts).
+export const startNotes: string[] = [];
+const clock = (ms: number) => new Date(ms).toTimeString().slice(0, 5);
+
+// At a stop of the daemon, after the checkpoint thread is closed: what the
+// store still owes is in its file, which the next start applies before
+// anything else. `notes`: what to tell the one who asked; `lost`: the file
+// could not be written, and the note says exactly what is lost with this
+// daemon.
+export async function owedAtStop(store: Store, how: "restart" | "stop"): Promise<{ notes: string[]; lost: boolean }> {
+  let left: Awaited<ReturnType<Store["closeOwed"]>>;
+  try { left = await store.closeOwed(); } catch (e) { return { notes: [`What the store owed at this ${how} could not be looked at: ${(e as Error).message}`], lost: true }; }
+  const made = left.made ? `${left.made} write${left.made === 1 ? "" : "s"} from while the disk did not answer ${left.made === 1 ? "was" : "were"} made before the ${how}. ` : "";
+  if (!left.owed) return { notes: made ? [made.trim()] : [], lost: false };
+  if (left.lost.length) {
+    const by = new Map<string, number>();
+    for (const w of left.lost) by.set(w, (by.get(w) ?? 0) + 1);
+    const what = [...by].map(([w, n]) => (n > 1 ? `${w} (${n})` : w)).join(", ");
+    const kept = left.owed - left.lost.length;
+    return { notes: [`${made}Not saved at the ${how} at ${clock(Date.now())}: the store's disk did not answer and the file that keeps what is owed ${kept ? "was full" : "could not be written"}. Lost: ${what}. A turn among them is closed as cut at the next start, and a card among them is asked again.${kept ? ` ${kept} other${kept === 1 ? " is" : "s are"} kept in the file for the next start.` : ""}`], lost: true };
+  }
+  return { notes: [`${made}${left.owed} write${left.owed === 1 ? "" : "s"} from while the disk did not answer ${left.owed === 1 ? "is" : "are"} kept in a file for the next start${left.synced ? "" : " (the disk has not confirmed the file: a loss of power now would lose it)"}.`], lost: false };
+}
+
 // One stall as the Daemon panel lists it: when it ended, how long, and what took the time.
 export type StallRow = { ts_ms: number; ms: number; what: string; kind: string; error_id?: string };
 const STALLS_KEPT = 20;
@@ -229,7 +277,8 @@ const STALLS_KEPT = 20;
 export class Daemon {
   // `backup_since_ms`: the running turns had their time and the backup the
   // restart waits on is being made.
-  draining: { since_ms: number; restart: boolean; deadline_ms: number; backup_since_ms?: number } | null = null;
+  // `notes`: what this stop or restart did not do or could not save, in words for the one who asked for it.
+  draining: { since_ms: number; restart: boolean; deadline_ms: number; backup_since_ms?: number; notes?: string[] } | null = null;
   // The process's start (a hot reload makes a new Daemon in the same process).
   readonly started: number = ((globalThis as any).__keelStarted ??= Date.now());
   // The last restart that was called off (what had to hold before it did not),
@@ -318,6 +367,10 @@ export class Daemon {
       systemd: process.env.KEEL_SUPERVISED === "systemd",
       running: this.runningSessions(),
       draining: this.draining,
+      // What the daemon before this one left to be said at this start (a restart that made no backup, writes it could not save).
+      start_notes: startNotes,
+      // The store's disk does not answer (src/core/checkpoint.ts): since when, and whether the store takes no writes by now.
+      store: this.disk(),
       restart_failed: this.restartFailed,
       stalls: this.stalls,
       // The thread that looks at the main one when the loop is held, or why there is none.
@@ -326,6 +379,12 @@ export class Daemon {
       last_start: restarts()?.last() ?? null,
     };
   }
+
+  private disk(): StoreDisk | null {
+    return checkpointerOf(this.deps.store)?.said ?? null;
+  }
+  // The store's disk does not answer at all (not: it is slow).
+  private silent(): boolean { return this.disk()?.silent_since_ms !== undefined; }
 
   emit() {
     this.deps.bus.emit({ t: "feature", name: "daemon", data: this.status() });
@@ -351,11 +410,24 @@ export class Daemon {
     }
     this.draining = { since_ms: Date.now(), restart: opts.restart, deadline_ms: Date.now() + opts.timeoutMs };
     this.restartFailed = null;
+    // With the store's disk not answering nothing is made before the
+    // restart (a backup would wait on the same disk, and a restart is the
+    // way out the daemon itself names). It is said where the one who asked
+    // reads it: in the answer to the request, by `keel restart`, and in
+    // Errors at the next start.
+    // (Said once: the words carry the time the restart was asked, not the time they are said again.)
+    const words = `No backup was made before the restart at ${clock(Date.now())}: the store's disk did not answer.`;
+    const noBackup = () => {
+      if (this.silent() && this.draining!.restart && this.beforeRestart.length) this.say(words);
+      return this.silent();
+    };
+    noBackup();
     this.emit();
     say(drainLine({ restart: opts.restart, running: this.runningSessions().length, timeoutMs: opts.timeoutMs, reason: opts.reason }));
     this.finished = (async () => {
       await this.deps.engine.settle(opts.timeoutMs);
-      if (this.draining!.restart) {
+      const silent = noBackup();
+      if (this.draining!.restart && !silent) {
         const t0 = Date.now();
         try {
           if (this.beforeRestart.length) { this.draining!.backup_since_ms = Date.now(); this.emit(); }
@@ -383,17 +455,33 @@ export class Daemon {
       off();
       say(exitLine({ restart: this.draining!.restart, parked, upMs: Date.now() - this.started, reason: opts.reason }));
       for (const f of this.beforeExit) await (async () => f())().catch((e) => this.deps.errors.capture("server", e, { at: "shutdown" }));
+      // What the store still owes (the owner's stops and answers from while its disk did not answer) is
+      // in its file for the next start, or is said exactly when that file could not be written either.
+      const left = await owedAtStop(this.deps.store, this.draining!.restart ? "restart" : "stop");
+      for (const n of left.notes) this.say(n, false);
       this.deps.providers.shutdown();
       endLife(this.draining!.restart ? "restart" : "stop");
       if (this.draining!.restart) this.relaunch();
-      // Let the last frames and the HTTP answer go out. Under systemd a
+      this.emit();
+      // Let the last frames and the HTTP answer go out (longer when there is a word about what was
+      // owed: the command that follows the stop reads it from here, twice a second). Under systemd a
       // restart exits 75 (EX_TEMPFAIL): Restart=on-failure starts it again.
       const code = this.draining!.restart && process.env.KEEL_SUPERVISED === "systemd" ? 75 : 0;
-      setTimeout(() => process.exit(code), 200);
+      setTimeout(() => process.exit(code), left.notes.length ? 1500 : 200);
     })();
     return this.finished;
   }
   private finished?: Promise<void>;
+
+  // A word about this stop or restart: in the daemon's state (the answer, the command line), on the
+  // console, and kept for the next start (`next`: unless the file it would be kept in is what failed).
+  private say(note: string, next = true) {
+    const d = this.draining;
+    if (!d || d.notes?.includes(note)) return;
+    (d.notes ??= []).push(note);
+    console.error(`[daemon] ${note}`);
+    if (next) try { this.deps.store.noteNext(note); } catch {}
+  }
 
   private relaunch() {
     // Under systemd (the unit sets KEEL_SUPERVISED) the unit starts it again; a child would
@@ -402,7 +490,8 @@ export class Daemon {
     const argv = relaunchArgv();
     const p = Bun.spawn(argv, {
       cwd: process.cwd(),
-      env: { ...process.env, KEEL_WAIT_FOR_PID: String(process.pid) },
+      // (What this daemon has to say to the next start goes with it too: the file may be what could not be written.)
+      env: { ...process.env, KEEL_WAIT_FOR_PID: String(process.pid), ...(this.draining?.notes?.length ? { KEEL_START_NOTES: JSON.stringify(this.draining.notes) } : {}) },
       stdio: ["ignore", "inherit", "inherit"],
       detached: true,
     });

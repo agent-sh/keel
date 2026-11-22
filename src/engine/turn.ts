@@ -7,7 +7,7 @@ import { rootOf } from "../safety/trust.ts";
 import type { Bus } from "../core/bus.ts";
 import { asAsker } from "../core/asker.ts";
 import { errorScope, type ErrorTracker } from "../core/errors.ts";
-import type { Store } from "../core/store.ts";
+import { refusedWrite, type Store } from "../core/store.ts";
 import { SessionMap } from "../core/session-map.ts";
 import { conceal } from "../core/conceal.ts";
 import { ownerPrompt } from "../core/owner.ts";
@@ -44,6 +44,12 @@ import { capResult, OUTPUT_CAP } from "../tools/spill.ts";
 export { APPROVAL_CUT, QUESTION_CUT, RESTART_CUT };
 // A result that says the turn was stopped or cut under the call, not that the call failed.
 export const isStopResult = (content: unknown) => stopKind(content) !== undefined;
+// A call in a few words, for a sentence that names it: its tool, and its command or file when it has one.
+const callWords = (u: ToolUseBlock) => {
+  const i = (u.input ?? {}) as Record<string, unknown>;
+  const of = [i.command, i.cmd, i.file_path, i.path].find((v): v is string => typeof v === "string" && !!v.trim())?.trim().split("\n")[0];
+  return of ? `${u.name} (${of.length > 80 ? `${of.slice(0, 80)}...` : of})` : u.name;
+};
 const outcomeOf = (session: string, callId: string) => allHooks().map((h) => h.callOutcome?.(session, callId)).find(Boolean);
 // What a call a restart cut is answered with. An error, except when what the
 // call was for is known to be stored (`done`): then the answer says so.
@@ -446,7 +452,8 @@ export class Engine {
 
   private setHold(id: string, by: string | null) {
     this.held.set(id, by);
-    this.store.db.run("INSERT INTO queue_holds (session_id, by) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET by = excluded.by", [id, by]);
+    // (Owed when the store takes no writes: a stop holds the queue in memory at once.)
+    this.store.sqlOrLater("hold", [id, by], "a stop's hold on the queue");
   }
 
   // Who made the session's hold, as far as it is known: the stop that made it
@@ -623,7 +630,12 @@ export class Engine {
     const r = this.running.get(id);
     if (!r) return;
     if (!this.stoppedEarly.has(id) && (!this.stoppedBy.has(id) || ownerStop(by))) this.stoppedBy.set(id, by);
-    if (holds(by)) this.hold(id, by);
+    // A stop always stops: what it writes besides (the hold on the queue,
+    // the turn's end) is owed when the store takes no writes, and the turn
+    // is aborted whatever becomes of those.
+    // (Each is owed with its record: a restart of the daemon keeps the stop: Store.orLater.)
+    const owed = (write: () => void) => { try { write(); } catch (e) { this.errors.capture("server", e, { session: id, at: "interrupt" }); } };
+    if (holds(by)) owed(() => this.hold(id, by));
     // Stopped while its provider and system prompt are still set up: the turn
     // is closed as stopped here, at once and in one write, not when the setup
     // settles. A daemon killed in between then finds a stopped turn with its
@@ -634,16 +646,19 @@ export class Engine {
         this.stoppedEarly.add(id);
         const who = this.stoppedBy.get(id) ?? by;
         this.stoppedBy.delete(id);
-        const closing = this.store.atomic(id, () => [
-          this.store.append(id, "turn_start", { model: session.model }),
-          this.store.append(id, "turn_end", { reason: "interrupted", usage: emptyUsage(), ms: 0, stopped_by: who }),
-        ]);
-        for (const e of closing) this.emitEvent(e);
+        owed(() => {
+          const at = Date.now(), ids = [Bun.randomUUIDv7(), Bun.randomUUIDv7()] as const;
+          const start = { model: session.model }, end = { reason: "interrupted", usage: emptyUsage(), ms: 0, stopped_by: who };
+          this.store.orLater("a stopped turn's start and end", () => {
+            const closing = this.store.atomic(id, () => [this.store.append(id, "turn_start", start, undefined, at, ids[0]), this.store.append(id, "turn_end", end, undefined, at, ids[1])]);
+            for (const e of closing) this.emitEvent(e);
+          }, [{ op: "event", id: ids[0], session: id, kind: "turn_start", data: start, at }, { op: "event", id: ids[1], session: id, kind: "turn_end", data: end, at }]);
+        });
       }
     }
     r.abort.abort();
     await r.done;
-    for (const q of this.store.queue(id)) if (q.steer) this.store.updateQueueItem(q.id, { steer: false });
+    owed(() => void this.store.sqlOrLater("unsteer", [id], "the queue after a stop"));
     this.emitQueue(id);
   }
 
@@ -1087,9 +1102,35 @@ export class Engine {
     const done = this.loop(id, abort.signal)
       .catch((e) => {
         if (abort.signal.aborted) return;
+        // The turn is over, and not by a stop: what it still ran with its
+        // signal (a command, a wait) is stopped with it, so nothing goes on
+        // without a turn that owns it.
+        abort.abort();
         // Its session was deleted under it: there is nothing to write the failure to, and it is no
         // failure of anyone's (the turn's writes are refused once the row is gone).
         if (!this.store.session(id)) return;
+        // The store takes no writes (its disk does not answer): the turn's
+        // failure is said in the session when it does, with why it stopped.
+        if (refusedWrite(e) || this.store.refusing) {
+          this.errors.capture("server", e, { session: id, at: "a turn ended: the store takes no writes" });
+          // Which calls of the turn had finished (their results are owed with it) and which were stopped:
+          // a call that ran is never asked for again by sending the prompt a second time.
+          const calls = this.unsaved.get(id);
+          this.unsaved.delete(id);
+          const ran = calls?.filter((c) => !c.stopped).map((c) => c.what) ?? [];
+          const stopped = calls?.some((c) => c.stopped) ?? true;
+          // (Calls of the turn's earlier steps ran too, and are stored: the prompt is not to be sent a second time for those either.)
+          const line = this.lineage(id);
+          const earlier = line.slice(line.findLastIndex((ev) => ev.kind === "turn_start") + 1).some((ev) => ev.kind === "tool_result");
+          const message = "This turn stopped: the daemon's disk did not answer and its store took no writes. "
+            + (ran.length
+              ? `These ran before the store stopped taking writes, and their results are kept: ${ran.join(", ")}. ${stopped ? "What else it was running was stopped. " : ""}Try again goes on from there; do not send the prompt a second time, or they run again.`
+              : earlier
+                ? "What it was running was stopped. Its earlier calls ran and their results are kept: try again goes on from there; do not send the prompt a second time, or they run again."
+                : "What it was running was stopped. Send the prompt again, or try again.");
+          this.store.appendOrLater(id, "error", { message }, (ev) => this.emitEvent(ev));
+          return;
+        }
         // A refusal a hook meant (`expected`) is said in the transcript, not tracked as a failure.
         const rec = (e as any)?.expected ? undefined : this.errors.capture("provider", e, { session: id });
         // `kind` and `status`: what failed, for the page's words and actions (a ProviderError's own, or its cause's).
@@ -1117,9 +1158,14 @@ export class Engine {
         if (scope) scope.turn = undefined;
         this.turns.delete(id);
         this.running.delete(id);
+        this.unsaved.delete(id);
         this.status(id, { kind: "idle" });
-        if (this.store.session(id)) this.setPhase(id, "idle");
-        this.next(id);
+        // (Owed when the store takes no writes: the turn is over in memory either way.)
+        if (!this.store.orLater("a session's phase", () => { if (this.store.session(id)) this.setPhase(id, "idle"); })) {
+          this.store.phaseOwed(id, "idle");
+          this.emitSession(id);
+        }
+        try { this.next(id); } catch (e) { if (!refusedWrite(e)) throw e; }
       });
     this.running.set(id, { abort, done });
   }
@@ -1562,7 +1608,7 @@ export class Engine {
     } finally {
       const by = this.stoppedBy.get(id);
       this.stoppedBy.delete(id);
-      this.append(id, "turn_end", { reason, usage, ms: Date.now() - t0, ...(by && reason === "interrupted" ? { stopped_by: by } : {}) });
+      this.store.appendOrLater(id, "turn_end", { reason, usage, ms: Date.now() - t0, ...(by && reason === "interrupted" ? { stopped_by: by } : {}) }, (e) => this.emitEvent(e));
       for (const h of allHooks()) await (async () => h.turnEnd?.(session, reason))().catch((e) => this.errors.capture("server", e, { hook: "turnEnd", session: id }));
     }
   }
@@ -1581,6 +1627,8 @@ export class Engine {
       // One that fails while the daemon parks its turns is closed below.
       .catch((e) => { if (this.stoppedEarly.has(id) || this.parking.has(id)) return undefined; throw e; });
     const stopped = this.stoppedEarly.delete(id);
+    // (The turn's first writes wait for a long hold of the store's write lock to be over, as a step's do: Store.clear.)
+    if (ready && !stopped && this.store.pacing?.()) await this.store.clear(signal);
     if (stopped || !ready) {
       // Failed while the daemon was on its way down (a provider that went
       // first, a listing cut short): the prompt keeps its turn, closed as cut
@@ -1600,7 +1648,9 @@ export class Engine {
     let st = ready;
     const seen = this.seen.get(id) ?? new Map();
     this.seen.set(id, seen);
-    const ctx: ToolContext = { sessionId: id, cwd: session.workspace, signal, seen, spillDir: join(this.spillRoot, id),
+    // Aborted when the turn fails while calls of a step still run (`batch`): the turn's own signal stays what a stop is.
+    const failing = new AbortController();
+    const ctx: ToolContext = { sessionId: id, cwd: session.workspace, signal: AbortSignal.any([signal, failing.signal]), seen, spillDir: join(this.spillRoot, id),
       parentId: session.parent_id ?? undefined,
       questionChanged: () => this.bus.emit({ t: "questions", pending: allPendingQuestions() }),
       inContext: (text) => JSON.stringify(toMessages(this.lineage(id))).includes(JSON.stringify(text).slice(1, -1)),
@@ -1634,7 +1684,11 @@ export class Engine {
     // (a denial and its reason, a finished read). The projection puts a
     // step's results back in call order. A call whose open card a stop
     // parks gets none: the next daemon asks on that card again.
-    const settle = (u: ToolUseBlock) => (r: ToolResultBlock) => {
+    // A result is stored once the store's write lock is not held for long (Store.clear): the turn
+    // waits for that off the loop. Should the store stop taking writes meanwhile, the result is
+    // owed at once (so a restart or a kill keeps it), and the turn waits on for the store to take it.
+    const settle = (u: ToolUseBlock) => (r: ToolResultBlock) => (this.store.pacing?.() && !this.store.refusing ? this.store.clear(signal, undefined, true).then(() => settleNow(u)(r)) : settleNow(u)(r));
+    const settleNow = (u: ToolUseBlock) => (r: ToolResultBlock): void | Promise<void> => {
       // (A question the owner answered as the stop came keeps its answer.)
       if (this.parking.has(id) && (outcomeOf(id, u.id) === "waiting" || (asksOwner(u.name) && r.content === QUESTION_CUT))) return;
       toolResults++;
@@ -1644,14 +1698,42 @@ export class Engine {
       const shown = this.shown.get(r.tool_use_id);
       this.shown.delete(r.tool_use_id);
       // One write through the store: when it fails, the result is not left in the kept events.
-      this.store.atomic(id, () => {
-        // What an error result is, kept with it: the call ran and failed, a gate refused it, or it was not
-        // run for another reason. Whoever counts later (an agent's report) counts as this turn's end does.
-        this.append(id, "tool_result", { results: [r], ...(r.is_error ? { verdict: how ?? "none" } : {}), ...(shown !== undefined ? { shown: { [r.tool_use_id]: shown } } : {}) });
+      // When the store takes no writes the result is owed, like the turn's end after it (Store.orLater):
+      // an answer the owner gave, or what a command they allowed printed, is not thrown away. The turn
+      // cannot go on from a result that is not stored, so it ends here, saying which calls had finished.
+      const at = Date.now(), eid = Bun.randomUUIDv7();
+      // What an error result is, kept with it: the call ran and failed, a gate refused it, or it was not
+      // run for another reason. Whoever counts later (an agent's report) counts as this turn's end does.
+      const data = this.store.redact(id, "tool_result", { results: [r], ...(r.is_error ? { verdict: how ?? "none" } : {}), ...(shown !== undefined ? { shown: { [r.tool_use_id]: shown } } : {}) });
+      let made = false;
+      const stored = this.store.orLater("a tool's result", () => this.store.atomic(id, () => {
+        this.emitEvent(this.store.append(id, "tool_result", data, undefined, at, eid));
         for (const h of allHooks()) {
           try { h.resultStored?.(session, [r]); } catch (e) { this.errors.capture("server", e, { hook: "resultStored", session: id }); }
         }
-      });
+        made = true;
+      }), [{ op: "event", id: eid, session: id, kind: "tool_result", data, at }]);
+      if (stored) return;
+      const ends = () => {
+        const calls = this.unsaved.get(id) ?? [];
+        this.unsaved.set(id, calls);
+        calls.push({ what: callWords(u), stopped: (signal.aborted || failing.signal.aborted) && stopKind(r.content) !== undefined });
+        throw Object.assign(new Error("the store takes no writes: this call's result is owed, and the turn ends here"), { code: "SQLITE_READONLY" });
+      };
+      // Owed. Where the store stopped for a hold of its write lock that ends (a start of the log on
+      // a slow disk), the turn waits for it: the result is made in its order, and the turn goes on.
+      if (this.store.pacing?.()) return this.store.clear(signal).then(() => { if (!made) ends(); });
+      ends();
+    };
+    // A step's calls. When one of them fails the turn (its result cannot be stored, or it threw past its
+    // wrapper), the others are stopped and waited for: their results are stored, or owed, before the
+    // turn's end, never after it.
+    const batch = async (runs: Promise<unknown>[]) => {
+      try { await Promise.all(runs); } catch (e) {
+        failing.abort();
+        await Promise.allSettled(runs);
+        throw e;
+      }
     };
     try {
       // Calls a restart cut while they waited for the owner: asked again on
@@ -1661,11 +1743,17 @@ export class Engine {
         this.status(id, { kind: "tool", since: Date.now(), names: [...new Set(owed.map((u) => u.name))] });
         // A question whose tool the session's model no longer has cannot be put back: it expired.
         const gone = (u: ToolUseBlock) => asksOwner(u.name) && !st.tools.some((t) => t.name === u.name);
-        await Promise.all(owed.map((u) => this.tracked(id, u, gone(u) ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: QUESTION_CUT }) : this.runTool(session, st.tools, u, ctx)).then(settle(u))));
+        await batch(owed.map((u) => this.tracked(id, u, gone(u) ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: QUESTION_CUT }) : this.runTool(session, st.tools, u, ctx)).then(settle(u))));
         this.status(id, { kind: "idle" });
         if (signal.aborted) throw signal.reason;
       }
+      let retaken = 0;
       for (;;) {
+        // (What the step had stored when a write of it was refused: see the catch at the loop's end.)
+        const head0 = this.store.session(id)?.head, steps0 = steps;
+        try {
+        // (What a step writes waits for a long hold of the store's write lock to be over: Store.clear.)
+        if (this.store.pacing?.()) await this.store.clear(signal);
         // Steers sent while the last step ran join here, after its tool results.
         // The owner's own words (a steer with no meta) release a held queue, as
         // a prompt typed while idle does: the turn they joined may be one a wait
@@ -1752,6 +1840,8 @@ export class Engine {
           throw e;
         }
         for (const h of allHooks()) await h.afterResponse?.(session, res, messages);
+        // (Right before the step's own writes: the hold's notice comes a moment before the lock is taken.)
+        if (this.store.pacing?.()) await this.store.clear(signal);
         const u: Usage = res.usage; // priced by the registry from the model's listed price
         this.learn(id, st, events, u);
         usage = addUsage(usage, u);
@@ -1791,8 +1881,8 @@ export class Engine {
         if (uses.length || cut) {
           if (uses.length) this.status(id, { kind: "tool", since: Date.now(), names: [...new Set(uses.map((u) => u.name))] });
           const spent = budget > 0 && steps >= budget;
-          await Promise.all(uses.map((u) => (spent ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: "Not run: the step budget of this turn is spent." }) : this.tracked(id, u, this.runTool(session, st.tools, u, ctx))).then(settle(u))));
-          if (cut) settle(cut)({ type: "tool_result", tool_use_id: cut.id, is_error: true, content: CUT_CALL });
+          await batch(uses.map((u) => (spent ? Promise.resolve<ToolResultBlock>({ type: "tool_result", tool_use_id: u.id, is_error: true, content: "Not run: the step budget of this turn is spent." }) : this.tracked(id, u, this.runTool(session, st.tools, u, ctx))).then(settle(u))));
+          if (cut) await settleNow(cut)({ type: "tool_result", tool_use_id: cut.id, is_error: true, content: CUT_CALL });
           this.status(id, { kind: "idle" });
           for (const h of allHooks()) await (async () => h.stepDone?.(session))().catch((e) => this.errors.capture("server", e, { hook: "stepDone", session: id }));
           if (signal.aborted) { reason = this.parking.has(id) ? "restart" : "interrupted"; break; }
@@ -1809,14 +1899,24 @@ export class Engine {
         if (this.liveSteers(id).length) continue;
         reason = res.stop;
         break;
+        } catch (e) {
+          // A write of this step landed on a hold of the store's write lock all the same (the loop
+          // reached it later than the hold's notice allows for) and was refused. Nothing of the step
+          // is stored yet (the branch ends where it did): the turn waits for the lock to be given up
+          // and takes the step again. It does not end for a hold that ends.
+          if (!refusedWrite(e) || signal.aborted || !this.store.pacing?.() || this.store.session(id)?.head !== head0 || ++retaken > 3) throw e;
+          steps = steps0;
+          await this.store.clear(signal);
+        }
       }
     } catch (e) {
       reason = signal.aborted ? (this.parking.has(id) ? "restart" : "interrupted") : "error";
-      if (!signal.aborted) { failed = typeof (e as any)?.code === "string" ? (e as any).code : undefined; throw e; }
+      // (A write the store refused is said as that, not by SQLite's name for it.)
+      if (!signal.aborted) { failed = refusedWrite(e) ? "store_refusing" : typeof (e as any)?.code === "string" ? (e as any).code : undefined; throw e; }
     } finally {
       const by = this.stoppedBy.get(id);
       this.stoppedBy.delete(id);
-      this.append(id, "turn_end", { reason, usage, ms: Date.now() - t0, steps: replies, tools: toolResults, tool_errors: toolErrors, tool_denied: toolDenied, ...(failed ? { code: failed } : {}), ...(by && reason === "interrupted" ? { stopped_by: by } : {}) });
+      this.store.appendOrLater(id, "turn_end", { reason, usage, ms: Date.now() - t0, steps: replies, tools: toolResults, tool_errors: toolErrors, tool_denied: toolDenied, ...(failed ? { code: failed } : {}), ...(by && reason === "interrupted" ? { stopped_by: by } : {}) }, (e) => this.emitEvent(e));
       // Between turns, a context past the preparing share gets its summary ready.
       if (!signal.aborted) {
         const events = this.lineage(id);
@@ -1828,6 +1928,8 @@ export class Engine {
     }
   }
 
+  // The calls of a turn whose results were owed when the store took no writes: what each was, and whether it was stopped.
+  private unsaved = new Map<string, { what: string; stopped: boolean }[]>();
   // The calls of each running turn that have not returned yet.
   private inflight = new Map<string, Map<string, ToolUseBlock>>();
   private tracked(id: string, u: ToolUseBlock, run: Promise<ToolResultBlock>): Promise<ToolResultBlock> {

@@ -15,7 +15,8 @@ import { shoot } from "./shots.ts";
 const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
 
 function daemon(state: string): Promise<{ proc: ChildProcess; url: string }> {
-  const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", state, "--workspace", state], {
+  // (The sessions' folder is beside the state folder, not in it: a session's file tools write nothing into the daemon's own.)
+  const proc = spawn("bun", ["src/main.ts", "serve", "--bind", "127.0.0.1:0", "--state-dir", state, "--workspace", `${state}-ws`], {
     // The memory store is a stand-in with a store of its own: a file there makes it slow (hook-delay).
     env: { KEEL_CONFIG_DIR: join(state, "config"), ...process.env, KEEL_SCRIPTED_PROVIDER: "1", KEEL_DRAIN_MS: "300", KEEL_DEFAULT_MODEL: "scripted:stand-in",
       TACIT_BIN: resolve("test/e2e/fixtures/tacit-standin.sh"), TACIT_STANDIN_STORE: join(state, "tacit-store") },
@@ -41,8 +42,9 @@ test.afterAll(() => { for (const d of made) rmSync(d, { recursive: true, force: 
 test("what a coordinator and the owner are told about agents, restarts and tools is true", async ({ page }) => {
   test.setTimeout(540_000);
   const state = join(ROOT, `told-${Date.now()}`);
-  made.push(state);
+  made.push(state, `${state}-ws`);
   mkdirSync(state, { recursive: true });
+  mkdirSync(`${state}-ws`, { recursive: true });
   let d = await daemon(state);
   const call = (path: string, body?: unknown, method = body === undefined ? "GET" : "POST") =>
     fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json() as any);
@@ -128,7 +130,7 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     await send(coord, `Run twelve lanes\n${calls([
       ...[1, 2, 3, 4].map((i) => agent(`Quota lane ${i}\nscript:billing`)),
       ...[1, 2, 3].map((i) => agent(`Tool lane ${i}\n${calls([fail3(i), fail3(i), fail3(i), bash("echo recovered")])}`)),
-      ...[1, 2].map((i) => agent(`Good lane ${i}\n${calls([bash(`echo built-${i}`), { name: "Write", input: { file_path: join(state, `good-${i}.txt`), content: "built\n" } }])}`)),
+      ...[1, 2].map((i) => agent(`Good lane ${i}\n${calls([bash(`echo built-${i}`), { name: "Write", input: { file_path: join(`${state}-ws`, `good-${i}.txt`), content: "built\n" } }])}`)),
       ...[1, 2].map((i) => agent(`Slow lane ${i}\n${calls([until(`slow-${i}`)])}`)),
       agent(`Parked lane\n${calls([{ name: "wait_for", input: { kind: "timer", seconds: 1800, note: "wait for CI" } }])}`),
       bash("echo started-all"),

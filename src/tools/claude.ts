@@ -1,6 +1,6 @@
 // The tool profile Claude models are trained on: Claude Code's current names,
 // argument shapes and result wording (code.claude.com/docs/en/tools-reference).
-import { heldFile } from "../core/store-files.ts";
+import { heldWrite } from "../core/store-files.ts";
 import { abs, editFile, editShown, globFiles, guardOverwrite, mtime, readFile, ripgrep, writeFile } from "./files.ts";
 import { answerText, ask, type Question } from "./interact.ts";
 import { findJob, jobsOf, running, stopJob } from "./jobs.ts";
@@ -184,7 +184,7 @@ const NotebookEdit: Tool = {
   async run(input, ctx) {
     const p = abs(String(input.notebook_path ?? ""), ctx);
     if (!ctx.seen.has(p)) return fail(`Read ${p} before editing it.`);
-    { const held = heldFile(p); if (held) return fail(held); }
+    { const held = heldWrite(p); if (held) return fail(held); }
     let nb: any;
     try { nb = JSON.parse(await Bun.file(p).text()); } catch (e) { return fail(`Cannot parse the notebook: ${(e as Error).message}`); }
     const cells: any[] = nb.cells ?? [];

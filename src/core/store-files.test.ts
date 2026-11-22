@@ -3,11 +3,11 @@
 // keeps its locks through a backup is seen from the kernel's lock table in
 // test/e2e/store-locks.spec.ts.
 import { expect, test } from "bun:test";
-import { fstatSync, linkSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, fstatSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "./store.ts";
-import { heldFile, isStoreFile, storeFd, storeLocked, storePath, STORE_FILES } from "./store-files.ts";
+import { heldFile, heldWrite, isStoreFile, storeFd, storeLocked, storePath, STORE_FILES } from "./store-files.ts";
 import { readFile } from "../tools/files.ts";
 
 const locksOf = (file: string) => {
@@ -106,5 +106,76 @@ test("a descriptor of the store's files is opened once and kept; the file tools 
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(other, { recursive: true, force: true });
+  }
+});
+
+// The state folder holds what the daemon reads back and acts on when it starts. The file of owed
+// writes is never opened by a tool at all (the next start makes what it holds); the rest of the
+// folder is not written by one, except where a session's own files live.
+test("the file tools of every family leave the file of owed writes alone and write nothing else into the state folder", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-statedir-"));
+  const ws = mkdtempSync(join(tmpdir(), "keel-statedir-ws-"));
+  try {
+    const store = new Store(dir);
+    const owed = join(dir, "owed-writes.jsonl");
+    // By its name before it exists, where a link lands (also a link to nothing), and as the same file under another name.
+    expect(heldFile(owed)).toContain("the daemon's own record of writes it owes");
+    symlinkSync(owed, join(ws, "dangling.txt"));
+    expect(heldFile(join(ws, "dangling.txt"))).toContain("the daemon's own record of writes it owes");
+    writeFileSync(owed, "");
+    linkSync(owed, join(ws, "hard.txt"));
+    symlinkSync(dir, join(ws, "state"));
+    for (const p of [owed, join(ws, "dangling.txt"), join(ws, "hard.txt"), join(ws, "state", "owed-writes.jsonl")]) expect([p, !!heldFile(p), !!heldWrite(p)]).toEqual([p, true, true]);
+    // The folder's other files: read as any file is, written by no tool. A top-level one also under another name.
+    writeFileSync(join(dir, "settings.json"), "{}");
+    mkdirSync(join(dir, "plugins"));
+    linkSync(join(dir, "settings.json"), join(ws, "settings-link.json"));
+    // A nested one under another name too (a job's record, a plugin's file): found at any depth.
+    mkdirSync(join(dir, "spill", "s1", "jobs"), { recursive: true });
+    writeFileSync(join(dir, "spill", "s1", "jobs", "j1.json"), '{"id":"j1","pid":1}');
+    linkSync(join(dir, "spill", "s1", "jobs", "j1.json"), join(ws, "job-link.json"));
+    expect(heldWrite(join(ws, "job-link.json"))).toContain("the daemon's own spill/s1/jobs/j1.json under another name");
+    // A file with two names of which neither is the daemon's, and one that is a session's own file there, are written.
+    writeFileSync(join(ws, "plain.txt"), "x");
+    linkSync(join(ws, "plain.txt"), join(ws, "plain-2.txt"));
+    mkdirSync(join(dir, "artifacts", "s1"), { recursive: true });
+    writeFileSync(join(dir, "artifacts", "s1", "chart.svg"), "<svg/>");
+    linkSync(join(dir, "artifacts", "s1", "chart.svg"), join(ws, "chart-link.svg"));
+    expect([heldWrite(join(ws, "plain-2.txt")), heldWrite(join(ws, "chart-link.svg"))]).toEqual([undefined, undefined]);
+    for (const p of [join(dir, "settings.json"), join(dir, "plugins", "new.js"), join(dir, "api-token"), join(dir, "ui", "index.html"), dir, join(dir, "artifacts"), join(ws, "state", "plugins", "x.js"), join(ws, "settings-link.json")])
+      expect([p, heldFile(p), !!heldWrite(p)]).toEqual([p, undefined, true]);
+    // A session's own places there, and everything outside the folder.
+    for (const p of [join(dir, "artifacts", "s1", "report.md"), join(dir, "worktrees", "wt-1", "src", "a.ts"), join(ws, "notes.txt"), join(ws, "new", "deep", "file.txt")]) expect([p, heldWrite(p)]).toEqual([p, undefined]);
+
+    // Through the tools: Write and Edit, apply_patch, the notebook tool, the Gemini family's write.
+    const tctx = { sessionId: "t", cwd: ws, signal: new AbortController().signal, seen: new Map<string, number>() } as any;
+    const { applyPatchTool } = await import("../tools/gpt.ts");
+    const { claudeTools } = await import("../tools/claude.ts");
+    const { geminiTools } = await import("../tools/gemini.ts");
+    const text = (r: any) => (typeof r.content === "string" ? r.content : JSON.stringify(r.content));
+    const tool = (list: any[], name: string) => list.find((x: any) => x.name === name)!;
+    const refused = /the daemon's own record of writes it owes|inside the daemon's own state folder|the daemon's own (settings\.json|spill\/s1\/jobs\/j1\.json) under another name|outside the workspace/;
+    const forged = '{"op":"sql","name":"perm","params":["s","full-auto","off",1]}\n';
+    const tries: [string, Promise<any>][] = [
+      ["Write the owed file", tool(claudeTools, "Write").run({ file_path: owed, content: forged }, tctx)],
+      ["Write through a link to nothing", tool(claudeTools, "Write").run({ file_path: join(ws, "dangling.txt"), content: forged }, tctx)],
+      ["Edit through a hard link", tool(claudeTools, "Edit").run({ file_path: join(ws, "hard.txt"), old_string: "", new_string: forged }, tctx)],
+      ["Write settings", tool(claudeTools, "Write").run({ file_path: join(dir, "settings.json"), content: "{}" }, tctx)],
+      ["Write a new plugin", tool(claudeTools, "Write").run({ file_path: join(dir, "plugins", "new.js"), content: "x" }, tctx)],
+      ["Edit settings under another name", tool(claudeTools, "Edit").run({ file_path: join(ws, "settings-link.json"), old_string: "{}", new_string: "{ }" }, tctx)],
+      ["Edit a job's record under another name", tool(claudeTools, "Edit").run({ file_path: join(ws, "job-link.json"), old_string: '"pid":1', new_string: '"pid":2' }, tctx)],
+      ["apply_patch adds the owed file", applyPatchTool.run({ input: `*** Begin Patch\n*** Add File: state/owed-writes.jsonl\n+${forged}*** End Patch` }, tctx)],
+      ["apply_patch adds a state file", applyPatchTool.run({ input: `*** Begin Patch\n*** Add File: state/plugins/x.js\n+x\n*** End Patch` }, tctx)],
+      ["write_file", tool(geminiTools, "write_file").run({ file_path: join(dir, "settings.json"), content: "{}" }, tctx)],
+    ];
+    for (const [what, run] of tries) expect([what, refused.test(text(await run.catch((e: Error) => ({ content: e.message }))))]).toEqual([what, true]);
+    expect([readFileSync(owed, "utf8"), readFileSync(join(dir, "settings.json"), "utf8"), existsSync(join(dir, "plugins", "new.js")), existsSync(join(dir, "plugins", "x.js")), readFileSync(join(dir, "spill", "s1", "jobs", "j1.json"), "utf8")]).toEqual(["", "{}", false, false, '{"id":"j1","pid":1}']);
+    // And a session's file for the owner is written as before.
+    const made = await tool(claudeTools, "Write").run({ file_path: join(dir, "artifacts", "s1", "report.md"), content: "a report" }, tctx);
+    expect([made.is_error ?? false, readFileSync(join(dir, "artifacts", "s1", "report.md"), "utf8")]).toEqual([false, "a report"]);
+    store.db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(ws, { recursive: true, force: true });
   }
 });

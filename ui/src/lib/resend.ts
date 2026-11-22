@@ -68,7 +68,9 @@ async function flush() {
   busy = true;
   let takes = false;
   try {
-    takes = !(await api<{ draining: unknown }>("/api/bootstrap")).draining;
+    // (Nor while its store takes no writes: its disk is slow, or does not answer.)
+    const b = await api<{ draining: unknown; store?: { refusing?: boolean; slow?: { refusing?: boolean } } | null }>("/api/bootstrap");
+    takes = !b.draining && !b.store?.refusing && !b.store?.slow?.refusing;
     for (const { key, d } of takes ? waitingSends() : []) {
       if (!getState().connected) break;
       // Still on its shelf, with its pictures read.
@@ -97,7 +99,8 @@ onFeature({
   // Every socket open, the page's first included (a reload with a send still out).
   reconnect: () => { again = AGAIN_MS; void flush(); },
   // A drain that was called off: the daemon takes work again.
-  frame: (f) => { if (f.name === "daemon" && !f.data?.draining) void flush(); },
+  // (Or its store takes writes again.)
+  frame: (f) => { if ((f.name === "daemon" && !f.data?.draining) || (f.name === "store" && !f.data?.refusing && !f.data?.slow?.refusing)) void flush(); },
 });
 
 // A send whose answer was lost says "delivery unconfirmed" until the owner

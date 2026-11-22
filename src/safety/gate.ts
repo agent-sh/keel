@@ -433,10 +433,14 @@ export class Gate {
   redact: (a: Approval) => Approval = (a) => a;
   private redactAny = <T,>(v: T): T => this.redact(v as any) as T;
 
-  private save(a: Approval) {
+  // `owed`: an answer. It acts in memory whatever the store says: when the
+  // store takes no writes its record is written later (Store.orLater), and
+  // the page is told now.
+  private save(a: Approval, owed = false) {
     a = this.redact(a);
-    this.store.db.query("INSERT INTO approvals (id, session_id, state, data, created) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET state = excluded.state, data = excluded.data")
-      .run(a.id, a.session_id, a.state, JSON.stringify(a), a.created);
+    // (An answer changes a card that is in the store: its id, its session, the state and the record it has from here.)
+    if (owed) this.store.sqlOrLater("approval", [a.id, a.session_id, a.state, JSON.stringify(a)], "a card's answer");
+    else this.store.db.query("INSERT INTO approvals (id, session_id, state, data, created) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET state = excluded.state, data = excluded.data").run(a.id, a.session_id, a.state, JSON.stringify(a), a.created);
     this.bus.emit({ t: "feature", name: "approval", session_id: a.session_id, data: a });
   }
 
@@ -932,6 +936,10 @@ export class Gate {
     const auto = this.perm(sessionId).mode === "auto";
     if (c.choice !== "deny" && !a.once && (auto || a.autoOwner) && (parked || !auto || !a.autoOwner))
       return { error: interruptedApproval, status: 409, approval: a };
+    // What widens what a session may do from here on (a standing answer) is never owed to a store
+    // that takes no writes: it is said, and the card takes a one-time answer or a denial meanwhile.
+    if ((c.choice === "session" || c.choice === "always") && this.store.refusing)
+      return { error: "the daemon's store takes no writes right now, and a standing answer cannot be kept: allow this once, or deny it", status: 503 };
     if ((c.choice === "session" || c.choice === "always") && a.risk === "high")
       return { error: `this card covers its one call only (${a.why}): answer once or deny`, status: 400 };
     // Its turn was just parked and this daemon is on its way out: an answer
@@ -998,7 +1006,7 @@ export class Gate {
   private finish(a: Approval, patch: Partial<Approval>) {
     this.waiting.delete(a.id);
     this.forms.delete(a.id);
-    this.save({ ...a, ...patch, resolved: Date.now() });
+    this.save({ ...a, ...patch, resolved: Date.now() }, true);
   }
 
   // After a mode or grant change: open cards that are now settled resolve.

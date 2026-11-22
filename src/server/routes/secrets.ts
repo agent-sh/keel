@@ -103,9 +103,14 @@ export const secretRoutes: RouteModule = (deps: Deps) => {
   // Placeholders mean the same after a restart: the same key, and the ids issued kept (never a value).
   vault.useKey(placeholderKey(store.stateDir));
   store.migrate(`CREATE TABLE IF NOT EXISTS secret_placeholders (id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT, created INTEGER NOT NULL)`);
-  const issue = store.db.query("INSERT INTO secret_placeholders (id, kind, name, created) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = COALESCE(excluded.name, name)");
   const issued = store.db.query("SELECT 1 FROM secret_placeholders WHERE id = ?");
-  vault.ledger = { issued: (id, kind, name) => void issue.run(id, kind, name ?? null, Date.now()), has: (id) => !!issued.get(id) };
+  // A placeholder issued while the store takes no writes is owed (its id and kind, never the value):
+  // the result that holds the new secret is then stored redacted like any other, not thrown away.
+  const owed = new Set<string>();
+  vault.ledger = {
+    issued: (id, kind, name) => { if (!store.sqlOrLater("placeholder", [id, kind, name ?? null, Date.now()], "a secret's placeholder")) owed.add(id); },
+    has: (id) => owed.has(id) || !!issued.get(id),
+  };
 
   // Everything stored is redacted; images, signatures and reasoning stay byte-exact.
   store.redact = (sessionId, kind, value) => {
