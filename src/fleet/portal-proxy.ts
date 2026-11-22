@@ -9,12 +9,21 @@ const OPEN_MS = 10_000; // a dev server that does not take the socket in 10 s is
 
 // Headers a dev server never gets from the portal: the owner's credentials for
 // keel, where the page came from, and what only the hop itself means.
-const DROP_UP = ["authorization", "origin", "referer", "host", "accept-encoding", "connection", "x-keel-link", "x-keel-nonce"];
+const DROP_UP = ["authorization", "x-api-key", "origin", "referer", "host", "accept-encoding", "connection", "x-keel-link", "x-keel-nonce"];
+// The cookie a remote browser signs in to this daemon with (/api/remote/enter) is the daemon's own credential: a
+// dev server gets the page's other cookies, never that one.
+export function withoutOwn(cookie: string | null): string | undefined {
+  if (!cookie) return undefined;
+  const rest = cookie.split(";").map((c) => c.trim()).filter((c) => c && !/^keel_token\s*=/i.test(c));
+  return rest.length ? rest.join("; ") : undefined;
+}
 const DROP_DOWN = ["x-frame-options", "content-security-policy", "content-length", "content-encoding", "transfer-encoding", "location", "access-control-allow-origin"];
 
 export function upHeaders(req: Request): Headers {
   const h = new Headers(req.headers);
   for (const k of DROP_UP) h.delete(k);
+  const cookie = withoutOwn(h.get("cookie"));
+  if (cookie) h.set("cookie", cookie); else h.delete("cookie");
   // Sec-Fetch-* describe the browser's hop to this daemon; carried over a link
   // they make the far daemon's request guard refuse the page's own assets.
   for (const k of [...h.keys()]) if (k.startsWith("sec-websocket") || k.startsWith("sec-fetch-") || k === "upgrade") h.delete(k);
@@ -88,7 +97,8 @@ export async function bridge(
 ): Promise<Response | undefined> {
   const protocols = (req.headers.get("sec-websocket-protocol") ?? "").split(",").map((p) => p.trim()).filter(Boolean);
   const headers: Record<string, string> = { ...opts.headers };
-  for (const k of ["cookie", "user-agent"]) { const v = req.headers.get(k); if (v) headers[k] = v; }
+  // (A hot-reload socket gets the page's cookies as its requests do: without the daemon's own.)
+  for (const k of ["cookie", "user-agent"]) { const v = k === "cookie" ? withoutOwn(req.headers.get(k)) : req.headers.get(k); if (v) headers[k] = v; }
   const up = new WebSocket(target, { protocols, headers } as any);
   up.binaryType = "arraybuffer";
   const data: Data = { kind: "portal", up, pending: [], hello: opts.hello };
