@@ -31,6 +31,11 @@ const engine = {
   },
   // A parent's message to its agent: stored as the agent's prompt (the engine keeps one for a working agent in its queue).
   message: (id: string, text: string, meta: any) => (sends.push({ id, text }), { event: store.append(id, "user", { text, ...meta }) }),
+  // (A hold in these tests is the owner's: nothing here stops an agent's session for its parent.)
+  heldBy: (id: string) => (held.has(id) ? "owner" : undefined),
+  holdQueue: (id: string) => void held.add(id),
+  releaseHold: (id: string) => !held.has(id),
+  hasInput: () => false,
   interrupt: async () => {},
   lineage: (id: string) => lineage(store.events(id), store.session(id)?.head ?? null),
   idle: async () => {},

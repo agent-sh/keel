@@ -109,11 +109,17 @@ under `~/.cache/keel-work/bun/research/`.
   leaves the queue in the write that stores its prompt: a working session
   takes a steer at its next step, a turn a restart cut takes it in the
   continued turn's first request, after the restart note. A sender's key
-  stores an input once (`input_keys`). A wake, a report, a loop run and a
+  stores an input once (`input_keys`; a tool call's key is the reply that
+  holds the call and the call's id, and a call a restart cut after its message
+  was stored says so). A wake, a report, a loop run, a monitor's batches and a
   failure notice are owed in their own tables and settled in the write that
   stores their prompt (`flush` in `src/automation/core.ts`). A stopping daemon
   starts no turn: a queue it left with a prompt owed a start is started by the
-  next one (`queue_owed`). A message whose session can no longer read it
+  next one (`queue_owed`), again when its model lists if it does not yet. A
+  hold says who made it (`queue_holds.by`): nothing but the owner starts a
+  session the owner stopped, so a message to it waits in its queue behind the
+  hold and its sender is told, and a sender's message releases only a hold
+  that sender's own stop made. A message whose session can no longer read it
   (deleted, archived, the row removed) is told to its sender as a failure in
   its scope (`src/automation/undelivered.ts`), never dropped in silence.
 - Every feature is researched first: how Claude Code, Codex, OpenCode and the

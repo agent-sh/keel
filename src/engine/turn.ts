@@ -42,10 +42,13 @@ export { APPROVAL_CUT, QUESTION_CUT, RESTART_CUT };
 // A result that says the turn was stopped or cut under the call, not that the call failed.
 export const isStopResult = (content: unknown) => stopKind(content) !== undefined;
 const outcomeOf = (session: string, callId: string) => allHooks().map((h) => h.callOutcome?.(session, callId)).find(Boolean);
-const cutText = (session: string, u: { id: string; name: string }) => {
-  if (asksOwner(u.name)) return QUESTION_CUT;
+// What a call a restart cut is answered with. An error, except when what the
+// call was for is known to be stored (`done`): then the answer says so.
+const cutResult = (session: string, u: { id: string; name: string }): { content: string; is_error: boolean } => {
+  if (asksOwner(u.name)) return { content: QUESTION_CUT, is_error: true };
   const o = outcomeOf(session, u.id);
-  return o === "not_run" || o === "waiting" ? APPROVAL_CUT : o ? o.denied : RESTART_CUT;
+  if (o && typeof o === "object" && "done" in o) return { content: o.done, is_error: false };
+  return { content: o === "not_run" || o === "waiting" ? APPROVAL_CUT : o ? o.denied : RESTART_CUT, is_error: true };
 };
 // A call that waits on the owner and has done nothing yet: one whose approval
 // card is open (Gate), a question, a plan put up for approval. A restart does
@@ -319,7 +322,9 @@ const abortError = () => Object.assign(new Error("interrupted"), { name: "AbortE
 // What became of an input: stored as the session's prompt (`event`), kept in
 // its queue (`queued`, as a steer or not), or not stored again (`duplicate`:
 // its sender's key was seen before).
-export type Sent = { event?: StoredEvent; queued?: QueueItem; steer?: boolean; duplicate?: boolean };
+// `held`: it is in the queue under a hold its sender may not release (the
+// owner stopped the session): nothing starts until the owner resumes it.
+export type Sent = { event?: StoredEvent; queued?: QueueItem; steer?: boolean; duplicate?: boolean; held?: boolean };
 
 export class Engine {
   private running = new Map<string, Running>();
@@ -327,7 +332,9 @@ export class Engine {
   private turns = new Map<string, string>();
   // Sessions whose queue a stop holds: stored, so the hold (and its Resume)
   // outlives a daemon restart; only an action that releases it clears it.
-  private held: Set<string>;
+  // With who made it (the `by` of the stop: "owner", "parent", ...), when it
+  // was said: a hold nobody named is the owner's.
+  private held: Map<string, string | null>;
   // Sessions whose queued prompt a stopping daemon did not start (next): stored,
   // so the next daemon starts it (startQueued).
   private owed: Set<string>;
@@ -381,13 +388,16 @@ export class Engine {
     // What idle compaction knows of each session's context, so a daemon that starts reads no events for it (resumeIdle).
     store.migrate("CREATE TABLE IF NOT EXISTS idle_facts (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, head TEXT, model TEXT NOT NULL, wire TEXT NOT NULL, used INTEGER NOT NULL, warm INTEGER NOT NULL, sure INTEGER NOT NULL, max INTEGER NOT NULL)");
     store.migrate("CREATE TABLE IF NOT EXISTS queue_holds (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE)");
-    this.held = new Set(store.db.query<{ session_id: string }, []>("SELECT session_id FROM queue_holds").all().map((r) => r.session_id));
+    if (!store.columnExists("queue_holds", "by")) store.migrate("ALTER TABLE queue_holds ADD COLUMN by TEXT");
+    this.held = new Map(store.db.query<{ session_id: string; by: string | null }, []>("SELECT session_id, by FROM queue_holds").all().map((r) => [r.session_id, r.by]));
     // A session's rows are read at every step and counted for every agent listed.
     store.migrate("CREATE INDEX IF NOT EXISTS queue_session ON queue(session_id)");
     store.migrate("CREATE TABLE IF NOT EXISTS queue_owed (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE)");
     this.owed = new Set(store.db.query<{ session_id: string }, []>("SELECT session_id FROM queue_owed").all().map((r) => r.session_id));
     // The inputs a sender named with a key of its own: each is stored once (claim).
-    store.migrate("CREATE TABLE IF NOT EXISTS input_keys (session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, key TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY (session_id, key)) WITHOUT ROWID");
+    store.migrate("CREATE TABLE IF NOT EXISTS input_keys (session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, key TEXT NOT NULL, ts INTEGER NOT NULL, fp TEXT, PRIMARY KEY (session_id, key)) WITHOUT ROWID");
+    if (!store.columnExists("input_keys", "fp")) store.migrate("ALTER TABLE input_keys ADD COLUMN fp TEXT");
+    store.migrate("CREATE INDEX IF NOT EXISTS input_keys_ts ON input_keys(ts)");
     // What a deleted session never read of what others sent it is told to them.
     store.queueGone = (rows, session) => this.dropped(rows, "deleted", session);
     // Each model's bytes a token, learned from what its provider counted.
@@ -398,9 +408,47 @@ export class Engine {
     bus.on((f) => { if (f.t === "session") this.dropObsolete(f.session.id); });
   }
 
-  private hold(id: string) {
-    this.held.add(id);
-    this.store.db.run("INSERT OR IGNORE INTO queue_holds (session_id) VALUES (?)", [id]);
+  // `by`: who stops it. The owner's hold (named so, or by nobody) stays the
+  // owner's. Another maker's stays its first maker's, and becomes the owner's
+  // when the owner stops the session too.
+  private hold(id: string, by?: string) {
+    const maker = by ?? null;
+    if (this.held.has(id)) {
+      const had = this.held.get(id);
+      if (!had || had === "owner" || had === maker || (maker && maker !== "owner")) return;
+    }
+    this.setHold(id, maker);
+  }
+
+  private setHold(id: string, by: string | null) {
+    this.held.set(id, by);
+    this.store.db.run("INSERT INTO queue_holds (session_id, by) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET by = excluded.by", [id, by]);
+  }
+
+  // Who made the session's hold, as far as it is known: the stop that made it
+  // said so, or (a hold from before that was kept) the last turn's stop did.
+  heldBy(id: string): string | undefined {
+    if (!this.held.has(id)) return undefined;
+    const by = this.held.get(id);
+    if (by) return by;
+    const end = this.lineage(id).findLast((e) => e.kind === "turn_end");
+    return end?.data.reason === "interrupted" && typeof end.data.stopped_by === "string" ? end.data.stopped_by : undefined;
+  }
+
+  // A stop of a session with no turn running (an agent stopped while it waits):
+  // its queue is held as a stop of a running turn holds it.
+  holdQueue(id: string, by?: string) {
+    this.hold(id, by);
+    this.emitQueue(id);
+  }
+
+  // The hold goes when one of `makers` made it. True when the queue is not held after this.
+  releaseHold(id: string, makers: readonly string[]): boolean {
+    if (!this.held.has(id)) return true;
+    const by = this.heldBy(id);
+    if (!by || !makers.includes(by)) return false;
+    this.release(id);
+    return true;
   }
 
   private release(id: string) {
@@ -524,7 +572,7 @@ export class Engine {
     const r = this.running.get(id);
     if (!r) return;
     if (by && !this.stoppedEarly.has(id)) this.stoppedBy.set(id, by);
-    this.hold(id);
+    this.hold(id, by);
     // Stopped while its provider and system prompt are still set up: the turn
     // is closed as stopped here, at once and in one write, not when the setup
     // settles. A daemon killed in between then finds a stopped turn with its
@@ -641,38 +689,56 @@ export class Engine {
     return { event: ev };
   }
 
-  // True the first time a session is given an input under this key.
-  private claim(id: string, key: string): boolean {
-    return this.store.db.query("INSERT OR IGNORE INTO input_keys (session_id, key, ts) VALUES (?, ?, ?)").run(id, key, Date.now()).changes > 0;
+  // True the first time a session is given an input under this key. `fp`: a
+  // fingerprint of the input's words; the same key with other words is the
+  // sender's mistake and is refused, as a send id is (409), not answered as
+  // sent. Keys are kept as long as the owner's send ids are.
+  private claim(id: string, key: string, fp?: string): boolean {
+    const now = Date.now();
+    if (this.store.db.query("INSERT OR IGNORE INTO input_keys (session_id, key, ts, fp) VALUES (?, ?, ?, ?)").run(id, key, now, fp ?? null).changes > 0) {
+      this.store.db.query("DELETE FROM input_keys WHERE ts < ?").run(now - KEYS_KEPT_MS);
+      return true;
+    }
+    const had = this.store.db.query<{ fp: string | null }, [string, string]>("SELECT fp FROM input_keys WHERE session_id = ? AND key = ?").get(id, key);
+    if (fp && had?.fp && had.fp !== fp) throw Object.assign(new Error("this send id was used for another message; send this one under a new id"), { status: 409 });
+    return false;
+  }
+
+  // Whether an input was stored for the session under this key.
+  hasInput(id: string, key: string): boolean {
+    return !!this.store.db.query("SELECT 1 FROM input_keys WHERE session_id = ? AND key = ?").get(id, key);
   }
 
   // A message from the session this one answers to (a parent to its agent),
   // stored before its sender is answered: as a queued row when the session
   // cannot take it now, else as its prompt. A running turn takes it at its
-  // next step, as a steer, and a daemon on its way down starts no turn for
-  // it: the row waits for the next one (startQueued). Otherwise it starts a
-  // turn now, after the sender's earlier ones that still wait (a stop left
-  // them in the queue), in the order they were sent. To this session it is
-  // what a typed prompt is to the owner's own: it releases a queue a stop
-  // holds. `key`: as for send.
-  message(id: string, text: string, meta: Record<string, unknown>, key?: string): Sent {
+  // next step, as a steer. A session the owner stopped starts nothing: the
+  // message is a queued row behind the hold, in the order it came, until the
+  // owner resumes the queue (`held`), whether it was sent before the stop,
+  // after it or while the daemon stops. A daemon on its way down starts no
+  // turn either: the row waits for the next one (startQueued). Otherwise it
+  // starts a turn now, after the sender's earlier ones that still wait, in the
+  // order they were sent. `releases`: the makers of a hold this sender may
+  // release, which are the stops it made itself; any other hold stays.
+  // `key`, `fp`: as for claim.
+  message(id: string, text: string, meta: Record<string, unknown>, opts: { key?: string; fp?: string; releases?: readonly string[] } = {}): Sent {
     return this.store.atomic(id, () => {
-      if (key && !this.claim(id, key)) return { duplicate: true };
-      const wait = () => {
-        const q = this.store.enqueue(id, text, true, undefined, meta);
+      if (opts.key && !this.claim(id, opts.key, opts.fp)) return { duplicate: true };
+      const wait = (steer: boolean) => {
+        const q = this.store.enqueue(id, text, steer, undefined, meta);
         this.emitQueue(id);
-        return { queued: q, steer: true };
+        return { queued: q, steer };
       };
-      if (this.running.has(id)) return wait();
+      if (this.running.has(id)) return wait(true);
+      if (!this.releaseHold(id, opts.releases ?? [])) return { ...wait(false), held: true };
       if (this.draining) {
         this.owe(id);
-        return wait();
+        return wait(true);
       }
-      this.release(id);
       const earlier = this.store.queue(id).filter((q) => q.meta?.kind === meta.kind && !this.offBranch(q));
       if (earlier.length) {
         for (const q of earlier) if (!q.steer) this.store.updateQueueItem(q.id, { steer: true });
-        const mine = wait();
+        const mine = wait(true);
         this.next(id);
         return mine;
       }
@@ -1687,8 +1753,8 @@ export class Engine {
   private async runTool(session: Session, tools: Tool[], u: ToolUseBlock, ctx: ToolContext): Promise<ToolResultBlock> {
     // Built when the stop comes: a stop for a daemon restart says so.
     const interrupted = (): ToolResultBlock => ({
-      type: "tool_result", tool_use_id: u.id, is_error: true,
-      content: this.parking.has(ctx.sessionId) ? cutText(ctx.sessionId, u) : STOPPED_WHILE,
+      type: "tool_result", tool_use_id: u.id,
+      ...(this.parking.has(ctx.sessionId) ? cutResult(ctx.sessionId, u) : { content: STOPPED_WHILE, is_error: true }),
     });
     if (ctx.signal.aborted) return interrupted();
     const tool = tools.find((t) => t.name === u.name);
@@ -2362,11 +2428,53 @@ export class Engine {
     for (const id of new Set([...this.owed, ...openAtBoot])) {
       const s = this.store.session(id);
       if (!s || !this.store.queue(id).length) { this.settleOwed(id); continue; }
+      // (An archived session's is started when it is restored: startOwed.)
       if (s.archived || this.held.has(id) || this.running.has(id)) continue;
       const end = this.lineage(id).at(-1);
       if (end?.kind === "turn_end" && end.data.reason === "restart") continue;
-      void waitModel(s.model).then(() => this.next(id), (e) => this.errors.capture("provider", e, { session: id, at: "queued prompt after restart" }));
+      this.owe(id);
+      void this.startWhenListed(id, waitModel);
     }
+  }
+
+  // The owed prompt starts once the session's model is listed. While it is not
+  // (a provider still starting, a model gone), the session says so in a note,
+  // once, as a cut turn that could not resume does, and the start is tried
+  // again every half minute (KEEL_QUEUED_RETRY_MS) until it goes, the row leaves the queue, the
+  // owner stops or archives the session, or the daemon stops.
+  private async startWhenListed(id: string, waitModel: (model: string) => Promise<void>) {
+    for (let said = false; ; ) {
+      const s = this.store.session(id);
+      if (!s || s.archived || this.draining || this.held.has(id) || this.running.has(id) || !this.owed.has(id) || !this.store.queue(id).length) return;
+      try {
+        await waitModel(s.model);
+        return this.startOwed(id);
+      } catch (e) {
+        if (!said) {
+          const rec = this.errors.capture("provider", e, { session: id, at: "queued prompt after restart" });
+          this.append(id, "note", { kind: "restart", text: `A prompt waits in this session's queue since the daemon restarted, and it could not start: ${rec.message}. It starts by itself when the model is back.` });
+          said = true;
+        }
+      }
+      await Bun.sleep(queuedRetryMs());
+    }
+  }
+
+  // The start a stopping daemon owed the session's queue is given now, if one
+  // is owed: at the next start, and when an archived session is restored (it
+  // starts nothing while archived, and would otherwise start by itself at
+  // some later restart).
+  startOwed(id: string) {
+    if (!this.owed.has(id)) return;
+    if (!this.store.queue(id).length) return this.settleOwed(id);
+    this.next(id);
+  }
+
+  // Whether the session's turns are run outside the engine's loop (an agent of
+  // another program): such a turn takes a message when it ends, not at a step.
+  isExternal(id: string): boolean {
+    const s = this.store.session(id);
+    return !!s && allHooks().some((h) => { try { return !!h.external?.(s); } catch { return false; } });
   }
 
   // The record of a cut turn (who is told is not the engine's business): a
@@ -2416,7 +2524,7 @@ export class Engine {
           const results = new Set(line.slice(lastStart).flatMap((e) => (e.kind === "tool_result" ? e.data.results.map((r: any) => r.tool_use_id) : [])));
           // A call whose card is still open is left for the continued turn (owedCalls).
           const cut = line.slice(lastStart).flatMap((e) => (e.kind === "assistant" ? e.data.blocks.filter((b: any) => b.type === "tool_use" && !results.has(b.id) && !waitsOnOwner(id, b)) : []));
-          if (cut.length) closing.push(this.store.append(id, "tool_result", { results: cut.map((u: any) => ({ type: "tool_result", tool_use_id: u.id, content: cutText(id, u), is_error: true })) }));
+          if (cut.length) closing.push(this.store.append(id, "tool_result", { results: cut.map((u: any) => ({ type: "tool_result", tool_use_id: u.id, ...cutResult(id, u) })) }));
           // It ran until the daemon went down (its last sign of life, or the
           // turn's own last event when that is later), not until this start.
           const down = Math.min(Date.now(), Math.max(this.wentDown ?? 0, line.at(-1)!.ts));
@@ -2671,6 +2779,10 @@ export function stalledContinuations(line: readonly StoredEvent[]): number {
 // Continued turns after a restart: this many run at once, each start at least
 // this far after the previous one. Three covers the usual one to three open
 // sessions with no wait; more queue behind them.
+// How long a sender's key is kept: as long as the owner's send ids (30 days).
+const KEYS_KEPT_MS = 30 * 86_400_000;
+// How long until a queue owed a start is tried again while its model is not listed.
+const queuedRetryMs = () => Number(process.env.KEEL_QUEUED_RETRY_MS ?? 30_000);
 const RESUME_AT_ONCE = Number(process.env.KEEL_RESUME_AT_ONCE || 3);
 const RESUME_GAP_MS = Number(process.env.KEEL_RESUME_GAP_MS ?? 1000);
 const RESUME_HOLD_MS = 30_000;

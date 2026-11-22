@@ -447,15 +447,15 @@ test("an input sent again under its sender's key is stored once", async () => {
   // To a working one: one row in its queue, however often it is asked.
   engine.send(s.id, "held open");
   await waiting;
-  const first = engine.message(s.id, "from the parent", meta, "call-7");
+  const first = engine.message(s.id, "from the parent", meta, { key: "call-7" });
   expect(first.queued).toMatchObject({ steer: true, text: "from the parent", meta });
-  expect(engine.message(s.id, "from the parent", meta, "call-7")).toEqual({ duplicate: true });
+  expect(engine.message(s.id, "from the parent", meta, { key: "call-7" })).toEqual({ duplicate: true });
   expect(store.queue(s.id).map((q) => q.id)).toEqual([first.queued!.id]);
 
   // The running turn takes it at its next step; asked again after that, nothing is stored.
   go();
   await engine.idle(s.id);
-  expect(engine.message(s.id, "from the parent", meta, "call-7")).toEqual({ duplicate: true });
+  expect(engine.message(s.id, "from the parent", meta, { key: "call-7" })).toEqual({ duplicate: true });
   await engine.idle(s.id);
   expect(texts()).toEqual(["a wake, sent once", "held open", "from the parent"]);
   expect(promptsOf(store, s.id, first.queued!.id)).toHaveLength(1);
@@ -464,7 +464,7 @@ test("an input sent again under its sender's key is stored once", async () => {
 
   // A key names an input of one session: another session's sender may use the same.
   const other = session();
-  expect(engine.message(other.id, "from the parent", meta, "call-7").event).toBeTruthy();
+  expect(engine.message(other.id, "from the parent", meta, { key: "call-7" }).event).toBeTruthy();
   await engine.idle(other.id);
 });
 
@@ -493,7 +493,9 @@ test("messages a stop left unread are read first, in order, when the next one ar
   expect(store.queue(s.id).map((q) => [q.text, q.steer])).toEqual([["one", false], ["two", false]]);
   expect(engine.isHeld(s.id)).toBe(true);
 
-  expect(engine.message(s.id, "three", meta).queued).toBeTruthy();
+  // The stop was the sender's own: its next message releases the hold it left.
+  expect(engine.heldBy(s.id)).toBe("parent");
+  expect(engine.message(s.id, "three", meta, { releases: ["parent"] }).queued).toBeTruthy();
   for (let i = 0; i < 200 && (engine.isRunning(s.id) || store.queue(s.id).length); i++) await engine.idle(s.id).then(() => Bun.sleep(1));
   expect(engine.isHeld(s.id)).toBe(false);
   const line = engine.lineage(s.id);
@@ -542,4 +544,189 @@ test("a prompt left queued when its turn ended while the daemon stopped starts a
   await Bun.sleep(20);
   expect(c.requests).toEqual([]);
   expect(promptsOf(c.store, s.id, q.id)).toHaveLength(1);
+});
+
+// The owner's Stop holds a session's queue until the owner resumes it. A
+// message from the session it answers to never starts it and never takes the
+// hold off, whenever it comes: before the stop (the stopped turn leaves it in
+// the queue), after it, or while the daemon stops. The sender is told it is
+// held. On Resume everything goes in the order it came, each once.
+test("a message to a session the owner stopped waits for the owner's Resume, sent before the stop, after it or during a drain", async () => {
+  const dir = scratch("message-owner-stop");
+  let reached!: () => void;
+  const waiting = new Promise<void>((r) => (reached = r));
+  let stopped = false;
+  const a = rig(dir, {
+    request: async (req) => {
+      if (stopped) return;
+      stopped = true;
+      reached();
+      await untilStopped(req);
+    },
+  });
+  const s = a.session();
+  const meta = { kind: "steer", agent_id: "ag_1" };
+  const mine = { releases: ["parent"] };
+  a.engine.send(s.id, "the task");
+  await waiting;
+  expect(a.engine.message(s.id, "sent before the stop", meta, mine)).toMatchObject({ queued: { steer: true } });
+  await a.engine.interrupt(s.id, "owner");
+  expect(a.engine.heldBy(s.id)).toBe("owner");
+  a.engine.send(s.id, "the owner's own queued prompt", { mode: "queue" });
+  const requests = a.requests.length;
+
+  const after = a.engine.message(s.id, "sent after the stop", meta, mine);
+  expect(after).toMatchObject({ held: true, queued: { steer: false } });
+  expect(after.event).toBeUndefined();
+  await Bun.sleep(10);
+  expect(a.engine.isRunning(s.id)).toBe(false);
+  expect(a.engine.isHeld(s.id)).toBe(true);
+
+  // While the daemon stops: held all the same, and not owed a start by the next one.
+  await a.engine.drain(0);
+  expect(a.engine.message(s.id, "sent during the drain", meta, mine)).toMatchObject({ held: true, queued: { steer: false } });
+  const b = rig(dir);
+  await b.engine.recover(b.store.bootWorking, noRecover);
+  await Bun.sleep(20);
+  expect(b.requests).toEqual([]);
+  expect(a.requests.length).toBe(requests);
+  expect(b.engine.heldBy(s.id)).toBe("owner");
+  expect(b.store.queue(s.id).map((q) => q.text)).toEqual(["sent before the stop", "the owner's own queued prompt", "sent after the stop", "sent during the drain"]);
+
+  // The owner resumes: each is read once, in the order it came.
+  b.engine.resumeQueue(s.id);
+  for (let i = 0; i < 400 && (b.engine.isRunning(s.id) || b.store.queue(s.id).length); i++) await b.engine.idle(s.id).then(() => Bun.sleep(1));
+  expect(b.engine.lineage(s.id).filter((e) => e.kind === "user").map((e) => e.data.text)).toEqual(["the task", "sent before the stop", "the owner's own queued prompt", "sent after the stop", "sent during the drain"]);
+  expect(b.engine.isHeld(s.id)).toBe(false);
+});
+
+// A hold is released only by the sender that made it. One the sender made and
+// the owner then made theirs (a second stop) is the owner's; one nobody named
+// is the owner's too, and a hold from before makers were kept is read from the
+// stop of the last turn.
+test("only the maker of a hold releases it with a message", async () => {
+  const dir = scratch("hold-makers");
+  const { store, engine, session } = rig(dir);
+  const meta = { kind: "steer", agent_id: "ag_1" };
+  const mine = { releases: ["parent"] };
+  const settled = async (id: string) => { for (let i = 0; i < 200 && engine.isRunning(id); i++) await engine.idle(id).then(() => Bun.sleep(1)); };
+
+  const own = session();
+  engine.holdQueue(own.id, "parent");
+  expect(engine.message(own.id, "after my own stop", meta, mine).event).toBeTruthy();
+  await settled(own.id);
+  expect(engine.isHeld(own.id)).toBe(false);
+
+  const both = session();
+  engine.holdQueue(both.id, "parent");
+  engine.holdQueue(both.id, "owner");
+  engine.holdQueue(both.id, "parent");
+  expect(engine.heldBy(both.id)).toBe("owner");
+  expect(engine.message(both.id, "after the owner's stop too", meta, mine)).toMatchObject({ held: true });
+
+  const unnamed = session();
+  engine.holdQueue(unnamed.id);
+  expect(engine.message(unnamed.id, "after a stop nobody named", meta, mine)).toMatchObject({ held: true });
+  expect(engine.isHeld(unnamed.id)).toBe(true);
+
+  // A hold stored before its maker was: the last turn's stop says who made it.
+  const old = session();
+  store.append(old.id, "user", { text: "x" });
+  store.append(old.id, "turn_start", { model: "m" });
+  store.append(old.id, "turn_end", { reason: "interrupted", stopped_by: "parent" });
+  store.db.run("INSERT INTO queue_holds (session_id) VALUES (?)", [old.id]);
+  const again = rig(dir);
+  expect(again.engine.heldBy(old.id)).toBe("parent");
+  expect(again.engine.message(old.id, "after a stop from before", meta, mine).event).toBeTruthy();
+  await again.engine.idle(old.id);
+});
+
+// The same key with other words is the sender's mistake: refused, not
+// answered as already sent with the words dropped. Keys are kept 30 days.
+test("a key used for another message is refused, and old keys go", () => {
+  const { store, engine, session } = rig(scratch("key-words"));
+  const s = session();
+  engine.holdQueue(s.id); // nothing starts: the rows stay to be counted
+  const meta = { kind: "steer", agent_id: "ag_1" };
+  expect(engine.message(s.id, "the words", meta, { key: "send-1", fp: "a" }).queued).toBeTruthy();
+  expect(engine.message(s.id, "the words", meta, { key: "send-1", fp: "a" })).toEqual({ duplicate: true });
+  expect(() => engine.message(s.id, "other words", meta, { key: "send-1", fp: "b" })).toThrow("used for another message");
+  expect(store.queue(s.id).map((q) => q.text)).toEqual(["the words"]);
+
+  store.db.run("UPDATE input_keys SET ts = ? WHERE key = 'send-1'", [Date.now() - 31 * 86_400_000]);
+  expect(engine.message(s.id, "a later one", meta, { key: "send-2", fp: "c" }).queued).toBeTruthy();
+  expect(engine.hasInput(s.id, "send-1")).toBe(false);
+  expect(engine.hasInput(s.id, "send-2")).toBe(true);
+});
+
+// A queue owed a start whose model is not listed when the daemon starts says
+// so in the session, and starts when the model is back, not at the next restart.
+test("an owed queue whose model is not listed yet says so and starts when it lists", async () => {
+  const dir = scratch("queued-model");
+  let reached!: () => void;
+  const waiting = new Promise<void>((r) => (reached = r));
+  let go!: () => void;
+  const gate = new Promise<void>((r) => (go = r));
+  const a = rig(dir, { request: async () => { reached(); await gate; } });
+  const s = a.session();
+  a.engine.send(s.id, "first");
+  await waiting;
+  const q = a.engine.send(s.id, "queued while the first turn ran", { mode: "queue" }).queued!;
+  const down = a.engine.drain(5_000);
+  go();
+  await down;
+
+  const before = process.env.KEEL_QUEUED_RETRY_MS;
+  process.env.KEEL_QUEUED_RETRY_MS = "20";
+  try {
+    const b = rig(dir);
+    let tries = 0;
+    await b.engine.recover(b.store.bootWorking, async () => { if (++tries < 3) throw new Error("no provider lists this model"); });
+    for (let i = 0; i < 400 && (tries < 3 || b.engine.isRunning(s.id) || b.store.queue(s.id).length); i++) await b.engine.idle(s.id).then(() => Bun.sleep(5));
+    const line = b.engine.lineage(s.id);
+    const notes = line.filter((e) => e.kind === "note" && e.data.kind === "restart");
+    // Said once, however often it was tried.
+    expect(notes.map((e) => String(e.data.text))).toEqual([expect.stringContaining("no provider lists this model")]);
+    expect(promptsOf(b.store, s.id, q.id)).toHaveLength(1);
+    expect(line.indexOf(promptsOf(b.store, s.id, q.id)[0]!)).toBeGreaterThan(line.indexOf(notes[0]!));
+    expect(line.at(-1)).toMatchObject({ kind: "turn_end", data: { reason: "end_turn" } });
+  } finally {
+    if (before === undefined) delete process.env.KEEL_QUEUED_RETRY_MS;
+    else process.env.KEEL_QUEUED_RETRY_MS = before;
+  }
+});
+
+// An archived session starts nothing. The start its queue is owed is given
+// when it is restored, not by itself at some later restart.
+test("an owed queue of an archived session starts when the session is restored", async () => {
+  const dir = scratch("queued-archived");
+  let reached!: () => void;
+  const waiting = new Promise<void>((r) => (reached = r));
+  let go!: () => void;
+  const gate = new Promise<void>((r) => (go = r));
+  const a = rig(dir, { request: async () => { reached(); await gate; } });
+  const s = a.session();
+  a.engine.send(s.id, "first");
+  await waiting;
+  const q = a.engine.send(s.id, "queued while the first turn ran", { mode: "queue" }).queued!;
+  const down = a.engine.drain(5_000);
+  go();
+  await down;
+  a.store.updateSession(s.id, { archived: true });
+
+  const b = rig(dir);
+  await b.engine.recover(b.store.bootWorking, noRecover);
+  await Bun.sleep(20);
+  expect(b.requests).toEqual([]);
+  b.store.updateSession(s.id, { archived: false });
+  b.engine.startOwed(s.id);
+  for (let i = 0; i < 200 && (b.engine.isRunning(s.id) || b.store.queue(s.id).length); i++) await b.engine.idle(s.id).then(() => Bun.sleep(1));
+  expect(promptsOf(b.store, s.id, q.id)).toHaveLength(1);
+
+  // Nothing is left for a later start, and a restore with nothing owed starts nothing.
+  const c = rig(dir);
+  await c.engine.recover(c.store.bootWorking, noRecover);
+  c.engine.startOwed(s.id);
+  await Bun.sleep(20);
+  expect(c.requests).toEqual([]);
 });

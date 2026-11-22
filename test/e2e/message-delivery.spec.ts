@@ -92,7 +92,8 @@ test("a working agent takes its parent's message at its next step, and a restart
   try {
     const [a, z, b, c] = ["a", "z", "b", "c"].map(r.gate) as [string, string, string, string];
     // By itself the agent would hold on A, then on Z. Each message names what it does next.
-    const { parent, child, agent } = await withAgent(r, "Holder", [r.hold(a), r.hold(z)]);
+    // (A title longer than the card's line: the waiting chip gives way to it.)
+    const { parent, child, agent } = await withAgent(r, "Holder of the long review of the parser and the store, with a title the card has to cut", [r.hold(a), r.hold(z)]);
     const id = (await agent()).id as string;
 
     // The parent's model sends while the agent's first command runs.
@@ -106,7 +107,13 @@ test("a working agent takes its parent's message at its next step, and a restart
     expect.soft((await agent()).messages_waiting).toBe(1);
     await page.setViewportSize({ width: 1920, height: 1040 });
     await page.goto(`${r.url()}/s/${parent}`);
-    await expect.soft(page.getByTestId("agent-call-waiting").first()).toHaveText("1 message waiting", { timeout: 10_000 });
+    const chip = page.getByTestId("agent-call-waiting").first();
+    await expect.soft(chip).toHaveText(/^1\s*message waiting$/, { timeout: 10_000 });
+    // The chip shrinks to its icon and count before the agent's title loses a letter more than it must.
+    const title = page.getByTestId("agent-call-title").first();
+    expect.soft(await title.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+    expect.soft((await chip.boundingBox())!.width).toBeLessThanOrEqual(40);
+    expect.soft(await chip.getAttribute("title")).toContain("1 message sent to this agent");
     await shoot(page, "message-delivery-01-waiting");
     expect((await r.prompts(child, "First message")).length).toBe(0);
 
@@ -306,6 +313,71 @@ test("a message that cannot be delivered is told to the session that sent it", a
     await new Promise((res) => setTimeout(res, 3_000));
     expect(await told(sender)).toHaveLength(1);
     expect(await told(parent)).toHaveLength(1);
+  } finally {
+    r.end();
+  }
+});
+
+test("a message to an agent the owner stopped waits for the owner's Resume, and the sender is told so", async ({ page }) => {
+  const r = await rig("message-stopped");
+  try {
+    const a = r.gate("a");
+    const { parent, child, agent } = await withAgent(r, "Stopped holder", [r.hold(a)]);
+    const id = (await agent()).id as string;
+    const queue = async () => (await r.call(`/api/sessions/${child}/queue`, undefined, "GET"));
+    const words = async () => (await queue()).queue.map((q: any) => String(q.text).split("\n").at(-1));
+    const turns = async () => (await r.events(child)).filter((e) => e.kind === "turn_start").length;
+
+    // One message is on its way when the owner stops the agent from its page, and queues a prompt of their own there.
+    await r.call(`/api/sessions/${parent}/agents/${id}/message`, { message: "Sent before the stop." });
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto(`${r.url()}/s/${child}`);
+    await page.getByTestId("stop").click();
+    await expect.poll(async () => [(await agent()).status, (await agent()).stopped_by], { timeout: 30_000 }).toEqual(["stopped", "owner"]);
+    await r.call(`/api/sessions/${child}/messages`, { text: "The owner's own queued prompt.", mode: "queue" });
+
+    // The parent's model sends after the stop: taken, held, and told why. Nothing starts.
+    await expect.poll(async () => (await r.view(parent)).running, { timeout: 30_000 }).toBe(false);
+    const results = async () => (await r.events(parent)).filter((e) => e.kind === "tool_result").length;
+    const had = await results();
+    await r.call(`/api/sessions/${parent}/messages`, { text: `script:calls ${JSON.stringify([{ name: "send_input", input: { target: id, message: "Sent after the stop." } }])}` });
+    await expect.poll(results, { timeout: 30_000 }).toBe(had + 1);
+    const answer = JSON.stringify((await r.events(parent)).filter((e) => e.kind === "tool_result").at(-1).data.results[0].content);
+    expect(answer).toContain("the owner stopped that agent");
+    expect(answer).toContain("when the owner resumes it");
+    await page.waitForTimeout(1_500);
+    expect([(await r.view(child)).running, (await queue()).held, await turns()]).toEqual([false, true, 1]);
+    expect(await words()).toEqual(["Sent before the stop.", "The owner's own queued prompt.", "Sent after the stop."]);
+    expect(await agent()).toMatchObject({ status: "stopped", stopped_by: "owner", messages_waiting: 2 });
+    await expect(page.getByTestId("queue-held")).toBeVisible();
+    await expect(page.getByTestId("queue-item")).toHaveCount(3);
+    await shoot(page, "message-delivery-05-held-for-the-owner");
+    // The stopped agent's report says what brings the messages to it, and the parent's card counts them.
+    const report = (await r.events(parent)).filter((e) => e.kind === "user" && String(e.data.text).includes("<subagent_result")).map((e) => String(e.data.text)).join("\n");
+    expect(report).toContain("the owner stopped it, and it reads");
+    await page.goto(`${r.url()}/s/${parent}`);
+    const chip = page.getByTestId("agent-call-waiting").first();
+    await expect(chip).toHaveText(/^2\s*messages waiting$/, { timeout: 10_000 });
+    // A short title is whole while the chip still has room to give.
+    const cut = await page.getByTestId("agent-call-title").first().evaluate((el) => el.scrollWidth > el.clientWidth);
+    expect(cut && (await chip.boundingBox())!.width > 40).toBe(false);
+    await shoot(page, "message-delivery-06-stopped-agent-card");
+
+    // A restart changes nothing: still held, nothing started, nothing lost.
+    await r.restart("SIGTERM");
+    await page.waitForTimeout(3_000);
+    expect([(await r.view(child)).running, (await queue()).held, await turns()]).toEqual([false, true, 1]);
+    expect(await words()).toEqual(["Sent before the stop.", "The owner's own queued prompt.", "Sent after the stop."]);
+
+    // The owner resumes from the agent's page: everything is read once, in the order it came.
+    await page.goto(`${r.url()}/s/${child}`);
+    await page.getByTestId("queue-held").getByRole("button", { name: "Resume" }).click();
+    await expect.poll(async () => (await queue()).queue.length, { timeout: 60_000 }).toBe(0);
+    await expect.poll(async () => (await r.view(child)).running, { timeout: 30_000 }).toBe(false);
+    const read = (await r.events(child)).filter((e) => e.kind === "user").map((e) => String(e.data.text).split("\n").at(-1));
+    expect(read.slice(1)).toEqual(["Sent before the stop.", "The owner's own queued prompt.", "Sent after the stop."]);
+    expect((await queue()).held).toBe(false);
+    await expect.poll(async () => (await agent()).status, { timeout: 30_000 }).toBe("completed");
   } finally {
     r.end();
   }

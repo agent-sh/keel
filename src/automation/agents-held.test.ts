@@ -19,6 +19,7 @@ const failures = await import("./failures.ts");
 const goals = await import("./goals.ts");
 const waits = await import("./waits.ts");
 const activity = await import("./activity.ts");
+const { automationTools, messageHooks } = await import("./tools.ts");
 const { handleLine } = await import("../integrations/momentum.ts");
 const { Voice } = await import("../integrations/voice.ts");
 
@@ -29,6 +30,7 @@ const usage = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
 // A parent's request named here hangs until its turn is stopped, or waits for the promise given for it;
 // an agent's answers at once, or once `gate` opens.
 const hangs = new Set<string>();
+const hung = new Set<string>();
 const pauses = new Map<string, Promise<void>>();
 let gate: Promise<void> | undefined;
 let report = "ok"; // what an agent answers
@@ -36,7 +38,9 @@ const provider = {
   wire: "openai",
   stream: async (req: any) => {
     const pause = pauses.get(req.sessionKey);
-    if (hangs.delete(req.sessionKey)) await new Promise((_r, rej) => req.signal.addEventListener("abort", () => rej(new Error("aborted")), { once: true }));
+    // A session whose prompt says [hang] hangs once, until its turn is stopped.
+    const stuck = JSON.stringify(req.messages).includes("[hang]") && !hung.has(req.sessionKey) && !!hung.add(req.sessionKey);
+    if (hangs.delete(req.sessionKey) || stuck) await new Promise((_r, rej) => (req.signal.aborted ? rej(new Error("aborted")) : req.signal.addEventListener("abort", () => rej(new Error("aborted")), { once: true })));
     else if (pause) { pauses.delete(req.sessionKey); await pause; }
     else if (store.session(req.sessionKey)?.parent_id) await gate;
     return { blocks: [{ type: "text", text: store.session(req.sessionKey)?.parent_id ? report : "ok" }], usage, stop: "end_turn", model: "x" };
@@ -268,3 +272,140 @@ test("what rides one input is bounded by the model's window, and the rest keep r
   expect(longest()).toBeLessThanOrEqual(room);
   expect(ends()).not.toContain("error");
 }, 90_000);
+
+const texts = (id: string) => store.events(id).filter((e) => e.kind === "user").map((e) => String(e.data.text).replace("Message from the session that started you:\n", ""));
+const settledQueue = (id: string) => until(() => !engine.isRunning(id) && !store.queue(id).length, 5000);
+
+// The owner stops an agent from its page. Its parent's model may go on sending
+// to it: nothing it sends starts the agent or takes the owner's hold off,
+// whether it was sent before the stop or after it. The sender is told the
+// message is held, the stopped agent's report says what brings it to the
+// agent, and the owner's Resume delivers everything in the order it came.
+test("a parent's message never starts an agent the owner stopped, and the owner's hold stays", async () => {
+  const p = store.createSession({ model: "m:x", workspace: dir, title: "parent of a stopped agent" });
+  engine.send(p.id, "owner: warm");
+  await quiet(p.id);
+  const a = await agents.spawn(p.id, { prompt: "work [hang]", isolation: "none", background: true });
+  await until(() => hung.has(a.session_id)); // its request is out
+  expect(await agents.send(a.id, "sent before the stop")).toMatchObject({ waits: true });
+  agents.stop(a.id, "owner");
+  await until(() => agents.get(a.id)!.status === "stopped");
+  engine.send(a.session_id, "the owner's own prompt, queued in the stopped agent", { mode: "queue" });
+
+  const after = await agents.send(a.id, "sent after the stop");
+  expect(after).toMatchObject({ waits: true, held: true, agent: { status: "stopped", stopped_by: "owner", messages_waiting: 2 } });
+  await quiet(a.session_id);
+  await quiet(p.id);
+  expect([engine.isRunning(a.session_id), engine.isHeld(a.session_id), engine.heldBy(a.session_id)]).toEqual([false, true, "owner"]);
+  expect(texts(a.session_id)).toHaveLength(1); // its task, and nothing since
+  expect(store.queue(a.session_id).map((q) => q.text.split("\n").at(-1))).toEqual(["sent before the stop", "the owner's own prompt, queued in the stopped agent", "sent after the stop"]);
+  // Its report says the messages wait for the owner, not that a message continues it.
+  const said = inputs(p.id).filter((i) => i.reports.includes(a.id)).map((i) => i.text).join("\n");
+  expect(said).toContain("the owner stopped it, and it reads");
+  expect(said).not.toContain("if a message continues it");
+
+  engine.resumeQueue(a.session_id);
+  await settledQueue(a.session_id);
+  expect(texts(a.session_id).slice(1)).toEqual(["sent before the stop", "the owner's own prompt, queued in the stopped agent", "sent after the stop"]);
+  expect(engine.isHeld(a.session_id)).toBe(false);
+  await until(() => agents.get(a.id)!.status === "completed");
+  expect(agents.get(a.id)).toMatchObject({ status: "completed", messages_waiting: 0 });
+}, 30_000);
+
+// The same for an agent with no turn running (it waits on a timer): the
+// owner's stop holds its queue too, and a stop its parent made is the
+// parent's to release with its next message.
+test("the owner's stop of a waiting agent holds it, and a parent's own stop does not hold its next message", async () => {
+  const p = store.createSession({ model: "m:x", workspace: dir, title: "parent of a waiting agent" });
+  engine.send(p.id, "owner: warm");
+  await quiet(p.id);
+  let open!: () => void;
+  gate = new Promise<void>((r) => (open = r));
+  const a = await agents.spawn(p.id, { prompt: "wait for the build", isolation: "none", background: true });
+  waits.create(a.session_id, waits.normalize({ kind: "timer", seconds: 600 }, dir));
+  open();
+  gate = undefined;
+  await until(() => agents.get(a.id)!.status === "waiting");
+  agents.stop(a.id, "owner");
+  await until(() => agents.get(a.id)!.status === "stopped");
+  expect(await agents.send(a.id, "to the waiting agent the owner stopped")).toMatchObject({ waits: true, held: true });
+  await quiet(a.session_id);
+  expect([engine.isRunning(a.session_id), engine.isHeld(a.session_id), texts(a.session_id).length]).toEqual([false, true, 1]);
+
+  const b = await agents.spawn(p.id, { prompt: "other work [hang]", isolation: "none", background: true });
+  await until(() => hung.has(b.session_id)); // its request is out
+  agents.stop(b.id, "parent");
+  await until(() => agents.get(b.id)!.status === "stopped");
+  expect(engine.heldBy(b.session_id)).toBe("parent");
+  expect(await agents.send(b.id, "go on after my own stop")).toMatchObject({ waits: false, agent: { status: "running" } });
+  await until(() => agents.get(b.id)!.status === "completed");
+  expect(texts(b.session_id).at(-1)).toBe("go on after my own stop");
+  expect(engine.isHeld(b.session_id)).toBe(false);
+  await quiet(p.id);
+}, 30_000);
+
+// The call that sends a message names it: by the reply that holds the call
+// and the call's id. A restart that cut the call after the message was stored
+// answers it truthfully, so the model does not send again; two calls that a
+// provider gave one id are two messages.
+test("a message call is keyed by its stored call, and a cut one whose message is stored says so", async () => {
+  const p = store.createSession({ model: "m:x", workspace: dir, title: "parent that sends by tool" });
+  engine.send(p.id, "owner: warm");
+  await quiet(p.id);
+  const a = await agents.spawn(p.id, { prompt: "listen [hang]", isolation: "none", background: true });
+  await until(() => hung.has(a.session_id)); // its request is out
+  const tool = automationTools.find((t) => t.name === "send_input")!;
+  const call = (message: string) => {
+    store.append(p.id, "assistant", { blocks: [{ type: "tool_use", id: "call-3-1", name: "send_input", input: { target: a.id, message } }] });
+    return tool.run({ target: a.id, message }, { sessionId: p.id, callId: "call-3-1", cwd: dir, signal: new AbortController().signal } as any);
+  };
+  const outcome = () => messageHooks.callOutcome!(p.id, "call-3-1");
+
+  // Before the message is stored the cut call has nothing to say for itself.
+  store.append(p.id, "assistant", { blocks: [{ type: "tool_use", id: "call-3-1", name: "send_input", input: { target: a.id, message: "never ran" } }] });
+  expect(outcome()).toBeUndefined();
+
+  await call("FIRST message");
+  expect(outcome()).toEqual({ done: expect.stringContaining("do not send it again") });
+  // The same id in a later reply is another call: its other words are stored too.
+  const second = await call("SECOND message, other words");
+  expect(String(second.content)).toContain("after its current step");
+  expect(store.queue(a.session_id).map((q) => q.text.split("\n").at(-1))).toEqual(["FIRST message", "SECOND message, other words"]);
+  // A call of another tool, or one a reply does not hold, is not this hook's.
+  store.append(p.id, "assistant", { blocks: [{ type: "tool_use", id: "call-9", name: "Bash", input: { command: "true" } }] });
+  expect(messageHooks.callOutcome!(p.id, "call-9")).toBeUndefined();
+  expect(messageHooks.callOutcome!(p.id, "no-such-call")).toBeUndefined();
+
+  agents.stop(a.id, "parent");
+  await until(() => agents.get(a.id)!.status === "stopped");
+  await quiet(p.id);
+}, 30_000);
+
+// An ended agent continued twice with nothing stored in its session between
+// the two (the daemon was stopping: each message waits in its queue) has two
+// tasks, and each has a report id of its own.
+test("two tasks given an ended agent with no event between them have two report ids", async () => {
+  const p = store.createSession({ model: "m:x", workspace: dir, title: "parent that continues twice" });
+  engine.send(p.id, "owner: warm");
+  await quiet(p.id);
+  const a = await lane(p.id, "first task");
+  await a.ended();
+  await quiet(p.id);
+  const first = agents.reportId(agents.get(a.id)!);
+  await engine.settle(0); // the daemon is stopping: nothing starts, messages wait in the queue
+  try {
+    expect(await agents.send(a.id, "second task")).toMatchObject({ waits: true });
+    const second = agents.reportId(agents.get(a.id)!);
+    agents.stop(a.id, "parent");
+    await until(() => agents.isEnded(agents.get(a.id)!));
+    expect(await agents.send(a.id, "third task")).toMatchObject({ waits: true });
+    const third = agents.reportId(agents.get(a.id)!);
+    expect(agents.get(a.id)!.first_seq).toBe(store.events(a.session_id).at(-1)!.seq);
+    expect(new Set([first, second, third]).size).toBe(3);
+  } finally {
+    engine.undrain();
+  }
+  await settledQueue(a.session_id);
+  await until(() => agents.get(a.id)!.status === "completed");
+  await quiet(p.id);
+}, 30_000);

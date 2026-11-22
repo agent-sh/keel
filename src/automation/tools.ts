@@ -92,20 +92,56 @@ const Agent: Tool = {
     const a = input.run_in_background ? await spawn() : await blocks(ctx, spawn);
     if (input.run_in_background) return ok(`Started agent ${a.id} (${a.title}) in the background. Its report wakes you as a message when it finishes, so set no timer or wait for it: do other work or end your turn.`);
     if (a.status === "waiting") return ok(`Agent ${a.id} parked on ${waits.describeActive(a.session_id) || "a scheduled wait"} and goes on in the background; its report arrives later.\n\nSo far:\n${a.result ?? ""}`);
-    return a.status === "completed" ? ok(agents.reportBlock(a)) : fail(agents.reportBlock(a));
+    const report = agents.withUnread(agents.reportBlock(a), a.id);
+    return a.status === "completed" ? ok(report) : fail(report);
   }),
 };
 
-// The sender's name for a message: the call that sent it. The same call run
-// again (its result was lost) sends nothing twice.
-const callKey = (ctx: ToolContext) => (ctx.callId ? `call:${ctx.sessionId}:${ctx.callId}` : undefined);
+// A call as the session's history holds it: the reply that made it, and what
+// it asked for. Undefined for a call no reply holds (one a program made).
+function callOf(sessionId: string, callId: string): { event: string; name: string; input: any } | undefined {
+  const line = D().engine.lineage(sessionId);
+  for (let i = line.length - 1; i >= 0; i--) {
+    const e = line[i]!;
+    if (e.kind !== "assistant") continue;
+    const u = (e.data.blocks as any[]).find((b) => b.type === "tool_use" && b.id === callId);
+    if (u) return { event: e.id, name: String(u.name), input: u.input };
+  }
+  return undefined;
+}
+// The sender's name for a message: the call that sent it, by the reply that
+// holds the call and the call's id. A provider may give two calls one id (in
+// two turns, after a compaction): the reply tells them apart, so another
+// message is never taken for one already sent.
+const keyOf = (event: string, callId: string) => `call:${event}:${callId}`;
+const callKey = (ctx: ToolContext) => {
+  const c = ctx.callId ? callOf(ctx.sessionId, ctx.callId) : undefined;
+  return c ? keyOf(c.event, ctx.callId!) : undefined;
+};
+const MESSAGE_TOOLS = new Set(["SendMessage", "send_input"]);
+// A message call a restart cut after its message was stored and before it was
+// answered: its result says the message is with the agent, so the model does
+// not send it a second time under a new call.
+export const messageHooks: TurnHooks = {
+  callOutcome: (sessionId, callId) => {
+    const c = callOf(sessionId, callId);
+    if (!c || !MESSAGE_TOOLS.has(c.name)) return undefined;
+    let to: agents.AgentRecord;
+    try { to = agents.resolveTarget(sessionId, String(c.input?.to ?? c.input?.agent_id ?? c.input?.target)); } catch { return undefined; }
+    if (!D().engine.hasInput(to.session_id, keyOf(c.event, callId))) return undefined;
+    return { done: `The daemon restarted before this call was answered. Its message was stored for agent ${to.id} before that and the agent reads it: do not send it again.` };
+  },
+};
 // When the agent reads a message that was taken: now, or from its queue.
 function whenRead(r: agents.MessageSent): string {
   if (r.duplicate) return "This call's message was already sent; it was not sent again.";
   if (!r.waits) return "It reads it now.";
   const n = r.agent.messages_waiting ?? 1;
   const where = `It is kept in its queue${n > 1 ? ` (${n} of your messages wait there)` : ""}`;
+  if (r.held) return `${where}: the owner stopped that agent, and it reads the message when the owner resumes it. Nothing you send starts it before that.`;
   if (D().engine.isDraining()) return `${where}: the daemon is restarting, and the agent reads it when it is back.`;
+  // An agent of another program takes input only between its turns.
+  if (D().engine.isExternal(r.agent.session_id)) return `${where}: the agent is working and reads it after its current turn.`;
   return `${where}: the agent is working and reads it after its current step, which can take as long as the tool it is running.`;
 }
 
@@ -125,7 +161,7 @@ const SendMessage: Tool = {
   },
   run: (input, ctx) => guard(async () => {
     const r = await agents.send(agents.resolveTarget(ctx.sessionId, String(input.to ?? input.agent_id)).id, String(input.message), false, callKey(ctx));
-    return ok(`Sent to ${r.agent.id}. ${whenRead(r)} Its report arrives as a message.`);
+    return ok(`${r.held ? "Stored for" : "Sent to"} ${r.agent.id}. ${whenRead(r)}${r.held ? "" : " Its report arrives as a message."}`);
   }),
 };
 

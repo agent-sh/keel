@@ -19,7 +19,7 @@ import * as undelivered from "./undelivered.ts";
 import { afterCallOff, afterTurn, capture, clip, D, hasPending, setDeps } from "./core.ts";
 import * as loops from "./loops.ts";
 import { parseLoopCommand } from "./schedule.ts";
-import { automationTools, extendTaskStop, waitAckHooks } from "./tools.ts";
+import { automationTools, extendTaskStop, messageHooks, waitAckHooks } from "./tools.ts";
 import { verifierSession } from "./verify.ts";
 import * as waits from "./waits.ts";
 import { liveAgents } from "./state.ts";
@@ -68,6 +68,7 @@ function init(deps: Deps) {
   extendTaskStop();
 
   registerHooks(waitAckHooks);
+  registerHooks(messageHooks);
   registerHooks(failures.hooks);
   registerHooks({
     // The owner's task-list edits since the last request, as one note.
@@ -181,7 +182,11 @@ function init(deps: Deps) {
       archived.add(s.id);
       waits.cancelForSession(s.id);
       agents.stopChildrenOf(s.id);
-    } else if (!s.archived && archived.delete(s.id)) agents.deliverOwed(s.id);
+    } else if (!s.archived && archived.delete(s.id)) {
+      agents.deliverOwed(s.id);
+      // A prompt its queue was owed a start for when it was archived starts now, not at some later restart.
+      deps.engine.startOwed(s.id);
+    }
   });
 
   // Approval cards become alerts (a child's under its parent); an answered
@@ -380,7 +385,7 @@ export const automationRoutes: RouteModule = (deps) => {
         // `client_id`: the page's name for this send; the same one again sends nothing.
         const key = typeof b.client_id === "string" && b.client_id.trim() ? `page:${b.client_id.trim().slice(0, 80)}` : undefined;
         const r = await agents.send(a.id, String(b.message), !!b.interrupt, key);
-        return json({ agent: r.agent, waits: r.waits, ...(r.duplicate ? { replayed: true } : {}) });
+        return json({ agent: r.agent, waits: r.waits, ...(r.held ? { held: true } : {}), ...(r.duplicate ? { replayed: true } : {}) });
       }),
     },
     "/api/sessions/:id/background": {

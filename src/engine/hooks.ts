@@ -133,8 +133,10 @@ export type TurnHooks = {
   // `denied`: the text the model gets (the owner's reason in it); `not_run`:
   // nothing answered it, so it never ran; `waiting`: its card is still open (or
   // was answered since), so the continued turn runs the call again and gets
-  // that card back. Nothing known: it may have partly run.
-  callOutcome?: (sessionId: string, callId: string) => { denied: string } | "not_run" | "waiting" | undefined;
+  // that card back. `done`: what the call was for was stored before the cut
+  // (a message kept for its receiver): the text says so, and the result is no
+  // error. Nothing known: it may have partly run.
+  callOutcome?: (sessionId: string, callId: string) => { denied: string } | { done: string } | "not_run" | "waiting" | undefined;
   // Whether the call waits on a card only the owner can answer, right now (an open approval).
   awaitsOwner?: (sessionId: string, callId: string) => boolean;
   // A call that is no question tool put a question to the owner on its card
