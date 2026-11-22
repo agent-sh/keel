@@ -21,7 +21,7 @@ import { routeModules } from "./routes/index.ts";
 import { portHolder, waitForLeaving } from "../admin/daemon.ts";
 import { relayDiagnostics } from "./diagnostics.ts";
 import { beginLife, lifeListening, Restarts } from "../admin/life.ts";
-import { drainLine, exitLine, providersLine } from "../admin/daemon-log.ts";
+import { drainLine, exitLine, providersLine, say } from "../admin/daemon-log.ts";
 import { beginWatch, during, timed } from "../admin/stall.ts";
 import { newestTurn } from "../admin/marks.ts";
 import { originOf } from "../admin/timeline-rows.ts";
@@ -144,7 +144,7 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
       for (const m of providers.current()) count.set(m.provider, (count.get(m.provider) ?? 0) + 1);
       const all = providers.statuses();
       const failed = all.filter((s) => s.available && providers.listing(s.id).state === "failed").map((s) => s.id);
-      console.log(providersLine({ available: all.filter((s) => s.available && !failed.includes(s.id)).map((s) => ({ id: s.id, models: count.get(s.id) ?? 0 })), failed, unset: all.filter((s) => !s.available).length }));
+      say(providersLine({ available: all.filter((s) => s.available && !failed.includes(s.id)).map((s) => ({ id: s.id, models: count.get(s.id) ?? 0 })), failed, unset: all.filter((s) => !s.available).length }));
     }).catch((e) => errors.capture("provider", e, { at: "startup listing" }));
     // Turns the last daemon left open or parked continue; a model whose provider is
     // still starting (a plugin) is waited for, up to a minute.
@@ -184,12 +184,12 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
     // The stop's two lines in the log: what it waits for, and what it parked.
     const running = store.db.query<{ id: string }, []>("SELECT id FROM sessions").all().filter((r) => engine.isRunning(r.id)).length;
     const up = Date.now() - ((globalThis as { __keelStarted?: number }).__keelStarted ?? Date.now());
-    console.log(drainLine({ restart: false, running, timeoutMs: drainMs, reason: "a stop signal" }));
+    say(drainLine({ restart: false, running, timeoutMs: drainMs, reason: "a stop signal" }));
     let parked = 0;
     const off = bus.on((f) => { if (f.t === "event" && f.event.kind === "turn_end" && f.event.data?.reason === "restart") parked++; });
     await engine.drain(drainMs).catch((e) => errors.capture("server", e, { at: "drain" }));
     off();
-    console.log(exitLine({ restart: false, parked, upMs: up }));
+    say(exitLine({ restart: false, parked, upMs: up }));
     providers.shutdown();
     server.stop(true);
   };

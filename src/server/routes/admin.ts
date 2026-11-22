@@ -24,7 +24,7 @@ import { join } from "node:path";
 import { Awake } from "../../admin/awake.ts";
 import { Daemon } from "../../admin/daemon.ts";
 import { restarts } from "../../admin/life.ts";
-import { settingsChanges, settingsLine } from "../../admin/daemon-log.ts";
+import { say, settingsChanges, settingsLine } from "../../admin/daemon-log.ts";
 import { restartNeedsEye, restartSummary, restartTurnLine, type Restart } from "../../admin/life-rows.ts";
 import * as activity from "../../automation/activity.ts";
 import { tellCutAgents, tellEarlier } from "../../automation/restart-told.ts";
@@ -169,7 +169,7 @@ export const adminRoutes: RouteModule = (deps) => {
         const before = settings();
         const r = patchSettings(await body(req));
         // The log says what changed, by name; never a value that could be a secret (daemon-log.ts).
-        if (r.ok) { const changes = settingsChanges(before, r.settings); if (changes.length) console.log(settingsLine(changes)); }
+        if (r.ok) { const changes = settingsChanges(before, r.settings); if (changes.length) say(settingsLine(changes)); }
         return r.ok ? json({ settings: r.settings }) : json({ error: r.error }, r.status ?? 400);
       },
     },

@@ -12,7 +12,7 @@ import { claimState, hasClaim } from "../core/claim.ts";
 import { pidBorn, pidHolds, pidLive, pidState } from "../core/pid.ts";
 import { addAdmission } from "../server/admission.ts";
 import { keepStall } from "./daemon-facts.ts";
-import { backupLine, drainLine, exitLine } from "./daemon-log.ts";
+import { backupLine, drainLine, exitLine, say } from "./daemon-log.ts";
 import { beatLife, endLife, restarts } from "./life.ts";
 import { describeStall, type Stall, StallMonitor, TurnWatch, watchWith } from "./stall.ts";
 import type { Dirs } from "./stall-cause.ts";
@@ -352,7 +352,7 @@ export class Daemon {
     this.draining = { since_ms: Date.now(), restart: opts.restart, deadline_ms: Date.now() + opts.timeoutMs };
     this.restartFailed = null;
     this.emit();
-    console.log(drainLine({ restart: opts.restart, running: this.runningSessions().length, timeoutMs: opts.timeoutMs, reason: opts.reason }));
+    say(drainLine({ restart: opts.restart, running: this.runningSessions().length, timeoutMs: opts.timeoutMs, reason: opts.reason }));
     this.finished = (async () => {
       await this.deps.engine.settle(opts.timeoutMs);
       if (this.draining!.restart) {
@@ -362,9 +362,9 @@ export class Daemon {
           // What each step says it made (the backup's name) goes on the log's line.
           const made: string[] = [];
           for (const f of this.beforeRestart) { const said = await f(); if (typeof said === "string" && said) made.push(said); }
-          if (made.length) console.log(backupLine({ ok: true, ms: Date.now() - t0, name: made.join(", ") }));
+          if (made.length) say(backupLine({ ok: true, ms: Date.now() - t0, name: made.join(", ") }));
         } catch (e) {
-          console.warn(backupLine({ ok: false, ms: Date.now() - t0, error: (e as Error)?.message }));
+          say(backupLine({ ok: false, ms: Date.now() - t0, error: (e as Error)?.message }), "warn");
           // Called off before a turn was cut: this daemon goes on as it was.
           const rec = this.deps.errors.capture("server", e, { at: "before a restart" });
           this.restartFailed = { ts_ms: Date.now(), error: rec.message };
@@ -381,7 +381,7 @@ export class Daemon {
       const off = this.deps.bus.on((f) => { if (f.t === "event" && f.event.kind === "turn_end" && f.event.data?.reason === "restart") parked++; });
       await this.deps.engine.park();
       off();
-      console.log(exitLine({ restart: this.draining!.restart, parked, upMs: Date.now() - this.started, reason: opts.reason }));
+      say(exitLine({ restart: this.draining!.restart, parked, upMs: Date.now() - this.started, reason: opts.reason }));
       for (const f of this.beforeExit) await (async () => f())().catch((e) => this.deps.errors.capture("server", e, { at: "shutdown" }));
       this.deps.providers.shutdown();
       endLife(this.draining!.restart ? "restart" : "stop");

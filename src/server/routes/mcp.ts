@@ -1,4 +1,4 @@
-import { mcpLine } from "../../admin/daemon-log.ts";
+import { mcpLine, say } from "../../admin/daemon-log.ts";
 import { registerSocket, type RouteModule } from "../app.ts";
 import { McpManager } from "../../mcp/manager.ts";
 import { installMcpTools } from "../../mcp/tools.ts";
@@ -50,7 +50,7 @@ export const mcpRoutes: RouteModule = (deps) => {
   // Once a process, when the servers had a moment to connect: one line of what was found (daemon-log.ts).
   if (!g.__keelMcpSaid) {
     g.__keelMcpSaid = true;
-    setTimeout(() => { try { console.log(mcpLine((g.__keelMcp ?? m).list().map((x: { name: string; state: string }) => ({ name: x.name, state: x.state })))); } catch {} }, Number(process.env.KEEL_MCP_SAID_MS) || 8000).unref?.();
+    setTimeout(() => { try { say(mcpLine((g.__keelMcp ?? m).list().map((x: { name: string; state: string }) => ({ name: x.name, state: x.state })))); } catch {} }, Number(process.env.KEEL_MCP_SAID_MS) || 8000).unref?.();
   }
   // An mcp_tool hook: a tool of a server that is connected or connects in time, called as the hook file's owner asked.
   hookMcp.call = async (server, tool, input, ms) => {

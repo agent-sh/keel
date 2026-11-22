@@ -7,7 +7,20 @@
 // daemon's story across restarts (the log is kept per day and read back at a
 // start: logs.ts). The words are here; the callers say when.
 import type { AgentRecord } from "../automation/agents.ts";
+import { runMode } from "../core/runmode.ts";
+import { logAt } from "./logs.ts";
 import { dur } from "./timeline-rows.ts";
+
+// Where the lines go: the daemon's log, through the console. A daemon a command runs inside its own
+// process (keel run with no daemon answering) says none of them: its console is the command's output.
+export function say(line: string, level: "info" | "warn" = "info") {
+  if (runMode.client) return;
+  if (level === "warn") console.warn(line); else console.log(line);
+}
+// The same for a line about a session's turn (logs.ts).
+export function sayAt(at: { session: string; turn?: string }, line: string, level: "info" | "warn" = "info") {
+  if (!runMode.client) logAt(at, line, level);
+}
 
 const LINE = 400;
 const clip = (s: string, n = LINE) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);

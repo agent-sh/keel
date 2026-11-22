@@ -24,7 +24,7 @@ import { detached } from "../../core/errors.ts";
 import { atSession } from "../../core/error-sites.ts";
 import { gitSync } from "../../core/git.ts";
 import { cutWhere } from "../../admin/life-rows.ts";
-import { agentLine, stopLine } from "../../admin/daemon-log.ts";
+import { agentLine, say, sayAt, stopLine } from "../../admin/daemon-log.ts";
 import { installLogs, LEVELS, logAt, logDir, logLines, onLog } from "../../admin/logs.ts";
 import { newestTurn } from "../../admin/marks.ts";
 import { registerHooks } from "../../engine/hooks.ts";
@@ -116,7 +116,7 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
       const e = eventsOut.state.endpoint ? spanEvent(s) : null;
       if (e) eventsOut.push(e);
     }
-    console.log(`[daemon] ${left.length} span${left.length === 1 ? "" : "s"} the last daemon left running ${left.length === 1 ? "was" : "were"} closed as interrupted${exporter.state.endpoint ? " and sent to the collector" : ""}`);
+    say(`[daemon] ${left.length} span${left.length === 1 ? "" : "s"} the last daemon left running ${left.length === 1 ? "was" : "were"} closed as interrupted${exporter.state.endpoint ? " and sent to the collector" : ""}`);
   });
   // What no span holds: a prompt arriving, and what a turn cost.
   const offBus = bus.on((f) => {
@@ -151,7 +151,7 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
     const e = f.event;
     const at = () => ({ session: e.session_id, turn: engine.turnOf(e.session_id) ?? newestTurn(store, e.session_id)?.id });
     if (e.kind === "turn_end" && e.data?.reason === "restart" && !e.data.crashed) logAt(at(), "[turn] parked for a daemon stop");
-    else if (e.kind === "turn_end" && e.data?.reason === "interrupted") logAt(at(), stopLine(e.data.stopped_by));
+    else if (e.kind === "turn_end" && e.data?.reason === "interrupted") sayAt(at(), stopLine(e.data.stopped_by));
     else if (e.kind === "compaction") {
       const n = e.data?.tokens_before;
       logAt({ session: e.session_id, turn: engine.turnOf(e.session_id) }, `[turn] context ${e.data?.mode === "clear" ? "cleared" : e.data?.trigger === "model" ? "started fresh by the model" : e.data?.auto ? "compacted by itself" : "compacted by the owner"}${typeof n === "number" && n > 0 ? `, from ${n} tokens` : ""}`);
@@ -168,7 +168,7 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
     agentState.delete(a.id);
     agentState.set(a.id, a.status);
     if (agentState.size > 2000) agentState.delete(agentState.keys().next().value!);
-    if (line) logAt({ session: a.parent_id }, `${line} [agent session ${String(a.session_id).slice(-12)}]`, a.status === "failed" ? "warn" : "info");
+    if (line) sayAt({ session: a.parent_id }, `${line} [agent session ${String(a.session_id).slice(-12)}]`, a.status === "failed" ? "warn" : "info");
   });
 
   const bundleFor = (q: { error_id?: string | null; session_id?: string | null; turn_event?: string | null; span_id?: string | null }) => {

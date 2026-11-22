@@ -305,7 +305,7 @@ test("the log names each line's session and turn, and is read across a restart",
     // The command reads the same lines, with the session and turn on each.
     const said = spawnSync("bun", ["src/main.ts", "debug", "log", "--session", failed, "--url", d.url], { encoding: "utf8", env: { ...process.env, KEEL_CONFIG_DIR: join(state, "config") } });
     expect(said.status, said.stderr).toBe(0);
-    expect(said.stdout).toMatch(new RegExp(`^\\d{4}-\\d\\d-\\d\\dT[\\d:.]+Z ERROR \\{${failed} ${failedTurn}\\} \\[provider\\] .*credit balance`, "m"));
+    expect(said.stdout).toMatch(new RegExp(`^\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d\\.\\d{3} ERROR \\{${failed} ${failedTurn}\\} \\[provider\\] .*credit balance`, "m"));
     expect(said.stdout).not.toContain(running);
   } finally {
     d.proc.kill("SIGKILL");
