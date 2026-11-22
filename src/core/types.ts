@@ -87,6 +87,7 @@ export type EventKind =
   | "assistant"     // one model response: { blocks, model, usage, stop, stop_details? }
   | "tool_result"   // results of one round of tool calls: { results: ToolResultBlock[] }
   | "turn_start"    // { model }
+  // tool_result also carries `verdict` for an error result: "failed" (the call ran), "denied" (a gate refused it), "none" (not run otherwise).
   | "turn_end"      // { reason, usage, ms, steps? (replies the model gave), tools?, tool_errors? (ran and failed), tool_denied?, stopped_by? }
   | "error"         // { message, where }
   | "note"          // system note shown in the transcript: { text, kind? }

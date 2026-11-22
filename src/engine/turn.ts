@@ -1554,7 +1554,9 @@ export class Engine {
       this.shown.delete(r.tool_use_id);
       // One write through the store: when it fails, the result is not left in the kept events.
       this.store.atomic(id, () => {
-        this.append(id, "tool_result", { results: [r], ...(shown !== undefined ? { shown: { [r.tool_use_id]: shown } } : {}) });
+        // What an error result is, kept with it: the call ran and failed, a gate refused it, or it was not
+        // run for another reason. Whoever counts later (an agent's report) counts as this turn's end does.
+        this.append(id, "tool_result", { results: [r], ...(r.is_error ? { verdict: how ?? "none" } : {}), ...(shown !== undefined ? { shown: { [r.tool_use_id]: shown } } : {}) });
         for (const h of allHooks()) {
           try { h.resultStored?.(session, [r]); } catch (e) { this.errors.capture("server", e, { hook: "resultStored", session: id }); }
         }

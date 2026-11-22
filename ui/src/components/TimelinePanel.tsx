@@ -557,7 +557,7 @@ function TurnReceipt({ turn, sessionId, facts, onRead }: { turn: string; session
   if (gone) return <p className="text-caption text-muted" data-testid="timeline-receipt-gone">This turn is no longer in the session.</p>;
   if (!r) return <p className="text-caption text-muted">Reading the receipt.</p>;
   const failedRequests = r.requests.filter((q) => q.status === "error");
-  // A call that ran and failed has a span to open. An error with no span never ran: a gate denied it, or it named no tool.
+  // A call that ran and failed has a span to open (one that named no tool too). An error with no span never ran: a gate denied it, or the turn did not run it.
   const failedTools = r.tools.filter((x) => x.status === "error" && x.span_id);
   const neverRan = r.tools.filter((x) => x.status === "error" && !x.span_id).length;
   const denied = facts?.denied_tools ?? 0;
@@ -599,8 +599,8 @@ function TurnReceipt({ turn, sessionId, facts, onRead }: { turn: string; session
               {neverRan > 0 && (
                 <span className="text-muted" data-testid="receipt-not-run">
                   {failedTools.length
-                    ? ` (${neverRan} more ${neverRan === denied ? "denied" : denied ? `never ran, ${denied} of them denied` : "never ran: denied, or no such tool"})`
-                    : `, ${neverRan === denied ? `${neverRan} denied` : denied ? `${neverRan} never ran, ${denied} of them denied` : `${neverRan} never ran (denied, or no such tool)`}`}
+                    ? ` (${neverRan} more ${neverRan === denied ? "denied" : denied ? `never ran, ${denied} of them denied` : "never ran"})`
+                    : `, ${neverRan === denied ? `${neverRan} denied` : denied ? `${neverRan} never ran, ${denied} of them denied` : `${neverRan} never ran`}`}
                 </span>
               )}
               {stopped > 0 && <span className="text-muted" data-testid="receipt-stopped">, {stopped} stopped with the turn</span>}
