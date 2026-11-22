@@ -6,7 +6,7 @@ import { auto, isLive, openSession, useAuto, type AgentRecord } from "../../lib/
 import { machineName } from "../../lib/fleet.ts";
 import { reportError, useStore } from "../../lib/store.ts";
 import { resultText } from "../../lib/tools.ts";
-import { callState, failureLine, type CallState } from "../../lib/work.ts";
+import { CALL_FAILED, CALL_STOPPED, callState, failureLine, type CallState } from "../../lib/work.ts";
 import { Apart, Under } from "../ToolCall.tsx";
 import { savePref } from "../../lib/ui.ts";
 import { cn } from "../../lib/utils.ts";
@@ -267,7 +267,7 @@ export function InputNotice({ e }: { e: StoredEvent }) {
 
 
 // The card of an Agent / spawn_agent call: the child's live state, open, stop.
-const ENDED_WORD: Partial<Record<CallState, string>> = { error: STATE_WORD.fail.toLowerCase(), denied: "denied by you", refused: "refused", stopped: STATE_WORD.stop.toLowerCase(), cut: "cut by a restart" };
+const ENDED_WORD: Partial<Record<CallState, string>> = { error: CALL_FAILED, denied: "denied by you", refused: "refused", stopped: CALL_STOPPED, cut: "cut by a restart" };
 
 export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: ToolResultBlock; live?: boolean }) {
   const input: any = use.input ?? {};

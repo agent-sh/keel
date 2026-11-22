@@ -17,7 +17,8 @@ import { Collapsible } from "@base-ui/react/collapsible";
 import { MessageCircleQuestion } from "lucide-react";
 import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Under } from "./ToolCall.tsx";
-import { NEEDS_ANSWER } from "../lib/work.ts";
+import { CALL_STOPPED, NEEDS_ANSWER } from "../lib/work.ts";
+import { STATE_WORD } from "../../../src/core/state-words.ts";
 import { stopKind } from "../../../src/core/stops.ts";
 import type { Asked, ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { SETTLE_MS } from "../lib/approvals.ts";
@@ -83,7 +84,7 @@ export function QuestionCard({ use, result, sessionId }: { use: ToolUseBlock; re
       <Collapsible.Trigger className="k-line">
         <span className="k-line-text">
           <span className="k-line-verb">{answered ? "Asked" : "Question"}</span>{" "}
-          {!answered && <><span className="k-line-state" data-tone={ended === "cut" ? "warn" : "idle"}>{ended === "cut" ? "cut by a restart" : ended === "stopped" ? "stopped" : "not answered"}</span>{" "}</>}
+          {!answered && <><span className="k-line-state" data-tone={ended === "cut" ? "warn" : "idle"}>{ended === "cut" ? "cut by a restart" : ended === "stopped" ? CALL_STOPPED : "not answered"}</span>{" "}</>}
           <span className="k-line-what" data-words="">{first?.question ?? ""}</span>
           {qs.length > 1 && <>{" "}<span className="k-line-rest">+{qs.length - 1}</span></>}
           {said && <>{" "}<span className="k-line-answer" data-testid="question-line-answer">{said}</span></>}
@@ -113,7 +114,7 @@ export function QuestionCard({ use, result, sessionId }: { use: ToolUseBlock; re
             )}
           </Fragment>
         ))}
-        {result && !given && <Under name={result.is_error && !stopKind(result.content) ? "Failed" : "Result"} tone={result.is_error && !stopKind(result.content) ? "fail" : undefined} testid="question-result">{resultText(result)}</Under>}
+        {result && !given && <Under name={result.is_error && !stopKind(result.content) ? STATE_WORD.fail : "Result"} tone={result.is_error && !stopKind(result.content) ? "fail" : undefined} testid="question-result">{resultText(result)}</Under>}
       </div>
       </Collapsible.Panel>
     </Collapsible.Root>

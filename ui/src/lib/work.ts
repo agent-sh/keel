@@ -9,6 +9,7 @@ import { commandOf } from "../../../src/core/command.ts";
 import { diffLines, splitLines } from "../../../src/tools/diff.ts";
 import { RESTART_CUT, STOPPED_WHILE, stopKind, turnedAway } from "../../../src/core/stops.ts";
 import { patchFiles, resultText, shellStatus, toolKind, type ToolKind } from "./tools.ts";
+import { NEEDS, STATE_WORD, countWord } from "../../../src/core/state-words.ts";
 
 // `card`: a call with a card of its own (a question, an agent, code, readers): always a step by itself, as is a plan update.
 export type Family = "explore" | "change" | "run" | "use" | "card" | "plan" | "said";
@@ -324,20 +325,23 @@ export function stateWords(s: StepSummary): Word[] {
   const { waiting, error, denied, refused, cut, stopped, unfinished } = s.looks;
   // Said of every call of the step without a number, of some with how many.
   const n = (count: number, all: string, some = all) => (count === s.calls ? all : `${count} ${some}`);
-  if (waiting) out.push({ text: waiting === s.calls ? NEEDS_APPROVAL : `${waiting} ${waiting === 1 ? "needs" : "need"} you`, tone: "need" });
-  if (error) out.push({ text: s.calls === 1 && s.exit !== undefined ? `exit ${s.exit}` : n(error, "failed"), tone: s.soft ? "note" : "fail" });
+  if (waiting) out.push({ text: waiting === s.calls ? NEEDS_APPROVAL : countWord("need", waiting), tone: "need" });
+  if (error) out.push({ text: s.calls === 1 && s.exit !== undefined ? `exit ${s.exit}` : n(error, CALL_FAILED), tone: s.soft ? "note" : "fail" });
   if (denied) out.push({ text: n(denied, "denied by you"), tone: "own" });
   if (refused) out.push({ text: n(refused, "refused"), tone: "warn" });
   if (cut) out.push({ text: n(cut, "cut by a restart"), tone: "warn" });
-  if (stopped) out.push({ text: n(stopped, "stopped"), tone: "idle" });
+  if (stopped) out.push({ text: n(stopped, CALL_STOPPED), tone: "idle" });
   if (unfinished) out.push({ text: n(unfinished, "no result", "with no result"), tone: "idle" });
   return out;
 }
 
-// What waits on the owner, in the words of the one state vocabulary (src/core/state-words.ts when
-// it lands: "Needs you", with what), in a line's own case.
-export const NEEDS_APPROVAL = "needs you: an approval";
-export const NEEDS_ANSWER = "needs you: an answer";
+// What waits on the owner, in the words of the one state vocabulary (src/core/state-words.ts:
+// "Needs you", with what), in a line's own case. A call that failed or was stopped says so in the
+// state's word too. (What a tool does keeps its own line: "Running <command>", "Stopped <command>".)
+export const NEEDS_APPROVAL = `${STATE_WORD.need.toLowerCase()}: ${NEEDS.approval}`;
+export const NEEDS_ANSWER = `${STATE_WORD.need.toLowerCase()}: ${NEEDS.owner}`;
+export const CALL_FAILED = STATE_WORD.fail.toLowerCase();
+export const CALL_STOPPED = STATE_WORD.stop.toLowerCase();
 
 // Whether any call of the step was carried out: a step none of whose calls was (they wait, were
 // turned away, or never got a result) says what was to be done, not that it was.

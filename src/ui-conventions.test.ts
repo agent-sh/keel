@@ -340,11 +340,18 @@ const LOWER_TERMS = ["asks"];
 const WAITS = /^(is |are )?waiting (on|for)\b/i;
 const VOCABULARY = "src/core/state-words.ts";
 // Where a session's or an agent's state is shown.
-const STATE_SURFACES = /^(lib\/(home|watch|rows|waiting|automation)\.ts|components\/(Sidebar|Bridge|HomeWatch|StartBox|ProjectPage|Palette|TurnControls|TimelinePanel|Attention|Mark|Where|Fleet|SessionHeader|SessionDock)\.tsx|components\/automation\/(SidebarExtras|BackgroundPopover|TranscriptExtras|InboxPanel|bits|AwayDigest|ActivityList|ChildApprovals)\.tsx)$/;
+const STATE_SURFACES = /^(lib\/(home|watch|rows|waiting|automation|work)\.ts|components\/(Sidebar|Bridge|HomeWatch|StartBox|ProjectPage|Palette|TurnControls|TimelinePanel|Attention|Mark|Where|Fleet|SessionHeader|SessionDock|Transcript|ToolCall|Work|QuestionCard|ApprovalCard|BlockedCards)\.tsx|components\/automation\/(SidebarExtras|BackgroundPopover|TranscriptExtras|InboxPanel|bits|AwayDigest|ActivityList|ChildApprovals)\.tsx)$/;
 const OTHER_STATES: Record<string, string[]> = {
   // A verb of a tool's line ("Running bun test"), not a state.
   "lib/tools.ts": ["Running"],
-  // The transcript's own lines are another lane's to move here (the file is skipped whole, below).
+  // The transcript says what a tool does in its own lines: the verb of a call ("Running bun test", "Stopped the
+  // server", "Asks which color"), a step that runs now, a plan's steps ("2 of 5 done", "Not started"), a
+  // summary read in parts. Where its words are a session's or a call's state it reads the vocabulary.
+  "components/Transcript.tsx": ["Running", "done"],
+  "components/ToolCall.tsx": ["Running", "Stopped", "Not started", "done"],
+  "components/Work.tsx": ["Running"],
+  "components/QuestionCard.tsx": ["Asks"],
+  "lib/work.ts": ["Stopped", "running"],
   // A daemon that waits for its turns before it stops, and a saved message that waits for the daemon.
   "components/DaemonPanel.tsx": ["Failed", "Stopped", "Waiting for running turns since"],
   "components/Composer.tsx": ["Waiting for Keel"],
@@ -371,9 +378,6 @@ const OTHER_STATES: Record<string, string[]> = {
   // A link that ends an edit.
   "components/automation/AgentSettings.tsx": ["Done"],
 };
-// The transcript's own lines ("Waiting for your approval", "Running ...", a turn's end) are being
-// reworked by its own lane: its strings and their vocabulary forms are handed to it, and it is not read here.
-const TRANSCRIPT = "components/Transcript.tsx";
 function stateLiterals(list: Src[]): string[] {
   const out: string[] = [];
   const exact = new Set(STATE_TERMS);
@@ -381,7 +385,6 @@ function stateLiterals(list: Src[]): string[] {
   const core = (t: string) => t.replace(/^[^A-Za-z]+|[^A-Za-z]+$/g, "");
   const leads = (t: string, cased: boolean) => STATE_TERMS.some((w) => new RegExp(`^${w}\\s*[:,\u00b7]`, cased ? "" : "i").test(t));
   for (const s of list) {
-    if (s.file === TRANSCRIPT) continue;
     const src = code(s.text);
     const ok = new Set(OTHER_STATES[s.file] ?? []);
     const hit = (text: string, at: number, cased: boolean) => {
@@ -400,7 +403,7 @@ function stateLiterals(list: Src[]): string[] {
 }
 
 // A state word is set in sentence case: no rule of a class that shows one turns it to capitals.
-const STATE_CLASSES = ["k-row-state", "k-row-class", "k-row-queued", "k-station-word", "k-sum-word", "k-kids-word", "k-kids-new", "k-child-state", "k-rail-card-word", "k-where-reach", "k-home-recent-word", "k-pane-empty-word", "k-look-state", "k-dock-need", "k-marks-head", "k-face-state"];
+const STATE_CLASSES = ["k-row-state", "k-row-class", "k-row-queued", "k-station-word", "k-sum-word", "k-kids-word", "k-kids-new", "k-child-state", "k-rail-card-word", "k-where-reach", "k-home-recent-word", "k-pane-empty-word", "k-look-state", "k-dock-need", "k-marks-head", "k-face-state", "k-line-state"];
 // (A class that is also the instrument face's state role and shows something else says so here.)
 const NOT_STATES = ["k-stuck-head", "k-aim", "k-ask-count"];
 function shoutedStates(list: Src[]): string[] {

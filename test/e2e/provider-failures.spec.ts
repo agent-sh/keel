@@ -48,7 +48,7 @@ test("retries, continuation, refusal and compaction as the owner sees them", asy
   // A model slow to start: the working line says what the turn waits on.
   await composer.fill("script:slow");
   await composer.press("Enter");
-  await expect(page.getByTestId("working")).toContainText(/Waiting on Scripted stand-in\s*2s/);
+  await expect(page.getByTestId("working")).toContainText(/Calling Scripted stand-in\s*2s/);
   await expect(texts.last()).toHaveText("Answered after a slow start.", { timeout: 15_000 });
 
   // Connected but no output yet (only keep-alives): said apart from the network wait.

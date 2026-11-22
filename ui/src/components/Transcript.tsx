@@ -25,6 +25,7 @@ import { LiveWork, Thinking, Work } from "./Work.tsx";
 import { OwnerWords, ToldModel, toldOf } from "./Words.tsx";
 import { ensureMarks } from "../lib/marks.ts";
 import { isPeerMessage, PeerMessage, RefusedNote } from "./FleetMessages.tsx";
+import { CUT_BY_RESTART, FAIL_WORD, NEEDS, STATE_WORD, stateWords } from "../../../src/core/state-words.ts";
 
 function ActionButton({ label, onClick, children, testid, idle }: { label: string; onClick: () => void; children: ReactNode; testid?: string; idle?: boolean }) {
   return (
@@ -454,8 +455,9 @@ function Working({ since, sessionId }: { since?: number; sessionId: string }) {
   const s = from ? Math.max(0, Math.round((liveNow() - from) / 1000)) : 0; // stopped while the daemon is unreachable
   // What waits on the owner is said as that, in the words every surface uses: an approval, a plan to
   // approve, a secret to give. (A tool that asks is not a tool that runs.)
-  const needs = approving ? "an approval" : st?.kind === "tool" ? st.names.map((n) => ASKS[n]).find(Boolean) : undefined;
-  const what = needs ? `Needs you: ${needs}` : st?.kind === "model" ? (st.preparing === "images" ? `Scaling images for ${st.model}` : st.connected ? `Connected to ${st.model}, no output yet` : `Waiting on ${st.model}`) : st?.kind === "tool" ? `Running ${st.names.join(", ")}` : "Working";
+  const needs = approving ? NEEDS.approval : st?.kind === "tool" ? st.names.map((n) => ASKS[n]).find(Boolean) : undefined;
+  // (A request on its way to the model is work, never a wait: "Calling", as the session's row says.)
+  const what = needs ? `${STATE_WORD.need}: ${needs}` : st?.kind === "model" ? (st.preparing === "images" ? `Scaling images for ${st.model}` : st.connected ? `Connected to ${st.model}, no output yet` : `Calling ${st.model}`) : st?.kind === "tool" ? `Running ${st.names.join(", ")}` : STATE_WORD.work;
   return (
     <div className="flex items-center gap-2.5 py-1 text-ui text-muted" data-testid="working">
       <span className="flex gap-1">
@@ -470,9 +472,9 @@ function Working({ since, sessionId }: { since?: number; sessionId: string }) {
 
 // How a turn ended, in the words of the one state vocabulary: Stopped (by whom), Failed (its
 // class), Declined. A turn Keel goes on with by itself is not a failure: it waits.
-const REASONS: Record<string, string> = { interrupted: "Stopped", max_tokens: "Failed: output limit", refusal: "Declined", error: "Failed", restart: "Stopped by a restart" };
+const REASONS: Record<string, string> = { interrupted: STATE_WORD.stop, max_tokens: `${STATE_WORD.fail}: ${FAIL_WORD.max_tokens}`, refusal: STATE_WORD.declined, error: STATE_WORD.fail, restart: CUT_BY_RESTART };
 // The tools that ask the owner for something: what the turn needs while one of them is out.
-const ASKS: Record<string, string> = { present_plan: "a plan", ExitPlanMode: "a plan", exit_plan_mode: "a plan", request_secret: "a secret" };
+const ASKS: Record<string, string> = { present_plan: NEEDS.plan!, ExitPlanMode: NEEDS.plan!, exit_plan_mode: NEEDS.plan!, request_secret: NEEDS.secret! };
 
 // `boxed`: the turn failed and its failure box is shown above. The box has the
 // way on (try again, the fix), and a turn with no reply has nothing to copy,
@@ -491,7 +493,7 @@ function TurnFooter({ e, reply, prompt, sid, notes, boxed = false, times = 1, pa
   // The session's own state, for the last footer: a turn that ended on a failure or a restart and
   // that Keel goes on with by itself (the provider asked for a wait, a restart cut it) waits.
   const told = useToldState(last ? sid : undefined);
-  const waits = !last || e.data.reason === "interrupted" || e.data.reason === "refusal" ? "" : told?.watch === "resume" ? "Waiting to resume" : told?.watch === "wait" && told.why === "resume" ? "Waiting for the provider" : "";
+  const waits = !last || e.data.reason === "interrupted" || e.data.reason === "refusal" ? "" : told?.watch === "resume" || (told?.watch === "wait" && told.why === "resume") ? stateWords(told).phrase : "";
   return (
     <div className="k-turn-foot group/foot -mt-1 flex h-7 items-center gap-0.5" data-quiet={!last || undefined}>
       {(reply.length > 0 || partial) && <CopyButton text={() => (partial ? actions.reply(sid, { before: e.seq, head: tailOf.get().other }) : reply.join("\n\n"))} label="Copy the reply" testid="copy-reply" className="size-7" />}
@@ -528,12 +530,12 @@ function Announcer({ sessionId, working, asking }: { sessionId: string; working:
   const approving = useSafety((x) => (x.approvals[sessionId]?.length ?? 0) > 0);
   const said = useRef<string | null>(null);
   let text = "";
-  if (approving) text = "Needs you: an approval.";
+  if (approving) text = `${STATE_WORD.need}: ${NEEDS.approval}.`;
   // A question card takes the place of the working line: the region says what the turn waits on.
-  else if (asking) text = "Needs you: an answer.";
+  else if (asking) text = `${STATE_WORD.need}: ${NEEDS.owner}.`;
   else if (st?.kind === "retry") text = `The provider failed: ${st.message}. Retrying, attempt ${st.attempt} of ${st.max}.`;
   else if (st?.kind === "compacting") text = `Compacting the context${compactPlan(st.plan)}.`;
-  else if (working) text = "Working.";
+  else if (working) text = `${STATE_WORD.work}.`;
   else if (said.current) text = "The turn ended.";
   if (said.current === null && !working && !approving && !asking) text = ""; // opening an idle session announces nothing
   said.current = text || said.current;

@@ -8,7 +8,7 @@ import { diffLines, splitLines } from "../../../src/tools/diff.ts";
 import type { PatchLine } from "../../../src/safety/patch.ts";
 import { actions, api, failed, reportError } from "../lib/store.ts";
 import { bounded } from "../lib/scrollback.ts";
-import { callState, changeOf, commandText, failureLine, familyOf, moreLines, NEEDS_APPROVAL, ranOf, refusalOf, smallChange } from "../lib/work.ts";
+import { CALL_STOPPED, callState, changeOf, commandText, failureLine, familyOf, moreLines, NEEDS_APPROVAL, ranOf, refusalOf, smallChange } from "../lib/work.ts";
 import { useCallsLive } from "../lib/call-live.ts";
 import { marksOf, useMarked } from "../lib/marks.ts";
 import { commandOf } from "../../../src/core/command.ts";
@@ -249,7 +249,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
           {state === "error" && !rejected && <><span className="k-line-state" data-tone={soft ? "note" : "fail"} data-testid="call-state">{shell.exit !== undefined ? `exit ${shell.exit}` : "failed"}</span>{" "}</>}
           {state === "denied" && <><span className="k-line-state" data-tone="own" data-testid="call-state">denied by you</span>{" "}</>}
           {state === "refused" && <><span className="k-line-state" data-tone="warn" data-testid="tool-refused">refused</span>{" "}</>}
-          {ended && <><span className="k-line-state" data-tone={ended === "cut" ? "warn" : "idle"} data-testid="tool-ended" title={ended === "cut" ? "A daemon restart cut this call. It may have partly run." : "You stopped the turn while this call ran."}>{ended === "cut" ? "cut by a restart" : "stopped"}</span>{" "}</>}
+          {ended && <><span className="k-line-state" data-tone={ended === "cut" ? "warn" : "idle"} data-testid="tool-ended" title={ended === "cut" ? "A daemon restart cut this call. It may have partly run." : "You stopped the turn while this call ran."}>{ended === "cut" ? "cut by a restart" : CALL_STOPPED}</span>{" "}</>}
           {state === "unfinished" && <><span className="k-line-state" data-tone="idle" data-testid="call-state" title="The turn ended before this call had a result.">no result</span>{" "}</>}
           {/* Why it is marked, in a few words; the sentence is its title and stands in the opened call. */}
           {!quiet && marks.filter((m) => m.kind !== "denied").map((m) => <Fragment key={m.kind}><span className="k-line-state k-line-mark" data-tone="warn" data-testid="call-mark" data-mark={m.kind} title={m.why}>{m.short}</span>{" "}</Fragment>)}
