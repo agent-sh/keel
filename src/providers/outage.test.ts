@@ -85,7 +85,8 @@ test("only an explicit upstream connect failure is an outage; ambiguous gateway 
   expect(classify("X", 503, h, "upstream connect error or disconnect/reset before headers. reset reason: connection failure").kind).toBe("overloaded");
   // The provider's own words.
   expect(classify("X", 503, h, JSON.stringify({ error: { message: "The server is overloaded or not ready yet." } })).kind).toBe("overloaded");
-  expect(classify("X", 502, h, JSON.stringify({ error: { type: "api_error", message: "Internal server error" } })).kind).toBe("server");
+  expect(classify("X", 502, h, JSON.stringify({ error: { type: "api_error", message: "Internal server error: connection error" } })).kind).toBe("server");
+  expect(classify("X", 502, h, JSON.stringify({ error: JSON.parse(brokerBody) })).kind).toBe("server");
   expect(classify("X", 529, h, JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } })).kind).toBe("overloaded");
   expect(classify("X", 500, h, "").kind).toBe("server");
   expect(gatewayDown(500, "getaddrinfo EAI_AGAIN")).toBe(false);
@@ -102,12 +103,13 @@ test("only a request that never left the machine is safe for a call that must no
   expect(neverSent(Object.assign(new Error("The operation timed out."), { name: "TimeoutError" }))).toBe(false);
 });
 
-test("quick tries first, then one every 15 to 30 s; waiting requests go within a few seconds", () => {
-  expect([0, 1, 2, 3].map((n) => outageDelayMs(n))).toEqual([1_000, 2_000, 4_000, 8_000]);
-  expect(outageDelayMs(4, () => 0)).toBe(15_000);
-  expect(outageDelayMs(4, () => 1)).toBe(30_000);
+test("five-second checks in the first ten minutes, then one every 15 to 30 s", () => {
+  expect([0, 1, 2, 3].map((n) => outageDelayMs(n))).toEqual([1_000, 2_000, 4_000, 5_000]);
+  expect(outageDelayMs(4, () => 0)).toBe(5_000);
+  expect(outageDelayMs(4, () => 0, OUTAGE, OUTAGE.fastForMs)).toBe(15_000);
+  expect(outageDelayMs(4, () => 1, OUTAGE, OUTAGE.fastForMs)).toBe(30_000);
   for (let i = 0; i < 50; i++) {
-    const d = outageDelayMs(4 + i);
+    const d = outageDelayMs(4 + i, Math.random, OUTAGE, OUTAGE.fastForMs);
     expect(d).toBeGreaterThanOrEqual(15_000);
     expect(d).toBeLessThanOrEqual(30_000);
   }
@@ -119,7 +121,7 @@ test("quick tries first, then one every 15 to 30 s; waiting requests go within a
 });
 
 // Milliseconds instead of seconds: the same steps, a thousand times faster.
-const FAST = { quickMs: [10, 10, 10, 10], slowMinMs: 20, slowMaxMs: 30, probeMs: 200, canaryMs: 60, staggerMs: 10, spreadMs: 100, maxMs: 60_000, carryMs: 60_000 };
+const FAST = { quickMs: [10, 10, 10, 10], fastMs: 25, slowMinMs: 20, slowMaxMs: 30, probeMs: 200, canaryMs: 60, staggerMs: 10, spreadMs: 100, maxMs: 60_000, carryMs: 60_000 };
 const gone = () => fetchFailure("P", thrown("getaddrinfo EAI_AGAIN p.example", "EAI_AGAIN"));
 const never = new AbortController().signal;
 
@@ -178,7 +180,7 @@ test("a blip says nothing; a request let through that fails keeps the others wai
   await Bun.sleep(5);
   // It fails again: it waits again, and the other one was never let through meanwhile.
   const again = o.wait("p", gone(), never, { session: first });
-  expect(o.list()[0]!.tries).toBe(1);
+  expect(o.list()[0]!.tries).toBe(2);
   await Promise.race([again, a2, b]);
   o.answered("p");
   await Promise.all([again, a2, b]);
@@ -221,6 +223,7 @@ test("an outage open when the daemon stopped keeps its start in the next one, an
   await Bun.sleep(60);
   const since = first.of("a")!.since;
   expect(first.of("a")!.confirmed).toBe(true);
+  first.tellParent(first.of("a")!, "parent", 12);
   first.stop(); // the daemon stops with the outage open: the turn is parked, not ended
   stop.abort();
   await w;
@@ -228,7 +231,11 @@ test("an outage open when the daemon stopped keeps its start in the next one, an
   const next = new Outages({ timing: FAST, file });
   const seen: Outage[] = [];
   const ended: number[] = [];
-  next.listen({ open: (x) => seen.push(x), close: (_x, ms) => ended.push(ms) });
+  next.listen({ open: (x) => seen.push(x), close: (_x, ms, _answered, parents) => {
+    expect(parents).toEqual([["parent", 12]]);
+    ended.push(ms);
+  } });
+  expect(next.carriedWait("a")?.at).toBe(since);
   const again = next.wait("p", gone(), never, { session: "a" });
   expect(next.of("a")!.since).toBe(since);
   expect(next.of("a")!.confirmed).toBe(true);
@@ -237,6 +244,69 @@ test("an outage open when the daemon stopped keeps its start in the next one, an
   expect(seen).toEqual([]); // said by the daemon before; not said twice
   expect(ended).toHaveLength(1);
   expect(ended[0]!).toBeGreaterThanOrEqual(60);
+});
+
+test("a flapping provider keeps its schedule, then gets quick checks after a quiet period", async () => {
+  let now = 1000;
+  const o = new Outages({ timing: { ...FAST, flapMs: 1000, quickMs: [1, 2], fastMs: 12 }, now: () => now });
+  const one = async (tries: number) => {
+    const waiting = o.wait("p", gone(), never, { session: "s" });
+    expect(o.of("s")?.tries).toBe(tries);
+    await waiting;
+    o.answered("p");
+    now += 10;
+  };
+  await one(0);
+  await one(1);
+  await one(2);
+  now += 1001;
+  await one(0);
+  o.stop();
+});
+
+test("only an API response takes a waiting turn through a captive portal", async () => {
+  const { getJson, streamEvents } = await import("./http.ts");
+  let mode = "html", followed = 0;
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req) {
+    if (new URL(req.url).pathname === "/login") { followed++; return new Response("not an API"); }
+    const page = " \n<!doctype html><title>Sign in</title>";
+    if (mode === "redirect") return new Response(null, { status: 302, headers: { location: "/login" } });
+    if (mode === "auth") return new Response(page, { status: 401 });
+    if (mode === "json-auth") return Response.json({ error: { message: "sign in" } }, { status: 401 });
+    if (mode === "api") return Response.json({ models: [] });
+    if (mode === "not-json") return new Response("not a listing");
+    return new Response(page, { headers: { "content-type": mode === "html" ? "text/html" : "text/plain" } });
+  } });
+  const url = `http://127.0.0.1:${server.port}/`;
+  const list = () => getJson("stub", url, {});
+  const outages = new Outages({ timing: FAST, probe: list });
+  const ctl = new AbortController();
+  let answered = 0, released = 0;
+  const turns = Array.from({ length: 3 }, (_, n) => outages.wait("p", gone(), ctl.signal, { session: String(n) }).then(() => released++, () => {}));
+  try {
+    for (const shape of ["html", "unlabelled", "redirect", "auth", "json-auth", "not-json"]) {
+      mode = shape;
+      const stream = streamEvents({ label: "stub", url, body: {}, headers: {}, signal: ctl.signal, onAnswer: () => answered++ });
+      const result = await stream.next().catch((e) => e);
+      if (shape === "json-auth") expect(result).toMatchObject({ kind: "auth" });
+      else if (shape !== "not-json") expect(result).toMatchObject({ kind: "unreachable" });
+      await expect(list()).rejects.toThrow();
+      await Bun.sleep(30);
+      expect(released).toBe(0);
+    }
+    expect(answered).toBe(0);
+    expect(followed).toBe(0);
+    mode = "api";
+    await Promise.race(turns);
+    expect(released).toBe(1);
+    outages.answered("p");
+    await Promise.all(turns);
+    expect(released).toBe(3);
+  } finally {
+    ctl.abort();
+    outages.stop();
+    server.stop(true);
+  }
 });
 
 // The same through the driver, on real sockets: what the runtime's fetch throws is classed where it is thrown.
@@ -256,7 +326,7 @@ test("the driver separates a refused connection and explicit broker DNS failure 
   expect(closed?.kind).toBe("network");
   expect(unreachable(closed)).toBe(false);
   // A 200 whose stream then breaks: the answer began.
-  const half = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data(s) { s.write("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n"); setTimeout(() => s.end(), 30); } } });
+  const half = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data(s) { s.write("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\nd\r\ndata: hello\n\n\r\n"); setTimeout(() => s.end(), 30); } } });
   let began = false;
   const broke = await (async () => {
     try { for await (const _ of streamEvents({ label: "stub", url: `http://127.0.0.1:${half.port}/`, headers: {}, body: {}, signal: never, onAnswer: () => { began = true; } })) void _; return null; } catch (e) { return e as ProviderError; }

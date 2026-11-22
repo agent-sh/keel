@@ -284,6 +284,7 @@ export class Providers {
       this.listings.set(p.id, { state: "ok", fetched: Date.now(), models, identity });
       this.cleared(p.id, "listing");
       this.brokerAnswered(p, base);
+      if (base === p.broker?.value && !(p instanceof EndpointProvider && p.cfg.listing === false)) this.outages.answered(p.id);
       return { ok: true };
     } catch (e) {
       p.broker?.noteRefusal(e);
@@ -522,17 +523,16 @@ export class Providers {
         };
         // The provider answered: an outage of it is over, and what waited for it goes (once a request).
         let told = false;
-        const answer = (accepted: boolean) => {
+        const onAnswer = () => {
           if (told) return;
           told = true;
           // A response from the retired port cannot recover the new one.
           if (base === p.broker?.value) {
-            if (accepted) this.brokerAnswered(p, base);
+            this.brokerAnswered(p, base);
             this.outages.answered(p.id);
           }
           req.onAnswer?.();
         };
-        const onAnswer = () => answer(true);
         let res: Awaited<ReturnType<Provider["stream"]>>;
         try {
           res = await p.stream({
@@ -547,9 +547,8 @@ export class Providers {
           if (unreachable(e) && (told || (sawHeaders && !status))) {
             throw new ProviderError("network", `the stream broke: ${(e as Error).message}`);
           }
-          // Only a provider answer releases other waiters, not a generic gateway error.
+          // Only an API reply or successful listing releases unrelated waiters.
           p.broker?.noteRefusal(e);
-          if (typeof status === "number" && !unreachable(e) && ![502, 503, 504].includes(status)) answer(false);
           this.note(p.id, e, "turn");
           throw e;
         }

@@ -1,20 +1,25 @@
 // A provider that cannot be reached: the wait every session of the provider shares.
-// Which failures are that is said in ./unreachable.ts (no token was spent on such
-// a request, so it is safe to send again any number of times). A turn is not
-// counted a retry for one: it waits until the provider answers
+// A proved pre-send failure (./unreachable.ts) doesn't spend a retry. A
+// request cut without headers spends one before it joins. Both wait for the API
 // (research/provider-outage.md).
 //
 // The wait is one per provider, not one per session: one try at a time, a
 // probe of the provider first (its model listing) and then one waiting request,
 // so twelve agents on a dead network send nothing. The rest go when that one
 // is answered, spread over a few seconds.
-import { readFileSync, writeFileSync } from "node:fs";
-import { unreachable } from "./unreachable.ts";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 
 // The wait's numbers, each with its reason.
 export const OUTAGE = {
   // The first tries come quickly: a dropped socket or a DNS hiccup heals within seconds.
   quickMs: [1_000, 2_000, 4_000, 8_000],
+  // Once the quick checks are spent, look every five seconds for ten minutes.
+  fastMs: 5_000,
+  fastForMs: 10 * 60_000,
+  // Repeated outages within five minutes keep their place in the schedule.
+  flapMs: 5 * 60_000,
+  // Tell the owner after five minutes, not for a short interruption.
+  alertMs: 5 * 60_000,
   // Then one try every 15 to 30 s, with jitter: inside the 5 to 60 s the leading
   // open harness uses, and slow enough that a provider that is down for hours
   // gets a few small requests a minute from the whole daemon.
@@ -43,8 +48,9 @@ export const OUTAGE = {
 export type Timing = typeof OUTAGE;
 
 // How long until try number `tries` (0 is the first after the failure).
-export function outageDelayMs(tries: number, rand: () => number = Math.random, t: Timing = OUTAGE): number {
-  return tries < t.quickMs.length ? t.quickMs[tries]! : Math.round(t.slowMinMs + rand() * (t.slowMaxMs - t.slowMinMs));
+export function outageDelayMs(tries: number, rand: () => number = Math.random, t: Timing = OUTAGE, age = 0): number {
+  if (age < t.fastForMs) return tries < t.quickMs.length ? Math.min(t.fastMs, t.quickMs[tries]!) : t.fastMs;
+  return Math.round(t.slowMinMs + rand() * (t.slowMaxMs - t.slowMinMs));
 }
 
 // How far apart `n` waiting requests go once the provider answers.
@@ -55,17 +61,21 @@ export type Outage = { provider: string; since: number; message: string; tries: 
 export type OutageEvents = {
   // The outage is real (confirmTries failed): said once.
   open?(o: Outage): void;
+  long?(o: Outage): void;
   // A session began to wait in an outage, or left it (`o` undefined).
   waiting?(session: string, o: Outage | undefined): void;
   // The outage is over after `ms`. `answered`: the provider answered; false when
   // nobody waits for it any more or the wait reached its ceiling.
-  close?(o: Outage, ms: number, answered: boolean): void;
+  close?(o: Outage, ms: number, answered: boolean, parents: [string, number][]): void;
 };
 
 type Timer = ReturnType<typeof setTimeout>;
 type Waiter = { session?: string; error: unknown; go(): void; fail(e: unknown): void; timer?: Timer };
 // `sessions`: the ones that wait in it, the one whose request is out to try the provider included.
-type Open = { provider: string; since: number; message: string; tries: number; confirmed: boolean; waiters: Waiter[]; sessions: Set<string>; timer?: Timer; canary: boolean; probing: boolean };
+type Retry = { model: string; purpose: "turn" | "summary"; spent: number };
+type WaitSite = { at: number; retry?: Retry };
+type Kept = { since: number; message: string; at: number; tries?: number; confirmed?: boolean; alerted?: boolean; parents?: Record<string, number>; sessions?: Record<string, WaitSite> };
+type Open = { provider: string; since: number; message: string; tries: number; misses: number; confirmed: boolean; waiters: Waiter[]; sessions: Map<string, WaitSite>; parents: Map<string, number>; alerted: boolean; timer?: Timer; canary: boolean; probing: boolean };
 type Opts = {
   // Asks the provider something small. Resolves when it answered anything, throws what the
   // transport threw. Absent: the first waiting request is the try.
@@ -84,7 +94,9 @@ const words = (e: unknown) => String((e as any)?.message ?? e ?? "").slice(0, 30
 export class Outages {
   private opens = new Map<string, Open>();
   // Outages the last daemon left open: the first failure of the provider takes up its start.
-  private carried = new Map<string, { since: number; message: string }>();
+  private carried = new Map<string, Kept>();
+  private recent = new Map<string, { tries: number; since: number; ended: number }>();
+  private carriedTimer?: Timer;
   private events: OutageEvents = {};
   // The daemon stops: what is open is kept as it is for the next one.
   private stopped = false;
@@ -96,23 +108,56 @@ export class Outages {
     this.now = o.now ?? Date.now;
     this.rand = o.rand ?? Math.random;
     this.t = { ...OUTAGE, ...o.timing };
-    if (o.file) {
-      // `at`: when the outage was last seen open. One the last daemon saw open a while ago is over or forgotten.
-      const now = this.now();
-      try {
-        for (const [k, v] of Object.entries<any>(JSON.parse(readFileSync(o.file, "utf8")))) {
-          if (typeof v?.since === "number" && now - Number(v.at ?? 0) <= this.t.carryMs) this.carried.set(k, { since: v.since, message: String(v.message ?? "") });
-        }
-      } catch {}
-      // What this daemon carries is dropped when no request took it up in time.
-      if (this.carried.size) setTimeout(() => { if (this.carried.size) { this.carried.clear(); this.persist(); } }, this.t.carryMs).unref?.();
-    }
+    if (o.file) try {
+      for (const [id, saved] of Object.entries<Kept>(JSON.parse(readFileSync(o.file, "utf8")))) {
+        if (typeof saved?.since === "number" && typeof saved.at === "number") this.carried.set(id, saved);
+      }
+    } catch {}
   }
 
-  listen(events: OutageEvents) { this.events = events; }
+  listen(events: OutageEvents) {
+    this.events = events;
+    this.expireCarried();
+  }
+
+  private expireCarried() {
+    clearTimeout(this.carriedTimer);
+    const now = this.now();
+    let next = Infinity, changed = false;
+    for (const [id, o] of this.carried) {
+      const expires = o.at + this.t.carryMs;
+      if (now < expires) { next = Math.min(next, expires); continue; }
+      this.carried.delete(id);
+      changed = true;
+      if (o.confirmed !== false) this.tell("close", this.carriedInfo(id, o), Math.max(0, o.at - o.since), false, []);
+    }
+    if (changed) this.persist();
+    if (next < Infinity) this.carriedTimer = setTimeout(() => this.expireCarried(), next - now).unref?.();
+  }
+
+  private carriedInfo(provider: string, o: Kept): Outage {
+    return { provider, since: o.since, message: o.message, tries: o.tries ?? 0, confirmed: o.confirmed !== false, sessions: Object.keys(o.sessions ?? {}) };
+  }
+
+  // A killed daemon left this turn inside a confirmed outage, not at a tool.
+  carriedWait(session: string) {
+    for (const o of this.carried.values()) if (Object.hasOwn(o.sessions ?? {}, session)) return o.sessions![session];
+  }
+
+  parentTold(outage: Outage, session: string) {
+    const o = this.opens.get(outage.provider);
+    return o?.since === outage.since && o.parents.has(session);
+  }
+
+  tellParent(outage: Outage, session: string, count: number) {
+    const o = this.opens.get(outage.provider);
+    if (o?.since !== outage.since) return;
+    o.parents.set(session, count);
+    this.persist();
+  }
 
   private info(o: Open): Outage {
-    return { provider: o.provider, since: o.since, message: o.message, tries: o.tries, confirmed: o.confirmed, sessions: [...o.sessions] };
+    return { provider: o.provider, since: o.since, message: o.message, tries: o.tries, confirmed: o.confirmed, sessions: [...o.sessions.keys()] };
   }
 
   // The outage a session waits in.
@@ -137,20 +182,30 @@ export class Outages {
   private persist() {
     if (!this.o.file || this.stopped) return;
     const at = this.now();
-    const kept: Record<string, { since: number; message: string; at: number }> = {};
-    for (const o of this.opens.values()) if (o.confirmed) kept[o.provider] = { since: o.since, message: o.message, at };
-    for (const [k, v] of this.carried) kept[k] ??= { ...v, at };
-    try { writeFileSync(this.o.file, JSON.stringify(kept)); } catch {}
+    const kept: Record<string, Kept> = Object.fromEntries(this.carried);
+    for (const o of this.opens.values()) kept[o.provider] = {
+      since: o.since, message: o.message, at, tries: o.tries, confirmed: o.confirmed, alerted: o.alerted,
+      parents: Object.fromEntries(o.parents), sessions: Object.fromEntries(o.sessions),
+    };
+    try {
+      writeFileSync(`${this.o.file}.new`, JSON.stringify(kept));
+      renameSync(`${this.o.file}.new`, this.o.file);
+    } catch {}
   }
 
-  private join(o: Open, session: string | undefined) {
-    if (!session || o.sessions.has(session)) return;
-    o.sessions.add(session);
-    this.tell("waiting", session, this.info(o));
+  private join(o: Open, session: string | undefined, retry?: Retry) {
+    if (!session) return;
+    const previous = o.sessions.get(session);
+    o.sessions.set(session, { at: previous?.at ?? this.now(), retry });
+    this.persist();
+    if (!previous) this.tell("waiting", session, this.info(o));
   }
 
   private leave(o: Open, session: string | undefined) {
-    if (session && o.sessions.delete(session)) this.tell("waiting", session, undefined);
+    if (session && o.sessions.delete(session)) {
+      if (this.opens.get(o.provider) === o) this.persist();
+      this.tell("waiting", session, undefined);
+    }
   }
 
   // A session's turn is over (stopped, parked): it waits in nothing.
@@ -169,14 +224,18 @@ export class Outages {
   // A request to `provider` failed as unreachable. Resolves when it may be sent
   // again: it is the one let through to try, or the provider answered. Rejects
   // when the signal aborts, and with the failure itself at the ceiling.
-  wait(provider: string, e: unknown, signal: AbortSignal, who: { session?: string } = {}): Promise<void> {
+  wait(provider: string, e: unknown, signal: AbortSignal, who: { session?: string; retry?: Retry } = {}): Promise<void> {
     if (signal.aborted) return Promise.reject(aborted());
     const now = this.now();
     let o = this.opens.get(provider);
     if (!o) {
+      this.expireCarried();
       const kept = this.carried.get(provider);
       this.carried.delete(provider);
-      o = { provider, since: kept?.since ?? now, message: words(e), tries: 0, confirmed: !!kept, waiters: [], sessions: new Set(), canary: false, probing: false };
+      const flap = this.recent.get(provider);
+      const tries = flap && now - flap.ended < this.t.flapMs ? flap.tries : 0;
+      o = { provider, since: kept?.since ?? now, message: words(e), tries: kept?.tries ?? tries, misses: 0,
+        confirmed: !!kept && kept.confirmed !== false, waiters: [], sessions: new Map(), parents: new Map(Object.entries(kept?.parents ?? {})), alerted: !!kept?.alerted, canary: false, probing: false };
       this.opens.set(provider, o);
     } else if (o.canary) {
       // The request let through to try the provider failed too.
@@ -207,21 +266,27 @@ export class Outages {
       };
       signal.addEventListener("abort", onAbort, { once: true });
       at.waiters.push(w);
-      this.join(at, who.session);
+      this.join(at, who.session, who.retry);
       this.arm(at);
     });
   }
 
   private arm(o: Open) {
-    if (o.timer || o.probing || this.opens.get(o.provider) !== o) return;
-    o.timer = setTimeout(() => this.tried(o), outageDelayMs(o.tries, this.rand, this.t));
+    if (this.stopped || o.timer || o.probing || this.opens.get(o.provider) !== o) return;
+    o.timer = setTimeout(() => this.tried(o), this.delay(o));
+  }
+
+  private delay(o: Open) {
+    const recent = this.recent.get(o.provider);
+    return outageDelayMs(o.tries, this.rand, this.t, this.now() - (recent && this.now() - recent.ended < this.t.flapMs ? recent.since : o.since));
   }
 
   // One more try failed.
   private failed(o: Open) {
     o.tries++;
+    o.misses++;
     if (o.confirmed) return this.persist();
-    if (o.tries < this.t.confirmTries) return;
+    if (o.misses < this.t.confirmTries) return;
     o.confirmed = true;
     this.persist();
     this.tell("open", this.info(o));
@@ -240,12 +305,17 @@ export class Outages {
     o.timer = undefined;
     if (this.opens.get(o.provider) !== o) return;
     if (this.now() - o.since >= this.t.maxMs) return this.giveUp(o);
+    if (o.confirmed && !o.alerted && this.now() - o.since >= this.t.alertMs && o.sessions.size) {
+      o.alerted = true;
+      this.persist();
+      this.tell("long", this.info(o));
+    }
     // The request let through is still out and nothing else waits: looked at again later.
     if (!o.waiters.length) return o.sessions.size ? this.arm(o) : this.end(o, false);
     o.probing = true;
     const up = await this.reach(o.provider);
     o.probing = false;
-    if (this.opens.get(o.provider) !== o) return;
+    if (this.stopped || this.opens.get(o.provider) !== o) return;
     if (!up) {
       this.failed(o);
       return this.arm(o);
@@ -255,7 +325,7 @@ export class Outages {
     // One request tries the provider. It is answered (answered), fails (wait), or is
     // given up on after a while, and then another goes.
     o.canary = true;
-    o.timer = setTimeout(() => { o.canary = false; this.tried(o); }, Math.max(outageDelayMs(o.tries, this.rand, this.t), this.t.canaryMs));
+    o.timer = setTimeout(() => { o.canary = false; this.tried(o); }, Math.max(this.delay(o), this.t.canaryMs));
     w.go();
   }
 
@@ -271,9 +341,10 @@ export class Outages {
         new Promise((_, reject) => { late = setTimeout(() => reject(Object.assign(new Error("the probe timed out: connection timed out"), { kind: "unreachable" })), this.t.probeMs); }),
       ]);
       return true;
-    } catch (e) {
-      // Any answer, a refusal included, is an answer.
-      return !unreachable(e);
+    } catch {
+      // Only a successful listing can validate the API. An auth response
+      // could come from a proxy, and a malformed listing proves nothing.
+      return false;
     } finally {
       clearTimeout(late);
     }
@@ -281,7 +352,7 @@ export class Outages {
 
   // The provider answered a request (a reply began, or a status of its own came back).
   answered(provider: string) {
-    if (!this.opens.size && !this.carried.size) return;
+    if (this.stopped || (!this.opens.size && !this.carried.size)) return;
     const o = this.opens.get(provider);
     if (!o) {
       // An outage the last daemon left open, and the provider answers now.
@@ -289,7 +360,7 @@ export class Outages {
       if (!kept) return;
       this.carried.delete(provider);
       this.persist();
-      this.tell("close", { provider, since: kept.since, message: kept.message, tries: 0, confirmed: true, sessions: [] }, this.now() - kept.since, true);
+      if (kept.confirmed !== false) this.tell("close", this.carriedInfo(provider, kept), this.now() - kept.since, true, Object.entries(kept.parents ?? {}));
       return;
     }
     this.end(o, true);
@@ -302,6 +373,14 @@ export class Outages {
     this.opens.delete(o.provider);
     clearTimeout(o.timer);
     o.timer = undefined;
+    const end = this.now();
+    const recent = this.recent.get(o.provider);
+    // Retain the last schedule briefly even for a blip. A successful canary
+    // advances it too, so repeated quick recoveries do not reset the ramp.
+    if (answered) {
+      for (const [id, r] of this.recent) if (end - r.ended >= this.t.flapMs) this.recent.delete(id);
+      this.recent.set(o.provider, { since: recent && end - recent.ended < this.t.flapMs ? recent.since : o.since, tries: o.tries + 1, ended: end });
+    }
     const info = this.info(o);
     // The waiting requests go one after another, the first at once.
     const gap = staggerGapMs(o.waiters.length, this.t);
@@ -309,10 +388,10 @@ export class Outages {
       if (!i || !gap) return w.go();
       w.timer = setTimeout(w.go, Math.round(i * gap * (0.9 + this.rand() * 0.2)));
     });
-    for (const s of [...o.sessions]) this.leave(o, s);
-    if (!o.confirmed) return;
+    for (const s of [...o.sessions.keys()]) this.leave(o, s);
     this.persist();
-    this.tell("close", info, this.now() - o.since, answered);
+    if (!o.confirmed) return;
+    this.tell("close", info, this.now() - o.since, answered, [...o.parents]);
   }
 
   // The ceiling: every waiting request fails with what it failed with.
@@ -322,9 +401,9 @@ export class Outages {
     clearTimeout(o.timer);
     const info = this.info(o);
     for (const w of o.waiters.splice(0)) w.fail(w.error);
-    for (const s of [...o.sessions]) this.leave(o, s);
+    for (const s of [...o.sessions.keys()]) this.leave(o, s);
     this.persist();
-    if (o.confirmed) this.tell("close", info, this.now() - o.since, false);
+    if (o.confirmed) this.tell("close", info, this.now() - o.since, false, []);
   }
 
   // The daemon stops: nothing is tried any more. What is open stays in the file for the next
@@ -333,6 +412,7 @@ export class Outages {
     if (this.stopped) return;
     this.persist();
     this.stopped = true;
+    clearTimeout(this.carriedTimer);
     for (const o of this.opens.values()) clearTimeout(o.timer);
   }
 }

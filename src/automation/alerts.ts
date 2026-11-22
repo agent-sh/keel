@@ -23,7 +23,7 @@ import { handShell, shellShows, tellShells } from "../server/shell.ts";
 // kind. A channel is anything with deliver(); phone push registers one later.
 
 // `machine`: about a machine of the fleet, not a session (it went out of reach; more of its alerts came than are listed).
-export const KINDS = ["approval", "question", "finished", "failed", "limit", "loop_failed", "agent", "snooze_over", "regression", "refused", "declined", "machine"] as const;
+export const KINDS = ["approval", "question", "finished", "failed", "limit", "loop_failed", "agent", "snooze_over", "regression", "refused", "declined", "machine", "outage"] as const;
 export type AlertKind = (typeof KINDS)[number];
 // Each channel's handoff: pending until deliver() settles, then sent or failed.
 // Sent means the channel took it, not that the owner saw it.
@@ -1156,6 +1156,7 @@ export function onTurnEnd(sessionId: string, reason: string, opts: { subagent: b
     if (text) event = e.id;
   }
   // How long the turn ran: a long one is worth a desktop notice (LONG_TURN_MS).
-  const ran_ms = start >= 0 ? Date.now() - all[start]!.ts : undefined;
+  const end = all.findLast((e) => e.kind === "turn_end");
+  const ran_ms = typeof end?.data.ms === "number" ? end.data.ms : start >= 0 ? Date.now() - all[start]!.ts : undefined;
   raise("finished", sessionId, title, plainLine(text) || "The turn finished.", event || ran_ms !== undefined ? { ...(event ? { event_id: event } : {}), ...(ran_ms !== undefined ? { ran_ms } : {}) } : undefined);
 }

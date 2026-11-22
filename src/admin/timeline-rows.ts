@@ -131,7 +131,7 @@ export type TurnInput = {
   start: { id: string; ts: number; model?: string };
   opener?: Opener;
   // `crashed`: the daemon went down under it. `unstarted`: it never began (the pair a restart writes for a prompt it found accepted).
-  end?: { reason: string; ms?: number; ts?: number; stopped_by?: string | null; crashed?: boolean; unstarted?: boolean } | null;
+  end?: { reason: string; ms?: number; provider_wait_ms?: number; ts?: number; stopped_by?: string | null; crashed?: boolean; unstarted?: boolean } | null;
   // What it spent: its rollup over all its requests when there is one, else what its end says.
   usage?: { input?: number; output?: number; cache_read?: number; cost?: number | null } | null;
   running?: boolean;
@@ -192,6 +192,7 @@ export function turnRow(t: TurnInput): TimelineRow {
     default: text = `${head}: no end was recorded, ${n}`;
   }
   // A turn whose requests were sent again says so: its steps count the replies, not the attempts.
+  if (t.end?.provider_wait_ms) text += `, waited ${dur(t.end.provider_wait_ms)} for the provider`;
   if (t.failed_requests && t.requests) text += `, ${plural(t.requests, "request")}, ${t.failed_requests} failed`;
   if (bad) text += `, ${bad}`;
   // A call the owner, a rule or the judge refused is a decision, not a failure.

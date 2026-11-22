@@ -116,7 +116,3 @@ export function directBrokerOrigin(url: string) {
   const u = loopback(url.split("?", 1)[0]);
   if (u && !proxied(u)) return u.origin;
 }
-
-// Do not follow a redirect from a reloadable loopback broker. No credential
-// or refusal evidence from a redirected request may cross that boundary.
-export const brokerFetch = (url: string) => directBrokerOrigin(url) ? { redirect: "error" as const } : {};

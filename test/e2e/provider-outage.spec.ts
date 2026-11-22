@@ -78,6 +78,13 @@ test("a turn started while the provider cannot be reached waits and completes wh
   expect(ev.filter((e) => e.kind === "error")).toEqual([]);
   expect(ev.filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).toEqual(["end_turn"]);
   expect(ev.filter((e) => e.kind === "user")).toHaveLength(1); // nothing was added to the history to go on
+  const receipt = await (await request.get(`/api/debug/turns/${ev.find((e) => e.kind === "turn_start").id}/receipt`)).json();
+  expect(receipt.requests).toHaveLength(1);
+  expect(receipt.end.provider_wait_ms).toBeGreaterThan(3000);
+  expect(receipt.end.active_ms).toBeLessThan(receipt.end.provider_wait_ms);
+  const done = await (await request.get(`/api/sessions/${id}/timeline?format=text`)).text();
+  expect(done).toContain("for the provider");
+  expect(done).not.toMatch(/requests, \d+ failed/);
 
   // Activity: one line when the outage was known and one when it ended, with its length.
   const { items } = await (await request.get("/api/activity?kind=daemon&limit=20")).json();
@@ -224,7 +231,7 @@ test("twelve agents of one parent wait through an outage of a minute: none fails
   const [, requests, listings] = said.match(/refused (\d+) requests and (\d+) listings/)!.map(Number);
   // One failed request per session that had one to send (twelve agents, the starter, the parent), and one listing per try.
   expect(requests).toBeLessThanOrEqual(N + 4);
-  expect(listings).toBeLessThanOrEqual(12);
+  expect(listings).toBeLessThanOrEqual(16);
   // Errors: one row for the outage, however many sessions it held.
   const { errors } = await (await request.get("/api/errors")).json();
   const rows = errors.filter(outageRow);
@@ -298,6 +305,7 @@ test("a daemon restart in the middle of the outage: the turn waits on in the nex
     expect(ev.filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).toEqual(["restart", "end_turn"]);
     expect(ev.filter((e) => e.kind === "error")).toEqual([]);
     expect(ev.filter((e) => e.kind === "note" && e.data.kind === "provider_wait")).toHaveLength(1);
+    expect(ev.filter((e) => e.kind === "user" && e.data.origin === "restart")).toHaveLength(0);
     const lines = (await call(d.url, "/api/activity?kind=daemon&limit=20")).items.filter((a: any) => a.sub.startsWith("outage")).map((a: any) => a.sub).sort();
     expect(lines).toEqual(["outage", "outage_over"]);
     // Still one Errors row: the listing the new daemon could not read at its start is the same outage.

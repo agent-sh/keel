@@ -15,8 +15,17 @@ export function neverSent(e: unknown): boolean {
 // A broker explicitly says it could not resolve or connect to the upstream.
 // Do not infer that from the HTTP status, HTML, debug fields or a reset.
 const BROKER_CONNECT = /^the (?:[\w-]+ )*broker could not (?:reach|connect to) \S+:\s*(?:getaddrinfo\s+|connect\s+)?(EAI_AGAIN|ENOTFOUND|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH)\b/i;
-export function gatewayDown(status: number, message: string): boolean {
-  return (status === 502 || status === 503 || status === 504) && BROKER_CONNECT.test(message.trim());
+export function gatewayDown(status: number, body: string): boolean {
+  if (status !== 502 && status !== 503 && status !== 504) return false;
+  try {
+    const json = JSON.parse(body);
+    // A provider error envelope is not transport evidence. The broker's
+    // explicit top-level message is a separate wire shape.
+    return !!json && typeof json === "object" && !Array.isArray(json) && !("error" in json) && !("type" in json) &&
+      typeof json.message === "string" && BROKER_CONNECT.test(json.message.trim());
+  } catch {
+    return BROKER_CONNECT.test(body.trim());
+  }
 }
 
 // A driver proved it at the transport boundary. Raw exception text and SDK

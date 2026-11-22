@@ -16,7 +16,7 @@ export const detached = <T>(f: () => T): T => errorScope.exit(f);
 // `group`: what repeats of this failure share, when its words do not say (a
 // message that carries what varies: a duration's cause, a child's name). The
 // row is one per group instead of one per message shape.
-export type ErrorPlace = Pick<ErrorRecord, "session_id" | "turn_event" | "span_id"> & { group?: string; recovered?: true };
+export type ErrorPlace = Pick<ErrorRecord, "session_id" | "turn_event" | "span_id"> & { group?: string; recovered?: true; quietLog?: true };
 export type ErrorCapture = Pick<ErrorRecord, "id" | "source"> & { context: unknown; turnSession?: string };
 
 const KEPT_MAX = 100;
@@ -167,7 +167,7 @@ export class ErrorTracker {
     const retry = (context as any)?.retry;
     const again = typeof retry === "number" && retry > 1 && !!session_id && this.retrySaid.get(session_id) === rec.message;
     if (typeof retry === "number" && session_id) { this.retrySaid.delete(session_id); this.retrySaid.set(session_id, rec.message); if (this.retrySaid.size > 500) this.retrySaid.delete(this.retrySaid.keys().next().value!); }
-    if (!again) console.error(`[${source}] ${rec.message}`);
+    if (!again && !at.quietLog) console.error(`[${source}] ${rec.message}`);
     return rec;
   }
   private retrySaid = new Map<string, string>();

@@ -83,6 +83,8 @@ export type TurnHooks = {
   // turn was stopped; a retry may follow). `req` is the same object in all three.
   requestSent?: (s: Session, req: ProviderRequest) => void;
   requestDone?: (s: Session, req: ProviderRequest, res: ProviderResult) => void;
+  requestWaitEnded?: (s: Session, req: ProviderRequest, ms: number) => void;
+  requestWaiting?: (s: Session, req: ProviderRequest) => void;
   requestFailed?: (s: Session, req: ProviderRequest, err: unknown, aborted: boolean) => void;
   // Each streamed piece of the answer, side answers too (they never reach the bus).
   requestDelta?: (s: Session, req: ProviderRequest, d: { kind: string; text: string }) => void;

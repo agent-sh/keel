@@ -29,7 +29,7 @@ export async function runEvents(
 }
 
 export const httpEvents = (o: Omit<StreamOpts, "body" | "signal">, req: ProviderRequest) => (body: Record<string, any>) =>
-  streamEvents({ ...o, headers: req.extraHeaders ? { ...o.headers, ...req.extraHeaders } : o.headers, body, signal: req.signal, onHeaders: req.onHeaders, onAnswer: req.onAnswer });
+  streamEvents({ ...o, headers: req.extraHeaders ? { ...o.headers, ...req.extraHeaders } : o.headers, body, signal: req.signal, onHeaders: req.onHeaders, connectWaitMs: req.connectWaitMs, onAnswer: req.onAnswer });
 
 export const ctxFor = (providerId: string, req: ProviderRequest, efforts: string[], legacyIsMine = false): WireCtx => ({
   origin: `${providerId}:${req.model}`,

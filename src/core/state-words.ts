@@ -272,7 +272,7 @@ export const WRONG_KINDS: readonly string[] = ["failed", "limit", "loop_failed",
 // An alert's kind in the vocabulary: a finish is Done, a failure Failed.
 export const ALERT_WORD: Record<string, string> = {
   approval: "Approval", question: "Question", finished: STATE_WORD.done, failed: STATE_WORD.fail, declined: STATE_WORD.declined, limit: "Usage limit", loop_failed: "Loop failed",
-  agent: "From the agent", snooze_over: "Snooze over", regression: "Regression", refused: "Refused call", machine: "Machine",
+  agent: "From the agent", snooze_over: "Snooze over", regression: "Regression", refused: "Refused call", machine: "Machine", outage: "Provider outage",
 };
 // The word of one alert: a question that carries a plan is a Plan, one that asks for a secret a Secret,
 // and a turn the model declined is Declined, not Done (`declined`: its session reads so now and this is its newest word).

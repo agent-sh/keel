@@ -3,7 +3,7 @@
 import { keyShaped } from "../core/conceal.ts";
 import { chunks } from "../core/proc.ts";
 import { EventStreamDecoder } from "./aws.ts";
-import { brokerFetch, directBrokerOrigin, refusedOrigins } from "./broker-address.ts";
+import { directBrokerOrigin, refusedOrigins } from "./broker-address.ts";
 import { gatewayDown, neverSent } from "./unreachable.ts";
 import { JsonArrayDecoder, SseDecoder, type SseEvent } from "./sse.ts";
 import { keptHeaders, redactHeaders, requestId, safeUrl, wire } from "./wiretap.ts";
@@ -71,8 +71,8 @@ export function classify(label: string, status: number, headers: Headers, body: 
   let msg = body;
   try {
     const j = JSON.parse(body);
-    const e = Array.isArray(j) ? j[0]?.error : j.error ?? j;
-    msg = typeof e === "string" ? e : e?.message ?? j.message ?? j.detail ?? body;
+    const e = Array.isArray(j) ? j[0]?.error : j?.error ?? j;
+    msg = typeof e === "string" ? e : e?.message ?? j?.message ?? j?.detail ?? body;
     if (typeof msg !== "string") msg = JSON.stringify(msg);
   } catch {}
   const text = `${label}: HTTP ${status}: ${clip(scrub(msg.trim() || "no body"))}`;
@@ -92,11 +92,19 @@ export function classify(label: string, status: number, headers: Headers, body: 
   if (/(does not|doesn't) (yet )?include access|not (available|included) (on|in|with) your (current )?(subscription|plan)/.test(low)) return new ProviderError("invalid", text, status);
   if (status === 429) return new ProviderError("rate", text, status, wait);
   // The broker named an upstream DNS or connection failure, not just a 5xx.
-  if (gatewayDown(status, msg)) return new ProviderError("unreachable", text, status, wait);
+  if (gatewayDown(status, body)) return new ProviderError("unreachable", text, status, wait);
   if (status === 529 || status === 503 || /overloaded/.test(low)) return new ProviderError("overloaded", text, status, wait);
   if (status >= 500) return new ProviderError("server", text, status, wait);
   return new ProviderError("invalid", text, status);
 }
+
+// Redirects are not API answers; do not follow a portal to its sign-in page.
+const redirected = (r: Response) => r.status >= 300 && r.status < 400 && !!r.headers.get("location");
+const html = (r: Response) => /^(?:text\/html|application\/xhtml\+xml)\s*(?:;|$)/i.test(r.headers.get("content-type") ?? "");
+const mayBePortal = (r: Response) => r.ok || r.status === 401 || r.status === 403;
+const intercepted = (r: Response) => r.status === 511 || redirected(r) || (mayBePortal(r) && html(r));
+const portal = (label: string, r: Response) => new ProviderError("unreachable", `${label}: got a web page or redirect instead of the provider API`, r.status);
+const startsHtml = (text: string) => text.trimStart().startsWith("<");
 
 // A stream that sends nothing for this long is cut and raised as a passing
 // network failure, so the engine's retries take it (Codex main: 300 s,
@@ -112,9 +120,9 @@ export function idleGuard(outer: AbortSignal, ms: number, label: string) {
   const onAbort = () => ctl.abort(outer.reason);
   if (outer.aborted) ctl.abort(outer.reason);
   else outer.addEventListener("abort", onAbort, { once: true });
-  const touch = () => {
+  const touch = (after = ms) => {
     clearTimeout(timer);
-    timer = setTimeout(() => { fired = true; ctl.abort(); }, ms);
+    timer = setTimeout(() => { fired = true; ctl.abort(); }, after);
   };
   touch();
   return {
@@ -136,6 +144,7 @@ export type StreamOpts = {
   secrets?: string[];
   idleMs?: number;
   onHeaders?: (h: Headers) => void;
+  connectWaitMs?: number;
   // The provider accepted the request (a 2xx): its answer begins.
   onAnswer?: () => void;
   // Called once on a refused credential (`err`: the refusal): a driver with a
@@ -166,19 +175,27 @@ async function* stream(o: StreamOpts, guard: ReturnType<typeof idleGuard>): Asyn
     const body = JSON.stringify(o.body);
     const sent = { "content-type": "application/json", accept: o.format === "json_array" ? "application/json" : "text/event-stream", ...headers, ...o.sign?.(body) };
     if (w) Object.assign(w, { method: "POST", url: safeUrl(o.url), req_headers: redactHeaders(sent), body_bytes: Buffer.byteLength(body), transport: "http", resent_after_auth: renewed || undefined });
+    const headersMs = o.connectWaitMs && Math.min(o.connectWaitMs, streamIdleMs(o.idleMs));
+    if (headersMs) guard.touch(headersMs);
     try {
-      res = await fetch(o.url, { ...brokerFetch(o.url), method: "POST", headers: sent, body, signal: guard.signal });
+      res = await fetch(o.url, { redirect: "manual", method: "POST", headers: sent, body, signal: guard.signal });
     } catch (e) {
       const stalled = guard.stalled();
-      if (stalled) throw stalled;
+      if (stalled) {
+        if (headersMs) throw Object.assign(new ProviderError("network", `${o.label}: no response headers in ${Math.round(headersMs / 1000)} s`), { probeBeforeRetry: true });
+        throw stalled;
+      }
       if (o.signal.aborted) throw new ProviderError("cancelled", "cancelled");
       throw fetchFailure(o.label, e, o.secrets, o.url);
     }
+    guard.touch();
     try { o.onHeaders?.(res.headers); } catch {}
     if (w) Object.assign(w, { status: res.status, request_id: requestId(res.headers), res_headers: keptHeaders(res.headers), headers_ms: Date.now() - t0 });
+    if (intercepted(res)) { void res.body?.cancel().catch(() => {}); throw portal(o.label, res); }
     if (res.ok) break;
     // A truncated error body is not a broker's explicit connect failure.
     const text = await res.text().catch(() => "");
+    if (mayBePortal(res) && startsHtml(text)) throw portal(o.label, res);
     if (w) w.error_body = clip(scrub(text, o.secrets), 2000);
     const err = classify(o.label, res.status, res.headers, scrub(text, o.secrets));
     if (err.kind === "auth" && o.onAuthFailure && !renewed) {
@@ -187,19 +204,31 @@ async function* stream(o: StreamOpts, guard: ReturnType<typeof idleGuard>): Asyn
     }
     throw err;
   }
-  try { o.onAnswer?.(); } catch {}
   const dec = o.format === "json_array" ? new JsonArrayDecoder()
     : res.headers.get("content-type")?.includes("application/vnd.amazon.eventstream") ? new EventStreamDecoder() : new SseDecoder();
   try {
-    for await (const chunk of chunks(res.body!)) {
+    let leading = true, answered = false;
+    const bom = new TextDecoder();
+    const answer = () => { if (!answered) { answered = true; try { o.onAnswer?.(); } catch {} } };
+    for await (const chunk of res.body ? chunks(res.body) : []) {
       guard.touch();
+      if (leading) {
+        // Empty/whitespace frames do not validate the API. Keep streaming the
+        // same bytes to the decoder; never buffer a portal page in the request.
+        const first = bom.decode(chunk, { stream: true }).trimStart();
+        if (first.startsWith("<")) throw portal(o.label, res);
+        if (first) {
+          leading = false;
+        }
+      }
       if (w) { w.bytes_in = (w.bytes_in ?? 0) + chunk.length; w.last_ms = Date.now(); }
       for (const ev of dec.push(chunk)) {
+        answer();
         if (w) { w.events = (w.events ?? 0) + 1; w.last_event = ev.event ?? /"type"\s*:\s*"([^"]{1,60})"/.exec(ev.data.slice(0, 200))?.[1]; }
         yield ev;
       }
     }
-    yield* dec.finish();
+    for (const ev of dec.finish()) { answer(); yield ev; }
   } catch (e) {
     if (e instanceof ProviderError) throw e;
     const stalled = guard.stalled();
@@ -250,14 +279,18 @@ export async function allPages<T>(label: string, read: (cursor: string, until: n
 export async function getJson(label: string, url: string, headers: Record<string, string>, secrets: string[] = [], until?: number): Promise<any> {
   let r: Response;
   try {
-    r = await fetch(url, { ...brokerFetch(url), headers: { accept: "application/json", ...headers }, signal: AbortSignal.timeout(until === undefined ? 30_000 : Math.max(1, Math.min(30_000, until - Date.now()))) });
+    r = await fetch(url, { redirect: "manual", headers: { accept: "application/json", ...headers }, signal: AbortSignal.timeout(until === undefined ? 30_000 : Math.max(1, Math.min(30_000, until - Date.now()))) });
   } catch (e) {
     throw fetchFailure(label, e, secrets, url);
   }
+  if (intercepted(r)) { void r.body?.cancel().catch(() => {}); throw portal(label, r); }
   const text = await r.text();
+  if (mayBePortal(r) && startsHtml(text)) throw portal(label, r);
   if (!r.ok) throw classify(label, r.status, r.headers, scrub(text, secrets));
   try {
-    return JSON.parse(text);
+    const result = JSON.parse(text);
+    if (result === null || typeof result !== "object") throw new Error("not a listing");
+    return result;
   } catch {
     throw new ProviderError("server", `${label}: the listing is not JSON`);
   }

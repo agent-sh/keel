@@ -15,6 +15,20 @@ Providers are found from the environment: `ANTHROPIC_API_KEY` for the Anthropic
 API; `AWS_BEARER_TOKEN_BEDROCK`, AWS keys or `ANTHROPIC_BEDROCK_BASE_URL` for
 Amazon Bedrock. Models come from each provider's own listing.
 
+### Provider outages
+
+A captive portal is not a provider answer. An HTML sign-in page or redirect
+keeps the turn waiting. A normal API 401 is still a credential error for the
+request that got it, not a recovery signal for other turns.
+
+A turn waiting on a provider gets the shared quick checks, then a check every
+five seconds for the first ten minutes. A return to the same outage schedule
+within five minutes keeps its backoff. A long outage raises one notification
+after five minutes. The wait is separate from work time in the timeline and
+receipts. A model request still missing HTTP headers at ten seconds joins the
+shared check before retrying, but spends a counted attempt because it might
+have reached the model.
+
 ### A local broker that changes ports
 
 If the launcher reads the broker address from an environment file, set

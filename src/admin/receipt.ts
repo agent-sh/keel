@@ -80,7 +80,7 @@ export function turnReceipt(store: Store, tracer: Tracer, turnEvent: string) {
   const turn = root?.kind === "turn" && root.session_id === sid && root.attrs.turn_event === start.id ? root : undefined;
   // A subagent's first turn shares its parent's trace, not its receipt.
   const children = turn ? tracer.trace(turn.trace_id).filter((s) => s.parent_id === turn.span_id && s.session_id === sid && s.attrs.turn_event === start.id) : [];
-  const requests = children.filter((s) => s.kind === "request").map((s) => ({
+  const requests = children.filter((s) => s.kind === "request" && !s.attrs.provider_wait).map((s) => ({
     span_id: s.span_id, purpose: label(s.attrs.shape?.purpose, purposes),
     attempt: typeof s.attrs.attempt === "number" ? s.attrs.attempt : null, status: s.status, error_id: s.error_id,
   }));
@@ -103,6 +103,6 @@ export function turnReceipt(store: Store, tracer: Tracer, turnEvent: string) {
     session_id: sid, turn_event: start.id, start_ms: start.ts,
     trace_id: turn?.trace_id ?? null, span_id: turn?.span_id ?? null,
     inputs, requests, tools,
-    end: end ? { event_id: end.id, reason: label(end.data?.reason, reasons), end_ms: end.ts } : null,
+    end: end ? { event_id: end.id, reason: label(end.data?.reason, reasons), end_ms: end.ts, ...(typeof end.data?.provider_wait_ms === "number" ? { provider_wait_ms: end.data.provider_wait_ms, active_ms: end.data.ms } : {}) } : null,
   };
 }

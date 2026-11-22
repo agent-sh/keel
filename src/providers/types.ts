@@ -73,6 +73,8 @@ export type ProviderRequest = {
   // The session asks for "drop_block" (a refused prefix was seen on it before).
   dropThinking?: boolean;
   // Set by the registry: every answer's headers, for its rate-limit windows.
+  // A turn can check reachability sooner before its first HTTP headers.
+  connectWaitMs?: number;
   onHeaders?: (h: Headers) => void;
   // Set by the registry: the provider accepted the request and its answer begins
   // (an outage of the provider is over: src/providers/outage.ts).

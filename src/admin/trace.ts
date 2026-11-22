@@ -295,6 +295,13 @@ export class Tracer {
         if (o && !o.first) o.first = Date.now();
       },
       requestDone: (_s, req, res) => this.done(req, res),
+      requestWaiting: (_s, req) => {
+        const o = this.open.get(req);
+        if (!o) return;
+        this.open.delete(req);
+        this.attempts.set(req, o.attempt - 1);
+        this.finish(o.span, { status: "interrupted", attrs: { ...this.wireAttrs(req, o), provider_wait: true } });
+      },
       requestFailed: (_s, req, err, aborted) => this.failed(req, err, aborted),
       toolRan: (s, call, result, ran) => this.tool(s, call.id, call.tool.name, call.input, result, ran, call.hook),
       turnEnd: (s, reason) => this.turnEnd(s, reason),

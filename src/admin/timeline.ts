@@ -328,7 +328,7 @@ export class Timeline {
       opener,
       wake: w && { kind: w.kind, ms: w.ended && w.created !== undefined ? w.ended - w.created : undefined },
       agent: g && { title: g.title, session_id: g.session_id },
-      end: end && { reason: String(end.reason ?? "error"), ms: typeof end.ms === "number" ? end.ms : undefined, ts: f.end!.ts, stopped_by: end.stopped_by, crashed: !!end.crashed, unstarted: !!end.unstarted },
+      end: end && { reason: String(end.reason ?? "error"), ms: typeof end.ms === "number" ? end.ms : undefined, provider_wait_ms: end.provider_wait_ms, ts: f.end!.ts, stopped_by: end.stopped_by, crashed: !!end.crashed, unstarted: !!end.unstarted },
       usage: roll && roll.requests > 0 ? roll : end?.usage,
       // Every request it made, the attempts that failed and were sent again among them.
       ...(roll && roll.requests > 0 ? { requests: roll.requests, failed_requests: roll.failed_attempts } : {}),

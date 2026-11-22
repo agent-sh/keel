@@ -260,6 +260,7 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
     // Every request to a model, a retry too, and how it ended: told only (Codex's two events).
     requestSent: (s, req) => tell("PreModelRequest", s, () => ({ model: req.model, purpose: req.purpose ?? "turn" })),
     requestDone: (s, req, res) => tell("PostModelRequest", s, () => ({ model: req.model, purpose: req.purpose ?? "turn", status: "completed", error: null, token_usage: res.usage })),
+    requestWaiting: (s, req) => tell("PostModelRequest", s, () => ({ model: req.model, purpose: req.purpose ?? "turn", status: "waiting", error: null, token_usage: null })),
     requestFailed: (s, req, err, aborted) => tell("PostModelRequest", s, () => ({ model: req.model, purpose: req.purpose ?? "turn", status: aborted ? "cancelled" : "failed", error: aborted ? null : String((err as Error)?.message ?? err).slice(0, 2000), token_usage: null })),
   });
 

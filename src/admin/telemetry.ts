@@ -207,6 +207,15 @@ export class Telemetry {
         const cls = res.stop === "refusal" ? "refusal" : res.stop === "model_context_window_exceeded" ? "context_overflow" : null;
         this.callEnd(p, { outcome: "ok", usage: res.usage, stop: res.stop, cls });
       },
+      requestWaitEnded: (_s, req, ms) => {
+        const step = this.steps.get(req);
+        if (step) step.t0 += ms;
+      },
+      requestWaiting: (_s, req) => {
+        this.take(req);
+        const step = this.steps.get(req);
+        if (step) step.attempt--;
+      },
       requestFailed: (_s, req, err, aborted) => {
         const p = this.take(req);
         if (!p) return;
