@@ -1,3 +1,5 @@
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { expect, test } from "./isolate.ts";
 import { ask, HAIKU, scriptBash, shoot } from "./shots.ts";
 
@@ -122,6 +124,7 @@ test("queue races, screenshots, order, late edits and branches", async ({ page, 
   await expect(page.getByTestId("queue-held")).toBeVisible({ timeout: 10_000 });
   let q = await queue();
   expect(q.held).toBe(true);
+  // (In the order they were queued: a box sends one at a time.)
   expect(q.queue.map((x) => [x.text, x.steer, x.images?.length ?? 0])).toEqual([["", false, 1], ["", false, 1], ["alpha", false, 0], ["bravo", false, 0], ["charlie", false, 0]]);
   const bytes = q.queue[0].images[0].data;
 
@@ -290,5 +293,43 @@ test("a tool the owner stopped reads stopped, not failed", async ({ page, reques
   } finally {
     await request.post(`/api/sessions/${session.id}/interrupt`, { data: { by: "owner" } });
     await request.delete(`/api/sessions/${session.id}`);
+  }
+});
+
+// Prompts queued in quick succession keep the order they were queued in, also
+// when the first request is the slow one: each is a request of its own, and
+// the daemon keeps the order they arrive in. Here the first is held on its way
+// until the two after it were answered (or, since a box sends one at a time,
+// until it is clear they are not coming before it).
+test("prompts queued one after another keep their order when the first request is slow", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models.map((m: any) => m.id);
+  test.skip(!models.includes("scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const gate = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `queue-order-${Date.now()}`);
+  mkdirSync(dirname(gate), { recursive: true });
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Queued in order" } })).json();
+  try {
+    await page.goto(`/s/${session.id}`);
+    const composer = page.getByTestId("composer");
+    // A turn that stays at work until the gate is there.
+    await composer.fill(`script:hold ${gate}`);
+    await composer.press("Enter");
+    await expect(page.getByTestId("stop")).toBeVisible();
+    let answered = 0;
+    const others = Promise.withResolvers<void>();
+    await page.route(`**/api/sessions/${session.id}/messages`, async (route) => {
+      const text = (route.request().postDataJSON() as { text?: string } | null)?.text;
+      if (text === "alpha") { await Promise.race([others.promise, new Promise((r) => setTimeout(r, 1500))]); return route.continue(); }
+      const response = await route.fetch();
+      if (++answered === 2) others.resolve();
+      await route.fulfill({ response });
+    });
+    for (const t of ["alpha", "bravo", "charlie"]) { await composer.fill(t); await composer.press("Control+Shift+Enter"); }
+    await expect.poll(async () => ((await (await request.get(`/api/sessions/${session.id}/queue`)).json()).queue as { text: string }[]).map((x) => x.text), { timeout: 15_000 }).toEqual(["alpha", "bravo", "charlie"]);
+    await expect(page.getByTestId("queue-item")).toHaveText([/alpha/, /bravo/, /charlie/]);
+  } finally {
+    writeFileSync(gate, "");
+    await request.post(`/api/sessions/${session.id}/interrupt`);
+    await request.delete(`/api/sessions/${session.id}`);
+    rmSync(gate, { force: true });
   }
 });

@@ -51,6 +51,8 @@ function useSlashItems() {
 
 // Images of kept sends being read back from the session's draft after a reload.
 const reading = new Set<string>();
+// The queued prompt of each box that is on its way, by its shelf: the next one goes after it.
+const outgoing = new Map<string, Promise<void>>();
 const MAX_FILES = 20;
 const heading = (d: SendDraft) => (d.state === "waiting" ? "Waiting for Keel" : d.state === "refused" ? (d.queue ? "Not queued" : "Not sent") : d.state === "unconfirmed" ? "Delivery unconfirmed" : "Saved draft");
 
@@ -545,12 +547,24 @@ const SessionComposer = memo(function SessionComposer({
     // on Retry before React has disabled its button.
     setSendDraft(shelf, id, { ...entry, state: "sending" });
     try {
-      const send = queue && onQueue ? onQueue : onSend;
       // A named send whose request is out when Keel stops being heard is not waited for (a request
       // into a link that says nothing may hang as long as the link does): it waits on its shelf
       // like one sent after, and goes out again under its id, which Keel takes once.
-      const out = send(text.trim(), images.map(toBlock), id);
-      await (named ? whileHeard(Promise.resolve(out)) : out);
+      if (queue && onQueue) {
+        // Queued prompts go one at a time, in the order they were queued: three queued in quick
+        // succession are three requests, and the daemon keeps the order they arrive in, which is
+        // not the order they were sent in once one of them waits for a connection.
+        const before = outgoing.get(shelf);
+        const go = () => onQueue(text.trim(), images.map(toBlock), id);
+        const mine = before ? before.then(go) : Promise.resolve(go());
+        const settled = mine.then(() => {}, () => {});
+        outgoing.set(shelf, settled);
+        void settled.then(() => { if (outgoing.get(shelf) === settled) outgoing.delete(shelf); });
+        await (named ? whileHeard(mine) : mine);
+      } else {
+        const out = onSend(text.trim(), images.map(toBlock), id);
+        await (named ? whileHeard(Promise.resolve(out)) : out);
+      }
     } catch (e) {
       // The daemon was away or restarting: the message waits on its shelf and
       // goes out by itself, once, when the daemon is back.
