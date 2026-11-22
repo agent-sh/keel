@@ -306,3 +306,42 @@ test("an unconfirmed send clears itself once the daemon holds it, by its id and 
   expect(texts).toEqual(["Arrived, though nobody said so.", "continue"]);
   await request.delete(`/api/sessions/${a}`);
 });
+
+// One question about a send is out at a time. A prompt that arrives while an
+// earlier answer ("not stored") is still on its way is asked about when that
+// answer returns: it was given before the prompt, and nothing else would ask
+// again until the session's next message or a reconnect.
+test("a send that arrives while an earlier question about it is out is asked about again", async ({ page, request }) => {
+  const a = (await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Asked too early" } })).json()).session.id as string;
+  const messages = `/api/sessions/${a}/messages`;
+  await page.goto(`/s/${a}`);
+  // The message does not reach the daemon yet, and the page is told the proxy lost it.
+  let body: Record<string, unknown> | undefined;
+  await page.route(messages, async (r) => {
+    body = r.request().postDataJSON();
+    await r.fulfill({ status: 502, json: { error: "The proxy lost the daemon." } });
+  }, { times: 1 });
+  // The page's first question about it is answered by the daemon ("not stored") and held on its way back.
+  const back = Promise.withResolvers<void>();
+  let questions = 0;
+  await page.route(`**/api/sessions/${a}/sends/*`, async (r) => {
+    if (++questions > 1) return r.fallback();
+    const answer = await r.fetch();
+    expect(await answer.json()).toEqual({ stored: false });
+    await back.promise;
+    await r.fulfill({ response: answer });
+  });
+  await composer(page).fill("Late, but it got there.");
+  await composer(page).press("Enter");
+  await expect(saved(page)).toContainText("Delivery unconfirmed");
+  await expect.poll(() => questions).toBe(1);
+  // Now it arrives, under the same send id, while that answer is still out.
+  expect((await request.post(messages, { data: body })).status()).toBe(201);
+  await expect(page.getByTestId("user-message").filter({ hasText: "Late, but it got there." })).toHaveCount(1);
+  await expect(saved(page)).toHaveCount(1);
+  back.resolve();
+  // The old answer changes nothing; the question asked again clears the item.
+  await expect(saved(page)).toHaveCount(0, { timeout: 10_000 });
+  expect(questions).toBe(2);
+  await request.delete(`/api/sessions/${a}`);
+});

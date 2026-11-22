@@ -115,9 +115,12 @@ async function arrived(key: string, d: SendDraft) {
   await Promise.all(d.images.map((a) => (a.file ? undefined : dropImage(key, a.id))));
   setSendDraft(key, d.id);
 }
-const asking = new Set<string>();
+// One question at a time for a send. A change that comes while it is out is
+// asked about when it returns: the answer on its way was given before the
+// change (a prompt that arrived after the daemon said "not stored").
+const asking = new Set<string>(), changed = new Set<string>();
 async function ask(key: string, id: string) {
-  if (asking.has(id)) return;
+  if (asking.has(id)) return void changed.add(id);
   asking.add(id);
   try {
     const r = await api<{ stored?: boolean }>(`/api/sessions/${key}/sends/${encodeURIComponent(id)}`);
@@ -127,6 +130,7 @@ async function ask(key: string, id: string) {
     // No answer: nothing is known, so nothing changes.
   } finally {
     asking.delete(id);
+    if (changed.delete(id) && sendDrafts(key).some((x) => x.id === id && x.state === "unconfirmed")) void ask(key, id);
   }
 }
 let unconfirmed = unconfirmedSends();
