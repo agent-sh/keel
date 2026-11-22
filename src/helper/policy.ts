@@ -11,12 +11,13 @@ export type DigestEvent = { id: string; ts: number; kind: string; session_id: st
 
 // Alert kinds (src/automation/alerts.ts) as the helper weighs them. An
 // approval or a question already reaches them on their channels: the helper
-// hears of it with their next word, it does not wake for it. A failure, a usage
+// hears of it with their next word, it does not wake for it. A failure, a turn
+// the model declined (the work stopped there, as with a failure), a usage
 // limit and a failed loop are what they would want summed up while away. A
 // finished turn matters only when it was long work (the alert rule's own
 // threshold, passed in). A snooze ending is routine.
 export function levelOfAlert(kind: string, data: { ran_ms?: number } | undefined, longTurnMs: number): Level | null {
-  if (kind === "failed" || kind === "limit" || kind === "loop_failed") return "wake";
+  if (kind === "failed" || kind === "declined" || kind === "limit" || kind === "loop_failed") return "wake";
   if (kind === "approval" || kind === "question" || kind === "agent") return "feed";
   if (kind === "finished") return Number(data?.ran_ms) >= longTurnMs ? "feed" : null;
   return null;

@@ -300,7 +300,8 @@ const usage = wrap(USAGE_USAGE, { days: { type: "string" }, hours: { type: "stri
   ]);
   const title = (r: any) => (id: string) => r.sessions?.[id]?.title || (r.sessions?.[id] ? "(untitled)" : undefined);
   out({ ...t, by_session: bySession.buckets, by_tree: byTree.buckets, sessions: { ...bySession.sessions, ...byTree.sessions } }, !!v.json, () => [
-    `${t.total.calls} model calls, ${t.total.errors} failed; ${t.total.tool_calls} tool calls, ${t.total.tool_errors} failed`,
+    // The page's own figure (Settings > Usage, "Failed or refused"): failed requests and the ones the model declined.
+    `${t.total.calls} model calls, ${t.total.failed ?? t.total.errors} failed or refused; ${t.total.tool_calls} tool calls, ${t.total.tool_errors} failed`,
     `spend ${t.total.cost_usd == null ? (t.total.unpriced_calls ? `unknown (${t.total.unpriced_calls} calls without a price)` : "none") : `$${t.total.cost_usd.toFixed(4)}`}`,
     `cache hit ${t.total.cache_hit_ratio == null ? "none" : `${Math.round(t.total.cache_hit_ratio * 100)}%`}; first token ${ms(t.total.ttft_p50)} median, ${ms(t.total.ttft_p95)} p95; request ${ms(t.total.latency_p50)} median`,
     "",

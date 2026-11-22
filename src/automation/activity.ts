@@ -38,6 +38,8 @@ CREATE INDEX IF NOT EXISTS activity_session ON activity(session_id, ts DESC);`);
   if (!D().store.columnExists("activity", "turn_event")) D().store.migrate("ALTER TABLE activity ADD COLUMN turn_event TEXT");
   // A turn's row and the alert its end raised are found by the turn (one row a turn in the list).
   D().store.migrate("CREATE INDEX IF NOT EXISTS activity_turn ON activity(turn_event)");
+  // The list across sessions holds a session to its newest rows: each session's rows, newest first, are read in this order.
+  D().store.migrate("CREATE INDEX IF NOT EXISTS activity_group ON activity(COALESCE(session_id, kind), ts DESC, id DESC)");
   prune();
   const g = globalThis as { __keelActivitySweep?: ReturnType<typeof setInterval> };
   clearInterval(g.__keelActivitySweep);
@@ -120,24 +122,34 @@ export function listSql(opts: ListOpts, now = Date.now()): { sql: string; args: 
   // (or turns are filtered out, when the alert is the only row left of it).
   const fold = !opts.kinds?.length || (opts.kinds.includes("turn") && opts.kinds.includes("alert"));
   const turnsListed = !opts.kinds?.length || opts.kinds.includes("turn");
-  const ended = (t: string, al: string) => `${t}.kind = 'turn' AND ${t}.sub NOT IN (${NOT_ENDS}) AND ${t}.turn_event = ${al}.turn_event AND ${t}.session_id IS ${al}.session_id AND ${t}.ts <= ${al}.ts`;
+  // A turn's row and its alert are found by the turn (the index on turn_event): the session and the time
+  // only confirm the pair (the + keeps the planner from walking a whole session's rows for each).
+  const ended = (t: string, al: string) => `${t}.kind = 'turn' AND ${t}.sub NOT IN (${NOT_ENDS}) AND ${t}.turn_event = ${al}.turn_event AND +${t}.session_id IS +${al}.session_id AND +${t}.ts <= +${al}.ts`;
   if (fold) where.push(`NOT (a.kind = 'alert' AND a.sub IN (${END_ALERTS}) AND a.turn_event IS NOT NULL AND EXISTS (SELECT 1 FROM activity t WHERE ${ended("t", "a")}))`);
   const said = turnsListed
-    ? `CASE WHEN a.kind = 'turn' AND a.turn_event IS NOT NULL AND a.sub NOT IN (${NOT_ENDS}) THEN (SELECT al.text FROM activity al WHERE al.kind = 'alert' AND al.sub IN (${END_ALERTS}) AND ${ended("a", "al")} ORDER BY al.ts LIMIT 1) END`
+    ? `CASE WHEN a.kind = 'turn' AND a.turn_event IS NOT NULL AND a.sub NOT IN (${NOT_ENDS}) THEN (SELECT al.text FROM activity al WHERE al.kind = 'alert' AND al.sub IN (${END_ALERTS}) AND ${ended("a", "al")} ORDER BY +al.ts LIMIT 1) END`
     : "NULL";
   const c = cursor(opts.before);
-  const cap = opts.cap && opts.cap > 0 && !opts.session_id ? Math.floor(opts.cap) : 0;
+  const cap = opts.cap && opts.cap > 0 && !opts.session_id ? Math.min(20, Math.floor(opts.cap)) : 0;
   const page = c ? "(ts < ? OR (ts = ? AND id < ?))" : "1 = 1";
   const pageArgs = c ? [c.ts, c.ts, c.id] : [];
   if (!cap) {
     return { sql: `SELECT a.*, ${said} AS said FROM activity a WHERE ${where.join(" AND ")} AND ${page.replace(/\b(ts|id)\b/g, "a.$1")} ORDER BY a.ts DESC, a.id DESC LIMIT ?`, args: [...args, ...pageArgs, limit + 1], limit };
   }
   // Rows with no session (the daemon's own: keep-awake holds, restarts) are capped by their kind.
+  // Not a window over every row of the range: the groups are stepped through in the order of an
+  // index (activity_group), each gives its newest `cap` rows by a seek, and the page is cut from
+  // those. How many more a group has is counted only for a group whose last shown row is on the page.
+  const group = "COALESCE(a.session_id, a.kind)";
+  const filters = where.join(" AND ");
+  const groups = "SELECT MIN(COALESCE(session_id, kind)) FROM activity UNION ALL SELECT (SELECT MIN(COALESCE(session_id, kind)) FROM activity WHERE COALESCE(session_id, kind) > g.v) FROM g WHERE g.v IS NOT NULL";
+  const top = Array.from({ length: cap }, (_, n) => `SELECT g.v AS v, ${n + 1} AS rn, (SELECT a.id FROM activity a WHERE ${group} = g.v AND ${filters} ORDER BY a.ts DESC, a.id DESC LIMIT 1 OFFSET ${n}) AS id FROM g WHERE g.v IS NOT NULL`);
   return {
-    sql: `WITH f AS (SELECT a.*, ${said} AS said, ROW_NUMBER() OVER (PARTITION BY COALESCE(a.session_id, a.kind) ORDER BY a.ts DESC, a.id DESC) AS rn,
-        COUNT(*) OVER (PARTITION BY COALESCE(a.session_id, a.kind)) AS of_session FROM activity a WHERE ${where.join(" AND ")})
-      SELECT * FROM f WHERE rn <= ? AND ${page} ORDER BY ts DESC, id DESC LIMIT ?`,
-    args: [...args, cap, ...pageArgs, limit + 1], limit,
+    sql: `WITH RECURSIVE g(v) AS (${groups}), top AS (${top.join(" UNION ALL ")}),
+      p AS (SELECT t.id, t.rn, t.v FROM top t JOIN activity a ON a.id = t.id WHERE ${page.replace(/\b(ts|id)\b/g, "a.$1")} ORDER BY a.ts DESC, a.id DESC LIMIT ?)
+      SELECT a.*, ${said} AS said, p.rn AS rn, CASE WHEN p.rn = ${cap} THEN (SELECT COUNT(*) FROM activity a WHERE ${group} = p.v AND ${filters}) END AS of_session
+      FROM p JOIN activity a ON a.id = p.id ORDER BY a.ts DESC, a.id DESC`,
+    args: [...Array.from({ length: cap }, () => args).flat(), ...pageArgs, limit + 1, ...args], limit,
   };
 }
 

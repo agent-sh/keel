@@ -198,15 +198,19 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
           const cut = at >= 0 && at <= 40 ? a.text.slice(0, at) + a.text.slice(at + title!.length + 2) : a.text;
           const text = alert && cut.toLowerCase().startsWith(`${ALERT_LABEL[alert].toLowerCase()}: `) ? cut.slice(ALERT_LABEL[alert].length + 2) : cut;
           // A turn's row carries what the turn said at its end (the alert its end raised is this row, not another).
+          // What it said leads; how it ended stands beside the session's name under it, so the name is said once.
           const said = a.kind === "turn" ? saidOf(a, title) : "";
+          const ended = a.kind === "turn" && title && a.text.startsWith(`${title}: `) ? a.text.slice(title.length + 2) : "";
+          const lead = said || (ended ? ended.charAt(0).toUpperCase() + ended.slice(1) : text);
           const body = (
             <>
               {alert
                 ? <span className="mt-0.5 shrink-0"><AlertIcon kind={alert} read={!bad(a)} /></span>
                 : <Icon className={cn("mt-0.5 size-3.5 shrink-0", bad(a) ? "text-danger" : "text-faint")} aria-hidden />}
               <span className="min-w-0 flex-1">
-                <span dir="auto" className="block text-caption leading-snug">{restart ? restartSummary(restart) : <>{alert && <span className="text-muted" data-testid="activity-word">{ALERT_LABEL[alert]} </span>}{text}</>}</span>
-                {said && <span dir="auto" className={cn("block truncate text-micro", bad(a) ? "text-st-fail" : "text-muted")} data-testid="activity-said">{said}</span>}
+                <span dir="auto" className={cn("block text-caption leading-snug", a.kind === "turn" && "line-clamp-2")} data-testid={said ? "activity-said" : undefined}>
+                  {restart ? restartSummary(restart) : <>{alert && <span className="text-muted" data-testid="activity-word">{ALERT_LABEL[alert]} </span>}{lead}</>}
+                </span>
                 {restart?.turns.map((t) => (
                   <button
                     key={t.end_event}
@@ -218,7 +222,12 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
                     {restartTurnLine(t)}
                   </button>
                 ))}
-                {place && <span className="block truncate text-micro text-faint" data-testid="activity-place">{place}</span>}
+                {(place || (said && ended)) && (
+                  <span className="block truncate text-micro text-faint">
+                    <span data-testid="activity-place">{place}</span>
+                    {said && ended && <span className={bad(a) ? "text-st-fail" : undefined} data-testid="activity-ended">{place ? ", " : ""}{ended}</span>}
+                  </span>
+                )}
               </span>
               <span className="shrink-0 text-micro text-faint tabular-nums" title={when(a.ts)}>{ago(a.ts)}</span>
             </>
@@ -228,7 +237,7 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
             <li key={a.id} data-testid="activity-item" data-kind={a.kind} data-activity={a.id}>
               {a.session_id ? (
                 <div className="flex items-start gap-0.5">
-                  <button type="button" onClick={() => void open(a)} className="flex min-w-0 flex-1 gap-2.5 rounded-lg px-2.5 py-1.5 text-left outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring">
+                  <button type="button" onClick={() => void open(a)} className="flex min-w-0 flex-1 gap-2.5 rounded-lg px-2.5 py-1 text-left outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring">
                     {body}
                   </button>
                   {/* The turn it happened in, kept with the row: later turns never change it. */}
@@ -239,14 +248,14 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
                       aria-label="The receipt of the turn it happened in"
                       title="The receipt of the turn it happened in"
                       data-testid="activity-receipt"
-                      className="mt-1 grid size-6 shrink-0 place-items-center rounded-md text-faint outline-none hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-ring"
+                      className="k-act mt-0.5"
                     >
                       <ReceiptText className="size-3.5" />
                     </button>
                   )}
                 </div>
               ) : (
-                <div className="flex gap-2.5 px-2.5 py-1.5">{body}</div>
+                <div className="flex gap-2.5 px-2.5 py-1">{body}</div>
               )}
               {!!a.more && (
                 <button

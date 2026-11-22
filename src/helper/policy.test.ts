@@ -5,7 +5,7 @@ import { levelOfAlert, nextWakeAt, spike } from "./policy.ts";
 
 test("what wakes the helper, what waits for the next turn, what is noise", () => {
   const long = 5 * 60_000;
-  expect(["failed", "limit", "loop_failed"].map((k) => levelOfAlert(k, undefined, long))).toEqual(["wake", "wake", "wake"]);
+  expect(["failed", "declined", "limit", "loop_failed"].map((k) => levelOfAlert(k, undefined, long))).toEqual(["wake", "wake", "wake", "wake"]);
   expect(["approval", "question", "agent"].map((k) => levelOfAlert(k, undefined, long))).toEqual(["feed", "feed", "feed"]);
   expect(levelOfAlert("finished", { ran_ms: long }, long)).toBe("feed");
   expect(levelOfAlert("finished", { ran_ms: 1000 }, long)).toBeNull();

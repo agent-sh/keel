@@ -334,7 +334,7 @@ test("after a kill, the errors, the digest, the log, spend, activity, times, sea
     await shoot(page, "past-truth-03-activity");
     await page.getByTestId("activity-failures").click();
     await expect(page.getByTestId("activity-item").filter({ hasText: "Reply" })).toHaveCount(0);
-    await expect(page.getByTestId("activity-item").filter({ hasText: "Billing A: turn failed" }).first()).toBeVisible();
+    await expect(page.getByTestId("activity-item").filter({ hasText: "Billing A, turn failed" }).first()).toBeVisible();
     await shoot(page, "past-truth-04-activity-failures");
     await page.keyboard.press("Escape");
     // Usage: spend ranked by session, and two turns side by side.

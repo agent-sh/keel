@@ -84,11 +84,11 @@ function Site({ e, s }: { e: ErrorRecord; s: ErrorSite }) {
       </button>
       <span className="flex items-center gap-0.5">
         {(s.turn_event || s.span_id) && (
-          <button type="button" className="grid size-6 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg" aria-label={`Trace of the failure in ${title}`} title="Opens this session's own trace at the request or tool call that failed" onClick={() => trace().catch(reportError)} data-testid="error-site-trace">
+          <button type="button" className="k-act" aria-label={`Trace of the failure in ${title}`} title="Opens this session's own trace at the request or tool call that failed" onClick={() => trace().catch(reportError)} data-testid="error-site-trace">
             <Activity className="size-3.5" />
           </button>
         )}
-        <button type="button" className="grid size-6 place-items-center rounded-md text-faint hover:bg-hover hover:text-fg" aria-label={`Copy the debug bundle of the failure in ${title}`} title="Copies the debug bundle of this session's own failure" onClick={(ev) => copyBundle({ error_id: e.id, session_id: s.session_id }, ev.currentTarget).then((ok) => { if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1500); } })} data-testid="error-site-bundle">
+        <button type="button" className="k-act" aria-label={`Copy the debug bundle of the failure in ${title}`} title="Copies the debug bundle of this session's own failure" onClick={(ev) => copyBundle({ error_id: e.id, session_id: s.session_id }, ev.currentTarget).then((ok) => { if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1500); } })} data-testid="error-site-bundle">
           {copied ? <Check className="size-3.5 text-ok" /> : <ClipboardCopy className="size-3.5" />}
         </button>
       </span>

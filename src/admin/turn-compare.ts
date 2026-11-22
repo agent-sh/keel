@@ -66,6 +66,10 @@ export function turnFacts(r: any): TurnFacts {
   };
 }
 
+// Differences under these read as none, in the sentences and in the page's table: a cost that
+// shows as $0.0000, a time a person cannot tell apart.
+export const SAME = { cost: 0.00005, ms: 50, share: 0.005 };
+
 // --- the words
 const num = (n: number) => Math.round(n).toLocaleString("en-US");
 export function span(ms: number): string {
@@ -103,7 +107,7 @@ export function turnDiff(a: TurnFacts, b: TurnFacts): { cost: string; time: stri
   const said = parts.slice(0, 3).map((p) => p.text);
   let cost: string;
   if (a.cost === null || b.cost === null) cost = `${A}'s cost against ${B}'s is not known (a request without a price)${said.length ? `; ${said.join(", ")}` : ""}.`;
-  else if (Math.abs(a.cost - b.cost) < 0.00005) cost = `${A} cost the same as ${B} (${usd(a.cost)})${said.length ? `: ${said.join(", ")}` : ""}.`;
+  else if (Math.abs(a.cost - b.cost) < SAME.cost) cost = `${A} cost the same as ${B} (${usd(a.cost)})${said.length ? `: ${said.join(", ")}` : ""}.`;
   else cost = `${A} cost ${usd(a.cost - b.cost)} ${a.cost > b.cost ? "more" : "less"} than ${B} (${usd(a.cost)} against ${usd(b.cost)})${said.length ? `: ${said.join(", ")}` : ""}.`;
   // --- time
   let time: string;
@@ -112,9 +116,9 @@ export function turnDiff(a: TurnFacts, b: TurnFacts): { cost: string; time: stri
     const d = a.ms - b.ms;
     const where = [
       { d: a.request_ms - b.request_ms, what: "in model requests" }, { d: a.tool_ms - b.tool_ms, what: "in tools" },
-      { d: (a.wait_ms ?? 0) - (b.wait_ms ?? 0), what: "waiting (approvals, questions, retries, the daemon)" },
-    ].filter((x) => Math.abs(x.d) >= 50).sort((x, y) => Math.abs(y.d) - Math.abs(x.d)).map((x) => `${span(Math.abs(x.d))} ${x.d > 0 ? "more" : "less"} ${x.what}`);
-    time = Math.abs(d) < 50 ? `${A} took as long as ${B} (${span(a.ms)}).`
+      { d: (a.wait_ms ?? 0) - (b.wait_ms ?? 0), what: "outside requests and tools" },
+    ].filter((x) => Math.abs(x.d) >= SAME.ms).sort((x, y) => Math.abs(y.d) - Math.abs(x.d)).map((x) => `${span(Math.abs(x.d))} ${x.d > 0 ? "more" : "less"} ${x.what}`);
+    time = Math.abs(d) < SAME.ms ? `${A} took as long as ${B} (${span(a.ms)}).`
       : `${A} took ${span(Math.abs(d))} ${d > 0 ? "longer" : "less"} than ${B} (${span(a.ms)} against ${span(b.ms)})${where.length ? `: ${where.join(", ")}` : ""}.`;
   }
   // --- what else differed

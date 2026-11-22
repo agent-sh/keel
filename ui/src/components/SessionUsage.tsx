@@ -19,7 +19,9 @@ import { useWholeEvents } from "../lib/whole.ts";
 // Parts for a bar or a split: cut by money when it is known, else by tokens.
 const parts = (tokens: Costs, costs: Costs | null, output = true): Part[] =>
   KINDS.filter((k) => output || k !== "output").map((k) => ({ label: KIND_LABEL[k], color: PART[k], value: costs ? costs[k] : tokens[k], also: costs ? fmtTokens(tokens[k]) : undefined, testid: `usage-${k}` }));
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const plural = (n: number, word: string) => `${n.toLocaleString("en-US")} ${word}${n === 1 ? "" : "s"}`;
+// The turns drawn at once: a session of a thousand turns opens on its newest, and the rest are a press away.
+const TURNS_SHOWN = 100;
 const pct = (share: number) => `${Math.round(100 * share)}%`;
 const NONE: StoredEvent[] = [];
 const h3 = "text-base font-medium";
@@ -109,6 +111,7 @@ export function SessionUsage({ session }: { session: Session }) {
   // Every row of the turns' tables, a compaction's included: the same count a turn shows.
   const requests = turns.reduce((n, t) => n + t.requests.length, 0);
   const [open, setOpen] = useState<number | null>(null);
+  const [shown, setShown] = useState(TURNS_SHOWN);
   // The newest turn first: the one a person opens the panel about. The other orders answer "which was dearest" and "which took longest".
   const [order, setOrder] = useState<Order>("newest");
   const listed = useMemo(() => {
@@ -124,7 +127,9 @@ export function SessionUsage({ session }: { session: Session }) {
     return () => { live = false; };
   }, [session.id, turns.length]);
   const attempts = useMemo(() => new Map((ledger?.turns ?? []).map((t) => [t.turn_event, t])), [ledger]);
-  const show = (n: number) => { setOpen(n); requestAnimationFrame(() => document.querySelector(`[data-turn="${n}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" })); };
+  // The widest turn number sets the column every row's number, bar and figures line up on.
+  const digits = `${String(Math.max(1, turns.length)).length}ch`;
+  const show = (n: number) => { setOpen(n); setShown(turns.length); requestAnimationFrame(() => document.querySelector(`[data-turn="${n}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" })); };
   // What the agents this session started spent: the task's cost is both.
   // Re-read when one of them ends; their requests, not their reports, count.
   const kids = useAuto((s) => Object.values(s.agents).filter((a) => a.parent_id === session.id).map((a) => `${a.id}:${a.status}`).join(","));
@@ -174,8 +179,8 @@ export function SessionUsage({ session }: { session: Session }) {
           )}
         </div>
         {!turns.length && <p className="k-empty">No turns yet.</p>}
-        <ol className="flex flex-col">
-          {listed.map(({ t, i: ti }) => {
+        <ol className="flex flex-col" style={{ "--turn-n": digits } as React.CSSProperties}>
+          {listed.slice(0, shown).map(({ t, i: ti }) => {
             const s = sent(t.total);
             // The turn's attempts as the ledger counted them: the ones that failed are said.
             const led = t.id ? attempts.get(t.id) : undefined;
@@ -191,29 +196,36 @@ export function SessionUsage({ session }: { session: Session }) {
                   className="-mx-2 block w-[calc(100%+1rem)] rounded-md px-2 py-2 text-left outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <span className="flex items-baseline gap-2">
-                    <span className="w-4 shrink-0 text-caption tabular-nums text-faint">{t.n}</span>
+                    <span className="w-[var(--turn-n)] shrink-0 text-right text-caption tabular-nums text-faint">{t.n}</span>
                     <span dir="auto" className="min-w-0 flex-1 truncate text-left text-ui text-fg">{t.prompt || "(no prompt)"}</span>
                     {t.cold && t.reused && <span className="shrink-0 rounded-sm bg-brass-soft px-1.5 py-px text-micro text-brass" data-testid="usage-cold" title={`the first request read ${fmtTokens(t.reused.read)} from cache of the ${fmtTokens(t.reused.before)} the turn before sent`}>cache cold</span>}
                     {compacted > 0 && <span className="shrink-0 rounded-sm bg-sunken px-1.5 py-px text-micro text-muted" data-testid="usage-compacted">compaction</span>}
                     <span className="shrink-0 text-ui tabular-nums text-fg" data-testid="usage-turn-cost">{t.total.cost !== undefined ? fmtCost(t.total.cost) : ""}</span>
                     <ChevronRight className={cn("size-3.5 shrink-0 self-center text-faint transition-transform", on && "rotate-90")} aria-hidden />
                   </span>
-                  <span className="mt-1.5 block pl-6"><SplitBar parts={parts(tokensOf(t.total), priced ? costs![ti]! : null, priced)} max={max} /></span>
-                  <span className="mt-1 flex flex-wrap gap-x-3 pl-6 text-caption tabular-nums text-muted">
+                  <span className="mt-1.5 block pl-[calc(var(--turn-n)+0.5rem)]"><SplitBar parts={parts(tokensOf(t.total), priced ? costs![ti]! : null, priced)} max={max} /></span>
+                  <span className="mt-1 flex flex-wrap gap-x-3 pl-[calc(var(--turn-n)+0.5rem)] text-caption tabular-nums text-muted">
                     <span>{fmtTokens(s)} sent</span>
                     <span>{fmtTokens(t.total.output)} out</span>
                     <span data-testid="usage-turn-requests">{led && led.requests >= t.requests.length ? `${plural(led.requests, "request")}${led.failed_attempts ? `, ${led.failed_attempts} failed` : ""}` : plural(t.requests.length, "request")}</span>
                     {t.ms !== undefined && <span>{fmtDur(t.ms)}</span>}
                   </span>
                 </button>
-                {on && <div className="pb-2.5 pl-6 max-sm:pl-0"><Requests t={t} /></div>}
+                {on && <div className="pb-2.5 pl-[calc(var(--turn-n)+0.5rem)] max-sm:pl-0"><Requests t={t} /></div>}
               </li>
             );
           })}
+          {listed.length > shown && (
+            <li className="border-t border-line py-2">
+              <button type="button" className="rounded-sm text-caption text-muted underline decoration-line-strong underline-offset-2 outline-none hover:text-fg focus-visible:ring-2 focus-visible:ring-ring" onClick={() => setShown((n) => n + 400)} data-testid="usage-turns-more">
+                {(listed.length - shown).toLocaleString("en-US")} more {listed.length - shown === 1 ? "turn" : "turns"}, {order === "newest" ? "older" : order === "oldest" ? "newer" : order === "dearest" ? "cheaper" : "shorter"} than these
+              </button>
+            </li>
+          )}
           {/* What was spent outside the turns' own requests, so the rows add up to the figure at the top. */}
           {why.beside !== undefined && turns.length > 0 && (
             <li data-testid="usage-beside" className="flex items-baseline gap-2 border-t border-line py-2">
-              <span className="w-4 shrink-0" aria-hidden />
+              <span className="w-[var(--turn-n)] shrink-0" aria-hidden />
               <span className="min-w-0 flex-1 text-ui text-muted">Beside the turns <span className="text-caption text-faint">side questions, readers, summaries on their own</span></span>
               <span className="shrink-0 text-ui tabular-nums text-fg" data-testid="usage-beside-cost">{fmtCost(why.beside)}</span>
               <span className="size-3.5 shrink-0" aria-hidden />

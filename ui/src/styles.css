@@ -566,6 +566,13 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .code-head .code-copy[data-copied] { color: var(--ok-ink); }
 .code-head .code-copy[data-failed], .code-head .code-copy[data-failed]:hover { color: var(--danger-ink); background: var(--danger-soft); }
 /* The shared copy button (CopyButton.tsx), and a block with one in its corner. */
+/* A small icon action in a dense row (a row's trace, its bundle, its receipt): the row's height under
+   a pointer, a finger's width where there is none. */
+.k-act { display: grid; place-items: center; flex-shrink: 0; width: var(--spacing-ctl-sm); height: var(--spacing-ctl-sm); border-radius: var(--radius-md); color: var(--faint); outline: none; }
+.k-act:hover { background: var(--hover); color: var(--fg); }
+.k-act:focus-visible { box-shadow: 0 0 0 2px var(--ring); }
+.k-act svg { width: 0.875rem; height: 0.875rem; }
+@media (hover: none) { .k-act { width: var(--spacing-ctl-xl); height: var(--spacing-ctl-xl); } }
 .k-copy { display: grid; place-items: center; width: 1.75rem; height: var(--spacing-ctl-md); flex-shrink: 0; border-radius: var(--radius-sm); color: var(--faint); }
 .k-copy:hover { background: var(--hover); color: var(--fg); }
 .k-copy svg { width: 0.875rem; height: 0.875rem; }

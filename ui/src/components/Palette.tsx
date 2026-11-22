@@ -247,8 +247,9 @@ export function Palette() {
                   className={cn("flex h-9 items-center gap-3 rounded-md px-2.5 text-ui", i === sel ? "bg-hover text-fg" : "text-muted")}
                 >
                   <span className={i === sel ? "text-accent" : "text-faint"}>{e.icon}</span>
-                  <span className="min-w-0 truncate text-fg">{e.label}</span>
-                  {e.detail && <span className="min-w-0 max-w-[40%] shrink-0 truncate text-caption text-faint">{e.detail}</span>}
+                  {/* The label and its detail share the row by what each needs: a short label leaves its room to the detail. */}
+                  <span className="min-w-0 flex-[0_1_auto] truncate text-fg">{e.label}</span>
+                  {e.detail && <span className="min-w-[6rem] flex-[0_1_auto] truncate text-caption text-faint">{e.detail}</span>}
                   <span className="ml-auto flex shrink-0 items-center">
                     {e.keys ? <Kbd keys={e.keys} /> : i === sel ? <CornerDownLeft className="size-3.5 text-faint" /> : null}
                   </span>
@@ -268,15 +269,17 @@ export function Palette() {
               </div>
             )}
           </div>
+          {/* What the search was limited to, in full: a time with its zone is not cut for the key hints. */}
+          {wantsSearch && !!limits?.length && (
+            <p className="border-t border-line px-4 py-1.5 text-micro text-faint" data-testid="palette-limits">Limited to <span className="text-muted">{limits.join(", ")}</span></p>
+          )}
           <div className="hidden items-center gap-4 border-t border-line px-4 py-2 text-micro text-faint sm:flex">
             <span className="flex items-center gap-1.5"><Kbd keys="↑" /><Kbd keys="↓" /> move</span>
             <span className="flex items-center gap-1.5"><Kbd keys="enter" /> open</span>
             <span className="flex items-center gap-1.5"><Kbd keys="escape" /> close</span>
             {/* What a search can be limited to, said where a search is typed; once it is, what it was limited to. */}
-            {wantsSearch && (
-              <span className="ml-auto min-w-0 truncate" data-testid="palette-limits">
-                {limits?.length ? <>Limited to <span className="text-muted">{limits.join(", ")}</span></> : <>Limit a search: <span className="font-mono">in:commands on:yesterday state:failed</span></>}
-              </span>
+            {wantsSearch && !limits?.length && (
+              <span className="ml-auto min-w-0 truncate" data-testid="palette-limit-hint">Limit a search: <span className="font-mono">in:commands on:yesterday state:failed</span></span>
             )}
           </div>
         </Dialog.Popup>
