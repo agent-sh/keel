@@ -9,6 +9,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
+import { logOf } from "../core/log-pages.ts";
 import { Store } from "../core/store.ts";
 import { attachmentPath, saveAttachment, setAttachmentsRoot } from "../engine/attachments.ts";
 import { adminCommands } from "../cli/admin.ts";
@@ -1166,4 +1167,198 @@ test("the first storage report of a start is answered from the report kept with 
     // What is kept is the read of the events alone: the sizes on disk are measured for every report, so the report adds up to the folder as it is.
     expect(Object.keys(JSON.parse(store.db.query<{ value: string }, []>("SELECT value FROM admin_meta WHERE key = 'storage_scan'").get()!.value)).sort()).toEqual(["rows", "scanned_ms"]);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// ---- deltas made from what the write-ahead log told ----
+
+const toldOf = (b: { path: string }) => !!manifestOf(b.path).database.told;
+
+// A restart's backup holds the changes since the last full backup and reads
+// only those when the log told them; after the log started again with nobody
+// reading it, it compares every page. A full backup is never made there: the
+// first one is owed to the daemon that starts next. What the log told is
+// compared with every page on a schedule, and each backup restores as the
+// store was.
+test("a restart's backup is a delta, from what the log told when it tells; a full one is owed; each one restores", async () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
+  try {
+    const src = new Store(join(root, "src"));
+    const s = src.createSession({ model: "p:m", workspace: root, title: "kept" });
+    const say = (t: string) => src.append(s.id, "user", { text: t.padEnd(12) + "x".repeat(3000) });
+    for (let i = 0; i < 300; i++) say(`one ${i}`);
+    const storage = new Storage(src, {} as any, new Bus(), {} as any);
+    const want = new Map<string, string[]>();
+    const kept = <B extends object>(b: B): B => { if ("path" in b) want.set((b as any).path, textsOf(src.stateDir)); return b; };
+    const backups = () => readdirSync(join(src.stateDir, "backups")).filter((d) => d.startsWith("keel-")).length;
+
+    // No backup yet: a restart does not wait for a copy of everything.
+    expect(await storage.backupQuick("before a restart")).toEqual({ owed: "there is no full backup to hold the changes since" });
+    expect(storage.owed()).toMatchObject({ why: "there is no full backup to hold the changes since" });
+    expect(existsSync(join(src.stateDir, "backups")) ? backups() : 0).toBe(0);
+    // The daemon that starts next makes it, and the note goes.
+    const full = kept(await storage.backup("after a restart"));
+    expect(full).toMatchObject({ kind: "full", checked: "whole" });
+    expect(storage.owed()).toBeUndefined();
+
+    // From here a restart's backup holds the pages the log named, and is not read from the whole file.
+    say("two");
+    const quick = kept(await storage.backupQuick("before a restart")) as any;
+    expect(quick).toMatchObject({ kind: "delta", told: true, base: full.name, checked: "pages" });
+    const m = manifestOf(quick.path).database;
+    expect(m).toMatchObject({ sha256: "", told: true });
+    expect(m.pages_sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(m.changed).toBeLessThan(20);
+    expect(verify(quick.path)).toMatchObject({ ok: true });
+
+    // The log starts again with nobody reading it (every frame copied, then a write): what changed is not known.
+    say("three");
+    src.db.exec("PRAGMA wal_checkpoint(PASSIVE)");
+    say("four");
+    // The restart's backup compares every page then, and holds what changed: the store as it stood before the restart.
+    const compared = kept(await storage.backupQuick("before a restart")) as any;
+    expect([compared.kind, toldOf(compared)]).toEqual(["delta", false]);
+    expect(manifestOf(compared.path).database.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(storage.owed()).toBeUndefined();
+    expect(backups()).toBe(3);
+
+    // Four in a row from the log (one less than are kept): the next one that may be slow compares, a quick one never does.
+    const told: any[] = [];
+    for (let i = 0; i < 4; i++) { say(`five ${i}`); told.push(kept(await (i % 2 ? storage.backup(`told ${i}`) : storage.backupQuick(`told ${i}`)))); }
+    expect(told.map(toldOf)).toEqual([true, true, true, true]);
+    say("six");
+    const again = kept(await storage.backupQuick("before a restart")) as any;
+    expect(toldOf(again)).toBe(true);
+    say("seven");
+    const due = kept(await storage.backup("a compare of every page"));
+    expect([due.kind, toldOf(due)]).toEqual(["delta", false]);
+    say("eight");
+    const after = kept(await storage.backup("asked for"));
+    expect(toldOf(after)).toBe(true);
+
+    // Every backup that is still kept restores as the store read when it was made.
+    const keptNow = storage.backups();
+    expect(keptNow.length).toBeGreaterThanOrEqual(5);
+    for (const b of keptNow) {
+      const dst = join(root, `dst-${b.name}`);
+      const r = restore(dst, b.path);
+      expect([b.reason, r.ok, textsOf(dst)]).toEqual([b.reason, true, want.get(b.path)!]);
+      const d = new Database(join(dst, "keel.db"), { readonly: true });
+      try { expect(d.query<{ integrity_check: string }, []>("PRAGMA integrity_check").get()!.integrity_check).toBe("ok"); } finally { d.close(); }
+      rmSync(dst, { recursive: true, force: true });
+    }
+    // A delta made from the log is called whole once it was read back over its full backup.
+    expect(await storage.checkBackups()).toMatchObject({ failed: [], store_ok: true });
+    expect(storage.backups().find((b) => b.name === after.name)).toMatchObject({ checked: "whole", told: true });
+    // A page of it changed on disk: it does not read back.
+    const z = join(after.path, "keel.db.delta.zst");
+    const bytes = readFileSync(z);
+    bytes[bytes.length >> 1] = bytes[bytes.length >> 1]! ^ 0xff;
+    writeFileSync(z, bytes);
+    expect(verify(after.path).ok).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The log's rows are not taken on trust: pages it did not name are read all
+// the same, and a compare says how many it missed. From then on every
+// backup compares.
+test("a log that did not name a changed page is found out, and nothing more is made from it", async () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
+  try {
+    const src = new Store(join(root, "src"));
+    const s = src.createSession({ model: "p:m", workspace: root, title: "kept" });
+    const say = (t: string) => src.append(s.id, "user", { text: t.padEnd(12) + "x".repeat(3000) });
+    for (let i = 0; i < 300; i++) say(`one ${i}`);
+    const captured: string[] = [];
+    const storage = new Storage(src, {} as any, new Bus(), { capture: (_s: string, e: Error) => captured.push(e.message) } as any);
+    const full = await storage.backup("full");
+    say("two");
+    const before = await storage.backup("told");
+    expect(toldOf(before)).toBe(true);
+    // The frames of the next changes are read, and their rows lose their pages.
+    for (let i = 0; i < 8; i++) say(`three ${i}`);
+    logOf(join(src.stateDir, "keel.db")).scan();
+    const side = new Database(join(src.stateDir, "log-pages.db"));
+    try { expect(side.query("UPDATE rows SET pages = x'' WHERE end = 0").run().changes).toBeGreaterThan(0); } finally { side.close(); }
+    // A restart does not get a backup that lacks a page: what the log told does not stand, and every page is compared.
+    const made = (await storage.backupQuick("before a restart")) as any;
+    expect([made.kind, toldOf(made), made.base]).toEqual(["delta", false, full.name]);
+    expect(captured).toEqual([expect.stringContaining(`that changed since the backup ${before.name}`)]);
+    expect(captured[0]).toContain("Until the daemon restarts every backup compares every page.");
+    const dst = join(root, "dst");
+    expect(restore(dst, made.path).ok).toBe(true);
+    expect(textsOf(dst)).toEqual(textsOf(src.stateDir));
+    // The log is whole again from here, and is still not used.
+    say("four");
+    // (A full backup is what follows when the changes have outgrown a delta of this small store: owed to a restart, made when asked for.)
+    const quick = (await storage.backupQuick("before a restart")) as any;
+    expect("owed" in quick || !toldOf(quick)).toBe(true);
+    expect(toldOf(await storage.backup("asked for"))).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A restart that comes while the daemon makes a backup of its own: it waits
+// for a compare (seconds) and then makes its own, so the store as it stood
+// before the restart is in a backup. It does not wait for the full backup
+// owed from the restart before: that one stays owed.
+test("a restart waits behind a compare the daemon is making, and not behind the full backup it owes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
+  try {
+    const src = new Store(join(root, "src"));
+    const s = src.createSession({ model: "p:m", workspace: root, title: "kept" });
+    const say = (t: string) => src.append(s.id, "user", { text: t.padEnd(12) + "x".repeat(3000) });
+    for (let i = 0; i < 300; i++) say(`one ${i}`);
+    const captured: string[] = [];
+    const storage = new Storage(src, {} as any, new Bus(), { capture: (_s: string, e: Error) => captured.push(e.message) } as any);
+    const later = () => (storage as any).later() as Promise<void>;
+    // No backup yet: owed to a restart, and the daemon begins the full one. A restart that comes meanwhile does not wait for it.
+    expect(await storage.backupQuick("before a restart")).toMatchObject({ owed: expect.any(String) });
+    const full = later();
+    expect(await storage.backupQuick("before a restart")).toEqual({ owed: "a full backup was being made when the restart asked for its own" });
+    await full;
+    expect(storage.backups().map((b) => [b.reason, b.kind])).toEqual([["after a restart", "full"]]);
+    expect(storage.owed()).toBeUndefined();
+    // Four deltas from the log: a compare is due, and the daemon begins it. A restart waits for it, then makes its own.
+    for (let i = 0; i < 4; i++) { say(`two ${i}`); expect(toldOf(await storage.backup(`told ${i}`))).toBe(true); }
+    say("three");
+    const compare = later();
+    const quick = (await storage.backupQuick("before a restart")) as any;
+    await compare;
+    expect(quick).toMatchObject({ kind: "delta", reason: "before a restart" });
+    const list = storage.backups().map((b) => b.reason);
+    expect(list.slice(0, 2)).toEqual(["before a restart", "a compare of every page"]);
+    expect(captured).toEqual([]);
+    const dst = join(root, "dst");
+    expect(restore(dst, quick.path).ok).toBe(true);
+    expect(textsOf(dst)).toEqual(textsOf(src.stateDir));
+
+    // The changes since the full backup have grown to a large share of the store (here: of a small one): every
+    // backup holds all of them again. The daemon makes a full one by itself, and the next backup is small again.
+    storage.grownPages = 4;
+    say("four");
+    const big = await storage.backup("asked for");
+    expect([big.kind, toldOf(big)]).toEqual(["delta", true]);
+    const before = manifestOf(big.path).database.changed;
+    expect(before).toBeGreaterThan(8);
+    await later();
+    expect(storage.backups()[0]).toMatchObject({ reason: "a new full backup", kind: "full", checked: "whole" });
+    say("five");
+    const small = await storage.backup("asked for");
+    expect(manifestOf(small.path).database).toMatchObject({ kind: "delta", told: true, base: storage.backups()[1]!.name });
+    expect(manifestOf(small.path).database.changed).toBeLessThan(before);
+    // A restart that comes while that full backup is being made does not wait for it.
+    say("six");
+    await storage.backup("asked for");
+    const due = later();
+    await new Promise((r) => setTimeout(r, 0));
+    const during = await storage.backupQuick("before a restart");
+    await due;
+    expect("owed" in during ? during.owed : "made").toMatch(/^(a full backup was being made when the restart asked for its own|made)$/);
+    expect(captured).toEqual([]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

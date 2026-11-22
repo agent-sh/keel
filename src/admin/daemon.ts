@@ -122,7 +122,7 @@ export class Daemon {
   // The process was told to stop (a signal): it stops, whatever a restart was doing.
   private stopping = false;
   private beforeExit: (() => void | Promise<void>)[] = [];
-  private beforeRestart: (() => void | string | Promise<void | string>)[] = [];
+  private beforeRestart: (() => void | string | { owed: string } | Promise<void | string | { owed: string }>)[] = [];
   // The stalls of this process, the newest first (the Daemon panel lists them).
   private stalls: StallRow[] = [];
   private sight?: StallWatch;
@@ -143,7 +143,8 @@ export class Daemon {
   // turns had their time and before any is parked; one that fails calls the
   // restart off, and the daemon takes work again.
   // `f` may answer with what it made, in a few words (a backup's name): the log's line says it.
-  onRestart(f: () => void | string | Promise<void | string>) { this.beforeRestart.push(f); }
+  // Or with `owed`: why it made nothing and left it to the daemon that starts next; the log's line says that.
+  onRestart(f: () => void | string | { owed: string } | Promise<void | string | { owed: string }>) { this.beforeRestart.push(f); }
 
   runningSessions(): string[] {
     return this.deps.store.db.query<{ id: string }, []>("SELECT id FROM sessions").all().map((r) => r.id).filter((id) => this.deps.engine.isRunning(id));
@@ -307,9 +308,11 @@ export class Daemon {
         try {
           if (this.beforeRestart.length) { this.draining!.backup_since_ms = Date.now(); this.emit(); }
           // What each step says it made (the backup's name) goes on the log's line.
-          const made: string[] = [];
-          for (const f of this.beforeRestart) { const said = await f(); if (typeof said === "string" && said) made.push(said); }
+          // A step that leaves its backup to the daemon that starts next says why.
+          const made: string[] = [], owed: string[] = [];
+          for (const f of this.beforeRestart) { const said = await f(); if (typeof said === "string" && said) made.push(said); else if (said && typeof said === "object") owed.push(said.owed); }
           if (made.length) say(backupLine({ ok: true, ms: Date.now() - t0, name: made.join(", ") }));
+          if (owed.length) say(backupLine({ ok: true, ms: Date.now() - t0, owed: owed.join(", ") }));
         } catch (e) {
           say(backupLine({ ok: false, ms: Date.now() - t0, error: (e as Error)?.message }), "warn");
           // Called off before a turn was cut: this daemon goes on as it was.

@@ -12,8 +12,29 @@
 //           full backup, which the manifest names. Restoring reads that full
 //           backup and puts these pages over it.
 //   (none)  keel.db, a plain copy: what a keel before this one wrote.
-// Whatever the kind, the manifest holds the SHA-256 of the whole database
-// file a restore must end up with, and a restore checks it.
+// Whatever the kind, the manifest holds what a restore must end up with, and
+// a restore checks it: the SHA-256 of the whole database file (`sha256`),
+// or, for a delta that was made without reading the whole file, the SHA-256
+// over the hash of each of its pages in order (`pages_sha256`).
+//
+// Which pages a delta holds is found in one of two ways:
+//   told      (database.told) from the write-ahead log: the pages its frames
+//             named since the backup before this one (src/core/log-pages.ts),
+//             with the pages that backup held. Only those pages are read: the
+//             time is the change's, not the store's. Made only when the log
+//             was read without a gap from that backup's place to this one's
+//             (database.at), and a few hundred pages the log did not name
+//             are read and must be as the full backup has them.
+//   compared  every page of the file is hashed and compared with the full
+//             backup's page hashes. The time is the store's. This is how a
+//             delta is made when the log does not say (it started again
+//             unseen, the daemon was killed with the machine, the store was
+//             restored), and on a schedule (Storage): it then also says
+//             whether the log had named every page that changed.
+// A full backup is never made while a restart waits (job.quick): the
+// restart goes on, and the backup is made by the daemon that starts after
+// it. A restart's backup is a delta: from what the log told when it tells,
+// else by the compare, as long as the restart has to wait for one then.
 //
 // What a backup was checked for before it got its name (database.checked):
 //   whole   a full backup: SQLite's integrity check passed on the snapshot
@@ -39,6 +60,7 @@ import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { logHead, PageLog, type LogAt } from "../core/log-pages.ts";
 import { GRANT_FILES, writeAll } from "../core/ownfile.ts";
 import { ASKED, HELD, logIndex, TRIED } from "../core/checkpoint-shared.ts";
 import { storeFd, storePath } from "../core/store-files.ts";
@@ -50,7 +72,8 @@ import { storeFd, storePath } from "../core/store-files.ts";
 // once the later check read it back; `failed`: that check found it does not
 // read back, and why. `newest_whole`: the newest backup of the list that is
 // known whole (itself, and for a delta the full backup it is read over).
-export type Backup = { name: string; path: string; created_ms: number | null; reason: string; sessions: number | null; events: number | null; bytes: number | null; unreadable?: string; config?: string; kind?: "full" | "delta"; base?: string; base_missing?: true; checked?: "whole" | "pages"; failed?: string; newest_whole?: true };
+// `told`: a delta whose pages were named by the log (see the top of this file).
+export type Backup = { name: string; path: string; created_ms: number | null; reason: string; sessions: number | null; events: number | null; bytes: number | null; unreadable?: string; config?: string; kind?: "full" | "delta"; base?: string; base_missing?: true; checked?: "whole" | "pages"; failed?: string; newest_whole?: true; told?: true };
 
 // The later check of a backup, written beside its manifest.
 export const CHECKED = "checked.json";
@@ -74,7 +97,10 @@ export type ManifestFile = { name: string; bytes: number; sha256: string; mtime_
 // is read over (by name and by that database's SHA-256) and how many pages
 // it carries. `source`: read from the database file under a read snapshot,
 // or from a VACUUM INTO copy when no such snapshot could be had.
-export type DbInfo = { kind: "full" | "delta"; page_size: number; pages: number; sha256: string; frames: number[]; base?: string; base_sha256?: string; changed?: number; source: "file" | "vacuum"; checked?: "whole" | "pages" };
+// `sha256` is empty for a delta made from what the log told: `pages_sha256`
+// is then what it must read back to. `at`: the place in the write-ahead log
+// the snapshot was taken at, from which the next backup asks the log.
+export type DbInfo = { kind: "full" | "delta"; page_size: number; pages: number; sha256: string; pages_sha256?: string; frames: number[]; base?: string; base_sha256?: string; changed?: number; source: "file" | "vacuum"; checked?: "whole" | "pages"; told?: true; at?: LogAt };
 export type Manifest = { created_ms: number; reason: string; sessions: number; events: number; files: ManifestFile[]; database?: DbInfo; config?: { dir: string; skipped: { name: string; why: string }[] } };
 
 const FULL = "keel.db.zst", PAGES = "keel.db.pages", DELTA = "keel.db.delta.zst";
@@ -116,7 +142,7 @@ export function listBackups(root: string): Backup[] {
         return {
           name, path, created_ms: m.created_ms, reason: m.reason, sessions: m.sessions, events: m.events, bytes: (m.files as { bytes: number }[]).reduce((n, f) => n + f.bytes, 0),
           ...(typeof m.config?.dir === "string" ? { config: m.config.dir } : {}),
-          ...(d ? { kind: d.kind, checked: later?.ok ? "whole" as const : d.checked ?? "whole" as const } : {}),
+          ...(d ? { kind: d.kind, checked: later?.ok ? "whole" as const : d.checked ?? "whole" as const, ...(d.told ? { told: true as const } : {}) } : {}),
           ...(later && !later.ok ? { failed: later.why ?? "it does not read back" } : {}),
           ...(d?.kind === "delta" && d.base ? { base: d.base, ...(existsSync(join(root, d.base, "manifest.json")) ? {} : { base_missing: true as const }) } : {}),
         };
@@ -190,7 +216,8 @@ export function hashFile(path: string, read: typeof readSync = readSync): string
 
 // Checks a backup: every file against the manifest, and the database. One
 // that holds the database compressed is read back whole (a delta over its
-// full backup) and must give the SHA-256 the manifest names: the bytes the
+// full backup) and must give the SHA-256 the manifest names (of the file, or
+// of its pages' hashes: `prover`): the bytes the
 // snapshot held when the backup was made. Its counts and SQLite's check
 // were taken through that snapshot then, and the snapshot is known to have
 // read the file alone (Snapshot.begin, snapshotTry), so this is the routine
@@ -209,9 +236,9 @@ export function verify(dir: string, deep = false): { ok: true; sessions: number;
   const m = files.manifest;
   if (m?.database) {
     const routine = (): { ok: true; sessions: number; events: number } | { ok: false; why: string } => {
-      const hash = createHash("sha256");
-      streamImage(dir, m.database!, (b) => void hash.update(b));
-      if (hash.digest("hex") !== m.database!.sha256) return { ok: false, why: "the database it holds does not read back as the one that was backed up" };
+      const proof = prover(m.database!);
+      streamImage(dir, m.database!, proof.take);
+      if (!proof.ok()) return { ok: false, why: "the database it holds does not read back as the one that was backed up" };
       return { ok: true, sessions: m.sessions, events: m.events };
     };
     if (!deep) {
@@ -288,9 +315,24 @@ const counts = (db: Database) => ({
 // `keep`: how many backups the owner keeps, which sets how large a delta may be.
 // `full`: a full backup whatever changed (the one made after a failed check).
 // `dbFd`: the daemon's kept descriptor of the database file (src/core/store-files.ts), for a backup made on a thread of its own.
-// `shmFd`: its kept descriptor of the log's index, the same way.
-export type BackupJob = { stateDir: string; root: string; tmp: string; reason: string; config?: string; keep?: number; full?: true; dbFd?: number; shmFd?: number };
-export type BackupDone = { sessions: number; events: number; skipped: { name: string; why: string }[]; config?: string };
+// `walFd`, `shmFd`: its kept descriptors of the log and the log's index, the same way.
+// `quick`: a restart waits on this backup: it is made only as a delta, never as a full backup.
+// `compare`: every page is compared whatever the log tells (the scheduled check of what it told).
+// `logWaitMs`: how long the rows of the log's last frames are waited for, where another thread writes them a moment after the snapshot.
+// `rowsSeen`: the newest row of the log's pages when the backup was asked for (before its snapshot).
+// `grownPages`: from how many pages a delta counts as grown (see BackupDone), where it is not the usual number.
+export type BackupJob = { stateDir: string; root: string; tmp: string; reason: string; config?: string; keep?: number; full?: true; dbFd?: number; walFd?: number; shmFd?: number; quick?: true; compare?: true; logWaitMs?: number; rowsSeen?: number; grownPages?: number };
+// `owed`: a quick backup that was not made, and why: nothing is in `tmp`.
+// `forget`: the rows of the log this backup read through (PageLog.forget), for once it has its name.
+// `missed`: a compare found pages that changed and that the log had not named: how many, and the
+// backup before this one, from whose place the log was asked.
+// `grown`: a delta that holds more than a thirty-second of the store (and 32 MiB of pages): every
+// backup after it reads, packs and reads back all of that again, so the daemon makes a full one soon.
+export type BackupDone = { sessions: number; events: number; skipped: { name: string; why: string }[]; config?: string; owed?: string; forget?: { id: number; s1: number; s2: number }; missed?: { pages: number; since: string }; grown?: true };
+// A delta is grown past one page in GROWN_SHARE of the store, when that is GROWN_PAGES pages and more.
+const GROWN_SHARE = 32, GROWN_PAGES = 8192;
+// A backup that is not made while a restart waits.
+class Owed extends Error {}
 
 // The database as it is at one moment, for the length of a backup.
 //
@@ -314,6 +356,8 @@ export type BackupDone = { sessions: number; events: number; skipped: { name: st
 export class Snapshot {
   readonly path: string;
   readonly db: Database;
+  // The place in the log the snapshot was taken at (set by `begin`): the frames up to it are in the file.
+  at?: LogAt;
   // `shmFd`: the process's kept descriptor of the log's index, from the thread that keeps it.
   constructor(stateDir: string, private shmFd?: number) {
     this.path = storePath(stateDir);
@@ -341,13 +385,24 @@ export class Snapshot {
   begin(held = false): boolean {
     this.db.run("BEGIN");
     this.db.query("SELECT COUNT(*) FROM sqlite_schema").get(); // the read snapshot starts with the first read
+    // (The index names the place: with the write lock held and every frame copied, the newest frame of its
+    // generation; with an emptied log, the beginning of the next one.)
+    const place = (): LogAt | undefined => { try { const h = logHead(this.shmFd ?? storeFd(`${this.path}-shm`)); return h && { s1: h.s1, s2: h.s2, frame: h.frame }; } catch { return undefined; } };
     if (held) {
       const at = this.index();
-      if (at && at.frames === at.copied) return true;
+      if (at && at.frames === at.copied) {
+        const here = place();
+        this.at = here && here.frame === at.frames ? here : undefined;
+        return true;
+      }
     } else {
       let wal = 0;
       try { wal = statSync(`${this.path}-wal`).size; } catch {} // no log at all
-      if (wal === 0) return true;
+      if (wal === 0) {
+        const here = place();
+        this.at = here && here.frame === 0 ? here : undefined;
+        return true;
+      }
     }
     this.end();
     return false;
@@ -403,7 +458,8 @@ const stamp = (path: string) => { const st = statSync(path); return `${st.size}:
 export function makeBackup(job: BackupJob, snap?: Snapshot): BackupDone {
   const { stateDir, tmp } = job;
   mkdirSync(tmp, { recursive: true });
-  let made: { info: DbInfo; files: string[]; sessions: number; events: number } | undefined;
+  let made: (Wrote & { sessions: number; events: number }) | undefined;
+  if (!snap && job.quick) throw new Owed("the store could not be held still for a moment, so the backup would be a copy of all of it");
   if (snap) {
     const before = stamp(snap.path);
     const held = counts(snap.db);
@@ -412,7 +468,7 @@ export function makeBackup(job: BackupJob, snap?: Snapshot): BackupDone {
     try {
       // The file is read through in order first; SQLite's check, which walks
       // it table by table, then finds it in the system's file cache.
-      const out = writeDatabase(snap.path, size, pages, "file", job);
+      const out = writeDatabase(snap.path, size, pages, "file", job, snap.at);
       // The file's size and time as they were: nothing wrote into it meanwhile.
       if (stamp(snap.path) === before) made = { ...out, ...held };
     } catch (e) {
@@ -428,6 +484,7 @@ export function makeBackup(job: BackupJob, snap?: Snapshot): BackupDone {
       }
     } else for (const f of DB_FILES) rmSync(join(tmp, f), { force: true });
   }
+  if (!made && job.quick) throw new Owed("the database file moved while it was read, so the backup would be a copy of all of it");
   if (!made) {
     const raw = join(tmp, "keel.db.raw");
     const src = snap?.db ?? new Database(storePath(stateDir), { readonly: true });
@@ -517,7 +574,17 @@ export function makeBackup(job: BackupJob, snap?: Snapshot): BackupDone {
   }
   syncPath(join(tmp, "manifest.json"));
   for (const d of [...folders].sort((a, b) => b.length - a.length)) syncPath(d);
-  return { sessions: made.sessions, events: made.events, skipped: carried?.skipped ?? [], ...(carried ? { config: carried.dir } : {}) };
+  const grown = made.info.kind === "delta" && (made.info.changed ?? 0) >= (job.grownPages ?? GROWN_PAGES) && (made.info.changed ?? 0) * GROWN_SHARE > made.info.pages;
+  return { sessions: made.sessions, events: made.events, skipped: carried?.skipped ?? [], ...(carried ? { config: carried.dir } : {}), ...(made.forget ? { forget: made.forget } : {}), ...(made.missed ? { missed: made.missed } : {}), ...(grown ? { grown: true as const } : {}) };
+}
+
+// makeBackup for the worker: a quick backup that cannot be made is an answer, not a failure.
+export function makeBackupOrOwe(job: BackupJob, snap?: Snapshot): BackupDone {
+  try { return makeBackup(job, snap); } catch (e) {
+    if (!(e instanceof Owed)) throw e;
+    snap?.close();
+    return { sessions: 0, events: 0, skipped: [], owed: e.message };
+  }
 }
 
 // The check that follows a backup, run in a process of its own
@@ -602,11 +669,33 @@ function frame(fd: number, data: Uint8Array, frames: number[]) {
   frames.push(z.length);
 }
 
+// The first 16 bytes of a page's SHA-256: what tells a changed page, and what `pages_sha256` is taken over.
+const pageHash = (page: Uint8Array) => createHash("sha256").update(page).digest().subarray(0, PAGE_HASH);
+
+// What a backup's database must read back to: the SHA-256 of the file, or,
+// where the manifest has none (a delta made from what the log told), the
+// SHA-256 over the hash of each page in order. `take` is given the file in
+// pieces of whole pages.
+function prover(info: DbInfo): { take: (b: Buffer) => void; ok: () => boolean } {
+  const hash = createHash("sha256");
+  if (info.sha256) return { take: (b) => void hash.update(b), ok: () => hash.digest("hex") === info.sha256 };
+  const size = info.page_size;
+  return {
+    take: (b) => { for (let o = 0; o + size <= b.length; o += size) hash.update(pageHash(b.subarray(o, o + size))); },
+    ok: () => !!info.pages_sha256 && hash.digest("hex") === info.pages_sha256,
+  };
+}
+
+type Base = { name: string; info: DbInfo; hashes: Buffer };
 // The newest full backup a delta can be read over: its page hashes are there
 // and are the ones its manifest names, and its pages are this size. Not one
 // that failed a later check, nor one with a delta that did (the full backup's
 // file or its page hashes may be what is wrong: nothing more is built on it).
-function findBase(root: string, size: number): { name: string; info: DbInfo; hashes: Buffer } | undefined {
+// `whole`: its file is read through too and must be the bytes its manifest
+// names. That pass is as long as the full backup, so a delta made from what
+// the log told leaves it to the next compare (and to every check that reads
+// a backup back, which reads this file).
+function findBase(root: string, size: number, whole: boolean): Base | undefined {
   const list = listBackups(root);
   const b = list.find((b) => !b.unreadable && b.kind === "full");
   if (!b || b.failed || list.some((d) => d.base === b.name && d.failed)) return;
@@ -614,25 +703,136 @@ function findBase(root: string, size: number): { name: string; info: DbInfo; has
     const m = JSON.parse(readFileSync(join(b.path, "manifest.json"), "utf8")) as Manifest;
     const info = m.database!, idx = m.files.find((f) => f.name === PAGES), db = m.files.find((f) => f.name === FULL);
     // The chain's checksum: the full backup's file is the bytes its manifest names (a pass over the compressed file).
-    if (info.page_size !== size || !idx || !db || statSync(join(b.path, FULL)).size !== db.bytes || hashFile(join(b.path, FULL)) !== db.sha256) return;
+    if (info.page_size !== size || !idx || !db || statSync(join(b.path, FULL)).size !== db.bytes || (whole && hashFile(join(b.path, FULL)) !== db.sha256)) return;
     const hashes = readFileSync(join(b.path, PAGES));
     if (hashes.length !== info.pages * PAGE_HASH || createHash("sha256").update(hashes).digest("hex") !== idx.sha256) return;
     return { name: b.name, info, hashes };
   } catch {} // not one to build on
 }
 
+// What the log tells of the pages that changed since the full backup `base`:
+// the pages the newest backup holds (it is `base`, or a delta over it), and
+// the pages of every frame written between that backup's place in the log
+// and this snapshot's (`at`). Page numbers from 0. Undefined when it does
+// not tell: the newest backup has no place written down, is not read over
+// `base`, failed a check, or the log was not read without a gap since.
+type Told = { set: Set<number>; walked: { id: number; s1: number; s2: number }; since: string };
+function toldPages(job: BackupJob, base: Base, at: LogAt, pages: number): Told | undefined {
+  const prev = listBackups(job.root).find((b) => !b.unreadable);
+  if (!prev || prev.failed || (prev.name !== base.name && prev.base !== base.name)) return;
+  let info: DbInfo | undefined;
+  try { info = (JSON.parse(readFileSync(join(prev.path, "manifest.json"), "utf8")) as Manifest).database; } catch {}
+  if (!info?.at || info.page_size !== base.info.page_size) return;
+  const log = new PageLog(storePath(job.stateDir), { wal: job.walFd, shm: job.shmFd });
+  try {
+    let got = log.between(info.at, at);
+    for (const until = Date.now() + (job.logWaitMs ?? 0); !got && Date.now() < until; got = log.between(info.at, at)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    if (!got) return;
+    const set = new Set<number>();
+    if (info.kind === "delta") {
+      const rec = 4 + info.page_size;
+      for (const b of framesOf(join(prev.path, DELTA), info.frames)) for (let o = 0; o + rec <= b.length; o += rec) set.add(b.readUInt32BE(o));
+    }
+    for (const p of got.pages) if (p >= 1 && p <= pages) set.add(p - 1);
+    return { set, walked: got.walked, since: prev.name };
+  } catch {
+    return; // the backup before this one does not read: the pages are compared
+  } finally {
+    log.close();
+  }
+}
+
+// The rows of the log that were there before this backup's snapshot and are
+// not of its generation: no later backup asks for them (PageLog.forget).
+function rowsBefore(job: BackupJob, at: LogAt): { id: number; s1: number; s2: number } | undefined {
+  if (job.rowsSeen === undefined) return;
+  return { id: job.rowsSeen, s1: at.s1, s2: at.s2 };
+}
+
+// Pages the log did not name, read all the same when a delta is made from
+// what it told: each must be as the full backup has it.
+const SPOT = 512;
+
+// Writes the pages `changed` (from 0, in order) as a delta's records into
+// `job.tmp`; `hashes` gets each one's hash at its place. The compressed
+// length of each frame.
+function writeDelta(fd: number, size: number, per: number, changed: number[], job: BackupJob, hashes: Buffer): number[] {
+  const frames: number[] = [];
+  const out = openSync(join(job.tmp, DELTA), "w", 0o600);
+  try {
+    // Records of a page number (4 bytes, big-endian, from 0) and the page, in page order.
+    const rec = Buffer.allocUnsafe(per * (4 + size));
+    const one = Buffer.allocUnsafe(size);
+    for (let i = 0; i < changed.length; i += per) {
+      const part = changed.slice(i, i + per);
+      part.forEach((p, k) => {
+        rec.writeUInt32BE(p, k * (4 + size));
+        const page = readPages(fd, size, p, 1, one);
+        page.copy(rec, k * (4 + size) + 4);
+        pageHash(page).copy(hashes, p * PAGE_HASH);
+      });
+      frame(out, rec.subarray(0, part.length * (4 + size)), frames);
+    }
+  } finally {
+    closeSync(out);
+  }
+  return frames;
+}
+
+// Read back from what was written: every page the delta holds is the
+// snapshot's page, and it holds every one of `changed`. The whole database
+// over the full backup is read back later (checked.json).
+function deltaReadsBack(job: BackupJob, frames: number[], changed: number[], hashes: Buffer, size: number): boolean {
+  let held = 0, same = true;
+  try {
+    for (const b of framesOf(join(job.tmp, DELTA), frames)) {
+      for (let o = 0; o + 4 + size <= b.length && same; o += 4 + size, held++) {
+        const p = b.readUInt32BE(o);
+        same = p === changed[held] && pageHash(b.subarray(o + 4, o + 4 + size)).compare(hashes, p * PAGE_HASH, (p + 1) * PAGE_HASH) === 0;
+      }
+    }
+  } catch { same = false; }
+  return same && held === changed.length;
+}
+
+type Wrote = { info: DbInfo; files: string[]; forget?: { id: number; s1: number; s2: number }; missed?: { pages: number; since: string } };
+
+// A delta made from what the log told: only those pages are read. Undefined
+// when it cannot stand (a page past the full backup's end that the log did
+// not name, more pages than a delta may hold, a page the log did not name
+// that is not as the full backup has it): the pages are then compared.
+function toldDelta(fd: number, size: number, pages: number, per: number, base: Base, told: Told, job: BackupJob, at: LogAt): Wrote | undefined {
+  const changed = [...told.set].filter((p) => p < pages).sort((a, b) => a - b);
+  for (let p = base.info.pages; p < pages; p++) if (!told.set.has(p)) return;
+  if (changed.length * (job.keep ?? 1) > pages) return;
+  const within = Math.min(pages, base.info.pages);
+  const one = Buffer.allocUnsafe(size);
+  for (let i = 0; i < SPOT && within > changed.length; i++) {
+    const p = Math.floor(Math.random() * within);
+    if (told.set.has(p)) continue;
+    if (pageHash(readPages(fd, size, p, 1, one)).compare(base.hashes, p * PAGE_HASH, (p + 1) * PAGE_HASH) !== 0) return;
+  }
+  // The hash of every page of this snapshot: the full backup's, with the pages this delta holds over them.
+  const hashes = Buffer.alloc(pages * PAGE_HASH);
+  base.hashes.copy(hashes, 0, 0, Math.min(base.hashes.length, hashes.length));
+  const frames = writeDelta(fd, size, per, changed, job, hashes);
+  const info: DbInfo = { kind: "delta", page_size: size, pages, sha256: "", pages_sha256: createHash("sha256").update(hashes).digest("hex"), frames, base: base.name, base_sha256: base.info.sha256, changed: changed.length, source: "file", checked: "pages", told: true, at };
+  if (!deltaReadsBack(job, frames, changed, hashes, size)) { rmSync(join(job.tmp, DELTA), { force: true }); return; }
+  return { info, files: [DELTA], forget: told.walked };
+}
+
 // Puts the database file at `path` (`pages` pages of `size` bytes, not
 // changing while this runs) into the backup folder `job.tmp`: as the pages
 // that differ from the newest full backup when those are few, else whole.
 // Few is no more than one page in `keep`: the deltas kept beside a full
-// backup then never outweigh a second full one. What was written is read
-// back and must give the file's own SHA-256; a delta that does not (its
+// backup then never outweigh a second full one.
+// `at`: the snapshot's place in the log. With it, and a log that tells what
+// changed since the backup before, only those pages are read (toldDelta).
+// Else every page is hashed and compared; what was written is then read
+// back and must give the file's own SHA-256, and a delta that does not (its
 // full backup was damaged since) is dropped for a full backup.
-function writeDatabase(path: string, size: number, pages: number, source: DbInfo["source"], job: BackupJob): { info: DbInfo; files: string[] } {
+function writeDatabase(path: string, size: number, pages: number, source: DbInfo["source"], job: BackupJob, at?: LogAt): Wrote {
   const per = Math.max(1, Math.floor(FRAME_BYTES / size));
-  const buf = Buffer.allocUnsafe(per * size);
-  const hashes = Buffer.allocUnsafe(pages * PAGE_HASH);
-  const whole = createHash("sha256");
   // The store's own file is read through the descriptor the process keeps and
   // is never closed: closing one would drop every lock this process holds on
   // the store (src/core/store-files.ts). A copy made for this backup is a
@@ -640,60 +840,58 @@ function writeDatabase(path: string, size: number, pages: number, source: DbInfo
   const live = source === "file";
   const fd = live ? job.dbFd ?? storeFd(path) : openSync(path, "r");
   try {
+    const keep = job.keep ?? 1;
+    const deltas = live && keep > 1 && !job.full;
+    let told: (Told & { base: string }) | undefined;
+    if (deltas && at) {
+      const base = findBase(job.root, size, false);
+      const t = base && toldPages(job, base, at, pages);
+      if (base && t) {
+        told = { ...t, base: base.name };
+        const made = job.compare ? undefined : toldDelta(fd, size, pages, per, base, t, job, at);
+        if (made) return made;
+      }
+    }
+    // A restart does not wait for a full backup, nor for the pass over the store that would only find that out.
+    if (job.quick && !(deltas && findBase(job.root, size, false))) throw new Owed("there is no full backup to hold the changes since");
+
+    const buf = Buffer.allocUnsafe(per * size);
+    const hashes = Buffer.allocUnsafe(pages * PAGE_HASH);
+    const whole = createHash("sha256");
     for (let p = 0; p < pages; p += per) {
       const block = readPages(fd, size, p, Math.min(per, pages - p), buf);
       whole.update(block);
-      for (let i = 0; i * size < block.length; i++) createHash("sha256").update(block.subarray(i * size, (i + 1) * size)).digest().copy(hashes, (p + i) * PAGE_HASH, 0, PAGE_HASH);
+      for (let i = 0; i * size < block.length; i++) pageHash(block.subarray(i * size, (i + 1) * size)).copy(hashes, (p + i) * PAGE_HASH);
     }
     const sha256 = whole.digest("hex");
+    const pages_sha256 = createHash("sha256").update(hashes).digest("hex");
     const reads = (info: DbInfo) => {
       const h = createHash("sha256");
       try { streamImage(job.tmp, info, (b) => void h.update(b)); } catch { return false; }
       return h.digest("hex") === sha256;
     };
+    const forget = at ? told?.walked ?? rowsBefore(job, at) : undefined;
 
-    const keep = job.keep ?? 1;
-    const base = source === "file" && keep > 1 && !job.full ? findBase(job.root, size) : undefined;
+    const base = deltas ? findBase(job.root, size, true) : undefined;
+    // Why this backup is not a delta, for a restart that does not wait for a full one.
+    let why = "there is no full backup to hold the changes since";
     if (base) {
       const changed: number[] = [];
       for (let p = 0; p < pages; p++) {
         if (p >= base.info.pages || hashes.compare(base.hashes, p * PAGE_HASH, (p + 1) * PAGE_HASH, p * PAGE_HASH, (p + 1) * PAGE_HASH) !== 0) changed.push(p);
       }
+      // What the log had told, against what did change: a page it did not name is one a delta made from it would lack.
+      const lacks = told && told.base === base.name ? changed.filter((p) => !told!.set.has(p)).length : 0;
+      const missed = lacks ? { pages: lacks, since: told!.since } : undefined;
       if (changed.length * keep <= pages) {
-        const frames: number[] = [];
-        const out = openSync(join(job.tmp, DELTA), "w", 0o600);
-        try {
-          // Records of a page number (4 bytes, big-endian, from 0) and the page, in page order.
-          const rec = Buffer.allocUnsafe(per * (4 + size));
-          const one = Buffer.allocUnsafe(size);
-          for (let i = 0; i < changed.length; i += per) {
-            const part = changed.slice(i, i + per);
-            part.forEach((p, k) => {
-              rec.writeUInt32BE(p, k * (4 + size));
-              readPages(fd, size, p, 1, one).copy(rec, k * (4 + size) + 4);
-            });
-            frame(out, rec.subarray(0, part.length * (4 + size)), frames);
-          }
-        } finally {
-          closeSync(out);
-        }
-        const info: DbInfo = { kind: "delta", page_size: size, pages, sha256, frames, base: base.name, base_sha256: base.info.sha256, changed: changed.length, source, checked: "pages" };
-        // Read back from what was written: every page it holds is the
-        // snapshot's page, and it holds every changed one. The whole
-        // database over the full backup is read back later (checked.json).
-        let held = 0, same = true;
-        try {
-          for (const b of framesOf(join(job.tmp, DELTA), frames)) {
-            for (let o = 0; o + 4 + size <= b.length && same; o += 4 + size, held++) {
-              const p = b.readUInt32BE(o);
-              same = p === changed[held] && createHash("sha256").update(b.subarray(o + 4, o + 4 + size)).digest().compare(hashes, p * PAGE_HASH, (p + 1) * PAGE_HASH, 0, PAGE_HASH) === 0;
-            }
-          }
-        } catch { same = false; }
-        if (same && held === changed.length) return { info, files: [DELTA] };
+        const frames = writeDelta(fd, size, per, changed, job, hashes);
+        const info: DbInfo = { kind: "delta", page_size: size, pages, sha256, pages_sha256, frames, base: base.name, base_sha256: base.info.sha256, changed: changed.length, source, checked: "pages", ...(at ? { at } : {}) };
+        if (deltaReadsBack(job, frames, changed, hashes, size)) return { info, files: [DELTA], ...(forget ? { forget } : {}), ...(missed ? { missed } : {}) };
         rmSync(join(job.tmp, DELTA), { force: true });
-      }
+        why = "the changes since the last full backup did not read back";
+      } else why = "more of the store changed since the last full backup than a backup of the changes may hold";
     }
+    if (job.quick) throw new Owed(why);
 
     const frames: number[] = [];
     const out = openSync(join(job.tmp, FULL), "w", 0o600);
@@ -703,9 +901,9 @@ function writeDatabase(path: string, size: number, pages: number, source: DbInfo
       closeSync(out);
     }
     writeFileSync(join(job.tmp, PAGES), hashes, { mode: 0o600 });
-    const info: DbInfo = { kind: "full", page_size: size, pages, sha256, frames, source, checked: "whole" };
+    const info: DbInfo = { kind: "full", page_size: size, pages, sha256, pages_sha256, frames, source, checked: "whole", ...(at && live ? { at } : {}) };
     if (!reads(info)) throw new Error("the backup did not check out: the database does not read back as it was written");
-    return { info, files: [FULL, PAGES] };
+    return { info, files: [FULL, PAGES], ...(forget && live ? { forget } : {}) };
   } finally {
     if (!live) closeSync(fd);
   }
@@ -786,16 +984,16 @@ export function streamImage(dir: string, info: DbInfo, sink: (b: Buffer) => void
 // was backed up; a file that is not is removed. `sync` false: a copy made to
 // be looked at and removed.
 export function materialize(dir: string, info: DbInfo, dest: string, sync = true) {
-  const hash = createHash("sha256");
+  const proof = prover(info);
   const fd = openSync(dest, "w", 0o644);
   try {
     try {
-      streamImage(dir, info, (b) => { hash.update(b); writeAll(fd, b); });
+      streamImage(dir, info, (b) => { proof.take(b); writeAll(fd, b); });
       if (sync) fsyncSync(fd);
     } finally {
       closeSync(fd);
     }
-    if (hash.digest("hex") !== info.sha256) throw new Error("the database it holds does not read back as the one that was backed up");
+    if (!proof.ok()) throw new Error("the database it holds does not read back as the one that was backed up");
   } catch (e) {
     rmSync(dest, { force: true });
     throw e;

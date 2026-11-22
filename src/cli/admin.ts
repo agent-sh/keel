@@ -213,6 +213,8 @@ const backup = wrap("keel backup [--url URL]  A checked copy of the database, th
 const backups = wrap("keel backups [--url URL] [--json]", {}, async (v) => {
   const r = await call(urlOf(v.url), "/api/backups");
   out(r, !!v.json, () => r.backups.map((b: any) => b.unreadable ? `${b.name}  ${b.created_ms ? time(b.created_ms) : "time unknown"}  ${b.unreadable}` : `${b.name}  ${time(b.created_ms)}  ${mb(b.bytes).padStart(9)}  ${b.sessions} sessions  (${b.reason})${b.base ? `  the changes since ${b.base}${b.base_missing ? ", which is gone: this one cannot be restored" : ""}` : ""}${b.failed ? `  NOT KNOWN WHOLE: ${b.failed}` : b.checked === "pages" ? "  its pages checked; not yet read back whole" : ""}${b.newest_whole ? "  (newest known whole)" : ""}`).join("\n") || "no backups");
+  // The backup the last restart did not wait for (it would have read the whole store): the daemon makes it within a minute of its start.
+  if (!v.json && r.owed) console.log(`a backup is owed since the restart at ${time(r.owed.since_ms)} (${r.owed.why}): the daemon makes it now`);
   return 0;
 });
 

@@ -11,7 +11,7 @@
 // SQLite answers at once with "busy", and a pass is over in a moment. Then
 // the backup is made from a copy instead. It answers once and the daemon
 // ends it.
-import { makeBackup, Snapshot, snapshotTry, type BackupJob } from "./backup.ts";
+import { makeBackupOrOwe, Snapshot, snapshotTry, type BackupJob } from "./backup.ts";
 
 declare const self: Worker;
 
@@ -38,7 +38,7 @@ self.onmessage = (e: MessageEvent<{ job: BackupJob; gate: Int32Array }>) => {
       snap.close();
       snap = undefined;
     }
-    self.postMessage({ t: "done", done: makeBackup(job, snap) });
+    self.postMessage({ t: "done", done: makeBackupOrOwe(job, snap) });
   } catch (err) {
     snap?.close();
     self.postMessage({ t: "failed", error: (err as Error).message });

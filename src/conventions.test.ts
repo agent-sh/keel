@@ -65,6 +65,7 @@ test("the store's files are named in few places and opened outside SQLite only t
     "src/admin/storage.ts",         // their sizes by stat, and a restore that moves them aside with no daemon on the folder
     "src/core/checkpoint-worker.ts", // the kept descriptors of the log (to sync it) and of its index (to read how far the copy is)
     "src/core/checkpoint.ts",       // the index's kept descriptor, to see how long the log is while the thread is in a step
+    "src/core/log-pages.ts",        // the kept descriptors of the log and its index, to read which pages the frames name
     "src/core/store-files.ts",
   ]);
   // The file of owed writes is an instruction to the next start (src/core/owed.ts): the daemon alone

@@ -54,8 +54,8 @@ export function mcpLine(servers: { name: string; state: string }[]): string {
 
 export const drainLine = (o: { restart: boolean; running: number; timeoutMs: number; reason?: string }) =>
   clip(`[daemon] draining for a ${o.restart ? "restart" : "stop"}${o.reason ? ` (${val(o.reason)})` : ""}: ${o.running ? `${o.running} turn${o.running === 1 ? "" : "s"} running get${o.running === 1 ? "s" : ""} up to ${dur(o.timeoutMs)}` : "no turn is running"}`);
-export const backupLine = (o: { ok: boolean; ms: number; name?: string; error?: string }) =>
-  clip(o.ok ? `[daemon] backup before the restart made in ${dur(o.ms)}${o.name ? `: ${val(o.name)}` : ""}` : `[daemon] backup before the restart failed after ${dur(o.ms)}: ${o.error ? val(o.error) : "no reason given"}; the restart is called off`);
+export const backupLine = (o: { ok: boolean; ms: number; name?: string; owed?: string; error?: string }) =>
+  clip(o.owed ? `[daemon] no backup before the restart, it is made after the start: ${val(o.owed)}` : o.ok ? `[daemon] backup before the restart made in ${dur(o.ms)}${o.name ? `: ${val(o.name)}` : ""}` : `[daemon] backup before the restart failed after ${dur(o.ms)}: ${o.error ? val(o.error) : "no reason given"}; the restart is called off`);
 export const exitLine = (o: { restart: boolean; parked: number; upMs: number; reason?: string }) =>
   clip(`[daemon] ${o.restart ? `restarting${o.reason ? ` (${val(o.reason)})` : ""}` : "stopping cleanly"} after ${dur(o.upMs)} up${o.parked ? `: ${o.parked} turn${o.parked === 1 ? "" : "s"} parked for the next start` : ""}`);
 

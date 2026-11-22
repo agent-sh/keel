@@ -1302,7 +1302,8 @@ it.
 `keel backup` writes a checked copy under `<state>/backups`: the database, the
 settings files, the uploaded files, and the files of the config folder (MCP
 servers, hooks, skills, plugins, agents, instructions). The daemon makes one
-before a restart. `keel backups` lists them.
+before a restart, and right after the start when it would have been a full
+copy (see below). `keel backups` lists them.
 
 A backup is made in a worker, so the daemon keeps answering meanwhile. The
 database is kept compressed (`keel.db.zst`, which `zstd -d` reads too). When
@@ -1312,17 +1313,40 @@ both. A delta is taken while the changed pages are at most one in `keep`
 (the number of backups kept, 5 by default), so the deltas beside a full
 backup never outweigh a second one. A full backup stays for as long as a
 kept backup is read over it. Each backup records the SHA-256 of the
-database it restores to, and a restore checks it.
+database it restores to (of the file, or of its pages' hashes in order), and
+a restore checks it.
+
+Which pages changed is read from the store's write-ahead log: each frame of
+the log names its page, and the daemon keeps those page numbers beside the
+store (`log-pages.db`) as the log is written and before it starts again. A
+delta made this way reads only the changed pages, so its time is the
+change's, not the store's. It is made only when the log was read without a
+gap since the backup before it. When it was not (the log started again
+unseen, the machine went down, the store was restored), the backup hashes
+every page of the store and compares, as before. One backup in every `keep`
+compares every page whatever the log says, and at least one a week: it
+reports a page the log did not name, marks the deltas made from the log
+since the last compare, and from then on every backup compares.
+
+A restart waits for a delta: made from the log when the log tells, in
+well under a second whatever the store's size, else by the compare. It
+never waits for a full backup (the first one of a store, one whose changes
+have outgrown a delta): that one is noted beside the backups before the
+restart goes on, and the daemon that starts makes it within a minute, with
+the reason "after a restart". A backup that can neither be made nor noted
+calls the restart off, as before.
 
 What a backup was checked for before it got its name:
 
 - A full backup: SQLite's integrity check passed on the snapshot that was
   read, and the file was read back whole to the recorded SHA-256.
-- A delta: every page that differs from its full backup is in it, read from
-  one snapshot; the delta was read back and each page matches; its full
-  backup's file has the SHA-256 it was written with. It is not read back
-  whole and SQLite's check is not run then: both take time in proportion to
-  the store, and a restart waits on its backup.
+- A delta: every page that differs from its full backup is in it (found by
+  comparing every page, or named by the log), read from one snapshot; the
+  delta was read back and each page matches. One made from the log also
+  reads a few hundred pages the log did not name: each must be as the full
+  backup has it. It is not read back whole and SQLite's check is not run
+  then: both take time in proportion to the store, and a restart waits on
+  its backup.
 - The daemon does both after, in a process of its own: twenty seconds after
   a start that finds such backups, and right after a backup that was asked
   for. It runs the integrity check on the store and reads each such delta

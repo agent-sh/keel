@@ -12,7 +12,7 @@
 //                                          retention; while none is set, what the proposed one would list
 // POST  /api/storage/retention             { spill_before_ms?, usage_before_ms?, sessions? } from a listing -> { removed, due }
 // POST  /api/storage/retention/removed     { session_id, paths } -> { removed }: which of them the retention removed
-// GET   /api/backups                       { backups }
+// GET   /api/backups                       { backups, settings, owed }
 // POST  /api/backups                       a backup now -> { backup }
 // GET   /api/daemon                        status: pid, uptime, running turns, draining, restart_failed
 // POST  /api/drain                         { timeout_seconds?, restart? } -> { ok, running, restart }
@@ -96,7 +96,8 @@ export const adminRoutes: RouteModule = (deps) => {
   // A check of earlier backups that runs then is ended for it (Storage.backup).
   daemon.onRestart(async () => {
     if (!settings().backup.before_restart) return;
-    try { return (await storage.backup("before a restart")).name; } catch (e) { throw new Error(`The backup before the restart failed: ${(e as Error).message}`, { cause: e }); }
+    // The changes since the last full backup are waited for; a full backup is owed to the daemon that starts next (Storage.backupQuick).
+    try { const b = await storage.backupQuick("before a restart"); return "owed" in b ? { owed: b.owed } : b.name; } catch (e) { throw new Error(`The backup before the restart failed: ${(e as Error).message}`, { cause: e }); }
     // Where the restart does not come after all, the backup is still read back.
     finally { storage.checkLater(); }
   });
@@ -253,7 +254,8 @@ export const adminRoutes: RouteModule = (deps) => {
     },
 
     "/api/backups": {
-      GET: () => json({ backups: storage.backups(), settings: settings().backup }),
+      // `owed`: the backup the last restart did not wait for, until this daemon has made it.
+      GET: () => json({ backups: storage.backups(), settings: settings().backup, owed: storage.owed() ?? null }),
       POST: async () => {
         const backup = await storage.backup("asked for");
         // Read back whole after the answer (a delta is checked for its pages before it has its name).

@@ -15,6 +15,7 @@ import type { Bus } from "../core/bus.ts";
 import type { ErrorTracker } from "../core/errors.ts";
 import { gitSync } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
+import { logOf, witnessed } from "../core/log-pages.ts";
 import { storeFd, storePath } from "../core/store-files.ts";
 import type { Engine } from "../engine/turn.ts";
 import { jobsOf, leftText, jobLive, stopJob, stopJobs } from "../tools/jobs.ts";
@@ -411,51 +412,161 @@ export class Storage {
   backup(reason: string): Promise<Backup> {
     this.cancelCheck?.();
     this.asked++; // a check that has not begun yet does not begin before this backup
-    const run = this.backing.then(() => (this.asked--, this.backupNow(reason)));
+    const run = this.backing.then(() => (this.asked--, this.backupNow(reason, { compare: this.untold || this.compareDue() }) as Promise<Backup>));
     this.backing = run.catch(() => {});
     return run;
   }
   private asked = 0;
 
-  // `full`: a full backup whatever changed.
-  private async backupNow(reason: string, full = false): Promise<Backup> {
+  // The backup a restart waits on: the changes since the last full backup,
+  // never a full one. The write-ahead log tells which pages changed since the
+  // backup before it (src/admin/backup.ts) and only those are read; where it
+  // does not (it started again unseen), every page is compared, as a
+  // restart's backup always was, so the store as it stood before the restart
+  // can still be restored. A full backup (the first one, one whose changes
+  // outgrew a delta) is not made here: it is owed, in a note beside the
+  // backups, and the daemon that starts after the restart makes it
+  // (checkLeft). The note is on the disk before this returns: a restart whose
+  // backup can neither be made nor be owed fails here, and is called off.
+  // A backup that is being made then is waited for (a compare takes
+  // seconds), and the restart's own follows it. Except the full backup the
+  // daemon owes from the restart before: that one can take as long as the
+  // store is large, the restart does not wait for it, and it stays owed.
+  backupQuick(reason: string): Promise<Backup | { owed: string }> {
+    this.cancelCheck?.();
+    if (this.owing) return Promise.resolve().then(() => this.owe("a full backup was being made when the restart asked for its own"));
+    this.asked++;
+    const run = this.backing.then(() => (this.asked--, this.backupNow(reason, { quick: true, compare: this.untold })));
+    this.backing = run.catch(() => {});
+    return run;
+  }
+  // A full backup the daemon makes by itself (the one owed to the last restart, one made because the
+  // changes had grown) is being made, or waits its turn.
+  private owing = 0;
+  // The newest backup holds a large share of the store as changes: a full one is due.
+  private fullDue = false;
+  // (From how many pages a delta counts as grown, where a test sets another number: src/admin/backup.ts.)
+  grownPages?: number;
+
+  // The note of a backup that is owed to a restart, and its removal once a backup is made.
+  private get owedPath() { return join(this.backupRoot, OWED); }
+  private owe(why: string): { owed: string } {
+    mkdirSync(this.backupRoot, { recursive: true });
+    writeFileSync(this.owedPath, JSON.stringify({ since_ms: Date.now(), why }), { mode: 0o600 });
+    syncPath(this.owedPath);
+    syncPath(this.backupRoot);
+    return { owed: why };
+  }
+  owed(): { since_ms: number; why: string } | undefined {
+    try { return JSON.parse(readFileSync(this.owedPath, "utf8")); } catch { return undefined; }
+  }
+
+  // What the log told is checked by a compare of every page (the backup
+  // made then holds what the compare found, whatever the log told): when as
+  // many deltas in a row were made from the log as leave one compared backup
+  // among those that are kept, and once a week. Never the backup a restart
+  // waits on: the next one that may be slow.
+  private compareDue(now = Date.now()): boolean {
+    const list = this.backups().filter((b) => !b.unreadable);
+    const run = list.findIndex((b) => !b.told);
+    const told = run < 0 ? list.length : run;
+    if (!told) return false;
+    const keep = settings().backup.keep as number;
+    return told >= Math.max(1, keep - 1) || now - (list[told]?.created_ms ?? 0) >= COMPARE_EVERY_MS;
+  }
+  // A compare found pages the log had not named: until the daemon restarts every backup compares.
+  private untold = false;
+
+  // `full`: a full backup whatever changed. `quick`: a delta, else it is owed.
+  // `compare`: every page is compared, whatever the log told.
+  private async backupNow(reason: string, how: { full?: boolean; quick?: boolean; compare?: boolean } = {}): Promise<Backup | { owed: string }> {
     // Two backups in the same millisecond get distinct names (-1, -2, ...).
     const base = `keel-${new Date().toISOString().replace(/[:.]/g, "-")}`;
     let stamp = base.slice(5);
     for (let n = 1; existsSync(join(this.backupRoot, `keel-${stamp}`)) || existsSync(join(this.backupRoot, `.keel-${stamp}.partial`)); n++) stamp = `${base.slice(5)}-${n}`;
     const tmp = join(this.backupRoot, `.keel-${stamp}.partial`);
     const final = join(this.backupRoot, `keel-${stamp}`);
+    const db = storePath(this.dir);
+    let done: BackupDone;
     try {
       mkdirSync(tmp, { recursive: true });
       // The worker reads the database file itself once the write-ahead log is
       // emptied into it: asked for here, between two writes of the daemon.
       // Without a checkpoint thread the daemon's own connection empties the
       // log, and gives up at once when a reader or a writer is in the way
-      // (its usual wait for a lock would hold the loop).
+      // (its usual wait for a lock would hold the loop). The loop is the
+      // only writer then, so what the log held is read here before it is
+      // emptied, and its end written down (src/core/log-pages.ts). Where a
+      // thread exists and does not answer (it is starting, or it failed) it
+      // may still write, so nothing is written down: the next backup compares.
       const checkpoint = () => {
-        try { this.store.noWait(() => this.store.db.run("PRAGMA wal_checkpoint(TRUNCATE)")); } catch {} // not emptied: the worker sees that
+        const empty = () => this.store.db.run("PRAGMA wal_checkpoint(TRUNCATE)");
+        try { this.store.noWait(() => (checkpointerOf(this.store) ? empty() : witnessed(db, empty))); } catch {} // not emptied: the worker sees that
       };
       // With one, the thread copies the log and holds the daemon's writes back for the worker's snapshot: the loop is not held at all.
+      // (The thread reads the log's pages itself, and writes down each of its ends.)
       const viaThread = (gate: Int32Array) => checkpointerOf(this.store)?.snapshot(gate);
       // The read thread's connection would keep the log from being emptied
       // while a read of it runs: its reads are held until the worker has its
       // snapshot (a read already running is waited for, ten seconds at most).
       const release = await readsOf(this.store).hold(READS_HOLD_MS);
-      const done = await inWorker<BackupDone>({ stateDir: this.dir, root: this.backupRoot, tmp, reason, keep: settings().backup.keep, ...(full ? { full: true as const } : {}), ...(this.config ? { config: resolve(this.config) } : {}) }, { checkpoint, viaThread, snapped: release }).finally(release);
+      const rowsSeen = logOf(db).newest();
+      done = await inWorker<BackupDone>({
+        stateDir: this.dir, root: this.backupRoot, tmp, reason, keep: settings().backup.keep,
+        ...(how.full ? { full: true as const } : {}), ...(how.quick ? { quick: true as const } : {}), ...(how.compare ? { compare: true as const } : {}),
+        ...(rowsSeen !== undefined ? { rowsSeen } : {}), ...(this.config ? { config: resolve(this.config) } : {}), ...(this.grownPages !== undefined ? { grownPages: this.grownPages } : {}),
+        // (The thread writes the rows of the log's last frames a moment after the snapshot it held the writes for.)
+        ...(checkpointerOf(this.store) ? { logWaitMs: LOG_WAIT_MS } : {}),
+      }, { checkpoint, viaThread, snapped: release }).finally(release);
+      if (done.owed) {
+        rmSync(tmp, { recursive: true, force: true });
+        return this.owe(done.owed);
+      }
       if (done.skipped.length) this.errors.capture?.("server", new Error(`the backup left out ${done.skipped.length} config file${done.skipped.length === 1 ? "" : "s"} it could not read: ${done.skipped.map((s) => s.name).join(", ")}`), { at: "backup config", dir: done.config });
       // What a backup still does on the loop after its worker: its name
       // (a sync of the folder), and below the removal of older ones.
       timed(() => "giving a backup its name", () => {
         renameSync(tmp, final);
         syncPath(this.backupRoot); // the name itself is on disk
+        // The next backup asks the log from this one's place: the rows before it go.
+        if (done.forget) logOf(db).forget(done.forget);
       });
     } catch (e) {
       rmSync(tmp, { recursive: true, force: true });
       throw e;
     }
+    // A backup that may read the whole store settles what a restart left owed.
+    if (!how.quick) rmSync(this.owedPath, { force: true });
+    if (done.missed) this.missed(done.missed, basename(final));
+    // The changes since the last full backup have grown: each backup holds them all again. A full
+    // one is made soon, by the daemon itself and never while a restart waits (later).
+    this.fullDue = !!done.grown;
     timed(() => "removing older backups", () => this.prune());
     this.diskStale = true;
     return this.backups().find((b) => b.name === basename(final))!;
+  }
+
+  // A compare found pages that changed and that the log had not named since
+  // the backup `since`. The backup made now holds them (it compared). The
+  // deltas made from what the log told, back from `since` to the last backup
+  // that compared, may lack a page: each is marked, never called whole, and
+  // nothing more is made from the log by this daemon.
+  private missed(m: { pages: number; since: string }, made: string) {
+    this.untold = true;
+    const list = this.backups();
+    const marked: string[] = [];
+    for (let i = list.findIndex((b) => b.name === m.since); i >= 0 && i < list.length && list[i]!.told; i++) {
+      const why = `the write-ahead log did not name every page that changed (found when the backup ${made} compared every page), so this backup may lack one`;
+      try {
+        writeFileSync(join(list[i]!.path, CHECKED), JSON.stringify({ checked_ms: Date.now(), ok: false, why } satisfies Checked), { mode: 0o600 });
+        syncPath(join(list[i]!.path, CHECKED));
+        marked.push(list[i]!.name);
+      } catch {}
+    }
+    this.errors.capture?.("server", new Error(
+      `The store's log did not name ${m.pages} page${m.pages === 1 ? "" : "s"} that changed since the backup ${m.since}. The backup ${made} compared every page and holds them. `
+      + (marked.length ? `${marked.length === 1 ? `The backup ${marked[0]} was` : `${marked.length} backups (${marked.join(", ")}) were`} made from what the log told and may lack a page: marked, and not counted as whole. ` : "")
+      + "Until the daemon restarts every backup compares every page."), { at: "backup pages" });
   }
 
   // The backups a later check is owed: deltas that were checked for their pages only.
@@ -469,9 +580,28 @@ export class Storage {
     clearTimeout(this.checkTimer);
     this.checkTimer = setTimeout(() => {
       this.checkTimer = undefined;
-      this.checkBackups(true).catch((e) => this.errors.capture?.("server", e, { at: "backup check" }));
+      this.later().catch((e) => this.errors.capture?.("server", e, { at: "backup check" }));
     }, ms);
     this.checkTimer.unref?.();
+  }
+  // What follows a backup or a start, with nobody waiting: the backup a
+  // restart left owed, or the compare that is due; then the check.
+  private async later() {
+    const owed = this.owed();
+    const own = async (reason: string, run: () => Promise<unknown>, said: string) => {
+      try { await run(); } catch (e) { this.errors.capture?.("server", new Error(`${said} failed: ${(e as Error).message}`, { cause: e }), { at: "backup" }); }
+    };
+    if (owed) {
+      this.owing++;
+      try { await own("after a restart", () => this.backup("after a restart"), "The backup owed to the last restart"); } finally { this.owing--; }
+    }
+    // (A full backup that is due compares nothing: the compare waits for the changes made over it.)
+    if (this.fullDue && !this.stopped) {
+      this.owing++;
+      const full = () => { const run = this.backing.then(() => this.backupNow("a new full backup", { full: true })); this.backing = run.catch(() => {}); return run; };
+      try { await own("a new full backup", full, "The full backup that was due"); } finally { this.owing--; }
+    } else if (!owed && this.compareDue()) await own("a compare of every page", () => this.backup("a compare of every page"), "The backup that compares every page");
+    await this.checkBackups(true);
   }
   // At a start: backups an earlier process left unchecked (it restarted
   // right after making one, or was killed before its check) are checked
@@ -479,8 +609,9 @@ export class Storage {
   // And the day's check (checkNow) is looked at once an hour, whether or
   // not a backup is made: a daemon that makes none for days still reads
   // the ones it keeps.
+  // And a backup the restart before this start left owed is made then.
   checkLeft() {
-    if (this.unchecked().length || this.dayDue()) this.checkLater(CHECK_AT_START_MS);
+    if (this.unchecked().length || this.dayDue() || this.owed() || this.compareDue()) this.checkLater(CHECK_AT_START_MS);
     clearInterval(this.dayTimer);
     this.dayTimer = setInterval(() => { if (!this.checkTimer && this.dayDue()) this.checkLater(0); }, DAY_LOOK_MS);
     this.dayTimer.unref?.();
@@ -599,7 +730,7 @@ export class Storage {
       this.errors.capture?.("server", new Error(`the database did not pass SQLite's integrity check: ${done.store.why}. ${names.length === 1 ? `The backup ${names[0]} holds` : `${names.length} backups (${names.join(", ")}) hold`} its pages as they were and may hold the damage: marked, and not counted as whole. No full backup can be made of the database as it is: one is refused, and so is a restart that waits on it.`), { at: "backup check" });
     } else if (failed.length) {
       let why: string | undefined;
-      try { full = await this.backupNow("after a backup failed its check", true); } catch (e) { why = (e as Error).message; }
+      try { full = (await this.backupNow("after a backup failed its check", { full: true })) as Backup; } catch (e) { why = (e as Error).message; }
       const whole = this.backups().find((b) => b.newest_whole)?.name;
       this.errors.capture?.("server", new Error(
         `${names.length === 1 ? `the backup ${names[0]} does` : `${names.length} backups (${names.join(", ")}) do`} not read back: ${failed[0]!.why}. `
@@ -637,6 +768,12 @@ const CHECK_AT_START_MS = 20_000;
 // And after a backup made by this process: a restart that waited on it has
 // ended the process long before, so the check runs only where none came.
 const CHECK_AFTER_BACKUP_MS = 120_000;
+// How long a backup waits for the rows of the log's last frames, which the checkpoint thread writes right after the snapshot.
+const LOG_WAIT_MS = 500;
+// The note of a backup owed to a restart, beside the backups.
+const OWED = ".owed";
+// A compare of every page at least this often, while deltas are made from what the log tells.
+const COMPARE_EVERY_MS = 7 * DAY;
 // A check that was ended for a backup: not a failure.
 class Cancelled extends Error {}
 
@@ -712,10 +849,11 @@ function inWorker<T>(job: BackupJob, on: { checkpoint?: () => void; viaThread?: 
     w.onerror = (e) => end(() => fail(new Error(`the backup worker failed: ${e.message}`)));
     // The database file is read through this process's kept descriptor (src/core/store-files.ts):
     // a thread made per backup opens none of its own. No file yet: the worker's read fails as it did.
-    let dbFd: number | undefined, shmFd: number | undefined;
+    let dbFd: number | undefined, shmFd: number | undefined, walFd: number | undefined;
     try { dbFd = storeFd(storePath(job.stateDir)); } catch {}
     try { shmFd = storeFd(`${storePath(job.stateDir)}-shm`); } catch {}
-    w.postMessage({ job: { ...job, dbFd, shmFd }, gate });
+    try { walFd = storeFd(`${storePath(job.stateDir)}-wal`); } catch {}
+    w.postMessage({ job: { ...job, dbFd, shmFd, walFd }, gate });
   });
 }
 

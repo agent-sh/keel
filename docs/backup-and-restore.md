@@ -32,7 +32,10 @@ The copy is opened and checked before it counts: SQLite's integrity check, and
 the same sessions and at least the same events as the live database. A backup
 that fails the check is removed. `keel backups` lists them, newest first; the
 newest five are kept (`backup.keep` in the settings). The daemon also makes
-one before a restart when `backup.before_restart` is on.
+one before a restart when `backup.before_restart` is on: before the restart
+when it holds the pages that changed, and right after the start, with the
+reason "after a restart", when it would be a full copy (the README's Backups
+section says when).
 
 Left out of `config/`: links, `.prev` and temp files, folders whose name
 starts with a dot, `node_modules`, and the sign-in file (its tokens rotate, so

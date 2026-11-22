@@ -24,6 +24,7 @@ test("a drain, its backup, a restart and a clean stop each say what happened", (
   expect(drainLine({ restart: true, running: 2, timeoutMs: 120_000, reason: "keel restart from a terminal" })).toBe("[daemon] draining for a restart (keel restart from a terminal): 2 turns running get up to 2 min");
   expect(drainLine({ restart: false, running: 0, timeoutMs: 10_000 })).toBe("[daemon] draining for a stop: no turn is running");
   expect(backupLine({ ok: true, ms: 1200, name: "2026-11-22-restart" })).toBe("[daemon] backup before the restart made in 1 s: 2026-11-22-restart");
+  expect(backupLine({ ok: true, ms: 40, owed: "there is no full backup to hold the changes since" })).toBe("[daemon] no backup before the restart, it is made after the start: there is no full backup to hold the changes since");
   expect(backupLine({ ok: false, ms: 300, error: "disk full" })).toBe("[daemon] backup before the restart failed after 300 ms: disk full; the restart is called off");
   expect(exitLine({ restart: true, parked: 3, upMs: 3_600_000, reason: "an upgrade" })).toBe("[daemon] restarting (an upgrade) after 1 h up: 3 turns parked for the next start");
   expect(exitLine({ restart: false, parked: 0, upMs: 90_000 })).toBe("[daemon] stopping cleanly after 2 min up");

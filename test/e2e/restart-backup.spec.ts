@@ -9,8 +9,11 @@ import { shoot } from "./shots.ts";
 // restart off: no turn is cut, the failure is one error, the page and
 // `keel restart` say so, and the same daemon takes work again, a wake that
 // came due while it drained included. Once the fault is gone the restart goes
-// through. Runs its own daemon on a scratch state
-// folder, on the scripted stand-in.
+// through. The backup it waits on is one that reads only what changed: the
+// first backup of a store is a copy of all of it, so that restart does not
+// wait, and the daemon that starts makes it; the next restart's backup holds
+// the pages that changed since, made before the restart. Runs its own daemon
+// on a scratch state folder, on the scripted stand-in.
 const ROOT = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state");
 const FAILED = "The backup before the restart failed";
 
@@ -35,7 +38,7 @@ function daemon(state: string, port: number): Promise<{ proc: ChildProcess; url:
 }
 
 test("a failed backup calls the restart off; the retry restarts", async ({ page }) => {
-  test.setTimeout(240_000);
+  test.setTimeout(360_000);
   const state = join(ROOT, `restart-backup-${Date.now()}`);
   for (const d of ["state", "work", "config", "home"]) mkdirSync(join(state, d), { recursive: true });
   const d = await daemon(state, await freePort());
@@ -107,7 +110,9 @@ test("a failed backup calls the restart off; the retry restarts", async ({ page 
     expect(await failures()).toMatchObject([{ count: 2 }]);
     expect((await call("/api/daemon")).pid).toBe(pid0);
 
-    // The fault is gone: the restart goes through, with its backup.
+    // The fault is gone: the restart goes through. There is no backup yet, and
+    // the first one is a copy of the whole store: the restart does not wait
+    // for it, and the daemon that starts makes it.
     rmSync(fault);
     const ok = await restart(5);
     expect(ok.status, ok.stdout + ok.stderr).toBe(0);
@@ -115,11 +120,23 @@ test("a failed backup calls the restart off; the retry restarts", async ({ page 
     expect(last).not.toBe(pid0);
     expect(ok.stdout).toContain(`restarted: pid ${last}`);
     expect((await call("/api/daemon")).restart_failed).toBeNull();
-    expect((await call("/api/backups")).backups).toMatchObject([{ reason: "before a restart", sessions: 3 }]);
+    expect((await call("/api/backups")).backups).toEqual([]);
     await page.reload();
     await expect(panel.getByTestId("daemon-status")).toContainText(`pid ${last}`, { timeout: 30_000 });
     await expect(panel.getByTestId("daemon-restart-failed")).toHaveCount(0);
     await shoot(page, "restart-backup-02-restarted");
+    await expect.poll(async () => (await call("/api/backups")).backups, { timeout: 60_000 }).toMatchObject([{ reason: "after a restart", kind: "full", sessions: 3 }]);
+
+    // The next restart: its backup is made before it, from the pages the log named since that one.
+    const more = await call("/api/sessions", { model: "scripted:stand-in", title: "Written between two restarts" });
+    expect(more.status).toBe(201);
+    const again = await restart(5);
+    expect(again.status, again.stdout + again.stderr).toBe(0);
+    expect((await call("/api/daemon")).pid).not.toBe(last);
+    const kept = (await call("/api/backups")).backups;
+    expect(kept).toMatchObject([{ reason: "before a restart", kind: "delta", told: true, sessions: 4 }, { reason: "after a restart", kind: "full" }]);
+    // It is read back whole over the full backup by the daemon that started.
+    await expect.poll(async () => (await call("/api/backups")).backups[0], { timeout: 60_000 }).toMatchObject({ name: kept[0].name, checked: "whole", newest_whole: true });
   } finally {
     // The restarted daemon is not this test's child: it is asked to stop at its
     // own address, once it says it serves this test's state folder.
