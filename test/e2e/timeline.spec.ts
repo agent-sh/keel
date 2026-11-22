@@ -246,10 +246,9 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     // A turn the owner started leads with what they asked; what it took is the line under it.
     await expect(panel.getByTestId("timeline-about").filter({ hasText: "script:slow timeline-prompt-marker" })).toHaveCount(1);
     await expect(panel.getByTestId("timeline-bad")).toHaveText("2 failed tools");
-    // The minute is said once; rows in the same minute show their time to the second, whole: every row has a full time.
-    await expect(panel.locator("time").first()).toHaveText(/^\d\d:\d\d$/);
-    await expect(panel.locator("time").filter({ hasText: /^\d\d:\d\d:\d\d$/ }).first()).toBeVisible();
-    for (const t of await panel.locator("time").allTextContents()) expect(t).toMatch(/^\d\d:\d\d(:\d\d)?$/);
+    // One time format in the view: every row has its time to the second.
+    await expect(panel.locator("time").first()).toBeVisible();
+    for (const t of await panel.locator("time").allTextContents()) expect(t).toMatch(/^\d\d:\d\d:\d\d$/);
     await shots("timeline-01-story");
 
     // Keyboard: the list is one Tab stop; arrows move, Enter opens the receipt.

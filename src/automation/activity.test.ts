@@ -7,7 +7,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
-import { zoneLabel } from "../core/clock.ts";
+import { localDay, zoneLabel } from "../core/clock.ts";
 import { Store } from "../core/store.ts";
 import * as activity from "./activity.ts";
 import * as alerts from "./alerts.ts";
@@ -38,7 +38,8 @@ function scratch() {
   };
   return { store, session, turn };
 }
-const T0 = new Date(2026, 10, 22, 7, 0, 0).getTime();
+// Seven in the morning two days ago: in the past, and inside the thirty days the list keeps.
+const T0 = (() => { const d = new Date(Date.now() - 2 * 86_400_000); d.setHours(7, 0, 0, 0); return d.getTime(); })();
 
 test("one row a turn, with what its alert said; alerts alone are still listed", () => {
   const { session, turn } = scratch();
@@ -94,7 +95,7 @@ test("the text form: a line a row in local time with the offset said once, and h
   const short = busy.slice(-12);
   expect(text).toEqual([
     `Activity, failures only, newest first. Times are local (${zoneLabel(T0)}).`,
-    "2026-11-22",
+    localDay(T0),
     `  07:00:05  turn     Many turns: turn finished (Reply 4)  [session=${short}]`,
     `  07:00:04  turn     Many turns: turn finished (Reply 3)  [session=${short}]`,
     `            3 more in "Many turns": keel activity --session ${short}`,
@@ -117,4 +118,19 @@ test("a turn the model declined is not filed as finished", () => {
   expect(activity.list({ failures: true }).items.map((x) => [x.kind, x.sub, x.said])).toEqual([
     ["turn", "refusal", "Declined: Refuses: The model declined the turn."], ["turn", "refusal", "Declined: Refuses: I will not"],
   ]);
+});
+
+// A wait on the owner has one age: the alert of a decision raised again (a restart puts its card back) keeps the time it was first asked.
+test("an approval raised again keeps the time it was first asked", () => {
+  const { session, store } = scratch();
+  const s = session("Needs approval");
+  const first = alerts.raise("approval", s, "Approval: Needs approval", "Bash: touch x", { approval_id: "ap-1", open_session: s })!;
+  store.db.query("UPDATE alerts SET ts = ? WHERE id = ?").run(T0, first.id);
+  // The daemon restarts and puts the card back; then once more, after the owner read the row.
+  const again = alerts.raise("approval", s, "Approval: Needs approval", "Bash: touch x", { approval_id: "ap-1", open_session: s })!;
+  expect([again.id === first.id, again.ts]).toEqual([false, T0]);
+  alerts.readWhere("approval_id", "ap-1");
+  expect(alerts.raise("approval", s, "Approval: Needs approval", "Bash: touch x", { approval_id: "ap-1", open_session: s })!.ts).toBe(T0);
+  // Another decision of the same session is asked now.
+  expect(alerts.raise("approval", s, "Approval: Needs approval", "Bash: touch y", { approval_id: "ap-2", open_session: s })!.ts).toBeGreaterThan(T0);
 });

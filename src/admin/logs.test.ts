@@ -4,7 +4,7 @@
 import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { formatLine, fromFiles, type LogLine, parseLines, tail } from "./logs.ts";
+import { formatLine, fromFiles, type LogLine, parseLines, shownLine, tail } from "./logs.ts";
 
 const S = "01a1fd57-0861-7438-b6d5-030fa4213433", T = "01a1fd57-095a-7557-af0f-38a84abd7dd6";
 const day = (d: string, h: number, m: number, s: number, ms = 0) => Date.parse(`${d}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(ms).padStart(3, "0")}Z`);
@@ -56,4 +56,13 @@ test("the newest end is read across days, and a window is found inside a large f
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// The files keep ISO times (they are read back); a person or a model reads the same line in the machine's own zone.
+test("a line is shown in local time and stored in UTC", () => {
+  const ts = new Date(2026, 10, 22, 7, 27, 38, 96).getTime();
+  const l: LogLine = { ts, level: "info", text: "[daemon] started", session: "01a201a4-4253-74d6-ab8a-e1e0cd415773" };
+  expect(shownLine(l)).toBe("2026-11-22 07:27:38.096 INFO  {01a201a4-4253-74d6-ab8a-e1e0cd415773} [daemon] started");
+  expect(formatLine(l)).toBe(`${new Date(ts).toISOString()} INFO  {01a201a4-4253-74d6-ab8a-e1e0cd415773} [daemon] started`);
+  expect(parseLines(formatLine(l))[0]).toEqual(l);
 });

@@ -351,9 +351,10 @@ function Panel({ session }: { session: Session }) {
             const isOpen = open === r.id;
             const turn = r.kind === "turn";
             const aside = r.turn?.branch === "other";
-            // The minute once; what follows in it shows its time to the second, whole, so a burst keeps its order and every row has a time.
+            // Every row has its time to the second, in one format: a burst keeps its order and no row reads as a different kind of time.
+            // A row in the same minute as the one above it is quieter, so the eye finds where a minute begins.
             const sameMinute = !!above && !label && clock(above.ts) === clock(r.ts);
-            const stamp = sameMinute ? clock(r.ts, { seconds: true }) : clock(r.ts);
+            const stamp = clock(r.ts, { seconds: true });
             return (
               <Fragment key={r.id}>
                 {label && (

@@ -2,7 +2,7 @@
 // backups | restore | report | usage | service: the daemon's administration
 // from a terminal. Each asks the running daemon over HTTP, except restore
 // (the daemon must be stopped) and service (writes the systemd unit).
-import { localStamp, zoneNote } from "../core/clock.ts";
+import { localStamp, zonedStamp, zoneNote } from "../core/clock.ts";
 import { rankLines } from "../admin/turn-compare.ts";
 import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -24,7 +24,8 @@ const common = { url: { type: "string" }, json: { type: "boolean" }, help: { typ
 
 const mb = (b: number) => (b < 1 << 20 ? `${(b / 1024).toFixed(1)} KB` : b < 1 << 30 ? `${(b / (1 << 20)).toFixed(1)} MB` : `${(b / (1 << 30)).toFixed(2)} GB`);
 const dur = (ms: number) => (ms < 60_000 ? `${Math.round(ms / 1000)} s` : ms < 3600_000 ? `${Math.round(ms / 60_000)} min` : `${(ms / 3600_000).toFixed(1)} h`);
-const time = (ms: number) => new Date(ms).toLocaleString(undefined, { hourCycle: "h23" });
+// The machine's own zone with its offset on the line, the same on every machine (clock.ts): a line is read alone.
+const time = zonedStamp;
 
 async function call(url: string, path: string, init?: RequestInit): Promise<any> {
   let r: Response;

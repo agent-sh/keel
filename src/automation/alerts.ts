@@ -360,6 +360,13 @@ export function raise(kind: AlertKind, sessionId: string | null, title: string, 
     }
     const key = DECISION[kind];
     const decision = key ? (data as Record<string, unknown> | undefined)?.[key] : undefined;
+    // A decision raised again (a daemon restart puts its card back, a redelivery) is the same wait: its row
+    // keeps the time it was first asked, so its age is one everywhere and does not start again at a restart.
+    let asked: number | undefined;
+    if (key && decision) {
+      asked = store.db.query<{ t: number | null }, string[]>(`SELECT MIN(ts) AS t FROM alerts WHERE kind = ? AND json_extract(data, '$.${key}') = ?${key === "call_id" ? ` AND ${ASKED_IN} = ?` : ""}`)
+        .get(...[kind, String(decision), ...(key === "call_id" ? [String((data as { open_session?: string }).open_session ?? sessionId)] : [])])?.t ?? undefined;
+    }
     if (key && decision) {
       // An approval or a question is its own decision: the same one raised again
       // replaces its row; a different one (a sibling agent's) stands beside it.
@@ -399,7 +406,7 @@ export function raise(kind: AlertKind, sessionId: string | null, title: string, 
     const stored = Object.keys(extra).length ? { ...(data as object), ...extra } : data;
     const delivery: Delivery | undefined = sendTo.length ? Object.fromEntries(sendTo.map((c) => [c, { state: "pending" as const }])) : undefined;
     const a: Alert = {
-      id: Bun.randomUUIDv7(), ts: Date.now(), kind, session_id: sid, read: watched || !f.deliver,
+      id: Bun.randomUUIDv7(), ts: asked ?? Date.now(), kind, session_id: sid, read: watched || !f.deliver,
       title: clip(scrub(title), 200), body: clip(scrub(body), 500), data: stored, channels: sendTo, delivery, rev: nextRev(), kept: false,
     };
     store.db.query("INSERT INTO alerts (id, ts, kind, session_id, title, body, read, data, channels, delivery, rev, kept) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)")
