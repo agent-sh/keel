@@ -3,21 +3,26 @@
 // remote browser, a tunnel or the phone gets 403, so nothing off the machine
 // can open a link on the desktop or take the notifications.
 //
-// GET  /api/shell          -> { attached, shells: [{ engine, version, since }] }
+// GET  /api/shell          -> { attached, shells: [{ engine, version, since, acks }], running: [title] }
+//      `running`: the top-level sessions with a turn at work, by title (what
+//      the app names before it stops the daemon).
 // GET  /api/shell/events   the shell's stream (server-sent events). The shell
-//      is attached while it is open. ?engine= and ?version= name it.
+//      is attached while it is open. ?engine= and ?version= name it; ?acks=1
+//      says it shows notifications and posts each one's number back. Only
+//      such a shell is handed alerts (src/server/shell.ts).
 //        hello    { pid, started_ms, needs, snooze_until }
 //        needs    { n }                  what waits on the owner, counted as the page's title counts it
-//        notify   { key, alert, title, body, urgency, kind }   show this (one per key, the next replaces it)
+//        notify   { key, alert, title, body, urgency, kind, ack }   show this (one per key, the next replaces it)
 //        withdraw { key }                take the key's notification down
 //        snooze   { until_ms | null }    alerts are held until then
+// POST /api/shell/ack      { ack }          the notification numbered `ack` is on screen
 // POST /api/shell/click    { alert }        -> { path }   where the alert's click leads, read now
 import { alertPath } from "../../automation/alerts.ts";
 import * as snooze from "../../automation/snooze.ts";
 import { isLocal } from "../../safety/presence.ts";
 import type { Frame } from "../../core/types.ts";
 import type { RouteModule } from "../app.ts";
-import { attachShell, shellAttached, shellList, tellShells } from "../shell.ts";
+import { ackShell, attachShell, shellAttached, shellList, tellShells } from "../shell.ts";
 import { board } from "./state.ts";
 
 const json = (v: unknown, status = 200) => Response.json(v, { status });
@@ -32,6 +37,17 @@ export const shellRoutes: RouteModule = (deps) => {
   const fill = () => {
     needs.clear();
     for (const [id, st] of Object.entries(board?.all() ?? {})) if (st.watch === "need" && topLevel(id)) needs.set(id, st.asks ?? 1);
+  };
+  // The top-level sessions a stop of the daemon would cut: their own turn, or an agent of theirs, at work.
+  const running = () => {
+    const titles = new Map<string, string>();
+    for (const id of Object.keys(board?.all() ?? {})) {
+      if (!deps.engine.isRunning(id)) continue;
+      let s = deps.store.session(id);
+      for (let hops = 0; s?.parent_id && hops < 8; hops++) s = deps.store.session(s.parent_id);
+      if (s) titles.set(s.id, s.title || "Untitled session");
+    }
+    return [...titles.values()];
   };
   const tellNeeds = () => { const n = count(); if (n !== told) { told = n; tellShells("needs", { n }); } };
 
@@ -50,7 +66,7 @@ export const shellRoutes: RouteModule = (deps) => {
   });
 
   return {
-    "/api/shell": { GET: (req: Request) => deskOnly(req) ?? json({ attached: shellAttached(), shells: shellList() }) },
+    "/api/shell": { GET: (req: Request) => deskOnly(req) ?? json({ attached: shellAttached(), shells: shellList(), running: running() }) },
     "/api/shell/events": {
       GET: (req: Request) => {
         const no = deskOnly(req);
@@ -68,7 +84,7 @@ export const shellRoutes: RouteModule = (deps) => {
             fill();
             told = count();
             put("hello", { pid: process.pid, started_ms: Math.round(Date.now() - process.uptime() * 1000), needs: told, snooze_until: snooze.global()?.until_ms ?? null });
-            detach = attachShell({ engine: (q.get("engine") ?? "").slice(0, 40), version: (q.get("version") ?? "").slice(0, 40) }, put);
+            detach = attachShell({ engine: (q.get("engine") ?? "").slice(0, 40), version: (q.get("version") ?? "").slice(0, 40), acks: q.get("acks") === "1" }, put, () => { clearInterval(ping); try { c.close(); } catch {} });
             // Under the server's idle timeout, and how a shell that died is noticed.
             ping = setInterval(() => { try { c.enqueue(enc.encode(": ping\n\n")); } catch { stop(); } }, 5000);
             req.signal.addEventListener("abort", () => { stop(); try { c.close(); } catch {} }, { once: true });
@@ -76,6 +92,12 @@ export const shellRoutes: RouteModule = (deps) => {
           cancel: stop,
         });
         return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-store" } });
+      },
+    },
+    "/api/shell/ack": {
+      POST: async (req: Request) => {
+        const b = await req.json().catch(() => ({}));
+        return deskOnly(req) ?? (Number.isSafeInteger(b.ack) ? json({ ok: ackShell(b.ack) }) : json({ error: "ack is the number a notify event carried" }, 400));
       },
     },
     "/api/shell/click": {

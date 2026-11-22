@@ -11,7 +11,7 @@ import { plainLine } from "../core/plain.ts";
 import { lockedDaemon } from "../admin/daemon.ts";
 import { openUrl } from "../cli/client.ts";
 import { desktopNotifications } from "./desktop.ts";
-import { shellAttached, tellShell, tellShells } from "../server/shell.ts";
+import { handShell, shellShows, tellShells } from "../server/shell.ts";
 
 // What needs the owner becomes one alert: kept in the inbox with unread state,
 // sent as a frame, and delivered to the channels the settings name for its
@@ -495,19 +495,22 @@ export function gvariantString(s: string) {
 registerChannel({
   id: "desktop",
   label: "Desktop notification",
-  // An attached desktop shell shows them itself, whatever this daemon could do alone.
-  available: () => shellAttached() || (process.env.KEEL_DESKTOP_NOTIFY !== "off" && !!(process.env.DBUS_SESSION_BUS_ADDRESS || process.env.XDG_RUNTIME_DIR) && !!(Bun.which("gjs") || Bun.which("gdbus"))),
+  // An attached desktop app shows them itself, whatever this daemon could do alone.
+  available: () => shellShows() || (process.env.KEEL_DESKTOP_NOTIFY !== "off" && !!(process.env.DBUS_SESSION_BUS_ADDRESS || process.env.XDG_RUNTIME_DIR) && !!(Bun.which("gjs") || Bun.which("gdbus"))),
   async deliver(a) {
     const key = a.session_id ?? "_";
     const urgency = a.kind === "approval" || a.kind === "question" || a.kind === "failed" || a.kind === "loop_failed" ? 2 : 1;
-    // The shell's to show while one is attached: its click opens the shell's
-    // window. Handed over or shown here, never both; one this daemon showed
-    // for the session before the shell came is taken down first.
-    if (tellShell("notify", { key, alert: a.id, title: a.title.replaceAll("\0", ""), body: a.body.replaceAll("\0", ""), urgency, kind: a.kind })) {
+    // The desktop app's to show while one is attached: its click opens the
+    // app's window. It is the app's once the app said the notification is on
+    // screen; with no word in a few seconds it is shown here instead. Never
+    // both: one this daemon showed for the session before the app came is
+    // taken down first, and so is this daemon's copy when the app's word
+    // comes late.
+    if (await handShell({ key, alert: a.id, title: a.title.replaceAll("\0", ""), body: a.body.replaceAll("\0", ""), urgency, kind: a.kind }, { late: () => void withdrawOwn(key).catch(() => {}) })) {
       void withdrawOwn(key).catch(() => {});
       return;
     }
-    if (process.env.KEEL_DESKTOP_NOTIFY === "off") throw new Error("the desktop shell went away before it took the alert");
+    if (process.env.KEEL_DESKTOP_NOTIFY === "off") throw new Error("no desktop app showed the alert, and this daemon shows none itself");
     const gjs = Bun.which("gjs");
     if (gjs) {
       if (!desktop || desktop.ended) {
