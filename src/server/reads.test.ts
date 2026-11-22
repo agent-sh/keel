@@ -115,6 +115,8 @@ test("a hold waits for the read in flight and keeps the next one back until it i
 // A read made ahead of the loop's own (a session's pages, before the loop brings the session into
 // memory) is worth a wait only when the thread can take it now. Behind a long report it would keep a
 // first prompt waiting for the whole report; where no thread runs, the loop would read the pages twice.
+// The long reads here take a set time on the thread, not a count of rows: a statement of seconds on an
+// idle machine took twice as long on a loaded one, and four of them in a row outlasted the test's time.
 test("a read made ahead runs when the thread is free, and is skipped behind other work or with no thread", async () => {
   const dir = mkdtempSync(join(tmpdir(), "keel-reads-"));
   dirs.push(dir);
@@ -122,7 +124,18 @@ test("a read made ahead runs when the thread is free, and is skipped behind othe
   const s = store.createSession({ model: "m", workspace: "/" });
   for (let i = 0; i < 20; i++) store.append(s.id, "user", { text: `prompt ${i}` });
   const ahead = "SELECT COUNT(*) AS n FROM events WHERE session_id = ?";
-  const reads = new Reads(store, true);
+  // The daemon's own thread program, with one more statement: `-- takes N ms` holds the thread that long.
+  const program = join(dir, "timed-reads.ts");
+  writeFileSync(program, `import ${JSON.stringify(new URL("./reads-worker.ts", import.meta.url).pathname)};
+const real = self.onmessage;
+self.onmessage = (ev) => {
+  const ms = /^-- takes (\\d+) ms$/.exec(ev.data?.args?.sql ?? "")?.[1];
+  if (!ms) return real(ev);
+  Bun.sleepSync(Number(ms));
+  postMessage({ id: ev.data.id, value: [] });
+};
+`);
+  const reads = new Reads(store, true, "file://" + program);
   try {
     // Free: made on the thread, and waited for.
     await reads.readAhead(ahead, [s.id]);
@@ -133,7 +146,7 @@ test("a read made ahead runs when the thread is free, and is skipped behind othe
     // Behind another read like it that takes long (a session of tens of thousands of events): made all the
     // same, and waited for a few hundred milliseconds at most.
     {
-      const long = "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 12000000) SELECT count(*) AS n FROM c";
+      const long = "-- takes 500 ms";
       const before = reads.counts.thread;
       const big = reads.readAhead(long, [], 30_000);
       const t = performance.now();
@@ -147,7 +160,7 @@ test("a read made ahead runs when the thread is free, and is skipped behind othe
       expect(reads.counts.thread - before).toBe(2);
     }
     // Behind a report of seconds: skipped, and the caller goes on at once.
-    const slow = "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 12000000) SELECT count(*) AS n FROM c";
+    const slow = "-- takes 500 ms";
     const report = reads.sql(slow);
     const t0 = performance.now();
     await reads.readAhead(ahead, [s.id]);
