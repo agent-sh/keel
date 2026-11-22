@@ -141,6 +141,21 @@ export class Restarts {
     return this.now;
   }
 
+  // The newest records, this start's first.
+  recent(n: number): Restart[] {
+    return this.store.db.query<{ data: string }, [number]>("SELECT data FROM daemon_starts ORDER BY up_ms DESC LIMIT ?").all(n + 1).map((r) => JSON.parse(r.data) as Restart);
+  }
+
+  // A parent was told what became of its cut agents (the line is stored): kept with the record
+  // of the start that cut them, this one's or an earlier one's.
+  told(id: string, parent: string, fates: Record<string, string>) {
+    const r = id === this.now.id ? this.now : this.read(id);
+    if (!r) return;
+    r.told = { ...r.told, [parent]: { ...r.told?.[parent], ...fates } };
+    if (r === this.now) return this.save();
+    this.store.db.query("UPDATE daemon_starts SET data = ? WHERE id = ?").run(JSON.stringify(r), r.id);
+  }
+
   private cut(s: Session, cut: CutTurn) {
     const r = this.now;
     if (r.settled_ms || r.turns.some((t) => t.end_event === cut.end_event)) return;

@@ -22,6 +22,9 @@ export type Restart = {
   unknown?: string;
   turns: RestartTurn[];
   settled_ms?: number; // every cut turn was decided
+  // What each session with cut agents was told of them, once the line was stored: by parent, each
+  // agent's session and the fate said (src/automation/restart-told.ts). A parent not here is still owed.
+  told?: Record<string, Record<string, string>>;
 };
 
 // The time of day, with the date when it is not the day of `beside`: the reader's own zone (see clock.ts).

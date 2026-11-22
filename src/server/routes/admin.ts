@@ -26,7 +26,7 @@ import { Daemon } from "../../admin/daemon.ts";
 import { restarts } from "../../admin/life.ts";
 import { restartNeedsEye, restartSummary, restartTurnLine, type Restart } from "../../admin/life-rows.ts";
 import * as activity from "../../automation/activity.ts";
-import { tellCutAgents } from "../../automation/restart-told.ts";
+import { tellCutAgents, tellEarlier } from "../../automation/restart-told.ts";
 import { loadSettings, onSettings, patchSettings, resetSettings, settings, settingsUnreadable } from "../../admin/settings.ts";
 import { Storage } from "../../admin/storage.ts";
 import { PROPOSED, Retention, retentionOf } from "../../admin/retention.ts";
@@ -117,9 +117,10 @@ export const adminRoutes: RouteModule = (deps) => {
   // daemon did not choose to go down, or a turn was not continued).
   const starts = restarts();
   if (starts) {
-    // Each change is a cut turn found or decided: a session whose cut agents are all decided is told of them
-    // then, with its next input (before the first of them reports again), and the rest when the record is whole.
-    const tell = (r: Restart, whole = false) => { try { tellCutAgents(r, whole); } catch (e) { errors.capture("server", e, { at: "restart told to parents" }); } };
+    // Each change is a cut turn found or decided: a session with a cut agent that is decided is told of it
+    // with its next request, and of the others as they are decided; what an earlier start still owed is
+    // told once this start's record is whole (src/automation/restart-told.ts).
+    const tell = (r: Restart, whole = false) => { try { tellCutAgents(r); if (whole) tellEarlier(r); } catch (e) { errors.capture("server", e, { at: "restart told to parents" }); } };
     // (After the step that changed it: a start finds every cut turn before it decides the first.)
     starts.changed = () => { daemon.emit(); queueMicrotask(() => tell(starts.last())); };
     // The log has a line a turn already, under the turn's own name (observe.ts).
