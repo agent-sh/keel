@@ -5,6 +5,10 @@
 
 // A call cut while its tool ran.
 export const RESTART_CUT = "Interrupted by a daemon restart while this tool ran. It may have partly run: check its effects before running it again.";
+// A call cut while it ran a command whose fate is known (src/tools/jobs.ts
+// cutCommand): the result starts with this and says what became of the
+// command: it runs on, it was stopped, or it ended and how.
+export const RESTART_RAN = "The daemon restarted while this command ran.";
 // A question a restart cut that could not be put back on its card (the
 // session's model no longer has the tool). Nothing was answered: the inbox
 // files it as a decision the owner still owes.
@@ -17,4 +21,4 @@ export const STOPPED_WHILE = "Interrupted by the user while this tool ran.";
 
 const CUT: readonly string[] = [RESTART_CUT, QUESTION_CUT, APPROVAL_CUT];
 export const stopKind = (content: unknown): "stopped" | "cut" | undefined =>
-  typeof content !== "string" ? undefined : content === STOPPED_BEFORE || content === STOPPED_WHILE ? "stopped" : CUT.includes(content) ? "cut" : undefined;
+  typeof content !== "string" ? undefined : content === STOPPED_BEFORE || content === STOPPED_WHILE ? "stopped" : CUT.includes(content) || content.startsWith(RESTART_RAN) ? "cut" : undefined;

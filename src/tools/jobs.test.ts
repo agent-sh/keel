@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ackNotices, adoptJobs, drainNotices, findJob, jobsOf, procfs, running, startJob, stopJob, takeUnread, toolEnv, waitJob } from "./jobs.ts";
+import { stopKind } from "../core/stops.ts";
+import { ackNotices, adoptJobs, cutCommand, drainNotices, findJob, jobsOf, procfs, running, startJob, stopJob, takeUnread, toolEnv, waitJob } from "./jobs.ts";
 
 // A daemon that starts background commands and exits (a restart); this
 // process plays the next daemon.
@@ -183,4 +184,72 @@ test("a command does not get the daemon's own supervision settings", () => {
   } finally {
     for (const k of ["KEEL_SUPERVISED", "KEEL_DRAIN_MS", "KEEL_GH_BIN"]) if (keep[k] === undefined) delete process.env[k]; else process.env[k] = keep[k];
   }
+});
+
+// What a call a restart cut is told about its command: what became of it, never "interrupted" for one that runs.
+test("a call a restart cut is told what became of its command: it runs on, it ended and how, or it was stopped", async () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? ".", "jobs-"));
+  const dir = join(root, "spill/s9/jobs");
+  // The daemon before: three commands in the foreground of three calls, then it is gone (a kill).
+  const code = `
+    import { startJob } from ${JSON.stringify(join(import.meta.dir, "jobs.ts"))};
+    const o = { sessionId: "s9", cwd: ${JSON.stringify(root)}, logDir: ${JSON.stringify(dir)}, stops: true };
+    startJob({ ...o, command: "sleep 30", callId: "runs", handle: "pid" });
+    startJob({ ...o, command: "sleep 0.3; exit 4", callId: "ended" });
+    startJob({ ...o, command: "sleep 30", callId: "exec", handle: "num" });
+    process.exit(0);`;
+  expect(await Bun.spawn(["bun", "-e", code], { stdout: "ignore", stderr: "inherit" }).exited).toBe(0);
+  await Bun.sleep(900);
+  adoptJobs(join(root, "spill"));
+  const jobs = jobsOf("s9");
+  const of = (call: string) => jobs.find((j) => j.callId === call)!;
+  try {
+    // One that outlived the daemon: named by its family's handle, with its log, and not to be started again.
+    const runs = cutCommand("s9", "runs")!;
+    expect(runs).toBe(`The daemon restarted while this command ran. The command was not interrupted: it still runs in the background (PID ${of("runs").pid}). Its output is being written to ${of("runs").log}. Do not start it again: a notice comes when it ends.`);
+    expect(cutCommand("s9", "exec")).toContain(`(session ID ${of("exec").num})`);
+    expect(running(of("runs"))).toBe(true);
+    // One that ended while no daemon ran: its exit code, and no second telling of its end.
+    expect(cutCommand("s9", "ended")).toMatch(/^The daemon restarted while this command ran\. The command was not interrupted: it exited with code 4 after \d+ s\. Its output is in .*\.log\. Do not run it again for its result\.$/);
+    expect(drainNotices("s9")).toEqual([]);
+    // A call that started no command: nothing is known here.
+    expect(cutCommand("s9", "no-such-call")).toBeUndefined();
+    // Each reads as a cut call, not a failed one.
+    expect(stopKind(runs)).toBe("cut");
+    // While this daemon stops: a command its call stops says so, and an exec session without a terminal goes on.
+    const mine = startJob({ sessionId: "s9", command: "sleep 30", cwd: root, logDir: dir, callId: "parked", stops: true });
+    const session = startJob({ sessionId: "s9", command: "sleep 30", cwd: root, logDir: dir, callId: "session", handle: "num" });
+    expect(cutCommand("s9", "parked")).toMatch(/^The daemon restarted while this command ran\. The restart stopped the command after \d+ s, before it finished\. Its output up to then is in .*\. Run it again if its work is still needed\.$/);
+    expect(cutCommand("s9", "session")).toContain(`it still runs in the background (session ID ${session.num})`);
+    await stopJob(mine, "was interrupted");
+    await stopJob(session);
+    // Asked again after its stop: it says how it ended.
+    expect(cutCommand("s9", "parked")).toContain("The command was interrupted after");
+  } finally {
+    for (const j of jobsOf("s9")) await stopJob(j);
+  }
+});
+
+test("a stop the last daemon began and did not see through is finished by the next one", async () => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? ".", "jobs-"));
+  const dir = join(root, "spill/s10/jobs");
+  // The daemon before asked a command that ignores the first signal to stop, and went down at once.
+  const code = `
+    import { startJob, stopJob } from ${JSON.stringify(join(import.meta.dir, "jobs.ts"))};
+    const j = startJob({ sessionId: "s10", cwd: ${JSON.stringify(root)}, logDir: ${JSON.stringify(dir)}, command: "trap '' TERM; sleep 30 & wait; sleep 30", callId: "c1", stops: true });
+    await Bun.sleep(300);
+    void stopJob(j, "was interrupted");
+    await Bun.sleep(100);
+    process.exit(0);`;
+  expect(await Bun.spawn(["bun", "-e", code], { stdout: "ignore", stderr: "inherit" }).exited).toBe(0);
+  adoptJobs(join(root, "spill"));
+  const j = jobsOf("s10")[0]!;
+  // What ignored the first signal is still there, and is ended: nothing of the command's group is left.
+  const groupLeft = () => { try { process.kill(-j.pid, 0); return true; } catch { return false; } };
+  expect(groupLeft()).toBe(true);
+  for (const until = Date.now() + 8000; groupLeft() && Date.now() < until; ) await Bun.sleep(50);
+  expect(groupLeft()).toBe(false);
+  expect(running(j)).toBe(false);
+  // Its call was told it was stopped: its end makes no note of its own.
+  expect(drainNotices("s10")).toEqual([]);
 });

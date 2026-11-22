@@ -38,7 +38,7 @@ const run_shell_command: Tool = {
     const delay = input.is_background ? Math.max(0, Number(input.delay_ms) || 0) : 0;
     const r = await runShell(ctx, {
       command: String(input.command ?? ""), description: input.description, cwd: input.dir_path ? abs(input.dir_path, ctx) : undefined,
-      timeoutMs: delay || 300_000, background: !!input.is_background && !delay, onTimeout: "background",
+      timeoutMs: delay || 300_000, background: !!input.is_background && !delay, onTimeout: "background", handle: "pid",
     });
     if (r.state === "refused") return fail(r.error);
     if (r.state === "running") {

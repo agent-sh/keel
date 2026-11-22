@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { conceal, concealDeep, secretPairs, streamConcealer } from "../core/conceal.ts";
 import { contains, realOf } from "../core/paths.ts";
 import { readStat } from "../core/pid.ts";
+import { RESTART_RAN } from "../core/stops.ts";
 import { sandboxStatus, scopeHead, splitScope } from "../safety/sandbox.ts";
 
 export type Job = {
@@ -38,6 +39,12 @@ export type Job = {
   containWhy?: string;
   background: boolean;   // the model was told it runs on; its end is reported
   callId?: string;       // the tool call that started it
+  // How its family's tools name it to the model: Claude's task ID, Codex's
+  // session ID, Gemini's PID. And whether the call that runs it stops it when
+  // the turn is stopped (the shell tools do; an exec session goes on).
+  handle?: Handle;
+  stops?: boolean;
+  stopping?: boolean;    // a stop of it is under way
   by?: "owner";          // the owner ran it from the terminal pane
   pid: number;
   boot?: string;         // its process's start time, read when it started (Linux)
@@ -49,6 +56,7 @@ export type Job = {
   exited: Promise<void>;
 };
 
+export type Handle = "id" | "num" | "pid";
 export const UNREAD_CAP = 1 << 20;
 const size = (p: string) => { try { return statSync(p).size; } catch { return 0; } };
 const metaPath = (log: string) => log.replace(/\.log$/, ".json");
@@ -125,6 +133,8 @@ export type StartOpts = {
   wrap?: (argv: string[]) => string[];
   callId?: string;
   by?: "owner";
+  handle?: Handle;
+  stops?: boolean;       // the call stops the command when its turn is stopped
 };
 
 export function startJob(o: StartOpts): Job {
@@ -147,7 +157,7 @@ export function startJob(o: StartOpts): Job {
   // What is kept and shown is the command with placeholders: a value the
   // secret hook put in only reaches the process.
   const job = { id, num, sessionId: o.sessionId, command: conceal(o.command, o.sessionId), description: o.description && conceal(o.description, o.sessionId), cwd: o.cwd, pty: !!o.pty,
-    log, started: Date.now(), background: !!o.background, readOff: 0, decoder: new TextDecoder(), callId: o.callId, by: o.by } as Job;
+    log, started: Date.now(), background: !!o.background, readOff: 0, decoder: new TextDecoder(), callId: o.callId, by: o.by, handle: o.handle, stops: o.stops } as Job;
   const unit = `keel-job-${id}-${Math.random().toString(36).slice(2, 8)}.scope`;
   if (box.slice) { job.contain = "cgroup"; job.cgroup = `/sys/fs/cgroup${box.slice}/${unit}`; }
   else { job.contain = "group"; job.containWhy = box.why; }
@@ -214,14 +224,15 @@ function jobScope(): { slice?: string; why?: string } {
 // ended, so the terminal pane lists commands of earlier daemons too.
 export type Meta = {
   id: string; num: number; sessionId: string; command: string; description?: string; cwd: string; started: number; background: boolean; pid: number;
-  boot?: string; reported?: boolean; pty?: boolean; call_id?: string; by?: "owner";
+  boot?: string; reported?: boolean; pty?: boolean; call_id?: string; by?: "owner"; handle?: Handle;
+  stopping?: true;   // a stop was under way when this was written: a daemon that went down then left it for the next one
   cgroup?: string; contain?: "cgroup" | "group"; contain_why?: string;
   ended?: number; exit_code?: number | null; signal?: string | null; stop_reason?: string;
   read_off?: number; // bytes of the log the model was handed (a later daemon goes on from there)
 };
 const meta = (j: Job, pid: number): Meta => ({
   id: j.id, num: j.num, sessionId: j.sessionId, command: j.command, description: j.description, cwd: j.cwd,
-  started: j.started, background: j.background, pid, boot: j.boot ?? procStart(pid), call_id: j.callId, by: j.by, read_off: j.readOff,
+  started: j.started, background: j.background, pid, boot: j.boot ?? procStart(pid), call_id: j.callId, by: j.by, handle: j.handle, stopping: j.stopping || undefined, read_off: j.readOff,
   cgroup: j.cgroup, contain: j.contain, contain_why: j.containWhy,
 });
 // Every sidecar write goes through here: the whole record with secrets as placeholders.
@@ -269,7 +280,7 @@ function finish(job: Job, code: number | null, signal: string | null) {
   } catch {}
   if (job.background) {
     const what = job.description ? `"${job.description}"` : `\`${job.command.slice(0, 80)}\``;
-    const how = job.stopReason ?? (signal ? `was killed by ${signal}` : code === null ? "ended while Keel restarted; its exit code is unknown" : `exited with code ${code}`);
+    const how = job.stopReason ?? (signal ? `was killed by ${signal}` : code === null ? "ended; its exit code was not recorded (it ended under another daemon, or was killed)" : `exited with code ${code}`);
     const list = notices.get(job.sessionId) ?? [];
     list.push({ text: `Background command ${what} (ID ${job.id}) ${how}. Output: ${job.log}`, job: job.id, log: job.log });
     notices.set(job.sessionId, list);
@@ -301,16 +312,23 @@ export function adoptJobs(spillRoot: string): number {
       if (JSON.stringify(shown) !== JSON.stringify(m)) { m = shown; writeMeta(log, m); }
       const base = { id: m.id, num: m.num, sessionId: m.sessionId, command: m.command, description: m.description, cwd: m.cwd,
         pty: !!m.pty, log, started: m.started, background: m.background, pid: m.pid, boot: m.boot, readOff: m.read_off ?? 0, decoder: new TextDecoder(),
-        callId: m.call_id, by: m.by, cgroup: m.cgroup, contain: m.contain ?? "group", containWhy: m.contain_why };
+        callId: m.call_id, by: m.by, handle: m.handle, cgroup: m.cgroup, contain: m.contain ?? "group", containWhy: m.contain_why };
+      // A stop the last daemon began and did not see through (it went down
+      // first) is finished here: whoever asked for it was told the command
+      // was stopped, and what ignored the first signal still runs.
+      const finishStop = (j: Job) => { if (!m.stopping || m.pty) return; j.left ??= [m.pid]; void stopJob(j, m.stop_reason ?? "was stopped").catch(() => {}); };
       if (m.reported || m.pty) {
         // History: a PTY never outlives its daemon; one with no end ended with it.
-        history.push({ ...base, readOff: m.read_off ?? size(log), ended: m.ended ?? m.started, exitCode: m.exit_code ?? null, signal: m.signal ?? null, stopReason: m.stop_reason, exited: Promise.resolve() });
+        const j: Job = { ...base, readOff: m.read_off ?? size(log), ended: m.ended ?? m.started, exitCode: m.exit_code ?? null, signal: m.signal ?? null, stopReason: m.stop_reason, exited: Promise.resolve() };
+        history.push(j);
+        finishStop(j);
         continue;
       }
       let resolve!: () => void;
-      const job: Job = { ...base, pty: false, background: true, exited: new Promise<void>((r) => (resolve = r)) };
+      const job: Job = { ...base, pty: false, background: !m.stopping, exited: new Promise<void>((r) => (resolve = r)) };
       jobs.set(job.id, job);
       adopted.set(job.id, { job, meta: m, resolve });
+      finishStop(job);
       n++;
     }
   }
@@ -417,6 +435,9 @@ export function writeJob(j: Job, chars: string): boolean {
 export async function stopJob(j: Job, reason = "was stopped"): Promise<number[]> {
   if (!jobLive(j)) return [];
   if (j.ended === undefined) j.stopReason = reason;
+  // Kept with the job: a daemon that goes down before the stop is through leaves it for the next one.
+  j.stopping = true;
+  if (!j.pty) patchMeta(j.log, { stopping: true, ...(j.ended === undefined ? { stop_reason: reason } : {}) });
   const pid = j.pid;
   // A job stopped while systemd-run still sets up its scope would leave the
   // scope behind empty: its command starts (systemd-run execs it) first.
@@ -446,6 +467,8 @@ export async function stopJob(j: Job, reason = "was stopped"): Promise<number[]>
   await quiet(2000);
   const rest = members(j).map((m) => m.pid);
   j.left = rest.length ? rest : undefined;
+  j.stopping = false;
+  if (!j.pty) patchMeta(j.log, { stopping: undefined });
   return rest;
 }
 
@@ -533,6 +556,42 @@ export function drainNotices(sessionId: string): Notice[] {
   notices.delete(sessionId);
   return n;
 }
+
+// What became of the command a tool call was running when a daemon restart
+// cut the call, as its result tells the model (the engine asks through the
+// callOutcome hook, src/server/routes/tools.ts). Asked in two places. While
+// the daemon stops: the job is this daemon's own child, and its call either
+// stops it (the shell tools), loses it with the terminal (a PTY) or leaves it
+// running (an exec session without one). At the next start: the job was taken
+// back (adoptJobs) and runs on, or ended meanwhile with or without an exit
+// code. Nothing is returned for a call that started no command: its fate is
+// not known here. Every text starts with RESTART_RAN (src/core/stops.ts).
+export function cutCommand(sessionId: string, callId: string, now = Date.now()): string | undefined {
+  const j = [...jobs.values()].findLast((x) => x.sessionId === sessionId && x.callId === callId);
+  if (!j) return undefined;
+  const ran = span((j.ended ?? now) - j.started);
+  const again = "Run it again if its work is still needed.";
+  if (j.ended === undefined && j.proc) {
+    if (j.pty) return `${RESTART_RAN} It ran in a terminal the daemon held, so it ended with the daemon after ${ran}, before it finished. Its output up to then is in ${j.log}. ${again}`;
+    if (j.stops) return `${RESTART_RAN} The restart stopped the command after ${ran}, before it finished. Its output up to then is in ${j.log}. ${again}`;
+  }
+  if (j.ended === undefined) {
+    if (!j.background) backgrounded(j);
+    const named = j.handle === "num" ? `session ID ${j.num}` : j.handle === "pid" ? `PID ${j.pid}` : `ID: ${j.id}`;
+    return `${RESTART_RAN} The command was not interrupted: it still runs in the background (${named}). Its output is being written to ${j.log}. Do not start it again: a notice comes when it ends.`;
+  }
+  // Its end is told here: the note a background job's end makes would say it twice.
+  const mine = (notices.get(sessionId) ?? []).filter((n) => n.job === j.id);
+  if (mine.length) {
+    notices.set(sessionId, (notices.get(sessionId) ?? []).filter((n) => n.job !== j.id));
+    ackNotices(mine);
+  }
+  if (j.pty && j.exitCode == null && !j.signal && !j.stopReason) return `${RESTART_RAN} It ran in a terminal the daemon held, so it ended with the daemon, before it finished. Its output up to then is in ${j.log}. ${again}`;
+  if (j.stopReason) return `${RESTART_RAN} The command ${j.stopReason} after ${ran}, before it finished. Its output up to then is in ${j.log}. ${again}`;
+  if (j.exitCode == null) return `${RESTART_RAN} The command ended meanwhile${j.signal ? ` (killed by ${j.signal})` : ""}; its exit code was not recorded. Its output is in ${j.log}: read it before running the command again.`;
+  return `${RESTART_RAN} The command was not interrupted: it exited with code ${j.exitCode} after ${ran}. Its output is in ${j.log}. Do not run it again for its result.`;
+}
+const span = (ms: number) => { const s = Math.max(0, Math.round(ms / 1000)); return s < 90 ? `${s} s` : s < 5400 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`; };
 
 // The notes are stored: their jobs' ends are reported for good.
 export function ackNotices(list: Notice[]) {

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { registerHooks } from "../../engine/hooks.ts";
 import { answer, askedOf, decline, pendingQuestions, type Answers } from "../../tools/interact.ts";
 import { conceal } from "../../core/conceal.ts";
-import { ackNotices, adoptJobs, drainNotices, findJob, jobsChanged, jobsOf, jobView, running, stopJob } from "../../tools/jobs.ts";
+import { ackNotices, adoptJobs, cutCommand, drainNotices, findJob, jobsChanged, jobsOf, jobView, running, stopJob } from "../../tools/jobs.ts";
 import { renderForOwner } from "../../tools/skills.ts";
 import { hookContext } from "../../integrations/hooks.ts";
 import { promptExpansion } from "./hooks.ts";
@@ -21,6 +21,10 @@ export const toolRoutes: RouteModule = (deps) => {
   // Background commands a previous daemon started run on; take them back.
   try { adoptJobs(join(deps.store.stateDir, "spill")); } catch (e) { deps.errors.capture("tool", e, { at: "adopt jobs" }); }
   registerHooks({
+    // A call a restart cut while it ran a command: its result says what became
+    // of the command (the engine stores the text as the call's result, an
+    // error like every cut call's, under the name the hook has for such a text).
+    callOutcome: (sessionId, callId) => { const text = cutCommand(sessionId, callId); return text ? { denied: text } : undefined; },
     beforeRequest(s, req) {
       // A job's end already stored (a restart came between storing it and
       // marking it reported) is not said twice.

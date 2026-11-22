@@ -4,7 +4,7 @@
 // outlives its timeout instead of killing it.
 import { existsSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { backgrounded, startJob, stopJob, takeUnread, waitJob, type Job } from "./jobs.ts";
+import { backgrounded, startJob, stopJob, takeUnread, waitJob, type Handle, type Job } from "./jobs.ts";
 import { notFound } from "./missing.ts";
 import type { ToolContext } from "./types.ts";
 import { SessionMap } from "../core/session-map.ts";
@@ -47,6 +47,7 @@ export type ShellOpts = {
   background?: boolean;    // start in the background right away
   onTimeout: "background" | "kill";
   pty?: boolean;
+  handle?: Handle;         // how the family's tools name a job to the model (Claude's task ID by default)
 };
 
 export async function runShell(ctx: ToolContext, o: ShellOpts): Promise<ShellRun> {
@@ -61,6 +62,8 @@ export async function runShell(ctx: ToolContext, o: ShellOpts): Promise<ShellRun
   const job = startJob({
     sessionId: ctx.sessionId, command: o.command, description: o.description, cwd, logDir: dir,
     argv: ["bash", "-c", script], pty: o.pty, background: o.background, wrap: ctx.wrapSpawn, callId: ctx.callId,
+    // In the foreground the call stops the command when its turn is stopped (below).
+    handle: o.handle, stops: !o.background,
   });
   if (o.background) return { state: "running", job, output: "" };
 
