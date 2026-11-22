@@ -4,7 +4,7 @@
 // open (a crash, a kill, a stop) stays open: the continued turn runs its call
 // again and waits on the same card, and an answer given before that is kept.
 import { heldFile } from "../core/store-files.ts";
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, relative } from "node:path";
 import type { Bus } from "../core/bus.ts";
@@ -29,6 +29,38 @@ import { classify, decide, isMode, ownPath, pathsNamed, programEntries, programR
 import { timed } from "../admin/stall.ts";
 import { ownerDenial } from "../core/stops.ts";
 import { landing, type MarkArgs } from "./marks.ts";
+import { readOptsFor } from "./sandbox-config.ts";
+import { ownFolders, sandboxScope, shownTo, storeOf, type ReadOpts } from "./sandbox-view.ts";
+
+// Whether a file is, by its inode, one of the files Keel keeps at the top of its state or config folders (and one
+// level into the config): asked only of a file that has more than one name.
+function keelInode(path: string): "state" | "config" | null {
+  let st: ReturnType<typeof lstatSync>;
+  try { st = lstatSync(path); } catch { return null; }
+  if (!st.isFile() || st.nlink < 2) return null;
+  if (heldFile(path)) return "state";
+  const same = (f: string) => { try { const o = statSync(f); return o.isFile() && o.ino === st.ino && o.dev === st.dev; } catch { return false; } };
+  const [state, config] = ownFolders() as [string, string];
+  for (const [dir, deep] of [[state, false], [config, true]] as const) {
+    let names: string[] = [];
+    try { names = readdirSync(dir); } catch { continue; }
+    for (const n of names.slice(0, 500)) {
+      const f = join(dir, n);
+      if (same(f)) return dir === state ? "state" : "config";
+      if (!deep) continue;
+      let inner: string[] = [];
+      try { inner = statSync(f).isDirectory() ? readdirSync(f) : []; } catch {} // not a folder
+      if (inner.slice(0, 200).some((m) => same(join(f, m)))) return "config";
+    }
+  }
+  return null;
+}
+
+// Whether a file has another name somewhere: a write to it lands there too. (The store's own files, by inode, are such.)
+const hardLink = (path: string): boolean => {
+  try { const st = lstatSync(path); return (st.isFile() && st.nlink > 1) || !!heldFile(path); } catch { return false; }
+};
+import { attachmentsGiven } from "../engine/attachments.ts";
 
 // (Where an edit lands is read in marks.ts, which the read thread loads too.)
 export { landing };
@@ -327,6 +359,55 @@ export class Gate {
     return { session_id: sessionId, mode: this.defaultMode(), sandbox: this.defaultSandbox(), network: true };
   }
 
+  // What a session's sandbox shows beyond the toolchains: the owner's list
+  // for its repository, and of Keel's own state the session's own files:
+  // what it was given by path, and its artifacts (written in the
+  // workspace-write profile, see `writable`).
+  readOpts(session: Session, profile?: SessionPerm["sandbox"]): ReadOpts {
+    if (session.machine) return readOptsFor(sandboxScope(session.workspace));
+    const artifacts = this.scope(session).scratch;
+    return { ...readOptsFor(sandboxScope(session.workspace)), own: [...attachmentsGiven(session.id), ...(profile === "workspace-write" ? [] : artifacts)] };
+  }
+  // The outputs kept for a session and for the sessions it started or was started by (an agent's report names its files).
+  private spills(session: Session): string[] {
+    const ids = new Set([session.id]);
+    let up = session;
+    for (let n = 0; up.parent_id && n < 32; n++) { ids.add(up.parent_id); up = this.store.session(up.parent_id) ?? up; }
+    try { for (const id of this.store.descendants(session.id)) ids.add(id); } catch {} // none
+    return [...ids].map((id) => join(this.store.stateDir, "spill", id));
+  }
+  // Why a file is one of Keel's own, which no session's tool writes: its state and its config, but for the session's
+  // artifacts folder and a worktree Keel made for it (its workspace, inside the state's worktrees folder).
+  // `where`: Keel's state (the store, its token, its keys, other sessions' files: no session's tool writes it, in any
+  // mode) or Keel's config (skills, hooks, MCP servers, settings: the owner's own card in the asking modes, refused
+  // where no card reaches the owner).
+  private keelOwn(path: string, workspace: string, scratch: string[]): { where: "state" | "config"; why: string } | null {
+    const s = storeOf(path);
+    const config = `it changes ${path}, which Keel runs or reads its configuration from (its hooks and their scripts, MCP servers, skills and agents), outside any sandbox`;
+    if (!s) {
+      // (A config file the owner keeps elsewhere: KEEL_HOOKS, KEEL_MCP_CONFIG and their kin.)
+      if (ownConfig().some((c) => contains(c, path))) return { where: "config", why: config };
+      // (A file with another name: one of the files at the top of Keel's state or config under a name in the workspace.)
+      const linked = keelInode(path);
+      return linked ? { where: linked, why: `it changes ${path}, another name (a hard link) of one of Keel's own files (its ${linked === "state" ? "state" : "settings"})` } : null;
+    }
+    if (!s.own) return null;
+    if (s.path !== (ownFolders()[0] as string)) return { where: "config", why: config };
+    if (scratch.some((d) => contains(d, path))) return null;
+    if (contains(workspace, path) && contains(realOf(join(this.store.stateDir, "worktrees")), workspace) && workspace !== realOf(join(this.store.stateDir, "worktrees"))) return null;
+    return { where: "state", why: `it changes ${path}, one of Keel's own files (its store, its token and keys, other sessions' files)` };
+  }
+
+  // What a session's commands write beside its folder: its outputs, and its artifacts folder (made when missing).
+  private writable(session: Session, spillDir: string | undefined, profile: SessionPerm["sandbox"]): string[] {
+    const out = spillDir ? [spillDir] : [];
+    if (profile !== "workspace-write" || session.machine) return out;
+    for (const dir of this.scope(session).scratch) {
+      try { mkdirSync(dir, { recursive: true }); out.push(dir); } catch {} // not writable here: the command is told when it tries
+    }
+    return out;
+  }
+
   // How far the daemon's own git may fetch for a session's worktree
   // (GitOpts.fetch in src/core/git.ts): as far as the session's own commands
   // reach. Any address when they are not confined; the ones the web tools
@@ -482,6 +563,13 @@ export class Gate {
     let own: { home: string; config: string[]; bins: string[]; land: (p: string) => string[] } | undefined;
     return decide(cls, {
       mode: p.mode, workspace: edit ? workspace : session.workspace, sandboxed: this.sandboxed(session, p), rules: before === undefined ? this.rules(session) : this.rules(session).filter((r) => r.created <= before), tool: name, bind, scratch, real: facts?.real, looked: facts?.looked,
+      // (On this machine's disk: a session whose tools run elsewhere reads and writes that machine's files.)
+      ...(session.machine || cls.kind !== "read" ? {} : { shown: (path: string) => shownTo(path, session.workspace, this.readOpts(session, "read-only"), this.spills(session)) }),
+      ...(session.machine || cls.kind === "read" ? {} : {
+        keel: (path: string) => { const k = this.keelOwn(path, workspace, scratch); return k?.where === "state" ? k.why : null; },
+        keelConfig: (path: string) => { const k = this.keelOwn(path, workspace, scratch); return k?.where === "config" ? k.why : null; },
+        linked: hardLink,
+      }),
       // What Keel itself runs things from: a change there is the owner's alone
       // (on this machine's disk). With it, the scripts the owner's hooks and a
       // pinned repository's hooks run: no pin holds one outside .keel/. Read
@@ -540,7 +628,7 @@ export class Gate {
     const p = this.perm(session.id);
     const ctx: Partial<ToolCall["ctx"]> | undefined =
       !(r.cls.kind === "shell" && r.cls.escalate) && this.sandboxed(session, p) && p.sandbox !== "off"
-        ? { wrapSpawn: (argv) => confine(argv, p, session.workspace, call.ctx.spillDir), confined: { sandbox: p.sandbox, network: p.network, since: Date.now() } }
+        ? { wrapSpawn: (argv) => confine(argv, p, session.workspace, this.writable(session, call.ctx.spillDir, p.sandbox), this.readOpts(session, p.sandbox)), confined: { sandbox: p.sandbox, network: p.network, since: Date.now() } }
         : undefined;
     // A confined command in a linked worktree can write the refs it shares
     // with the other checkouts: they are read now and compared after it

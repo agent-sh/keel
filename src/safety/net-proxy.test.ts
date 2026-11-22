@@ -4,12 +4,14 @@
 // stay reachable through the proxy. The stand-in servers are on this
 // machine's loopback: what a sandbox must never reach.
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection, createServer, type Server } from "node:net";
-import { networkInterfaces, tmpdir } from "node:os";
+import { hostname, networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import { addressBytes, addressText, internalAddress } from "../core/hosts.ts";
-import { ownPort, publicOnly, setInterfaces, startProxy, type Policy, type Refusal } from "./net-proxy.ts";
+import { sessionPorts, forgetOwnership } from "../fleet/portal.ts";
+import { ownPort, publicOnly, reachInto, RELAY_JS, setInterfaces, startProxy, type Policy, type Refusal } from "./net-proxy.ts";
+import { sandboxScope, scopeDir } from "./sandbox-scope.ts";
 import { sandboxSaid } from "./refwatch.ts";
 import { confine, sandboxStatus } from "./sandbox.ts";
 
@@ -18,7 +20,15 @@ const root = realpathSync(mkdtempSync(join(tmpdir(), "keel-net-")));
 const hits: string[] = [];
 let standin: ReturnType<typeof Bun.serve>;
 beforeAll(() => {
-  standin = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => { hits.push(`${req.method} ${new URL(req.url).pathname}`); return new Response(`standin saw ${req.method} ${new URL(req.url).pathname} host=${req.headers.get("host")} proxy=${req.headers.get("proxy-connection")}\n`); } });
+  standin = Bun.serve({ port: 0, hostname: "0.0.0.0", fetch: async (req) => {
+    const path = new URL(req.url).pathname;
+    hits.push(`${req.method} ${path}`);
+    // A redirect to another port of this machine; an answer sent in pieces; else what was asked, as the server saw it.
+    if (path.startsWith("/redirect/")) return new Response(null, { status: 302, headers: { location: `http://127.0.0.1:${path.slice(10)}/after-redirect` } });
+    if (path === "/pieces") return new Response(new ReadableStream({ async start(c) { for (const part of ["one ", "two ", "three"]) { c.enqueue(new TextEncoder().encode(part)); await Bun.sleep(5); } c.close(); } }));
+    const body = req.body ? await req.text() : "";
+    return new Response(`standin saw ${req.method} ${path} host=${req.headers.get("host")} proxy=${req.headers.get("proxy-connection")} body=${body}\n`);
+  } });
 });
 afterAll(() => { standin.stop(true); rmSync(root, { recursive: true, force: true }); });
 
@@ -200,7 +210,7 @@ test("an allowed destination is carried: CONNECT as a tunnel, a plain request as
     expect(tunnel).toContain("standin saw GET /through-tunnel");
     // The path alone reaches the server, the proxy's own header does not, and the connection is one request's.
     const plain = await ask(sock, `POST http://127.0.0.1:${port}/plain?x=1 HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nProxy-Connection: keep-alive\r\nContent-Length: 2\r\n\r\nhi`);
-    expect(plain).toContain(`standin saw POST /plain host=127.0.0.1:${port} proxy=null`);
+    expect(plain).toContain(`standin saw POST /plain host=127.0.0.1:${port} proxy=null body=hi`);
     expect(hits.slice(-2)).toEqual(["GET /through-tunnel", "POST /plain"]);
   } finally {
     server.close();
@@ -262,3 +272,107 @@ test("a command that went around the proxy, or was refused by it, is told how th
   // With the network off the older sentence stands alone.
   expect(sandboxSaid("curl: (6) Could not resolve host: example.com", { ...at, network: false })).toEqual([expect.stringContaining("This session's network is off")]);
 });
+
+test("the rule's edges: other spellings of this machine, a name that points inside, the header and the request line, slow and long heads, bodies in pieces, a redirect", async () => {
+  const port = standin.port!;
+  ownPort(port);
+  const before = hits.length;
+  // The real resolver, for the spellings a resolver turns into an address.
+  const sock = join(root, "c.sock");
+  const server = startProxy(sock, { headMs: 300 });
+  try {
+    const connect = (to: string) => ask(sock, `CONNECT ${to} HTTP/1.1\r\nHost: ${to}\r\n\r\n`);
+    const get = (url: string, more = "") => ask(sock, `GET ${url} HTTP/1.1\r\n${more}\r\n`);
+    // IPv6 loopback in its forms, IPv4 inside IPv6, decimal, octal, hexadecimal and short IPv4, localhost with a dot and
+    // its subdomains, this machine's own name: none reaches the stand-in (refused, or no such name).
+    const spellings = ["[::1]", "[0:0:0:0:0:0:0:1]", "[::ffff:127.0.0.1]", "[::ffff:7f00:1]", "2130706433", "0x7f.1", "0x7f000001", "127.1", "0177.0.0.1", "017700000001", "localhost", "localhost.", "app.localhost", "LOCALHOST", hostname(), "0.0.0.0", "0"];
+    for (const h of spellings) {
+      for (const r of [await connect(`${h}:${port}`), await get(`http://${h}:${port}/edge`)]) expect([h, r.split("\r\n")[0]]).toEqual([h, expect.stringMatching(/^HTTP\/1\.1 (403|502|400) /)]);
+    }
+    // This machine's address on a network (a LAN's, a VPN's, a tailnet's): its own, whatever the range.
+    const lan = Object.values(networkInterfaces()).flat().find((a) => a && !a.internal && a.family === "IPv4")?.address;
+    if (lan) expect((await connect(`${lan}:${port}`)).split("\r\n")[0]).toBe("HTTP/1.1 403 Forbidden");
+    expect(hits.length).toBe(before);
+    // A head that does not end is not waited for; one that is too long is refused.
+    expect(await ask(sock, "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\n")).toBe("");
+    expect(await ask(sock, `GET http://x/${"a".repeat(1_000_000)} HTTP/1.1\r\n\r\n`)).toStartWith("HTTP/1.1 431 ");
+  } finally {
+    server.close();
+  }
+  // Carried (a rule that lets the stand-in's port through, as a listed host will): what the server is told, and bodies in pieces.
+  const names: Record<string, string[]> = { "chain.example": ["127.0.0.1"], "six.example": ["::1"] };
+  const only: Policy = (_h, _a, p) => (p === port ? { allow: true } : { allow: false, why: "it is not listed" });
+  const sock2 = join(root, "d.sock");
+  const carried = startProxy(sock2, { policy: () => only, resolve: async (h) => names[h] ?? [h] });
+  try {
+    // The server is told the host of the request line, not the header's; a request with no Host header gets one.
+    expect(await ask(sock2, `GET http://127.0.0.1:${port}/host HTTP/1.1\r\nHost: other.example\r\n\r\n`)).toContain(`standin saw GET /host host=127.0.0.1:${port} `);
+    expect(await ask(sock2, `GET http://127.0.0.1:${port}/old HTTP/1.0\r\n\r\n`)).toContain(`standin saw GET /old host=127.0.0.1:${port} `);
+    // A name is resolved once, through its chain, and the address that was judged is the one connected to.
+    expect(await ask(sock2, `GET http://chain.example:${port}/by-name HTTP/1.1\r\n\r\n`)).toContain(`standin saw GET /by-name host=chain.example:${port} `);
+    // A body sent in pieces, and an answer in pieces.
+    const chunked = await ask(sock2, `POST http://127.0.0.1:${port}/chunked HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n`);
+    expect(chunked).toContain("body=abcde");
+    expect(await ask(sock2, `GET http://127.0.0.1:${port}/pieces HTTP/1.1\r\n\r\n`)).toMatch(/one .*two .*three/s);
+    // A tunnel carries any bytes (the proxy does not read them).
+    const raw = await ask(sock2, `CONNECT 127.0.0.1:${port} HTTP/1.1\r\n\r\n`, "\x00\x01 not http at all\r\n\r\n");
+    expect(raw).toStartWith("HTTP/1.1 200 Connection Established");
+    // A redirect is the client's: its next request comes back to the proxy and is judged again.
+    const other = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("the other service\n") });
+    try {
+      mkdirSync(join(root, "relay"), { recursive: true });
+      writeFileSync(join(root, "relay/relay.js"), RELAY_JS);
+      const relay = Bun.spawn([process.execPath, join(root, "relay/relay.js"), "listen", sock2], { stdout: "pipe", env: { ...process.env, BUN_BE_BUN: "1" } as Record<string, string> });
+      const relayPort = Number((await relay.stdout.getReader().read().then((r) => new TextDecoder().decode(r.value))).trim());
+      const curl = Bun.spawn(["curl", "-s", "-L", "--noproxy", "", "-x", `http://127.0.0.1:${relayPort}`, `http://127.0.0.1:${port}/redirect/${other.port}`], { stdout: "pipe", stderr: "pipe" });
+      const out = await new Response(curl.stdout).text();
+      await curl.exited;
+      relay.kill();
+      expect(out).toContain(`Keel's sandbox proxy refused 127.0.0.1:${other.port}: it is not listed.`);
+      expect(out).not.toContain("the other service");
+    } finally {
+      other.stop(true);
+    }
+  } finally {
+    carried.close();
+  }
+  // No more than its share of connections at once: one past it is refused, and said.
+  const sock3 = join(root, "e.sock");
+  const small = startProxy(sock3, { policy: () => only, max: 2 });
+  try {
+    const held = [1, 2].map(() => createConnection(sock3));
+    for (const h of held) h.write(`CONNECT 127.0.0.1:${port} HTTP/1.1\r\n\r\n`);
+    await Bun.sleep(100);
+    expect(await ask(sock3, `CONNECT 127.0.0.1:${port} HTTP/1.1\r\n\r\n`)).toStartWith("HTTP/1.1 503 ");
+    for (const h of held) h.destroy();
+    await Bun.sleep(50);
+    expect(await ask(sock3, `GET http://127.0.0.1:${port}/after HTTP/1.1\r\n\r\n`)).toContain("standin saw GET /after");
+  } finally {
+    small.close();
+  }
+  // The default rule on addresses that are public: IPv6 too.
+  expect(publicOnly("example.com", "2606:4700:4700::1111", 443)).toEqual({ allow: true });
+  expect(publicOnly("six.example", "::1", 443)).toEqual({ allow: false, why: "it is an address on this machine or a private network" });
+});
+
+test.skipIf(!sandboxStatus().available || !Bun.which("nsenter"))("the owner's portal reaches a server a sandboxed command runs, on the sandbox's own loopback", async () => {
+  const ws = join(root, "ws-portal");
+  mkdirSync(ws, { recursive: true });
+  const sid = `portal-test-${Date.now()}`;
+  // A dev server inside a sandbox: on its own 127.0.0.1, which is not this machine's.
+  const p = Bun.spawn(confine(["bash", "-c", "echo hello-from-inside > index.html; exec python3 -m http.server 8765 --bind 127.0.0.1"], { sandbox: "workspace-write", network: false }, ws), { cwd: ws, stdout: "ignore", stderr: "ignore", env: { ...process.env, KEEL_SESSION: sid } as Record<string, string> });
+  try {
+    let at: { port: number; pid: number; ns?: string } | undefined;
+    for (let i = 0; i < 50 && !at; i++) { await Bun.sleep(100); forgetOwnership(); at = sessionPorts().get(sid)?.find((x) => x.port === 8765); }
+    expect(at?.ns).toMatch(/^net:\[\d+\]$/);
+    // Straight from here there is nothing on that port; through the namespace there is.
+    expect(await fetch("http://127.0.0.1:8765/index.html").then((r) => r.status, () => 0)).not.toBe(200);
+    const local = await reachInto(scopeDir(sandboxScope(ws)), at!.pid, at!.port, at!.ns!);
+    expect(await (await fetch(`http://127.0.0.1:${local}/index.html`)).text()).toBe("hello-from-inside\n");
+    // The same reach is used again for the next request.
+    expect(await reachInto(scopeDir(sandboxScope(ws)), at!.pid, at!.port, at!.ns!)).toBe(local);
+  } finally {
+    p.kill();
+    await p.exited;
+  }
+}, 30_000);

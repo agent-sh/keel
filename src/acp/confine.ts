@@ -13,6 +13,10 @@ import { writeOwnFile } from "../core/ownfile.ts";
 import { confine, sandboxStatus } from "../safety/sandbox.ts";
 import type { SessionPerm } from "../safety/gate.ts";
 import type { AcpAgent } from "./agents.ts";
+import { readOptsFor } from "../safety/sandbox-config.ts";
+import { programPaths, sandboxScope, type ReadOpts } from "../safety/sandbox-view.ts";
+
+const withProgram = (o: ReadOpts, argv: string[]): ReadOpts => ({ ...o, read: [...(o.read ?? []), ...programPaths(argv)] });
 
 // Harness names whose folders an agent of that id (or program) writes.
 const HARNESSES = ["opencode", "kimi", "claude", "codex", "gemini", "qwen", "goose", "cursor", "augment", "auggie", "crush", "droid", "factory"];
@@ -91,7 +95,9 @@ export function confineAgent(agent: AcpAgent, perm: Pick<SessionPerm, "sandbox" 
   const writable = writableOf(agent, start);
   const where = perm.sandbox === "workspace-write" ? "it writes only in the workspace and its own folders" : "it writes only in its own folders";
   return {
-    argv: confine(argv, perm, workspace, writable),
+    // (What the owner lets this workspace's commands read holds for its agent too. The agent's own program is the
+    // owner's choice: it is shown with what its command line names.)
+    argv: confine(argv, perm, workspace, writable, withProgram(readOptsFor(sandboxScope(workspace)), argv)),
     confined: true,
     writable,
     note: `${agent.name} runs in the command sandbox (${perm.sandbox}): ${where}${perm.network ? "" : ", with no network (its model service included)"}.`,

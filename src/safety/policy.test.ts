@@ -25,7 +25,32 @@ test("a call's class comes from its tool's definition", () => {
   expect(classify(tool("apply_patch", "edit"), "*** Begin Patch\n*** Delete File: c.ts\n*** End Patch", ws)).toEqual({ kind: "edit", paths: ["/w/repo/c.ts"] });
   expect(classify(tool("write_stdin", "control"), { session_id: 3, chars: "y\n" }, ws)).toEqual({ kind: "control" });
   expect(classify(tool("mcp_call"), { tool: "github__create_issue", arguments: {} }, ws)).toEqual({ kind: "other" });
-  expect(classify(tool("Read", undefined, true), { file_path: "/etc/passwd" }, ws)).toEqual({ kind: "read" });
+  // A read carries the files and folders it names: its path keys (a relative one from the call's folder), and a pattern that starts at a path.
+  expect(classify(tool("Read", undefined, true), { file_path: "/etc/passwd" }, ws)).toEqual({ kind: "read", paths: ["/etc/passwd"] });
+  expect(classify(tool("Glob", undefined, true), { pattern: "**/*.ts", path: "../other" }, ws)).toEqual({ kind: "read", paths: ["/w/other"] });
+  expect(classify(tool("Glob", undefined, true), { pattern: "/srv/keys/*.pem" }, ws)).toEqual({ kind: "read", paths: ["/srv/keys/*.pem"] });
+  // A pattern that names a folder before its first wildcard is read from the tool's folder: it reaches that folder.
+  expect(classify(tool("Glob", undefined, true), { pattern: ".ssh/*", path: "/home/u" }, ws)).toEqual({ kind: "read", paths: ["/home/u", "/home/u/.ssh/*"] });
+  expect(classify(tool("Glob", undefined, true), { pattern: "*.ts", path: "/home/u" }, ws)).toEqual({ kind: "read", paths: ["/home/u"] });
+  // A string that only looks like a path is not one: a tool reads the keys that name files.
+  expect(classify(tool("Skill", undefined, true), { skill: "x", args: "/review" }, ws)).toEqual({ kind: "read" });
+  expect(classify(tool("read_many_files", undefined, true), { paths: ["a.ts", "/etc/hosts"] }, ws)).toEqual({ kind: "read", paths: ["/w/repo/a.ts", "/etc/hosts"] });
+  expect(classify(tool("TaskList", undefined, true), { query: "what is /etc used for" }, ws)).toEqual({ kind: "read" });
+  // In a sandboxed session a file tool reads what the sandbox shows. Outside it: the owner's card, in every asking mode;
+  // refused in Full auto, where a card would go to the judge. Outside a sandbox a read is a read.
+  const shown = (p: string) => (p.startsWith("/home/u/.ssh") ? { shown: false as const, store: true, why: "it reads ~/.ssh/id, where the owner's credentials are kept." }
+    : p.startsWith("/home/u/") ? { shown: false as const, store: false, why: "it reads ~/notes, which this session's sandbox does not show its commands." } : { shown: true as const });
+  const key = { kind: "read" as const, paths: ["/w/repo/a.ts", "/home/u/.ssh/id"] };
+  const note = { kind: "read" as const, paths: ["/home/u/notes"] };
+  for (const mode of ["ask", "auto-edits", "auto", "reviewer", "read-only", "plan"] as const) {
+    expect([mode, decide(key, facts(mode, { sandboxed: true, shown }))]).toEqual([mode, { ask: { risk: "high", why: "it reads ~/.ssh/id, where the owner's credentials are kept.", rule: "a credential store or one of Keel's own files", suggest: [], ownerOnly: true } }]);
+    expect([mode, kind(decide(note, facts(mode, { sandboxed: true, shown })))]).toEqual([mode, "ask-high"]);
+  }
+  expect(decide(key, facts("full-auto", { sandboxed: true, shown }))).toEqual({ deny: "Refused: it reads ~/.ssh/id, where the owner's credentials are kept. In Full auto nothing reads it; say what you wanted it for and go on with the rest." });
+  expect(decide(note, facts("full-auto", { sandboxed: true, shown }))).toEqual({ deny: "Refused: it reads ~/notes, which this session's sandbox does not show its commands. In Full auto a file tool reads only what the session's sandbox shows; say what you wanted it for and go on with the rest." });
+  expect(kind(decide({ kind: "read", paths: ["/w/repo/a.ts"] }, facts("ask", { sandboxed: true, shown })))).toBe("allow");
+  expect(kind(decide(key, facts("ask", { sandboxed: false, shown })))).toBe("allow");
+  expect(kind(decide(key, facts("full-auto", { sandboxed: false, shown })))).toBe("allow");
   // Keys in the input never change the class.
   expect(classify(tool("keel__session_send"), { session_id: "x", text: "hi" }, ws)).toEqual({ kind: "other" });
   expect(classify(tool("keel__session_send"), { task_id: "x", to: "y" }, ws)).toEqual({ kind: "other" });

@@ -7,12 +7,13 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { gitViewsDir } from "../core/git.ts";
-import { IN_SANDBOX, proxyDir, RELAY_START, relayFiles } from "./net-proxy.ts";
+import type { SessionPerm } from "./gate.ts";
+import { IN_SANDBOX, proxyDir, RELAY_START, relayFiles, viewOnThread } from "./net-proxy.ts";
 import { sandboxRoot, sandboxScope, scopeDir } from "./sandbox-scope.ts";
+import { flockPath, forgetViews, offeredPaths, overlays, readView, SLOT, type ReadOpts, type View } from "./sandbox-view.ts";
 
 const SSH_SNIPPETS = "/etc/ssh/ssh_config.d";
 const isDir = (p: string) => { try { return statSync(p).isDirectory(); } catch { return false; } };
-import type { SessionPerm } from "./gate.ts";
 
 export type SandboxStatus = { available: boolean; reason?: string; bwrap?: string; scope: boolean; scopeReason?: string };
 
@@ -445,8 +446,10 @@ const SANDBOX_GIT: [string, string][] = [["branch.autoSetupMerge", "false"]];
 const LINKED_GIT: [string, string][] = [["gc.auto", "0"], ["maintenance.auto", "false"], ["fsck.badRefFiletype", "ignore"], ["repack.updateServerInfo", "false"]];
 // The shell line that adds settings to the environment it is run in and then
 // becomes the command (its arguments). The names and values are Keel's own.
-const withGit = (settings: [string, string][]) =>
-  `n=\${GIT_CONFIG_COUNT:-0}; case "$n" in ""|*[!0-9]*) n=0;; esac; ${settings.map(([k, v]) => `export "GIT_CONFIG_KEY_$n=${k}" "GIT_CONFIG_VALUE_$n=${v}"; n=$((n+1))`).join("; ")}; export GIT_CONFIG_COUNT=$n; exec "$@"`;
+// `defaults`: variables set unless the command's environment has them (the sandbox's cache folders).
+const shq = (v: string) => `'${v.replace(/'/g, "'\\''")}'`;
+const withGit = (settings: [string, string][], defaults: [string, string][] = []) =>
+  `${defaults.map(([k, v]) => `[ -n "\${${k}:-}" ] || export ${k}=${shq(v)}; `).join("")}export KEEL_SANDBOX_PATH="$PATH"; n=\${GIT_CONFIG_COUNT:-0}; case "$n" in ""|*[!0-9]*) n=0;; esac; ${settings.map(([k, v]) => `export "GIT_CONFIG_KEY_$n=${k}" "GIT_CONFIG_VALUE_$n=${v}"; n=$((n+1))`).join("; ")}; export GIT_CONFIG_COUNT=$n; exec "$@"`;
 
 // Why a confined command in `workspace` cannot write git's files, when the
 // profile opens none of them: said on a command that ran into it.
@@ -468,14 +471,71 @@ export function gitShut(workspace: string): string | undefined {
 // `scratch` is the session's own tool folder (a command's working-directory
 // file, spilled output), or several (an ACP agent's own folders): writable in
 // every profile.
-export function confine(argv: string[], perm: Pick<SessionPerm, "sandbox" | "network">, workspace: string, scratch?: string | string[]): string[] {
+export function confine(argv: string[], perm: Pick<SessionPerm, "sandbox" | "network">, workspace: string, scratch?: string | string[], read: ReadOpts = {}): string[] {
   const st = sandboxStatus();
   if (perm.sandbox === "off" || !st.available) return argv;
+  // The profile is the same for every command of a session until one of its
+  // inputs changes: it is built once and kept for a short while (profileOf).
+  const extra = (typeof scratch === "string" ? [scratch] : scratch ?? []).filter((p) => p && existsSync(p));
+  const b = [...profileOf(st.bwrap!, perm, workspace, extra, read), ...argv];
+  return st.scope ? [...scopeHead(), ...scopeProps(), "--", ...b] : b;
+}
+
+// A session's profile is kept: building one reads a few hundred names on
+// disk, and a turn runs many commands. What it is made from is its key (the
+// folders, the profile, the owner's lists and what Keel adds, the
+// environment's toolchain names). What it reads on disk (which toolchains,
+// caches and checkouts exist) is read again when a kept one is older than
+// PROFILE_MS: the command at hand runs with the kept one, and the new one is
+// made on the sandboxes' thread (src/safety/net-proxy-worker.ts), off this
+// loop. Only a session's first profile is made here.
+let PROFILE_MS = 5_000;
+// (A test makes a kept profile old at once.)
+export const setProfileAge = (ms: number) => void (PROFILE_MS = ms);
+type Perm = { sandbox: "workspace-write" | "read-only"; network: boolean };
+const profiles = new Map<string, { at: number; argv: string[]; busy?: boolean }>();
+// Every kept profile is dropped (the owner changed what a sandbox shows; a test changed the disk).
+export function forgetProfiles() { profiles.clear(); forgetViews(); }
+function profileOf(bwrap: string, perm: Pick<SessionPerm, "sandbox" | "network">, workspace: string, scratch: string[], read: ReadOpts): string[] {
+  const key = JSON.stringify([bwrap, perm.sandbox, perm.network, workspace, scratch, read, process.env.PATH, process.env.TMPDIR, process.env.SSH_AUTH_SOCK]);
+  const p = perm as Perm;
+  const flock = flockPath();
+  const layered = !!flock && overlays(bwrap);
+  const have = profiles.get(key);
+  if (have) {
+    if (Date.now() - have.at >= PROFILE_MS && !have.busy) {
+      const asked = viewOnThread({ workspace, profile: p.sandbox, read, env: { ...process.env }, layered, offers: offeredPaths(), state: dirname(gitViewsDir()) });
+      if (asked) {
+        have.busy = true;
+        void asked.then((view) => {
+          // (No answer: the kept one stays for another round.)
+          if (profiles.get(key) !== have) return;
+          if (view) profiles.set(key, { at: Date.now(), argv: compose(bwrap, p, workspace, scratch, view, flock) });
+          else { have.busy = false; have.at = Date.now(); }
+        });
+      } else profiles.set(key, { at: Date.now(), argv: compose(bwrap, p, workspace, scratch, readView(workspace, p.sandbox, read, process.env, layered), flock) });
+    }
+    return profiles.get(key)!.argv;
+  }
+  const argv = compose(bwrap, p, workspace, scratch, readView(workspace, p.sandbox, read, process.env, layered), flock);
+  if (profiles.size > 256) profiles.clear();
+  profiles.set(key, { at: Date.now(), argv });
+  return argv;
+}
+
+// The sandbox's arguments around a view (src/sandbox-view.ts: what the
+// command can read: the system, the owner's toolchains and a home of the
+// sandbox's own; the package caches layered when a lock program is there to
+// hold a layer by).
+function compose(bwrap: string, perm: Perm, workspace: string, scratch: string[], view: View, flock: string | null): string[] {
   // A network namespace of its own, always: the host's loopback (Keel's own API among the listeners there), the
   // local network and the display's abstract sockets are not in it. With the session's network on, what leaves
   // goes through the proxy this process runs for the repository (src/safety/net-proxy.ts).
-  const b = [st.bwrap!, "--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc", "--unshare-net",
-    "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"];
+  const b = [bwrap, "--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc", "--unshare-net",
+    "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", ...view.before];
+  // The cache layers of the slot the command's wrapper takes: read by bubblewrap from a file of that slot (HOLD).
+  const layers = view.layers && flock ? layerFiles(view.layers, perm.sandbox) : undefined;
+  if (layers) b.push("--args", "8");
   // ssh's system snippets are root's, and in a user namespace they are nobody's: ssh refuses to start over one
   // ("Bad owner or permissions"). The folder is emptied, and holds the sandbox's own snippet when the network is on.
   const snippets = isDir(SSH_SNIPPETS);
@@ -490,23 +550,56 @@ export function confine(argv: string[], perm: Pick<SessionPerm, "sandbox" | "net
   // git settings for every confined command, after any the owner's
   // environment already carries (git-config(1), GIT_CONFIG_COUNT).
   const settings = [...SANDBOX_GIT];
+  let own: string[];
   if (perm.sandbox === "workspace-write") {
-    b.push("--bind", workspace, workspace);
-    const tmp = process.env.TMPDIR;
-    if (tmp && existsSync(tmp) && !tmp.startsWith("/tmp")) b.push("--bind", tmp, tmp);
     // The repository's hooks and config run code outside the sandbox later:
     // they stay read-only. Commits still work.
     const linked = linkedGitBinds(workspace);
-    b.push(...cloneGitBinds(workspace), ...linked);
+    own = ["--bind", workspace, workspace, ...cloneGitBinds(workspace), ...linked];
     if (linked.length) settings.push(...LINKED_GIT);
-  }
-  // The views the daemon's own git reads repositories through (src/core/git.ts):
-  // never writable, also for a session whose folder holds Keel's state folder.
-  if (perm.sandbox === "workspace-write") for (const own of [gitViewsDir(), sandboxTopsDir()]) if (existsSync(own)) b.push("--ro-bind", own, own);
-  for (const p of typeof scratch === "string" ? [scratch] : scratch ?? []) if (p && existsSync(p)) b.push("--bind", p, p);
+  } else own = ["--ro-bind", workspace, workspace];
+  // The credential stores and Keel's own folders are hidden after the
+  // workspace is bound: also for a session whose folder holds them. A
+  // workspace inside one of Keel's own (a worktree it made) is bound again,
+  // and what Keel gives the session from its own folders comes after.
+  b.push(...own, ...view.masks, ...(view.again ? own : []), ...view.after);
+  for (const p of scratch) b.push("--bind", p, p);
+  b.push(...view.last);
+  for (const name of view.unset) b.push("--unsetenv", name);
   // The settings are added inside, after any the command's own environment
   // carries (git-config(1), GIT_CONFIG_COUNT): the count is the command's,
   // which only the command's own process knows.
-  b.push("--", "/bin/sh", "-c", prelude + withGit(settings), "keel-sandbox", ...argv);
-  return st.scope ? [...scopeHead(), ...scopeProps(), "--", ...b] : b;
+  b.push("--", "/bin/sh", "-c", prelude + withGit(settings, view.defaults), "keel-sandbox");
+  // The command takes a cache layer before the sandbox is built and holds it until its last process ends.
+  return layers && flock ? ["/bin/sh", "-c", HOLD, view.layers!.slots, flock, layers, ...b] : b;
 }
+// The layers' arguments and folders as two files beside the locks, the slot's number still to be put in
+// (`<name>` nul-separated for bubblewrap, `<name>.dirs` a line each): written when they change.
+const layerText = new Map<string, string>();
+function layerFiles(l: { slots: string; args: string[]; dirs: string[] }, profile: string): string {
+  const file = join(l.slots, `layers-${profile}.args`);
+  const text = `${l.args.join("\0")}\0\n${l.dirs.join("\n")}\n`;
+  if (layerText.get(file) !== text || !existsSync(file)) {
+    let now = "";
+    try { now = `${readFileSync(file, "utf8")}\n${readFileSync(`${file}.dirs`, "utf8")}`; } catch {} // not written yet
+    if (now !== text) {
+      mkdirSync(l.slots, { recursive: true, mode: 0o700 });
+      writeFileSync(`${file}.dirs`, `${l.dirs.join("\n")}\n`);
+      writeFileSync(file, `${l.args.join("\0")}\0`);
+    }
+    if (layerText.size > 256) layerText.clear();
+    layerText.set(file, text);
+  }
+  return file;
+}
+// The wrapper that takes a cache layer for a command: the first slot whose
+// lock is free (the lock is held by the command and what it starts: file
+// descriptor 9 stays open in them). bubblewrap reads the slot's layers from
+// file descriptor 8. Past SLOTS_MAX commands of one repository at once, it
+// waits for the first slot.
+const SLOTS_MAX = 64;
+const HOLD = `d="$0"; f="$1"; t="$2"; shift 2; i=0; while :; do if exec 9>"$d/$i.lock" && "$f" -n 9; then break; fi; i=$((i+1)); ` +
+  `if [ "$i" -ge ${SLOTS_MAX} ]; then i=0; exec 9>"$d/0.lock"; "$f" -w 600 9 || { echo "keel: every cache layer of this sandbox is held by another command; run the command again" >&2; exit 75; }; break; fi; done; ` +
+  // The slot's own copy of the layers' arguments, made again when the layers changed.
+  `a="$d/$i.\${t##*/}"; if [ ! -f "$a" ] || [ "$t" -nt "$a" ]; then sed "s/${SLOT}/$i/g" "$t.dirs" | xargs -d '\n' mkdir -p && sed "s/${SLOT}/$i/g" "$t" > "$a.new" && mv "$a.new" "$a" || exit 75; fi; ` +
+  `exec 8<"$a"; exec "$@"`;

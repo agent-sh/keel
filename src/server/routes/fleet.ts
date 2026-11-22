@@ -35,6 +35,8 @@ import { runMode } from "../../core/runmode.ts";
 import { allPendingQuestions } from "../../tools/interact.ts";
 import { board } from "./state.ts";
 import { fitted } from "../../engine/image-fit.ts";
+import { reachInto } from "../../safety/net-proxy.ts";
+import { sandboxScope, scopeDir } from "../../safety/sandbox-scope.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -163,16 +165,27 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     const port = Number(portS);
     const o = portalOf(sid, port);
     if (!o || o.key !== key) return { error: bad("not found", 404) };
-    if (!(sessionPorts().get(sid) ?? []).some((p) => p.port === port)) return { error: bad("no process of the session listens there any more", 502) };
-    return { sid, port, key, point: o.point, rest: rest.join("/") };
+    const at = (sessionPorts().get(sid) ?? []).find((p) => p.port === port);
+    if (!at) return { error: bad("no process of the session listens there any more", 502) };
+    return { sid, port, key, point: o.point, rest: rest.join("/"), at };
+  };
+  // The port the daemon reaches the dev server on: the port itself, or for a server a sandboxed command runs (on
+  // its sandbox's own loopback) a local one that is carried into that sandbox's network namespace.
+  const reach = async (sid: string, at: { port: number; pid: number; ns?: string }): Promise<number> => {
+    if (!at.ns) return at.port;
+    const s = store.session(sid);
+    if (!s) throw new Error("no such session");
+    return reachInto(scopeDir(sandboxScope(s.workspace)), at.pid, at.port, at.ns);
   };
   const portal = async (req: Request, srv: Bun.Server<unknown>) => {
     const u = new URL(req.url);
     const t = portalTarget(u.pathname.slice("/portal/".length));
     if ("error" in t) return t.error;
-    if (isUpgrade(req)) return bridge(req, srv, `ws://127.0.0.1:${t.port}/${t.rest}${u.search}`);
+    let local: number;
+    try { local = await reach(t.sid, t.at); } catch (e) { return bad(`the dev server runs inside the session's sandbox, and the portal could not reach into it: ${(e as Error).message}`, 502); }
+    if (isUpgrade(req)) return bridge(req, srv, `ws://127.0.0.1:${local}/${t.rest}${u.search}`);
     let r: Response;
-    try { r = await upstream(req, t.port, `${t.rest}${u.search}`); } catch (e) { return bad(`the dev server does not answer: ${(e as Error).message}`, 502); }
+    try { r = await upstream(req, local, `${t.rest}${u.search}`); } catch (e) { return bad(`the dev server does not answer: ${(e as Error).message}`, 502); }
     return present(r, t.port, portalPath(t.sid, t.port, t.key), t.point);
   };
 
@@ -733,9 +746,11 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       const u = new URL(req.url);
       const t = portalTarget(u.pathname.slice("/api/fleet/portal/".length));
       if ("error" in t) return proven(t.error!, c, f.id);
-      if (isUpgrade(req)) return bridge(req, srv, `ws://127.0.0.1:${t.port}/${t.rest}${u.search}`, { hello: JSON.stringify({ keel_proof: proof(c.key, c.nonce, f.id) }) });
+      let local: number;
+      try { local = await reach(t.sid, t.at); } catch (e) { return proven(bad(`the dev server runs inside the session's sandbox, and the portal could not reach into it: ${(e as Error).message}`, 502), c, f.id); }
+      if (isUpgrade(req)) return bridge(req, srv, `ws://127.0.0.1:${local}/${t.rest}${u.search}`, { hello: JSON.stringify({ keel_proof: proof(c.key, c.nonce, f.id) }) });
       let r: Response;
-      try { r = await upstream(req, t.port, `${t.rest}${u.search}`); } catch (e) { return proven(bad(`the dev server does not answer: ${(e as Error).message}`, 502), c, f.id); }
+      try { r = await upstream(req, local, `${t.rest}${u.search}`); } catch (e) { return proven(bad(`the dev server does not answer: ${(e as Error).message}`, 502), c, f.id); }
       const h = new Headers(r.headers);
       h.set("x-keel-portal", "1");
       h.set("x-keel-portal-point", t.point ? "1" : "0");

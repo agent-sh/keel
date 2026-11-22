@@ -363,9 +363,155 @@ the judge are what hold a command the reading misses. Known gaps:
 ## The command sandbox
 
 With a session's sandbox on (workspace-write), a command runs in
-[bubblewrap](https://github.com/containers/bubblewrap): the whole machine is
-read-only to it except the session's folder, the temporary folder and the
-session's own scratch, and the network is off unless the session turns it on.
+[bubblewrap](https://github.com/containers/bubblewrap): it writes only in the
+session's folder, its own temporary folder and the session's own scratch, it
+reads the system and your toolchains but not the rest of your home folder,
+and it has a network of its own (below).
+
+### What a sandboxed command can read
+
+A sandboxed command runs without a card in Auto edits, Auto and Full auto,
+so what it can read it can pass on to any public host when the session's
+network is on. It reads, by design:
+
+- the session's folder, `.env` files in it included (the task may need
+  them: keep a secret out of a folder you let a sandboxed session work in);
+- the other checkouts of the same repository (the main checkout and its
+  worktrees), read-only;
+- the system: `/usr`, `/etc`, `/opt` and the like, as unix permissions allow;
+- your toolchains, read-only: the well-known folders (the `bin` folders of
+  cargo, bun, go and `~/.local`, `~/.rustup`, `~/.nvm` and their kin), the
+  folders the toolchain variables name (`CARGO_HOME`, `GOROOT`, `JAVA_HOME`
+  and so on), every folder on the daemon's `PATH` with the toolchain around
+  it, and what the links in those folders point at. For a dot-folder
+  directly in your home (`~/.tool/bin`), only `bin` and the folders named
+  `lib`, `lib64`, `libexec`, `share` and `include` beside it;
+- git's global config and the ignore and attributes files it names, and
+  version files (`.tool-versions`, `.nvmrc`);
+- your package caches, as they are: cargo's registry, the Go module cache,
+  bun's, npm's, pnpm's, uv's, pip's, Playwright's browsers and the like
+  (`CACHES` and `XDG_CACHES` in `src/safety/sandbox-view.ts`). A build of
+  what you fetched before works with the network off;
+- the registry lines of your package managers' settings (npm's, pip's,
+  bun's and uv's), without their tokens: with the registry setting gone, a
+  private package's name would be asked of the public registry. Without
+  its token your private registry refuses, which is said;
+- the skills and commands Keel offers the session, the files you attached
+  to it and its artifacts folder (which its commands also write);
+- for a program you configured to run in the session's sandbox (an ACP
+  agent, a language server of your own or one found on `PATH`): the program
+  with the toolchain around it and the files and folders its command line
+  names. A command an editor passes (its MCP servers) and a program inside
+  the workspace get nothing added.
+
+Everything else is not there. The home folder a command sees is an empty
+folder in memory with the above bound into it, read-only except
+`~/.keel-sandbox`, where the XDG cache and state folders point
+(`XDG_CACHE_HOME`, `XDG_STATE_HOME`). Your keys and cloud sign-ins, the
+tokens of command line tools, browser profiles, the keyring, shell history
+and startup files, editors' and other harnesses' folders, other projects,
+`~/.cache` (apart from the package caches), `/root`, `/mnt`, `/media` and
+data disks are not readable (`CREDENTIALS` in `src/safety/sandbox-view.ts`
+lists the stores by name), and neither are the sockets under `/run`: the
+session bus, the keyring, the GPG and SSH agents, the display, Docker.
+Keel's own state and config folders (every session's text, the API token,
+device keys, your settings) are hidden in every sandbox, whatever you list.
+
+Three rules hold whatever names a path:
+
+- Nothing inside a credential store or one of Keel's own folders is shown
+  because a link, a toolchain variable or git's config points there. Only
+  your own list opens a store, by naming it.
+- After everything is bound, the stores and Keel's folders are hidden
+  inside whatever was bound (a folder you listed, the session's folder, a
+  toolchain).
+- Nothing is followed from a folder the sandbox can write. A `PATH` folder
+  inside the session's folder (an activated `.venv/bin`, `node_modules/.bin`)
+  is the session's own, and a link in it points where a command made it
+  point: its target is not shown.
+
+What a command writes to a package cache lands in a layer of the sandbox's
+own, on disk in Keel's state folder, and nothing outside a sandbox reads it:
+a sandboxed command cannot plant a package for a later build of yours. A
+command that runs alone always gets the repository's first layer, so the
+next command finds what it fetched. Commands that run at the same time each
+get a layer of their own (the kernel does not allow two mounts over one):
+what the second fetched is found again when two run at once again, else it
+is fetched again. Where you have no cache folder yet for an installed tool,
+the tool's folder is the sandbox's own. Temp files of a sandbox are removed
+after 10 days and a layer no command used after 30 (systemd's defaults for
+`/tmp` and `/var/tmp`); Settings shows what the sandboxes hold on disk and
+clears it.
+
+A sandboxed command's environment holds what a build needs (`PATH`, the
+locale, the temp folder, the toolchains' variables, the proxy variables the
+sandbox sets) and nothing else of the daemon's: no variable whose name says
+token, key, secret, password or credential, and none whose value is a URL
+with a password. You can name more variables to pass on in Settings.
+
+What that costs a command, measured on a day of ordinary work (bun, npm,
+pnpm, cargo, go, uv, pip, git, make, cmake, curl, java all work):
+
+- git over SSH, and `ssh` itself: there is no key and no agent. Turn on
+  "Let its commands use the SSH agent" for the folder: the commands can
+  then sign in with your keys while it is on, and still cannot read them.
+- git over HTTPS to a private repository, `gh`, publishing a package, cloud
+  command lines, a signed commit: their tokens and keys are not there. For
+  a token kept in a file, add the file or folder to what the session's
+  folder may read. A token kept in the keyring (`gh` and git's credential
+  helpers on a desktop) is reached only outside the sandbox.
+- `docker`: its socket is not there (a container can read the whole
+  machine). Run it outside the sandbox.
+- A write in the home outside the session's folder fails, as it did before,
+  `~/.cache` included.
+- A tool whose settings file is hidden may behave differently (another
+  registry, no sign-in). Settings lists the hidden settings files you have.
+
+A command that looked for something hidden is told what was hidden and how
+you allow it; for a credential store or one of Keel's own files no way
+around is offered. The sentence is the same whether the path exists or not.
+You see and edit the lists in Settings, Permissions, "Sandbox: what commands
+can read": folders and files for every session, for the sessions of one
+folder (a repository's checkouts count as one), the SSH agent switch for
+one folder, and the variables to pass on. The list is in Keel's config
+folder (`sandbox.json`). A list cannot name the whole home folder, the
+machine's runtime folders (`/run`, `/proc`, `/tmp`) or one of Keel's own
+files, judged where the entry really is (a link to the home is the home).
+
+Where the kernel or bubblewrap cannot mount an overlay inside the sandbox
+(a kernel before 5.11, bubblewrap before 0.11), the package caches are the
+sandbox's own, empty at first: a first build downloads again.
+
+### The file tools
+
+The file tools (Read, Grep, Glob, Edit, Write and their kin in each family)
+run in the daemon, outside the sandbox. In a sandboxed session they are
+held to the sandbox by the same rule:
+
+- A read of what the sandbox shows runs. A read of anything else asks you,
+  in every mode, and in Full auto (where a card would go to the judge, which
+  sees a path and not what is in the file) it is refused. The credential
+  stores and Keel's own files are judged before the session's folder: a
+  session whose folder is your home asks for your keys all the same. Other
+  sessions' outputs, artifacts and attachments are closed to a session.
+- In Full auto a write lands only where the session's commands can write:
+  its folder (what runs or configures things later aside) and its scratch,
+  by where the file really is. A file that has another name elsewhere (a
+  hard link) is not written; in the asking modes it is your card.
+
+Keel's own folders have a rule each, in every mode, sandboxed or not, for
+every tool and for a command's plain write, by path, through a link,
+through a hard link or through `..`:
+
+- Its state folder (the store, its logs, the API token, device keys, other
+  sessions' files) is never written by a session's tool. The session's own
+  artifacts folder and a worktree Keel made for it are its own.
+- Its config folder (skills, hooks, MCP servers, agents, plugins, the
+  sandbox's lists, settings) is yours alone to change. A session you ask to
+  write a skill or add a hook there gets your card in Ask, Auto edits and
+  Auto: one call at a time, with no standing rule offered and no judge. In
+  Full auto no card reaches you, so it is refused, with the sentence that
+  says to do it in an asking mode or in Settings.
 
 ### The network of a sandboxed command
 
@@ -405,8 +551,18 @@ result. With the network off there is no proxy and nothing leaves.
 
 Cost, measured: a command with the network on starts about 19 ms later
 (the relay inside the sandbox); a request takes no measurable extra time;
-the proxy and relay carry about 1.2 GB a second from a local source, with
-the daemon's loop delayed 0.4 ms on average while they do.
+the proxy and relay carry about 1.1 GB a second from a local source. The
+proxies run on a thread of their own. With 50 downloads at once the
+daemon's loop is delayed 0.3 ms on average and 11 ms at worst, and with 200
+connections at once 0.3 ms and 19 ms (on the loop itself that was 5 ms and
+27 ms, and 21 ms and 77 ms).
+
+A sandboxed command starts about 25 ms later than one in a sandbox that
+shows the whole machine (measured: 100 short commands take 61 ms each
+against 34 ms). The time is bubblewrap's: it reads the machine's mount
+table once for every folder it binds, and a home with many toolchains has
+some 40 of them. Small settings files are not bound one by one for that
+reason: they are copies in one folder, bound once.
 
 A session can commit. That needs git's own files to be writable, so the
 profile opens them and keeps read-only what git would run outside the sandbox

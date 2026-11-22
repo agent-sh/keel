@@ -266,7 +266,7 @@ function entries(file: string): [string, string][] {
 const shq = (v: string) => `'${v.replace(/'/g, "'\\''")}'`;
 // The folders the repository of `w` has checked out: its main checkout and
 // every linked worktree, from the files git keeps of them.
-function checkouts(w: Where): string[] {
+export function checkouts(w: Where): string[] {
   const out = new Set<string>();
   const add = (p: string | undefined) => { if (p) try { out.add(realpathSync(p)); } catch { out.add(resolve(p)); } };
   add(w.top);

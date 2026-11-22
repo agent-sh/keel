@@ -1404,7 +1404,7 @@ export class Engine {
     if (session.parent_id && purpose !== "reader") req.cacheLife = this.cacheLife(id, st);
     if (req.cache !== false) req.cacheMs = askedLife(st.provider.wire, req.cacheLife) ?? (retention(st.provider.wire, this.lineage(id), st.info.id).sure || undefined);
     // What the model can read, applied after the hooks (a hook may rebuild the messages).
-    const whole = resolveAttachments(st.info.images === false ? withoutImages(req.messages, st.info.name ?? st.info.model) : req.messages, st.info);
+    const whole = resolveAttachments(st.info.images === false ? withoutImages(req.messages, st.info.name ?? st.info.model) : req.messages, st.info, id);
     // Every image within what the model's host takes (a history may hold a
     // larger one from before images were scaled when stored): a refused image
     // would fail this request and every later one of the session.

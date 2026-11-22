@@ -25,6 +25,8 @@ import type { RouteModule } from "../app.ts";
 import { tracer } from "./observe.ts";
 import { gate, presence } from "./permissions.ts";
 import { trustRef } from "./trust.ts";
+import { readOptsFor } from "../../safety/sandbox-config.ts";
+import { programPaths, sandboxScope } from "../../safety/sandbox-view.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -107,12 +109,13 @@ export const lspRoutes: RouteModule = ({ store, bus, errors, workspace }) => {
     // on. A sandbox this machine cannot give is no reason to run a server
     // outside one. Confined or not, it runs in a scope of its own with a
     // memory limit and the scope's lower weights, not in the daemon's unit.
-    confine: (argv, perm, ws, memoryMb) => {
+    confine: (argv, perm, ws, memoryMb, own) => {
       const limit = ["-p", `MemoryMax=${memoryMb}M`];
       if (perm.sandbox === "off") return { argv: inScope(argv, limit) };
       const st = sandboxStatus();
       if (!st.available) return { refuse: `the session's commands run in a sandbox (${perm.sandbox}) and this machine cannot give one (${st.reason}), so no language server is started outside it` };
-      return { argv: inScope(confine(argv, perm, ws), limit) };
+      const opts = readOptsFor(sandboxScope(ws));
+      return { argv: inScope(confine(argv, perm, ws, undefined, own ? { ...opts, read: [...(opts.read ?? []), ...programPaths(argv)] } : opts), limit) };
     },
     env: (sessionId) => toolEnv(sessionId),
     wanted: (ws) => modeFor(ws) !== "off",

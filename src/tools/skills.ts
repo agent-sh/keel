@@ -10,6 +10,7 @@ import { writeOwnFile } from "../core/ownfile.ts";
 import { registerHooks } from "../engine/hooks.ts";
 import { enabledUnits } from "../plugins/registry.ts";
 import { fail, ok, type Tool, type ToolContext } from "./types.ts";
+import { offerToSandbox } from "../safety/sandbox-view.ts";
 
 export type Skill = {
   name: string;
@@ -119,6 +120,16 @@ export function skillRoots(cwd: string): { dir: string; scope: Skill["scope"] }[
   }
   return roots;
 }
+
+// The owner's own skill and command folders are what a session is told to
+// read and run from: a sandboxed command sees them, read-only (the project's
+// are in the workspace already).
+offerToSandbox(() => [
+  join(homedir(), ".claude/skills"), join(homedir(), ".agents/skills"), join(configDir(), "skills"), join(homedir(), ".claude/commands"), join(configDir(), "commands"),
+  // The other folders the owner had Keel read skills from, and the plugins it carries.
+  ...(skillsConfig().roots ?? []).map((r) => r.dir).filter((d): d is string => typeof d === "string" && d.startsWith("/")),
+  ...carriedPlugins().map((p) => p.dir),
+]);
 
 // A feature may hold back a repository's skill (one changed since it was trusted).
 export const skillFilter: { allow?: (dir: string) => boolean } = {};

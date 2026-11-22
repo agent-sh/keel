@@ -10,6 +10,8 @@ import { toolsFor } from "../tools/registry.ts";
 import type { ToolContext, ToolOutput } from "../tools/types.ts";
 import { dropCallEnv, setCallEnv } from "../tools/jobs.ts";
 import { SHELL_FIELDS, vault } from "../safety/secrets.ts";
+import { readOptsFor } from "../safety/sandbox-config.ts";
+import { sandboxScope } from "../safety/sandbox-view.ts";
 
 // A secret named in a call another daemon sent (it sends names, never values):
 // one this daemon holds under that name, or a refusal that names it.
@@ -91,7 +93,8 @@ export function execArgv(script: string, root: string, confined?: { sandbox?: un
   if (!confined) return argv;
   const sandbox = confined.sandbox === "read-only" ? "read-only" : "workspace-write";
   if (!sandboxStatus().available) return { error: `The session is sandboxed and this machine cannot sandbox commands (${sandboxStatus().reason}): nothing ran.` };
-  return confine(argv, { sandbox, network: confined.network === true }, root);
+  // (What this machine's owner lets the folder's commands read: its own settings.)
+  return confine(argv, { sandbox, network: confined.network === true }, root, undefined, readOptsFor(sandboxScope(root)));
 }
 
 const seenBySession = new Map<string, Map<string, number>>();
@@ -111,7 +114,7 @@ export async function runHands(q: HandsRequest, spillRoot: string, signal: Abort
   const callId = typeof q.call === "string" && q.call ? q.call : crypto.randomUUID();
   const ctx: ToolContext = {
     sessionId: q.session, cwd: q.cwd, signal, seen, spillDir, callId,
-    wrapSpawn: q.sandbox ? (argv) => confine(argv, { sandbox: "workspace-write", network: false }, q.root) : undefined,
+    wrapSpawn: q.sandbox ? (argv) => confine(argv, { sandbox: "workspace-write", network: false }, q.root, undefined, readOptsFor(sandboxScope(q.root))) : undefined,
   };
   let input = q.input;
   if (tool.kind === "shell" && input && typeof input === "object") {

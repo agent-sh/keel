@@ -1,7 +1,7 @@
 import { expect, test } from "./isolate.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { ask, HAIKU, openPanel, scriptBash, shoot } from "./shots.ts";
 
 // An editor's end of ACP: `keel acp` on stdio, JSON-RPC one message a line.
@@ -232,6 +232,8 @@ test("acp mcp servers", async ({ page, request, baseURL }) => {
   // The session's sandbox is turned on: the command is started again inside
   // it, and cannot write where the session's own commands cannot.
   const { sandbox } = await (await request.get("/api/permissions/settings")).json();
+  // The editor's server is a file outside the session's folder: a sandbox shows it once the owner lists its folder for the workspace.
+  if (sandbox.available) expect((await request.put("/api/permissions/sandbox", { data: { workspace: { scope: ws, read: [dirname(server)] } } })).ok()).toBe(true);
   const put = await request.put(`/api/sessions/${id}/permissions`, { data: { sandbox: "read-only" } });
   if (sandbox.available) {
     expect(put.ok()).toBe(true);

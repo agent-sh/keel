@@ -10,7 +10,7 @@
 // The same reference always resolves to the same bytes for a given model.
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { open } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { chunks } from "../core/proc.ts";
 import { decodeText, textEncoding } from "../core/text.ts";
 import type { AttachmentBlock, Message } from "../core/types.ts";
@@ -178,8 +178,20 @@ const read = (path: string) => {
   return b;
 };
 
-export function resolveAttachments(messages: Message[], info: Pick<ModelInfo, "pdf" | "name">): Message[] {
+// The folders of the files a session was given by path, as its requests name
+// them: its commands read those in a sandbox, and no other session's.
+const given = new Map<string, Set<string>>();
+export const attachmentsGiven = (sessionId: string): string[] => [...(given.get(sessionId) ?? [])];
+
+// `sessionId`: the session the request is of, when its model may read the files with its tools.
+export function resolveAttachments(messages: Message[], info: Pick<ModelInfo, "pdf" | "name">, sessionId?: string): Message[] {
   if (!messages.some((m) => m.role === "user" && m.content.some((b: any) => b.type === "attachment"))) return messages;
+  const note = (path: string) => {
+    if (!sessionId) return;
+    let set = given.get(sessionId);
+    if (!set) { if (given.size > 2000) given.clear(); given.set(sessionId, (set = new Set())); }
+    set.add(dirname(path));
+  };
   return messages.map((m) => {
     if (m.role !== "user" || !m.content.some((b: any) => b.type === "attachment")) return m;
     const content = m.content.map((b: any) => {
@@ -187,6 +199,7 @@ export function resolveAttachments(messages: Message[], info: Pick<ModelInfo, "p
       const a = b as AttachmentBlock;
       const path = attachmentPath(a.id);
       if (!path) return { type: "text", text: `[Attached file ${a.name} is no longer stored.]` };
+      note(path);
       // The original of an image stored scaled down: its path, for the model's tools.
       if (a.scaled) return { type: "text", text: `[The image before this was scaled from ${a.scaled.from.join("x")} to ${a.scaled.to.join("x")} to fit the providers' image limits; the original is at ${path}.]` };
       const bytes = read(path);

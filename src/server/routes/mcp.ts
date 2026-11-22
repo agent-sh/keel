@@ -14,6 +14,8 @@ import { gate, presence } from "./permissions.ts";
 import { hookMcp } from "../../integrations/hooks.ts";
 import * as activity from "../../automation/activity.ts";
 import { confine, sandboxStatus } from "../../safety/sandbox.ts";
+import { readOptsFor } from "../../safety/sandbox-config.ts";
+import { sandboxScope } from "../../safety/sandbox-view.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -76,7 +78,7 @@ export const mcpRoutes: RouteModule = (deps) => {
     if (!s || !p || p.sandbox === "off") return { argv, as: "off" };
     const st = sandboxStatus();
     if (!st.available) return { refuse: `the session's commands run in a sandbox (${p.sandbox}) and this machine cannot give one (${st.reason}), so the editor's command is not started outside it` };
-    return { argv: confine(argv, p, s.workspace), as: `${p.sandbox}${p.network ? "" : ", no network"}` };
+    return { argv: confine(argv, p, s.workspace, undefined, readOptsFor(sandboxScope(s.workspace))), as: `${p.sandbox}${p.network ? "" : ", no network"}` };
   };
   // What a session's own server did is in the session's activity and on the
   // bus: it is a program the session runs, and the owner sees that it does.

@@ -230,7 +230,7 @@ test("a one-call card a restart left parked closes when its call went on without
 // CallClass fails the typecheck here until it has a sample, and the test below
 // then holds the gate to carrying it.
 const everyClass: { [K in CallClass["kind"]]: Required<Extract<CallClass, { kind: K }>> } = {
-  read: { kind: "read" },
+  read: { kind: "read", paths: ["/w/repo/a.ts"] },
   control: { kind: "control" },
   shell: { kind: "shell", command: "make", escalate: true, cwd: "/w/repo/sub", interpreter: "zsh" },
   edit: { kind: "edit", paths: ["/w/repo/tsconfig.json"], names: ["plugins"] },

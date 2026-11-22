@@ -50,7 +50,10 @@ export type Rule = { id: string; kind: RuleKind; pattern: string; scope: string;
 export type Suggest = { kind: RuleKind; pattern: string; bind?: string };
 
 export type CallClass =
-  | { kind: "read" }
+  // `paths`: the files and folders a read names (readPaths), for the one
+  // thing a read is held to: in a sandboxed session it asks before it reads
+  // where the owner's credentials or Keel's own files are kept.
+  | { kind: "read"; paths?: string[] }
   // `interpreter`: the program that runs the command when it is not bash. The
   // rules read a command as bash does, so none of it is then taken for a read.
   | { kind: "shell"; command: string; escalate?: boolean; cwd?: string; interpreter?: string }
@@ -88,7 +91,10 @@ const onlyOwner = (why: string, rule = "yours alone to allow"): Decision => ({ a
 // (its read flag and its kind); the input only supplies the command or the
 // paths of that kind, so no key a model puts in a call changes how it is judged.
 export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKind; input_schema?: any; built?: any; interpreter?(input: any): string; appliesPatch?: true }, input: any, cwd: string): CallClass {
-  if (tool.readOnly) return { kind: "read" };
+  if (tool.readOnly) {
+    const paths = readPaths(input, cwd);
+    return paths.length ? { kind: "read", paths } : { kind: "read" };
+  }
   switch (tool.kind) {
     case "control":
       return { kind: "control" };
@@ -366,6 +372,37 @@ const LANDS = new Set(["cp", "install", "mv", "rsync", "scp", "ln", "tar", "bsdt
 // A folder that holds folders of files that run later: something moved or copied under its name brings them.
 const HOLDS_RUNS_LATER = /(^|\/)\.(github|gitlab|circleci|buildkite|forgejo|gitea|woodpecker|tekton|husky|githooks|keel|claude|codex|gemini|vscode|azure-pipelines|semaphore|teamcity|git)$/;
 
+// The files and folders a reading tool's input names: its path keys, a
+// relative one from the call's folder, and any other string that is an
+// absolute path (a pattern that starts at one).
+const PATH_KEY = /^(file_?path|path|paths|dir_?path|directory|absolute_path|notebook_path|file|filename|folder|root)$/i;
+// A key that holds a pattern of names: read from the tool's folder key when it has one (Glob's `path`), else as a
+// path when it starts at one. A pattern that reaches a store by a wildcard-free start is that store's.
+const PATTERN_KEY = /^(pattern|patterns|glob|include|includes)$/i;
+export function readPaths(input: unknown, cwd: string): string[] {
+  const out = new Set<string>();
+  const whole = (v: string) => (v === "~" ? homedir() : v.startsWith("~/") ? join(homedir(), v.slice(2)) : v);
+  const add = (v: unknown, base = cwd) => {
+    if (typeof v !== "string" || !v || v.length > 4096) return;
+    const t = whole(v);
+    out.add(isAbsolute(t) ? resolve(t) : resolve(base, t));
+  };
+  if (input && typeof input === "object" && !Array.isArray(input)) {
+    const entries = Object.entries(input);
+    const each = (v: unknown, f: (x: unknown) => void) => { if (Array.isArray(v)) for (const x of v.slice(0, 32)) f(x); else f(v); };
+    const bases: string[] = [];
+    for (const [k, v] of entries) if (PATH_KEY.test(k)) each(v, (x) => { add(x); if (typeof x === "string" && x) bases.push(isAbsolute(whole(x)) ? resolve(whole(x)) : resolve(cwd, whole(x))); });
+    for (const [k, v] of entries) if (PATTERN_KEY.test(k)) each(v, (x) => {
+      if (typeof x !== "string" || !x) return;
+      // The part before the first wildcard names where the pattern looks.
+      const lead = x.slice(0, x.search(/[*?[{]|$/));
+      if (isAbsolute(whole(x))) add(x);
+      else if (lead.includes("/") || lead.startsWith(".")) for (const b of bases.length ? bases : [cwd]) add(x, b);
+    });
+  }
+  return [...out].slice(0, 32);
+}
+
 // The strings of a tool's input that are a path by themselves (an MCP file
 // server's `path`), for a tool whose input the gate cannot read otherwise.
 export function pathsNamed(input: unknown): string[] {
@@ -402,13 +439,38 @@ export type Facts = {
   // looked up by the gate before it decides, so this only reads the answer. Without it the reading forms of such
   // programs (node --version) are not reads.
   real?: (program: string) => boolean;
+  // Whether the session's sandbox shows a path to its commands (sandbox-view.ts, shownTo): a file tool of a
+  // sandboxed session reads what they read. `store`: a credential store or one of Keel's own folders.
+  shown?: (path: string) => { shown: true } | { shown: false; store: boolean; why: string };
+  // Why a file (where it lands) is in Keel's own state folder, which no session's tool writes in any mode; nothing
+  // for any other file, the session's own artifacts and a worktree Keel made for it.
+  keel?: (path: string) => string | null;
+  // Why a file is in Keel's own config folder (skills, hooks, MCP servers, settings): the owner's own card in the
+  // asking modes, and refused in Full auto, where no card reaches the owner and the judge does not decide it.
+  keelConfig?: (path: string) => string | null;
+  // Whether a file has another name somewhere (a hard link): a write to it lands there too.
+  linked?: (path: string) => boolean;
 };
 
 // The class of a command that asks to run outside the sandbox.
 export const ESCALATES = "asks to leave the sandbox";
 
 export function decide(c: CallClass, f: Facts): Decision {
-  if (c.kind === "read" || c.kind === "control") return { allow: true };
+  if (c.kind === "read") {
+    // A sandboxed session's file tools run outside the sandbox: they read
+    // what its commands read (the sandbox's view) and nothing else without
+    // the owner, in every mode. Where no owner is asked (Full auto) such a
+    // read is refused.
+    if (f.sandboxed && f.shown) for (const p of c.paths ?? []) {
+      const v = f.shown(p);
+      if (v.shown) continue;
+      // (In Full auto a card goes to the judge, which sees a path and not what is in the file: there the read is refused.)
+      if (f.mode === "full-auto") return { deny: `Refused: ${v.why.replace(/\.$/, "")}. In Full auto ${v.store ? "nothing reads it" : "a file tool reads only what the session's sandbox shows"}; say what you wanted it for and go on with the rest.` };
+      return onlyOwner(v.why, v.store ? "a credential store or one of Keel's own files" : "outside what the sandbox shows");
+    }
+    return { allow: true };
+  }
+  if (c.kind === "control") return { allow: true };
   // Plan mode holds like read-only, and says how to go on.
   if (f.mode === "plan") {
     const d = decide(c, { ...f, mode: "read-only" });
@@ -431,13 +493,29 @@ export function decide(c: CallClass, f: Facts): Decision {
   if (c.kind === "refused") return { deny: c.why };
   if (c.kind === "drive") return decideDrive(c, f);
   if (c.kind === "edit") {
+    // Keel's own state is never a session's tool's to write, in any mode.
+    for (const p of c.paths) { const why = f.keel?.(p); if (why) return { deny: keelRefusal(why) }; }
     if (f.mode === "read-only") return { deny: "This session is read-only: files cannot be changed. Say what you would change instead." };
-    // Full auto runs an edit unreviewed, but not one of a file that runs later (a hook, a CI workflow, a shell's
-    // start file, Keel's own configuration): that one is high risk and goes to its judge.
     if (f.mode === "full-auto") {
+      // Keel's own config is the owner's alone to change, and here no card reaches them.
+      for (const p of c.paths) { const why = f.keelConfig?.(p); if (why) return { deny: configRefusal(why) }; }
+      // No owner is asked here. A sandboxed session's file tools then write
+      // where its commands can and nowhere else: its folder (what runs or
+      // configures things later aside) and its scratch, by where the file
+      // really is, and not through a file that has another name elsewhere.
+      if (f.sandboxed) for (const p of c.paths) {
+        const why = ownerOnlyEdit(p, f)?.why ?? (f.linked?.(p) ? hardLinked(p) : ownPath(p, f) ? null : `it changes ${p}, outside this session's folder, where its sandbox lets nothing write`);
+        if (why) return { deny: `Refused: ${why}. In Full auto a sandboxed session's file tools write only where its commands can; say what you wanted it for and go on with the rest.` };
+      }
+      // With no sandbox Full auto runs an edit unreviewed, but not one of a file that runs later (a hook, a CI
+      // workflow, a shell's start file): that one is high risk and goes to its judge.
       for (const p of c.paths) { const o = ownerOnlyEdit(p, f); if (o) return { ask: { risk: "high", why: o.why, rule: o.rule, suggest: [] } }; }
       return { allow: true };
     }
+    // Keel's own config (also under another name, a hard link): the owner's call, one at a time.
+    for (const p of c.paths) { const why = f.keelConfig?.(p); if (why) return onlyOwner(why, "Keel's own configuration"); }
+    // A file with another name elsewhere: what is written through it lands outside the sandbox's folders too.
+    if (f.sandboxed) for (const p of c.paths) if (f.linked?.(p)) return onlyOwner(hardLinked(p), "a file with another name outside the sandbox");
     // A file something runs or reads its configuration from later (git hooks,
     // direnv, the project's hook and MCP files, Keel's own config, a shell's
     // start file, the login keys): the owner's call, one at a time. No grant,
@@ -453,6 +531,14 @@ export function decide(c: CallClass, f: Facts): Decision {
     const dirs = [...new Set(open.map((p) => (contains(f.workspace, p) && !protectedPath(f.workspace, p) ? f.workspace : dirname(p))))];
     return { ask: { risk: "low", suggest: dirs.map((d) => ({ kind: "edit", pattern: d })) } };
   }
+  // A tool that can change things, given one of Keel's own files (an MCP file server's write): its state never, in
+  // any mode; its config not in Full auto (the asking modes get the owner's card below).
+  if (c.kind === "other") for (const w of c.paths ?? []) {
+    const why = keelNamed(w, f.workspace, f, "names", f.keel);
+    if (why) return { deny: keelRefusal(why) };
+    const config = f.mode === "full-auto" ? keelNamed(w, f.workspace, f, "names", f.keelConfig) : null;
+    if (config) return { deny: configRefusal(config) };
+  }
   if (f.mode === "full-auto") return { allow: true };
   if (f.mode === "read-only") return { deny: `This session is read-only: ${f.tool} can change things, so it does not run here.` };
   // A tool that can change things, given a file that is the owner's alone to change (an MCP file server's write).
@@ -463,6 +549,18 @@ export function decide(c: CallClass, f: Facts): Decision {
   const grant = (c.kind === "other" && c.grant) || f.tool;
   if (f.rules.some((r) => r.kind === "tool" && r.pattern === grant && (!r.bind || r.bind === f.bind))) return { allow: true };
   return { ask: { risk: "low", suggest: [{ kind: "tool", pattern: grant, ...(f.bind ? { bind: f.bind } : {}) }] } };
+}
+
+const keelRefusal = (why: string) => `Refused: ${why}. No session's tool writes there in any mode. Say what you wanted it for and go on with the rest.`;
+const configRefusal = (why: string) => `Refused: ${why}. In Full auto no card reaches the owner, and this is theirs alone to allow: do it in an asking mode (Ask, Auto edits or Auto), where the owner approves it, or the owner changes it in Settings. Go on with the rest.`;
+const hardLinked = (p: string) => `it changes ${p}, a file that has another name elsewhere (a hard link): what is written lands there too, outside what this session's sandbox lets it write`;
+// Why a path a command or a tool's input names is one of Keel's own files, where it lands.
+function keelNamed(w: string, cwd: string, f: Facts, does: string, of: Facts["keel"]): string | null {
+  if (!of) return null;
+  const p = spelled(w, cwd, f.home ?? homedir());
+  if (!p) return null;
+  for (const q of f.own?.().land(p) ?? [p]) { const why = of(q); if (why) return why.replace(/^it changes/, `it ${does}`); }
+  return null;
 }
 
 // Never allowed on its own: in Auto and Reviewer it is refused, whatever a
@@ -565,12 +663,23 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
       const written = writesOf(part, run);
       // (A command that writes more files than the rules read is not read: any of them could be one that runs later.)
       if (written.length > WORDS_MAX) return { ask: { risk: "high", why: `the command names ${written.length} files to write or delete, more than the rules read for one command (${WORDS_MAX})`, rule: RULE_WORDS.hidden, suggest: [] } };
-      for (const w of written) { const o = here(w); if (o) return owners(o); }
+      // A file of Keel's own state is never written, in any mode; one of its config not in Full auto, where no card
+      // reaches the owner (in the asking modes it is the owner's card, below).
+      const keels = (w: string): Decision | null => {
+        if (at === null && !/^(["']?)(\/|~|\$HOME|\$\{HOME\})/.test(w)) return null;
+        const keel = keelNamed(w, at ?? "/", f, "writes", f.keel);
+        if (keel) return { deny: keelRefusal(`the command: ${keel}`) };
+        const config = f.mode === "full-auto" ? keelNamed(w, at ?? "/", f, "writes", f.keelConfig) : null;
+        return config ? { deny: configRefusal(`the command: ${config}`) } : null;
+      };
+      for (const w of written) { const k = keels(w); if (k) return k; const o = here(w); if (o) return owners(o); }
       // (The rest reads only the programs that copy into a folder, apply a patch, unpack an archive or are handed code.)
       if (!lands) continue;
       // (A folder elsewhere that the sandbox keeps the command from writing; not one of the home folder's own.)
       const heldFolder = (d: string, cwd: string) => { const p = spelled(join(d, "_"), cwd, home); return !!p && sureWord(d) && sandboxHolds(p, f) && dirname(dirname(p)) !== home; };
       for (const d of writesInto(run.words)) {
+        const k = keels(join(d, "_"));
+        if (k) return k;
         const o = here(join(d, "_")) ?? (HOLDS_RUNS_LATER.test(untrailed(d)) && at !== null && !heldFolder(untrailed(d), at) ? { rule: "runs later, outside the sandbox", why: `it writes into ${d}, where files that run or configure things later are kept` } : null);
         if (o) return owners(o);
       }

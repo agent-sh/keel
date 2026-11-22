@@ -121,6 +121,12 @@ test("a hook's allow answers the card the owner would have got, for a call insid
       expect([m, p, o.what, o.card?.suggest]).toEqual([m, p, "card high", []]);
     }
   }
+  // In Full auto no card reaches the owner: Keel's own config is refused there, hook or no hook, and no card is made.
+  mode("full-auto");
+  for (const p of [join(configDir(), "hooks.json"), join(configDir(), "mcp.json"), join(configDir(), "skills/new/SKILL.md")]) {
+    const o = await outcome(write(p));
+    expect([p, o.what, o.card]).toEqual([p, "refused", undefined]);
+  }
   // A high-risk command still gets its card.
   mode("ask");
   expect((await outcome(bash("sudo rm -rf /var/lib/thing"))).what).toBe("card high");

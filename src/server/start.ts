@@ -30,6 +30,7 @@ import { beginWatch, during, timed } from "../admin/stall.ts";
 import { newestTurn } from "../admin/marks.ts";
 import { originOf } from "../admin/timeline-rows.ts";
 import { startMark, startTraceBegin } from "../core/start-trace.ts";
+import { tendSandboxes } from "../safety/sandbox-view.ts";
 
 export { defaultStateDir };
 
@@ -82,6 +83,9 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   const life = opts.client ? undefined : beginLife(stateDir);
   // The daemon's git calls keep their views of repositories here, where a confined command cannot write.
   setGitViews(stateDir);
+  // What the sandboxes keep on disk is tended now and daily, off the loop (src/safety/sandbox-view.ts): the folders
+  // of repositories that are gone, temp files and cache layers past their age.
+  if (!opts.client) { void tendSandboxes(); setInterval(() => void tendSandboxes(), 86_400_000).unref?.(); }
   const store = new Store(stateDir);
   startMark("store");
   const bus = new Bus();

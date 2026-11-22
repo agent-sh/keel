@@ -127,6 +127,8 @@ afterEach(() => {
 });
 // Once, after the last test file (bun test fires no exit event from a preload).
 afterAll(() => {
+  // (A sandbox's cache layers hold folders the kernel made with no permissions: opened up first.)
+  Bun.spawnSync(["chmod", "-R", "u+rwX", join(dir, "state")], { stdout: "ignore", stderr: "ignore" });
   rmSync(dir, { recursive: true, force: true });
   leftBehind();
 });

@@ -44,6 +44,8 @@ test("an edit's type error reaches the model and the tool card, and its fix", as
   const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
   const sandboxed = (await (await request.get("/api/permissions/settings")).json()).sandbox.available as boolean;
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", ...(sandboxed ? { sandbox: "workspace-write", network: false } : { sandbox: "off" }) } });
+  // The workspace's modules are a link to a folder elsewhere: a sandbox shows it once the owner lists it for the workspace.
+  if (sandboxed) expect((await request.put("/api/permissions/sandbox", { data: { workspace: { scope: ws, read: [modules] } } })).ok()).toBe(true);
   const file = join(ws, "src/math.ts");
 
   // Turn 1: read it, then an edit that changes nothing a compiler minds, then the edit that breaks a type.

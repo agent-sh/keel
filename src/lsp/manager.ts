@@ -32,7 +32,9 @@ export type ManagerDeps = {
   // The command as the session's own commands run (inside its sandbox, or
   // refused when the session is confined and this machine cannot confine),
   // in a scope of its own that holds it to `memoryMb`.
-  confine: (argv: string[], perm: Perm, workspace: string, memoryMb: number) => { argv: string[] } | { refuse: string };
+  // `own`: the program is the owner's or the machine's (found on PATH, in a toolchain's folder, or the owner's own
+  // command), not one the workspace holds: a sandbox shows it with what its command line names.
+  confine: (argv: string[], perm: Perm, workspace: string, memoryMb: number, own?: boolean) => { argv: string[] } | { refuse: string };
   env: (sessionId: string) => Record<string, string>;
   // A server started, ended or failed (for the errors table and the page).
   onChange?: (e: { what: "started" | "ended" | "failed"; id: string; root: string; session: string; why?: string }) => void;
@@ -232,7 +234,7 @@ export class LspManager {
     const others = this.alive().filter((x) => x !== e && !x.client!.stopping).sort((a, b) => a.lastUsed - b.lastUsed);
     const max = Math.max(1, this.d.maxServers?.() ?? MAX_SERVERS);
     for (const x of others.slice(0, Math.max(0, others.length + 1 - max))) void x.client!.stop(`stopped: no more than ${max} of the language servers are alive at once (diagnostics.max_servers), and this one was used least recently`);
-    const run = this.d.confine(found.argv, perm, s.workspace, SERVER_MEMORY_MB);
+    const run = this.d.confine(found.argv, perm, s.workspace, SERVER_MEMORY_MB, found.from === "path");
     if ("refuse" in run) { e.state = "refused"; e.error = run.refuse; return null; }
     e.argv = run.argv;
     e.from = found.from;

@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { HAIKU, shoot, ask, scriptBash } from "./shots.ts";
+import { HAIKU, shoot, ask, scriptBash, openPanel } from "./shots.ts";
 
 // Feature: the command sandbox. In auto-edits mode with the workspace-write
 // profile and the network off, a command runs without asking, can write the
@@ -151,6 +151,117 @@ test("a sandboxed session commits in its worktree", async ({ page, request }) =>
   expect(git(repo, "rev-parse", "--verify", "-q", "refs/heads/main")).toHaveLength(40);
 });
 
+// What a sandboxed command can read: the session's folder, the system and the
+// owner's toolchains. Not the rest of the home (a key under ~/.ssh, a file of
+// another project) and not Keel's own state folder. A command that looked for
+// one of those is told what was hidden; the owner opens a folder for the
+// workspace in Settings; and the file tools, which run outside the sandbox,
+// ask before they read where credentials are kept.
+test("a sandboxed command reads none of the owner's secrets, and the owner opens a folder for it", async ({ page, request }) => {
+  const settings = await (await request.get("/api/permissions/settings")).json();
+  test.skip(!settings.sandbox.available, `sandbox unavailable: ${settings.sandbox.reason}`);
+  const home = process.env.HOME!;
+  const stamp = Date.now();
+  const ws = join(home, ".cache/keel-work/bun/e2e-ws", `sandbox-read-${stamp}`);
+  mkdirSync(ws, { recursive: true });
+  // The owner's files: a key, a note in a folder of their own, and a tool on PATH-less reach (a script in the folder).
+  mkdirSync(join(home, ".ssh"), { recursive: true });
+  writeFileSync(join(home, ".ssh", `id_e2e_${stamp}`), `PRIVATE-KEY-${stamp}\n`);
+  const notes = join(home, `notes-${stamp}`);
+  mkdirSync(notes, { recursive: true });
+  writeFileSync(join(notes, "plan.md"), `OWNER-NOTE-${stamp}\n`);
+  writeFileSync(join(ws, ".env"), `WORKSPACE-ENV-${stamp}\n`);
+  const { state_dir } = await (await request.get("/api/daemon")).json();
+  expect(existsSync(join(state_dir, "keel.db"))).toBe(true);
+
+  const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
+  const id = session.id;
+  await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "auto-edits", sandbox: "workspace-write", network: false } });
+  await page.goto(`/s/${id}`);
+  const results = async () => ((await (await request.get(`/api/sessions/${id}`)).json()).events as any[]).filter((e) => e.kind === "tool_result").map((e) => String(e.data.results[0].content));
+  const bash = async (command: string, n: number) => {
+    await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([{ name: "Bash", input: { command } }])}`);
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("turn-end")).toHaveCount(n, { timeout: 60_000 });
+    return (await results()).at(-1)!;
+  };
+
+  // 1. The command runs without a card. It reads its own folder's .env, and finds no key, no note and no Keel state.
+  const look = `cat .env; cat ~/.ssh/id_e2e_${stamp}; cat ${notes}/plan.md; ls ${state_dir}/keel.db; echo x > "$XDG_CACHE_HOME/made-by-sandbox" && echo wr""ote-cache; echo x > ~/made-by-sandbox || echo home-cl""osed`;
+  const first = await bash(look, 1);
+  await expect(page.getByTestId("approval")).toHaveCount(0);
+  expect(first).toContain(`WORKSPACE-ENV-${stamp}`);
+  expect(first).not.toContain(`PRIVATE-KEY-${stamp}`);
+  expect(first).not.toContain(`OWNER-NOTE-${stamp}`);
+  expect(first.match(/No such file or directory/g)!.length).toBeGreaterThanOrEqual(3);
+  // Its cache folder is the sandbox's own; the rest of the home it sees takes no write. Nothing reached the owner's home.
+  expect(first).toContain("wrote-cache");
+  expect(first).toContain("home-closed");
+  expect(existsSync(join(home, ".keel-sandbox"))).toBe(false);
+  expect(existsSync(join(home, "made-by-sandbox"))).toBe(false);
+  // It is told what was hidden and how the owner allows it, in its own tool's words for leaving the sandbox. For
+  // the key and Keel's own file no way around is offered.
+  expect(first).toContain("[sandbox] This session's sandbox does not show");
+  expect(first).toMatch(new RegExp(`does not show [^\\n]*\\.ssh/id_e2e_${stamp}[^\\n]*: the owner's credential stores and Keel's own files are kept from every sandboxed command\\.(\\n|$)`));
+  expect(first).toMatch(new RegExp(`does not show [^\\n]*notes-${stamp}/plan\\.md: the home folder is not readable there`));
+  expect(first).toContain("The owner can add a folder to what this session's folder may read, in Settings, Permissions.");
+  expect(first).toContain("dangerouslyDisableSandbox: true");
+  const tool = page.getByTestId("tool-call").first();
+  await tool.click();
+  await expect(tool).toContainText("This session's sandbox does not show");
+  await shoot(page, "sandbox-06-hidden");
+
+  // 2. The owner adds the folder for this workspace in Settings.
+  await page.goto("/settings/safety");
+  const card = page.getByTestId("sandbox-reads");
+  await card.getByTestId("sandbox-scope").click();
+  await page.getByRole("option", { name: ws, exact: true }).click();
+  await expect(card.getByTestId("sandbox-scope")).toContainText(ws);
+  // The home itself is refused, with the reason.
+  const one = card.getByTestId("sandbox-read-one");
+  await one.getByTestId("sandbox-read-add").fill("~");
+  await one.getByTestId("sandbox-read-add-button").click();
+  await expect(card.getByTestId("sandbox-reads-error")).toContainText("would open all of the home folder");
+  await one.getByTestId("sandbox-read-add").fill(notes);
+  await one.getByTestId("sandbox-read-add").press("Enter");
+  await expect(one.getByTestId("sandbox-read-path")).toHaveText([notes]);
+  await shoot(page, "sandbox-07-settings");
+  // The same card on a phone: a long path wraps, nothing is wider than the page.
+  const size = page.viewportSize()!;
+  await page.setViewportSize({ width: 390, height: 844 });
+  await card.scrollIntoViewIfNeeded();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  expect(await card.evaluate((el) => [...el.querySelectorAll("*")].every((n) => n.getBoundingClientRect().right <= window.innerWidth + 1))).toBe(true);
+  await shoot(page, "sandbox-07b-settings-390");
+  await page.setViewportSize(size);
+  expect((await (await request.get("/api/permissions/sandbox")).json()).workspaces[ws]).toEqual({ read: [notes] });
+
+  // 3. The same command now reads the note, and still no key.
+  await page.goto(`/s/${id}`);
+  const second = await bash(look, 2);
+  expect(second).toContain(`OWNER-NOTE-${stamp}`);
+  expect(second).not.toContain(`PRIVATE-KEY-${stamp}`);
+
+  // The session's own files in Keel's state are there: an artifact it writes from a command lands in its artifacts folder.
+  const artifacts = join(state_dir, "artifacts", id);
+  const third = await bash(`echo chart > ${artifacts}/chart.txt && cat ${artifacts}/chart.txt; ls ${state_dir}/artifacts | wc -l`, 3);
+  expect(third).toContain("chart\n1");
+  expect(readFileSync(join(artifacts, "chart.txt"), "utf8")).toBe("chart\n");
+
+  // 4. A file tool runs outside the sandbox: reading the key asks the owner, and says why.
+  await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([{ name: "Read", input: { file_path: join(home, ".ssh", `id_e2e_${stamp}`) } }])}`);
+  await page.keyboard.press("Enter");
+  const approval = page.getByTestId("approval");
+  await expect(approval).toHaveCount(1, { timeout: 30_000 });
+  await expect(approval).toContainText("where the owner's credentials, history or sign-in settings are kept");
+  await shoot(page, "sandbox-08-read-asks");
+  await approval.getByTestId("deny").click();
+  await page.getByTestId("deny-reason").fill("that is my key");
+  await page.getByTestId("deny-send").click();
+  await expect(page.getByTestId("turn-end")).toHaveCount(4, { timeout: 60_000 });
+  expect((await results()).join("\n")).not.toContain(`PRIVATE-KEY-${stamp}`);
+});
+
 // A sandboxed command is not the owner to the daemon's API. With the
 // session's network on it has a network namespace of its own and a proxy
 // that never connects to this machine: the API's port is not on its
@@ -215,4 +326,44 @@ test("a sandboxed command with the network on cannot reach the daemon's API", as
   await tool.click();
   await expect(tool).toContainText("Keel's own API is never reachable from a sandbox");
   await shoot(page, "sandbox-09-api-refused");
+});
+
+// A dev server a sandboxed command starts listens on the sandbox's own
+// loopback: nothing else on the machine reaches it there. The session's
+// portal still shows it: the daemon reaches into that sandbox's network
+// namespace for the port.
+test("the portal shows a dev server a sandboxed command runs", async ({ page, request }) => {
+  const settings = await (await request.get("/api/permissions/settings")).json();
+  test.skip(!settings.sandbox.available, `sandbox unavailable: ${settings.sandbox.reason}`);
+  const port = Number(execFileSync("python3", ["-c", "import socket; s=socket.socket(); s.bind(('127.0.0.1', 0)); print(s.getsockname()[1])"], { encoding: "utf8" }).trim());
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `sandbox-portal-${Date.now()}`);
+  mkdirSync(ws, { recursive: true });
+  writeFileSync(join(ws, "index.html"), "<!doctype html><title>t</title><h1>served from inside the sandbox</h1>\n");
+  const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
+  const id = session.id;
+  await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "full-auto", sandbox: "workspace-write", network: true } });
+  try {
+    await page.goto(`/s/${id}`);
+    await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([{ name: "Bash", input: { command: `python3 -m http.server ${port} --bind 127.0.0.1`, run_in_background: true } }])}`);
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
+    // The port is the session's, though it is on no address of this machine.
+    const ports = async () => ((await (await request.get(`/api/sessions/${id}/portal`)).json()).ports as any[]);
+    await expect.poll(async () => (await ports()).map((p) => p.port), { timeout: 20_000 }).toContain(port);
+    expect((await ports()).find((p) => p.port === port).ns).toMatch(/^net:/);
+    expect(await fetch(`http://127.0.0.1:${port}/`).then((r) => r.status, () => 0)).toBe(0);
+    // Opened in the Preview panel, the portal serves it.
+    await openPanel(page, "preview");
+    const entry = page.locator(`[data-testid="preview-port"][data-port="${port}"]`);
+    await expect(entry).toBeVisible({ timeout: 15_000 });
+    await entry.click();
+    await expect(page.frameLocator('[data-testid="preview-frame"]').locator("h1")).toHaveText("served from inside the sandbox", { timeout: 15_000 });
+    await shoot(page, "sandbox-10-portal");
+    const url = (await ports()).find((p) => p.port === port).url as string;
+    const served = await request.get(url);
+    expect(served.status()).toBe(200);
+    expect(await served.text()).toContain("served from inside the sandbox");
+  } finally {
+    await request.delete(`/api/sessions/${id}`);
+  }
 });

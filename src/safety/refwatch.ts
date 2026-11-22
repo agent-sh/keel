@@ -150,7 +150,7 @@ const NETWORK = /Could not resolve host|Could not resolve hostname|Temporary fai
 const GIT_WRITE = /\.lock'?: Read-only file system|\.git\/[^\n']*'?: Read-only file system|insufficient permission for adding an object|could not (lock|write) config file/;
 // With the network on: what the sandbox's proxy refused while the command ran, and what a command says when it
 // went around the proxy (a name it resolved itself, another protocol, this machine's localhost).
-const NETWORK_ON = /Could not resolve host|Could not resolve hostname|Temporary failure in name resolution|Name or service not known|Network is unreachable|ENETUNREACH|EAI_AGAIN|ENOTFOUND|Failed to connect to (localhost|127\.0\.0\.1|\[?::1\]?)|connect ECONNREFUSED (127\.0\.0\.1|::1)/i;
+const NETWORK_ON = /Could not resolve host|Could not resolve hostname|Temporary failure in name resolution|Name or service not known|Network is unreachable|No route to host|ENETUNREACH|EHOSTUNREACH|EAI_AGAIN|ENOTFOUND|Failed to connect to (localhost|127\.0\.0\.1|\[?::1\]?)|connect ECONNREFUSED (127\.0\.0\.1|::1)/i;
 export function sandboxSaid(output: string, at: { linked: boolean; network: boolean; escape: string; shut?: () => string | undefined; refused?: () => { host: string; port: number; why: string }[] }): string[] {
   const said: string[] = [];
   // None of git's files is open to this session: that is the whole story of a failed git write.

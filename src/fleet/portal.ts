@@ -5,15 +5,18 @@
 // port is listed). Portals live in memory: none is open after a restart.
 import { readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
 
-export type PortInfo = { port: number; pid: number; process: string; open: boolean; point?: boolean; url?: string };
+// `ns`: the process is in a network namespace of its own (a sandboxed command's): the port is on that namespace's
+// loopback, and the daemon reaches it through reachInto (src/safety/net-proxy.ts).
+export type PortInfo = { port: number; pid: number; process: string; open: boolean; point?: boolean; url?: string; ns?: string };
 
 const OWNERSHIP_MS = 2_000; // an ownership answer is reused for 2 s
 
 type Listener = { port: number; inode: string };
 
-function listeners(): Listener[] {
+// `of`: a process whose network namespace's table is read (a sandboxed command's); else the daemon's own.
+function listeners(of?: string): Listener[] {
   const out: Listener[] = [];
-  for (const t of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+  for (const t of of ? [`/proc/${of}/net/tcp`, `/proc/${of}/net/tcp6`] : ["/proc/net/tcp", "/proc/net/tcp6"]) {
     let text: string;
     try { text = readFileSync(t, "utf8"); } catch { continue; }
     for (const line of text.split("\n").slice(1)) {
@@ -34,9 +37,16 @@ let cache: { at: number; bySession: Map<string, PortInfo[]> } | undefined;
 export function sessionPorts(): Map<string, PortInfo[]> {
   if (cache && Date.now() - cache.at < OWNERSHIP_MS) return cache.bySession;
   const bySession = new Map<string, PortInfo[]>();
-  const ls = listeners();
-  if (!ls.length) { cache = { at: Date.now(), bySession }; return bySession; }
-  const byInode = new Map(ls.map((l) => [l.inode, l.port]));
+  const mine = (() => { try { return readlinkSync("/proc/self/ns/net"); } catch { return ""; } })();
+  const tables = new Map<string, Map<string, number>>([[mine, new Map(listeners().map((l) => [l.inode, l.port]))]]);
+  // The table of a process's own network namespace: read once per namespace.
+  const tableOf = (pid: string): { ns: string; byInode: Map<string, number> } => {
+    let ns = mine;
+    try { ns = readlinkSync(`/proc/${pid}/ns/net`); } catch {} // gone, or not ours to read: the daemon's own table
+    let t = tables.get(ns);
+    if (!t) tables.set(ns, (t = new Map(listeners(pid).map((l) => [l.inode, l.port]))));
+    return { ns, byInode: t };
+  };
   const uid = process.getuid?.();
   let pids: string[] = [];
   try { pids = readdirSync("/proc").filter((p) => /^\d+$/.test(p)); } catch {}
@@ -46,6 +56,8 @@ export function sessionPorts(): Map<string, PortInfo[]> {
       const env = readFileSync(`/proc/${pid}/environ`, "latin1");
       const m = env.match(/(?:^|\0)KEEL_SESSION=([^\0]+)/);
       if (!m) continue;
+      const { ns, byInode } = tableOf(pid);
+      if (!byInode.size) continue;
       const fds = readdirSync(`/proc/${pid}/fd`);
       for (const fd of fds) {
         let link: string;
@@ -56,7 +68,7 @@ export function sessionPorts(): Map<string, PortInfo[]> {
         const list = bySession.get(m[1]!) ?? [];
         if (!list.some((p) => p.port === port)) {
           const name = readFileSync(`/proc/${pid}/comm`, "utf8").trim();
-          list.push({ port, pid: Number(pid), process: name, open: false });
+          list.push({ port, pid: Number(pid), process: name, open: false, ...(ns !== mine ? { ns } : {}) });
         }
         bySession.set(m[1]!, list);
       }

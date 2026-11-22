@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { deliver } from "../../automation/core.ts";
 import { sandboxSaid } from "../../safety/refwatch.ts";
 import { gitShut, linkedWorktree } from "../../safety/sandbox.ts";
+import { hiddenSaid, hiddenSettings, ownerHome, sandboxBytes, sandboxScope, shownPaths, tendSandboxes, toolchainPaths, warmOverlays } from "../../safety/sandbox-view.ts";
+import { refusedSince } from "../../safety/net-proxy.ts";
+import { sandboxConfig, setSandboxConfig } from "../../safety/sandbox-config.ts";
 import { escapeOf } from "../../safety/policy.ts";
 import * as activity from "../../automation/activity.ts";
 import { stopKind } from "../../core/stops.ts";
@@ -21,8 +24,7 @@ import { CLIENTS, type AnsweredBy } from "../../safety/card.ts";
 import { sandboxStatus } from "../../safety/sandbox.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { setGitReach } from "../../core/git.ts";
-import { refusedSince } from "../../safety/net-proxy.ts";
-import { sandboxScope, scopeDir } from "../../safety/sandbox-scope.ts";
+import { scopeDir } from "../../safety/sandbox-scope.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -44,6 +46,8 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
   const needs = (req: Request, action: string) => (pk.allows(req, action) ? null : json({ error: "this needs your passkey from a remote device", presence: { action } }, 428));
   g.judge = makeJudge(store, deps.providers, () => g.setting("reviewer_model"), () => g.setting("reviewer_policy"));
   const sb = sandboxStatus();
+  // (Whether the package caches can be layered here is asked now, off the loop: src/safety/sandbox-view.ts.)
+  if (sb.available) void warmOverlays(sb.bwrap);
   if (!sb.available && g.defaultSandbox() !== "off") deps.errors.capture("server", new Error(`sandbox unavailable: ${sb.reason}`), { at: "startup" });
   // What the daemon's own git may fetch for a session's worktree: as far as that session reaches.
   setGitReach((id) => g.gitReach(id));
@@ -60,6 +64,11 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
       if (!watched && !confined) return;
       const said = typeof result.content === "string" ? result.content : result.content.map((b) => (b.type === "text" ? b.text : "")).join("\n");
       const shut = confined ? sandboxSaid(said, { linked: !s.machine && !!linkedWorktree(s.workspace), network: !!confined.network, escape: escapeOf(call.tool), ...(s.machine ? {} : { shut: () => gitShut(s.workspace), refused: () => refusedSince(scopeDir(sandboxScope(s.workspace)), confined.since ?? Date.now()) }) }) : [];
+      // What the sandbox's view of the machine hid from it (src/safety/sandbox-view.ts).
+      if (confined && !s.machine) {
+        const opts = g.readOpts(s, confined.sandbox === "read-only" ? "read-only" : "workspace-write");
+        shut.push(...hiddenSaid(said, { workspace: s.workspace, shown: () => shownPaths(s.workspace, opts), escape: escapeOf(call.tool), sshAgent: opts.sshAgent, cwd: call.ctx.cwd }));
+      }
       if (watched?.note) activity.record("approval", "sandbox", s.id, watched.note, { call_id: call.id });
       const text = [watched?.note && `[sandbox] ${watched.note} If this command did that and it was not asked for, put it back and say so.`, ...shut.map((line) => `[sandbox] ${line}`)].filter(Boolean).join("\n\n");
       if (!text) return;
@@ -95,6 +104,20 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
   };
   const settings = () => ({ default_mode: g.defaultMode(), default_sandbox: g.defaultSandbox(), reviewer_model: g.setting("reviewer_model") ?? null, reviewer_policy: g.setting("reviewer_policy") ?? "", modes: MODES, mode_groups: MODE_GROUPS, sandbox: sandboxStatus() });
 
+  const sandboxSettings = () => {
+    const home = ownerHome();
+    const short = (p: string) => (p === home ? "~" : p.startsWith(`${home}/`) ? `~/${p.slice(home.length + 1)}` : p);
+    const scopes = [...new Set([...Object.keys(sandboxConfig().workspaces), ...store.sessions().filter((s) => !s.machine && !s.archived).map((s) => sandboxScope(s.workspace))])].sort();
+    return { ...sandboxConfig(), scopes, shown: toolchainPaths().map(short), hidden_settings: hiddenSettings(), bytes: sandboxSize.bytes, available: sandboxStatus().available };
+  };
+  // What the sandboxes hold on disk (their cache layers and temp files): measured off the loop, at most once a minute.
+  const sandboxSize = { bytes: 0, at: 0, busy: false };
+  const measure = () => {
+    if (sandboxSize.busy || Date.now() - sandboxSize.at < 60_000) return;
+    sandboxSize.busy = true;
+    void sandboxBytes().then((n) => { sandboxSize.bytes = n; sandboxSize.at = Date.now(); }).finally(() => { sandboxSize.busy = false; });
+  };
+
   return {
     "/api/permissions/settings": {
       GET: () => json(settings()),
@@ -116,6 +139,32 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
           g.setDefaultSandbox(b.default_sandbox as SandboxProfile);
         }
         return json(settings());
+      },
+    },
+    // What a sandboxed command may read beyond the system and the owner's
+    // toolchains: the owner's lists, for every workspace and per workspace,
+    // and whether a workspace's commands may use the SSH agent. `shown`: what
+    // of the home every sandbox shows, so the owner sees it. `scopes`: the
+    // repositories and folders the sessions work in.
+    "/api/permissions/sandbox": {
+      GET: () => { measure(); return json(sandboxSettings()); },
+      PUT: async (req: any) => {
+        // (Every change here lets commands read more: it is the owner's.)
+        const guard = needs(req, "settings");
+        if (guard) return guard;
+        const b = await body(req);
+        const no = setSandboxConfig({ read: b.read, env: b.env, workspace: b.workspace });
+        if (no) return bad(no);
+        return json(sandboxSettings());
+      },
+    },
+    // The sandboxes' own cache layers and temp files, removed now (what a running command holds stays).
+    "/api/permissions/sandbox/clear": {
+      POST: async () => {
+        await tendSandboxes(true);
+        sandboxSize.bytes = await sandboxBytes();
+        sandboxSize.at = Date.now();
+        return json(sandboxSettings());
       },
     },
     "/api/sessions/:id/permissions": {

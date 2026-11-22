@@ -8,6 +8,8 @@ import { ModelPicker } from "./ModelPicker.tsx";
 import { enroll, passkeyBlock } from "../lib/presence.ts";
 import { Card, SettingRow } from "./Settings.tsx";
 import { Select } from "./Select.tsx";
+import { Switch } from "@base-ui/react/switch";
+import { composing } from "../lib/keys.ts";
 import { clock } from "../lib/utils.ts";
 
 type PermSettings = { default_mode: string; reviewer_model: string | null; reviewer_policy: string };
@@ -58,6 +60,7 @@ export function SafetySettings({ children }: { children?: ReactNode }) {
           </div>
         </SettingRow>
       </Card>
+      <SandboxReadsCard />
       <PasskeysCard />
       <RemoteAccessCard />
       <TrustCard />
@@ -81,6 +84,114 @@ function PolicyBox({ value, onSave }: { value: string; onSave: (v: string) => vo
         className="w-full resize-y rounded-lg border border-line bg-bg px-3 py-2 text-ui outline-none placeholder:text-faint focus:border-line-strong"
       />
       <button data-testid="reviewer-policy-save" disabled={v === value} onClick={() => onSave(v)} className="h-8 rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-40">Save policy</button>
+    </div>
+  );
+}
+
+type SandboxReads = {
+  read: string[]; env: string[]; workspaces: Record<string, { read?: string[]; ssh_agent?: boolean }>; scopes: string[]; shown: string[];
+  hidden_settings: { path: string; note?: string }[]; bytes: number; available: boolean;
+};
+
+// What a sandboxed command may read. The card says what every sandbox
+// shows by design, and what it hides; here the owner adds folders, for every
+// session or for one folder's, lets a folder's commands use the SSH agent,
+// names environment variables a command keeps, and clears what the
+// sandboxes hold on disk.
+function SandboxReadsCard() {
+  const [v, setV] = useState<SandboxReads | null>(null);
+  const [scope, setScope] = useState("");
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    api<SandboxReads>("/api/permissions/sandbox").then((r) => { setV(r); setScope((s) => s || r.scopes[0] || ""); }).catch(reportError);
+  }, []);
+  const put = (patch: object) => api<SandboxReads>("/api/permissions/sandbox", { method: "PUT", body: JSON.stringify(patch) })
+    .then((r) => { setV(r); setErr(""); }).catch((e) => setErr(failed(e, { at: "SafetySettings" })));
+  if (!v) return null;
+  const own = (scope && v.workspaces[scope]) || {};
+  const mb = v.bytes >= 1024 * 1024 * 1024 ? `${(v.bytes / 1024 / 1024 / 1024).toFixed(1)} GB` : `${Math.round(v.bytes / 1024 / 1024)} MB`;
+  return (
+    <div className="k-after-card flex flex-col gap-2" data-testid="sandbox-reads">
+      <h3 className="px-1 text-ui font-medium text-muted">Sandbox: what commands can read</h3>
+      <Card>
+        <div className="border-b border-line py-4">
+          <div className="text-base font-medium">Every folder</div>
+          <div className="mt-0.5 text-ui text-muted">A sandboxed command does not see your home folder. It reads the session's folder, the system, and what is listed below. Add a folder or a file that the commands of every session may read.</div>
+          <PathList testid="sandbox-read-all" paths={v.read} onChange={(read) => put({ read })} />
+          <details className="mt-3 text-caption text-muted">
+            <summary className="cursor-pointer select-none hover:text-fg" data-testid="sandbox-shown-toggle">Readable in every sandbox by design</summary>
+            <ul className="mt-2 flex list-disc flex-col gap-1 pl-5" data-testid="sandbox-by-design">
+              <li>The other checkouts of the session's repository (its main checkout and worktrees), read-only.</li>
+              <li>Your package caches (cargo, Go, bun, npm, pnpm, uv, pip, Playwright and the like): read as they are; what a command writes there stays in the sandbox.</li>
+              <li>Git's global config and ignore file, and version files such as .tool-versions.</li>
+              <li>The skills and commands Keel offers the session, the files you attached to it and its artifacts.</li>
+              {v.shown.length > 0 && <li>Your toolchains, read-only: <span className="break-all font-mono" data-testid="sandbox-shown">{v.shown.join(", ")}</span></li>}
+            </ul>
+          </details>
+          {v.hidden_settings.length > 0 && (
+            <details className="mt-2 text-caption text-muted">
+              <summary className="cursor-pointer select-none hover:text-fg" data-testid="sandbox-hidden-toggle">Settings files of yours that are hidden there: {v.hidden_settings.length}</summary>
+              <p className="mt-2">A tool inside a sandbox runs without these, so it may behave differently there (another registry, no sign-in).</p>
+              <ul className="mt-1 flex flex-col gap-0.5 font-mono" data-testid="sandbox-hidden">{v.hidden_settings.map((h) => <li key={h.path} className="break-all">{h.path}{h.note && <span className="font-sans text-faint"> ({h.note})</span>}</li>)}</ul>
+            </details>
+          )}
+        </div>
+        <div className="border-b border-line py-4">
+          <div className="text-base font-medium">One folder</div>
+          <div className="mt-0.5 text-ui text-muted">For the sessions that work in one repository or folder.</div>
+          {v.scopes.length === 0 ? <p className="k-empty mt-3">Nothing yet: open a session in a folder first.</p> : (
+            <>
+              <Select data-testid="sandbox-scope" value={scope} onChange={(e) => setScope(e.target.value)} className="mt-3 h-8 max-w-full rounded-md border border-line bg-raised px-2 font-mono text-caption outline-none focus:border-line-strong">
+                {v.scopes.map((s) => <option key={s} value={s}>{s}</option>)}
+              </Select>
+              <PathList testid="sandbox-read-one" paths={own.read ?? []} onChange={(read) => put({ workspace: { scope, read } })} />
+              <label className="mt-3 flex items-start gap-2.5 text-ui">
+                <Switch.Root checked={!!own.ssh_agent} onCheckedChange={(on) => put({ workspace: { scope, ssh_agent: on } })} data-testid="sandbox-ssh-agent" className="k-switch mt-0.5">
+                  <Switch.Thumb className="k-switch-thumb" />
+                </Switch.Root>
+                <span>Let its commands use the SSH agent <span className="text-muted">(they can sign in and push with your keys while it is on; they cannot read the keys)</span></span>
+              </label>
+            </>
+          )}
+          {err && <p className="mt-3 text-caption text-danger" role="alert" data-testid="sandbox-reads-error">{err}</p>}
+        </div>
+        <div className="border-b border-line py-4">
+          <div className="text-base font-medium">Environment variables</div>
+          <div className="mt-0.5 text-ui text-muted">A sandboxed command gets the variables a build needs (PATH, the locale, the toolchains' folders) and none of the rest of the daemon's environment: no token, key or password. Name a variable to pass it on as well.</div>
+          <PathList testid="sandbox-env" paths={v.env} onChange={(env) => put({ env })} placeholder="NAME" label="An environment variable a sandboxed command keeps" />
+        </div>
+        <SettingRow label="On disk" hint="What sandboxed commands wrote to their own package caches and temp folders. Temp files go after 10 days and a cache layer no command used after 30; clearing removes all that no running command holds.">
+          <div className="flex items-center gap-3">
+            <span className="text-ui tabular-nums text-muted" data-testid="sandbox-bytes">{mb}</span>
+            <button data-testid="sandbox-clear" onClick={() => api<SandboxReads>("/api/permissions/sandbox/clear", { method: "POST", body: "{}" }).then(setV).catch(reportError)}
+              className="h-8 rounded-lg border border-line px-3 text-ui hover:bg-hover">Clear</button>
+          </div>
+        </SettingRow>
+      </Card>
+    </div>
+  );
+}
+
+// A list of paths (or names) with one field to add to it. An entry is shown whole: a long one wraps.
+function PathList({ paths, onChange, testid, placeholder = "~/folder or /path", label = "A folder or file commands may read" }: { paths: string[]; onChange: (next: string[]) => void; testid: string; placeholder?: string; label?: string }) {
+  const [add, setAdd] = useState("");
+  const commit = () => { const t = add.trim(); if (!t || paths.includes(t)) return; onChange([...paths, t]); setAdd(""); };
+  return (
+    <div className="mt-3 flex flex-col gap-1.5" data-testid={testid}>
+      {paths.map((p) => (
+        <div key={p} className="flex items-start gap-2 text-caption">
+          <span className="min-w-0 flex-1 break-all font-mono" data-testid="sandbox-read-path">{p}</span>
+          <button className="shrink-0 text-faint hover:text-danger" aria-label={`Remove ${p}`} onClick={() => onChange(paths.filter((x) => x !== p))}>Remove</button>
+        </div>
+      ))}
+      <div className="flex items-center gap-2">
+        <input
+          value={add} onChange={(e) => setAdd(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !composing(e)) commit(); }}
+          placeholder={placeholder} aria-label={label} data-testid="sandbox-read-add"
+          className="h-8 min-w-0 flex-1 rounded-md border border-line bg-bg px-2.5 font-mono text-caption outline-none placeholder:text-faint focus:border-line-strong"
+        />
+        <button disabled={!add.trim()} onClick={commit} data-testid="sandbox-read-add-button" className="h-8 shrink-0 rounded-lg border border-line px-3 text-ui hover:bg-hover disabled:opacity-40">Add</button>
+      </div>
     </div>
   );
 }
