@@ -1,5 +1,5 @@
 import { CopyButton } from "./CopyButton.tsx";
-import { ArrowDown, ChevronDown, ChevronLeft, ChevronRight, FileText, GitBranch, ImageOff, Layers, Pencil, Play, RotateCcw, ShieldAlert } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, ChevronDown, ChevronLeft, ChevronRight, FileText, GitBranch, ImageOff, Layers, Pencil, Play, RotateCcw, ShieldAlert } from "lucide-react";
 import { TurnNotes } from "./MemoryNote.tsx";
 import { createContext, memo, startTransition, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { lineage } from "../../../src/core/tree.ts";
@@ -16,6 +16,9 @@ import { composing } from "../lib/keys.ts";
 import { Kbd } from "./Kbd.tsx";
 import { clock, cn, fmtCost, fmtTokens, fmtWait, focusBox, scrollMotion } from "../lib/utils.ts";
 import { every } from "../lib/clock.ts";
+import { flushPlaces, isLater, newAfter, offsetAt, placeOf, putPlace, WRITE_MS, type Place } from "../lib/place.ts";
+import { presentAt } from "../lib/automation.ts";
+import type { PaneSwap } from "../lib/looks.ts";
 import { TurnFailure } from "./TurnFailure.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
@@ -26,7 +29,7 @@ import { LiveWork, Thinking, Work } from "./Work.tsx";
 import { OwnerWords, ToldModel, toldOf } from "./Words.tsx";
 import { ensureMarks } from "../lib/marks.ts";
 import { isPeerMessage, PeerMessage, RefusedNote } from "./FleetMessages.tsx";
-import { CUT_BY_RESTART, FAIL_WORD, NEEDS, STATE_WORD, stateWords, unreachableSince } from "../../../src/core/state-words.ts";
+import { CUT_BY_RESTART, FAIL_WORD, MARK_READ, NEEDS, newSinceAt, STATE_WORD, stateWords, unreachableSince } from "../../../src/core/state-words.ts";
 import { hhmm } from "../../../src/core/watch.ts";
 
 function ActionButton({ label, onClick, children, testid, idle }: { label: string; onClick: () => void; children: ReactNode; testid?: string; idle?: boolean }) {
@@ -788,22 +791,35 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   // the element itself is taken away (its step was made again as older events
   // joined it), the place is found again by the event.
   const anchor = useRef<{ el: Element; top: number; ev?: string; evTop?: number } | null>(null);
+  // Where an element's top stands on screen once it has arrived: a row that is still coming in is
+  // drawn a little under its place for a moment (animate-in), and a place measured there is off by that.
+  const yOf = (el: Element) => {
+    let y = el.getBoundingClientRect().top;
+    for (let a = el.closest<HTMLElement>(".animate-in"); a && content.current?.contains(a); a = a.parentElement?.closest<HTMLElement>(".animate-in") ?? null) {
+      const t = getComputedStyle(a).transform;
+      if (t && t !== "none") y -= new DOMMatrixReadOnly(t).m42;
+    }
+    return y;
+  };
+  // Rows stack in order: the first whose bottom is below the top, by halving
+  // over the rows where they are (no copy of the list: a long transcript is
+  // scrolled through many times a second). What leads them and is no row
+  // (the sticky branch banner, the button for earlier messages) is passed
+  // over; it marks itself `data-pinned`.
+  const rowAt = (c: HTMLElement, top: number) => {
+    const rows = c.children;
+    let lo = 0, hi = rows.length;
+    while (lo < hi && lo < 3 && (rows.item(lo) as HTMLElement).dataset.pinned) lo++;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (rows.item(mid)!.getBoundingClientRect().bottom > top + 1) hi = mid; else lo = mid + 1; }
+    return lo;
+  };
   const remember = () => {
     const el = scroller.current;
     const c = content.current;
     anchor.current = null;
     if (!el || !c || stick.current) return;
     const top = el.getBoundingClientRect().top;
-    // Rows stack in order: the first whose bottom is below the top, by halving
-    // over the rows where they are (no copy of the list: a long transcript is
-    // scrolled through many times a second). What leads them and is no row
-    // (the sticky branch banner, the button for earlier messages) is passed
-    // over; it marks itself `data-pinned`.
-    const rows = c.children;
-    let lo = 0, hi = rows.length;
-    while (lo < hi && lo < 3 && (rows.item(lo) as HTMLElement).dataset.pinned) lo++;
-    while (lo < hi) { const mid = (lo + hi) >> 1; if (rows.item(mid)!.getBoundingClientRect().bottom > top + 1) hi = mid; else lo = mid + 1; }
-    const row = rows.item(lo);
+    const row = c.children.item(rowAt(c, top));
     if (!row) return;
     let part: Element = row;
     // Down to the deepest block crossing the top (a paragraph of a tall reply):
@@ -815,9 +831,314 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     }
     const holder = part.closest<HTMLElement>("[data-events], [data-event-id]");
     const ev = holder ? holder.dataset.eventId ?? holder.dataset.events!.split(" ")[0] : undefined;
-    anchor.current = { el: part, top: part.getBoundingClientRect().top - top, ev, evTop: holder ? holder.getBoundingClientRect().top - top : undefined };
+    anchor.current = { el: part, top: yOf(part) - top, ev, evTop: holder ? yOf(holder) - top : undefined };
   };
   const holderOf = (ev: string) => content.current?.querySelector<HTMLElement>(`[data-event-id="${CSS.escape(ev)}"], [data-events~="${CSS.escape(ev)}"]`);
+
+  // ---------- The owner's place in this session, and how far they have read (lib/place.ts) ----------
+  // What the owner's own hand moved: a wheel, a key, a press that is held (the scroll bar), a touch
+  // and the glide after it. A scroll the page makes itself (rows taking their heights after a load
+  // or a reconnect, the view held on its line) is not where the owner is, and is never kept.
+  const hand = useRef({ at: -1e9, held: false, touch: -1e9 });
+  const byHand = () => { const h = hand.current, now = performance.now(); return h.held || now - h.at < 1500 || now - h.touch < 4000; };
+  const placing = useRef<Place | null>(null);
+  // The first row at or under the view's top that shows an event. What stands at the top may show
+  // none (a turn's end line): the place is then this row, at its distance under the top.
+  const under = (top: number): HTMLElement | null => {
+    const c = content.current;
+    if (!c) return null;
+    const rows = c.children;
+    for (let i = rowAt(c, top), n = 0; i < rows.length && n < 12; i++, n++) {
+      const row = rows.item(i) as HTMLElement;
+      const list = row.matches("[data-event-id], [data-events]") ? [row] : [...row.querySelectorAll<HTMLElement>("[data-event-id], [data-events]")];
+      const hit = list.find((x) => yOf(x) >= top - 1);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  // The place is kept: what stands at the top of the view, or that the end is followed.
+  const moved = useRef(false); // the owner moved the view since the place was last kept
+  const saving = useRef(0);
+  const savePlace = () => {
+    clearTimeout(saving.current);
+    saving.current = 0;
+    moved.current = false;
+    const el = scroller.current;
+    if (!el || placing.current) return;
+    if (stick.current && !short.current) return putPlace(sessionId, { end: true, ev: undefined, off: undefined, h: undefined });
+    const top = el.getBoundingClientRect().top;
+    // (A line of a reply that still streams has no event yet: the place stays the last one that had.)
+    const holder = (anchor.current?.ev ? holderOf(anchor.current.ev) : null) ?? under(top);
+    const ev = holder ? holder.dataset.eventId ?? holder.dataset.events?.split(" ")[0] : undefined;
+    if (!holder || !ev) return;
+    putPlace(sessionId, { end: false, ev, off: Math.round(yOf(holder) - top), h: Math.round(holder.getBoundingClientRect().height) });
+  };
+  // Kept at most once in WRITE_MS while the owner scrolls, and when they leave if they moved since.
+  // `own`: an act of the owner's that moves the view by itself (the way to the end, to what is new, to a search hit).
+  const saveSoon = (own = false) => {
+    if (own) hand.current.at = performance.now();
+    else if (!byHand()) return;
+    moved.current = true;
+    saving.current ||= window.setTimeout(savePlace, WRITE_MS);
+  };
+  const leavePlace = () => { if (moved.current) savePlace(); flushPlaces(); };
+  useEffect(() => {
+    const box = scroller.current?.closest<HTMLElement>(".k-session") ?? scroller.current;
+    if (!box) return;
+    const h = hand.current;
+    const stamp = () => { h.at = performance.now(); };
+    const down = (e: PointerEvent) => { if (e.pointerType === "touch") h.touch = performance.now(); else h.held = true; };
+    const up = () => { if (h.held) { h.held = false; h.at = performance.now(); } };
+    const touch = () => { h.touch = performance.now(); };
+    const o = { passive: true, capture: true } as const;
+    box.addEventListener("wheel", stamp, o);
+    box.addEventListener("keydown", stamp, o);
+    box.addEventListener("pointerdown", down, o);
+    for (const k of ["touchstart", "touchmove", "touchend"] as const) box.addEventListener(k, touch, o);
+    addEventListener("pointerup", up, o);
+    addEventListener("pointercancel", up, o);
+    // The page going away (a reload, a closed tab).
+    addEventListener("pagehide", leavePlace);
+    return () => {
+      box.removeEventListener("wheel", stamp, o);
+      box.removeEventListener("keydown", stamp, o);
+      box.removeEventListener("pointerdown", down, o);
+      for (const k of ["touchstart", "touchmove", "touchend"] as const) box.removeEventListener(k, touch, o);
+      removeEventListener("pointerup", up, o);
+      removeEventListener("pointercancel", up, o);
+      removeEventListener("pagehide", leavePlace);
+    };
+  }, [sessionId, !!events]);
+  // The view is put where it stood: the event's row at the same distance from the view's top. False
+  // when the row is not on the page (its part is not loaded). The row is drawn at its own height
+  // first (off the screen it stands at an estimate), and from then on the reading anchor holds the
+  // line under the view's top there while the rows around it take their heights and the pane its width.
+  const place = (p: Place): boolean => {
+    const el = scroller.current, holder = p.ev ? holderOf(p.ev) : null;
+    if (!el || !holder) return false;
+    const row = holder.closest<HTMLElement>(".row-cv");
+    if (row) { row.style.contentVisibility = "visible"; requestAnimationFrame(() => requestAnimationFrame(() => { row.style.contentVisibility = ""; })); }
+    const off = offsetAt(p, holder.getBoundingClientRect().height);
+    stick.current = false;
+    el.scrollTop += yOf(holder) - el.getBoundingClientRect().top - off;
+    lastTop.current = el.scrollTop;
+    remember();
+    if (!anchor.current) anchor.current = { el: holder, top: off, ev: p.ev, evTop: off };
+    setAway(true);
+    return true;
+  };
+  // While the part that holds the place is read the conversation is not shown: it appears where the
+  // owner was, with no jump from its end. A wait that can be seen says what it is; after three
+  // seconds the end is shown, and the place stays kept for the next time.
+  const [finding, setFinding] = useState(false);
+  const findT = useRef(0);
+  const veil = (on: boolean) => {
+    const c = content.current;
+    if (c) c.style.visibility = on ? "hidden" : "";
+    clearTimeout(findT.current);
+    findT.current = on ? window.setTimeout(() => setFinding(true), 400) : 0;
+    if (!on) setFinding(false);
+  };
+  const placed = useRef(false);
+  const comeBack = () => {
+    if (!events) return;
+    if (!placed.current) {
+      placed.current = true;
+      const p = placeOf(sessionId);
+      // (Not over a jump that is under way: a search hit or a link names its own place.)
+      if (p && !p.end && p.ev && !getUI().focusEvent && !reading) placing.current = p;
+    }
+    const p = placing.current;
+    if (!p) return;
+    const end = (to: boolean) => { placing.current = null; veil(false); if (!to) toEnd(false, false); };
+    if (place(p)) return end(true);
+    // Its row is not here. An event of the run shown that has no row of its own (it was folded into
+    // a turn's notes) has no place; one of an earlier part is read with its part.
+    if (events.some((e) => e.id === p.ev) || reaching.current === p.ev) return events.some((e) => e.id === p.ev) ? end(false) : undefined;
+    reaching.current = p.ev!;
+    veil(true);
+    setTimeout(() => { if (placing.current === p) end(false); }, 3000);
+    actions.page(sessionId, { around: p.ev! }).then((pg) => {
+      reaching.current = null;
+      if (placing.current !== p) return;
+      // (A place on a branch that is not the session's own any more is not gone back to.)
+      if (!pg.on_head) return end(false);
+      const head = getState().sessions[sessionId]?.head ?? null;
+      const joined = lineage(getState().events[sessionId] ?? [], head).some((e) => e.id === p.ev);
+      if (!joined) setView({ event: p.ev!, head: pg.head, end: pg.end ? null : pg.last, other: false });
+    }, () => { reaching.current = null; if (placing.current === p) end(false); });
+  };
+  // A pane's session going under a look or leaving the pane: its place is written, if the owner
+  // moved since. Under a look the view stays as it is (it is not drawn, and not scrolled), so
+  // nothing is put back when it shows again: what is new since is worked out then.
+  useEffect(() => {
+    const onSwap = (e: Event) => {
+      const d = (e as CustomEvent<PaneSwap>).detail;
+      if (d.session !== sessionId) return;
+      if (d.state === "restored") { arrive.current = true; lookSoon(); }
+      else leavePlace();
+    };
+    addEventListener("keel:pane-swap", onSwap);
+    return () => removeEventListener("keel:pane-swap", onSwap);
+  }, [sessionId]);
+  useLayoutEffect(() => () => { leavePlace(); clearTimeout(saving.current); clearTimeout(findT.current); clearTimeout(looking.current); clearTimeout(going.current); }, [sessionId]);
+
+  // Where what is new to the owner starts: a rule above the first row that came after the last one
+  // they read, with that row's time. `ev` null: that row is in a part above that is not on the page.
+  // One at a time. While it stands the read mark stays before it, so a reload, a switch or a blur
+  // brings the same rule back: it goes once its first line and then the end were seen (or the owner
+  // says so, or sends a prompt), and the mark is written then.
+  const [fresh, setFresh] = useState<{ ev: string | null; at: number } | null>(null);
+  // Where it is against the view: above it, below it, or in it (null).
+  const [freshAt, setFreshAt] = useState<"above" | "below" | null>(null);
+  const arrive = useRef(true); // the owner is coming (back) to this conversation: what came since is new, on screen or not
+  const sawFresh = useRef(false);
+  const going = useRef(0);
+  const rule = useRef<HTMLElement | null>(null);
+  // The last event whose row (or step) has its top on screen.
+  const lastSeen = (): string | undefined => {
+    const el = scroller.current, c = content.current;
+    if (!el || !c) return undefined;
+    const bottom = el.getBoundingClientRect().bottom - 8;
+    const rows = c.children;
+    let lo = 0, hi = rows.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (rows.item(mid)!.getBoundingClientRect().top < bottom) lo = mid + 1; else hi = mid; }
+    for (let i = lo - 1; i >= 0; i--) {
+      const row = rows.item(i) as HTMLElement;
+      if (row.dataset.eventId) return row.dataset.eventId;
+      const steps = [...row.querySelectorAll<HTMLElement>("[data-events]")].filter((x) => x.getBoundingClientRect().top < bottom);
+      if (steps.length) return steps.at(-1)!.dataset.events!.split(" ").at(-1);
+    }
+    return undefined;
+  };
+  // The rule is drawn by the style sheet over the gap above its row, from an attribute: it takes no
+  // room, so nothing moves when it comes or goes. (A run's first step is marked on the run's own
+  // row: the rule stands between two rows.) A screen reader is told of it by a separator of its own,
+  // the last thing in the row before, so it is said where it stands: after what was read, before what is new.
+  const ruleRow = () => content.current?.querySelector<HTMLElement>("[data-new-since]") ?? null;
+  const drawRule = () => {
+    const c = content.current;
+    const holder = fresh?.ev ? holderOf(fresh.ev) : null;
+    const row = holder?.closest<HTMLElement>(".row-cv");
+    const on = holder && row && holder !== row && row.querySelector("[data-events]") === holder ? row : holder;
+    for (const old of c?.querySelectorAll("[data-new-since]") ?? []) if (old !== on) old.removeAttribute("data-new-since");
+    const before = on?.previousElementSibling;
+    if (!on || !fresh || !before || (before as HTMLElement).dataset.pinned) rule.current?.remove();
+    if (!on || !fresh) return;
+    const says = newSinceAt(clock(fresh.at));
+    if (on.dataset.newSince !== says) on.dataset.newSince = says;
+    if (!before || (before as HTMLElement).dataset.pinned) return;
+    if (!rule.current) {
+      rule.current = document.createElement("span");
+      rule.current.className = "sr-only";
+      rule.current.setAttribute("role", "separator");
+    }
+    if (rule.current.getAttribute("aria-label") !== says) rule.current.setAttribute("aria-label", says);
+    if (before.lastChild !== rule.current) before.append(rule.current);
+  };
+  useLayoutEffect(drawRule, [fresh, events]);
+  // The rule goes: the owner has read to the end (or said so), and the mark is written there.
+  const endFresh = () => {
+    clearTimeout(going.current);
+    going.current = 0;
+    sawFresh.current = false;
+    setFresh(null);
+    const last = events?.at(-1);
+    if (last && !reading) putPlace(sessionId, { read: last.id, readSeq: last.seq, readAt: Date.now() });
+  };
+  // What is on screen is looked at when it can have changed: the owner scrolled, events came, the
+  // view changed size, or the owner came to this pane or left it (keel:present). No timer runs for it.
+  // - No rule stands: when events came after the mark that the owner cannot have read (they were not
+  //   here, or are here with the first of them below the view, or have just come back), the rule is
+  //   set at the first; else, while they are here, the mark follows what is on screen.
+  // - A rule stands: where it is against the view, and whether its first line and then the end were seen.
+  const look = () => {
+    clearTimeout(looking.current);
+    looking.current = 0;
+    const el = scroller.current;
+    if (!el || !events?.length || document.hidden) return;
+    const here = presentAt(sessionId);
+    const view = el.getBoundingClientRect();
+    if (!reading && !fresh) {
+      const p = placeOf(sessionId);
+      const last = events.at(-1)!;
+      // The first sight of this conversation on this device: what is here is not new.
+      if (!p?.read) putPlace(sessionId, { read: last.id, readSeq: last.seq, readAt: Date.now() });
+      else {
+        const after = newAfter(events, p);
+        const first = after === "before" ? undefined : after.find((e) => holderOf(e.id));
+        // (Nothing is below the view of a reader who follows the end: a row that has just come is
+        // looked at before the view was put at the end again.)
+        const below = !!first && !stick.current && yOf(holderOf(first.id)!) > view.bottom - 24;
+        if ((first || after === "before") && (arrive.current || !here || below)) {
+          sawFresh.current = false;
+          setFresh({ ev: first?.id ?? null, at: first?.ts ?? p.readAt ?? Date.now() });
+        } else if (here) {
+          const id = stick.current && !short.current ? last.id : lastSeen();
+          const seen = id === last.id ? last : id ? events.find((e) => e.id === id) : undefined;
+          if (seen && isLater(p, seen)) putPlace(sessionId, { read: seen.id, readSeq: seen.seq, readAt: Date.now() });
+        }
+      }
+      arrive.current = false;
+      return;
+    }
+    if (!fresh) return;
+    if (fresh.ev && !ruleRow()) drawRule();
+    const top = ruleRow()?.getBoundingClientRect().top;
+    // (Its row is not on the page: in a part above, or below the earlier part that is read.)
+    const where = top === undefined ? (fresh.ev && short.current ? "below" : "above") : top < view.top - 4 ? "above" : top > view.bottom - 24 ? "below" : null;
+    if (where !== freshAt) setFreshAt(where);
+    if (!here) return;
+    if (!where) sawFresh.current = true;
+    const atEnd = !short.current && el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    if (sawFresh.current && atEnd && !going.current) going.current = window.setTimeout(endFresh, 4000);
+  };
+  const looks = useRef(look);
+  looks.current = look;
+  const looking = useRef(0);
+  const lookSoon = () => { looking.current ||= window.setTimeout(() => looks.current(), 200); };
+  useEffect(() => {
+    const on = () => lookSoon();
+    addEventListener("keel:present", on);
+    document.addEventListener("visibilitychange", on);
+    return () => { removeEventListener("keel:present", on); document.removeEventListener("visibilitychange", on); };
+  }, []);
+  // (At once when the conversation shows and when a rule comes, so the rule and the way to it are
+  // there with it; a moment later when events came, once the view has followed them.)
+  useEffect(() => { if (events) looks.current(); }, [!!events, !!fresh, !!reading]);
+  useEffect(() => { if (events) lookSoon(); }, [events, fresh]);
+  useEffect(() => { if (!fresh) setFreshAt(null); }, [fresh]);
+  // A rule whose row was in a part above: once that part is on the page it stands on its row.
+  useEffect(() => {
+    if (!fresh || fresh.ev !== null || !events) return;
+    const after = newAfter(events, placeOf(sessionId));
+    const first = after === "before" ? undefined : after.find((e) => holderOf(e.id));
+    if (first) setFresh({ ev: first.id, at: first.ts });
+  }, [fresh, events]);
+  // A prompt sent from here ends it: the owner is done with what was new.
+  useEffect(() => {
+    const onSent = (e: Event) => { if ((e as CustomEvent<string>).detail === sessionId && fresh) endFresh(); };
+    addEventListener("keel:sent", onSent);
+    return () => removeEventListener("keel:sent", onSent);
+  }, [sessionId, fresh, events, !!reading]);
+  // To it: the rule at the view's top, so the new text reads down from there and nothing above it
+  // is cut in half. (A rule in a part that is not on the page is reached as a search hit is: by the
+  // last line that was read.)
+  const toFresh = () => {
+    const el = scroller.current, on = ruleRow();
+    if (!fresh) return;
+    if (!el || !on) { const to = fresh.ev ?? placeOf(sessionId)?.read; if (to) setUI({ focusEvent: to, focusStay: to }); return; }
+    stick.current = false;
+    setAway(true);
+    // (The rule stands half a gap above its row, its words a line high: the row a little over a rem
+    // under the top; a step's rule is on its edge. In rem: the text size the owner picked scales it.)
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    el.scrollTop += on.getBoundingClientRect().top - el.getBoundingClientRect().top - (on.classList.contains("k-step") ? 0.5 : 1.0625) * rem;
+    lastTop.current = el.scrollTop;
+    remember();
+    saveSoon(true);
+    looks.current();
+  };
 
   // The earlier part read leaves with its view: the events the page holds of
   // the session's own branch are the ones that reach its end.
@@ -845,7 +1166,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     if (!lineage(all, session.head).some((e) => e.id === view.head)) leave();
   }, [session.head, all, view]);
 
-  const toEnd = (smooth = false) => {
+  // `own`: the owner went there (Latest, End, a prompt sent): the end is their place from now.
+  const toEnd = (smooth = false, own = true) => {
     const el = scroller.current;
     if (!el) return;
     leaving.current();
@@ -853,6 +1175,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     setAway(false);
     el.scrollTo({ top: el.scrollHeight, behavior: smooth ? scrollMotion() : "instant" });
     lastTop.current = el.scrollTop;
+    if (own) saveSoon(true);
   };
 
   // Follow the end while it grows (streaming, a tool row opening), unless the reader scrolled up.
@@ -872,8 +1195,11 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     // (Not for another run of events, or an earlier part read above this one.)
     if (same) keepHeight(was);
     else { foot.current = { ref: null, len: 0 }; for (const k of [...kept.current]) setRoom(k, 0); }
+    // The owner comes back to where they were, before the first paint.
+    comeBack();
     if (el && !same && stick.current && !reading?.end) pin(el);
   }, [events]);
+  const viewSize = useRef(0);
   useEffect(() => {
     const c = content.current;
     if (!c) return;
@@ -888,6 +1214,8 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       // It is written a frame later: it changes the width of what other observers watch (the
       // message box's tray, the list of requests), and a size changed from inside an observer's
       // call, which they cannot be told of in the same pass, is reported by the browser as an error.
+      const size = el.clientWidth * 100_000 + el.clientHeight;
+      if (size !== viewSize.current) { viewSize.current = size; lookSoon(); }
       const box = el.closest<HTMLElement>(".k-session");
       const sbw = `${el.offsetWidth - el.clientWidth}px`;
       if (box && box.style.getPropertyValue("--sbw") !== sbw) { cancelAnimationFrame(late); late = requestAnimationFrame(() => box.style.setProperty("--sbw", sbw)); }
@@ -896,7 +1224,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       else if (anchor.current && !anchor.current.el.isConnected && anchor.current.ev && holderOf(anchor.current.ev)) {
         // The element read was made again: its event's row or step is put back where it stood.
         const a = anchor.current;
-        const moved = holderOf(a.ev!)!.getBoundingClientRect().top - el.getBoundingClientRect().top - a.evTop!;
+        const moved = yOf(holderOf(a.ev!)!) - el.getBoundingClientRect().top - a.evTop!;
         if (Math.abs(moved) >= 0.5) {
           const was = el.scrollTop;
           el.scrollTop += moved;
@@ -908,7 +1236,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
         // are added above it (an earlier part read), the row now at the top is
         // one of those, still at its estimated height, and holding on to it
         // would let the reader's row slide as it takes its real height.
-        const moved = anchor.current.el.getBoundingClientRect().top - el.getBoundingClientRect().top - anchor.current.top;
+        const moved = yOf(anchor.current.el) - el.getBoundingClientRect().top - anchor.current.top;
         if (Math.abs(moved) >= 0.5) {
           const was = el.scrollTop;
           el.scrollTop += moved;
@@ -1021,6 +1349,14 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     }, (e) => { if ((e as { status?: number }).status !== 404) reportError(e); }); // 404: an event of another session
   }, [want, events]);
 
+  // The way to where what is new starts, and the owner's word that they have read it.
+  const wayNew = fresh && freshAt ? (
+    <span className="k-new-jump">
+      <button type="button" data-testid="new-since-jump" data-where={freshAt} onClick={toFresh}>{freshAt === "above" ? <ArrowUp className="size-3.5" /> : <ArrowDown className="size-3.5" />}{newSinceAt(clock(fresh.at))}</button>
+      <button type="button" data-testid="new-since-read" aria-label={MARK_READ} title={MARK_READ} onClick={endFresh}><Check className="size-3.5" /></button>
+    </span>
+  ) : null;
+
   // A prompt this page sends while an earlier part is read goes to the end,
   // and so does the transcript. Nothing else moves the reader: not an agent's
   // report, a wake or a peer's message, and not a prompt from another tab.
@@ -1090,8 +1426,10 @@ export function Transcript({ sessionId }: { sessionId: string }) {
         const r = el.getBoundingClientRect();
         const box = sc.getBoundingClientRect();
         sc.scrollTop += r.top - box.top - Math.max(0, (box.height - r.height) / 2);
+        lastTop.current = sc.scrollTop;
       }
       remember();
+      saveSoon(true);
       if (!stay) {
         el.tabIndex = -1;
         el.focus({ preventScroll: true });
@@ -1242,7 +1580,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           if (away === stick.current) setAway(!stick.current);
           // The scroll this transcript made itself to hold the anchor in place is not the reader's.
           if (settling.current) settling.current = false;
-          else remember();
+          else { remember(); saveSoon(); lookSoon(); }
           // The reader moving toward an edge reads the part beyond it (not a
           // scroll that only followed the content changing size).
           if (!stick.current && up && el.scrollTop < el.clientHeight) older(true);
@@ -1293,15 +1631,21 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           <span className="flex items-center gap-1 border-l border-line pl-2 font-normal text-faint" data-testid="prompt-place-back"><Kbd keys="escape" /> message box</span>
         </div>
       )}
+      {finding && <p role="status" data-testid="finding-place" className="k-place-wait">Finding your place</p>}
       {findNote && (
         <div role="status" data-testid="find-note" className="absolute left-1/2 top-3 z-10 flex max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-2 rounded-lg border border-line bg-raised px-3 py-1.5 text-caption text-muted shadow-2 animate-pop">
           <span>{findNote === "part" ? "Find in page reaches only the messages loaded here." : `Find in page does not reach ${findNote.calls === 1 ? "1 call" : `${findNote.calls} calls`} in ${findNote.steps === 1 ? "1 folded step" : `${findNote.steps} folded steps`}.`}</span>
           <button type="button" data-testid="find-note-search" onClick={() => { setFindNote(false); setUI({ palette: true }); }} className="h-7 shrink-0 rounded-md px-2 font-medium text-accent-ink hover:bg-accent-soft">{findNote === "part" ? "Search the whole conversation" : "Search the conversation"}</button>
         </div>
       )}
+      {/* The way to where what is new starts, while that line is not in view, stands at the conversation's
+          foot: with the way to the end when the reader is away from it; when they follow the end, over the
+          room under the last line, where no line is. */}
+      {!(away || earlier) && wayNew && <div className="k-new-bar">{wayNew}</div>}
       {(away || earlier) && (
         // A strip of its own under the conversation: the way to the end never lies over a line being read.
         <div className="k-latest-bar">
+          {wayNew}
           <button
             type="button"
             onClick={() => toEnd(true)}

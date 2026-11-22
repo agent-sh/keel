@@ -12,6 +12,7 @@ import { dropOrphans, dropSendDrafts } from "./send-drafts.ts";
 import { setRatio } from "../../../src/engine/compact.ts";
 import { answerMakesTry, askGap, askLife, ASKS, BEAT_MS, GRACE_MS, HIDDEN_RESYNC_MS, look, PING, rttOf, SLEPT_MS, SLOW_BEAT_MS, socketBound, step, tripped, type Beat, type Trips } from "./heartbeat.ts";
 import { Scope } from "./scope.ts";
+import { dropPlace } from "./place.ts";
 import { every as onBeat } from "./clock.ts";
 import { CoverCtx, makeGate, type Gate } from "./cover.ts";
 
@@ -778,6 +779,7 @@ export function apply(f: Frame) {
       set({ sessions, events, gone: { ...state.gone, [s.id]: s.parent_id ?? state.sessions[s.id]?.parent_id ?? true } });
       forgetLegacyQuestions(s.id);
       dropSendDrafts(s.id);
+      dropPlace(s.id);
       return;
     }
     if (!state.sessions[s.id] && s.archived) return;

@@ -405,22 +405,31 @@ test("the inbox lists what needs you first, each counter says what it counts, an
   await expect(page.getByTestId("rail-card")).toContainText("The handlers share one verifier now.", { timeout: 10_000 });
   await shoot(page, "state-words-07-hover-ended");
 
-  // Two panes: the changelog is worked in, the notes are shown beside it. Both are on screen, so both are read.
+  // Two panes: the changelog is worked in, the notes are shown beside it. A pane is read when the owner is at it
+  // (it holds the keyboard and they did something in the page within the last minute, or their pointer, a wheel
+  // or a touch was in it within the last half minute), not because it is on screen.
+  const at = async (id: string) => { const b = (await station(page, id).boundingBox())!; await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2); await page.mouse.move(b.x + b.width / 2 + 3, b.y + b.height / 2 + 3); };
   await page.evaluate(([a, b]) => {
     localStorage.setItem("keel.focus", "false");
     localStorage.setItem("keel.panes", JSON.stringify({ count: 2, slots: [a, b], sizes: {}, active: 0 }));
   }, [changelog, notes]);
   await page.goto(`/s/${changelog}`);
   await expect(station(page, notes)).toBeVisible();
+  await at(changelog);
   await expect(row(page, changelog)).not.toHaveAttribute("data-unread", "true", { timeout: 15_000 });
+  // The pane beside it is on screen, and nobody is at it: its row stays marked until the owner goes there.
+  await page.waitForTimeout(1500);
+  await expect(row(page, notes)).toHaveAttribute("data-unread", "true");
+  await at(notes);
   await expect(row(page, notes)).not.toHaveAttribute("data-unread", "true", { timeout: 15_000 });
   // One that is not on screen stays unread.
   await expect(row(page, webhooks)).toHaveAttribute("data-unread", "true");
-  // A reply arrives in the pane beside the one worked in: it is on screen, so its row is not marked.
+  // A reply arrives in the pane the owner is at: its row is not marked.
+  await at(notes);
   await send(request, notes, "script:say One more item: the docs sweep started.");
   await expect(station(page, notes).getByTestId("transcript")).toContainText("One more item: the docs sweep started.", { timeout: 30_000 });
   await settle(request, notes);
-  await page.waitForTimeout(2500); // the presence check runs every second
+  await page.waitForTimeout(2500);
   await expect(row(page, notes)).not.toHaveAttribute("data-unread", "true");
   expect((await unread()).sessions[notes] ?? 0).toBe(0);
   // The same reply in a session that is not on screen marks it.

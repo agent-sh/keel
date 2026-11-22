@@ -274,14 +274,18 @@ onFeature({
 
 // Presence: where the owner is in this page, sent when it changes and on a beat while the
 // page is visible (a hidden page says once that nobody looks at it, and then nothing).
-// - Which sessions are in view: the one worked in and those in the other panes,
-//   each only while most of its pane is inside the window (a pane scrolled off
-//   it is not seen) and nothing lies over the panes (the Inbox open over them).
+// - Which sessions the owner is at: of the panes in view (most of the pane inside
+//   the window, nothing lying over the panes), the one that holds the keyboard
+//   while they did something in the page within the last minute, and any their
+//   pointer, a wheel or a touch was in within the last half minute (presentAt).
 // - Whether the page has focus, and how long ago the owner last did something
 //   here (a key, the pointer, the wheel, a touch): the daemon reads their
 //   absences off that, not off focus, which a page keeps while nobody is there.
 // Unread means not seen:
-// - What ends in a session in view of a page that has focus is read, in any pane.
+// - What ends in a session the owner is at is read. A pane beside the one worked
+//   in is not read because it is on screen, and neither is a focused page nobody
+//   touches: its row is marked, and its conversation shows where the new starts
+//   (the same rule there: components/Transcript.tsx).
 // - What calls the owner (an ask, a failure) is not read by being in view: it is
 //   read when it is answered, when they go to its session, or when they act in
 //   its pane. Its notification is the daemon's to hold back or send (alerts.ts).
@@ -317,6 +321,21 @@ const focusedNow = () => document.hasFocus() && document.visibilityState === "vi
 export const ATTEND_MS = 60_000;
 const here = () => lastInput > 0 && Date.now() - lastInput < ATTEND_MS;
 export const attends = (id: string) => focusedNow() && here() && panesInView().includes(id);
+// The owner is reading this session now (what "read" means, for the lines of its conversation and
+// for the mark on its row in the list alike): its pane is in view of a focused page, and they are at
+// that pane: it holds the keyboard and they did something in the page within the last minute, or
+// their pointer, a wheel or a touch was in it within the last PRESENT_MS. A pane beside the one
+// worked in is not read because it is on screen, and a focused page nobody touches reads nothing.
+export const PRESENT_MS = 30_000;
+const paneInput = new Map<string, number>(); // when the owner last did something in each session's pane
+const paneOf = (el: Element | null) => el?.closest<HTMLElement>("section.k-station[data-station]")?.dataset.station;
+const lapseOf = (id: string, now: number) => Math.max((paneInput.get(id) ?? 0) + PRESENT_MS, paneOf(document.activeElement) === id && lastInput ? lastInput + ATTEND_MS : 0) - now;
+const presentIn = (inView: string[], id: string, now = Date.now()) => inView.includes(id) && lapseOf(id, now) > 0;
+export const presentAt = (id: string) => focusedNow() && presentIn(panesInView(), id);
+// The sessions the owner is reading, as of the last look; a change is told to the page as the
+// event keel:present (a conversation follows its own read mark by it, with no timer of its own).
+let presentNow: string[] = [];
+let lapse: ReturnType<typeof setTimeout> | undefined;
 
 type Reading = "auto" | "touch" | "open";
 const reading = new Set<string>();
@@ -337,8 +356,17 @@ function presence(now = false) {
   const helm = r.name === "session" ? r.id : null;
   const focused = focusedNow();
   const inView = panesInView();
-  const sid = helm && inView.includes(helm) ? helm : null;
-  const shown = inView.filter((id) => id !== sid);
+  // What is read is what the owner is at (presentAt): the daemon is told of those panes, so a finish
+  // in a pane nobody is at is unread in the list as its lines are new in its conversation.
+  const at0 = Date.now();
+  const present = focused ? inView.filter((id) => presentIn(inView, id, at0)) : [];
+  // Looked at again when the first of them runs out, so its going is told when it happens.
+  clearTimeout(lapse);
+  lapse = present.length ? setTimeout(() => presence(), Math.max(50, Math.min(...present.map((id) => lapseOf(id, at0))) + 20)) : undefined;
+  if (present.join() !== presentNow.join()) { presentNow = present; dispatchEvent(new CustomEvent("keel:present", { detail: present })); }
+  const at = helm && inView.includes(helm) ? helm : null; // the session the owner went to, once its pane is in view
+  const sid = at && present.includes(at) ? at : null;
+  const shown = present.filter((id) => id !== sid);
   const key = `${sid}:${focused}:${shown.join()}`;
   // A hidden page says once that it is not looked at and then nothing: its word runs out by
   // itself (45 s), which means the same, and a phone's radio is not woken for it every 20 s.
@@ -352,7 +380,7 @@ function presence(now = false) {
   // route nobody at the page made: the owner goes somewhere by a press or a key, within the last minute.)
   if (helm !== opened) { goingTo = opened === undefined || !here() ? null : helm; opened = helm; }
   if (!focused) return;
-  if (sid && goingTo === sid) { goingTo = null; read(sid, "open"); }
+  if (at && goingTo === at) { goingTo = null; read(at, "open"); }
   else if (sid) read(sid, "auto");
   for (const id of shown) read(id, "auto");
   // An agent that ended is seen once its session, or the one that started it, is in view.
@@ -422,13 +450,19 @@ addEventListener("pagehide", () => {
 addEventListener("pageshow", () => { if (leaving) { leaving = false; presence(true); } });
 // The first input after a while is the owner coming back: said at once. Any other is said within
 // five seconds, not at the next report, so the daemon knows to within that when they were last there.
-function input() {
+function input(e: Event) {
   const now = Date.now();
   const back = now - lastInput > 60_000;
   lastInput = now;
+  // In a pane: the owner is at it from now (said at once when they were not).
+  const id = paneOf(e.target instanceof Element ? e.target : null);
+  if (id) paneInput.set(id, now);
   if (back || now - sent.at > 5_000) presence(true);
+  else if (id && !presentNow.includes(id)) lookSoon();
 }
-for (const type of ["keydown", "pointerdown", "pointermove", "wheel", "touchstart"]) addEventListener(type, input, { capture: true, passive: true });
+// The keyboard going to another pane (a Tab, a press, the page's own focus) changes which pane the owner is at.
+document.addEventListener("focusin", () => lookSoon());
+for (const type of ["keydown", "pointerdown", "pointermove", "wheel", "touchstart", "touchmove"]) addEventListener(type, input, { capture: true, passive: true });
 // A press or a key in a session's pane is the owner acting there: what called them in it is read.
 function touched(e: Event) {
   const id = (e.target instanceof Element ? e.target.closest<HTMLElement>("section.k-station[data-station]") : null)?.dataset.station;

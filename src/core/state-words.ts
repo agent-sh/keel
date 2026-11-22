@@ -48,6 +48,10 @@ export const asOf = (hhmm: string) => `as of ${hhmm}`;
 export const queuedWord = (n: number) => `${n} ${QUEUED.toLowerCase()}`;
 export const NEW = "New";
 export const NEW_SINCE = "New since you looked";
+// In a conversation, on the rule above the first line the owner has not read: since when.
+export const newSinceAt = (hhmm: string) => `${NEW} since ${hhmm}`;
+// On the way to that rule: the owner says they have read what is new.
+export const MARK_READ = "Mark as read";
 
 // What a session needs from the owner, by the daemon's reason.
 export const NEEDS: Record<string, string> = {
