@@ -46,7 +46,9 @@ test("Auto reviews uncovered work while Full auto reviews only flagged calls", a
 
   await choose("auto", "Auto");
   await page.getByTestId("permission-menu").click();
-  await expect(page.getByText("Ordinary calls run without review.", { exact: false })).toBeVisible();
+  // Each mode says what it does in one line; the mode in use says the whole of it.
+  await expect(page.getByTestId("mode-full-auto")).toContainText("Runs; only flagged calls are judged");
+  await expect(page.getByTestId("mode-description")).toBeVisible();
   await shoot(page, "permission-review-01-modes");
   await page.keyboard.press("Escape");
 
