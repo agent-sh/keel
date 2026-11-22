@@ -3,7 +3,7 @@
 import { expect, test } from "bun:test";
 import { stateOf, type SessionState, type Watch } from "./watch.ts";
 import { stateWord } from "../automation/state.ts";
-import { ALERT_GROUPS, COUNTERS, STATE_WORD, agentState, agentWhy, alertGroup, alertWord, askAction, backgroundWord, countName, countWord, heldWords, inBackground, queuedWord, stateAlone, stateLabel, stateWords, agentTally as tally, waitsOnOwner, wentWrongWord } from "./state-words.ts";
+import { ALERT_GROUPS, COUNTERS, CUT_BY_RESTART, STATE_WORD, holdsWords, lastTold, agentState, agentWhy, alertGroup, alertWord, askAction, backgroundWord, countName, countWord, heldWords, inBackground, queuedWord, stateAlone, stateLabel, stateWords, agentTally as tally, waitsOnOwner, wentWrongWord } from "./state-words.ts";
 
 const st = (watch: Watch, more: Partial<SessionState> = {}): SessionState => ({ watch, agents: 0, ...more });
 
@@ -153,4 +153,16 @@ test("an alert says what it is: a plan, a secret, a turn the model declined", ()
   expect(alertWord({ kind: "failed", read: false })).toBe("Failed");
   expect([askAction({ kind: "approval", read: false }), askAction({ kind: "question", read: false }), askAction({ kind: "question", read: false, data: { plan_id: "p" } }), askAction({ kind: "question", read: false, data: { secret_id: "c" } })])
     .toEqual(["Review", "Answer", "Review", "Open"]);
+});
+
+test("a head that stands for more than one state says each it holds, once", () => {
+  expect(holdsWords(["fail", "fail"])).toBe("Failed");
+  expect(holdsWords(["fail", "declined"])).toBe("Failed or declined");
+  expect(holdsWords(["declined"])).toBe("Declined");
+  expect(holdsWords(["stop", "resume"])).toBe("Stopped or waiting to resume");
+  expect(holdsWords(["done", "idle", "done"])).toBe("Done or not started");
+  expect(holdsWords(["need"])).toBe("Needs you");
+  // A turn a restart cut that is no longer waiting: Stopped, with by what.
+  expect(CUT_BY_RESTART).toBe("Stopped by a restart");
+  expect(lastTold("Waiting", "Timer: check the deploy")).toBe("It last told: Waiting, Timer: check the deploy");
 });

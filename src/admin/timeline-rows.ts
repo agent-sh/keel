@@ -12,7 +12,7 @@ import { PEER_PREFIX } from "../core/owner.ts";
 import type { ErrorRecord, TurnStatus } from "../core/types.ts";
 import { errorClass } from "./classes.ts";
 import { waitWords } from "../core/watch.ts";
-import { FAIL_WORD } from "../core/state-words.ts";
+import { FAIL_WORD, NEEDS, STATE_WORD } from "../core/state-words.ts";
 
 export type TimelineKind =
   | "turn" | "agent" | "wait" | "loop" | "approval" | "question" | "compaction" | "model" | "restart" | "error" | "goal" | "limit" | "files"
@@ -417,13 +417,13 @@ export function nowLines(n: NowInput): TimelineNow {
     void lines.push(clean({ id: `now:${id}`, ts: o.ts ?? n.ts, kind, sub: "now", tone, text, ...o, ...refs(r) }));
   const inChild = (c: { child_session?: string; child_title?: string }) => (c.child_session ? `, in agent ${title(c.child_title, "of this session")}` : "");
   for (const a of n.approvals) {
-    add(`approval:${a.id}`, "approval", "owner", `Waits on the owner: approval for ${a.tool ?? "a tool"}${a.risk === "high" ? " (high risk)" : ""}${inChild(a)}`, { ts: a.created, open: true }, { approval_id: a.id, call_id: a.call_id, child_session: a.child_session });
+    add(`approval:${a.id}`, "approval", "owner", `${STATE_WORD.need}: ${NEEDS.approval} for ${a.tool ?? "a tool"}${a.risk === "high" ? " (high risk)" : ""}${inChild(a)}`, { ts: a.created, open: true }, { approval_id: a.id, call_id: a.call_id, child_session: a.child_session });
   }
-  for (const q of n.questions) add(`question:${q.call_id}`, "question", "owner", `Waits on the owner: a question${inChild(q)}`, { open: true }, { call_id: q.call_id, child_session: q.child_session });
-  for (const c of n.secrets ?? []) add(`secret:${c.id}`, "question", "owner", `Waits on the owner: a secret to give${inChild(c)}`, { ...(c.created ? { ts: c.created } : {}), open: true }, { call_id: c.id, child_session: c.child_session });
+  for (const q of n.questions) add(`question:${q.call_id}`, "question", "owner", `${STATE_WORD.need}: ${NEEDS.question}${inChild(q)}`, { open: true }, { call_id: q.call_id, child_session: q.child_session });
+  for (const c of n.secrets ?? []) add(`secret:${c.id}`, "question", "owner", `${STATE_WORD.need}: ${NEEDS.secret}${inChild(c)}`, { ...(c.created ? { ts: c.created } : {}), open: true }, { call_id: c.id, child_session: c.child_session });
   if (n.resumes) add("resumes", "limit", "plain", "Resumes by itself when the wait the provider asked for is over", { ...(n.resumes.since ? { ts: n.resumes.since } : {}), until: n.resumes.at, open: true });
-  for (const p of n.plans ?? []) add(`plan:${p.id}`, "question", "owner", `Waits on the owner: a plan to approve${inChild(p)}`, { ...(p.created ? { ts: p.created } : {}), open: true }, { child_session: p.child_session });
-  if (n.held) add("held", "restart", "owner", "Waits on the owner: a turn cut by a daemon restart was not resumed", { ts: n.held.since }, { note_id: n.held.note_id });
+  for (const p of n.plans ?? []) add(`plan:${p.id}`, "question", "owner", `${STATE_WORD.need}: ${NEEDS.plan}${inChild(p)}`, { ...(p.created ? { ts: p.created } : {}), open: true }, { child_session: p.child_session });
+  if (n.held) add("held", "restart", "owner", `${STATE_WORD.need}: ${NEEDS.resume}, cut by a daemon restart`, { ts: n.held.since }, { note_id: n.held.note_id });
   if (n.turn) {
     const who = originOf(n.turn.opener);
     const head = who.key === "restart" ? "Running a turn resumed after a daemon restart" : `Running a turn started by ${who.words}`;
@@ -431,16 +431,16 @@ export function nowLines(n: NowInput): TimelineNow {
     const asking = n.turn.status.kind === "tool" && n.approvals.some((a) => !a.child_session);
     // What failed in it up to now is said here: a running turn is not a row, so nothing else would say it.
     const bad = n.turn.failed_tools ? plural(n.turn.failed_tools, "failed tool") : undefined;
-    add("turn", "turn", "live", `${head}: step ${n.turn.steps + (n.turn.status.kind === "model" || n.turn.status.kind === "retry" ? 1 : 0) || 1}, ${bad ? `${bad} so far, ` : ""}${asking ? "waiting for approval" : DOING(n.turn.status, n.ts, n.turn.output)}`, { ts: n.turn.ts, open: true, turn_event: n.turn.id, ...(bad ? { bad } : {}) });
+    add("turn", "turn", "live", `${head}: step ${n.turn.steps + (n.turn.status.kind === "model" || n.turn.status.kind === "retry" ? 1 : 0) || 1}, ${bad ? `${bad} so far, ` : ""}${asking ? `${STATE_WORD.need.toLowerCase()}: ${NEEDS.approval}` : DOING(n.turn.status, n.ts, n.turn.output)}`, { ts: n.turn.ts, open: true, turn_event: n.turn.id, ...(bad ? { bad } : {}) });
   } else if (n.starting) add("turn", "turn", "live", "Starting a turn", { open: true });
   for (const a of n.agents.slice(0, AGENTS_SHOWN)) {
     // A parked agent says what it waits for; a timer's wake time makes the line say when it is due.
-    const parked = a.status === "waiting" ? `is waiting on ${a.wait ? waitWords(a.wait.kind) : "a wake of its own"}` : "is working";
+    const parked = a.status === "waiting" ? `is ${STATE_WORD.wait.toLowerCase()} for ${a.wait ? waitWords(a.wait.kind) : "a wake of its own"}` : "is working";
     add(`agent:${a.id}`, "agent", "live", `Agent ${title(a.title, "(untitled)")} ${parked}`, { ts: a.created, open: true, ...(a.status === "waiting" && a.wait?.until ? { until: a.wait.until } : {}) }, { agent_id: a.id, child_session: a.session_id });
   }
   if (n.agents.length > AGENTS_SHOWN) add("agents", "agent", "live", `${n.agents.length - AGENTS_SHOWN} more agents are working`, { open: true });
   // A timer is due at its wake time (its deadline is a minute later: it fires, it does not time out).
-  for (const w of n.waits) add(`wait:${w.id}`, "wait", "plain", `Waits on ${waitWords(w.kind)}`, { ts: w.created, until: w.kind === "timer" ? w.deadline - TIMER_SLACK_MS : w.deadline, open: true }, { wait_id: w.id });
+  for (const w of n.waits) add(`wait:${w.id}`, "wait", "plain", `${STATE_WORD.wait} for ${waitWords(w.kind)}`, { ts: w.created, until: w.kind === "timer" ? w.deadline - TIMER_SLACK_MS : w.deadline, open: true }, { wait_id: w.id });
   // A command left running after the turn is work that goes on, not a wait (the session's state says Working).
   for (const j of n.jobs ?? []) add(`job:${j.id}`, "wait", "plain", "A command runs in the background", { ts: j.started, open: true });
   const q = n.queue;
@@ -463,7 +463,7 @@ export function nowLines(n: NowInput): TimelineNow {
 // that open a row's detail or that a coordinator acts on at the end of its
 // line (`ids: false` leaves them out). Times are the machine's own zone, the
 // one alerts and the page use, and the first line says which.
-const STATE: Record<TimelineNow["state"], string> = { working: "working", owner: "waiting on the owner", waiting: "waiting", failed: "failed", declined: "declined by the model", stopped: "stopped", resume: "waiting to resume", done: "done", idle: "not started" };
+const STATE: Record<TimelineNow["state"], string> = { working: "working", owner: STATE_WORD.need.toLowerCase(), waiting: "waiting", failed: "failed", declined: "declined by the model", stopped: "stopped", resume: "waiting to resume", done: "done", idle: "not started" };
 const stamp = (ts: number) => localStamp(ts).slice(5);
 // What is new to a reader that last read at `mark`: a row that began since, or a turn that ended since
 // (it was running then, told under "now", and had no row).

@@ -162,10 +162,9 @@ export function InputNotice({ e }: { e: StoredEvent }) {
             {/* The agent by its title; its id is on hover. */}
             <span className="min-w-[3rem] shrink truncate font-medium" title={`${r.title} (agent ${r.id})`}>{r.title}</span>
             {/* The word first and whole: what gives way in a narrow pane is the rest of the line. */}
-            <span className="flex min-w-0 flex-1 items-baseline gap-1 text-caption text-faint" data-testid="agent-report-status">
-              <span className="shrink-0" data-testid="agent-report-state">{r.said.phrase}</span>
-              <span className="min-w-0 truncate"> · reported{r.task ? ` · ${r.task}` : ""}{r.said.why ? ` · ${r.said.why}` : ""}</span>
-            </span>
+            <span className="shrink-0 whitespace-nowrap text-caption text-faint" data-testid="agent-report-state">{r.said.phrase}</span>
+            {/* The rest gives way: cut at its end while "· reported" has room, and gone whole where it has not. */}
+            <span className="k-report-rest text-caption text-faint"><span data-testid="agent-report-status">· reported{r.task ? ` · ${r.task}` : ""}{r.said.why ? ` · ${r.said.why}` : ""}</span></span>
             <ChevronRight className="ml-auto size-3.5 shrink-0 text-faint transition-transform group-data-[open]/rep:rotate-90" />
           </Collapsible.Trigger>
           <Collapsible.Panel className="overflow-hidden border-t border-line px-4 py-3 text-ui"><Markdown text={r.text} /></Collapsible.Panel>

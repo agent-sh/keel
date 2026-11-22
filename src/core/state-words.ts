@@ -117,6 +117,19 @@ export function stateAlone(st: Stated): string {
   return st.watch === "work" && st.why === "command" ? cap(COMMAND_IN_BACKGROUND) : stateLabel(st);
 }
 const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+// What a group of sessions holds, where one head stands for more than one state (a band of the
+// folded list): the words of the states in it, each once. "Failed or declined", "Done or not
+// started", "Stopped or waiting to resume".
+export function holdsWords(watches: readonly Watch[]): string {
+  const words = [...new Set(watches.map((w) => stateLabel({ watch: w })))];
+  return words.map((t, i) => (i ? t.charAt(0).toLowerCase() + t.slice(1) : t)).join(" or ");
+}
+// A turn a restart cut that Keel does not go on with (it is no longer waiting to resume): Stopped, with by what.
+export const CUT_BY_RESTART = `${STATE_WORD.stop} by a restart`;
+// What a session on a machine that does not answer last told, beside its Offline.
+export const lastTold = (label: string, text?: string) => `It last told: ${label}${text ? `, ${text}` : ""}`;
+// Sessions that came to the list while the owner's hand was on it: they wait at its end.
+export const JUST_ARRIVED = "Just arrived";
 // A session whose only work is a command it left running: counted apart from the ones a turn or an agent works in.
 export const inBackground = (st: Stated | undefined) => st?.watch === "work" && st.why === "command";
 export const backgroundWord = (n: number) => `${n} in background`;

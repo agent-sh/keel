@@ -12,7 +12,7 @@ import { lockedDaemon } from "../admin/daemon.ts";
 import { openUrl } from "../cli/client.ts";
 import { desktopNotifications } from "./desktop.ts";
 import { secretsWaiting } from "../server/routes/secrets.ts";
-import { ASK_KINDS, WRONG_KINDS } from "../core/state-words.ts";
+import { ASK_KINDS, STATE_WORD, WRONG_KINDS } from "../core/state-words.ts";
 import { handShell, shellShows, tellShells } from "../server/shell.ts";
 
 // What needs the owner becomes one alert: kept in the inbox with unread state,
@@ -364,6 +364,9 @@ export function raise(kind: AlertKind, sessionId: string | null, title: string, 
       // An approval or a question is its own decision: the same one raised again
       // replaces its row; a different one (a sibling agent's) stands beside it.
       // (A call id is its session's: another session's question under the same id is another decision.)
+      // An approval the owner has looked at and not answered is still listed while it waits: told of
+      // again (its card changed while it waits), it is the same row, not a second one beside it.
+      if (kind === "approval" && store.db.query("SELECT 1 FROM alerts WHERE read = 1 AND kind = 'approval' AND json_extract(data, '$.approval_id') = ? LIMIT 1").get(String(decision))) return undefined;
       store.db.query(`DELETE FROM alerts WHERE read = 0 AND kind = ? AND json_extract(data, '$.${key}') = ?${key === "call_id" ? ` AND ${ASKED_IN} = ?` : ""}`)
         .run(...[kind, String(decision), ...(key === "call_id" ? [String((data as { open_session?: string }).open_session ?? sessionId)] : [])]);
     } else if (sid) {
@@ -521,6 +524,16 @@ export function readWhere(key: string, value: string, askedIn?: string) {
   if (ids.length) markRead({ ids });
   // An ask the owner had looked at and now answered is read already: the pages are told all the same, since it waits no more.
   else if (sessions.length) emit("alerts_read", { settled: value, rev: currentRev() });
+}
+
+// A question whose card went without an answer (its turn was stopped): nothing of it waits on
+// the owner any more, so its alert is read, as an approval's is when its turn is stopped. The
+// notice of a question that expired unanswered is an alert of its own and stays, and so does
+// what the owner marked unread.
+export function settleAsks(sessionId: string) {
+  const rows = D().store.db.query<Row, [string]>(`SELECT * FROM alerts WHERE read = 0 AND kept = 0 AND kind = 'question' AND ${ASKED_IN} = ?`).all(sessionId);
+  const ids = rows.map(toAlert).filter((a) => !a.data?.expired && !stillOpen(a)).map((a) => a.id);
+  if (ids.length) markRead({ ids });
 }
 
 // The owner wants to come back to it: unread again, at a new revision, and kept
@@ -737,5 +750,9 @@ export function onTurnEnd(sessionId: string, reason: string, opts: { subagent: b
   }
   // How long the turn ran: a long one is worth a desktop notice (LONG_TURN_MS).
   const ran_ms = start >= 0 ? Date.now() - all[start]!.ts : undefined;
-  raise("finished", sessionId, title, plainLine(text) || "The turn finished.", event || ran_ms !== undefined ? { ...(event ? { event_id: event } : {}), ...(ran_ms !== undefined ? { ran_ms } : {}) } : undefined);
+  // A turn the model declined is filed as a finish until it has a kind of its own: its notification says so
+  // in the state's word, on every channel, and the Inbox reads the word from `end`.
+  const declined = reason === "refusal";
+  raise("finished", sessionId, declined ? `${STATE_WORD.declined}: ${title}` : title, plainLine(text) || (declined ? "The model declined the turn." : "The turn finished."),
+    event || ran_ms !== undefined || declined ? { ...(event ? { event_id: event } : {}), ...(ran_ms !== undefined ? { ran_ms } : {}), ...(declined ? { end: "refusal" } : {}) } : undefined);
 }

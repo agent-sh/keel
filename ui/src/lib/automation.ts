@@ -278,7 +278,8 @@ export function panesInView(): string[] {
 const focusedNow = () => document.hasFocus() && document.visibilityState === "visible";
 // The owner is at this session now: its pane is in view of a focused page they did something in within the last minute.
 export const ATTEND_MS = 60_000;
-export const attends = (id: string) => focusedNow() && lastInput > 0 && Date.now() - lastInput < ATTEND_MS && panesInView().includes(id);
+const here = () => lastInput > 0 && Date.now() - lastInput < ATTEND_MS;
+export const attends = (id: string) => focusedNow() && here() && panesInView().includes(id);
 
 type Reading = "auto" | "touch" | "open";
 const reading = new Set<string>();
@@ -306,8 +307,9 @@ function presence(now = false) {
   }
   // Going to a session reads it whole, what was kept unread included: once its pane is in view.
   // (Judged as the route changes, below: a mark the owner sets a moment after arriving is not
-  // what they arrived to. The first look after a load is not an arrival.)
-  if (helm !== opened) { goingTo = opened === undefined ? null : helm; opened = helm; }
+  // what they arrived to. The first look after a load is not an arrival, and neither is a change of
+  // route nobody at the page made: the owner goes somewhere by a press or a key, within the last minute.)
+  if (helm !== opened) { goingTo = opened === undefined || !here() ? null : helm; opened = helm; }
   if (!focused) return;
   if (sid && goingTo === sid) { goingTo = null; read(sid, "open"); }
   else if (sid) read(sid, "auto");

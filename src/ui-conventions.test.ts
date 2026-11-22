@@ -325,7 +325,8 @@ function shared(list: Src[]): string[] {
 // vocabulary retired, as text of its own: a label that is the word, a line
 // that leads with it ("Failed: ..."), a count that ends in it ("2 running").
 // A string counts anywhere on the page when it is written as a label
-// (capitalized): a lower-case one is an identifier (a status, a kind). In the
+// (a capital in it, or more than one word, in any case: "Needs You", "NEEDS
+// YOU"): a lower-case word is an identifier (a status, a kind). In the
 // modules that show a session's or an agent's state, text between tags and
 // the fixed parts of a template count whatever their case ("2 running",
 // "offline", "asks"), and so does a phrase that says a session waits in words
@@ -353,6 +354,8 @@ const OTHER_STATES: Record<string, string[]> = {
   "components/Settings.tsx": ["Working"],
   "components/SessionPanel.tsx": ["Running", "Failed"],
   "components/surfaces/Mcp.tsx": ["Failed"],
+  // A language server that was never started.
+  "components/surfaces/LanguageServers.tsx": ["not started"],
   "components/PortPanel.tsx": ["Failed"],
   "components/MemoryFacts.tsx": ["Failed"],
   "components/UsagePanel.tsx": ["Failed"],
@@ -376,7 +379,7 @@ function stateLiterals(list: Src[]): string[] {
   const exact = new Set(STATE_TERMS);
   const lower = new Set([...STATE_TERMS, ...LOWER_TERMS].map((t) => t.toLowerCase()));
   const core = (t: string) => t.replace(/^[^A-Za-z]+|[^A-Za-z]+$/g, "");
-  const leads = (t: string, cased: boolean) => STATE_TERMS.some((w) => new RegExp(`^${w}\\s*[:\u00b7]`, cased ? "" : "i").test(t));
+  const leads = (t: string, cased: boolean) => STATE_TERMS.some((w) => new RegExp(`^${w}\\s*[:,\u00b7]`, cased ? "" : "i").test(t));
   for (const s of list) {
     if (s.file === TRANSCRIPT) continue;
     const src = code(s.text);
@@ -387,10 +390,30 @@ function stateLiterals(list: Src[]): string[] {
       if (!c || ok.has(c) || ok.has(text.trim()) || [...ok].some((o) => o.includes(" ") && text.trim().startsWith(o)) || /^\s*[:?]|&&|\|\||=>|===|!==|\?\s*$/.test(text)) return;
       if ((cased ? exact.has(c) : lower.has(c.toLowerCase())) || leads(c, cased) || WAITS.test(text.trim())) out.push(`${s.file}:${lineOf(src, at)}: "${text.trim().slice(0, 60)}" is a state word: read it from ${VOCABULARY}`);
     };
-    for (const m of src.matchAll(/"((?:[^"\\\n]|\\.)*)"|'((?:[^'\\\n]|\\.)*)'/g)) hit(m[1] ?? m[2] ?? "", m.index!, true);
+    // (A lower-case word alone is an identifier; anything written as a label is matched in any case.)
+    for (const m of src.matchAll(/"((?:[^"\\\n]|\\.)*)"|'((?:[^'\\\n]|\\.)*)'/g)) { const t = m[1] ?? m[2] ?? ""; hit(t, m.index!, !/[A-Z]|\S\s+\S/.test(t)); }
     const any = STATE_SURFACES.test(s.file);
     for (const m of src.matchAll(/`((?:[^`\\]|\\.)*)`/g)) for (const part of m[1]!.split(/\$\{[^}]*\}/)) hit(part, m.index!, !any);
     if (s.file.endsWith(".tsx")) for (const m of src.matchAll(/[>}]([^<>{}=;()`"']*[A-Za-z]{2}[^<>{}=;()`"']*)(?=[<{])/g)) { if (!/^[\s,]*\w+:\s*$/.test(m[1]!)) hit(m[1]!, m.index!, !any); } // (a key of an object literal is not text)
+  }
+  return out;
+}
+
+// A state word is set in sentence case: no rule of a class that shows one turns it to capitals.
+const STATE_CLASSES = ["k-row-state", "k-row-class", "k-row-queued", "k-station-word", "k-sum-word", "k-kids-word", "k-kids-new", "k-child-state", "k-rail-card-word", "k-where-reach", "k-home-recent-word", "k-pane-empty-word", "k-look-state", "k-dock-need", "k-marks-head", "k-face-state"];
+// (A class that is also the instrument face's state role and shows something else says so here.)
+const NOT_STATES = ["k-stuck-head", "k-aim", "k-ask-count"];
+function shoutedStates(list: Src[]): string[] {
+  const out: string[] = [];
+  const names = (sel: string) => [...sel.matchAll(/\.([A-Za-z][\w-]*)/g)].map((m) => m[1]!);
+  for (const s of list) for (const r of rules(s.text)) {
+    const d = r.decls.find((x) => x.prop === "text-transform" && /uppercase|capitalize/.test(x.value));
+    if (!d) continue;
+    for (const sel of r.selector.split(",")) {
+      const cs = names(sel);
+      const hit = cs.find((c) => STATE_CLASSES.includes(c));
+      if (hit && !cs.some((c) => NOT_STATES.includes(c))) out.push(`${s.file}:${d.line}: .${hit} shows a state word: it is set in sentence case, as ${VOCABULARY} writes it`);
+    }
   }
   return out;
 }
@@ -416,6 +439,7 @@ test("every time is on the 24-hour clock", () => {
 test("the look is set by components and tokens, not by test ids or utility names", () => expect(selectors(sheets, page)).toEqual([]));
 test("a label, a picked row and a switch are their shared class", () => expect(shared(page)).toEqual([]));
 test("a state word is written once, in the vocabulary", () => expect(stateLiterals(page)).toEqual([]));
+test("a state word is set in sentence case", () => expect(shoutedStates(sheets)).toEqual([]));
 
 // ---------- The checks themselves ----------
 
@@ -463,6 +487,10 @@ test("each check refuses what it is for", () => {
   // Idle is no state's word; a session that waits says so through the vocabulary; "asks" and "offline" are retired spellings where a state is shown.
   expect(stateLiterals(tsx('const STATE = { idle: { word: "Idle" } };\nconst what = approving ? "Waiting for your approval" : "";\n<b>{agent} is waiting for your answer</b>'))).toHaveLength(3);
   expect(stateLiterals(tsx('<span>{agent} asks</span>\n<span data-offline>offline</span>', "components/Sidebar.tsx"))).toHaveLength(2);
+  // A label in another case is the same word: an attribute's string, a word that leads a sentence.
+  expect(stateLiterals(tsx('<span title="Needs You" />\nconst a = "NEEDS YOU";\nconst b = "needs you";\n<i aria-label="Needs you, under a look" />'))).toHaveLength(4);
+  // And no rule turns one to capitals.
+  expect(shoutedStates(css(".k-row-state { font-weight: 700; text-transform: uppercase; }\n.k-rail .k-sum-word, .k-other { text-transform: uppercase; }"))).toHaveLength(2);
 });
 
 test("each check lets ordinary edits through", () => {
@@ -470,6 +498,7 @@ test("each check lets ordinary edits through", () => {
   expect(stateLiterals(tsx('const live = a.status === "running" || a.status === "waiting";\nconst hint = "Running sessions are listed once the agent view is set.";\n<span>{STATE_WORD.work}</span>\nconst STATE = {\n  waiting: { word: STATE_WORD.wait },\n};'))).toEqual([]);
   expect(stateLiterals(tsx('const said = "Waiting until it is idle";\nconst live = m.state === "offline";'))).toEqual([]);
   expect(stateLiterals(tsx('const SERVER = { error: "Failed" };', "components/surfaces/Mcp.tsx"))).toEqual([]);
+  expect(shoutedStates(css(".k-stuck-head { text-transform: uppercase; }\n.k-station-identity .k-station-word { text-transform: none; }\n.k-aim.k-face-state { text-transform: uppercase; }"))).toEqual([]);
   expect(stateLiterals(tsx('<span>{n} failed</span>', "components/CodeCall.tsx"))).toEqual([]);
   expect(sheetSizes(css(".k-thing { font-size: var(--text-caption); height: var(--spacing-ctl-md); }\n.prose-keel sup { font-size: 0.75em; }\n/* font-size: 3rem */"))).toEqual([]);
   expect(pageSizes(tsx('// Tailwind text-sm is not used here.\n/* nor text-[1.1rem] */\nconst tick = { fontSize: "var(--text-micro)" };\n<p className="text-ui text-[color:var(--x)] text-[var(--c)]" />'))).toEqual([]);

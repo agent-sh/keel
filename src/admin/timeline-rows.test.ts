@@ -147,10 +147,10 @@ test("now: what waits on the owner first, then what runs, then what is waited on
   });
   expect(busy.state).toBe("owner");
   expect(busy.lines.map((l) => [l.kind, l.tone, l.text])).toEqual([
-    ["approval", "owner", "Waits on the owner: approval for Bash (high risk)"],
-    ["turn", "live", "Running a turn started by a wait wake: step 3, waiting for approval"],
+    ["approval", "owner", "Needs you: an approval for Bash (high risk)"],
+    ["turn", "live", "Running a turn started by a wait wake: step 3, needs you: an approval"],
     ["agent", "live", 'Agent "Check the parser" is working'],
-    ["wait", "plain", "Waits on a timer"],
+    ["wait", "plain", "Waiting for a timer"],
     ["queue", "plain", "2 queued prompts and 1 steer wait for the turn"],
   ]);
   // The ids a line leads by: the card, the turn's receipt.
@@ -167,13 +167,13 @@ test("now: what waits on the owner first, then what runs, then what is waited on
   // A plan presented for approval waits on the owner; a command left running is waited on.
   const plan = nowLines({ ...quiet, turn: { id: "t1", ts: 1, steps: 1, status: { kind: "tool", since: 1, names: ["present_plan"] } }, plans: [{ id: "p1", created: 50_000 }] });
   expect(plan.state).toBe("owner");
-  expect(plan.lines[0]).toMatchObject({ kind: "question", tone: "owner", text: "Waits on the owner: a plan to approve", open: true, ts: 50_000 });
+  expect(plan.lines[0]).toMatchObject({ kind: "question", tone: "owner", text: "Needs you: a plan", open: true, ts: 50_000 });
   expect(nowLines({ ...quiet, jobs: [{ id: "j1", started: 70_000 }] })).toMatchObject({ state: "working", lines: [{ kind: "wait", text: "A command runs in the background", ts: 70_000 }] });
   // The word follows the session's one state where that says more.
   expect(nowLines({ ...quiet, watch: "wait" }).state).toBe("waiting");
   expect(nowLines({ ...quiet, turn: { id: "t1", ts: 1, steps: 1, status: { kind: "idle" } }, watch: "need" }).state).toBe("owner");
   // A secret to give waits on the owner; a failed turn that resumes by itself says until when.
-  expect(nowLines({ ...quiet, secrets: [{ id: "c9", created: 60_000 }] })).toMatchObject({ state: "owner", lines: [{ kind: "question", tone: "owner", text: "Waits on the owner: a secret to give" }] });
+  expect(nowLines({ ...quiet, secrets: [{ id: "c9", created: 60_000 }] })).toMatchObject({ state: "owner", lines: [{ kind: "question", tone: "owner", text: "Needs you: a secret" }] });
   const resumes = nowLines({ ...quiet, watch: "wait", resumes: { at: 100_000 + 12 * 60_000, since: 90_000 } });
   expect(resumes.state).toBe("waiting");
   expect(timelineText({ session_id: "s", as_of: 100_000, now: resumes, rows: [], next: null } as any)).toContain("Resumes by itself when the wait the provider asked for is over, for 10 s, due in 12 min");
@@ -186,17 +186,17 @@ test("now: what waits on the owner first, then what runs, then what is waited on
   // One clock for a timer: it is due at its wake time, a minute before its deadline.
   const timed = nowLines({ ...quiet, waits: [{ id: "w", kind: "timer", created: 40_000, deadline: 100_000 + 15 * 60_000 + 60_000 }] });
   expect(timed.lines[0]).toMatchObject({ until: 100_000 + 15 * 60_000 });
-  expect(timelineText({ session_id: "s", as_of: 100_000, now: timed, rows: [], next: null } as any)).toContain("Waits on a timer, for 1 min, due in 15 min");
+  expect(timelineText({ session_id: "s", as_of: 100_000, now: timed, rows: [], next: null } as any)).toContain("Waiting for a timer, for 1 min, due in 15 min");
   // A line that says how long a silence has lasted is not given the turn's time after it.
   const silent = nowLines({ ...quiet, ts: 100_000, turn: { id: "t1", ts: 40_000, steps: 0, status: { kind: "model", since: 79_000, model: "m", connected: 79_000, quiet: 79_000 } } });
   expect(timelineText({ session_id: "s", as_of: 100_000, now: silent, rows: [], next: null } as any).split("\n")[2]).toMatch(/no output for 21 s  \[turn=t1\]$/);
   // A parked agent: what it waits for, and until when.
   const parked = nowLines({ ...quiet, agents: [{ id: "a1", session_id: "c1", title: "Scout", status: "waiting", created: 40_000, wait: { kind: "timer", until: 100_000 + 42 * 60_000 } }, { id: "a2", session_id: "c2", title: "Other", status: "waiting", created: 40_000 }] });
-  expect(parked.lines.map((l) => l.text)).toEqual(['Agent "Scout" is waiting on a timer', 'Agent "Other" is waiting on a wake of its own']);
-  expect(timelineText({ session_id: "s", as_of: 100_000, now: parked, rows: [], next: null } as any).split("\n")[2]).toContain('Agent "Scout" is waiting on a timer, for 1 min, due in 42 min');
+  expect(parked.lines.map((l) => l.text)).toEqual(['Agent "Scout" is waiting for a timer', 'Agent "Other" is waiting for a wake of its own']);
+  expect(timelineText({ session_id: "s", as_of: 100_000, now: parked, rows: [], next: null } as any).split("\n")[2]).toContain('Agent "Scout" is waiting for a timer, for 1 min, due in 42 min');
   // A call of the turn whose card is open has not started: the turn waits on the answer, it does not run the tool.
   const asking = nowLines({ ...quiet, turn: { id: "t1", ts: 1, steps: 1, status: { kind: "tool", since: 1, names: ["Bash"] } }, approvals: [{ id: "p1", tool: "Bash" }] });
-  expect(asking.lines.map((l) => l.text)).toEqual(["Waits on the owner: approval for Bash", "Running a turn started by the owner: step 1, waiting for approval"]);
+  expect(asking.lines.map((l) => l.text)).toEqual(["Needs you: an approval for Bash", "Running a turn started by the owner: step 1, needs you: an approval"]);
   // An agent's open card does not mean this session's own call waits.
   expect(nowLines({ ...quiet, turn: { id: "t1", ts: 1, steps: 1, status: { kind: "tool", since: 1, names: ["Agent"] } }, approvals: [{ id: "p1", tool: "Bash", child_session: "c1" }] }).lines[1]!.text).toBe("Running a turn started by the owner: step 1, running Agent");
   // A cut turn that was not continued is said here, and names the note so its row is not shown too.
@@ -218,9 +218,9 @@ test("the text form: a line a row, with the ids that open its detail or that a c
   const page = { session_id: "s1", as_of: Date.UTC(2026, 0, 2, 14, 40, 0), now, rows, next: "5:x" };
   expect(timelineText({ ...page, now: { ...now, lines: now.lines.map((l) => ({ ...l, ts: page.as_of - 60_000, until: l.until && page.as_of + 300_000 })) } }, { title: "Parser work" }).split("\n")).toEqual([
     `Timeline of session "Parser work" (s1), newest first. Times are local (${zoneLabel(page.as_of)}); read at ${localStamp(page.as_of)}.`,
-    "Now: waiting on the owner.",
-    '  Waits on the owner: approval for Bash, in agent "Check the parser", for 1 min  [approval=p1 session=c1]',
-    "  Waits on a timer, for 1 min, due in 5 min  [wait=w1]",
+    "Now: needs you.",
+    '  Needs you: an approval for Bash, in agent "Check the parser", for 1 min  [approval=p1 session=c1]',
+    "  Waiting for a timer, for 1 min, due in 5 min  [wait=w1]",
     `${localStamp(rows[0]!.ts).slice(5)}   Wait wake, 14 steps, 2 failed tools, 3 min, $0.03  [turn=t2]`,
     `${localStamp(rows[1]!.ts).slice(5)} ! Model request error (rate limit)  [error=e1]`,
     "Older rows: before=5:x",

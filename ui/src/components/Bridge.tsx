@@ -29,7 +29,7 @@ import { ago, clock, scrollMotion, when } from "../lib/utils.ts";
 import { sequenceAt } from "../lib/asks.ts";
 import { focusBox } from "../lib/utils.ts";
 import { branchOf, lastLine, useNeedCount, useSessionState, useStateLabel, useWatch } from "../lib/watch.ts";
-import { OFFLINE, STATE_WORD, asOf, countWord, stateLabel } from "../../../src/core/state-words.ts";
+import { OFFLINE, STATE_WORD, asOf, countWord, lastTold, stateLabel } from "../../../src/core/state-words.ts";
 import { MachineSep, machineRuns, useWhere, whereWords } from "./Where.tsx";
 import { isPinned, pin as pinSession } from "../lib/sessops.ts";
 import { soloWindow } from "../lib/shell.ts";
@@ -118,7 +118,7 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
           <span className="k-station-word" data-testid="station-word" data-offline={offline || undefined}><Mark w={w} />{offline ? OFFLINE : stateLabel(st)}</span>
           {!offline && w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="station-class">{failWord(st.cls)}</span>}
           {timed(st) && !offline && <span className="k-station-clock tabular-nums" data-testid="station-clock">{stateClock(st, now)}</span>}
-          {why && <span className="k-station-why" data-testid="station-why" data-why={offline ? "offline" : st.why} title={offline ? `It last told: ${stateLabel(st)}${told ? `, ${told}` : ""}` : why}>{why}</span>}
+          {why && <span className="k-station-why" data-testid="station-why" data-why={offline ? "offline" : st.why} title={offline ? lastTold(stateLabel(st), st.text) : why}>{why}</span>}
         </span>
         <span className="k-station-meta" title={s.workspace}>
           <span className="k-station-where block truncate">{s.workspace_gone ? <span className="k-gone">{folderOf(s)} gone</span> : folderOf(s)}{!helm && ` / ${modelOf(s.model)}`}</span>

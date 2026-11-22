@@ -280,6 +280,57 @@ test("a finished notice quotes this turn's reply and names it, or none", () => {
   expect(three.a.data?.event_id).toBeUndefined();
 });
 
+test("an approval the owner looked at, told of again while it waits, is one row", () => {
+  const { session } = scratch();
+  const s = session("Rotate the certificates");
+  const told = () => alerts.raise("approval", s, "Approval: Rotate the certificates", "Bash: touch renewed.txt", { approval_id: "ap1", open_session: s, risk: "low" });
+  told();
+  told(); // not looked at yet: the newer one replaces it
+  expect(alerts.list({ limit: 10 }).filter((a) => a.data?.approval_id === "ap1")).toHaveLength(1);
+  alerts.markRead({ session_id: s });
+  told();
+  const rows = alerts.list({ limit: 10 }).filter((a) => a.data?.approval_id === "ap1");
+  expect(rows.map((a) => a.read)).toEqual([true]);
+  // Another approval of the same session is another decision.
+  alerts.raise("approval", s, "Approval: Rotate the certificates", "Bash: touch other.txt", { approval_id: "ap2", open_session: s, risk: "low" });
+  expect(alerts.unreadCounts().sessions[s]).toBe(1);
+});
+
+// Until a declined turn has an alert kind of its own it is filed as a finish: every channel reads its title.
+test("a turn the model declined is told as Declined, on every channel", () => {
+  const { store, session } = scratch();
+  const s = session("Draft the notice");
+  store.append(s, "turn_start", { model: "m" });
+  store.append(s, "assistant", { blocks: [{ type: "text", text: "I will not" }] });
+  alerts.onTurnEnd(s, "refusal", { subagent: false, loopRun: false, more: false });
+  const a = alerts.list({ limit: 1 })[0]!;
+  expect([a.kind, a.title, a.body, a.data.end]).toEqual(["finished", "Declined: Draft the notice", "I will not", "refusal"]);
+});
+
+// A question whose turn was stopped has no card left: nothing waits on the owner.
+test("a question whose card went with a stopped turn is read; one that waits, an expired one and a kept one stay", () => {
+  const { session } = scratch();
+  const s = session("Pick a window"), t = session("Pick a color");
+  const stop = new AbortController();
+  void ask({ sessionId: s, callId: "q1", signal: stop.signal } as any).catch(() => {});
+  void ask({ sessionId: t, callId: "q2", signal: new AbortController().signal } as any);
+  alerts.raise("question", s, "Question: Pick a window", "Which window?", { call_id: "q1", open_session: s });
+  alerts.raise("question", t, "Question: Pick a color", "Which color?", { call_id: "q2", open_session: t });
+  alerts.raise("question", s, "Unanswered question: Pick a window", "Expired before you answered: Which day?", { call_id: "q0", open_session: s, expired: true });
+  // While its card waits a turn's end reads nothing.
+  alerts.settleAsks(s);
+  expect(alerts.unreadCounts().sessions[s]).toBe(2);
+  stop.abort();
+  alerts.settleAsks(s);
+  alerts.settleAsks(t);
+  const of = (call: string) => alerts.list({ limit: 10 }).find((a) => a.data?.call_id === call)!;
+  expect([of("q1").read, of("q2").read, of("q0").read]).toEqual([true, false, false]);
+  // Marked unread by the owner, it is theirs to keep.
+  alerts.markUnread(of("q1").id);
+  alerts.settleAsks(s);
+  expect(of("q1").read).toBe(false);
+});
+
 // A question a restart could not put back expired unanswered: the turn that
 // went on without it is filed as a decision the owner owes, not as finished.
 test("a turn whose question expired unanswered is filed as a question, not as finished", () => {

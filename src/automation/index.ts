@@ -135,6 +135,8 @@ function init(deps: Deps) {
         const more = hasPending(s.id) || waits.activeFor(s.id) > 0 || liveAgents(s.id) > 0;
         const child = !!deps.store.session(s.id)?.parent_id;
         if (!child) activity.record("turn", reason, s.id, `${deps.store.session(s.id)?.title || "Session"}: turn ${TURN_WORDS[reason] ?? `ended (${reason})`}`, undefined, turn);
+        // A question this turn asked whose card went with it (the turn was stopped) waits on nobody. (A turn parked for a restart keeps its card.)
+        if (reason !== "restart") alerts.settleAsks(s.id);
         activity.ofTurn(s.id, turn, () => alerts.onTurnEnd(s.id, reason, { subagent: child, loopRun, more }));
         if (!child) goals.afterTurn(s.id, reason, { judge: !more, turn }).catch((e) => capture(e, { at: "goal" }));
       });

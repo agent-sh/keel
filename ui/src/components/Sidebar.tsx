@@ -30,7 +30,7 @@ import { fitBands } from "../lib/rail-fit.ts";
 import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, clock, cn, folderNames, when } from "../lib/utils.ts";
 import { AT_REST, branchOf, lastLine, useLastLine, useNeedCount, useSessionState, useSessionStates, type SessionState, type Watch } from "../lib/watch.ts";
-import { COUNTERS, NEW, NEW_SINCE, OFFLINE, STATE_WORD, asOf, countName, queuedWord, stateAlone, stateLabel, wentWrongWord } from "../../../src/core/state-words.ts";
+import { COUNTERS, JUST_ARRIVED, NEW, NEW_SINCE, OFFLINE, STATE_WORD, asOf, countName, holdsWords, lastTold, queuedWord, stateAlone, stateLabel, wentWrongWord } from "../../../src/core/state-words.ts";
 import { useUnsent, useWaitingSend } from "../lib/send-drafts.ts";
 import { MachineSep, machineRuns, useWhere, WherePip, whereWords } from "./Where.tsx";
 import { finished, ListFind, matches, order, readNote, setArrange, useArrange, useNote } from "./ListArrange.tsx";
@@ -292,7 +292,7 @@ function Row({ s: given, active, where, gone }: { s: Session; active: boolean; w
         {(s.settings.tags ?? []).slice(0, 1).map((t) => <span key={t} title={(s.settings.tags ?? []).join(", ")} className="k-row-tag shrink truncate rounded-xs bg-sunken px-1 text-micro text-faint" data-testid="row-tag">{t}</span>)}
         <SessionBadges sessionId={s.id} />
         {/* What it needs is under a look: its pane shows another session for now. */}
-        {under && <span className="k-row-under" data-testid="row-under" role="img" aria-label="Needs you, under a look" title="Needs you while its pane shows another session for now"><Layers2 aria-hidden="true" /></span>}
+        {under && <span className="k-row-under" data-testid="row-under" role="img" aria-label={`${STATE_WORD.need}, under a look`} title={`${STATE_WORD.need} while its pane shows another session for now`}><Layers2 aria-hidden="true" /></span>}
         {/* A message of theirs that waits in the session's queue. */}
         {queued > 0 && !left && <span className="k-row-queued" data-testid="row-queued" role="img" aria-label={queuedWord(queued)} title={`${queued} message${queued > 1 ? "s" : ""} of yours ${queued > 1 ? "wait" : "waits"} here for the turn to end`}><MessageSquareMore aria-hidden="true" />{queued}</span>}
         {/* The time a glance wants: how long it has needed them, worked on this step or waited (when a timer is due); at rest, when it last moved. */}
@@ -425,7 +425,7 @@ function LateLine({ n, to }: { n: number; to: { current: HTMLElement | null } })
     <button type="button" className="k-late-line" data-testid="late-line" title="They take their places when your hand has left the list"
       onPointerEnter={() => hold(true)} onPointerLeave={() => hold(false)}
       onClick={() => { touch?.(); to.current?.scrollIntoView({ block: "end" }); }}>
-      <ArrowDown aria-hidden="true" /><span className="min-w-0 truncate">{n} just arrived, below</span>
+      <ArrowDown aria-hidden="true" /><span className="min-w-0 truncate">{n} {JUST_ARRIVED.toLowerCase()}, below</span>
     </button>
   );
 }
@@ -488,14 +488,7 @@ let openOn: "active" | "archived" = "active";
 // the rail has room for ends in a count that opens the list. A finished
 // session you have not looked at keeps a full mark; one you have seen goes
 // quiet. Hovering or focusing a mark shows its card.
-const BANDS: { w: Watch[]; label: string; short: string }[] = [
-  { w: ["need"], label: STATE_WORD.need, short: "Need" },
-  { w: ["fail", "declined"], label: STATE_WORD.fail, short: "Fail" },
-  { w: ["wait"], label: STATE_WORD.wait, short: "Wait" },
-  { w: ["work"], label: STATE_WORD.work, short: "Work" },
-  { w: ["resume", "stop"], label: STATE_WORD.stop, short: "Stop" },
-  { w: ["done", "idle"], label: STATE_WORD.done, short: STATE_WORD.done },
-];
+const BANDS: { w: Watch[] }[] = [{ w: ["need"] }, { w: ["fail", "declined"] }, { w: ["wait"] }, { w: ["work"] }, { w: ["resume", "stop"] }, { w: ["done", "idle"] }];
 // The folded rail keeps every band on screen. When the marks do not fit at
 // their usual size the rail sets them tighter (smaller marks, slimmer heads);
 // only when they do not fit even so does a band hold some back behind a count.
@@ -547,8 +540,9 @@ function Marks({ current }: { current: string | null }) {
   const unread = useAuto((s) => s.unread.sessions);
   const bind = useContext(CardCtx);
   const bands = [
-    ...BANDS.map((b) => ({ ...b, items: list.filter((s) => b.w.includes(banded[s.id] ?? "idle")) })),
-    { w: ["idle"] as Watch[], label: "New", short: "New", items: late },
+    // A band's words are the states of the sessions in it (src/core/state-words.ts): "Failed or declined", "Done or not started".
+    ...BANDS.map((b) => { const items = list.filter((s) => b.w.includes(banded[s.id] ?? "idle")); return { ...b, key: b.w[0]!, label: holdsWords(items.map((s) => banded[s.id] ?? "idle")), items, late: false }; }),
+    { w: ["idle"] as Watch[], key: "late", label: JUST_ARRIVED, items: late, late: true },
   ].filter((b) => b.items.length);
   const { probe, rows } = useRailRoom(bands.length, list.length + late.length);
   const fit = fitBands(bands.map((b) => b.items.length), rows);
@@ -563,8 +557,9 @@ function Marks({ current }: { current: string | null }) {
         const items = (at >= room ? [all[at]!, ...all.filter((s) => s.id !== current)] : all).slice(0, room);
         const rest = all.length - items.length;
         return (
-          <section key={b.label} className="k-marks" data-watch={b.w[0]} aria-label={`${b.label}: ${all.length}`} data-testid="rail-band">
-            <h3 className="k-marks-head" aria-hidden="true"><span>{b.short}</span><span className="tabular-nums">{all.length}</span></h3>
+          <section key={b.key} className="k-marks" data-watch={b.w[0]} aria-label={`${b.label}: ${all.length}`} title={`${b.label}: ${all.length}`} data-testid="rail-band">
+            {/* The band's mark and how many: the rail has no room for the word, which is the band's name and tooltip. */}
+            <h3 className="k-marks-head" aria-hidden="true">{b.late ? <Plus aria-hidden="true" /> : <Mark w={b.w.find((w) => all.some((x) => (banded[x.id] ?? "idle") === w)) ?? b.w[0]!} />}<span className="tabular-nums">{all.length}</span></h3>
             <ol>
               {items.map((s) => {
                 const card = bind(s, 0);
@@ -617,13 +612,16 @@ function RailCard({ s: given, y, left, row, cut }: { s: Session; y: number; left
   const s = useStore((x) => x.sessions[given.id]) ?? given;
   const st = useSessionState(s);
   const w = st.watch;
-  const now = useNow(timed(st));
+  // A machine that does not answer says nothing new: the card reads Offline with when it last told, as the row and the pane's head do, and no clock runs.
+  const offline = useWhere(s)?.reach === "offline";
+  const now = useNow(timed(st) && !offline);
   const unread = useAuto((x) => x.unread.sessions[s.id] ?? 0);
   const events = useStore((x) => x.events[s.id]);
   // What it last did or ended with: from the events the page holds, else asked of the daemon (a session never opened here).
   const told = useLastLine(s, !events);
   const line = events ? lastLine(branchOf(events, s.head), s.workspace) : told;
-  const why = whyText(st, now);
+  const toldAt = (st as { as_of?: number }).as_of ?? s.updated;
+  const why = offline ? lastTold(stateLabel(st), st.text) : whyText(st, now);
   const top = Math.min(Math.max(y, 96), innerHeight - 96);
   // Beside a list row the card adds what the row has no room for and repeats nothing of it:
   // the reason in full, what the session last did, its model, the whole path, the exact time.
@@ -631,7 +629,7 @@ function RailCard({ s: given, y, left, row, cut }: { s: Session; y: number; left
     return (
       <div className="k-rail-card" data-kind="row" data-watch={w} style={{ top, left }} data-testid="rail-card" aria-hidden="true">
         {cut && <p className="k-rail-card-title">{s.title}</p>}
-        {why && <p className="k-rail-card-why" data-testid="rail-card-why" data-why={st.why}>{why}</p>}
+        {why && <p className="k-rail-card-why" data-testid="rail-card-why" data-why={offline ? "offline" : st.why}>{why}</p>}
         {line && line !== why && <p className="k-rail-card-line">{line}</p>}
         <dl className="k-rail-card-meta">
           <dt>Model</dt><dd>{modelOf(s.model)}</dd>
@@ -645,15 +643,17 @@ function RailCard({ s: given, y, left, row, cut }: { s: Session; y: number; left
     <div className="k-rail-card" data-watch={w} style={{ top, left }} data-testid="rail-card" aria-hidden="true">
       <div className="k-rail-card-row">
         <Mark w={w} />
-        <span className="k-rail-card-word">{stateLabel(st)}</span>
-        {w === "fail" && failWord(st.cls) && <span className="k-row-class">{failWord(st.cls)}</span>}
-        {timed(st)
+        <span className="k-rail-card-word" data-testid="rail-card-word" data-offline={offline || undefined}>{offline ? OFFLINE : stateLabel(st)}</span>
+        {!offline && w === "fail" && failWord(st.cls) && <span className="k-row-class">{failWord(st.cls)}</span>}
+        {offline
+          ? <span className="k-rail-card-time" data-testid="rail-card-time" title={when(toldAt)}>{asOf(clock(toldAt))}</span>
+          : timed(st)
           ? <span className="k-rail-card-time tabular-nums" data-live>{stateClock(st, now)}</span>
           : <span className="k-rail-card-time" title={when(s.updated)}>{ago(s.updated) === "now" ? "just now" : `${ago(s.updated)} ago`}</span>}
       </div>
       <p className="k-rail-card-title">{s.title || "New session"}</p>
       {/* Why it is in its state: what waits on the owner, the step, what it waits for, how it failed. */}
-      {why && <p className="k-rail-card-why" data-testid="rail-card-why" data-why={st.why}>{why}</p>}
+      {why && <p className="k-rail-card-why" data-testid="rail-card-why" data-why={offline ? "offline" : st.why}>{why}</p>}
       {line && line !== why && <p className="k-rail-card-line">{line}</p>}
       {unread > 0 && w !== "need" && <p className="k-rail-card-new">{NEW_SINCE}</p>}
       <dl className="k-rail-card-meta">
@@ -973,7 +973,7 @@ function Index({ current }: { current: string | null }) {
         {/* What came while the list was held: at its end, the first of them (the rest behind "N more"), until the hand has left. */}
         {waits && (
           <section ref={lateBox} className="k-group" data-testid="late-group">
-            <h2 className="k-group-head"><Plus /><span className="truncate">Just arrived</span><span className="tabular-nums text-faint">{late.length}</span></h2>
+            <h2 className="k-group-head"><Plus /><span className="truncate">{JUST_ARRIVED}</span><span className="tabular-nums text-faint">{late.length}</span></h2>
             <Group list={late} current={current} where />
           </section>
         )}

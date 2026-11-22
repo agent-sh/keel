@@ -158,9 +158,8 @@ function Inbox({ onClose }: { onClose: () => void }) {
         {shown.length === 0 && <li><Empty>{onlyUnread ? "Nothing unread." : `Nothing ${STATE_WORD.need.toLowerCase()}.`}</Empty></li>}
         {parts.flatMap(({ part, n, rows }) => [<PartHead key={part} part={part} n={n} />, ...rows.map(({ a, first, last, alone, place, fresh, asks, word, declined }) => {
           // On a phone a row that waits gives its line the width: its mark and its "Review" say what it is, and its age is in the tooltip.
-          // What a row of an ask offers: the card that answers it, while it waits, or the session of one that is new
-          // (never for one the owner marked unread again: that one was answered).
-          const offers = !!a.open || (!a.read && !a.kept && ASK_KINDS.includes(a.kind));
+          // A row offers the card that answers it only while that card waits: an ask whose card is gone (answered, or its turn stopped) has nothing to answer.
+          const offers = !!a.open;
           const tight = !wide && offers;
           const n = notes[a.id];
           // On a shared line the width goes to what waits on the owner: the title gives way first there.
@@ -190,7 +189,8 @@ function Inbox({ onClose }: { onClose: () => void }) {
                     {/* The mark is the state, in its color while unread: a glyph, no box around it. */}
                     <AlertIcon kind={a.kind} read={a.read && !a.open} declined={declined} />
                     {/* The kind stands second in both row forms, so the eye finds it in one place. */}
-                    <span className="shrink-0 text-muted" data-testid="inbox-state" title={routeOf(a)}>
+                    {/* (A column of its own, as wide as the usual words, so the titles after it start at one place.) */}
+                    <span className={cn("shrink-0 text-muted", !tight && "min-w-[4.75rem]")} data-testid="inbox-state" title={routeOf(a)}>
                       <span data-testid="inbox-word" className={tight ? "sr-only" : undefined}>{word}</span>
                       <span className="sr-only">, {a.read ? "read" : "unread"}{a.data?.snoozed ? ", snoozed" : a.data?.held ? ", held by the snooze" : ""}: </span>
                     </span>
