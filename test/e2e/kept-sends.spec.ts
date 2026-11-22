@@ -323,18 +323,19 @@ test("a send that arrives while an earlier question about it is out is asked abo
   }, { times: 1 });
   // The page's first question about it is answered by the daemon ("not stored") and held on its way back.
   const back = Promise.withResolvers<void>();
+  const firstAnswer = Promise.withResolvers<unknown>();
   let questions = 0;
   await page.route(`**/api/sessions/${a}/sends/*`, async (r) => {
     if (++questions > 1) return r.fallback();
     const answer = await r.fetch();
-    expect(await answer.json()).toEqual({ stored: false });
+    firstAnswer.resolve(await answer.json());
     await back.promise;
     await r.fulfill({ response: answer });
   });
   await composer(page).fill("Late, but it got there.");
   await composer(page).press("Enter");
   await expect(saved(page)).toContainText("Delivery unconfirmed");
-  await expect.poll(() => questions).toBe(1);
+  expect(await firstAnswer.promise).toEqual({ stored: false });
   // Now it arrives, under the same send id, while that answer is still out.
   expect((await request.post(messages, { data: body })).status()).toBe(201);
   await expect(page.getByTestId("user-message").filter({ hasText: "Late, but it got there." })).toHaveCount(1);
