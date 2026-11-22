@@ -5,6 +5,18 @@ import { allCommands, commandsVersion, composing, fuzzy, onCommands } from "../l
 import { actions, reportError, useStore, useModels } from "../lib/store.ts";
 import { switchSession } from "../lib/switch.ts";
 import { navigate, setUI, useUI } from "../lib/ui.ts";
+import { openWaiting } from "./HomeWatch.tsx";
+import { modalOpen } from "../lib/overlay.ts";
+
+// Opens a session as the home screen does: the keyboard goes to what the session asks, on its
+// card and on no answer. The session opens at once; the keyboard is brought to the card when the
+// palette itself is out of the way (a card takes none under a dialog).
+function openSession(id: string) {
+  navigate({ name: "session", id });
+  let frames = 0;
+  const go = () => { if (modalOpen() && ++frames < 60) requestAnimationFrame(go); else openWaiting(id); };
+  requestAnimationFrame(go);
+}
 import { ago, cn, folderNames } from "../lib/utils.ts";
 import { useAgentCounts, useWatches, watchLabel } from "../lib/watch.ts";
 import { machineName } from "../lib/fleet.ts";
@@ -94,7 +106,8 @@ export function Palette() {
         seen.add(s.id);
         out.push({
           key: `s:${s.id}`, group: s.machine ? `Sessions on ${machineName(s.machine) ?? s.machine}` : "Sessions", label: s.title || "New session", detail: `${names.get(s.workspace)}  ${ago(s.updated)}`,
-          icon: <span className="grid size-4 place-items-center" title={watchLabel(w[s.id] ?? "idle", agents[s.id])}><Mark w={w[s.id] ?? "idle"} className="size-2" /></span>, score: score + 5, run: () => navigate({ name: "session", id: s.id }),
+          icon: <span className="grid size-4 place-items-center" title={watchLabel(w[s.id] ?? "idle", agents[s.id])}><Mark w={w[s.id] ?? "idle"} className="size-2" /></span>, score: score + 5,
+          run: () => openSession(s.id),
         });
       }
     }

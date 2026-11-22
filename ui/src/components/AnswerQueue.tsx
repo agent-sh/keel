@@ -31,11 +31,15 @@
 // waits and that the owner went to from a list, a link or the palette (a look,
 // or the pane beside that holds it) is one to answer and leave. Once they have
 // answered all it asked they are back where they came from. Not when they went
-// to its pane themselves (a press in it, the keys that step through the panes)
-// or typed in its message box: then they are there to work. And not in a layout
-// of one pane, where opening a session turns the page: they turn it back.
+// to its pane themselves (a press in it, the keys that step through the panes),
+// and not once they began to read or work there: a press in that pane outside
+// what it asks, a scroll of its conversation by the wheel or the keys, a
+// selection in it, typing in its message box, or ten seconds spent there after
+// the cards could be answered. Then they stay. And not in a layout of one pane,
+// where opening a session turns the page: they turn it back.
 import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { announce } from "../lib/announce.ts";
+import { SETTLE_MS } from "../lib/approvals.ts";
 import { answeredHere, askIn, focusAsk, restInBox, sequenceAt, setSequence } from "../lib/asks.ts";
 import { isMac, registerCommand } from "../lib/keys.ts";
 import { focusBack, leaveLook, movedTo } from "../lib/looks.ts";
@@ -53,6 +57,12 @@ import { useSessionStates } from "../lib/watch.ts";
 import { Kbd } from "./Kbd.tsx";
 
 const KEYS = "alt+a";
+// How long in a session that waits, once its cards can be answered, before the owner is taken to be reading it.
+const READING_MS = 10_000;
+// What a session asks: a press or a key there is on the way to an answer, not reading.
+const ASKS = '[data-testid="composer-asks"], [data-ask-part]';
+// The keys that scroll a conversation (from its rows, or from an empty message box).
+const SCROLL_KEYS = new Set(["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "]);
 // How long the sequence stays on with nothing answered and no key or press on the cards.
 const QUIET_MS = 60_000;
 // What a session that needs the owner shows as a card above its message box (the daemon's `why`).
@@ -112,11 +122,13 @@ function go(id: string) {
 }
 const end = () => { setSequence(null); origin = null; if (state.on) set({ on: false, at: null }); };
 // Nothing is left to answer: the owner is back where the sequence began, the keyboard where it was there.
+// A sequence that began inside a look and ended in it leaves that look: it was answered.
 function done(cur: string) {
   const from = origin;
   end();
+  if (from && from.route.name === "session" && from.route.id === cur) { if (!leaveLook(cur, true)) restInBox(cur); return; }
   putAway(cur);
-  if (!from || (from.route.name === "session" && from.route.id === cur) || !backTo(from.route, from.slot)) restInBox(cur);
+  if (!from || !backTo(from.route, from.slot)) restInBox(cur);
 }
 // The page's own rule for a focus it makes by itself (lib/self-focus.ts) is told the same: the
 // message box of the session the sequence brings the keyboard to takes none, neither as its
@@ -213,14 +225,38 @@ export function AnswerQueue() {
     const leaves = st.over.includes(cur) || (st.slots.length > 1 && !movedTo(cur) && matchMedia("(min-width: 768px)").matches);
     visit = order.includes(cur) && leaves ? { id: cur, from, slot: getStations().active } : null;
   }, [route]);
+  // The owner began to read or work in the session they went to: they stay (see the head of the file).
   useEffect(() => {
-    const typed = (e: Event) => {
-      const t = e.target as HTMLElement | null;
-      if (visit && t?.matches?.('[data-testid="composer"]') && t.closest<HTMLElement>("[data-station]")?.dataset.station === visit.id) visit = null;
+    const inVisit = (t: EventTarget | null) => !!visit && t instanceof Element && t.closest<HTMLElement>("[data-station]")?.dataset.station === visit.id;
+    const stay = () => { visit = null; };
+    const typed = (e: Event) => { if (inVisit(e.target) && (e.target as Element).matches('[data-testid="composer"]')) stay(); };
+    const pressed = (e: Event) => { if (inVisit(e.target) && !(e.target as Element).closest(ASKS)) stay(); };
+    const wheeled = (e: Event) => { if (inVisit(e.target)) stay(); };
+    const keyed = (e: KeyboardEvent) => {
+      if (!SCROLL_KEYS.has(e.key) || e.altKey || e.ctrlKey || e.metaKey || !inVisit(e.target) || (e.target as Element).closest(ASKS)) return;
+      // (Arrows and Space in a message box that holds text move its caret or type: only an empty box scrolls the conversation.)
+      const t = e.target as HTMLElement;
+      if ((t.tagName === "TEXTAREA" || t.tagName === "INPUT") && ((t as HTMLTextAreaElement).value !== "" || e.key.startsWith("Arrow") || e.key === " ")) return;
+      stay();
     };
+    const selected = () => { const sel = getSelection(); if (visit && sel && !sel.isCollapsed && inVisit(sel.anchorNode instanceof Element ? sel.anchorNode : sel.anchorNode?.parentElement ?? null)) stay(); };
     addEventListener("input", typed, true);
-    return () => removeEventListener("input", typed, true);
+    addEventListener("pointerdown", pressed, true);
+    addEventListener("wheel", wheeled, { capture: true, passive: true });
+    addEventListener("keydown", keyed, true);
+    document.addEventListener("selectionchange", selected);
+    return () => {
+      removeEventListener("input", typed, true); removeEventListener("pointerdown", pressed, true); removeEventListener("wheel", wheeled, true);
+      removeEventListener("keydown", keyed, true); document.removeEventListener("selectionchange", selected);
+    };
   }, []);
+  // And so does time: ten seconds there once its cards could be answered.
+  useEffect(() => {
+    const v = visit;
+    if (!v || v.id !== cur) return;
+    const t = window.setTimeout(() => { if (visit === v) visit = null; }, SETTLE_MS + READING_MS);
+    return () => window.clearTimeout(t);
+  }, [route, cur]);
 
   // Anything else the owner does ends the sequence, and so does leaving the window. So does a
   // quiet minute: one with no answer and no key or press on the cards. (A sequence left on
