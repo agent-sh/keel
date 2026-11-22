@@ -1,5 +1,15 @@
 import { expect, test } from "bun:test";
-import { hexOf, pathParts } from "./shell.ts";
+import { BROUGHT_MS, broughtHere, hexOf, pathParts, wasBrought } from "./shell.ts";
+
+// The review's case: a link raised the window and a card took the keyboard on its answer.
+test("an arrival from outside the page holds the keyboard off the answers for a while, then no longer", () => {
+  expect(wasBrought(1_000_000)).toBe(false);
+  broughtHere(1_000_000);
+  expect(wasBrought(1_000_001)).toBe(true);
+  expect(wasBrought(1_000_000 + BROUGHT_MS - 1)).toBe(true);
+  expect(wasBrought(1_000_000 + BROUGHT_MS)).toBe(false);
+  broughtHere(-Infinity);
+});
 
 test("a path from the shell is read into what the page acts on", () => {
   expect(pathParts("/s/abc?approval=ap1")).toEqual({ pathname: "/s/abc", event: null, approval: "ap1", inbox: false });

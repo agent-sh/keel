@@ -14,6 +14,7 @@ import { onFeature, reportError, reportUnlessGone, useStore, failed } from "../l
 import { openFocus } from "../lib/self-focus.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { lineage } from "../../../src/core/tree.ts";
+import { shell } from "../lib/shell.ts";
 import { cn, scrollMotion } from "../lib/utils.ts";
 import { FallbackChip } from "./Fallback.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
@@ -752,7 +753,12 @@ function SessionComposer({
           if (fs.length) { e.preventDefault(); addFiles(fs); return; }
           // A web view that hands the paste nothing at all for a copied image
           // (WebKitGTK does): the image is read from the clipboard itself.
-          if (!e.clipboardData.types.length) pastedImages().then((images) => { if (images.length) addFiles(images); }).catch(() => {});
+          // Only on the owner's own paste, and the desktop app is told first:
+          // it lets the clipboard be read for this one paste and at no other time.
+          if (!e.clipboardData.types.length && e.nativeEvent.isTrusted) {
+            shell?.post({ t: "paste" });
+            pastedImages().then((images) => { if (images.length) addFiles(images); }).catch(() => {});
+          }
         }}
         onKeyDown={(e) => {
           if (composing(e)) return;

@@ -103,6 +103,105 @@ test("shell: a session's own window shows that session alone and keeps the main 
   }
 });
 
+// The review's case: a keel:// link raised the window on a session with a request waiting,
+// the card took the keyboard on "Allow once" by itself, and one Return ran the command.
+test("shell: a link or a launch never lands the keyboard on an answer; a notification's own click does", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  const a = await make(request, "Shell: where the owner was");
+  await expect.poll(() => ended(request, a.id), { timeout: 60_000 }).toBe(true);
+  const asks = (await (await request.post("/api/sessions", { data: { model: MODEL, title: "Shell: asks before it runs" } })).json()).session;
+  await request.put(`/api/sessions/${asks.id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+  await request.post(`/api/sessions/${asks.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "touch answered-by-a-link.txt" } }])}` } });
+  const pending = async () => ((await (await request.get(`/api/sessions/${asks.id}/approvals?all`)).json()).approvals as any[]).filter((x) => x.state === "pending");
+  await expect.poll(async () => (await pending()).length, { timeout: 30_000 }).toBe(1);
+  const approval = (await pending())[0].id as string;
+  try {
+    await page.addInitScript(shellObject("main"));
+    await page.goto(`/s/${a.id}`);
+    await expect(page.getByTestId("transcript")).toBeVisible();
+
+    // A link (or a second launch, or the tray) brings the owner to the session.
+    await tell(page, { open: `/s/${asks.id}`, from: "link" });
+    await page.waitForURL(new RegExp(`/s/${asks.id}$`));
+    const once = page.getByTestId("allow-once");
+    await expect(once).toBeVisible();
+    // Past the time a new card waits before it takes the keyboard by itself.
+    await expect(page.getByTestId("approvals")).toBeFocused({ timeout: 10_000 });
+    await page.waitForTimeout(1500);
+    await expect(once).not.toBeFocused();
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(1000);
+    expect((await pending()).map((x) => x.id)).toEqual([approval]);
+    await shoot(page, "shell-03-link-arrival");
+
+    // The owner then puts the keyboard on the answer; another link takes it off again.
+    await once.focus();
+    await tell(page, { open: `/s/${asks.id}`, from: "link" });
+    await expect(page.getByTestId("approvals")).toBeFocused();
+
+    // A link cannot name a request either: an approval in a path that was not clicked is "card".
+    await tell(page, { open: `/s/${asks.id}?approval=${approval}` });
+    await page.waitForTimeout(500);
+    await expect(once).not.toBeFocused();
+
+    // The click on that request's own notification is the owner's choice of it.
+    await tell(page, { open: `/s/${asks.id}?approval=${approval}`, from: "click" });
+    await expect(once).toBeFocused();
+  } finally {
+    for (const s of [a, asks]) await request.delete(`/api/sessions/${s.id}`).catch(() => {});
+  }
+});
+
+// The review's case: the band was hidden whenever the app has a title bar, so a loss only the
+// page sees (its socket cut while the daemon answers) was said nowhere.
+test("shell: the page says the daemon is away unless the app's title bar does, and the text size keys are the page's setting", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  const a = await make(request, "Shell: the socket is cut");
+  await expect.poll(() => ended(request, a.id), { timeout: 60_000 }).toBe(true);
+  const live: { ws?: import("@playwright/test").WebSocketRoute; cut: boolean } = { cut: false };
+  await page.routeWebSocket(/\/ws$/, (ws) => {
+    if (live.cut) return void ws.close({ code: 4000, reason: "cut by the test" });
+    ws.connectToServer();
+    live.ws = ws;
+  });
+  try {
+    await page.addInitScript(shellObject("main"));
+    await page.goto(`/s/${a.id}`);
+    await expect(page.getByTestId("transcript")).toBeVisible();
+    const band = page.getByTestId("daemon-away");
+    await expect(band).toHaveCount(0);
+
+    live.cut = true;
+    await live.ws!.close({ code: 4000, reason: "cut by the test" });
+    // The app sees the daemon answer, so its title bar says nothing: the page must.
+    await expect(band).toBeVisible({ timeout: 10_000 });
+    await shoot(page, "shell-04-socket-cut");
+    // The app's title bar says it: one place, not two.
+    await tell(page, { daemon: "away" });
+    await expect(band).toHaveCount(0);
+    // The app sees the daemon back while the page is still cut off: the page says so again.
+    await tell(page, { daemon: "up" });
+    await expect(band).toBeVisible({ timeout: 10_000 });
+    live.cut = false;
+    await tell(page, { daemon: "up" });
+    await expect(band).toHaveCount(0, { timeout: 15_000 });
+
+    // Ctrl plus, minus and zero in the app are the page's text size: one scale.
+    const scale = () => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--ui-scale").trim());
+    expect(await scale()).toBe("1");
+    await tell(page, { scale: "up" });
+    await expect.poll(scale).toBe("1.1");
+    await expect.poll(async () => (await posted(page, "look")).at(-1)?.scale).toBe(1.1);
+    await tell(page, { scale: "down" });
+    await tell(page, { scale: "down" });
+    await expect.poll(scale).toBe("0.9");
+    await tell(page, { scale: "reset" });
+    await expect.poll(scale).toBe("1");
+  } finally {
+    await request.delete(`/api/sessions/${a.id}`).catch(() => {});
+  }
+});
+
 test("shell: a browser tab has no shell", async ({ page, request }) => {
   test.skip(!(await scripted(request)), "requires the scripted provider");
   const a = await make(request, "Shell: in a browser tab");

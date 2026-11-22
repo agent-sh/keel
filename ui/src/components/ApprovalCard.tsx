@@ -4,6 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExter
 import { shownInPart } from "../../../src/safety/summary.ts";
 import { batches, batchName, coverName, hold, nextAction, pressable, READ_MS, settled, SETTLE_MS, spentAction, stand, type Action, type Batch, type Hold, type Stand } from "../lib/approvals.ts";
 import { arrivalOf, arriving } from "../lib/automation.ts";
+import { wasBrought } from "../lib/shell.ts";
 import { hasHidden, hasRtl } from "../lib/hidden-chars.ts";
 import { dropRepeats, keyRefused, keysSettled, mayTake, noteAnswer, sequenceAt, takeKeys, typeToBox, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
@@ -606,10 +607,12 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   // then its Allow, "deny" opens the denial with the keyboard in the reason field.
   const hold = useHold(list);
   const asked = useRef(false);
+  const chosen = useRef(false); // an arrival named this card's answer (the click on its own notification)
   const arrive = () => {
     const arrival = arrivalOf(a.id);
     if (!arrival) return false;
     asked.current = true;
+    chosen.current = arrival.to === "allow";
     if (arrival.to === "deny") { setReason((r) => r + arrival.typed); setDenying(true); }
     // (A card that is not all read is read on the list first, whatever the arrival asked for.)
     else if (arrival.to === "card" || unread.current) takeKeys(list.current, true, false);
@@ -651,7 +654,10 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   useEffect(() => {
     if (hold.keys !== "ready" || !hold.take || moved.current === hold.at) return;
     const at = document.activeElement;
-    if (!(at === root.current || (first && at === list.current)) || !mayHold()) { moved.current = hold.at; return; }
+    // Brought here from outside the page (a link, a second launch of the desktop app): the
+    // keyboard stays where it is read and does not move onto an answer by itself, unless the
+    // arrival named this card's answer.
+    if (!(at === root.current || (first && at === list.current)) || !mayHold() || (wasBrought() && !chosen.current)) { moved.current = hold.at; return; }
     if (!live && onceInRegion()) return;
     moved.current = hold.at;
     once.current?.focus({ preventScroll: true });

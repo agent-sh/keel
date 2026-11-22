@@ -6,6 +6,7 @@ import { RotateCw, Unplug } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { shell } from "../lib/shell.ts";
 import { api, downSince, onFeature, readAtOpen, useStore } from "../lib/store.ts";
+import { useUI } from "../lib/ui.ts";
 import { clock } from "../lib/utils.ts";
 
 // A drop this short is a blip (the socket opened again at once): nothing is said.
@@ -16,6 +17,7 @@ export function AdminBand() {
   const [updated, setUpdated] = useState(false);
   const build = useRef<string | null>(null);
   const connected = useStore((s) => s.connected);
+  const shellAway = useUI((s) => s.shellAway);
   useEffect(() => {
     const check = () => api<{ build_id: string; draining: any }>("/api/bootstrap").then((b) => {
       if (build.current && build.current !== b.build_id) setUpdated(true);
@@ -42,8 +44,10 @@ export function AdminBand() {
     const t = setTimeout(() => setAway(since), Math.max(0, since + AWAY_AFTER_MS - Date.now()));
     return () => clearTimeout(t);
   }, [connected]);
-  // In the desktop shell the title bar says the daemon is away, with the button that starts it: one place, not two.
-  if (away !== null && !updated && !shell?.can.titlebar) {
+  // In the desktop app the title bar says the daemon is away, with the button that starts it: one
+  // place, not two. Only while it does say so: a loss the app does not see (the page's own
+  // connection cut while the daemon answers) is said here as in a tab.
+  if (away !== null && !updated && !(shell?.can.titlebar && shellAway)) {
     return (
       <div role="status" data-testid="daemon-away" className="flex h-9 shrink-0 items-center justify-center gap-3 border-b border-warn/40 bg-brass-soft px-4 text-ui animate-in">
         <Unplug className="size-3.5 shrink-0 text-warn" />

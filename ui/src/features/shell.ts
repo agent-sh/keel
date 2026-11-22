@@ -8,9 +8,9 @@ import { AppWindow } from "lucide-react";
 import { createElement } from "react";
 import { focusApproval } from "../lib/automation.ts";
 import { registerCommand } from "../lib/keys.ts";
-import { hexOf, pathParts, shell, soloWindow } from "../lib/shell.ts";
+import { broughtHere, hexOf, pathParts, shell, soloWindow, type ShellTold } from "../lib/shell.ts";
 import { reconnectNow } from "../lib/store.ts";
-import { getUI, setUI } from "../lib/ui.ts";
+import { getUI, setScale, setUI, stepScale } from "../lib/ui.ts";
 
 const host = shell;
 if (host) {
@@ -31,19 +31,35 @@ if (host) {
   new MutationObserver(later).observe(root, { attributes: true, attributeFilter: ["class", "style"] });
   later();
 
+  // The app opened this page: on a launch, a link or its tray. Nobody chose where the keyboard is.
+  broughtHere();
+  // A card that already has the keyboard on an answer gives it to its list of requests.
+  const offAnswers = () => {
+    const at = document.activeElement as HTMLElement | null;
+    const card = at?.closest<HTMLElement>("[data-approval-id]");
+    if (card && (at?.dataset.testid === "allow-once" || at?.dataset.testid === "allow-always")) focusApproval(card.dataset.approvalId!, "card");
+  };
+
   addEventListener("keel-shell", (e) => {
-    const detail = (e as CustomEvent<{ open?: string; daemon?: string }>).detail;
-    // The shell saw the daemon come back: the page joins it now, not when its own wait ends.
-    if (detail?.daemon === "up") reconnectNow();
+    const detail = (e as CustomEvent<ShellTold>).detail;
+    // The app saw the daemon come back: the page joins it now, not when its own wait ends.
+    if (detail?.daemon === "up") { setUI({ shellAway: false }); reconnectNow(); }
+    if (detail?.daemon === "away") setUI({ shellAway: true });
+    // The text size keys every desktop app has: one scale, the page's own setting.
+    if (detail?.scale === "reset") setScale(1);
+    else if (detail?.scale) stepScale(detail.scale === "up" ? 1 : -1);
     const open = detail?.open;
     if (typeof open !== "string") return;
     const { pathname, event, approval, inbox } = pathParts(open);
+    // Only the click on a request's own notification may land on its answer.
+    const chosen = detail?.from === "click";
+    if (!chosen) { broughtHere(); offAnswers(); }
     if (event) setUI({ focusEvent: event });
     if (pathname !== location.pathname) {
       history.pushState(null, "", pathname);
       dispatchEvent(new PopStateEvent("popstate"));
     }
-    if (approval && getUI().route.name === "session") focusApproval(approval);
+    if (approval && getUI().route.name === "session") focusApproval(approval, chosen ? "allow" : "card");
     if (inbox) dispatchEvent(new Event("keel-open-inbox"));
   });
 
