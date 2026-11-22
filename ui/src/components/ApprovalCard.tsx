@@ -42,11 +42,28 @@ const EMPTY: Approval[] = [];
 type Unseen = { n: number; out: number; begun: boolean };
 type View = { read: Set<string>; live: Set<string>; grant: Set<string>; ripe: Set<string>; cut: Set<string>; unseen: Map<string, Unseen>; acts: Map<string, Action>; key: string };
 const NO_VIEW: View = { read: new Set(), live: new Set(), grant: new Set(), ripe: new Set(), cut: new Set(), unseen: new Map(), acts: new Map(), key: "" };
+// What in a request's text a reader could miss, read once for each request:
+// - `hidden`: characters that do not show as written (they are spelled out and marked);
+// - `alike`: letters that are not plain ASCII and can pass for plain ones (they are named);
+// - `rtl`: letters written right to left (each run stands by itself, in the order written).
+// A text with any of them is `flagged`: it is answered on its own, and its Allow never takes
+// the keyboard by the page's own doing.
+type Shown = { text: string; hidden: number; alike: ReturnType<typeof lookAlikes>; rtl: boolean; flagged: boolean };
+const shownCache = new WeakMap<Approval, Shown>();
+function shownOf(a: Approval): Shown {
+  let s = shownCache.get(a);
+  if (!s) {
+    const text = a.summary;
+    const hidden = spellHidden(text).filter((p) => p.hidden).length, alike = lookAlikes(text), rtl = hasRtl(text);
+    shownCache.set(a, (s = { text, hidden, alike, rtl, flagged: hidden > 0 || alike.length > 0 || rtl }));
+  }
+  return s;
+}
 // A card whose text is to be opened before it is answered: the daemon shows only its start, it
 // holds a character that had to be spelled out, or it is longer than its box and not yet read
 // there. `whole`: the owner opened it.
 const mustBeOpened = (a: Approval, whole: boolean, cut: boolean, unseen: Unseen | undefined) =>
-  !whole && (shownInPart(a) || hasHidden(a.summary, "\n\t") || (cut && (!unseen || unseen.n > 0)));
+  !whole && (shownInPart(a) || shownOf(a).hidden > 0 || (cut && (!unseen || unseen.n > 0)));
 type Reading = { born: number; sum?: Stand; once?: Hold; always?: Hold; cut: boolean };
 type Clip = { top: number; bottom: number; left: number; right: number };
 
@@ -183,8 +200,9 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
     }
     const acts = new Map<string, Action>();
     const open = new Set(s.cards.filter((a) => a.state === "pending").map((a) => a.id));
-    // A text with marked characters is read and answered on its own, as one cut by its box is.
-    const alone = new Set([...cut, ...s.cards.filter((c) => hasHidden(c.summary, "\n\t")).map((c) => c.id)]);
+    // A text that is flagged (marked characters, look-alike letters, letters written right to left)
+    // is read and answered on its own, as one cut by its box is.
+    const alone = new Set([...cut, ...s.cards.filter((c) => shownOf(c).flagged).map((c) => c.id)]);
     for (const g of batches(s.cards, read, alone)) acts.set(g.tool, nextAction(s.acts.get(g.tool), g.ids, s.hot.has(g.tool), now, open));
     s.acts = acts;
     const key = JSON.stringify([[...read], [...live], [...grant], [...ripe], [...cut], [...unseen].map(([id, u]) => [id, u.n, u.out, u.begun]), [...acts].map(([tool, a]) => [tool, a.covered, a.live])]);
@@ -271,7 +289,7 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
   const { view, tick, waiting, setHot, spend } = useReadings(list, cards);
   // How the list holds the keyboard (lib/asks.ts): said on it for the page and its tests.
   const hold = useHold(list);
-  const groups = batches(waiting, view.read, new Set([...view.cut, ...waiting.filter((c) => hasHidden(c.summary, "\n\t")).map((c) => c.id)]));
+  const groups = batches(waiting, view.read, new Set([...view.cut, ...waiting.filter((c) => shownOf(c).flagged).map((c) => c.id)]));
   const [hot, setHotTools] = useState<string[]>([]); // the tools whose action the pointer or the keyboard is on
   const [at, setAt] = useState<{ on: "once" | "all" | "row" | "card" | "list"; id?: string } | null>(null); // where the keyboard is in the list (`card`: on a card itself)
   // The cards the owner opened to their whole text, by the list's Enter or a card's own control.
@@ -350,10 +368,13 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
     // Not from a field, and not from a popup a card opened (its events come here through React, not the page).
     if (!e.currentTarget.contains(t) || t.tagName === "INPUT" || e.altKey || e.ctrlKey || e.metaKey || composing(e)) return;
     // Enter on the list itself opens the first request that must be opened: the step its card asks
-    // for first. It answers nothing.
+    // for first. It answers nothing. Like a key on an answer, it acts only once the keyboard has
+    // been on the list for the settle time (lib/asks.ts): an Enter on its way somewhere else, or
+    // pressed as the card arrives, opens nothing.
     if (e.key === "Enter" && t === e.currentTarget) {
-      // (The owner's own move on the list, lib/asks.ts: the card's Allow may take the keyboard once the text is read.)
-      if (!e.repeat && !e.shiftKey && shut[0]) { e.preventDefault(); setWhole(shut[0].id, true); takeKeys(e.currentTarget, true); }
+      // (The owner's own move on the list: the settle time runs anew, and the card's Allow may take
+      // the keyboard after it once the text is read, where the card lets it.)
+      if (!e.repeat && !e.shiftKey && shut[0] && !keyRefused(e.currentTarget)) { e.preventDefault(); setWhole(shut[0].id, true); takeKeys(e.currentTarget, true); }
       return;
     }
     // Words typed while a card has the keyboard are for the message box: they go there, and so does the Enter after them.
@@ -417,7 +438,7 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
                   // (True at every moment: while its Allow waits, Enter does nothing yet, and the line says so.)
                   : at?.on === "once" && !shut.some((c) => c.id === at.id) ? "Up and Down choose; Enter allows the framed one in a moment"
                   : at?.on === "once" || at?.on === "row" || at?.on === "card" ? "Up and Down choose a request"
-                  : at?.on === "list" && shut.length ? "Enter opens the first request that must be opened"
+                  : at?.on === "list" && shut.length && hold.keys === "ready" ? "Enter opens the first request that must be opened"
                   : ""}
               </span>
               <span className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
@@ -461,7 +482,7 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
               unseen={view.unseen.get(a.id)}
               whole={!!opened[a.id]}
               onWhole={(on) => setWhole(a.id, on)}
-              enterOpens={at?.on === "list" && shut[0]?.id === a.id}
+              enterOpens={at?.on === "list" && shut[0]?.id === a.id && hold.keys === "ready"}
               keysOn={at?.on === "list" ? "list" : at?.id !== a.id ? "" : at.on === "once" ? "once" : at.on === "card" ? "card" : ""}
             />
           ))}
@@ -634,7 +655,7 @@ function AllowAll({ g, ids, on, cards, busy, list, onHot, press, onAllow }: {
 // it has been on the page that long. `cut`: its text is longer than its box.
 // `unseen`: the lines of its text that have not been in view (none known yet: not read).
 // `whole`: the owner opened its whole text, by the list's Enter or by the card's own control
-// (`onWhole`). `enterOpens`: the list has the keyboard and its Enter would open this card.
+// (`onWhole`). `enterOpens`: the list has the keyboard and its Enter would open this card now.
 // `keysOn`: where the keyboard is, as far as this card goes: on its Allow once, on the card
 // itself, or on the list.
 function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, grant, armed, cut, unseen, whole, onWhole, enterOpens, keysOn }: {
@@ -661,7 +682,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   // no answer and never has the keyboard on one: Allow once and Always allow
   // refuse, and say what is left. Bringing the text into view is the owner's own act.
   const part = shownInPart(a); // the daemon kept more of the input than the card shows
-  const marked = hasHidden(a.summary, "\n\t");
+  const shown = shownOf(a);
+  const marked = shown.hidden > 0;
   // The lines the owner has yet to bring into view: said where the text is in view or has been, or
   // once a press was refused for them (a card whose text is all out of view says nothing by
   // itself, and so does not change as it comes into view).
@@ -673,7 +695,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   shutNow.current = shut;
   const mustOpen = !unseen || unseen.n > 0 || shut;
   // All of a short text with marked characters is on the card: what its first control does is show the marks.
-  const marks = marked ? spellHidden(a.summary).filter((p) => p.hidden).length : 0;
+  const marks = shown.hidden;
   const onlyMarks = marked && !part && !cut;
   const thing = a.kind === "shell" ? "command" : "text";
   const openLabel = onlyMarks ? `Show the ${marks} marked character${marks === 1 ? "" : "s"}` : a.kind === "shell" ? "Show the whole command" : "Show all of it";
@@ -688,13 +710,16 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   // The card's own rule is the stricter one and comes first in both.
   // - May an answer of the card have the keyboard by the page's own doing: only when its text
   //   is read (every line of it has been in view, and what had to be opened was), the card is
-  //   in the window, and the request is not high risk: that answer is the owner's to go to
-  //   (Down from the card or its list, or Tab), after a load, a return or a step of a sequence.
+  //   in the window, and nothing about the request asks for a second look (`heldWhy`): high
+  //   risk, an input the daemon shows in part, a text that is flagged. Such an answer is the
+  //   owner's to go to (Down from the card or its list, or Tab), after a load, a return, a step
+  //   of a sequence or the Enter that opened the text: Enter alone never both opens and allows it.
   // - Why a press on an answer does nothing, or "" when it answers: the card's rule (a text
   //   not all read takes no answer), then the control's (it stands, and has stood for the
   //   settle time: `stood`), then the keyboard's for a press made by a key (lib/asks.ts: not
   //   within the settle time of the keyboard arriving by code, not under a dialog).
-  const mayHold = () => !unread.current && inView() && a.risk !== "high";
+  const heldWhy = a.risk === "high" ? "High risk" : part ? "Shown in part" : marked ? "Marked characters" : shown.alike.length ? "Not plain ASCII" : shown.rtl ? "Right-to-left letters" : "";
+  const mayHold = () => !unread.current && inView() && !heldWhy;
   const refusalOf = (stood: boolean, key: Element | null): string => {
     // Not read: the text is to be opened first, or so many of its lines have not been in view.
     // (Said on the card from then on, where its text is all out of view and it said nothing by itself.)
@@ -835,10 +860,11 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   // would answer; `arming` while the page is about to make that so, or how to get there.
   const ready = keysOn === "once" && live && !mustOpen && hold.keys === "ready";
   const coming = keysOn === "card" || (keysOn === "list" && first);
+  const heldLine = heldWhy ? `${heldWhy}: Down, then Enter allows once` : "";
   const arming = ready || shut || left > 0 ? ""
     : keysOn === "once" ? "Enter allows once in a moment"
     : !coming ? ""
-    : a.risk === "high" ? (mustOpen ? "" : "High risk: Down, then Enter allows once")
+    : heldWhy ? (mustOpen ? "" : heldLine)
     : hold.take ? "Enter allows once in a moment"
     : "";
 
@@ -894,7 +920,10 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   const short = !whole && (cut || part);
   // What an edit would write, under its paths: read like any other text of a request (its lines are counted).
   const body = a.kind === "edit" && !(whole && part) ? editBody(a.input) : null;
-  const alike = lookAlikes(whole && part ? kept : a.summary);
+  // (Opened to all the daemon kept of a long input: that text is what is shown, and what is named.)
+  const alike = whole && part ? lookAlikes(kept) : shown.alike;
+  const rtl = whole && part ? hasRtl(kept) : shown.rtl;
+  const hiddenNow = whole && part ? hasHidden(kept, "\n\t") : marked;
   const summary = (
     <>
       <pre
@@ -922,7 +951,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
         )}
       </pre>
       {/* A character that hides or reorders text is spelled out above, and the card says that it did so. */}
-      {hasHidden(a.summary, "\n\t") && (
+      {hiddenNow && (
         <p className={cn("mt-1 text-micro text-danger", !dense && "mx-4")} data-testid="approval-hidden">
           This text holds characters that do not show as written. Each is spelled out and marked.
         </p>
@@ -940,7 +969,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
           {alike.length > 6 ? `, and ${alike.length - 6} more` : ""}.
         </p>
       )}
-      {hasRtl(whole && part ? kept : a.summary) && (
+      {rtl && (
         <p className={cn("mt-1 text-micro text-warn", !dense && "mx-4")} data-testid="approval-rtl">
           It holds letters written right to left: each word reads as written, and the words stand in the order the {a.kind === "shell" ? "command" : "text"} is written.
         </p>
@@ -1123,11 +1152,12 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
             // What Enter does, true at every moment. "Enter allows once" stands only while its Allow has
             // the keyboard and a press would answer. Before that, while the keyboard is on its way to the
             // Allow or the Allow still waits out its settle time, the line says so, dimmer; for a
-            // high-risk request it says how to reach the answer. The longest line holds the room, so
-            // nothing moves as one gives way to another.
+            // request that asks for a second look it says how to reach the answer. The longest line the
+            // card can say holds the room, so nothing moves as one gives way to another.
             : !dense && (
               <span className="ml-auto grid justify-items-end text-micro text-faint max-sm:hidden pointer-coarse:hidden">
                 <span className="invisible col-start-1 row-start-1" aria-hidden="true">Enter allows once, Esc to deny with a reason</span>
+                {heldLine && <span className="invisible col-start-1 row-start-1" aria-hidden="true">{heldLine}</span>}
                 {ready ? <span className="col-start-1 row-start-1" data-testid="approval-hint">Enter allows once, Esc to deny with a reason</span>
                   : arming ? <span className="col-start-1 row-start-1 opacity-70" data-testid="approval-arming">{arming}</span>
                   : null}

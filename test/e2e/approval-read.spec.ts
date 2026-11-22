@@ -477,3 +477,100 @@ test("Allow one retry is held like an answer", async ({ page, request }) => {
     await drop(request, [s.id]);
   }
 });
+
+// A card the page itself flags asks for a deliberate step: its text must be opened (longer than
+// its box, a character that hides or reorders text, an input the daemon shows in part). An Enter
+// inside the settle time of the keyboard's arrival opens nothing, so the Enter after it is no
+// allow; and where the text is marked or shown in part, Enter alone never both opens and allows:
+// the answer is the owner's to go to (Down), and the card says so.
+const FIXTURE = `${import.meta.dirname}/fixtures/echo-mcp.ts`;
+test("an early Enter opens nothing, and Enter alone never both opens and allows a flagged card", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  test.setTimeout(420_000);
+  const server = `readecho${Date.now().toString(36)}`;
+  expect((await request.post("/api/mcp/servers", { data: { name: server, command: "bun", args: [FIXTURE] } })).ok()).toBe(true);
+  await expect.poll(async () => ((await (await request.get("/api/mcp/servers")).json()).servers as { name: string; state: string }[]).find((x) => x.name === server)?.state, { timeout: 20_000 }).toBe("ready");
+  const shapes: [string, { name: string; input: unknown }][] = [
+    ["thirteen lines", bash(`${Array.from({ length: 12 }, (_, i) => `echo step ${i + 1}`).join("\n")}\ntouch thirteen.txt`)],
+    ["a reordering character", bash("touch a\u202Etxt.b")],
+    ["an input shown in part", { name: "mcp_call", input: { tool: `${server}__echo`, arguments: { text: `${"words ".repeat(120)}END-OF-TEXT` } } }],
+  ];
+  const made: string[] = [];
+  const list = page.getByTestId("approvals").first(), card = page.getByTestId("approval").first();
+  // The page keeps time itself: when the keyboard came to the list, when it had been there for
+  // the settle time, and when each Enter went down.
+  type Clock = { came: number; ready: number; enters: number[] };
+  await page.addInitScript(() => {
+    const w = window as unknown as { __r: { came: number; ready: number; enters: number[] } };
+    w.__r = { came: 0, ready: 0, enters: [] };
+    addEventListener("keydown", (e: KeyboardEvent) => { if (e.key === "Enter") w.__r.enters.push(performance.now()); }, true);
+    new MutationObserver(() => {
+      const keys = document.querySelector('[data-testid="approvals"]')?.getAttribute("data-keys");
+      if (keys && !w.__r.came) w.__r.came = performance.now();
+      if (keys === "ready" && !w.__r.ready) w.__r.ready = performance.now();
+    }).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ["data-keys"] });
+  });
+  // One Enter `ms` after the keyboard came to the list (the press is sent a little before, for the
+  // time it takes to land), and one 1.5 s later. (A machine too slow to press inside the settle
+  // time proves nothing with that press: the page's own clock says so.)
+  const schedule = async (id: string, what: string, ms: number) => {
+    await expect(card).toBeVisible();
+    await page.waitForFunction((at) => { const r = (window as unknown as { __r: Clock }).__r; return r.came > 0 && performance.now() - r.came >= at; }, ms - 70);
+    await page.keyboard.press("Enter");
+    const { ready, enters } = await page.evaluate(() => (window as unknown as { __r: Clock }).__r);
+    if (ready && enters[0]! >= ready) { console.log(`slow at ${ms} ms (${what}): the first Enter came ${Math.round(enters[0]! - ready)} ms after the settle time`); return; }
+    // Inside the settle time it opened nothing.
+    await expect(card.getByTestId("approval-expand")).not.toHaveText("Fold");
+    await page.waitForTimeout(1500);
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(400);
+    expect(await states(request, id), `${what}, Enter at ${ms} ms and 1.5 s later`).toBe("pending");
+  };
+  try {
+    for (const [name, call] of shapes) {
+      // The page loads on a session whose request waits.
+      const loaded = await asking(request, `Read: ${name}, on a load`, [call]);
+      made.push(loaded.id);
+      await waits(request, loaded.id);
+      for (const ms of [100, 500, 900]) {
+        await page.goto(`/s/${loaded.id}`);
+        await expect(card).toHaveAttribute("data-must-open", "true");
+        await schedule(loaded.id, `${name}, page load`, ms);
+      }
+      // The request arrives in a page that is open.
+      for (const ms of [100, 500, 900]) {
+        const s = (await (await request.post("/api/sessions", { data: { model: MODEL, title: `Read: ${name}, arriving at ${ms}` } })).json()).session as { id: string };
+        made.push(s.id);
+        await request.put(`/api/sessions/${s.id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+        await page.goto(`/s/${s.id}`);
+        await expect(page.getByTestId("composer").first()).toBeVisible();
+        await request.post(`/api/sessions/${s.id}/messages`, { data: { text: `script:calls ${JSON.stringify([call])}` } });
+        await schedule(s.id, `${name}, arriving`, ms);
+      }
+      // Enter every 150 ms from the load. A text that is marked or shown in part stays pending however
+      // long that goes on (3.3 s here). A plain long command is opened by the first Enter after the
+      // settle time, and its Allow takes the keyboard only once its text has stood open for the
+      // settle time too: by the page's own clock nothing is allowed 1.6 s after the keyboard came.
+      const plain = name === "thirteen lines";
+      await page.goto(`/s/${loaded.id}`);
+      await expect(card).toBeVisible();
+      const since = () => page.evaluate(() => { const r = (window as unknown as { __r: Clock }).__r; return r.came ? performance.now() - r.came : 0; });
+      while ((await since()) < (plain ? 1600 : 3300)) { await page.keyboard.press("Enter"); await page.waitForTimeout(150); }
+      expect(await states(request, loaded.id), `${name}, Enter every 150 ms`).toBe("pending");
+      if (plain) continue;
+      // What it takes: the text opened, then Down to the answer, then Enter. The card says so.
+      await expect(card).not.toHaveAttribute("data-must-open", "true", { timeout: 10_000 });
+      await list.focus();
+      await expect(card.getByTestId("approval-arming")).toHaveText(/: Down, then Enter allows once$/);
+      await expect(list).toHaveAttribute("data-keys", "ready");
+      await page.keyboard.press("ArrowDown");
+      await expect(card.getByTestId("allow-once")).toBeFocused();
+      await expect(card).toHaveAttribute("data-live", "true", { timeout: 10_000 });
+      await page.keyboard.press("Enter");
+      await expect.poll(() => states(request, loaded.id)).toBe("allowed/once");
+    }
+  } finally {
+    await drop(request, made);
+    await request.delete(`/api/mcp/servers/${server}`);
+  }
+});
