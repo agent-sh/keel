@@ -1,9 +1,9 @@
 // The state vocabulary: one word per state, for a session and for an agent
 // alike, on every surface. This file is the only place a state word is
-// written; a component that needs one reads it from here (the lint in
-// src/ui-conventions.test.ts holds the page to that), and the daemon's own
+// written. The page reads it from here (the lint in src/ui-conventions.test.ts
+// holds it to that), as it reads src/core/command.ts, and the daemon's own
 // texts (src/core/watch.ts, src/automation/state.ts) are built from the same
-// tables. The state itself is the daemon's: it serves what a session needs,
+// tables. It imports nothing but types, so both sides may. The state itself is the daemon's: it serves what a session needs,
 // does or waits for, with the reason (`why`), and this file says it.
 //
 //   State      Word          With what
@@ -27,7 +27,7 @@
 //
 // Sentence case everywhere. Retired: Running, Asks you, Finished, quota,
 // Steer as a state, "Waiting" for a command left in the background (it works).
-import type { SessionState, Watch } from "../../../src/core/watch.ts";
+import type { SessionState, Watch } from "./watch.ts";
 
 export const STATE_WORD: Record<Watch, string> = {
   need: "Needs you", work: "Working", wait: "Waiting", fail: "Failed", declined: "Declined", resume: "Waiting", stop: "Stopped", done: "Done", idle: "Not started",

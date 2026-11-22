@@ -23,10 +23,10 @@
 // A scheduled loop is not a wait: the session is at rest between runs (a
 // loop can run for months), and the loop is said beside the state.
 // An agent's own session keeps its own state.
-// The words are the vocabulary's (ui/src/lib/state-words.ts): one word per
+// The words are the vocabulary's (src/core/state-words.ts): one word per
 // state, for a session and an agent alike, on the page and in a tool's answer.
 import type { Session, StoredEvent, TurnStatus } from "./types.ts";
-import { COMMAND_IN_BACKGROUND, STATE_WORD, WAITS_FOR, failWord, stateLabel, waitsFor } from "../../ui/src/lib/state-words.ts";
+import { COMMAND_IN_BACKGROUND, STATE_WORD, WAITS_FOR, failWord, stateLabel, waitsFor } from "./state-words.ts";
 
 // `stop`: the owner (or a parent) stopped the last turn, or it stopped at its
 // step budget; `resume`: a daemon restart cut it and Keel is about to continue

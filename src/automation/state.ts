@@ -13,7 +13,7 @@ import type { Session, StoredEvent, TurnStatus } from "../core/types.ts";
 import { statSync } from "node:fs";
 import { STUCK_AFTER, stuckOf, type After, type Progress } from "../core/stuck.ts";
 import { oneLine, stateOf, watchWord, type Ask, type Pending, type SessionState as State, type Watch, type WatchFacts } from "../core/watch.ts";
-import { stateLabel, stateWords } from "../../ui/src/lib/state-words.ts";
+import { stateLabel, stateWords } from "../core/state-words.ts";
 import { settings } from "../admin/settings.ts";
 import * as perm from "../server/routes/permissions.ts";
 import { plansWaiting } from "../server/routes/plan.ts";
@@ -243,7 +243,7 @@ export function stuckAfter(): After {
   return set?.model_s && set.tool_s ? { model: set.model_s * 1000, tool: set.tool_s * 1000 } : STUCK_AFTER;
 }
 
-// The state in a tool's words: the vocabulary's (ui/src/lib/state-words.ts), in lower case.
+// The state in a tool's words: the vocabulary's (src/core/state-words.ts), in lower case.
 // What a session waits for is named by its kind only: a wait's note or a command line may
 // hold what another session's model should not read.
 export function stateWord(st: State): string {

@@ -1,4 +1,4 @@
-import { failWord } from "../../ui/src/lib/state-words.ts";
+import { failWord } from "../core/state-words.ts";
 import { errorClass } from "../admin/classes.ts";
 import { fingerprint } from "../core/store.ts";
 import { NUDGE_AT } from "../engine/repeat.ts";

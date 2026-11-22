@@ -1,8 +1,8 @@
 // The vocabulary: one word per state, the same for a session and an agent,
 // and counts that add up.
 import { expect, test } from "bun:test";
-import { stateOf, type SessionState, type Watch } from "../../../src/core/watch.ts";
-import { stateWord } from "../../../src/automation/state.ts";
+import { stateOf, type SessionState, type Watch } from "./watch.ts";
+import { stateWord } from "../automation/state.ts";
 import { ALERT_GROUPS, COUNTERS, STATE_WORD, agentState, agentWhy, alertGroup, heldWords, stateLabel, stateWords, tally } from "./state-words.ts";
 
 const st = (watch: Watch, more: Partial<SessionState> = {}): SessionState => ({ watch, agents: 0, ...more });

@@ -142,7 +142,7 @@ A session and an agent have one state, and each state has one word on every
 surface: the list's rows and the agents under them, a pane's head, an agent's
 card in the transcript, the list of background work, the Inbox, the home
 screen, the timeline, and what a tool or the command line is told. The words
-are written once, in `ui/src/lib/state-words.ts`; the state itself is the
+are written once, in `src/core/state-words.ts`; the state itself is the
 daemon's (`src/core/watch.ts`, `src/automation/state.ts`). A check in
 `src/ui-conventions.test.ts` fails when a component writes one of them itself.
 
