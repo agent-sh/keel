@@ -341,6 +341,9 @@ body {
 }
 ::selection { background: var(--accent-soft); }
 * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+/* A popup on its way out (a dialog, a sheet, its backdrop) takes no press and covers nothing: what it
+   leaves in view is in view at once (an approval's Allow counts its stillness from then). */
+[data-ending-style] { pointer-events: none; }
 :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: var(--radius-sm); }
 input:focus-visible, textarea:focus-visible { outline: none; }
 /* A choice of a few on one track: the look of the one control for a segmented

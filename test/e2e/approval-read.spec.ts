@@ -856,8 +856,9 @@ test("every way to a waiting session lands the keyboard on its list, then on All
 
 // A card reached by the Inbox's Review, as a look over a pane beside another: it stands where it
 // lands from its first frame (it fades in, it does not slide; its column does not shift as the
-// conversation under it is drawn), so its Allow once, judged by how long it stood still, takes a
-// press 1.1 s after the card shows. Three times out of three.
+// conversation under it is drawn), and the Inbox on its way out lies over none of it, so its Allow
+// once, judged by how long it stood still and whole, takes a press 1.1 s after the card shows.
+// Three times out of three.
 test("a card reached by the Inbox's Review stands still from its first frame, and a press 1.1 s after it is taken", async ({ page, request }) => {
   test.skip(!(await scripted(request)), "requires the scripted provider");
   test.setTimeout(180_000);
@@ -880,11 +881,12 @@ test("a card reached by the Inbox's Review stands still from its first frame, an
       await expect(item).toBeVisible();
       // Every frame from the press on: where its Allow once stands.
       await page.evaluate(() => {
-        const w = window as unknown as { __at: { t: number; x: number; y: number }[] };
+        const w = window as unknown as { __at: { t: number; x: number; y: number; hit: boolean }[] };
         w.__at = [];
         const look = () => {
           const b = [...document.querySelectorAll<HTMLElement>('[data-testid="allow-once"]')].find((el) => !el.closest("[inert]"));
-          if (b) { const r = b.getBoundingClientRect(); w.__at.push({ t: performance.now(), x: r.x, y: r.y }); }
+          // Where it stands, and whether a press at its middle would reach it (nothing on its way out lies over it).
+          if (b) { const r = b.getBoundingClientRect(); w.__at.push({ t: performance.now(), x: r.x, y: r.y, hit: b.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)) }); }
           if (w.__at.length < 120) requestAnimationFrame(look);
         };
         requestAnimationFrame(look);
@@ -895,6 +897,8 @@ test("a card reached by the Inbox's Review stands still from its first frame, an
       await page.waitForTimeout(1100);
       const moves = await page.evaluate(() => { const a = (window as unknown as { __at: { x: number; y: number }[] }).__at; return a.filter((p, i) => i > 0 && (Math.abs(p.x - a[i - 1]!.x) >= 0.5 || Math.abs(p.y - a[i - 1]!.y) >= 0.5)).length; });
       expect(moves, `rep ${rep}: frames where Allow once moved after it was drawn`).toBe(0);
+      const covered = await page.evaluate(() => (window as unknown as { __at: { hit: boolean }[] }).__at.filter((p) => !p.hit).length);
+      expect(covered, `rep ${rep}: frames where something lay over Allow once after it was drawn`).toBe(0);
       await card.getByTestId("allow-once").click();
       await expect.poll(() => states(request, s.id), { message: `rep ${rep}: the press 1.1 s after the card showed`, timeout: 5000 }).toBe("allowed/once");
       takes.push("taken");
