@@ -7,7 +7,7 @@ import { fromBlock, MAX_EDGE, toAttachment, toBlock, type Attachment } from "../
 import { boxRefused, ownFocus } from "../lib/asks.ts";
 import { composing, fuzzy, isMac, keyLabel, QUEUE_KEYS, SEND_KEYS } from "../lib/keys.ts";
 import { splitId } from "../lib/fleet-ids.ts";
-import { draftGone, draftHere, dropImage, fromServer, getDraft, isKeeping, keepImage, keeps, draftListed, textTaken, typing, type Draft } from "../lib/drafts.ts";
+import { draftGone, draftHere, dropImage, fromServer, getDraft, isKeeping, keepImage, keeps, draftListed, keepText, keptText, textTaken, typing, type Draft } from "../lib/drafts.ts";
 import { daemonAway, hasSavedImage, messageRefused, namedSends, savedImages, sendDrafts, setSendDraft, setSendImage, shelfKey, shown, unread, useSendDrafts, type SendDraft } from "../lib/send-drafts.ts";
 import { sendWaitingSoon } from "../lib/resend.ts";
 import { getState, onFeature, reportError, reportUnlessGone, useStore, failed, whileHeard } from "../lib/store.ts";
@@ -274,11 +274,24 @@ const SessionComposer = memo(function SessionComposer({
     if (d) setSaid([`${heading(d)}: ${d.text.trim() || "attachments only"}`, d.state !== "parked" && d.error].filter(Boolean).join(". "));
   }, [saved]);
 
+  const heldText = useRef(false);
   useEffect(() => {
     if (text && session?.id) typing(session.id);
     if (text) localStorage.setItem(draftKey(session?.id), text);
     else localStorage.removeItem(draftKey(session?.id));
+    // (An empty box takes the kept text out only when it held some in this page's life: a box
+    // that starts empty has yet to ask for what was kept.)
+    if (text || heldText.current) keepText(draftKey(session?.id), text);
+    heldText.current = !!text;
   }, [text, session?.id]);
+  // What was typed in the last seconds before the browser's own process ended is not in
+  // localStorage yet: the box takes it from where it was kept durably (lib/drafts.ts).
+  useEffect(() => {
+    if (localStorage.getItem(key)) return;
+    let live = true;
+    keptText(key).then((was) => { if (live && was && !draft.current.text && !localStorage.getItem(key)) setText(was); });
+    return () => { live = false; };
+  }, [key]);
   const unsent = !!text.trim() || images.length > 0;
   const hasUnsent = unsent || saved.some((d) => d.state === "refused" || d.state === "parked" || d.state === "waiting");
   useEffect(() => (sid ? draftHere(sid, hasUnsent) : undefined), [hasUnsent, sid]);

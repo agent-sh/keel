@@ -91,3 +91,41 @@ export function draftGone(sid: string) {
   if (said.get(sid)) post(sid, false);
   said.delete(sid);
 }
+
+// The box's own text, where the end of the browser's process cannot take its last seconds. The
+// box writes its text to localStorage at every key, but an engine puts that on disk some
+// seconds later: a browser (or the desktop app's drawing program) that is killed in between
+// comes back without what was typed last. The same text is kept here, a moment after the last
+// key, in a write the engine must have on disk before it says done; the box reads it when
+// localStorage holds nothing for it. A box that is emptied (a send) is taken out at once.
+const KEPT_AFTER_MS = 300;
+let kept: Promise<IDBDatabase> | null = null;
+const store = () => (kept ??= new Promise<IDBDatabase>((res, rej) => {
+  const r = indexedDB.open("keel-drafts", 1);
+  r.onupgradeneeded = () => r.result.createObjectStore("text");
+  r.onsuccess = () => res(r.result);
+  r.onerror = () => rej(r.error);
+}));
+const pending = new Map<string, ReturnType<typeof setTimeout>>();
+export function keepText(key: string, text: string) {
+  if (typeof indexedDB === "undefined") return;
+  clearTimeout(pending.get(key));
+  const write = () => {
+    pending.delete(key);
+    store().then((db) => {
+      const texts = db.transaction("text", "readwrite", { durability: "strict" }).objectStore("text");
+      if (text) texts.put(text, key);
+      else texts.delete(key);
+    }).catch(() => {}); // a profile with no room or no database keeps what localStorage keeps
+  };
+  if (text) pending.set(key, setTimeout(write, KEPT_AFTER_MS));
+  else write();
+}
+export function keptText(key: string): Promise<string> {
+  if (typeof indexedDB === "undefined") return Promise.resolve("");
+  return store().then((db) => new Promise<string>((res) => {
+    const r = db.transaction("text").objectStore("text").get(key);
+    r.onsuccess = () => res(typeof r.result === "string" ? r.result : "");
+    r.onerror = () => res("");
+  })).catch(() => "");
+}
