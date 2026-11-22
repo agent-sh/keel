@@ -6,7 +6,7 @@ import { HardDrive, RotateCw, Unplug } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { shell } from "../lib/shell.ts";
 import { api, downSince, onFeature, readAtOpen, useStore } from "../lib/store.ts";
-import { useUI } from "../lib/ui.ts";
+import { setUI, useUI } from "../lib/ui.ts";
 import { clock } from "../lib/utils.ts";
 
 // A drop this short is a blip (the socket opened again at once): nothing is said.
@@ -20,6 +20,7 @@ export function AdminBand() {
   const build = useRef<string | null>(null);
   const connected = useStore((s) => s.connected);
   const shellAway = useUI((s) => s.shellAway);
+  const shellNote = useUI((s) => s.shellNote);
   useEffect(() => {
     const check = () => api<{ build_id: string; draining: any; store?: { full?: { since_ms: number; free_mb?: number }; silent_since_ms?: number; refusing?: boolean; slow?: { since_ms: number; sync_ms: number; held_ms: number; refusing?: boolean; building?: string } } | null }>("/api/bootstrap").then((b) => {
       if (build.current && build.current !== b.build_id) setUpdated(true);
@@ -125,6 +126,16 @@ export function AdminBand() {
             ? `You can still read sessions, stop a turn, answer a card and restart Keel${draining?.restart ? " (it is restarting)" : ""}. New prompts and settings are turned away.`
             : "Work goes on for now; what it writes may not be on the disk. See Errors."}
         </span>
+      </div>
+    );
+  }
+  // A line of the desktop app's about this window, until the owner has read it.
+  if (shellNote && !updated) {
+    return (
+      <div role="status" data-testid="shell-note" className="flex h-9 shrink-0 items-center justify-center gap-3 border-b border-line bg-raised px-4 text-ui animate-in">
+        <RotateCw className="size-3.5 shrink-0 text-brass" />
+        <span className="truncate">{shellNote}</span>
+        <button type="button" onClick={() => setUI({ shellNote: null })} className="h-7 shrink-0 rounded-md border border-line px-3 text-caption text-fg hover:bg-hover">OK</button>
       </div>
     );
   }
