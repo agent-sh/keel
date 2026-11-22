@@ -45,6 +45,10 @@ test("memory usage: tokens added, recalls used, nothing added twice, shown in Se
   expect(events.filter((e) => e.kind === "assistant").map((e) => e.data.blocks.map((b: any) => b.text ?? "").join(""))[0]).toBe("From memory: code-word.");
 
   // The measurement: one row per ask, nothing of the facts themselves.
+  // (Whether a recall was used is judged from the reply once its turn is over, a moment after the turn's
+  // end is stored: the report is read until the last turn's recall is counted.)
+  const measured = async () => { const r = await (await request.get(`/api/telemetry/memory?session_id=${session.id}`)).json(); return { r, tool: r.paths.find((p: any) => p.path === "store_tool") }; };
+  await expect.poll(async () => (await measured()).tool?.used ?? 0, { timeout: 15_000 }).toBe(1);
   const res = await request.get(`/api/telemetry/memory?session_id=${session.id}`);
   const report = await res.json();
   const by = Object.fromEntries(report.paths.map((p: any) => [p.path, p]));
