@@ -1,18 +1,17 @@
 import { expect, test } from "./isolate.ts";
-import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
+import { ask, HAIKU, shoot } from "./shots.ts";
 
 // Feature: edit-and-resend makes a branch and the arrows move between the
 // versions; fork from a message opens a new session; rename, archive, restore,
 // search across what sessions said, and delete.
 test("branches, fork, rename, archive, search, delete", async ({ page, request }) => {
-  test.skip(SCRIPTED, "needs a real model: its replies are searched for the words the prompts ask for");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   const tag = `zq${Date.now().toString(36)}`;
   const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU } })).json();
   await page.goto(`/s/${session.id}`);
   const composer = page.getByTestId("composer");
 
-  await composer.fill(`Reply with only the word apple. (${tag})`);
+  await composer.fill(ask(`Reply with only the word apple. (${tag})`, `script:say apple (${tag})`));
   await composer.press("Enter");
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 90_000 });
   await expect(page.getByTestId("assistant-text").last()).toContainText(/apple/i);
@@ -20,7 +19,7 @@ test("branches, fork, rename, archive, search, delete", async ({ page, request }
   // Edit and resend: a second version, shown as 2/2.
   await page.getByTestId("user-message").hover();
   await page.getByTestId("edit-message").click();
-  await page.getByTestId("edit-box").fill(`Reply with only the word banana. (${tag})`);
+  await page.getByTestId("edit-box").fill(ask(`Reply with only the word banana. (${tag})`, `script:say banana (${tag})`));
   await page.getByTestId("edit-send").click();
   await expect(page.getByTestId("branch-pos")).toHaveText("2/2", { timeout: 30_000 });
   await expect(page.getByTestId("assistant-text").last()).toContainText(/banana/i, { timeout: 90_000 });

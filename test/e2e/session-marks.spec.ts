@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { HAIKU, openPanel, shoot, SCRIPTED } from "./shots.ts";
+import { ask, HAIKU, openPanel, scriptBash, shoot } from "./shots.ts";
 
 // Feature: session marks. Pin (the station and the list), tags (the list and
 // its filter), done (the owner's next message reopens it), the step budget
@@ -7,7 +7,6 @@ import { HAIKU, openPanel, shoot, SCRIPTED } from "./shots.ts";
 // turns they may start, and an archive that asks before it stops a running
 // background command. Marks are daemon state: the API reads what the UI set.
 test("pin, tags, done, step budget, peer marks, archive with a job", async ({ page, request }) => {
-  test.skip(SCRIPTED, "needs a real model: it has to pick a tool for a plain prompt and start a background job");
   const word = `mk${Date.now().toString(36)}`;
   const prev = (await (await request.get("/api/permissions/settings")).json()).default_mode;
   await request.put("/api/permissions/settings", { data: { default_mode: "full-auto" } });
@@ -53,7 +52,7 @@ test("pin, tags, done, step budget, peer marks, archive with a job", async ({ pa
   await page.getByTestId("done-toggle").click();
   await expect(page.getByTestId("done-toggle")).toHaveAttribute("aria-checked", "true");
   await shoot(page, "marks-02-panel");
-  await page.getByTestId("composer").fill("List the files of this folder with a tool, then say what you found.");
+  await page.getByTestId("composer").fill(ask("List the files of this folder with a tool, then say what you found.", scriptBash("ls")));
   await page.getByTestId("composer").press("Enter");
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 90_000 });
   await expect(page.getByTestId("done-toggle")).toHaveAttribute("aria-checked", "false");
@@ -67,7 +66,10 @@ test("pin, tags, done, step budget, peer marks, archive with a job", async ({ pa
   await page.getByTestId("max-steps").fill("");
   await page.getByTestId("max-steps").press("Enter");
   await expect.poll(async () => (await api()).settings.max_steps).toBeUndefined();
-  await page.getByTestId("composer").fill("Start the command `sleep 600` as a background command (do not wait for it), then reply with the word started.");
+  await page.getByTestId("composer").fill(ask(
+    "Start the command `sleep 600` as a background command (do not wait for it), then reply with the word started.",
+    `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "sleep 600", run_in_background: true } }])}`,
+  ));
   await page.getByTestId("composer").press("Enter");
   await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 120_000 });
   await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}/jobs`)).json()).jobs.filter((j: any) => j.running).length, { timeout: 20_000 }).toBe(1);
