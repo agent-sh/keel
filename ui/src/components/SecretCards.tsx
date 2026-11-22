@@ -1,6 +1,7 @@
 import { KeyRound, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { dropRepeats, keyRefused, noteAnswer, typeToBox, useAskKeys, useHold } from "../lib/asks.ts";
+import { SETTLE_MS } from "../lib/approvals.ts";
+import { dropRepeats, keyRefused, noteAnswer, useAskKeys, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
 import { secrets, useSecrets, type SecretMeta, type SecretRequest } from "../lib/secrets.ts";
 import { reportError, failed } from "../lib/store.ts";
@@ -41,24 +42,39 @@ function Head({ title, sub }: { title: string; sub?: string }) {
   );
 }
 
-// The card is held to the one rule of lib/asks.ts. A card that takes the
-// keyboard by itself takes it on the card, never in its field: what the owner
-// was typing as it appeared goes on to the message box, not into the secret,
-// and the field is one Tab away. When the owner brought the keyboard here
-// themselves (a row of the home screen, the key that goes to what waits), the
-// field has it: there they mean it. Enter gives the value as a key on any
-// answer does, not within the settle time of the keyboard arriving. And only
-// in the session the owner has open: a request of a session that is merely on
-// the page (a pane beside it, a phone's page behind the home screen) never
-// pulls the keyboard, or the screen, to itself.
+// The card is held to the rule of lib/asks.ts, with one exception: what is
+// typed on it is never sent on to the message box. A secret typed at a card
+// that shows the keyboard on it would land in the plain box, and Enter would
+// send it to the model.
+// - A card that takes the keyboard by itself (its pane is worked in, the
+//   message box is empty) takes it on the card, never in its field: a word on
+//   its way to the message box is not given as the secret. Letters typed on
+//   the card are dropped, and the card says how to get to the field: Tab or
+//   Enter. A paste on the card goes into the field, masked, and gives nothing.
+// - When the owner brought the keyboard here themselves (a row of the home
+//   screen, the key that goes to what waits, a step of the sequence), the
+//   field has it: there they mean it.
+// - Enter gives the value as a key on any answer does: not within the settle
+//   time of the keyboard arriving on the card, or of code putting it in the
+//   field.
+// - A message box that holds a draft keeps the keyboard: the card takes none.
+// And only in the session the owner has open: a request of a session that is
+// merely on the page (a pane beside it, a phone's page behind the home screen)
+// never pulls the keyboard, or the screen, to itself.
+const TO_FIELD = "Tab or Enter to type the secret";
 function RequestCard({ r, first }: { r: SecretRequest; first: boolean }) {
   const root = useRef<HTMLDivElement>(null);
   const field = useRef<HTMLInputElement>(null);
   useAskKeys(root, first);
   const hold = useHold(root);
+  // When code last put the keyboard in the field.
+  const fieldAt = useRef(-Infinity);
+  const toField = () => { fieldAt.current = performance.now(); field.current?.focus({ preventScroll: true }); };
   useEffect(() => {
-    if (hold.own && hold.take && document.activeElement === root.current) field.current?.focus({ preventScroll: true });
+    if (hold.own && hold.take && document.activeElement === root.current) toField();
   }, [hold.own, hold.take, hold.at]);
+  const [onCard, setOnCard] = useState(false); // the keyboard is on the card itself, not in its field or on a button
+  const [dropped, setDropped] = useState(false); // a key typed on the card went nowhere
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -77,8 +93,30 @@ function RequestCard({ r, first }: { r: SecretRequest; first: boolean }) {
       data-ask-card=""
       data-ask=""
       data-keys={hold.keys || undefined}
+      onFocus={(e) => { setOnCard(e.target === e.currentTarget); if (e.target !== e.currentTarget) setDropped(false); }}
+      onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) { setOnCard(false); setDropped(false); } }}
       onKeyDownCapture={dropRepeats}
-      onKeyDown={(e) => { if (!composing(e)) typeToBox(e); }}
+      onKeyDown={(e) => {
+        // Only keys pressed on the card itself: the field and the buttons keep theirs.
+        if (e.target !== e.currentTarget || composing(e) || e.altKey || e.ctrlKey || e.metaKey) return;
+        if (e.key === "Enter") {
+          e.preventDefault();
+          // (Not an Enter pressed as the keyboard arrived: it was on its way somewhere else.)
+          if (keyRefused(e.currentTarget)) setDropped(true);
+          else toField();
+        } else if (e.key.length === 1) {
+          e.preventDefault();
+          setDropped(true);
+        }
+      }}
+      onPaste={(e) => {
+        if (e.target !== e.currentTarget) return;
+        e.preventDefault();
+        const text = e.clipboardData.getData("text");
+        if (!text) return;
+        setValue(text);
+        toField();
+      }}
     >
       <Head title={`The model asks for ${r.name}`} />
       {r.purpose && <p className="px-4 pt-1.5 text-caption text-muted">{r.purpose}</p>}
@@ -92,7 +130,8 @@ function RequestCard({ r, first }: { r: SecretRequest; first: boolean }) {
           onChange={(e) => setValue(e.target.value)}
           // Enter gives the value as a key on any answer does: not as the keyboard arrives by code, not under a dialog.
           onKeyDown={(e) => {
-            const no = e.key === "Enter" && !composing(e) ? keyRefused(e.currentTarget, e.repeat) : "";
+            if (e.key !== "Enter" || composing(e)) return;
+            const no = keyRefused(e.currentTarget, e.repeat) || (performance.now() - fieldAt.current < SETTLE_MS ? "Not yet: the keyboard has only just arrived" : "");
             if (no) { e.preventDefault(); setErr(no); }
           }}
           placeholder="Paste the value: it goes to commands only, never to the model"
@@ -101,7 +140,12 @@ function RequestCard({ r, first }: { r: SecretRequest; first: boolean }) {
         <button type="submit" disabled={busy || !value} data-testid="secret-give" className={`k-secret-give ${primary}`}>Give</button>
         <button type="button" disabled={busy} data-testid="secret-decline" onClick={() => act(() => secrets.decline(r.session_id, r.id))} className={quiet}>Decline</button>
       </form>
-      <p className="px-4 pb-3 -mt-1 text-micro text-faint">{err ? <span className="text-danger">{err}</span> : `Held in memory for this session as $${r.name}; a restart forgets it.`}</p>
+      <p className="px-4 pb-3 -mt-1 text-micro text-faint">
+        {err ? <span className="text-danger" role="alert" data-testid="secret-error">{err}</span>
+          // While the keyboard is on the card itself, what gets it into the field. Marked once a key typed here went nowhere.
+          : onCard ? <span className={dropped ? "text-warn" : undefined} role="status" data-testid="secret-hint" data-dropped={dropped || undefined}>{TO_FIELD}{dropped ? ": what is typed here goes nowhere" : ""}</span>
+          : `Held in memory for this session as $${r.name}; a restart forgets it.`}
+      </p>
     </div>
   );
 }
