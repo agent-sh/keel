@@ -174,14 +174,16 @@ export class LspClient {
     if (this.ended) return;
     try {
       const bytes = encode(m);
-      this.proc.stdin.write(bytes);
-      // A flush that cannot finish means the server is not reading: what waits
-      // for it is counted, and a server that leaves too much unread is ended
-      // (the daemon would hold every later document for it otherwise).
-      const flushed = this.proc.stdin.flush() as number | Promise<number>;
-      if (typeof flushed !== "number") {
+      // Bun's sink answers a write with the bytes it took, or, once what it
+      // holds is not going out (the server is not reading its input), with a
+      // promise that settles when the held bytes went. Every write made in
+      // that state adds to what waits; a server that leaves too much unread
+      // is ended, or the daemon would hold every later document for it.
+      const wrote = this.proc.stdin.write(bytes) as number | Promise<number>;
+      if (typeof wrote === "number") void Promise.resolve(this.proc.stdin.flush()).catch(() => {});
+      else {
         this.backlog += bytes.length;
-        void flushed.then(() => { this.backlog = 0; }, () => {});
+        void wrote.then(() => { this.backlog = 0; }, () => {});
         if (this.backlog > this.limits.backlogBytes) this.end(`it stopped reading its input (${this.backlog} bytes not taken)`);
       }
     } catch (e) {

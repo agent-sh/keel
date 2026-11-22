@@ -44,3 +44,14 @@ test("pushes for files nobody opened and work nobody ends fill nothing, and an e
   await client.stop();
   expect(client.held).toEqual({ docs: 0, pushed: 0, pulled: 0, waiters: 0, progress: 0 });
 });
+
+test("a server that stops reading its input is ended once too much waits for it, not held for", async () => {
+  const { client, why } = start("noread", 0, { backlogBytes: 1024 * 1024 });
+  await client.ready;
+  await Bun.sleep(100); // it has read `initialized` and stopped
+  // Documents of 300 KB each: the pipe and Bun's sink take the first, the rest waits.
+  for (let i = 0; i < 12 && !client.ended; i++) { client.sync("/w/a.txt", `${i} ${"x".repeat(300_000)}\n`, "plaintext"); await Bun.sleep(20); }
+  expect(client.ended).toContain("it stopped reading its input");
+  expect(why()).toMatch(/it stopped reading its input \(\d+ bytes not taken\)/);
+  expect(client.held).toEqual({ docs: 0, pushed: 0, pulled: 0, waiters: 0, progress: 0 });
+});

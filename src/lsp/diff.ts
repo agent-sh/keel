@@ -37,19 +37,56 @@ export function fromLsp(raw: unknown, text?: string): Diag[] {
 
 const keyOf = (d: Diag) => `${d.severity}\0${d.source ?? ""}\0${d.code ?? ""}\0${d.message}\0${d.at ?? ""}`;
 
-export type DiagDiff = { added: Diag[]; fixed: Diag[] };
+// `still`: diagnostics the file had before, on a line the edit rewrote, that
+// are there after it too: not something the edit introduced, and not fixed.
+export type DiagDiff = { added: Diag[]; fixed: Diag[]; still: Diag[] };
+
+// The lines an edit changed: lines [from, oldTo) of the old text became
+// [from, newTo) of the new one (1-based), everything before and after being
+// the same. Null when the texts are the same.
+export type Changed = { from: number; oldTo: number; newTo: number };
+export function changedLines(before: string, after: string): Changed | null {
+  if (before === after) return null;
+  const a = before.split("\n"), b = after.split("\n");
+  let p = 0;
+  while (p < a.length && p < b.length && a[p] === b[p]) p++;
+  let s = 0;
+  while (s < a.length - p && s < b.length - p && a[a.length - 1 - s] === b[b.length - 1 - s]) s++;
+  return { from: p + 1, oldTo: a.length - s + 1, newTo: b.length - s + 1 };
+}
+
+const baseKey = (d: Diag) => `${d.severity}\0${d.source ?? ""}\0${d.code ?? ""}\0${d.message}`;
 
 // `before` and `after` are one file's diagnostics. Added: in file order.
-export function diffDiagnostics(before: Diag[], after: Diag[]): DiagDiff {
+// `changed`: the lines the edit rewrote, when the two texts are at hand. A
+// diagnostic that went from a rewritten line while the same one appeared at
+// the same place in the rewrite was there all along: it is `still`, neither
+// fixed nor new. (The same message appearing on another line is a new one.)
+export function diffDiagnostics(before: Diag[], after: Diag[], changed?: Changed | null): DiagDiff {
   const had = new Map<string, Diag[]>();
   for (const d of before) { const k = keyOf(d); const list = had.get(k); if (list) list.push(d); else had.set(k, [d]); }
-  const added: Diag[] = [];
+  let added: Diag[] = [];
   for (const d of [...after].sort((a, b) => a.line - b.line || a.col - b.col)) {
     const left = had.get(keyOf(d));
     if (left?.length) left.pop();
     else added.push(d);
   }
-  return { added, fixed: [...had.values()].flat() };
+  let fixed = [...had.values()].flat();
+  const still: Diag[] = [];
+  if (changed && added.length && fixed.length) {
+    const gone = new Map<string, Diag[]>();
+    for (const f of fixed) if (f.line >= changed.from && f.line < changed.oldTo) { const k = `${f.line}\0${baseKey(f)}`; const list = gone.get(k); if (list) list.push(f); else gone.set(k, [f]); }
+    const paired = new Set<Diag>();
+    added = added.filter((a) => {
+      const f = a.line >= changed.from && a.line < changed.newTo ? gone.get(`${a.line}\0${baseKey(a)}`)?.pop() : undefined;
+      if (!f) return true;
+      paired.add(f);
+      still.push(a);
+      return false;
+    });
+    if (paired.size) fixed = fixed.filter((f) => !paired.has(f));
+  }
+  return { added, fixed, still };
 }
 
 // What is counted and listed: errors only, or warnings too. Information and
@@ -99,10 +136,13 @@ export function renderDiagnostics(files: FileDiff[], o: RenderOpts): Rendered {
   const rows: { path: string; d: Diag }[] = [];
   let fixed = 0;
   let remain = 0;
+  let stillErrors = 0;
+  let stillWarnings = 0;
   for (const f of files) {
     for (const d of f.diff.added) if (want(d)) rows.push({ path: f.path, d });
     // Fixed ones are counted at the level shown: a hint that went away is no fix.
     for (const d of f.diff.fixed) if (want(d)) fixed++;
+    for (const d of f.diff.still) if (want(d)) { if (d.severity === 1) stillErrors++; else stillWarnings++; }
     for (const d of f.after) if (d.severity === 1) remain++;
   }
   rows.sort((a, b) => a.d.severity - b.d.severity); // stable: errors first, each group in file order
@@ -112,11 +152,15 @@ export function renderDiagnostics(files: FileDiff[], o: RenderOpts): Rendered {
   const pending = o.pending ?? [];
   const unchecked = o.unchecked ?? [];
   const clean = !rows.length && !fixed ? o.clean ?? [] : [];
-  if (!rows.length && !fixed && !pending.length && !unchecked.length && !clean.length) return NONE;
+  const still = stillErrors + stillWarnings;
+  if (!rows.length && !fixed && !still && !pending.length && !unchecked.length && !clean.length) return NONE;
   const head: string[] = [];
   if (errors) head.push(`${plural(errors, "new error")}`);
   if (warnings) head.push(`${plural(warnings, "new warning")}`);
   if (fixed) head.push(`${fixed} fixed`);
+  // An error that was on a line before the edit rewrote it and is on it after: said as that, not as a new one.
+  if (stillErrors) head.push(`${plural(stillErrors, "error")} still on the changed line${still === 1 ? "" : "s"}`);
+  if (stillWarnings) head.push(`${plural(stillWarnings, "warning")} still on the changed line${still === 1 ? "" : "s"}`);
   const from = o.late ? "From an earlier edit (the language server answered after its result was written): " : "";
   const first: string[] = [];
   if (head.length) {

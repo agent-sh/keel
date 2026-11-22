@@ -3,7 +3,8 @@
 // messages once a document opens and answers nothing, `crash` exits when one opens, `push`
 // answers by pushing (no version), `deaf` says it pushes and never does,
 // `slowinit` answers initialize after the pause, `pushmany` pushes for
-// hundreds of files nobody opened and starts as many progress tokens. Each line of a document that holds the
+// hundreds of files nobody opened and starts as many progress tokens,
+// `noread` answers initialize and then reads nothing more of its input. Each line of a document that holds the
 // word ERROR is one error diagnostic.
 //   bun lsp-standin.ts <slow|flood|crash|push|plain> [pause ms]
 const mode = process.argv[2] ?? "plain";
@@ -46,6 +47,9 @@ function handle(m: any) {
   switch (m.method) {
     case "initialize":
       return void setTimeout(() => send({ id: m.id, result: { capabilities: { textDocumentSync: 1, ...(mode === "push" || mode === "deaf" || mode === "pushmany" ? {} : { diagnosticProvider: { interFileDependencies: false, workspaceDiagnostics: false } }) }, serverInfo: { name: "standin", version: mode } } }), mode === "slowinit" ? pause : 0);
+    case "initialized":
+      if (mode === "noread") { process.stdin.pause(); process.stdin.removeAllListeners("data"); setInterval(() => {}, 1000); }
+      return;
     case "textDocument/didOpen":
       docs.set(m.params.textDocument.uri, m.params.textDocument.text);
       return opened(m.params.textDocument.uri);

@@ -15,10 +15,10 @@
 // goes with a later result of the session.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
-import { readText } from "../core/proc.ts";
+import { git } from "../core/git.ts";
 import { track } from "../mcp/procs.ts";
 import { LspClient, readDoc } from "./client.ts";
-import { type Diag, diffDiagnostics, type FileDiff } from "./diff.ts";
+import { changedLines, type Diag, diffDiagnostics, type FileDiff } from "./diff.ts";
 import { configMark, type Def, definitions, findCommand, languageOf, rootFor, serves, type ServerOverride, startRule } from "./servers.ts";
 
 export type Perm = { mode: string; sandbox: "off" | "workspace-write" | "read-only"; network: boolean };
@@ -97,19 +97,40 @@ function rssTreeMb(pid: number): number {
 const RESCAN_MS = 30_000;
 // Other files of the session checked again after an edit (an edit here can break a file edited before).
 const BESIDE = 5;
-// The repository's own word on what differs, read without running anything it configures.
-const GIT = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
+// The repository's own word on what differs, through the daemon's one way
+// to run git (src/core/git.ts): the repository's config is not in force
+// there, so no monitor, hook, filter or other program it names runs.
 async function gitOut(root: string, args: string[]): Promise<string | null> {
-  try {
-    const p = Bun.spawn([...GIT, "-C", root, ...args], { stdout: "pipe", stderr: "ignore", stdin: "ignore", timeout: 2000 });
-    const out = await readText(p.stdout);
-    return (await p.exited) === 0 ? out : null;
-  } catch { return null; }
+  const r = await git(root, args, { read: true, timeout: 2000 }).catch(() => null);
+  return r && r.code === 0 ? r.out : null;
+}
+// Whether `root` is in a repository's work tree, and its head ("" before the first commit).
+export async function repoHead(root: string): Promise<{ repo: boolean; head: string }> {
+  if ((await gitOut(root, ["rev-parse", "--is-inside-work-tree"]))?.trim() !== "true") return { repo: false, head: "" };
+  return { repo: true, head: (await gitOut(root, ["rev-parse", "--verify", "-q", "HEAD"]))?.trim() ?? "" };
+}
+const names = (out: string) => out.split("\0").filter(Boolean);
+// The files under `root` that differ from the head: changed or deleted in the
+// work tree (by size and time only: `ls-files -m` would read a changed file
+// through a clean filter), staged (a file moved or removed with git, a new
+// one added), and untracked. Null: the repository could not say.
+export async function repoDiffers(root: string, head: string): Promise<string[] | null> {
+  const tracked = await gitOut(root, ["diff-files", "--name-only", "--no-renames", "--relative", "-z"]);
+  const staged = head ? await gitOut(root, ["diff-index", "--cached", "--name-only", "--no-renames", "--relative", "-z", "HEAD"]) : "";
+  const untracked = await gitOut(root, ["ls-files", "-o", "--exclude-standard", "-z"]);
+  if (tracked === null || staged === null || untracked === null) return null;
+  return [...new Set([...names(tracked), ...names(staged), ...names(untracked)])];
+}
+// The files under `root` that two commits differ in. Null: they cannot be compared.
+export async function repoBetween(root: string, from: string, to: string): Promise<string[] | null> {
+  const out = from && to ? await gitOut(root, ["diff", "--name-only", "--no-renames", "--relative", "-z", from, to]) : null;
+  return out === null ? null : names(out);
 }
 // A file's size and change time: whether the text read from it is still what is on disk.
 const markOf = (path: string): string | null => { try { const st = statSync(path); return st.isFile() ? `${st.size}:${st.mtimeMs}` : null; } catch { return null; } };
 
-type Asked = { path: string; entry: Entry; client: LspClient; base: Promise<Diag[] | null> | Diag[] | null; beside?: boolean };
+// `was`: the file's text before the edit, which says which lines the edit rewrote.
+type Asked = { path: string; entry: Entry; client: LspClient; base: Promise<Diag[] | null> | Diag[] | null; was?: string; beside?: boolean };
 // `asked`: the model was told this file is not checked yet, so a clean answer is said too.
 type Late = { server: string; base: Diag[]; after: Diag[]; asked: boolean };
 type SessState = { owed: Map<string, Diag[]>; told: Map<string, { key: string; diags: Diag[]; at: number }>; late: Map<string, Late>; down: Set<string> };
@@ -285,16 +306,16 @@ export class LspManager {
       if (mark === null) { client.close(d.path); changes.push({ path: d.path, type: "deleted" }); this.forget(d.path); }
       else if (mark !== d.mark) { const text = await readDoc(d.path); if (text !== null) client.sync(d.path, text, languageOf(e.def, d.path), mark); }
     }
-    if (e.repo === undefined) e.repo = (await gitOut(e.root, ["rev-parse", "--is-inside-work-tree"]))?.trim() === "true";
+    const at = await repoHead(e.root);
+    e.repo = at.repo;
     if (!e.repo) { client.changed(changes); return ran && !first ? "restart" : undefined; }
-    const head = (await gitOut(e.root, ["rev-parse", "--verify", "-q", "HEAD"]))?.trim() ?? "";
+    const head = at.head;
     let moved = false;
     if (e.head !== undefined && e.head !== head) {
-      const between = e.head && head ? await gitOut(e.root, ["diff", "--name-only", "-z", e.head, head]) : null;
-      const names = between?.split("\0").filter(Boolean);
+      const between = await repoBetween(e.root, e.head, head);
       e.head = head;
-      if (!names || names.length > 500) return "restart";
-      for (const rel of names) {
+      if (!between || between.length > 500) return "restart";
+      for (const rel of between) {
         const path = join(e.root, rel);
         if (!serves(e.def, path) || client.has(path)) continue;
         let mtime = 0;
@@ -305,19 +326,13 @@ export class LspManager {
       moved = true;
     }
     e.head = head;
-    // By the files' size and time only: `ls-files -m` reads a changed file through
-    // the repository's clean filter, a program its configuration names.
-    const tracked = await gitOut(e.root, ["diff-files", "--name-only", "--no-renames", "-z"]);
-    // What is staged (a file moved or removed with git, a new one added): the index against the head, no file read.
-    const staged = head ? await gitOut(e.root, ["diff-index", "--cached", "--name-only", "--no-renames", "-z", "HEAD"]) : "";
-    const untracked = await gitOut(e.root, ["ls-files", "-o", "--exclude-standard", "-z"]);
-    if (tracked === null || staged === null || untracked === null || client.ended) return;
-    const listed = `${tracked}\0${staged}\0${untracked}`;
+    const listed = await repoDiffers(e.root, head);
+    if (listed === null || client.ended) return;
     // After a move the lists start over: what differed from the old head says nothing about the new one.
     const quiet = first || moved;
     if (moved) { e.seen = new Set(); e.gone = new Set(); }
     const now = new Set<string>();
-    for (const rel of new Set(listed.split("\0").filter(Boolean))) {
+    for (const rel of listed) {
       const path = join(e.root, rel);
       if (!serves(e.def, path)) continue;
       now.add(path);
@@ -384,7 +399,7 @@ export class LspManager {
         // A file the edit creates had no diagnostics; one that cannot be sent (binary, too large) is not asked about.
         if (text === null && existsSync(path)) continue;
         const base = text === null ? [] : client.diagnostics(path, client.sync(path, text, languageOf(def, path), markOf(path) ?? ""));
-        asked.push({ path, entry: e, client, base });
+        asked.push({ path, entry: e, client, base, ...(text !== null ? { was: text } : {}) });
       }
     }
     if (asked.length || down.size) this.calls.set(callId, { session: s.id, asked, down, t0: Date.now(), cold });
@@ -415,7 +430,7 @@ export class LspManager {
       const beside = [...st.told.entries()].filter(([p, t]) => t.key === e.key && !edited.has(p)).sort((a, b) => b[1].at - a[1].at).slice(0, BESIDE);
       for (const [path, t] of beside) asked.push({ path, entry: e, client: e.client, base: t.diags, beside: true });
     }
-    type Job = { a: Asked; base: Diag[] | null; after: Diag[] | null | undefined };
+    type Job = { a: Asked; base: Diag[] | null; after: Diag[] | null | undefined; now?: string };
     const jobs: Job[] = [];
     const waits: Promise<void>[] = [];
     let closed = false; // the wait is over: an answer from here on is a late one
@@ -429,6 +444,7 @@ export class LspManager {
       }
       const version = a.client.sync(a.path, text, languageOf(a.entry.def, a.path), markOf(a.path) ?? "");
       const answer = a.client.diagnostics(a.path, version);
+      job.now = text;
       jobs.push(job);
       waits.push(Promise.all([a.base, answer]).then(([base, after]) => {
         job.base = base;
@@ -463,14 +479,16 @@ export class LspManager {
       }
       answered++;
       // An earlier edit of the file whose answer never reached the model: compared from before that one.
-      const base = st.owed.get(a.path) ?? job.base;
+      const owed = st.owed.get(a.path);
+      const base = owed ?? job.base;
       st.owed.delete(a.path);
       st.late.delete(a.path);
       st.told.set(a.path, { key: a.entry.key, diags: job.after, at: Date.now() });
       // Nothing to compare with (the question about the file as it was got no answer): said, never passed over.
       if (!base) { if (!a.beside) { unchecked.push(rel); servers.add(a.entry.def.id); } continue; }
-      const diff = diffDiagnostics(base, job.after);
-      if (diff.added.length || diff.fixed.length) { files.push({ path: rel, diff, after: a.beside ? [] : job.after }); servers.add(a.entry.def.id); }
+      // The lines this edit rewrote, when the comparison starts at this edit's own "before".
+      const diff = diffDiagnostics(base, job.after, !owed && a.was !== undefined && job.now !== undefined ? changedLines(a.was, job.now) : null);
+      if (diff.added.length || diff.fixed.length || diff.still.length) { files.push({ path: rel, diff, after: a.beside ? [] : job.after }); servers.add(a.entry.def.id); }
     }
     if (st.told.size > 200) st.told.delete(st.told.keys().next().value!);
     if (!jobs.length && !unchecked.length) return null;

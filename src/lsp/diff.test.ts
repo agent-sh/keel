@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { codeText, diffDiagnostics, fromLsp, renderDiagnostics, type Diag } from "./diff.ts";
+import { changedLines, codeText, diffDiagnostics, fromLsp, renderDiagnostics, type Diag } from "./diff.ts";
 
 const d = (line: number, message: string, o: Partial<Diag> = {}): Diag => ({ line, col: 1, severity: 1, source: "ts", code: "2322", message, ...o });
 
@@ -10,7 +10,7 @@ test("a diagnostic an edit moved is the same diagnostic; more of one is new, few
   const x = diffDiagnostics(before, after);
   expect(x.added.map((a) => a.line)).toEqual([20]);
   expect(x.fixed.map((f) => f.code)).toEqual(["2304"]);
-  expect(diffDiagnostics(before, before)).toEqual({ added: [], fixed: [] });
+  expect(diffDiagnostics(before, before)).toEqual({ added: [], fixed: [], still: [] });
   // The same words at another severity are another diagnostic.
   expect(diffDiagnostics([d(1, "x", { severity: 2 })], [d(1, "x")]).added).toHaveLength(1);
 });
@@ -25,7 +25,31 @@ test("an error fixed in one place while the same message appears in another is o
   expect(x.fixed.map((f) => f.line)).toEqual([1]);
   // The same line three lines further down is the same diagnostic.
   const moved = fromLsp(raw(3), "\n\n\nconst a: number = 'x';\nconst b: number = 2;\n");
-  expect(diffDiagnostics(before, moved)).toEqual({ added: [], fixed: [] });
+  expect(diffDiagnostics(before, moved)).toEqual({ added: [], fixed: [], still: [] });
+});
+
+test("an error on a line the edit rewrote, still there after it, is said as still there: not as one fixed and one new", () => {
+  const raw = (line: number, col = 6) => [{ range: { start: { line, character: col } }, severity: 1, code: 2322, source: "ts", message: "Type 'string' is not assignable to type 'number'." }];
+  const was = "export const ok = 1;\nconst a: number = 'x';\nconst b: number = 2;\n";
+  const now = "export const ok = 1;\nconst a: number = 'longer';\nconst b: number = 2;\n";
+  expect(changedLines(was, now)).toEqual({ from: 2, oldTo: 3, newTo: 3 });
+  expect(changedLines(was, was)).toBeNull();
+  expect(changedLines("a\nb\n", "a\nx\ny\nb\n")).toEqual({ from: 2, oldTo: 2, newTo: 4 }); // two lines put in
+  const before = fromLsp(raw(1), was), after = fromLsp(raw(1), now);
+  // Without the lines the edit changed it reads as a fix and a new error.
+  expect(diffDiagnostics(before, after)).toMatchObject({ added: [{ line: 2 }], fixed: [{ line: 2 }], still: [] });
+  const x = diffDiagnostics(before, after, changedLines(was, now));
+  expect(x).toMatchObject({ added: [], fixed: [], still: [{ line: 2 }] });
+  expect(renderDiagnostics([{ path: "a.ts", diff: x, after }], { server: "typescript", level: "errors" }).text)
+    .toBe('<diagnostics server="typescript">\n1 error still on the changed line.\n</diagnostics>');
+  // The same message on another line of what the edit rewrote is a new error, and the first one is fixed.
+  const moved = "export const ok = 1;\nconst a: number = 1;\nconst b: number = 'y';\n";
+  expect(diffDiagnostics(before, fromLsp(raw(2), moved), changedLines(was, moved))).toMatchObject({ added: [{ line: 3 }], fixed: [{ line: 2 }], still: [] });
+  // A new error beside the one that stayed: both are said, each as what it is.
+  const both = "export const ok = 1;\nconst a: number = 'z'; const c: number = 'c';\nconst b: number = 2;\n";
+  const y = diffDiagnostics(before, fromLsp([...raw(1), ...raw(1, 29)], both), changedLines(was, both));
+  expect(y).toMatchObject({ added: [{ col: 30 }], fixed: [], still: [{ col: 7 }] });
+  expect(renderDiagnostics([{ path: "a.ts", diff: y, after: [] }], { server: "typescript", level: "errors" }).text.split("\n")[1]).toBe("1 new error, 1 error still on the changed line.");
 });
 
 test("a server's diagnostics are read defensively", () => {
