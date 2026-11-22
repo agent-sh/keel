@@ -407,7 +407,7 @@ test("an edit's card shows what it writes, and takes no answer until that was re
     // Opened and scrolled through, it is read.
     await card.getByTestId("approval-expand").click();
     await expect(text).toContainText("rm -rf / # the last line");
-    await expect(card.getByTestId("approval-left")).toHaveText(/^\d+ lines not seen yet/);
+    await expect(card.getByTestId("approval-left")).toHaveText(/^\d+ (lines|rows) not seen yet/);
     await wheel(page, -6000, 3);
     await wheel(page, 90, 80);
     await expect(card).not.toHaveAttribute("data-must-open", "true", { timeout: 10_000 });

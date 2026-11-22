@@ -6,7 +6,7 @@ import { Spelled } from "./Spelled.tsx";
 
 // The one retry the owner can let through. It lets a call run, so it is held like an answer on a
 // request: it does nothing as it appears or within a moment of moving, and a press it refuses is
-// answered (the ring, and the reason said once).
+// answered (the ring, and the reason in words at the control).
 function Retry({ onAllow }: { onAllow: () => void }) {
   const ref = useRef<HTMLButtonElement>(null);
   const stood = useStood(ref);
@@ -21,7 +21,7 @@ function Retry({ onAllow }: { onAllow: () => void }) {
         data-nudge={nudge.mark}
         onPointerDown={pressed.onPointerDown}
         onMouseDown={pressed.onMouseDown}
-        onClick={(e) => { if (pressed.said(e)) onAllow(); else nudge.refuse("Not yet: it has only just come under your hand"); }}
+        onClick={(e) => { if (pressed.said(e)) onAllow(); else nudge.refuse("Not yet: it appeared a moment ago", e.currentTarget); }}
         className="k-grant inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-line px-3 text-ui hover:bg-hover aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-transparent"
       >
         <RotateCcw className="size-3.5" /> Allow one retry

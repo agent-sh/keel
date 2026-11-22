@@ -36,10 +36,11 @@ const EMPTY: Approval[] = [];
 // - `live`: its Allow once may be pressed (lib/approvals.ts: pressable). `grant`: the same for its Always allow.
 // - `ripe`: the card has been on the page for the settle time (it may take the keyboard).
 // - `cut`: its text is longer than the box that shows it.
-// - `unseen`: the lines of its text that have not been in view (`n`), and how many of those the
-//   owner has to bring into view (`out`: lib/approvals.ts, sawLines). A card is answered when none is left.
+// - `unseen`: the rows of its text, as it wraps now, that have not been in view (`n`, of `total`),
+//   and how many of those the owner has to bring into view (`out`: lib/approvals.ts, sawLines).
+//   A card is answered when none is left.
 // - `acts`: each "allow all" action, by tool: what it covers and whether it can be pressed.
-type Unseen = { n: number; out: number; begun: boolean };
+type Unseen = { n: number; out: number; begun: boolean; total: number };
 type View = { read: Set<string>; live: Set<string>; grant: Set<string>; ripe: Set<string>; cut: Set<string>; unseen: Map<string, Unseen>; acts: Map<string, Action>; key: string };
 const NO_VIEW: View = { read: new Set(), live: new Set(), grant: new Set(), ripe: new Set(), cut: new Set(), unseen: new Map(), acts: new Map(), key: "" };
 // The text a card shows of a request (its summary and, for an edit, what the edit writes:
@@ -212,7 +213,7 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
       else if (!f) s.lines.set(id, { ...l, view: null, since: now });
     }
     const read = new Set<string>(), live = new Set<string>(), grant = new Set<string>(), ripe = new Set<string>(), cut = new Set<string>(), unseen = new Map<string, Unseen>();
-    for (const [id, l] of s.lines) unseen.set(id, unseenLines(l));
+    for (const [id, l] of s.lines) unseen.set(id, { ...unseenLines(l), total: l.total });
     for (const [id, r] of seen) {
       const old = now - r.born >= SETTLE_MS;
       if (settled(r.sum, now)) read.add(id);
@@ -228,7 +229,7 @@ function useReadings(list: RefObject<HTMLDivElement | null>, cards: Approval[]) 
     const alone = new Set([...cut, ...s.cards.filter((c) => shownOf(c).flagged).map((c) => c.id)]);
     for (const g of batches(s.cards, read, alone)) acts.set(g.tool, nextAction(s.acts.get(g.tool), g.ids, s.hot.has(g.tool), now, open));
     s.acts = acts;
-    const key = JSON.stringify([[...read], [...live], [...grant], [...ripe], [...cut], [...unseen].map(([id, u]) => [id, u.n, u.out, u.begun]), [...acts].map(([tool, a]) => [tool, a.covered, a.live])]);
+    const key = JSON.stringify([[...read], [...live], [...grant], [...ripe], [...cut], [...unseen].map(([id, u]) => [id, u.n, u.out, u.begun, u.total]), [...acts].map(([tool, a]) => [tool, a.covered, a.live])]);
     if (key !== s.view.key) setView((s.view = { read, live, grant, ripe, cut, unseen, acts, key }));
     return s.view;
   }, [list]);
@@ -329,6 +330,7 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
   // has neither before it lands: where one is used, the rows of every action that can be
   // pressed are framed all the time.
   const byFinger = useMedia("(pointer: coarse), (max-width: 40rem)");
+  const touch = useMedia("(pointer: coarse)"); // what a card says of a key is said of a tap there
   const marked = new Set((byFinger ? groups.map((g) => g.tool).filter((t) => view.acts.get(t)?.live) : hot).flatMap(covered));
   const dull = groups.find((g) => hot.includes(g.tool) && !view.acts.get(g.tool)?.live);
 
@@ -507,6 +509,7 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
               whole={!!opened[a.id]}
               onWhole={(on) => setWhole(a.id, on)}
               enterOpens={at?.on === "list" && shut[0]?.id === a.id && hold.keys === "ready"}
+              touch={touch}
               keysOn={at?.on === "list" ? "list" : at?.id !== a.id ? "" : at.on === "once" ? "once" : at.on === "card" ? "card" : ""}
             />
           ))}
@@ -681,11 +684,11 @@ function AllowAll({ g, ids, on, cards, busy, list, onHot, press, onAllow }: {
 // `whole`: the owner opened its whole text, by the list's Enter or by the card's own control
 // (`onWhole`). `enterOpens`: the list has the keyboard and its Enter would open this card now.
 // `keysOn`: where the keyboard is, as far as this card goes: on its Allow once, on the card
-// itself, or on the list.
-function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, grant, armed, read, cut, unseen, whole, onWhole, enterOpens, keysOn }: {
+// itself, or on the list. `touch`: the pointer is a finger.
+function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, grant, armed, read, cut, unseen, whole, onWhole, enterOpens, keysOn, touch }: {
   a: Approval; first: boolean; asker?: string; list: RefObject<HTMLDivElement | null>; many: boolean; plain: boolean;
   hot: boolean; locked: boolean; ripe: boolean; live: boolean; grant: boolean; armed: (which: "live" | "grant") => boolean; read: () => unknown; cut: boolean; unseen?: Unseen;
-  whole: boolean; onWhole: (on: boolean) => void; enterOpens: boolean; keysOn: "" | "once" | "card" | "list";
+  whole: boolean; onWhole: (on: boolean) => void; enterOpens: boolean; keysOn: "" | "once" | "card" | "list"; touch: boolean;
 }) {
   const dense = many && a.risk !== "high"; // a high-risk request keeps its whole card, with why it is one
   const Icon = a.risk === "high" ? ShieldAlert : ICON[a.kind];
@@ -713,7 +716,13 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   // itself, and so does not change as it comes into view).
   const [told, setTold] = useState(false);
   const left = unseen && (unseen.begun || told) ? unseen.out : 0;
-  const leftText = `${left} line${left === 1 ? "" : "s"} not seen yet`;
+  // What is counted is what is seen: the text's lines where none of them wraps, and rows (the
+  // lines as the card draws them) where one does, so one long line is not called twenty.
+  const kept = part ? (typeof a.input?._clipped === "string" ? a.input._clipped : JSON.stringify(a.input ?? {}, null, 2)) : "";
+  const written = (whole && part ? kept : shown.text).replace(/\n$/, "").split("\n").length;
+  const unit = unseen && unseen.total !== written ? "row" : "line";
+  const count = (n: number) => `${n} ${unit}${n === 1 ? "" : "s"}`;
+  const leftText = `${count(left)} not seen yet`;
   const shut = mustBeOpened(a, whole, cut, unseen);
   const shutNow = useRef(shut);
   shutNow.current = shut;
@@ -725,6 +734,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   const openLabel = onlyMarks ? `Show the ${marks} marked character${marks === 1 ? "" : "s"}` : a.kind === "shell" ? "Show the whole command" : "Show all of it";
   const openFirst = onlyMarks ? `Look at the marked character${marks === 1 ? "" : "s"} first` : `Open the whole ${thing} first`;
   const enterSays = onlyMarks ? `Enter shows the marked character${marks === 1 ? "" : "s"}` : `Enter opens the whole ${thing}`;
+  const tapSays = onlyMarks ? `Tap to show the marked character${marks === 1 ? "" : "s"}` : `Tap to open the whole ${thing}`;
   const unread = useRef(mustOpen);
   unread.current = mustOpen;
   const toList = () => list.current?.focus({ preventScroll: true });
@@ -837,10 +847,18 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   // The keyboard never rests on an answer of a card that is not all read, nor on the card
   // itself when its text must be opened (it was found cut after the keyboard came): it is read
   // on the list, where Enter opens it.
+  // Read again (its text wrapped anew when the window or the text size changed, and its lines
+  // were seen once more), its Allow may take the keyboard back as when it first came: the card
+  // itself sent it off, so that arrival is not used up. The keyboard waits on the list for the
+  // first card and for one that must be opened, on the card itself for any other.
   useEffect(() => {
     const at = document.activeElement as HTMLElement | null;
     if (!at || !root.current?.contains(at)) return;
-    if ((shut && at === root.current) || (mustOpen && (at.dataset.testid === "allow-once" || at.dataset.testid === "allow-always"))) toList();
+    const onAnswer = at.dataset.testid === "allow-once" || at.dataset.testid === "allow-always";
+    if (!((shut && at === root.current) || (mustOpen && onAnswer))) return;
+    moved.current = 0;
+    if (shut || first) toList();
+    else root.current.focus({ preventScroll: true });
   }, [mustOpen, shut]);
   const held = useHandBack(root, list);
   // Leaving the reason (Esc, Back) puts the keyboard where the card's own rule would: on
@@ -864,7 +882,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   const nudge = useNudge();
   // Why a press on one of its answers does nothing now.
   const unreadLines = unseen?.out ?? 0;
-  const notYet = unreadLines > 0 ? `Not yet: ${unreadLines} line${unreadLines === 1 ? "" : "s"} not seen yet` : ripe ? "Not yet: it moved a moment ago" : "Not yet: it has only just arrived";
+  const notYet = unreadLines > 0 ? `Not yet: ${count(unreadLines)} not seen yet` : ripe ? "Not yet: it moved a moment ago" : "Not yet: it has only just arrived";
   const refused = () => { if (unreadLines > 0) setTold(true); };
   // What the hint line may say (see where it is drawn): `ready` exactly when Enter on its Allow
   // would answer; `arming` while the page is about to make that so, or how to get there.
@@ -875,7 +893,9 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
     : keysOn === "once" ? "Enter allows once in a moment"
     : !coming ? ""
     : heldWhy ? (mustOpen ? "" : heldLine)
-    : hold.take ? "Enter allows once in a moment"
+    // (Only while the Allow is still to take the keyboard for this arrival: else Enter stays where
+    // it is, as it does for an owner brought here from outside the page.)
+    : hold.take && moved.current !== hold.at && (!wasBrought() || chosen.current) ? "Enter allows once in a moment"
     : "";
 
   const answer = async (body: { choice: string; reason?: string; rules?: Suggest[] }) => {
@@ -925,8 +945,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
     </span>
   );
   const notice = a.notice && <p className={cn("text-caption text-warn", dense ? "mb-1" : "mx-4 mt-2")} data-testid="approval-notice">{a.notice}</p>;
-  // The whole of what the daemon kept of the input, when the card shows only its start.
-  const kept = part ? (typeof a.input?._clipped === "string" ? a.input._clipped : JSON.stringify(a.input ?? {}, null, 2)) : "";
+  // (`kept`: the whole of what the daemon kept of the input, when the card shows only its start.)
   const short = !whole && (cut || part);
   // What an edit would write, under its paths: read like any other text of a request. Its lines are
   // counted, and each is shown as it is written (Spelled): a character in it that hides or
@@ -1151,7 +1170,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
             // Why the answers wait, beside them, before anything was pressed: the text is to be opened
             // (the list's Enter does that while the list has the keyboard), or so many of its lines have
             // not been in view. (In the answers' own row, so the card keeps its height when it goes.)
-            : shut ? <span className="ml-auto text-micro text-warn" role="status" data-testid="approval-open-first">{enterOpens ? enterSays : openFirst}.</span>
+            : shut ? <span className="ml-auto text-micro text-warn" role="status" data-testid="approval-open-first">{touch ? tapSays : enterOpens ? enterSays : openFirst}.</span>
             : left > 0 ? <span className="ml-auto text-micro text-warn tabular-nums" role="status" data-testid="approval-left">{leftText}</span>
             // What Enter does, true at every moment. "Enter allows once" stands only while its Allow has
             // the keyboard and a press would answer. Before that, while the keyboard is on its way to the

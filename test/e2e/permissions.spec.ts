@@ -185,7 +185,7 @@ test("permission card answers wrap on a narrow screen", async ({ page, request }
   await once.focus();
   await page.waitForTimeout(1300);
   await page.keyboard.press("Enter");
-  await expect(card.getByTestId("approval-left")).toHaveText(/^\d+ lines? not seen yet/);
+  await expect(card.getByTestId("approval-left")).toHaveText(/^\d+ (lines?|rows?) not seen yet/);
   expect(existsSync(join(ws, "alpha.txt"))).toBe(false);
   const tray = (await page.locator(`[data-station="${session.id}"]`).getByTestId("composer-tray").boundingBox())!;
   await page.mouse.move(tray.x + tray.width / 2, tray.y + tray.height / 2);

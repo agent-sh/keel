@@ -32,6 +32,12 @@ type Kinds = { ask: boolean; tool: boolean };
 type Report = { total: Row; paths: (Row & { path: string })[]; store?: { out: Kinds; degraded: Kinds } };
 export type MemoryTab = "usage" | "given" | "search" | "unused";
 
+// A path's name: "Memory store, with a prompt", and on a phone "With a prompt".
+const STORE = "Memory store, ";
+const pathLabel = (path: string): ReactNode => {
+  const name = PATH[path] ?? path;
+  return name.startsWith(STORE) ? <><span className="max-sm:hidden">{STORE}</span>{name.slice(STORE.length)}</> : name;
+};
 const PATH: Record<string, string> = {
   store_start: "Memory store, session start",
   store_prompt: "Memory store, with a prompt",
@@ -68,8 +74,9 @@ function UsageTable({ since }: { since: number }) {
   const cells = (label: ReactNode, x: Row): ReactNode[] => {
     const why = [x.skipped && `${x.skipped} not asked`, x.empty && `${x.empty} with nothing to add`, x.repeat && `${x.repeat} already in the context`, x.late && `${x.late} not waited for`, x.timeouts && `${x.timeouts} timed out`, x.failures && `${x.failures} failed`].filter(Boolean).join(", ");
     return [
-      // A phone has room for the path on two lines, not on one: it wraps there, whole.
-      <span className="block max-sm:whitespace-normal">{label}</span>,
+      // A phone has room for the path on two lines, not on one: it wraps there, whole, and leaves
+      // out the words every path shares (the panel is Memory).
+      <span className="block first-letter:uppercase max-sm:whitespace-normal">{label}</span>,
       <span title={why || undefined}>{x.recalls} <span className="text-faint">of {x.asked}</span></span>,
       <span title={plural(x.facts, "fact")}>{fmtTokens(x.tokens)}</span>,
       x.recalls_checked
@@ -87,7 +94,7 @@ function UsageTable({ since }: { since: number }) {
     <>
       <Table
         head={["Path", "Recalls", "Tokens added", "Named in reply (estimate)", "Not added again", "Time added"]}
-        rows={[...r.paths.map((p) => cells(PATH[p.path] ?? p.path, p)), ...(r.paths.length > 1 ? [cells(<span className="font-medium">All memory</span>, r.total)] : [])]}
+        rows={[...r.paths.map((p) => cells(pathLabel(p.path), p)), ...(r.paths.length > 1 ? [cells(<span className="font-medium">All memory</span>, r.total)] : [])]}
         // A phone keeps what the table is opened for: how often memory was added, what it cost, whether it was used.
         wide={[4, 5]}
       />
