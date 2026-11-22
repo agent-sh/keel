@@ -14,10 +14,14 @@
 // that arrived waits at the list's end, and both take their place when the
 // hand has left. What the owner did themselves (archived a row, opened a new
 // session) is not held.
+//
+// A row is one line by default: the mark, the title, the time, and the reason
+// where the title leaves it room. Two lines, with the reason always there, is
+// a choice. Either way every row of the list is as high as every other.
 import { LIST_TIER, WATCH_RANK, type Watch } from "../../../src/core/watch.ts";
 
-export type Arrange = { group: "project" | "mine" | "folder" | "flat"; sort: "created" | "recent" | "name" | "state"; hideDone: boolean };
-export const DEFAULT: Arrange = { group: "folder", sort: "created", hideDone: false };
+export type Arrange = { group: "project" | "mine" | "folder" | "flat"; sort: "created" | "recent" | "name" | "state"; hideDone: boolean; lines: "one" | "two" };
+export const DEFAULT: Arrange = { group: "folder", sort: "created", hideDone: false, lines: "one" };
 
 // What the browser keeps: the arrangement, the version of its defaults, and
 // whether the note about the changed default is still to be read.
@@ -41,6 +45,7 @@ export function readArrange(raw: string | null, used: boolean): Kept {
       group: pick(o.group, ["project", "mine", "folder", "flat"] as const, DEFAULT.group),
       sort: !now && sort === "recent" ? DEFAULT.sort : sort,
       hideDone: o.hideDone === true,
+      lines: pick(o.lines, ["one", "two"] as const, DEFAULT.lines),
     },
     note: now ? o.note === true : used,
   };
@@ -83,11 +88,13 @@ export function folders<T extends Row>(sessions: T[], a: Pick<Arrange, "sort">, 
 // The list while the hand is on it. `was`: the sessions the list was drawn
 // from when the hand arrived, as they were then (their order comes from
 // them). `now`: the sessions it would be drawn from now. `own(id)`: the owner
-// acted on that session, so it is as it is now. The answer: `list`, to order
+// acted on that session, so it is as it is now. `mine(id)`: a session that
+// came is the owner's own (they made or opened it from this page), so it
+// takes its place at once. The answer: `list`, to order
 // by (a session still here is the one of `was`, so it sorts where it did);
 // `gone`, the ones of it that left and are drawn as dimmed rows in their
 // place; `late`, the ones that came and wait at the list's end.
-export function held<T extends { id: string }>(was: T[], now: T[], own: (id: string) => boolean): { list: T[]; gone: Set<string>; late: T[] } {
+export function held<T extends { id: string }>(was: T[], now: T[], own: (id: string) => boolean, mine: (id: string) => boolean = own): { list: T[]; gone: Set<string>; late: T[] } {
   const live = new Map(now.map((s) => [s.id, s]));
   const had = new Set(was.map((s) => s.id));
   const list: T[] = [], gone = new Set<string>(), late: T[] = [];
@@ -97,7 +104,7 @@ export function held<T extends { id: string }>(was: T[], now: T[], own: (id: str
     list.push(s);
     if (!cur) gone.add(s.id);
   }
-  for (const s of now) if (!had.has(s.id)) (own(s.id) ? list : late).push(s);
+  for (const s of now) if (!had.has(s.id)) (own(s.id) || mine(s.id) ? list : late).push(s);
   return { list, gone, late };
 }
 

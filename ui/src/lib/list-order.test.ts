@@ -42,6 +42,9 @@ test("under the hand the list is the one the hand found: what left stays, what c
   expect(r.list[1]).toBe(was[1]!); // ordered by what it was: its new activity does not move it
   expect([...r.gone]).toEqual(["c"]);
   expect(ids(r.late)).toBe("d");
+  // A session the owner made from this page while their pointer rested in the list takes its place at once.
+  const mine = held(was, [...was, s("made", 9)], () => false, (id) => id === "made");
+  expect([ids(mine.list), ids(mine.late)]).toEqual(["a b c made", ""]);
   // The owner archived b themselves: it is gone at once.
   expect(ids(held(was, [was[0]!, was[2]!], (id) => id === "b").list)).toBe("a c");
 });
@@ -58,9 +61,11 @@ test("the counts name the longest wait first, and unread only what no other coun
 
 test("an arrangement kept before the default changed moves to it once, and says so", () => {
   // Kept by the version before: sorted by recent activity, whether chosen or not.
-  expect(readArrange(JSON.stringify({ group: "flat", sort: "recent", hideDone: true }), true)).toEqual({ arrange: { group: "flat", sort: "created", hideDone: true }, note: true });
+  expect(readArrange(JSON.stringify({ group: "flat", sort: "recent", hideDone: true }), true)).toEqual({ arrange: { group: "flat", sort: "created", hideDone: true, lines: "one" }, note: true });
   // Another order was their choice: kept, and told that rows keep their place now.
-  expect(readArrange(JSON.stringify({ group: "folder", sort: "state", hideDone: false }), true)).toEqual({ arrange: { group: "folder", sort: "state", hideDone: false }, note: true });
+  expect(readArrange(JSON.stringify({ group: "folder", sort: "state", hideDone: false }), true)).toEqual({ arrange: { group: "folder", sort: "state", hideDone: false, lines: "one" }, note: true });
+  // Two lines a row is a choice that is kept.
+  expect(readArrange(keep({ arrange: { ...DEFAULT, lines: "two" }, note: false }), true).arrange.lines).toBe("two");
   // Nothing kept: the default; a browser that ran Keel before is told, a first visit is not.
   expect(readArrange(null, true)).toEqual({ arrange: DEFAULT, note: true });
   expect(readArrange(null, false)).toEqual({ arrange: DEFAULT, note: false });
