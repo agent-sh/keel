@@ -42,6 +42,9 @@ const DEADLINE_MS = 5 * 60_000;
 const AHEAD_MS = 5_000;
 // And how long when its read waits behind another read like it.
 const AHEAD_QUEUED_MS = 300;
+// And how long a caller waits for rows handed over (rowsOff) behind other reads like them: each is
+// a part of a session, a few thousand rows or a run of bodies, and a dozen sessions may ask at once.
+const ROWS_QUEUED_MS = 2_000;
 
 export class Reads {
   private worker?: Worker;
@@ -115,12 +118,18 @@ export class Reads {
   // The rows of one statement over the events, read on the thread and handed over, for a caller that
   // would otherwise read them on the loop (a session's rows, its event bodies before a turn reads them). Undefined
   // where no thread runs, or when it has not answered after `ms`: the caller then reads for itself.
+  // Like a read made ahead, it is worth its wait only when the thread can take it now: behind a
+  // report of seconds (or while reads are held back) it is not asked, and the caller reads for
+  // itself at once, as it did before these reads were handed over. Behind reads like it (several
+  // sessions brought in together) it is made, and waited for ROWS_QUEUED_MS at most.
   rowsOff<T>(sql: string, params: (string | number | null)[], ms = AHEAD_MS): Promise<T[] | undefined> {
-    if (!this.thread || !this.start()) return Promise.resolve(undefined);
+    if (!this.thread || this.held || this.waiting.size > this.ahead || !this.start()) return Promise.resolve(undefined);
+    if (this.ahead > 0) ms = Math.min(ms, ROWS_QUEUED_MS);
+    this.ahead++;
     return new Promise<T[] | undefined>((ok) => {
       const t = setTimeout(() => ok(undefined), ms);
       t.unref?.();
-      (this.run("sql", { sql, params }, true) as Promise<T[]>).then((rows) => { clearTimeout(t); ok(rows); }, () => { clearTimeout(t); ok(undefined); });
+      (this.run("sql", { sql, params }, true) as Promise<T[]>).then((rows) => { clearTimeout(t); ok(rows); }, () => { clearTimeout(t); ok(undefined); }).finally(() => { this.ahead--; });
     });
   }
 

@@ -158,6 +158,7 @@ test("a read made ahead runs when the thread is free, and is skipped behind othe
     await new Promise((ok) => setTimeout(ok, 0));
     expect(done).toBe(false);
     expect(waited).toBeLessThan(100);
+
     // A read ahead that takes longer than its caller will wait: the caller goes on, the read finishes behind it.
     await report;
     const t1 = performance.now();
@@ -173,6 +174,22 @@ test("a read made ahead runs when the thread is free, and is skipped behind othe
     await reads.readAhead(ahead, [s.id]);
     release();
     expect(reads.counts).toEqual({ thread: 10, loop: 0 });
+    // Rows handed over to a caller (a session's rows, a run of its bodies) are the same: with the
+    // thread free they come from it, several at once in their turns.
+    const rows = "SELECT seq FROM events WHERE session_id = ? ORDER BY seq";
+    const parts = await Promise.all([1, 2, 3].map(() => reads.rowsOff<{ seq: number }>(rows, [s.id])));
+    expect(parts.map((p) => p?.length)).toEqual([20, 20, 20]);
+    // Behind a report of seconds they are not waited for: the caller is told at once to read for itself.
+    const busy = reads.sql(slow);
+    const t3 = performance.now();
+    expect(await reads.rowsOff(rows, [s.id])).toBeUndefined();
+    expect(performance.now() - t3).toBeLessThan(100);
+    await busy;
+    // Nor while reads are held back, nor where no thread runs.
+    const let2 = await reads.hold(30_000);
+    expect(await reads.rowsOff(rows, [s.id])).toBeUndefined();
+    let2();
+    expect(await new Reads(store, false).rowsOff(rows, [s.id])).toBeUndefined();
   } finally {
     reads.close();
   }
@@ -184,4 +201,4 @@ test("a read made ahead runs when the thread is free, and is skipped behind othe
   await broken.sql("SELECT 1");
   await broken.readAhead(ahead, [s.id]);
   expect(broken.counts).toEqual({ thread: 1, loop: 1 });
-});
+}, 30_000);
