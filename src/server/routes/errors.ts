@@ -16,7 +16,7 @@ export const errorRoutes: RouteModule = ({ store, errors, bus }) => {
     for (const e of open) {
       if (seen && !seen.has(e.id)) continue;
       if (seen && seen.get(e.id) !== (e.count ?? 1)) { changed.push(e.id); continue; }
-      if (what === "resolve") store.resolveError(e.id, true); else store.readError(e.id, true);
+      if (what === "resolve") errors.resolve(e.id, true); else store.readError(e.id, true);
       bus.emit({ t: "error", error: errors.get(e.id)! });
       n++;
     }
@@ -50,7 +50,7 @@ export const errorRoutes: RouteModule = ({ store, errors, bus }) => {
         const ok = (v: unknown) => v === undefined || typeof v === "boolean";
         if (!b || (b.resolved === undefined && b.read === undefined) || !ok(b.resolved) || !ok(b.read)) return json({ error: "resolved or read must be true or false" }, 400);
         if (!store.error(req.params.id)) return json({ error: "no such error" }, 404);
-        if (typeof b.resolved === "boolean") store.resolveError(req.params.id, b.resolved);
+        if (typeof b.resolved === "boolean") errors.resolve(req.params.id, b.resolved);
         if (typeof b.read === "boolean") store.readError(req.params.id, b.read);
         const rec = errors.get(req.params.id)!;
         bus.emit({ t: "error", error: rec });

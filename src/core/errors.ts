@@ -49,11 +49,18 @@ export class ErrorTracker {
   // whether or not they last happened there.
   list(limit = 200, opts: { resolved?: boolean; read?: boolean; session?: string } = {}): ErrorRecord[] {
     if (!opts.session) return this.sites.with(this.store.errors(limit, opts));
-    const there = this.sites.inScope(opts.session);
-    // A kind from before sites were kept is still found by where it last happened.
-    let last = new Set<string>();
-    try { last = new Set(this.store.errors(limit, opts).map((e) => e.id)); } catch {}
-    return this.sites.with(this.store.errors(5000, { resolved: opts.resolved, read: opts.read }).filter((e) => there.has(e.id) || last.has(e.id)).slice(0, limit));
+    // By the session's own rows, each kind read by its id: complete however many kinds the
+    // store holds (a model is told of its session's failures from this), and no pass over the rest.
+    const ids = this.sites.kindsOf(opts.session, opts, limit);
+    return this.sites.with(ids.map((id) => this.store.error(id)).filter((e): e is ErrorRecord => !!e));
+  }
+
+  // The owner resolved a kind, or took that back. Resolved, what was open of it is dealt with:
+  // a later occurrence that a retry heals leaves it recovered, not open over the old ones.
+  resolve(id: string, resolved: boolean): ErrorRecord | undefined {
+    this.store.resolveError(id, resolved);
+    if (resolved) this.sites.settle(id);
+    return this.get(id);
   }
 
   // A retry of the request these failures came from passed: each is healed in
@@ -112,7 +119,17 @@ export class ErrorTracker {
       return { id: "", source, message: e.message, stack: e.stack, context, count: 1, first_ts: now, ts: now, session_id, turn_event, span_id } as ErrorRecord;
     }
     // Where it happened is kept beside the kind; a store that will not take it leaves the kind as it is.
-    try { this.sites.note(rec); rec = this.sites.with([rec])[0]!; } catch (failed) { console.error(`[${source}] where it happened was not recorded: ${(failed as Error)?.message ?? failed}`); }
+    try {
+      // A failure that is about to be tried again is not the owner's yet: when nothing of its
+      // kind has failed for good it stays read, so the count of unread failures does not rise for the length of
+      // each wait and fall when the retry passes. It is unread when the retries run out (that
+      // failure is captured without a retry to come), or when the kind was already open.
+      const pending = typeof (context as any)?.retry === "number" && typeof (context as any)?.wait_ms === "number";
+      const quiet = pending && this.sites.failed(rec.id) === 0;
+      this.sites.note(rec, pending);
+      if (quiet) rec = this.store.readError(rec.id, true) ?? rec;
+      rec = this.sites.with([rec])[0]!;
+    } catch (failed) { console.error(`[${source}] where it happened was not recorded: ${(failed as Error)?.message ?? failed}`); }
     this.bus.emit({ t: "error", error: rec });
     for (const listener of this.captures) {
       try { listener({ id: rec.id, source, context, turnSession: scope?.session }); } catch {}

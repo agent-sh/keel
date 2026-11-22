@@ -176,6 +176,10 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
     if (q.error_id && !kind) return { status: 404, error: "no such error" } as const;
     // Asked from a session: the bundle is of that session's own occurrence
     // (its turn and span), not of wherever the kind happened last.
+    // A kind that happened in sessions, asked from one it never happened in (nor in its agents): there is no failure of that session to bundle.
+    if (kind && q.session_id && kind.sites?.length && !kind.sites.some((x) => x.session_id === q.session_id || store.session(x.session_id)?.parent_id === q.session_id)) {
+      return { status: 404, error: `that error did not happen in this session; it happened in ${kind.sites.slice(0, 4).map((x) => `"${x.title || x.session_id}"`).join(", ")}${kind.sites.length > 4 ? ` and ${kind.sites.length - 4} more` : ""}` } as const;
+    }
     const error = kind && atSession(kind, q.session_id ?? undefined);
     if (!error && !q.session_id && !q.span_id) return { status: 400, error: "error_id, session_id or span_id" } as const;
     if (q.session_id && !store.session(q.session_id)) return { status: 404, error: "no such session" } as const;

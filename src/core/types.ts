@@ -232,6 +232,8 @@ export type ErrorRecord = {
   // Set when every occurrence was healed by a retry of its request: it is not
   // an open failure. An occurrence that is not healed takes it away.
   recovered_ts?: number;
+  // On a record read for one session (atSession): when the kind last happened anywhere; `ts` is that session's last.
+  kind_ts?: number;
 };
 
 // One kind of failure in one session: how often, when, and where its latest

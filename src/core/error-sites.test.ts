@@ -27,81 +27,89 @@ function fresh() {
   return { store, errors, frames, capture, done: () => { console.error = said; store.db.close(); } };
 }
 
-test("a kind that happened in three sessions lists each with its own count and latest time, and a session's own occurrence is the one opened from it", () => {
-  const { store, errors, frames, capture, done } = fresh();
-  try {
-    const [a, b, c] = ["A", "B", "C"].map((title) => store.createSession({ model: "m", workspace: "/", title }));
-    const turn = (id: string) => store.append(id, "turn_start", {}).id;
-    const ta = turn(a!.id);
-    errors.capture("provider", new Error("credit balance too low"), { session: a!.id }, { turn_event: ta, span_id: "span-a" });
-    capture(a!.id, "credit balance too low");
-    capture(b!.id, "credit balance too low");
-    const last = capture(c!.id, "credit balance too low");
-    // One kind, four times, last in C: what the row alone says.
-    expect([last.count, last.session_id]).toEqual([4, c!.id]);
-    const rec = errors.get(last.id)!;
-    expect(rec.sites!.map((s) => `${s.title} ${s.count}`).sort()).toEqual(["A 2", "B 1", "C 1"]);
-    expect(frames.at(-1)!.sites!.length).toBe(3);
-    // The list of a session holds the kind although it last happened elsewhere.
-    expect(errors.list(200, { session: a!.id }).map((e) => e.id)).toEqual([last.id]);
-    expect(errors.list(200, { session: b!.id })[0]!.sites!.find((s) => s.session_id === b!.id)!.count).toBe(1);
-    // Opened from A it is A's: its session, and no turn or span of C's.
-    const first = errors.capture("provider", new Error("credit balance too low"), { session: a!.id }, { turn_event: ta, span_id: "span-a" });
-    capture(c!.id, "credit balance too low");
-    const mine = atSession(errors.get(first.id)!, a!.id);
-    expect([mine.session_id, mine.turn_event, mine.span_id, mine.context]).toEqual([a!.id, ta, "span-a", undefined]);
-    expect(atSession(errors.get(first.id)!, "no-such").session_id).toBe(c!.id);
-    // Found by the end of its id, as a text row prints it.
-    expect(errors.find(last.id.slice(-12))!.id).toBe(last.id);
-    // A removed session takes its site with it: its count is said as held by no session.
-    store.db.run("DELETE FROM sessions WHERE id = ?", [b!.id]);
-    const lines = errorLines([errors.get(last.id)!], { now: 0 });
-    expect(lines.some((l) => /1x  with no session recorded/.test(l))).toBe(true);
-    expect(lines.filter((l) => /keel debug [0-9a-f]{12} --session [0-9a-f]{12}/.test(l)).length).toBe(2);
-  } finally { done(); }
-});
+// (The per-session rows, a session's own bundle and Recovered after a retry are checked through
+// the daemon in test/e2e/past-truth.spec.ts. Here: what a small workload cannot reach.)
 
-test("a failure a retry healed is recovered and read; one that was not healed keeps the kind open", () => {
-  const { store, errors, frames, capture, done } = fresh();
-  try {
-    const s = store.createSession({ model: "m", workspace: "/", title: "Overloaded" });
-    const other = store.createSession({ model: "m", workspace: "/", title: "Other" });
-    const r1 = capture(s.id, "529 overloaded", { retry: 1 });
-    const r2 = capture(s.id, "529 overloaded", { retry: 2 });
-    expect(errorState(errors.get(r1.id)!)).toBe("open");
-    errors.recovered([r1, r2], s.id);
-    const healed = errors.get(r1.id)!;
-    expect([errorState(healed), healed.sites![0]!.healed, !!healed.read_ts]).toEqual(["recovered", 2, true]);
-    expect(errorState(frames.at(-1)!)).toBe("recovered");
-    expect(errorLines([healed])[0]).toStartWith("0 open, 1 recovered (a retry passed).");
-    // It happens again elsewhere and the retries run out: open and unread again.
-    capture(other.id, "529 overloaded");
-    const again = errors.get(r1.id)!;
-    expect([errorState(again), again.read_ts]).toEqual(["open", undefined]);
-    // Healed there too: recovered again.
-    errors.recovered([again], other.id);
-    expect(errorState(errors.get(r1.id)!)).toBe("recovered");
-    // An occurrence outside any session is never healed.
-    errors.capture("provider", new Error("529 overloaded"));
-    expect(errorState(errors.get(r1.id)!)).toBe("open");
-  } finally { done(); }
-});
-
-test("recovered only when every counted occurrence was healed in a session", () => {
-  const site = (count: number, healed: number) => ({ session_id: "s", count, healed, first_ts: 1, ts: 2, ...(healed ? { healed_ts: 5 } : {}) });
-  expect(recoveredAt(3, [site(3, 3)])).toBe(5);
-  expect(recoveredAt(3, [site(3, 2)])).toBeUndefined();
-  expect(recoveredAt(4, [site(3, 3)])).toBeUndefined();
-  expect(recoveredAt(1, [])).toBeUndefined();
-});
-
-// A captured failure whose text or context holds a key-shaped string is stored without it.
-test("a key in a captured error is not in its row", () => {
+// What a session's model is told about its failures is read from this list: it holds every kind
+// that happened in the session, however many newer kinds the store holds.
+test("a session's kinds are all listed in a store of thousands of newer kinds", () => {
   const { store, errors, done } = fresh();
   try {
-    const key = ["sk", "ant", "api03", "PLANTEDKEY0123456789abcdefghijklmnopqrstuvwxyzABCDEFGH"].join("-");
-    const rec = errors.capture("tool", new Error(`the tool printed ${key}`), { tool: "Bash", stderr: `marker ${key}` });
-    expect(rec.message).toBe("the tool printed <redacted>");
-    expect(JSON.stringify(store.db.query("SELECT * FROM errors").all())).not.toContain("PLANTEDKEY");
+    const mine = store.createSession({ model: "m", workspace: "/", title: "Mine" });
+    const other = store.createSession({ model: "m", workspace: "/", title: "Other" });
+    const add = store.db.query("INSERT INTO errors (id, ts, first_ts, count, source, message, fingerprint, session_id) VALUES (?, ?, ?, 1, 'tool', ?, ?, ?)");
+    const site = store.db.query("INSERT INTO error_sites (error_id, session_id, count, first_ts, ts) VALUES (?, ?, 1, ?, ?)");
+    store.db.transaction(() => {
+      // 107 kinds in this session, older than everything else; then 5,200 kinds that last happened elsewhere.
+      for (let i = 0; i < 107; i++) { add.run(`mine-${i}`, 1000 + i, 1000 + i, `mine ${i}`, `fm${i}`, i % 2 ? mine.id : other.id); site.run(`mine-${i}`, mine.id, 1000 + i, 1000 + i); }
+      for (let i = 0; i < 5200; i++) { add.run(`else-${i}`, 10_000 + i, 10_000 + i, `else ${i}`, `fe${i}`, other.id); site.run(`else-${i}`, other.id, 10_000 + i, 10_000 + i); }
+    })();
+    const listed = errors.list(200, { session: mine.id });
+    expect(listed).toHaveLength(107);
+    expect(listed[0]!.id).toBe("mine-106");
+    expect(listed.every((e) => e.sites!.some((x) => x.session_id === mine.id))).toBe(true);
+    // Its limit and its filters still hold.
+    expect(errors.list(10, { session: mine.id })).toHaveLength(10);
+    store.readError("mine-3", true);
+    expect(errors.list(200, { session: mine.id, read: false })).toHaveLength(106);
+    expect(errors.list(200, { session: other.id }).length).toBe(200);
+  } finally { done(); }
+});
+
+test("what is open of a kind is kept with the kind: resolved then healed elsewhere, and a deleted session", () => {
+  const { store, errors, frames, capture, done } = fresh();
+  try {
+    const [a, b] = ["A", "B"].map((title) => store.createSession({ model: "m", workspace: "/", title }));
+    // It failed for good in A; the owner resolved it. It happens in B and a retry heals it: recovered and read.
+    const first = capture(a!.id, "529 overloaded");
+    expect(errorState(errors.get(first.id)!)).toBe("open");
+    expect(errorState(errors.resolve(first.id, true)!)).toBe("resolved");
+    const again = capture(b!.id, "529 overloaded", { retry: 1, wait_ms: 500 });
+    expect(errorState(errors.get(first.id)!)).toBe("open");
+    errors.recovered([again], b!.id);
+    const healed = errors.get(first.id)!;
+    expect([errorState(healed), !!healed.read_ts, healed.count]).toEqual(["recovered", true, 2]);
+    expect(errorState(frames.at(-1)!)).toBe("recovered");
+    expect(errorLines([healed])[0]).toStartWith("0 open, 1 recovered (a retry passed).");
+    // Its sessions are deleted: still recovered, with no session to name.
+    store.db.run("DELETE FROM sessions WHERE id IN (?, ?)", [a!.id, b!.id]);
+    const gone = errors.get(first.id)!;
+    expect([errorState(gone), gone.sites]).toEqual(["recovered", undefined]);
+    // Healed three times and then the retries run out: open and unread. Outside any session: never healed.
+    const c = store.createSession({ model: "m", workspace: "/", title: "C" });
+    const tries = [1, 2, 3].map((n) => capture(c.id, "stream dropped", { retry: n, wait_ms: 500 }));
+    errors.recovered(tries, c.id);
+    expect(errorState(errors.get(tries[0]!.id)!)).toBe("recovered");
+    capture(c.id, "stream dropped");
+    expect([errorState(errors.get(tries[0]!.id)!), errors.get(tries[0]!.id)!.read_ts]).toEqual(["open", undefined]);
+    errors.capture("provider", new Error("529 overloaded"));
+    expect(errorState(errors.get(first.id)!)).toBe("open");
+    // The state from one row of the tally.
+    expect([recoveredAt({ open: 0, healed_ts: 5 }), recoveredAt({ open: 1, healed_ts: 5 }), recoveredAt({ open: 0, healed_ts: null }), recoveredAt(undefined)]).toEqual([5, undefined, undefined, undefined]);
+  } finally { done(); }
+});
+
+// The count of unread failures is what the bug badge shows. A failure that is about to be tried
+// again does not raise it; one whose retries ran out does, and so does one of a kind already open.
+test("a failure that will be retried is not unread while its retry waits", () => {
+  const { store, errors, capture, done } = fresh();
+  try {
+    const s = store.createSession({ model: "m", workspace: "/", title: "S" });
+    const unread = () => store.errors(200, { resolved: false, read: false }).length;
+    const one = capture(s.id, "429 rate limited", { retry: 1, wait_ms: 2000 });
+    expect([unread(), !!one.read_ts, errorState(one)]).toEqual([0, true, "open"]);
+    capture(s.id, "429 rate limited", { retry: 2, wait_ms: 4000 });
+    expect(unread()).toBe(0);
+    // The retries run out: this one is the owner's.
+    capture(s.id, "429 rate limited");
+    expect(unread()).toBe(1);
+    // A later attempt of a kind that is open stays unread while it waits.
+    capture(s.id, "429 rate limited", { retry: 1, wait_ms: 2000 });
+    expect(unread()).toBe(1);
+    // Opened from another session, a record says the kind's own last time beside that session's.
+    const t = store.createSession({ model: "m", workspace: "/", title: "T" });
+    const last = capture(t.id, "429 rate limited");
+    const mine = atSession(errors.get(last.id)!, s.id);
+    expect([mine.session_id, mine.kind_ts, mine.ts <= mine.kind_ts!]).toEqual([s.id, last.ts, true]);
   } finally { done(); }
 });

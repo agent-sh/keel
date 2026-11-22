@@ -96,7 +96,11 @@ export function buildBundle(store: Store, tracer: Tracer, o: BundleOpts): { mark
   if (e) {
     out.push("## Failure", "");
     out.push(`- Source: ${e.source}; error id \`${e.id}\``);
-    out.push(`- Seen ${e.count ?? 1} time(s): first ${iso(e.first_ts ?? e.ts)}, last ${iso(e.ts)}${e.resolved_ts ? `, marked resolved ${iso(e.resolved_ts)}` : ""}`);
+    // The kind's own count and times; then this session's, when the kind happened elsewhere too.
+    const n = e.count ?? 1;
+    out.push(`- Seen ${n} ${n === 1 ? "time" : "times"} in all: first ${iso(e.first_ts ?? e.ts)}, last ${iso(e.kind_ts ?? e.ts)}${e.resolved_ts ? `, marked resolved ${iso(e.resolved_ts)}` : ""}`);
+    const here = e.sites?.find((x) => x.session_id === sid);
+    if (here && here.count < n) out.push(`- In this session: ${here.count} ${here.count === 1 ? "time" : "times"}, last ${iso(here.ts)}`);
     // Every session the kind happened in, each with its own count: the bundle is of one of them.
     // A session's own bundle names no other session.
     if (e.recovered_ts) out.push(`- Recovered: each time, a retry of the request passed (last ${iso(e.recovered_ts)}).`);
