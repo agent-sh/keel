@@ -312,7 +312,7 @@ test("while the owner is away, one digest tells what each session did, what wait
     const away1 = await textOf("/api/away?format=text");
     writeFileSync(join(SHOTS, "overview-02-away.txt"), away1);
     expect(tokensOf(away1)).toBeLessThan(TEXT_TOKENS);
-    expect(away1).toMatch(/^While you are away, since \d\d:\d\d UTC \(\d+ s\): \d of the sessions' own turns ended in 4 sessions, 2 failed; 1 approval waits; 1 agent parked; \$\d+\.\d+ spent in all\.\n/);
+    expect(away1).toMatch(/^While you are away, since \d\d:\d\d:\d\d UTC([+-]\d\d:\d\d)? \(\d+ s\): \d of the sessions' own turns ended in 4 sessions, 2 failed; 1 approval waits; 1 agent parked; \$\d+\.\d+ spent in all\.\n/);
     expect(away1).toMatch(new RegExp(`  "Billing check", failed: 1 turn ended, 1 failed \\(billing\\)  \\[session=${billing.slice(-12)}\\]`));
     expect(away1).toMatch(/  "Changelog", done: 2 turns ended; \$\d+\.\d+  \[session=/);
     expect(away1).toContain("2 other sessions: nothing happened.");
@@ -356,7 +356,7 @@ test("while the owner is away, one digest tells what each session did, what wait
     expect(twice.spans[0]).toEqual(back.spans[0]);
     expect(row(twice, fine)).toMatchObject({ turns: 2 });
     expect(twice.sessions.map((r) => [r.id, r.turns, r.failed])).toEqual(back.sessions.map((r) => [r.id, r.turns, r.failed]));
-    expect(await textOf("/api/away?format=text")).toMatch(/^While you were away, 2 times between \d\d:\d\d and \d\d:\d\d UTC \(\d+ s in all\): /);
+    expect(await textOf("/api/away?format=text")).toMatch(/^While you were away, 2 times between \d\d:\d\d:\d\d and \d\d:\d\d:\d\d UTC([+-]\d\d:\d\d)? \(\d+ s in all\): /);
 
     // Opened, a row a session, in the daemon's own words. Opening it is seeing it: the daemon lets it go,
     // and it stays on screen until the Inbox closes.
@@ -401,7 +401,7 @@ test("while the owner is away, one digest tells what each session did, what wait
     await page.waitForTimeout(2500); // past the block's second look
     await expect(block).toHaveCount(0);
     // A window that is asked for is told whether or not the owner was away, up to a week back.
-    expect(await textOf("/api/away?since=1h&format=text")).toMatch(/^From \d\d:\d\d to \d\d:\d\d UTC \(1 h\): \d of the sessions' own turns ended in 5 sessions, 2 failed; /);
+    expect(await textOf("/api/away?since=1h&format=text")).toMatch(/^From \d\d:\d\d:\d\d to \d\d:\d\d:\d\d UTC([+-]\d\d:\d\d)? \(1 h\): \d of the sessions' own turns ended in 5 sessions, 2 failed; /);
     expect((await fetch(`${d.url}/api/away?since=30d`)).status).toBe(400);
   } finally {
     d.proc.kill("SIGTERM");
