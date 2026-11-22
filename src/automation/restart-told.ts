@@ -13,8 +13,9 @@
 // since the restart is not named: its report said what became of it. Nothing
 // is said twice: a parent is marked told when the line is stored, so a daemon
 // that goes down first tells it at its next start, from the record of the
-// start before, unless the parent was given input since that start: what it
-// was told or did since is newer than the record.
+// start before, unless the parent was given input since that start (other
+// than a restart's own note): what it was told or did since is newer than
+// the record.
 import type { Restart, RestartTurn } from "../admin/life-rows.ts";
 import { restarts } from "../admin/life.ts";
 import { addNotice, hasNotice } from "../tools/jobs.ts";
@@ -74,10 +75,13 @@ function owed(r: Restart, parent: string, skip?: Set<string>, now = Date.now()):
   return { fates, ready: !pending || now - r.up_ms >= SETTLE_MS };
 }
 
-// When the parent was last given input (a prompt, a report, a wake, a line of the harness).
+// When the parent was last given input (a prompt, a report, a wake), other than a restart's own note
+// to it: that note says its turn was cut, and nothing of its agents. Asked as a fact (the newest
+// such row, found by the session's index): the session is not brought into memory for it.
 function lastInput(parent: string): number | undefined {
-  for (const e of D().store.back(parent)) if (e.kind === "user") return e.ts;
-  return undefined;
+  return D().store.db
+    .query<{ ts: number }, [string]>("SELECT ts FROM events WHERE session_id = ? AND kind = 'user' AND COALESCE(json_extract(data, '$.origin'), '') != 'restart' ORDER BY seq DESC LIMIT 1")
+    .get(parent)?.ts;
 }
 
 // Lines up the line for each parent that is owed one. `current`: the record as it stands when the

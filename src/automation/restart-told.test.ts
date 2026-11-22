@@ -169,11 +169,38 @@ test("a line a daemon died with is told by the next start, once, unless the pare
   r3.finish(() => undefined);
   tellEarlier(r3.last());
   drainNotices(parent.id);
-  store.append(parent.id, "user", { text: "go on" });
-  const { r: r4 } = w.start(1004, Date.now() + 1000);
+  // The parent's own turn was cut too, and the next start continues it with its note: that note says nothing
+  // of the agents, and is no reason to drop the line. (It was: any input since the start settled the record.)
+  store.append(parent.id, "user", { text: "[harness] The daemon restarted during your previous turn.", origin: "restart" });
+  // (Each start at a time of its own: on a fast machine two would share a millisecond, and which is the earlier would not be said.)
+  const t4 = Date.now();
+  const { r: r4, h: h4 } = w.start(1004, t4);
+  h4.turnCut!(b.s, w.cut(31));
+  h4.turnCutSettled!(b.s, w.cut(31), "continued");
   r4.finish(() => undefined);
   tellEarlier(r4.last());
-  expect(send()).toEqual([]);
-  expect(r4.recent(2)[1]!.told).toEqual({ [parent.id]: {} });
+  expect(send().sort()).toEqual([
+    `[harness] A daemon restart cut 1 of your agents mid-turn: "A02" (${b.id}) resumed. A resumed agent reports as before: nothing to send it.`,
+    `[harness] An earlier daemon restart cut 1 of your agents mid-turn: "A01" (${a.id}) resumed. A resumed agent reports as before: nothing to send it.`,
+  ]);
+  // --- the same once more (A04 cut, the line lost with its daemon), and then the owner's prompt: what the
+  // parent knows is newer than that record, and a later start does not bring it up.
+  const { r: r5, h: h5 } = w.start(1005, t4 + 10);
+  h5.turnCut!(c.s, w.cut(41));
+  h5.turnCutSettled!(c.s, w.cut(41), "continued");
+  r5.finish(() => undefined);
+  tellEarlier(r5.last());
+  drainNotices(parent.id);
+  setSystemTime(new Date(t4 + 60));
+  try {
+    store.append(parent.id, "user", { text: "go on" });
+    const { r: r6 } = w.start(1006, t4 + 1000);
+    r6.finish(() => undefined);
+    tellEarlier(r6.last());
+    expect(send()).toEqual([]);
+    expect(r6.recent(2)[1]!.told).toEqual({ [parent.id]: {} });
+  } finally {
+    setSystemTime();
+  }
   store.db.close();
 });
