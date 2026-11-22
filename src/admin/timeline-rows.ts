@@ -104,7 +104,7 @@ const LEAD: Record<string, string> = {
   command: "Command ended", provider_wait: "Resumed by itself after the provider's wait",
 };
 // `continued`: the harness went on with a failed turn by itself when the wait the provider asked for was over (its round).
-export type Opener = { about?: unknown; origin?: unknown; kind?: unknown; job?: unknown; queue_id?: unknown; wait_id?: unknown; agent_id?: unknown; loop_id?: unknown; run_id?: unknown; from?: unknown; outcome?: unknown; status?: unknown; continued?: unknown } | null | undefined;
+export type Opener = { about?: unknown; origin?: unknown; kind?: unknown; job?: unknown; queue_id?: unknown; wait_id?: unknown; agent_id?: unknown; loop_id?: unknown; run_id?: unknown; from?: unknown; outcome?: unknown; status?: unknown; continued?: unknown; parts?: unknown } | null | undefined;
 export const whoWords = (key: string) => WHO[key] ?? "something else";
 export function originOf(o: Opener): { key: string; words: string; lead: string; queued: boolean } {
   const origin = str(o?.origin), kind = str(o?.kind);
@@ -169,7 +169,9 @@ export function turnRow(t: TurnInput): TimelineRow {
   const who = originOf(t.opener);
   const outcome = t.end?.unstarted ? "unstarted" : t.end ? outcomeOf(t.end.reason, t.end.stopped_by) : t.running ? "running" : "open";
   const told = who.key === "wait" && t.wake ? ` (${waitWords(t.wake.kind)}${t.wake.ms !== undefined && t.wake.ms >= 0 ? `, after ${dur(t.wake.ms)}` : ""})`
-    : who.key === "subagent" && t.agent ? ` from ${title(t.agent.title, "an agent")}` : "";
+    : who.key === "subagent" && t.agent ? ` from ${title(t.agent.title, "an agent")}`
+      // Several reports in one input: how many (each is named in its own row of the agent's end).
+      : who.key === "subagent" && Number(t.opener?.parts) > 1 ? ` from ${Number(t.opener!.parts)} agents` : "";
   const head = `${who.lead}${told}${who.queued ? " (queued)" : ""}`;
   const n = plural(t.steps, "step");
   const after = t.steps ? ` after ${n}` : " before its first step";

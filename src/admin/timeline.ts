@@ -267,7 +267,7 @@ export class Timeline {
     const q = this.store.db.query<{ kind: string; parent: string | null; session_id: string; o: string | null }, [string]>(
       `SELECT kind, parent, session_id, CASE WHEN kind = 'user' THEN json_object('origin', data ->> '$.origin', 'kind', data ->> '$.kind', 'queue_id', data ->> '$.queue_id',
                   'wait_id', data ->> '$.wait_id', 'agent_id', data ->> '$.agent_id', 'loop_id', data ->> '$.loop_id', 'run_id', data ->> '$.run_id', 'from', data ->> '$.from',
-         'outcome', data ->> '$.outcome', 'status', data ->> '$.status', 'job', data ->> '$.job', 'continued', data ->> '$.continued',
+         'outcome', data ->> '$.outcome', 'status', data ->> '$.status', 'job', data ->> '$.job', 'continued', data ->> '$.continued', 'parts', json_array_length(data, '$.parts'),
          'about', CASE WHEN data ->> '$.kind' IS NULL AND COALESCE(data ->> '$.origin', '') IN ('', 'steer', 'queued', 'voice', 'cli') THEN substr(data ->> '$.text', 1, 240) END)
          WHEN kind = 'turn_end' THEN json_object('reason', data ->> '$.reason') END AS o
        FROM events WHERE id = ?`);

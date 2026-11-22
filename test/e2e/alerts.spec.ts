@@ -310,8 +310,9 @@ test("alerts: agents that fail are one alert a cause, and their coordinator coun
   const headline = Number((await page.getByTestId("home-count-fail").textContent())?.match(/\d+/)?.[0]);
   await expect(page.getByTestId("sum-fail")).toHaveText(new RegExp(`^\\s*${headline}\\s*failed`, "i"));
   await shoot(page, "alerts-04-agents-failed");
-  // Looked at: it reads as itself again.
-  await page.goto(`/s/${session.id}`);
+  // Looked at (opened from its home row): it reads as itself again.
+  await page.locator(`[data-testid="home-session"][data-session="${session.id}"]`).getByTestId("home-see").click();
+  await expect(page).toHaveURL(new RegExp(`/s/${session.id}`));
   await expect(page.locator(`[data-testid="session-row"][data-session="${session.id}"]`)).not.toHaveAttribute("data-watch", "fail", { timeout: 30_000 });
   const settings = (await (await request.get(`/api/sessions/${session.id}?events=0`)).json()).session.settings;
   expect(settings.agents_fail_seen_ms).toBe(settings.agents_failed_ms);

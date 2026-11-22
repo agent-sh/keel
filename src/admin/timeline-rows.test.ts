@@ -70,6 +70,8 @@ test("who started a turn: what the prompt says it is, then how it arrived", () =
   expect(originOf({ kind: "something-new" })).toMatchObject({ words: "something else", lead: "Other input" });
   // The owner's Continue is stored as a harness prompt; a note the harness writes names its kind.
   expect(originOf({ origin: "harness" })).toMatchObject({ key: "continue", lead: "Owner's Resume", words: "the owner's Resume" });
+  // Several reports in one input say how many agents they are from.
+  expect(turnRow({ start, opener: { kind: "subagent", parts: 3 }, end: { reason: "end_turn" }, steps: 1, tools: 0, failed_tools: 0 }).text).toBe("Agent report from 3 agents, 1 step");
   // The harness went on by itself after the provider's wait: not the owner's Resume.
   expect(originOf({ origin: "harness", continued: 1 })).toMatchObject({ key: "provider_wait", lead: "Resumed by itself after the provider's wait" });
   expect(originOf({ origin: "harness", kind: "harness" })).toMatchObject({ key: "harness", lead: "Harness note" });

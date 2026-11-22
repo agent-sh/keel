@@ -108,7 +108,7 @@ test("one report tells every session's state, failure, run time and spend, as th
     expect(group("Waiting (1):")[0]).toMatch(/"Rate limited fetch": resumes by itself when the wait the provider asked for is over, for \d+ m?s, due in 1[45] min; 1 turn, 1 failed \(rate limit\)  \[session=[0-9a-f]{12}\]$/);
     // The turn and the error of a failure are in its session's timeline, not in this text.
     expect(text).not.toMatch(/turn=|error=/);
-    expect(group("Stopped (1):")[0]).toMatch(/"Stopped by me": stopped \d+ m?s ago; 1 turn/);
+    expect(group("Stopped (1):")[0]).toMatch(/"Stopped by me": stopped by the owner \d+ m?s ago; 1 turn/);
     expect(group("Done (9):")).toHaveLength(9);
     expect(text).toMatch(/"Changelog": finished \d+ m?s ago; 2 turns; \$\d+\.\d+  \[session=/);
     expect(text).toContain('Not started (2): "Parked idea", "Not yet begun"');

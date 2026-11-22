@@ -53,7 +53,7 @@ export function tally(turns: RestartTurn[]): string {
 // choose to go down, or a turn was not continued. A planned restart that
 // continued everything is in the log and the Daemon page, not a row each time.
 export const restartNeedsEye = (r: Restart): boolean =>
-  r.before?.how === "killed" || r.before?.how === "crash" || r.before?.how === "signal" || r.turns.some((t) => t.state === "held" || t.state === "left");
+  r.before?.how === "killed" || r.before?.how === "crash" || r.turns.some((t) => t.state === "held" || t.state === "left");
 
 // One sentence: when it went down, how, when it came back, and what that cut.
 export function restartSummary(r: Restart): string {
