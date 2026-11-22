@@ -9,6 +9,7 @@ import { machineName } from "../lib/fleet.ts";
 import { api, reportError } from "../lib/store.ts";
 import { seedComposer } from "../lib/ui.ts";
 import { cn } from "../lib/utils.ts";
+import { ContentFrame } from "./ContentFrame.tsx";
 
 type Port = { port: number; pid: number; process: string; open: boolean; point?: boolean; url?: string };
 
@@ -73,13 +74,13 @@ export function PreviewPanel({ session }: { session: Session }) {
         )}
       </div>
       {cur ? (
-        <iframe
+        <ContentFrame
+          what="preview"
           key={`${cur.url}-${n}`}
-          ref={frame}
+          frameRef={frame}
           src={cur.url}
           title={`Preview of port ${cur.port}`}
           data-testid="preview-frame"
-          data-content-frame=""
           sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads"
           className="min-h-0 flex-1 bg-white"
         />

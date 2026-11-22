@@ -198,6 +198,67 @@ fetch("/api/sessions").then(() => document.body.append(" reached the daemon"), (
   await request.delete(`/api/sessions/${s.id}`);
 });
 
+// The review's loop case: a page that asks for the keyboard as fast as it can, from the moment
+// it loads, with no press of the owner's in it. An engine that refuses a frame the focus it
+// was not given never lets it (the desktop app's do); in a browser that does not, the page takes
+// the frame away at its second take and says so, and what the owner types is the message box's.
+test("artifacts: a page that keeps taking the keyboard is stopped, and typing stays in the message box", async ({ page, request }) => {
+  const word = `lp${Date.now().toString(36)}`;
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", word);
+  mkdirSync(ws, { recursive: true });
+  const s = (await (await request.post("/api/sessions", { data: { workspace: ws, model: "scripted:stand-in", title: `Loop ${word}` } })).json()).session;
+  await request.put(`/api/sessions/${s.id}/permissions`, { data: { mode: "full-auto" } });
+  const { dir } = await (await request.get(`/api/sessions/${s.id}/artifacts`)).json();
+  const loop = `<!doctype html><input id="i" autofocus><script>
+const i = document.getElementById("i");
+setInterval(() => { window.focus(); i.focus(); i.click(); }, 0);
+</script>`;
+  try {
+    await page.goto(`/s/${s.id}`);
+    await openPanel(page, "artifacts");
+    await request.post(`/api/sessions/${s.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Write", input: { file_path: `${dir}/loop.html`, content: loop } }])}` } });
+    const rows = page.getByTestId("artifact-row");
+    await expect(rows).toHaveCount(1, { timeout: 30_000 });
+    const box = page.getByTestId("composer");
+    await rows.first().click();
+    // The frame carries the policy an engine can refuse the focus by.
+    const shown = page.getByTestId("artifact-frame");
+    await expect(shown).toHaveAttribute("allow", "focus-without-user-activation 'none'");
+    const field = page.frameLocator('[data-testid="artifact-frame"]').locator("#i");
+    await expect(field).toBeVisible();
+    // The owner goes to the message box and types while the frame asks: every character is the box's.
+    await box.click();
+    const typed = "k".repeat(41);
+    await page.keyboard.type(typed, { delay: 20 });
+    await expect(box).toHaveValue(typed);
+    if (await shown.count()) await expect(field).toHaveValue("");
+    // The owner's own press in the frame gives it the keyboard.
+    if (await shown.count()) {
+      await field.click();
+      await page.keyboard.type("abc");
+      await expect(field).toHaveValue("abc");
+    }
+    // The owner goes back to the message box; the frame goes on asking. Where the engine lets a
+    // frame the owner was in take the keyboard, the page takes the frame away at its second
+    // take and says so in its place.
+    await box.click();
+    const stopped = page.getByTestId("frame-stopped");
+    await expect(stopped).toBeVisible({ timeout: 15_000 });
+    await expect(stopped).toContainText("kept taking the keyboard and was stopped");
+    await expect(shown).toHaveCount(0);
+    await box.click();
+    await page.keyboard.type("more", { delay: 20 });
+    // (Where in the text the click put the caret is not the point: all of it is in the box.)
+    await expect.poll(async () => (await box.inputValue()).replace("more", "")).toBe(typed);
+    await shoot(page, "artifacts-06-frame-stopped");
+    // The owner may have it back.
+    await stopped.getByTestId("frame-show-again").click();
+    await expect(shown).toBeVisible();
+  } finally {
+    await request.delete(`/api/sessions/${s.id}`).catch(() => {});
+  }
+});
+
 // A page a session wrote gets the keyboard by the owner's own act (a press over it, Tab into
 // it), never by asking for it. The review's page: once clicked in, it asks for the focus again
 // and again from a timer; the owner then clicks the message box and types or pastes, and the
@@ -231,16 +292,22 @@ document.addEventListener("click", (e) => { if (e.isTrusted) for (let i = 1; i <
     await expect(field).toHaveValue("in the page");
     expect(await inFrame()).toBe(true);
 
-    // The owner goes to the message box. The page asks for the focus sixty times over four seconds.
+    // The owner goes to the message box. The page asks for the keyboard again within a moment,
+    // and again: at its second take it is taken away, the page says so in its place, and the
+    // keyboard is the message box's.
     const box = page.getByTestId("composer");
     await box.click();
-    await page.keyboard.type("the owner's words, typed while the page asks for the keyboard", { delay: 45 });
-    await expect(box).toHaveValue("the owner's words, typed while the page asks for the keyboard");
-    await expect(field).toHaveValue("in the page");
-    await page.waitForTimeout(1500); // the rest of the page's asking
+    await expect(page.getByTestId("frame-stopped")).toBeVisible();
+    await expect(page.getByTestId("artifact-frame")).toHaveCount(0);
+    await expect(box).toBeFocused();
+    await page.keyboard.type("the owner's words, typed after the page asked for the keyboard", { delay: 45 });
+    await expect(box).toHaveValue("the owner's words, typed after the page asked for the keyboard");
     expect(await inFrame()).toBe(false);
     await expect(box).toBeFocused();
     await shoot(page, "artifacts-05-keyboard-stays");
+    // Shown again, it is a page like any other (this one asks only once it was clicked in).
+    await page.getByTestId("frame-show-again").click();
+    await expect(field).toBeVisible();
 
     // Tab from the control before it still reaches the page.
     await page.evaluate(() => {
