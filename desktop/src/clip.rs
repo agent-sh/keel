@@ -21,6 +21,11 @@ pub fn fit(width: i32, height: i32, edge: i32) -> (i32, i32) {
     (((width as f64 * scale).round() as i32).max(1), ((height as f64 * scale).round() as i32).max(1))
 }
 
+/// Whether the formats a clipboard offers name a picture.
+pub fn names_picture<'a>(mut mimes: impl Iterator<Item = &'a str>) -> bool {
+    mimes.any(|m| m.starts_with("image/"))
+}
+
 #[derive(Default)]
 pub struct Gate {
     input: Option<Instant>,
@@ -69,6 +74,15 @@ mod tests {
         assert_eq!(fit(40, 30, 1568), (40, 30));
         assert_eq!(fit(30000, 2, 1568), (1568, 1));
         assert_eq!(fit(800, 600, 0), (800, 600));
+    }
+
+    // The review's case: bytes that are no picture, offered as one, read as an empty clipboard.
+    #[test]
+    fn a_clipboard_that_offers_a_picture_is_known_by_its_formats() {
+        assert!(names_picture(["text/plain", "image/png"].into_iter()));
+        assert!(names_picture(["image/jpeg"].into_iter()));
+        assert!(!names_picture(["text/plain", "text/html", "UTF8_STRING"].into_iter()));
+        assert!(!names_picture(std::iter::empty()));
     }
 
     #[test]

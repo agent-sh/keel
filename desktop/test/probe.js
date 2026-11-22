@@ -31,7 +31,7 @@
   addEventListener("keel-shell", (e) => {
     const d = e.detail || {};
     if (d.copied && d.copied.id >= 9000) say(`COPIED id=${d.copied.id} ok=${d.copied.ok}`);
-    if (d.pasted && d.pasted.id >= 9000) say(`PASTED id=${d.pasted.id} refused=${!!d.pasted.refused} text=${JSON.stringify(d.pasted.text ?? null)} images=${(d.pasted.images || []).length}${d.pasted.images && d.pasted.images[0] ? ` size=${d.pasted.images[0].width}x${d.pasted.images[0].height} from=${(d.pasted.from || []).join("x")} chars=${d.pasted.images[0].data.length}` : ""}`);
+    if (d.pasted && d.pasted.id >= 9000) say(`PASTED id=${d.pasted.id} refused=${!!d.pasted.refused} text=${JSON.stringify(d.pasted.text ?? null)} images=${(d.pasted.images || []).length}${d.pasted.images && d.pasted.images[0] ? ` size=${d.pasted.images[0].width}x${d.pasted.images[0].height} from=${(d.pasted.from || []).join("x")} chars=${d.pasted.images[0].data.length}` : ""} failed=${!!d.pasted.failed}`);
   });
   const copy = (id, text) => { window.keelShell.post({ t: "copying" }); window.keelShell.post({ t: "copy", id, text }); };
   addEventListener("keydown", (e) => {

@@ -289,6 +289,11 @@ open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(
   (wl-copy -t image/png < "$D/large.png" > /dev/null 2>&1 &); sleep 1.5
   $A key --id "$WS" F5 > /dev/null 2>&1
   check "a large pasted picture is handed over at the size the page keeps (3000x2000 as 1568x1045)" "wait_for 15 \"grep -aq '^PROBE PASTED id=9005 refused=false .*images=1 size=1568x1045 from=3000x2000' '$D/shell.out'\""
+  # Bytes that are no picture, offered as one: said as a picture that could not be read, not as an empty clipboard.
+  head -c 300000 /dev/urandom > "$D/broken.png"
+  (wl-copy -t image/png < "$D/broken.png" > /dev/null 2>&1 &); sleep 1.5
+  $A key --id "$WS" F5 > /dev/null 2>&1
+  check "a picture that cannot be read is said to the page" "wait_for 15 \"grep -aq '^PROBE PASTED id=9005 refused=false .*images=0.* failed=true' '$D/shell.out'\""
   (wl-copy copied-by-the-check > /dev/null 2>&1 &); sleep 1
 fi
 $A key --id "$WS" F6 > /dev/null 2>&1

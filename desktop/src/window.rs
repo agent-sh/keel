@@ -519,9 +519,14 @@ impl Win {
         let (win, board) = (self.clone(), clipboard.clone());
         clipboard.read_text_async(gio::Cancellable::NONE, move |text| {
             let text = text.ok().flatten().map(|t| t.to_string());
+            // Whether the clipboard says it holds a picture, whatever comes of reading it.
+            let offered = crate::clip::names_picture(board.formats().mime_types().iter().map(|m| m.as_str()));
             board.read_texture_async(gio::Cancellable::NONE, move |texture| {
                 let Some(texture) = texture.ok().flatten() else {
-                    return win.tell(&serde_json::json!({ "pasted": { "id": id, "text": text, "images": [] } }));
+                    // A clipboard that says it holds a picture and gave none: the picture could not
+                    // be read, which is said, not passed off as an empty clipboard.
+                    let failed = offered;
+                    return win.tell(&serde_json::json!({ "pasted": { "id": id, "text": text, "images": [], "failed": failed } }));
                 };
                 let (width, height) = (texture.width(), texture.height());
                 glib::spawn_future_local(async move {
