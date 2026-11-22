@@ -313,18 +313,3 @@ test("the spans a kill left running are owed to the collector until it takes the
     rmSync(dir, { recursive: true, force: true });
   }
 });
-
-// A tool that failed and printed a key: its span's error is stored without it.
-test("a key a failed tool printed is not in its span's error", () => {
-  const x = tracer();
-  try {
-    const key = ["sk", "ant", "api03", "PLANTEDKEY0123456789abcdefghijklmnopqrstuvwxyzABCDEFGH"].join("-");
-    const s = x.store.createSession({ workspace: x.dir, model: "p:m" });
-    x.hooks.toolRan!(s, { id: "c9", tool: { name: "Bash" }, input: { command: "deploy" } } as any, { type: "tool_result", tool_use_id: "c9", is_error: true, content: `tool-marker ${key}\nExit code 5` } as any, { ms: 1, outcome: "error" });
-    const span = x.t.span(toolSpanId(s.id, "c9"))!;
-    expect(span.error).toBe("tool-marker <redacted>\nExit code 5");
-    expect(JSON.stringify(x.store.db.query("SELECT * FROM spans").all())).not.toContain("PLANTEDKEY");
-  } finally {
-    x.close();
-  }
-});

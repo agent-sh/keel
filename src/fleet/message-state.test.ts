@@ -1,5 +1,6 @@
-// A message between sessions has one true state in the store, and a session
-// lists what it sent and received with it.
+// A message between sessions has one true state in the store. (Queued, then delivered, then
+// handled, and the list a session shows of it, are checked through the daemon in
+// test/e2e/past-truth.spec.ts. Here: what that workload does not reach.)
 import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -45,28 +46,14 @@ function fresh() {
   return { store, bus, states, a, b, stateOf, queued, read, end, settle, done: () => { states.stop(); store.db.close(); } };
 }
 
-test("queued, then delivered when the receiver reads it, then handled when that turn ends", async () => {
-  const { a, b, store, stateOf, queued, read, end, settle, done } = fresh();
+test("a message read by a turn that failed is handled, with how that turn ended", async () => {
+  const { stateOf, queued, read, end, done } = fresh();
   try {
-    const { q, meta } = queued("m1", "Tell me when the build is green.");
-    expect(stateOf("m1").state).toBe("queued");
+    const { q, meta } = queued("m1", "And the tests?");
     read(q, meta);
     expect(stateOf("m1").state).toBe("delivered");
-    // The check a moment after the row left the queue finds it read, not dropped.
-    await settle();
-    expect(stateOf("m1").state).toBe("delivered");
-    end("end_turn");
-    expect([stateOf("m1").state, stateOf("m1").reason, typeof stateOf("m1").state_ms]).toEqual(["handled", null, "number"]);
-    // A turn that failed read it too: handled, and the row says how its turn ended.
-    const two = queued("m2", "And the tests?");
-    read(two.q, two.meta);
     end("error");
-    expect([stateOf("m2").state, stateOf("m2").reason]).toEqual(["handled", "the turn that read it failed"]);
-    // Both ends list it with the same state.
-    const sent = peerMessages(store.db, a.id), got = peerMessages(store.db, b.id);
-    expect(sent.map((m) => [m.id, m.direction, m.other.title, m.state])).toEqual([["m2", "sent", "Receiver busy", "handled"], ["m1", "sent", "Receiver busy", "handled"]]);
-    expect(got.map((m) => [m.id, m.direction, m.other.title, m.state])).toEqual([["m2", "received", "Sender", "handled"], ["m1", "received", "Sender", "handled"]]);
-    expect(peerMessageLines(sent.slice(1), () => "T")[0]).toBe('T  sent to "Receiver busy": handled at T. Tell me when the build is green.');
+    expect([stateOf("m1").state, stateOf("m1").reason]).toEqual(["handled", "the turn that read it failed"]);
   } finally { done(); }
 });
 

@@ -312,28 +312,3 @@ test("a rollup that drifted from the ledger is found by its count and made again
   expect(checkRollup(store.db, false).ok).toBe(true);
   expect(captured).toEqual([`The usage rollup did not match the ledger and was made again from it (${drift.ledger_calls} requests).`]);
 });
-
-// Agent trees: every session's sums go to the session at the top of its tree, and the answer names the listed sessions.
-test("spend by agent tree sums a session with the agents under it, dearest first", async () => {
-  const flat = (await ask({ group: "session", sort: "cost" })).body.buckets as { key: string; priced_cost_usd: number; calls: number }[];
-  const parents = new Map(query<{ id: string; parent_id: string }, []>("SELECT id, parent_id FROM sessions WHERE parent_id IS NOT NULL").all().map((r) => [r.id, r.parent_id]));
-  const top = (id: string) => { let at = id; for (let p = parents.get(at); p; p = parents.get(at)) at = p; return at; };
-  const want = new Map<string, { cost: number; calls: number; agents: number }>();
-  for (const b of flat) {
-    const t = want.get(top(b.key)) ?? want.set(top(b.key), { cost: 0, calls: 0, agents: 0 }).get(top(b.key))!;
-    t.cost += b.priced_cost_usd;
-    t.calls += b.calls;
-    if (top(b.key) !== b.key) t.agents++;
-  }
-  const { body, sessions } = await ask({ group: "tree", sort: "cost" });
-  const got = body.buckets as { key: string; priced_cost_usd: number; calls: number; agents: number; own_cost_usd: number; agents_cost_usd: number }[];
-  expect(got.length).toBe(want.size);
-  expect(got.length).toBeLessThan(flat.length);
-  for (const g of got) {
-    const w = want.get(g.key)!;
-    expect([g.key, g.calls, g.agents, Math.abs(g.priced_cost_usd - w.cost) < 1e-9, Math.abs(g.own_cost_usd + g.agents_cost_usd - g.priced_cost_usd) < 1e-9]).toEqual([g.key, w.calls, w.agents, true, true]);
-  }
-  expect(got.map((g) => g.priced_cost_usd)).toEqual([...got.map((g) => g.priced_cost_usd)].sort((a, b) => b - a));
-  // Every listed session that is still there is named.
-  for (const g of got) if (query("SELECT 1 FROM sessions WHERE id = ?").get(g.key)) expect(typeof sessions![g.key]!.title).toBe("string");
-});

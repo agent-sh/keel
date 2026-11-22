@@ -27,8 +27,8 @@ const KEY = ["sk", "ant", "api03", "PLANTEDKEY0123456789abcdefghijklmnopqrstuvwx
 const made: string[] = [];
 test.afterAll(() => { for (const d of made) rmSync(d, { recursive: true, force: true }); });
 
-test("after a kill, the errors, the digest, the log, spend, activity, times, search and exported spans say what happened", async ({ page }) => {
-  test.setTimeout(420_000);
+// What the workload left, for every test below: one daemon, killed once and started again.
+async function build() {
   const state = join(ROOT, `past-truth-${Date.now()}`);
   made.push(state);
   mkdirSync(state, { recursive: true });
@@ -63,6 +63,13 @@ test("after a kill, the errors, the digest, the log, spend, activity, times, sea
   // Where the run is, in the log of a run that stops part way.
   const t0 = Date.now();
   const mark = (what: string) => console.log(`[past-truth] ${((Date.now() - t0) / 1000).toFixed(1)} s: ${what}`);
+  // Where the run is, in the log of a run that stops part way.
+  const close = async () => {
+    // (A daemon the test already killed has no exit code, only its signal: it is not waited for again.)
+    if (d.proc.exitCode === null && d.proc.signalCode === null) { d.proc.kill("SIGKILL"); await exited(d.proc); }
+    collector.closeAllConnections();
+    await new Promise((r) => collector.close(r));
+  };
   try {
     const ids: Record<string, string> = {};
     const open = async (title: string, mode = "full-auto") => {
@@ -98,10 +105,8 @@ test("after a kill, the errors, the digest, the log, spend, activity, times, sea
     await open("Receiver"); await send("Receiver", script([bash("sleep 4; echo busy-done")]));
     await open("Sender"); await run("Sender", script([{ name: "keel__session_send", input: { to: ids.Receiver, text: "Tell me when the build is green." } }]));
     const sentAs = async () => (await call(`/api/sessions/${ids.Sender}/peer-messages`)).messages as { state: string; direction: string; other: { title: string }; state_ms: number | null }[];
-    expect((await sentAs()).map((m) => [m.direction, m.other.title, m.state])).toEqual([["sent", "Receiver", "queued"]]);
+    const sentFirst = (await sentAs()).map((m) => [m.direction, m.other.title, m.state]);
     await expect.poll(async () => (await sentAs())[0]!.state, { timeout: 60_000 }).toBe("handled");
-    const got = (await call(`/api/sessions/${ids.Receiver}/peer-messages`)).messages;
-    expect([got[0].direction, got[0].other.title, got[0].state]).toEqual(["received", "Sender", "handled"]);
     // What the kill will find open: an approval that waits on the owner, and a command still running.
     await open("Needs approval", "default");
     await send("Needs approval", `Touch a file\n${script([bash("touch approval-marker.txt && rm -rf ./build-out")])}`);
@@ -128,19 +133,48 @@ test("after a kill, the errors, the digest, the log, spend, activity, times, sea
     await expect.poll(async () => !!(await call("/api/daemon")).last_start?.settled_ms, { timeout: 60_000 }).toBe(true);
 
     mark("the daemon is back");
-    // --- 5: a wait on the owner keeps the time it was first asked, across the restart
+    // The wait on the owner as the daemon tells it after the restart, and the digest that counts it.
+    // Then the owner denies it, so its turn ends and every span has an end.
     await expect.poll(async () => !!(await approval()), { timeout: 30_000 }).toBe(true);
-    await expect.poll(async () => (await askedAlert())?.ts, { timeout: 15_000 }).toBe(asked.alert);
-    expect((await approval())!.created).toBe(asked.approval);
-    const stateNow = (await call("/api/state")).states[ids["Needs approval"]!];
-    expect([stateNow.watch, stateNow.since]).toEqual(["need", asked.approval]);
-    // The digest counts it, then the owner denies it, so its turn ends and every span has an end.
+    await expect.poll(async () => !!(await askedAlert()), { timeout: 15_000 }).toBe(true);
+    const back = { approval: (await approval())!.created, alert: (await askedAlert()).ts as number, state: (await call("/api/state")).states[ids["Needs approval"]!] as { watch: string; since: number } };
     const away = await text(`/api/away?since=${since}&format=text`);
     const digest = (await call(`/api/away?since=${since}`)).away;
     await call(`/api/sessions/${ids["Needs approval"]}/approvals/${(await approval())!.id}`, { choice: "deny", reason: "not now" });
     for (const t of ["Needs approval", "Long tool"]) await idle(t);
+    const log = async (q: string) => ((await call(`/api/logs?limit=2000&q=${encodeURIComponent(q)}`)).lines as { text: string; ts: number; session?: string }[]);
+    // A stop that was asked for, and the next start: the last test's.
+    const stopAndStart = async () => { d.proc.kill("SIGTERM"); await exited(d.proc); d = await ownDaemon(state, d.port, env); };
+    return { url: () => d.url, state, collectorUrl, call, text, keel, log, ids, since, downAt, spans, orphans, asked, back, away, digest, sentFirst, sentAs, stopAndStart, close };
 
-    mark("1 errors");
+  } catch (e) {
+    await close();
+    throw e;
+  }
+}
+
+// One test a feature, over the same workload: a failure names what is not true. (They read; only the
+// last one stops the daemon. After a failure the worker starts again and builds the workload anew.)
+test.describe("after a kill", () => {
+  test.describe.configure({ timeout: 300_000 });
+  let W: Awaited<ReturnType<typeof build>>;
+  test.beforeAll(async () => { W = await build(); });
+  test.afterAll(async () => { await W?.close(); });
+
+  test("a wait on the owner keeps the time it was first asked, and a message its true state", async () => {
+    const { asked, back, sentFirst, sentAs, call, ids } = W;
+    // --- 5: the alert, the card and the session's state all count from when it was first asked, across the restart
+    expect([back.alert, back.approval]).toEqual([asked.alert, asked.approval]);
+    expect([back.state.watch, back.state.since]).toEqual(["need", asked.approval]);
+    // --- 7: a message sent to a session at work was queued, then handled, and both sides say so
+    expect(sentFirst).toEqual([["sent", "Receiver", "queued"]]);
+    expect((await sentAs()).map((m) => m.state)).toEqual(["handled"]);
+    const got = (await call(`/api/sessions/${ids.Receiver}/peer-messages`)).messages;
+    expect([got[0].direction, got[0].other.title, got[0].state]).toEqual(["received", "Sender", "handled"]);
+  });
+
+  test("a repeated error lists each session it happened in, and a healed one is recovered", async () => {
+    const { call, text, keel, ids, url } = W;
     // --- 1: errors
     const errors = (await call("/api/errors")).errors as ErrorRecord[];
     const billing = errors.find((e) => e.message.includes("credit balance"))!;
@@ -157,6 +191,11 @@ test("after a kill, the errors, the digest, the log, spend, activity, times, sea
     expect(bundle).toContain(`- Turn \`${siteA.turn_event}\``);
     expect(bundle).toContain(`span \`${siteA.span_id}\``);
     expect(bundle).not.toContain(`- Session \`${ids["Billing B"]}\``);
+    // It says the kind's own count and, beside it, this session's.
+    expect(bundle).toMatch(/- Seen 4 times in all: first [^\n]+, last [^\n]+\n- In this session: 2 times, last /);
+    // Asked with a session the kind never happened in, there is no failure of that session to bundle.
+    const never = await fetch(`${url()}/api/debug/bundle?error_id=${billing.id}&session_id=${ids.Push}`);
+    expect([never.status, (await never.json()).error]).toEqual([404, expect.stringMatching(/^that error did not happen in this session; it happened in "Billing [AB]", "Billing [AB]"$/)]);
     expect(((await call(`/api/errors?session=${ids["Billing A"]}`)).errors as ErrorRecord[]).map((e) => e.id)).toContain(billing.id);
     // A failure a retry healed is recovered: read, and not among the open ones.
     const healed = errors.find((e) => e.message.includes("529 overloaded"))!;
@@ -167,7 +206,11 @@ test("after a kill, the errors, the digest, the log, spend, activity, times, sea
     expect(listed.out).toMatch(new RegExp(`2x  Billing A, last \\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d:\\d\\d  \\(keel debug ${billing.id.slice(-12)} --session ${ids["Billing A"]!.slice(-12)}\\)`));
     expect(keel("debug", billing.id.slice(-12), "--session", ids["Billing A"]!.slice(-12)).out).toContain(`"Billing A"`);
 
-    mark("8 scrub and spans");
+  });
+
+  test("no stored failure text holds a key a tool printed, and no exported span lacks its parent", async () => {
+    const { call, text, ids, spans, orphans } = W;
+    const errors = (await call("/api/errors")).errors as ErrorRecord[];
     // --- 8: no stored failure text holds the key a tool printed; no exported span lacks its parent
     const mine = await call(`/api/errors?session=${ids["Private marker"]}`);
     expect(JSON.stringify(mine.failures)).toContain("tool-marker <redacted>");
@@ -179,7 +222,10 @@ test("after a kill, the errors, the digest, the log, spend, activity, times, sea
     await expect.poll(async () => { await call("/api/debug/export/flush", {}); return orphans(); }, { timeout: 30_000 }).toEqual([]);
     expect([...spans.values()].filter((s) => s.interrupted).length).toBeGreaterThanOrEqual(2);
 
-    mark("2 digest and log");
+  });
+
+  test("the away digest and the daemon's log tell what the daemon went through", async () => {
+    const { call, keel, log, ids, away, digest, state, url, collectorUrl } = W;
     // --- 2: the away digest and the daemon's log
     const first = away.split("\n")[0]!;
     expect(first).toMatch(/^From \d\d:\d\d:\d\d to \d\d:\d\d:\d\d UTC([+-]\d\d:\d\d)? \(1\d min\): the daemon went down and came back after \d+ (ms|s), 2 turns cut; /);
@@ -189,10 +235,9 @@ test("after a kill, the errors, the digest, the log, spend, activity, times, sea
     expect(keel("status", "--away", "--since", "10m").out.split("\n")[0]).toContain("the daemon went down and came back after");
     expect([digest.daemon.length, digest.totals.approvals, typeof digest.daemon_brief]).toEqual([1, 1, "string"]);
     // The log: a start, what it found, the settings change, the owner's Stop, the agent, and (below) a clean stop. One line each.
-    const log = async (q: string) => ((await call(`/api/logs?limit=2000&q=${encodeURIComponent(q)}`)).lines as { text: string; ts: number; session?: string }[]);
     const starts = await log("[daemon] started");
     expect(starts).toHaveLength(2);
-    expect(starts[1]!.text).toMatch(new RegExp(`^\\[daemon\\] started: Keel \\S+, pid \\d+, at ${d.url}; state ${state}; config ${join(state, "config")}$`));
+    expect(starts[1]!.text).toMatch(new RegExp(`^\\[daemon\\] started: Keel \\S+, pid \\d+, at ${url()}; state ${state}; config ${join(state, "config")}$`));
     await expect.poll(async () => (await log("[daemon] providers found")).length, { timeout: 30_000 }).toBe(2);
     expect((await log("[daemon] providers found"))[1]!.text).toMatch(/^\[daemon\] providers found: .*scripted \(\d+ models\)/);
     await expect.poll(async () => (await log("[daemon] MCP servers")).length, { timeout: 30_000 }).toBeGreaterThanOrEqual(1);
@@ -208,7 +253,10 @@ test("after a kill, the errors, the digest, the log, spend, activity, times, sea
     expect(printed.err).toMatch(/Times are local \(UTC[+-]?[\d:]*\); the files and --json keep UTC/);
     expect(printed.out.split("\n")[0]).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3} INFO  \[daemon\] started: /);
 
-    mark("3 spend and time");
+  });
+
+  test("spend is ranked by session and agent tree, the slowest requests are listed, and two turns compare", async () => {
+    const { call, keel, ids, since } = W;
     // --- 3: spend and time
     const ranked = await call(`/api/usage?group=session&sort=cost&since_ms=${since}`);
     expect(ranked.buckets[0].key).toBe(ids["Many turns"]);
@@ -244,7 +292,10 @@ test("after a kill, the errors, the digest, the log, spend, activity, times, sea
     expect([over.turns[0].requests, over.turns[0].failed_attempts, over.counts.requests, over.counts.failed]).toEqual([3, 2, 3, 2]);
     expect(over.counts.requests).toBe((await call(`/api/telemetry?session_id=${ids.Overloaded}`)).total.calls);
 
-    mark("5 shares and words");
+  });
+
+  test("one range shows one failed share, a chart's bucket says when its data was, and a refusal is Declined", async () => {
+    const { call, ids, since, downAt } = W;
     // --- 5: one failed share for a range in every Usage view; a chart's bucket says when its data was
     const report = await call(`/api/telemetry?since_ms=${since}`);
     const compare = await call(`/api/telemetry/compare?a_since_ms=${since}&a_until_ms=${report.until_ms}&b_since_ms=${since - 1000}&b_until_ms=${since}`);
@@ -256,7 +307,10 @@ test("after a kill, the errors, the digest, the log, spend, activity, times, sea
     const refused = ((await call("/api/alerts?limit=100")).alerts as any[]).filter((a) => a.session_id === ids.Refuses);
     expect(refused.map((a) => [a.kind, a.title])).toEqual([["declined", "Declined: Refuses"]]);
 
-    mark("4 activity");
+  });
+
+  test("Activity is one row a turn, with failures, a time range, a session and a text form", async () => {
+    const { call, keel, ids, downAt } = W;
     // --- 4: activity
     const many = (await call(`/api/activity?session_id=${ids["Many turns"]}&limit=100`)).items as any[];
     // One row a turn, each with what the turn said at its end; the alert of its end is no row of its own.
@@ -276,7 +330,10 @@ test("after a kill, the errors, the digest, the log, spend, activity, times, sea
     expect(activity.out.split("\n")[0]).toMatch(/^Activity, failures only, since \d{4}-\d\d-\d\d \d\d:\d\d:\d\d, newest first\. Times are local \(UTC[+-]?[\d:]*\)\.$/);
     expect(activity.out).toMatch(/\n  \d\d:\d\d:\d\d  turn     Billing A: turn failed \(HTTP 402: Scripted: your credit balance is too low/);
 
-    mark("6 search");
+  });
+
+  test("a search hit says when it happened, and a search is limited in its own words", async () => {
+    const { call, keel, ids, since, url } = W;
     // --- 6: search
     const hits = (q: string) => call(`/api/search?q=${encodeURIComponent(q)}&limit=20`);
     const pushed = await hits("git push in:commands since:today");
@@ -289,7 +346,7 @@ test("after a kill, the errors, the digest, the log, spend, activity, times, sea
     expect([await n("git push on:yesterday"), await n("git push on:today")]).toEqual([0, await n("git push since:today")]);
     // A limit that is not understood is refused with what it takes, not searched as a word.
     for (const q of ["git push since:lastweek", "git push state:bogus", "git push since:99999999999d"]) {
-      const r = await fetch(`${d.url}/api/search?q=${encodeURIComponent(q)}`);
+      const r = await fetch(`${url()}/api/search?q=${encodeURIComponent(q)}`);
       const body = await r.json();
       expect([q, r.status, body.limit, /NaN/.test(body.error)]).toEqual([q, 400, true, false]);
       expect(body.error).toMatch(/is not a limit this search knows\. (since: and until: take|state: takes) /);
@@ -303,10 +360,15 @@ test("after a kill, the errors, the digest, the log, spend, activity, times, sea
     expect(found.out).toMatch(/^1 hit for "git push", limited to commands, since \d{4}-\d\d-\d\d 00:00 UTC([+-]\d\d:\d\d)?, the newest first\. Times are local \(UTC[+-]?[\d:]*\)\.\n\d{4}-\d\d-\d\d \d\d:\d\d:\d\d  \$ Bash git push origin main/);
     expect(found.out).toContain(`Push  [session=${ids.Push!.slice(-12)}]`);
 
-    mark("the pages");
+  });
+
+  test("the pages show it: Errors, the palette, Activity, Usage and Tokens", async ({ page }) => {
+    const { call, ids, url } = W;
+    const turns = await call(`/api/telemetry/turns?session_id=${ids["Many turns"]}`);
+    const [t4, t3] = [turns.turns.find((t: any) => t.n === 4), turns.turns.find((t: any) => t.n === 3)];
     // --- the pages, in both themes
     await page.setViewportSize({ width: 1920, height: 1040 });
-    await page.goto(`${d.url}/`);
+    await page.goto(`${url()}/`);
     await page.getByTestId("errors-button").click();
     const row = page.getByTestId("error-row").filter({ hasText: "credit balance" });
     await row.locator("summary").click();
@@ -338,7 +400,7 @@ test("after a kill, the errors, the digest, the log, spend, activity, times, sea
     await shoot(page, "past-truth-04-activity-failures");
     await page.keyboard.press("Escape");
     // Usage: spend ranked by session, and two turns side by side.
-    await page.goto(`${d.url}/settings/usage`);
+    await page.goto(`${url()}/settings/usage`);
     await page.getByTestId("usage-go-sessions").click();
     await expect(page.getByTestId("usage-rank").getByTestId("rank-open").first()).toHaveText("Many turns");
     await page.getByRole("radio", { name: "Agent trees" }).click();
@@ -356,12 +418,12 @@ test("after a kill, the errors, the digest, the log, spend, activity, times, sea
     await shoot(page, "past-truth-07-two-turns-narrow");
     await page.setViewportSize({ width: 1920, height: 1040 });
     // The Tokens panel opens at the newest turn and can be sorted; its request count is the ledger's.
-    await page.goto(`${d.url}/s/${ids.Overloaded}`);
+    await page.goto(`${url()}/s/${ids.Overloaded}`);
     await page.getByTestId("panel-menu").click();
     await page.getByTestId("panel-pick-usage").click();
     await expect(page.getByTestId("usage-cost")).toContainText("3 requests, 2 of them failed attempts");
     await expect(page.getByTestId("usage-turn-requests").first()).toHaveText("3 requests, 2 failed");
-    await page.goto(`${d.url}/s/${ids["Many turns"]}`);
+    await page.goto(`${url()}/s/${ids["Many turns"]}`);
     await page.getByTestId("panel-menu").click();
     await page.getByTestId("panel-pick-usage").click();
     await expect(page.getByTestId("usage-turn").first()).toHaveAttribute("data-turn", "6");
@@ -369,18 +431,21 @@ test("after a kill, the errors, the digest, the log, spend, activity, times, sea
     await expect(page.getByTestId("usage-turn").first()).toHaveAttribute("data-turn", "4");
     await shoot(page, "past-truth-08-tokens");
 
-    mark("a clean stop");
+  });
+
+  test("a stop that was asked for is in the log, and the digest never says the daemon went down for it", async () => {
+    const { call, text, log, since, stopAndStart } = W;
     // --- a clean stop is in the log of the next start
-    d.proc.kill("SIGTERM");
-    await exited(d.proc);
-    d = await ownDaemon(state, d.port, env);
+    await stopAndStart();
     expect((await log("[daemon] draining for a stop (a stop signal)")).length).toBe(1);
     expect((await log("[daemon] stopping cleanly after")).length).toBe(1);
     expect(await log("[daemon] started")).toHaveLength(3);
-  } finally {
-    // (A daemon the test already killed has no exit code, only its signal: it is not waited for again.)
-    if (d.proc.exitCode === null && d.proc.signalCode === null) { d.proc.kill("SIGKILL"); await exited(d.proc); }
-    collector.closeAllConnections();
-    await new Promise((r) => collector.close(r));
-  }
+    // The window holds a kill and a stop that was asked for: the kill is told as going down, the stop is not.
+    await expect.poll(async () => !!(await call("/api/daemon")).last_start?.settled_ms, { timeout: 60_000 }).toBe(true);
+    const lines = (await text(`/api/away?since=${since}&format=text`)).split("\n");
+    expect(lines[0]).toMatch(/: the daemon went down and came back after \d+ (ms|s), 2 turns cut; restarted when asked; /);
+    expect(lines[1]).toMatch(/^The daemon went down without stopping /);
+    expect(lines[2]).toMatch(/^It also restarted once when asked \(down [\d.]+ s in all\); no turn was cut\.$/);
+    expect(lines.filter((l) => /went down|stopped by itself/.test(l)).length).toBe(2);
+  });
 });

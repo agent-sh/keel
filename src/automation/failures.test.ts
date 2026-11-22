@@ -332,16 +332,6 @@ test("a prune that fails after the failure is written does not bring the report 
   expect(got[0]).not.toContain("<subagent_result");
 });
 
-// A failure whose text holds a key-shaped string (a tool printed one) is recorded without it: no notice can carry it.
-test("a key in a failure's text is not in its stored sample", () => {
-  const key = ["sk", "ant", "api03", "PLANTEDKEY0123456789abcdefghijklmnopqrstuvwxyzABCDEFGH"].join("-");
-  const s = store.createSession({ model: "m", workspace: "/", title: "Private marker" });
-  failures.record(s.id, { kind: "tool", cls: "Bash", message: `tool-marker ${key}\nExit code 5`, ref: { id: "c1", label: `deploy ${key}` } });
-  const rows = JSON.stringify(store.db.query("SELECT * FROM session_failures WHERE session_id = ?").all(s.id));
-  expect(rows).toContain("tool-marker <redacted>");
-  expect(rows).not.toContain("PLANTEDKEY");
-});
-
 // Last in the file: it sets other daemon parts.
 test("the notice's rider goes with the daemon parts it was set up for", () => {
   const other = new Store(join(dir, "other")); // a store the notice was never set up on: no failures table
