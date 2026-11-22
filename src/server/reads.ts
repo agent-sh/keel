@@ -84,10 +84,11 @@ export class Reads {
     for (const f of this.drained.splice(0)) f();
   }
 
-  run<K extends TaskName>(name: K, args: Args<K>): Promise<Result<K>> {
-    if (this.held) return this.held.then(() => this.run(name, args));
+  // `events`: the read is of the events alone, which never wait to be written.
+  run<K extends TaskName>(name: K, args: Args<K>, events = false): Promise<Result<K>> {
+    if (this.held) return this.held.then(() => this.run(name, args, events));
     // The thread reads what is committed: the side rows that wait are written first (src/core/side.ts).
-    this.store.side?.flush();
+    if (!events) this.store.side?.flush();
     const w = this.thread ? this.start() : undefined;
     if (!w) return new Promise((resolve) => resolve(this.onLoop(name, args) as Result<K>));
     this.counts.thread++;
@@ -111,15 +112,15 @@ export class Reads {
     return this.run("sql", { sql, params }) as Promise<T[]>;
   }
 
-  // The rows of one statement, read on the thread and handed over, for a caller that would
-  // otherwise read them on the loop (a session's event bodies before a turn reads them). Undefined
+  // The rows of one statement over the events, read on the thread and handed over, for a caller that
+  // would otherwise read them on the loop (a session's rows, its event bodies before a turn reads them). Undefined
   // where no thread runs, or when it has not answered after `ms`: the caller then reads for itself.
   rowsOff<T>(sql: string, params: (string | number | null)[], ms = AHEAD_MS): Promise<T[] | undefined> {
     if (!this.thread || !this.start()) return Promise.resolve(undefined);
     return new Promise<T[] | undefined>((ok) => {
       const t = setTimeout(() => ok(undefined), ms);
       t.unref?.();
-      this.sql<T>(sql, params).then((rows) => { clearTimeout(t); ok(rows); }, () => { clearTimeout(t); ok(undefined); });
+      (this.run("sql", { sql, params }, true) as Promise<T[]>).then((rows) => { clearTimeout(t); ok(rows); }, () => { clearTimeout(t); ok(undefined); });
     });
   }
 

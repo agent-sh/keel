@@ -705,3 +705,49 @@ test("bodies read on the loop are counted by who asked; warmed off the loop, a t
   other.close();
   store.db.close();
 });
+
+// A session not in memory is brought in with its rows read on the read thread
+// and handed over: the loop reads only what was stored meanwhile.
+test("a session's rows come from the read thread, and what was stored meanwhile from the table", async () => {
+  const dir = scratch();
+  const seed = new Store(dir);
+  const s = seed.createSession({ model: "m", workspace: "/" });
+  seed.db.transaction(() => { for (let i = 0; i < 9000; i++) seed.append(s.id, "user", { text: "t", i }); })();
+  const store = new Store(dir);
+  const other = new Database(join(dir, "keel.db"), { readonly: true });
+  const asked: string[] = [];
+  let late: string | undefined;
+  store.readOff = async (sql, params) => {
+    asked.push(sql.includes("SELECT data") ? "bodies" : "rows");
+    const rows = other.query<any, any[]>(sql).all(...params);
+    // An event stored while the thread's last part was on its way.
+    if (asked.length === 3 && !late) late = store.append(s.id, "note", { text: "meanwhile" }).id;
+    return rows;
+  };
+  const { reads, stop } = tableReads(store);
+  try {
+    await store.warm(s.id, false);
+    // Three parts from the thread (4,096, 4,096, 808), then one look at the table for what came since.
+    expect(asked).toEqual(["rows", "rows", "rows"]);
+    expect(reads).toHaveLength(1);
+    const all = store.events(s.id);
+    expect(all).toHaveLength(9001);
+    expect(all.at(-1)!.id).toBe(late!);
+    expect(all.map((e) => e.seq)).toEqual(Array.from({ length: 9001 }, (_, i) => i + 1));
+    expect(store.coldReads().n).toBe(0);
+    // With its bodies: every run from the thread, none read here.
+    asked.length = 0;
+    await store.warm(s.id);
+    expect(asked.every((a) => a === "bodies")).toBe(true);
+    expect(asked.length).toBe(Math.ceil(9001 / 64));
+    expect(store.bodyReads()).toMatchObject({ n: 0, off: asked.length });
+    expect(all[4500]!.data.i).toBe(4500);
+    expect(reads).toHaveLength(1);
+  } finally { stop(); }
+  // No thread: the rows are read here, a part at a time, as before.
+  const plain = new Store(dir);
+  plain.readOff = async () => undefined;
+  await plain.warm(s.id, false);
+  expect(plain.events(s.id)).toHaveLength(9001);
+  other.close();
+});

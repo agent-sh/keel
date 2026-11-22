@@ -273,6 +273,7 @@ const NEWEST_PART = 32;
 
 const pause = () => new Promise<void>((r) => setImmediate(r));
 const BODIES = "SELECT data FROM events WHERE session_id = ? AND seq >= ? AND seq <= ? ORDER BY seq";
+const BARE_PART = "SELECT id, seq, parent, kind, ts FROM events WHERE session_id = ? AND seq > ? ORDER BY seq LIMIT 4096";
 // KEEL_TRACE_COLD=1: each whole-session read and each read of bodies made on the loop is a line of the log, with who asked; =stack: and its call stack.
 const TRACE_COLD = process.env.KEEL_TRACE_COLD;
 // SQLite's words for a write on a connection that takes none (PRAGMA query_only).
@@ -392,7 +393,7 @@ export class Store {
   offLoop?: (sql: string, params: (string | number | null)[]) => Promise<unknown>;
   // The rows of a statement, read on the read thread and handed over; undefined when that cannot
   // be had now (no thread, or no answer in time): set by the daemon (Reads.rowsOff).
-  readOff?: (sql: string, params: (string | number | null)[]) => Promise<{ data: string }[] | undefined>;
+  readOff?: (sql: string, params: (string | number | null)[]) => Promise<any[] | undefined>;
   // A summary settled against its branch on the read thread (src/engine/settle-read.ts), set by the
   // daemon: without it the caller settles on the loop.
   settleOff?: (ask: SettleAsk) => Promise<Settled>;
@@ -1320,22 +1321,8 @@ export class Store {
     await this.warm(session_id, false);
     const k = this.kept.get(session_id);
     if (!k || !k.all.length) return;
-    let t0 = performance.now();
-    for (let i = Math.floor(Math.min(firstAfter(k.all, from - 1), k.all.length - 1) / RUN); i * RUN < k.all.length && !k.gone && k.all[i * RUN]!.seq <= to; i++) {
-      const have = k.runs[i];
-      if (have) { have.used = ++this.tick; continue; }
-      const hi = k.all[Math.min(k.all.length, (i + 1) * RUN) - 1]!.seq;
-      const rows = this.readOff ? await this.readOff(BODIES, [session_id, k.all[i * RUN]!.seq, hi]).catch(() => undefined) : undefined;
-      if (k.gone) return;
-      if (k.runs[i]) continue;
-      // (The run as it stands now: an event stored meanwhile is in it, and was not read.)
-      const end = Math.min(k.all.length, (i + 1) * RUN);
-      if (rows && rows.length === end - i * RUN && k.all[end - 1]!.seq === hi) { this.install(k, i, rows); this.bodiesOff++; }
-      else this.read(k, i);
-      if (performance.now() - t0 < 4) continue;
-      await pause();
-      t0 = performance.now();
-    }
+    const last = firstAfter(k.all, Math.min(to, Number.MAX_SAFE_INTEGER - 1));
+    await this.fill(k, Math.min(firstAfter(k.all, from - 1), k.all.length - 1), Math.max(last, 1));
     if (!k.gone) this.touch(session_id, k);
   }
 
@@ -1397,7 +1384,9 @@ export class Store {
       // disk. Whether that read is worth a wait is the read thread's to say
       // (Reads.readAhead: not when it is busy, not where it cannot run).
       // For the events alone that is the index of their rows, and no body.
-      if (this.offLoop) {
+      if (this.readOff) {
+        // (With a thread that hands rows over, the rows themselves come from it: see below.)
+      } else if (this.offLoop) {
         await this.offLoop(bodies
           ? "SELECT COUNT(*) AS n, SUM(LENGTH(data)) AS bytes, MAX(ts) AS ts FROM events WHERE session_id = ?"
           : `SELECT COUNT(*) AS n, MAX(ts) AS ts, MAX(LENGTH(id) + LENGTH(COALESCE(parent, '')) + LENGTH(kind)) AS w FROM events ${bareBy(this.db)} WHERE session_id = ?`, [session_id]).catch(() => {});
@@ -1406,8 +1395,18 @@ export class Store {
     }
     if (!k) {
       const rows: Bare[] = [];
-      const page = this.db.query<Bare, [string, number]>("SELECT id, seq, parent, kind, ts FROM events WHERE session_id = ? AND seq > ? ORDER BY seq LIMIT 4096");
-      for (;;) {
+      // The rows are read on the read thread and handed over, a few thousand at a time: the loop
+      // waits for no page of them (a disk busy with other work makes each read slow, wherever the
+      // page is). What was stored meanwhile, and everything where no thread answers, is read here.
+      while (this.readOff) {
+        const part: Bare[] | undefined = await this.readOff(BARE_PART, [session_id, rows.at(-1)?.seq ?? 0]).catch(() => undefined);
+        if (!part) break;
+        for (const r of part) rows.push(r);
+        if (part.length < 4096) break;
+      }
+      const page = this.db.query<Bare, [string, number]>(BARE_PART);
+      if (this.kept.has(session_id)) rows.length = 0;
+      else for (;;) {
         const part = page.all(session_id, rows.at(-1)?.seq ?? 0);
         for (const r of part) rows.push(r);
         if (part.length < 4096) break;
@@ -1417,16 +1416,31 @@ export class Store {
       k = this.kept.get(session_id) ?? this.keep(session_id, rows);
     }
     if (!bodies) return;
+    await this.fill(k, 0, k.all.length, true);
+    if (!k.gone) this.touch(session_id, k);
+  }
+
+  // The runs of a kept session from place `a` up to place `b`, in memory: each one that is not is
+  // read on the read thread and handed over (else here), with the loop given back between runs.
+  // `within`: only while the bodies kept fit the budget.
+  private async fill(k: Kept, a: number, b: number, within = false): Promise<void> {
     let t0 = performance.now();
-    for (let i = 0; i * RUN < k.all.length && !k.gone; i++) {
+    for (let i = Math.floor(a / RUN); i * RUN < Math.min(b, k.all.length) && !k.gone; i++) {
+      const have = k.runs[i];
+      if (have) { have.used = ++this.tick; continue; }
+      if (within && this.keptBytes >= this.budget * 0.9) break;
+      const hi = k.all[Math.min(k.all.length, (i + 1) * RUN) - 1]!.seq;
+      const rows: { data: string }[] | undefined = this.readOff ? await this.readOff(BODIES, [k.id, k.all[i * RUN]!.seq, hi]).catch(() => undefined) : undefined;
+      if (k.gone) return;
       if (k.runs[i]) continue;
-      if (this.keptBytes >= this.budget * 0.9) break;
-      this.read(k, i);
+      // (The run as it stands now: an event stored meanwhile is in it, and was not read.)
+      const end = Math.min(k.all.length, (i + 1) * RUN);
+      if (rows && rows.length === end - i * RUN && k.all[end - 1]!.seq === hi) { this.install(k, i, rows); this.bodiesOff++; }
+      else this.read(k, i);
       if (performance.now() - t0 < 4) continue;
       await pause();
       t0 = performance.now();
     }
-    if (!k.gone) this.touch(session_id, k);
   }
 
   // The branch the session shows (the events from the first to its head),
