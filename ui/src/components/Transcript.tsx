@@ -472,7 +472,7 @@ function Working({ since, sessionId }: { since?: number; sessionId: string }) {
   // (A request on its way to the model is work, never a wait: "Calling", as the session's row says.)
   const what = needs ? `${STATE_WORD.need}: ${needs}` : st?.kind === "model" ? (st.preparing === "images" ? `Scaling images for ${st.model}` : st.connected ? `Connected to ${st.model}, no output yet` : `Calling ${st.model}`) : st?.kind === "tool" ? `Running ${st.names.join(", ")}` : STATE_WORD.work;
   return (
-    <div className="flex items-center gap-2.5 py-1 text-ui text-muted" data-testid="working">
+    <div className="flex min-h-[1.875rem] items-center gap-2.5 py-1 text-ui text-muted" data-testid="working">
       <span className="flex gap-1">
         {/* Waiting on the owner is their color and does not pulse: nothing runs until they answer. */}
         {[0, 1, 2].map((i) => <span key={i} className={cn("size-1.5 rounded-full", needs ? "bg-st-need" : "bg-brass animate-pulse-dot")} style={needs ? undefined : { animationDelay: `${i * 160}ms` }} />)}
@@ -577,7 +577,8 @@ function Live({ sessionId, working, asking, since, elsewhere }: { sessionId: str
   }
   return (
     <>
-      {hasDraft && <div className="flex flex-col gap-3" data-testid="draft"><Draft draft={draft} /></div>}
+      {/* (No lower than the working line it takes the place of: the first words of a reply drop no line above them.) */}
+      {hasDraft && <div className="flex min-h-[1.875rem] flex-col gap-3" data-testid="draft"><Draft draft={draft} /></div>}
       <Status sessionId={sessionId} />
       {working && !hasDraft && !asking && <Working since={since} sessionId={sessionId} />}
       <Announcer sessionId={sessionId} working={working} asking={asking} />
