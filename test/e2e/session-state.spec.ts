@@ -621,9 +621,13 @@ test("the card beside a list row adds what the row lacks and repeats nothing of 
     await expect(card.getByTestId("rail-card-why")).toHaveText(`Approve Bash: ${command}`);
     await expect(card).toContainText("Model");
     await expect(card).toContainText("Path");
-    // Nothing of the row again: not its state word, not its title, not the folder's name alone.
+    // Nothing of the row again: not its state word, not the folder's name alone, and its title only
+    // where the row cut it (the card then says it whole: the row has no tooltip of the browser's own).
     await expect(card).not.toContainText(/needs you/i);
-    await expect(card).not.toContainText("Clean the build output before the release");
+    const cut = await r.locator(".k-row-title").evaluate((el) => el.scrollWidth > el.clientWidth + 1);
+    if (cut) await expect(card).toContainText("Clean the build output before the release");
+    else await expect(card).not.toContainText("Clean the build output before the release");
+    expect(await r.locator(".k-row-title").getAttribute("title")).toBeNull();
     await expect(card.locator(".k-mark")).toHaveCount(0);
     await shoot(page, "session-state-11-row-card");
     await page.getByTestId("list-arrange").click();

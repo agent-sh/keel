@@ -173,13 +173,12 @@ test("Esc is in the shortcut sheet and a session row is one Tab stop", async ({ 
   const next = row(order[at + 1]!); // not on screen: it can open beside
   await page.keyboard.press("ArrowDown");
   await expect(next).toBeFocused();
-  await page.keyboard.press("ArrowRight");
-  await expect(next.getByTestId("row-beside")).toBeFocused();
-  await page.keyboard.press("ArrowRight");
-  await expect(next.getByTestId("row-archive")).toBeFocused();
+  for (const act of ["row-pin", "row-beside", "row-archive"]) {
+    await page.keyboard.press("ArrowRight");
+    await expect(next.getByTestId(act)).toBeFocused();
+  }
   await shoot(page, "keyboard-paths-09-row-actions");
-  await page.keyboard.press("ArrowLeft");
-  await page.keyboard.press("ArrowLeft");
+  for (let i = 0; i < 3; i++) await page.keyboard.press("ArrowLeft");
   await expect(next).toBeFocused();
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("ArrowUp");
@@ -191,17 +190,15 @@ test("Esc is in the shortcut sheet and a session row is one Tab stop", async ({ 
   await page.keyboard.press("Shift+Escape");
   await expect(page.getByTestId("composer")).toBeFocused();
 
-  // With a second pane a row has a third action (place it in a pane): still one Tab stop, and Right reaches all three.
+  // With a second pane a row has one more action (place it in a pane): still one Tab stop, and Right reaches all four.
   await page.getByTestId("panes-2").click();
   const off = page.getByTestId("session-list").locator('[data-testid="session-row"]:not([data-shown])').first();
   await off.focus();
-  for (const act of ["row-beside", "row-place", "row-archive"]) {
+  for (const act of ["row-pin", "row-beside", "row-place", "row-archive"]) {
     await page.keyboard.press("ArrowRight");
     await expect(off.getByTestId(act)).toBeFocused();
   }
-  await page.keyboard.press("ArrowLeft");
-  await page.keyboard.press("ArrowLeft");
-  await page.keyboard.press("ArrowLeft");
+  for (let i = 0; i < 4; i++) await page.keyboard.press("ArrowLeft");
   await expect(off).toBeFocused();
   await page.keyboard.press("Tab");
   expect(await off.evaluate((el) => el.contains(document.activeElement))).toBe(false);

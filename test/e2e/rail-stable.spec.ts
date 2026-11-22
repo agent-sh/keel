@@ -21,7 +21,7 @@ import { shoot } from "./shots.ts";
 const MODEL = "scripted:stand-in";
 const script = (calls: unknown[]) => `script:calls ${JSON.stringify(calls)}`;
 test.use({ storageState: { cookies: [], origins: [] }, viewport: { width: 1920, height: 1040 } });
-test.setTimeout(300_000);
+test.setTimeout(420_000);
 
 type Day = { root: string; gate: string; ids: Record<string, string>; ticks: string[] };
 async function seed(request: APIRequestContext): Promise<Day> {
@@ -76,12 +76,14 @@ const arm = (page: Page) => page.evaluate(() => {
 });
 type Frame = { rows: Record<string, [number, number]>; under: string | null; focus: string | null };
 // What the frames since the last call saw: how often a row moved or changed height, and every row that was under the pointer.
-async function seen(page: Page) {
+// `watch`: a row whose every place in those frames is told (`at`).
+async function seen(page: Page, watch?: string) {
   const frames = await page.evaluate(() => { const w = window as any; const f = w.__rail.frames; w.__rail.frames = []; return f; }) as Frame[];
   let moves = 0, resized = 0, jump = 0;
-  const heights = new Set<number>(), under = new Set<string | null>();
+  const heights = new Set<number>(), under = new Set<string | null>(), at = new Set<number>();
   for (let i = 0; i < frames.length; i++) {
     under.add(frames[i]!.under);
+    if (watch && frames[i]!.rows[watch]) at.add(frames[i]!.rows[watch]![0]);
     for (const [id, [y, h]] of Object.entries(frames[i]!.rows)) {
       heights.add(h);
       const was = frames[i - 1]?.rows[id];
@@ -90,7 +92,7 @@ async function seen(page: Page) {
       if (was[1] !== h) resized++;
     }
   }
-  return { frames: frames.length, moves, jump, resized, heights: [...heights], under: [...under] };
+  return { frames: frames.length, moves, jump, resized, heights: [...heights], under: [...under], at: [...at] };
 }
 
 test("no row moves or changes height while a dozen sessions take turns, under the pointer, under the keyboard and in any order", async ({ page, request }) => {
@@ -112,6 +114,11 @@ test("no row moves or changes height while a dozen sessions take turns, under th
     await page.goto(`/s/${ids.reader}`);
     await expect(row(ids.need!)).toHaveAttribute("data-watch", "need");
     await expect(page.getByTestId("composer")).toBeFocused();
+    // The message queued behind the working turn shows on its row (looked at first: the command
+    // that keeps the turn working is given two minutes).
+    await expect(row(ids.work!).getByTestId("row-queued")).toHaveText("1");
+    await expect(row(ids.work!).getByTestId("row-queued")).toHaveAttribute("aria-label", "1 queued");
+    await expect(row(ids.work!).getByTestId("row-queued")).toBeInViewport({ ratio: 1 });
     // The storm is on: a turn of its own has ended in a session it sends to (asked of the daemon, not
     // read off a row: a turn this short may never be drawn as working on a busy machine).
     await expect.poll(async () => ((await (await request.get(`/api/sessions/${day.ticks[0]}`)).json()).events as { kind: string; data: { text?: string } }[]).some((e) => e.kind === "user" && /script:say tick \d+/.test(e.data.text ?? "")), { timeout: 60_000 }).toBe(true);
@@ -203,6 +210,28 @@ test("no row moves or changes height while a dozen sessions take turns, under th
     await expect(row(made)).toBeVisible();
     await request.patch(`/api/sessions/${ids.fail}`, { data: { archived: false } });
     await request.delete(`/api/sessions/${made}`);
+
+    // 5a. Still by recent activity: the pointer left lying on a row for a minute of the storm, the
+    // keyboard in the pane. After a few seconds the list lets go and follows the work again, but
+    // around that row: the others take their places, the row under the pointer stays where it is.
+    await page.getByTestId("composer").focus();
+    // (The rows are still moving when the pointer is aimed: it is put down, then nudged onto a row if it came to rest between two.)
+    let lying: string | null = null;
+    for (const dy of [0, 16, -16, 32]) {
+      await page.mouse.move(at.x + 118, at.y + at.height / 2 + dy);
+      await expect(list).toHaveAttribute("data-held", "true");
+      lying = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('[data-testid="session-row"]')?.getAttribute("data-session") ?? null, [at.x + 118, at.y + at.height / 2 + dy] as const);
+      if (lying) break;
+    }
+    expect(lying, "a row under the pointer").toBeTruthy();
+    await page.waitForTimeout(300);
+    await seen(page);
+    await page.waitForTimeout(60_000);
+    const minute = await seen(page, lying!);
+    await expect(list).not.toHaveAttribute("data-held", "true");
+    expect(minute.moves, "the list follows the work again under a pointer that only lies there").toBeGreaterThan(0);
+    expect({ under: minute.under, at: minute.at.length }, "the row under the lying pointer, and the places it stood in").toEqual({ under: [lying], at: 1 });
+    await page.mouse.move(1200, 500);
     await page.getByTestId("list-arrange").click();
     await page.getByTestId("arrange-reset").click();
     await page.keyboard.press("Escape");
@@ -254,6 +283,21 @@ test("no row moves or changes height while a dozen sessions take turns, under th
   await expect(page.getByTestId("sum-need")).toHaveText(/1\s*needs you/i);
   await expect(page.getByTestId("sum-fail")).toHaveText(/1\s*failed/i);
   await expect(page.getByTestId("sum-need")).toBeInViewport({ ratio: 1 });
+  // The counts are one stop for Tab: the arrows move between them.
+  const bar = page.getByTestId("list-summary");
+  await expect(bar).toHaveAttribute("role", "toolbar");
+  await expect(bar.locator('button[tabindex="0"]')).toHaveCount(1);
+  await page.getByTestId("sum-need").focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByTestId("sum-fail")).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(bar.locator("button:not([hidden])").last()).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(page.getByTestId("sum-need")).toBeFocused();
+  await expect(bar.locator('button[tabindex="0"]')).toHaveCount(1);
+  await page.getByTestId("composer").focus();
+  // A row has no tooltip of the browser's own: it would lie over the card beside the row, which says the title whole.
+  expect(await row(ids.need!).evaluate((el) => [el, ...el.querySelectorAll(".k-row-title, .k-row-why")].map((x) => x.getAttribute("title")))).toEqual([null, null, null]);
   const hide = (id: string) => list.evaluate((nav, sid) => {
     const r = nav.querySelector<HTMLElement>(`[data-session="${sid}"]`)!.getBoundingClientRect(), n = nav.getBoundingClientRect();
     nav.scrollTop = r.top - n.top + nav.scrollTop > nav.clientHeight ? 0 : nav.scrollHeight;
@@ -297,10 +341,6 @@ test("no row moves or changes height while a dozen sessions take turns, under th
   await page.getByTestId("composer").focus();
   await page.setViewportSize({ width: 1920, height: 1040 });
 
-  // 7. The message queued behind the working turn shows on its row.
-  await expect(row(ids.work!).getByTestId("row-queued")).toHaveText("1");
-  await expect(row(ids.work!).getByTestId("row-queued")).toHaveAttribute("aria-label", "1 queued");
-  await expect(row(ids.work!).getByTestId("row-queued")).toBeInViewport({ ratio: 1 });
   // 8. Enter on the row of the session this pane already shows: the keyboard is in its message box.
   await page.keyboard.press("Alt+l");
   await expect(row(ids.reader!)).toBeFocused();
@@ -312,25 +352,49 @@ test("no row moves or changes height while a dozen sessions take turns, under th
   const rows = await list.locator('[data-testid="session-row"]').evaluateAll((els) => els.map((e) => e.getAttribute("data-session")!));
   const after = rows[rows.indexOf(ids.idle!) + 1] ?? rows[rows.indexOf(ids.idle!) - 1]!;
   await row(ids.idle!).focus();
-  await page.keyboard.press("ArrowRight");
-  await page.keyboard.press("ArrowRight");
-  await expect(row(ids.idle!).getByTestId("row-archive")).toBeFocused();
+  // Right walks the row's actions: Pin, Open beside, Archive.
+  for (const action of ["row-pin", "row-beside", "row-archive"]) {
+    await page.keyboard.press("ArrowRight");
+    await expect(row(ids.idle!).getByTestId(action)).toBeFocused();
+  }
   await page.keyboard.press("Enter");
   await expect(row(ids.idle!)).toHaveCount(0);
   await expect(row(after)).toBeFocused();
   await page.getByTestId("composer").focus();
 
-  // 10. The default changed once for a browser that kept the old one: its menu says so, once.
+  // 10. The default changed once for a browser that kept the old one. A line under the counts says
+  // so where it is seen, and leads to the Arrange menu, which says it too; both are gone once the menu was opened.
   await page.evaluate(() => localStorage.setItem("keel.listArrange", JSON.stringify({ group: "folder", sort: "recent", hideDone: false })));
   await page.reload();
-  await page.getByTestId("list-arrange").click();
+  await expect(page.getByTestId("list-note")).toHaveText(/Sessions now keep their place\./);
+  await expect(page.getByTestId("list-note")).toBeInViewport({ ratio: 1 });
+  await page.getByTestId("list-note-arrange").click();
+  await expect(page.getByTestId("arrange-menu")).toBeVisible();
   await expect(page.getByTestId("arrange-note")).toBeVisible();
   await expect(page.getByTestId("arrange-sort-created")).toHaveAttribute("aria-checked", "true");
   await shoot(page, "rail-stable-02-arrange-note");
   await page.keyboard.press("Escape");
+  await expect(page.getByTestId("list-note")).toHaveCount(0);
   await page.getByTestId("list-arrange").click();
   await expect(page.getByTestId("arrange-menu")).toBeVisible();
   await expect(page.getByTestId("arrange-note")).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  // Dismissed by its own button, it does not come back; and one who chose the order by state is told nothing: nothing changed for them.
+  await page.evaluate(() => localStorage.setItem("keel.listArrange", JSON.stringify({ group: "folder", sort: "recent", hideDone: false })));
+  await page.reload();
+  await page.getByTestId("list-note-dismiss").click();
+  await expect(page.getByTestId("list-note")).toHaveCount(0);
+  await page.reload();
+  await expect(row(ids.need!)).toBeVisible();
+  await expect(page.getByTestId("list-note")).toHaveCount(0);
+  await page.evaluate(() => localStorage.setItem("keel.listArrange", JSON.stringify({ group: "folder", sort: "state", hideDone: false })));
+  await page.reload();
+  await expect(row(ids.need!)).toBeVisible();
+  await expect(page.getByTestId("list-note")).toHaveCount(0);
+  await page.getByTestId("list-arrange").click();
+  await expect(page.getByTestId("arrange-sort-state")).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByTestId("arrange-note")).toHaveCount(0);
+  await page.getByTestId("arrange-reset").click();
   await page.keyboard.press("Escape");
   writeFileSync(day.gate, "");
 });
@@ -355,6 +419,27 @@ test("with four panes the list is still titles, one line a session, and folds to
     await expect(row(ids.need!).getByTestId("row-state")).toHaveText("Needs you");
     await shoot(page, "rail-stable-03-two-panes");
 
+    // Enter on the row of a session a pane already shows, where a card waits on the owner: the keyboard
+    // goes to that card, by the cards' own rule (a region of it, never an answer).
+    await panes([ids.reader!, ids.need!]);
+    await page.reload();
+    const asking = page.locator(`section.k-station[data-station="${ids.need}"]`);
+    await expect(asking.getByTestId("approval")).toBeVisible();
+    await expect(page.locator(`section.k-station[data-station="${ids.reader}"]`).getByTestId("composer")).toBeFocused();
+    await row(ids.need!).focus();
+    await page.keyboard.press("Enter");
+    await expect.poll(() => page.evaluate((id) => { const a = document.activeElement; return !!a?.closest("[data-ask-card]") && a.closest("[data-station]")?.getAttribute("data-station") === id && !a.matches("button"); }, ids.need!)).toBe(true);
+
+    // A look lies over the pane of the session that needs them (the pane shows another for now): its
+    // row says so, and it is counted with what needs them.
+    await page.evaluate(([own, other, look]) => localStorage.setItem("keel.panes", JSON.stringify({ count: 2, slots: [own, other], over: [look, null], sizes: {}, active: 0 })), [ids.need!, ids.work!, ids.reader!] as const);
+    await page.goto(`/s/${ids.reader}`);
+    await expect(page.getByTestId("look-bar")).toBeVisible();
+    await expect(row(ids.need!).getByTestId("row-under")).toBeVisible();
+    await expect(row(ids.work!).getByTestId("row-under")).toHaveCount(0);
+    await expect(page.getByTestId("sum-need")).toHaveText(/^1/);
+    await shoot(page, "rail-stable-08-need-under-a-look");
+
     // Four panes at 1920: no room for the list at its width, room for titles.
     await panes([ids.reader!, ids.work!, ids.need!, ids.wait!]);
     await page.reload();
@@ -377,6 +462,10 @@ test("with four panes the list is still titles, one line a session, and folds to
     expect(rows[0]!.height).toBeLessThan(2 * rem);
     // The panes keep their narrowest width and nothing scrolls sideways for the list.
     expect(await fits()).toBe(true);
+    // Its words are whole: the filter's hint is the short one, and neither tab is cut.
+    await expect(page.getByTestId("list-filter")).toHaveAttribute("placeholder", "Filter");
+    expect(await page.getByTestId("list-filter").evaluate((el: HTMLInputElement) => { const c = document.createElement("canvas").getContext("2d")!; c.font = getComputedStyle(el).font; return c.measureText(el.placeholder).width <= el.clientWidth - parseFloat(getComputedStyle(el).paddingLeft) - parseFloat(getComputedStyle(el).paddingRight); })).toBe(true);
+    for (const t of ["tab-active", "tab-archived"]) expect(await page.getByTestId(t).evaluate((el) => { const r = document.createRange(); r.selectNodeContents(el); const w = r.getBoundingClientRect(), b = el.getBoundingClientRect(); return w.left >= b.left + 1 && w.right <= b.right - 1; }), `${t} keeps its word inside`).toBe(true);
     // The bar's own controls are still in it: the toggle, New session, the filter, the tabs, the foot.
     const edge = (await side.boundingBox())!;
     for (const t of ["rail-toggle", "new-session", "list-filter", "list-arrange", "tab-archived", "list-summary", "settings-button", "theme-toggle"]) {
@@ -477,6 +566,203 @@ test("a count goes to a row that a fold hides and never changes a pane; what is 
     await page.getByTestId("list-arrange").click();
     await page.getByTestId("arrange-reset").click();
     await page.keyboard.press("Escape");
+  } finally {
+    for (const id of made) { await request.post(`/api/sessions/${id}/interrupt`).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); }
+    if (folder) await request.delete(`/api/session-folders/${folder}`).catch(() => {});
+  }
+});
+
+test("a session is pinned from its row by pointer, key and menu, and the pinned stand in the order the owner gave them", async ({ page, request }) => {
+  test.skip(!((await (await request.get("/api/models")).json()).models as { id: string }[]).some((m) => m.id === MODEL), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const root = `${process.env.HOME}/.cache/keel-work/bun/e2e-ws/pins-${Date.now().toString(36)}`;
+  mkdirSync(root, { recursive: true });
+  const made: string[] = [];
+  const mk = async (title: string) => {
+    const { session } = await (await request.post("/api/sessions", { data: { model: MODEL, title, workspace: root } })).json();
+    made.push(session.id);
+    return session.id as string;
+  };
+  const list = page.getByTestId("session-list");
+  const row = (id: string) => list.locator(`[data-testid="session-row"][data-session="${id}"]`);
+  const pinned = () => page.getByTestId("pinned-group").locator('[data-testid="session-row"]').evaluateAll((els) => els.map((e) => e.getAttribute("data-session")));
+  try {
+    const a = await mk("Alpha: tidy the logs"), b = await mk("Bravo: review the patch"), c = await mk("Charlie: update the docs"), d = await mk("Delta: measure the cache");
+    await page.goto(`/s/${a}`);
+    await expect(row(d)).toBeVisible();
+    await expect(page.getByTestId("pinned-group")).toHaveCount(0);
+
+    // By the pointer: Pin is among the actions a row shows under it. One press, from the list.
+    await row(a).hover();
+    await row(a).getByTestId("row-pin").click();
+    await expect.poll(pinned).toEqual([a]);
+    // From the keyboard: Right goes to the row's actions, and Pin is the first. The keyboard stays with the row, in the group it went to.
+    await row(b).focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(row(b).getByTestId("row-pin")).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect.poll(pinned).toEqual([a, b]);
+    await expect(row(b)).toBeFocused();
+    // From the row's own menu (a right click).
+    await row(c).click({ button: "right" });
+    await expect(page.getByTestId("row-menu")).toBeVisible();
+    await shoot(page, "rail-stable-09-row-menu");
+    await page.getByTestId("row-menu-pin").click();
+    await expect.poll(pinned).toEqual([a, b, c]);
+    // A row the owner sent to the pinned went there: the list is not held around where it stood (no gap above its first group).
+    expect(await list.evaluate((nav) => [nav.style.paddingTop, nav.scrollTop])).toEqual(["", 0]);
+    expect(await page.getByTestId("pinned-group").evaluate((el) => el.getBoundingClientRect().top - el.parentElement!.getBoundingClientRect().top)).toBeLessThan(12);
+
+    // The pinned are reordered from the keyboard: Alt Up and Alt Down on a pinned row. The keyboard stays on it.
+    await row(c).focus();
+    await page.keyboard.press("Alt+ArrowUp");
+    await expect.poll(pinned).toEqual([a, c, b]);
+    await expect(row(c)).toBeFocused();
+    await page.keyboard.press("Alt+ArrowUp");
+    await expect.poll(pinned).toEqual([c, a, b]);
+    await expect(row(c)).toBeFocused();
+    await page.keyboard.press("Alt+ArrowUp"); // already the first: nothing moves
+    await page.keyboard.press("Alt+ArrowDown");
+    await expect.poll(pinned).toEqual([a, c, b]);
+    await expect(row(c)).toBeFocused();
+    // And by a drag inside the group: the last one dropped on the first's upper half goes before it.
+    await row(b).dragTo(row(a), { targetPosition: { x: 80, y: 4 } });
+    await expect.poll(pinned).toEqual([b, a, c]);
+    // A session that is not pinned, dropped among the pinned, is pinned at that place.
+    await row(d).dragTo(row(c), { targetPosition: { x: 80, y: 26 } });
+    await expect.poll(pinned).toEqual([b, a, c, d]);
+    await page.mouse.move(1200, 500);
+    await shoot(page, "rail-stable-10-pinned-order");
+
+    // The order is stored with the pins: the same after a reload, and the daemon holds their marks in it.
+    await page.reload();
+    await expect.poll(pinned).toEqual([b, a, c, d]);
+    const marks = await Promise.all([b, a, c, d].map(async (id) => (await (await request.get(`/api/sessions/${id}?events=0`)).json()).session.settings.pinned_ms as number));
+    expect(marks).toEqual([...marks].sort((x, y) => x - y));
+    expect(new Set(marks).size).toBe(4);
+    // Unpinned from its row, the same way.
+    await row(d).hover();
+    await expect(row(d).getByTestId("row-pin")).toHaveAttribute("aria-pressed", "true");
+    await row(d).getByTestId("row-pin").click();
+    await expect.poll(pinned).toEqual([b, a, c]);
+  } finally {
+    for (const id of made) await request.delete(`/api/sessions/${id}`).catch(() => {});
+  }
+});
+
+test("what changes elsewhere waits for the hand, is said at the list's foot, and settles around the row the hand was on", async ({ page, request }) => {
+  test.skip(!((await (await request.get("/api/models")).json()).models as { id: string }[]).some((m) => m.id === MODEL), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const root = `${process.env.HOME}/.cache/keel-work/bun/e2e-ws/settle-${Date.now().toString(36)}`;
+  const dirs = { first: `${root}/a-first`, mid: `${root}/m-mid`, wait: `${root}/z-wait` };
+  for (const d of Object.values(dirs)) mkdirSync(d, { recursive: true });
+  const made: string[] = [];
+  let folder: string | undefined;
+  const mk = async (title: string, workspace: string, text?: string) => {
+    const { session } = await (await request.post("/api/sessions", { data: { model: MODEL, title, workspace } })).json();
+    made.push(session.id);
+    if (text) {
+      await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+      await request.post(`/api/sessions/${session.id}/messages`, { data: { text } });
+    }
+    return session.id as string;
+  };
+  const list = page.getByTestId("session-list");
+  const row = (id: string) => list.locator(`[data-testid="session-row"][data-session="${id}"]`);
+  const state = async (id: string) => ((await (await request.get("/api/state")).json()).states ?? {})[id]?.watch as string | undefined;
+  try {
+    const reader = await mk("Reading: design notes", dirs.mid), r1 = await mk("Mid task 1: tidy the logs", dirs.mid), r2 = await mk("Mid task 2: review the patch", dirs.mid), r3 = await mk("Mid task 3: update the docs", dirs.mid);
+    // Fourteen that wait on a timer (each may hold a queued message, so each row would ask for its queue).
+    const waiting: string[] = [];
+    for (let i = 1; i <= 14; i++) waiting.push(await mk(`Wait ${i}: check the deploy`, dirs.wait, script([{ name: "wait_for", input: { kind: "timer", seconds: 900, note: "check the deploy" } }])));
+    await expect.poll(() => state(waiting.at(-1)!), { timeout: 30_000 }).toBe("wait");
+
+    // A page load asks for the queue of a dozen rows at most, however many could have one.
+    const bare: string[] = [];
+    page.on("request", (r) => { const u = new URL(r.url()); if (r.method() === "GET" && /^\/api\/sessions\/[0-9a-f-]{20,}$/.test(u.pathname) && u.searchParams.get("events") === "0") bare.push(u.pathname); });
+    await page.goto(`/s/${reader}`);
+    await expect(row(waiting[0]!)).toHaveAttribute("data-watch", "wait");
+    await expect.poll(() => bare.length).toBe(12);
+    await page.waitForTimeout(1200);
+    expect(bare.length, "requests for a row's queue after the page loaded").toBe(12);
+
+    // 1. One of the owner's folders, folded on another device while the pointer is in the list
+    // ("By my folders"): no row moves under the hand. It folds when the hand has left.
+    folder = (await (await request.post("/api/session-folders", { data: { name: "Chores" } })).json()).folder.id as string;
+    await request.patch(`/api/sessions/${r1}`, { data: { folder_id: folder } });
+    await page.getByTestId("list-arrange").click();
+    await page.getByTestId("arrange-group-mine").click();
+    await page.keyboard.press("Escape");
+    await expect(list.locator(`[data-testid="folder-head"][data-folder="${folder}"]`)).toBeVisible();
+    await expect(row(r1)).toBeVisible();
+    await arm(page);
+    // (The pointer rests on the open session's row: by their folders the other rows at rest may be behind "N more".)
+    const under = (await row(reader).boundingBox())!;
+    const stir = (n = 0) => page.mouse.move(under.x + 120 + (n % 2), under.y + under.height / 2);
+    await stir();
+    await expect(list).toHaveAttribute("data-held", "true");
+    await page.waitForTimeout(300);
+    await seen(page);
+    await request.patch(`/api/session-folders/${folder}`, { data: { collapsed: true } });
+    await page.waitForTimeout(700);
+    await stir(1);
+    await page.waitForTimeout(500);
+    const folded = await seen(page);
+    expect({ moves: folded.moves, under: folded.under }, "a folder folded elsewhere, under the pointer").toEqual({ moves: 0, under: [reader] });
+    await expect(row(r1)).toBeVisible();
+    await page.mouse.move(1200, 300);
+    await expect(row(r1)).toHaveCount(0);
+    await request.patch(`/api/session-folders/${folder}`, { data: { collapsed: false } });
+    await page.getByTestId("list-arrange").click();
+    await page.getByTestId("arrange-reset").click();
+    await page.keyboard.press("Escape");
+    await expect(row(r1)).toBeVisible();
+
+    // 2. Eight sessions made elsewhere while the pointer is in the list of a short window: nothing
+    // moves; they wait at the list's end, the first of them (the rest behind "N more"); and since
+    // that is below what the list shows, a line at its foot says so. A press on it goes to them.
+    await page.setViewportSize({ width: 1920, height: 620 });
+    await list.evaluate((nav) => { nav.scrollTop = 0; });
+    const at = (await row(r2).boundingBox())!;
+    const hand = (n = 0) => page.mouse.move(at.x + 120 + (n % 2), at.y + at.height / 2);
+    await hand();
+    await expect(list).toHaveAttribute("data-held", "true");
+    await page.waitForTimeout(300);
+    await seen(page);
+    const came: string[] = [];
+    for (let i = 1; i <= 8; i++) came.push(await mk(`Arrival ${i}: made on another device`, dirs.first));
+    const late = page.getByTestId("late-group");
+    await expect(late.locator('[data-testid="session-row"]')).toHaveCount(6);
+    await expect(late.locator(".k-more")).toHaveText("2 more");
+    await hand(1);
+    const arrived = await seen(page, r2);
+    expect({ moves: arrived.moves, under: arrived.under, at: arrived.at.length }, "eight arrivals, under the pointer").toEqual({ moves: 0, under: [r2], at: 1 });
+    await expect(late).not.toBeInViewport();
+    const line = page.getByTestId("late-line");
+    await expect(line).toHaveText("8 just arrived, below");
+    await expect(line).toBeInViewport({ ratio: 1 });
+    await shoot(page, "rail-stable-11-arrivals-wait-below");
+    await line.click();
+    await expect(late).toBeInViewport();
+    await expect(line).toHaveCount(0);
+    await expect(list).toHaveAttribute("data-held", "true");
+
+    // 3. The hand goes back to its row, then leaves for less than a second: the arrivals take their
+    // places above it (a folder of their own, first in the list), and the row is where it was when
+    // the pointer comes back.
+    await list.evaluate((nav) => { nav.scrollTop = 0; });
+    await hand();
+    await page.waitForTimeout(300);
+    const before = (await row(r2).boundingBox())!;
+    await page.mouse.move(1200, 300);
+    await expect(late).toHaveCount(0, { timeout: 3000 });
+    await expect(row(came.at(-1)!)).toHaveCount(1);
+    const after = (await row(r2).boundingBox())!;
+    expect(Math.abs(after.y - before.y), `the row the hand was on moved ${after.y - before.y}px when the list settled`).toBeLessThan(1);
+    await hand();
+    expect(await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('[data-testid="session-row"]')?.getAttribute("data-session"), [at.x + 120, at.y + at.height / 2] as const)).toBe(r2);
+    // The arrivals are above it now, in their folder, first in the list.
+    expect(await list.locator('[data-testid="session-row"]').evaluateAll((els, id) => els.findIndex((e) => e.getAttribute("data-session") === id), came.at(-1)!)).toBe(0);
+    await shoot(page, "rail-stable-12-settled-around-the-row");
+    void r3;
   } finally {
     for (const id of made) { await request.post(`/api/sessions/${id}/interrupt`).catch(() => {}); await request.delete(`/api/sessions/${id}`).catch(() => {}); }
     if (folder) await request.delete(`/api/session-folders/${folder}`).catch(() => {});
