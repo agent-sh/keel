@@ -788,7 +788,14 @@ export class McpManager {
     // A call that asks past a bound is ended here: its own stop, beside the session's.
     const limit = new AbortController();
     const signal = AbortSignal.any([ctx.signal, limit.signal]);
-    const call: CallAsks = { asked: 0, declined: 0, queued: 0, self: 0, roots: 0, notes: new Set(), end: () => limit.abort(), readOnly: e ? (e.bundled ? e.bundled.reads(tool) : !!e.config.read_tools?.includes(tool)) : false };
+    const call: CallAsks = { asked: 0, declined: 0, queued: 0, self: 0, roots: 0, notes: new Set(), end: () => {
+      limit.abort();
+      // A server that asks while its call runs, on a connection where nothing
+      // names the call, goes on asking after the call was ended: its next
+      // question would reach this session's next call on it. The connection
+      // goes with the call; the next call starts the server again.
+      if (client.era === "legacy" && client.unnamedRequests) client.drop(`a call of ${shown}__${tool} was ended because of the questions it asked, and the server may still be asking`);
+    }, readOnly: e ? (e.bundled ? e.bundled.reads(tool) : !!e.config.read_tools?.includes(tool)) : false };
     // What the model is told besides the result: what the server asked that got no answer, and why.
     const noted = (out: ToolOutput): ToolOutput => {
       if (!call.notes.size) return out;

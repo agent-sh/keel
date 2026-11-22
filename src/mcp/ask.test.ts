@@ -62,6 +62,8 @@ test("a call's timeout counts the server's time across its questions, and not th
     expect(Date.now() - t0).toBeLessThan(2000);
     // The owner takes 600 ms a question, three seconds in all: within a timeout of 2.8 s, because that time is not the server's.
     expect(text(await legacy.callTool("slow", {}, undefined, 2800, undefined, undefined, answering(600)))).toBe('slow: ["accept","accept","accept","accept","accept"]');
+    // The newer protocol's rounds share the call's timeout, and a late round says the call's, not what was left of it.
+    await expect(modern.callTool("slowly", {}, undefined, 1000, undefined, undefined, answering(0))).rejects.toThrow("tools/call timed out after 1s, in round 3 of the call");
     // A server of the newer protocol that asks to be called again whatever it is answered: the call ends.
     await expect(modern.callTool("loop", {}, undefined, 10_000, undefined, undefined, answering(0))).rejects.toThrow("the server asked to be called again 64 times in one call");
   } finally {

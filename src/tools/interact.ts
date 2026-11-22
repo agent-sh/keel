@@ -18,12 +18,13 @@ const keyOf = (sessionId: string, callId: string) => `${sessionId}:${callId}`;
 // Questions that stopped waiting, newest last: a phone that saw one pending
 // learns it closed. A few hundred are plenty.
 // `answers`: what was picked, so a card reopened elsewhere shows it.
-const closed: { call_id: string; session_id: string; at: number; answered: boolean; answers?: Answers }[] = [];
+// `question`: the id of a question a server asked (a call can have several, one after another).
+const closed: { call_id: string; session_id: string; at: number; answered: boolean; answers?: Answers; question?: string }[] = [];
 // What the owner typed for a server's question is the server's alone: it is
 // not kept here, so it reaches no other device.
-const close = (call_id: string, session_id: string, reply: Reply, asked: boolean) => {
+const close = (call_id: string, session_id: string, reply: Reply, asked?: string) => {
   const answers = reply === DECLINED ? null : reply;
-  closed.push({ call_id, session_id, at: Date.now(), answered: answers !== null, ...(answers && !asked ? { answers } : {}) });
+  closed.push({ call_id, session_id, at: Date.now(), answered: answers !== null, ...(answers && !asked ? { answers } : {}), ...(asked ? { question: asked } : {}) });
   if (closed.length > 300) closed.splice(0, closed.length - 300);
 };
 export const closedQuestions = (sinceMs: number) => closed.filter((q) => q.at >= sinceMs);
@@ -44,7 +45,7 @@ export function askFor(ctx: ToolContext, asked?: Asked): Promise<Reply> {
       ctx.signal.removeEventListener("abort", onAbort);
       if (pending.get(key)?.resolve === done) {
         pending.delete(key);
-        close(id, ctx.sessionId, a, !!asked);
+        close(id, ctx.sessionId, a, asked?.id);
         ctx.questionChanged?.();
       }
       resolve(a);

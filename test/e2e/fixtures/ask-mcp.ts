@@ -52,7 +52,7 @@ const TOOLS = [
   // A server that never has enough: every answer gets another question (`loop`),
   // a form no card can show, which needs no owner to be answered (`blind`),
   // or the session's folder again (`folders`).
-  ...(modern ? [tool("loop", "Asks again after every answer, for ever"), tool("blind", "Asks a form that cannot be answered, for ever"), tool("folders", "Asks for the folders, for ever")] : []),
+  ...(modern ? [tool("loop", "Asks again after every answer, for ever"), tool("blind", "Asks a form that cannot be answered, for ever"), tool("folders", "Asks for the folders, for ever"), tool("slowly", "Works for a while before each round's question")] : []),
   ...(modern ? [] : [
     tool("twice", "Asks two questions, one after the other"),
     tool("work", "Does something, asks, and does more"),
@@ -157,8 +157,9 @@ async function handle(m: any) {
       if (!TOOLS.some((t) => t.name === name)) return fail(-32602, `no tool ${name}`);
       if (name === "caps") return reply(text(JSON.stringify(caps)));
       if (name === "start") return reply(text(`start: ${JSON.stringify(atStart)}`));
-      if (modern && (name === "loop" || name === "blind" || name === "folders")) {
+      if (modern && (name === "loop" || name === "blind" || name === "folders" || name === "slowly")) {
         const round = Number(m.params?.requestState ?? 0) + 1;
+        if (name === "slowly") await sleep(400);
         if (name === "folders") return reply({ resultType: "input_required", inputRequests: { q: { method: "roots/list" } }, requestState: String(round) });
         const params = name === "loop" ? YESNO(`Round ${round}: go on?`) : form("A form with a part no card has.", { where: { type: "object" } }, ["where"]);
         return reply({ resultType: "input_required", inputRequests: { q: { method: "elicitation/create", params } }, requestState: String(round) });

@@ -359,14 +359,21 @@ export class McpClient {
     const now = Date.now();
     if (now - this.loose.since > 60_000) this.loose = { since: now, n: 0 };
     if (++this.loose.n <= LOOSE_MAX) return false;
-    const why = `the server made more than ${LOOSE_MAX} requests of its own in a minute that no call was waiting for`;
-    if (!this.closed) {
-      this.closedWhy = why;
-      this.close();
-      this.closeHook?.(why);
-    }
+    this.drop(`the server made more than ${LOOSE_MAX} requests of its own in a minute that no call was waiting for`);
     return true;
   }
+
+  // Ends the connection from this side, and tells its owner why.
+  drop(why: string) {
+    if (this.closed) return;
+    this.closedWhy = why;
+    this.close();
+    this.closeHook?.(why);
+  }
+  // Whether a request of the server's own comes with nothing that names the
+  // call it is for (stdio, and the older transport's one stream): a question
+  // of a call that is over would then go to the next call.
+  get unnamedRequests() { return this.t.kind === "stdio" || !!this.t.sse; }
 
   private write(msg: unknown) {
     if (this.t.kind === "stdio") {
@@ -658,7 +665,7 @@ export class McpClient {
     };
   }
 
-  async rpc(method: string, params: any = {}, opt: { signal?: AbortSignal; timeoutMs?: number; modern?: boolean; authorize?: () => string | undefined; input?: CallInput } = {}): Promise<any> {
+  async rpc(method: string, params: any = {}, opt: { signal?: AbortSignal; timeoutMs?: number; timeoutText?: string; modern?: boolean; authorize?: () => string | undefined; input?: CallInput } = {}): Promise<any> {
     const deny = opt.authorize?.();
     if (deny) throw new McpAuthorizationError(deny);
     if (this.closed) throw new Error("the connection is closed");
@@ -698,7 +705,7 @@ export class McpClient {
       // is asked and goes on with what was left, so a server that keeps
       // asking still has one timeout for its call, not a new one a question.
       let left = timeoutMs, since = 0;
-      const arm = () => { since = Date.now(); timer = setTimeout(() => giveUp(`${method} timed out after ${Math.round(timeoutMs / 1000)}s`, "timed out"), left); };
+      const arm = () => { since = Date.now(); timer = setTimeout(() => giveUp(opt.timeoutText ?? `${method} timed out after ${Math.round(timeoutMs / 1000)}s`, "timed out"), left); };
       let held = 0;
       const hold = () => {
         if (held++ === 0) { clearTimeout(timer); left = Math.max(0, left - (Date.now() - since)); }
@@ -778,10 +785,11 @@ export class McpClient {
     const whole = opt.timeoutMs ?? this.timeoutMs;
     let left = whole;
     for (let quiet = 0, round = 1; ; round++) {
-      if (left <= 0) throw new Error(`${method} timed out after ${Math.round(whole / 1000)}s`);
+      if (left <= 0) throw new Error(`${method} timed out after ${Math.round(whole / 1000)}s, before round ${round} of the call`);
       if (round > ROUNDS_MAX) throw new Error(`the server asked to be called again ${ROUNDS_MAX} times in one call`);
       const began = Date.now();
-      const r = await this.rpc(method, next, { ...opt, timeoutMs: left });
+      // (A later round has only what is left of the call's time: its timeout is said as the call's.)
+      const r = await this.rpc(method, next, { ...opt, timeoutMs: left, ...(round > 1 ? { timeoutText: `${method} timed out after ${Math.round(whole / 1000)}s, in round ${round} of the call` } : {}) });
       left -= Date.now() - began;
       if (r?.resultType !== "input_required") return r;
       const asked = Object.entries((r.inputRequests ?? {}) as Record<string, InputRequest>);

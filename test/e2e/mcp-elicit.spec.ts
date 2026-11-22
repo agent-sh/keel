@@ -264,8 +264,9 @@ test("a server's questions are bounded, and none is shown in a session that did 
     }
     await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 30_000 });
     expect((await k.results(id)).at(-1)).toBe("asker__forever was ended: asker went on asking after the owner declined 5 of its questions in this call. Its work may be half done: check before calling it again.");
-    // What the server asked after its call was ended had no call to go to: no card, no choice.
-    await expect.poll(() => k.answers().filter((a) => a.tool === "forever").at(-1)?.answer, { timeout: 30_000 }).toEqual([...Array(5).fill("decline"), null, ...Array(24).fill("cancel")]);
+    // The server went with its call: what it would have asked next reaches no later call (it is started again for the next one).
+    await page.waitForTimeout(500);
+    expect(k.answers().filter((a) => a.tool === "forever")).toEqual([]);
 
     // Twelve at once: one card and five behind it; the rest are not kept waiting.
     await run(page, "asker__many");

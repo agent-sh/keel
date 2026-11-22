@@ -330,6 +330,18 @@ export function mobileApi(ctx: MobileCtx) {
 
   // Questions the model asked that wait for the owner, as approval cards. Each
   // pending call is read from its own tool call, however far back it is.
+  // A card's id. A question a server asked carries its own id too: a call can
+  // have several, one after another, and an answer to a card that is no
+  // longer the one waiting must find nothing (never the next question).
+  const questionId = (callId: string, asked?: string) => (asked ? `q-${callId}-${asked}` : `q-${callId}`);
+  // The pending question a card id is for.
+  function questionFor(aid: string): { s: Session; callId: string; asked?: string } | undefined {
+    for (const s of store.sessions()) for (const callId of pendingQuestions(s.id)) {
+      const asked = askedOf(s.id, callId)?.id;
+      if (questionId(callId, asked) === aid) return { s, callId, asked };
+    }
+    return undefined;
+  }
   function questionCard(s: Session, callId: string) {
     const e = store.db.query<any, [string, string]>("SELECT * FROM events WHERE session_id = ? AND kind = 'assistant' AND instr(data, ?) > 0 ORDER BY seq DESC LIMIT 1").get(s.id, JSON.stringify(callId));
     const tu = e ? (JSON.parse(e.data).blocks ?? []).find((b: any) => b.type === "tool_use" && b.id === callId) : undefined;
@@ -338,7 +350,7 @@ export function mobileApi(ctx: MobileCtx) {
     const qs = asked ? normQuestions({ questions: asked.questions }) : tu ? normQuestions(tu.input) : [];
     const options = qs.flatMap((q) => q.options.map((o) => o.label));
     return {
-      id: `q-${callId}`, chat_id: s.id, session_key: s.id, kind: "question",
+      id: questionId(callId, asked?.id), chat_id: s.id, session_key: s.id, kind: "question",
       command: asked ? [`${asked.from} asks: ${asked.message}`, ...(asked.notes ?? []), ...qs.map((q) => q.question)].join("\n") : tu ? qs.map((q) => q.question).join("\n") || "A question" : "This question is no longer stored; answer it in the workbench",
       description: options.join(" / "), options, unavailable: !tu,
       // One entry per question, by id: a card of several takes one answer each.
@@ -349,9 +361,10 @@ export function mobileApi(ctx: MobileCtx) {
   }
   // A question that stopped waiting, with what was picked (by question id), as
   // the desktop shows it: from this daemon's record, else the stored result.
-  function closedQuestion(q: { call_id: string; session_id: string; at: number; answered: boolean; answers?: Answers }) {
+  function closedQuestion(q: { call_id: string; session_id: string; at: number; answered: boolean; answers?: Answers; question?: string }) {
     const s = store.session(q.session_id);
-    const base = s ? questionCard(s, q.call_id) : { id: `q-${q.call_id}`, chat_id: q.session_id, session_key: q.session_id, kind: "question", command: "", description: "", options: [], questions: [] };
+    // (A server's question is gone once it closed: its card closes by its id, with nothing of another question in it.)
+    const base = s && !q.question ? questionCard(s, q.call_id) : { id: questionId(q.call_id, q.question), chat_id: q.session_id, session_key: q.session_id, kind: "question", command: "", description: "", options: [], questions: [] };
     let answers = q.answers;
     if (!answers && q.answered) {
       const r = store.db.query<{ data: string }, [string, string]>("SELECT data FROM events WHERE session_id = ? AND kind = 'tool_result' AND instr(data, ?) > 0 ORDER BY seq DESC LIMIT 1").get(q.session_id, JSON.stringify(q.call_id));
@@ -457,17 +470,17 @@ export function mobileApi(ctx: MobileCtx) {
         return err("biometric signature required", 403);
     }
     if (aid.startsWith("q-")) {
-      const callId = aid.slice(2);
-      const card = questions().find((q) => q.id === aid);
-      if (!card) return err("this question is no longer waiting", 409);
+      // (By the whole id: a card of a server's earlier question on the same call finds nothing.)
+      const at = questionFor(aid);
+      if (!at) return err("this question is no longer waiting", 409);
+      const { s, callId } = at;
+      const card = questionCard(s, callId);
       if (choice !== "deny" && !text) return err("answer required for question", 400);
-      const s = store.session(card.chat_id)!;
       const answers: Answers = {};
       const qs = card.questions as { id: string; options: string[]; multi: boolean }[];
       // Dismissing a question a server asked is the protocol's decline.
       if (choice === "deny" && askedOf(s.id, callId)) {
-        // (The phone's answer is signed and taken once, so it cannot land a second time on the next question: it is for the one that waits now.)
-        if (decline(s.id, callId, askedOf(s.id, callId)?.id) !== true) return err("this question is no longer waiting", 409);
+        if (decline(s.id, callId, at.asked) !== true) return err("this question is no longer waiting", 409);
         return json({ approval: { ...card, actions: [], state: "denied", choice }, resolved: 1 });
       }
       if (choice !== "deny" && !byId && qs.length > 1) return err(`this card asks ${qs.length} questions; answer each by its id (answers: { id: answer })`, 400);
@@ -480,7 +493,7 @@ export function mobileApi(ctx: MobileCtx) {
         for (const v of vals) { const hit = q.options.find((o) => o.toLowerCase() === v.toLowerCase()); (hit ? picked : other).push(hit ?? v); }
         answers[q.id] = other.length ? { picked, other: other.join(", ") } : { picked };
       }
-      const sent = answer(s.id, callId, answers, false, askedOf(s.id, callId)?.id);
+      const sent = answer(s.id, callId, answers, false, at.asked);
       // A form that asks for what looks like a secret is sent from the workbench only, on the owner's word there.
       if (sent === "unsent") return err("this form asks for what looks like a secret: dismiss it here, or answer it in the workbench", 409);
       if (sent !== true) return err("this question is no longer waiting", 409);
@@ -568,7 +581,7 @@ export function mobileApi(ctx: MobileCtx) {
                 // A question answered elsewhere: its card closes on the phone too.
                 if (f.event.kind === "tool_result") {
                   const ids = new Set(((f.event.data.results ?? []) as any[]).map((r) => r.tool_use_id));
-                  for (const c of closedCards(f.event.ts - 60_000)) if (c.kind === "question" && ids.has(c.id.slice(2))) send({ type: "approval", seq: gseq, approval: c });
+                  for (const q of closedQuestions(f.event.ts - 60_000)) if (ids.has(q.call_id)) send({ type: "approval", seq: gseq, approval: closedQuestion(q) });
                 }
               } else if (f.t === "delta" && f.kind === "text") send({ type: "delta", chat_id: f.session_id, delta: f.text });
               else if (f.t === "session") {

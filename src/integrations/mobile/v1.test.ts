@@ -13,7 +13,7 @@ import { setDeps } from "../../automation/core.ts";
 import * as agents from "../../automation/agents.ts";
 import * as alerts from "../../automation/alerts.ts";
 import { setAttachmentsRoot } from "../../engine/attachments.ts";
-import { ask } from "../../tools/interact.ts";
+import { ask, answer, askFor } from "../../tools/interact.ts";
 import wire from "./contract/wire.json";
 import { answersText, approvalMessage, canonicalMessage, sha256Hex } from "./sig.ts";
 import { MobileStore } from "./store.ts";
@@ -384,6 +384,41 @@ describe("questions", () => {
     const reopened = (await call("GET", "/v1/sync?since=0")).body.approvals.find((a: any) => a.id === "q-call-q");
     expect(reopened).toMatchObject({ state: "approved", answers: { build: { picked: ["Debug"] }, checks: { picked: ["Integration"] } } });
     expect(reopened.questions.map((q: any) => q.id)).toEqual(["build", "checks"]);
+  });
+
+  // A server can ask one question after another on one call. A card of the
+  // first, still on the phone after it was answered on the desktop, must not
+  // answer or decline the second.
+  test("a server's question is answered by its own card: a card of the question before it finds nothing", async () => {
+    const s = session();
+    store.append(s.id, "assistant", { blocks: [{ type: "tool_use", id: "call-s", name: "mcp_call", input: { tool: "srv__ask" } }] });
+    const ctx = { callId: "call-s", sessionId: s.id, signal: new AbortController().signal } as any;
+    const form = (id: string, question: string) => ({ id, from: "srv", message: question, questions: [{ id: "ok", question, options: [{ label: "Yes" }, { label: "No" }] }] });
+    const cards = async () => (await call("GET", `/v1/chats/${s.id}/run`)).body.approvals.filter((a: any) => a.kind === "question").map((a: any) => a.id);
+    const send = (id: string, choice: "once" | "deny", answer?: string) => {
+      const ts = String(Math.floor(Date.now() / 1000));
+      const asig = sign("sha256", Buffer.from(`approve2\n${id}\nonce\n${sha256Hex(answer ?? "")}\n${ts}`), { key: akey.privateKey, dsaEncoding: "der" }).toString("base64");
+      return call("POST", `/v1/approvals/${id}`, { choice, ...(answer ? { answer } : {}) }, choice === "once" ? { "x-hm-asig": asig, "x-hm-asig-v": "2" } : {});
+    };
+    const first = askFor(ctx, form("q-one", "Go on?"));
+    expect(await cards()).toEqual(["q-call-s-q-one"]);
+    // Answered on the desktop; the server asks its next question on the same call.
+    expect(answer(s.id, "call-s", { ok: { picked: ["Yes"] } }, false, "q-one")).toBe(true);
+    expect(await first).toEqual({ ok: { picked: ["Yes"] } });
+    let second: any = "waiting";
+    askFor(ctx, form("q-two", "Delete it all?")).then((a) => (second = a));
+    expect(await cards()).toEqual(["q-call-s-q-two"]);
+    // The phone still shows the first card: its answer, its dismissal and the call's bare id find nothing.
+    expect([(await send("q-call-s-q-one", "once", "Yes")).status, (await send("q-call-s-q-one", "deny")).status, (await send("q-call-s", "once", "Yes")).status, (await send("q-call-s", "deny")).status]).toEqual([409, 409, 409, 409]);
+    await Bun.sleep(0);
+    expect(second).toBe("waiting");
+    // The first card comes back closed under its own id, with nothing of the second question in it.
+    const closed = (await call("GET", "/v1/sync?since=0")).body.approvals.find((a: any) => a.id === "q-call-s-q-one");
+    expect([closed.state, closed.command, closed.questions]).toEqual(["approved", "", []]);
+    // The second card answers the second question.
+    expect((await send("q-call-s-q-two", "once", "No")).status).toBe(200);
+    await Bun.sleep(0);
+    expect(second).toEqual({ ok: { picked: ["No"] } });
   });
 
   test("a question answered elsewhere comes back closed in the next sync", async () => {
