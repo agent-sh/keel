@@ -3,7 +3,7 @@ import { peerProblem, standInDaemon } from "./peer.ts";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { HAIKU, shoot, choose } from "./shots.ts";
 
@@ -228,7 +228,8 @@ test("fleet: a secret goes to the other machine by name only", async ({ page, re
     for (const r of (await results()).slice(-2)) expect(r).toContain(sha);
 
     // The value is in no file of the other daemon's state and no answer it gives.
-    const files = (d: string): string[] => readdirSync(d).flatMap((n) => { const p = join(d, n), st = statSync(p); return st.isDirectory() ? files(p) : st.isFile() ? [p] : []; });
+    // (The state folder's own files: a link in it, as in the daemon's view of a repository, is not one, and its target may not be there.)
+    const files = (d: string): string[] => readdirSync(d).flatMap((n) => { const p = join(d, n), st = lstatSync(p); return st.isDirectory() ? files(p) : st.isFile() ? [p] : []; });
     for (const f of files(STATE)) expect({ f, has: readFileSync(f).includes(token) }).toEqual({ f, has: false });
     for (const path of [`/api/sessions/${far}`, `/api/sessions/${s}/jobs`, "/api/errors", "/api/fleet/messages"]) {
       const body = await (await request.get(`${PEER}${path}`)).text();

@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext } from "./isolate.ts";
 import { createHash } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { HAIKU, shoot, ask, scriptBash } from "./shots.ts";
 
@@ -80,7 +80,9 @@ test("secrets stay out of history and still work", async ({ page, request }) => 
   expect(routes.join("\n")).toContain("[secret:");
   for (const r of routes) { expect(r).not.toContain(token); expect(r).not.toContain(given); }
   const { state_dir } = await (await request.get("/api/daemon")).json();
-  const walk = (d: string): string[] => readdirSync(d).flatMap((f) => { const p = join(d, f); const st = statSync(p); return st.isDirectory() ? walk(p) : st.isFile() ? [p] : []; });
+  // The state folder's own files: a link in it (the daemon's view of a repository links to that
+  // repository's objects and refs, and a target may not be there) is not a file of the state.
+  const walk = (d: string): string[] => readdirSync(d).flatMap((f) => { const p = join(d, f); const st = lstatSync(p); return st.isDirectory() ? walk(p) : st.isFile() ? [p] : []; });
   const leaks = walk(state_dir).filter((f) => { const b = readFileSync(f); return b.includes(token) || b.includes(given); });
   expect(leaks).toEqual([]);
 
