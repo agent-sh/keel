@@ -432,8 +432,6 @@
    other panes keep their text as it is and lose only the rule. */
 @media (min-width: 768px) {
   .k-stations:not([data-count="1"]) .k-station[data-helm]::before { content: ""; position: absolute; z-index: 4; top: var(--k-band-h); left: 0; right: 0; height: 2px; background: var(--fg); pointer-events: none; }
-  /* A look is not the pane's session: its rule is dashed, as a place a drop would land is. */
-  .k-stations .k-station[data-helm][data-look]::before { background: repeating-linear-gradient(90deg, var(--fg) 0 0.625rem, transparent 0.625rem 1rem); }
 }
 /* A pane's views. The session it holds fills the pane. What lies over it for now (a look,
    the start page) is drawn on top, and what is under stays laid out as it was, out of
@@ -443,39 +441,60 @@
 .k-view[inert] { visibility: hidden; }
 /* The bar across the top of what lies over a pane's session, one line of a fixed height. It
    says what this is and whose pane it is ("Looking at X. This pane holds Y."), then the way
-   back and the way to keep a look. In a narrow pane the first sentence gives way (the header
-   under the bar names the session), then the held session's title is cut. */
+   back and the way to keep a look. Where room is short the first sentence gives way (the
+   header under the bar names the session looked at), then "This pane holds", and the held
+   session's name is cut last: it is what the bar is for. */
 .k-look-bar { display: flex; align-items: center; gap: 0.375rem; flex-shrink: 0; height: 2.375rem; padding: 0 0.625rem 0 1.375rem; border-bottom: 1px solid var(--line); background: var(--sunken); font-size: var(--text-caption); line-height: 1.0625rem; container-type: inline-size; }
+/* A look is not the pane's session: the rule between its bar and the session looked at is
+   dashed, as a place a drop would land is, and in ink in the pane worked in. */
+.k-view[data-view="look"] > .k-look-bar { border-bottom-color: transparent; background-image: repeating-linear-gradient(90deg, var(--line-strong) 0 0.625rem, transparent 0.625rem 1rem); background-position: bottom; background-size: 100% 1px; background-repeat: no-repeat; }
+@media (min-width: 768px) {
+  .k-station[data-helm] > .k-view[data-view="look"] > .k-look-bar { background-image: repeating-linear-gradient(90deg, var(--fg) 0 0.625rem, transparent 0.625rem 1rem); background-size: 100% 2px; }
+}
 /* (One line of two sentences. When both do not fit, the first goes to a line above that is not
-   shown, and the second, whose pane this is, has the line; then its title is cut.) */
+   shown, and the second, whose pane this is, has the line. In it the same again: when "This
+   pane holds" and the name at its least, with what is said of its state, do not fit, the
+   words go to a line that is not shown and the name has the line.) */
 .k-look-says { flex: 1 1 0; min-width: 0; height: 1.0625rem; display: flex; flex-wrap: wrap; align-content: flex-end; column-gap: 0.4375rem; overflow: hidden; white-space: nowrap; color: var(--muted); }
 .k-look-says b { font-weight: 600; color: var(--fg); }
 .k-look-this { flex: 0 0 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-.k-look-holds { flex: 0 1 auto; min-width: 0; max-width: 100%; height: 1.0625rem; display: flex; align-items: center; }
-.k-look-holds .k-mark { flex-shrink: 0; width: 0.5rem; height: 0.5rem; margin: 0 0.375rem 0 0.4375rem; }
+.k-look-holds { flex: 1 1 auto; min-width: 0; max-width: 100%; height: 1.0625rem; display: flex; flex-wrap: wrap; align-content: flex-end; column-gap: 0.4375rem; overflow: hidden; }
+.k-look-lead { flex: 0 0 auto; }
+/* (The least the name is cut to beside the words: its mark, about sixteen characters, and its state.) */
+.k-look-own { --k-own-least: 8.5rem; flex: 1 1 var(--k-own-least); min-width: 0; height: 1.0625rem; display: flex; align-items: center; }
+.k-look-own[data-state="need"] { --k-own-least: 13.5rem; }
+.k-look-own:is([data-state="fail"], [data-state="declined"]) { --k-own-least: 12rem; }
+.k-look-own .k-mark { flex-shrink: 0; width: 0.5rem; height: 0.5rem; margin-right: 0.375rem; }
 .k-look-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* The pane's own session needs the owner, or failed, while it is under the look: said in words, in the state's ink. */
-.k-look-state { flex-shrink: 0; font-weight: 600; color: var(--st-need-ink); }
+.k-look-state { flex-shrink: 0; margin-left: 0.25em; font-weight: 600; color: var(--st-need-ink); }
 .k-look-bar:is([data-under="fail"], [data-under="declined"]) .k-look-state { color: var(--st-fail-ink); }
+/* What a click on the row aimed at this pane will do, in place of the sentences while it is aimed. */
+.k-aim-in { flex: 0 1 auto; min-width: 0; height: 1.0625rem; padding: 0 0.5rem; overflow: hidden; text-overflow: ellipsis; border-radius: 0.1875rem; background: var(--fg); font-weight: 700; font-size: var(--text-micro); line-height: 1.0625rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--bg); }
 .k-look-act { display: inline-flex; align-items: center; gap: 0.4375rem; flex-shrink: 0; height: var(--spacing-ctl-md); padding: 0 0.5rem; border-radius: 0.25rem; box-shadow: inset 0 0 0 1px var(--line-strong); background: var(--raised); font-weight: 500; white-space: nowrap; color: var(--fg); }
 .k-look-act:hover { background: var(--hover); }
 .k-look-act:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 .k-look-act svg { flex-shrink: 0; width: 0.875rem; height: 0.875rem; color: var(--muted); }
 @container (max-width: 31rem) { .k-look-keep kbd { display: none; } }
-/* On a card of the look Escape is the card's own key: the bar does not offer it there. */
-.k-view:has([data-ask-card]:focus-within) .k-look-esc { display: none; }
-/* A line at the pane's foot for a few seconds: what left the pane, and where it is. */
-.k-pane-note { position: absolute; z-index: 32; inset: auto 0 0; height: 1.25rem; padding: 0 0.75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--fg); font-size: var(--text-micro); font-weight: 500; line-height: 1.25rem; text-align: center; color: var(--bg); pointer-events: none; animation: k-note-in 160ms var(--ease-out); }
+/* The bar offers Escape only where it leads back. On a card of the look it is the card's
+   own key, and a field keeps it for itself (the list's filter, a terminal's line, a title
+   being renamed); the message box hands it on. (The way back grows toward the sentence
+   when the key shows again: a press on either button stays on it.) */
+.k-view:has([data-ask-card]:focus-within) .k-look-esc,
+body:has(:is(input, textarea, [contenteditable]):focus):not(:has(.k-composer-box textarea:focus)) .k-look-esc { display: none; }
+/* A line at the pane's foot for a few seconds: what left the pane, and where it is. It lies
+   in the room under the message box and leaves air between the two. */
+.k-pane-note { position: absolute; z-index: 32; inset: auto 0 0; height: 1rem; padding: 0 0.75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--fg); font-size: var(--text-micro); font-weight: 500; line-height: 1rem; text-align: center; color: var(--bg); pointer-events: none; animation: k-note-in 160ms var(--ease-out); }
 @keyframes k-note-in { from { opacity: 0; } }
 /* Before the click: the pane a row of the list will change, while the pointer or the keys
    are on that row. Its band goes to ink and a tab hangs from it that says what the click
-   does; under the bar of a look or of the start page, so the bar's words and keys stay
-   readable. When that pane is out of view in a row of panes that scrolls sideways, the
-   tab stands at that edge of the row with an arrow. */
-.k-station:has(> .k-aim) .k-band { background-color: var(--fg); }
-.k-station:has(> .k-aim) .k-band::after { content: none; }
+   does; a pane with a bar (a look, the start page over a session) says it in the bar, so
+   nothing lies over the bar's keys or the header under it. When that pane is out of view
+   in a row of panes that scrolls sideways, the tab stands at that edge of the row with an
+   arrow. */
+.k-station:has(> .k-aim, .k-look-bar[data-aim]) .k-band { background-color: var(--fg); }
+.k-station:has(> .k-aim, .k-look-bar[data-aim]) .k-band::after { content: none; }
 .k-aim { position: absolute; z-index: 31; top: 0; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 0.3125rem; padding: 0.0625rem 0.625rem 0.125rem; border-radius: 0 0 0.3125rem 0.3125rem; background: var(--fg); font-weight: 700; font-size: var(--text-micro); line-height: 0.875rem; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; color: var(--bg); pointer-events: none; }
-.k-station:is([data-look], .k-station-new[data-holds]) > .k-aim { top: calc(var(--k-band-h) + 2.375rem); }
 .k-station[data-drop] .k-aim { display: none; }
 .k-aim-edge { position: fixed; z-index: 46; left: auto; transform: none; border-radius: 0 0 0 0.3125rem; }
 .k-aim-edge[data-side="left"] { border-radius: 0 0 0.3125rem 0; }
@@ -599,16 +618,21 @@ html[data-resizing] iframe { pointer-events: none; }
    panes need a preview of a conversation that does not hold the keyboard.
    The title comes first and takes the width it needs, up to the pane's. The
    state stands beside it, on one line, when the title leaves room for the
-   state's word and its clock beside the tools, and its reason has what is
-   left there; else state and reason go to the line under the title, where the
-   reason has the pane's width. Which of the two is decided by the title and
-   the pane alone (the room is a fixed measure, not what the reason happens to
-   say), so the header keeps its height while the state changes. Where room is
-   short the folder gives way first, then the reason is cut; the title is never
-   squeezed by either. Each
-   is one line cut with an ellipsis, whole in its tooltip, and both are shown
-   whole in a note under the header while the keys are on its tools. */
-.k-station-head { --k-tools-w: calc(var(--k-tools, 0) * (var(--spacing-ctl-md) + 1px)); --k-state-room: 8rem; }
+   state's word and its clock, for about sixteen characters of a reason when
+   the state has one, and for the tools that always show; else state and
+   reason go to the line under the title, where the reason has the pane's
+   width. Which of the two is decided by the title, the pane and whether there
+   is a reason (the room is a fixed measure, not what the reason happens to
+   say), so the header keeps its height while the steps of a turn change the
+   reason, and a wider pane is never the taller one. The folder has only the
+   room nothing else wants, the tools that move the pane show only where the
+   reason keeps its sixteen characters beside them (the keys and the list's
+   menu move it), and the title is never squeezed by any of them. Each is one
+   line cut with an ellipsis, whole in its tooltip,
+   and both are shown whole in a note under the header while the keys are on
+   its tools. */
+.k-station-head { --k-tools-w: calc(min(var(--k-tools, 0), 3) * (var(--spacing-ctl-md) + 1px)); --k-state-room: 8rem; }
+.k-station-rest:has(.k-station-why) { --k-state-room: 16rem; }
 .k-station-identity { flex-wrap: wrap; column-gap: 0.625rem; row-gap: 0.125rem; }
 .k-station-identity .k-station-title { display: block; flex: 0 1 auto; min-width: 0; max-width: 100%; margin: 0; white-space: nowrap; text-overflow: ellipsis; }
 .k-station-rest { flex: 1 1 calc(var(--k-state-room) + var(--k-tools-w)); min-width: 0; display: flex; align-items: center; gap: 0.625rem; min-height: 1.625rem; }
@@ -627,12 +651,13 @@ html[data-resizing] iframe { pointer-events: none; }
 /* A pane that is not worked in shows its tools when it is pointed at or the keys are in it:
    they lie over the end of the header's first line and take no room from the title or the reason. */
 .k-station:not([data-helm]) .k-station-identity .k-station-tools { position: absolute; top: 0.6875rem; right: 0.75rem; margin: 0; padding-left: 1.25rem; background: linear-gradient(90deg, transparent, var(--k-head-bg) 1rem); }
-.k-station-head:has(.k-station-identity) { container-type: inline-size; }
-@container (max-width: 35rem) { .k-station-identity .k-station-meta { display: none; } }
-/* A narrow pane worked in: the tools that move the pane give way (the keys and the list's menu move it), and the title has their room. */
-@container (max-width: 34rem) {
-  .k-station[data-helm] .k-station-identity .k-tool-move { display: none; }
-  .k-station[data-helm] .k-station-rest { --k-tools-w: calc(min(var(--k-tools, 0), 3) * (var(--spacing-ctl-md) + 1px)); }
+.k-station-head:has(.k-station-identity) { container: k-head / inline-size; }
+@container k-head (max-width: 35rem) { .k-station-identity .k-station-meta { display: none; } }
+/* The pane worked in: the tools that move the pane show where the line they are on has room
+   for the state, a reason and all six, whether there is a reason now or not. */
+@media (min-width: 768px) {
+  .k-station[data-helm] .k-station-rest { container: k-rest / inline-size; }
+  @container k-rest (max-width: 27.5rem) { .k-station-identity .k-tool-move { display: none; } }
 }
 /* Pinned: a tab hanging from the band. */
 .k-pin-mark { position: absolute; left: 0; top: 0; width: 0.1875rem; height: 1.375rem; background: var(--fg); }
@@ -891,8 +916,9 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-station-word, .k-station-clock { white-space: nowrap; flex-shrink: 0; }
 @media (max-width: 767px) {
   .k-station-meta { display: none; }
-  /* A phone's header: the title and the tools on the first line, the state and its reason on the second, in the page's width. */
-  .k-station-identity .k-station-title { max-width: calc(100% - 3 * (var(--spacing-ctl-md) + 1px) - 0.5rem); }
+  /* A phone's header: the title beside the tools, on a second line when it is long, so that it
+     is read whole; the state and its reason under it, in the page's width. */
+  .k-station-identity .k-station-title { max-width: calc(100% - 3 * (var(--spacing-ctl-md) + 1px) - 0.5rem); display: -webkit-box; white-space: normal; }
   .k-station-identity .k-station-rest { flex-basis: 100%; }
   .k-station .k-station-identity .k-station-tools { position: absolute; top: 0.5rem; right: 0.875rem; margin: 0; padding: 0; background: none; }
 }

@@ -187,8 +187,9 @@ function useDrop(slot: number | undefined) {
 }
 
 // What a click on the row the pointer or the keys are on will do to a pane: said on that pane, in a
-// tab that hangs from its band (under the bar of a look). The row itself is described by the same
-// words for assistive technology (Bridge sets that as the keys reach it).
+// tab that hangs from its band. A pane with a bar (a look, the start page over a session) says it
+// in the bar instead, where it covers nothing. The row itself is described by the same words for
+// assistive technology (Bridge sets that as the keys reach it).
 function AimTag({ slot }: { slot?: number }) {
   const how = useAim(slot);
   return how ? <span className="k-aim k-face-state" data-testid="pane-aim">{AIMS[how]}</span> : null;
@@ -198,18 +199,34 @@ function AimTag({ slot }: { slot?: number }) {
 // page). It says what this is and whose pane it is: the session looked at, the
 // session the pane holds (its mark is live, and it says so in words when it
 // needs the owner or failed under the look), then the way back and, for a
-// look, the way to keep it. While a card of the look has the keyboard, Escape
-// is the card's key and the bar does not offer it (bridge.css).
-function LookBar({ under, looking, onBack, keep }: { under: Session; looking?: Session; onBack: () => void; keep?: () => void }) {
+// look, the way to keep it. Escape is offered only where it leads back: not
+// while the keyboard is on a card of the look or in a field that keeps Escape
+// for itself (bridge.css). Where room is short the
+// first sentence gives way (the header under the bar names the session looked
+// at), then "This pane holds", and the held session's name is cut last. While
+// a row of the list aims at the pane, the bar says what a click there will do
+// in place of its sentences; the row of the session already shown changes
+// nothing, and the sentences stay (the pane's band marks it).
+function LookBar({ under, looking, slot, onBack, keep }: { under: Session; looking?: Session; slot?: number; onBack: () => void; keep?: () => void }) {
   const st = useSessionState(under);
   const w = st.watch;
+  const how = useAim(slot);
   const title = under.title || "New session";
   const state = w === "need" ? "needs you" : w === "fail" || w === "declined" ? "failed" : "";
   return (
-    <div className="k-look-bar" data-testid="look-bar" data-holds={under.id} data-under={state ? w : undefined}>
+    <div className="k-look-bar" data-testid="look-bar" data-holds={under.id} data-under={state ? w : undefined} data-aim={how ?? undefined}>
       <p className="k-look-says" data-testid="look-says">
-        <span className="k-look-this">{keep ? <>Looking at <b dir="auto">{looking?.title || "this session"}</b>.</> : "The start page."}</span>{" "}
-        <span className="k-look-holds" title={`This pane holds ${title}`}>This pane holds <Mark w={w} /><b dir="auto" className="k-look-title">{title}{!state && "."}</b>{state && <span className="k-look-state" data-testid="look-state">, {state}.</span>}</span>
+        {how && how !== "here" ? <span className="k-aim-in k-face-state" data-testid="pane-aim">{AIMS[how]}</span> : (
+          <>
+            <span className="k-look-this">{keep ? <>Looking at <b dir="auto">{looking?.title || "this session"}</b>.</> : "The start page."}</span>{" "}
+            <span className="k-look-holds" title={`This pane holds ${title}${state ? `, ${state}` : ""}`}>
+              <span className="k-look-lead">This pane holds </span>
+              <span className="k-look-own" data-state={state ? w : undefined}>
+                <Mark w={w} /><b className="k-look-title" data-testid="look-title"><bdi>{title}</bdi>{state ? "," : "."}</b>{state && " "}{state && <span className="k-look-state" data-testid="look-state">{state}.</span>}
+              </span>
+            </span>
+          </>
+        )}
       </p>
       <button type="button" className="k-look-act" data-testid="look-back" title={`Back to ${title}, the session this pane holds`} aria-label={`Back to ${title}${state ? `, ${state}` : ""}, the session this pane holds`} onClick={onBack}>
         <ArrowLeft aria-hidden="true" />Back<Kbd keys="escape" className="k-look-esc" />
@@ -291,19 +308,19 @@ function Station({ s, helm, slot, grow, look, fresh }: { s: Session; helm: boole
       {...drop}
     >
       <div className="k-band" aria-hidden="true" />
-      <AimTag slot={slot} />
+      {!covered && <AimTag slot={slot} />}
       <PaneNote slot={slot} />
       {fresh && (
         <div key="new" className="k-view k-view-over" data-view="new">
           <div key="band" className="k-band" aria-hidden="true" />
-          <LookBar key="bar" under={look?.s ?? s} onBack={() => void leaveHome()} />
+          <LookBar key="bar" under={look?.s ?? s} slot={slot} onBack={() => void leaveHome()} />
           <StartBox key="view" beside onBack={() => void leaveHome()} />
         </div>
       )}
       {look && (
         <div key={look.id} className="k-view k-view-over" data-view="look" inert={fresh} data-station={fresh ? look.id : undefined}>
           <div key="band" className="k-band" aria-hidden="true" />
-          <LookBar key="bar" under={s} looking={look.s} onBack={() => leaveLook(look.id)} keep={() => keepLook(look.id)} />
+          <LookBar key="bar" under={s} looking={look.s} slot={slot} onBack={() => leaveLook(look.id)} keep={() => keepLook(look.id)} />
           <Boundary key="view">
             {/* In a pane that is not worked in a look is as compact as any other pane. */}
             {look.s
