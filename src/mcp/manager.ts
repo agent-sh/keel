@@ -7,6 +7,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { basename, dirname, join } from "node:path";
+import { spelled } from "../safety/chars.ts";
 import { detached, type ErrorTracker } from "../core/errors.ts";
 import { registerCatalog, unregisterCatalog, type CatalogTool } from "../tools/catalog.ts";
 import type { CallClass } from "../safety/policy.ts";
@@ -575,7 +576,10 @@ export class McpManager {
     return {
       server,
       name: t.name,
-      qualified: `${server}__${t.name}`,
+      // The name every place shows and `mcp_call` takes. A server names its own tools: a character in
+      // a name that hides or reorders text is written out, so the name reads the same on a card, in
+      // the transcript, in the timeline and in a rule. The call still goes out under the server's own name.
+      qualified: spelled(`${server}__${t.name}`, ""),
       mcp: true,
       source: binding(sourced(e.config), this.bindKey),
       description: t.description ?? t.title ?? "",

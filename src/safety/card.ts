@@ -41,10 +41,11 @@ export type Hold = "long" | "cut" | "marked" | "risk" | "where";
 
 // Where a call runs. `far`: on another machine than the daemon that asks.
 // `cwd`: the folder a command starts in, when that is not the session's own
-// folder (or, for another machine, the folder its call names). `away`: it is
-// not under the session's folder either. `shell`: the program that
+// folder (or, for another machine, the folder its call names). `sub`: the
+// same folder as a path under the session's, when it is one. `away`: it is
+// not under the session's folder. `shell`: the program that
 // reads the command, when it is not the default shell.
-export type Where = { name: string; cwd?: string; shell?: string; far: boolean; away?: true };
+export type Where = { name: string; cwd?: string; sub?: string; shell?: string; far: boolean; away?: true };
 
 export type CardForm = {
   id: string; session_id: string; call_id: string; tool: string; kind: Approval["kind"]; state: Approval["state"];
@@ -57,8 +58,9 @@ export type CardForm = {
   marks: Marks;        // read from `text` once, for every client
   machine?: Where;     // where it runs
   reason?: string;     // why it is asked, and why only once is offered
+  rule?: string;       // the class of the policy's rule that asked, when it gave one
   hold: Hold[];        // empty: one line shows all of it
-  line: string;        // what a notification says of it: the tool, where it runs when not here, the start of the text
+  line: string;        // what a notification says of it: the tool, where it runs when not the session's own folder, the start of the text
   glance: boolean;     // that line shows all of it within a collapsed notification: only then may one carry Allow once
   grants: string[];    // the rules a standing answer would store ("echo *"): a client names them on that answer
   choices: ("once" | "session" | "always" | "deny")[];
@@ -111,36 +113,47 @@ export function cardForm(a: Approval, here?: { name: string; far?: boolean }): C
   const named = a.kind === "shell" && a.input && typeof a.input === "object" && typeof a.input.machine === "string" && a.input.machine
     ? { name: spelled(a.input.machine, ""), ...(typeof a.input.cwd === "string" && a.input.cwd ? { cwd: spelled(a.input.cwd, "") } : {}), far: true } : undefined;
   // Where the gate found the command to start, and what reads it (kept with the card when it opened).
-  const at = a.at ? { ...(a.at.cwd ? { cwd: spelled(a.at.cwd, "") } : {}), ...(a.at.shell ? { shell: spelled(a.at.shell, "") } : {}), ...(a.at.away ? { away: true as const } : {}) } : {};
+  const at = a.at ? { ...(a.at.cwd ? { cwd: spelled(a.at.cwd, "") } : {}), ...(a.at.sub ? { sub: spelled(a.at.sub, "") } : {}), ...(a.at.shell ? { shell: spelled(a.at.shell, "") } : {}), ...(a.at.away ? { away: true as const } : {}) } : {};
   const machine: Where | undefined = named ?? (here || a.at ? { name: here?.name ?? "", far: !!here?.far, ...at } : undefined);
   const reason = [a.risk === "high" ? `High risk${a.why ? `: ${a.why}` : ""}` : a.why, a.notice].filter(Boolean).map((s) => String(s).replace(/[.\s]+$/, "")).join(". ");
   const hold: Hold[] = [];
   const lines = lineCount(text);
   if (lines > 1 || text.length > SHORT_MAX || text.includes("\t")) hold.push("long");
   if (cut) hold.push("cut");
-  if (marked(marks) || !plainAscii(text.replace(/[\n\t]/g, ""))) hold.push("marked");
+  // (A tool's name is another server's word too: one that is not plain ASCII can hide, reorder or pass for another.)
+  if (marked(marks) || !plainAscii(text.replace(/[\n\t]/g, "")) || !plainAscii(a.tool)) hold.push("marked");
   if (a.risk !== "low" || a.once || a.kind === "refused") hold.push("risk");
   if (machine?.far || machine?.away || machine?.shell) hold.push("where");
   const standing = a.risk === "low" && !a.once && a.suggest.length > 0;
-  // The notification's line: where it runs is said before the text, so a cut never hides it.
-  const place = machine?.far ? ` on ${machine.name}${machine.cwd ? ` in ${machine.cwd}` : ""}` : machine?.away && machine.cwd ? ` in ${machine.cwd}` : "";
-  const line = `${a.tool}${place}: ${spelled(a.summary)}`.slice(0, 500);
+  // The notification's line: where it runs is said before the text, so a cut
+  // never hides it. A folder under the session's is named by its path from
+  // there, and counts in what the line may hold. The tool's name is spelled as
+  // the text is: an MCP server names its own tools.
+  const place = machine?.far ? ` on ${machine.name}${machine.cwd ? ` in ${machine.cwd}` : ""}` : machine?.cwd ? ` in ${machine.away ? machine.cwd : machine.sub ?? machine.cwd}` : "";
+  const line = `${spelled(a.tool, "")}${place}: ${spelled(a.summary)}`.slice(0, 500);
   return {
     id: a.id, session_id: a.session_id, call_id: a.call_id, tool: a.tool, kind: a.kind, state: a.state,
     text, ...(cut ? { cut: true as const } : {}), ...(w.kept ? { kept: true as const } : {}),
     // (An input the gate cut says how long it was; a text the form cut is counted here.)
     ...(w.kept ? (typeof a.input_len === "number" ? { total: a.input_len } : {}) : over ? { total: w.text.length } : {}),
     chars: text.length, lines,
-    risk: a.risk, marks, ...(machine ? { machine } : {}), ...(reason ? { reason: `${reason}.` } : {}),
-    hold, line, glance: hold.length === 0 && line.length <= NOTE_MAX && !/ {2}/.test(line),
+    risk: a.risk, marks, ...(machine ? { machine } : {}), ...(reason ? { reason: `${reason}.` } : {}), ...(a.rule ? { rule: a.rule } : {}),
+    // Every character of the line is one column of a notification: plain ASCII, the tool's name included.
+    hold, line, glance: hold.length === 0 && a.risk === "low" && !GRAVE.test(a.rule ?? "") && line.length <= NOTE_MAX && plainAscii(line) && !/ {2}/.test(line),
     grants: standing ? a.suggest.map((r) => r.pattern) : [],
     choices: ["once", ...(standing ? (["session", "always"] as const) : []), "deny"],
   };
 }
 
+// The policy's classes of rule that a notification never allows, whatever the
+// risk it rates them: what destroys, reaches another host or machine, exposes
+// something, or hides what it does. Read from the class word the policy gives
+// with its ask (`Ask.rule`), so a class the policy adds is held here with it.
+const GRAVE = /\b(destroys|remote|exposes|hidden|machine)\b/;
+
 // The first thing in a text that is not plain: a hidden character by its code point, a look-alike by itself and its code.
 function firstMark(f: CardForm): string {
-  for (const ch of f.text) {
+  for (const ch of plainAscii(f.text.replace(/[\n\t]/g, "")) ? f.tool : f.text) {
     if (ch === "\n" || ch === "\t" || plainAscii(ch)) continue;
     const s = spelled(ch, "");
     return s !== ch ? s.slice(1, -1) : `${ch} U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`;
@@ -193,10 +206,19 @@ const FROM: Record<Client, string> = {
 // and how: "the page, its text shown whole", "a script, its text given whole" (a
 // program and an editor are handed the text; what they showed is not known),
 // "the phone (Pixel), by its rule for another request" for a card another card's standing answer settled.
+// The place alone: "the phone (Pixel)", "the page on studio".
+export const whereSaid = (by: AnsweredBy): string =>
+  `${FROM[by.client] ?? "the API"}${by.device ? ` (${spelled(by.device, "").slice(0, 60)})` : ""}${by.peer ? ` on ${spelled(by.peer, "").slice(0, 60)}` : ""}`;
+// How long ago, in the largest unit that fits: "3 s ago", "4 min ago", "2 h ago".
+export const agoSaid = (ms: number): string => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return s < 60 ? `${s} s ago` : s < 3600 ? `${Math.floor(s / 60)} min ago` : `${Math.floor(s / 3600)} h ago`;
+};
+
 export function fromSaid(by: AnsweredBy | undefined): string {
   if (!by) return "";
   const handed = by.client === "script" || by.client === "acp";
-  const where = `${FROM[by.client] ?? "the API"}${by.device ? ` (${spelled(by.device, "").slice(0, 60)})` : ""}${by.peer ? ` on ${spelled(by.peer, "").slice(0, 60)}` : ""}`;
+  const where = whereSaid(by);
   return by.grant ? `${where}, by its rule for another request` : `${where}${by.seen === "whole" ? `, its text ${handed ? "given" : "shown"} whole` : ""}`;
 }
 
@@ -211,9 +233,10 @@ export function cardLines(f: CardForm): { head: string; notes: string[]; text: s
     ...(m?.far ? [`Runs on ${m.name}${m.cwd ? `, in ${m.cwd}` : ""}.`] : m?.cwd ? [m.away ? `Runs in ${m.cwd}, which is not the session's folder.` : `Runs in ${m.cwd}.`] : []),
     ...(m?.shell ? [`Runs with ${m.shell}, not the default shell.`] : []),
     ...marksSaid(f.marks, thing),
+    ...(plainAscii(f.tool) ? [] : [`The tool's name is not plain ASCII: ${spelled(f.tool, "")}.`]),
     ...(!f.cut ? [] : f.kept ? [f.total ? `Only its start is kept: ${f.chars} of ${f.total} characters.` : "Only its start is kept: the rest is not shown anywhere."]
       : [`Only its start is shown here: ${f.chars} of ${f.total ?? "more"} characters. The page shows all of it.`]),
   ];
   const size = f.lines > 1 ? `${f.lines} lines` : f.chars > SHORT_MAX ? `${f.chars} characters` : "";
-  return { head: `${f.tool}${f.risk === "high" ? ", high risk" : ""}${size ? `, ${size}` : ""}`, notes, text: spelled(f.text) };
+  return { head: `${spelled(f.tool, "")}${f.risk === "high" ? ", high risk" : ""}${size ? `, ${size}` : ""}`, notes, text: spelled(f.text) };
 }

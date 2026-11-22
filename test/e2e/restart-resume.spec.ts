@@ -773,7 +773,8 @@ test("an approval pending at a crash or a stop is shown again after the restart"
     await expect(card).toHaveCount(0);
     expect(ran()).toBe("ran-1\n");
     const again = await call(`/api/sessions/${sid}/approvals/${first}`, { choice: "once" });
-    expect([again.status, again.error]).toEqual([409, "already allowed (once)"]);
+    // (It says who answered first, and how long ago.)
+    expect([again.status, again.error]).toEqual([409, expect.stringMatching(/^already allowed \(once\) from the page, \d+ (s|min) ago$/)]);
 
     // Recorded once each: two cut turns, each call's one result in call order, the continued turns.
     const ev = (await call(`/api/sessions/${sid}`, undefined, "GET")).events as any[];

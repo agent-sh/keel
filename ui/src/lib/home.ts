@@ -81,10 +81,10 @@ export const sayMore = (more: More[]) => `${more.reduce((n, p) => n + p.ids.leng
 export const WHOLE_MAX = SHORT_MAX;
 // A row does not say where a command runs either: one for another machine
 // (`far`: the session works on one, or the call names one), for a folder that
-// is not the session's, or for a shell that is not the default is reviewed on
-// its card, where that is said. The daemon holds the same (its "where").
-export function wholeCommand(a: { kind: string; risk: string; summary: string; input?: unknown; at?: { cwd?: string; away?: true; shell?: string } } | undefined, far = false): string | null {
-  if (!a || a.risk !== "low" || a.kind !== "shell" || far || a.at?.away || a.at?.shell) return null;
+// is not the session's own (a subfolder too), or for a shell that is not the
+// default is reviewed on its card, where that is said.
+export function wholeCommand(a: { kind: string; risk: string; summary: string; input?: unknown; at?: { cwd?: string; sub?: string; away?: true; shell?: string } } | undefined, far = false): string | null {
+  if (!a || a.risk !== "low" || a.kind !== "shell" || far || a.at?.cwd || a.at?.away || a.at?.shell) return null;
   const input = a.input as { command?: unknown; cmd?: unknown; machine?: unknown } | undefined;
   const typed = typeof input?.command === "string" ? input.command : typeof input?.cmd === "string" ? input.cmd : null;
   if (typed === null || typed !== a.summary || (typeof input?.machine === "string" && input.machine)) return null;

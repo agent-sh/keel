@@ -9,7 +9,7 @@ import type { ToolCall } from "../engine/hooks.ts";
 import type { Tool } from "../tools/types.ts";
 import { cardForm, cardLines, CLIENTS, fromSaid, holdSaid, NOTE_MAX, oneLine, refusal, SHORT_MAX, TEXT_MAX, type Client, type Hold } from "./card.ts";
 import * as chars from "./chars.ts";
-import { Gate, type Approval } from "./gate.ts";
+import { closedWhy, Gate, type Approval } from "./gate.ts";
 import { denialReason, ownerDenial, turnedAway } from "../core/stops.ts";
 
 const base: Pick<Approval, "id" | "session_id" | "call_id" | "state" | "suggest" | "created"> = { id: "a1", session_id: "s1", call_id: "c1", state: "pending", suggest: [], created: 1 };
@@ -41,7 +41,11 @@ const SHAPES: { name: string; a: Approval; hold: Hold[]; glance?: true; text?: (
   { name: "a command for another machine", a: { ...shell("rm -rf build"), tool: "keel__run_on", input: { machine: "build-box", command: "rm -rf build", cwd: "/srv/app" } }, hold: ["where"] },
   { name: "a command in a folder that is not the session's", a: shell("rm -rf build", { at: { cwd: "/srv/other", away: true } }), hold: ["where"] },
   { name: "a command read by another shell", a: shell("rm -rf build", { at: { cwd: "/w", shell: "zsh" } }), hold: ["where"] },
-  { name: "a command in a folder under the session's", a: shell("rm -rf build", { at: { cwd: "/w/packages/app" } }), hold: [], glance: true },
+  { name: "a command in a folder under the session's", a: shell("rm -rf build", { at: { cwd: "/w/packages/app", sub: "packages/app" } }), hold: [], glance: true },
+  { name: "a command in a folder far under the session's", a: shell("rm -rf build", { at: { cwd: "/w/packages/app/src/generated", sub: "packages/app/src/generated" } }), hold: [] },
+  // The reviewer's two tool names: 40 characters that are about 60 columns, and one that reorders the line.
+  { name: "a tool named in letters twice as wide", a: { ...base, tool: `srv__${"\u5168".repeat(20)}`, kind: "other", summary: '{"to":"evil"}', input: { to: "evil" }, risk: "low" }, hold: ["marked"] },
+  { name: "a tool whose name reorders the line", a: { ...base, tool: "srv__a\u202eb", kind: "other", summary: '{"to":"evil"}', input: { to: "evil" }, risk: "low" }, hold: ["marked"] },
   { name: "a command longer than a form carries", a: shell("a".repeat(TEXT_MAX + 50)), hold: ["long", "cut"], cut: true, text: (t) => t.length === TEXT_MAX },
   {
     name: "an edit that writes a file", hold: ["long"], text: (t) => t === "/w/src/auth.ts\nexport const admin = true;\n",
@@ -99,6 +103,23 @@ test("one form: every shape carries the whole text, whether it is cut, why it is
   // A session that works on another machine: every card of it runs there.
   expect(cardForm(shell("npm test"), { name: "rig", far: true })).toMatchObject({ machine: { name: "rig", far: true }, hold: ["where"], glance: false, line: "Bash on rig: npm test" });
   expect(cardForm(shell("npm test", { at: { cwd: "/w/sub" } }), { name: "desk" }).machine).toEqual({ name: "desk", far: false, cwd: "/w/sub" });
+  // A folder under the session's is named in the line by its path from there, and counts in what the line may hold.
+  expect(cardForm(shell("rm -rf build", { at: { cwd: "/w/packages/app", sub: "packages/app" } })).line).toBe("Bash in packages/app: rm -rf build");
+  expect(cardForm(shell("rm -rf build", { at: { cwd: "/w/packages/app/src/generated", sub: "packages/app/src/generated" } })).line.length).toBeGreaterThan(NOTE_MAX);
+  // A tool's name is spelled in the line as the text is, and the whole line is plain ASCII or no notification allows it.
+  const wide = cardForm(SHAPES.find((s) => s.name === "a tool named in letters twice as wide")!.a);
+  expect([wide.line.length, wide.glance, wide.hold]).toEqual([40, false, ["marked"]]);
+  const turned = cardForm(SHAPES.find((s) => s.name === "a tool whose name reorders the line")!.a);
+  expect([turned.line, turned.glance]).toEqual(['srv__a<U+202E>b: {"to":"evil"}', false]);
+  expect(cardLines(turned)).toMatchObject({ head: "srv__a<U+202E>b", notes: ["The tool's name is not plain ASCII: srv__a<U+202E>b."] });
+  expect(holdSaid(turned)).toBe("Open the request to read it first: it holds characters that can mislead (U+202E).");
+  // The policy's class of rule: what destroys, reaches a remote, exposes, hides or is another machine's is never a
+  // notification's to allow, whatever risk the policy rates it; any other class leaves a short low-risk card as it is.
+  for (const rule of ["destroys", "destroys files outside the session's folder", "remote", "exposes a secret", "hidden", "machine"]) {
+    expect([rule, cardForm(shell("npm test", { rule }))]).toEqual([rule, expect.objectContaining({ glance: false, hold: [], rule })]);
+  }
+  expect(cardForm(shell("npm test", { rule: "writes in the workspace" })).glance).toBe(true);
+  expect(cardForm(shell("npm test", { rule: "destroys", risk: "high" }))).toMatchObject({ glance: false, hold: ["risk"] });
   // A standing answer names the rule it would store.
   expect(cardForm(shell("echo a > b", { suggest: [{ kind: "shell", pattern: "echo *" }] }))).toMatchObject({ choices: ["once", "session", "always", "deny"], grants: ["echo *"] });
 });
@@ -193,6 +214,14 @@ test("who answered, in words: no address and no key", () => {
   expect(fromSaid({ client: "phone", device: "Pixel 8", grant: true })).toBe("the phone (Pixel 8), by its rule for another request");
   expect(CLIENTS.map((c) => fromSaid({ client: c }))).toEqual(["the page", "the phone", "a notification", "the command line", "a script", "an editor", "the API"]);
   expect(fromSaid(undefined)).toBe("");
+  // The race's loser is told who answered, and how long ago.
+  const closed = (a: Partial<Approval>, now: number) => closedWhy({ ...shell("npm test"), resolved: 10_000, ...a } as Approval, now);
+  expect(closed({ state: "allowed", choice: "once", by: { client: "page", seen: "whole" } }, 13_200)).toBe("already allowed (once) from the page, 3 s ago");
+  expect(closed({ state: "allowed", choice: "session", by: { client: "phone", device: "Pixel 8" } }, 10_000 + 4 * 60_000)).toBe("already allowed (for this session) from the phone (Pixel 8), 4 min ago");
+  expect(closed({ state: "denied", choice: "deny", reason: "keep alpha", by: { client: "cli" } }, 10_000 + 2 * 3_600_000)).toBe("already denied from the command line, 2 h ago: keep alpha");
+  // A card a rule or a stop closed has no one to name.
+  expect(closed({ state: "allowed", choice: "once", reason: "settled by a grant or a mode change" }, 11_000)).toBe("already allowed (once): settled by a grant or a mode change");
+  expect(closed({ state: "cancelled", reason: "the turn was stopped" }, 11_000)).toBe("cancelled: the turn was stopped");
 });
 
 test("a text's marks, counted once, and the text as a plain place shows it", () => {
@@ -233,6 +262,8 @@ test("the gate holds an allow of a text that was not shown, takes a deny at once
   expect(g.approval(short!.id)).toMatchObject({ state: "allowed", choice: "once", by: { client: "api" } });
   // With the word it is taken, and the card keeps who gave it and how.
   expect(g.resolve(first!.id, "s1", { choice: "once", seen: "whole", by: { client: "phone", device: "Pixel" } })).toEqual({ ok: true });
+  // An answer that comes second is told who answered first.
+  expect(g.resolve(first!.id, "s1", { choice: "once", seen: "whole", by: { client: "page" } })).toMatchObject({ status: 409, error: expect.stringMatching(/^already allowed \(once\) from the phone \(Pixel\), \d s ago$/) });
   expect(g.approval(first!.id)).toMatchObject({ state: "allowed", choice: "once", by: { client: "phone", device: "Pixel", seen: "whole" } });
   // A deny needs nothing.
   expect(g.resolve(other!.id, "s1", { choice: "deny", by: { client: "notification", device: "Pixel" } })).toEqual({ ok: true });
@@ -323,6 +354,8 @@ test("a card says where its command starts and what reads it", async () => {
   await Bun.sleep(30);
   const forms = g.approvals({ session: "s1", pending: true }).map((a) => g.form(a));
   expect(forms.map((f) => [f.hold, !!f.machine?.away, f.machine?.cwd])).toEqual([[[], false, undefined], [["where"], true, other], [[], false, join(session.workspace, "packages")]]);
+  // The folder under the session's is in the notification's line, by its path from there.
+  expect([forms[2]!.line, forms[2]!.glance, forms[0]!.line]).toEqual(["exec_command in packages: rm -rf build", true, "exec_command: rm -rf build"]);
   expect(cardLines(forms[2]!).notes).toEqual([`Runs in ${join(session.workspace, "packages")}.`]);
   expect(forms[1]!.line).toBe(`exec_command in ${other}: rm -rf build`);
   expect(cardLines(forms[1]!).notes).toEqual([`Runs in ${other}, which is not the session's folder.`]);

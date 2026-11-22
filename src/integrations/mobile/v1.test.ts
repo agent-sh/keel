@@ -1005,6 +1005,10 @@ describe("permission cards", () => {
     const ok = await answer("apr-long", { choice: "once", seen: "whole" });
     expect([ok.status, ok.body.approval.state, ok.body.approval.from]).toEqual([200, "approved", "the phone (phone), its text shown whole"]);
     expect(gate.approval("apr-long")!.by).toEqual({ client: "phone", device: "phone", seen: "whole" });
+    // An answer that comes second is told who answered first and how long ago, with the card as it ended.
+    const late = await answer("apr-long", { choice: "once", seen: "whole" });
+    expect([late.status, late.body.approval.state, late.body.approval.from]).toEqual([409, "approved", "the phone (phone), its text shown whole"]);
+    expect(late.body.error).toMatch(/^this approval is already allowed \(once\) from the phone \(phone\), \d s ago$/);
     // A short one is allowed as before, from the card or from a notification.
     expect((await answer("apr-short", { choice: "once", via: "notification" })).status).toBe(200);
     expect(gate.approval("apr-short")!.by).toEqual({ client: "notification", device: "phone" });

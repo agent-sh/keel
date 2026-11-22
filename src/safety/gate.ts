@@ -6,7 +6,7 @@
 import { heldFile } from "../core/store-files.ts";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, normalize } from "node:path";
+import { basename, dirname, isAbsolute, join, normalize, relative } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import { locate } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
@@ -23,7 +23,7 @@ import { configDir } from "../providers/config.ts";
 import { artifactsDir, contains, realOf } from "../core/paths.ts";
 import { applyEdit } from "../tools/files.ts";
 import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
-import { cardForm, refusal, type AnsweredBy, type CardForm, type Hold } from "./card.ts";
+import { agoSaid, cardForm, refusal, whereSaid, type AnsweredBy, type CardForm, type Hold } from "./card.ts";
 import { classify, decide, isMode, ownPath, pathsNamed, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 import { timed } from "../admin/stall.ts";
 import { ownerDenial } from "../core/stops.ts";
@@ -70,7 +70,9 @@ export type Approval = {
   // when it is not the session's own (a workdir, or where the session's shell
   // has moved to), `away` when it is not under the session's folder either,
   // and the shell when it is not the default one.
-  at?: { cwd?: string; shell?: string; away?: true };
+  // `sub`: the folder as a path under the session's own, when it is one.
+  at?: { cwd?: string; sub?: string; shell?: string; away?: true };
+  rule?: string;        // the class of the rule that asked, in the policy's few words (its `Ask.rule`)
   risk: "high" | "low";
   why?: string;         // why only "once" is offered
   notice?: string;      // why the owner is asked (the reviewer could not judge it)
@@ -794,7 +796,7 @@ export class Gate {
   }
 
   private async card(session: Session, call: ToolCall, name: string, cls: CallClass, summary: string,
-    ask: { risk: "high" | "low"; why?: string; suggest: Suggest[]; notice?: string; bind?: string; autoOwner?: true; cut?: true }, once = false): Promise<{ deny: string } | void> {
+    ask: { risk: "high" | "low"; why?: string; rule?: string; suggest: Suggest[]; notice?: string; bind?: string; autoOwner?: true; cut?: true }, once = false): Promise<{ deny: string } | void> {
     // A call a hook changed is asked about as changed: the card says what the model wrote.
     const from = call.hook?.from;
     const changed = from === undefined ? undefined : `A hook of yours changed this call. The model asked for: ${(shellText(from) ?? JSON.stringify(from) ?? "").slice(0, 300)}`;
@@ -815,7 +817,7 @@ export class Gate {
       summary, cut: ask.cut, notice: [ask.notice, changed].filter(Boolean).join(" ") || undefined,
       // Cards of one reply are made in the same millisecond: each gets a later time than the one before, so they list in call order.
       input: clip(call.input), input_sha: this.shaOf(session.id, call.input), ...inputLen(call.input), risk: ask.risk, why: ask.why, suggest: ask.suggest, state: "pending", created: (this.lastCard = Math.max(Date.now(), this.lastCard + 1)),
-      once: once || undefined, bind: ask.bind, autoOwner: ask.autoOwner, ...placeOf(session, cls),
+      once: once || undefined, bind: ask.bind, autoOwner: ask.autoOwner, ...placeOf(session, cls), ...(ask.rule ? { rule: ask.rule } : {}),
     };
     return this.wait(a, session, call, name, cls);
   }
@@ -1046,10 +1048,14 @@ const keyOf = (name: string, target: { source?: string; shape?: string } | null,
 const reasonOf = (r: string) => r.replace(/[.\s]+$/, "");
 
 
-export function closedWhy(a: Approval): string {
+// How a card ended, for the client whose answer came second: what was
+// answered, where from and how long ago ("already allowed (once) from the
+// page, 3 s ago"), then the reason when one was given.
+export function closedWhy(a: Approval, now = Date.now()): string {
   const why = a.reason ? `: ${a.reason}` : "";
-  if (a.state === "allowed") return `already allowed (${a.choice === "once" || !a.choice ? "once" : a.choice === "session" ? "for this session" : "always"})${why}`;
-  if (a.state === "denied") return `already denied${why}`;
+  const by = a.by && (a.state === "allowed" || a.state === "denied") ? ` from ${whereSaid(a.by)}${a.resolved ? `, ${agoSaid(now - a.resolved)}` : ""}` : "";
+  if (a.state === "allowed") return `already allowed (${a.choice === "once" || !a.choice ? "once" : a.choice === "session" ? "for this session" : "always"})${by}${why}`;
+  if (a.state === "denied") return `already denied${by}${why}`;
   if (a.state === "cancelled") return `cancelled${why}`;
   return "nothing waits on this card any more: it can no longer be answered";
 }
@@ -1081,7 +1087,7 @@ function placeOf(session: Session, cls: CallClass): { at?: Approval["at"] } {
   const [root, cwd] = !cls.cwd ? ["", ""] : session.machine ? [session.workspace, cls.cwd] : [realOf(session.workspace), realOf(cls.cwd)];
   const moved = cwd !== root, own = contains(root, cwd);
   if (!moved && !cls.interpreter) return {};
-  return { at: { ...(moved ? { cwd: cls.cwd } : {}), ...(cls.interpreter ? { shell: cls.interpreter } : {}), ...(own ? {} : { away: true as const }) } };
+  return { at: { ...(moved ? { cwd: cls.cwd } : {}), ...(moved && own ? { sub: relative(root, cwd) } : {}), ...(cls.interpreter ? { shell: cls.interpreter } : {}), ...(own ? {} : { away: true as const }) } };
 }
 
 // How long an input was, kept only when the card holds its start alone.

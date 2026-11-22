@@ -65,7 +65,7 @@ test("Allow once is offered only for a command the row shows whole", () => {
   expect(wholeCommand({ kind: "shell", risk: "low", summary: "rm -rf build", input: { command: "rm -rf build", machine: "build-box" } })).toBeNull();
   expect(wholeCommand({ ...shell("rm -rf build"), at: { cwd: "/srv/app", away: true } })).toBeNull();
   expect(wholeCommand({ ...shell("rm -rf build"), at: { cwd: "/w", shell: "zsh" } })).toBeNull();
-  expect(wholeCommand({ ...shell("rm -rf build"), at: { cwd: "/w/sub" } })).toBe("rm -rf build");
+  expect(wholeCommand({ ...shell("rm -rf build"), at: { cwd: "/w/sub", sub: "sub" } })).toBeNull();
   // A character that hides or reorders what is shown: a right-to-left override, a zero-width space, a tab.
   for (const odd of ["echo \u202Etxt.x > r.txt", "rm -rf di\u200Bst", "ls\t-la", "echo a\u2028b"]) expect(wholeCommand(shell(odd))).toBeNull();
   // Nor one that draws nothing or as a plain space, nor letters a renderer reorders: printable ASCII only.

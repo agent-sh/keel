@@ -10,7 +10,7 @@ import { TEXT_MEDIA } from "../../engine/compact.ts";
 import { imageType } from "../../engine/images.ts";
 import type { Server } from "bun";
 import type { Session, StoredEvent } from "../../core/types.ts";
-import type { Approval, Gate } from "../../safety/gate.ts";
+import { closedWhy, type Approval, type Gate } from "../../safety/gate.ts";
 import { cardLines, fromSaid, type CardForm } from "../../safety/card.ts";
 import { spelled } from "../../safety/chars.ts";
 import type { Deps } from "../../server/app.ts";
@@ -256,7 +256,7 @@ export function approvalOf(a: Approval, form?: CardForm) {
   actions.push(["Deny", "deny", "danger"]);
   return {
     id: a.id, chat_id: a.session_id, session_key: a.session_id, kind: "permission",
-    command: spelled(a.summary), description: a.why ? `${a.tool}: ${a.why}` : a.tool,
+    command: spelled(a.summary), description: a.why ? `${spelled(a.tool, "")}: ${a.why}` : spelled(a.tool, ""),
     actions, state: STATE[a.state] ?? a.state, choice: a.choice ?? null, ts: secs(a.created),
     ...(a.by ? { from: fromSaid(a.by) } : {}),
     ...(form && l ? {
@@ -545,7 +545,9 @@ export function mobileApi(ctx: MobileCtx) {
     const a = g?.approval(aid);
     if (!g || !a) return err("unknown approval", 404);
     if (text) return err("answer only applies to questions", 400);
-    if (a.state !== "pending") return err(`this approval is already ${STATE[a.state] ?? a.state}`, 409);
+    // Answered elsewhere first: who answered and how long ago, and the card as it ended.
+    const closed = (x: Approval) => json({ error: `this approval is ${closedWhy(x)}`, approval: cardOf(x) }, 409);
+    if (a.state !== "pending") return closed(a);
     // `seen`: the app's word that its card showed the whole text. The gate
     // takes it from the app's card only: a notification shows one line, so an
     // answer from one allows once, and only what that line shows whole.
@@ -557,7 +559,8 @@ export function mobileApi(ctx: MobileCtx) {
     });
     // Held: the card is still open. The sentence is what the app shows; `hold` and the card tell a newer app what to open.
     if ("error" in r && r.hold) return json({ error: r.error, hold: r.hold, approval: cardOf(g.approval(aid)!) }, 409);
-    if ("error" in r) return err(r.status === 409 ? `this approval is already ${STATE[g.approval(aid)?.state ?? ""] ?? "closed"}` : r.error, r.status);
+    if ("error" in r && r.status === 409 && g.approval(aid)!.state !== "pending") return closed(g.approval(aid)!);
+    if ("error" in r) return err(r.error, r.status);
     return json({ approval: cardOf(g.approval(aid)!), resolved: 1 });
   }
 

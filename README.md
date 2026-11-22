@@ -1239,8 +1239,12 @@ card: that is the owner's word about every call.
   to its end. An app from before the rule gets the sentence.
 - A notification shows a line, and collapsed only its start. It carries Allow
   once only for a request whose whole line (the tool and the text) fits in 40
-  characters with no run of spaces, and Open and Deny for the rest. Its
-  action never gives a standing answer. The app draws the whole line again
+  characters of plain ASCII with no run of spaces, and Open and Deny for the
+  rest. The line names a folder under the session's when the command starts
+  there, and a tool's name is written in it with nothing hidden. The policy's
+  answer counts too: only a low-risk request, and none whose rule the policy
+  classes as what destroys, reaches a remote or another machine, exposes
+  something or hides what it does. Its action never gives a standing answer. The app draws the whole line again
   before it asks for the fingerprint.
 - `keel approve ID` shows the request (through the pager when it is taller
   than the terminal) and then asks. `--yes` skips the question for a request
@@ -1248,10 +1252,16 @@ card: that is the owner's word about every call.
   lists them and asks which, and without a terminal it lists and exits 2.
   `keel attach` prints each request whole when it opens; `/approve` answers
   the one it printed, a held one by its id, and on a pipe no held one at all.
-- An editor over ACP is sent the whole text in the request's content. A
-  script over a run's stream is handed the whole input.
+- An editor over ACP is sent the whole text in the request's content, with
+  hidden characters written out, as are the title and the rule an "Always
+  allow" option names. `rawInput` is the tool's input as it is, for the
+  editor's own use: it is not what is shown to be read. A script over a run's
+  stream is handed the whole input.
 - A card of a session on another machine is judged by the daemon that owns
   the session; the forwarding daemon passes the word through and adds none.
+
+An answer that comes second is told who answered first and how long ago
+("already allowed (once) from the page, 3 s ago").
 
 The answer keeps who gave it: the kind of client, the phone's name, the
 machine it came through, whether the text was said to be shown (given, for a

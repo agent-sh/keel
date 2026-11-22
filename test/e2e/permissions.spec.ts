@@ -102,7 +102,7 @@ test("permission gate", async ({ page, request }) => {
   const stale = await request.post(`/api/sessions/${session.id}/approvals/${pending[0].id}`, { data: { choice: "once" } });
   expect(stale.status()).toBe(409);
   const said = await stale.json();
-  expect(said.error).toMatch(/already denied: keep alpha/);
+  expect(said.error).toMatch(/already denied from the page, \d+ (s|min) ago: keep alpha/);
   expect(said.approval.state).toBe("denied");
   expect(existsSync(join(ws, "alpha.txt"))).toBe(true);
   await expect(page.getByTestId("assistant-text").last()).toContainText(/fixture/i);
