@@ -10,7 +10,7 @@ import { draftGone, draftHere, dropImage, fromServer, getDraft, isKeeping, keepI
 import { daemonAway, hasSavedImage, messageRefused, namedSends, savedImages, sendDrafts, setSendDraft, setSendImage, shelfKey, shown, unread, useSendDrafts, type SendDraft } from "../lib/send-drafts.ts";
 import { sendWaitingSoon } from "../lib/resend.ts";
 import { onFeature, reportError, reportUnlessGone, useStore, failed } from "../lib/store.ts";
-import { openedAt, selfFocus } from "../lib/self-focus.ts";
+import { openFocus } from "../lib/self-focus.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { lineage } from "../../../src/core/tree.ts";
 import { cn, scrollMotion } from "../lib/utils.ts";
@@ -120,7 +120,7 @@ function SessionComposer({
   useLayoutEffect(() => {
     if (!autoFocus || took.current) return;
     took.current = true;
-    selfFocus(ref.current, openedAt());
+    openFocus(ref.current);
   }, []);
   const queueButton = useRef<HTMLButtonElement>(null);
   const enterSends = useUI((s) => s.enterSends);
