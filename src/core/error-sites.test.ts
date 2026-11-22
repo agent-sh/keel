@@ -67,8 +67,12 @@ test("what is open of a kind is kept with the kind: resolved then healed elsewhe
     const again = capture(b!.id, "529 overloaded", { retry: 1, wait_ms: 500 });
     expect(errorState(errors.get(first.id)!)).toBe("open");
     errors.recovered([again], b!.id);
+    // A later attempt whose retry is still to come leaves it recovered; healed, it is recovered still.
+    const later = capture(b!.id, "529 overloaded", { retry: 1, wait_ms: 500 });
+    expect([errorState(errors.get(first.id)!), !!errors.get(first.id)!.read_ts]).toEqual(["recovered", true]);
+    errors.recovered([later], b!.id);
     const healed = errors.get(first.id)!;
-    expect([errorState(healed), !!healed.read_ts, healed.count]).toEqual(["recovered", true, 2]);
+    expect([errorState(healed), !!healed.read_ts, healed.count]).toEqual(["recovered", true, 3]);
     expect(errorState(frames.at(-1)!)).toBe("recovered");
     expect(errorLines([healed])[0]).toStartWith("0 open, 1 recovered (a retry passed).");
     // Its sessions are deleted: still recovered, with no session to name.
@@ -85,7 +89,7 @@ test("what is open of a kind is kept with the kind: resolved then healed elsewhe
     errors.capture("provider", new Error("529 overloaded"));
     expect(errorState(errors.get(first.id)!)).toBe("open");
     // The state from one row of the tally.
-    expect([recoveredAt({ open: 0, healed_ts: 5 }), recoveredAt({ open: 1, healed_ts: 5 }), recoveredAt({ open: 0, healed_ts: null }), recoveredAt(undefined)]).toEqual([5, undefined, undefined, undefined]);
+    expect([recoveredAt({ open: 0, healed_ts: 5 }), recoveredAt({ open: 1, healed_ts: 5 }), recoveredAt({ open: 1, pending: 1, healed_ts: 5 }), recoveredAt({ open: 0, healed_ts: null }), recoveredAt(undefined)]).toEqual([5, undefined, 5, undefined, undefined]);
   } finally { done(); }
 });
 

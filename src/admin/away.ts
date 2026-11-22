@@ -192,7 +192,10 @@ function ownWays(rs: Restart[]): string {
 }
 // The sentences, a bounded few. The starts nobody asked for come first, the newest of them
 // each in a sentence; the asked ones are one sentence: how many, the time down, what they cut.
-// Then the stalls in one. Asked restarts that cut nothing are not worth a digest by themselves.
+// Then the stalls in one.
+// Whether what the daemon went through is worth a digest by itself: asked restarts that cut
+// nothing are not (they are told beside whatever else there is to tell).
+export const daemonTold = (f: DaemonFacts | undefined): boolean => !!f && (f.restarts.some((r) => !wasAsked(r)) || f.stalls.length > 0 || cutOf(f.restarts).length > 0);
 export function daemonLines(f: DaemonFacts | undefined): string[] {
   if (!f) return [];
   const out: string[] = [];
@@ -201,9 +204,8 @@ export function daemonLines(f: DaemonFacts | undefined): string[] {
   if (own.length > 1) out.push(`The daemon stopped by itself ${times(own.length)} (${ownWays(own)})${own.length > told.length ? `; the last ${told.length}:` : ":"}`);
   for (const r of told) out.push(restartSummary(r));
   const stalls = stallsLine(f.stalls);
-  if (wanted.length === 1 && !own.length) {
-    if (cutOf(wanted).length || stalls) out.push(restartSummary(wanted[0]!));
-  } else if (wanted.length && (own.length || stalls || cutOf(wanted).length)) {
+  if (wanted.length === 1 && !own.length) out.push(restartSummary(wanted[0]!));
+  else if (wanted.length) {
     const cut = cutOf(wanted);
     out.push(`${own.length ? "It also restarted" : "The daemon restarted"} ${times(wanted.length)} when asked (down ${secs(downOf(wanted))} in all); ${cut.length ? `${cut.length} turn${cut.length > 1 ? "s were" : " was"} cut: ${tally(cut)}` : "no turn was cut"}.`);
   }
@@ -224,8 +226,7 @@ export function daemonBrief(f: DaemonFacts | undefined): string {
   const own = f.restarts.filter((r) => !wasAsked(r)), wanted = f.restarts.filter(wasAsked);
   const parts = [
     own.length ? `${own.length === 1 ? downWords(own[0]!) : `stopped by itself ${times(own.length)}`}${cutBrief(own)}` : "",
-    // Asked restarts that cut nothing are told only beside something else the daemon went through.
-    wanted.length && (own.length || f.stalls.length || cutOf(wanted).length) ? `restarted ${wanted.length === 1 ? "" : `${times(wanted.length)} `}when asked${cutBrief(wanted)}` : "",
+    wanted.length ? `restarted ${wanted.length === 1 ? "" : `${times(wanted.length)} `}when asked${cutBrief(wanted)}` : "",
     f.stalls.length ? `${own.length || wanted.length ? "" : "was "}unresponsive ${times(f.stalls.length)}` : "",
   ].filter(Boolean);
   return parts.length ? `the daemon ${parts.join("; ")}` : "";
@@ -265,8 +266,8 @@ function digestRow(r: OverviewRow, questions: number): DigestRow | null {
 export function digest(o: Overview, w: AwayWindow, more: DigestMore = {}): Digest | null {
   const asked = more.questions ?? {};
   const rows = o.sessions.map((r) => digestRow(r, asked[r.id] ?? 0)).filter((r): r is DigestRow => !!r);
+  if (!rows.length && !daemonTold(more.daemon)) return null;
   const daemon = daemonLines(more.daemon);
-  if (!rows.length && !daemon.length) return null;
   rows.sort((a, b) => WATCH_RANK[a.watch] - WATCH_RANK[b.watch] || b.turns - a.turns);
   const sum = (f: (r: DigestRow) => number) => rows.reduce((n, r) => n + f(r), 0);
   const agents: Record<string, number> = {};

@@ -210,10 +210,12 @@ test("asked restarts are summed and never told as going down, and a kill among t
   const held = { ...start(0, "restart", 2), turns: [turn(0, 0), turn(0, 1, "held")] };
   expect(daemonBrief({ restarts: [held], stalls: [] })).toBe("the daemon restarted when asked, 2 turns cut (1 held for the owner)");
   expect(digest(page([row(1, { title: "Quiet" })]), one, { daemon: { restarts: [held], stalls: [] } })!.daemon).toEqual([expect.stringMatching(/^The daemon stopped for a restart at \d\d:\d\d:\d\d and came back at \d\d:\d\d:\d\d UTC\S* \(down 300 ms\); 2 turns were cut: 1 resumed, 1 held for the owner\.$/)]);
-  // Asked restarts that cut nothing are nothing to tell by themselves.
+  // Asked restarts that cut nothing are nothing to tell by themselves; beside a session's work they are counted.
   const idle = Array.from({ length: 4 }, (_, i) => start(i, "restart", 0));
-  expect(daemonBrief({ restarts: idle, stalls: [] })).toBe("");
   expect(digest(page([row(1, { title: "Quiet" })]), one, { daemon: { restarts: idle, stalls: [] } })).toBeNull();
+  const beside = digest(page([row(2, { title: "Build", did: { turns: 1, failed: {}, agents: {}, cost: 0 } })]), one, { daemon: { restarts: idle, stalls: [] } })!;
+  expect(beside.daemon).toEqual(["The daemon restarted 4 times when asked (down 1.2 s in all); no turn was cut."]);
+  expect(digestBrief(beside)).toStartWith("the daemon restarted 4 times when asked; 1 turn ended");
   // Thirty starts, three of them kills, one a failure of its own: counted by how each came about,
   // the ones nobody asked for told one by one, the asked ones in one sentence.
   const thirty = Array.from({ length: 30 }, (_, i) => start(i, [4, 17, 26].includes(i) ? "killed" : i === 9 ? "crash" : "restart", (i * 5) % 13));

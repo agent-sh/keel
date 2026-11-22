@@ -46,8 +46,10 @@ const siteOf = (r: Row): ErrorSite => ({
 // open occurrence: every occurrence since the owner last resolved it was
 // healed by a retry of its request. One that was not (the retries ran out, or
 // it happened outside a session) keeps the kind open; a session deleted
-// afterwards changes nothing.
-export const recoveredAt = (t: { open: number; healed_ts: number | null } | undefined): number | undefined => (t && t.open <= 0 && t.healed_ts ? t.healed_ts : undefined);
+// afterwards changes nothing. An occurrence whose retry is still to come
+// (`pending`) does not open a recovered kind: it is healed or it fails for
+// good, and only then does the kind change.
+export const recoveredAt = (t: { open: number; pending?: number; healed_ts: number | null } | undefined): number | undefined => (t && t.open - (t.pending ?? 0) <= 0 && t.healed_ts ? t.healed_ts : undefined);
 
 // The record with its last occurrence put aside for the one in `sessionId`,
 // when the kind happened there: what a bundle or a trace opened from that
@@ -131,10 +133,10 @@ export class ErrorSites {
     if (!recs.length) return recs;
     const ids = recs.map((r) => r.id);
     const all = this.of(ids);
-    const tally = new Map<string, { open: number; healed_ts: number | null }>();
+    const tally = new Map<string, { open: number; pending: number; healed_ts: number | null }>();
     for (let i = 0; i < ids.length; i += 400) {
       const part = ids.slice(i, i + 400);
-      for (const t of this.db.query<{ error_id: string; open: number; healed_ts: number | null }, string[]>(`SELECT error_id, open, healed_ts FROM error_tally WHERE error_id IN (${part.map(() => "?").join(",")})`).all(...part)) tally.set(t.error_id, t);
+      for (const t of this.db.query<{ error_id: string; open: number; pending: number; healed_ts: number | null }, string[]>(`SELECT error_id, open, pending, healed_ts FROM error_tally WHERE error_id IN (${part.map(() => "?").join(",")})`).all(...part)) tally.set(t.error_id, t);
     }
     return recs.map((r) => {
       const sites = all.get(r.id);
