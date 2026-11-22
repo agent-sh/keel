@@ -197,8 +197,8 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     const plain = await (await fetch(`${d.url}${base}/timeline?format=text`)).text();
     expect(plain).toContain('Timeline of session "Parser cleanup"');
     // The command the cut turn started may still run (the daemon took it back to report its end): the session waits on it until then.
-    expect(plain).toMatch(/Now: (idle|waiting)\./);
-    if (plain.includes("Now: waiting.")) expect(plain).toContain("Waits on a background command");
+    expect(plain).toMatch(/Now: (done|working)\./);
+    if (plain.includes("Now: working.")) expect(plain).toContain("A command runs in the background");
     expect(plain).toMatch(/\n\d\d-\d\d \d\d:\d\d:\d\d {3}Wait wake \(a timer, after \d s\), 1 step, \d+ m?s, \$[\d.]+ {2}\[turn=[0-9a-f-]{36}\]\n/);
     for (const word of PRIVATE) expect(plain).not.toContain(word);
     expect(await (await fetch(`${d.url}${base}/timeline?format=text&ids=0`)).text()).not.toMatch(/\[turn=/);
@@ -239,7 +239,7 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     const line = (r: TimelineRow) => panel.locator(`[data-testid="timeline-row"][data-id="${r.id}"]`);
     await expect(rows).toHaveCount(all.rows.length);
     // The command the cut turn started has ended and its turn with it: nothing is going on.
-    await expect(panel.getByTestId("timeline-state")).toHaveText("Idle");
+    await expect(panel.getByTestId("timeline-state")).toHaveText("Done");
     await expect(panel.getByTestId("timeline-now-line").first()).toContainText("Nothing is running or waited on. The last turn finished.");
     await expect(rows.first()).toContainText("Command ended, 1 step");
     await expect(rows.nth(1)).toContainText("Resumed after a daemon restart, 1 step");
@@ -270,7 +270,7 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     // Each failed call is named by its tool and opens in the trace: the command by its exit code, the call that named no tool as that
     // (in the order their results came: the call that named no tool was answered at once).
     await expect(receipt.getByTestId("receipt-tools")).toHaveText("2 tool calls, 2 failed: timeline-no-such-tool (no such tool), Bash (exit 1)");
-    await expect(receipt.getByTestId("receipt-end")).toContainText("Finished after");
+    await expect(receipt.getByTestId("receipt-end")).toContainText("Done after");
     await shots("timeline-02-receipt");
     // Escape from inside the open row closes it and puts the keys back on its line.
     await receipt.getByTestId("receipt-bundle").focus();
@@ -333,7 +333,7 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     expect(pending).toHaveLength(1);
     await call(`${base}/approvals/${pending[0].id}`, { choice: "deny" });
     // The answer moves it on, and what was open is now a row each.
-    await expect(panel.getByTestId("timeline-state")).toHaveText("Idle", { timeout: 60_000 });
+    await expect(panel.getByTestId("timeline-state")).toHaveText("Done", { timeout: 60_000 });
     await expect(rows.first()).toContainText(/Approval for Bash denied after/);
     await expect(rows.nth(1)).toContainText("Approval asked for Bash");
     // The owner's denial is a decision, said as one: not a failed tool, not red, not under Failures.
@@ -492,7 +492,7 @@ test("the timeline of a session of forty thousand notes opens at once and the da
     await page.getByTestId("panel-search").fill("timeline");
     await page.getByTestId("panel-pick-timeline").click();
     const panel = page.getByTestId("timeline-panel");
-    await expect(panel.getByTestId("timeline-state")).toHaveText("Idle");
+    await expect(panel.getByTestId("timeline-state")).toHaveText("Not started");
     await expect(panel.getByTestId("timeline-now-line")).toHaveText("Nothing has run in this session yet.");
     await shoot(page, "timeline-long-session");
   } finally {

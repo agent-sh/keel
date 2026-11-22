@@ -38,7 +38,7 @@ test("errors fold, link to their session and resolve", async ({ page, request })
   await shoot(page, "errors-01-open");
 
   // Mark read: out of the badge, still listed, hidden by Unread only; kept by the daemon.
-  const badge = async () => Number((await page.getByTestId("errors-button").getAttribute("aria-label"))?.match(/^(\d+) unread/)?.[1] ?? 0);
+  const badge = async () => Number((await page.getByTestId("errors-button").getAttribute("aria-label"))?.match(/(\d+) errors? in Keel you have not looked at/)?.[1] ?? 0);
   const before = await badge();
   await row.getByTestId("error-read").click();
   await expect(row).toHaveAttribute("data-read", "1");

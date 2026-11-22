@@ -171,11 +171,16 @@ test("sessions on another machine sit under that machine's separator; a local on
     await request.post(`/api/fleet/machines/${mid}/check`);
     await page.goto(`/s/${placed.id}`);
     await expect(sep).toHaveAttribute("data-reach", "offline", { timeout: 15_000 });
-    await expect(sep).toContainText("offline");
+    await expect(sep).toContainText("Offline");
     await expect(page.getByTestId("machine-chip")).toHaveAttribute("data-reach", "offline");
     // Its rows read as offline too: stepped back, the clock's place saying so instead of counting.
     await expect(row(page, placed.id)).toHaveAttribute("data-offline", "true");
-    await expect(row(page, placed.id).getByTestId("row-time")).toHaveText("offline");
+    // The row's word is Offline, with when it last told; the pane's head says the same and its clock stands.
+    await expect(row(page, placed.id).getByTestId("row-time")).toHaveText("Offline");
+    await expect(row(page, placed.id).getByTestId("row-why")).toHaveText(/^as of \d\d:\d\d$/);
+    await expect(page.getByTestId("station-word")).toHaveText("Offline");
+    await expect(page.getByTestId("station-why")).toHaveText(/^as of \d\d:\d\d$/);
+    await expect(page.getByTestId("station-clock")).toHaveCount(0);
     expect(await row(page, placed.id).locator(".k-row-title").evaluate((el) => getComputedStyle(el).color)).toBe(await sep.locator(".k-machine-sep-count").evaluate((el) => getComputedStyle(el).color));
     // And the line above the list counts them, on screen wherever the machine's separator is: a press goes to the first.
     await expect(page.getByTestId("sum-offline")).toHaveText(/1\s*offline/i);

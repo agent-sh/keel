@@ -114,7 +114,7 @@ test("fleet move: from another machine a session only comes back here, and the p
     await expect(to(first.id)).toBeEnabled();
     await expect(to(third)).toBeEnabled();
     await expect(to(silent)).toBeDisabled();
-    await expect(to(silent)).toContainText("offline");
+    await expect(to(silent)).toContainText("Offline");
     await expect(page.getByTestId("move-later")).toHaveCount(0);
     await page.getByRole("radio", { name: "place only" }).click();
     await to(first.id).click();
@@ -127,7 +127,7 @@ test("fleet move: from another machine a session only comes back here, and the p
     await expect(to(third)).toHaveCount(0);
     const later = page.getByTestId("move-later");
     await expect(later.locator(`[data-testid="move-unavailable"][data-machine="${third}"]`)).toContainText(thirdName);
-    await expect(later.locator(`[data-testid="move-unavailable"][data-machine="${silent}"]`)).toContainText("offline");
+    await expect(later.locator(`[data-testid="move-unavailable"][data-machine="${silent}"]`)).toContainText("Offline");
     await expect(later).toContainText("Move it back here first, then to one of these.");
     await shoot(page, "fleet-move-03-only-back");
     // What the picker no longer offers is what the daemon refuses.

@@ -55,7 +55,7 @@ test("subagents run in parallel, report back, and stop", async ({ page, request 
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("agent-call")).toHaveCount(3, { timeout: 60_000 });
   const card = page.getByTestId("agent-call").nth(2);
-  await expect(card.getByTestId("agent-call-status")).toHaveText("Running in background", { timeout: 30_000 });
+  await expect(card.getByTestId("agent-call-status")).toHaveText("Working, in background", { timeout: 30_000 });
   await shoot(page, "agents-05-running");
   // Reading the running agent is safe: Escape from the page or from its
   // message box goes back to the parent and stops nothing.
@@ -75,7 +75,7 @@ test("subagents run in parallel, report back, and stop", async ({ page, request 
     await expect(page).toHaveURL(parentUrl);
     await page.waitForTimeout(1_000); // a stop request would have ended the turn by now
     expect((await (await request.get(`/api/sessions/${child}`)).json()).running).toBe(true);
-    await expect(card.getByTestId("agent-call-status")).toHaveText("Running in background");
+    await expect(card.getByTestId("agent-call-status")).toHaveText("Working, in background");
   }
   await card.getByTestId("agent-call-stop").click();
   // Who stopped it travels with it: the card and the report the parent got say it was the owner.
@@ -156,7 +156,8 @@ test("a parked subagent notifies its busy parent before the final report", async
     const note = page.getByTestId("agent-park-notice");
     await expect(note).toHaveCount(1);
     await note.getByRole("button").click();
-    await expect(note).toContainText(`Agent ${a.id} parked on timer wait ${waitId}`);
+    await expect(note).toContainText(`${a.title} waits for timer wait ${waitId}`);
+    await expect(note.getByTestId("agent-park-id")).toHaveText(`Agent ${a.id}`);
     await expect(note).not.toContainText("child-only wait details");
     await shoot(page, "agents-parked");
 

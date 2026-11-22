@@ -30,7 +30,7 @@ test("a paused session shows its waiting reports; a loop run brings one, Resume 
     // Paused, nothing queued, one report waiting: the line says so and no turn started for it.
     const paused = page.getByTestId("queue-held");
     await expect(paused).toContainText("Paused after the stop.");
-    await expect(page.getByTestId("queue-reports")).toHaveText("1 agent report is waiting.");
+    await expect(page.getByTestId("queue-reports")).toHaveText("1 agent report is held.");
     await expect(page.getByTestId("agent-report")).toHaveCount(0);
     await shoot(page, "held-reports-01-paused");
 
@@ -48,7 +48,7 @@ test("a paused session shows its waiting reports; a loop run brings one, Resume 
 
     // The second agent finishes: still paused, so its report waits until the owner resumes.
     await expect.poll(() => status("Slow helper"), { timeout: 40_000 }).toBe("completed");
-    await expect(page.getByTestId("queue-reports")).toHaveText("1 agent report is waiting.");
+    await expect(page.getByTestId("queue-reports")).toHaveText("1 agent report is held.");
     await expect(page.getByTestId("agent-report")).toHaveCount(1);
     await paused.getByRole("button", { name: "Resume" }).click();
     await expect(page.getByTestId("agent-report")).toHaveCount(2, { timeout: 30_000 });

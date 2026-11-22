@@ -78,7 +78,7 @@ test("a plan waiting for approval reads Needs you on the row, the pane, the tab 
   }
 });
 
-test("a session waiting on a timer or a background command says so, with what it waits for and since when", async ({ page, request }) => {
+test("a session waiting on a timer says so, with what it waits for and since when; one with a command in the background works", async ({ page, request }) => {
   test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
   await page.setViewportSize({ width: 1920, height: 1040 });
   const made: string[] = [];
@@ -107,15 +107,16 @@ test("a session waiting on a timer or a background command says so, with what it
     await expect(page.getByTestId("station-clock")).toHaveText(/^due in 1[45]m$/);
     // The command left running: named, with how long it has run.
     const j = row(page, job);
-    await expect(j).toHaveAttribute("data-watch", "wait");
-    await expect(j.getByTestId("row-why")).toHaveText("Command: sleep 300");
+    await expect(j).toHaveAttribute("data-watch", "work");
+    await expect(j.getByTestId("row-state")).toHaveText("Working");
+    await expect(j.getByTestId("row-why")).toHaveText("Command in background: sleep 300");
     await expect(j.getByTestId("row-time")).toHaveText(/^\d+s$/);
     expect(await stateOf(request, timer)).toMatchObject({ watch: "wait", why: "timer", text: "Timer: check the deploy" });
-    expect(await stateOf(request, job)).toMatchObject({ watch: "wait", why: "command" });
+    expect(await stateOf(request, job)).toMatchObject({ watch: "work", why: "command" });
     // The timeline's Now says waiting too, and on what.
     const now = await (await request.get(`/api/sessions/${job}/timeline?format=text&limit=1`)).text();
-    expect(now).toContain("Now: waiting.");
-    expect(now).toContain("Waits on a background command");
+    expect(now).toContain("Now: working.");
+    expect(now).toContain("A command runs in the background");
     await shoot(page, "session-state-02-waiting");
 
     // The wait cancelled: nothing is waited on, the session is done.
@@ -469,21 +470,20 @@ test("an agent that asks the owner is marked as asking in the tree, on its card 
     await expect(row(page, parent).getByTestId("row-why")).toHaveText(/^Agent Ask about scope.*: Question: Should the check cover the staging cluster\?$/);
     // The count under the row: one asks, one runs. Folded, the mark is the owner's.
     const kids = page.getByTestId("session-list").getByTestId("session-children");
-    await expect(kids.getByTestId("children-asking")).toHaveText("· 1 asks you");
-    await expect(kids.getByTestId("children-toggle")).toContainText("2 agents");
-    await expect(kids.getByTestId("children-toggle")).toContainText("1 running");
+    await expect(kids.getByTestId("children-asking")).toHaveText("1 needs you");
+    await expect(kids.getByTestId("children-toggle")).toHaveAccessibleName("2 agents: 1 needs you, 1 working");
     await expect(kids.getByTestId("children-toggle").locator('.k-mark[data-watch="need"]')).toBeVisible();
     // The tree: the asking agent is marked, the running one is not.
     await kids.getByTestId("children-toggle").click();
     const asking = kids.locator('[data-testid="child-session"][data-asking]');
     await expect(asking).toHaveCount(1);
     await expect(asking).toContainText("Ask about scope");
-    await expect(asking.getByTestId("child-asking")).toHaveText("asks you");
+    await expect(asking.getByTestId("child-state")).toHaveText("Needs you");
     await expect(kids.getByTestId("child-session")).toHaveCount(2);
     // Its card in the parent's transcript.
     const card = page.getByTestId("agent-call").filter({ hasText: "Ask about scope" });
-    await expect(card.getByTestId("agent-call-status")).toHaveText("Asks you");
-    await expect(page.getByTestId("agent-call").filter({ hasText: "Count the handlers" }).getByTestId("agent-call-status")).toHaveText("Running in background");
+    await expect(card.getByTestId("agent-call-status")).toHaveText("Needs you: a question");
+    await expect(page.getByTestId("agent-call").filter({ hasText: "Count the handlers" }).getByTestId("agent-call-status")).toHaveText("Working, in background");
     await shoot(page, "session-state-08-agent-asks");
   } finally {
     mkdirSync(WS, { recursive: true });
@@ -749,7 +749,7 @@ test("a declined turn, a stopped one with a held queue and a scheduled loop read
     expect(await now(armed)).toContain("Waits on a timer");
     // A scheduled loop does not make a finished session wait: it is at rest between runs.
     await expect.poll(async () => (await stateOf(request, looped))?.watch, { timeout: 30_000 }).toBe("done");
-    expect(await now(looped)).toMatch(/^Now: idle\./);
+    expect(await now(looped)).toMatch(/^Now: done\./);
     expect(await now(looped)).toContain("runs next");
 
     await page.goto(`/s/${looped}`);
@@ -962,7 +962,7 @@ test("twelve sessions in mixed states read apart at a glance, wide and on a phon
     await page.goto(`/s/${done1}`);
     const want: [string, string][] = [
       [approval, "need"], [question, "need"], [plan, "need"], [working, "work"], [silent, "work"], [parent, "work"],
-      [timer, "wait"], [job, "wait"], [failed, "fail"], [declined, "declined"], [stopped, "stop"], [done1, "done"],
+      [timer, "wait"], [job, "work"], [failed, "fail"], [declined, "declined"], [stopped, "stop"], [done1, "done"],
     ];
     for (const [id, w] of want) await expect(row(page, id), id).toHaveAttribute("data-watch", w, { timeout: 15_000 });
     // All of them are on screen at once: a row is two lines at most.

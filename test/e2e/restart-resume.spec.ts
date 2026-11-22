@@ -454,7 +454,7 @@ test("a background agent is continued across restarts and its record matches wha
       expect(await reports()).toHaveLength(0);
     }
     await page.goto(`${d.url}/s/${session.id}`);
-    await expect(page.getByTestId("agent-call-status").first()).toContainText(/running/i);
+    await expect(page.getByTestId("agent-call-status").first()).toContainText(/working/i);
     await shoot(page, "restart-03-agent-running-after-two");
 
     // Released: its one report, with the real answer, reaches the parent.

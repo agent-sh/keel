@@ -36,7 +36,7 @@ test("alerts: inbox, unread, command hook, routes", async ({ page, request }) =>
 
   await page.getByTestId("inbox-button").click();
   await expect(page.getByTestId("inbox-item").first()).toHaveAttribute("data-unread", "true");
-  await expect(page.getByTestId("inbox-item").first()).toContainText("Finished");
+  await expect(page.getByTestId("inbox-item").first()).toContainText("Done");
   await shoot(page, "alerts-02-inbox");
 
   // Opening the alert goes to the session and reads it.
@@ -227,9 +227,9 @@ test("alerts: a row is title, state and one line; routes are said once", async (
   // A row that waits on the owner says that it opens the card that answers it.
   await expect(rows.filter({ hasText: "Approval" }).getByTestId("inbox-opens")).toHaveText("Review");
   await expect(rows.filter({ hasText: "Question" }).getByTestId("inbox-opens")).toHaveText("Answer");
-  await expect(rows.filter({ hasText: "Finished" }).getByTestId("inbox-opens")).toHaveCount(0);
+  await expect(rows.filter({ hasText: "Done" }).getByTestId("inbox-opens")).toHaveCount(0);
   // The model's markdown is read as words.
-  const finished = rows.filter({ hasText: "Finished" }).first();
+  const finished = rows.filter({ hasText: "Done" }).first();
   await expect(finished.getByTestId("inbox-line")).toHaveText(/^The parser, moved: The change is in notes\/plan\.md:2/);
   // Routes: once for the list, on no row.
   await expect(page.getByTestId("inbox-routes")).toHaveCount(1);
@@ -242,9 +242,10 @@ test("alerts: a row is title, state and one line; routes are said once", async (
     const lines = await row.getByTestId("inbox-line").evaluate((el) => Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)));
     expect(lines).toBe(1);
   }
-  // The four are one session's: its title stands once, over them.
+  // The four are one session's: its title stands once, over them. (None of them has a card that waits: they are new, not under Needs you.)
   await expect(rows.getByTestId("inbox-place")).toHaveCount(1);
   await expect(rows.getByTestId("inbox-place")).toHaveText("Write up the parser move");
+  expect(await rows.evaluateAll((els) => els.map((e) => e.getAttribute("data-part")))).toEqual(["new", "new", "new", "new"]);
   // An unread row says its state once, with its mark: no bar, no second colored mark,
   // and the state word in the same face and case as on a read row.
   const first = rows.first();
@@ -252,14 +253,14 @@ test("alerts: a row is title, state and one line; routes are said once", async (
   expect(await first.evaluate((el) => getComputedStyle(el, "::before").content)).toBe("none");
   const unreadFace = await face(first);
   expect(unreadFace).toContain("|none|");
-  expect(await first.getByTestId("inbox-dot").evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(await rows.getByTestId("inbox-place").evaluate((el) => getComputedStyle(el).color));
+  expect(await first.getByTestId("inbox-dot").evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(await rows.getByTestId("inbox-place").first().evaluate((el) => getComputedStyle(el).color));
   // What a person or a model wrote reads in its own direction.
   for (const id of ["inbox-place", "inbox-line"]) await expect(rows.getByTestId(id).first()).toHaveAttribute("dir", "auto");
   await shoot(page, "alerts-09-rows");
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(panel).toBeInViewport({ ratio: 1 });
   // On a phone the list starts high: the bands over it are two short rows.
-  expect((await all.first().boundingBox())!.y).toBeLessThanOrEqual(124);
+  expect((await page.getByTestId("inbox-part").first().boundingBox())!.y).toBeLessThanOrEqual(124);
   // A phone's drawer is too narrow for a title and its alert on one line: the lone alert stands under its title there.
   expect((await lone.boundingBox())!.height).toBeGreaterThan(44);
   await shoot(page, "alerts-09-rows-phone");

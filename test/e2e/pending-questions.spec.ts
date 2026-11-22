@@ -94,7 +94,7 @@ test("only live questions mark an unopened session and its parent as Needs you",
     expect(loaded.has(parent)).toBe(false);
     await row(parent).click();
     await expect(pane).toHaveText("Needs you");
-    const childLink = page.getByRole("button", { name: /Color helper.*is waiting for your answer/ });
+    const childLink = page.getByRole("button", { name: /Color helper.*needs you: a question/ });
     await expect(childLink).toBeVisible();
     await shoot(page, "pending-questions-04-child-wait");
     expect(loaded.has(child)).toBe(false);

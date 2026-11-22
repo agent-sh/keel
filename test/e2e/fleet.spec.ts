@@ -352,7 +352,7 @@ test("fleet start: a picked machine that went offline never becomes a local star
     await expect.poll(state, { timeout: 30_000 }).toBe("offline");
     // The page has heard it: the picker lists the machine as offline.
     await page.getByTestId("machine-picker").click();
-    await expect(page.locator(`[data-testid="machine-option"][data-machine="${machine}"]`)).toContainText("offline");
+    await expect(page.locator(`[data-testid="machine-option"][data-machine="${machine}"]`)).toContainText("Offline");
     await page.keyboard.press("Escape");
     await page.getByTestId("composer").press("Enter");
     await page.waitForTimeout(1000);
@@ -362,7 +362,7 @@ test("fleet start: a picked machine that went offline never becomes a local star
     // Which machine and why is said once, in the line above the box; the picker keeps the pick and marks it.
     await expect(page.getByTestId("machine-blocked")).toContainText(`${name} is offline`);
     await expect(page.getByTestId("machine-picker")).toHaveAttribute("data-blocked", "true");
-    await expect(page.getByTestId("machine-picker")).not.toContainText("offline");
+    await expect(page.getByTestId("machine-picker")).not.toContainText(/offline/i);
     // Where the session would work is still said, in the start box's heading.
     await expect(page.getByTestId("home-start").getByRole("heading", { name: "Start a session" })).toContainText(`on ${name}, in its granted directory`);
     await expect(page.getByTestId("machine-blocked")).toContainText("nothing starts on this machine instead");

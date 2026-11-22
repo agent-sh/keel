@@ -1,0 +1,516 @@
+import { expect, test, type APIRequestContext, type Page } from "./isolate.ts";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { exited, ownDaemon } from "./peer.ts";
+import { shoot } from "./shots.ts";
+
+// Feature: one word per state on every surface. A coordinator with eight
+// agents, one in each state, reads the same on the agents' rows under it, on
+// their cards, in the list of background work and in each agent's own pane;
+// its summary counts every agent, so the numbers add up; a notice names an
+// agent by its title; Stop asks first and is not inside the row's open
+// target; an agent that ends is marked until seen. The Inbox lists what needs
+// the owner before anything that ended; each counter says what it counts;
+// unread means not seen. The scripted stand-in sends the exact calls.
+const STAND_IN = "scripted:stand-in";
+const WS = `${process.env.HOME}/.cache/keel-work/bun/e2e-ws/state-words`;
+const script = (calls: unknown[]) => `script:calls ${JSON.stringify(calls)}`;
+const row = (page: Page, id: string) => page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${id}"]`);
+const station = (page: Page, id: string) => page.locator(`section.k-station[data-station="${id}"]`);
+const flat = (t: string) => t.replace(/\s+/g, " ").trim();
+
+async function scripted(request: APIRequestContext) {
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  return models.some((m) => m.id === STAND_IN);
+}
+async function start(request: APIRequestContext, title: string, mode = "full-auto") {
+  mkdirSync(WS, { recursive: true });
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title, workspace: WS } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode, sandbox: "off" } });
+  return session.id as string;
+}
+const send = (request: APIRequestContext, id: string, text: string) => request.post(`/api/sessions/${id}/messages`, { data: { text } });
+const idle = async (request: APIRequestContext, id: string) => { const d = await (await request.get(`/api/sessions/${id}`)).json(); return !d.running && d.events.at(-1)?.kind === "turn_end"; };
+const settle = (request: APIRequestContext, id: string) => expect.poll(() => idle(request, id), { timeout: 60_000 }).toBe(true);
+const states = async (request: APIRequestContext) => ((await (await request.get("/api/state")).json()).states ?? {}) as Record<string, { watch: string; why?: string; asks?: number; agents?: number; parked?: number; text?: string }>;
+
+// A command that goes on until its gate file is there, 99 s at most (one still running at 120 s
+// is moved to the background). `work` is three of them, each its own call.
+const gates = join(WS, `gates-${Date.now().toString(36)}`);
+const gate = (name: string) => join(gates, name);
+const release = (name: string) => writeFileSync(gate(name), "go\n");
+const gateLoop = (name: string, n = 0) => ({ name: "Bash", input: { command: `i=0; until [ -f ${gate(name)} ] || [ $i -ge 330 ]; do i=$((i+1)); sleep 0.3; done; echo released ${n}` } });
+const work = (name: string) => [0, 1, 2].map((n) => gateLoop(name, n));
+const child = (title: string, body: string) => ({ name: "spawn_agent", input: { message: `${title}\n${body}`, isolation: "none" } });
+
+// The eight agents of the coordinator, and the word each one's state has.
+const LANES: { title: string; body: string; word: string }[] = [
+  { title: "Port the parser to the new tokenizer", body: script(work("parser")), word: "Working" },
+  { title: "Bench the cache under load", body: script(work("bench")), word: "Working" },
+  { title: "Review pull request 212", body: script(work("review")), word: "Working" },
+  { title: "Watch CI on main", body: script([{ name: "wait_for", input: { kind: "timer", seconds: 3600, note: "CI on main turns green" } }]), word: "Waiting" },
+  { title: "Wait for the staging deploy", body: script([{ name: "wait_for", input: { kind: "file", path: gate("staging-marker"), note: "staging deploy marker" } }]), word: "Waiting" },
+  { title: "Fetch the release notes from the tracker", body: "script:billing", word: "Failed" },
+  { title: "Push the release branch", body: script([gateLoop("push-hold"), { name: "Bash", input: { command: "touch pushed-release.txt" } }]), word: "Needs you" },
+  { title: "Summarize the open issues", body: "script:say Report: 14 open issues, 3 block the release.", word: "Done" },
+];
+
+test("eight agents read the same on every surface, and the summary adds up", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  test.setTimeout(420_000);
+  mkdirSync(gates, { recursive: true });
+  const coord = await start(request, "Coordinator: release train 2.4");
+  const elsewhere = await start(request, "Standup notes for Thursday");
+  await send(request, elsewhere, "script:say Three items for Thursday."); await settle(request, elsewhere);
+  await send(request, coord, `Start the lanes. ${script(LANES.map((l) => child(l.title, l.body)))}`);
+  type Agent = { id: string; session_id: string; title: string; status: string; created: number };
+  const agents = async () => (await (await request.get(`/api/sessions/${coord}/agents`)).json()).agents as Agent[];
+  const by = async (title: string) => (await agents()).find((a) => a.title.startsWith(title))!;
+  try {
+    await expect.poll(async () => (await agents()).length, { timeout: 60_000 }).toBe(8);
+    // The push agent asks for its next command.
+    const push = await by("Push the release branch");
+    await request.put(`/api/sessions/${push.session_id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+    release("push-hold");
+    // Each agent is where the day needs it: three at work, two waiting, one failed, one that asks, one done.
+    await expect.poll(async () => { const st = await states(request); return (await agents()).map((a) => `${a.status}${st[a.session_id]?.watch === "need" ? "+need" : ""}`).sort().join(" "); }, { timeout: 90_000 })
+      .toBe("completed failed running running running running+need waiting waiting");
+    await expect.poll(async () => !(await (await request.get(`/api/sessions/${coord}`)).json()).running && (await states(request))[coord]?.watch, { timeout: 60_000 }).toBe("need");
+
+    await page.goto(`/s/${coord}`);
+    const kids = row(page, coord).locator("xpath=..").getByTestId("session-children");
+    const tree = (title: string) => kids.getByTestId("child-session").filter({ hasText: title });
+    const card = (title: string) => station(page, coord).getByTestId("agent-call").filter({ hasText: title });
+
+    // The summary counts every agent by state: what needs the owner and what failed first, and the parts add up.
+    // It is one line: how many, then each state's mark and count; the sentence is the line's name and tooltip.
+    const toggle = kids.getByTestId("children-toggle");
+    const summary = { toHaveText: (text: string, o?: { timeout?: number }) => expect(toggle).toHaveAccessibleName(text, o) };
+    await summary.toHaveText("8 agents: 1 needs you, 1 failed, 3 working, 2 waiting, 1 done");
+    await expect(toggle).toHaveAttribute("title", "8 agents: 1 needs you, 1 failed, 3 working, 2 waiting, 1 done");
+    await expect(kids.getByTestId("children-total")).toHaveText("8 agents");
+    const parts = kids.getByTestId("children-summary").locator("[data-count]");
+    const counts = async () => (await parts.evaluateAll((els) => els.map((e) => Number(e.getAttribute("data-count"))))).reduce((n, x) => n + x, 0);
+    expect(await counts()).toBe(8);
+    expect(await parts.evaluateAll((els) => els.map((e) => `${e.getAttribute("data-watch")} ${e.getAttribute("data-count")}`))).toEqual(["need 1", "fail 1", "work 3", "wait 2", "done 1"]);
+    // The line is one line high, and every count is inside it: none is cut off at the list's edge.
+    await expect(kids.getByTestId("children-asking")).toHaveText("1 needs you");
+    await expect(kids.getByTestId("children-asking")).toHaveAttribute("title", "1 needs you");
+    const line = (await toggle.boundingBox())!;
+    expect(line.height).toBeLessThanOrEqual(30);
+    for (const part of await parts.all()) { const b = (await part.boundingBox())!; expect(b.x + b.width, "a count is whole").toBeLessThanOrEqual(line.x + line.width); }
+    await toggle.click();
+    await expect(kids.getByTestId("child-session")).toHaveCount(8);
+
+    // One word for one agent: its row in the tree, its card, the list of background work.
+    await station(page, coord).getByTestId("background-button").click();
+    for (const l of LANES) {
+      await expect(tree(l.title).getByTestId("child-state"), `tree: ${l.title}`).toHaveText(l.word);
+      await expect(tree(l.title).getByTestId("child-title")).toHaveText(l.title);
+      // The row says its state to a hover and to a screen reader too, with its title.
+      await expect(tree(l.title)).toHaveAccessibleName(new RegExp(`^${l.title}, ${l.word}`));
+      await expect(tree(l.title)).toHaveAttribute("title", new RegExp(`^${l.title}: ${l.word}`));
+      await expect(card(l.title).getByTestId("agent-call-state"), `card: ${l.title}`).toHaveText(new RegExp(`^${l.word}`));
+      const bg = page.getByTestId("bg-agent").filter({ hasText: l.title });
+      await expect(bg.getByTestId("bg-agent-state"), `background: ${l.title}`).toHaveText(new RegExp(`^${l.word}`));
+    }
+    // With what: the approval, the timer and the file, the failure's class in its one word.
+    await expect(page.getByTestId("bg-agent").filter({ hasText: "Push the release branch" }).getByTestId("bg-agent-state")).toHaveText("Needs you: an approval");
+    await expect(page.getByTestId("bg-agent").filter({ hasText: "Watch CI on main" }).getByTestId("bg-agent-state")).toHaveText("Waiting for a timer");
+    await expect(page.getByTestId("bg-agent").filter({ hasText: "Wait for the staging deploy" }).getByTestId("bg-agent-state")).toHaveText("Waiting for a file");
+    await expect(page.getByTestId("bg-agent").filter({ hasText: "Fetch the release notes" }).getByTestId("bg-agent-state")).toHaveText("Failed: billing");
+    await expect(card("Fetch the release notes").getByTestId("agent-call-state")).toHaveText("Failed: billing");
+    // No surface says the words the vocabulary retired.
+    const said = [await kids.innerText(), await page.getByTestId("background-popup").innerText(), ...(await station(page, coord).getByTestId("agent-call").allInnerTexts())];
+    for (const text of said) expect(flat(text)).not.toMatch(/\b(Running|running|Asks you|asks you|Finished)\b/);
+    await shoot(page, "state-words-01-coordinator");
+    await page.keyboard.press("Escape");
+
+    // A notice about an agent names it by its title; its id stands at the end.
+    const ci = await by("Watch CI on main");
+    const park = station(page, coord).getByTestId("agent-park-notice").filter({ hasText: "Watch CI on main" }).first();
+    await expect(park).toContainText("Agent waiting");
+    await park.click();
+    await expect(park).toContainText("Watch CI on main waits for");
+    await expect(park.getByTestId("agent-park-id")).toHaveText(`Agent ${ci.id}`);
+    // The failure notice says the class in the word the rows use for it.
+    await expect(station(page, coord).getByTestId("failure-entries").first()).toContainText("1 agent failed (billing)");
+
+    // And in each agent's own pane: the head says the same word.
+    for (const l of LANES) {
+      const a = await by(l.title);
+      await tree(l.title).click();
+      await expect(station(page, a.session_id).getByTestId("station-word"), `pane: ${l.title}`).toHaveText(new RegExp(`^${l.word}`));
+    }
+    await row(page, coord).click();
+
+    // The owner allows the push: the agent goes on and ends. The parent then works, and the count
+    // after its word is the agents that work: the summary's "working".
+    const waiting = (await (await request.get(`/api/sessions/${push.session_id}/approvals`)).json()).approvals as { id: string; state?: string }[];
+    expect((await request.post(`/api/sessions/${push.session_id}/approvals/${waiting[0]!.id}`, { data: { choice: "once" } })).ok()).toBe(true);
+    await summary.toHaveText("8 agents: 1 failed, 3 working, 2 waiting, 2 done", { timeout: 60_000 });
+    expect(await counts()).toBe(8);
+    await expect.poll(async () => !(await (await request.get(`/api/sessions/${coord}`)).json()).running && (await states(request))[coord]?.watch, { timeout: 60_000 }).toBe("work");
+    // Three of its five agents still out work (two wait): the head says of how many, and the pill beside it counts the same five.
+    await expect(row(page, coord).getByTestId("row-state")).toHaveText("Working · 3 of 5 agents");
+    await expect(station(page, coord).getByTestId("station-word")).toHaveText("Working · 3 of 5 agents");
+    await expect(station(page, coord).getByTestId("background-button")).toHaveText("5 in background");
+
+    // An agent that ends while neither it nor its parent is on screen is marked on its row until one of them is.
+    await row(page, elsewhere).click();
+    await expect(station(page, elsewhere)).toBeVisible();
+    release("bench");
+    await expect.poll(async () => (await by("Bench the cache")).status, { timeout: 60_000 }).toBe("completed");
+    await expect(tree("Bench the cache").getByTestId("child-state")).toHaveText("Done");
+    await expect(tree("Bench the cache")).toHaveAttribute("data-fresh", "true");
+    await expect(tree("Bench the cache").getByTestId("child-fresh")).toBeVisible();
+    await expect(tree("Summarize the open issues")).not.toHaveAttribute("data-fresh", "true");
+    await shoot(page, "state-words-02-agent-ended");
+    await row(page, coord).click();
+    await expect(tree("Bench the cache")).not.toHaveAttribute("data-fresh", "true", { timeout: 15_000 });
+    await summary.toHaveText("8 agents: 1 failed, 2 working, 2 waiting, 3 done", { timeout: 60_000 });
+
+    // Stop is a control of its own over the row's end, not inside what opens it, named with its agent, and always asks first.
+    const reviewRow = kids.getByTestId("child-row").filter({ hasText: "Review pull request 212" });
+    expect(await reviewRow.getByTestId("child-session").getByTestId("child-stop").count()).toBe(0);
+    // No row keeps room for it: the words of a live agent and of an ended one end at the same place.
+    const right = async (title: string) => { const b = (await tree(title).getByTestId("child-state").boundingBox())!; return Math.round(b.x + b.width); };
+    expect(await right("Review pull request 212")).toBe(await right("Summarize the open issues"));
+    await reviewRow.hover();
+    const url = page.url();
+    await expect(reviewRow.getByTestId("child-stop")).toHaveAccessibleName("Stop agent: Review pull request 212");
+    await reviewRow.getByTestId("child-stop").click();
+    const confirm = page.getByTestId("confirm");
+    await expect(confirm).toContainText('Stop "Review pull request 212"?');
+    await expect(confirm).toContainText("It has worked for");
+    // The keyboard is on Cancel: an Enter on its way stops nothing.
+    await expect(confirm.getByRole("button", { name: "Cancel" })).toBeFocused();
+    await shoot(page, "state-words-03-stop-asks");
+    await page.keyboard.press("Enter");
+    await expect(confirm).toBeHidden();
+    expect((await by("Review pull request 212")).status).toBe("running");
+    expect(page.url()).toBe(url);
+    await reviewRow.hover();
+    await reviewRow.getByTestId("child-stop").click();
+    await confirm.getByTestId("confirm-action").click();
+    await expect.poll(async () => (await by("Review pull request 212")).status, { timeout: 30_000 }).toBe("stopped");
+    await expect(tree("Review pull request 212").getByTestId("child-state")).toHaveText("Stopped");
+    await expect(card("Review pull request 212").getByTestId("agent-call-status")).toHaveText("Stopped · You stopped this agent");
+    await summary.toHaveText("8 agents: 1 failed, 1 working, 2 waiting, 1 stopped, 3 done", { timeout: 60_000 });
+    expect(await counts()).toBe(8);
+    // Its report says how it ended first, whole, in a pane of any width.
+    await expect(station(page, coord).getByTestId("agent-report").filter({ hasText: "Review pull request 212" }).getByTestId("agent-report-state")).toHaveText("Stopped");
+
+    // Four panes: an agent's row may be too narrow for its title and its word. The title stays, the mark says the state, and the tooltip has both.
+    const four = [coord, elsewhere, (await by("Port the parser")).session_id, (await by("Watch CI on main")).session_id];
+    await page.evaluate((slots) => {
+      localStorage.setItem("keel.focus", "false");
+      localStorage.setItem("keel.panes", JSON.stringify({ count: 4, slots, sizes: {}, active: 0 }));
+    }, four);
+    await page.goto(`/s/${coord}`);
+    await expect(page.locator("section.k-station[data-station]")).toHaveCount(4);
+    await expect(kids.getByTestId("child-session").first()).toBeVisible();
+    // The narrow list keeps the total and what calls the owner (the failed one), whole; the sentence is still the line's name.
+    await expect(kids.getByTestId("children-fail")).toBeVisible();
+    await expect(kids.getByTestId("children-total")).toHaveText(/^8/);
+    await expect(toggle).toHaveAccessibleName("8 agents: 1 failed, 1 working, 2 waiting, 1 stopped, 3 done");
+    for (const part of await parts.all()) { if (!(await part.isVisible())) continue; const b = (await part.boundingBox())!, l = (await toggle.boundingBox())!; expect(b.x + b.width, "a count is whole in the narrow list").toBeLessThanOrEqual(l.x + l.width); }
+    for (const title of ["Fetch the release notes from the tracker", "Watch CI on main"]) {
+      const box = (await tree(title).getByTestId("child-title").boundingBox())!;
+      expect(box.width, `${title}: its title has room`).toBeGreaterThan(40);
+      await expect(tree(title)).toHaveAttribute("title", new RegExp(`^${title}: `));
+    }
+    await shoot(page, "state-words-10-four-panes");
+    await page.evaluate(() => { localStorage.setItem("keel.focus", "true"); localStorage.removeItem("keel.panes"); });
+    // A smaller desk, and the largest text size: the line of counts is still one line with every count in it.
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(`/s/${coord}`);
+    await expect(kids.getByTestId("child-session").first()).toBeVisible();
+    await shoot(page, "state-words-12-1440");
+    await page.evaluate(() => localStorage.setItem("keel.textScale", "1.5"));
+    await page.reload();
+    await expect(kids.getByTestId("child-session").first()).toBeVisible();
+    expect((await toggle.boundingBox())!.height).toBeLessThanOrEqual(45);
+    for (const part of await parts.all()) { const b = (await part.boundingBox())!, l = (await toggle.boundingBox())!; expect(b.x + b.width, "a count is whole at the largest text").toBeLessThanOrEqual(l.x + l.width); }
+    await shoot(page, "state-words-13-text-size-1-5");
+    await page.evaluate(() => localStorage.removeItem("keel.textScale"));
+
+    // A phone: the same words in the list of background work.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`/s/${coord}`);
+    await expect(page.getByTestId("agent-call").first()).toBeVisible();
+    await shoot(page, "state-words-04-phone");
+    if (await page.getByTestId("background-button").isVisible()) {
+      await page.getByTestId("background-button").click();
+      await expect(page.getByTestId("bg-agent").filter({ hasText: "Fetch the release notes" }).getByTestId("bg-agent-state")).toHaveText("Failed: billing");
+      await shoot(page, "state-words-04-phone-background");
+    }
+  } finally {
+    for (const g of ["parser", "bench", "review", "push-hold"]) if (!existsSync(gate(g))) release(g);
+    await request.post(`/api/sessions/${coord}/interrupt`).catch(() => {});
+  }
+});
+
+test("the inbox lists what needs you first, each counter says what it counts, and unread means not seen", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  test.setTimeout(240_000);
+  await request.post("/api/alerts/read", { data: {} });
+  const approval = async (title: string, file: string) => {
+    const id = await start(request, title, "ask");
+    await send(request, id, script([{ name: "Bash", input: { command: `touch ${file}` } }]));
+    await expect.poll(async () => (await states(request))[id]?.watch, { timeout: 30_000 }).toBe("need");
+    return id;
+  };
+  const finish = async (title: string, said: string) => { const id = await start(request, title); await send(request, id, `script:say ${said}`); await settle(request, id); return id; };
+  const waits = async (title: string, mode: string, call: { name: string; input: unknown }) => {
+    const id = await start(request, title, mode);
+    await send(request, id, script([call]));
+    await expect.poll(async () => (await states(request))[id]?.watch, { timeout: 30_000 }).toBe("need");
+    return id;
+  };
+  // In the order they happened: an approval, two finishes, an approval, a finish.
+  const certs = await approval("Rotate the staging certificates", "renewed.txt");
+  const notes = await finish("Standup notes for Thursday", "Three items: the importer landed.");
+  const changelog = await finish("Draft the 2.4 changelog", "Draft done: 31 entries in four groups.");
+  const canary = await approval("Watch the canary deploy", "promoted.txt");
+  const webhooks = await finish("Refactor the billing webhooks", "The handlers share one verifier now.");
+
+  await page.goto("/");
+  const unread = async () => (await (await request.get("/api/alerts?with_unread")).json()).unread as { total: number; sessions: Record<string, number> };
+  expect((await unread()).total).toBe(5);
+
+  // The bell counts what is unread and says so.
+  const bell = page.getByTestId("inbox-button");
+  await expect(page.getByTestId("inbox-count")).toHaveText("5");
+  await expect(bell).toHaveAccessibleName(/5 unread: new since you last looked/);
+  await expect(bell).toHaveAttribute("title", /5 unread: new since you last looked/);
+  // The tab's title and the home headline count what waits on the owner: the same number.
+  const asks = Object.entries(await states(request)).filter(([id]) => [certs, canary].includes(id)).reduce((n, [, st]) => n + (st.asks ?? 1), 0);
+  expect(asks).toBe(2);
+  const need = page.getByTestId("home-count-need");
+  const n = Number((await need.innerText()).match(/\d+/)![0]);
+  expect(n).toBeGreaterThanOrEqual(2);
+  await expect(page).toHaveTitle(new RegExp(`^\\(${n}\\) `));
+  await expect(need).toHaveAttribute("title", new RegExp(`^${n} things wait on you: approvals, questions, plans and secrets`));
+  // The bug counts Keel's own errors.
+  await expect(page.getByTestId("errors-button")).toHaveAccessibleName(/errors? in Keel/);
+
+  // The Inbox: what needs the owner first, then what else is new. Nothing that waits is below a finish.
+  await bell.click();
+  await page.getByTestId("inbox-unread-filter").check();
+  const items = page.getByTestId("inbox-item");
+  await expect(items).toHaveCount(5);
+  await expect(page.getByTestId("inbox-part")).toHaveText([/^Needs you\s*2$/, /^New since you looked\s*3$/]);
+  expect(await items.evaluateAll((els) => els.map((e) => e.getAttribute("data-part")))).toEqual(["need", "need", "new", "new", "new"]);
+  expect(await items.evaluateAll((els) => els.map((e) => e.querySelector('[data-testid="inbox-word"]')?.textContent))).toEqual(["Approval", "Approval", "Done", "Done", "Done"]);
+  // What waits is in the order it was asked: the oldest request first.
+  expect(await items.evaluateAll((els) => els.slice(0, 2).map((e) => e.querySelector('[data-testid="inbox-place"]')?.textContent))).toEqual(["Rotate the staging certificates", "Watch the canary deploy"]);
+  await shoot(page, "state-words-05-inbox");
+  await page.keyboard.press("Escape");
+
+  // An approval that was looked at and not answered still waits: it stays under Needs you, read.
+  await row(page, certs).click();
+  await expect(station(page, certs).getByTestId("approval").first()).toBeVisible();
+  await expect.poll(async () => (await unread()).sessions[certs] ?? 0, { timeout: 15_000 }).toBe(0);
+  // A plan and a secret to give wait on the owner too: each is in the Inbox under its own word.
+  const plan = await waits("Plan the retry policy", "plan", { name: "present_plan", input: { title: "Retry policy", plan: "## Retry policy\n\n1. Read the importer.\n2. Change the policy." } });
+  const secret = await waits("Call the staging API", "full-auto", { name: "request_secret", input: { name: "STATE_WORDS_TOKEN", purpose: "a spec" } });
+  await page.goto("/");
+  await expect(page).toHaveTitle(/^\(\d+\) /);
+  const things = Number((await page.title()).match(/^\((\d+)\)/)![1]);
+  expect(things).toBeGreaterThanOrEqual(4);
+  // One count of what waits: the tab's title, the home headline and the list's line say the same number.
+  await expect(page.getByTestId("home-count-need")).toHaveText(new RegExp(`^${things} need you$`));
+  await expect(page.getByTestId("sum-need")).toHaveText(new RegExp(`^${things}need you$`));
+  await bell.click();
+  await page.getByRole("radio", { name: "All" }).click();
+  const needs = page.locator('[data-testid="inbox-item"][data-part="need"]');
+  await expect(needs).toHaveCount(4);
+  expect(await needs.evaluateAll((els) => els.map((e) => `${e.querySelector('[data-testid="inbox-word"]')?.textContent} ${e.querySelector('[data-testid="inbox-place"]')?.textContent} ${e.hasAttribute("data-unread") ? "unread" : "read"} ${e.querySelector('[data-testid="inbox-opens"]')?.textContent}`)))
+    .toEqual(["Approval Rotate the staging certificates read Review", "Approval Watch the canary deploy unread Review", "Plan Plan the retry policy unread Review", "Secret Call the staging API unread Open"]);
+  // Nothing that waits is below anything that ended.
+  const order = await items.evaluateAll((els) => els.map((e) => e.getAttribute("data-part")));
+  expect(order.lastIndexOf("need")).toBeLessThan(order.findIndex((x) => x !== "need"));
+  await shoot(page, "state-words-05b-inbox-needs");
+  await page.keyboard.press("Escape");
+  // Answered, it leaves the part: the plan is turned down, the secret request let go.
+  for (const id of [plan, secret]) await request.post(`/api/sessions/${id}/interrupt`);
+  await bell.click();
+  await expect(needs).toHaveCount(2, { timeout: 15_000 });
+  await page.keyboard.press("Escape");
+
+  // A session that ended and was never opened here: the card beside its row says what it ended with.
+  await page.getByTestId("session-list").hover();
+  await row(page, webhooks).hover();
+  await expect(page.getByTestId("rail-card")).toContainText("The handlers share one verifier now.", { timeout: 10_000 });
+  await shoot(page, "state-words-07-hover-ended");
+
+  // Two panes: the changelog is worked in, the notes are shown beside it. Both are on screen, so both are read.
+  await page.evaluate(([a, b]) => {
+    localStorage.setItem("keel.focus", "false");
+    localStorage.setItem("keel.panes", JSON.stringify({ count: 2, slots: [a, b], sizes: {}, active: 0 }));
+  }, [changelog, notes]);
+  await page.goto(`/s/${changelog}`);
+  await expect(station(page, notes)).toBeVisible();
+  await expect(row(page, changelog)).not.toHaveAttribute("data-unread", "true", { timeout: 15_000 });
+  await expect(row(page, notes)).not.toHaveAttribute("data-unread", "true", { timeout: 15_000 });
+  // One that is not on screen stays unread.
+  await expect(row(page, webhooks)).toHaveAttribute("data-unread", "true");
+  // A reply arrives in the pane beside the one worked in: it is on screen, so its row is not marked.
+  await send(request, notes, "script:say One more item: the docs sweep started.");
+  await expect(station(page, notes).getByTestId("transcript")).toContainText("One more item: the docs sweep started.", { timeout: 30_000 });
+  await settle(request, notes);
+  await page.waitForTimeout(2500); // the presence check runs every second
+  await expect(row(page, notes)).not.toHaveAttribute("data-unread", "true");
+  expect((await unread()).sessions[notes] ?? 0).toBe(0);
+  // The same reply in a session that is not on screen marks it.
+  await send(request, webhooks, "script:say Verified again.");
+  await settle(request, webhooks);
+  await expect.poll(async () => (await unread()).sessions[webhooks] ?? 0, { timeout: 15_000 }).toBeGreaterThan(0);
+
+  // The owner marks the session they are in unread, to come back to it: the page showing it does not read it back.
+  await page.getByTestId("session-menu").first().click();
+  await page.getByTestId("menu-unread").click();
+  await expect(row(page, changelog)).toHaveAttribute("data-unread", "true");
+  await page.waitForTimeout(2500);
+  await expect(row(page, changelog)).toHaveAttribute("data-unread", "true");
+  await shoot(page, "state-words-08-two-panes-marked-unread");
+  // A reload is not going to the session: the mark is still there after it.
+  await page.reload();
+  await expect(row(page, changelog)).toHaveAttribute("data-unread", "true", { timeout: 15_000 });
+  await page.waitForTimeout(2500);
+  await expect(row(page, changelog)).toHaveAttribute("data-unread", "true");
+  // Opening it again reads it.
+  await row(page, webhooks).click();
+  await expect(row(page, webhooks)).not.toHaveAttribute("data-unread", "true", { timeout: 15_000 });
+  await row(page, changelog).click();
+  await expect(row(page, changelog)).not.toHaveAttribute("data-unread", "true", { timeout: 15_000 });
+
+  // And one action clears every unread mark.
+  await page.waitForTimeout(1500); // the page says where it is within a second: the session just left is not on screen
+  await send(request, webhooks, "script:say Verified a third time.");
+  await settle(request, webhooks);
+  await expect(row(page, webhooks)).toHaveAttribute("data-unread", "true", { timeout: 15_000 });
+  await bell.click();
+  await page.getByTestId("mark-all-read").click();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("session-list").locator('[data-testid="session-row"][data-unread="true"]')).toHaveCount(0);
+  await expect(page.getByTestId("inbox-count")).toHaveCount(0);
+  await expect(bell).toHaveAccessibleName(/Nothing new since you last looked/);
+
+  // A phone: the same parts. The two approvals were read by "clear all" and still wait: they are first.
+  await send(request, webhooks, "script:say Verified a fourth time.");
+  await settle(request, webhooks);
+  await expect.poll(async () => (await unread()).total, { timeout: 15_000 }).toBeGreaterThan(0);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/?inbox");
+  await expect(page.getByTestId("inbox-part")).toHaveText([/^Needs you\s*2$/, /^New since you looked\s*1$/, /^Earlier\s*\d+$/]);
+  await shoot(page, "state-words-06-inbox-phone");
+});
+
+test("a command left in the background is work, and a held message says when it is taken", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  // Its turn ended and a command it started still runs: the session works. It does not wait.
+  const bg = await start(request, "Run the long migration");
+  await send(request, bg, script([{ name: "Bash", input: { command: "sleep 240", run_in_background: true, description: "the long migration" } }]));
+  await settle(request, bg);
+  await expect.poll(async () => (await states(request))[bg]?.watch, { timeout: 30_000 }).toBe("work");
+  // A turn that runs a command: a message sent to it is held, and says until when.
+  const busy = await start(request, "Port the importer");
+  await send(request, busy, script([{ name: "Bash", input: { command: "sleep 60; echo ported" } }]));
+  await expect.poll(async () => (await states(request))[busy]?.why, { timeout: 30_000 }).toBe("tool");
+  try {
+    await page.goto(`/s/${busy}`);
+    await expect(row(page, bg)).toHaveAttribute("data-watch", "work");
+    await expect(row(page, bg).getByTestId("row-state")).toHaveText("Working");
+    await expect(row(page, bg).getByTestId("row-why")).toHaveText(/^Command in background: the long migration/);
+    // The words are in sentence case on the row, as in a pane's head.
+    expect(await row(page, bg).getByTestId("row-state").evaluate((e) => getComputedStyle(e).textTransform)).toBe("none");
+    await expect(station(page, busy).getByTestId("station-word")).toHaveText("Working");
+
+    await page.getByTestId("composer").fill("Also keep the old importer behind a switch.");
+    await page.keyboard.press("Enter");
+    const item = page.getByTestId("queue-item");
+    await expect(item.getByTestId("queue-word")).toHaveText("Queued");
+    await expect(item.getByTestId("queue-when")).toHaveText("held until its current step ends");
+    await shoot(page, "state-words-09-held-message");
+    // Stopped, the same message waits for the owner: it says so.
+    await request.post(`/api/sessions/${busy}/interrupt`);
+    await expect(item.getByTestId("queue-when")).toHaveText("held until it is resumed", { timeout: 30_000 });
+  } finally {
+    for (const id of [bg, busy]) await request.post(`/api/sessions/${id}/interrupt`).catch(() => {});
+  }
+});
+
+// A daemon of the spec's own with a command hook: what leaves the machine is read from the hook's log.
+test("a failure in a pane scrolled off the window is unread and notified; one in front of the owner waits until they leave", async ({ page }) => {
+  test.setTimeout(240_000);
+  const state = join(process.env.HOME!, ".cache/keel-work/bun/e2e-state", `state-words-${Date.now().toString(36)}`);
+  const log = join(state, "notify.log");
+  const d = await ownDaemon(state, 0, { KEEL_NOTIFY_COMMAND: resolve("test/e2e/fixtures/notify-log.sh"), KEEL_NOTIFY_LOG: log });
+  const api = async (path: string, o: { method?: string; data?: unknown } = {}) => {
+    const r = await fetch(`${d.url}${path}`, { method: o.method ?? (o.data ? "POST" : "GET"), headers: o.data ? { "content-type": "application/json" } : {}, body: o.data ? JSON.stringify(o.data) : undefined });
+    return r.json() as Promise<any>;
+  };
+  try {
+    const ws = join(state, "ws");
+    mkdirSync(ws, { recursive: true });
+    const ids: string[] = [];
+    for (let i = 1; i <= 6; i++) {
+      const { session } = await api("/api/sessions", { data: { model: STAND_IN, title: `Pane ${i}`, workspace: ws } });
+      await api(`/api/sessions/${session.id}/permissions`, { method: "PUT", data: { mode: "full-auto", sandbox: "off" } });
+      ids.push(session.id);
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(d.url);
+    await page.evaluate((slots) => {
+      localStorage.setItem("keel.focus", "false");
+      localStorage.setItem("keel.panes", JSON.stringify({ count: 6, slots, sizes: {}, active: 0 }));
+    }, ids);
+    await page.goto(`${d.url}/s/${ids[0]}`);
+    const pane = (i: number) => page.locator(`section.k-station[data-station="${ids[i]}"]`);
+    await expect(page.locator("section.k-station[data-station]")).toHaveCount(6);
+    // The sixth pane is placed and scrolled off the window; the first is in view.
+    expect((await pane(5).boundingBox())!.x).toBeGreaterThan(1440);
+    const first = (await pane(0).boundingBox())!;
+    expect(first.x + first.width).toBeLessThanOrEqual(1440);
+    // The owner is at the desk: they type in the first pane.
+    const typing = async () => { await pane(0).getByTestId("composer").click(); await page.keyboard.type("x"); await page.keyboard.press("Backspace"); };
+    await typing();
+    await page.waitForTimeout(1500); // the page has said where its owner is
+    const alertOf = async (id: string) => ((await api("/api/alerts?with_unread")).alerts as any[]).find((a) => a.session_id === id && ["failed", "limit"].includes(a.kind));
+    const notified = (id: string) => existsSync(log) && readFileSync(log, "utf8").split("\n").filter(Boolean).some((l) => JSON.parse(l).session_id === id);
+    const seen = async (id: string) => { const s = (await api(`/api/sessions/${id}`)).session; return !!s.settings.failed_ms && s.settings.fail_seen_ms === s.settings.failed_ms; };
+
+    // A session fails in the pane that is off the window: nobody saw it.
+    await api(`/api/sessions/${ids[5]}/messages`, { data: { text: "script:billing" } });
+    await expect.poll(async () => (await alertOf(ids[5]!))?.read, { timeout: 30_000 }).toBe(false);
+    // Its notification goes out at once, it is unread on the list and the bell, and its failure is still news.
+    await expect.poll(() => notified(ids[5]!), { timeout: 15_000 }).toBe(true);
+    await expect(row(page, ids[5]!)).toHaveAttribute("data-unread", "true");
+    await expect(page.getByTestId("inbox-count")).toHaveText("1");
+    await typing();
+    await page.waitForTimeout(2500);
+    expect(await seen(ids[5]!)).toBe(false);
+    await expect(row(page, ids[5]!)).toHaveAttribute("data-unread", "true");
+
+    // A session fails in the pane in front of the owner while they work in it. A failure is not read by
+    // being in view; it has been seen, and its notification is held back while they are there.
+    await api(`/api/sessions/${ids[0]}/messages`, { data: { text: "script:billing" } });
+    await expect.poll(async () => (await alertOf(ids[0]!))?.read, { timeout: 30_000 }).toBe(false);
+    expect((await alertOf(ids[0]!)).data.withheld).toEqual(["command"]);
+    await page.mouse.move(700, 500);
+    await expect.poll(() => seen(ids[0]!), { timeout: 15_000 }).toBe(true);
+    await page.waitForTimeout(4000);
+    expect(notified(ids[0]!)).toBe(false);
+    await expect(page.getByTestId("inbox-count")).toHaveText("2");
+    await shoot(page, "state-words-11-six-panes-1440");
+    // They leave the sessions (the page goes to Settings) and it still waits unread: now it is sent.
+    await page.goto(`${d.url}/settings/general`);
+    await expect.poll(() => notified(ids[0]!), { timeout: 20_000 }).toBe(true);
+    expect((await alertOf(ids[0]!)).data.withheld).toBeUndefined();
+  } finally {
+    d.proc.kill();
+    await exited(d.proc);
+  }
+});
