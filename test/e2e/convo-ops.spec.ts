@@ -198,7 +198,9 @@ test("export, summarize and confirm dialogs fit a short window", async ({ page, 
   await body.evaluate((el) => (el.scrollTop = 0));
   for (const dark of [false, true]) {
     await page.evaluate((d) => document.documentElement.classList.toggle("dark", d), dark);
-    const cue = await confirm.evaluate((el) => {
+    // (The line follows the scroll position at the page's next frame, and a theme's color once its
+    // class is on: read until it stands, not in the instant after the scroll was set.)
+    const read = () => confirm.evaluate((el) => {
       const probe = document.createElement("i");
       probe.style.color = "var(--line-strong)";
       el.append(probe);
@@ -209,7 +211,7 @@ test("export, summarize and confirm dialogs fit a short window", async ({ page, 
       const pixel = (c: string) => { ctx.clearRect(0, 0, 1, 1); ctx.fillStyle = c; ctx.fillRect(0, 0, 1, 1); return [...ctx.getImageData(0, 0, 1, 1).data].join(","); };
       return { strong: pixel(strong), line: pixel(getComputedStyle(el.querySelector(".k-dialog-foot")!).borderTopColor) };
     });
-    expect(cue.line).toBe(cue.strong);
+    await expect.poll(async () => { const cue = await read(); return cue.line === cue.strong ? "the stronger line" : `${cue.line}, not ${cue.strong}`; }).toBe("the stronger line");
   }
   await page.keyboard.press("Escape");
   await expect(confirm).toBeHidden();
