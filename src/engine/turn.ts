@@ -4,6 +4,7 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { rootOf } from "../safety/trust.ts";
+import { DeltaJoin } from "./deltas.ts";
 import type { Bus } from "../core/bus.ts";
 import { asAsker } from "../core/asker.ts";
 import { errorScope, type ErrorTracker } from "../core/errors.ts";
@@ -713,6 +714,8 @@ export class Engine {
 
   // When the reply being streamed last gave output; undefined between requests.
   private outputs = new Map<string, number>();
+  // A stream's text is joined for a moment before it is sent on as a frame (src/engine/deltas.ts).
+  readonly deltas = new DeltaJoin((session, d) => this.bus.emit({ t: "delta", session_id: session, ...d }));
   outputOf(id: string): number | undefined {
     return this.outputs.get(id);
   }
@@ -1463,6 +1466,8 @@ export class Engine {
         const tap: Wire = {};
         wireOf.set(req, tap);
         if (!quiet) this.wires.set(id, tap);
+        // (The hooks that time a stream's pieces, looked up once a request, not at every piece.)
+        const timing = allHooks().filter((h) => h.requestDelta);
         const res = await wireScope.run(tap, () => st.provider.stream({ ...req, onHeaders }, (d) => {
           if ((first || silent) && !quiet) { first = silent = false; this.status(id, { kind: "idle" }); }
           last = Date.now();
@@ -1470,9 +1475,9 @@ export class Engine {
           const p = partial.get(d.index) ?? { kind: d.kind, text: "" };
           p.text += d.text;
           partial.set(d.index, p);
-          this.measure(id, (h) => h.requestDelta?.(session, req, d));
-          if (!quiet) this.bus.emit({ t: "delta", session_id: id, ...d });
-        }));
+          for (const h of timing) try { h.requestDelta!(session, req, d); } catch (e) { this.errors.capture("server", e, { hook: "measure", session: id }); }
+          if (!quiet) this.deltas.push(id, d);
+        })).finally(() => { if (!quiet) this.deltas.end(id); });
         clearInterval(hush);
         if (!quiet) { this.outputs.delete(id); this.wires.delete(id); }
         if (!quiet || attempt) this.status(id, { kind: "idle" });
@@ -1664,7 +1669,7 @@ export class Engine {
         signal,
         events: () => this.lineage(id),
         append: (kind, data) => this.append(id, kind, data),
-        delta: (kind, index, text) => this.bus.emit({ t: "delta", session_id: id, kind, index, text }),
+        delta: (kind, index, text) => this.deltas.push(id, { kind, index, text }),
         status: (s) => this.status(id, s),
       });
       reason = signal.aborted ? (this.parking.has(id) ? "restart" : "interrupted") : r.reason;
@@ -1673,6 +1678,7 @@ export class Engine {
       reason = signal.aborted ? (this.parking.has(id) ? "restart" : "interrupted") : "error";
       if (!signal.aborted) throw e;
     } finally {
+      this.deltas.end(id);
       const by = this.stoppedBy.get(id);
       this.stoppedBy.delete(id);
       this.store.appendOrLater(id, "turn_end", { reason, usage, ms: Date.now() - t0, ...(by && reason === "interrupted" ? { stopped_by: by } : {}) }, (e) => this.emitEvent(e));

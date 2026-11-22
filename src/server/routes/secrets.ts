@@ -7,7 +7,7 @@ import { chmodSync, closeSync, openSync, readFileSync, writeSync } from "node:fs
 import { join } from "node:path";
 import { setConcealer } from "../../core/conceal.ts";
 import { registerHooks } from "../../engine/hooks.ts";
-import { nameError, SHELL_FIELDS, vault } from "../../safety/secrets.ts";
+import { nameError, SHELL_FIELDS, StreamScan, vault } from "../../safety/secrets.ts";
 import { dropCallEnv, registerEnv, setCallEnv } from "../../tools/jobs.ts";
 import { declareAsksOwner, registerShared } from "../../tools/registry.ts";
 import type { Tool, ToolContext } from "../../tools/types.ts";
@@ -117,10 +117,16 @@ export const secretRoutes: RouteModule = (deps: Deps) => {
     if (typeof value === "string") return vault.redact(value, sessionId, kind === "title" || kind === "queue" ? "prompt" : "output");
     return vault.redactDeep(value, sessionId, kind === "user" ? "prompt" : "output");
   };
-  // Live frames: the streamed text and feature frames (approval cards).
-  // Stored events were redacted on the way in.
+  // A reply's text as it streams is scanned before it is a frame, each piece with the ones before it
+  // in view (a key cut by a piece's end is caught when the next piece completes it).
+  const streams = new StreamScan(vault);
+  deps.engine.deltas.scan = {
+    piece: (session, index, text) => streams.piece(`${session} ${index}`, session, text),
+    end: (session, index) => streams.end(`${session} ${index}`, session),
+  };
+  // Live frames: feature frames (approval cards). The streamed text was scanned before it
+  // became a frame (above); stored events were redacted on the way in.
   bus.use((f) => {
-    if (f.t === "delta") return { ...f, text: vault.redact(f.text, f.session_id, "output") };
     if (f.t === "feature" && f.name !== "secret") return { ...f, data: vault.redactDeep(f.data, f.session_id ?? null, "output") };
     return f;
   });

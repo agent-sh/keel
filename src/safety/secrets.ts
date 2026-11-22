@@ -343,6 +343,56 @@ export class Vault {
     return r + out.slice(at);
   }
 
+  // The longest end of `text` (8 characters at least) that is the start of a known value which goes on after it.
+  knownStart(text: string): { n: number; e: Entry } | undefined {
+    let best: { n: number; e: Entry } | undefined;
+    for (const e of this.byValue.values()) {
+      for (let n = Math.min(e.value.length - 1, text.length); n >= 8 && n > (best?.n ?? 0); n--) {
+        if (text.endsWith(e.value.slice(0, n))) { best = { n, e }; break; }
+      }
+    }
+    return best;
+  }
+
+  // `text` from `from` on, redacted as redact() would the whole: what comes
+  // before `from` is read (a name its value is assigned to, the start of a
+  // value that ends after it) and not returned. A value that began before
+  // `from` gives its placeholder for the part of it that is returned. For
+  // text that arrives in pieces (StreamScan below): each piece is redacted
+  // with the pieces before it in view.
+  // `found`: what detect() gave for the text, when the caller has it already.
+  redactTail(text: string, from: number, sessionId: string | null, source: Source, found?: Hit[]): string {
+    if (from <= 0 && !found) return this.redact(text, sessionId, source);
+    if (from >= text.length) return "";
+    // What is replaced, and by what: known values (the longest first where they overlap), then what detect() finds outside them.
+    const ranges: { start: number; end: number; by: () => string }[] = [];
+    const free = (start: number, end: number) => !ranges.some((r) => start < r.end && end > r.start);
+    const known = [...this.byValue.values()].filter((e) => text.includes(e.value)).sort((a, b) => b.value.length - a.value.length);
+    for (const e of known) {
+      for (let at = text.indexOf(e.value); at >= 0; at = text.indexOf(e.value, at + e.value.length)) {
+        if (at + e.value.length <= from || !free(at, at + e.value.length)) continue;
+        ranges.push({ start: at, end: at + e.value.length, by: () => {
+          if (sessionId && !e.sessions.has(sessionId)) this.add(e.value, e.kind, source, sessionId);
+          return this.placeholder(e);
+        } });
+      }
+    }
+    for (const h of found ?? detect(text)) {
+      if (h.end <= from || !free(h.start, h.end)) continue;
+      ranges.push({ start: h.start, end: h.end, by: () => this.placeholder(this.add(h.value, h.kind, source, sessionId)) });
+    }
+    // Text that ends in the first part of a known value (cut short there): replaced, as redact() does.
+    const cut = this.knownStart(text);
+    if (cut && text.length - cut.n >= 0 && free(text.length - cut.n, text.length)) ranges.push({ start: text.length - cut.n, end: text.length, by: () => this.placeholder(cut.e) });
+    ranges.sort((a, b) => a.start - b.start);
+    let out = "", at = from;
+    for (const r of ranges) {
+      out += text.slice(at, Math.max(at, r.start)) + r.by();
+      at = r.end;
+    }
+    return out + text.slice(at);
+  }
+
   // A JSON value with every string redacted, except what must stay byte-exact
   // (images, provider signatures and opaque reasoning).
   redactDeep<T>(v: T, sessionId: string | null, source: Source): T {
@@ -561,3 +611,69 @@ export class Vault {
 }
 
 export const vault = new Vault();
+
+// Text that arrives in pieces (a reply as it streams), redacted before any of
+// it is shown. A secret may be cut by a piece's end, so two things are kept
+// per stream: the end of what was already given out, as context (`seen`), and
+// the end of what arrived that may still grow into a secret (`held`), which
+// is given out with the next piece or at the stream's end:
+//  - the last run of characters a secret is made of (printable ASCII with no
+//    space): a key, a token or an assigned value is such a run, and it is
+//    looked at when it is whole. A run longer than HOLD_MAX is given out but
+//    for its last HOLD_KEEP characters (no rule's key is longer; a longer
+//    value that began before gives its placeholder for the rest of it);
+//  - a private key block that has begun and not ended, up to KEY_MAX.
+// Each piece is redacted with `seen` in view (Vault.redactTail), so a value
+// is caught whose name came with an earlier piece.
+const SEEN = 160, HOLD_MAX = 600, HOLD_KEEP = 300, KEY_MAX = 16_384;
+const KEY_OPEN = /-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----(?![\s\S]*-----END[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----)/;
+const KEY_START = /-----BEGIN[ A-Z0-9_-]{0,100}$/;
+export class StreamScan {
+  private streams = new Map<string, { seen: string; held: string }>();
+  constructor(private v: Vault = vault) {}
+
+  // What may be shown now of `text`, the next piece of the stream `key` (of session `sessionId`).
+  piece(key: string, sessionId: string | null, text: string): string {
+    let st = this.streams.get(key);
+    if (!st) {
+      if (this.streams.size > 2_000) this.streams.clear();
+      this.streams.set(key, (st = { seen: "", held: "" }));
+    }
+    const all = st.held + text;
+    let cut = all.length;
+    while (cut > 0) {
+      const c = all.charCodeAt(cut - 1);
+      if (c <= 0x20 || c > 0x7e) break;
+      cut--;
+    }
+    if (all.length - cut > HOLD_MAX) cut = all.length - HOLD_KEEP;
+    // A key block that began (in what is held, or in what was given out) and has not ended: its body waits for its end.
+    const whole = st.seen + all;
+    const open = KEY_OPEN.exec(whole) ?? KEY_START.exec(whole);
+    if (open && all.length - Math.max(0, open.index - st.seen.length) <= KEY_MAX) cut = Math.min(cut, Math.max(0, open.index - st.seen.length));
+    // And the start of a value the vault knows, which the next piece may complete.
+    const known = this.v.knownStart(whole.slice(0, st.seen.length + cut));
+    if (known) cut = Math.max(0, cut - known.n);
+    // What is given out never ends inside a secret that is whole already (a long run cut before its end): it waits whole.
+    const hits = detect(whole);
+    for (const h of hits) if (h.start < st.seen.length + cut && h.end > st.seen.length + cut) cut = Math.max(0, h.start - st.seen.length);
+    return this.give(st, all, cut, sessionId, hits.filter((h) => h.end <= st.seen.length + cut));
+  }
+
+  // The stream ended: what was held, redacted. The stream is forgotten.
+  end(key: string, sessionId: string | null): string {
+    const st = this.streams.get(key);
+    if (!st) return "";
+    this.streams.delete(key);
+    return this.give(st, st.held, st.held.length, sessionId);
+  }
+
+  private give(st: { seen: string; held: string }, all: string, cut: number, sessionId: string | null, found?: Hit[]): string {
+    st.held = all.slice(cut);
+    if (!cut) return "";
+    const whole = st.seen + all.slice(0, cut);
+    const out = this.v.redactTail(whole, st.seen.length, sessionId, "output", found);
+    st.seen = whole.slice(-SEEN);
+    return out;
+  }
+}

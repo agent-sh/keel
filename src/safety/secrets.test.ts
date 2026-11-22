@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { detect, publicNames, Vault } from "./secrets.ts";
+import { detect, publicNames, StreamScan, Vault } from "./secrets.ts";
 
 const GH = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
 const AWS = "AKIA" + "QWERTYUIOPASDFGH";
@@ -218,4 +218,70 @@ test("placeholders outlive a restart and a forgotten one is named", () => {
   expect(after.redact(`again ${GH}`, "s1", "output")).toBe(`again ${ph}`);
   expect(after.placeholders(cmd, "s1", new Set(["command"]))).toEqual({ held: [ph], gone: ["[value of $NOPE]"] });
   expect(after.placeholders({ content: { nested: [ph] } }, "other")).toEqual({ held: [], gone: [ph] });
+});
+
+// A reply streams a few characters at a time, and a secret is cut by the end
+// of a piece wherever the model's tokens fall. What is shown of the stream is
+// what redact() makes of the whole text: no piece gives out the start of a
+// secret before the piece that completes it has been seen.
+test("a secret cut by a piece's end is caught: a stream in pieces reads as the whole text redacted", () => {
+  const key = Array.from({ length: 16 }, (_, i) => "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj".slice(0, 60) + String(1000 + i)).join("\n");
+  const texts = [
+    `Here is the token ${GH} and more text after it.`,
+    `first export AWS_ACCESS_KEY_ID=${AWS} then run the deploy, please`,
+    `set API_KEY = "a8Kq2mZx91LpQw7RtY3v" in the file and go on`,
+    `curl -H "Authorization: Bearer abcDEF123456ghiJKL789mno" https://example.test/x`,
+    `the database is at postgres://app:s3cr3tPassw0rd99@db.internal:5432/app for now`,
+    `intro\n-----BEGIN RSA PRIVATE KEY-----\n${key}\n-----END RSA PRIVATE KEY-----\noutro text here`,
+    `nothing secret here: const token = getToken(); max_tokens = 4096; a path /usr/local/bin and words`,
+    `中文说明 ${GH} 之后的文字，没有空格的一段话继续写下去直到结束`,
+    `a long run ${"x".repeat(700)}${GH}${"y".repeat(700)} ends`,
+    `two in a row ${GH} ${AWS} done`,
+    `the owner's pass phrase is correct horse battery staple and then more words follow it`,
+  ];
+  const known = "correct horse battery staple";
+  // (One key for every vault here: a value has the same placeholder in each.)
+  const KEY = new Uint8Array(32).fill(7);
+  let rnd = 9;
+  const rand = (n: number) => ((rnd = (rnd * 1103515245 + 12345) & 0x7fffffff) % n);
+  let pieces = 0, held = 0;
+  for (const text of texts) {
+    const whole = new Vault();
+    whole.useKey(KEY);
+    whole.add(known, "password", "prompt", "s");
+    const want = whole.redact(text, "s", "output");
+    // Every place to cut once, then cuts at random (a few characters a piece, as a model streams).
+    const cuts: number[][] = Array.from({ length: text.length - 1 }, (_, i) => [i + 1]);
+    for (let n = 0; n < 60; n++) {
+      const at: number[] = [];
+      for (let i = 1 + rand(6); i < text.length; i += 1 + rand(9)) at.push(i);
+      cuts.push(at);
+    }
+    for (const at of cuts) {
+      const v = new Vault();
+      v.useKey(KEY);
+      v.add(known, "password", "prompt", "s");
+      const scan = new StreamScan(v);
+      let out = "", from = 0;
+      for (const to of [...at, text.length]) {
+        const got = scan.piece("k", "s", text.slice(from, to));
+        // Nothing that is given out holds the start of a secret the whole text has.
+        for (const h of detect(text)) if (h.end > to) expect({ text: text.slice(0, 40), at, leaked: (out + got).includes(h.value.slice(0, 12)) }).toEqual({ text: text.slice(0, 40), at, leaked: false });
+        if (!got && to < text.length) held++;
+        out += got;
+        from = to;
+        pieces++;
+      }
+      out += scan.end("k", "s");
+      expect({ at, out }).toEqual({ at, out: want });
+    }
+  }
+  // The pieces did cut secrets, and some pieces waited.
+  expect(pieces).toBeGreaterThan(5000);
+  expect(held).toBeGreaterThan(500);
+  // And what is given out from a place on is what the whole reads from that place.
+  const v = new Vault();
+  expect(v.redactTail(`token ${GH} here`, 0, "s", "output")).toBe(v.redact(`token ${GH} here`, "s", "output"));
+  expect(v.redactTail(`API_KEY=${AWS} here`, 8, "s", "output")).toBe(v.redact(`API_KEY=${AWS} here`, "s", "output").slice(8));
+  expect(v.redactTail(`token ${GH} here`, 10, "s", "output")).toBe(`${v.redact(GH, "s", "output")} here`);
 });
