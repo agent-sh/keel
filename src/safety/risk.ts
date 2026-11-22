@@ -34,19 +34,15 @@
 // Research: ~/.cache/keel-work/bun/research/risk-classes.md (Claude Code's
 // auto mode rules and Codex's reviewer policy draw the same lines).
 import { resolve } from "node:path";
+import { QUESTIONS } from "./looked.ts";
+export { RULE_WORDS } from "./risk-words.ts";
 import { protectedBranch } from "./autonomy.ts";
-import { ENVIRONMENT, LOCAL_HOST, REACHES, REMOTE_SPEC, deployNamed, elsewhere, envIn, exposes, remote, secretFile, sender, type Part } from "./risk-reach.ts";
-import { ASSIGN, DEPTH, GLOB, INTERPRETERS, LOST, SCRIPT_MAX, SHELLS, cluster, dirsOf, untrailed, literal, madeName, name, redirected, rootOf, target, under, unwrap, valuesOf, written, type Risk, type RiskRule, type Run, type Values, type Where } from "./risk-words.ts";
+import { ENVIRONMENT, LOCAL_HOST, REACHES, REMOTE_SPEC, deployNamed, elsewhere, envIn, exposes, remote, secretFile, sender, sqlClient, type Part } from "./risk-reach.ts";
+import { ASSIGN, DEPTH, GLOB, INTERPRETERS, LOST, SCRIPT_MAX, SHELLS, WORDS_MAX, cluster, dirsOf, untrailed, literal, madeName, name, redirected, rootOf, target, under, unwrap, valuesOf, written, type Risk, type RiskRule, type Run, type Values, type Where } from "./risk-words.ts";
 import { highRisk, isReadOnly, lineRisk, splitCommand, type Made, type Simple } from "./shell.ts";
 
 export { secretFile } from "./risk-reach.ts";
 export type { Risk, RiskRule, Where } from "./risk-words.ts";
-
-// Each class in a few words: what the ask carries as its rule, and a folded call is marked with in the transcript.
-export const RULE_WORDS: Record<RiskRule, string> = {
-  destroys: "destroys work or data", remote: "changes another machine or a service", exposes: "sends credentials out",
-  hidden: "runs code that is not in the command", machine: "reaches past the session on this machine",
-};
 
 // ---- class: destroys ----
 
@@ -54,7 +50,9 @@ export const RULE_WORDS: Record<RiskRule, string> = {
 const TAKES: Record<string, RegExp> = { truncate: /^(-s|--size|-r|--reference|-o)$/, shred: /^(-n|--iterations|-s|--size)$/ };
 const DELETES = new Set(["rm", "unlink", "shred", "truncate", "rimraf", "del", "del-cli", "trash"]);
 const LOGGISH = /\.(log|out|tmp|pid|lock)$/;
-const LATE = ", and git did not say in time what it holds";
+// What is said of a path git was asked about and did not answer for: in time, or at all, where the line names
+// more paths than are looked up for one command.
+const late = (w: Where) => (w.looked?.over?.() ? `, one of more paths than are looked up for one command (${QUESTIONS})` : ", and git did not say in time what it holds");
 
 // What the line itself moved earlier (`mv src src.bak && rm -rf src.bak`): a path under the new name is asked of
 // git under the old one, where its files were.
@@ -74,13 +72,16 @@ function deletes(x: Part, c: Ctx, prev: Run | null): Risk[] {
   const add = (why: string) => { out.push({ rule: "destroys", why }); };
   const verb = p === "truncate" ? "empties" : p === "shred" ? "overwrites" : "deletes";
   if (DELETES.has(p)) {
-    const recursive = (p === "rm" && args.some((a) => /^-[a-zA-Z]*[rR]/.test(a) || a === "--recursive")) || p === "rimraf" || p === "del" || p === "del-cli" || p === "trash";
+    // An option the line builds (OPTS=-rf; rm $OPTS src) is read as the widest one: recursive and forced.
+    const built = (a: string, k: number) => { const how = x.made(k); const said = how ? written(a, how, dir, w, vals, x.i) : null; return typeof said === "string" && said.startsWith("-"); };
+    const recursive = (p === "rm" && args.some((a, k) => /^-[a-zA-Z]*[rR]/.test(a) || a === "--recursive" || built(a, k))) || p === "rimraf" || p === "del" || p === "del-cli" || p === "trash";
     // Its paths come from another command: read where that one looks, when it is find.
     if (x.run.fed) {
       const from = x.run.fed === "find" ? x.run.find! : prev && name(prev.words[0]) === "find" ? prev.words : null;
       if (from) return swept(from, verb, dir, c, x.i, s.flow);
       return [{ rule: "destroys", why: `${verb} the paths another command prints, which are not in the command` }];
     }
+    if (args.length > WORDS_MAX) return [{ rule: "destroys", why: `${verb} ${args.length} paths, more than the rules read for one command (${WORDS_MAX})` }];
     let rest = false;
     // (A path named twice is judged once.)
     const seen = args.length > 8 ? new Set<string>() : null;
@@ -89,11 +90,12 @@ function deletes(x: Part, c: Ctx, prev: Run | null): Risk[] {
       if (!rest && a === "--") { rest = true; continue; }
       if (!rest && a.startsWith("-")) { if (TAKES[p]?.test(a)) k++; continue; }
       if (seen) { if (seen.has(a)) continue; seen.add(a); }
+      if (!rest && built(a, k)) continue;
       const t = target(a, x.made(k), dir, w, vals, x.i);
       if ("made" in t) continue;
       if ("unread" in t) { add(`${verb} a path the command does not spell out (${t.unread}): write the path into the command`); continue; }
       if (t.place === "scratch") continue;
-      if (t.place === "outside" || t.place === "cache") { add(`${verb} ${t.shown}, outside the session's folder`); continue; }
+      if (t.place === "outside" || t.place === "cache") { add(`${verb} ${t.shown}${w.away ? "" : ", outside the session's folder"}`); continue; }
       if (t.place === "folder") { add(`${verb} the session's folder, or what holds it`); continue; }
       if (t.place === "repo") { add(`${verb} ${t.shown}, the repository's own data`); continue; }
       // Inside the folder: one named file is an edit. A folder or a pattern is judged by what git cannot bring back there.
@@ -102,7 +104,7 @@ function deletes(x: Part, c: Ctx, prev: Run | null): Risk[] {
       const path = origin(t.path, c.moved);
       const kept = w.looked?.kept(t.glob ? [`:(glob)${path}`, ...(recursive ? [`:(glob)${path}/**`] : [])] : [literal(path)]);
       const said = `deletes ${t.shown}${recursive ? " recursively" : ""}`;
-      if (kept === "late") add(said + LATE);
+      if (kept === "late") add(said + late(w));
       else if (kept === undefined || kept === null) {
         // Not known: a made name, one file by its extension, and a pattern that is not everything pass.
         const one = !t.glob && /[^/]\.[A-Za-z0-9]+$/.test(t.path);
@@ -110,7 +112,8 @@ function deletes(x: Part, c: Ctx, prev: Run | null): Risk[] {
         // (Asked only where the names do not settle it: a path that is not there holds nothing to lose.)
         if (kept === null && !t.glob && w.looked!.exists(path) === "none") continue;
         add(`${said}, which is not known to be build output`);
-      } else if (recursive ? kept.n >= 1 && !kept.self : kept.n >= 2) add(`${said}, which holds files git cannot bring back (new, or changed since they were committed)`);
+      // (A name written with a slash after it is the folder it leads to, when it is a link: not the one entry git lists.)
+      } else if (recursive ? kept.n >= 1 && !(kept.self && !a.endsWith("/")) : kept.n >= 2) add(`${said}, which holds files git cannot bring back (new, or changed since they were committed)`);
     }
     return out;
   }
@@ -144,7 +147,7 @@ function deletes(x: Part, c: Ctx, prev: Run | null): Risk[] {
     else if ("place" in t && t.place !== "scratch" && t.place !== "inside") add(`deletes in ${t.shown}, outside the session's folder, what the source does not hold`);
     else if ("place" in t && t.place === "inside") {
       const kept = w.looked?.kept([literal(t.path)]);
-      if (kept === "late" || (kept && kept.n >= 1 && !kept.self) || ((kept === undefined || kept === null) && !madeName(t.shown))) add(`deletes in ${t.shown} what the source does not hold${kept === "late" ? LATE : ""}`);
+      if (kept === "late" || (kept && kept.n >= 1 && !kept.self) || ((kept === undefined || kept === null) && !madeName(t.shown))) add(`deletes in ${t.shown} what the source does not hold${kept === "late" ? late(w) : ""}`);
     }
   }
   return out;
@@ -173,7 +176,7 @@ function swept(find: string[], verb: string, dir: string | null, c: Ctx, at: num
     if (t.place === "outside" || t.place === "cache" || t.place === "repo" || (t.place === "folder" && t.path !== resolve(w.workspace))) { out.push({ rule: "destroys", why: `${verb} what find matches under ${t.shown}, outside the session's work` }); continue; }
     const kept = w.looked?.kept(plain ? [`:(glob)${t.path}/**/${names[0]}`, `:(glob)${t.path}/**/${names[0]}/**`] : [literal(t.path)]);
     const said = `${verb} what find matches under ${t.shown}${plain ? ` (${names[0]})` : ""}`;
-    if (kept === "late") out.push({ rule: "destroys", why: said + LATE });
+    if (kept === "late") out.push({ rule: "destroys", why: said + late(w) });
     else if (kept === undefined || kept === null) { if (!(plain ? madeName(names[0]!) : madeName(t.shown))) out.push({ rule: "destroys", why: `${said}, which is not known to be build output` }); }
     else if (kept.n >= 1) out.push({ rule: "destroys", why: `${said}, files git cannot bring back among them` });
   }
@@ -182,7 +185,7 @@ function swept(find: string[], verb: string, dir: string | null, c: Ctx, at: num
 
 // A move of, or an overwrite onto, what is outside the session's folder, in a session nothing confines to it
 // (confined, the write fails by itself). Temporary and cache folders hold nothing that is missed.
-const OVERWRITES = new Set(["mv", "cp", "install", "ln", "tee", "dd", "sed", "perl"]);
+const OVERWRITES = new Set(["mv", "cp", "install", "ln", "tee", "dd", "sed", "perl", "sort", "sponge"]);
 function overwrites(x: Part, c: Ctx): Risk[] {
   const { p, args, dir, s } = x;
   const { w } = c;
@@ -192,13 +195,22 @@ function overwrites(x: Part, c: Ctx): Risk[] {
   const gone = (t: ReturnType<typeof target>) => "place" in t && (t.place === "outside" || t.place === "folder");
   // Whether the path is there to be lost: not known without the disk, and then nothing is said of it.
   const there = (path: string, kind: "file" | "any") => { const e = w.looked?.exists(path); return e === "late" || e === "file" || (kind === "any" && e === "dir"); };
-  const onto = (a: string, how: Made | undefined, what: string) => {
+  // `from`: what is copied or moved there, for a target that is a folder: the file of the same name in it.
+  const onto = (a: string, how: Made | undefined, what: string, from: string[] = []) => {
     const t = target(a, how, dir, w, vals, x.i);
-    if (gone(t) && "path" in t && !t.path.startsWith("/dev/") && (t.glob || there(t.path, "file"))) out.push({ rule: "destroys", why: `${what} ${t.shown}, outside the session's folder` });
+    if (!gone(t) || !("path" in t) || t.path.startsWith("/dev/")) return;
+    if (t.glob || there(t.path, "file")) out.push({ rule: "destroys", why: `${what} ${t.shown}, outside the session's folder` });
+    else if (from.length && from.length <= 8 && w.looked?.exists(t.path) === "dir") {
+      const whole = args.some((o) => /^-[a-zA-Z]*[rRa]/.test(o) || o === "--recursive" || o === "--archive");
+      const same = from.map((f) => `${t.path}/${name(untrailed(f))}`).find((p) => there(p, whole ? "any" : "file"));
+      if (same) out.push({ rule: "destroys", why: `${what} ${same.replace(w.home, "~")}, outside the session's folder` });
+    }
   };
+  // A variable the line gave one value, in a redirect's target (F=~/other/x; echo y > $F).
+  const named1 = (to: string) => to.replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (all, v: string) => { const k = vals.get(v); return k && k.text !== undefined && k.at < x.i ? k.text : all; });
   // (A plain name under the folder the part runs in, inside the session's own, is inside it: most redirects.)
   const plain = dir !== null && under(rootOf(w), dir);
-  if (s.redirects) for (const r of redirected(s)) if (r.empties && !/[$`]/.test(r.to) && !(plain && !/^[\/~]|(^|\/)\.\.(\/|$)/.test(r.to) && !w.land)) onto(r.to, undefined, "overwrites");
+  if (s.redirects) for (const r0 of redirected(s)) { const r = r0.to.includes("$") && vals !== LOST ? { ...r0, to: named1(r0.to) } : r0; if (r.empties && !/[$`]/.test(r.to) && !(plain && !/^[\/~]|(^|\/)\.\.(\/|$)/.test(r.to) && !w.land)) onto(r.to, undefined, "overwrites"); }
   if (!OVERWRITES.has(p)) return out;
   const named = args.map((a, k) => ({ a, k })).filter(({ a }) => !a.startsWith("-"));
   if (p === "mv" && named.length >= 2) {
@@ -206,8 +218,10 @@ function overwrites(x: Part, c: Ctx): Risk[] {
       const t = target(a, x.made(k), dir, w, vals, x.i);
       if (gone(t) && "path" in t && (t.glob || w.looked === undefined || there(t.path, "any"))) out.push({ rule: "destroys", why: `moves ${t.shown} away, from outside the session's folder` });
     }
-    onto(named.at(-1)!.a, x.made(named.at(-1)!.k), "moves a file onto");
-  } else if ((p === "cp" || p === "install") && named.length >= 2) onto(named.at(-1)!.a, x.made(named.at(-1)!.k), "copies a file onto");
+    onto(named.at(-1)!.a, x.made(named.at(-1)!.k), "moves a file onto", named.slice(0, -1).map((f) => f.a));
+  } else if ((p === "cp" || p === "install") && named.length >= 2) onto(named.at(-1)!.a, x.made(named.at(-1)!.k), "copies a file onto", named.slice(0, -1).map((f) => f.a));
+  else if (p === "sponge") { for (const { a, k } of named) onto(a, x.made(k), "overwrites"); }
+  else if (p === "sort") args.forEach((a, k) => { if (/^(-o|--output)$/.test(args[k - 1] ?? "")) onto(a, x.made(k), "overwrites"); else if (a.startsWith("--output=")) onto(a.slice(9), undefined, "overwrites"); });
   else if (p === "ln" && named.length >= 2 && args.some((a) => /^-[a-zA-Z]*f/.test(a) || a === "--force")) {
     // A forced link takes the place of what stood there, a folder too.
     const t = target(named.at(-1)!.a, x.made(named.at(-1)!.k), dir, w, vals, x.i);
@@ -264,6 +278,12 @@ function gitRisks(words: string[]): Risk[] {
   const g = gitParts(words);
   if (!g) return [];
   const out: Risk[] = [];
+  // (git -C DIR reset --hard is the reset it is without the folder: the older rules read the subcommand first.)
+  if (words[1] !== g.sub) { const old = highRisk({ words: ["git", g.sub, ...g.args], text: "", redirects: false }); if (old) out.push({ rule: OLD(old), why: old, said: true }); }
+  if (g.sub === "push") {
+    const to = g.args.find((a, k) => !a.startsWith("-") && !/^(-o|--push-option|--receive-pack|--exec)$/.test(g.args[k - 1] ?? "")) ?? g.args.find((a) => a.startsWith("--repo="))?.slice(7);
+    if (to && (ADDRESS.test(to) || /^[\w.-]+@[\w.-]+:/.test(to))) out.push({ rule: "exposes", why: `pushes the repository to an address the command names (${to.slice(0, 100)})` });
+  }
   for (const kv of g.set) {
     const eq = kv.indexOf("=");
     const key = eq < 0 ? kv : kv.slice(0, eq);
@@ -288,7 +308,7 @@ function gitRisks(words: string[]): Risk[] {
     // --staged alone only takes a change back out of the index.
     const paths = args.filter((a, k) => k !== dd && !a.startsWith("-") && !/^(-s|--source|--pathspec-from-file)$/.test(args[k - 1] ?? ""));
     if ((!has(/^(-S|--staged)$/) || has(/^(-W|--worktree)$/)) && paths.length && !oneFile(paths)) out.push({ rule: "destroys", why: DISCARDS });
-  } else if (sub === "clean" && args.some((a) => a === "--force" || cluster(a, "f")) && !args.some((a) => a === "--dry-run" || cluster(a, "n"))) out.push({ rule: "destroys", why: "deletes untracked files" });
+  } else if (sub === "clean" && args.some((a) => a === "--force" || cluster(a, "f")) && !args.some((a) => a === "--dry-run" || cluster(a, "n")) && !(args.some((a) => cluster(a, "X")) && !args.some((a) => cluster(a, "x")))) out.push({ rule: "destroys", why: "deletes untracked files" });
   else if (sub === "rm" && has(/^-[a-zA-Z]*r/) && !has(/^--cached$/)) out.push({ rule: "destroys", why: "deletes tracked files recursively" });
   else if (sub === "branch" && (has(/^-[a-zA-Z]*D/) || (has(/^(-d|--delete)$/) && has(/^(-f|--force)$/)))) {
     // A branch a release or deploy line is named by, or one the command does not spell out.
@@ -363,6 +383,8 @@ function codeRisks(prog: string, code: string, judge?: (path: string) => Risk[])
   if ((CODE_EVALS.test(code) && CODE_SOURCE.test(code)) || CODE_PIPES.test(code)) return [{ rule: "hidden", why: `gives ${prog} code that runs what it fetches or decodes` }];
   return [];
 }
+// A file opened for writing, or written whole, at a path written out from the root or the home.
+const CODE_WRITES = /\bopen\(\s*["']((?:\/|~\/)[^"'\s]{1,300})["']\s*,\s*["'][wx]|\b(?:writeFileSync|writeFile|write_text|File\.write)\(\s*["']((?:\/|~\/)[^"'\s]{1,300})["']/g;
 // The code an interpreter is given on its command line.
 function inline(p: string, args: string[]): string | null {
   for (let k = 0; k < args.length; k++) {
@@ -390,6 +412,8 @@ const STDIN = /^(\/dev\/stdin|\/dev\/fd\/0|\/proc\/self\/fd\/0)$/;
 const INSTALLERS = /^(npm|pnpm|yarn|bun|pip|pip3|pipx|uv|uvx|poetry|pdm|cargo|gem|npx|bunx|deno|go|brew|node|nodejs)$/;
 const ADDRESS = /^(git\+|git:\/\/|https?:\/\/|ssh:\/\/|github:|gitlab:|bitbucket:)/i;
 // A variable named for what it holds: a key, a token, a password.
+// The variables a script names its tools by, and the program each stands for.
+const STANDS: Record<string, string> = { EDITOR: "vi", VISUAL: "vi", PAGER: "less", SHELL: "sh", CC: "cc", CXX: "c++", MAKE: "make", PYTHON: "python3", NODE: "node", BUN: "bun", GO: "go", CARGO: "cargo" };
 const SECRET_VAR = /(SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|API_?KEY|PRIVATE_?KEY|ACCESS_?KEY)/i;
 const REGISTRY = /^(--index-url|--extra-index-url|--registry|--index|--default-index|--find-links)(=|$)/;
 function fetched(words: string[]): Risk[] {
@@ -466,7 +490,7 @@ function machine(x: Part, chain: Run[], away: boolean): Risk[] {
   }
   if (p === "pkill" || p === "killall") { const why = wideNames(p, args) ?? (args.some((a) => !a.startsWith("-") && /keel/i.test(a)) ? "the harness's own processes" : null); return why ? add(`signals ${why}`) : []; }
   // (init and telinit only with the level they switch to: a file named init is any program.)
-  if (ADMIN.has(p) && !(/^(init|telinit)$/.test(p) && !/^[0-6sSqQuU]$/.test(args[0] ?? "")) && !(p === "sysctl" && !args.some((a) => /^(-w|--write)$/.test(a) || a.includes("="))) && !(p === "mount" && !args.length) && !(/^(umount|swapoff)$/.test(p) && !args.includes("-a") && !args.includes("--all")))
+  if (ADMIN.has(p) && !(/^(init|telinit)$/.test(p) && !/^[0-6sSqQuU]$/.test(args[0] ?? "")) && !(p === "sysctl" && !args.some((a) => /^(-w|--write)$/.test(a) || a.includes("="))) && !(p === "mount" && !args.includes("--") && !args.some((a, k) => !a.startsWith("-") && !/^(-t|--types|-O|--test-opts)$/.test(args[k - 1] ?? "")) && !args.some((a) => /^(-a|--all|-o|--options|--bind|--rbind|--move|-[BRM]|--make-[a-z-]+)$/.test(a))) && !(/^(umount|swapoff)$/.test(p) && !args.includes("-a") && !args.includes("--all")))
     return add(`changes how the machine itself is set up (${p})`);
   if (p === "service" && /^(stop|restart|reload)$/.test(x.plain[1] ?? "")) return add("stops or restarts a service of the machine");
   if (p === "tmux" && /^(send-keys|send|paste-buffer)$/.test(x.plain[0] ?? "")) return [{ rule: "hidden", why: "types into another terminal: what runs there is not a command of this session" }];
@@ -481,7 +505,8 @@ function machine(x: Part, chain: Run[], away: boolean): Risk[] {
     if ((/^(stop|disable|mask|kill)$/.test(verb) && x.plain.slice(1).some((u) => /keel/i.test(u))) || (/^(restart|try-restart)$/.test(verb) && x.plain.slice(1).some((u) => /^keel(\.service)?$/i.test(u)))) return add("stops the harness's own service");
     // A unit of the machine, or any unit where the command runs on another one: stopping it stops what others use.
     if (/^(stop|disable|mask|kill|isolate)$/.test(verb) && !args.includes("--user")) return add(`stops a service of the machine (systemctl ${verb})`);
-    if (away && /^(stop|restart|reload|disable|mask|kill|start|enable)$/.test(verb)) return add(`stops or restarts a service there (systemctl ${verb})`);
+    // (A user unit restarted there is what it is here: a development service cycled.)
+    if (away && (/^(stop|disable|mask|kill)$/.test(verb) || (/^(restart|reload|start|enable)$/.test(verb) && !args.includes("--user")))) return add(`stops or restarts a service there (systemctl ${verb})`);
   }
   if (p === "launchctl" && /^(load|unload|bootout|bootstrap|remove)$/.test(x.plain[0] ?? "")) return add("changes what the system starts for the user");
   if (p === "crontab") {
@@ -505,6 +530,12 @@ function machine(x: Part, chain: Run[], away: boolean): Risk[] {
 function opens(x: Part, w: Where, vals: Values): Risk[] {
   const { p, args, plain } = x;
   const add = (why: string): Risk[] => [{ rule: "exposes", why }];
+  if (p === "tmate") return add("opens this terminal to whoever is given its link (tmate)");
+  if (p === "gh" && plain[0] === "repo" && plain[1] === "create" && args.includes("--public") && args.some((a) => /^--(push|source)\b/.test(a))) return add("publishes the repository where anyone can read it (gh repo create --public)");
+  // A file server on every interface: php's own, and serve's listen address.
+  const every = /^(tcp:\/\/)?(0\.0\.0\.0|\[::\])(:\d+)?$/;
+  if ((p === "php" && args.some((a, k) => args[k - 1] === "-S" && every.test(a))) || ((p === "serve" || p === "http-server") && args.some((a, k) => /^(-l|--listen|-a)$/.test(args[k - 1] ?? "") && every.test(a))))
+    return add("serves the folder's files to every machine that can reach this one");
   if (p === "ngrok" || p === "localtunnel" || p === "lt" || (p === "cloudflared" && plain[0] === "tunnel")) return add(`opens a tunnel from the network to this machine (${p})`);
   if (p === "ssh" && args.some((a, k) => /^-[a-zA-Z]*R$/.test(a) && args[k + 1] !== undefined) && !args.some((a) => LOCAL_HOST.test(a))) return add("opens a tunnel from another machine to this one (ssh -R)");
   const serves = (INTERPRETERS.test(p) && args.includes("http.server")) || p === "serve" || p === "http-server";
@@ -521,7 +552,7 @@ function opens(x: Part, w: Where, vals: Values): Risk[] {
 
 // The programs a rule here is written for. A part that runs none of them, sets nothing, redirects nothing, is
 // started by no other program and is spelled out is not looked at: that keeps a line of very many small commands cheap.
-const KNOWN = new Set([...REACHES, ...DELETES, ...ADMIN, "service", "tar", "zip", "ln", "awk", "gawk", "lua", "brew", "osascript", "vi", "vim", "nvim", "ex", "view", "make", "gmake", "find", "chmod", "chown", "chgrp", "git", "kill", "pkill", "killall", "killall5", "tmux", "loginctl", "systemctl", "launchctl", "crontab", "at", "batch", "eval", "source", ".",
+const KNOWN = new Set([...REACHES, ...DELETES, ...ADMIN, "service", "tar", "zip", "ln", "awk", "gawk", "lua", "brew", "sort", "sponge", "osascript", "vi", "vim", "nvim", "ex", "view", "make", "gmake", "find", "chmod", "chown", "chgrp", "git", "kill", "pkill", "killall", "killall5", "tmux", "loginctl", "systemctl", "launchctl", "crontab", "at", "batch", "eval", "source", ".",
   "alias", "trap", "su", "script", "nix-shell", "mv", "cp", "install", "tee", "dd", "sed", "perl", "sh", "bash", "zsh", "dash", "ksh", "fish", "node", "nodejs", "ruby", "php", "pip", "pip3", "pipx", "uvx", "pdm", "npx",
   "bunx", "go", "ngrok", "cloudflared", "lt", "localtunnel", "serve", "http-server", "parallel", "nc", "ncat", "netcat", "socat", "scp", "sftp", "ftp", "tftp", "rclone", "mail", "mailx", "mutt", "sendmail", "telnet", "websocat", "croc", "wormhole", "kubectl", "oc", "export", "declare", "typeset", "readonly",
   "aria2c"]);
@@ -591,6 +622,8 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
   // A credential file a stage above this one in its pipeline reads: looked for only when a sender asks.
   const reads = (k: number) => {
     const q = parts[k]!, r = runs[k]!.words, p = name(r[0]);
+    // A client told to print the credential it holds.
+    if ((p === "aws" && r.includes("export-credentials")) || (p === "gh" && r[1] === "auth" && r[2] === "token") || (p === "gcloud" && r[1] === "auth" && /^print-(access|identity)-token$/.test(r[2] ?? ""))) return ENVIRONMENT;
     if (sender(p)) return undefined;
     // The environment printed whole, or one variable of it by name, is what holds the tokens.
     if (p === "printenv" || (p === "env" && r.length === 1) || (p === "set" && r.length === 1) || ((p === "export" || p === "declare") && r[1] === "-p")) return ENVIRONMENT;
@@ -611,6 +644,14 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
     return held;
   };
 
+  // The functions the line defines, when one of them runs its arguments as its command ("$@", $1): a call of
+  // such a function is read as the command it is handed.
+  let passes: Set<string> | null = null;
+  for (let i = 0; i + 1 < n; i++) {
+    const s = parts[i]!, body = parts[i + 1]!;
+    if (s.words.length === 1 && !s.dyn && !s.heredoc && body.flow && /^\{(\s|$)/.test(body.text)) (passes ??= new Set()).add(s.words[0]!);
+  }
+  if (passes && !parts.some((s) => s.flow && s.words.length && /^\$(@|\*|1)$/.test(s.words[0]!) && s.words.slice(1).every((a) => /^\$(@|\*|\d)$/.test(a)))) passes = null;
   const lined: number[] = []; // the parts the line's own rules look at again
   const copies = new Map<string, string>(); // the names the line gave a copy of a credential file
   const script = (text: string, dir: string | null, out: Risk[]) => {
@@ -637,28 +678,54 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
     }
     if (run.deep) { at(i).push({ rule: "hidden", why: "starts its command through more wrappers than the rules read" }); continue; }
     const spelled = first === undefined || (!s.dyn?.includes(run.at) && !(GLOB.test(first) && first !== "[" && first !== "[["));
+    // A function of the line that runs its arguments as a command: a call of it is the command it is given.
+    const passed = spelled && passes !== null && first !== undefined && passes.has(first) && run.words.length > 1;
     // Most parts: a program no rule is written for, spelled out, with nothing set, nothing redirected and nothing in front of it.
-    if (spelled && !run.set.length && !s.redirects && !run.wrapped && !known(name(first)) && !(first?.includes("/") && deployNamed(first, !!w.away))) continue;
+    if (spelled && !passed && !run.set.length && !s.redirects && !run.wrapped && !known(name(first)) && !(first?.includes("/") && deployNamed(first, !!w.away))) continue;
     const out = at(i);
-    const dir = dirs[i]!;
+    let dir: string | null = dirs[i] ?? null;
+    // `env -C DIR CMD` runs the command in that folder.
+    const lead = run.wrapped ? s.words.slice(s.words.findIndex((a) => !ASSIGN.test(a))) : null;
+    const viaEnv = lead !== null && name(lead[0]) === "env";
+    if (viaEnv) { const k = lead!.findIndex((a) => a === "-C" || a === "--chdir"); const to = k > 0 ? lead![k + 1] : lead!.find((a) => a.startsWith("--chdir="))?.slice(8); if (to !== undefined) dir = dir === null || /[$`*?]/.test(to) ? null : resolve(dir, to); }
     const vals = s.flow ? LOST : values;
-    const made = (k: number) => s.how?.[s.dyn?.indexOf(run.at + 1 + k) ?? -1];
-    let words = run.words;
+    const from = run.at + (passed ? 1 : 0);
+    const made = (k: number) => s.how?.[s.dyn?.indexOf(from + 1 + k) ?? -1];
+    let words = passed ? run.words.slice(1) : run.words;
     if (!spelled) {
-      // A program whose name an expansion or a pattern makes: read as the name the line gave it, when it gave one.
+      // A program whose name an expansion or a pattern makes is not what the line says it runs: high risk, also
+      // when the line itself gave the variable its value (nothing needs a program hidden in a variable). Kept
+      // are the names scripts are written with: the owner's editor and pager, the login shell with no script, a
+      // build's tool variables (read as the tool they stand for), and the arguments a function or a nested
+      // script runs as its command.
       const how = s.dyn?.includes(run.at) ? s.how?.[s.dyn.indexOf(run.at)] : undefined;
-      const said = how && !how.rest ? written(first!, how, dir, w, vals, i) : null;
-      if (typeof said !== "string" || !said || /[$`\s*?[]/.test(said)) { out.push({ rule: "hidden", why: `runs a program whose name the line builds as it runs (${first}): write the program out` }); continue; }
-      words = [said, ...run.words.slice(1)];
+      const one = how && !how.rest && !how.subs.length && how.vars.length === 1 && how.vars[0]!.at === 0 && how.vars[0]!.len === first!.length ? how.vars[0]!.name : /^\$\{([A-Z_]+):-[\w.+-]+\}$/.exec(first!)?.[1];
+      const stands = one !== undefined && !values.has(one) ? STANDS[one] : undefined;
+      const rest = run.words.slice(1);
+      if (stands === "sh" && !rest.some((a) => !a.startsWith("-") || /^-[a-zA-Z]*c$/.test(a))) continue;
+      // (Only as the whole command: `$1 -rf src` gives its own words to a program nobody named.)
+      if (/^\$(@|\*|1)$/.test(first!) && s.flow && (depth > 0 || passes !== null) && rest.every((a) => /^\$(@|\*|\d)$/.test(a))) continue;
+      if (!stands || stands === "sh") { out.push({ rule: "hidden", why: `runs a program whose name the line builds as it runs (${first}): write the program out` }); continue; }
+      words = [stands, ...rest];
     }
     const args = words.slice(1);
-    const x: Part = { s, run: words === run.words ? run : { ...run, words }, p: name(words[0]), args, plain: args.filter((a) => !a.startsWith("-")), dir, i, made };
+    const x: Part = { s, run: words === run.words ? run : { ...run, words, ...(passed ? { wrapped: true as const } : {}) }, p: name(words[0]), args, plain: args.filter((a) => !a.startsWith("-")), dir, i, made };
     out.push(...loaded(run.set.length || /^(export|declare|typeset|readonly)$/.test(x.p) ? [...run.set, ...args.filter((a) => ASSIGN.test(a))] : run.set), ...overwrites(x, c));
+    // On another machine: a write to a file that runs later there, or lets someone in.
+    if (w.away && (s.redirects || x.p === "tee")) {
+      const to = [...(s.redirects ? redirected(s).map((r) => r.to) : []), ...(x.p === "tee" ? x.plain : [])].find((t) => AWAY_LATER.test(t));
+      if (to) out.push({ rule: "remote", why: `writes ${to}, which runs later or lets someone in` });
+      // One of the system's own files, emptied and written over.
+      const over = to ? undefined : (s.redirects ? redirected(s).filter((r) => r.empties).map((r) => r.to) : []).find((t) => AWAY_SYSTEM.test(t));
+      if (over) out.push({ rule: "remote", why: `overwrites ${over}, a file of the system there` });
+    }
+    // `env -S 'CMD ARGS'` runs the string as a command.
+    if (viaEnv) { const k = lead!.findIndex((a) => a === "-S" || a === "--split-string"); if (k > 0 && lead![k + 1] !== undefined) { script(lead!.slice(k + 1).join(" "), dir, out); continue; } }
     // A part that only reads destroys and sends nothing.
     if (!words.length || isReadOnly(s.heredoc ? { ...s, heredoc: undefined } : s)) continue;
     // Here for what it sets or redirects alone: a program no rule is written for has nothing more to read, but a
     // redirect into a socket the shell opens.
-    if (spelled && !run.wrapped && !known(x.p) && !(first!.includes("/") && deployNamed(first!, !!w.away))) { if (s.redirects) out.push(...exposes(x, above, holding, anywhere, copies, w)); continue; }
+    if (spelled && !run.wrapped && !known(x.p) && !(first!.includes("/") && deployNamed(first!, !!w.away))) { if (s.redirects) out.push(...exposes(x, above, holding, anywhere, copies, w, vals)); continue; }
     lined.push(i);
     const before = prev[i]! >= 0 ? runs[prev[i]!]! : null;
     // The text handed to it on its input, where the line holds it: the here-document after it, or what echo before it prints.
@@ -667,21 +734,52 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
     const chain: Run[] = [];
     if (x.p === "kill" && run.fed) for (let j = prev[i]!, hops = 0; j >= 0 && hops < 16; j = prev[j]!, hops++) chain.push(runs[j]!);
     const typed = s.words.slice(s.words.findIndex((a) => !ASSIGN.test(a)));
-    out.push(...deletes(x, c, before), ...(x.p === "git" ? gitRisks(words) : []), ...remote(x, text, w, vals), ...exposes(x, above, holding, anywhere, copies, w), ...fetched(run.wrapped ? typed : words), ...(run.wrapped ? fetched(words) : []), ...machine(x, chain, !!w.away), ...opens(x, w, vals));
+    out.push(...deletes(x, c, before), ...(x.p === "git" ? gitRisks(words) : []), ...remote(x, text, w, vals), ...exposes(x, above, holding, anywhere, copies, w, vals), ...fetched(run.wrapped ? typed : words), ...(run.wrapped ? fetched(words) : []), ...machine(x, chain, !!w.away), ...opens(x, w, vals));
     if ((x.p === "cp" || x.p === "mv" || x.p === "install" || x.p === "ln") && x.plain.length === 2 && (secretFile(x.plain[0]!) || copies.has(x.plain[0]!))) copies.set(x.plain[1]!, copies.get(x.plain[0]!) ?? x.plain[0]!);
     if (x.p === "mv" && x.plain.length === 2) {
       const [from, to] = x.plain.map((a) => target(a, made(args.indexOf(a)), dir, w, vals, i));
       if (from && to && "place" in from && "place" in to && from.place === "inside" && to.place === "inside" && !from.glob && !to.glob) c.moved.set(to.path, from.path);
     }
     // A command that runs somewhere else is read as the commands it holds, with nothing there the session's own.
-    const far = elsewhere(x);
+    // (A word written in ANSI-C quotes is the text its escapes spell: read as that, or not read at all.)
+    let xr = x;
+    if (s.text.includes("$'") && /^(ssh|autossh|kubectl|oc|docker|podman|docker-compose)$/.test(x.p)) {
+      const spelt = [...s.text.matchAll(/\$'((?:[^'\\]|\\.)*)'/g)].map((m) => ansi(m[1]!));
+      const at = args.map((_, k) => k).filter((k) => { const m = made(k); return !!m && m.one && m.rest && !m.vars.length && !m.subs.length; });
+      if (spelt.length !== at.length || spelt.some((t) => t === null)) { out.push({ rule: "hidden", why: "spells part of a command for another machine in escapes the rules do not read: write it out" }); continue; }
+      const decoded = [...args];
+      at.forEach((k, j) => { decoded[k] = spelt[j]!; });
+      xr = { ...x, args: decoded, plain: decoded.filter((a) => !a.startsWith("-")) };
+    }
+    const far = elsewhere(xr);
     if (far) {
       const handed = !!before || !!s.inputs?.length;
       const shell = far.command.length ? SHELLS.test(name(far.command[0])) && fromInput(name(far.command[0]), far.command.slice(1)) : p0(x) === "ssh";
       if (handed && shell) out.push({ rule: "remote", why: `on ${far.host}, runs a script it is handed on its input: its text is not in the command` });
-      else if (far.command.length) out.push(...away(far.argv ? far.command : far.command.join(" "), far.host, w, depth));
+      else if (far.command.length) {
+        // A file of statements handed to a database client there is read here, where the file is.
+        const fed = s.inputs?.[0] !== undefined ? target(s.inputs[0], undefined, dir, w, vals, i) : null;
+        const sql = fed && "path" in fed && !fed.glob ? w.looked?.read(fed.path) : undefined;
+        out.push(...away(far.argv ? far.command : far.command.join(" "), far.host, w, depth, typeof sql === "string" ? { sql } : s.inputs?.length ? { file: s.inputs[0]! } : undefined));
+      }
       continue;
     }
+    // A container that mounts a folder of this machine: what its command deletes under the mount is deleted here.
+    if ((x.p === "docker" || x.p === "podman") && x.plain[0] === "run" && dir !== null && !w.away && depth < DEPTH) {
+      const mounted = contained(args, dir, w.home);
+      if (mounted) {
+        const r = analyse([{ words: mounted.command, text: mounted.command.join(" "), redirects: false }], { ...w, cwd: mounted.cwd }, depth + 1);
+        for (const one of [...[...r.per.values()].flat(), ...r.line]) if (one.rule === "destroys") out.push({ rule: "destroys", why: `${one.why} (through the folder the container mounts)` });
+      }
+    }
+    // What a write-open of a path outside the folder, written out in code, would be as a command.
+    const opened = (path: string): Risk[] => {
+      if (w.sandboxed || w.away) return [];
+      const t = target(path, undefined, dir, w, vals, i);
+      if (!("place" in t) || (t.place !== "outside" && t.place !== "folder") || t.path.startsWith("/dev/")) return [];
+      const e = w.looked?.exists(t.path);
+      return e === "late" || e === "file" ? [{ rule: "destroys", why: `overwrites ${t.shown}, outside the session's folder` }] : [];
+    };
     // What a delete written in code would be as a command, for code whose every delete names its path.
     const judge = (path: string) => deletes({ ...x, run: { words: ["rm", "-r", path], at: 0, set: [] }, p: "rm", args: ["-r", path], plain: [path], made: () => undefined }, c, null);
     // A script given to a shell, to eval, or to a program that runs one, is read as the commands it holds.
@@ -722,7 +820,7 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
     } else if (x.p === "alias" && args.some((a) => /^[^=\s-][^=\s]*=/.test(a))) out.push({ rule: "hidden", why: "gives a word another meaning (alias): what a later command runs is not what it says" });
     else if (INTERPRETERS.test(x.p) || x.p === "lua") {
       const code = x.p === "lua" ? args[args.indexOf("-e") + 1] ?? null : inline(x.p, args);
-      if (code !== null) out.push(...codeRisks(x.p, code, judge));
+      if (code !== null) out.push(...codeRisks(x.p, code, judge), ...[...code.matchAll(CODE_WRITES)].slice(0, 16).flatMap((m) => opened(m[1] ?? m[2]!)));
     } else if (x.p === "awk" || x.p === "gawk") {
       // awk runs what its script hands to system() or pipes into a shell.
       const code = x.plain[0] ?? "";
@@ -748,6 +846,7 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
     const s = parts[i]!;
     if (s.sep === "|" && parts[i + 1]!.sep === "&" && s.words.length === 1 && parts[i + 1]!.words.length === 1 && parts[i + 1]!.words[0] === s.words[0]) { line.push({ rule: "machine", why: `pipes ${s.words[0]} into itself in the background: every run starts two more, until the machine stops` }); break; }
   }
+  const added = new Map<string, string>(); // the remotes the line adds, by name
   for (const i of lined) {
     const s = parts[i]!;
     if (s.heredoc) continue;
@@ -755,6 +854,12 @@ export function analyse(parts: Simple[], w: Where, depth = 0, pre?: Laid): { per
     const p = name(run.words[0]);
     if (!(SHELLS.test(p) || INTERPRETERS.test(p) || FETCHES.test(p) || (p === "git" && (pushes || run.words[1] === "clone")))) continue;
     const args = run.words.slice(1);
+    if (p === "git" && pushes) {
+      const g = gitParts(run.words);
+      if (g?.sub === "remote" && g.args[0] === "add") { const named = g.args.slice(1).filter((a) => !a.startsWith("-")); if (named[0] && named[1]) added.set(named[0], named[1]); }
+      const to = g?.sub === "push" ? g.args.find((a) => !a.startsWith("-")) : undefined;
+      if (to && added.has(to)) line.push({ rule: "exposes", why: `pushes the repository to ${added.get(to)!.slice(0, 100)}, a remote the same line adds` });
+    }
     // A shell or an interpreter that reads its program from a pipe: what the stage before prints is what runs.
     const j = prev[i]!;
     if (!whole && j >= 0 && (SHELLS.test(p) || INTERPRETERS.test(p)) && fromInput(p, args)) {
@@ -797,11 +902,14 @@ const p0 = (x: Part) => name(x.run.words[0]);
 // A command that runs on another machine or in a container: read through the same classes, with no folder known
 // and nothing there the session's own. What it would be here, it is there, where nothing holds it.
 // `text`: a script the shell there reads, or the words of one command run as they are.
-function away(text: string | string[], host: string, w: Where, depth: number): Risk[] {
+// `fed`: what it is handed on its input from this machine: the statements of a file that was read, or the file's name.
+function away(text: string | string[], host: string, w: Where, depth: number, fed?: { sql?: string; file?: string }): Risk[] {
   if (depth >= DEPTH) return [{ rule: "hidden", why: "nests scripts deeper than the rules read" }];
   if (typeof text === "string" && text.length > SCRIPT_MAX) return [{ rule: "hidden", why: `runs on ${host} a script of ${text.length} characters, longer than the rules read through: put it in a file there` }];
   const inner = typeof text === "string" ? splitCommand(text) : [{ words: text, text: text.join(" "), redirects: false }];
   if (!inner) return [{ rule: "hidden", why: `runs on ${host} a script the rules cannot split into its commands` }];
+  // What a database client there is handed: statements that were read stand with its own words; a file that was not read is its input.
+  if (fed && inner.length === 1 && sqlClient(name(unwrap(inner[0]!.words).words[0]))) inner[0] = fed.sql !== undefined ? { ...inner[0]!, words: [...inner[0]!.words, fed.sql] } : { ...inner[0]!, inputs: [fed.file!] };
   const r = analyse(inner, { cwd: "/", home: w.home, workspace: w.workspace, away: host }, depth + 1);
   const seen = new Set<string>();
   const out: Risk[] = [];
@@ -809,6 +917,61 @@ function away(text: string | string[], host: string, w: Where, depth: number): R
   return out;
 }
 
+// Files of another machine that run later there, or let someone in: its login keys and start files, its cron
+// tables, its accounts and services.
+const AWAY_SYSTEM = /^\/(etc|usr|boot|bin|sbin|lib|lib64|opt|var\/lib)\//;
+const AWAY_LATER = /(^|\/)(\.ssh\/(authorized_keys2?|config|rc|environment)|\.(bashrc|bash_profile|bash_login|profile|zshrc|zshenv|zprofile|zlogin)|\.config\/systemd\/)|^\/etc\/(crontab|cron\.|sudoers|profile|ssh\/|systemd\/|rc\.local|ld\.so\.preload|passwd|shadow|environment)|^\/var\/spool\/cron/;
+// The text an ANSI-C quoted word spells ($'\x72\x6d' is rm). null: an escape the rules do not read.
+function ansi(body: string): string | null {
+  let out = "";
+  for (let k = 0; k < body.length; k++) {
+    const ch = body[k]!;
+    if (ch !== "\\") { out += ch; continue; }
+    const rest = body.slice(k + 1, k + 9);
+    const m = /^x([0-9a-fA-F]{1,2})/.exec(rest) ?? /^([0-7]{1,3})/.exec(rest);
+    if (m) { out += String.fromCharCode(parseInt(m[1]!, rest[0] === "x" ? 16 : 8)); k += m[0].length; continue; }
+    const one: Record<string, string> = { n: "\n", t: "\t", r: "\r", "\\": "\\", "'": "'", '"': '"', a: "\x07", b: "\b", e: "\x1b", f: "\f", v: "\v", "?": "?" };
+    if (rest[0] !== undefined && one[rest[0]] !== undefined) { out += one[rest[0]]; k += 1; continue; }
+    return null;
+  }
+  return out;
+}
+// The command a `docker run` hands its container, when a folder of this machine is mounted in it: with the
+// mount's paths as this machine's, and every other path of the container somewhere that holds nothing (a
+// container's own files are not the session's). null: nothing of this machine is mounted.
+const RUN_VALUED = /^(-v|--volume|--mount|-e|--env|--env-file|-p|--publish|-w|--workdir|--name|--network|--net|-u|--user|--entrypoint|-l|--label|-m|--memory|--cpus|--platform|-h|--hostname|--add-host|--cap-add|--cap-drop|--device|--dns|--gpus|--ipc|--pid|--restart|--security-opt|--shm-size|--tmpfs|--ulimit|--volumes-from|--cidfile|--log-driver|--log-opt|--pull|--runtime|--stop-signal|--stop-timeout|--userns|--uts|--cgroupns|--link|--expose|--ip|--annotation|-a|--attach|-c|--cpu-shares|--cpuset-cpus)$/;
+const NOWHERE = "/tmp/keel-container";
+function contained(args: string[], dir: string, home: string): { command: string[]; cwd: string } | null {
+  const mounts: { src: string; dst: string }[] = [];
+  let workdir: string | undefined;
+  let i = args.indexOf("run") + 1;
+  for (; i < args.length && args[i]!.startsWith("-"); i++) {
+    const a = args[i]!, eq = a.indexOf("=");
+    const v = /^(-v|--volume)$/.test(a) ? args[i + 1] : /^(-v|--volume)=/.test(a) ? a.slice(eq + 1) : undefined;
+    if (v !== undefined) { const [src, dst] = v.split(":"); if (src && dst?.startsWith("/")) mounts.push({ src, dst }); }
+    const m = a === "--mount" ? args[i + 1] : a.startsWith("--mount=") ? a.slice(8) : undefined;
+    if (m !== undefined && /(^|,)type=bind(,|$)/.test(m)) { const src = /(?:^|,)(?:source|src)=([^,]+)/.exec(m)?.[1], dst = /(?:^|,)(?:target|destination|dst)=([^,]+)/.exec(m)?.[1]; if (src && dst) mounts.push({ src, dst }); }
+    if (/^(-w|--workdir)$/.test(a)) workdir = args[i + 1]; else if (/^--workdir=/.test(a)) workdir = a.slice(10);
+    if (RUN_VALUED.test(a)) i++;
+  }
+  const command = args.slice(i + 1);
+  // The folder a mount's source names: the one the command runs in ($PWD, ., a substitution, which is `pwd` when it is anything), one under it, or one written from the root or the home.
+  const here = (src: string): string | null => {
+    const t = src.replace(/^\$\{?PWD\}?|^\$\(\.\.\.\)/, dir).replace(/^(~|\$HOME|\$\{HOME\})(?=\/|$)/, home);
+    return /[$`*?]/.test(t) ? null : resolve(dir, t);
+  };
+  const ours = mounts.map((m) => ({ dst: untrailed(m.dst) || "/", src: here(m.src) })).filter((m): m is { dst: string; src: string } => m.src !== null && m.dst !== "/").slice(0, 8);
+  if (!ours.length || !command.length || command.length > 256) return null;
+  const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const mapped = (word: string) => {
+    let t = word;
+    ours.forEach((m, k) => { t = t.replace(new RegExp(`(^|[\\s'"=;(])${esc(m.dst)}(?=\\/|$|[\\s'";)])`, "g"), `$1\u0001${k}\u0002`); });
+    t = t.replace(/(^|[\s'"=;(])\/(?=[A-Za-z0-9._-])/g, `$1${NOWHERE}/`);
+    return t.replace(/\u0001(\d+)\u0002/g, (_, k: string) => ours[Number(k)]!.src);
+  };
+  const cwd = workdir ? mapped(workdir) : NOWHERE;
+  return { command: command.map(mapped), cwd: cwd.startsWith("/") ? cwd : NOWHERE };
+}
 const OLD = (why: string): RiskRule => (/^runs as root|^stops the machine/.test(why) ? "machine" : /remote/.test(why) ? "remote" : /downloaded/.test(why) ? "hidden" : "destroys");
 
 // Every reason the line is high risk, each once.

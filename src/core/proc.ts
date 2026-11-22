@@ -25,6 +25,26 @@ export async function* chunks(s: ReadableStream<Uint8Array>): AsyncGenerator<Uin
   }
 }
 
+// As chunks(), and it ends when `stop` settles: the reader is cancelled there, so a pipe that a process further
+// down still holds open is not waited for.
+export async function* chunksUntil(s: ReadableStream<Uint8Array>, stop: Promise<unknown>): AsyncGenerator<Uint8Array, void> {
+  const r = s.getReader();
+  const stopped = Symbol("stopped");
+  const end = stop.then(() => stopped, () => stopped);
+  let ended = false;
+  try {
+    for (;;) {
+      const x = await Promise.race([r.read(), end]);
+      if (x === stopped) return;
+      const { done, value } = x as ReadableStreamReadResult<Uint8Array>;
+      if (done) { ended = true; return; }
+      if (value) yield value;
+    }
+  } finally {
+    if (!ended) r.cancel().catch(() => {});
+  }
+}
+
 // Each chunk of a child pipe; resolves when the pipe ends. A read failure, or
 // an `onChunk` that throws, rejects, tagged with `where`.
 export async function pump(pipe: Pipe, onChunk: (c: Uint8Array) => void, where = "child pipe"): Promise<void> {

@@ -610,7 +610,7 @@ export class Gate {
       const mine = new Promise<void>((r) => { done = r; });
       this.asking.set(session.id, mine);
       try {
-        for (let pass = 0; l && asked.size && pass < 3; pass++) {
+        for (let pass = 0; l && asked.size && !l.over() && pass < 3; pass++) {
           await l.answer(asked);
           asked = new Map();
           dNow = this.evaluate(session, name, judged, target?.source, { ...facts, looked: l.view(asked) });
@@ -770,9 +770,10 @@ export class Gate {
       if (this.retries.delete(retry)) return ran("retry", "the owner let one retry through"), { cls };
     }
     if (!auto && cls.kind === "shell" && !cls.escalate) {
-      const parts = splitCommand(cls.command);
-      // The rules settle git's own forms from the repository's state. A line that is high risk for anything else goes to the judge.
-      const rule = parts && this.checking.get(callKey(session.id, call.id))?.settles ? preAllow(parts, cls.cwd ?? session.workspace, homedir(), lookRepo) : null;
+      // The rules settle git's own forms from the repository's state. A line that is high risk for anything else goes
+      // to the judge, and is not read again here.
+      const parts = this.checking.get(callKey(session.id, call.id))?.settles ? splitCommand(cls.command) : null;
+      const rule = parts ? preAllow(parts, cls.cwd ?? session.workspace, homedir(), lookRepo) : null;
       if (rule) return ran("rule", rule), { cls };
     }
     // What is judged is what runs, whole: the judge is sent the start of a

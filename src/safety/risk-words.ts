@@ -21,12 +21,22 @@ export type Risk = { rule: RiskRule; why: string; git?: true; said?: true };
 // machine or in a container (its name): nothing there is the session's own, and no relative path is known.
 export type Where = { cwd: string; home: string; workspace: string; scratch?: string[]; looked?: Looked; land?: (p: string) => string[]; sandboxed?: boolean; lost?: true; away?: string };
 
+// Each class in a few words: what the ask carries as its rule, and a folded call is marked with in the transcript.
+export const RULE_WORDS: Record<RiskRule, string> = {
+  destroys: "destroys work or data", remote: "changes another machine or a service", exposes: "sends credentials out",
+  hidden: "runs code that is not in the command", machine: "reaches past the session on this machine",
+};
+
+// The budgets of one decision. A line past one of them is "longer than the rules read": high risk, said at once.
 export const DEPTH = 8; // nested scripts read through; deeper is not read, and says so
+export const PARTS_MAX = 4_096; // commands of one line (the lines of a here-document are text, and not counted)
+export const PATH_MAX = 4_096; // characters of a folder a chain of cds is followed to
+export const WORDS_MAX = 1_024; // paths one command writes or deletes
 // A nested script longer than this is not read through either: reading one costs as much as reading the line it is
 // in, and the line is read once.
 export const SCRIPT_MAX = 4_000;
 
-export const SHELLS = /^(sh|bash|zsh|dash|ksh|fish)$/;
+export const SHELLS = /^(sh|bash|zsh|dash|ksh|fish|ash)$/;
 export const INTERPRETERS = /^(python[0-9.]*|node|nodejs|bun|deno|perl|ruby|php)$/;
 export const GLOB = /[*?[]/;
 export const ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=/;
@@ -48,12 +58,12 @@ const VALUED: Record<string, RegExp> = {
   strace: /^-[oepsaEuPIbXSU]$/, ltrace: /^-[oepsanulAF]$/, flock: /^(-w|--timeout|-E|--conflict-exit-code)$/,
   "systemd-run": /^(-u|--unit|-p|--property|--description|--slice|-M|--machine|-H|--host|--working-directory|--uid|--gid|--nice|-E|--setenv|--on-active|--on-boot|--on-startup|--on-unit-active|--on-unit-inactive|--on-calendar|--timer-property)$/,
   uv: /^(--with|--with-editable|--with-requirements|--python|-p|--project|--directory|--env-file|--extra|--group|--index|--package|--isolated-from)$/,
-  npm: /^(--prefix|-w|--workspace|-c|--call|--package|-p)$/, direnv: /^$/, dotenv: /^(-e|-f|--file)$/, runuser: /^(-u|-g|-G|--user|--group)$/, screen: /^(-S|-L|-c|-e|-s|-T|-t|-p)$/,
+  npm: /^(--prefix|-w|--workspace|-c|--call|--package|-p)$/, sshpass: /^-[pfdP]$/, direnv: /^$/, dotenv: /^(-e|-f|--file)$/, runuser: /^(-u|-g|-G|--user|--group)$/, screen: /^(-S|-L|-c|-e|-s|-T|-t|-p)$/,
 };
 const WRAPPERS = new Set(["env", "nohup", "setsid", "nice", "ionice", "timeout", "stdbuf", "command", "builtin", "exec", "sudo", "doas", "time", "chrt", "taskset", "watch", "xargs", "parallel", "npx", "bunx",
-  "busybox", "toybox", "coproc", "strace", "ltrace", "unshare", "fakeroot", "flock", "chronic", "systemd-run", "dotenv", "valgrind", "firejail", "proot", "runuser", "chroot", "faketime", "screen"]);
+  "busybox", "toybox", "coproc", "strace", "ltrace", "unshare", "fakeroot", "flock", "chronic", "systemd-run", "dotenv", "valgrind", "firejail", "proot", "runuser", "chroot", "faketime", "screen", "sshpass"]);
 // Programs that start another after a word of their own: `bundle exec CMD`, `uv run CMD`.
-const STARTS: Record<string, RegExp> = { bundle: /^exec$/, npm: /^exec$/, pnpm: /^exec$/, yarn: /^exec$/, uv: /^run$/, poetry: /^run$/, pipenv: /^run$/, pdm: /^run$/, direnv: /^exec$/, rye: /^run$/, hatch: /^run$/ };
+const STARTS: Record<string, RegExp> = { bundle: /^exec$/, npm: /^exec$/, pnpm: /^(exec|dlx)$/, yarn: /^(exec|dlx)$/, bun: /^x$/, uv: /^run$/, poetry: /^run$/, pipenv: /^run$/, pdm: /^run$/, direnv: /^exec$/, rye: /^run$/, hatch: /^run$/ };
 
 // A path without the slashes it ends in. (A pattern for them reads a run of slashes in the middle of a word once
 // for each of them.)
@@ -69,7 +79,7 @@ const NONE: string[] = [];
 export function unwrap(words: string[]): Run {
   // Most commands: a program that starts no other, with nothing set in front of it.
   const first = words[0];
-  if (first !== undefined && !ASSIGN.test(first) && first !== "-p" && first !== "function" && first !== "find" && first !== "gdb" && first !== "lldb" && !WRAPPERS.has(name(first)) && !(name(first) in STARTS)) return { words, at: 0, set: NONE };
+  if (first !== undefined && !ASSIGN.test(first) && first !== "-p" && first !== "function" && first !== "find" && first !== "gdb" && first !== "lldb" && first !== "yarn" && first !== "pnpm" && !WRAPPERS.has(name(first)) && !(name(first) in STARTS)) return { words, at: 0, set: NONE };
   let at = 0;
   const set: string[] = [];
   let fed: Run["fed"];
@@ -94,6 +104,8 @@ export function unwrap(words: string[]): Run {
       wrapped = true;
       continue;
     }
+    // A package manager run with a deleting program of the project as its word (yarn rimraf src): that program.
+    if ((prog === "yarn" || prog === "pnpm") && /^(rimraf|del|del-cli|trash)$/.test(words[at + 1] ?? "") && n < DEPTH) { at += 1; wrapped = true; continue; }
     const starts = STARTS[prog]?.test(words[at + 1] ?? "");
     if (!WRAPPERS.has(prog) && !starts) break;
     if (n >= DEPTH) return { words: words.slice(at), at, set, fed, timed, deep: true, wrapped: true };
@@ -109,7 +121,7 @@ export function unwrap(words: string[]): Run {
     }
     // timeout's first operand is how long, flock's the lock, direnv's and chroot's the folder, faketime's the time;
     // command -v only asks what a name is.
-    if (prog === "timeout" || prog === "flock" || prog === "chroot" || prog === "faketime" || (prog === "direnv" && starts)) i++;
+    if (prog === "timeout" || prog === "flock" || prog === "chroot" || prog === "faketime" || (prog === "chrt" && !words.slice(at + 1, i).some((a) => /^-[a-zA-Z]*p/.test(a))) || (prog === "direnv" && starts)) i++;
     if (prog === "command" && /^-[pvV]*[vV]/.test(words[at + 1] ?? "")) break;
     if (prog === "xargs" || prog === "parallel") fed = "xargs";
     if (i >= words.length) break;
@@ -147,7 +159,10 @@ export function dirsOf(parts: Simple[], runs: Run[], cwd: string | null, home: s
     const arg = w.slice(1).find((a) => !a.startsWith("-") || a === "-");
     if (w[0] === "popd" || arg === "-" || (arg !== undefined && (/[$`*?[\]{}]/.test(arg) || (arg.startsWith("~") && arg !== "~" && !arg.startsWith("~/"))))) return null;
     const path = arg === undefined || arg === "~" ? home : arg.startsWith("~/") ? home + arg.slice(1) : arg;
-    return isAbsolute(path) ? resolve(path) : from === null ? null : resolve(from, path);
+    const next = isAbsolute(path) ? resolve(path) : from === null ? null : resolve(from, path);
+    // (A folder longer than a path can be is none: a chain of relative cds is not followed past it, so no later
+    // reader resolves against a longer and longer one.)
+    return next !== null && next.length > PATH_MAX ? null : next;
   };
   return parts.map((s, i) => {
     if (s.heredoc) return inner === undefined ? top : inner;
@@ -185,7 +200,7 @@ export const LOST: Values = new Map();
 export function valuesOf(parts: Simple[], runs: Run[]): Values {
   const out: Values = new Map();
   // A value is only ever read into a word an expansion makes: a line with none has none to read.
-  if (!parts.some((p) => p.dyn)) return out;
+  if (!parts.some((p) => p.dyn || (p.redirects && p.text.includes("$")))) return out;
   const count = new Map<string, number>();
   const bare = new Set<string>();
   for (let i = 0; i < parts.length; i++) {

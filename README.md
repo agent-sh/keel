@@ -264,6 +264,68 @@ sandboxing separately from approvals and can review eligible approvals
 automatically. [OpenCode](https://opencode.ai/docs/permissions/) uses
 `allow`, `ask` and `deny` rules scoped by action and resource.
 
+## What makes a command high risk
+
+A command is high risk when what it runs is in one of five classes. Such a
+command gets a card of its own in Ask, Auto edits and Reviewer, also under a
+sandbox, and goes to the judge in Auto and Full auto. No standing rule covers
+it, and the card says which rule of yours it overrode. The class is on the
+card and in the `PermissionRequest` hook's `keel_rule`.
+
+| Class | What it reads |
+| --- | --- |
+| destroys work or data | a delete, move or overwrite outside the session's folder; a delete inside it of files git cannot bring back; git's ways to discard work; a drop or reset of a database that is not local or a test one |
+| changes another machine or a service | a classed command sent to another machine or a container (`ssh`, `kubectl exec`, `docker exec`, `mosh`, `ansible`), a deploy or publish, a delete on a cluster, a cloud or a hosted service |
+| sends credentials out | an environment file, a key or a credential store handed to a program that sends: by name, through a substitution, a variable, a copy, a redirect, or the folder sent whole |
+| runs code that is not in the command | a program word the line builds, a script fetched and run, text decoded or handed over on input, an install from an address or a registry the command names |
+| reaches past the session on this machine | signals to runtimes or to Keel, scheduled work, system services, a container given the host |
+
+The classes read the command's words. They ask the disk four things, off the
+loop and before the decision: what git cannot bring back under a path, whether
+a path outside the folder exists, which files a patch or an archive writes,
+and what a file of SQL says. A question the disk does not answer in time is
+read as high risk.
+
+One decision has budgets. A line past one of them is not read further: it is
+high risk, and the card says the number.
+
+| Budget | Limit |
+| --- | --- |
+| commands on one line (the lines of a here-document are text) | 4,096 |
+| scripts nested in scripts | 8 deep |
+| a nested script, or a here-document fed to a shell | 4,000 characters |
+| paths one command writes or deletes | 1,024 |
+| questions to the disk for one command | 32 |
+| a folder followed through a chain of `cd` | 4,096 characters |
+
+### What the classes do not read
+
+The classes are a reading of the command line, not a wall. The sandbox and
+the judge are what hold a command the reading misses. Known gaps:
+
+- What a script file of the session's own does (`bash run.sh`, `make`,
+  `npm run x`): only its name is read, and a name with `deploy` or `publish`
+  in it is high risk.
+- Code handed to an interpreter beyond the forms listed in `src/safety/risk.ts`
+  (deletes and write-opens with a path written out, a fetch that is run, a
+  credential file read beside a network call).
+- Mass edits that empty files (`sed -i 'd' src/*.ts`): not told from a codemod.
+- A token in a request's own words (`curl -H "Authorization: Bearer $TOKEN"`):
+  the rules cannot tell the host that owns the token from another.
+- `git add -A && git push`: what `-A` adds is not in the command.
+- Cloud runners that carry a command in a document or a parameter
+  (`aws ssm send-command`), and services whose verbs are not in the tables.
+- `kubectl create secret --from-env-file`, a copy of a credential file to a
+  mounted share, an archive unpacked or a sync into an existing folder
+  outside the session's, `gzip` or `chmod` of a file there.
+- Temporary and cache folders: a move or an overwrite there is not counted
+  as a loss.
+- A file server with no bind address given (`python3 -m http.server`); the
+  form that names every interface is high risk.
+- A database client's host given only by its own config file or by a
+  variable set outside the command, for clients that read one.
+- A file git ignores that is deleted with its folder (an ignored `.env`).
+
 ## The command sandbox
 
 With a session's sandbox on (workspace-write), a command runs in
@@ -545,7 +607,7 @@ These fire, most used first:
 | `StopFailure` | A turn ends in an error, or at the output limit | error type: `rate_limit`, `authentication_failed`, `billing_error`, `server_error`, `invalid_request`, `max_output_tokens`, `unknown` | `error`, `error_details`, `last_assistant_message` | Told only |
 | `SubagentStop` | A subagent's turn ends by itself | agent type | `stop_hook_active`, `agent_transcript_path` (`null`), `last_assistant_message` | Told only: the agent's report is already on its way to its parent |
 | `SessionEnd` | A session is archived or deleted, once | `reason`: `other` | `reason`, `keel_reason` (`archived`, `deleted`) | Told only. 1.5 s unless the hook names a timeout, 60 s at most |
-| `PermissionRequest` | An approval card is about to open | tool name | `tool_name`, `tool_input`, `keel_risk`, `keel_reason` | `decision.behavior` `deny` refuses the call. `allow` answers the card where a `PreToolUse` allow would (see below). An allow that carries `updatedInput` or `updatedPermissions` is not taken. Exit code 2 does nothing here |
+| `PermissionRequest` | An approval card is about to open | tool name | `tool_name`, `tool_input`, `keel_risk`, `keel_reason`, `keel_rule` (the class of a high-risk command, in its few words) | `decision.behavior` `deny` refuses the call. `allow` answers the card where a `PreToolUse` allow would (see below). An allow that carries `updatedInput` or `updatedPermissions` is not taken. Exit code 2 does nothing here |
 | `PreCompact` | Before a compaction | `trigger`: `manual`, `auto` | `trigger`, `custom_instructions` | The compaction waits for it. It cannot block: a compaction at the window has to happen |
 | `SubagentStart` | A subagent's first prompt | agent type | none | Add context for the subagent |
 | `PostCompact` | A summary took the place of the history | `trigger` | `trigger`, `compact_summary` | Told only |

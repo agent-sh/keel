@@ -492,10 +492,20 @@ test("a delete inside the folder is high risk by what git cannot bring back ther
     return { a: a!, asked };
   };
   const answer = async (c: Awaited<ReturnType<typeof card>>) => { g.resolve(c.a.id, "s1", { choice: "deny" }); await c.asked; };
+  // A file git was told not to look at (assume-unchanged, skip-worktree) and that changed since: git lists
+  // nothing under its folder, and cannot bring the change back.
+  for (const [dir, flag] of [["quiet", "--assume-unchanged"], ["skipped", "--skip-worktree"]] as const) {
+    mkdirSync(join(ws, dir), { recursive: true });
+    writeFileSync(join(ws, dir, "a.ts"), "x\n");
+    git("add", dir);
+    git("commit", "-q", "-m", dir);
+    git("update-index", flag, `${dir}/a.ts`);
+    writeFileSync(join(ws, dir, "a.ts"), "changed\n");
+  }
   // A folder git ignores is build output, and one whose every file is committed and unchanged comes back from
   // git; changed files, new ones nobody has added yet and a repository of its own do not.
   const lost = "destroys work or data";
-  for (const [command, risk, rule] of [["rm -rf out", "low", undefined], ["rm -rf kept", "low", undefined], ["rm -rf build", "high", lost], ["rm -rf fresh", "high", lost], ["rm -rf single", "high", lost], ["rm -rf lib/nested", "high", lost],
+  for (const [command, risk, rule] of [["rm -rf out", "low", undefined], ["rm -rf kept", "low", undefined], ["rm -rf quiet", "high", lost], ["rm -rf skipped", "high", lost], ["rm -rf build", "high", lost], ["rm -rf fresh", "high", lost], ["rm -rf single", "high", lost], ["rm -rf lib/nested", "high", lost],
     ["find . -name '*.sh' -delete", "high", lost], ["find . -name '*.o' -delete", "low", undefined], ["find . -name '*.ts' -delete", "high", lost]] as const) {
     const c = await card(command);
     expect([command, c.a.risk, c.a.rule]).toEqual([command, risk, rule]);

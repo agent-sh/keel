@@ -12,7 +12,6 @@
 // still open at the end counts as not answered, which the policy reads as
 // high risk. The answers stay with the call, so a card that waits is judged
 // again with the same ones.
-import { existsSync, readFileSync } from "node:fs";
 import { lstat } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { gitNames } from "../core/git.ts";
@@ -29,7 +28,12 @@ export type Looked = {
   targets(kind: "patch" | "archive", file: string): string[] | null;
   // null: not read (missing, too large, no answer in time).
   read(file: string): string | null;
+  // The line asked more than is looked up for one command (QUESTIONS): the rest were not asked, and read as not answered.
+  over?(): boolean;
 };
+// How many questions one command may ask of the disk. A line that names more paths than that is not read
+// further: what was not asked counts as not answered, which is high risk, and nothing is asked at all.
+export const QUESTIONS = 32;
 
 const within = <T>(ms: number, p: Promise<T>, late: T): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -39,23 +43,43 @@ const within = <T>(ms: number, p: Promise<T>, late: T): Promise<T> => {
 // The folders of a bare repository that are the repository.
 const BARE = new Set(["objects", "refs", "HEAD", "packed-refs", "config", "hooks", "info", "worktrees", "modules", "logs"]);
 
+const there = (p: string) => lstat(p).then(() => true, () => false);
+// The paths of a repository's submodules, from its own .gitmodules: at most 256 KB of it, read off the loop.
+async function submodules(workspace: string): Promise<string[]> {
+  try {
+    const f = Bun.file(join(workspace, ".gitmodules"));
+    if (!(await f.exists())) return [];
+    const text = await f.slice(0, 262_144).text();
+    // (Spaces and tabs only around the words: a pattern that also takes line ends reads a run of blank lines
+    // once for each of them.)
+    return [...text.matchAll(/^[ \t]*path[ \t]*=[ \t]*([^\n]+)$/gm)].map((m) => resolve(workspace, m[1]!.trim()));
+  } catch {
+    return [];
+  }
+}
+
 export async function keptIn(workspace: string, specs: string[], deadlineMs = 1_500): Promise<Kept> {
   const named = specs.filter((s) => s.startsWith(":(literal)")).map((s) => s.slice(10));
   try {
     // A repository of its own under the path, the session's folder being one with no work tree, and a
     // submodule under the path: each is more than git brings back.
-    if (named.some((p) => existsSync(join(p, ".git")))) return { n: 2 };
-    if (!existsSync(join(workspace, ".git")) && existsSync(join(workspace, "HEAD")) && existsSync(join(workspace, "objects")) && existsSync(join(workspace, "refs"))
-      && named.some((p) => BARE.has(relative(workspace, p).split("/")[0] ?? ""))) return { n: 2 };
-    const modules = join(workspace, ".gitmodules");
-    if (named.length && existsSync(modules)) {
-      const paths = [...readFileSync(modules, "utf8").matchAll(/^\s*path\s*=\s*(.+?)\s*$/gm)].map((m) => resolve(workspace, m[1]!));
-      if (named.some((p) => paths.some((sub) => contains(p, sub)))) return { n: 2 };
-    }
+    if ((await Promise.all(named.map((p) => there(join(p, ".git"))))).some(Boolean)) return { n: 2 };
+    if (named.some((p) => BARE.has(relative(workspace, p).split("/")[0] ?? "")) && !(await there(join(workspace, ".git")))
+      && (await Promise.all(["HEAD", "objects", "refs"].map((n) => there(join(workspace, n))))).every(Boolean)) return { n: 2 };
+    if (named.length) { const paths = await submodules(workspace); if (named.some((p) => paths.some((sub) => contains(p, sub)))) return { n: 2 }; }
   } catch { /* what the disk does not say, git is asked */ }
+  const began = Date.now();
   const r = await gitNames(workspace, ["ls-files", "-z", "-m", "-o", "--exclude-standard", "--", ...specs], 2, deadlineMs);
   if (r.late) return "late";
   if (r.none || r.failed) return null;
+  if (r.names.length === 0) {
+    // Nothing new or changed that git sees. A file marked assume-unchanged or skip-worktree is one git was told
+    // not to look at: its changes are not listed above, and are not in git either. (Asked only here, where the
+    // delete would otherwise be an edit; the listing is tagged, and stopped at the first such entry.)
+    const hidden = await gitNames(workspace, ["ls-files", "-z", "-v", "--", ...specs], 1, Math.max(200, deadlineMs - (Date.now() - began)), (e) => /^[a-zS] /.test(e));
+    if (hidden.late) return "late";
+    if (hidden.names.length) return { n: 2 };
+  }
   const one = r.names.length === 1 && named.length === 1 && specs.length === 1 && !r.names[0]!.endsWith("/") && resolve(workspace, r.names[0]!) === resolve(named[0]!);
   return { n: r.names.length, ...(one ? { self: true as const } : {}) };
 }
@@ -100,14 +124,15 @@ async function textOf(file: string): Promise<string | null> {
 }
 
 // The answers gathered for one call. `view(asked)` is what a decision reads: an answer already in hand, else the
-// answer of a disk that did not answer, with the question noted in `asked`. `answer` asks the disk what was noted
-// (at most 32 questions a time: a line that asks more is decided with the rest not answered).
+// answer of a disk that did not answer, with the question noted in `asked`. `answer` asks the disk what was noted.
+// A decision that asks more than QUESTIONS at once is over: nothing is asked for it, and it stands as it is.
 export function looking(workspace: string) {
   const known = new Map<string, unknown>();
+  let over = false;
   const view = (asked?: Map<string, () => Promise<unknown>>): Looked => {
     const get = <A>(key: string, late: A, ask: () => Promise<A>): A => {
       if (known.has(key)) return known.get(key) as A;
-      asked?.set(key, ask);
+      if (asked && !asked.has(key)) { if (asked.size >= QUESTIONS) over = true; else asked.set(key, ask); }
       return late;
     };
     return {
@@ -115,10 +140,11 @@ export function looking(workspace: string) {
       exists: (path) => get(`exists\0${path}`, "late" as const, () => existsAt(path)),
       targets: (kind, file) => get<string[] | null>(`targets\0${kind}\0${file}`, null, () => targetsOf(kind, file)),
       read: (file) => get<string | null>(`read\0${file}`, null, () => textOf(file)),
+      over: () => over,
     };
   };
-  const answer = async (asked: Map<string, () => Promise<unknown>>) => { await Promise.all([...asked].slice(0, 32).map(async ([key, ask]) => { known.set(key, await ask()); })); };
-  return { view, answer };
+  const answer = async (asked: Map<string, () => Promise<unknown>>) => { await Promise.all([...asked].map(async ([key, ask]) => { known.set(key, await ask()); })); };
+  return { view, answer, over: () => over };
 }
 
 // Decides with what the disk says: `run` is called with the answers so far, what it asked is answered, and it is
@@ -127,7 +153,7 @@ export async function deciding<T>(workspace: string, run: (looked: Looked) => T)
   const l = looking(workspace);
   let asked = new Map<string, () => Promise<unknown>>();
   let d = run(l.view(asked));
-  for (let pass = 0; asked.size && pass < 3; pass++) {
+  for (let pass = 0; asked.size && !l.over() && pass < 3; pass++) {
     await l.answer(asked);
     asked = new Map();
     d = run(l.view(asked));

@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { neverAllowed, neverAllowedText } from "./autonomy.ts";
 import type { Looked } from "./looked.ts";
 import { RULE_WORDS, codeGiven, laid, risksOf } from "./risk.ts";
-import { name as baseName, untrailed, unwrap, type Run } from "./risk-words.ts";
+import { PARTS_MAX, WORDS_MAX, name as baseName, untrailed, unwrap, valuesOf, type Run } from "./risk-words.ts";
 import { isReadOnly, matchRule, readForm, resolveVariables, shimmedRead, splitCommand, suggestRule, type Simple } from "./shell.ts";
 import { atCwd, contains } from "../core/paths.ts";
 import type { ToolKind } from "../tools/types.ts";
@@ -237,7 +237,8 @@ type OwnerOnly = { why: string; rule: string };
 // repository's hooks run), which no sandbox confines.
 function ownerOnlyEdit(p: string, f: Facts, does = "changes"): OwnerOnly | null {
   const rel = relative(f.workspace, p);
-  if (RUNS_LATER.test(rel)) return { rule: "runs later, outside the sandbox", why: `it ${does} ${rel}, which runs or configures things outside the sandbox later` };
+  // (Also in other letter case: on a disk that does not tell cases apart it is the same file.)
+  if (RUNS_LATER.test(rel) || RUNS_LATER.test(rel.toLowerCase())) return { rule: "runs later, outside the sandbox", why: `it ${does} ${rel}, which runs or configures things outside the sandbox later` };
   const o = f.own?.();
   const own = (f.config ?? o?.config)?.find((c) => contains(c, p));
   if (own) return { rule: "Keel's own configuration", why: `it ${does} ${p}, which Keel runs or reads its configuration from (its hooks and their scripts, MCP servers, skills and agents), outside any sandbox` };
@@ -280,7 +281,7 @@ const EACH_ARG = new Set(["tee", "mv", "rm", "truncate", "shred", "sponge", "yq"
 // The programs looked for anywhere among the words, as they always were, and the ones read only where the program stands.
 const WRITERS = /^(?:.*\/)?(?:cp|install|ln|rsync|scp|tee|mv|rm|truncate|shred|sed|dd)$/;
 const WRITER_NAMES = new Set(["cp", "install", "ln", "rsync", "scp", "tee", "mv", "rm", "truncate", "shred", "sed", "dd"]);
-const WRITERS_FIRST = /^(?:curl|wget|git|yq|perl|sponge|patch|chmod|chown|chgrp)$/;
+const WRITERS_FIRST = /^(?:curl|wget|git|yq|perl|sponge|patch|chmod|chown|chgrp|ed|ex|vi|vim|nvim)$/;
 // `run`: the command the part runs, when the caller has worked it out already.
 export function writesOf(p: Simple, run?: Run): string[] {
   const out: string[] = [];
@@ -294,6 +295,8 @@ export function writesOf(p: Simple, run?: Run): string[] {
   else if (EACH_ARG.has(name)) out.push(...args);
   // What a change of modes or ownership names, past the mode or the owner.
   else if (name === "chmod" || name === "chown" || name === "chgrp") out.push(...args.slice(1));
+  // An editor run from a command works from a script: the files it is given are what it writes.
+  else if (/^(ed|ex|vi|vim|nvim)$/.test(name)) out.push(...rest.filter((a, k) => !a.startsWith("-") && !a.startsWith("+") && !/^(-c|--cmd|-S|-u|-i|-w|-W|-T|-t)$/.test(rest[k - 1] ?? "")));
   else if (name === "sed") { if (rest.some((a) => /^(?:-[a-zA-Z]*i|--in-place)/.test(a))) out.push(...args); }
   else if (name === "curl" || name === "wget") {
     // The file a download is written to: -o FILE, also at the end of a cluster (-sLo FILE), and --output=FILE.
@@ -455,11 +458,31 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
   const parts = splitCommand(command);
   const home = f.home ?? homedir();
   const worst = f.mode === "read-only" ? null : parts ? neverAllowed(parts, cwd, home) : neverAllowedText(command, home);
-  if (worst) return never(worst, f);
+  const shellRules = f.rules.filter((r) => r.kind === "shell");
+  // A standing rule of the owner's that names this command and does not cover it: the card says so.
+  // `why`: the reason, as "deletes ..." or, for another machine, "on HOST, deletes ...".
+  const uncovered = (d: Decision, why: string): Decision => {
+    if (!("ask" in d) || !parts || !shellRules.length) return d;
+    const stands = shellRules.find((r) => parts.some((p) => !p.heredoc && p.words.length && matchRule(r.pattern, p)));
+    if (!stands) return d;
+    const away = /^on ([^,]{1,80}), (.*)$/s.exec(why);
+    const said = /^it /.test(why) ? why : away ? `on ${away[1]}, it ${away[2]}` : `it ${why}`;
+    return { ask: { ...d.ask, notice: `Your rule "${stands.pattern}" does not cover this one: ${said}.` } };
+  };
+  if (worst) return uncovered(never(worst, f), worst);
   if (!parts) {
     if (f.mode === "full-auto") return { allow: true };
     if (f.mode === "read-only") return { deny: "This session is read-only and the command could not be parsed to check it." };
     return { ask: { risk: "high", why: "the command could not be parsed, so no rule can cover it", rule: "could not be parsed", suggest: [] } };
+  }
+  // A line of more commands than the rules read through is not read at all: high risk, said at once.
+  if (parts.length > PARTS_MAX) {
+    let n = 0;
+    for (const p of parts) if (!p.heredoc) n++;
+    if (n > PARTS_MAX) {
+      const why = `holds ${n} commands, more than the rules read through (${PARTS_MAX})`;
+      return f.mode === "read-only" ? { deny: `This session is read-only, and the command ${why}.` } : { ask: { risk: "high", why: `the command ${why}`, rule: RULE_WORDS.hidden, suggest: [] } };
+    }
   }
   // A command whose plain shape writes a file that is the owner's alone to
   // change (`echo x >> ~/.bashrc`, a cp into Keel's config, a write into a CI
@@ -470,7 +493,10 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
   // (Each part's command and folder, worked out once for this and for the risk classes.)
   const pre = laid(parts, cwd, home);
   if (f.mode !== "read-only") {
-    const owners = (o: OwnerOnly): Decision => (f.mode === "full-auto" ? { ask: { risk: "high", why: `the command: ${o.why}`, rule: o.rule, suggest: [] } } : onlyOwner(`the command: ${o.why}`, o.rule));
+    const owners = (o: OwnerOnly): Decision => uncovered(f.mode === "full-auto" ? { ask: { risk: "high", why: `the command: ${o.why}`, rule: o.rule, suggest: [] } } : onlyOwner(`the command: ${o.why}`, o.rule), o.why);
+    // The variables the line gives one value, and the links it makes: a write through either lands where they lead.
+    let vals: ReturnType<typeof valuesOf> | undefined;
+    const links = new Map<string, string>();
     const unread = (what: string): Decision => ({ ask: { risk: "high", why: `the command ${what}: it can put files where they run later`, rule: RULE_WORDS.hidden, suggest: [] } });
     const asked = new Map<string, OwnerOnly | null>();
     for (let i = 0; i < parts.length; i++) {
@@ -484,13 +510,31 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
       // A folder the rules cannot follow: only what is written out from the root or the home is read.
       const at = pre.dirs[i] ?? null;
       // (A path the line names again in the same folder is asked about once.)
-      const here = (w: string) => {
+      const here = (w0: string) => {
+        // (D=.github/workflows; echo x > $D/x.yml: the name is read as the one value the line gave it.)
+        const w = w0.includes("$") && !/\$(HOME|\{HOME\})/.test(w0)
+          ? w0.replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (all, v: string) => { const k = (vals ??= valuesOf(parts, pre.runs)).get(v); return k && k.text !== undefined && k.at < i ? k.text : all; }) : w0;
         const key = `${at}\0${w}`;
         let o = asked.get(key);
-        if (o === undefined) asked.set(key, (o = at !== null || /^(["']?)(\/|~|\$HOME|\$\{HOME\})/.test(w) ? ownerOnlyNamed(w, at ?? "/", f, "writes") : null));
+        if (o !== undefined) return o;
+        o = at !== null || /^(["']?)(\/|~|\$HOME|\$\{HOME\})/.test(w) ? ownerOnlyNamed(w, at ?? "/", f, "writes") : null;
+        // (ln -s .github/workflows w && echo x > w/x.yml: a path under a link the line made is the path under what it links to.)
+        if (!o && links.size) {
+          const p = spelled(w, at ?? "/", home);
+          if (p) for (const [link, to] of links) if (p === link || p.startsWith(`${link}/`)) { o = ownerOnlyNamed(to + p.slice(link.length), "/", f, "writes"); if (o) break; }
+        }
+        asked.set(key, o);
         return o;
       };
-      for (const w of writesOf(part, run)) { const o = here(w); if (o) return owners(o); }
+      if (first === "ln" && at !== null && run.words.some((a) => /^-[a-zA-Z]*s/.test(a) || a === "--symbolic")) {
+        const named = run.words.slice(1).filter((a) => !a.startsWith("-"));
+        const to = named.length === 2 ? spelled(named[0]!, at, home) : null, link = named.length === 2 ? spelled(named[1]!, at, home) : null;
+        if (to && link && links.size < 16) links.set(link, to);
+      }
+      const written = writesOf(part, run);
+      // (A command that writes more files than the rules read is not read: any of them could be one that runs later.)
+      if (written.length > WORDS_MAX) return { ask: { risk: "high", why: `the command names ${written.length} files to write or delete, more than the rules read for one command (${WORDS_MAX})`, rule: RULE_WORDS.hidden, suggest: [] } };
+      for (const w of written) { const o = here(w); if (o) return owners(o); }
       // (The rest reads only the programs that copy into a folder, apply a patch, unpack an archive or are handed code.)
       if (!lands) continue;
       for (const d of writesInto(run.words)) {
@@ -511,20 +555,18 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
       }
       // Code given to an interpreter that names such a file in its text.
       const code = codeGiven(run);
-      if (code) for (const m of code.matchAll(/["']([^"'\s]{3,300})["']/g)) { const o = /[\/.]/.test(m[1]!) ? here(m[1]!) : null; if (o) return owners(o); }
+      // (Each quoted string as it stands: a short one is passed, not skipped half-way into the next.)
+      if (code) for (const m of code.matchAll(/"([^"]*)"|'([^']*)'/g)) { const t = m[1] ?? m[2]!; const o = t.length >= 3 && t.length <= 300 && !/\s/.test(t) && /[\/.]/.test(t) ? here(t) : null; if (o) return owners(o); }
     }
   }
   const risks = risksOf(parts, { cwd, home, workspace: f.workspace, scratch: f.scratch, looked: f.looked, sandboxed: f.sandboxed, land: f.own && ((p) => f.own!().land(p)) }, pre);
-  const shellRules = f.rules.filter((r) => r.kind === "shell");
   if (risks.length) {
     if (f.mode === "read-only") return { deny: `This session is read-only, and the command ${risks[0]!.why}.` };
     // (The rule is the first reason in a few words: its own when it is that short, else its class's. A line of
     // several says how many more.)
     const classes = [...new Set(risks.map((r) => (r.said ? r.why : RULE_WORDS[r.rule])))];
-    // A standing rule of the owner's that names this command does not cover it, and the card says so.
-    const stands = shellRules.find((r) => parts.some((p) => !p.heredoc && p.words.length && matchRule(r.pattern, p)));
-    return { ask: { risk: "high", why: `the command ${risks.map((r) => r.why).join(" and ")}`, rule: classes.length > 1 ? `${classes[0]}, and ${classes.length - 1} more` : classes[0], suggest: [],
-      ...(risks.every((r) => r.git) ? { settles: true as const } : {}), ...(stands ? { notice: `Your rule "${stands.pattern}" does not cover this one: it ${risks[0]!.why}.` } : {}) } };
+    return uncovered({ ask: { risk: "high", why: `the command ${risks.map((r) => r.why).join(" and ")}`, rule: classes.length > 1 ? `${classes[0]}, and ${classes.length - 1} more` : classes[0], suggest: [],
+      ...(risks.every((r) => r.git) ? { settles: true as const } : {}) } }, risks[0]!.why);
   }
   if (f.mode === "full-auto") return { allow: true };
   // A variable the line's first words give a value is read as that value.

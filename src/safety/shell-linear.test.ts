@@ -9,6 +9,11 @@
 // that lead into its parser; and the whole decision judges such words where
 // the risk rules read them. None may take 50 ms.
 import { expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { chunksUntil } from "../core/proc.ts";
+import { keptIn } from "./looked.ts";
 import { neverAllowed, neverAllowedText } from "./autonomy.ts";
 import { decide } from "./policy.ts";
 import { risksOf as risksIn } from "./risk.ts";
@@ -133,3 +138,72 @@ test("a here-document of 100,000 lines is decided in step with its length, whoev
   }
   expect(slow).toEqual([]);
 }, 120_000);
+
+// Lines of many commands where each one costs more than a word to read: a folder that every `cd` makes longer,
+// a program word a variable holds, a command for another machine, a redirect, a path the disk is asked about.
+// Each read the line again for every part of it (5,000 parts of `cd dN && echo x > f` held the loop 8 seconds).
+// A line of more commands than the rules read (PARTS_MAX) is high risk at once; below it each is read once.
+test("a line of many commands that change folder, write, run elsewhere or delete is decided in step with its length", () => {
+  const facts = (mode: "ask" | "full-auto") => ({ mode, workspace: "/w", sandboxed: false, tool: "Bash", home: "/h", rules: [] });
+  const many = (n: number, one: (k: number) => string, sep = "; ") => Array.from({ length: n }, (_, k) => one(k)).join(sep);
+  const shapes: [string, string, boolean][] = [
+    // (Under the count of commands that are read: the folder is followed until it is longer than a path can be, and a write where it is not known is a write like any other.)
+    ["2,000 x cd dN && echo x > f", many(2_000, (k) => `cd d${k} && echo x > f`), false],
+    ["5,000 x cd dN && echo x > f", many(5_000, (k) => `cd d${k} && echo x > f`), true],
+    ["50,000 x $X a after X=rm", `X=rm; ${"$X a;".repeat(50_000)}`, true],
+    ["4,000 x $X a after X=rm", `X=rm; ${"$X a;".repeat(4_000)}`, true],
+    ["50,000 x ssh h ls", "ssh h ls;".repeat(50_000), true],
+    ["4,000 x ssh h ls", "ssh h ls;".repeat(4_000), false],
+    ["5,000 redirects on one command", `echo x ${many(5_000, (k) => `> f${k}`, " ")}`, true],
+    ["5,000 x echo x > fN", many(5_000, (k) => `echo x > f${k}`), true],
+    ["5,000 x rm -rf dN", many(5_000, (k) => `rm -rf d${k}`), true],
+    ["4,000 x rm -rf dN", many(4_000, (k) => `rm -rf d${k}`), true],
+    ["rm -rf with 5,000 paths", `rm -rf ${many(5_000, (k) => `d${k}`, " ")}`, true],
+    ["4,000 x mv dN dN+1, then rm", `${many(4_000, (k) => `mv d${k} d${k + 1}`)}; rm -rf d4000`, true],
+  ];
+  const slow: string[] = [];
+  for (const [label, command, high] of shapes) for (const mode of ["ask", "full-auto"] as const) {
+    let best = Infinity, d: ReturnType<typeof decide> | undefined;
+    for (let k = 0; k < 6 && best > 5 * LIMIT; k++) { const t = performance.now(); d = decide({ kind: "shell", command, cwd: "/w" }, facts(mode)); best = Math.min(best, performance.now() - t); }
+    if (best > 5 * LIMIT) slow.push(`${mode}: ${label}: ${best.toFixed(0)} ms`);
+    if ((!!d && "ask" in d && d.ask.risk === "high") !== high) slow.push(`${mode}: ${label}: ${high ? "not high risk" : "high risk"}`);
+  }
+  expect(slow).toEqual([]);
+}, 120_000);
+
+// The disk's answers are asked off the loop, and what is read there is bounded too: a repository's own
+// .gitmodules of 100 KB of blank lines held the loop 2.7 seconds for every delete inside the folder.
+test("a repository's own files do not hold the loop while a delete is judged", async () => {
+  const ws = mkdtempSync(join(tmpdir(), "keel-linear-"));
+  try {
+    Bun.spawnSync(["git", "init", "-q", ws], { stdout: "ignore", stderr: "ignore" });
+    mkdirSync(join(ws, "vendor/lib"), { recursive: true });
+    writeFileSync(join(ws, ".gitmodules"), `${"\n".repeat(50_000)}[submodule "lib"]\n\tpath = vendor/lib\n${" \t\n".repeat(20_000)}`);
+    // The longest the loop was held: the largest gap between two turns of a 1 ms timer.
+    let last = performance.now(), gap = 0;
+    const timer = setInterval(() => { const now = performance.now(); gap = Math.max(gap, now - last); last = now; }, 1);
+    const kept = await keptIn(ws, [`:(literal)${join(ws, "vendor")}`]);
+    await Bun.sleep(5);
+    clearInterval(timer);
+    // The submodule under the path is still found, and nothing stalled.
+    expect(kept).toEqual({ n: 2 });
+    expect(gap).toBeLessThan(5 * LIMIT);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+}, 60_000);
+
+// The deadline of a question to git is the question's own: a process further down that keeps the pipe open past
+// it is not waited for (a child that kept its output held five cards for six seconds).
+test("a read that is stopped at its deadline ends there, whoever still holds the pipe", async () => {
+  const proc = Bun.spawn(["sh", "-c", "sleep 30 & echo first"], { stdin: "ignore", stdout: "pipe", stderr: "ignore", detached: true });
+  try {
+    const t = performance.now();
+    let text = "";
+    for await (const chunk of chunksUntil(proc.stdout as ReadableStream<Uint8Array>, Bun.sleep(300))) text += new TextDecoder().decode(chunk);
+    expect(text).toBe("first\n");
+    expect(performance.now() - t).toBeLessThan(1_500);
+  } finally {
+    try { process.kill(-proc.pid, "SIGKILL"); } catch { /* gone already */ }
+  }
+}, 60_000);

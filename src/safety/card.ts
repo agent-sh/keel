@@ -7,6 +7,7 @@
 // too: the page reads this one as well.
 import type { Approval } from "./gate.ts";
 import { marked, marksOf, marksSaid, plainAscii, spelled, type Marks } from "./chars.ts";
+import { RULE_WORDS } from "./risk-words.ts";
 import { shownInPart } from "./summary.ts";
 
 // The most of a text a form carries. The gate keeps this much of an input
@@ -149,7 +150,9 @@ export function cardForm(a: Approval, here?: { name: string; far?: boolean }): C
 // risk it rates them: what destroys, reaches another host or machine, exposes
 // something, or hides what it does. Read from the class word the policy gives
 // with its ask (`Ask.rule`), so a class the policy adds is held here with it.
-const GRAVE = /\b(destroys|remote|exposes|hidden|machine)\b/;
+// (The ask's rule is the class in the policy's few words, "sends credentials out", or an older rule's own:
+// both are read, the class by its words.)
+const GRAVE = { test: (rule: string) => /\b(destroys|remote|exposes|hidden|machine)\b/.test(rule) || Object.values(RULE_WORDS).some((w) => rule.startsWith(w)) };
 
 // The first thing in a text that is not plain: a hidden character by its code point, a look-alike by itself and its code.
 function firstMark(f: CardForm): string {

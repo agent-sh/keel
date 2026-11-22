@@ -59,7 +59,7 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSy
 import { basename, dirname, join, resolve } from "node:path";
 import { privateHost } from "./hosts.ts";
 import { defaultStateDir } from "./paths.ts";
-import { chunks, readText } from "./proc.ts";
+import { chunksUntil, readText } from "./proc.ts";
 
 export type GitResult = { code: number; out: string; err: string };
 export type GitOpts = {
@@ -621,27 +621,37 @@ export async function git(dir: string, args: string[], o: GitOpts = {}): Promise
 }
 
 // The first `max` names a listing prints (with -z), and no more: git is stopped there, so a listing over a very
-// large index costs what its first names cost. `none`: no repository here. `late`: it did not answer in time.
-// `failed`: git refused the call (a path outside the repository).
-export async function gitNames(dir: string, args: string[], max: number, timeout: number): Promise<{ names: string[]; none?: true; late?: true; failed?: true }> {
+// large index costs what its first names cost. `pick`: only the entries it takes are counted. `none`: no
+// repository here. `late`: it did not answer in time. `failed`: git refused the call (a path outside the
+// repository). The deadline is the call's own: git and what it started are killed there, and a pipe that one of
+// them still holds open is not waited for.
+export async function gitNames(dir: string, args: string[], max: number, timeout: number, pick?: (entry: string) => boolean): Promise<{ names: string[]; none?: true; late?: true; failed?: true }> {
   let p: Plan;
   try { p = plan(dir, args, { read: true }); } catch { return { names: [], failed: true }; }
   if ("fail" in p) return { names: [], none: true };
   let proc: ReturnType<typeof Bun.spawn>;
-  try { proc = Bun.spawn(p.argv, { cwd: p.cwd, env: p.env, stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout, killSignal: "SIGKILL" }); } catch { return { names: [], failed: true }; }
+  try { proc = Bun.spawn(p.argv, { cwd: p.cwd, env: p.env, stdin: "ignore", stdout: "pipe", stderr: "ignore", detached: true }); } catch { return { names: [], failed: true }; }
+  const stop = () => { try { process.kill(-proc.pid, "SIGKILL"); } catch { try { proc.kill("SIGKILL"); } catch { /* gone already */ } } };
+  let late = false, timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<void>((done) => { timer = setTimeout(() => { late = true; stop(); done(); }, timeout); });
   const names: string[] = [];
   const text = new TextDecoder();
   let rest = "";
-  for await (const chunk of chunks(proc.stdout as ReadableStream<Uint8Array>)) {
-    rest += text.decode(chunk, { stream: true });
-    for (let at = rest.indexOf("\0"); at >= 0 && names.length < max; at = rest.indexOf("\0")) { names.push(rest.slice(0, at)); rest = rest.slice(at + 1); }
-    if (names.length >= max) { proc.kill("SIGKILL"); break; }
-    if (rest.length > 65_536) rest = rest.slice(-4_096); // one name longer than any path: not kept whole
+  try {
+    for await (const chunk of chunksUntil(proc.stdout as ReadableStream<Uint8Array>, deadline)) {
+      rest += text.decode(chunk, { stream: true });
+      for (let at = rest.indexOf("\0"); at >= 0 && names.length < max; at = rest.indexOf("\0")) { const entry = rest.slice(0, at); if (!pick || pick(entry)) names.push(entry); rest = rest.slice(at + 1); }
+      if (names.length >= max) break;
+      if (rest.length > 65_536) rest = rest.slice(-4_096); // one name longer than any path: not kept whole
+    }
+    if (names.length >= max) { stop(); return { names }; }
+    if (late) return { names, late: true };
+    const code = await Promise.race([proc.exited, deadline.then(() => null)]);
+    if (code === null || late) return { names, late: true };
+    return code === 0 ? { names } : { names: [], failed: true };
+  } finally {
+    clearTimeout(timer);
   }
-  const code = await proc.exited;
-  if (names.length >= max) return { names };
-  if (proc.signalCode) return { names, late: true };
-  return code === 0 ? { names } : { names: [], failed: true };
 }
 
 // Why a call in `dir` that may fetch as far as `fetch` fetches nothing, or nothing when it may.
