@@ -181,8 +181,11 @@ export function stallsLine(stalls: StallFact[]): string {
 
 // How a start came about decides how it is told. `own`: nobody asked the daemon to stop
 // (a kill, the machine, a failure of its own, an end nothing recorded). `asked`: a restart or a
-// stop somebody asked for. An asked one is never told as the daemon going down.
+// stop somebody asked for. An asked one is never told as the daemon going down. `signal`: a stop
+// signal from outside: neither asked of Keel nor the daemon's own doing, and said as such.
 const wasAsked = (r: Restart) => r.before?.how === "restart" || r.before?.how === "stop";
+const bySignal = (r: Restart) => r.before?.how === "signal";
+const longest = (rs: Restart[]) => rs.reduce((n, r) => Math.max(n, r.before ? Math.max(0, r.up_ms - r.before.down_ms) : 0), 0);
 const cutOf = (rs: Restart[]) => rs.flatMap((r) => r.turns.filter((t) => !t.earlier));
 const downOf = (rs: Restart[]) => rs.reduce((n, r) => n + (r.before ? Math.max(0, r.up_ms - r.before.down_ms) : 0), 0);
 // "(killed, or the machine went down; ended on a failure)": the ways among these starts.
@@ -196,18 +199,22 @@ function ownWays(rs: Restart[]): string {
 // Whether what the daemon went through is worth a digest by itself: asked restarts that cut
 // nothing are not (they are told beside whatever else there is to tell).
 export const daemonTold = (f: DaemonFacts | undefined): boolean => !!f && (f.restarts.some((r) => !wasAsked(r)) || f.stalls.length > 0 || cutOf(f.restarts).length > 0);
+// "was stopped by a signal, down 42 min", "was stopped by a signal twice, down 42 min at the longest".
+const signalWords = (rs: Restart[]) => `was stopped by a signal${rs.length > 1 ? ` ${times(rs.length)}` : ""}, down ${dur(longest(rs))}${rs.length > 1 ? " at the longest" : ""}`;
 export function daemonLines(f: DaemonFacts | undefined): string[] {
   if (!f) return [];
   const out: string[] = [];
-  const own = f.restarts.filter((r) => !wasAsked(r)), wanted = f.restarts.filter(wasAsked);
+  const own = f.restarts.filter((r) => !wasAsked(r) && !bySignal(r)), wanted = f.restarts.filter(wasAsked), signalled = f.restarts.filter(bySignal);
   const told = own.slice(-RESTARTS_TOLD);
   if (own.length > 1) out.push(`The daemon stopped by itself ${times(own.length)} (${ownWays(own)})${own.length > told.length ? `; the last ${told.length}:` : ":"}`);
   for (const r of told) out.push(restartSummary(r));
+  // Each stop by a signal in its own sentence (a few): when, how long down, what it cut.
+  for (const r of signalled.slice(-RESTARTS_TOLD)) out.push(restartSummary(r));
   const stalls = stallsLine(f.stalls);
-  if (wanted.length === 1 && !own.length) out.push(restartSummary(wanted[0]!));
+  if (wanted.length === 1 && !own.length && !signalled.length) out.push(restartSummary(wanted[0]!));
   else if (wanted.length) {
     const cut = cutOf(wanted);
-    out.push(`${own.length ? "It also restarted" : "The daemon restarted"} ${times(wanted.length)} when asked (down ${secs(downOf(wanted))} in all); ${cut.length ? `${cut.length} turn${cut.length > 1 ? "s were" : " was"} cut: ${tally(cut)}` : "no turn was cut"}.`);
+    out.push(`${own.length || signalled.length ? "It also restarted" : "The daemon restarted"} ${times(wanted.length)} when asked (down ${secs(downOf(wanted))} in all); ${cut.length ? `${cut.length} turn${cut.length > 1 ? "s were" : " was"} cut: ${tally(cut)}` : "no turn was cut"}.`);
   }
   if (stalls) out.push(stalls);
   return out;
@@ -223,11 +230,12 @@ const downWords = (r: Restart) => (!r.before ? "started after an end that was no
 // "the daemon went down and came back after 29 s, 6 turns cut; restarted 12 times when asked, 71 turns cut; unresponsive twice".
 export function daemonBrief(f: DaemonFacts | undefined): string {
   if (!f || (!f.restarts.length && !f.stalls.length)) return "";
-  const own = f.restarts.filter((r) => !wasAsked(r)), wanted = f.restarts.filter(wasAsked);
+  const own = f.restarts.filter((r) => !wasAsked(r) && !bySignal(r)), wanted = f.restarts.filter(wasAsked), signalled = f.restarts.filter(bySignal);
   const parts = [
     own.length ? `${own.length === 1 ? downWords(own[0]!) : `stopped by itself ${times(own.length)}`}${cutBrief(own)}` : "",
+    signalled.length ? `${signalWords(signalled)}${cutBrief(signalled)}` : "",
     wanted.length ? `restarted ${wanted.length === 1 ? "" : `${times(wanted.length)} `}when asked${cutBrief(wanted)}` : "",
-    f.stalls.length ? `${own.length || wanted.length ? "" : "was "}unresponsive ${times(f.stalls.length)}` : "",
+    f.stalls.length ? `${own.length || wanted.length || signalled.length ? "" : "was "}unresponsive ${times(f.stalls.length)}` : "",
   ].filter(Boolean);
   return parts.length ? `the daemon ${parts.join("; ")}` : "";
 }

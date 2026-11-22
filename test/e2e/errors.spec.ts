@@ -22,6 +22,8 @@ test("errors fold, link to their session and resolve", async ({ page, request })
   const row = panel.getByTestId("error-row").filter({ hasText: tag });
   await expect(row).toHaveCount(1);
   await expect(row.getByTestId("error-count")).toHaveText("3x");
+  // When it last happened, on the clock, beside how long ago (it read "now" or "1h" alone).
+  await expect(row.getByTestId("error-time")).toHaveText(/^\d\d:\d\d:\d\d · now$/);
   // The row says it opens: a marker in a token color, turned once it has.
   const marker = row.getByTestId("error-marker");
   const isOpen = () => row.evaluate((d) => (d as HTMLDetailsElement).open);

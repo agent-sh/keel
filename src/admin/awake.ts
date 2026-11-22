@@ -62,6 +62,8 @@ export class Awake {
   private denied = false;
   readonly available: boolean;
   draining = false;
+  // The daemon got a stop signal: the lock's process gets it too (its group), and that end is not a refusal.
+  signalled = false;
 
   private firstReason?: string;
 
@@ -126,6 +128,8 @@ export class Awake {
       const granted = this.locked;
       this.locked = false;
       const err = (await readText(p.stderr).catch(() => "")).trim();
+      // Ended with the daemon by the stop signal both got: nothing refused the lock.
+      if (this.signalled) return;
       this.refused = err || `systemd-inhibit ended with ${code}`;
       // Refused at once, with nobody asking for a hold: this machine does not give the lock.
       if (!granted && !this.untilMs) {

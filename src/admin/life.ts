@@ -34,10 +34,10 @@ const KEPT = 50;
 const G = globalThis as { __keelLife?: Life; __keelRestarts?: Restarts };
 
 // `listening_ms`: when it began to answer. `code`: the exit code of an end it did not choose.
-type Alive = { pid: number; started_ms: number; alive_ms: number; listening_ms?: number; ended_ms?: number; how?: "restart" | "stop" | "crash"; code?: number };
+type Alive = { pid: number; started_ms: number; alive_ms: number; listening_ms?: number; ended_ms?: number; how?: "restart" | "stop" | "crash" | "signal"; code?: number };
 
 // `unknown`: why nothing is known of the daemon before this one.
-export type Life = { before: Before | null; unknown?: string; started_ms: number; beat(): void; listening(): void; end(how: "restart" | "stop" | "crash", code?: number): void };
+export type Life = { before: Before | null; unknown?: string; started_ms: number; beat(): void; listening(): void; end(how: "restart" | "stop" | "crash" | "signal", code?: number): void };
 
 // How the daemon that wrote this sign of life ended, or why that cannot be said.
 // `listened`: when the log last shows a daemon begin to answer (any daemon writes that line).
@@ -94,7 +94,8 @@ export function beginLife(stateDir: string): Life {
 }
 
 // A stop the daemon makes itself says which kind before it exits.
-export const endLife = (how: "restart" | "stop") => G.__keelLife?.end(how);
+// `signal`: a stop signal from outside ended it (main.ts), not a stop or restart asked of Keel.
+export const endLife = (how: "restart" | "stop" | "signal") => G.__keelLife?.end(how);
 // The sign of life, from the daemon's one timer; and the moment it began to answer.
 export const beatLife = () => G.__keelLife?.beat();
 export const lifeListening = () => G.__keelLife?.listening();

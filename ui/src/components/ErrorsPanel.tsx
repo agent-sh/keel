@@ -6,10 +6,13 @@ import type { ErrorRecord, ErrorSite } from "../../../src/core/types.ts";
 import { elsewhere, ERROR_STATE, errorState, healedWords } from "../../../src/admin/error-rows.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { navigate, setUI } from "../lib/ui.ts";
-import { ago, cn, when } from "../lib/utils.ts";
+import { ago, clock, cn, when } from "../lib/utils.ts";
 import { Seg, tabId } from "./Seg.tsx";
 import type { Cause } from "../../../src/admin/stall-cause.ts";
 import { CAUSE_LABEL, ownDoing, secs } from "../../../src/admin/stall-rows.ts";
+
+// A row's time: 20:05:34, and the day before it when that was not today.
+const lastAt = (ts: number) => clock(ts, { seconds: true, date: new Date(ts).toDateString() !== new Date().toDateString() });
 
 // One row per kind of failure (the daemon folds repeats into a count), with
 // every session it happened in (each with its own count, latest time, and a
@@ -165,7 +168,8 @@ function Row({ e }: { e: ErrorRecord }) {
             {n}x
           </span>
         )}
-        <span className="text-micro text-faint tabular-nums" title={when(e.ts)}>{ago(e.ts)}</span>
+        {/* When it last happened on the reader's clock (with the day when not today), and how long ago. */}
+        <span className="text-micro text-faint tabular-nums" title={when(e.ts)} data-testid="error-time">{lastAt(e.ts)} · {ago(e.ts)}</span>
         {state === "open" && (
           <button
             type="button"

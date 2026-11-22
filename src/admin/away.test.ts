@@ -196,7 +196,7 @@ test("the digest names a kill, what it cut and the stalls of the absence, and co
 test("asked restarts are summed and never told as going down, and a kill among them is told first", () => {
   const one = { spans: [{ from: T0, to: T0 + 9 * H }], present: true };
   const turn = (i: number, k: number, state: Restart["turns"][number]["state"] = "continued") => ({ turn_event: `t${i}-${k}`, end_event: `e${i}-${k}`, step: 2, tools: [], ran_ms: 60_000, down_ms: 0, crashed: false, session_id: sid(k), title: `Session ${k}`, state }) as unknown as Restart["turns"][number];
-  const start = (i: number, how: "killed" | "restart" | "crash" | "stop", cut: number): Restart => {
+  const start = (i: number, how: "killed" | "restart" | "crash" | "stop" | "signal", cut: number): Restart => {
     const up = T0 + H + i * 10 * MIN, down = up - (how === "restart" ? 300 : 35_000);
     return { id: `${i}`, up_ms: up, pid: 100 + i, before: { pid: 99 + i, started_ms: up - 10 * MIN, down_ms: down, how }, turns: Array.from({ length: cut }, (_, k) => turn(i, k)), settled_ms: up + 300 };
   };
@@ -216,6 +216,10 @@ test("asked restarts are summed and never told as going down, and a kill among t
   const beside = digest(page([row(2, { title: "Build", did: { turns: 1, failed: {}, agents: {}, cost: 0 } })]), one, { daemon: { restarts: idle, stalls: [] } })!;
   expect(beside.daemon).toEqual(["The daemon restarted 4 times when asked (down 1.2 s in all); no turn was cut."]);
   expect(digestBrief(beside)).toStartWith("the daemon restarted 4 times when asked; 1 turn ended");
+  // A stop signal from outside, the daemon down 42 minutes: not "when asked", and the time down is in the headline.
+  const signalled = { ...start(0, "signal", 1), before: { ...start(0, "signal", 1).before!, down_ms: start(0, "signal", 1).up_ms - 42 * MIN } };
+  expect(daemonBrief({ restarts: [signalled], stalls: [] })).toBe("the daemon was stopped by a signal, down 42 min, 1 turn cut");
+  expect(daemonLines({ restarts: [signalled], stalls: [] })).toEqual([expect.stringMatching(/^The daemon was stopped by a signal at \d\d:\d\d:\d\d and came back at \d\d:\d\d:\d\d UTC\S* \(down 42 min\); 1 turn was cut: 1 resumed\.$/)]);
   // Thirty starts, three of them kills, one a failure of its own: counted by how each came about,
   // the ones nobody asked for told one by one, the asked ones in one sentence.
   const thirty = Array.from({ length: 30 }, (_, i) => start(i, [4, 17, 26].includes(i) ? "killed" : i === 9 ? "crash" : "restart", (i * 5) % 13));

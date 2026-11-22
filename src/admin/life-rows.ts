@@ -8,7 +8,8 @@ import type { CutState, CutTurn } from "../engine/hooks.ts";
 // How the daemon before this one ended. `killed`: it left no end (a kill, the
 // runtime or the machine went down); its time is its last sign of life.
 // `crash`: the process ended itself on a failure (`code`: its exit code).
-export type Before = { pid: number; started_ms: number; down_ms: number; how: "killed" | "restart" | "stop" | "crash"; code?: number };
+// `signal`: a stop signal from outside (SIGTERM, SIGINT) stopped it: nobody asked Keel to stop.
+export type Before = { pid: number; started_ms: number; down_ms: number; how: "killed" | "restart" | "stop" | "crash" | "signal"; code?: number };
 // `left`: nothing went on with it (its session is archived, say); it is as the cut left it.
 // `why`: for a held turn the reason; for one that went on by other means, what the means were.
 // `earlier`: an earlier stop cut it, and it was still waiting to be decided when this start came.
@@ -36,7 +37,7 @@ function span(ms: number): string {
   const m = Math.round(s / 60);
   return m < 90 ? `${m} min` : `${(m / 60).toFixed(1)} h`;
 }
-const HOW: Record<Before["how"], string> = { killed: "went down without stopping (killed, or the machine went down)", crash: "ended on a failure", restart: "stopped for a restart", stop: "was stopped" };
+const HOW: Record<Before["how"], string> = { killed: "went down without stopping (killed, or the machine went down)", crash: "ended on a failure", restart: "stopped for a restart", stop: "was stopped", signal: "was stopped by a signal" };
 const title = (t: string) => { const s = t.replace(/\s+/g, " ").trim(); return s ? `"${s.length > 48 ? `${s.slice(0, 47)}…` : s}"` : "an untitled session"; };
 
 // "3 resumed, 1 held", in a fixed order.
@@ -52,7 +53,7 @@ export function tally(turns: RestartTurn[]): string {
 // choose to go down, or a turn was not continued. A planned restart that
 // continued everything is in the log and the Daemon page, not a row each time.
 export const restartNeedsEye = (r: Restart): boolean =>
-  r.before?.how === "killed" || r.before?.how === "crash" || r.turns.some((t) => t.state === "held" || t.state === "left");
+  r.before?.how === "killed" || r.before?.how === "crash" || r.before?.how === "signal" || r.turns.some((t) => t.state === "held" || t.state === "left");
 
 // One sentence: when it went down, how, when it came back, and what that cut.
 export function restartSummary(r: Restart): string {

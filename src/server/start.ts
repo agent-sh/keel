@@ -23,7 +23,7 @@ import { readsOf } from "./reads.ts";
 import { routeModules } from "./routes/index.ts";
 import { portHolder, waitForLeaving } from "../admin/daemon.ts";
 import { relayDiagnostics } from "./diagnostics.ts";
-import { beginLife, lifeListening, Restarts } from "../admin/life.ts";
+import { beginLife, endLife, lifeListening, Restarts } from "../admin/life.ts";
 import { drainLine, exitLine, providersLine, say } from "../admin/daemon-log.ts";
 import { beginWatch, during, timed } from "../admin/stall.ts";
 import { newestTurn } from "../admin/marks.ts";
@@ -245,6 +245,8 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
     await checkpointer.close().catch((e) => errors.capture("server", e, { at: "closing the checkpoint thread" }));
     // What the store still owes is in its file for the next start; what could not be kept there is said.
     for (const n of (await owedAtStop(store, "stop")).notes) console.error(`[daemon] ${n}`);
+    // Said so at the next start: a signal from outside stopped it, nobody asked Keel to.
+    endLife("signal");
     server.stop(true);
   };
   return { url, stateDir, engine, stop };

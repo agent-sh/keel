@@ -142,6 +142,7 @@ export const adminRoutes: RouteModule = (deps) => {
   if (!G.__keelAdminSignals) {
     G.__keelAdminSignals = true;
     for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => {
+      if (G.__keelAdmin) G.__keelAdmin.awake.signalled = true; // the keep-awake lock ends with the signal: not a refusal
       G.__keelAdmin?.daemon.refuseWork();
       G.__keelAdmin?.storage?.stopChecks(); // a check's process ends with the daemon
     });
