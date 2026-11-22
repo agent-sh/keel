@@ -357,7 +357,7 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     expect(said2).toContain(`"Asks a question" cut at step 1, waiting for the owner's answer, after`);
     for (const t of ["Needs approval", "Asks a question"]) expect(said2).not.toContain(`"${t}" cut at step 1, waiting for the model`);
     // Item 7: the turn that goes on with the card says a restart started it, and the cut turns are not turns that ended.
-    await expect.poll(async () => text(`/api/sessions/${approval}/timeline?format=text`), { timeout: 30_000 }).toContain("Running a turn resumed after a daemon restart: step 1, waiting for approval");
+    await expect.poll(async () => text(`/api/sessions/${approval}/timeline?format=text`), { timeout: 30_000 }).toContain("Running a turn resumed after a daemon restart: step 1, needs you: an approval");
     expect(await text(`/api/overview?format=text&max=200`)).toMatch(/\n {2}"Needs approval": an approval waits, for [^;]+; 2 turns cut; \$/);
     expect(await text("/api/away?since=1h&format=text")).toMatch(/\n {2}"Needs approval", needs you: 2 turns cut by a restart; 1 approval waits; \$/);
 
