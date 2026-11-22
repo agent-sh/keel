@@ -64,7 +64,7 @@ async function readAt(page: Page, id: string, line: string) {
 }
 // The same line at the same height (within a few px), and not the end.
 async function same(page: Page, id: string, before: At, what: string) {
-  await expect.poll(async () => { const a = await at(page, id); return a ? [a.line, Math.abs(a.y - before.y) <= 4, a.end] : null; }, { timeout: 15_000, message: what }).toEqual([before.line, true, false]);
+  await expect.poll(async () => { const a = await at(page, id); return a ? [a.line, Math.abs(a.y - before.y) <= 4 ? "where it was" : `at ${a.y} px, it was at ${before.y}`, a.end] : null; }, { timeout: 15_000, message: what }).toEqual([before.line, "where it was", false]);
   return (await at(page, id))!;
 }
 
@@ -278,9 +278,21 @@ test("a place in a part that is not loaded is read first, and a daemon restart k
     });
     await page.goto(`${d.url}/s/${id}`);
     await expect(page.getByTestId("user-message").last()).toBeVisible({ timeout: 30_000 });
-    // The owner reads far up, in parts the page reads as they go.
     const sc = page.locator(".k-reading").first();
     const box = (await sc.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    // A place inside the part the page opens with, above the rows it draws first (the last of that
+    // part are drawn at once, the rest a moment later): its row is there when it is looked for.
+    for (let i = 0; i < 5; i++) { await page.mouse.wheel(0, -2000); await page.waitForTimeout(150); }
+    await page.waitForTimeout(1500);
+    const near = (await at(page, id))!;
+    expect([near.end, near.line.length > 3]).toEqual([false, true]);
+    const partsBefore = await sc.evaluate((el) => el.querySelectorAll("[data-event-id]").length);
+    await page.reload();
+    const nearAfter = await same(page, id, near, "after a reload, a place above the rows drawn first");
+    console.log(`PLACES above the rows drawn first\na reload | ${near.top} to ${nearAfter.top} | ${nearAfter.line} | rows with an event then ${partsBefore}`);
+    await page.evaluate(() => { (window as any).__shown = 0; (window as any).__ends = 0; });
+    // The owner reads far up, in parts the page reads as they go.
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     for (let i = 0; i < 40; i++) { await page.mouse.wheel(0, -3000); await page.waitForTimeout(120); }
     await page.waitForTimeout(1200);

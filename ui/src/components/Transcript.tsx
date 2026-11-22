@@ -920,12 +920,28 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     if (row) { row.style.contentVisibility = "visible"; requestAnimationFrame(() => requestAnimationFrame(() => { row.style.contentVisibility = ""; })); }
     const off = offsetAt(p, holder.getBoundingClientRect().height);
     stick.current = false;
+    const was = el.scrollTop;
     el.scrollTop += yOf(holder) - el.getBoundingClientRect().top - off;
+    // (The scroll event that follows reports this, not the reader.)
+    if (el.scrollTop !== was) settling.current = true;
     lastTop.current = el.scrollTop;
     remember();
     if (!anchor.current) anchor.current = { el: holder, top: off, ev: p.ev, evTop: off };
     setAway(true);
     return true;
+  };
+  // A place is put back in the frame its rows are first drawn in, and a row can stand at another
+  // height for a moment then (its text before the page's own typeface is in, a row that folds once
+  // it has measured itself): the place is put back once more two frames later and when the
+  // typefaces are in, with the row as it stands then. Only while nothing else moved the view: not
+  // the owner, and not a scroll the page made on purpose.
+  const again = useRef<Place | null>(null);
+  const settle = (p: Place) => {
+    again.current = p;
+    const re = () => { const el = scroller.current; if (again.current === p && el && !moved.current && el.scrollTop === lastTop.current) place(p); };
+    requestAnimationFrame(() => requestAnimationFrame(re));
+    if (document.fonts?.status === "loading") void document.fonts.ready.then(() => requestAnimationFrame(re));
+    setTimeout(() => { if (again.current === p) again.current = null; }, 1500);
   };
   // While the part that holds the place is read the conversation is not shown: it appears where the
   // owner was, with no jump from its end. A wait that can be seen says what it is; after three
@@ -951,7 +967,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     const p = placing.current;
     if (!p) return;
     const end = (to: boolean) => { placing.current = null; veil(false); if (!to) toEnd(false, false); };
-    if (place(p)) return end(true);
+    if (place(p)) { settle(p); return end(true); }
     // Its row is not here. An event of the run shown that has no row of its own (it was folded into
     // a turn's notes) has no place; one of an earlier part is read with its part.
     if (events.some((e) => e.id === p.ev) || reaching.current === p.ev) return events.some((e) => e.id === p.ev) ? end(false) : undefined;
@@ -1453,6 +1469,11 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   // the rows above must not leave again when the jump is done.
   const jumped = useRef(false);
   if (focus && (built?.at.get(focus) ?? 0) < cut) jumped.current = true;
+  // So does a place that is put back: its row may be above the first rows, and it is looked for in
+  // the frame its events are drawn in (a row that joined a moment later was taken for no row at all,
+  // and the owner was left at the end of that part).
+  const back = placed.current ? placing.current : placeOf(sessionId);
+  if (back && !back.end && back.ev) jumped.current = true;
   const from = whole || jumped.current ? 0 : cut;
   useEffect(() => {
     if (from === 0) return;
@@ -1580,7 +1601,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           if (away === stick.current) setAway(!stick.current);
           // The scroll this transcript made itself to hold the anchor in place is not the reader's.
           if (settling.current) settling.current = false;
-          else { remember(); saveSoon(); lookSoon(); }
+          else { again.current = null; remember(); saveSoon(); lookSoon(); }
           // The reader moving toward an edge reads the part beyond it (not a
           // scroll that only followed the content changing size).
           if (!stick.current && up && el.scrollTop < el.clientHeight) older(true);
