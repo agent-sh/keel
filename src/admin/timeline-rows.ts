@@ -30,6 +30,8 @@ export type TurnFacts = {
   // refused before they ran (not failures). `branch`: "other" when the turn is not on the branch shown,
   // "unknown" when the read that made the row had not walked that far up the branch yet (see `partial`).
   steps: number; tools: number; failed_tools: number; denied_tools?: number; compactions?: number; branch?: "other" | "unknown";
+  // `requests`: every model request of the turn; `failed_requests`: the attempts among them that failed.
+  requests?: number; failed_requests?: number;
   input?: number; output?: number; cache_read?: number; cost?: number;
 };
 export type TimelineRow = {
@@ -125,6 +127,9 @@ export type TurnInput = {
   usage?: { input?: number; output?: number; cache_read?: number; cost?: number | null } | null;
   running?: boolean;
   steps: number;
+  // Every model request made while it ran, and of them the attempts that failed (a retry sent again, the one it ended on).
+  requests?: number;
+  failed_requests?: number;
   tools: number;
   failed_tools: number;
   denied_tools?: number;
@@ -175,6 +180,8 @@ export function turnRow(t: TurnInput): TimelineRow {
     case "unstarted": text = "A prompt was accepted; the daemon went down before its turn started"; break;
     default: text = `${head}: no end was recorded, ${n}`;
   }
+  // A turn whose requests were sent again says so: its steps count the replies, not the attempts.
+  if (t.failed_requests && t.requests) text += `, ${plural(t.requests, "request")}, ${t.failed_requests} failed`;
   if (bad) text += `, ${bad}`;
   // A call the owner, a rule or the judge refused is a decision, not a failure.
   if (t.denied_tools) text += `, ${plural(t.denied_tools, "denied call")}`;
@@ -191,7 +198,7 @@ export function turnRow(t: TurnInput): TimelineRow {
     ...refs({ error_id: t.error_id, queue_id: str(t.opener?.queue_id), wait_id: str(t.opener?.wait_id), agent_id: str(t.opener?.agent_id), loop_id: str(t.opener?.loop_id), run_id: str(t.opener?.run_id), from_session: str(t.opener?.from), child_session: who.key === "subagent" ? t.agent?.session_id : undefined }),
     turn: clean({
       origin: who.key, queued: who.queued || who.key === "queued" ? (true as const) : undefined, outcome, reason: t.end?.reason, model: t.start.model,
-      steps: t.steps, tools: t.tools, failed_tools: t.failed_tools, denied_tools: t.denied_tools || undefined, compactions: t.compactions || undefined, branch: t.branch === "other" || t.branch === "unknown" ? t.branch : undefined,
+      steps: t.steps, requests: t.requests, failed_requests: t.failed_requests || undefined, tools: t.tools, failed_tools: t.failed_tools, denied_tools: t.denied_tools || undefined, compactions: t.compactions || undefined, branch: t.branch === "other" || t.branch === "unknown" ? t.branch : undefined,
       input: u?.input, output: u?.output, cache_read: u?.cache_read, cost: u?.cost ?? undefined,
     }),
   });

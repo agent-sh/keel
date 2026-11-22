@@ -304,8 +304,8 @@ export class Timeline {
   // summary's) and tool runs, joined by the turn's id.
   private rollup(turnEvent: string) {
     if (!this.table("telemetry_turns")) return undefined;
-    return this.store.db.query<{ tool_calls: number; tool_errors: number; requests: number; input: number; output: number; cache_read: number; cost: number | null }, [string]>(
-      "SELECT tool_calls, tool_errors, requests, input, output, cache_read, cost FROM telemetry_turns WHERE turn_event = ?").get(turnEvent) ?? undefined;
+    return this.store.db.query<{ tool_calls: number; tool_errors: number; requests: number; failed_attempts: number; input: number; output: number; cache_read: number; cost: number | null }, [string]>(
+      "SELECT tool_calls, tool_errors, requests, failed_attempts, input, output, cache_read, cost FROM telemetry_turns WHERE turn_event = ?").get(turnEvent) ?? undefined;
   }
 
   private turn(sessionId: string, m: MarkRow, ctx: Ctx): TimelineRow {
@@ -327,6 +327,8 @@ export class Timeline {
       agent: g && { title: g.title, session_id: g.session_id },
       end: end && { reason: String(end.reason ?? "error"), ms: typeof end.ms === "number" ? end.ms : undefined, ts: f.end!.ts, stopped_by: end.stopped_by, crashed: !!end.crashed, unstarted: !!end.unstarted },
       usage: roll && roll.requests > 0 ? roll : end?.usage,
+      // Every request it made, the attempts that failed and were sent again among them.
+      ...(roll && roll.requests > 0 ? { requests: roll.requests, failed_requests: roll.failed_attempts } : {}),
       running: !f.end && this.live.turnOf?.(sessionId) === m.id,
       ...this.counts(sessionId, m, f.end, end, f.nextSeq),
       compactions: f.compactions,

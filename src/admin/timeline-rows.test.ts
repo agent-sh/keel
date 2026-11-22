@@ -275,3 +275,14 @@ test("what is new since a reader's last read: rows begun since, a turn that ende
   // No earlier read is kept (the first one): every row, and the answer says so.
   expect(timelineText(page, { title: "Dozen lanes", fresh: { since: null } }).split("\n")[0]).toContain("newest first (no earlier read of yours is kept: every row).");
 });
+
+test("a turn whose requests were sent again says how many it made and how many failed", () => {
+  // Twice overloaded, then answered: it read "Owner prompt, 1 step", as a turn of one request.
+  const retried = turnRow({ start, opener: {}, end: { reason: "end_turn" }, steps: 1, tools: 0, failed_tools: 0, requests: 3, failed_requests: 2 });
+  expect(retried.text).toBe("Owner prompt, 1 step, 3 requests, 2 failed");
+  expect(retried.turn).toMatchObject({ steps: 1, requests: 3, failed_requests: 2 });
+  // A turn with no failed attempt says its steps only.
+  const plain = turnRow({ start, opener: {}, end: { reason: "end_turn" }, steps: 2, tools: 0, failed_tools: 0, requests: 2, failed_requests: 0 });
+  expect(plain.text).toBe("Owner prompt, 2 steps");
+  expect(plain.turn!.failed_requests).toBeUndefined();
+});
