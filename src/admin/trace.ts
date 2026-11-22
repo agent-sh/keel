@@ -222,6 +222,7 @@ export class Tracer {
   // written, by session.
   private running = new Map<string, Record<string, unknown>>();
   private turnMade = new Map<string, string>();
+  private born = Date.now();
   private later(what: string, sql: string, params: unknown[]) {
     this.store.side.later(what, () => void this.store.db.run(sql, params as any[]));
   }
@@ -373,14 +374,17 @@ export class Tracer {
     if (this.turnMade.size > 2_000) this.turnMade.clear();
     this.turnMade.set(s.id, turn.id);
     const attrs = { turn_event: turn.id, model: s.model, ...(s.parent_id ? { parent_session: s.parent_id } : {}), ...(p.links.length ? { links: p.links } : {}) };
-    const made = this.store.db.run(
-      "INSERT OR IGNORE INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, status, attrs) VALUES (?, ?, ?, ?, 'turn', 'invoke_agent', ?, 'running', ?)",
-      [p.span, p.trace, p.parent, s.id, turn.ts, JSON.stringify(attrs)],
-    );
+    const sql = "INSERT OR IGNORE INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, status, attrs) VALUES (?, ?, ?, ?, 'turn', 'invoke_agent', ?, 'running', ?)";
+    const row = [p.span, p.trace, p.parent, s.id, turn.ts, JSON.stringify(attrs)];
+    // A turn that began under this tracer has no span yet (the check above): its row waits with the
+    // other side rows. One from before (a turn a restart goes on with) is looked for, as it was.
+    const fresh = turn.ts >= this.born;
+    if (fresh) this.later("a turn's span", sql, row);
+    const made = fresh || this.store.db.run(sql, row).changes > 0;
     // (Written by this call: its attributes are the ones its end goes on from.)
-    if (made.changes) this.began(p.span, attrs);
+    if (made) this.began(p.span, attrs);
     // A prompt that waited in the queue: that wait is the turn's too, before its first step.
-    if (made.changes) {
+    if (made) {
       const qid = this.store.db.query<{ id: string | null }, [string]>(
         "SELECT u.data ->> '$.queue_id' AS id FROM events t JOIN events u ON u.id = t.parent WHERE t.id = ? AND u.kind = 'user'").get(turn.id)?.id;
       const queued = qid ? this.queued.get(qid) : undefined;

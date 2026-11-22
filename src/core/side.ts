@@ -32,7 +32,7 @@
 import type { Database } from "bun:sqlite";
 
 // The tables whose writes may wait. A statement that names one of them makes the waiting writes first.
-export const SIDE_TABLES = ["spans", "telemetry_calls", "telemetry_tools", "telemetry_turns", "telemetry_toolsets", "usage_rollup", "activity", "idle_facts"] as const;
+export const SIDE_TABLES = ["spans", "telemetry_calls", "telemetry_tools", "telemetry_turns", "telemetry_toolsets", "usage_rollup", "activity", "idle_facts", "search_idx", "search_docs", "search_in"] as const;
 const NAMES = new RegExp(`\\b(${SIDE_TABLES.join("|")})\\b`);
 // How long a side write waits for the others (KEEL_SIDE_MS sets another: a test of what a kill loses sets it long).
 export const SIDE_MS = Number(process.env.KEEL_SIDE_MS) > 0 ? Number(process.env.KEEL_SIDE_MS) : 500;

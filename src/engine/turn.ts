@@ -1918,8 +1918,8 @@ export class Engine {
         const u: Usage = res.usage; // priced by the registry from the model's listed price
         this.learn(id, st, events, u);
         usage = addUsage(usage, u);
-        this.store.addUsage(id, u);
-        this.emitSession(id);
+        // (What the reply cost is written with the reply, as one commit: below. A declined one stores it here.)
+        if (res.stop === "refusal") { this.store.addUsage(id, u); this.emitSession(id); }
 
         if (res.stop === "refusal") {
           this.append(id, "assistant", { blocks: res.blocks, model: st.info.id, usage: u, stop: "refusal", stop_details: res.stop_details ?? null });
@@ -1942,7 +1942,13 @@ export class Engine {
         // At the output limit the last tool call may be cut, even when its input
         // parses: it is kept (its id stays paired) but never run.
         const cut = res.stop === "max_tokens" && blocks.at(-1)?.type === "tool_use" ? (blocks.at(-1) as ToolUseBlock) : undefined;
-        this.append(id, "assistant", { blocks, model: st.info.id, usage: u, stop: res.stop });
+        // One commit for the step: what the reply cost and the reply. The frames go out once it is stored, in the order they did.
+        const stored = this.store.atomic(id, () => {
+          this.store.addUsage(id, u);
+          return this.store.append(id, "assistant", { blocks, model: st.info.id, usage: u, stop: res.stop });
+        });
+        this.emitSession(id);
+        this.emitEvent(stored);
         replies++;
 
         if (res.stop === "model_context_window_exceeded") {

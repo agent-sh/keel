@@ -1,9 +1,13 @@
 // Search across sessions: titles and folders first, then what was said and
 // done: prompts (with the names of their attached files), reply text, tool
 // calls with a bounded excerpt of their input and output, and summaries. An
-// FTS5 index the database keeps current with triggers, so the turn loop does
-// not have to know about it.
+// FTS5 index. An event's rows are written beside it, not in its commit: they
+// wait with the other side rows (src/core/side.ts) and are written before
+// anything reads the index. `upto` in search_meta is the last event whose
+// rows are written, so a start after a kill writes the ones that waited.
+// Removing an event's rows is still a trigger of the database.
 import type { Database } from "bun:sqlite";
+import type { Store } from "../../core/store.ts";
 import type { RouteModule } from "../app.ts";
 import { readsOf } from "../reads.ts";
 import { searchLimits, SHELL_TOOLS } from "../search-query.ts";
@@ -48,8 +52,11 @@ const ROWS = (SRC: string) => [
 // column is not indexed); the map can, so removing an event's rows costs a
 // lookup of that event and a delete by rowid each, whatever else is indexed.
 const COLS = "INSERT INTO search_in (text, event_id, session_id, kind, ts, ref, cut)";
-const NEW_SRC = "(SELECT NEW.id AS id, NEW.session_id AS session_id, NEW.kind AS kind, NEW.ts AS ts, NEW.data AS data) e";
+// One event, by its id: what the rows of an event just stored are made from.
+const ONE_SRC = "(SELECT id, session_id, kind, ts, data FROM events WHERE id = ?1) e";
 const KINDS = "('user', 'assistant', 'tool_result', 'compaction', 'note')";
+// Which of ROWS an event of each kind can have.
+const ROWS_OF: Record<string, number[]> = { user: [0], assistant: [1, 2], tool_result: [3], compaction: [4], note: [4] };
 
 // Bumped when what is indexed changes: the index is made again from the events once.
 // The next bump that changes what is indexed must drop the kept-rows path below (UNMAPPED_VERSION).
@@ -67,8 +74,10 @@ DROP VIEW IF EXISTS search_in;
 DROP TABLE IF EXISTS search_docs;
 DROP TABLE IF EXISTS search_meta;
 `;
+// The greatest row number of the events table (the newest event's, but for one stored after the newest was deleted).
+const LAST_EVENT = "(SELECT COALESCE(MAX(rowid), 0) FROM events)";
 const SCHEMA = `
-CREATE TABLE search_meta (version INTEGER NOT NULL);
+CREATE TABLE search_meta (version INTEGER NOT NULL, upto INTEGER);
 CREATE VIRTUAL TABLE IF NOT EXISTS search_idx USING fts5(text, event_id UNINDEXED, session_id UNINDEXED, kind UNINDEXED, ts UNINDEXED, ref UNINDEXED, cut UNINDEXED, tokenize = 'unicode61 remove_diacritics 2');
 CREATE TABLE search_docs (event_id TEXT NOT NULL, doc INTEGER NOT NULL, PRIMARY KEY (event_id, doc)) WITHOUT ROWID;
 CREATE VIEW search_in AS SELECT NULL AS text, NULL AS event_id, NULL AS session_id, NULL AS kind, NULL AS ts, NULL AS ref, NULL AS cut;
@@ -78,9 +87,6 @@ CREATE TRIGGER search_in_ins INSTEAD OF INSERT ON search_in BEGIN
 END;
 CREATE TRIGGER search_docs_del AFTER DELETE ON search_docs BEGIN
   DELETE FROM search_idx WHERE rowid = OLD.doc;
-END;
-CREATE TRIGGER search_idx_ins AFTER INSERT ON events WHEN NEW.kind IN ${KINDS} BEGIN
-  ${ROWS(NEW_SRC).map((r) => `${COLS} ${r};`).join("\n  ")}
 END;
 CREATE TRIGGER search_idx_del AFTER DELETE ON events WHEN OLD.kind IN ${KINDS} BEGIN
   DELETE FROM search_docs WHERE event_id = OLD.id;
@@ -98,9 +104,21 @@ export function initSearchIndex(db: Database) {
     : undefined;
   // The recorded version is trusted only with its objects in place (an older
   // binary cut while it rebuilt its own layout leaves the version without them).
-  const OBJECTS = ["search_idx", "search_docs", "search_in", "search_in_ins", "search_docs_del", "search_idx_ins", "search_idx_del"];
-  const present = new Set(db.query<{ name: string }, string[]>(`SELECT name FROM sqlite_master WHERE name IN (${OBJECTS.map(() => "?").join(", ")})`).all(...OBJECTS).map((r) => r.name));
-  if (had === INDEX_VERSION && present.size === OBJECTS.length) return;
+  const OBJECTS = ["search_idx", "search_docs", "search_in", "search_in_ins", "search_docs_del", "search_idx_del"];
+  // (The trigger that wrote an event's rows in its commit, of a store from before the rows waited.)
+  const OLD = "search_idx_ins";
+  const found = new Set(db.query<{ name: string }, string[]>(`SELECT name FROM sqlite_master WHERE name IN (${[...OBJECTS, OLD].map(() => "?").join(", ")})`).all(...OBJECTS, OLD).map((r) => r.name));
+  const present = new Set(OBJECTS.filter((o) => found.has(o)));
+  if (had === INDEX_VERSION && present.size === OBJECTS.length) {
+    // This version's index as an earlier build left it: its trigger goes, and every event stored so far has its rows.
+    const marked = db.query<{ name: string }, []>("PRAGMA table_info(search_meta)").all().some((c) => c.name === "upto");
+    if (found.has(OLD) || !marked) db.transaction(() => {
+      db.exec(`DROP TRIGGER IF EXISTS ${OLD}`);
+      if (!marked) db.exec("ALTER TABLE search_meta ADD COLUMN upto INTEGER");
+      db.exec(`UPDATE search_meta SET upto = ${LAST_EVENT}`);
+    }).immediate();
+    return;
+  }
   const whole = had === UNMAPPED_VERSION && present.has(OBJECTS[0]!);
   db.transaction(() => {
     const keep = whole;
@@ -111,8 +129,45 @@ export function initSearchIndex(db: Database) {
     // Index what was stored before the index existed. A kept index with no
     // rows was never filled: that version recorded itself before its fill.
     if (!keep || !db.query("SELECT 1 FROM search_docs LIMIT 1").get()) for (const r of ROWS(`events e`)) db.run(`${COLS} ${r}`);
-    db.run("INSERT INTO search_meta (version) VALUES (?)", [INDEX_VERSION]);
+    db.run(`INSERT INTO search_meta (version, upto) VALUES (?, ${LAST_EVENT})`, [INDEX_VERSION]);
   }).immediate(); // the write lock from the start: another process cannot commit in between
+}
+
+// The rows of the events stored from here on. Each event's wait with the other
+// side rows and are written, in the order the events were stored, with the
+// number of the last event written (`upto`): a kill loses the rows that
+// waited, and the next start writes them from the events (catchUp). An event
+// stored with many others (an import) has its rows written in that
+// transaction, after the ones that waited.
+export function keepIndexed(store: Pick<Store, "db" | "side"> & { stored?: Store["stored"] }) {
+  const db = store.db;
+  // (Statements are made when first run and kept by their text: a start that stores nothing reads nothing.)
+  const made = ROWS(ONE_SRC).map((r) => `${COLS} ${r}`);
+  const write = (id: string, kind: string, rowid: number) => {
+    for (const i of ROWS_OF[kind] ?? []) db.query(made[i]!).run(id);
+    db.query("UPDATE search_meta SET upto = MAX(COALESCE(upto, 0), ?)").run(rowid);
+  };
+  // Events stored by a daemon that was killed before their rows were written: at most what waited then.
+  const upto = db.query<{ upto: number | null }, []>("SELECT upto FROM search_meta").get()?.upto;
+  // (An index filled before `upto` was kept holds every event stored so far.)
+  if (upto == null) db.exec(`UPDATE search_meta SET upto = ${LAST_EVENT}`);
+  if (typeof upto === "number") {
+    const late = db.query<{ id: string; kind: string; rowid: number }, [number]>(
+      `SELECT e.id, e.kind, e.rowid AS rowid FROM events e WHERE e.rowid > ? AND e.kind IN ${KINDS} AND NOT EXISTS (SELECT 1 FROM search_docs d WHERE d.event_id = e.id) ORDER BY e.rowid`).all(upto);
+    if (late.length) db.transaction(() => { for (const e of late) write(e.id, e.kind, e.rowid); })();
+  }
+  // The greatest row number handed over: an event numbered at or under it took the number of a
+  // deleted one, and `upto` may be past it already, so its rows do not wait.
+  let seen = Math.max(upto ?? 0, db.query<{ n: number }, []>("SELECT COALESCE(MAX(rowid), 0) AS n FROM events").get()?.n ?? 0);
+  store.stored = (e, bulk) => {
+    const again = e.rowid <= seen;
+    seen = Math.max(seen, e.rowid);
+    // (An event of a kind that is not searched has no rows: `upto` passes it with the next one that has.)
+    if (!ROWS_OF[e.kind]) return;
+    if (!bulk && !again) return store.side.later("an event's search rows", () => write(e.id, e.kind, e.rowid));
+    store.side.flush();
+    write(e.id, e.kind, e.rowid);
+  };
 }
 
 type Hit = {
@@ -133,6 +188,7 @@ export function ftsQuery(q: string): string | null {
 
 export const searchRoutes: RouteModule = ({ store }) => {
   initSearchIndex(store.db);
+  keepIndexed(store);
 
   return {
     "/api/search": {

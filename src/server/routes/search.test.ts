@@ -1,5 +1,6 @@
 // The search index's own bookkeeping, which the e2e cannot see: how an
 // event's rows leave the index, and what a start does to an index it finds.
+import { Database } from "bun:sqlite";
 import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -93,7 +94,7 @@ test("an index from before the map keeps its rows and gets them mapped", async (
   start();
   // The layout of version 3: rows straight into the index, removed by a scan on the event id.
   store.db.exec(`
-    DROP TRIGGER search_idx_ins; DROP TRIGGER search_idx_del; DROP VIEW search_in; DROP TABLE search_docs;
+    DROP TRIGGER search_idx_del; DROP VIEW search_in; DROP TABLE search_docs;
     UPDATE search_meta SET version = 3;
     CREATE TRIGGER search_idx_ins AFTER INSERT ON events WHEN NEW.kind = 'user' BEGIN
       INSERT INTO search_idx (text, event_id, session_id, kind, ts, ref, cut) VALUES (json_extract(NEW.data, '$.text'), NEW.id, NEW.session_id, 'user', NEW.ts, NULL, 0);
@@ -177,7 +178,8 @@ test("a later start reads the recorded version and nothing of the index, even an
     const seen = record(next.store);
     const get = next.start();
     expect(seen.some((q) => q.includes("search_meta"))).toBe(true);
-    expect(seen.filter((q) => /count\s*\(|\bFROM events\b|\bsearch_idx\b|\bsearch_docs\b/i.test(q))).toEqual([]);
+    // (But for the events stored after the last one whose rows were written: a seek past it, which finds none.)
+    expect(seen.filter((q) => /count\s*\(|\bFROM events\b|\bsearch_idx\b|\bsearch_docs\b/i.test(q) && !/e\.rowid > \?|MAX\(rowid\)/.test(q))).toEqual([]);
     expect(version(next.store)).toBe(done);
     // Emptied on purpose and not filled again: the events are still there, the hits are not.
     expect(await next.hits(get, "dunnart")).toEqual([]);
@@ -191,10 +193,47 @@ test("a recorded version whose index objects are gone is made again", async () =
   expect((await first.hits(first.start(), "quokka")).length).toBe(6);
   const done = version(first.store);
   // An older binary cut while it rebuilt its own layout: the version stays, the index does not.
-  first.store.db.exec("DROP TRIGGER search_idx_ins; DROP TRIGGER search_idx_del; DROP TABLE search_idx;");
+  first.store.db.exec("DROP TRIGGER search_idx_del; DROP TABLE search_idx;");
   first.store.db.close();
   const next = open(first.dir);
   expect((await next.hits(next.start(), "quokka")).map((h) => h.session_id)).toEqual(Array(6).fill(s));
   expect(version(next.store)).toBe(done);
   next.store.db.close();
+});
+
+// An event's rows are not written in its commit: they wait with the other
+// side rows. A search still finds the event at once, and a daemon killed
+// while rows waited writes them at its next start, once.
+test("an event's rows wait for the next side commit, are found at once, and survive a kill", async () => {
+  const first = open();
+  const get = first.start();
+  const rows = (s: Store) => s.db.query<{ n: number }, []>("SELECT count(*) AS n FROM search_docs").get()!.n;
+  const committed = () => { const db = new Database(join(first.dir, "keel.db"), { readonly: true }); try { return db.query<{ n: number }, []>("SELECT count(*) AS n FROM search_docs").get()!.n; } finally { db.close(); } };
+  const s = talk(first.store, "wombat");
+  // Stored, not yet indexed: the log holds the events and none of their rows.
+  expect(first.store.side.pending).toBeGreaterThan(0);
+  expect(committed()).toBe(0);
+  // A search has them written first.
+  expect((await first.hits(get, "wombat")).map((h) => h.session_id)).toEqual(Array(6).fill(s));
+  expect(first.store.side.pending).toBe(0);
+  expect(committed()).toBe(6);
+  // An import's events are indexed in its own transaction, after the ones that waited.
+  const late = talk(first.store, "potoroo");
+  const copy = first.store.createWithEvents({ model: "m", workspace: "/" }, [{ id: "imp-1", kind: "user", data: { text: "an imported bettong prompt" }, ts: 5 }]);
+  expect(committed()).toBe(13);
+  expect((await first.hits(get, "bettong")).map((h) => h.session_id)).toEqual([copy.id]);
+  // Killed with rows waiting: the events are stored, their rows are not.
+  const cut = talk(first.store, "quoll");
+  expect(first.store.side.pending).toBeGreaterThan(0);
+  first.store.db.close();
+  expect(committed()).toBe(13);
+  // The next start writes them from the events, each once, and a start after that finds nothing to write.
+  for (let i = 0; i < 2; i++) {
+    const next = open(first.dir);
+    const again = next.start();
+    expect(rows(next.store)).toBe(19);
+    expect((await next.hits(again, "quoll")).map((h) => h.session_id)).toEqual(Array(6).fill(cut));
+    expect((await next.hits(again, "potoroo")).map((h) => h.session_id)).toEqual(Array(6).fill(late));
+    next.store.db.close();
+  }
 });

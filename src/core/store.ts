@@ -376,6 +376,10 @@ export class Store {
   readonly side: Side;
   sideFailed?: (e: unknown, what: string) => void;
 
+  // Told of each event as it is stored (the search index, src/server/routes/search.ts): its row
+  // number in the table, and `bulk` for one stored with many others in a transaction still open.
+  stored?: (e: { id: string; kind: string; rowid: number }, bulk: boolean) => void;
+
   // A read made ahead on the read thread (src/server/reads.ts, readAhead), set
   // by the daemon: what it reads is then in the operating system's memory
   // for the loop. It resolves when that is so, or when it is not worth waiting for.
@@ -924,13 +928,15 @@ export class Store {
       const p = parent !== undefined
         ? parent
         : (this.db.query<{ head: string | null }, [string]>("SELECT head FROM sessions WHERE id = ?").get(session_id)?.head ?? null);
-      this.db
+      const row = this.db
         .query("INSERT INTO events (id, session_id, seq, parent, kind, data, ts) VALUES (?, ?, ?, ?, ?, ?, ?)")
-        .run(id, session_id, n, p, kind, text, ts);
+        .run(id, session_id, n, p, kind, text, ts).lastInsertRowid;
       this.db.query("UPDATE sessions SET updated = ?, head = ? WHERE id = ?").run(now, id, session_id);
-      return { n, p };
+      return { n, p, row: Number(row) };
     });
-    const { n, p } = tx();
+    const { n, p, row } = tx();
+    // (Never a reason for the event to fail: it is stored.)
+    try { this.stored?.({ id, kind, rowid: row }, false); } catch (e) { this.sideFailed?.(e, "an event's search rows"); }
     const ev: StoredEvent = { id, session_id, seq: n, parent: p, kind, data, ts };
     const k = this.kept.get(session_id);
     if (k) {
@@ -1460,9 +1466,10 @@ export class Store {
       let prev: string | null = null;
       let seq = 0;
       for (const e of events) {
-        this.db
+        const row = this.db
           .query("INSERT INTO events (id, session_id, seq, parent, kind, data, ts) VALUES (?, ?, ?, ?, ?, ?, ?)")
-          .run(e.id, ses.id, ++seq, e.parent !== undefined ? e.parent : prev, e.kind, JSON.stringify(this.redact(ses.id, e.kind, e.data)), e.ts);
+          .run(e.id, ses.id, ++seq, e.parent !== undefined ? e.parent : prev, e.kind, JSON.stringify(this.redact(ses.id, e.kind, e.data)), e.ts).lastInsertRowid;
+        this.stored?.({ id: e.id, kind: e.kind, rowid: Number(row) }, true);
         prev = e.id;
       }
       this.db.query("UPDATE sessions SET head = ? WHERE id = ?").run(head !== undefined ? head : prev, ses.id);
@@ -1494,9 +1501,10 @@ export class Store {
             else delete data[k];
           }
         }
-        this.db
+        const row = this.db
           .query("INSERT INTO events (id, session_id, seq, parent, kind, data, ts) VALUES (?, ?, ?, ?, ?, ?, ?)")
-          .run(id, session_id, ++seq, prev, e.kind, JSON.stringify(this.redact(session_id, e.kind, data)), e.ts);
+          .run(id, session_id, ++seq, prev, e.kind, JSON.stringify(this.redact(session_id, e.kind, data)), e.ts).lastInsertRowid;
+        this.stored?.({ id, kind: e.kind, rowid: Number(row) }, true);
         prev = id;
       }
       this.db.query("UPDATE sessions SET head = ? WHERE id = ?").run(prev, session_id);
