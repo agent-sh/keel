@@ -8,6 +8,7 @@ import type { Filter } from "../admin/telemetry.ts";
 import { marksOf, type MarkArgs } from "../safety/marks.ts";
 import { searchContent, type ContentQuery } from "./routes/search-content.ts";
 import { callAnswered, callsNamed, type AnsweredAsk, type NamedAsk } from "./routes/calls-read.ts";
+import { sessionWhole, type WholeAsk } from "./routes/session-read.ts";
 
 export const tasks = {
   // One statement and its rows. The statement is not kept: its text may carry
@@ -25,6 +26,8 @@ export const tasks = {
   // The replies of a session that hold a call by one of some names, and whether a call was answered (the last-call route).
   "calls.named": (db: Database, a: NamedAsk) => callsNamed(db, a),
   "calls.answered": (db: Database, a: AnsweredAsk) => callAnswered(db, a),
+  // A whole session as the bytes of its answer (GET /api/sessions/:id with no page).
+  "session.whole": (db: Database, a: WholeAsk) => sessionWhole(db, a),
 };
 
 export type Tasks = typeof tasks;

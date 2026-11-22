@@ -6,7 +6,6 @@ import { awakeHolds, awakeReasons, recheckAwake } from "../admin/awake.ts";
 import type { Judged } from "../safety/gate.ts";
 import { registerHooks } from "../engine/hooks.ts";
 import { toMessages } from "../engine/turn.ts";
-import { lineage } from "../core/tree.ts";
 import type { Deps, RouteModule } from "../server/app.ts";
 import { registerShared } from "../tools/registry.ts";
 import { ownerSeen } from "../admin/away.ts";
@@ -82,7 +81,7 @@ function init(deps: Deps) {
     beforeRequest: (s, req) => {
       if (req.purpose !== "turn" || !goals.tellModel(s.id)) return req;
       taskRenames.told(s.id);
-      return { ...req, messages: toMessages(lineage(deps.store.events(s.id), deps.store.session(s.id)?.head ?? null)) };
+      return { ...req, messages: toMessages(deps.store.lineage(s.id)) };
     },
     // The owner's agent types are their side of the block (hooks.ts SystemBlock).
     system: (s) => {

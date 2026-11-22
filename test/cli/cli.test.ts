@@ -1731,4 +1731,105 @@ describe("a session out of memory is never read whole on the loop", () => {
       await d.stop();
     }
   }, 120_000);
+
+  // Every other reader of a session that may be out of memory, one at a time:
+  // the phone's routes, a message from another session and where it stands, a
+  // loop's run, the helper's report on a session, the judge reading what the
+  // owner asked for, the whole session asked for at once, and what a start
+  // reads to go on (reports owed, agents at work, loops with a run open).
+  // Each used to read the session whole on the loop.
+  test("the phone, a message between sessions, a loop, the helper, the judge and a start each read a session out of memory: no such read", async () => {
+    const { key, sig } = await import("../e2e/fixtures/phone-app.ts");
+    const { createHash } = await import("node:crypto");
+    // (A session's rows are given back after a second and a half unread here, not an hour.)
+    const d = await restartable(join(SCRATCH, "state-cold-sweep"), { KEEL_EVENTS_IDLE_MS: "50", KEEL_MAIL_STANDIN: join(SCRATCH, "sweep-mail") });
+    const cold = async () => (await d.api("/api/resources")).daemon.kept_events.cold_reads as { n: number; rows: number; by: { who: string; n: number; rows: number }[]; start: { n: number; rows: number; by: { who: string; n: number; rows: number }[] } };
+    const send = (method: string, path: string, body?: unknown) => fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const idle = async (id: string) => {
+      for (let i = 0; i < 600; i++) { const st = await d.api(`/api/cli/state/${id}`); if (!st.running && (st.queue === 0 || st.held)) return; await Bun.sleep(50); }
+      throw new Error(`${id} did not come to rest`);
+    };
+    // Long enough for every idle session's rows to be given back.
+    const out = () => Bun.sleep(2_500);
+    const calls = (...c: [string, unknown][]) => `script:calls ${JSON.stringify(c.map(([name, input]) => ({ name, input })))}`;
+    const made = async (title: string) => {
+      const id = (await d.api("/api/sessions", { title })).session.id as string;
+      await d.api(`/api/sessions/${id}/messages`, { text: calls(["Bash", { command: "echo one" }], ["Bash", { command: "echo two" }]) });
+      await idle(id);
+      return id;
+    };
+    try {
+      await send("PUT", "/api/permissions/settings", { default_mode: "full-auto" });
+      const coordinator = await made("Coordinator");
+      const peer = await made("A peer");
+      const other = await made("Another session");
+      // A phone, paired as the app pairs, signing as the app signs.
+      const req = key(), apr = key();
+      const code = (await (await send("POST", "/api/mobile/pair", { public_url: "https://keel.example.test" })).json()).code;
+      const token = (await (await send("POST", "/v1/pair", { code, pub: req.pub, apub: apr.pub, device_name: "Stand-in phone", lock: true })).json()).token as string;
+      const phone = async (path: string) => {
+        const ts = String(Math.floor(Date.now() / 1000));
+        const r = await fetch(d.url + path, { headers: { authorization: `Bearer ${token}`, "x-hm-ts": ts, "x-hm-sig": sig(req, `GET\n${path}\n${ts}\n${createHash("sha256").update("").digest("hex")}`) } });
+        expect([path, r.status]).toEqual([path, 200]);
+        return r.json() as Promise<any>;
+      };
+      const since = (await phone("/v1/sync?since=0")).seq as number;
+      // A loop in the peer, and the helper, set up while everything is still in memory.
+      const loop = await (await send("POST", "/api/loops", { session_id: peer, schedule: "every day at 09:30", prompt: "script:say the loop ran" })).json();
+      const helper = await (await send("PUT", "/api/helper", { on: true })).json();
+      await send("PATCH", `/api/sessions/${helper.session_id}`, { model: "scripted:stand-in" });
+      await send("PUT", `/api/sessions/${helper.session_id}/permissions`, { mode: "full-auto" });
+
+      // 1. The phone: a page of a chat, its last turn's steps and its usage, each of a session out of memory.
+      await out();
+      expect((await phone(`/v1/chats/${coordinator}/messages?paged=1&limit=20`)).messages.length).toBeGreaterThan(0);
+      expect((await phone(`/v1/chats/${peer}/run`)).steps.length).toBe(2);
+      expect((await phone(`/v1/chats/${other}/usage`)).turn).toBeDefined();
+      // 2. The whole session at once, and the phone catching up from a cursor.
+      await out();
+      expect((await d.api(`/api/sessions/${coordinator}`)).events.length).toBeGreaterThan(5);
+      await phone(`/v1/sync?since=${since}`);
+      // 3. A message from the coordinator to a session out of memory: the count of turns others started
+      // there is read as it arrives, and where the message stands is asked once it was handled.
+      await out();
+      await d.api(`/api/sessions/${coordinator}/messages`, { text: calls(["keel__session_send", { to: other, text: "Status from the coordinator. script:say Noted." }]) });
+      await idle(coordinator);
+      await idle(other);
+      const message = (await d.api(`/api/fleet/messages?session_id=${other}`)).messages[0];
+      // (Its turn has ended by now: the store says so itself, and an older store's row still says delivered.)
+      expect(["delivered", "handled"]).toContain(message?.state);
+      await out();
+      expect((await d.api(`/api/fleet/messages/${message.id}/disposition`)).handled).toBe(true);
+      // 4. A loop's run asked for in a session out of memory: how its last turn stands is read first.
+      expect((await send("POST", `/api/loops/${loop.id}/run`)).status).toBe(200);
+      await idle(peer);
+      // 5. The helper reads a session out of memory.
+      await out();
+      await d.api(`/api/sessions/${helper.session_id}/messages`, { text: calls(["helper__session_read", { session: coordinator }]) });
+      await idle(helper.session_id);
+      expect(JSON.stringify((await d.api(`/api/sessions/${helper.session_id}`)).events.findLast((e: any) => e.kind === "tool_result")?.data.results[0].content)).toContain("Coordinator");
+      // 6. The judge: an agent's call is judged against what the owner asked its root session, which is out of memory by then.
+      const judged = await made("Judged");
+      await send("PUT", `/api/sessions/${judged}/permissions`, { mode: "auto", sandbox: "off" });
+      await d.api(`/api/sessions/${judged}/messages`, { text: calls(["spawn_agent", { message: `Part 1\n${calls(["Bash", { command: "sleep 3" }], ["Bash", { command: "printf marker > judge-allow.txt" }])}`, isolation: "none" }]) });
+      await Bun.sleep(6_000);
+      await idle(judged);
+      const first = await cold();
+      // 7. A start with agents at work, a report owed and a loop's run open: what it reads to go on.
+      await d.api(`/api/sessions/${coordinator}/messages`, { text: calls(...Array.from({ length: 2 }, (_, k) => ["spawn_agent", { message: `Part ${k + 1}\n${calls(["Bash", { command: "sleep 4" }])}`, isolation: "none" }] as [string, unknown])) });
+      await send("POST", `/api/loops/${loop.id}/run`);
+      await Bun.sleep(1_000);
+      await d.graceful();
+      await Bun.sleep(7_000);
+      await idle(coordinator);
+      await idle(peer);
+      const brief = (c: { n: number; rows: number; by: { who: string; n: number; rows: number }[] }) => ({ n: c.n, rows: c.rows, by: c.by.map((b) => `${b.n} of ${b.rows} rows: ${b.who}`) });
+      const second = await cold();
+      const none = { n: 0, rows: 0, by: [] };
+      expect({ while_serving: brief(first), before_the_restart_started: brief(first.start), after_the_restart: brief(second), as_it_started: brief(second.start) })
+        .toEqual({ while_serving: none, before_the_restart_started: none, after_the_restart: none, as_it_started: none });
+    } finally {
+      await d.stop();
+    }
+  }, 180_000);
 });

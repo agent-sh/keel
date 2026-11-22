@@ -1,7 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { lineage } from "../core/tree.ts";
 import { localTime } from "../core/clock.ts";
 import { dur } from "../admin/timeline-rows.ts";
 import { didLine } from "./report-did.ts";
@@ -848,20 +847,39 @@ function settle(agentId: string, report: string) {
 // report instance. A wait cut by a stop or a restart holds no report, so it
 // stays owed. A result stored before reports had ids matches by its words,
 // only for the agent's current report while it has had one task.
+// Only the parent's tool results stored since the agent was made are read (a
+// result about an agent is not older than the agent), and only those that
+// name it: the parent's history before that, and its replies, are not read,
+// and a parent that is not in memory is not brought in.
 function waitHolds(a: AgentRecord, report = reportId(a)): boolean {
-  const evs = D().store.events(a.parent_id);
-  const legacy = () => report === reportId(a) && !D().store.events(a.session_id).some((e) => e.kind === "turn_end" && e.seq <= a.first_seq);
-  const calls = new Set(evs.flatMap((e) => (e.kind === "assistant" ? (e.data.blocks as any[]).filter((b) => b.type === "tool_use" && b.name === "wait_agent").map((b) => b.id) : [])));
-  for (const e of evs) {
-    if (e.kind !== "tool_result") continue;
+  const { store } = D();
+  const legacy = () => report === reportId(a) && !store.db.query("SELECT 1 FROM events INDEXED BY events_bare WHERE session_id = ? AND kind = 'turn_end' AND seq <= ? LIMIT 1").get(a.session_id, a.first_seq);
+  for (const e of store.newest(a.parent_id, "tool_result", a.created - CLOCK_SLACK_MS)) {
     for (const r of e.data.results ?? []) {
-      if (!calls.has(r.tool_use_id) || r.is_error || typeof r.content !== "string") continue;
+      if (r.is_error || typeof r.content !== "string" || !r.content.includes(a.id)) continue;
       let st: any;
       try { st = JSON.parse(r.content)?.status?.[a.id]; } catch { continue; }
-      if (st?.report_id !== undefined) { if (st.report_id === report) return true; continue; }
-      const words = st?.completed ?? st?.errored ?? st?.interrupted?.report ?? st?.incomplete?.report;
+      if (st === undefined || st === null || !isWaitCall(e, r.tool_use_id)) continue;
+      if (st.report_id !== undefined) { if (st.report_id === report) return true; continue; }
+      const words = st.completed ?? st.errored ?? st.interrupted?.report ?? st.incomplete?.report;
       if (words !== undefined && words === a.result && legacy()) return true;
     }
+  }
+  return false;
+}
+// How far a clock set back between an agent's start and its report may put the report's time before the agent's.
+const CLOCK_SLACK_MS = 5 * 60_000;
+// Whether the call a result answers is a wait_agent call: the reply that made
+// it is the nearest one the result was stored under.
+function isWaitCall(result: StoredEvent, callId: string): boolean {
+  const { store } = D();
+  let parent = result.parent;
+  for (let n = 0; parent && n < 4096; n++) {
+    const e = store.event(parent);
+    if (!e) return false;
+    const call = e.kind === "assistant" ? (e.data.blocks as any[] | undefined)?.find((b) => b.type === "tool_use" && b.id === callId) : undefined;
+    if (call) return call.name === "wait_agent";
+    parent = e.parent;
   }
   return false;
 }
@@ -1428,10 +1446,7 @@ export function onCutTurnHeld(sessionId: string, why: string) {
 // The reason the session's last turn ended, when it ended by itself after the
 // last input it got (not parked by a restart, nothing sent after it).
 function endedTurn(sessionId: string): string | undefined {
-  const { store } = D();
-  const evs = lineage(store.events(sessionId), store.session(sessionId)?.head ?? null);
-  for (let i = evs.length - 1; i >= 0; i--) {
-    const e = evs[i]!;
+  for (const e of D().store.back(sessionId)) {
     if (e.kind === "user") return undefined;
     if (e.kind === "turn_end") return e.data.reason && e.data.reason !== "restart" ? String(e.data.reason) : undefined;
   }

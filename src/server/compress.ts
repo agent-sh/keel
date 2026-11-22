@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { brotliCompress, brotliCompressSync, constants } from "node:zlib";
 
-type Enc = "zstd" | "br" | "gzip";
+export type Enc = "zstd" | "br" | "gzip";
 
 // A body under one TCP segment (about 1.4 KB) arrives in one packet either way:
 // compressing it saves no round trip and costs CPU, so the floor sits below that.
@@ -38,7 +38,9 @@ const vary = (h: Headers) => {
 };
 
 const DYNAMIC: readonly Enc[] = ["zstd", "br", "gzip"];
-const encode = (raw: Uint8Array<ArrayBuffer>, e: Enc) =>
+// The coding a JSON answer to this request is compressed with, null for none.
+export const codingOf = (req: Request): Enc | null => (req.method === "HEAD" ? null : pick(req.headers.get("accept-encoding"), DYNAMIC));
+export const encode = (raw: Uint8Array<ArrayBuffer>, e: Enc) =>
   (e === "zstd" ? Bun.zstdCompressSync(raw, { level: 3 })
   : e === "br" ? brotliCompressSync(raw, { params: { [constants.BROTLI_PARAM_QUALITY]: 4, [constants.BROTLI_PARAM_SIZE_HINT]: raw.length } })
   : Bun.gzipSync(raw, { level: 4 })) as Uint8Array<ArrayBuffer>;

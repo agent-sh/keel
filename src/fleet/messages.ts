@@ -120,10 +120,8 @@ export class Messages {
   // Turns other sessions started (or wait to start) since the owner last spoke here.
   private peerTurns(id: string): number {
     let n = 0;
-    const events = this.store.events(id);
-    for (let i = events.length - 1; i >= 0; i--) {
-      const e = events[i]!;
-      if (e.kind !== "user") continue;
+    // (The inputs alone, newest first, back to the owner's last prompt: nothing else of the session is read.)
+    for (const e of this.store.newest(id, "user")) {
       if (e.data.kind === "peer" || String(e.data.text ?? "").startsWith(PEER_PREFIX)) n++;
       else if (!e.data.kind && !e.data.origin) break; // the owner's own prompt
     }
@@ -321,7 +319,9 @@ export class Messages {
     if (m.state !== "delivered" && m.state !== "queued") return { state: m.state, handled: false, session: s.id, phase: s.phase, reason: m.reason ?? undefined };
     const tag = `message_id="${id}"`;
     const waiting = this.store.queue(s.id).some((q) => q.text.includes(tag));
-    const seen = this.store.events(s.id).some((e) => e.kind === "user" && (e.data.message_id === id || String(e.data.text ?? "").includes(tag)));
+    // (It was stored in the session after it was received: only the inputs since then are read.)
+    let seen = false;
+    for (const e of this.store.newest(s.id, "user", m.created_ms - 5 * 60_000)) if (e.data.message_id === id || String(e.data.text ?? "").includes(tag)) { seen = true; break; }
     return { state: m.state, handled: seen && !waiting && s.phase !== "working" && !this.engine.isRunning(s.id), session: s.id, phase: s.phase };
   }
 

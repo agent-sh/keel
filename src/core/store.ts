@@ -198,6 +198,14 @@ const GIVE_BACK_BYTES = 8e6;
 // Asks the runtime's collector: for a whole collection now, or for one when it sees fit.
 const collect = (whole: boolean) => (globalThis as { Bun?: { gc(whole: boolean): void } }).Bun?.gc(whole);
 
+// A walk back over a session that is not in memory (Store.back) reads this
+// many of its rows at a time, and brings the session in when it has read this
+// many: a reader of a branch's end stops within its last turn, far before that.
+const BACK_PART = 256;
+const BACK_ROWS = 8192;
+// And a look back over the events of one kind (Store.newest) reads this many of them at a time.
+const NEWEST_PART = 32;
+
 const pause = () => new Promise<void>((r) => setImmediate(r));
 // KEEL_TRACE_COLD=1: each whole-session read made on the loop is a line of the log, with who asked; =stack: and its call stack.
 const TRACE_COLD = process.env.KEEL_TRACE_COLD;
@@ -893,6 +901,69 @@ export class Store {
     }
     const k = this.held(session_id);
     return (k.whole ??= k.all.slice());
+  }
+
+  // The branch the session shows, from its head back, an event at a time: for
+  // a reader that needs how the branch ends (its last turn, its last prompt)
+  // and stops there. A session in memory is walked on the branch kept. One
+  // that is not is read from the index of its rows, a few hundred at a time
+  // from the newest, and an event's body only when it is asked for: nothing
+  // is brought into memory, and the reader pays for how far back it goes. One
+  // that goes further than BACK_ROWS has the session brought in after all
+  // (counted as a whole read on the loop: coldReads).
+  *back(session_id: string): Generator<StoredEvent, void, undefined> {
+    const walk = function* (line: readonly StoredEvent[], from: number) { for (let i = from; i >= 0; i--) yield line[i]!; };
+    if (this.kept.has(session_id)) { const line = this.lineage(session_id); return yield* walk(line, line.length - 1); }
+    let want = this.db.query<{ head: string | null }, [string]>("SELECT head FROM sessions WHERE id = ?").get(session_id)?.head ?? null;
+    const part = this.db.query<Bare, [string, number, number]>("SELECT id, seq, parent, kind, ts FROM events INDEXED BY events_bare WHERE session_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?");
+    const body = this.db.query<{ data: string }, [string]>("SELECT data FROM events WHERE id = ?");
+    let below = Number.MAX_SAFE_INTEGER;
+    for (let read = 0; want; ) {
+      if (read >= BACK_ROWS || this.kept.has(session_id)) {
+        // Far back (or brought in by someone meanwhile): the rest is walked on the branch kept.
+        const line = this.lineage(session_id);
+        let at = firstAfter(line, below - 1) - 1;
+        while (at >= 0 && line[at]!.id !== want) at--;
+        return yield* walk(line, at);
+      }
+      const rows = part.all(session_id, below, BACK_PART);
+      if (!rows.length) return;
+      read += rows.length;
+      below = rows.at(-1)!.seq;
+      for (const r of rows) {
+        if (r.id !== want) continue;
+        want = r.parent ?? null;
+        const e = { id: r.id, session_id, seq: r.seq, parent: r.parent ?? null, kind: r.kind as EventKind } as StoredEvent;
+        let data: unknown;
+        Object.defineProperty(e, "data", { enumerable: true, get: () => (data ??= deepFreeze(JSON.parse(body.get(r.id)?.data ?? "null"))) });
+        e.ts = r.ts;
+        yield Object.freeze(e);
+        if (!want) return;
+      }
+    }
+  }
+
+  // The session's events of one kind, on any branch, newest first, an event
+  // at a time: for a reader that looks back for something and stops when it
+  // has it. `since`: only those stored at or after that time. From the rows
+  // kept when the session is in memory, else from the index of its rows, with
+  // the bodies of the events of that kind alone: nothing is brought in.
+  *newest(session_id: string, kind: EventKind, since = 0): Generator<StoredEvent, void, undefined> {
+    const k = this.kept.get(session_id);
+    if (k) {
+      this.touch(session_id, k);
+      const all = k.all;
+      for (let i = all.length - 1; i >= 0; i--) if (all[i]!.kind === kind && all[i]!.ts >= since) yield all[i]!;
+      return;
+    }
+    const part = this.db.query<EventRow, [string, string, number, number, number]>(
+      "SELECT e.* FROM events e WHERE e.id IN (SELECT id FROM events INDEXED BY events_bare WHERE session_id = ?1 AND kind = ?2 AND ts >= ?3 AND seq < ?4 ORDER BY seq DESC LIMIT ?5) ORDER BY e.seq DESC");
+    for (let below = Number.MAX_SAFE_INTEGER; ; ) {
+      const rows = part.all(session_id, kind, since, below, NEWEST_PART);
+      for (const r of rows) yield deepFreeze(rowToEvent(r));
+      if (rows.length < NEWEST_PART) return;
+      below = rows.at(-1)!.seq;
+    }
   }
 
   // The last event of the branch the session shows, read by itself: for a

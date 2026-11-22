@@ -1,4 +1,4 @@
-import { lineage } from "../core/tree.ts";
+import type { StoredEvent } from "../core/types.ts";
 import * as activity from "./activity.ts";
 import { D, alertHook, capture, deliver, emit, hasPending } from "./core.ts";
 import { check, extractJson } from "./schema.ts";
@@ -219,15 +219,16 @@ const sum = (u: any = {}) => (u.input ?? 0) + (u.output ?? 0) + (u.cache_read ??
 // used a tool, over the whole turn: a message the owner steered in mid-turn
 // is part of it, not its start.
 function turnFacts(sessionId: string): { id?: string; tokens: number; tools: boolean } {
-  const evs = lineage(D().store.events(sessionId), D().store.session(sessionId)?.head ?? null);
-  const end = evs.findLastIndex((e) => e.kind === "turn_end");
-  if (end < 0) return { tokens: 0, tools: false };
+  // (Read from the branch's end back to the turn's start, and no further.)
+  let end: StoredEvent | undefined;
   let tools = false;
-  for (let i = end - 1; i >= 0 && evs[i]!.kind !== "turn_start"; i--) {
-    const e = evs[i]!;
+  for (const e of D().store.back(sessionId)) {
+    if (!end) { if (e.kind === "turn_end") end = e; continue; }
+    if (e.kind === "turn_start") break;
     if (e.kind === "assistant" && (e.data.blocks as any[]).some((b) => b.type === "tool_use")) tools = true;
   }
-  return { id: evs[end]!.id, tokens: sum(evs[end]!.data.usage), tools };
+  if (!end) return { tokens: 0, tools: false };
+  return { id: end.id, tokens: sum(end.data.usage), tools };
 }
 
 // The checks under way, each by its session and goal instance: a check of a
@@ -362,7 +363,8 @@ async function owed(sessionId: string) {
   if (!active(g) || !s || s.archived) return;
   // Work still lined up (a wake, an agent's report, a turn under way) ends in a turn of its own, checked then.
   if (D().engine.isRunning(sessionId) || hasPending(sessionId) || waits.activeFor(sessionId) > 0 || liveAgents(sessionId) > 0) return;
-  const last = lineage(D().store.events(sessionId), s.head ?? null).findLast((e) => e.kind === "user" || e.kind === "turn_start" || e.kind === "turn_end");
+  let last: StoredEvent | undefined;
+  for (const e of D().store.back(sessionId)) if (e.kind === "user" || e.kind === "turn_start" || e.kind === "turn_end") { last = e; break; }
   if (last && (last.kind !== "turn_end" || last.data.reason === "restart")) return;
   // No turn since the goal was set: its first prompt never went (the daemon was on its way down).
   if (!last || last.ts < g!.started_ms) return void kickoff(g!);

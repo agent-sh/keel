@@ -798,6 +798,13 @@ export function mobileApi(ctx: MobileCtx) {
   }
 
   const chat = (sid: string) => store.session(sid);
+  // The chat, for a handler that reads its events: one that is not in memory is brought in off
+  // the loop first, a part at a time (its rows; these routes are not under /api/sessions/:id,
+  // where every request does this).
+  const warmed = async (sid: string) => {
+    if (!store.isKept(sid) && store.session(sid)) await store.warm(sid, false);
+    return store.session(sid);
+  };
 
   // The receipt of a prompt already stored, as it stands now: the committed
   // message, a queued prompt still waiting as it was first told, or the
@@ -843,7 +850,14 @@ export function mobileApi(ctx: MobileCtx) {
     },
     // `since` and `seq` are positions in the global event sequence, so a long
     // session never hides a newer event of a short one (syncBody).
-    "/v1/sync": { GET: signed((req) => json(syncBody(Math.max(0, Number(new URL(req.url).searchParams.get("since")) || 0)))) },
+    "/v1/sync": {
+      GET: signed(async (req) => {
+        const since = Math.max(0, Number(new URL(req.url).searchParams.get("since")) || 0);
+        // The chats whose shown branch changed since are read whole below: brought in off the loop first.
+        if (since > 0) for (const id of mobile.branchesAfter(since)) await warmed(id);
+        return json(syncBody(since));
+      }),
+    },
     "/v1/events": { GET: signed((req, dev, _b, srv) => events(req, dev, srv)) },
     "/v1/chats": {
       GET: signed(() => { const u = unread(); return json({ chats: store.sessions().map((s) => chatFull(s, u)), working: working() }); }),
@@ -876,8 +890,8 @@ export function mobileApi(ctx: MobileCtx) {
       })),
     },
     "/v1/chats/:cid/messages": {
-      GET: signed((req) => {
-        const s = chat(req.params.cid!);
+      GET: signed(async (req) => {
+        const s = await warmed(req.params.cid!);
         if (!s) return err("unknown chat", 404);
         const page = chatMessages(s, new URL(req.url).searchParams);
         return page ? json(page) : err("that message is not on this chat's shown branch; reload the chat", 409);
@@ -950,11 +964,11 @@ export function mobileApi(ctx: MobileCtx) {
     },
     "/v1/chats/:cid/stop": { POST: signed(async (req) => { await engine.interrupt(req.params.cid!); return json({ ok: true }); }) },
     "/v1/chats/:cid/run": {
-      GET: signed((req) => {
-        const s = chat(req.params.cid!);
+      GET: signed(async (req) => {
+        const s = await warmed(req.params.cid!);
         if (!s) return err("unknown chat", 404);
         // The tool calls of the latest turn on the shown branch, one step each.
-        const line = lineage(store.events(s.id), s.head);
+        const line = store.lineage(s.id);
         const start = line.findLastIndex((e) => e.kind === "turn_start");
         const steps = (start < 0 ? [] : line.slice(start)).flatMap((e) => (e.kind === "assistant" ? (e.data.blocks ?? []) : [])
           .filter((b: any) => b.type === "tool_use").map((b: any) => ({ tool: b.name, ts: secs(e.ts), what: stepWhat(b.input) })));
@@ -964,11 +978,11 @@ export function mobileApi(ctx: MobileCtx) {
       }),
     },
     "/v1/chats/:cid/usage": {
-      GET: signed((req) => {
-        const s = chat(req.params.cid!);
+      GET: signed(async (req) => {
+        const s = await warmed(req.params.cid!);
         if (!s) return json({ chat_id: req.params.cid, session: null });
         // The latest finished turn on the shown branch, with its answering model.
-        const line = lineage(store.events(s.id), s.head);
+        const line = store.lineage(s.id);
         const end = line.findLast((e) => e.kind === "turn_end");
         const answered = end ? line.slice(0, line.indexOf(end)).findLast((e) => e.kind === "assistant")?.data.model : undefined;
         const u = end?.data.usage;

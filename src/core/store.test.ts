@@ -536,3 +536,51 @@ test("an append costs the same in a long session as in a new one, and what a rea
   expect(long).toBeLessThan(short * 1.8 + 5);
   expect(store.lineage(longId).length).toBe(11 + 5000);
 });
+
+// A reader of how a branch ends walks it from the head back, and a reader
+// that looks for something among the events of one kind takes them newest
+// first. Both give what the whole session gives, whether the session is in
+// memory or not, and for one that is not they bring nothing in: only as far
+// as the reader goes is read.
+test("a walk back from the head and a look over one kind give the session's own events without bringing it in", () => {
+  const dir = scratch();
+  const { id, fork } = long(new Store(dir), 3000);
+  const whole = new Store(dir);
+  const line = [...whole.lineage(id)].reverse();
+  const users = whole.events(id).filter((e) => e.kind === "user").reverse();
+  const brief = (e: { id: string; seq: number; parent: string | null; kind: string; ts: number; data: unknown }) => ({ id: e.id, seq: e.seq, parent: e.parent, kind: e.kind, ts: e.ts, data: e.data });
+  expect(line.length).toBe(1505);
+  expect(line.some((e) => e.id === fork)).toBe(true);
+  // In memory: the kept branch, the same events.
+  expect([...whole.back(id)].map(brief)).toEqual(line.map(brief));
+  expect([...whole.newest(id, "user")].map(brief)).toEqual(users.map(brief));
+  // Not in memory: the same events, a few read, nothing kept, no whole read counted.
+  const cold = new Store(dir);
+  cold.serving = true;
+  const bodies = spyOn(JSON, "parse");
+  const tail: { id: string; kind: string; data: unknown }[] = [];
+  for (const e of cold.back(id)) { tail.push({ id: e.id, kind: e.kind, data: e.kind === "user" ? e.data : null }); if (tail.length === 40) break; }
+  // (Only the bodies asked for were parsed.)
+  expect(bodies.mock.calls.length).toBe(tail.filter((e) => e.kind === "user").length);
+  bodies.mockRestore();
+  expect(tail.map((e) => e.id)).toEqual(line.slice(0, 40).map((e) => e.id));
+  expect(tail.filter((e) => e.kind === "user").map((e) => e.data)).toEqual(line.slice(0, 40).filter((e) => e.kind === "user").map((e) => e.data));
+  const few: string[] = [];
+  for (const e of cold.newest(id, "user")) { few.push(e.id); if (few.length === 50) break; }
+  expect(few).toEqual(users.slice(0, 50).map((e) => e.id));
+  const since = users[9]!.ts;
+  expect([...cold.newest(id, "user", since)].map(brief)).toEqual(users.filter((e) => e.ts >= since).map(brief));
+  expect(cold.isKept(id)).toBe(false);
+  expect(cold.coldReads().n).toBe(0);
+  // A walk past the branch's fork (its first half lies under 1,500 newer events of another branch) is still the branch.
+  expect([...cold.back(id)].map((e) => e.id)).toEqual(line.map((e) => e.id));
+  expect(cold.isKept(id)).toBe(false);
+  // One that goes very far has the session brought in after all, and is counted as that.
+  const far = long(new Store(dir), 9000);
+  const farLine = [...new Store(dir).lineage(far.id)].reverse().map((e) => e.id);
+  const again = new Store(dir);
+  again.serving = true;
+  expect([...again.back(far.id)].map((e) => e.id)).toEqual(farLine);
+  expect(again.isKept(far.id)).toBe(true);
+  expect(again.coldReads().n).toBe(1);
+});

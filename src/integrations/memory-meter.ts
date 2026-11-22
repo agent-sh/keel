@@ -21,7 +21,6 @@
 // thousands of facts does not hold the loop for all of them at once.
 import { ownerPrompt } from "../core/owner.ts";
 import type { Store } from "../core/store.ts";
-import { lineage } from "../core/tree.ts";
 import { bytesPerToken } from "../engine/compact.ts";
 import { registerHooks } from "../engine/hooks.ts";
 import { SessionMap } from "../core/session-map.ts";
@@ -247,7 +246,7 @@ CREATE INDEX IF NOT EXISTS memory_given_ts ON memory_given(ts);`);
     const list = this.open.get(sessionId);
     if (!list?.length) return;
     this.open.delete(sessionId);
-    const events = lineage(this.store.events(sessionId), this.store.session(sessionId)?.head ?? null);
+    const events = this.store.lineage(sessionId);
     const from = events.findLastIndex((e) => e.kind === "turn_start");
     const said = events.slice(Math.max(0, from)).filter((e) => e.kind === "assistant").map((e) => {
       const calls = (e.data.blocks ?? []).filter((b: any) => b.type === "tool_use").map((b: any) => stringsOf(b.input).join("\n")).join("\n");

@@ -91,7 +91,7 @@ export class Outcomes {
       // parked, counted from the branch as that start left it.
       turnCut: (s, cut) => {
         if (!cut.crashed) return;
-        const line = lineage(this.store.events(s.id), this.store.session(s.id)?.head ?? null);
+        const line = this.store.lineage(s.id);
         const at = line.findIndex((e) => e.id === cut.end_event);
         if (at >= 0) this.recordTurn(s, "restart", line.slice(0, at + 1));
       },

@@ -64,7 +64,13 @@ export function askedFor(store: Store, sessionId: string, n = 6): { owner: strin
     const s = store.session(id);
     return s ? store.lineage(id) : [];
   };
-  const owner = root ? words(root.id).filter((e) => e.kind === "user" && !e.data.kind && !NOT_OWNER.has(e.data.origin) && !String(e.data.text).startsWith("[harness]")).slice(-n).map((e) => `- ${String(e.data.text).slice(0, 1000)}`) : [];
+  // The newest n of the owner's messages, read from the branch's end back: the prompts before them are not read.
+  const owner: string[] = [];
+  if (root) for (const e of store.back(root.id)) {
+    if (e.kind !== "user" || e.data.kind || NOT_OWNER.has(e.data.origin) || String(e.data.text).startsWith("[harness]")) continue;
+    owner.unshift(`- ${String(e.data.text).slice(0, 1000)}`);
+    if (owner.length >= n) break;
+  }
   const task = self?.parent_id ? words(self.id).find((e) => e.kind === "user" && e.data.kind === "task")?.data.text : undefined;
   return { owner, task: typeof task === "string" ? task.slice(0, 2000) : undefined };
 }
@@ -109,6 +115,9 @@ export async function askJudge(providers: Providers, id: string, p: JudgeText, s
 
 export function makeJudge(store: Store, providers: Providers, model: () => string | undefined, policy: () => string | undefined = () => undefined) {
   return async (a: ReviewAsk): Promise<Verdict> => {
+    // The session's rows are brought in off the loop when it is not in memory (a subagent's first call
+    // after a start): the task it was given is looked for from its first event.
+    if (a.session.parent_id && !store.isKept(a.session.id)) await store.warm(a.session.id, false);
     const p = judgePrompt(a, askedFor(store, a.session.id), policy());
     if (a.mode === "auto") {
       // The action itself has already passed the exact-input check. Other

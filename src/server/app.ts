@@ -18,7 +18,7 @@ import { lastCall } from "./routes/calls-read.ts";
 import index from "../../ui/index.html";
 import { speedOffer } from "../providers/registry.ts";
 import { carrySettings, commitSwitch } from "./switch.ts";
-import { bundleRoutes, compressJson } from "./compress.ts";
+import { bundleRoutes, codingOf, compressJson } from "./compress.ts";
 import { daemonApi, embeddedBuilt, stamp, UiBundles } from "./ui-bundle.ts";
 import { fitted } from "../engine/image-fit.ts";
 import { bytesPerToken } from "../engine/compact.ts";
@@ -96,6 +96,8 @@ function routeOf(req: Request & { params?: Record<string, string> }): string {
 }
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
+// The size of the parts a whole session's answer is sent in.
+const WHOLE_PART = 1 << 20;
 // Bun's default idle timeout, and the point where a handler counts as slow.
 const IDLE_S = 10;
 const SLOW_MS = 8_000;
@@ -144,7 +146,9 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
         const sid = req.params?.id;
         if (typeof sid === "string" && !store.isKept(sid)) {
           const url = new URL(req.url);
-          if (url.pathname.startsWith("/api/sessions/") && url.searchParams.get("events") !== "0" && !url.searchParams.has("after") && store.session(sid)) await store.warm(sid, false);
+          // (Nor for the whole session, which the read thread writes from the table.)
+          const whole = req.method === "GET" && url.pathname === `/api/sessions/${sid}` && !(Number(url.searchParams.get("page")) > 0);
+          if (url.pathname.startsWith("/api/sessions/") && url.searchParams.get("events") !== "0" && !url.searchParams.has("after") && !whole && store.session(sid)) await store.warm(sid, false);
         }
         // Who asks, for a read that holds the loop all the same: the route as it is registered, its values left out (src/core/asker.ts).
         const res = await asAsker(routeOf(req), () => timed(label, () => h(req, srv)));
@@ -262,18 +266,41 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           const q = new URL(req.url).searchParams;
           const bare = q.get("events") === "0";
           const page = Number(q.get("page")) || 0;
-          // A transcript that is not in memory is brought in a part at a time,
-          // so a long one does not hold every other session while it is read.
-          // What is answered is read after that, in one piece. A reader that
-          // asks for a part has the events brought in without their bodies.
-          if (!bare) await store.warm(req.params.id, page <= 0);
+          // The whole session (no `page`): every event of it, all branches. It
+          // is written on the read thread from the rows as they are stored
+          // (routes/session-read.ts): the loop reads, parses and compresses
+          // none of it, and the session is not brought into memory for it.
+          // What goes with the events is the session as it stands now; `seq`
+          // is the newest of the events answered, so a reader that goes on
+          // from it misses nothing stored meanwhile.
+          if (!bare && page <= 0) {
+            const s = session(req.params.id)!;
+            const head = `{"session":${JSON.stringify(s)},"events":`;
+            const tail = `,${JSON.stringify({ running: engine.isRunning(s.id), bytes_per_token: bytesPerToken(s.model), queue: engine.queued(s.id), held: engine.isHeld(s.id), status: engine.statusOf(s.id), draft: live.draft(s.id), rev: bus.rev() }).slice(1)}`;
+            const whole = await readsOf(store).run("session.whole", { session: s.id, head, tail, coding: codingOf(req) });
+            const headers = { "content-type": "application/json;charset=utf-8", ...(whole.coding ? { "content-encoding": whole.coding, vary: "Accept-Encoding" } : {}) };
+            // A long answer goes out a part at a time, the loop free between the parts: tens of megabytes
+            // handed to the socket in one piece are copied where every other session waits.
+            if (whole.body.length <= WHOLE_PART) return new Response(whole.body, { headers });
+            let at = 0;
+            return new Response(new ReadableStream<Uint8Array>({
+              pull(c) {
+                c.enqueue(whole.body.subarray(at, (at += WHOLE_PART)));
+                if (at >= whole.body.length) c.close();
+              },
+            }), { headers });
+          }
+          // A part of a transcript that is not in memory: its events are
+          // brought in without their bodies, a part at a time, and what is
+          // answered is read after that, in one piece.
+          if (!bare) await store.warm(req.params.id, false);
           // The rest runs in one piece after that wait, where the handler is no
           // longer timed as a whole: reading a long branch out and writing it
           // as JSON is named, should it hold the loop (src/admin/stall.ts).
           return timed(() => `answering GET /api/sessions/${req.params.id} (reading the session out and writing it as JSON)`, () => {
             const s = session(req.params.id);
             if (!s) return bad("no such session", 404);
-            const events = bare ? undefined : page > 0 ? pageOfLine(store.lineage(s.id), { limit: page }, (parent) => store.versions(s.id, parent), s.head, true).events : store.events(s.id);
+            const events = bare ? undefined : pageOfLine(store.lineage(s.id), { limit: page }, (parent) => store.versions(s.id, parent), s.head, true).events;
             // `seq`: the session's newest seq on any branch, which a reader that
             // holds a part of the session resumes from (its own last event may
             // be far below it: the branch shown is not always the newest).

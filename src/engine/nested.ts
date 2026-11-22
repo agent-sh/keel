@@ -18,7 +18,6 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { contains } from "../core/paths.ts";
 import type { Store } from "../core/store.ts";
-import { lineage } from "../core/tree.ts";
 import type { Session, StoredEvent, ToolResultBlock } from "../core/types.ts";
 import type { Tool } from "../tools/types.ts";
 import { checkpointAt } from "./compact.ts";
@@ -95,8 +94,7 @@ function textsOf(e: StoredEvent): string[] {
 }
 
 export function loadedPaths(store: Store, sessionId: string): Set<string> {
-  const s = store.session(sessionId);
-  const events = lineage(store.events(sessionId), s?.head ?? null);
+  const events = store.lineage(sessionId);
   const cp = checkpointAt(events);
   const cpId = cp.at >= 0 ? events[cp.at]!.id : "";
   let st = seen.get(sessionId);

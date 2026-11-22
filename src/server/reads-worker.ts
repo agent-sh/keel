@@ -19,7 +19,11 @@ self.onmessage = (ev: MessageEvent) => {
     if (!db) throw new Error("the read thread has no database");
     const run = tasks[m.name] as ((db: Database, args: unknown) => unknown) | undefined;
     if (!run) throw new Error(`no read named ${m.name}`);
-    postMessage({ id: m.id, value: run(db, m.args) });
+    const value = run(db, m.args);
+    // A read that answers with bytes names their buffers: handed to the loop, not copied.
+    const transfer = (value as { transfer?: ArrayBuffer[] } | null)?.transfer;
+    if (transfer) postMessage({ id: m.id, value: { ...(value as object), transfer: undefined } }, transfer);
+    else postMessage({ id: m.id, value });
   } catch (e) {
     postMessage({ id: m.id, error: e instanceof Error ? { message: e.message, stack: e.stack } : { message: String(e) } });
   }

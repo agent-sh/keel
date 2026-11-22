@@ -2021,6 +2021,12 @@ export class Engine {
         if (longestSure(provider.wire) < 2 * IDLE_MARGIN_MS) continue;
         let facts = this.idleFacts(id);
         if (!facts || facts.head !== s.head || facts.model !== info.id || facts.wire !== provider.wire) {
+          // Its events are read: a session that is not in memory is brought in off the loop first
+          // (this pass and the start's own pass over the same sessions run side by side).
+          if (!this.store.isKept(id)) {
+            await this.store.warm(id, false);
+            if (this.running.has(id) || this.store.session(id)?.head !== s.head) continue;
+          }
           facts = this.readIdleFacts(s, provider.wire, info.id);
           // One session's events were read: the loop is given back before the next.
           await new Promise<void>((r) => setImmediate(r));

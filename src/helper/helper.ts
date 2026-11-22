@@ -275,7 +275,7 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
 
   // The note a helper prompt gets: events not told yet, and the remembered
   // items it calls up that the context has not seen since its last summary.
-  private note(s: Session, events: StoredEvent[], prompt: string): { text: string; recalled: MemoryRecord[]; hints: string[]; repeats: number; told: DigestEvent[] } | null {
+  private note(s: Session, events: readonly StoredEvent[], prompt: string): { text: string; recalled: MemoryRecord[]; hints: string[]; repeats: number; told: DigestEvent[] } | null {
     const at = checkpointAt(events).at;
     // A record a note already carried is not sent again while it is as that
     // note had it. One changed since (by the owner, or by a tool) is: its new
@@ -311,7 +311,7 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
       compactFocus: (s) => (s.settings.helper ? FOCUS : undefined),
       async beforeRequest(s, req) {
         if (req.purpose !== "turn" || !s.settings.helper) return req;
-        const events = lineage(h.deps.store.events(s.id), h.deps.store.session(s.id)?.head ?? null);
+        const events = h.deps.store.lineage(s.id);
         let i = events.length - 1;
         while (i >= 0 && (events[i]!.kind === "turn_start" || events[i]!.kind === "compaction" || (events[i]!.kind === "note" && !events[i]!.data.model) || (events[i]!.kind === "note" && events[i]!.data.memory))) i--;
         const last = events[i];
@@ -332,7 +332,7 @@ CREATE TABLE IF NOT EXISTS helper_mail_seen (id TEXT PRIMARY KEY, ts INTEGER NOT
         const hooks = [n.told.length && "digest", (recalled.length || n.hints.length) && "remembered"].filter(Boolean);
         const ev = h.deps.store.append(s.id, "note", { text: n.text, model: true, memory: { source: "helper", hooks }, helper: { recall: recalled, hints: n.hints, events: n.told.length } });
         h.deps.bus.emit({ t: "event", event: ev });
-        return { ...req, messages: toMessages(lineage(h.deps.store.events(s.id), h.deps.store.session(s.id)?.head ?? null)) };
+        return { ...req, messages: toMessages(h.deps.store.lineage(s.id)) };
       },
     });
     this.off.push(this.deps.bus.on((f) => {

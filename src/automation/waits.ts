@@ -6,7 +6,6 @@ import * as activity from "./activity.ts";
 import * as failures from "./failures.ts";
 import { readStat } from "../core/pid.ts";
 import { pumpText, readText } from "../core/proc.ts";
-import { lineage } from "../core/tree.ts";
 
 // Zero-token waits: the daemon probes, the model is not called until the
 // condition holds, the deadline passes or the wait is cancelled. Each of those
@@ -744,7 +743,8 @@ export async function tick() {
 export function cutTurn(sessionId: string): boolean {
   const { store } = D();
   if (store.bootWorking.includes(sessionId)) return true;
-  const end = lineage(store.events(sessionId), store.session(sessionId)?.head ?? null).at(-1);
+  // (The branch's last event, read by itself: a session that is not in memory is not brought in for it.)
+  const end = store.headEvent(sessionId);
   return end?.kind === "turn_end" && end.data.reason === "restart";
 }
 

@@ -6,7 +6,6 @@ import { clip } from "../automation/core.ts";
 import { agentCounts, sessionState } from "../automation/state.ts";
 import { watchWord } from "../core/watch.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
-import { lineage } from "../core/tree.ts";
 import { whose } from "../engine/compact.ts";
 import * as perm from "../server/routes/permissions.ts";
 import { pendingQuestions } from "../tools/interact.ts";
@@ -80,11 +79,13 @@ const sessionRead: Tool = {
   description: "Read one session (an id, or a part of its title naming one): its last summary if it was compacted, its last turns (the owner's or other prompts, the replies, tool calls by name), errors, and its agents.",
   input_schema: { type: "object", properties: { session: { type: "string" }, turns: { type: "number", description: "How many recent prompts to show (default 4, at most 20)" } }, required: ["session"], additionalProperties: false },
   readOnly: true,
-  run: (input) => guard(() => {
+  run: (input) => guard(async () => {
     const { store, engine } = H!.deps;
     const s = find(String(input.session ?? ""));
     if (s.settings.helper) return "That is this conversation.";
-    const evs = lineage(store.events(s.id), s.head);
+    // A session that is not in memory is brought in off the loop first (its rows; the bodies read are the last turns').
+    await store.warm(s.id, false);
+    const evs = store.lineage(s.id);
     const n = Math.min(20, Math.max(1, Number(input.turns) || 4));
     const out: string[] = [`${s.title || "(untitled)"} (${s.id}) in ${s.workspace}, model ${s.model}, ${sessionState(s).word}, last turn ended: ${s.settings.last_end ?? "none"}`];
     const summary = evs.findLast((e) => e.kind === "compaction" && e.data.mode === "summary");

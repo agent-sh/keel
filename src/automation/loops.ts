@@ -1,6 +1,6 @@
 import { zonedStamp } from "../core/clock.ts";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { lineage } from "../core/tree.ts";
+import type { StoredEvent } from "../core/types.ts";
 import { D, alertHook, capture, deliver, emit, familyOf, flush, inert, withdraw } from "./core.ts";
 import { checkZone, localZone, nextCron, nextRuns, parseCron, parseSchedule, YEAR } from "./schedule.ts";
 import * as activity from "./activity.ts";
@@ -367,14 +367,18 @@ function runText(l: LoopRecord, extra?: string): string {
 // held it yet), else the reason it ended, when it ended.
 function lastTurn(sessionId: string): string | undefined {
   const { store } = D();
-  const line = lineage(store.events(sessionId), store.session(sessionId)?.head ?? null);
-  const started = line.findLastIndex((e) => e.kind === "turn_start");
-  const ended = line.findLastIndex((e) => e.kind === "turn_end");
-  if (started > ended) return store.bootWorking.includes(sessionId) ? "cut" : undefined;
-  if (ended < 0) return undefined;
-  const reason = String(line[ended]!.data.reason);
-  // Parked, and anything after it (a note that it was held, a new prompt) means it is not waiting to be continued.
-  return reason === "restart" ? (ended === line.length - 1 ? "cut" : undefined) : reason;
+  // The branch's end, read back to its last turn's start or end, whichever is newer.
+  let after = 0;
+  for (const e of store.back(sessionId)) {
+    if (e.kind === "turn_start") return store.bootWorking.includes(sessionId) ? "cut" : undefined;
+    if (e.kind === "turn_end") {
+      const reason = String(e.data.reason);
+      // Parked, and anything after it (a note that it was held, a new prompt) means it is not waiting to be continued.
+      return reason === "restart" ? (after === 0 ? "cut" : undefined) : reason;
+    }
+    after++;
+  }
+  return undefined;
 }
 
 // The engine decides a cut turn soon after a start: it waits for the turn's
@@ -733,7 +737,8 @@ export function recover() {
     const s = D().store.session(session_id);
     const turn = s && !s.archived ? lastTurn(session_id) : undefined;
     if (turn === "cut") continue;
-    const ended = turn ? lineage(D().store.events(session_id), s!.head ?? null).findLast((e) => e.kind === "turn_end") : undefined;
+    let ended: StoredEvent | undefined;
+    if (turn) for (const e of D().store.back(session_id)) if (e.kind === "turn_end") { ended = e; break; }
     if (ended && ended.seq > (first ?? 0)) onTurnEnd(session_id, turn!);
     else db().query("UPDATE loop_runs SET ended_ms = ?, ok = 0, outcome = 'failed', detail = 'the daemon stopped during the run' WHERE session_id = ? AND ended_ms IS NULL AND started_ms IS NOT NULL").run(now, session_id);
   }
