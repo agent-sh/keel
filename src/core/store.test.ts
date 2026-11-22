@@ -418,7 +418,8 @@ test("a failure captured after the store closed is said on the console and throw
   console.error = (...a: unknown[]) => void said.push(a.join(" "));
   try {
     const rec = errors.capture("server", new Error("after the close"));
-    expect([rec.id, rec.message]).toEqual(["", "after the close"]);
+    // (Not stored: it is kept in memory under a name of its own, and shown from there.)
+    expect([rec.id, rec.message, errors.unwritten().map((e) => e.message)]).toEqual(["unwritten-1", "after the close", ["after the close"]]);
   } finally {
     console.error = log;
     rmSync(dir, { recursive: true, force: true });

@@ -243,6 +243,9 @@ export type ErrorRecord = {
   recovered_ts?: number;
   // On a record read for one session (atSession): when the kind last happened anywhere; `ts` is that session's last.
   kind_ts?: number;
+  // Not stored: the store could not take this row (why, in its words). It is
+  // kept in memory, shown, and written once the store takes rows again.
+  unwritten?: string;
 };
 
 // One kind of failure in one session: how often, when, and where its latest

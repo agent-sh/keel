@@ -6,7 +6,8 @@ import type { RouteModule } from "../app.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
-export const errorRoutes: RouteModule = ({ store, errors, bus }) => {
+export const errorRoutes: RouteModule = ({ store, errors: tracker, bus }) => {
+  const errors = tracker;
   const allSeen = async (req: Request, what: "resolve" | "read") => {
     const b = (await req.json().catch(() => null)) as { seen?: { id: string; count: number }[] } | null;
     const open = store.errors(5000, what === "resolve" ? { resolved: false } : { resolved: false, read: false });
@@ -33,7 +34,9 @@ export const errorRoutes: RouteModule = ({ store, errors, bus }) => {
         // grouped record (one row per cause, with counts and where), the same
         // one its model is told from.
         const session = q.get("session") ?? undefined;
-        const list = errors.list(200, { resolved: flag("resolved"), read: flag("read"), session });
+        // The failures the store could not take (its disk is full, or it takes no writes) lead the open list.
+        const waiting = flag("resolved") === true || flag("read") === true ? [] : tracker.unwritten(session);
+        const list = [...waiting, ...errors.list(200, { resolved: flag("resolved"), read: flag("read"), session })];
         return json(session ? { errors: list, failures: recordOf(store, session) } : { errors: list });
       },
       POST: async (req: Request) => {
@@ -49,6 +52,11 @@ export const errorRoutes: RouteModule = ({ store, errors, bus }) => {
         const b = (await req.json().catch(() => null)) as { resolved?: unknown; read?: unknown } | null;
         const ok = (v: unknown) => v === undefined || typeof v === "boolean";
         if (!b || (b.resolved === undefined && b.read === undefined) || !ok(b.resolved) || !ok(b.read)) return json({ error: "resolved or read must be true or false" }, 400);
+        // One the store never took is only in memory: seen or resolved, it is let go.
+        if (req.params.id.startsWith("unwritten-")) {
+          const gone = tracker.dismiss(req.params.id);
+          return gone ? json({ record: gone }) : json({ error: "no such error" }, 404);
+        }
         if (!store.error(req.params.id)) return json({ error: "no such error" }, 404);
         if (typeof b.resolved === "boolean") errors.resolve(req.params.id, b.resolved);
         if (typeof b.read === "boolean") store.readError(req.params.id, b.read);

@@ -187,6 +187,11 @@ function Row({ e }: { e: ErrorRecord }) {
           {state === "recovered" && <span>Healed by a retry <span className="tabular-nums text-fg">{when(e.recovered_ts!)}</span></span>}
           {e.resolved_ts && <span>Resolved <span className="tabular-nums text-fg">{when(e.resolved_ts)}</span></span>}
         </div>
+        {e.unwritten && (
+          <p className="text-caption text-warn" data-testid="error-unwritten">
+            Kept in memory: the store did not take this row ({e.unwritten}). It is written as soon as the store takes rows again, and is lost if the daemon stops first.
+          </p>
+        )}
         {named && <Wire s={named} />}
         <Sites e={e} />
         {e.context?.kind === "stall" && e.context.cause && <StallCause c={e.context.cause as Cause} />}

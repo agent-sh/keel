@@ -304,3 +304,28 @@ test("manual compaction is tracked once and archived refusals stay visible", asy
     await request.delete(path);
   }
 });
+
+// A failure the store could not take (its disk is full, or it takes no writes) is kept by the daemon in
+// memory and leads the list all the same. The panel shows it as a row like the others and says that it
+// is not saved yet. (The daemon's list is the real one; the kept row is put in front of it here, since a
+// spec cannot fill the daemon's disk.)
+test("a failure the store could not take is listed, and the panel says it is only in memory", async ({ page }) => {
+  const kept: ErrorRecord = { id: "unwritten-1", ts: Date.now() - 4000, first_ts: Date.now() - 9000, count: 3, source: "server", message: "the store's disk is full: a prompt could not be stored", unwritten: "database or disk is full" };
+  await page.route(/\/api\/errors(\?|$)/, async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    const answer = await route.fetch();
+    const body = await answer.json();
+    await route.fulfill({ response: answer, json: { ...body, errors: [kept, ...body.errors] } });
+  });
+  await page.goto("/");
+  await page.getByTestId("errors-button").click();
+  const row = page.getByTestId("errors-panel").getByTestId("error-row").filter({ hasText: "the store's disk is full" });
+  await expect(row).toHaveCount(1);
+  await expect(row.getByTestId("error-count")).toHaveText("3x");
+  await row.locator("summary").click();
+  await expect(row.getByTestId("error-unwritten")).toContainText("Kept in memory: the store did not take this row (database or disk is full)");
+  await shoot(page, "errors-07-kept-in-memory");
+  // A row the store took has no such line.
+  await page.getByTestId("errors-panel").getByTestId("error-row").filter({ hasNotText: "the store's disk is full" }).first().locator("summary").click().catch(() => {});
+  await expect(page.getByTestId("error-unwritten")).toHaveCount(1);
+});

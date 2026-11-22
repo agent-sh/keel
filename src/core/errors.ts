@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Bus } from "./bus.ts";
-import { sessionOf, type Store } from "./store.ts";
+import { fingerprint, sessionOf, type Store } from "./store.ts";
 import type { ErrorRecord } from "./types.ts";
 import { ErrorSites } from "./error-sites.ts";
 
@@ -18,6 +18,28 @@ export const detached = <T>(f: () => T): T => errorScope.exit(f);
 // row is one per group instead of one per message shape.
 export type ErrorPlace = Pick<ErrorRecord, "session_id" | "turn_event" | "span_id"> & { group?: string };
 export type ErrorCapture = Pick<ErrorRecord, "id" | "source"> & { context: unknown; turnSession?: string };
+
+const KEPT_MAX = 100;
+const FLUSH_MS = 30_000;
+// What the kept failures may hold: each record, and all of them together.
+const KEPT_RECORD_BYTES = 32 * 1024;
+const KEPT_BYTES = 2 * 1024 * 1024;
+const DROPPED = "\u0000dropped";
+const sizeOf = (r: { message: string; stack?: string; context?: unknown }) => {
+  let n = r.message.length + (r.stack?.length ?? 0);
+  try { n += r.context === undefined ? 0 : JSON.stringify(r.context).length; } catch { n += KEPT_RECORD_BYTES; }
+  return n;
+};
+// A record within KEPT_RECORD_BYTES: the message and the stack are cut, and a context too large to keep is left out and said.
+function bounded<T extends { message: string; stack?: string; context?: unknown }>(r: T): T {
+  const message = r.message.length > 4_000 ? `${r.message.slice(0, 4_000)}... (${r.message.length - 4_000} more characters)` : r.message;
+  const stack = r.stack && r.stack.length > 8_000 ? `${r.stack.slice(0, 8_000)}\n... (cut)` : r.stack;
+  let context = r.context;
+  let size = 0;
+  try { size = context === undefined ? 0 : JSON.stringify(context).length; } catch { size = Infinity; }
+  if (size > KEPT_RECORD_BYTES - 12_000) context = { left_out: `the context of this failure was ${Number.isFinite(size) ? `${size} characters` : "not something that can be kept"}: too large to keep in memory` };
+  return { ...r, message, stack, context };
+}
 
 // Every failure lands in one table and one live frame, whoever caught it.
 export class ErrorTracker {
@@ -111,13 +133,19 @@ export class ErrorTracker {
     // throws inside a catch or the process's rejection handler turns one
     // failure into another.
     let rec: ErrorRecord;
+    const raw = { source, message: e.message, stack: e.stack, context, session_id, turn_event, span_id };
     try {
-      rec = this.store.recordError({ source, message: e.message, stack: e.stack, context, session_id, turn_event, span_id }, at.group);
+      rec = this.store.recordError(raw, at.group);
     } catch (failed) {
+      // Kept in memory and shown all the same: a full disk, or a store that
+      // takes no writes, is when the owner most needs to see what fails.
       console.error(`[${source}] ${e.message} (not recorded: ${(failed as Error)?.message ?? failed})`);
-      const now = Date.now();
-      return { id: "", source, message: e.message, stack: e.stack, context, count: 1, first_ts: now, ts: now, session_id, turn_event, span_id } as ErrorRecord;
+      const kept = this.keep(raw, at.group, String((failed as Error)?.message ?? failed));
+      try { this.bus.emit({ t: "error", error: kept }); } catch {}
+      return kept;
     }
+    // The store takes rows again: the ones it could not take are written now.
+    if (this.kept.length) this.flush();
     // Where it happened is kept beside the kind; a store that will not take it leaves the kind as it is.
     try {
       // A failure that is about to be tried again is not the owner's yet: when nothing of its
@@ -136,6 +164,117 @@ export class ErrorTracker {
     }
     console.error(`[${source}] ${rec.message}`);
     return rec;
+  }
+
+  // Failures the store could not take, the newest last: at most KEPT_MAX
+  // kinds, a repeat counted on its kind. They are in the list the Errors
+  // panel reads (`unwritten`), and are written, with their counts and times,
+  // as soon as the store takes a row again (`flush`: at the next capture
+  // that is recorded, and every FLUSH_MS while any wait).
+  private kept: { rec: ErrorRecord; raw: Omit<ErrorRecord, "id" | "ts">; group?: string; key: string; bytes: number }[] = [];
+  private keptSeq = 0;
+  private keptBytes = 0;
+  private flushing?: ReturnType<typeof setInterval>;
+  // What is kept is what the store would have kept: the same redaction
+  // first (a secret in a failure's text is its placeholder in memory, on
+  // the bus and in the list, as it is in the table), and one record a kind,
+  // by the store's own fingerprint (a message that differs by a number or an
+  // id is the same kind). A record is held to KEPT_RECORD_BYTES (a long
+  // stack is cut, a large context is left out and said), and all of them to
+  // KEPT_BYTES: the oldest go first, and how many went is itself a record.
+  private keep(given: Omit<ErrorRecord, "id" | "ts">, group: string | undefined, why: string): ErrorRecord {
+    const now = Date.now();
+    let raw = given;
+    try {
+      raw = { ...given, message: this.store.redact(null, "error", given.message), stack: given.stack && this.store.redact(null, "error", given.stack), context: given.context && this.store.redact(null, "error", given.context) };
+    } catch {
+      // The redaction itself failed: nothing of the failure's own text is kept.
+      raw = { ...given, message: "a failure whose text could not be checked for secrets", stack: undefined, context: undefined };
+    }
+    raw = bounded(raw);
+    const key = `${raw.source}\u0000${fingerprint(group ?? raw.message)}`;
+    const bytes = sizeOf(raw);
+    const had = this.kept.find((k) => k.key === key);
+    if (had) {
+      this.keptBytes += bytes - had.bytes;
+      had.raw = raw;
+      had.bytes = bytes;
+      had.rec = { ...had.rec, ...raw, ts: now, count: (had.rec.count ?? 1) + 1 };
+      this.trim(had.key);
+      return had.rec;
+    }
+    const rec = { ...raw, id: `unwritten-${++this.keptSeq}`, ts: now, first_ts: now, count: 1, unwritten: why } as ErrorRecord;
+    this.kept.push({ rec, raw, group, key, bytes });
+    this.keptBytes += bytes;
+    this.trim(key);
+    if (!this.flushing) {
+      this.flushing = setInterval(() => this.flush(), FLUSH_MS);
+      this.flushing.unref?.();
+    }
+    return rec;
+  }
+  // Held to the count and the bytes: the oldest kinds go (never `spare`, the one just kept), and that they went is said.
+  private trim(spare: string) {
+    let dropped = 0;
+    while (this.kept.length > KEPT_MAX || this.keptBytes > KEPT_BYTES) {
+      const i = this.kept.findIndex((k) => k.key !== spare && k.key !== DROPPED);
+      if (i < 0) break;
+      const [gone] = this.kept.splice(i, 1);
+      this.keptBytes -= gone!.bytes;
+      dropped += gone!.rec.count ?? 1;
+      try { this.bus.emit({ t: "error", error: { ...gone!.rec, resolved_ts: Date.now() } as ErrorRecord }); } catch {}
+    }
+    if (!dropped) return;
+    const now = Date.now();
+    const said = this.kept.find((k) => k.key === DROPPED);
+    const total = (said?.rec.count ?? 0) + dropped;
+    const raw = { source: "server" as const, message: `${total} earlier failure${total === 1 ? " was" : "s were"} dropped from memory: the store took no rows and no more could be kept. The console has each of them.` };
+    if (said) { said.raw = raw; said.rec = { ...said.rec, ...raw, ts: now, count: total }; }
+    else {
+      const bytes = sizeOf(raw);
+      this.kept.push({ rec: { ...raw, id: `unwritten-${++this.keptSeq}`, ts: now, first_ts: now, count: total, unwritten: "kept in memory" } as ErrorRecord, raw, group: DROPPED, key: DROPPED, bytes });
+      this.keptBytes += bytes;
+    }
+    try { this.bus.emit({ t: "error", error: this.kept.find((k) => k.key === DROPPED)!.rec }); } catch {}
+  }
+  // The failures the store has not taken yet, the newest first (of one session's scope when asked).
+  unwritten(session?: string): ErrorRecord[] {
+    return this.kept.map((k) => k.rec).filter((r) => !session || r.session_id === session).reverse();
+  }
+  // The owner has seen one of them and wants it gone: it is let go, and the page is told.
+  dismiss(id: string): ErrorRecord | undefined {
+    const i = this.kept.findIndex((k) => k.rec.id === id);
+    if (i < 0) return undefined;
+    const [k] = this.kept.splice(i, 1);
+    this.keptBytes -= k!.bytes;
+    const gone = { ...k!.rec, resolved_ts: Date.now() };
+    try { this.bus.emit({ t: "error", error: gone }); } catch {}
+    return gone;
+  }
+  // Writes what was kept, the oldest first, and stops at the first the store still refuses.
+  flush() {
+    while (this.kept.length) {
+      const k = this.kept[0]!;
+      let rec: ErrorRecord;
+      try {
+        rec = this.store.recordError(k.raw, k.group);
+        // The row says when it first happened and how often, not when it could be written.
+        const more = (k.rec.count ?? 1) - 1;
+        this.store.db.query("UPDATE errors SET count = count + ?, first_ts = MIN(first_ts, ?), ts = ? WHERE id = ?").run(more, k.rec.first_ts ?? k.rec.ts, k.rec.ts, rec.id);
+        rec = this.store.error(rec.id) ?? rec;
+      } catch {
+        return;
+      }
+      this.kept.shift();
+      this.keptBytes -= k.bytes;
+      // The page drops the row it showed from memory and takes the stored one.
+      try {
+        this.bus.emit({ t: "error", error: { ...k.rec, resolved_ts: Date.now() } as ErrorRecord });
+        this.bus.emit({ t: "error", error: rec });
+      } catch {}
+    }
+    clearInterval(this.flushing);
+    this.flushing = undefined;
   }
 
   installGlobal() {
