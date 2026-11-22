@@ -95,6 +95,14 @@ under `~/.cache/keel-work/bun/research/`.
   stalls with one cause are one Errors row. The watcher sees no JavaScript
   frames: synchronous work that can be long is wrapped in `timed`
   (`src/admin/stall.ts`) so a stall that computed names it.
+- A turn ends as "interrupted" only when `Engine.interrupt` was called for it,
+  and every caller says who it is with a word of `src/core/stoppers.ts`, kept
+  on the turn's end (`stopped_by`). What is said of the stop and what follows
+  from it are read from that one table: only the owner's own Stop holds the
+  queue as theirs, pauses a goal and keeps agents' reports from waking the
+  session; a message of the owner's that takes the turn's place (an edit, a
+  queued prompt sent now) is not a Stop. An abort that is not the turn's own
+  (a hook's or a provider's time limit) is a failure of what aborted.
 - Every failure is captured once in the `errors` table (`ErrorTracker.capture`)
   and shown live in the UI's Errors panel. Browser errors post to `/api/errors`.
 - A session is told what went wrong in its scope without asking: failures of its

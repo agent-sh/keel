@@ -37,7 +37,7 @@ test("a steer written on another branch waits for the owner instead of joining t
   const branchA = store.session(s.id)!.head!;
   engine.send(s.id, "second, on branch B");
   await waiting;
-  await engine.interrupt(s.id);
+  await engine.interrupt(s.id, "owner");
   const [q] = store.queue(s.id);
   expect(q?.text).toBe("meant for branch B");
 

@@ -541,7 +541,7 @@ test("a peer message held by a Stop keeps who sent it", async () => {
     expect(prompts.map((e) => e.data)).toMatchObject([{ ...meta, origin: "queued" }]);
     expect(String(prompts[0]!.data.text)).toContain(`message_id="${m.id}"`);
   } finally {
-    await engine.interrupt(to.id);
+    await engine.interrupt(to.id, "owner");
     allHooks().pop();
     store.db.close();
     rmSync(dir, { recursive: true, force: true });

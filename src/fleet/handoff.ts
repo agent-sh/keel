@@ -532,7 +532,7 @@ ${GIT} update-index -q --refresh >/dev/null || true`, "the folder could not take
         if (pre.refuse) throw new Error(pre.refuse);
         from = pre.dir;
       }
-      await step("interrupt", async () => (this.engine.isRunning(sid) ? void (await this.engine.interrupt(sid)) : "skip"));
+      await step("interrupt", async () => (this.engine.isRunning(sid) ? void (await this.engine.interrupt(sid, "handoff")) : "skip"));
       let target = "";
       if (h.carry === "none") {
         for (const n of ["snapshot", "transfer"] as StepName[]) await step(n, async () => "skip");

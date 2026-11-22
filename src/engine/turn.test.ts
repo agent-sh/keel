@@ -307,7 +307,7 @@ test("a prompt after a cut turn follows the restart message; a waiting card gets
   const a = cut([{ type: "tool_use", id: "w1", name: "Bash", input: {} }], [{ type: "tool_result", tool_use_id: "w1", is_error: true, content: RESTART_CUT }]);
   engine.send(a, "typed before the continuation");
   expect(users(a)).toEqual([["owner", "go"], ["restart", "[harness] The daemon restarted during yo"], ["owner", "typed before the continuation"]]);
-  await engine.interrupt(a);
+  await engine.interrupt(a, "owner");
   // A waiting question whose continuation was cut again before the model was asked: no second restart message.
   const b = cut([{ type: "tool_use", id: "q1", name: "AskUserQuestion", input: {} }]);
   store.append(b, "user", { text: "[harness] The daemon restarted during your previous turn.", origin: "restart" });
@@ -328,7 +328,7 @@ test("a prompt after a cut turn follows the restart message; a waiting card gets
   const d = cut([{ type: "tool_use", id: "w1", name: "Bash", input: {} }], [{ type: "tool_result", tool_use_id: "w1", is_error: true, content: RESTART_CUT }]);
   engine.resume(d);
   expect(users(d).map((u) => u[0])).toEqual(["owner", "restart"]);
-  await engine.interrupt(d);
+  await engine.interrupt(d, "owner");
   // The count of continues after a provider's wait is read through a restart that cut the continued turn.
   const e = store.createSession({ model: "x:y", workspace: dir }).id;
   store.append(e, "user", { text: "go" });
@@ -658,7 +658,7 @@ test("a queue request cannot start a stopped session with an empty queue", async
       expect(engine.isHeld(s.id)).toBe(false);
     }
   } finally {
-    await engine.interrupt(s.id);
+    await engine.interrupt(s.id, "owner");
     allHooks().pop();
     store.db.close();
     rmSync(dir, { recursive: true, force: true });

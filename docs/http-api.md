@@ -61,7 +61,7 @@ The session's stored events after a seq (`?after=SEQ`), in order. Each has `id`,
 
 ### POST /api/sessions/:id/interrupt
 
-Stops the turn that runs and answers when it has ended. A session with no turn is left as it is.
+Stops the turn that runs and answers when it has ended. A session with no turn is left as it is. Body `{ "by": "owner" }` when the owner asked for it: that is their Stop, after which the queue waits for them and a goal pauses. Without it only the turn ends.
 
 - Response: `{ ok: true }`
 

@@ -962,7 +962,7 @@ export function mobileApi(ctx: MobileCtx) {
         return json({ ok: true });
       }),
     },
-    "/v1/chats/:cid/stop": { POST: signed(async (req) => { await engine.interrupt(req.params.cid!); return json({ ok: true }); }) },
+    "/v1/chats/:cid/stop": { POST: signed(async (req) => { await engine.interrupt(req.params.cid!, "phone"); return json({ ok: true }); }) },
     "/v1/chats/:cid/run": {
       GET: signed(async (req) => {
         const s = await warmed(req.params.cid!);

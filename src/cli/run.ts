@@ -384,7 +384,7 @@ export async function runPrompt(v: any, pos: string[], c0: Client, found: Found,
   const onSignal = (code: number) => async () => {
     if (interrupted !== null) process.exit(code);
     interrupted = code;
-    if (sessionId) await c.post(`/api/sessions/${sessionId}/interrupt`).catch(() => {});
+    if (sessionId) await c.post(`/api/sessions/${sessionId}/interrupt`, { by: "owner" }).catch(() => {});
     await own?.stop().catch(() => {});
     process.exit(code);
   };
@@ -459,7 +459,7 @@ export async function runPrompt(v: any, pos: string[], c0: Client, found: Found,
       match = again.subtype === "success" ? structured(schema, again.answer) : undefined;
     }
     const value = match && "value" in match ? match : undefined;
-    if (w.subtype === "timeout" && own) await c.post(`/api/sessions/${sessionId}/interrupt`).catch(() => {});
+    if (w.subtype === "timeout" && own) await c.post(`/api/sessions/${sessionId}/interrupt`, { by: "owner" }).catch(() => {});
     if (v.archived) await c.patch(`/api/sessions/${sessionId}`, { archived: true }).catch((e) => console.error(`keel ${name}: the session was not archived: ${e.message}`));
     const res = resultObject(w, { sessionId, url, ms: Date.now() - t0, onAsk, replayed: sent.replayed, structured: value });
 

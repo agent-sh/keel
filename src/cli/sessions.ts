@@ -184,7 +184,7 @@ const stop = command("stop", STOP_USAGE, {}, async (v, pos, c) => {
   if (!pos[0]) return usageError("stop", "name the session", STOP_USAGE);
   const s = await c.resolve(pos[0]);
   const st = await c.get<any>(`/api/cli/state/${s.id}`);
-  await c.post(`/api/sessions/${s.id}/interrupt`);
+  await c.post(`/api/sessions/${s.id}/interrupt`, { by: "owner" });
   if (v.json) console.log(JSON.stringify({ ok: true, session_id: s.id, was_running: st.running }));
   else console.log(st.running ? `stopped ${s.id}` : `${s.id} was not running`);
   return EXIT.ok;
@@ -566,7 +566,7 @@ export async function attachTo(c: Client, sessionId: string, v: { thoughts?: boo
       const [cmd, ...rest] = text.split(/\s+/);
       const arg = rest.join(" ");
       if (cmd === "/detach") break;
-      else if (cmd === "/stop") await c.post(`/api/sessions/${sessionId}/interrupt`);
+      else if (cmd === "/stop") await c.post(`/api/sessions/${sessionId}/interrupt`, { by: "owner" });
       else if (cmd === "/steer" || cmd === "/queue") await c.post(`/api/sessions/${sessionId}/messages`, { text: arg, mode: cmd.slice(1) });
       else if (cmd === "/approve" || cmd === "/deny") {
         // The cards this terminal had printed before the line was typed, then what is open now

@@ -248,11 +248,11 @@ export class Storage {
   async removeSession(id: string) {
     const s = this.store.session(id);
     if (!s) return;
-    await this.engine.interrupt(id);
+    await this.engine.interrupt(id, "delete");
     // Nothing that comes due while its commands are stopped starts a turn in it, and it goes with no turn running.
     await this.engine.whileClosing([id], async () => {
       await Promise.all(jobsOf(id).filter(jobLive).map((j) => stopJob(j, "was stopped: its session was deleted")));
-      while (this.engine.isRunning(id)) await this.engine.interrupt(id);
+      while (this.engine.isRunning(id)) await this.engine.interrupt(id, "delete");
     });
     if (!this.store.session(id)) return;
     rmSync(join(this.dir, "spill", id), { recursive: true, force: true });

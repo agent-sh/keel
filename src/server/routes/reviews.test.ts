@@ -75,7 +75,7 @@ test("Fix on a finding starts after a Stop, behind what the owner must place fir
     expect(store.queue(s.id).map((q) => q.meta?.kind)).toEqual([undefined, "review_fix"]);
     expect(store.events(s.id, before.seq)).toEqual([]);
   } finally {
-    await engine.interrupt(s.id);
+    await engine.interrupt(s.id, "owner");
     allHooks().length = hooks;
     store.db.close();
     rmSync(dir, { recursive: true, force: true });

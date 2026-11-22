@@ -415,7 +415,7 @@ export async function runStream(v: any, pos: string[], c0: Client, found: Found,
       else if (m.kind === "bad") say({ type: "system", subtype: "input_error", error: m.error });
       else if (m.kind === "refused") say({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: m.error } });
       else if (m.kind === "interrupt") {
-        const e = sessionId ? await c.post(`/api/sessions/${sessionId}/interrupt`).then(() => null, (x) => x as Error) : null;
+        const e = sessionId ? await c.post(`/api/sessions/${sessionId}/interrupt`, { by: "owner" }).then(() => null, (x) => x as Error) : null;
         say({ type: "control_response", response: e ? { subtype: "error", request_id: m.request_id, error: e.message } : { subtype: "success", request_id: m.request_id } });
       } else {
         const k = pending.get(m.request_id);
@@ -496,7 +496,7 @@ export async function runStream(v: any, pos: string[], c0: Client, found: Found,
   const onSignal = (code: number) => async () => {
     if (interrupted !== null) process.exit(code);
     interrupted = code;
-    if (sessionId) await c.post(`/api/sessions/${sessionId}/interrupt`).catch(() => {});
+    if (sessionId) await c.post(`/api/sessions/${sessionId}/interrupt`, { by: "owner" }).catch(() => {});
     await own?.stop().catch(() => {});
     process.exit(code);
   };
@@ -616,7 +616,7 @@ export async function runStream(v: any, pos: string[], c0: Client, found: Found,
       if (Date.now() >= deadline) {
         if (sessionId) {
           result({ subtype: "timeout", outcome: null });
-          if (own) await c.post(`/api/sessions/${sessionId}/interrupt`).catch(() => {});
+          if (own) await c.post(`/api/sessions/${sessionId}/interrupt`, { by: "owner" }).catch(() => {});
         }
         console.error(`keel ${name}: --timeout ran out${own ? "; the turn was stopped" : "; the session keeps running"}`);
         code = EXIT.timeout;

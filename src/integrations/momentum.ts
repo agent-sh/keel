@@ -73,7 +73,7 @@ export function handleLine(line: string, c: Ctx): Record<string, unknown> {
     const s = typeof session_id === "string" ? c.store.session(session_id) : null;
     if (!s) return { ok: false, code: "not_found", error: "unknown session" };
     if (action === "interrupt") {
-      c.engine.interrupt(s.id);
+      void c.engine.interrupt(s.id, "supervisor");
       return { ok: true, accepted: action };
     }
     if (!text.trim()) return { ok: false, code: "empty_text", error: "queue and steer need text" };

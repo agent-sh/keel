@@ -151,7 +151,7 @@ export const reviewRoutes: RouteModule = (deps: Deps) => {
         if (!r || r.session_id !== req.params.id) return bad("no such review", 404);
         if (r.state !== "running") return bad("the review is not running", 409);
         stopping.add(r.id);
-        if (r.child_id && engine.isRunning(r.child_id)) await engine.interrupt(r.child_id);
+        if (r.child_id && engine.isRunning(r.child_id)) await engine.interrupt(r.child_id, "review");
         stopping.delete(r.id);
         const now = get(r.id)!;
         return json({ review: now.state === "running" ? save({ ...now, state: "stopped", error: "Stopped by you", ended: Date.now() }) : now });

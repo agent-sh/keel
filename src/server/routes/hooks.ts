@@ -12,6 +12,7 @@ import { contains } from "../../core/paths.ts";
 import { Hooks, hookContext, namesOf, ownerHooksPath, parseHooks, projectRoot, reaches, scriptsOf, SHOWN_MAX, type HookEvent, type HookResult } from "../../integrations/hooks.ts";
 import type { Gate } from "../../safety/gate.ts";
 import { gate as daemonGate, presence } from "./permissions.ts";
+import { ownerStop, replaced } from "../../core/stoppers.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -200,9 +201,11 @@ export function joinHooks(deps: Deps, gate: Gate | undefined): ReturnType<RouteM
     },
     async turnEnd(s, reason) {
       for (const [id, c] of calls) if (c.session === s.id) calls.delete(id); // calls a gate refused, or a stop cut
-      // The owner stopped a turn of the session itself (not a subagent's, and not a hook's own stop at PostToolBatch).
+      // The owner stopped a turn of the session itself, with their Stop or with a message of theirs that
+      // took its place (not a subagent's turn, and not a stop by anything else: a hook's own, an archive).
       if (reason === "interrupted") {
-        if (!s.parent_id && events(s.id).findLast((e) => e.kind === "turn_end")?.data.stopped_by !== "hook") tell("Interrupt", s, () => ({}));
+        const by = events(s.id).findLast((e) => e.kind === "turn_end")?.data.stopped_by;
+        if (!s.parent_id && (ownerStop(by) || replaced(by))) tell("Interrupt", s, () => ({}));
         return;
       }
       if (reason === "error" || reason === "max_tokens") {

@@ -22,6 +22,7 @@ import type { ModelInfo, Provider, ProviderRequest, ProviderResult } from "../pr
 import { asksOwner, registerPinnedDeferred, sessionToolsKey, toolsFor } from "../tools/registry.ts";
 import { allPendingQuestions } from "../tools/interact.ts";
 import { APPROVAL_CUT, QUESTION_CUT, RESTART_CUT, STOPPED_BEFORE, STOPPED_WHILE, stopKind } from "../core/stops.ts";
+import { holds, ownerStop } from "../core/stoppers.ts";
 import { dropCallEnv } from "../tools/jobs.ts";
 import { isDeferError, loadsNatively, referenced, refuseDefer, withCatalog } from "../tools/defer.ts";
 import { allHooks, hookChanged, type CutState, type CutTurn, type ExternalTurn, type SystemBlock, type ToolAuthorization, type ToolCall } from "./hooks.ts";
@@ -365,8 +366,13 @@ export class Engine {
   private cutAtBoot = new Map<string, CutTurn>();
   // Queued prompts a Send now has taken and not yet appended.
   private sending = new Set<string>();
-  // Who asked a running turn to stop (the owner, the parent agent), kept on its turn_end.
+  // Who asked a running turn to stop (a word of src/core/stoppers.ts), kept on its turn_end. A turn
+  // ends as interrupted only through interrupt(), so every such end has one.
   private stoppedBy = new Map<string, string>();
+  // Sessions whose running turn is being stopped so that the owner's own message is the next one
+  // (a prompt they edited, a queued prompt they sent now): until that turn has started, nothing
+  // else starts one there (the queue's next row, a wake, a report).
+  private replacing = new Map<string, number>();
   // Sessions whose accepted prompt is still being set up for its turn, and
   // those of them a stop has already closed (interrupt).
   private setting = new Set<string>();
@@ -602,14 +608,19 @@ export class Engine {
     return this.store.lineage(id);
   }
 
-  // Stop the running turn: the model stream and running tools are cut, the
-  // queue is held (nothing starts by itself until the owner sends or resumes),
-  // and steers that did not reach the turn become ordinary queued prompts.
-  async interrupt(id: string, by?: string) {
+  // Stop the running turn: the model stream and running tools are cut, and
+  // steers that did not reach the turn become ordinary queued prompts.
+  // `by`: who stops it, a word of src/core/stoppers.ts. Every caller says one:
+  // the turn's end keeps it, and what follows from the stop is read from it.
+  // Only the owner's own Stop holds the queue as theirs (nothing starts by
+  // itself until the owner sends or resumes); the stop of an agent by its side
+  // and a move of the session keep it waiting for their own time (holds).
+  // The first stop names the turn's end; the owner's Stop after another's does.
+  async interrupt(id: string, by: string) {
     const r = this.running.get(id);
     if (!r) return;
-    if (by && !this.stoppedEarly.has(id)) this.stoppedBy.set(id, by);
-    this.hold(id, by);
+    if (!this.stoppedEarly.has(id) && (!this.stoppedBy.has(id) || ownerStop(by))) this.stoppedBy.set(id, by);
+    if (holds(by)) this.hold(id, by);
     // Stopped while its provider and system prompt are still set up: the turn
     // is closed as stopped here, at once and in one write, not when the setup
     // settles. A daemon killed in between then finds a stopped turn with its
@@ -618,10 +629,11 @@ export class Engine {
       const session = this.store.session(id);
       if (session) {
         this.stoppedEarly.add(id);
+        const who = this.stoppedBy.get(id) ?? by;
         this.stoppedBy.delete(id);
         const closing = this.store.atomic(id, () => [
           this.store.append(id, "turn_start", { model: session.model }),
-          this.store.append(id, "turn_end", { reason: "interrupted", usage: emptyUsage(), ms: 0, ...(by ? { stopped_by: by } : {}) }),
+          this.store.append(id, "turn_end", { reason: "interrupted", usage: emptyUsage(), ms: 0, stopped_by: who }),
         ]);
         for (const e of closing) this.emitEvent(e);
       }
@@ -806,14 +818,47 @@ export class Engine {
   async edit(id: string, eventId: string, text: string) {
     const old = this.store.event(eventId);
     if (!old || old.session_id !== id || old.kind !== "user") throw Object.assign(new Error("not a prompt of this session"), { status: 400 });
-    await this.interrupt(id);
-    this.release(id);
-    // An edited steer is a new turn from the same place, not a live steer: it says what it was.
-    const ev = this.accept(id, { text, images: old.data.images, ...(old.data.origin === "steer" ? { edited_from: "steer" } : {}) }, old.parent);
-    this.emitSession(id);
-    this.start(id);
-    this.emitQueue(id);
-    return { event: ev };
+    // The running turn ends for the owner's new version of the prompt: their act, and not a Stop.
+    return this.replace(id, async () => {
+      await this.interrupt(id, "edit");
+      this.release(id);
+      // An edited steer is a new turn from the same place, not a live steer: it says what it was.
+      const ev = this.accept(id, { text, images: old.data.images, ...(old.data.origin === "steer" ? { edited_from: "steer" } : {}) }, old.parent);
+      this.emitSession(id);
+      this.start(id);
+      this.emitQueue(id);
+      return { event: ev };
+    });
+  }
+
+  // While the owner's message takes the running turn's place: nothing else starts a turn in the
+  // session between the old turn's end and the new one's start (next, and what the automation
+  // delivers: startsNext). What was kept back goes if no turn started after all.
+  private async replace<T>(id: string, work: () => Promise<T>): Promise<T> {
+    this.replacing.set(id, (this.replacing.get(id) ?? 0) + 1);
+    const stops = this.running.has(id);
+    let failed = false;
+    try { return await work(); } catch (e) {
+      failed = true;
+      throw e;
+    } finally {
+      const left = (this.replacing.get(id) ?? 1) - 1;
+      if (left > 0) this.replacing.set(id, left);
+      else {
+        this.replacing.delete(id);
+        // The owner's message could not be made the next turn (its write failed) and the turn it was to
+        // replace is stopped: nothing else starts in its place. The queue waits for the owner, who sees why.
+        if (failed && stops && !this.running.has(id)) { this.hold(id, "owner"); this.emitQueue(id); }
+        else if (!this.running.has(id)) {
+          this.next(id);
+          for (const h of allHooks()) try { h.closingOver?.(id); } catch (e) { this.errors.capture("server", e, { hook: "closingOver", session: id }); }
+        }
+      }
+    }
+  }
+  // Whether the owner's own message is about to be the session's next turn (see replace).
+  startsNext(id: string) {
+    return this.replacing.has(id);
   }
 
   // A queued prompt now: the running turn stops and this one is the next turn.
@@ -832,15 +877,18 @@ export class Engine {
     this.sending.add(qid);
     try {
       this.emitQueue(id);
-      await this.interrupt(id);
-      // Another Send now of the same stop got there first and its turn runs:
-      // this row is the next prompt, at the head of the queue, and starts no
-      // second turn beside that one.
-      if (this.running.has(id)) return void this.nextUp(q, here);
-      // Sent before a cut turn was continued: the model is told of the cut first.
-      this.acceptRestart(id);
-      if (!this.deliver(qid, "queued", { release: true, turn: true })) throw gone();
-      this.start(id);
+      // The running turn ends for the owner's queued prompt: their act, and not a Stop.
+      await this.replace(id, async () => {
+        await this.interrupt(id, "send_now");
+        // Another Send now of the same stop got there first and its turn runs:
+        // this row is the next prompt, at the head of the queue, and starts no
+        // second turn beside that one.
+        if (this.running.has(id)) return void this.nextUp(q, here);
+        // Sent before a cut turn was continued: the model is told of the cut first.
+        this.acceptRestart(id);
+        if (!this.deliver(qid, "queued", { release: true, turn: true })) throw gone();
+        this.start(id);
+      });
     } finally {
       this.sending.delete(qid);
       // Also when it failed: the row is queued again, and open pages show it again.
@@ -915,7 +963,7 @@ export class Engine {
 
   // After a turn: the next queued prompt starts, unless the queue is held.
   private next(id: string) {
-    if (this.held.has(id) || this.running.has(id)) return;
+    if (this.held.has(id) || this.running.has(id) || this.replacing.has(id)) return;
     // A daemon on its way down starts no turn: the next one starts what waits here (startQueued).
     if (this.draining) {
       if (this.store.queue(id).length) this.owe(id);
