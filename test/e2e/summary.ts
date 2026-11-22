@@ -25,11 +25,14 @@ export default class Summary implements Reporter {
     const skipped = new Map<string, TestCase[]>();
     // A step a test left out because the daemon cannot show it (annotated "left out"): the test ran, that part did not.
     const left: string[] = [];
+    // What a test added to the daemon's lists and did not take away (isolate.ts): the next specs run with it.
+    const behind: string[] = [];
     for (const t of tests) {
       const o = t.outcome();
       for (const a of [...t.annotations, ...t.results.flatMap((r) => (r as { annotations?: TestCase["annotations"] }).annotations ?? [])]) {
         const line = `    ${where(t)} ${t.title}: ${a.description}`;
         if (a.type === "left out" && !left.includes(line)) left.push(line);
+        if (a.type === "left behind" && !behind.includes(line)) behind.push(line);
       }
       if (!t.results.length) count["not run"]++;
       else if (o === "skipped") { count.skipped++; const need = needOf(reasonOf(t)); skipped.set(need, [...(skipped.get(need) ?? []), t]); }
@@ -43,6 +46,7 @@ export default class Summary implements Reporter {
       console.log(`  skipped, ${need} (${ts.length}):`);
       for (const t of ts) { const r = reasonOf(t); console.log(`    ${where(t)} ${t.title}${r === need ? "" : ` [${r.slice(need.length + 2)}]`}`); }
     }
+    if (behind.length) console.log(`  left on the daemon for the tests after (${behind.length}):\n${behind.join("\n")}`);
     if (left.length) console.log(`  steps left out (${left.length}):\n${left.join("\n")}`);
     console.log(`Summary: ${parts.join(", ")}, ${count.skipped} skipped${reasons.length ? ` (${reasons.map(([need, ts]) => `${ts.length} ${need}`).join("; ")})` : ""}${left.length ? `; ${left.length} step${left.length === 1 ? "" : "s"} left out` : ""}${result.status === "interrupted" ? "; the run was interrupted" : ""}.`);
   }

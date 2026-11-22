@@ -984,6 +984,71 @@ unprivileged user namespaces is needed for the namespaces; `--allow-network`
 runs without them (still no credentials and the same provider check, traffic
 not blocked). Dependencies are installed before the network is cut.
 
+### What a run covers
+
+A run of specs ends with one line that counts what ran and what did not:
+
+```
+Summary: 398 passed, 0 failed, 35 skipped (24 needs a real model; 2 sandbox unavailable; ...).
+```
+
+A skipped test is not a passed one. Each skip is made by a probe in the test
+(`test.skip(condition, "needs X: why")`), and the lines above the summary name
+the skipped tests under what each needs. They also name a step a test left out
+because the daemon cannot show it, and what a test added to the daemon's lists
+(an MCP server, a project, a paired machine) and did not take away: a spec that
+fails only after another one is looked for there.
+
+On the scripted daemon every spec passes every time or is skipped that way. To
+tell a change's failures from the suite's own, run the specs it touches several
+times, the files in another order each time:
+
+```bash
+bun scripts/flake.ts test/e2e/alerts.spec.ts test/e2e/search.spec.ts   # three runs through scripts/smoke.sh
+bun scripts/flake.ts --runs 5 --seed 7                                  # every spec, five runs, a seed to repeat
+```
+
+It prints the tests that did not pass every time, how often each failed, and
+for a flaky one the spec files that ran before it in every failing run and in
+no passing one. Spec files named on the command line in another order than by
+name run in the order named (`playwright.config.ts`).
+
+### Specs that need a real model
+
+These test what a model does with a prompt in words (it picks the tool, follows
+an instruction it was given, judges a change). The scripted stand-in cannot
+show that, so each is skipped on it by its own probe, with the reason below,
+and runs with `KEEL_TEST_MODEL` set to a real model on a daemon that has one.
+A spec whose model part is only "make this call" or "say this word" runs on the
+stand-in instead (`ask(words, script)` in `test/e2e/shots.ts`).
+
+| Spec | Test | It needs a real model because |
+| --- | --- | --- |
+| `agent-review.spec.ts` | reviews of an agent's work go back to that agent | it has to start an agent and act on the review |
+| `agent-work.spec.ts` | agents: own worktree, structured reports, staggered starts | it has to start agents that commit in their worktrees and report |
+| `code-mode.spec.ts` | code mode | it has to call run_code with the code given and repeat what it printed |
+| `consult.spec.ts` | consult: the advisor tool on another model, set in Settings and per session | the advisor is a second model of the same provider, asked for an opinion |
+| `context.spec.ts` | context meter, effort, compact and clear | it checks a real model's window, its efforts and what a summary kept |
+| `drive.spec.ts` | sessions elsewhere: list, read, send, held while a prompt is open | it has to drive another harness's session with the fleet tools |
+| `goals-tasks.spec.ts` | goals and the shared task list | it has to work toward a goal and keep the task list |
+| `goals-tasks.spec.ts` | goal: a claim the files do not back is not met | the goal's verifier is a model that has to read the files |
+| `hooks.spec.ts` | hooks | it has to try the commands the hooks block and change |
+| `integrations.spec.ts` | tacit and momentum | it has to answer from the memory the hook injected |
+| `mcp-oauth.spec.ts` | mcp oauth sign-in | it has to find the server's tool with ToolSearch and run it |
+| `nested-instructions.spec.ts` | nested instruction files load when the work reaches their folder | it has to read two files and follow the instructions loaded on the way |
+| `phone.spec.ts` | phone control: read, tap by index, read again; not armed, stopped, turned off | it has to load the phone tools and tap what it read |
+| `profile.spec.ts` | profile: the panel, and a model pick with reasoning and speed | it checks the tool profile, reasoning levels and speed of a Claude model |
+| `readers.spec.ts` | readers: a folder of logs is read in parts and compiled into one answer | the readers and the model that asks them have to read the logs |
+| `review.spec.ts` | independent review with findings | the reviewer has to read the change and write findings |
+| `review.spec.ts` | reviewer mode judges calls | the reviewer has to judge calls against the owner's policy |
+| `side-questions.spec.ts` | side questions stay out of the conversation | a side question is answered from what was said before |
+| `skills.spec.ts` | skills: listed, run by the owner, loaded by the model | it has to follow a skill's instructions and load one by itself |
+| `subagents.spec.ts` | subagents run in parallel, report back, and stop | it has to start two agents and gather their reports |
+| `takeover.spec.ts` | take over a running session: ended where it ran, or copied with the one step | it has to load the import tool and take the session over |
+| `trust.spec.ts` | trust, hooks and quarantine | it has to follow the project instructions once the folder is trusted |
+| `wait-sources.spec.ts` | pull request checks and a socket feed wake the session | it has to set the waits with its tools from a plain prompt |
+| `web-reader.spec.ts` | web reader: a long page is read for the prompt, the page saved whole | a reader model has to answer from a page WebFetch brings from the web (and the public network) |
+
 ## Checks on another machine
 
 ```bash

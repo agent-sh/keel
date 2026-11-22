@@ -85,6 +85,35 @@ async function sessionIds(request: APIRequestContext) {
   return ids;
 }
 
+// What else of the daemon outlives a test: the lists a spec adds to and a later
+// spec reads (an MCP server, a project, a session folder, a paired machine, a
+// placement rule, a loop). They are not removed here (a spec that pairs a
+// machine once for its tests means to), but a test that leaves one more than
+// it found is named with what it left, in the run's summary: a spec that
+// fails only after another one is found there. Unread alerts are read: a
+// later spec counts them.
+const LISTS: { path: string; what: string; of: (b: any) => unknown[] }[] = [
+  { path: "/api/mcp/servers", what: "MCP servers", of: (b) => b.servers ?? [] },
+  { path: "/api/projects", what: "projects", of: (b) => b.projects ?? [] },
+  { path: "/api/session-folders", what: "session folders", of: (b) => b.folders ?? [] },
+  { path: "/api/fleet/machines", what: "machines", of: (b) => b.machines ?? [] },
+  { path: "/api/fleet/placement", what: "placement rules", of: (b) => b.rules ?? [] },
+  { path: "/api/loops", what: "loops", of: (b) => b.loops ?? [] },
+];
+const nameOf = (x: any) => String(typeof x === "string" ? x : x?.name ?? x?.title ?? x?.id ?? JSON.stringify(x)).slice(0, 60);
+async function lists(request: APIRequestContext): Promise<Record<string, string[]>> {
+  const out: Record<string, string[]> = {};
+  await Promise.all(LISTS.map(async (l) => {
+    const r = await request.get(l.path, { timeout: 10_000 }).catch(() => null);
+    if (r?.ok()) out[l.what] = l.of(await r.json().catch(() => ({}))).map(nameOf);
+  }));
+  return out;
+}
+const unreadAlerts = async (request: APIRequestContext) => {
+  const r = await request.get("/api/alerts?limit=1", { timeout: 10_000 }).catch(() => null);
+  return r?.ok() ? Number((await r.json().catch(() => ({}))).unread?.total ?? 0) : 0;
+};
+
 // Asked once a worker: what the daemon says of itself.
 let scratch: Promise<boolean> | undefined;
 let warned = false;
@@ -94,9 +123,26 @@ const scratchDaemon = (request: APIRequestContext) => (scratch ??= (async () => 
   return isScratch({ argv: daemon.argv, state_dir: daemon.state_dir, home: boot.home, providers: ((models.providers ?? []) as { id: string }[]).map((p) => p.id) });
 })());
 
-export const test = base.extend<{ daemonSettings: void; ownSessions: void }>({
+export const test = base.extend<{ daemonSettings: void; ownSessions: void; leftBehind: void }>({
+  // Set up first and looked at last, after the sessions went and the settings were put back.
+  leftBehind: [
+    async ({ request }, use, info) => {
+      if (!(await scratchDaemon(request))) return use();
+      const [before, unread] = await Promise.all([lists(request), unreadAlerts(request)]);
+      await use();
+      const after = await lists(request);
+      const left = Object.entries(after).flatMap(([what, names]) => {
+        const had = [...(before[what] ?? [])];
+        const more = names.filter((n) => { const i = had.indexOf(n); if (i < 0) return true; had.splice(i, 1); return false; });
+        return more.length ? [`${what}: ${more.join(", ")}`] : [];
+      });
+      if (left.length) info.annotations.push({ type: "left behind", description: left.join("; ") });
+      if ((await unreadAlerts(request)) > unread) await request.post("/api/alerts/read", { data: {}, timeout: 10_000 }).catch(() => null);
+    },
+    { auto: true },
+  ],
   ownSessions: [
-    async ({ request }, use) => {
+    async ({ request, leftBehind: _first }, use) => {
       if (!(await scratchDaemon(request))) {
         if (!warned) console.warn("The daemon at KEEL_URL is not a scratch one (no scripted provider, not a dev daemon with a state folder of its own): the sessions the tests make are left there.");
         warned = true;
@@ -120,7 +166,7 @@ export const test = base.extend<{ daemonSettings: void; ownSessions: void }>({
     { auto: true },
   ],
   daemonSettings: [
-    async ({ request }, use) => {
+    async ({ request, leftBehind: _first }, use) => {
       const before = await read(request);
       await use();
       await restore(request, before);
