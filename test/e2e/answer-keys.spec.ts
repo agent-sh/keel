@@ -420,7 +420,7 @@ test("a plan is approved by a key on Approve only once it was read to its end", 
   await expect(one.getByTestId("plan-approve")).toBeFocused();
   await expect(one).toHaveAttribute("data-keys", "ready");
   await expect(one.getByTestId("plan-hint")).toHaveText("Enter approves the plan");
-  await shoot(page, "answer-keys-13-plan-whole");
+  await shoot(page, "answer-keys-19-plan-whole");
   await page.keyboard.press("Enter");
   await expect.poll(() => open1(short)).toBe(0);
   await drop(request, short);
@@ -681,7 +681,7 @@ test("over two panes, three approvals (one long), a question and a plan are answ
   await at(p);
   const plan = cardIn(page, p, "plan");
   await expect(plan.getByTestId("plan-approve")).toBeFocused({ timeout: 8000 });
-  await shoot(page, "answer-keys-18-sequence-plan");
+  await shoot(page, "answer-keys-20-sequence-plan");
   await press("Enter");
 
   // Nothing is left: the pane shows the reader again, the keyboard in its box, the other pane as it was.

@@ -22,7 +22,7 @@ const tell = () => subs.forEach((f) => f());
 
 if (typeof window !== "undefined") addEventListener("input", () => { typed = performance.now(); }, true);
 
-// Offers the act back: `words` say what was done ("Archived Fix the flaky upload test").
+// Offers the act back: `words` say what was done, the act first ("Archived: Fix the flaky upload test").
 export function offerUndo(words: string, undo: Undoable["undo"]) {
   clearTimeout(timer);
   current = { n: ++made, words, undo, at: performance.now() };

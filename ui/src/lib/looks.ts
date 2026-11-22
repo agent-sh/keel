@@ -216,7 +216,7 @@ export function keepLook(id: string): boolean {
   const home = fromHome.has(id);
   fromHome.delete(id);
   stations.place(id, slot);
-  offerUndo(`${titleOf(id)} is kept in the pane`, () => {
+  offerUndo(`Kept in the pane: ${titleOf(id)}`, () => {
     stations.putBack(was);
     if (home) fromHome.add(id);
     navigate({ name: "session", id }, true);

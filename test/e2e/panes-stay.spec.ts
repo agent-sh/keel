@@ -713,8 +713,8 @@ test("Escape right after a palette, a menu or the slash menu closed, or a click 
 
 // A mis-click on the panes or the list is put back in one press: Keep here (the look over the
 // pane's own session again), a pane closed (the panes in their order), a session archived from
-// its row (in the list again). Each is offered for a moment at the page's lower left, with its
-// button and Ctrl Z.
+// its row (in the list again). Each is offered for a moment at the list's foot, with its button
+// and Ctrl Z.
 test("Keep here, a closed pane and an archive are undone by one key or click, the panes in their order", async ({ page, request }) => {
   await scripted(request);
   await settle(request);
@@ -731,7 +731,7 @@ test("Keep here, a closed pane and an archive are undone by one key or click, th
   await slot(page, 0).getByTestId("look-keep").click();
   await expect(slot(page, 0)).toHaveAttribute("data-holds", other);
   await expect(toast).toBeVisible();
-  await expect(toast.getByTestId("undo-words")).toHaveText("Draft the 2.4 changelog is kept in the pane");
+  await expect(toast.getByTestId("undo-words")).toHaveText("Kept in the pane: Draft the 2.4 changelog");
   await shoot(page, "panes-stay-20-undo-keep");
   let t0 = Date.now();
   await page.keyboard.press("Control+z");
@@ -745,7 +745,7 @@ test("Keep here, a closed pane and an archive are undone by one key or click, th
   await slot(page, 0).getByTestId("composer").click();
   await page.keyboard.press("Alt+w");
   await expect.poll(holds).toEqual([[coord, coord]]);
-  await expect(toast.getByTestId("undo-words")).toHaveText("Closed Spike: full-text search over the notes");
+  await expect(toast.getByTestId("undo-words")).toHaveText("Closed: Spike: full-text search over the notes");
   t0 = Date.now();
   await toast.getByTestId("undo").click();
   await expect.poll(holds, { timeout: 1500 }).toEqual([[reader, reader], [coord, coord]]);
@@ -755,7 +755,7 @@ test("Keep here, a closed pane and an archive are undone by one key or click, th
   await row(page, other).hover();
   await row(page, other).getByTestId("row-archive").click();
   await expect(row(page, other)).toHaveCount(0);
-  await expect(toast.getByTestId("undo-words")).toHaveText("Archived Draft the 2.4 changelog");
+  await expect(toast.getByTestId("undo-words")).toHaveText("Archived: Draft the 2.4 changelog");
   await shoot(page, "panes-stay-21-undo-archive");
   t0 = Date.now();
   await page.keyboard.press("Control+z");
@@ -779,7 +779,7 @@ test("Keep here, a closed pane and an archive are undone by one key or click, th
   await page.getByTestId("palette-input").fill("Archive this session");
   await expect(page.getByTestId("palette").getByRole("option").first()).toContainText("Archive this session");
   await page.keyboard.press("Enter");
-  await expect(toast.getByTestId("undo-words")).toHaveText("Archived Draft the 2.4 changelog");
+  await expect(toast.getByTestId("undo-words")).toHaveText("Archived: Draft the 2.4 changelog");
   const tb = (await toast.boundingBox())!;
   expect(tb.y).toBeLessThanOrEqual(1);
   expect(tb.x + tb.width).toBeLessThanOrEqual(390);

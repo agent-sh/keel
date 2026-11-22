@@ -92,7 +92,7 @@ function closeStation(id: string) {
   const helm = helmNow() === id;
   stations.close(id);
   if (helm) navigate(next ? { name: "session", id: next } : { name: "new" });
-  if (i >= 0) offerUndo(`Closed ${getState().sessions[id]?.title || "the pane"}`, () => { stations.putBack(was); if (helm) navigate({ name: "session", id }); });
+  if (i >= 0) offerUndo(`Closed: ${getState().sessions[id]?.title || "New session"}`, () => { stations.putBack(was); if (helm) navigate({ name: "session", id }); });
 }
 
 function Tool({ label, onClick, children, testid, on, move }: { label: string; onClick: () => void; children: React.ReactNode; testid?: string; on?: boolean; move?: boolean }) {

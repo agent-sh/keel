@@ -68,7 +68,7 @@ export const setMaxSteps = (id: string, n: number) => actions.patch(id, { max_st
 export async function archive(s: Session, on = true) {
   listActed(s.id);
   const was = stations.snapshot();
-  const back = () => { if (on) offerUndo(`Archived ${s.title || "New session"}`, async () => { listActed(s.id); await actions.patch(s.id, { archived: false }); stations.putBack(was); }); };
+  const back = () => { if (on) offerUndo(`Archived: ${s.title || "New session"}`, async () => { listActed(s.id); await actions.patch(s.id, { archived: false }); stations.putBack(was); }); };
   try {
     const r = await actions.patch(s.id, { archived: on });
     back();

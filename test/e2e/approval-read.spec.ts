@@ -338,7 +338,7 @@ test("a long command is read by keys: Enter opens it, End reads it to its end, E
       const unseen = async () => Number(await card.getAttribute("data-unseen"));
       expect(await unseen()).toBeGreaterThan(5);
       if (key === "End") {
-        await shoot(page, "approval-read-14-end-reads-on");
+        await shoot(page, "approval-read-16-end-reads-on");
         await press("End");
       } else {
         const first = await unseen();
