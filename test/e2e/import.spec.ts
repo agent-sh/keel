@@ -151,6 +151,10 @@ test("import and export", async ({ page, request }) => {
     await page.keyboard.press("Enter");
     await page.getByTestId(`import-tab-${tab}`).click();
     await page.getByTestId("import-search").fill(tag);
+    // The stores are read again. The daemon keeps what it read of these stores for a few seconds, and it
+    // read them as this test began, before the fixtures were written: a run that got here inside those
+    // seconds was shown that reading, with no session of this test, and the sheet does not list again by itself.
+    await sheet.getByRole("button", { name: "Read the stores again" }).click();
     await expect(rows.first()).toContainText(row, { timeout: 20_000 }); // a store's first listing reads its files
     await rows.first().click();
     await expect(page.getByTestId("import-preview")).toContainText(text);
