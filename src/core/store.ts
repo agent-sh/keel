@@ -20,6 +20,15 @@ PRAGMA foreign_keys = ON;
 -- whole table (a report, a search, a sum over every event) belongs on the
 -- read thread, whose connection keeps the default and sorts in a file.
 PRAGMA temp_store = MEMORY;
+-- The pages this connection keeps in its own memory: 16 MB. Working sessions
+-- write to a few megabytes of pages (the ends of the tables and indexes they
+-- append to, and the way down to them). With those kept, a step reads the
+-- file about as seldom as with any larger cache: counted on the loop's
+-- thread with twelve sessions at work, 16, 64, 128 and 256 MB read the same,
+-- and SQLite's default of 2 MB, which is below that set, a quarter more.
+-- What a step still reads are pages the connection never had (a session not
+-- touched for long, a table read whole): no size of cache spares a first read.
+PRAGMA cache_size = -16384;
 -- What the log is held to when no checkpoint thread works (checkpoint.ts):
 -- SQLite checkpoints it at 1,000 pages (4.1 MB), it grows past that only
 -- while a long read holds it (the read thread, a backup), and this gives the

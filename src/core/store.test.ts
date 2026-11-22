@@ -430,3 +430,10 @@ test("a statement's undo pages are kept in memory, not in a temporary file", () 
   expect(store.db.query<{ temp_store: number }, []>("PRAGMA temp_store").get()!.temp_store).toBe(2);
   store.db.close();
 });
+
+// The connection keeps the pages working sessions write to in its own memory (16 MB), not SQLite's default of 2 MB.
+test("the daemon's connection keeps 16 MB of pages", () => {
+  const store = new Store(scratch());
+  expect(store.db.query<{ cache_size: number }, []>("PRAGMA cache_size").get()!.cache_size).toBe(-16384);
+  store.db.close();
+});
