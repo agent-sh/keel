@@ -145,7 +145,8 @@ screen, the timeline, and what a tool or the command line is told. The words
 are written once, in `src/core/state-words.ts`, which the daemon and the page
 both read; the state itself is the daemon's (`src/core/watch.ts`,
 `src/automation/state.ts`). A check in `src/ui-conventions.test.ts` fails when
-a component writes one of them itself. State words are in sentence case.
+a component writes one of them itself, in any case, or a stylesheet turns one
+to capitals. State words are in sentence case.
 
 | State | Word | With what |
 | --- | --- | --- |
@@ -157,7 +158,7 @@ a component writes one of them itself. State words are in sentence case.
 | Its last turn ended | Done | |
 | Its last turn failed | Failed | one class: rate limit, overloaded, server error, stream dropped, context full, sign-in, billing, image refused, invalid request, output limit |
 | The model refused the turn | Declined | |
-| You or its parent stopped it, or its step budget ran out | Stopped | at the step budget |
+| You or its parent stopped it, its step budget ran out, or a restart cut a turn that is not resumed | Stopped | at the step budget, by a restart |
 | No turn yet | Not started | |
 | Its machine does not answer | Offline | as of the time it last told |
 
@@ -169,7 +170,11 @@ add up; the line's name and tooltip say it whole: `8 agents: 1 needs you,
 1 failed, 3 working, 2 waiting, 1 done`. Where a word stands with no reason
 beside it (a mark's tooltip, a recent row), a session that only keeps a
 command going reads "Command in background", and the counts count it apart
-from the ones a turn or an agent works in.
+from the ones a turn or an agent works in. Failed and Declined share their
+red and differ in their mark (a full square, an empty one). The folded list
+has no room for a word: each of its bands is headed by its state's mark and
+how many, and its name and tooltip say what it holds ("Failed or declined: 2",
+"Done or not started: 4").
 
 Counters, each with one meaning, said in its tooltip and its accessible name:
 
@@ -180,7 +185,9 @@ Counters, each with one meaning, said in its tooltip and its accessible name:
 - The bell counts what is unread: alerts that are new since you last looked.
   Its panel lists what needs you first, in the order it was asked, then what
   else is new, then what you have seen. A request stays under "Needs you"
-  while its card waits, read or not, and leaves when it is answered.
+  while its card waits, read or not, and leaves when it is answered. A
+  question whose turn was stopped has no card left: it is read, and its row
+  offers nothing.
 - The bug counts errors in Keel itself that you have not looked at.
 
 Unread means not seen:
@@ -189,7 +196,8 @@ Unread means not seen:
   focus, is read. A pane counts as in view while most of it is inside the
   window and nothing lies over the panes; one scrolled off the window is not.
 - What calls you (an ask, a failure) is not read by being in view. It is read
-  when you answer it, go to its session, or act in its pane. Its notification
+  when you answer it, go to its session (by a press or a key of yours: a
+  change of page nobody made reads nothing), or act in its pane. Its notification
   is held back only while its pane is in view of a focused page you did
   something in within the last minute, and is sent when that stops being true
   and it still waits. A page left open mutes nothing.

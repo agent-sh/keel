@@ -94,7 +94,11 @@ test("the list with room, marks without, the card and the toggle", async ({ page
   await expect(entry(failed)).toHaveAttribute("data-watch", "fail");
   const failBand = rail.getByTestId("rail-band").filter({ has: page.locator(`[data-session="${failed}"]`) });
   await expect(failBand).toHaveAttribute("data-watch", "fail");
-  await expect(failBand.locator(".k-marks-head")).toContainText(/Fail\s*\d+/i);
+  // A band is headed by its state's mark and how many; its name and tooltip say in words what it holds.
+  await expect(failBand.locator(".k-marks-head")).toHaveText(/^\d+$/);
+  await expect(failBand.locator(".k-marks-head .k-mark")).toHaveAttribute("data-watch", "fail");
+  await expect(failBand).toHaveAttribute("title", /^Failed: \d+$/);
+  await expect(failBand).toHaveAccessibleName(/^Failed: \d+$/);
   const codes = await rail.getByTestId("rail-code").allTextContents();
   expect(codes.length).toBeGreaterThanOrEqual(3);
   expect(codes.every((c) => c.length >= 2)).toBe(true);

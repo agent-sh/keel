@@ -188,6 +188,22 @@ test("sessions on another machine sit under that machine's separator; a local on
     await page.getByTestId("sum-offline").click();
     await expect(row(page, placed.id)).toBeFocused();
     await shoot(page, "session-rows-05-remote-offline");
+    // The card beside the row says the same: what the session last told, with no clock that runs.
+    await row(page, placed.id).hover();
+    const card = page.getByTestId("rail-card");
+    await expect(card.getByTestId("rail-card-why")).toHaveAttribute("data-why", "offline");
+    await expect(card.getByTestId("rail-card-why")).toHaveText(/^It last told: /);
+    await expect(card.locator("[data-live]")).toHaveCount(0);
+    // And the card of its mark in the folded list: Offline, as of when, not the state it last told with a clock.
+    await page.evaluate(() => localStorage.setItem("keel.list", "false"));
+    await page.reload();
+    await page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${placed.id}"]`).hover();
+    await expect(card.getByTestId("rail-card-word")).toHaveText("Offline");
+    await expect(card.getByTestId("rail-card-time")).toHaveText(/^as of \d\d:\d\d$/);
+    await expect(card.locator("[data-live]")).toHaveCount(0);
+    await shoot(page, "session-rows-05-remote-offline-card");
+    await page.evaluate(() => localStorage.setItem("keel.list", "true"));
+    await page.goto(`/s/${placed.id}`);
 
     // All five counts at once (one needs the owner, one failed, one works, one is unread, one is on the
     // machine that does not answer): the line fits its bar at every text size and at the narrowest the

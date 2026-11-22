@@ -58,8 +58,8 @@ test("a plan waiting for approval reads Needs you on the row, the pane, the tab 
     expect(st!.since).toBeGreaterThan(Date.now() - 120_000);
     // The timeline's Now reads the same state and names the plan.
     const now = await (await request.get(`/api/sessions/${planner}/timeline?format=text&limit=1`)).text();
-    expect(now).toContain("Now: waiting on the owner.");
-    expect(now).toContain("Waits on the owner: a plan to approve");
+    expect(now).toContain("Now: needs you.");
+    expect(now).toContain("Needs you: a plan");
 
     // Its own pane: the band and the word.
     await page.goto(`/s/${planner}`);
@@ -656,7 +656,7 @@ test("the parent's Now line says what a parked agent waits for and until when", 
 
     // The timeline's Now, as text: the agent, what it waits on, when that is due.
     const now = (await (await request.get(`/api/sessions/${parent}/timeline?format=text&limit=1`)).text()).split("\n").filter((l) => l.startsWith("  "));
-    expect(now.join("\n")).toMatch(/Agent "Watch the deploy.*" is waiting on a timer, .*due in 4[12] min/);
+    expect(now.join("\n")).toMatch(/Agent "Watch the deploy.*" is waiting for a timer, .*due in 4[12] min/);
     expect(now.join("\n")).not.toContain("a wake of its own");
     // The one state says the same: the parent waits, on its agent's timer, until then.
     const st = await stateOf(request, parent) as { watch: string; why?: string; text?: string; until?: number };
@@ -668,7 +668,7 @@ test("the parent's Now line says what a parked agent waits for and until when", 
     await expect(row(page, parent).getByTestId("row-time")).toHaveText(/^in 4[12]m$/);
     // The panel's Now line.
     await openPanel(page, "timeline");
-    await expect(page.getByTestId("side-panel")).toContainText(/is waiting on a timer/);
+    await expect(page.getByTestId("side-panel")).toContainText(/is waiting for a timer/);
     await expect(page.getByTestId("side-panel")).toContainText(/due in 4[12] min/);
     await shoot(page, "session-state-09-parked-agent");
   } finally {
@@ -705,7 +705,7 @@ test("a failure is not hidden by a wait still armed", async ({ page, request, ba
     // The timeline's Now does not call it waiting either, and still lists the timer.
     const now = await (await request.get(`/api/sessions/${id}/timeline?format=text&limit=1`)).text();
     expect(now).toContain("Now: failed.");
-    expect(now).toContain("Waits on a timer");
+    expect(now).toContain("Waiting for a timer");
   } finally {
     await drop(request, made);
   }
@@ -746,7 +746,7 @@ test("a declined turn, a stopped one with a held queue and a scheduled loop read
     // Stopped after arming a timer: still stopped (the queue is held), with the timer listed under it.
     expect((await stateOf(request, armed))?.watch).toBe("stop");
     expect(await now(armed)).toMatch(/^Now: stopped\./);
-    expect(await now(armed)).toContain("Waits on a timer");
+    expect(await now(armed)).toContain("Waiting for a timer");
     // A scheduled loop does not make a finished session wait: it is at rest between runs.
     await expect.poll(async () => (await stateOf(request, looped))?.watch, { timeout: 30_000 }).toBe("done");
     expect(await now(looped)).toMatch(/^Now: done\./);
@@ -832,8 +832,8 @@ test("a secret the model asks for reads Needs you with its name", async ({ page,
     await expect(row(page, asks).getByTestId("row-why")).toHaveText("Secret to give: DEPLOY_KEY");
     await expect(page).toHaveTitle(/^\(\d+\) /);
     const now = await (await request.get(`/api/sessions/${asks}/timeline?format=text&limit=1`)).text();
-    expect(now).toContain("Now: waiting on the owner.");
-    expect(now).toContain("Waits on the owner: a secret to give");
+    expect(now).toContain("Now: needs you.");
+    expect(now).toContain("Needs you: a secret");
   } finally {
     await drop(request, made);
   }

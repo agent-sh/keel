@@ -166,6 +166,40 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     await expect(tree("Bench the cache").getByTestId("child-fresh")).toBeVisible();
     await expect(tree("Summarize the open issues")).not.toHaveAttribute("data-fresh", "true");
     await shoot(page, "state-words-02-agent-ended");
+    // Folded, the line says how many are new after its counts. A count is never cut: with too little room
+    // for both, "1 new" goes whole; with too little for the counts, they take a second line.
+    await toggle.click();
+    const fresh = kids.getByTestId("children-fresh");
+    await expect(fresh).toHaveText("1 new");
+    const whole = () => toggle.evaluate((line) => {
+      const l = line.getBoundingClientRect();
+      const within = (e: Element, box: DOMRect) => { const r = e.getBoundingClientRect(); return r.left >= box.left - 0.5 && r.right <= box.right + 0.5 && r.top >= box.top - 0.5 && r.bottom <= box.bottom + 0.5; };
+      const counts = [...line.querySelectorAll("[data-count]")];
+      const extra = line.querySelector(".k-kids-extra")!.getBoundingClientRect();
+      const news = line.querySelector('[data-testid="children-fresh"]')!;
+      const r = news.getBoundingClientRect();
+      return {
+        counts: counts.every((c) => within(c, l)), sum: counts.reduce((n, c) => n + Number(c.getAttribute("data-count")), 0),
+        // "new" is whole in its room or wholly out of it (on the line the room cuts off), never part of it.
+        fresh: within(news, extra) ? "whole" : Math.min(r.right, extra.right) - Math.max(r.left, extra.left) <= 0.5 || Math.min(r.bottom, extra.bottom) - Math.max(r.top, extra.top) <= 0.5 ? "gone" : "cut",
+        lines: Math.round(l.height / parseFloat(getComputedStyle(document.documentElement).fontSize) / 1.5),
+      };
+    });
+    expect(await whole()).toEqual({ counts: true, sum: 8, fresh: "whole", lines: 1 });
+    // The list squeezed until the counts just fit, then to half of that.
+    const need = await toggle.evaluate((line) => { const last = [...line.querySelectorAll("[data-count]")].at(-1)!.getBoundingClientRect(); const cs = getComputedStyle(line); return last.right - line.getBoundingClientRect().left + parseFloat(cs.columnGap) + parseFloat(cs.paddingRight) + 1; });
+    // (Room for the counts and half of "1 new": the half is not shown.)
+    await toggle.evaluate((el, w) => { (el as HTMLElement).style.width = `${w}px`; }, need + 24);
+    expect(await whole()).toEqual({ counts: true, sum: 8, fresh: "gone", lines: 1 });
+    await toggle.evaluate((el, w) => { (el as HTMLElement).style.width = `${w}px`; }, need);
+    expect(await whole()).toEqual({ counts: true, sum: 8, fresh: "gone", lines: 1 });
+    await toggle.evaluate((el, w) => { (el as HTMLElement).style.width = `${w}px`; }, need * 0.6);
+    const two = await whole();
+    expect(two).toMatchObject({ counts: true, sum: 8, fresh: "gone" });
+    expect(two.lines).toBeGreaterThanOrEqual(2);
+    await shoot(page, "state-words-14-agents-line-squeezed");
+    await toggle.evaluate((el) => { (el as HTMLElement).style.width = ""; });
+    await toggle.click();
     await row(page, coord).click();
     await expect(tree("Bench the cache")).not.toHaveAttribute("data-fresh", "true", { timeout: 15_000 });
     await summary.toHaveText("8 agents: 1 failed, 2 working, 2 waiting, 3 done", { timeout: 60_000 });
@@ -200,6 +234,17 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     expect(await counts()).toBe(8);
     // Its report says how it ended first, whole, in a pane of any width.
     await expect(station(page, coord).getByTestId("agent-report").filter({ hasText: "Review pull request 212" }).getByTestId("agent-report-state")).toHaveText("Stopped");
+    // Whole means clear of the row's chevron and not narrower than its text, whatever the title's length.
+    const reportsWhole = async (where: string) => {
+      const rows = await station(page, coord).getByTestId("agent-report").evaluateAll((els) => els.map((el) => {
+        const word = el.querySelector<HTMLElement>('[data-testid="agent-report-state"]')!, chevron = el.querySelector("svg.lucide-chevron-right")!, title = el.querySelector<HTMLElement>("span[title]")!;
+        const w = word.getBoundingClientRect(), c = chevron.getBoundingClientRect(), t = title.getBoundingClientRect();
+        return { word: word.textContent, clear: w.right <= c.left + 0.5 && w.left >= t.right - 0.5, whole: word.scrollWidth <= word.clientWidth + 1 && w.width > 20 };
+      }));
+      expect(rows.length, where).toBeGreaterThan(0);
+      for (const r of rows) expect(r, where).toMatchObject({ clear: true, whole: true });
+    };
+    await reportsWhole("one pane");
 
     // Four panes: an agent's row may be too narrow for its title and its word. The title stays, the mark says the state, and the tooltip has both.
     const four = [coord, elsewhere, (await by("Port the parser")).session_id, (await by("Watch CI on main")).session_id];
@@ -220,6 +265,7 @@ test("eight agents read the same on every surface, and the summary adds up", asy
       expect(box.width, `${title}: its title has room`).toBeGreaterThan(40);
       await expect(tree(title)).toHaveAttribute("title", new RegExp(`^${title}: `));
     }
+    await reportsWhole("four panes");
     await shoot(page, "state-words-10-four-panes");
     await page.evaluate(() => { localStorage.setItem("keel.focus", "true"); localStorage.removeItem("keel.panes"); });
     // A smaller desk, and the largest text size: the line of counts is still one line with every count in it.
@@ -239,6 +285,7 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`/s/${coord}`);
     await expect(page.getByTestId("agent-call").first()).toBeVisible();
+    await reportsWhole("a phone");
     await shoot(page, "state-words-04-phone");
     if (await page.getByTestId("background-button").isVisible()) {
       await page.getByTestId("background-button").click();
@@ -315,28 +362,41 @@ test("the inbox lists what needs you first, each counter says what it counts, an
   // A plan and a secret to give wait on the owner too: each is in the Inbox under its own word.
   const plan = await waits("Plan the retry policy", "plan", { name: "present_plan", input: { title: "Retry policy", plan: "## Retry policy\n\n1. Read the importer.\n2. Change the policy." } });
   const secret = await waits("Call the staging API", "full-auto", { name: "request_secret", input: { name: "STATE_WORDS_TOKEN", purpose: "a spec" } });
+  const windowAsk = await waits("Pick a deploy window", "full-auto", { name: "AskUserQuestion", input: { questions: [{ header: "Window", question: "Which window should the deploy take?", options: [{ label: "Tonight" }, { label: "Tomorrow" }], multiSelect: false }] } });
   await page.goto("/");
   await expect(page).toHaveTitle(/^\(\d+\) /);
   const things = Number((await page.title()).match(/^\((\d+)\)/)![1]);
-  expect(things).toBeGreaterThanOrEqual(4);
+  expect(things).toBeGreaterThanOrEqual(5);
   // One count of what waits: the tab's title, the home headline and the list's line say the same number.
   await expect(page.getByTestId("home-count-need")).toHaveText(new RegExp(`^${things} need you$`));
   await expect(page.getByTestId("sum-need")).toHaveText(new RegExp(`^${things}need you$`));
   await bell.click();
   await page.getByRole("radio", { name: "All" }).click();
   const needs = page.locator('[data-testid="inbox-item"][data-part="need"]');
-  await expect(needs).toHaveCount(4);
+  await expect(needs).toHaveCount(5);
   expect(await needs.evaluateAll((els) => els.map((e) => `${e.querySelector('[data-testid="inbox-word"]')?.textContent} ${e.querySelector('[data-testid="inbox-place"]')?.textContent} ${e.hasAttribute("data-unread") ? "unread" : "read"} ${e.querySelector('[data-testid="inbox-opens"]')?.textContent}`)))
-    .toEqual(["Approval Rotate the staging certificates read Review", "Approval Watch the canary deploy unread Review", "Plan Plan the retry policy unread Review", "Secret Call the staging API unread Open"]);
+    .toEqual(["Approval Rotate the staging certificates read Review", "Approval Watch the canary deploy unread Review", "Plan Plan the retry policy unread Review", "Secret Call the staging API unread Open", "Question Pick a deploy window unread Answer"]);
+  // The word has a column of its own: every title after it starts at one place.
+  const starts = await needs.evaluateAll((els) => els.map((e) => Math.round(e.querySelector('[data-testid="inbox-place"]')!.getBoundingClientRect().x)));
+  expect(new Set(starts).size, `titles start at ${starts.join(", ")}`).toBe(1);
   // Nothing that waits is below anything that ended.
   const order = await items.evaluateAll((els) => els.map((e) => e.getAttribute("data-part")));
   expect(order.lastIndexOf("need")).toBeLessThan(order.findIndex((x) => x !== "need"));
   await shoot(page, "state-words-05b-inbox-needs");
   await page.keyboard.press("Escape");
   // Answered, it leaves the part: the plan is turned down, the secret request let go.
-  for (const id of [plan, secret]) await request.post(`/api/sessions/${id}/interrupt`);
+  const before = (await unread()).total;
+  for (const id of [plan, secret, windowAsk]) await request.post(`/api/sessions/${id}/interrupt`);
   await bell.click();
   await expect(needs).toHaveCount(2, { timeout: 15_000 });
+  // A question whose turn was stopped waits on nobody: it is read, the bell does not count it, and its row offers no answer.
+  const asked = async () => ((await (await request.get("/api/alerts?with_unread")).json()).alerts as any[]).find((a) => a.kind === "question" && a.session_id === windowAsk);
+  await expect.poll(async () => (await asked())?.read, { timeout: 15_000 }).toBe(true);
+  expect((await unread()).total).toBeLessThan(before);
+  const stoppedAsk = items.filter({ hasText: "Pick a deploy window" }).filter({ has: page.getByTestId("inbox-word").getByText("Question") });
+  await expect(stoppedAsk).toHaveCount(1);
+  await expect(stoppedAsk).not.toHaveAttribute("data-unread", "true");
+  await expect(stoppedAsk.getByTestId("inbox-opens")).toHaveCount(0);
   await page.keyboard.press("Escape");
 
   // A session that ended and was never opened here: the card beside its row says what it ended with.

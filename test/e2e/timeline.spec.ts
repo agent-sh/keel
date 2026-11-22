@@ -314,9 +314,9 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     await send(script([{ name: "Bash", input: { command: "rm timeline-tool-marker.txt" } }]));
     await expect(panel.getByTestId("timeline-state")).toHaveText("Needs you", { timeout: 30_000 });
     const needs = panel.locator('[data-testid="timeline-now-line"][data-tone="owner"]');
-    await expect(needs).toHaveText(/Waits on the owner: approval for Bash/);
+    await expect(needs).toHaveText(/Needs you: an approval for Bash/);
     // The call's card is open: the turn waits on the answer, it is not "running Bash".
-    await expect(panel.locator('[data-testid="timeline-now-line"][data-kind="turn"]')).toContainText("Running a turn started by the owner: step 1, waiting for approval");
+    await expect(panel.locator('[data-testid="timeline-now-line"][data-kind="turn"]')).toContainText("Running a turn started by the owner: step 1, needs you: an approval");
     // What "now" says is not said again as rows: the list still starts at the last turn that ended.
     await expect(panel.locator('[data-testid="timeline-row"][data-sub="running"]')).toHaveCount(0);
     await expect(panel.locator('[data-testid="timeline-row"][data-tone="owner"]')).toHaveCount(0);
