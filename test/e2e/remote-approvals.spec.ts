@@ -123,6 +123,15 @@ test("a phone, a notification and the API: an allow of unread text is held by th
   expect(by[other.id]).toEqual(["denied", { client: "notification", device: "Pixel stand-in" }]);
   expect(by[marked.id]).toEqual(["denied", { client: "api" }]);
   expect(by[risky.id]).toEqual(["denied", { client: "phone", device: "Pixel stand-in" }]);
+  // A denial reads the same in the call's result whichever client gave it: the transcript shows
+  // each as denied by the owner, with the owner's reason where one was given and none made up.
+  const { events } = await (await request.get(`/api/sessions/${id}/events`)).json();
+  const results = Object.fromEntries((events as any[]).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results).map((r: any) => [r.tool_use_id, r.content]));
+  expect(results[other.call_id]).toBe("The owner denied this call. Do not retry it; take another way or ask."); // from a notification
+  expect(results[risky.call_id]).toBe("The owner denied this call. Do not retry it; take another way or ask."); // from the phone's card
+  expect(results[marked.call_id]).toBe("The owner denied this call: not this one"); // over the API, with a reason
+  await page.goto(`/s/${id}`);
+  await expect(page.getByTestId("transcript")).toContainText("denied by you");
 
   // --- the timeline says where each was answered
   const rows = (await (await request.get(`/api/sessions/${id}/timeline`)).json()).rows as { kind: string; text: string }[];

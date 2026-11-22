@@ -1011,6 +1011,8 @@ describe("permission cards", () => {
     // A deny is taken at once, from anywhere.
     expect((await answer("apr-other", { choice: "deny", via: "notification" })).status).toBe(200);
     expect(gate.approval("apr-other")).toMatchObject({ state: "denied", by: { client: "notification", device: "phone" } });
+    // (No reason of the phone's making: the call's result is then the words a denial on the page gives.)
+    expect(gate.approval("apr-other")!.reason).toBeUndefined();
     for (const id of ["apr-risky", "apr-marked", "apr-wide", "apr-far"]) expect((await answer(id, { choice: "deny" })).status).toBe(200);
   });
 });

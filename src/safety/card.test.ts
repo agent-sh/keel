@@ -10,6 +10,7 @@ import type { Tool } from "../tools/types.ts";
 import { cardForm, cardLines, CLIENTS, fromSaid, holdSaid, NOTE_MAX, oneLine, refusal, SHORT_MAX, TEXT_MAX, type Client, type Hold } from "./card.ts";
 import * as chars from "./chars.ts";
 import { Gate, type Approval } from "./gate.ts";
+import { denialReason, ownerDenial, turnedAway } from "../core/stops.ts";
 
 const base: Pick<Approval, "id" | "session_id" | "call_id" | "state" | "suggest" | "created"> = { id: "a1", session_id: "s1", call_id: "c1", state: "pending", suggest: [], created: 1 };
 const shell = (command: string, more: Partial<Approval> = {}): Approval => ({ ...base, tool: "Bash", kind: "shell", summary: command, input: { command }, risk: "low", ...more });
@@ -237,6 +238,28 @@ test("the gate holds an allow of a text that was not shown, takes a deny at once
   expect(g.resolve(other!.id, "s1", { choice: "deny", by: { client: "notification", device: "Pixel" } })).toEqual({ ok: true });
   expect(g.approval(other!.id)).toMatchObject({ state: "denied", by: { client: "notification", device: "Pixel" } });
   expect(await Promise.all(asked)).toEqual([undefined, undefined, expect.objectContaining({ deny: expect.any(String) })]);
+});
+
+// The transcript reads a denial back from the result's words ("denied by you", and the reason after
+// the colon): whichever client denies, the model and the transcript get the same text.
+test("a denial reads the same in the call's result whichever client gave it", async () => {
+  const { session, call, gate } = scratch();
+  const g = gate();
+  const clients = [{ client: "page" }, { client: "phone", device: "Pixel" }, { client: "notification", device: "Pixel" }, { client: "cli" }, { client: "script" }, { client: "acp" }, { client: "api" }] as const;
+  for (const reason of [undefined, "not on this branch"]) {
+    const texts: string[] = [];
+    for (const by of clients) {
+      const asked = g.beforeTool(session, call(`node deny-${by.client}.js\n${lines41}`));
+      await Bun.sleep(10);
+      const [a] = g.approvals({ session: "s1", pending: true });
+      expect(g.resolve(a!.id, "s1", { choice: "deny", reason, by })).toEqual({ ok: true });
+      const r = await asked;
+      texts.push(r && "deny" in r ? r.deny : "");
+      expect(g.approval(a!.id)).toMatchObject({ state: "denied", choice: "deny", by });
+    }
+    expect([...new Set(texts)]).toEqual([ownerDenial(reason)]);
+    expect([turnedAway(texts[0]), denialReason(texts[0]!)]).toEqual(["denied", reason ?? ""]);
+  }
 });
 
 // The review's steps: one reply with a short command, a 41-line one and one with U+202E, all

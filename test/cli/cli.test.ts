@@ -1263,6 +1263,16 @@ describe("client commands against a running daemon", () => {
     expect(held.out).not.toContain("\u202e");
     expect((await k(["approve", marked, "--deny"])).code).toBe(0);
     expect((await cardsOf(marked))[0]).toMatchObject({ state: "denied", by: { client: "cli" } });
+    // The call's result is the words a denial on the page gives: the transcript reads it as denied by the owner.
+    const resultOf = async (sid: string, callId: string) => {
+      for (let i = 0; i < 100; i++) {
+        const { events } = await (await fetch(`${url}/api/sessions/${sid}/events`)).json() as any;
+        const r = events.filter((e: any) => e.kind === "tool_result").flatMap((e: any) => e.data.results).find((x: any) => x.tool_use_id === callId);
+        if (r) return r.content;
+        await Bun.sleep(100);
+      }
+    };
+    expect(await resultOf(marked, (await cardsOf(marked))[0].call_id)).toBe("The owner denied this call. Do not retry it; take another way or ask.");
 
     // Several wait: none is picked by guess. They are listed, and one is named.
     const two = await waits([{ name: "Bash", input: { command: "echo a > approve-a.txt" } }, { name: "Bash", input: { command: "echo b > approve-b.txt" } }], "script:batch");
@@ -1279,6 +1289,7 @@ describe("client commands against a running daemon", () => {
     expect((await cardsOf(two)).map((a) => a.state)).toEqual(["pending", "allowed"]);
     expect((await k(["approve", two, "--deny", "--answer", "not this one"])).code).toBe(0);
     expect((await cardsOf(two))[0]).toMatchObject({ state: "denied", reason: "not this one" });
+    expect(await resultOf(two, first.call_id)).toBe("The owner denied this call: not this one");
 
     // A standing answer names the rule it stores, and settles no request that is read first:
     // the 41-line command beside the short one stays open for its own answer.

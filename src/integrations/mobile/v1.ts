@@ -549,8 +549,10 @@ export function mobileApi(ctx: MobileCtx) {
     // `seen`: the app's word that its card showed the whole text. The gate
     // takes it from the app's card only: a notification shows one line, so an
     // answer from one allows once, and only what that line shows whole.
+    // (A denial carries no reason of the phone's making: the call's result is then the same words as
+    // a denial on the page, and the transcript reads it the same. Where it was given is kept in `by`.)
     const r = g.resolve(aid, a.session_id, {
-      choice: choice as any, reason: choice === "deny" ? `denied from ${dev.name}` : undefined,
+      choice: choice as any,
       seen: b.seen === "whole" ? "whole" : undefined, by: { client: b.via === "notification" ? "notification" : "phone", device: dev.name },
     });
     // Held: the card is still open. The sentence is what the app shows; `hold` and the card tell a newer app what to open.
