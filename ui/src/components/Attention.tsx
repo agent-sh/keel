@@ -6,7 +6,7 @@
 // to answer and is in the parent's state, so only top-level sessions are read.
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { attends } from "../lib/automation.ts";
-import { failStamp, failUnseen, isFailure } from "../lib/home.ts";
+import { agentFailNews, failStamp, failUnseen, isFailure } from "../lib/home.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
 import type { Session } from "../../../src/core/types.ts";
 import { useNeedCount, useSessionStates, type Watch } from "../lib/watch.ts";
@@ -80,6 +80,15 @@ export function Attention() {
 export function useSeenFailure(s: Session, w: Watch, placed: boolean) {
   const visible = useSyncExternalStore(onVisible, () => document.visibilityState === "visible");
   const at = placed && visible && isFailure(w) && failUnseen(s) ? failStamp(s) : null;
+  // The failures of its agents are seen the same way: the session counts as failed until then.
+  const agentsAt = placed && visible && agentFailNews(s) ? s.settings.agents_failed_ms! : null;
+  useEffect(() => {
+    if (agentsAt === null) return;
+    const look = () => { if (!attends(s.id)) return false; actions.patch(s.id, { agents_fail_seen: agentsAt } as never).catch(reportError); return true; };
+    if (look()) return;
+    const t = setInterval(() => { if (look()) clearInterval(t); }, 1000);
+    return () => clearInterval(t);
+  }, [s.id, agentsAt]);
   useEffect(() => {
     if (at === null) return;
     const look = () => { if (!attends(s.id)) return false; actions.patch(s.id, { fail_seen: at } as never).catch(reportError); return true; };

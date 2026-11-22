@@ -3,7 +3,7 @@
 // (src/core/watch.ts) and whether the owner has looked at a failure since it
 // happened.
 import { askThing, whyText, type SessionState, type Watch } from "../../../src/core/watch.ts";
-import { backgroundWord, countWord, inBackground, stateLabel, stateWords, waitsOnOwner } from "../../../src/core/state-words.ts";
+import { agentsFailedText, backgroundWord, countWord, inBackground, stateLabel, stateWords, waitsOnOwner } from "../../../src/core/state-words.ts";
 import { oneLine, SHORT_MAX } from "../../../src/safety/card.ts";
 
 export type Row = { id: string; w: Watch };
@@ -124,3 +124,26 @@ export const failUnseen = (s: Pick<Failing, "settings">) => s.settings.fail_seen
 // (A turn the model declined is a failure under its own word: news the same way.)
 export const isFailure = (w: Watch | undefined) => w === "fail" || w === "declined";
 export const unseenFailures = (list: Failing[], w: Record<string, Watch>) => new Set(list.filter((s) => isFailure(w[s.id]) && failUnseen(s)).map((s) => s.id));
+
+// ---- Agents that failed under a session. Its tree's root keeps when one last
+// failed (agents_failed_ms, src/automation/alerts.ts agentsFailed); until the
+// owner has looked at the session after that, it counts as Failed in every
+// counter (the headline, the list's line, its row), whatever its own turn came
+// to, unless something waits on the owner there. Looked at, it reads as itself.
+type AgentFailing = { id: string; settings: { agents_failed_ms?: number | null; agents_fail_seen_ms?: number | null } };
+export const agentFailNews = (s: Pick<AgentFailing, "settings">) => !!s.settings.agents_failed_ms && s.settings.agents_fail_seen_ms !== s.settings.agents_failed_ms;
+// A session's state as the counters and its row read it: Failed, for its agents, while that is news.
+export const countedState = (s: Pick<AgentFailing, "settings">, st: SessionState): SessionState =>
+  agentFailNews(s) && st.watch !== "need" && !isFailure(st.watch) ? { ...st, watch: "fail", why: "agents", text: agentsFailedText(st.agents_failed ?? 1) } : st;
+// The states as the counters read them, and the sessions whose failure is news (their own, or their agents').
+export function withAgentFailures<S extends AgentFailing & Failing>(list: S[], states: Record<string, SessionState | undefined>): { states: Record<string, SessionState>; unseen: Set<string> } {
+  const out: Record<string, SessionState> = {};
+  const unseen = new Set<string>();
+  for (const s of list) {
+    const st = states[s.id];
+    if (!st) continue;
+    out[s.id] = countedState(s, st);
+    if (out[s.id] !== st || (isFailure(st.watch) && failUnseen(s))) unseen.add(s.id);
+  }
+  return { states: out, unseen };
+}

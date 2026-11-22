@@ -287,3 +287,33 @@ test("alerts: a row is title, state and one line; routes are said once", async (
   await request.delete(`/api/sessions/${session.id}`);
   await request.delete(`/api/sessions/${quiet.id}`);
 });
+
+// Feature: agents that fail reach the owner. Three agents of one coordinator
+// fail of one cause: the Inbox has one alert for it with the count, not three
+// and not none, and the coordinator counts as Failed (its row, the home rows,
+// the counters) until the owner looks at it. (Eleven failed agents reached no
+// alert, and their coordinator stood under "28 more" outside every failed count.)
+test("alerts: agents that fail are one alert a cause, and their coordinator counts as failed until looked at", async ({ page, request }) => {
+  test.skip(!HAIKU.startsWith("scripted:"), "needs the scripted model: the agents fail on cue");
+  const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU, title: "Coordinator of three" } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await page.goto("/");
+  const spawn = (i: number) => ({ name: "spawn_agent", input: { message: `Billing lane ${i}\nscript:billing`, isolation: "none" } });
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([spawn(1), spawn(2), spawn(3)])}` } });
+  await expect.poll(async () => ((await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents as any[]).filter((a) => a.status === "failed").length, { timeout: 60_000 }).toBe(3);
+  const mine = async () => ((await (await request.get("/api/alerts")).json()).alerts as any[]).filter((a) => a.session_id === session.id && a.kind === "failed");
+  await expect.poll(async () => (await mine()).map((a) => a.title), { timeout: 30_000 }).toEqual(["Coordinator of three: 3 agents failed: billing"]);
+  // Counted as Failed on every counter of the screen, with one number: its home row, its list row, the two counts.
+  await expect(page.locator(`[data-testid="session-row"][data-session="${session.id}"]`)).toHaveAttribute("data-watch", "fail", { timeout: 30_000 });
+  await expect(page.locator(`[data-testid="home-session"][data-session="${session.id}"]`)).toHaveAttribute("data-watch", "fail");
+  const headline = Number((await page.getByTestId("home-count-fail").textContent())?.match(/\d+/)?.[0]);
+  await expect(page.getByTestId("sum-fail")).toHaveText(new RegExp(`^\\s*${headline}\\s*failed`, "i"));
+  await shoot(page, "alerts-04-agents-failed");
+  // Looked at: it reads as itself again.
+  await page.goto(`/s/${session.id}`);
+  await expect(page.locator(`[data-testid="session-row"][data-session="${session.id}"]`)).not.toHaveAttribute("data-watch", "fail", { timeout: 30_000 });
+  const settings = (await (await request.get(`/api/sessions/${session.id}?events=0`)).json()).session.settings;
+  expect(settings.agents_fail_seen_ms).toBe(settings.agents_failed_ms);
+  await request.delete(`/api/sessions/${session.id}`);
+});

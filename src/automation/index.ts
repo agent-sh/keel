@@ -184,6 +184,8 @@ function init(deps: Deps) {
     if (!agents.isEnded(a)) return void settled.delete(a.id);
     if (settled.has(a.id)) return;
     settled.add(a.id);
+    // A failed agent reaches the owner: one alert a cause a parent (alerts.agentsFailed).
+    if (a.status === "failed") alerts.agentsFailed(a);
     if (a.handback || !agents.isSilent(a.id)) return;
     const p = deps.store.session(a.parent_id);
     if (!p || p.archived || p.parent_id || deps.engine.isRunning(p.id) || hasPending(p.id) || waits.activeFor(p.id) > 0 || liveAgents(p.id) > 0) return;

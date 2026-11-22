@@ -143,6 +143,9 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     await spending;
     const lanes = await agents();
     const lane = (title: string) => lanes.find((a) => a.title === title)!;
+    // Every agent report row names its agent, a failed one's too (those read "Agent report, 1 step").
+    const coordStory = await text(`/api/sessions/${coord}/timeline?format=text&limit=200`);
+    expect(coordStory).not.toMatch(/ Agent report[,:]/);
     commands.push(lane("Slow lane 1").session_id, lane("Slow lane 2").session_id);
     await idle(small);
     await idle(twice);
@@ -329,6 +332,12 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     // An agent whose command runs on has not finished: it waits on the command, its parent is told so, and no
     // report says "completed" while the command runs. (Four agents reported "completed" with their commands running.)
     await expect.poll(tally, { timeout: 90_000 }).toEqual({ failed: 4, completed: 5, waiting: 3 });
+    // The coordinator's timeline names the command each waits on (it read "waiting for a wake of its own").
+    const coordNow = await text(`/api/sessions/${coord}/timeline?format=text`);
+    for (const title of ["Slow lane 1", "Slow lane 2"]) {
+      const j = (await jobsOf(lane(title).session_id)).find((x) => x.running)!;
+      expect(coordNow).toContain(`Agent "${title}" is waiting for command ${j.id}`);
+    }
     for (const title of ["Slow lane 1", "Slow lane 2"]) {
       expect(str((await results(lane(title).session_id)).at(-1))).toContain("The command was not interrupted: it still runs in the background");
       await expect.poll(async () => inputs(coord), { timeout: 60_000 }).toMatch(new RegExp(`\\[harness\\] Agent "${title}" \\(${lane(title).id}\\) is waiting for command \\w+, which runs on after a daemon restart\\. It has not finished; its report comes when it does\\.`));
@@ -399,7 +408,9 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     await send(stopped, calls([bash(`${STOPPED}; echo never`)]));
     await atTool(stopped);
     const r3 = await restart("SIGTERM");
-    expect(r3.before.how).not.toBe("killed");
+    // A stop signal from outside is said as one: nobody asked Keel to stop (it read "the daemon restarted when asked").
+    expect(r3.before.how).toBe("signal");
+    expect(await text("/api/away?since=1h&format=text")).not.toMatch(/when asked/);
     expect(by(r3, approval)).toMatchObject({ waiting: 1 });
     await idle(stopped);
     const gone = (await jobsOf(stopped)).find((j) => j.command === `${STOPPED}; echo never`);
@@ -429,6 +440,11 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     await call(`/api/sessions/${unnamed}/interrupt`, {});
     await expect.poll(async () => (await endsOf(unnamed)).length, { timeout: 30_000 }).toBe(2);
     expect(await endsOf(unnamed)).toEqual([["interrupted", "api"], ["end_turn", null]]);
+    // The model is told who stopped its call: the API, not the user. (Every stop read "Interrupted by the user".)
+    const stopResult = async (id: string) => str((await results(id)).find((r) => /^Interrupted /.test(str(r))));
+    expect(await stopResult(unnamed)).toBe("Interrupted while this tool ran: the turn stopped through the API.");
+    expect(await stopResult(stopd)).toBe("Interrupted by the user while this tool ran.");
+    expect(await stopResult(sentNow)).toBe("Interrupted while this tool ran: the turn ended when the owner sent a new message.");
     expect((await call(`/api/sessions/${unnamed}/queue`)).held).toBe(false);
     expect(await text(`/api/sessions/${unnamed}/timeline?format=text`)).toContain(", stopped through the API");
     expect(await text(`/api/sessions/${unnamed}/timeline?format=text`)).not.toContain("the owner");

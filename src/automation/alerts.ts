@@ -12,7 +12,10 @@ import { lockedDaemon } from "../admin/daemon.ts";
 import { openUrl } from "../cli/client.ts";
 import { desktopNotifications } from "./desktop.ts";
 import { secretsWaiting } from "../server/routes/secrets.ts";
-import { ASK_KINDS, STATE_WORD, WRONG_KINDS } from "../core/state-words.ts";
+import { ASK_KINDS, STATE_WORD, WRONG_KINDS, failWord, limitWord } from "../core/state-words.ts";
+import { classOfText } from "../admin/classes.ts";
+import { groupsOf } from "./failures.ts";
+import { exampleOf, OTHERS, SELF } from "./failure-groups.ts";
 import { handShell, shellShows, tellShells } from "../server/shell.ts";
 
 // What needs the owner becomes one alert: kept in the inbox with unread state,
@@ -397,7 +400,8 @@ const waits = (a: Pick<Alert, "kind" | "session_id" | "data" | "read">) => (a.da
 const routine = (kind: AlertKind, data: unknown, st: AlertSettings) =>
   kind === "snooze_over" || kind === "refused" || kind === "machine" || (kind === "finished" && st.completion !== "always" && !(Number((data as { ran_ms?: number } | undefined)?.ran_ms) >= LONG_TURN_MS));
 
-export function raise(kind: AlertKind, sessionId: string | null, title: string, body: string, data?: unknown): Alert | undefined {
+// `silent`: kept in the inbox and told on no channel (an update of a row the owner was told of already).
+export function raise(kind: AlertKind, sessionId: string | null, title: string, body: string, data?: unknown, silent = false): Alert | undefined {
   try {
     const { store } = D();
     const s = sessionId ? store.session(sessionId) : undefined;
@@ -406,7 +410,7 @@ export function raise(kind: AlertKind, sessionId: string | null, title: string, 
     // agent named so two agents' alerts never read alike.
     const sid = s?.parent_id ?? sessionId;
     const child = s?.parent_id ? { child_session: sessionId, child_title: s.title || undefined } : {};
-    return file({ kind, sid, from: sessionId, source: s?.parent_id ? sessionId! : "", title, body, data, child });
+    return file({ kind, sid, from: sessionId, source: s?.parent_id ? sessionId! : "", title, body, data, child, ...(silent ? { silent: true } : {}) });
   } catch (e) {
     capture(e, { at: "raise alert", kind });
     return undefined;
@@ -458,10 +462,13 @@ function file(x: Filing): Alert | undefined {
     if (kind === "approval" && store.db.query(`SELECT 1 FROM alerts WHERE read = 1 AND kind = 'approval' AND json_extract(data, '$.approval_id') = ?${origin} LIMIT 1`).get(...[String(decision), ...theirs])) return undefined;
     store.db.query(`DELETE FROM alerts WHERE read = 0 AND kind = ? AND json_extract(data, '$.${key}') = ?${key === "call_id" ? ` AND ${ASKED_IN} = ?` : ""}${origin}`)
       .run(...[kind, String(decision), ...(key === "call_id" ? [String((data as { open_session?: string }).open_session ?? x.from)] : []), ...theirs]);
+  } else if (sid && failureFp(data)) {
+    // Agents' failures of one cause are one row a cause: a newer count replaces the unread row of its cause, never the session's own failure.
+    store.db.query(`DELETE FROM alerts WHERE ${col} = ? AND kind = ? AND read = 0 AND json_extract(data, '$.failure_fp') = ?`).run(sid, kind, failureFp(data)!);
   } else if (sid) {
     // A newer notice of the same kind from the same source replaces the unread
     // one: one live row per session and kind (the activity list keeps each).
-    store.db.query(`DELETE FROM alerts WHERE ${col} = ? AND kind = ? AND read = 0 AND COALESCE(json_extract(data, '$.child_session'), '') = ?`)
+    store.db.query(`DELETE FROM alerts WHERE ${col} = ? AND kind = ? AND read = 0 AND COALESCE(json_extract(data, '$.child_session'), '') = ? AND json_extract(data, '$.failure_fp') IS NULL`)
       .run(sid, kind, x.source);
   }
   const chosen = st.routes[kind] ?? [];
@@ -503,7 +510,9 @@ function file(x: Filing): Alert | undefined {
   // An ask is open from the moment it is raised: its card waits.
   if (ASK_KINDS.includes(kind) && waits(a)) a.open = true;
   emit("alert", a);
-  activity.record("alert", kind, x.from, `${a.title}: ${a.body}`, { alert_id: a.id, ...flags, ...(key && decision ? { [key]: String(decision) } : {}) });
+  // (A limit's class and the time it lifts go with its row: the timeline says which limit.)
+  const limit = kind === "limit" ? { cls: (data as { cls?: string } | undefined)?.cls, until: (data as { until?: number } | undefined)?.until } : {};
+  activity.record("alert", kind, x.from, `${a.title}: ${a.body}`, { alert_id: a.id, ...flags, ...(key && decision ? { [key]: String(decision) } : {}), ...limit });
   deliverTo(a, sendTo);
   return a;
 }
@@ -1046,6 +1055,39 @@ registerChannel({
   },
 });
 
+// --- agents that failed ------------------------------------------------------------
+//
+// An agent's failure reaches the owner as its cause does in the session's own
+// record (session_failures, src/automation/failure-groups.ts): one alert a
+// cause a parent, "Coordinator: 6 agents failed: billing", its count raised as
+// more agents fail of it. A newer count replaces the unread row and is told on
+// no channel again (the owner was told of that cause once); one the owner has
+// read is news again when another agent fails of it. An agent's finished work
+// is not an alert: its report goes to its parent, and the parent's own Done
+// says when the work is over (its alert waits while agents are out).
+const failureFp = (data: unknown) => { const fp = (data as { failure_fp?: unknown } | null | undefined)?.failure_fp; return typeof fp === "string" ? fp : undefined; };
+export function agentsFailed(a: { id: string; parent_id: string }) {
+  try {
+    const { store } = D();
+    const parent = store.session(a.parent_id);
+    if (!parent || parent.archived) return;
+    const g = groupsOf(store, a.parent_id).find((x) => x.kind === "agent" && x.refs.some((r) => r.id === a.id));
+    if (!g) return;
+    const named = g.refs.filter((r) => r.id !== SELF && r.id !== OTHERS);
+    const n = named.length + (g.refs.find((r) => r.id === OTHERS)?.n ?? 0);
+    const mine = named.find((r) => r.id === a.id);
+    const why = failWord(g.cls) || exampleOf(g.sample);
+    const told = store.db.query<{ n: number }, [string, string]>("SELECT COUNT(*) AS n FROM alerts WHERE read = 0 AND kind = 'failed' AND session_id = ? AND json_extract(data, '$.failure_fp') = ?").get(parent.parent_id ?? parent.id, g.fp)!.n > 0;
+    raise("failed", parent.id, `${parent.title || "Session"}: ${n} ${n === 1 ? "agent" : "agents"} failed: ${why}`, `${mine?.label ? `Agent "${mine.label}": ` : ""}${exampleOf(mine?.eg ?? g.sample)}`, { failure_fp: g.fp, agents_failed: n, agent_id: a.id }, told);
+    // The session the owner sees counts as failed until they look at it (ui/src/lib/home.ts).
+    let root = parent;
+    for (let i = 0; root.parent_id && i < 32; i++) root = store.session(root.parent_id) ?? root;
+    D().bus.emit({ t: "session", session: store.mergeSettings(root.id, { agents_failed_ms: Date.now() })! });
+  } catch (e) {
+    capture(e, { at: "agents failed alert", session: a.parent_id });
+  }
+}
+
 // --- turn outcomes -------------------------------------------------------------
 
 const LIMIT = /rate.?limit|usage limit|quota|too many requests|\b429\b|overloaded|throttl/i;
@@ -1067,9 +1109,14 @@ export function onTurnEnd(sessionId: string, reason: string, opts: { subagent: b
   const start = all.findLastIndex((e) => e.kind === "turn_start");
   const evs = start >= 0 ? all.slice(start) : all;
   if (reason === "error") {
-    const err = [...evs].reverse().find((e) => e.kind === "error")?.data.message ?? "The turn failed.";
+    const failed = [...evs].reverse().find((e) => e.kind === "error")?.data;
+    const err = String(failed?.message ?? "The turn failed.");
     if (opts.loopRun) return; // the loop reports its own failure
-    raise(LIMIT.test(err) ? "limit" : "failed", sessionId, LIMIT.test(err) ? `Usage limit: ${title}` : `Failed: ${title}`, err.split("\n")[0]!);
+    if (!LIMIT.test(err)) { raise("failed", sessionId, `Failed: ${title}`, err.split("\n")[0]!); return; }
+    // A limit says which (a rate limit, an overloaded provider, a spent quota) and, when the provider named one, until when.
+    const cls = classOfText(err);
+    const until = typeof failed?.retry_at === "number" ? failed.retry_at : undefined;
+    raise("limit", sessionId, `${limitWord(cls)}: ${title}`, err.split("\n")[0]!, { cls, ...(until ? { until } : {}) });
     return;
   }
   if (reason === "max_tokens") { raise("failed", sessionId, `Cut off: ${title}`, "The reply reached the model's output limit."); return; }

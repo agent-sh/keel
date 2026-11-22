@@ -36,7 +36,7 @@ import type { Session } from "../../../src/core/types.ts";
 import { READ_MS, SETTLE_MS, settled, stand, type Stand } from "../lib/approvals.ts";
 import { focusAsk } from "../lib/asks.ts";
 import { focusApproval } from "../lib/automation.ts";
-import { pickRows, rowKind, rowLine, sayMore, unseenFailures, watchSummary, wholeCommand } from "../lib/home.ts";
+import { pickRows, rowKind, rowLine, sayMore, watchSummary, wholeCommand, withAgentFailures } from "../lib/home.ts";
 import { getSafety, safety, useSafety, type Approval } from "../lib/safety.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
@@ -74,12 +74,14 @@ export function useHome() {
   const own = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id), [sessions]);
   const states = useSessionStates(own);
   return useMemo(() => {
-    const watches = Object.fromEntries(own.map((s) => [s.id, states[s.id]!.watch])) as Record<string, Watch>;
+    // A session with agents that failed counts as Failed until the owner looks at it (lib/home.ts).
+    const counted = withAgentFailures(own, states);
+    const watches = Object.fromEntries(own.map((s) => [s.id, counted.states[s.id]!.watch])) as Record<string, Watch>;
     const ranked = [...own].sort((a, b) => WATCH_RANK[watches[a.id]!] - WATCH_RANK[watches[b.id]!] || b.updated - a.updated);
-    const told = ranked.map((s) => ({ id: s.id, st: states[s.id]! })), unseen = unseenFailures(own, watches);
+    const told = ranked.map((s) => ({ id: s.id, st: counted.states[s.id]! })), unseen = counted.unseen;
     // A session whose machine does not answer is not counted: its state is the last it told, not what it is.
     const sum = { ...watchSummary(told, unseen), head: watchSummary(told.filter((r) => countsNow(r.st)), unseen).head };
-    return { ...sum, all: own, byId: Object.fromEntries(own.map((s) => [s.id, s])) as Record<string, Session>, states };
+    return { ...sum, all: own, byId: Object.fromEntries(own.map((s) => [s.id, s])) as Record<string, Session>, states: counted.states };
   }, [own, states]);
 }
 

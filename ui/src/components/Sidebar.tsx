@@ -20,6 +20,7 @@ import { stations, useStations } from "../lib/stations.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { actedOn, anchorRow, dropAnchor, focusRow, forgetActed, jumpNext, listActed, nameCounts, nameUnder, onReveal, reanchor, useActed, useAnchor, useCounts, useHand, useUnderLook, type Hand, type Kind } from "../lib/list-hold.ts";
 import { around, folders, held as heldList, pinnedOrder, tally } from "../lib/list-order.ts";
+import { countedState, withAgentFailures } from "../lib/home.ts";
 import { focusAsk } from "../lib/asks.ts";
 import { announce } from "../lib/announce.ts";
 import { useNeedUnderLooks } from "../lib/looks.ts";
@@ -185,7 +186,9 @@ function Row({ s: given, active, where, gone }: { s: Session; active: boolean; w
   const s = live ?? given;
   const { narrow, lines } = useContext(ListCtx);
   const restore = s.archived;
-  const st = useSessionState(s);
+  // A session whose agents failed reads Failed until the owner looks at it, as the counters count it (lib/home.ts).
+  const own = useSessionState(s);
+  const st = useMemo(() => countedState(s, own), [s, own]);
   const w = st.watch;
   // A machine that does not answer: what its rows say is the last it told, so they are dimmed and their clocks stand.
   // The state says so itself (lib/watch.ts: `offline`, and `as_of` when it was last told), until the machine has stayed heard.
@@ -798,7 +801,12 @@ function CountsKeeper() {
   const counts = useMemo(() => {
     const off = new Set(down.split(" ").filter(Boolean));
     // (A session whose machine does not answer is counted as offline, below, and as nothing else.)
-    const t = tally(top.filter((s) => countsNow(states[s.id])), states as Record<string, SessionState>, unread);
+    // A failure counts as the home screen's headline counts it: until the owner has looked at it, a
+    // session's own or its agents' (lib/home.ts). Looked at, it is a failed row in the list, not news:
+    // two counters on one screen give one number.
+    const counted = withAgentFailures(top, states as Record<string, SessionState>);
+    const t = tally(top.filter((s) => countsNow(states[s.id])), counted.states, unread);
+    t.fail = t.fail.filter((id) => counted.unseen.has(id));
     const more = under.split(" ").filter((id) => id && !t.need.includes(id) && top.some((s) => s.id === id));
     return { ...t, need: [...t.need, ...more], offline: top.filter((s) => s.machine && off.has(s.machine)).map((s) => s.id) };
   }, [top, states, unread, down, under]);
