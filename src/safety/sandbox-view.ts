@@ -43,11 +43,11 @@
 //   there points where a command made it point.
 //
 // Research: ~/.cache/keel-work/bun/research/sandbox-network-and-secrets.md.
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { checkouts, gitSync, gitViewsDir, locate } from "../core/git.ts";
-import { contains } from "../core/paths.ts";
+import { gitSync, gitViewsDir, locate } from "../core/git.ts";
+import { contains, realOf } from "../core/paths.ts";
 import { readText } from "../core/proc.ts";
 import { configDir } from "../providers/config.ts";
 import { sandboxRoot, sandboxScope, SCOPE_ORIGIN, scopeDir } from "./sandbox-scope.ts";
@@ -161,7 +161,8 @@ export const CREDENTIALS = [
   ".config/Code", ".config/Cursor", ".config/zed", ".vscode", ".vscode-server", ".local/share/zed", ".config/JetBrains", ".local/share/JetBrains",
 ];
 
-const real = (p: string) => { try { return realpathSync(p); } catch { return resolve(p); } };
+// (Where a path is, as the kernel walks it: src/core/paths.ts. Never by its text.)
+const real = (p: string) => realOf(p);
 // The owner's home as their programs know it: HOME, which a command inherits.
 export const ownerHome = () => real(process.env.HOME && isAbsolute(process.env.HOME) ? process.env.HOME : homedir());
 const kind = (p: string): "dir" | "file" | "link" | "other" | "none" => {
@@ -252,12 +253,31 @@ export const flockPath = () => (flockAt ??= Bun.which("flock") ?? (["/usr/bin/fl
 
 // ---- tending ----
 
-// A sandbox's folder, removed whole: a module cache keeps its folders read-only, which stops a plain removal.
-export function removeTree(dir: string) {
-  try {
-    Bun.spawnSync(["chmod", "-R", "u+rwX", dir], { stdout: "ignore", stderr: "ignore" });
-    rmSync(dir, { recursive: true, force: true });
-  } catch {} // left for the next start
+// Removing what a sandbox held. A sandboxed command writes these folders,
+// so nothing in them is believed: an entry may be a link to anywhere, and
+// may become one while it is being removed. So an entry is first moved, by
+// its name (a rename follows no link), into a folder no sandbox is given
+// (`trash`, on the same file system), and removed there: a link is
+// unlinked, a folder is made writable through (a module cache keeps its
+// folders read-only; chmod -R follows no link below the folder it is given,
+// and that folder is no link by then) and removed without leaving its file
+// system. A path that is not inside Keel's sandbox folder is not touched.
+const REMOVE = 'for d in "$@"; do if [ -L "$d" ] || [ ! -d "$d" ]; then rm -f -- "$d"; else chmod -R u+rwX -- "$d" 2>/dev/null; rm -rf --one-file-system -- "$d"; fi; done';
+function toTrash(paths: string[]): string[] {
+  const root = sandboxRoot(), trash = join(root, "trash");
+  const out: string[] = [];
+  for (const p of paths) {
+    // (Its folder is one of Keel's own, with no link in its path: only the entry's own name can be anything.)
+    const dir = dirname(p);
+    if (!contains(root, dir) || dir === trash || real(dir) !== dir) continue;
+    try {
+      mkdirSync(trash, { recursive: true, mode: 0o700 });
+      const to = join(trash, crypto.randomUUID());
+      renameSync(p, to);
+      out.push(to);
+    } catch {} // gone already, or held: left for the next round
+  }
+  return out;
 }
 // A sandbox's temp files are kept as long as systemd keeps /tmp's by
 // default (tmpfiles.d, 10 days), and a cache layer no command used as long
@@ -265,7 +285,6 @@ export function removeTree(dir: string) {
 // it is missed.
 const TMP_KEEP_MS = 10 * 86_400_000;
 const LAYER_KEEP_MS = 30 * 86_400_000;
-const REMOVE = 'for d in "$@"; do chmod -R u+rwX "$d" 2>/dev/null; rm -rf "$d"; done';
 // What the sandboxes hold on disk, tended (at a daemon's start and daily),
 // off the loop: the folders of repositories that are gone, temp files and
 // layers past their age. `all`: every layer and temp file no command holds
@@ -275,32 +294,51 @@ export async function tendSandboxes(all = false): Promise<void> {
   try { names = readdirSync(sandboxRoot()); } catch {} // none made yet
   const flock = flockPath();
   const run = async (argv: string[]) => { try { await Bun.spawn(argv, { stdout: "ignore", stderr: "ignore" }).exited; } catch {} }; // left for the next round
+  const remove = async (paths: string[]) => { const moved = toTrash(paths); if (moved.length) await run(["sh", "-c", REMOVE, "sh", ...moved]); };
   const now = Date.now();
+  // What an earlier round moved and did not finish.
+  try { const left = readdirSync(join(sandboxRoot(), "trash")).map((n) => join(sandboxRoot(), "trash", n)); if (left.length) await run(["sh", "-c", REMOVE, "sh", ...left]); } catch {} // no trash
   for (const name of names) {
     const dir = join(sandboxRoot(), name);
+    if (name === "trash") continue;
     if (name.startsWith("probe")) { removeProbe(dir); continue; }
     let origin: string | undefined;
     try { origin = readFileSync(join(dir, SCOPE_ORIGIN), "utf8"); } catch {} // not a scope's folder (the relay, the settings)
     if (origin === undefined) continue;
-    if (!existsSync(origin)) { await run(["sh", "-c", REMOVE, "sh", dir]); continue; }
+    if (!existsSync(origin)) { await remove([dir]); continue; }
     // Temp files: by age, each entry at the top.
     let tmp: string[] = [];
     try { tmp = readdirSync(join(dir, "tmp")); } catch {} // none
+    const old: string[] = [];
     for (const t of tmp) {
       let at = 0;
       try { at = lstatSync(join(dir, "tmp", t)).mtimeMs; } catch { continue; }
-      if (all || now - at > TMP_KEEP_MS) await run(["sh", "-c", REMOVE, "sh", join(dir, "tmp", t)]);
+      if (all || now - at > TMP_KEEP_MS) old.push(join(dir, "tmp", t));
     }
-    // Layers: by the time a command last took the slot, under the slot's own lock.
+    for (let i = 0; i < old.length; i += 64) await remove(old.slice(i, i + 64));
+    // Layers: by the time a command last took the slot, under the slot's own lock. The lock is taken by a helper
+    // that holds it while the layer's folders are moved away (a command that starts then waits, and makes them anew).
     let slots: string[] = [];
-    try { slots = readdirSync(join(dir, "slots")).filter((f) => f.endsWith(".lock")); } catch {} // none
+    try { slots = readdirSync(join(dir, "slots")).filter((f) => /^\d+\.lock$/.test(f)); } catch {} // none
     for (const f of slots) {
       const slot = f.slice(0, -5), lock = join(dir, "slots", f);
       let at = 0;
       try { at = statSync(lock).mtimeMs; } catch { continue; }
       if (!flock || !(all || now - at > LAYER_KEEP_MS)) continue;
-      await run([flock, "-n", lock, "sh", "-c", REMOVE, "sh", join(dir, "up", slot), join(dir, "work", slot)]);
+      const up = join(dir, "up", slot), work = join(dir, "work", slot);
+      if (real(dirname(up)) !== dirname(up) || real(dirname(work)) !== dirname(work)) continue;
+      const trash = join(sandboxRoot(), "trash");
+      mkdirSync(trash, { recursive: true, mode: 0o700 });
+      const to = join(trash, crypto.randomUUID());
+      // (mv by name inside the lock: a rename, which follows no link.)
+      await run([flock, "-n", lock, "sh", "-c", 'mkdir "$0" && { [ ! -e "$1" ] || mv -T -- "$1" "$0/up"; [ ! -e "$2" ] || mv -T -- "$2" "$0/work"; }', to, up, work]);
+      await run(["sh", "-c", REMOVE, "sh", to]);
     }
+    // The locks of sessions that ran here long ago.
+    let by: string[] = [];
+    try { by = readdirSync(join(dir, "slots", "by")); } catch {} // none
+    const gone = by.filter((n) => { try { return now - statSync(join(dir, "slots", "by", n)).mtimeMs > LAYER_KEEP_MS; } catch { return false; } }).map((n) => join(dir, "slots", "by", n));
+    if (gone.length) await remove(gone);
   }
 }
 // How much the sandboxes hold on disk, in bytes (du, off the loop).
@@ -451,7 +489,39 @@ export const offeredPaths = () => [...new Set(offered.flatMap((f) => { try { ret
 export function siblings(workspace: string): string[] {
   try {
     const at = locate(workspace);
-    return at ? checkouts(at).filter((p) => p !== real(workspace) && !contains(p, real(workspace)) && isDir(p)) : [];
+    if (!at) return [];
+    const ws = real(workspace);
+    // What names a checkout is in the git directory, where a sandboxed command of a main checkout writes. So a
+    // checkout is taken only when it and the repository name each other: its own `.git` file points back at the
+    // directory that names it. A forged entry needs that file in a folder the sandbox could already write.
+    const back = (dot: string, dir: string): boolean => {
+      if (basename(dot) !== ".git" || !isAbsolute(dot) || kind(dot) !== "file") return false;
+      const named = /^gitdir: (.+)$/m.exec(readFileSync(dot, "utf8"))?.[1]?.trim();
+      return !!named && real(isAbsolute(named) ? named : join(dirname(dot), named)) === real(dir);
+    };
+    // The session's own pointer first: a linked worktree whose repository does not name it has no repository here.
+    if (at.top && at.gitDir !== at.common) {
+      let named = "";
+      try { named = readFileSync(join(at.gitDir, "gitdir"), "utf8").trim(); } catch {} // not a worktree's directory
+      if (basename(named) !== ".git" || real(dirname(isAbsolute(named) ? named : join(at.gitDir, named))) !== real(at.top)) return [];
+    }
+    const out = new Set<string>();
+    if (basename(at.common) === ".git" && kind(at.common) === "dir") out.add(real(dirname(at.common)));
+    const [state] = ownFolders() as [string, string];
+    let names: string[] = [];
+    try { names = readdirSync(join(at.common, "worktrees")); } catch {} // no linked worktrees
+    for (const name of names.slice(0, 512)) {
+      const dir = join(at.common, "worktrees", name);
+      let dot: string;
+      try { dot = readFileSync(join(dir, "gitdir"), "utf8").trim(); } catch { continue; }
+      if (!back(dot, dir)) continue;
+      const folder = real(dirname(dot));
+      // In Keel's own state only a worktree Keel made: a folder directly in its worktrees folder.
+      if (contains(state, folder) && dirname(folder) !== join(state, "worktrees")) continue;
+      out.add(folder);
+    }
+    // (Not the session's folder, a folder around it, or one inside it: that one is the session's own.)
+    return [...out].filter((p) => !contains(p, ws) && !contains(ws, p) && isDir(p));
   } catch {
     return [];
   }
@@ -463,6 +533,11 @@ export function readPath(entry: string, home = ownerHome()): string | undefined 
   const p = t === "~" ? home : t.startsWith("~/") ? join(home, t.slice(2)) : t;
   return isAbsolute(p) && resolve(p) !== "/" ? resolve(p) : undefined;
 }
+
+// The files Keel reads its own configuration from when the owner keeps them outside its config folder (a variable
+// names each): its hooks, MCP servers, ACP agents and their folders. Keel runs what they name, outside any sandbox.
+export const namedConfig = (env: Record<string, string | undefined> = process.env): string[] =>
+  [env.KEEL_HOOKS, env.KEEL_MCP_CONFIG, env.KEEL_ACP_AGENTS, env.KEEL_ACP_FOLDERS].filter((x): x is string => !!x && isAbsolute(x)).map(real);
 
 // ---- small files, in one folder ----
 
@@ -572,19 +647,39 @@ export function hiddenSettings(home = ownerHome()): { path: string; note?: strin
 // owner gave the session under a name, is not the daemon's and stays.)
 const ENV_KEPT = /^(PATH|HOME|USER|LOGNAME|SHELL|PWD|OLDPWD|SHLVL|HOSTNAME|LANG|LANGUAGE|LC_[A-Z_]+|TZ|TERM|TERMINFO|TERMINFO_DIRS|COLORTERM|COLUMNS|LINES|NO_COLOR|FORCE_COLOR|CLICOLOR|CLICOLOR_FORCE|CI|TMPDIR|TEMP|TMP|EDITOR|VISUAL|PAGER|GIT_PAGER|SYSTEMD_PAGER|DPKG_PAGER|MANPAGER|LESS|XDG_[A-Z_]+|DEBIAN_FRONTEND|SOURCE_DATE_EPOCH|MAKEFLAGS|MAKELEVEL|CC|CXX|CPP|LD|AR|CFLAGS|CXXFLAGS|CPPFLAGS|LDFLAGS|PKG_CONFIG_PATH|LD_LIBRARY_PATH|LIBRARY_PATH|CPATH|C_INCLUDE_PATH|CPLUS_INCLUDE_PATH|CMAKE_[A-Z_]+|RUSTFLAGS|RUSTUP_TOOLCHAIN|RUSTC_WRAPPER|CARGO_[A-Z_]+|GOPATH|GOBIN|GOFLAGS|GOTOOLCHAIN|GOPROXY|GONOSUMDB|GONOSUMCHECK|GOPRIVATE|GO111MODULE|CGO_[A-Z_]+|PYTHONPATH|PYTHONHOME|PYTHONUNBUFFERED|PYTHONDONTWRITEBYTECODE|PIP_[A-Z_]+|UV_[A-Z_]+|CONDA_[A-Z_]+|NODE_PATH|NODE_ENV|NODE_OPTIONS|NVM_[A-Z_]+|BUN_[A-Z_]+|DENO_[A-Z_]+|JAVA_OPTS|JAVA_TOOL_OPTIONS|GRADLE_USER_HOME|MAVEN_OPTS|M2_HOME|ANDROID_[A-Z_]+|DOTNET_[A-Z_]+|GEM_PATH|BUNDLE_PATH|SSH_AUTH_SOCK|GIT_[A-Z_0-9]+|KEEL_SESSION|KEEL_SANDBOX_[A-Z_]+|TRACEPARENT|TRACESTATE)$/;
 const ENV_SECRET = /TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|APIKEY|API_KEY|PRIVATE_KEY|ACCESS_KEY|(^|_)AUTH(_|$)|(^|_)KEY$/i;
-const URL_WITH_PASSWORD = /\b[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s@]+@/i;
-// The names to take out of a sandboxed command's environment. `more`: names the owner keeps besides (Settings).
-export function envDropped(env: Record<string, string | undefined> = process.env, more: string[] = []): string[] {
+// A URL that carries a sign-in before its host: a user and a password, or a token alone (https://token@host).
+const URL_SIGN_IN = /(\b[a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi;
+// git settings given through the environment (GIT_CONFIG_COUNT, GIT_CONFIG_KEY_n, GIT_CONFIG_VALUE_n): a pair that
+// carries a sign-in (an Authorization header, a credential helper, a URL with one).
+const GIT_PAIR_SECRET = /authorization\s*:|\b(bearer|basic)\s+\S|token|passw|secret|credential/i;
+const GIT_KEY_SECRET = /extraheader|credential|proxyauth|password|token/i;
+// What happens to the daemon's environment on the way into a sandbox: the names taken out, and the values put in
+// changed (a URL kept without its sign-in). `more`: names the owner keeps besides (Settings).
+export function envPlan(env: Record<string, string | undefined> = process.env, more: string[] = []): { drop: string[]; set: [string, string][] } {
   const kept = new Set([...ROOT_VARS, ...more]);
-  const out: string[] = [];
+  const drop: string[] = [], set: [string, string][] = [];
+  // git's settings: all of them go when one pair carries a sign-in (the pairs are numbered: one cannot be taken out alone).
+  const count = Number(env.GIT_CONFIG_COUNT ?? 0);
+  let gitSecret = false;
+  for (let i = 0; i < Math.min(Number.isFinite(count) ? count : 0, 256) && !gitSecret; i++) {
+    const k = env[`GIT_CONFIG_KEY_${i}`] ?? "", v = env[`GIT_CONFIG_VALUE_${i}`] ?? "";
+    gitSecret = GIT_KEY_SECRET.test(k) || GIT_PAIR_SECRET.test(v) || new RegExp(URL_SIGN_IN.source, "i").test(v) || new RegExp(URL_SIGN_IN.source, "i").test(k);
+  }
   for (const [name, value] of Object.entries(env)) {
     if (value === undefined) continue;
+    const owners = more.includes(name);
     const named = kept.has(name) || ENV_KEPT.test(name);
-    const secret = (ENV_SECRET.test(name) && name !== "SSH_AUTH_SOCK" && !more.includes(name)) || URL_WITH_PASSWORD.test(value);
-    if (!named || secret) out.push(name);
+    const secret = ENV_SECRET.test(name) && name !== "SSH_AUTH_SOCK" && !owners;
+    if (!named || secret || (gitSecret && /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(name))) { drop.push(name); continue; }
+    // (A name the owner listed is theirs to pass whole.)
+    if (owners) continue;
+    const plain = value.replace(URL_SIGN_IN, "$1");
+    if (plain !== value) set.push([name, plain]);
   }
-  return out;
+  return { drop, set };
 }
+// The names to take out of a sandboxed command's environment.
+export const envDropped = (env: Record<string, string | undefined> = process.env, more: string[] = []): string[] => envPlan(env, more).drop;
 
 // ---- the view ----
 
@@ -798,7 +893,9 @@ export function readView(workspace: string, profile: "workspace-write" | "read-o
     after.push("--ro-bind", agent, agent);
     for (const f of ["known_hosts", "config"]) { const p = join(home, ".ssh", f); if (kind(p) === "file") after.push("--ro-bind", p, p); }
   }
-  const unset = [...new Set([...envDropped(env, o.env), "DBUS_SESSION_BUS_ADDRESS", "XAUTHORITY", "DISPLAY", "WAYLAND_DISPLAY", "GNOME_SETUP_DISPLAY", "GPG_AGENT_INFO", "SSH_AGENT_PID", ...(agent ? [] : ["SSH_AUTH_SOCK"])])];
+  // (The names of the session's desktop and agents. The rest of the daemon's environment is judged when a command
+  // starts, by what the environment holds then: envPlan.)
+  const unset = ["DBUS_SESSION_BUS_ADDRESS", "XAUTHORITY", "DISPLAY", "WAYLAND_DISPLAY", "GNOME_SETUP_DISPLAY", "GPG_AGENT_INFO", "SSH_AGENT_PID", ...(agent ? [] : ["SSH_AUTH_SOCK"])];
   // Last of all the home is closed: only the sandbox's own folders in it, the workspace and what was bound stay as they are.
   return {
     before, masks, again, after, last: homeIsWorkspace ? [] : ["--remount-ro", home], unset, defaults, home,
@@ -820,9 +917,8 @@ const CONFIG_OPEN = /^(skills|commands|agents|[^/]+\.md)$/;
 export function shownTo(path: string, workspace: string, o: ReadOpts = {}, scratch: string[] = []): { shown: true } | { shown: false; store: boolean; why: string } {
   const L = listsOf(workspace, o, process.env);
   const { home, ws, listed } = L;
-  // (A pattern is read up to its first wildcard.)
-  const wild = path.search(/[*?[{]/);
-  const p = real(wild < 0 ? path : dirname(`${path.slice(0, wild)}x`));
+  // (The path whole, whatever characters its names hold: a pattern was cut where it was read, readPaths.)
+  const p = real(path);
   const how = "The owner can add a folder to what this session's folder may read, in Settings, Permissions.";
   // The stores and Keel's own folders first, wherever the session's folder is.
   const store = storeOf(p, home);

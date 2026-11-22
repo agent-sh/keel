@@ -4,13 +4,13 @@
 // stay reachable through the proxy. The stand-in servers are on this
 // machine's loopback: what a sandbox must never reach.
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection, createServer, type Server } from "node:net";
 import { hostname, networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
-import { addressBytes, addressText, internalAddress } from "../core/hosts.ts";
+import { addressBytes, addressText, internalAddress, privateHost } from "../core/hosts.ts";
 import { sessionPorts, forgetOwnership } from "../fleet/portal.ts";
-import { ownPort, publicOnly, reachInto, RELAY_JS, setInterfaces, startProxy, type Policy, type Refusal } from "./net-proxy.ts";
+import { failProxyThread, onProxyTrouble, ownPort, proxiesClosed, proxyDir, publicOnly, reopenProxies, reachInto, RELAY_JS, setInterfaces, startProxy, type Policy, type Refusal } from "./net-proxy.ts";
 import { sandboxScope, scopeDir } from "./sandbox-scope.ts";
 import { sandboxSaid } from "./refwatch.ts";
 import { confine, sandboxStatus } from "./sandbox.ts";
@@ -116,6 +116,11 @@ test("an address is judged by its bytes: every spelling of an inside address is 
   expect(addressText(addressBytes("0000:0000:0000:0000:0000:0000:0000:0001")!)).toBe("::1");
   expect(addressText(addressBytes("64:FF9B::8.8.8.8")!)).toBe("64:ff9b::808:808");
   expect(addressBytes("example.com")).toBeNull();
+  // Fullwidth digits and dots, and the ideographic full stop, are the plain ones to a resolver: the same address.
+  for (const t of ["\uFF11\uFF12\uFF17.\uFF10.\uFF10.\uFF11", "127\uFF0E0\uFF0E0\uFF0E1", "127\u30020\u30020\u30021", "\uFF4C\uFF4F\uFF43\uFF41\uFF4C\uFF48\uFF4F\uFF53\uFF54", "x\u3002localhost"]) expect([t, privateHost(t)]).toEqual([t, true]);
+  expect(addressText(addressBytes("\uFF11\uFF12\uFF17.\uFF10.\uFF10.\uFF11")!)).toBe("127.0.0.1");
+  // A name that only starts like an address is a name, and a public address is public by any spelling.
+  for (const t of ["10.example.com", "fdroid.org", "127.0.0.1.nip.io", "93.184.216.34", "[2606:4700:4700::1111]", "0x5db8d822"]) expect([t, privateHost(t)]).toEqual([t, false]);
 });
 
 test("the proxy never reaches this machine under any spelling of its addresses, by CONNECT or by a plain request", async () => {
@@ -363,8 +368,18 @@ test.skipIf(!sandboxStatus().available || !Bun.which("nsenter"))("the owner's po
   const p = Bun.spawn(confine(["bash", "-c", "echo hello-from-inside > index.html; exec python3 -m http.server 8765 --bind 127.0.0.1"], { sandbox: "workspace-write", network: false }, ws), { cwd: ws, stdout: "ignore", stderr: "ignore", env: { ...process.env, KEEL_SESSION: sid } as Record<string, string> });
   try {
     let at: { port: number; pid: number; ns?: string } | undefined;
-    for (let i = 0; i < 50 && !at; i++) { await Bun.sleep(100); forgetOwnership(); at = sessionPorts().get(sid)?.find((x) => x.port === 8765); }
+    // (The session's processes are the one the daemon started for it and what that started.)
+    const held = new Map([[sid, [p.pid]]]);
+    for (let i = 0; i < 50 && !at; i++) { await Bun.sleep(100); forgetOwnership(); at = sessionPorts(held).get(sid)?.find((x) => x.port === 8765); }
     expect(at?.ns).toMatch(/^net:\[\d+\]$/);
+    // A process that only says it is the session's, in its environment, is not: another command cannot put its port
+    // into this session's portal.
+    const liar = Bun.spawn(["python3", "-m", "http.server", "8766", "--bind", "127.0.0.1"], { cwd: ws, stdout: "ignore", stderr: "ignore", env: { ...process.env, KEEL_SESSION: sid } as Record<string, string> });
+    try {
+      for (let i = 0; i < 30 && (await fetch("http://127.0.0.1:8766/").then((r) => r.status, () => 0)) !== 200; i++) await Bun.sleep(100);
+      forgetOwnership();
+      expect(sessionPorts(held).get(sid)?.map((x) => x.port)).toEqual([8765]);
+    } finally { liar.kill(); await liar.exited; }
     // Straight from here there is nothing on that port; through the namespace there is.
     expect(await fetch("http://127.0.0.1:8765/index.html").then((r) => r.status, () => 0)).not.toBe(200);
     const local = await reachInto(scopeDir(sandboxScope(ws)), at!.pid, at!.port, at!.ns!);
@@ -376,3 +391,33 @@ test.skipIf(!sandboxStatus().available || !Bun.which("nsenter"))("the owner's po
     await p.exited;
   }
 }, 30_000);
+
+test("the proxies' thread is started again when it fails, and after three failures in a minute the proxies are closed, not moved to the loop", async () => {
+  const said: string[] = [];
+  onProxyTrouble((e) => said.push(e.message));
+  const dir = join(root, "scope-restart");
+  const net = proxyDir(dir), sock = join(net, "proxy.sock");
+  const answers = async () => { for (let i = 0; i < 100; i++) { if (existsSync(sock)) { const r = await ask(sock, "GET http://127.0.0.1:9/ HTTP/1.1\r\nHost: x\r\n\r\n"); if (r.startsWith("HTTP/1.1 403")) return true; } await Bun.sleep(50); } return false; };
+  try {
+    expect(await answers()).toBe(true);
+    // The thread fails: it is started again, the same socket listens again, and it is said.
+    failProxyThread("thrown in a test");
+    expect(await answers()).toBe(true);
+    expect(said.filter((m) => /was started again/.test(m)).length).toBe(1);
+    expect(proxiesClosed()).toBe(false);
+    // It keeps failing: after the third restart in a minute nothing listens, here or on a thread.
+    for (let i = 0; i < 3; i++) { failProxyThread("thrown in a test"); await Bun.sleep(50); }
+    expect(proxiesClosed()).toBe(true);
+    expect(existsSync(sock)).toBe(false);
+    expect(said.at(-1)).toContain("sandboxed commands have no network until the daemon restarts");
+    // A command that then meets the dead proxy is told what it is.
+    expect(sandboxSaid("curl: (7) Failed to connect to 127.0.0.1 port 3128", { linked: false, network: true, escape: "", closed: proxiesClosed }).join(" ")).toContain("Keel's sandbox proxy is not running");
+    // Asking for the folder again starts nothing.
+    proxyDir(dir);
+    await Bun.sleep(100);
+    expect(existsSync(sock)).toBe(false);
+  } finally {
+    onProxyTrouble(undefined);
+    reopenProxies();
+  }
+}, 60_000);

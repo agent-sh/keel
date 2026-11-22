@@ -6,8 +6,12 @@
 export function privateHost(hostname: string): boolean {
   const bytes = addressBytes(hostname);
   if (bytes) return internalBytes(bytes);
-  return !hostname.includes(".") || /^(localhost|.*\.localhost)\.?$/i.test(hostname);
+  const name = plainHost(hostname);
+  return !name.includes(".") || /^(localhost|.*\.localhost)\.?$/i.test(name);
 }
+// A host's text as a resolver reads it: compatibility forms folded (fullwidth letters, digits and dots), and the
+// other full stops IDNA takes as a dot.
+const plainHost = (text: string) => text.trim().normalize("NFKC").replace(/[\u3002\uFF0E\uFF61]/g, ".");
 
 // ---- an address, by its bytes ----
 
@@ -19,7 +23,8 @@ export function privateHost(hostname: string): boolean {
 // 16 for IPv6), judged by them, and connected to by the one text of them.
 // Nothing for a text that is not an address.
 export function addressBytes(text: string): Uint8Array | null {
-  let a = text.trim();
+  // (Fullwidth digits and dots, and the ideographic full stop, are the plain ones to a resolver.)
+  let a = plainHost(text);
   if (a.startsWith("[") && a.endsWith("]")) a = a.slice(1, -1);
   // (A zone names an interface of this machine, not another address.)
   const zone = a.indexOf("%");

@@ -33,6 +33,12 @@ export function snapshot(root: string): Snap {
     } catch {}
   };
   for (const f of FILES) take(f);
+  // Keel's own configuration, where the owner keeps a file of it inside this folder (KEEL_HOOKS and its kin).
+  for (const f of [process.env.KEEL_HOOKS, process.env.KEEL_MCP_CONFIG, process.env.KEEL_ACP_AGENTS, process.env.KEEL_ACP_FOLDERS]) {
+    if (!f) continue;
+    const rel = relative(root, f);
+    if (rel && !rel.startsWith("..") && !rel.startsWith("/")) take(rel);
+  }
   for (const d of DIRS) {
     let names: string[] = [];
     try { names = readdirSync(join(root, d)); } catch { continue; }

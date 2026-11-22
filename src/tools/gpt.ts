@@ -5,6 +5,7 @@ import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import { atCwd, realOf } from "../core/paths.ts";
 import { heldFile } from "../core/store-files.ts";
+import { hold } from "./files.ts";
 import { APPLY_PATCH_GRAMMAR as grammar } from "./apply_patch_grammar.ts";
 import { ask, type Question } from "./interact.ts";
 import { cleanTerm, findJob, hasUnread, running, startJob, takeUnread, waitJob, writeJob, type Job } from "./jobs.ts";
@@ -49,7 +50,7 @@ function execResult(job: Job, t0: number, maxTokens: number): string {
 
 async function runPatch(text: string, base: string, ctx: ToolContext) {
   try {
-    const r = await applyPatch(ctx.cwd, text, { base });
+    const r = await applyPatch(ctx.cwd, text, { base, judged: ctx.judged, sessionId: ctx.sessionId });
     for (const f of r.files) ctx.seen.set(resolve(base, f.path), Date.now());
     return ok(r.summary);
   } catch (e) {
@@ -207,15 +208,20 @@ const view_image: Tool = {
     const raw = String(input?.path ?? "").trim();
     if (!raw) return fail("view_image needs a path");
     const p = realOf(atCwd(shellCwd(ctx), raw));
+    // (The file is held for the read: what is read is the file that was judged.)
+    const h = hold(p, ctx, "read");
+    if ("refused" in h) return fail(h.refused);
+    try {
     let st;
-    try { st = statSync(p); } catch { return fail(`unable to locate image at \`${p}\``); }
+    try { st = statSync(h.io); } catch { return fail(`unable to locate image at \`${p}\``); }
     if (!st.isFile()) return fail(`image path \`${p}\` is not a file`);
     { const held = heldFile(p); if (held) return fail(held); }
     const type = Bun.file(p).type;
     if (!/^image\/(png|jpeg|gif|webp)$/.test(type)) return fail(`\`${p}\` is not a PNG, JPEG, GIF or WebP image (${type})`);
     if (st.size > 20 * 1024 * 1024) return fail(`\`${p}\` is ${(st.size / 1048576).toFixed(0)} MB; resize it (e.g. magick) and view the copy`);
     ctx.seen.set(p, st.mtimeMs);
-    return { content: [{ type: "image", media_type: type, data: Buffer.from(await Bun.file(p).arrayBuffer()).toString("base64"), path: p }] };
+    return { content: [{ type: "image", media_type: type, data: Buffer.from(await Bun.file(h.io).arrayBuffer()).toString("base64"), path: p }] };
+    } finally { h.close(); }
   },
 };
 

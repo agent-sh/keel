@@ -377,7 +377,9 @@ network is on. It reads, by design:
 - the session's folder, `.env` files in it included (the task may need
   them: keep a secret out of a folder you let a sandboxed session work in);
 - the other checkouts of the same repository (the main checkout and its
-  worktrees), read-only;
+  worktrees), read-only. A checkout counts when it and the repository name
+  each other: its own `.git` file points back at the repository's entry for
+  it. An entry a command wrote into the git directory shows nothing;
 - the system: `/usr`, `/etc`, `/opt` and the like, as unix permissions allow;
 - your toolchains, read-only: the well-known folders (the `bin` folders of
   cargo, bun, go and `~/.local`, `~/.rustup`, `~/.nvm` and their kin), the
@@ -441,13 +443,27 @@ is fetched again. Where you have no cache folder yet for an installed tool,
 the tool's folder is the sandbox's own. Temp files of a sandbox are removed
 after 10 days and a layer no command used after 30 (systemd's defaults for
 `/tmp` and `/var/tmp`); Settings shows what the sandboxes hold on disk and
-clears it.
+clears it. What is removed is first moved out of the sandbox's reach by its
+name and removed there, so a link a command left in its temp folder is
+removed as a link and nothing it points at is touched.
+
+A repository's sandbox takes 64 commands at once, and one session 16 of
+them. A command past either waits 20 seconds for one to end, and then ends
+with the sentence that says which bound it met.
 
 A sandboxed command's environment holds what a build needs (`PATH`, the
 locale, the temp folder, the toolchains' variables, the proxy variables the
 sandbox sets) and nothing else of the daemon's: no variable whose name says
-token, key, secret, password or credential, and none whose value is a URL
-with a password. You can name more variables to pass on in Settings.
+token, key, secret, password or credential. A kept variable whose value is
+a URL with a sign-in (a password, or a token alone, as in `GOPROXY` or
+`PIP_INDEX_URL`) goes in without the sign-in, so the registry setting stays
+and the token does not. git settings given through the environment
+(`GIT_CONFIG_COUNT` and its pairs) all go when one of them carries a
+sign-in, an Authorization header among them. The environment is cleaned
+before bubblewrap starts: bubblewrap is the first process inside, and what
+it was started with can be read there. You can name more variables to pass
+on in Settings; a variable a tool adds for one call (a secret you gave the
+session under a name) is passed as it is.
 
 What that costs a command, measured on a day of ordinary work (bun, npm,
 pnpm, cargo, go, uv, pip, git, make, cmake, curl, java all work):
@@ -498,6 +514,27 @@ held to the sandbox by the same rule:
   its folder (what runs or configures things later aside) and its scratch,
   by where the file really is. A file that has another name elsewhere (a
   hard link) is not written; in the asking modes it is your card.
+- A reading tool Keel knows only by its flag (an MCP server's, an ACP
+  agent's) is judged by the files its input names, the same way.
+
+A path is judged where it is, and what is judged is what is opened:
+
+- Where a path leads is the kernel's walk, never the path's text: each part
+  in turn, a link followed where it stands, `..` applied to where the walk
+  is. `<folder>/link/../file` is beside the link's target. A path the
+  kernel refuses (too many links, a part after a file, `..` after a part
+  that is not there) is not opened.
+- A name is a name whatever characters it holds: a link called `l[x` is a
+  link. Only a pattern (Glob's, Grep's) is read up to its first wildcard.
+- The gate looks, then the tool opens, and a command running beside the
+  call can change what a name is in between. So a file tool holds the file:
+  it opens the folder the gate judged and checks that what it opened is
+  that folder, opens the file inside it without following a link at its
+  name (or creates it there and only there), and reads and writes that
+  descriptor. A name that became a link, or a folder that became one, is
+  refused with "not the file this call was checked for". This needs
+  `/proc` (Linux); elsewhere the path is checked again right before the
+  open, which narrows the gap and does not close it.
 
 Keel's own folders have a rule each, in every mode, sandboxed or not, for
 every tool and for a command's plain write, by path, through a link,
@@ -512,6 +549,18 @@ through a hard link or through `..`:
   Auto: one call at a time, with no standing rule offered and no judge. In
   Full auto no card reaches you, so it is refused, with the sentence that
   says to do it in an asking mode or in Settings.
+- A file of that configuration you keep somewhere else by a variable
+  (`KEEL_HOOKS`, `KEEL_MCP_CONFIG`, `KEEL_ACP_AGENTS`, `KEEL_ACP_FOLDERS`)
+  has the config folder's rule. When it is inside a session's folder it is
+  read-only in that session's sandbox. One that does not exist yet cannot
+  be closed that way (a bind needs the file): what a command makes of it is
+  moved to quarantine after the call, and until then Keel may read it. Keep
+  such a file outside the folders your sessions work in.
+
+These rules hold for a session's tools. A command that runs outside a
+sandbox (a session with the sandbox off, or a command you let leave it) has
+your own reach: what it may run is the permission modes' to decide, not the
+sandbox's.
 
 ### The network of a sandboxed command
 
@@ -542,9 +591,25 @@ runs for the repository:
   on. Java reads no proxy variables: give it `-Dhttps.proxyHost` and
   `-Dhttps.proxyPort` from `KEEL_SANDBOX_PROXY`, or run it outside.
 - A server a sandboxed command starts listens on the sandbox's own
-  `localhost`: other commands of the same call reach it, your browser and
-  the portal do not. Start a dev server you want to open outside the
+  `localhost`: other commands of the same call reach it, and nothing else
+  on this machine does. The session's portal still shows it: the daemon
+  reaches into that sandbox's network namespace for the port (`nsenter`,
+  for the session's own portal only). A session's ports are those of the
+  processes the daemon started for its commands and what they started,
+  never of a process that names the session in its own environment. To
+  open it in a browser by its own address, start the dev server outside the
   sandbox.
+- One sandbox's proxy carries 256 connections at once. Past that the
+  connection that has carried nothing for the longest (a minute or more)
+  is ended for the new one, else the new one is refused.
+- A destination is judged by its address's bytes: every way to write an
+  address (hex, octal, one number, IPv6 written out, an IPv4 address inside
+  an IPv6 one) is the same address.
+- The proxies run on a thread of their own. If it fails it is started
+  again, and that is in Errors. If it fails four times in a minute it is not
+  started again: no proxy listens, nothing leaves a sandbox until the daemon
+  restarts, and a command that meets it is told so. The proxies are never
+  moved onto the daemon's own loop for that.
 
 A command that the proxy refused, or that went around it, is told so in its
 result. With the network off there is no proxy and nothing leaves.

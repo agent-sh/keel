@@ -4,13 +4,14 @@
 // bwrap is missing or cannot start, sandboxing is unavailable and says why;
 // a session never believes it is confined when it is not.
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { atCwd, contains, realOf } from "../core/paths.ts";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { gitViewsDir } from "../core/git.ts";
 import type { SessionPerm } from "./gate.ts";
 import { IN_SANDBOX, proxyDir, RELAY_START, relayFiles, viewOnThread } from "./net-proxy.ts";
 import { sandboxRoot, sandboxScope, scopeDir } from "./sandbox-scope.ts";
-import { flockPath, forgetViews, offeredPaths, overlays, readView, SLOT, type ReadOpts, type View } from "./sandbox-view.ts";
+import { envPlan, flockPath, forgetViews, namedConfig, offeredPaths, overlays, readView, SLOT, type ReadOpts, type View } from "./sandbox-view.ts";
 
 const SSH_SNIPPETS = "/etc/ssh/ssh_config.d";
 const isDir = (p: string) => { try { return statSync(p).isDirectory(); } catch { return false; } };
@@ -141,6 +142,14 @@ function codeOf(dir: string): string[] | null {
 // worktrees', its submodules'). Past this many the rest are read-only as a whole.
 const GIT_DIRS_MAX = 256;
 
+// Where a path that exists is, as the kernel walks it (realOf: never by the path's text). It throws for one that is
+// not there, as realpath does.
+function there(p: string): string {
+  const r = realOf(p);
+  lstatSync(r);
+  return r;
+}
+
 // A git directory inside the writable folder: a normal clone's `.git`, or a
 // submodule's under `modules`. It stays writable (a commit writes it) with
 // its code read-only, and so is the code of what lives inside it: each
@@ -175,7 +184,7 @@ function guardGitDir(dir: string, root: string, budget: { left: number }): strin
 // command can rewrite that file only for a directory it could already write.
 function within(root: string, wt: string): boolean {
   try {
-    const folder = realpathSync(dirname(resolve(wt, readFileSync(join(wt, "gitdir"), "utf8").trim())));
+    const folder = there(dirname(atCwd(wt, readFileSync(join(wt, "gitdir"), "utf8").trim())));
     return folder === root || folder.startsWith(root + sep);
   } catch {
     return false; // a folder that is gone: not the session's
@@ -208,7 +217,7 @@ function modulesOf(modules: string, root: string, budget: { left: number }): str
 function cloneGitBinds(workspace: string): string[] {
   const git = join(workspace, ".git");
   try {
-    return kindOf(git) === "dir" ? guardGitDir(git, realpathSync(workspace), { left: GIT_DIRS_MAX }) : [];
+    return kindOf(git) === "dir" ? guardGitDir(git, there(workspace), { left: GIT_DIRS_MAX }) : [];
   } catch {
     return ro(git); // a listing that failed halfway: closed
   }
@@ -276,12 +285,12 @@ export function linkedWorktree(workspace: string): { dot: string; own: string; c
     if (kindOf(dot) !== "file") return undefined;
     const named = /^gitdir: (.+)$/m.exec(readFileSync(dot, "utf8"))?.[1]?.trim();
     if (!named) return undefined;
-    const own = realpathSync(resolve(workspace, named));
+    const own = there(atCwd(workspace, named));
     const common = dirname(dirname(own));
     if (basename(dirname(own)) !== "worktrees") return undefined;
-    if (realpathSync(resolve(own, readFileSync(join(own, "commondir"), "utf8").trim())) !== common) return undefined;
-    const back = resolve(own, readFileSync(join(own, "gitdir"), "utf8").trim());
-    if (realpathSync(dirname(back)) !== realpathSync(workspace) || basename(back) !== ".git") return undefined;
+    if (there(atCwd(own, readFileSync(join(own, "commondir"), "utf8").trim())) !== common) return undefined;
+    const back = atCwd(own, readFileSync(join(own, "gitdir"), "utf8").trim());
+    if (there(dirname(back)) !== there(workspace) || basename(back) !== ".git") return undefined;
     if (!["HEAD", "objects", "refs"].every((p) => existsSync(join(common, p)))) return undefined;
     return { dot, own, common };
   } catch {
@@ -389,7 +398,7 @@ export function linkedGitBinds(workspace: string): string[] {
   try {
     // The session's own config.worktree, made empty when missing (see codeOf).
     if (!plainFile(join(own, "config.worktree"))) return [];
-    const modules = modulesOf(join(own, "modules"), realpathSync(workspace), { left: GIT_DIRS_MAX });
+    const modules = modulesOf(join(own, "modules"), there(workspace), { left: GIT_DIRS_MAX });
     if (!modules) return [];
     // The logs of the shared refs are a store git makes at a first commit. A
     // bare repository has none, and nothing can be made at the top from
@@ -477,8 +486,30 @@ export function confine(argv: string[], perm: Pick<SessionPerm, "sandbox" | "net
   // The profile is the same for every command of a session until one of its
   // inputs changes: it is built once and kept for a short while (profileOf).
   const extra = (typeof scratch === "string" ? [scratch] : scratch ?? []).filter((p) => p && existsSync(p));
-  const b = [...profileOf(st.bwrap!, perm, workspace, extra, read), ...argv];
+  const b = [...cleaned(profileOf(st.bwrap!, perm, workspace, extra, read), st.bwrap!, read), ...argv];
   return st.scope ? [...scopeHead(), ...scopeProps(), "--", ...b] : b;
+}
+
+// The command's environment is cleaned before bubblewrap starts, by env(1):
+// bubblewrap is the first process inside, and what it was started with is
+// read there (/proc/1/environ) whatever it then takes out for its child. What
+// goes is judged by the daemon's environment as it is at this call (envPlan):
+// everything of it that a build does not need, and a kept value that carries
+// a sign-in goes in without it. What a caller adds for the command (the
+// session's id, a secret the owner gave it under a name) is not the daemon's
+// and stays.
+const ENV_HERE = "\0keel-env\0";
+let envProgram: string | null | undefined;
+function cleaned(profile: string[], bwrap: string, read: ReadOpts): string[] {
+  const at = profile.indexOf(ENV_HERE);
+  if (at < 0) return profile;
+  if (envProgram === undefined) envProgram = ["/usr/bin/env", "/bin/env"].find((p) => existsSync(p)) ?? null;
+  const plan = envPlan(process.env, read.env);
+  const to = profile.indexOf(bwrap, at);
+  const fixed = profile.slice(at + 1, to).filter((x) => x !== "-u");
+  if (envProgram) return [...profile.slice(0, at), envProgram, ...[...plan.drop, ...fixed].flatMap((n) => ["-u", n]), ...plan.set.map(([k, v]) => `${k}=${v}`), ...profile.slice(to)];
+  // (No env program on this machine: bubblewrap takes them out for the command it starts; its own start keeps them.)
+  return [...profile.slice(0, at), bwrap, ...[...plan.drop, ...fixed].flatMap((n) => ["--unsetenv", n]), ...plan.set.flatMap(([k, v]) => ["--setenv", k, v]), ...profile.slice(to + 1)];
 }
 
 // A session's profile is kept: building one reads a few hundred names on
@@ -497,7 +528,7 @@ const profiles = new Map<string, { at: number; argv: string[]; busy?: boolean }>
 // Every kept profile is dropped (the owner changed what a sandbox shows; a test changed the disk).
 export function forgetProfiles() { profiles.clear(); forgetViews(); }
 function profileOf(bwrap: string, perm: Pick<SessionPerm, "sandbox" | "network">, workspace: string, scratch: string[], read: ReadOpts): string[] {
-  const key = JSON.stringify([bwrap, perm.sandbox, perm.network, workspace, scratch, read, process.env.PATH, process.env.TMPDIR, process.env.SSH_AUTH_SOCK]);
+  const key = JSON.stringify([bwrap, perm.sandbox, perm.network, workspace, scratch, read, process.env.PATH, process.env.TMPDIR, process.env.SSH_AUTH_SOCK, namedConfig()]);
   const p = perm as Perm;
   const flock = flockPath();
   const layered = !!flock && overlays(bwrap);
@@ -531,7 +562,8 @@ function compose(bwrap: string, perm: Perm, workspace: string, scratch: string[]
   // A network namespace of its own, always: the host's loopback (Keel's own API among the listeners there), the
   // local network and the display's abstract sockets are not in it. With the session's network on, what leaves
   // goes through the proxy this process runs for the repository (src/safety/net-proxy.ts).
-  const b = [bwrap, "--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc", "--unshare-net",
+  // (ENV_HERE: where the command's environment is cleaned, before bubblewrap starts: confine puts it in per call.)
+  const b = [ENV_HERE, ...view.unset.flatMap((name) => ["-u", name]), bwrap, "--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc", "--unshare-net",
     "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", ...view.before];
   // The cache layers of the slot the command's wrapper takes: read by bubblewrap from a file of that slot (HOLD).
   const layers = view.layers && flock ? layerFiles(view.layers, perm.sandbox) : undefined;
@@ -557,6 +589,11 @@ function compose(bwrap: string, perm: Perm, workspace: string, scratch: string[]
     const linked = linkedGitBinds(workspace);
     own = ["--bind", workspace, workspace, ...cloneGitBinds(workspace), ...linked];
     if (linked.length) settings.push(...LINKED_GIT);
+    // A file of Keel's own configuration that the owner keeps inside the session's folder (KEEL_HOOKS and its kin)
+    // is read-only there: Keel runs what it names, outside the sandbox. (One that is not there yet cannot be
+    // closed, a bind needs the file: what a command makes of it is taken away after the call, src/safety/quarantine.ts.)
+    const ws = realOf(workspace);
+    for (const f of namedConfig()) if (f !== ws && contains(ws, f) && kindOf(f) === "file") own.push(...ro(f));
   } else own = ["--ro-bind", workspace, workspace];
   // The credential stores and Keel's own folders are hidden after the
   // workspace is bound: also for a session whose folder holds them. A
@@ -565,13 +602,12 @@ function compose(bwrap: string, perm: Perm, workspace: string, scratch: string[]
   b.push(...own, ...view.masks, ...(view.again ? own : []), ...view.after);
   for (const p of scratch) b.push("--bind", p, p);
   b.push(...view.last);
-  for (const name of view.unset) b.push("--unsetenv", name);
   // The settings are added inside, after any the command's own environment
   // carries (git-config(1), GIT_CONFIG_COUNT): the count is the command's,
   // which only the command's own process knows.
   b.push("--", "/bin/sh", "-c", prelude + withGit(settings, view.defaults), "keel-sandbox");
   // The command takes a cache layer before the sandbox is built and holds it until its last process ends.
-  return layers && flock ? ["/bin/sh", "-c", HOLD, view.layers!.slots, flock, layers, ...b] : b;
+  return layers && flock ? ["/bin/sh", "-c", holdScript(), view.layers!.slots, flock, layers, ...b] : b;
 }
 // The layers' arguments and folders as two files beside the locks, the slot's number still to be put in
 // (`<name>` nul-separated for bubblewrap, `<name>.dirs` a line each): written when they change.
@@ -595,11 +631,29 @@ function layerFiles(l: { slots: string; args: string[]; dirs: string[] }, profil
 // The wrapper that takes a cache layer for a command: the first slot whose
 // lock is free (the lock is held by the command and what it starts: file
 // descriptor 9 stays open in them). bubblewrap reads the slot's layers from
-// file descriptor 8. Past SLOTS_MAX commands of one repository at once, it
-// waits for the first slot.
+// file descriptor 8.
+//
+// A repository has SLOTS_MAX layers, and one session holds at most
+// SESSION_SHARE of them (descriptor 7: one of the session's own locks), so
+// one session's commands cannot make every other session of the repository
+// wait. Past its share, or with every layer held, a command waits
+// SLOT_WAIT_S seconds and then ends with the sentence that says why.
+//
+// The layer's folders are made at every start (a test of each, a mkdir of
+// one that is gone): what tends the layers, or the owner, may have removed
+// them since the slot's arguments were written.
 const SLOTS_MAX = 64;
-const HOLD = `d="$0"; f="$1"; t="$2"; shift 2; i=0; while :; do if exec 9>"$d/$i.lock" && "$f" -n 9; then break; fi; i=$((i+1)); ` +
-  `if [ "$i" -ge ${SLOTS_MAX} ]; then i=0; exec 9>"$d/0.lock"; "$f" -w 600 9 || { echo "keel: every cache layer of this sandbox is held by another command; run the command again" >&2; exit 75; }; break; fi; done; ` +
-  // The slot's own copy of the layers' arguments, made again when the layers changed.
-  `a="$d/$i.\${t##*/}"; if [ ! -f "$a" ] || [ "$t" -nt "$a" ]; then sed "s/${SLOT}/$i/g" "$t.dirs" | xargs -d '\n' mkdir -p && sed "s/${SLOT}/$i/g" "$t" > "$a.new" && mv "$a.new" "$a" || exit 75; fi; ` +
+const SESSION_SHARE = 16;
+let SLOT_WAIT_S = 20;
+// (A test waits less.)
+export const setSlotWait = (seconds: number) => { SLOT_WAIT_S = seconds; forgetProfiles(); };
+// (A command started for no session, a language server or an editor's MCP server, has no share: only the repository's bound.)
+const holdScript = () => `d="$0"; f="$1"; t="$2"; shift 2; s="\${KEEL_SESSION:-}"; case "$s" in *[!A-Za-z0-9_-]*) s="";; esac; ` +
+  `if [ -n "$s" ]; then [ -d "$d/by/$s" ] || mkdir -p "$d/by/$s"; j=0; while :; do if exec 7>"$d/by/$s/$j.lock" && "$f" -n 7; then break; fi; j=$((j+1)); ` +
+  `if [ "$j" -ge ${SESSION_SHARE} ]; then exec 7>"$d/by/$s/0.lock"; "$f" -w ${SLOT_WAIT_S} 7 || { echo "keel: this session already runs ${SESSION_SHARE} sandboxed commands at once, the most one session may, and none ended in ${SLOT_WAIT_S} s. Stop one of them, or run this again when one has ended." >&2; exit 75; }; break; fi; done; fi; ` +
+  `i=0; while :; do if exec 9>"$d/$i.lock" && "$f" -n 9; then break; fi; i=$((i+1)); ` +
+  `if [ "$i" -ge ${SLOTS_MAX} ]; then i=0; exec 9>"$d/0.lock"; "$f" -w ${SLOT_WAIT_S} 9 || { echo "keel: ${SLOTS_MAX} sandboxed commands of this repository run at once, the most its sandbox takes, and none ended in ${SLOT_WAIT_S} s. Run this again when one has ended." >&2; exit 75; }; break; fi; done; ` +
+  // The slot's own copy of the layers' arguments and folders, made again when the layers changed.
+  `a="$d/$i.\${t##*/}"; if [ ! -f "$a" ] || [ ! -f "$a.dirs" ] || [ "$t" -nt "$a" ]; then sed "s/${SLOT}/$i/g" "$t.dirs" > "$a.dirs.new" && mv "$a.dirs.new" "$a.dirs" && sed "s/${SLOT}/$i/g" "$t" > "$a.new" && mv "$a.new" "$a" || exit 75; fi; ` +
+  `while IFS= read -r x; do [ -d "$x" ] || mkdir -p "$x" || exit 75; done < "$a.dirs"; ` +
   `exec 8<"$a"; exec "$@"`;

@@ -28,6 +28,9 @@ export type ToolContext = {
   // command on another machine asks that machine for the same.
   // `since`: when the confinement was set for the call (what its proxy refused after that is the call's).
   confined?: { sandbox: "workspace-write" | "read-only"; network: boolean; since?: number };
+  // Set by a beforeTool hook: the files and folders this call was judged for, where they are (no link in a path).
+  // A file tool opens nothing else (src/tools/files.ts hold).
+  judged?: string[];
   // The tool_use id of the call being run (set per call by the engine).
   callId?: string;
   // Set on a call a program made (run_code): the id of the turn's call that runs the program.

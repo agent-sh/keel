@@ -13,7 +13,7 @@
 // - In a sandboxed Full auto session a file tool writes only inside the
 //   session's writable folders, by where the file really is.
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Bus } from "../core/bus.ts";
@@ -25,6 +25,7 @@ import { claudeTools } from "../tools/claude.ts";
 import { geminiTools } from "../tools/gemini.ts";
 import { gptTools } from "../tools/gpt.ts";
 import { Gate } from "./gate.ts";
+import { classOf } from "../acp/external.ts";
 import type { Mode } from "./policy.ts";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "keel-tools-")));
@@ -232,6 +233,56 @@ test("a sandboxed session's file tools read what its sandbox shows: a store or K
   expect(await through(session, "Read", { file_path: join(home, ".ssh/id_ed25519") })).toBe("ran");
 }, 180_000);
 
+test("a link whose name holds a glob character is a link: a path is cut at a wildcard only when it came from a pattern", async () => {
+  // Links to the key folder under names a pattern would stop at.
+  const names = ["l[x", "q*", "b{c", "w?y"];
+  for (const name of names) symlinkSync(join(home, ".ssh"), join(ws, name));
+  try {
+    for (const sandbox of ["workspace-write", "read-only"] as const) {
+      for (const mode of ["ask", "auto-edits", "auto"] as Mode[]) {
+        gate.setPerm(session.id, { mode, sandbox });
+        for (const name of names) {
+          for (const [tool, input] of [["Read", { file_path: join(ws, name, "id_ed25519") }], ["read_file", { file_path: `${name}/id_ed25519` }], ["view_image", { path: join(ws, name, "id_ed25519") }], ["Grep", { pattern: "KEY", path: join(ws, name) }], ["Glob", { pattern: "*", path: join(ws, name) }]] as [string, Record<string, unknown>][]) {
+            expect([sandbox, mode, name, tool, await through(session, tool, input)]).toEqual([sandbox, mode, name, tool, expect.stringMatching(/^owner: it reads .*\.ssh/)]);
+          }
+        }
+      }
+      gate.setPerm(session.id, { mode: "full-auto", sandbox });
+      for (const name of names) expect([sandbox, name, await through(session, "Read", { file_path: join(ws, name, "id_ed25519") })]).toEqual([sandbox, name, expect.stringMatching(/^refused: /)]);
+    }
+    // A pattern is still read from the folder it looks in: one that reaches the key folder by a plain start is the key folder's.
+    gate.setPerm(session.id, { mode: "auto-edits", sandbox: "workspace-write" });
+    expect(await through(session, "Glob", { pattern: "keys/*" })).toMatch(/^owner: it reads .*\.ssh/);
+    expect(await through(session, "Glob", { pattern: "src/*.ts" })).toBe("ran");
+    expect(await through(session, "Glob", { pattern: "**/*.[tj]s", path: join(ws, "src") })).toBe("ran");
+  } finally {
+    for (const name of names) rmSync(join(ws, name), { force: true });
+  }
+});
+
+test("a reading tool known only by its flag (an MCP server's, an ACP agent's read) is judged by the files its input names", async () => {
+  const mcpRead = (input: Record<string, unknown>): any => ({ name: "mcp_call", readOnly: false, input_schema: { type: "object" }, description: "", run: async () => ({ content: "" }), target: async () => ({ name: "files__read_file", readOnly: true, input }) });
+  const ask = async (t: any, input: Record<string, unknown>) => {
+    let done: unknown = "waiting";
+    const asked = gate.beforeTool(session, { id: `m${n++}`, tool: t, input, ctx: { sessionId: session.id, cwd: ws, signal: new AbortController().signal, spillDir: join(state, "spill", session.id), seen: new Map() } as any }).then((r) => (done = r));
+    const open = () => gate.approvals({ session: session.id, pending: true });
+    for (let i = 0; i < 400 && done === "waiting" && !open().length; i++) await Bun.sleep(5);
+    const card = open()[0];
+    if (card) gate.resolve(card.id, session.id, { choice: "deny" });
+    await asked;
+    return card ? `card: ${card.why}` : done && typeof done === "object" && "deny" in (done as any) ? "refused" : "ran";
+  };
+  gate.setPerm(session.id, { mode: "auto-edits", sandbox: "workspace-write" });
+  expect(await ask(mcpRead({ path: join(home, ".ssh/id_ed25519") }), {})).toMatch(/^card: it reads .*\.ssh/);
+  expect(await ask(mcpRead({ path: join(ws, "keys/id_ed25519") }), {})).toMatch(/^card: it reads .*\.ssh/);
+  expect(await ask(mcpRead({ path: join(ws, "src/a.ts") }), {})).toBe("ran");
+  gate.setPerm(session.id, { mode: "full-auto", sandbox: "workspace-write" });
+  expect(await ask(mcpRead({ path: join(home, ".ssh/id_ed25519") }), {})).toBe("refused");
+  // An ACP agent's read names its files in its locations and its raw input.
+  expect(classOf({ kind: "read", locations: [{ path: join(home, ".ssh/id_ed25519") }] }, ws)).toEqual({ kind: "read", paths: [join(home, ".ssh/id_ed25519")] });
+  expect(classOf({ kind: "search", rawInput: { path: "keys" } }, ws)).toEqual({ kind: "read", paths: [join(ws, "keys")] });
+});
+
 test("in Full auto a sandboxed session's file tools write only where its commands can, by where the file really is", async () => {
   put(join(root, "outside/file.txt"), "{}\n");
   symlinkSync(join(root, "outside"), join(ws, "out"));
@@ -258,4 +309,81 @@ test("in Full auto a sandboxed session's file tools write only where its command
   // With no sandbox Full auto writes as it did (but never Keel's own files, above).
   gate.setPerm(session.id, { mode: "full-auto", sandbox: "off" });
   expect(await through(session, "Edit", { file_path: join(root, "outside/file.txt"), old_string: "{}", new_string: "{ }" })).toBe("ran");
+}, 120_000);
+
+// The gate looks at a path, then the tool opens it: a command that runs beside the call can change what the name is
+// in between. The tool opens the file the gate judged (the gate hands it the judged paths, as the engine passes
+// them on) and nothing else.
+async function judgedThenRun(s: Session, name: string, input: Record<string, unknown>, between?: () => void): Promise<{ gate: string; out: string }> {
+  const ctx = { sessionId: s.id, cwd: s.workspace, signal: new AbortController().signal, spillDir: join(state, "spill", s.id), seen: new Map<string, number>() } as any;
+  let r: any = "waiting";
+  const asked = gate.beforeTool(s, { id: `r${n++}`, tool: tool(name), input, ctx }).then((x) => (r = x));
+  const open = () => gate.approvals({ session: s.id, pending: true });
+  for (let i = 0; i < 400 && r === "waiting" && !open().length; i++) await Bun.sleep(5);
+  const card = open()[0];
+  if (card) gate.resolve(card.id, s.id, { choice: "deny" });
+  await asked;
+  if (card) return { gate: `card: ${card.why}`, out: "" };
+  if (r && "deny" in r) return { gate: "refused", out: "" };
+  between?.();
+  // (As the engine runs a call: with what the gate's hook added to its context.)
+  const res = await tool(name).run(input, { ...ctx, ...(r?.ctx ?? {}) });
+  return { gate: "ran", out: typeof res.content === "string" ? res.content : JSON.stringify(res.content) };
+}
+
+test("a name that changes between the gate's look and the tool's open: the tool opens the file that was judged, or nothing", async () => {
+  gate.setPerm(session.id, { mode: "auto-edits", sandbox: "workspace-write" });
+  const flip = join(ws, "flip"), plain = join(ws, "plain-a"), key = join(home, ".ssh/id_ed25519"), hooks = join(configDir(), "hooks.json");
+  put(plain, "plain\n");
+  put(hooks, "{}\n");
+  const toPlain = () => { rmSync(flip, { force: true }); writeFileSync(flip, "plain\n"); };
+  const toLink = (target: string) => () => { rmSync(flip, { force: true }); symlinkSync(target, flip); };
+  // Reads, every family: the file becomes a link to the key after the gate looked.
+  for (const [name, input] of [["Read", { file_path: flip }], ["read_file", { file_path: flip }], ["read_file", { file_path: flip, start_line: 1, end_line: 2 }], ["view_image", { path: flip }]] as [string, Record<string, unknown>][]) {
+    toPlain();
+    const got = await judgedThenRun(session, name, input, toLink(key));
+    expect([name, got.gate, got.out.includes("KEY")]).toEqual([name, "ran", false]);
+    expect([name, got.out]).toEqual([name, expect.stringContaining("is not the file this call was checked for")]);
+  }
+  // A folder above the file becomes a link.
+  put(join(ws, "dir/note.txt"), "note\n");
+  put(join(home, ".ssh/note.txt"), "KEY-NOTE\n");
+  const swap = await judgedThenRun(session, "Read", { file_path: join(ws, "dir/note.txt") }, () => { rmSync(join(ws, "dir"), { recursive: true }); symlinkSync(join(home, ".ssh"), join(ws, "dir")); });
+  expect([swap.gate, swap.out.includes("KEY-NOTE")]).toEqual(["ran", false]);
+  rmSync(join(ws, "dir"));
+  // Writes, every family: the file becomes a link to Keel's hooks file after the gate looked; nothing is written there.
+  for (const [label, name, input] of writers(flip).filter(([l]) => l !== "NotebookEdit" && l !== "apply_patch add")) {
+    toPlain();
+    writeFileSync(flip, "{}");
+    const before = readFileSync(hooks, "utf8");
+    const got = await judgedThenRun(session, name, input, toLink(hooks));
+    expect([label, got.gate, readFileSync(hooks, "utf8")]).toEqual([label, "ran", before]);
+  }
+  // A new file: the name is a link to a file that does not exist yet by the time the tool creates it.
+  for (const [name, input] of [["Write", { file_path: flip, content: "PLANTED" }], ["write_file", { file_path: flip, content: "PLANTED" }], ["apply_patch", patch(`*** Add File: ${flip}\n+PLANTED`)]] as [string, Record<string, unknown>][]) {
+    rmSync(flip, { force: true });
+    const planted = join(configDir(), "planted.json");
+    const got = await judgedThenRun(session, name, input, toLink(planted));
+    expect([name, got.gate, existsSync(planted)]).toEqual([name, "ran", false]);
+  }
+  // The same with a command flipping the name as fast as it can, as a background command of the session would: no read returns the key.
+  toPlain();
+  const flipper = Bun.spawn(["python3", "-c", `import os\nws=${JSON.stringify(ws)}; key=${JSON.stringify(key)}\nwhile True:\n    os.symlink(ws+"/plain-a", ws+"/t1"); os.rename(ws+"/t1", ws+"/flip")\n    os.symlink(key, ws+"/t2"); os.rename(ws+"/t2", ws+"/flip")`], { stdout: "ignore", stderr: "ignore" });
+  try {
+    await Bun.sleep(200);
+    let leaks = 0, ran = 0, read = 0;
+    for (let i = 0; i < 300; i++) {
+      const got = await judgedThenRun(session, "Read", { file_path: flip });
+      if (got.gate !== "ran") continue;
+      ran++;
+      if (got.out.includes("KEY")) leaks++;
+      if (got.out.includes("plain")) read++;
+    }
+    expect([leaks, ran > 0]).toEqual([0, true]);
+  } finally {
+    flipper.kill();
+    await flipper.exited;
+    rmSync(flip, { force: true });
+    for (const t of ["t1", "t2"]) rmSync(join(ws, t), { force: true });
+  }
 }, 120_000);

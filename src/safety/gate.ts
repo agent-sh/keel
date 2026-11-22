@@ -22,10 +22,10 @@ import { readOnlyCommand, shimmedPrograms, splitCommand } from "./shell.ts";
 import { report, watch, type Watch } from "./refwatch.ts";
 import { configDir } from "../providers/config.ts";
 import { artifactsDir, contains, realOf } from "../core/paths.ts";
-import { applyEdit } from "../tools/files.ts";
+import { applyEdit, noteJudged } from "../tools/files.ts";
 import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
 import { agoSaid, cardForm, refusal, whereSaid, type AnsweredBy, type CardForm, type Hold } from "./card.ts";
-import { classify, decide, isMode, ownPath, pathsNamed, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
+import { classify, decide, isMode, ownPath, pathsNamed, readPaths, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 import { timed } from "../admin/stall.ts";
 import { ownerDenial } from "../core/stops.ts";
 import { landing, type MarkArgs } from "./marks.ts";
@@ -183,7 +183,9 @@ const ownConfig = () => [configDir(), process.env.KEEL_HOOKS, process.env.KEEL_M
 const inputSha = (input: unknown) => new Bun.CryptoHasher("sha256").update(JSON.stringify(input ?? {}) ?? "").digest("hex");
 
 function callClass(call: ToolCall, target: Target): CallClass {
-  const cls = target ? target.cls ?? (target.readOnly ? { kind: "read" } : { kind: "other" }) : classifyCall(call);
+  // (A reading tool known only by its flag, an MCP server's among them, is a read of the files its input names.)
+  const reads = (input: unknown): CallClass => { const paths = readPaths(input, cwdOf(call) ?? call.ctx.cwd); return paths.length ? { kind: "read", paths } : { kind: "read" }; };
+  const cls = target ? target.cls ?? (target.readOnly ? reads(target.input) : { kind: "other" }) : classifyCall(call);
   // A tool the gate knows only by name is given the paths its input names (an MCP file server's write).
   if (cls.kind === "other" && !cls.paths) {
     const paths = pathsNamed(target ? target.input : call.input);
@@ -626,7 +628,7 @@ export class Gate {
     const r = await this.check(session, call);
     if ("deny" in r) return r;
     const p = this.perm(session.id);
-    const ctx: Partial<ToolCall["ctx"]> | undefined =
+    let ctx: Partial<ToolCall["ctx"]> | undefined =
       !(r.cls.kind === "shell" && r.cls.escalate) && this.sandboxed(session, p) && p.sandbox !== "off"
         ? { wrapSpawn: (argv) => confine(argv, p, session.workspace, this.writable(session, call.ctx.spillDir, p.sandbox), this.readOpts(session, p.sandbox)), confined: { sandbox: p.sandbox, network: p.network, since: Date.now() } }
         : undefined;
@@ -641,6 +643,11 @@ export class Gate {
         this.watches.set(callKey(session.id, call.id), w);
       }
     }
+    // The files the call was judged for, where they are: a file tool opens nothing else (src/tools/files.ts hold).
+    // A name can change between this look and the tool's open; what is opened is compared with this.
+    const judged = !session.machine && (r.cls.kind === "edit" || r.cls.kind === "read" || r.cls.kind === "other") && r.cls.paths?.length ? { judged: [...r.cls.paths] } : undefined;
+    // (Also kept for a moment by session: a caller that runs the tool without this context is held to it too.)
+    if (judged) { ctx = { ...ctx, ...judged }; noteJudged(session.id, judged.judged); }
     if (!r.authorization) return ctx ? { ctx } : undefined;
     const auth = r.authorization;
     const wrap = ctx?.wrapSpawn ?? call.ctx.wrapSpawn;

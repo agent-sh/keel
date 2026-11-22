@@ -15,6 +15,7 @@ import type { AgentConfinement } from "./confine.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { atCwd, realOf } from "../core/paths.ts";
+import { hold } from "../tools/files.ts";
 import type { Store } from "../core/store.ts";
 import { emptyUsage, type Session, type StoredEvent, type ToolResultBlock, type Usage } from "../core/types.ts";
 import type { ExternalIO } from "../engine/hooks.ts";
@@ -36,7 +37,8 @@ export function classOf(tc: Json, cwd: string): CallClass {
     .filter((p): p is string => typeof p === "string" && !!p).map((p) => atCwd(cwd, p));
   switch (tc.kind) {
     case "read": case "search": case "think":
-      return { kind: "read" };
+      // (With what it names: a read is judged by its files.)
+      return paths.length ? { kind: "read", paths: [...new Set(paths)] } : { kind: "read" };
     case "edit": case "delete": case "move":
       return paths.length ? { kind: "edit", paths: [...new Set(paths)] } : { kind: "other" };
     case "execute": {
@@ -338,10 +340,14 @@ export class AcpRunner {
         if (!isAbsolute(given)) throw Object.assign(new Error("path must be absolute"), { code: -32602 });
         // (The file the kernel reaches: what is judged is what is opened.)
         const path = realOf(given);
-        const v = await this.judge(s, { id: crypto.randomUUID(), name: "Read", cls: { kind: "read" }, input: { file_path: path }, signal });
+        const v = await this.judge(s, { id: crypto.randomUUID(), name: "Read", cls: { kind: "read", paths: [path] }, input: { file_path: path }, signal });
         if (v) throw Object.assign(new Error(v.deny), { code: -32000 });
         { const held = heldFile(path); if (held) throw Object.assign(new Error(held), { code: -32000 }); }
-        let text = readFileSync(path, "utf8");
+        // (The file that was judged, held: not whatever the name is by now.)
+        const h = hold(path, { judged: [path] }, "read");
+        if ("refused" in h) throw Object.assign(new Error(h.refused), { code: -32000 });
+        let text: string;
+        try { text = readFileSync(h.io, "utf8"); } finally { h.close(); }
         if (p.line || p.limit) {
           const lines = text.split("\n");
           const from = Math.max(0, Number(p.line ?? 1) - 1);
@@ -356,8 +362,9 @@ export class AcpRunner {
         const v = await this.judge(s, { id: crypto.randomUUID(), name: "Write", cls: { kind: "edit", paths: [path] }, input: { file_path: path, content: String(p.content ?? "") }, signal });
         if (v) throw Object.assign(new Error(v.deny), { code: -32000 });
         { const held = heldWrite(path); if (held) throw Object.assign(new Error(held), { code: -32000 }); }
-        mkdirSync(dirname(path), { recursive: true });
-        writeFileSync(path, String(p.content ?? ""));
+        const h = hold(path, { judged: [path] }, "write");
+        if ("refused" in h) throw Object.assign(new Error(h.refused), { code: -32000 });
+        try { writeFileSync(h.io, String(p.content ?? "")); } finally { h.close(); }
         return null;
       }
       default:

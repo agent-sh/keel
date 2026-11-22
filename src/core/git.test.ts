@@ -34,6 +34,8 @@ const must = (cwd: string, ...args: string[]) => { const r = raw(cwd, ...args); 
 beforeEach(() => { rmSync(marks, { recursive: true, force: true }); mkdirSync(marks, { recursive: true }); });
 afterAll(() => {
   for (const [k, v] of Object.entries(was)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  // (A sandbox's cache layers keep a folder of the kernel's that nothing may read.)
+  Bun.spawnSync(["chmod", "-R", "u+rwX", root], { stdout: "ignore", stderr: "ignore" });
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -375,9 +377,12 @@ test.skipIf(!sandboxStatus().available)("a confined command cannot write a view,
   const view = gitEnv(dir).GIT_COMMON_DIR!;
   const r = Bun.spawnSync(confine(["bash", "-c", `echo x >> ${view}/config; mkdir ${view}/hooks; echo x > ${join(root, "state")}/other && echo wrote-beside`], { sandbox: "workspace-write", network: false }, root), { cwd: root, stdout: "pipe", stderr: "pipe" });
   const said = r.stdout.toString() + r.stderr.toString();
-  expect(said.match(/Read-only file system/g)).toHaveLength(2);
-  expect(said).toContain("wrote-beside"); // the folder around the views is the session's own here
+  // Keel's state is in no sandbox, also for a session whose folder holds it (src/safety/sandbox-view.ts): the view
+  // is not there to write, and what the command wrote "beside" it landed in the sandbox's own empty folder.
+  expect(said.match(/No such file or directory|Read-only file system/g)).toHaveLength(2);
   expect(existsSync(join(view, "hooks"))).toBe(false);
+  expect(readFileSync(join(view, "config"), "utf8")).not.toContain("\nx\n");
+  expect(existsSync(join(root, "state/other"))).toBe(false);
 });
 
 // git asks a repository inside a work tree about itself by running git in it,

@@ -14,11 +14,12 @@
 // - every action is staged in memory first: a later action sees an earlier one
 //   on the same file, and a failing hunk leaves every file untouched;
 // - paths are resolved through symlinks and must stay inside the workspace.
-import { chmod, lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { buildDiff } from "./diff.ts";
 import { atCwd, contains, realOf } from "../core/paths.ts";
 import { heldWrite } from "../core/store-files.ts";
+import { hold, type HoldContext } from "./files.ts";
 
 const BEGIN_PATCH = "*** Begin Patch";
 const END_PATCH = "*** End Patch";
@@ -490,6 +491,8 @@ type Staged = {
 export type ApplyOptions = {
   base?: string;             // where relative paths start (default: cwd)
   allowOutside?: string[];   // real paths outside the workspace a gate cleared
+  judged?: string[];         // the files the call was judged for (ToolContext.judged): nothing else is opened
+  sessionId?: string;        // the session the patch is applied for (what its gate cleared lately holds a call with no `judged`)
 };
 
 // Parses and applies a V4A patch inside the workspace `cwd`.
@@ -517,16 +520,21 @@ export async function applyPatch(cwd: string, text: string, opts: ApplyOptions =
     const display = contains(root, real) ? relative(root, real) || "." : real;
     let original: string | null = null;
     let mode: number | null = null;
+    // The file is held while it is read: the file that was judged, by its descriptor (files.ts hold).
+    const h = hold(real, opts, "read");
+    if ("refused" in h) throw new Error(h.refused);
     try {
-      const st = await lstat(real);
-      if (!st.isFile()) throw new Error(`${display} is not a regular file`);
-      const bytes = await readFile(real);
-      try { original = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
-      catch { throw new Error(`${display} is not UTF-8 text and cannot be patched`); }
-      mode = st.mode & 0o7777;
+      if (h.existed) {
+        const st = await stat(h.io);
+        if (!st.isFile()) throw new Error(`${display} is not a regular file`);
+        const bytes = await readFile(h.io);
+        try { original = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+        catch { throw new Error(`${display} is not UTF-8 text and cannot be patched`); }
+        mode = st.mode & 0o7777;
+      }
     } catch (err: any) {
       if (err?.code !== "ENOENT") throw err;
-    }
+    } finally { h.close(); }
     e = { display, original, current: original, mode, movedFrom: null };
     files.set(real, e);
     order.push(real);
@@ -590,30 +598,37 @@ export async function applyPatch(cwd: string, text: string, opts: ApplyOptions =
   for (const real of order) {
     const f = files.get(real)!;
     if (f.original !== f.current && f.current !== null) {
-      try { await writeAtomic(real, f.current, f.mode); }
+      try { await writeAtomic(real, f.current, f.mode, opts); }
       catch (e) { throw new Error(`cannot write ${f.display}: ${(e as Error).message}`); }
     }
   }
   for (const real of order) {
     const f = files.get(real)!;
-    if (f.original !== null && f.current === null) await rm(real);
+    if (f.original !== null && f.current === null) {
+      // (Removed by its name inside its folder, held: a name is not followed when it is removed.)
+      const h = hold(real, opts, "folder");
+      if ("refused" in h) throw new Error(h.refused);
+      try { await rm(h.beside(basename(real))); } finally { h.close(); }
+    }
   }
   return { files: out, summary: `Success. Updated the following files:\n${summary.join("\n")}` };
 }
 
 // Writes through a temp file in the same directory, keeping the permission bits.
-async function writeAtomic(path: string, content: string, mode: number | null) {
-  const dir = dirname(path);
-  await mkdir(dir, { recursive: true });
-  const tmp = join(dir, `.${basename(path)}.keel-tmp-${crypto.randomUUID()}`);
+async function writeAtomic(path: string, content: string, mode: number | null, ctx: HoldContext) {
+  // The folder is held (made when missing): the temp file is made in it and takes the file's name there, which is
+  // not followed if it is a link by then.
+  const h = hold(path, ctx, "folder");
+  if ("refused" in h) throw new Error(h.refused);
+  const tmp = h.beside(`.${basename(path)}.keel-tmp-${crypto.randomUUID()}`);
   try {
-    await writeFile(tmp, content);
+    await writeFile(tmp, content, { flag: "wx" });
     if (mode !== null) await chmod(tmp, mode);
-    await rename(tmp, path);
+    await rename(tmp, h.beside(basename(path)));
   } catch (e) {
     await rm(tmp, { force: true });
     throw e;
-  }
+  } finally { h.close(); }
 }
 
 export { buildDiff };

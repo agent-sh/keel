@@ -157,10 +157,10 @@ function SandboxReadsCard() {
         </div>
         <div className="border-b border-line py-4">
           <div className="text-base font-medium">Environment variables</div>
-          <div className="mt-0.5 text-ui text-muted">A sandboxed command gets the variables a build needs (PATH, the locale, the toolchains' folders) and none of the rest of the daemon's environment: no token, key or password. Name a variable to pass it on as well.</div>
+          <div className="mt-0.5 text-ui text-muted">A sandboxed command gets the variables a build needs (PATH, the locale, the toolchains' folders) and none of the rest of the daemon's environment: no variable named as a token, key or password, and a URL in a kept one goes in without its sign-in. Name a variable to pass it on as it is.</div>
           <PathList testid="sandbox-env" paths={v.env} onChange={(env) => put({ env })} placeholder="NAME" label="An environment variable a sandboxed command keeps" />
         </div>
-        <SettingRow label="On disk" hint="What sandboxed commands wrote to their own package caches and temp folders. Temp files go after 10 days and a cache layer no command used after 30; clearing removes all that no running command holds.">
+        <SettingRow label="On disk" hint="What sandboxed commands wrote to their own package caches and temp folders. Temp files go after 10 days and a cache layer no command used after 30; clearing removes the temp files and every layer no running command holds.">
           <div className="flex items-center gap-3">
             <span className="text-ui tabular-nums text-muted" data-testid="sandbox-bytes">{mb}</span>
             <button data-testid="sandbox-clear" onClick={() => api<SandboxReads>("/api/permissions/sandbox/clear", { method: "POST", body: "{}" }).then(setV).catch(reportError)}

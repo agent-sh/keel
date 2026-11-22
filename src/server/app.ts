@@ -28,7 +28,7 @@ import { KEEL_FILE_MAX } from "../core/keel-file.ts";
 import { inFlight, timed } from "../admin/stall.ts";
 import { moduleTook } from "../core/start-trace.ts";
 import { routeTable } from "./stable-api.ts";
-import { ownPort } from "../safety/net-proxy.ts";
+import { onProxyTrouble, ownPort } from "../safety/net-proxy.ts";
 
 // The seqs of the prompts of a branch, kept while the branch is the same array
 // (the store gives a new one when the branch grows or the head moves).
@@ -657,5 +657,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
   const server = Bun.serve({ ...options, routes: { ...ui.routes(PAGES, embeddedUi), ...routes } } as any);
   // The sandbox's proxy never connects here, whatever is listed for a sandbox (src/safety/net-proxy.ts).
   ownPort(server.port);
+  // What goes wrong with the proxies' thread is in the Errors panel.
+  onProxyTrouble((e, at) => errors.capture("server", e, { at }));
   return server;
 }

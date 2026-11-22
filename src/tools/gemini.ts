@@ -5,7 +5,7 @@ import { heldFile } from "../core/store-files.ts";
 import { decodeText } from "../core/text.ts";
 import { join } from "node:path";
 import { notFound } from "./missing.ts";
-import { abs, editFile, editShown, globFiles, guardOverwrite, lineRange, mtime, numbered, readFile, ripgrep, WHOLE_FILE_BYTES, writeFile } from "./files.ts";
+import { abs, editFile, editShown, globFiles, guardOverwrite, hold, lineRange, mtime, numbered, readFile, ripgrep, WHOLE_FILE_BYTES, writeFile } from "./files.ts";
 import { answerText, ask, type Question } from "./interact.ts";
 import { jobsOf, running, waitJob } from "./jobs.ts";
 import { headTail, runShell, shellCwd } from "./shell.ts";
@@ -69,22 +69,27 @@ const read_file: Tool = {
     if (s || e) {
       if (mtime(p) === -1) return fail(notFound(p, ctx.cwd));
       { const held = heldFile(p); if (held) return fail(held); }
+      // (The file is held for the read: what is read is the file that was judged.)
+      const h = hold(p, ctx, "read");
+      if ("refused" in h) return fail(h.refused);
+      try {
       const limit = e ? e - (s ?? 1) + 1 : undefined;
       if (limit !== undefined && limit < 1) return fail(`end_line ${e} is before start_line ${s}: no line is in that range. Leave end_line out to read on from start_line.`);
-      if (Bun.file(p).size > WHOLE_FILE_BYTES) {
+      if (Bun.file(h.io).size > WHOLE_FILE_BYTES) {
         // Too large to read whole: only the lines up to the range's end are read.
         const r = await lineRange(p, { offset: s ?? 1, limit, number: false, signal: ctx.signal });
         if (r.stopped) return fail(`The read of ${p} was stopped before it reached line ${s ?? 1}.`);
         ctx.seen.set(p, mtime(p));
         return r.past ? fail(`${p} has ${r.total} lines; line ${s} is past the end.`) : ok(r.body);
       }
-      const { text } = decodeText(new Uint8Array(await Bun.file(p).arrayBuffer()));
+      const { text } = decodeText(new Uint8Array(await Bun.file(h.io).arrayBuffer()));
       ctx.seen.set(p, mtime(p));
       // As a whole read says it: an empty file has no line 1 to be past.
       if (!text) return ok(`${p} exists but is empty.`);
       const r = numbered(text, s ?? 1, limit, false);
       // The same answer as for a file read in chunks: a start past the end is said, not an empty success.
       return s && s > r.total ? fail(`${p} has ${r.total} lines; line ${s} is past the end.`) : ok(r.body);
+      } finally { h.close(); }
     }
     const r = await readFile(p, ctx, {});
     if (typeof r.content === "string" && !r.error) return ok(r.content.replace(/^ *\d+\t/gm, ""));
@@ -106,7 +111,7 @@ const write_file: Tool = {
     const existed = mtime(p) !== -1;
     const g = guardOverwrite(p, ctx);
     if (g) return fail(g);
-    await writeFile(p, String(input.content ?? ""), ctx);
+    { const no = await writeFile(p, String(input.content ?? ""), ctx); if (no) return fail(no); }
     return ok(existed ? `Successfully overwrote file: ${p}.` : `Successfully created and wrote to new file: ${p}.`);
   },
 };
@@ -128,7 +133,7 @@ const replace: Tool = {
   async run(input, ctx) {
     const p = abs(String(input.file_path ?? ""), ctx);
     if (input.old_string === "" && mtime(p) === -1) {
-      await writeFile(p, String(input.new_string ?? ""), ctx);
+      { const no = await writeFile(p, String(input.new_string ?? ""), ctx); if (no) return fail(no); }
       return ok(`Created new file: ${p} with provided content.`);
     }
     const r = await editFile(p, String(input.old_string ?? ""), String(input.new_string ?? ""), !!input.allow_multiple, ctx);

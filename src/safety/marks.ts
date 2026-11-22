@@ -62,7 +62,9 @@ export type MarkArgs = {
 // Only the paths change: everything else the call was classified with (what
 // its words name) goes to the rules as it was.
 export const landing = (c: CallClass): CallClass =>
-  c.kind === "edit" ? { ...c, paths: [...new Set(c.paths.flatMap((p) => [join(realOf(dirname(p)), basename(p)), realOf(p)]))] } : c;
+  c.kind === "edit" ? { ...c, paths: [...new Set(c.paths.flatMap((p) => [join(realOf(dirname(p)), basename(p)), realOf(p)]))] }
+    // (What a read names, where it is: the file a tool opens.)
+    : c.kind === "read" && c.paths ? { ...c, paths: [...new Set(c.paths.map((p) => realOf(p)))] } : c;
 
 // A program given to run_code, as the command the gate judges it as
 // (src/tools/codemode.ts asShellCommand: a test holds the two to one form).

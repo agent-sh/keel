@@ -206,9 +206,13 @@ test("a sandboxed command reads none of the owner's secrets, and the owner opens
   expect(first).toMatch(new RegExp(`does not show [^\\n]*notes-${stamp}/plan\\.md: the home folder is not readable there`));
   expect(first).toContain("The owner can add a folder to what this session's folder may read, in Settings, Permissions.");
   expect(first).toContain("dangerouslyDisableSandbox: true");
+  // On the card too. (A command that just ended stands as it was, with the tail of its own output, until the owner
+  // folds it: opened again it shows its result, which holds the sentence.)
   const tool = page.getByTestId("tool-call").first();
-  await tool.click();
-  await expect(tool).toContainText("This session's sandbox does not show");
+  await expect(async () => {
+    await tool.getByRole("button").first().click();
+    await expect(tool).toContainText("This session's sandbox does not show", { timeout: 1_000 });
+  }).toPass({ timeout: 15_000 });
   await shoot(page, "sandbox-06-hidden");
 
   // 2. The owner adds the folder for this workspace in Settings.
@@ -277,7 +281,9 @@ test("a sandboxed command with the network on cannot reach the daemon's API", as
   const { session: other } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU, title: `OTHER-SESSION-${Date.now()}` } })).json();
   const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
   const id = session.id;
-  const before = await (await request.get("/api/permissions/sandbox")).json();
+  // (The owner's lists: what the page shows beside them, the size on disk among it, moves as commands run.)
+  const lists = (x: any) => ({ read: x.read, env: x.env, workspaces: x.workspaces });
+  const before = lists(await (await request.get("/api/permissions/sandbox")).json());
   // Each act two ways: straight at the port, and through the proxy the sandbox was given.
   const api = `http://127.0.0.1:${port}`;
   const acts: [string, string][] = [
@@ -320,7 +326,7 @@ test("a sandboxed command with the network on cannot reach the daemon's API", as
     // Nothing changed: the session is still confined in the mode it was put in, and the read list is as it was.
     const { perm } = await (await request.get(`/api/sessions/${id}/permissions`)).json();
     expect([perm.mode, perm.sandbox, perm.network]).toEqual([mode, "workspace-write", true]);
-    expect(await (await request.get("/api/permissions/sandbox")).json()).toEqual(before);
+    expect(lists(await (await request.get("/api/permissions/sandbox")).json())).toEqual(before);
   }
   const tool = page.getByTestId("tool-call").last();
   await tool.click();

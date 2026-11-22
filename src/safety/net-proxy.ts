@@ -195,7 +195,11 @@ const IDLE_MS = 60_000;
 const refusalText = (host: string, port: number, why: string) =>
   `Keel's sandbox proxy refused ${host}:${port}: ${why}.`;
 function refuse(c: Socket, status: string, text: string) {
+  // The answer, then the connection is over. What the client still sends is read and dropped, so its close is seen
+  // (a connection left half open would count as one in use); one that never closes is ended after a moment.
   c.end(`HTTP/1.1 ${status}\r\nContent-Type: text/plain; charset=utf-8\r\nX-Keel-Sandbox: refused\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(text) + 1}\r\n\r\n${text}\n`);
+  c.resume();
+  setTimeout(() => c.destroy(), 5_000).unref?.();
 }
 
 // One proxy on one unix socket. `policy` is asked once per connection, with
@@ -329,33 +333,70 @@ const noted = (path: string, r: Refusal) => {
   if (list.length > 200) list.splice(0, 100);
   refusals.set(path, list);
 };
+// The thread's troubles are said once each in the daemon's Errors (the server wires `trouble`).
+let trouble: ((e: Error, at: string) => void) | undefined;
+export const onProxyTrouble = (f: typeof trouble) => void (trouble = f);
 let thread: Worker | null | undefined;
+// When the thread failed (the last minute's): after RESTARTS_MAX it is not started again and the proxies are closed.
+let failures: number[] = [];
+let closed = false;
+const RESTARTS_MAX = 3;
+// Whether the proxies are closed: the thread kept failing, so nothing leaves a sandbox until the daemon restarts.
+export const proxiesClosed = () => closed;
+function startThread(): Worker {
+  const program = typeof __KEEL_NETPROXY_JS__ === "string"
+    ? URL.createObjectURL(new Blob([__KEEL_NETPROXY_JS__], { type: "application/javascript" }))
+    : new URL("./net-proxy-worker.ts", import.meta.url).href;
+  const w = new Worker(program);
+  (w as Worker & { unref?: () => void }).unref?.();
+  w.onmessage = (ev: MessageEvent<FromProxy>) => {
+    const m = ev.data;
+    if (m.t === "view") { const done = views.get(m.id); views.delete(m.id); done?.(m.view); }
+    else if (m.t === "refused") noted(m.path, m.r);
+    else if (m.t === "failed") trouble?.(new Error(`the sandbox proxy for ${m.path} could not listen: ${m.error}`), "sandbox proxy");
+  };
+  w.onerror = (ev) => threadFailed(w, String((ev as ErrorEvent)?.message ?? "an error in the thread"));
+  for (const port of ownPorts) w.postMessage({ t: "own", port } satisfies ToProxy);
+  return w;
+}
+// The thread threw or ended: it is started again and listens on every socket again. One that keeps failing is not
+// started a fourth time in a minute: the proxies are closed (no socket listens, so nothing leaves a sandbox), never
+// moved to the daemon's loop, and both are said.
+function threadFailed(w: Worker, why: string) {
+  if (thread !== w) return;
+  try { w.terminate(); } catch {} // gone already
+  thread = undefined;
+  for (const [id, done] of views) { views.delete(id); done(undefined); }
+  const now = Date.now();
+  failures = [...failures.filter((t) => now - t < 60_000), now];
+  if (failures.length > RESTARTS_MAX) return close(`the sandbox proxies' thread failed ${failures.length} times in a minute (${why})`);
+  trouble?.(new Error(`the sandbox proxies' thread stopped (${why}) and was started again; connections it carried were cut`), "sandbox proxy");
+  const next = proxyThread();
+  if (next) for (const path of asked) next.postMessage({ t: "listen", path } satisfies ToProxy);
+}
+function close(why: string) {
+  closed = true;
+  thread = null;
+  for (const path of asked) rmSync(path, { force: true });
+  trouble?.(new Error(`${why}: it is not started again, and sandboxed commands have no network until the daemon restarts`), "sandbox proxy");
+}
 function proxyThread(): Worker | null {
   if (thread !== undefined) return thread;
   try {
-    const program = typeof __KEEL_NETPROXY_JS__ === "string"
-      ? URL.createObjectURL(new Blob([__KEEL_NETPROXY_JS__], { type: "application/javascript" }))
-      : new URL("./net-proxy-worker.ts", import.meta.url).href;
-    const w = new Worker(program);
-    (w as Worker & { unref?: () => void }).unref?.();
-    w.onmessage = (ev: MessageEvent<FromProxy>) => {
-      const m = ev.data;
-      if (m.t === "view") { const done = views.get(m.id); views.delete(m.id); done?.(m.view); }
-      else if (m.t === "refused") noted(m.path, m.r);
-      // A socket the thread could not listen on is listened on here.
-      else if (m.t === "failed") here(m.path);
-    };
-    // The thread is gone: what it listened on is listened on here from now on.
-    w.onerror = () => { thread = null; for (const path of asked) here(path); for (const [id, done] of views) { views.delete(id); done(undefined); } };
-    for (const port of ownPorts) w.postMessage({ t: "own", port } satisfies ToProxy);
-    thread = w;
-  } catch {
-    thread = null; // no thread in this build: the proxies run on this one
+    thread = startThread();
+  } catch (e) {
+    // No thread can be started in this build at all: the proxies run on the daemon's loop, with the same rule.
+    thread = null;
+    if (!failures.length) trouble?.(new Error(`the sandbox proxies' thread could not be started (${(e as Error).message}): the proxies run on the daemon's loop`), "sandbox proxy");
+    else close(`the sandbox proxies' thread could not be started again (${(e as Error).message})`);
   }
   return thread;
 }
+// (A test ends the thread as a failure would, and opens the proxies again after it closed them.)
+export const failProxyThread = (why = "a test") => { if (thread) threadFailed(thread, why); };
+export const reopenProxies = () => { closed = false; failures = []; if (thread === null) thread = undefined; asked.clear(); };
 function here(path: string) {
-  if (local.has(path)) return;
+  if (local.has(path) || closed) return;
   try { local.set(path, startProxy(path, { refused: (r) => noted(path, r) })); } catch {} // the next command asks again
 }
 // The folder a sandbox scope's proxy socket is in (bound into its sandboxes),
@@ -365,7 +406,7 @@ function here(path: string) {
 export function proxyDir(dir: string): string {
   const net = join(dir, "net");
   const sock = join(net, "proxy.sock");
-  if (asked.has(sock) && existsSync(sock)) return net;
+  if (closed || (asked.has(sock) && existsSync(sock))) return net;
   mkdirSync(net, { recursive: true, mode: 0o700 });
   asked.add(sock);
   const w = proxyThread();

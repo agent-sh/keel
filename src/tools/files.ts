@@ -1,10 +1,10 @@
 // File operations every family's tools share: reading pages of text, images,
 // PDFs and notebooks; exact-string edits with the quote and line-ending
 // tolerance models need; the read-before-overwrite guard; glob and ripgrep.
-import { chmodSync, readFileSync, statSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, mkdirSync, openSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { mkdir, open, readdir } from "node:fs/promises";
-import { dirname, extname, isAbsolute, join, resolve } from "node:path";
-import { atCwd, realOf } from "../core/paths.ts";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { atCwd, canonical, contains, realOf } from "../core/paths.ts";
 import { heldFile, heldWrite } from "../core/store-files.ts";
 import type { ImageBlock, TextBlock } from "../core/types.ts";
 import { notFound } from "./missing.ts";
@@ -17,6 +17,122 @@ import { decodeText, textEncoding } from "../core/text.ts";
 // path the gate judged (realOf), and the one every file tool opens, so the two cannot differ.
 export const abs = (p: string, ctx: ToolContext) => realOf(atCwd(ctx.cwd, p));
 export const mtime = (p: string) => { try { return statSync(p).mtimeMs; } catch { return -1; } };
+
+// ---- the file a tool opens is the file that was judged ----------------------
+
+// Between the gate's look at a path and a tool's open of it, a command that
+// runs beside the call can change what the name is: a file becomes a link to
+// a key, a folder above it becomes a link. So a file tool never opens a name
+// and hopes: it holds the file.
+//
+// - The path must be canonical (no link, `.` or `..` in it: what realOf
+//   answers for a path the kernel takes) and one the gate judged for this
+//   call (`ctx.judged`: the files the call's class named, where they are).
+// - Its folder is opened and what was opened is compared with the path (the
+//   descriptor's own path, /proc/self/fd): a folder swapped for a link is
+//   not the folder that was judged.
+// - The file is opened inside that folder without following a link at its
+//   name (O_NOFOLLOW), or created there and only there (O_EXCL).
+// - What the tool then reads and writes is that descriptor (`io`, the
+//   descriptor's path: every read and write of this module goes through
+//   ioOf), so no name is looked up again.
+//
+// Where the descriptor's path cannot be read (no /proc: not Linux) the path
+// is checked to be canonical and judged, and then opened by its name.
+export type Held = { path: string; io: string; existed: boolean; beside(name: string): string; close(): void };
+const PROC = existsSync("/proc/self/fd");
+const held = new Map<string, string[]>();
+// The path to do I/O on for a file a call holds: its descriptor's. A path nothing holds is itself.
+export const ioOf = (p: string) => held.get(p)?.at(-1) ?? p;
+const moved = (p: string, how: string) => ({ refused: `${p} is not the file this call was checked for: ${how}. Nothing was read or written. If the file changed while the call ran, call again.` });
+
+// What the gate judged lately for each session: the paths of the calls it let run, for a moment. A caller that runs
+// a tool for a session without the context the gate's hook made (no `judged`) is held to these: a tool run for a
+// session opens nothing its gate did not just clear.
+const LATELY_MS = 30_000;
+const lately = new Map<string, Map<string, number>>();
+export function noteJudged(sessionId: string, paths: string[]) {
+  const now = Date.now();
+  let m = lately.get(sessionId);
+  if (!m) { if (lately.size > 512) lately.clear(); lately.set(sessionId, (m = new Map())); }
+  if (m.size > 256) for (const [k, at] of m) if (at < now) m.delete(k);
+  for (const p of paths) m.set(p, now + LATELY_MS);
+}
+function clearedFor(ctx: HoldContext, p: string): boolean {
+  const within = (paths: Iterable<string>) => { for (const j of paths) if (j === p || contains(j, p)) return true; return false; };
+  if (ctx.judged) return within(ctx.judged);
+  // (No gate has judged a file for this session in this process: nothing to hold the call to.)
+  const m = ctx.sessionId ? lately.get(ctx.sessionId) : undefined;
+  if (!m) return true;
+  const now = Date.now();
+  return within([...m].filter(([, at]) => at >= now).map(([k]) => k));
+}
+export type HoldContext = { judged?: string[]; sessionId?: string };
+
+export function hold(given: string, ctx: HoldContext, how: "read" | "write" | "folder"): Held | { refused: string } {
+  // (A caller that names the file through a link: where it is. The tools pass what realOf answered already.)
+  const p = canonical(given) ? given : realOf(given);
+  // The daemon's own store and claim are never opened from inside the daemon, by any name: closing a descriptor of
+  // such a file gives up the lock the daemon holds on it.
+  { const kept = heldFile(p); if (kept) return { refused: kept }; }
+  if (!canonical(p)) {
+    // (A path the kernel refuses is answered by realOf as it was given: say what the kernel says of it.)
+    let why = "its path holds a link or a `..`";
+    try { statSync(p); } catch (e) { why = `the path cannot be opened (${(e as NodeJS.ErrnoException).code ?? "it failed"})`; }
+    return moved(p, why);
+  }
+  const cleared = clearedFor(ctx, p);
+  // (A read of a name that is not there says so in the tool's own words.)
+  if (!cleared && (how !== "read" || existsSync(p))) return moved(p, "the path it names changed between the check and the open");
+  const none = (): Held => ({ path: p, io: p, existed: false, beside: (name) => join(dirname(p), name), close() {} });
+  if (!PROC) return { ...none(), existed: existsSync(p) };
+  const dir = dirname(p), base = basename(p);
+  const fds: number[] = [];
+  const close = () => { for (const fd of fds.splice(0)) try { closeSync(fd); } catch {} };
+  try {
+    if (how !== "read") mkdirSync(dir, { recursive: true });
+    let dfd: number;
+    try { dfd = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY); } catch (e) {
+      if (how === "read" && (e as NodeJS.ErrnoException).code === "ENOENT") return none();
+      throw e;
+    }
+    fds.push(dfd);
+    if (readlinkSync(`/proc/self/fd/${dfd}`) !== dir) { close(); return moved(p, "its folder is somewhere else now (a link took the place of a folder)"); }
+    const beside = (name: string) => `/proc/self/fd/${dfd}/${name}`;
+    let io = beside(base), existed = true;
+    if (how !== "folder") {
+      let fd: number | undefined;
+      // (O_NONBLOCK: a pipe with no writer does not hold the call; a regular file is not affected.)
+      try { fd = openSync(beside(base), (how === "read" ? constants.O_RDONLY : constants.O_RDWR) | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code === "ELOOP" || code === "EMLINK") { close(); return moved(p, "it is a link now"); }
+        if (code !== "ENOENT") {
+          // (A folder for a write, a file that may not be read or written: the tool says it in its own words, by the name inside the held folder.)
+          existed = existsSync(beside(base));
+        } else {
+          existed = false;
+          if (how === "write") fd = openSync(beside(base), constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o666);
+        }
+      }
+      if (fd !== undefined) { fds.push(fd); io = `/proc/self/fd/${fd}`; }
+    }
+    const names = [...new Set([p, given])];
+    for (const n of names) held.set(n, [...(held.get(n) ?? []), io]);
+    return {
+      path: p, io, existed, beside,
+      close() {
+        for (const n of names) {
+          const l = held.get(n);
+          if (l) { const i = l.lastIndexOf(io); if (i >= 0) l.splice(i, 1); if (!l.length) held.delete(n); }
+        }
+        close();
+      },
+    };
+  } catch (e) {
+    close();
+    return { refused: `${p} could not be opened: ${(e as Error).message}` };
+  }
+}
 
 export const READ_CHARS = 100_000;     // about 25k tokens: one read page
 export const WHOLE_FILE_BYTES = 256 * 1024;
@@ -90,7 +206,7 @@ export async function lineRange(p: string, o: { offset?: number; limit?: number;
     len = 0;
     return line <= end;
   };
-  const fh = await open(p, "r");
+  const fh = await open(ioOf(p), "r");
   let bytes = 0; // the file's size when the read began
   const buf = new Uint8Array(CHUNK);
   let pos = 0;
@@ -137,14 +253,21 @@ export async function lineRange(p: string, o: { offset?: number; limit?: number;
 // `large` (Claude Code's allow_large): a text read sized to the context left
 // (ctx.room) instead of one page and the whole-file limit.
 export async function readFile(p: string, ctx: ToolContext, o: { offset?: number; limit?: number; pages?: string; large?: boolean } = {}): Promise<ReadResult> {
+  // The file is held for the whole read: what is read is the file that was judged (hold).
+  const h = hold(p, ctx, "read");
+  if ("refused" in h) return { content: h.refused, error: true };
+  try { return await readHeld(p, ctx, o); } finally { h.close(); }
+}
+async function readHeld(p: string, ctx: ToolContext, o: { offset?: number; limit?: number; pages?: string; large?: boolean }): Promise<ReadResult> {
   let st;
   // A spilled output the storage retention removed is said to be that, not a file that never was.
-  try { st = statSync(p); } catch { return { content: removedNote(p, ctx.spillDir) ?? notFound(p, ctx.cwd), error: true }; }
+  try { st = statSync(ioOf(p)); } catch { return { content: removedNote(p, ctx.spillDir) ?? notFound(p, ctx.cwd), error: true }; }
   if (st.isDirectory()) return { content: `${p} is a directory. List it with the shell (ls).`, error: true };
   // A count of lines: one below 1 reads nothing, and an empty result with no reason reads as an empty file.
   if (o.limit !== undefined && o.limit < 1) return { content: `limit is the number of lines to read, 1 or more (it was ${o.limit}). Leave it out to read on from the offset.`, error: true };
   { const held = heldFile(p); if (held) return { content: held, error: true }; }
-  const f = Bun.file(p);
+  // (Its kind by its name; its bytes from the file held.)
+  const f = Bun.file(ioOf(p), { type: Bun.file(p).type });
   const ext = extname(p).toLowerCase();
   if (IMAGE.test(f.type)) {
     if (st.size > 20 * 1024 * 1024) return { content: `${p} is ${(st.size / 1048576).toFixed(0)} MB; resize it (e.g. magick) and read the copy.`, error: true };
@@ -229,10 +352,10 @@ async function readPdf(p: string, ctx: ToolContext, pages?: string): Promise<Rea
 const srcText = (s: unknown) => (Array.isArray(s) ? s.join("") : String(s ?? ""));
 
 async function readNotebook(p: string, ctx: ToolContext): Promise<ReadResult> {
-  const st = statSync(p);
+  const st = statSync(ioOf(p));
   if (st.size > 100 * 1024 * 1024) return { content: `${p} is over 100 MB; read a slice of its cells with jq.`, error: true };
   let nb: any;
-  try { nb = JSON.parse(await Bun.file(p).text()); } catch (e) { return { content: `${p} is not valid notebook JSON: ${(e as Error).message}`, error: true }; }
+  try { nb = JSON.parse(await Bun.file(ioOf(p)).text()); } catch (e) { return { content: `${p} is not valid notebook JSON: ${(e as Error).message}`, error: true }; }
   ctx.seen.set(p, st.mtimeMs);
   const blocks: (TextBlock | ImageBlock)[] = [];
   let text = "";
@@ -267,21 +390,30 @@ export function guardOverwrite(p: string, ctx: ToolContext): string | null {
   if (seen === undefined) {
     ctx.seen.set(p, m);
     let head = "";
-    try { head = readFileSync(p, "utf8").slice(0, 2000); } catch {}
+    const h = hold(p, ctx, "read");
+    if ("refused" in h) return h.refused;
+    try { head = readFileSync(h.io, "utf8").slice(0, 2000); } catch {} finally { h.close(); }
     return `${p} exists and was not read in this session. Its start is below; write again to replace it.\n\n${head}`;
   }
   if (seen !== m) return `${p} changed on disk since it was read. Read it again before replacing it.`;
   return null;
 }
 
-export async function writeFile(p: string, content: string, ctx: ToolContext) {
+// Writes a file. It answers with words when the write was refused (the tool gives them to the model as its result).
+export async function writeFile(p: string, content: string, ctx: ToolContext): Promise<string | undefined> {
   { const held = heldWrite(p); if (held) throw new Error(held); }
-  await mkdir(dirname(p), { recursive: true });
-  let mode: number | undefined;
-  try { mode = statSync(p).mode; } catch {}
-  await Bun.write(p, content);
-  if (mode !== undefined) chmodSync(p, mode & 0o7777);
+  // The file is held while it is written: made in its folder and nowhere else when it is new, the same file when
+  // it is there (hold).
+  const h = hold(p, ctx, "write");
+  if ("refused" in h) return h.refused;
+  try {
+    let mode: number | undefined;
+    if (h.existed) try { mode = statSync(h.io).mode; } catch {}
+    await Bun.write(h.io, content);
+    if (mode !== undefined) chmodSync(h.io, mode & 0o7777);
+  } finally { h.close(); }
   ctx.seen.set(p, mtime(p));
+  return undefined;
 }
 
 // ---- exact-string edits ----------------------------------------------------
@@ -420,7 +552,10 @@ export async function editFile(p: string, oldS: string, newS: string, all: boole
   const m = mtime(p);
   if (m === -1) return { error: notFound(p, ctx.cwd) };
   { const held = heldWrite(p); if (held) return { error: held }; }
-  const bytes = new Uint8Array(await Bun.file(p).arrayBuffer());
+  const h = hold(p, ctx, "read");
+  if ("refused" in h) return { error: h.refused };
+  let bytes: Uint8Array;
+  try { bytes = new Uint8Array(await Bun.file(h.io).arrayBuffer()); } finally { h.close(); }
   if (!isUtf8(bytes)) return { error: `${p} is not valid UTF-8; change it with a shell command that keeps its encoding.` };
   // A UTF-8 byte-order mark stays (the decoder drops it from the text).
   const bom = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf;
@@ -428,7 +563,7 @@ export async function editFile(p: string, oldS: string, newS: string, all: boole
   const r = applyEdit(before, oldS, newS, all);
   if ("error" in r) return r;
   const seen = ctx.seen.get(p);
-  await writeFile(p, bom ? `\uFEFF${r.text}` : r.text, ctx);
+  { const no = await writeFile(p, bom ? `\uFEFF${r.text}` : r.text, ctx); if (no) return { error: no }; }
   const notes = [r.note, seen === undefined ? undefined : seen !== m ? "the file had other changes since it was read; read it again before edits that depend on them" : undefined].filter(Boolean);
   return { ok: notes.length ? ` (${notes.join("; ")})` : "", before, after: r.text };
 }

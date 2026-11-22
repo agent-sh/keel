@@ -1,9 +1,14 @@
 // The portal: the owner opens a dev server one of a session's processes runs
 // on a loopback port, inside the workbench. "A process of the session" is one
-// whose environment carries the session's KEEL_SESSION (every tool process
-// gets it, and children inherit it), read from /proc (Linux only; elsewhere no
-// port is listed). Portals live in memory: none is open after a restart.
+// the daemon started for one of the session's commands, or one of the
+// processes those started: found by what the daemon holds a command by (its
+// cgroup, its process group: src/tools/jobs.ts sessionRoots) and the pid tree
+// below, read from /proc (Linux only; elsewhere no port is listed). Never
+// by a variable in a process's environment, which the process sets itself: a
+// command could name another session there and show its port in that
+// session's portal. Portals live in memory: none is open after a restart.
 import { readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
+import { sessionRoots } from "../tools/jobs.ts";
 
 // `ns`: the process is in a network namespace of its own (a sandboxed command's): the port is on that namespace's
 // loopback, and the daemon reaches it through reachInto (src/safety/net-proxy.ts).
@@ -33,8 +38,8 @@ function listeners(of?: string): Listener[] {
 
 let cache: { at: number; bySession: Map<string, PortInfo[]> } | undefined;
 
-// Ports each session's processes listen on.
-export function sessionPorts(): Map<string, PortInfo[]> {
+// Ports each session's processes listen on. `roots`: the processes the daemon holds each session's commands by.
+export function sessionPorts(roots: Map<string, number[]> = sessionRoots()): Map<string, PortInfo[]> {
   if (cache && Date.now() - cache.at < OWNERSHIP_MS) return cache.bySession;
   const bySession = new Map<string, PortInfo[]>();
   const mine = (() => { try { return readlinkSync("/proc/self/ns/net"); } catch { return ""; } })();
@@ -48,31 +53,47 @@ export function sessionPorts(): Map<string, PortInfo[]> {
     return { ns, byInode: t };
   };
   const uid = process.getuid?.();
-  let pids: string[] = [];
-  try { pids = readdirSync("/proc").filter((p) => /^\d+$/.test(p)); } catch {}
-  for (const pid of pids) {
-    try {
-      if (uid !== undefined && statSync(`/proc/${pid}`).uid !== uid) continue;
-      const env = readFileSync(`/proc/${pid}/environ`, "latin1");
-      const m = env.match(/(?:^|\0)KEEL_SESSION=([^\0]+)/);
-      if (!m) continue;
-      const { ns, byInode } = tableOf(pid);
-      if (!byInode.size) continue;
-      const fds = readdirSync(`/proc/${pid}/fd`);
-      for (const fd of fds) {
-        let link: string;
-        try { link = readlinkSync(`/proc/${pid}/fd/${fd}`); } catch { continue; }
-        const ino = link.match(/^socket:\[(\d+)\]$/)?.[1];
-        const port = ino ? byInode.get(ino) : undefined;
-        if (port === undefined) continue;
-        const list = bySession.get(m[1]!) ?? [];
-        if (!list.some((p) => p.port === port)) {
-          const name = readFileSync(`/proc/${pid}/comm`, "utf8").trim();
-          list.push({ port, pid: Number(pid), process: name, open: false, ...(ns !== mine ? { ns } : {}) });
-        }
-        bySession.set(m[1]!, list);
+  if (roots.size) {
+    // The pid tree: a process the daemon holds, and what it started.
+    const kids = new Map<number, number[]>();
+    let names: string[] = [];
+    try { names = readdirSync("/proc").filter((p) => /^\d+$/.test(p)); } catch {}
+    for (const n of names) {
+      try {
+        const st = readFileSync(`/proc/${n}/stat`, "latin1");
+        const parent = Number(st.slice(st.lastIndexOf(") ") + 2).split(" ")[1]);
+        const list = kids.get(parent);
+        if (list) list.push(Number(n)); else kids.set(parent, [Number(n)]);
+      } catch {} // gone
+    }
+    for (const [session, held] of roots) {
+      const seen = new Set<number>();
+      const todo = [...held];
+      while (todo.length) {
+        const pid = todo.pop()!;
+        if (seen.has(pid)) continue;
+        seen.add(pid);
+        todo.push(...(kids.get(pid) ?? []));
+        try {
+          if (uid !== undefined && statSync(`/proc/${pid}`).uid !== uid) continue;
+          const { ns, byInode } = tableOf(String(pid));
+          if (!byInode.size) continue;
+          for (const fd of readdirSync(`/proc/${pid}/fd`)) {
+            let link: string;
+            try { link = readlinkSync(`/proc/${pid}/fd/${fd}`); } catch { continue; }
+            const ino = link.match(/^socket:\[(\d+)\]$/)?.[1];
+            const port = ino ? byInode.get(ino) : undefined;
+            if (port === undefined) continue;
+            const list = bySession.get(session) ?? [];
+            if (!list.some((p) => p.port === port)) {
+              const name = readFileSync(`/proc/${pid}/comm`, "utf8").trim();
+              list.push({ port, pid, process: name, open: false, ...(ns !== mine ? { ns } : {}) });
+            }
+            bySession.set(session, list);
+          }
+        } catch {} // gone
       }
-    } catch {}
+    }
   }
   cache = { at: Date.now(), bySession };
   return bySession;

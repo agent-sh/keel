@@ -6,7 +6,7 @@ import { afterAll, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { atCwd, realOf } from "../core/paths.ts";
+import { atCwd, canonical, realOf } from "../core/paths.ts";
 import { claudeTools } from "../tools/claude.ts";
 import { geminiTools } from "../tools/gemini.ts";
 import { gptTools } from "../tools/gpt.ts";
@@ -52,11 +52,31 @@ test("realOf walks a path as the kernel does: each part resolved, then `..` appl
   // A file that does not exist yet lands where its folder really is.
   expect(realOf(`${ws}/sk/../new.json`)).toBe(join(config, "new.json"));
   expect(realOf(`${ws}/out/../made/new.txt`)).toBe(join(outside, "made/new.txt"));
-  expect(realOf(`${ws}/missing/../plain.txt`)).toBe(join(ws, "plain.txt"));
-  // A dangling link is followed (a write through it makes the file it names), and a loop ends.
+  // A dangling link is followed (a write through it makes the file it names).
   symlinkSync(join(config, "made-by-link.json"), join(ws, "dangling"));
   expect(realOf(join(ws, "dangling"))).toBe(join(config, "made-by-link.json"));
-  expect(typeof realOf(join(ws, "loop-a/x"))).toBe("string");
+  // A path the kernel refuses comes back as it was given, and opening that fails as the kernel says: a loop, more
+  // links than it follows (a chain of 41 that ends at Keel's hooks file), a part after a file, a file named as a
+  // folder, `..` after a part that does not exist. None of them is canonical.
+  for (let i = 0; i < 41; i++) symlinkSync(i < 40 ? `mc${i + 1}` : join(config, "hooks.json"), join(ws, `mc${i}`));
+  symlinkSync("plain.txt", join(ws, "to-file"));
+  const refused: [string, string][] = [
+    [`${ws}/loop-a/x`, "ELOOP"], [`${ws}/mc0`, "ELOOP"],
+    [`${ws}/plain.txt/x`, "ENOTDIR"], [`${ws}/plain.txt/`, "ENOTDIR"], [`${ws}/plain.txt/.`, "ENOTDIR"], [`${ws}/plain.txt/..`, "ENOTDIR"], [`${ws}/plain.txt/../sk/../hooks.json`, "ENOTDIR"], [`${ws}/to-file/`, "ENOTDIR"],
+    [`${ws}/missing/../sk/../hooks.json`, "ENOENT"], [`${ws}/missing/..`, "ENOENT"],
+  ];
+  for (const [p, code] of refused) {
+    let got = "opened";
+    try { statSync(realOf(p)); } catch (e) { got = (e as NodeJS.ErrnoException).code ?? "failed"; }
+    let kernel = "opened";
+    try { statSync(p); } catch (e) { kernel = (e as NodeJS.ErrnoException).code ?? "failed"; }
+    expect([p, realOf(p), got, kernel, canonical(realOf(p))]).toEqual([p, p, code, code, false]);
+  }
+  // A chain the kernel follows (40 links) is followed.
+  expect(realOf(`${ws}/mc1`)).toBe(join(config, "hooks.json"));
+  // What the walk answers for a path the kernel takes is canonical; a path with a link, a dot or a doubled slash in it is not.
+  for (const p of [join(config, "hooks.json"), join(ws, "plain.txt"), join(ws, "new/deep/file.txt"), "/"]) expect([p, canonical(p)]).toEqual([p, true]);
+  for (const p of [`${ws}/sk/../hooks.json`, `${ws}/sk`, `${ws}/sk/x`, `${ws}//plain.txt`, `${ws}/./plain.txt`, `${ws}/plain.txt/`, "plain.txt", `${ws}/new/../x`]) expect([p, canonical(p)]).toEqual([p, false]);
   // A relative path starts at the folder given, and `..` in it is walked the same way.
   expect(realOf(atCwd(ws, "sk/../hooks.json"))).toBe(join(config, "hooks.json"));
   expect(atCwd(ws, "./sub//x.txt")).toBe(join(ws, "sub/x.txt"));

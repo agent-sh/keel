@@ -5,7 +5,7 @@ import { deliver } from "../../automation/core.ts";
 import { sandboxSaid } from "../../safety/refwatch.ts";
 import { gitShut, linkedWorktree } from "../../safety/sandbox.ts";
 import { hiddenSaid, hiddenSettings, ownerHome, sandboxBytes, sandboxScope, shownPaths, tendSandboxes, toolchainPaths, warmOverlays } from "../../safety/sandbox-view.ts";
-import { refusedSince } from "../../safety/net-proxy.ts";
+import { proxiesClosed, refusedSince } from "../../safety/net-proxy.ts";
 import { sandboxConfig, setSandboxConfig } from "../../safety/sandbox-config.ts";
 import { escapeOf } from "../../safety/policy.ts";
 import * as activity from "../../automation/activity.ts";
@@ -63,7 +63,7 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
       const confined = call.tool.kind === "shell" ? call.ctx.confined : undefined;
       if (!watched && !confined) return;
       const said = typeof result.content === "string" ? result.content : result.content.map((b) => (b.type === "text" ? b.text : "")).join("\n");
-      const shut = confined ? sandboxSaid(said, { linked: !s.machine && !!linkedWorktree(s.workspace), network: !!confined.network, escape: escapeOf(call.tool), ...(s.machine ? {} : { shut: () => gitShut(s.workspace), refused: () => refusedSince(scopeDir(sandboxScope(s.workspace)), confined.since ?? Date.now()) }) }) : [];
+      const shut = confined ? sandboxSaid(said, { linked: !s.machine && !!linkedWorktree(s.workspace), network: !!confined.network, escape: escapeOf(call.tool), ...(s.machine ? {} : { shut: () => gitShut(s.workspace), refused: () => refusedSince(scopeDir(sandboxScope(s.workspace)), confined.since ?? Date.now()), closed: proxiesClosed }) }) : [];
       // What the sandbox's view of the machine hid from it (src/safety/sandbox-view.ts).
       if (confined && !s.machine) {
         const opts = g.readOpts(s, confined.sandbox === "read-only" ? "read-only" : "workspace-write");

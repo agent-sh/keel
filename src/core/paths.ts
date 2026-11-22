@@ -54,27 +54,65 @@ export function atCwd(cwd: string, p: string): string {
 // exist yet. A dangling link is followed too (a write through it creates the
 // file it names). This is the one function a path is judged by, and a file
 // tool opens what it returns, so what is judged is what is opened.
+//
+// A path the kernel refuses is returned as it was given (absolute), so that
+// opening it fails the same way: more links than the kernel follows (ELOOP),
+// a part after a file or a file named as a folder (`file/x`, `file/`,
+// `file/..`: ENOTDIR), `..` after a part that does not exist (ENOENT), a
+// folder that may not be searched. Such a path is never canonical
+// (canonical()), and a file tool opens only a canonical one.
 export function realOf(p: string): string {
+  const given = isAbsolute(p) ? p : `${process.cwd()}/${p}`;
   const parts = (text: string) => text.split("/").filter((c) => c !== "" && c !== ".");
-  const todo = parts(isAbsolute(p) ? p : `${process.cwd()}/${p}`);
-  // `at` holds no link: every part of it was looked at. Past the first part that does not exist nothing can be a link.
-  let at = "/", missing = false, links = 0;
+  const todo = parts(given);
+  // `at` holds no link: every part of it was looked at. `folder`: it is a folder that exists. Past the first part
+  // that does not exist nothing can be a link.
+  let at = "/", folder = true, missing = false, links = 0;
   while (todo.length) {
     const c = todo.shift()!;
+    if (missing) {
+      if (c === "..") return given;
+      at = `${at}/${c}`;
+      continue;
+    }
+    if (!folder) return given;
     if (c === "..") { at = dirname(at); continue; }
     const next = at === "/" ? `/${c}` : `${at}/${c}`;
-    if (missing) { at = next; continue; }
-    let link = false;
-    try { link = lstatSync(next).isSymbolicLink(); } catch { missing = true; at = next; continue; }
-    if (!link) { at = next; continue; }
+    let st: ReturnType<typeof lstatSync>;
+    try { st = lstatSync(next); } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") return given;
+      missing = true;
+      at = next;
+      continue;
+    }
+    if (!st.isSymbolicLink()) { at = next; folder = st.isDirectory(); continue; }
     // More links than the kernel follows (40): it refuses the path. The path comes back as it was given, so
     // whatever opens it walks the same links from the start and is refused the same way. Never the rest of
     // the walk from here: opened, that would get a count of its own and reach a target nobody judged.
-    if (++links > 40) return isAbsolute(p) ? p : `${process.cwd()}/${p}`;
+    if (++links > 40) return given;
     let to: string;
-    try { to = readlinkSync(next); } catch { missing = true; at = next; continue; }
+    try { to = readlinkSync(next); } catch { return given; }
     if (to.startsWith("/")) at = "/";
     todo.unshift(...parts(to));
   }
+  // (Named as a folder, by a slash or a dot at its end, and it is a file.)
+  if (!missing && !folder && /\/\.?$/.test(given)) return given;
   return at;
+}
+
+// Whether a path is the one text of where it is: absolute, no `.` or `..` in it, no doubled or closing slash, and
+// no part of it a link. What realOf returns for a path the kernel takes is canonical; what it returns for one the
+// kernel refuses is not.
+export function canonical(p: string): boolean {
+  if (!isAbsolute(p) || (p !== "/" && (p.endsWith("/") || p.includes("//")))) return false;
+  let at = "";
+  for (const c of p.split("/").slice(1)) {
+    if (c === "." || c === "..") return false;
+    at = `${at}/${c}`;
+    try { if (lstatSync(at).isSymbolicLink()) return false; } catch (e) {
+      // (Past a part that does not exist nothing is a link; any other failure is the kernel refusing the path.)
+      return (e as NodeJS.ErrnoException).code === "ENOENT" && !p.slice(at.length).split("/").some((x) => x === "." || x === "..");
+    }
+  }
+  return true;
 }

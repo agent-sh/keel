@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { realOf } from "../core/paths.ts";
+import { landing } from "./marks.ts";
 import { asksLess, childMode, classify, decide, MODES, shellText, type Facts, type Mode, type Rule, escapeOf } from "./policy.ts";
 
 const ws = "/w/repo";
@@ -27,10 +29,16 @@ test("a call's class comes from its tool's definition", () => {
   expect(classify(tool("mcp_call"), { tool: "github__create_issue", arguments: {} }, ws)).toEqual({ kind: "other" });
   // A read carries the files and folders it names: its path keys (a relative one from the call's folder), and a pattern that starts at a path.
   expect(classify(tool("Read", undefined, true), { file_path: "/etc/passwd" }, ws)).toEqual({ kind: "read", paths: ["/etc/passwd"] });
-  expect(classify(tool("Glob", undefined, true), { pattern: "**/*.ts", path: "../other" }, ws)).toEqual({ kind: "read", paths: ["/w/other"] });
-  expect(classify(tool("Glob", undefined, true), { pattern: "/srv/keys/*.pem" }, ws)).toEqual({ kind: "read", paths: ["/srv/keys/*.pem"] });
+  expect(classify(tool("Glob", undefined, true), { pattern: "**/*.ts", path: "../other" }, ws)).toEqual({ kind: "read", paths: ["/w/repo/../other"] });
+  // (Its `..` is kept for the walk: after a link it is the parent of the link's target. Where it lands is what is
+  // judged: landing, tested on real folders in walked-paths.test.ts.)
+  expect(landing(classify(tool("Read", undefined, true), { file_path: "/usr/bin/../lib" }, ws))).toEqual({ kind: "read", paths: [realOf("/usr/lib")] });
+  expect(classify(tool("Glob", undefined, true), { pattern: "/srv/keys/*.pem" }, ws)).toEqual({ kind: "read", paths: ["/srv/keys"] });
+  // A path key's value is a path whole, whatever characters its names hold: only a pattern is cut at a wildcard.
+  expect(classify(tool("Read", undefined, true), { file_path: "/w/repo/l[x/id" }, ws)).toEqual({ kind: "read", paths: ["/w/repo/l[x/id"] });
+  expect(classify(tool("Read", undefined, true), { file_path: "q*/b{c/key" }, ws)).toEqual({ kind: "read", paths: ["/w/repo/q*/b{c/key"] });
   // A pattern that names a folder before its first wildcard is read from the tool's folder: it reaches that folder.
-  expect(classify(tool("Glob", undefined, true), { pattern: ".ssh/*", path: "/home/u" }, ws)).toEqual({ kind: "read", paths: ["/home/u", "/home/u/.ssh/*"] });
+  expect(classify(tool("Glob", undefined, true), { pattern: ".ssh/*", path: "/home/u" }, ws)).toEqual({ kind: "read", paths: ["/home/u", "/home/u/.ssh"] });
   expect(classify(tool("Glob", undefined, true), { pattern: "*.ts", path: "/home/u" }, ws)).toEqual({ kind: "read", paths: ["/home/u"] });
   // A string that only looks like a path is not one: a tool reads the keys that name files.
   expect(classify(tool("Skill", undefined, true), { skill: "x", args: "/review" }, ws)).toEqual({ kind: "read" });

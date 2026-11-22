@@ -2,14 +2,15 @@
 // toolchains run, its secrets are not there, what it writes in its home stays
 // the sandbox's own, and Keel's own folders are never shown.
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { gitViewsDir, setGitViews } from "../core/git.ts";
 import { configDir } from "../providers/config.ts";
 import { refusedRead, sandboxConfig, setSandboxConfig } from "./sandbox-config.ts";
-import { confine, forgetProfiles, sandboxStatus, setProfileAge } from "./sandbox.ts";
-import { envDropped, hiddenSaid, overlays, readView, registrySettings, removeTree, shownPaths, shownTo, toolchainPaths } from "./sandbox-view.ts";
+import { confine, forgetProfiles, sandboxStatus, setProfileAge, setSlotWait } from "./sandbox.ts";
+import { sandboxScope, scopeDir } from "./sandbox-scope.ts";
+import { envDropped, envPlan, hiddenSaid, overlays, readView, registrySettings, shownPaths, shownTo, siblings, tendSandboxes, toolchainPaths } from "./sandbox-view.ts";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "keel-view-")));
 const home = join(root, "home"), ws = join(root, "ws");
@@ -57,7 +58,9 @@ beforeAll(() => {
 afterAll(() => {
   for (const [k, v] of Object.entries(was)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
   setGitViews(stateWas);
-  removeTree(root);
+  // (A module cache keeps its folders read-only.)
+  Bun.spawnSync(["chmod", "-R", "u+rwX", root], { stdout: "ignore", stderr: "ignore" });
+  rmSync(root, { recursive: true, force: true });
 });
 
 const run = (script: string, o: { sandbox?: "workspace-write" | "read-only"; at?: string; read?: string[]; sshAgent?: boolean; env?: Record<string, string>; keep?: string[] } = {}) => {
@@ -137,6 +140,68 @@ test.skipIf(!sandboxStatus().available || !overlays())("commands at once each ta
   expect(run("ls ~/go/pkg | grep -c '^from-'")).toBe("1\n");
 });
 
+test.skipIf(!sandboxStatus().available || !overlays())("what tends the sandboxes follows no link a command left, and a command runs after it cleared everything", async () => {
+  // A command leaves, in its temp folder and its cache layer, links to a folder of the owner's and to the home.
+  const precious = join(home, "precious");
+  mkdirSync(join(precious, "sub"), { recursive: true });
+  writeFileSync(join(precious, "sub/keep.txt"), "keep\n");
+  writeFileSync(join(precious, "ro.txt"), "ro\n");
+  chmodSync(join(precious, "ro.txt"), 0o400);
+  chmodSync(join(precious, "sub"), 0o500);
+  try {
+    const left = run(`ln -sfn ${precious} "$TMPDIR/link-out"; ln -sfn ${home} "$TMPDIR/link-home"; mkdir -p "$TMPDIR/d/deep"; ln -sfn ${precious} "$TMPDIR/d/inner"; ln -sfn ${precious} ~/go/pkg/link-in-layer; echo x > "$TMPDIR/d/deep/f"; chmod 500 "$TMPDIR/d/deep"; echo left`);
+    expect(left).toBe("left\n");
+    const scope = scopeDir(sandboxScope(ws));
+    expect(existsSync(join(scope, "tmp"))).toBe(true);
+    const homeBefore = readdirSync(home).sort();
+    await tendSandboxes(true);
+    // Nothing of the owner's was touched: not a mode, not a file.
+    expect((statSync(join(precious, "ro.txt")).mode & 0o777).toString(8)).toBe("400");
+    expect((statSync(join(precious, "sub")).mode & 0o777).toString(8)).toBe("500");
+    expect(readFileSync(join(precious, "sub/keep.txt"), "utf8")).toBe("keep\n");
+    expect(readdirSync(home).sort()).toEqual(homeBefore);
+    // What the command left is gone, links and read-only folders alike, and so are the layers.
+    expect(readdirSync(join(scope, "tmp"))).toEqual([]);
+    expect(existsSync(join(scope, "up", "0"))).toBe(false);
+    expect(readdirSync(join(dirname(scope), "trash"))).toEqual([]);
+    // The next commands of the repository run: the layer's folders are made again at their start.
+    expect(run("echo ran; ls ~/go/pkg | grep -c link-in-layer")).toBe("ran\n0\n");
+    expect(run("echo again > ~/go/pkg/after-clear; cat ~/go/pkg/after-clear")).toBe("again\n");
+    // Also when only the folders went (removed by hand) and the slot's own files stayed.
+    for (const d of ["up", "work"]) { Bun.spawnSync(["chmod", "-R", "u+rwX", join(scope, d)]); rmSync(join(scope, d), { recursive: true, force: true }); }
+    expect(run("echo ran")).toBe("ran\n");
+  } finally {
+    chmodSync(join(precious, "sub"), 0o700);
+    rmSync(precious, { recursive: true, force: true });
+  }
+});
+
+test.skipIf(!sandboxStatus().available || !overlays())("one session holds a share of a repository's cache layers, and a command past it ends with the sentence", async () => {
+  setSlotWait(1);
+  const start = (script: string, session?: string) => {
+    forgetProfiles();
+    return Bun.spawn(confine(["bash", "-c", script], { sandbox: "workspace-write", network: false }, ws), { cwd: ws, stdout: "pipe", stderr: "pipe", env: { ...process.env, ...(session ? { KEEL_SESSION: session } : {}) } as Record<string, string> });
+  };
+  const held = Array.from({ length: 16 }, () => start("echo up; sleep 30", "session-a"));
+  try {
+    // (Each has its layer when it has said so.)
+    await Promise.all(held.map(async (p) => { const r = p.stdout.getReader(); await r.read(); r.releaseLock(); }));
+    const over = start("echo ran", "session-a");
+    const [out, err] = await Promise.all([new Response(over.stdout).text(), new Response(over.stderr).text()]);
+    expect([await over.exited, out]).toEqual([75, ""]);
+    expect(err).toContain("this session already runs 16 sandboxed commands at once");
+    // Another session of the repository, and a command of no session, are not held up by it.
+    const other = start("echo ran", "session-b");
+    expect([await new Response(other.stdout).text(), await other.exited]).toEqual(["ran\n", 0]);
+    const none = start("echo ran");
+    expect([await new Response(none.stdout).text(), await none.exited]).toEqual(["ran\n", 0]);
+  } finally {
+    for (const p of held) p.kill();
+    await Promise.all(held.map((p) => p.exited));
+    setSlotWait(20);
+  }
+}, 60_000);
+
 test.skipIf(!sandboxStatus().available)("a first use of a package manager: a cache the owner has none of is the sandbox's own folder, the tool's whole folder when that is not there", () => {
   // No ~/.m2 at all: the whole folder is the sandbox's. A ~/.gradle with no caches yet: the caches folder is.
   mkdirSync(join(home, ".gradle"), { recursive: true });
@@ -196,17 +261,35 @@ test.skipIf(!sandboxStatus().available)("nothing in a store is bound, whatever n
 });
 
 test.skipIf(!sandboxStatus().available)("a sandboxed command's environment holds what a build needs and no token of the daemon's", () => {
-  const planted: Record<string, string> = { GITHUB_TOKEN: "t", GH_TOKEN: "t", NPM_TOKEN: "t", HF_TOKEN: "t", CLOUDFLARE_API_TOKEN: "t", AWS_SECRET_ACCESS_KEY: "t", DATABASE_URL: "postgres://u:pw@db/x", KEEL_ANYTHING: "k", SOME_APP_SETTING: "v", MY_BUILD_FLAG: "on", GOPROXY: "https://user:pw@proxy.example" };
+  const planted: Record<string, string> = {
+    GITHUB_TOKEN: "KEELMARK-t", GH_TOKEN: "KEELMARK-t", NPM_TOKEN: "KEELMARK-t", HF_TOKEN: "KEELMARK-t", CLOUDFLARE_API_TOKEN: "KEELMARK-t", AWS_SECRET_ACCESS_KEY: "KEELMARK-t", DATABASE_URL: "postgres://u:KEELMARK-pw@db/x",
+    KEEL_ANYTHING: "KEELMARK-k", SOME_APP_SETTING: "KEELMARK-v", MY_BUILD_FLAG: "on",
+    // A registry or proxy setting with a sign-in in its URL (a password, or a token alone) is kept without the sign-in.
+    GOPROXY: "https://user:KEELMARK-pw@proxy.example,direct", PIP_INDEX_URL: "https://KEELMARK-token@pypi.example/simple",
+    // git settings given through the environment, one of them an Authorization header: all of them go.
+    GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: "http.extraheader", GIT_CONFIG_VALUE_0: "Authorization: Bearer KEELMARK-git", GIT_CONFIG_KEY_1: "core.quotepath", GIT_CONFIG_VALUE_1: "off",
+  };
   for (const [k, v] of Object.entries(planted)) process.env[k] = v;
   try {
     const names = (out: string) => out.trim().split("\n").filter(Boolean).sort();
-    const got = names(run(`env | cut -d= -f1 | grep -E '^(${Object.keys(planted).join("|")}|PATH|HOME|LANG|TMPDIR|XDG_CACHE_HOME|GIT_CONFIG_COUNT)$'`, { env: planted }));
-    expect(got).toEqual(["GIT_CONFIG_COUNT", "HOME", ...(process.env.LANG ? ["LANG"] : []), "PATH", "TMPDIR", "XDG_CACHE_HOME"]);
+    // (The sandbox gives git settings of its own under the same names: those are looked at by their values below.)
+    const got = names(run(`env | cut -d= -f1 | grep -E '^(${Object.keys(planted).filter((k) => !/^GIT_CONFIG_(KEY|VALUE)/.test(k)).join("|")}|PATH|HOME|LANG|TMPDIR|XDG_CACHE_HOME)$'`, { env: planted }));
+    expect(got).toEqual(["GIT_CONFIG_COUNT", "GOPROXY", "HOME", ...(process.env.LANG ? ["LANG"] : []), "PATH", "PIP_INDEX_URL", "TMPDIR", "XDG_CACHE_HOME"]);
+    expect(run(`echo "$GOPROXY $PIP_INDEX_URL"; git config --get http.extraheader; git config --get core.quotepath; echo "git settings: $GIT_CONFIG_COUNT"`, { env: planted }).trim().split("\n")[0]).toBe("https://proxy.example,direct https://pypi.example/simple");
+    // Nothing of it anywhere inside: not in the command's environment, and not in the environment any process there
+    // was started with (bubblewrap is the first one, and it is started clean).
+    const seen = run(`echo "own: $(env | grep -c KEELMARK)"; for p in /proc/[0-9]*; do echo "$(cat $p/comm): $(tr '\\0' '\\n' < $p/environ | grep -c KEELMARK)"; done`, { env: planted });
+    expect(seen).toContain("bwrap: 0");
+    expect(seen.trim().split("\n").filter((l) => !/: 0$/.test(l))).toEqual([]);
     // A name the owner keeps, in Settings.
     expect(names(run("env | cut -d= -f1 | grep -E '^(MY_BUILD_FLAG|GITHUB_TOKEN)$'", { env: planted, keep: ["MY_BUILD_FLAG"] }))).toEqual(["MY_BUILD_FLAG"]);
     // The rule itself: by name, and by a value that holds a password.
     expect(envDropped({ PATH: "/bin", GOPATH: "/g", CARGO_HOME: "/c", LC_ALL: "C", GIT_SSH_COMMAND: "ssh", SSH_AUTH_SOCK: "/s", KEEL_SESSION: "x", FOO: "1", GH_TOKEN: "t", CARGO_REGISTRY_TOKEN: "t", UV_INDEX_URL: "https://u:p@x/simple", PIP_INDEX_URL: "https://x/simple", GIT_ASKPASS: "a", API_KEY: "k", MONKEY: "banana" }))
-      .toEqual(["FOO", "GH_TOKEN", "CARGO_REGISTRY_TOKEN", "UV_INDEX_URL", "API_KEY", "MONKEY"]);
+      .toEqual(["FOO", "GH_TOKEN", "CARGO_REGISTRY_TOKEN", "API_KEY", "MONKEY"]);
+    expect(envPlan({ UV_INDEX_URL: "https://u:p@x/simple", GOPROXY: "https://tok@a.example,https://b.example", PIP_INDEX_URL: "https://x/simple", PATH: "/bin" }).set).toEqual([["UV_INDEX_URL", "https://x/simple"], ["GOPROXY", "https://a.example,https://b.example"]]);
+    // git's settings stay when none carries a sign-in.
+    expect(envPlan({ GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.quotepath", GIT_CONFIG_VALUE_0: "off" }).drop).toEqual([]);
+    expect(envPlan({ GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "url.https://tok@github.com/.insteadof", GIT_CONFIG_VALUE_0: "https://github.com/" }).drop).toEqual(["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"]);
   } finally {
     for (const k of Object.keys(planted)) delete process.env[k];
   }
@@ -387,5 +470,51 @@ test.skipIf(!sandboxStatus().available)("a session's profile is kept, and made a
     setProfileAge(5_000);
     rmSync(join(home, ".deno"), { recursive: true, force: true });
     forgetProfiles();
+  }
+});
+
+test.skipIf(!sandboxStatus().available)("another checkout is taken only when it and the repository name each other: an entry a command forged shows nothing", () => {
+  const git = (dir: string, ...args: string[]) => {
+    const r = Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main", ...args], { cwd: dir, stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" } as Record<string, string> });
+    if (r.exitCode) throw new Error(`git ${args.join(" ")}: ${r.stderr.toString()}`);
+  };
+  const repo = join(home, "repos/app"), linked = join(home, "repos/app-wt"), docs = join(home, "Documents"), other = join(home, "repos/other");
+  for (const d of [repo, docs, other]) mkdirSync(d, { recursive: true });
+  writeFileSync(join(docs, "tax.txt"), "TAX\n");
+  writeFileSync(join(other, ".env"), "OTHER-ENV\n");
+  git(repo, "init", "-q");
+  writeFileSync(join(repo, "a.txt"), "a\n");
+  git(repo, "add", "a.txt");
+  git(repo, "commit", "-q", "-m", "one");
+  git(repo, "worktree", "add", "-q", linked);
+  git(other, "init", "-q");
+  try {
+    // The real one is another checkout of the repository.
+    expect(siblings(repo)).toEqual([linked]);
+    expect(siblings(linked)).toEqual([repo]);
+    // A command of a main-checkout session writes entries that name the owner's documents, Keel's state, a sibling
+    // project and a folder with a .git file of its own making that points nowhere back.
+    const forged: [string, string][] = [["docs", join(docs, ".git")], ["state", join(state(), ".git")], ["other", join(other, ".git")], ["spill", join(state(), "spill/.git")]];
+    writeFileSync(join(state(), "spill/.git"), "gitdir: /nowhere\n");
+    const made = run(forged.map(([name, to]) => `mkdir -p .git/worktrees/${name} && echo ${to} > .git/worktrees/${name}/gitdir && echo ../.. > .git/worktrees/${name}/commondir && cp .git/HEAD .git/worktrees/${name}/HEAD`).join("; ") + "; echo made", { at: repo });
+    expect(made).toBe("made\n");
+    expect(siblings(repo)).toEqual([linked]);
+    // The next command sees none of them, and neither does a file tool.
+    expect(run(`cat ${join(docs, "tax.txt")} ${join(other, ".env")} ${join(state(), "api-token")} 2>&1 | grep -c 'No such file'; cat ${join(linked, "a.txt")}`, { at: repo })).toBe("3\na\n");
+    for (const p of [join(docs, "tax.txt"), join(other, ".env")]) expect([p, shownTo(p, repo).shown]).toEqual([p, false]);
+    expect(shownTo(join(linked, "a.txt"), repo).shown).toBe(true);
+    // A folder whose .git file points back at an entry is one the command could already write: it is inside the session's folder.
+    const mine = run(`mkdir -p made-wt .git/worktrees/mine && echo "gitdir: $PWD/.git/worktrees/mine" > made-wt/.git && echo "$PWD/made-wt/.git" > .git/worktrees/mine/gitdir; echo ok`, { at: repo });
+    expect(mine).toBe("ok\n");
+    expect(siblings(repo)).toEqual([linked]);
+    // A session whose folder says it is a worktree of a repository that does not name it has no other checkouts.
+    const stray = join(home, "repos/stray");
+    mkdirSync(stray, { recursive: true });
+    writeFileSync(join(stray, ".git"), `gitdir: ${join(repo, ".git/worktrees/app-wt")}\n`);
+    expect(siblings(stray)).toEqual([]);
+  } finally {
+    rmSync(join(home, "repos"), { recursive: true, force: true });
+    rmSync(docs, { recursive: true, force: true });
+    rmSync(join(state(), "spill/.git"), { force: true });
   }
 });

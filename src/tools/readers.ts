@@ -6,7 +6,8 @@
 // style name, the other families a snake_case one.
 import { mkdirSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { atCwd, realOf } from "../core/paths.ts";
+import { atCwd, canonical, realOf } from "../core/paths.ts";
+import { hold, type HoldContext } from "./files.ts";
 import { READ_WHOLE_CHARS, readersAtOnce, wholeText, type Material } from "../engine/reader.ts";
 import { coverageNote } from "../engine/readers.ts";
 import { isClaimFile } from "../core/claim.ts";
@@ -55,15 +56,20 @@ const show = (f: string, cwd: string) => { const r = relative(cwd, f); return r 
 // A file's text, or why it is not read: binary (a NUL byte, or not UTF-8). At
 // most `max` bytes of it are read (a character is never more than its bytes);
 // `cut` says the file is longer.
-async function textOf(f: string, max: number): Promise<{ text: string; cut: boolean } | { skip: string }> {
+async function textOf(f: string, max: number, ctx: HoldContext): Promise<{ text: string; cut: boolean } | { skip: string }> {
   if (isClaimFile(f)) return { skip: "the daemon's claim on its state folder" };
   if (isStoreFile(f)) return { skip: "the daemon's own store, which is not opened from inside the daemon" };
-  const file = Bun.file(f);
-  const cut = file.size > max;
-  const b = await (cut ? file.slice(0, max) : file).bytes();
-  if (b.subarray(0, 8192).includes(0)) return { skip: "binary" };
-  // A character the cut split is left out, not an error.
-  try { return { text: new TextDecoder("utf-8", { fatal: true }).decode(b, { stream: cut }), cut }; } catch { return { skip: "not UTF-8 text" }; }
+  // The file itself, held: a link found inside a folder (to a file somewhere else) is not read through.
+  const h = hold(f, ctx, "read");
+  if ("refused" in h) return { skip: canonical(f) ? "it changed while it was read" : "a link, or a path with one in it: read what it points at by its own path" };
+  try {
+    const file = Bun.file(h.io);
+    const cut = file.size > max;
+    const b = await (cut ? file.slice(0, max) : file).bytes();
+    if (b.subarray(0, 8192).includes(0)) return { skip: "binary" };
+    // A character the cut split is left out, not an error.
+    try { return { text: new TextDecoder("utf-8", { fatal: true }).decode(b, { stream: cut }), cut }; } catch { return { skip: "not UTF-8 text" }; }
+  } finally { h.close(); }
 }
 
 // Text the budget cut: its whole lines, and where the rest starts.
@@ -117,7 +123,7 @@ export async function gather(input: { paths?: unknown; urls?: unknown }, ctx: To
     const name = show(f, ctx.cwd);
     if (pool.left <= 0) { skipped.push(`${name} (${past})`); continue; }
     let t: Awaited<ReturnType<typeof textOf>>;
-    try { t = await textOf(f, pool.left); } catch (e) { skipped.push(`${name} (${(e as Error).message})`); continue; }
+    try { t = await textOf(f, pool.left, ctx); } catch (e) { skipped.push(`${name} (${(e as Error).message})`); continue; }
     if ("skip" in t) { skipped.push(`${name} (${t.skip})`); continue; }
     let text = t.text;
     if (t.cut) {

@@ -1,7 +1,7 @@
 // The tool profile Claude models are trained on: Claude Code's current names,
 // argument shapes and result wording (code.claude.com/docs/en/tools-reference).
 import { heldWrite } from "../core/store-files.ts";
-import { abs, editFile, editShown, globFiles, guardOverwrite, mtime, readFile, ripgrep, writeFile } from "./files.ts";
+import { abs, editFile, editShown, globFiles, guardOverwrite, hold, mtime, readFile, ripgrep, writeFile } from "./files.ts";
 import { answerText, ask, type Question } from "./interact.ts";
 import { findJob, jobsOf, running, stopJob } from "./jobs.ts";
 import { headTail, runShell, shellCwd } from "./shell.ts";
@@ -140,7 +140,7 @@ const Write: Tool = {
     const g = guardOverwrite(p, ctx);
     if (g) return fail(g);
     if (existed && content.includes("�")) return fail("The content holds U+FFFD, the mark of bytes that did not decode; write the real characters.");
-    await writeFile(p, content, ctx);
+    { const no = await writeFile(p, content, ctx); if (no) return fail(no); }
     return ok(existed ? `The file ${p} has been updated successfully.` : `File created successfully at: ${p}`);
   },
 };
@@ -186,7 +186,9 @@ const NotebookEdit: Tool = {
     if (!ctx.seen.has(p)) return fail(`Read ${p} before editing it.`);
     { const held = heldWrite(p); if (held) return fail(held); }
     let nb: any;
-    try { nb = JSON.parse(await Bun.file(p).text()); } catch (e) { return fail(`Cannot parse the notebook: ${(e as Error).message}`); }
+    const h = hold(p, ctx, "read");
+    if ("refused" in h) return fail(h.refused);
+    try { nb = JSON.parse(await Bun.file(h.io).text()); } catch (e) { return fail(`Cannot parse the notebook: ${(e as Error).message}`); } finally { h.close(); }
     const cells: any[] = nb.cells ?? [];
     const mode = input.edit_mode ?? "replace";
     const idx = input.cell_id === undefined ? -1 : cells.findIndex((c, i) => (c.id ?? `cell-${i}`) === input.cell_id);
@@ -206,7 +208,7 @@ const NotebookEdit: Tool = {
       else { delete c.outputs; delete c.execution_count; }
     }
     nb.cells = cells;
-    await writeFile(p, JSON.stringify(nb, null, 1) + "\n", ctx);
+    { const no = await writeFile(p, JSON.stringify(nb, null, 1) + "\n", ctx); if (no) return fail(no); }
     return ok(`Updated cell ${input.cell_id ?? "(start)"} of ${p} (${mode}).`);
   },
 };

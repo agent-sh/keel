@@ -821,6 +821,18 @@ function gone(j: Job) {
 }
 
 export const jobsOf = (sessionId: string) => [...jobs.values()].filter((j) => j.sessionId === sessionId);
+// The processes of each session's commands that still run, by what the daemon holds each command by: its cgroup
+// (the scope it was started in), else its process group and session, each with its start time checked (members).
+// Never by what a process says of itself: its environment is its own to set.
+export function sessionRoots(): Map<string, number[]> {
+  const out = new Map<string, number[]>();
+  for (const j of jobs.values()) {
+    if (!jobLive(j)) continue;
+    const pids = members(j).map((m) => m.pid);
+    if (pids.length) out.set(j.sessionId, [...(out.get(j.sessionId) ?? []), ...pids]);
+  }
+  return out;
+}
 // Live jobs (see jobLive) of any session whose folder is in `dir` or holds it (where links
 // land): a job in a parent folder can write into it too.
 export const jobsIn = (dir: string) => { const d = realOf(dir); return [...jobs.values()].filter((j) => { const c = realOf(j.cwd); return (contains(d, c) || contains(c, d)) && jobLive(j); }); };

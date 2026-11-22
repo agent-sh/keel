@@ -382,22 +382,26 @@ const PATTERN_KEY = /^(pattern|patterns|glob|include|includes)$/i;
 export function readPaths(input: unknown, cwd: string): string[] {
   const out = new Set<string>();
   const whole = (v: string) => (v === "~" ? homedir() : v.startsWith("~/") ? join(homedir(), v.slice(2)) : v);
-  const add = (v: unknown, base = cwd) => {
+  // `pattern`: the value came from a pattern key: it is read up to its first wildcard (the folder the pattern looks
+  // in). A path key's value is a path whole, whatever characters its names hold (a link can be named `l[x`).
+  const add = (v: unknown, base = cwd, pattern = false) => {
     if (typeof v !== "string" || !v || v.length > 4096) return;
-    const t = whole(v);
-    out.add(isAbsolute(t) ? resolve(t) : resolve(base, t));
+    let t = whole(v);
+    if (pattern) { const wild = t.search(/[*?[{]/); if (wild >= 0) t = dirname(`${t.slice(0, wild)}x`); }
+    // (With its `..` kept: where it leads is the walk's to say, realOf.)
+    out.add(atCwd(base, t));
   };
   if (input && typeof input === "object" && !Array.isArray(input)) {
     const entries = Object.entries(input);
     const each = (v: unknown, f: (x: unknown) => void) => { if (Array.isArray(v)) for (const x of v.slice(0, 32)) f(x); else f(v); };
     const bases: string[] = [];
-    for (const [k, v] of entries) if (PATH_KEY.test(k)) each(v, (x) => { add(x); if (typeof x === "string" && x) bases.push(isAbsolute(whole(x)) ? resolve(whole(x)) : resolve(cwd, whole(x))); });
+    for (const [k, v] of entries) if (PATH_KEY.test(k)) each(v, (x) => { add(x); if (typeof x === "string" && x) bases.push(atCwd(cwd, whole(x))); });
     for (const [k, v] of entries) if (PATTERN_KEY.test(k)) each(v, (x) => {
       if (typeof x !== "string" || !x) return;
       // The part before the first wildcard names where the pattern looks.
       const lead = x.slice(0, x.search(/[*?[{]|$/));
-      if (isAbsolute(whole(x))) add(x);
-      else if (lead.includes("/") || lead.startsWith(".")) for (const b of bases.length ? bases : [cwd]) add(x, b);
+      if (isAbsolute(whole(x))) add(x, cwd, true);
+      else if (lead.includes("/") || lead.startsWith(".")) for (const b of bases.length ? bases : [cwd]) add(x, b, true);
     });
   }
   return [...out].slice(0, 32);
