@@ -6,6 +6,7 @@
 // it can be sent again (replay). The trace id is the turn's turn_start event
 // id, so an error that names its turn names its trace. Kept SPAN_DAYS days.
 import { scrubbed } from "../core/conceal.ts";
+import { fromSaid, type AnsweredBy } from "../safety/card.ts";
 import { gunzipSync, gzipSync } from "node:zlib";
 import type { Bus } from "../core/bus.ts";
 import { errorScope } from "../core/errors.ts";
@@ -261,10 +262,10 @@ export class Tracer {
           if (f.status.kind === "retry") this.wait(f.session_id, key, "retry wait", { attempt: f.status.attempt, max: f.status.max });
           else if (f.status.kind === "compacting") this.wait(f.session_id, key, "compaction", { auto: f.status.auto });
         } else if (f.t === "feature" && f.name === "approval" && f.data?.id) {
-          const a = f.data as { id: string; session_id: string; state: string; tool?: string; risk?: string; call_id?: string; choice?: string };
+          const a = f.data as { id: string; session_id: string; state: string; tool?: string; risk?: string; call_id?: string; choice?: string; by?: AnsweredBy };
           const key = `approval:${a.id}`;
           if (a.state === "pending") this.wait(a.session_id, key, "approval wait", { tool: a.tool, risk: a.risk, call_id: a.call_id, approval_id: a.id });
-          else this.endWait(key, { answer: a.state, ...(a.choice ? { choice: a.choice } : {}) });
+          else this.endWait(key, { answer: a.state, ...(a.choice ? { choice: a.choice } : {}), ...(a.by ? { from: fromSaid(a.by) } : {}) });
         }
       } catch {
         // A wait that could not be recorded is a gap in a trace, never a failure of the turn.

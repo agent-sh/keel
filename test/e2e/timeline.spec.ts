@@ -333,7 +333,7 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     await call(`${base}/approvals/${pending[0].id}`, { choice: "deny" });
     // The answer moves it on, and what was open is now a row each.
     await expect(panel.getByTestId("timeline-state")).toHaveText("Done", { timeout: 60_000 });
-    await expect(rows.first()).toContainText(/Approval for Bash denied after/);
+    await expect(rows.first()).toContainText(/Approval for Bash denied from the API after/);
     await expect(rows.nth(1)).toContainText("Approval asked for Bash");
     // The owner's denial is a decision, said as one: not a failed tool, not red, not under Failures.
     await expect(rows.nth(2)).toHaveText(/Owner prompt, 2 steps, 1 denied call/);

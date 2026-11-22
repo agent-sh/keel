@@ -16,6 +16,7 @@
 // marks (a session of tens of thousands of notes and no turn, a turn with a
 // thousand hook notes) is never walked.
 import { createHash } from "node:crypto";
+import { fromSaid } from "../safety/card.ts";
 import type { Store } from "../core/store.ts";
 import type { ErrorRecord, TurnStatus } from "../core/types.ts";
 import { errorClass } from "./classes.ts";
@@ -434,7 +435,7 @@ export class Timeline {
         const r = approval(id);
         if (!r) return undefined;
         const a = JSON.parse(r.data);
-        return { tool: a.tool, risk: a.risk, state: a.state, choice: a.choice, created: a.created, resolved: a.resolved };
+        return { tool: a.tool, risk: a.risk, state: a.state, choice: a.choice, created: a.created, resolved: a.resolved, from: fromSaid(a.by) };
       },
     };
   }

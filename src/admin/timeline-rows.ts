@@ -243,7 +243,8 @@ export type Lookups = {
   agent?(id: string): { session_id?: string; title?: string; type?: string; status?: string; created?: number; ended?: number | null; stopped_by?: string | null; end_reason?: string | null } | undefined;
   wait?(id: string): { kind?: string; status?: string; created?: number; deadline?: number; ended?: number | null } | undefined;
   loop?(id: string): { name?: string } | undefined;
-  approval?(id: string): { tool?: string; risk?: string; state?: string; choice?: string; created?: number; resolved?: number } | undefined;
+  // `from`: where the owner's answer was given ("the phone (Pixel)"), when the card kept it.
+  approval?(id: string): { tool?: string; risk?: string; state?: string; choice?: string; created?: number; resolved?: number; from?: string } | undefined;
 };
 export { waitWords };
 const STOPPED: Record<string, string> = {
@@ -319,7 +320,9 @@ export function activityRow(a: ActivityIn, look: Lookups = {}, own = false): Tim
     const ms = p?.created !== undefined ? a.ts - p.created : undefined;
     const tool = p?.tool ?? toolOf(a.text);
     const said = a.sub === "allowed" ? `allowed${CHOICE[p?.choice ?? ""] ?? ""}` : a.sub === "denied" ? "denied" : "cancelled";
-    return row("approval", `Approval for ${tool} ${said}${ms !== undefined && ms >= 0 ? ` after ${dur(ms)}` : ""}`, { ms }, { approval_id: d.approval_id });
+    // (A card closed by a grant, a mode change or a stop has no answer of the owner's to place.)
+    const from = p?.from && a.sub !== "cancelled" ? ` from ${p.from}` : "";
+    return row("approval", `Approval for ${tool} ${said}${from}${ms !== undefined && ms >= 0 ? ` after ${dur(ms)}` : ""}`, { ms }, { approval_id: d.approval_id });
   }
   if (a.kind === "alert") {
     if (a.sub === "approval") {
