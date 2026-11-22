@@ -4,7 +4,7 @@ import { mkdirSync } from "node:fs";
 import { createHmac, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { HAIKU, shoot } from "./shots.ts";
+import { ask, HAIKU, shoot } from "./shots.ts";
 
 // Feature: messages between sessions. A session sends with keel__session_send
 // to a session on the other machine (delivered over the link, shown there as
@@ -36,11 +36,15 @@ test("fleet messages: across machines, and held for the owner", async ({ page, r
   try {
     await page.goto(`/s/${sender.id}`);
     await expect(page.getByTestId("composer")).toBeVisible();
-    await page.getByTestId("composer").fill(
+    // The two sends are the product's part; a real model makes them from words, the stand-in from its script.
+    const hello = "Hello from the other machine. Answer right in your own conversation, without any tool, with the single word: received";
+    const note = "Answer right in your own conversation, without any tool, with the single word: noted";
+    await page.getByTestId("composer").fill(ask(
       `Make exactly two keel__session_send calls, one after the other, then reply "done". ` +
-      `1) to "${peer.name}/${receiver.id}", text "Hello from the other machine. Answer right in your own conversation, without any tool, with the single word: received". ` +
-      `2) to "Wide receiver", text "Answer right in your own conversation, without any tool, with the single word: noted".`,
-    );
+      `1) to "${peer.name}/${receiver.id}", text "${hello}". ` +
+      `2) to "Wide receiver", text "${note}".`,
+      `script:calls ${JSON.stringify([{ name: "keel__session_send", input: { to: `${peer.name}/${receiver.id}`, text: hello } }, { name: "keel__session_send", input: { to: "Wide receiver", text: note } }])}`,
+    ));
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("turn-end")).toBeVisible({ timeout: 120_000 });
     const sends = page.locator('[data-tool="keel__session_send"]');
@@ -97,11 +101,13 @@ test("fleet messages: a notice when the other machine's session has handled it",
   await request.put(`/api/sessions/${sender.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
   try {
     await page.goto(`/s/${sender.id}`);
-    await page.getByTestId("composer").fill(
+    const text = "Answer right in your own conversation, without any tool, with the single word: done";
+    await page.getByTestId("composer").fill(ask(
       `Make one keel__session_send call to "${peer.name}/${receiver.id}" with notify_when_idle true and text ` +
-      `"Answer right in your own conversation, without any tool, with the single word: done". Then reply "waiting" and stop. ` +
+      `"${text}". Then reply "waiting" and stop. ` +
       `When the notice comes, reply with the single word: notified.`,
-    );
+      `script:calls ${JSON.stringify([{ name: "keel__session_send", input: { to: `${peer.name}/${receiver.id}`, text, notify_when_idle: true } }])}`,
+    ));
     await page.keyboard.press("Enter");
     const send = page.locator('[data-tool="keel__session_send"]');
     await expect(send).toHaveCount(1, { timeout: 120_000 });

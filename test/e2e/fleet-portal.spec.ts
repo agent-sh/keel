@@ -2,7 +2,7 @@ import { expect, test } from "./isolate.ts";
 import { peerProblem } from "./peer.ts";
 import { execFileSync } from "node:child_process";
 import { writeSite } from "./fixtures/dev-site.ts";
-import { HAIKU, shoot, openPanel, SCRIPTED } from "./shots.ts";
+import { ask, HAIKU, openPanel, shoot } from "./shots.ts";
 
 // Feature: the portal. A dev server the session starts shows up in the
 // Preview panel; opened, it runs in a sandboxed frame through the portal
@@ -16,10 +16,13 @@ const SITE = `${process.env.HOME}/.cache/keel-work/bun/dev-fleet/site-e2e`;
 const PEER = process.env.KEEL_PEER_URL ?? "http://127.0.0.1:47975";
 
 const site = () => writeSite(SITE);
-const START = `Use the Bash tool once with run_in_background true to run: bun serve.ts ${PORT}. Then reply "started".`;
+// A real model starts the dev server from words; the stand-in from its script. The preview is the product's part.
+const START = ask(
+  `Use the Bash tool once with run_in_background true to run: bun serve.ts ${PORT}. Then reply "started".`,
+  `script:calls ${JSON.stringify([{ name: "Bash", input: { command: `bun serve.ts ${PORT}`, run_in_background: true } }])}`,
+);
 
 test("portal: the session's dev server in the preview, assets and fetch inside, picker", async ({ page, request }) => {
-  test.skip(SCRIPTED, "needs a real model: it has to start the dev server the preview shows");
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   site();
   const s = (await (await request.post("/api/sessions", { data: { workspace: SITE, title: "Preview a site", model: HAIKU } })).json()).session;

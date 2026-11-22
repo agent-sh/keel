@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { basename } from "node:path";
-import { HAIKU, shoot } from "./shots.ts";
+import { ask, HAIKU, scriptBash, shoot } from "./shots.ts";
 
 // Feature: moving a session to another machine with its git state and back.
 // Its uncommitted change travels, the model works on it over there, and coming
@@ -43,7 +43,7 @@ test("fleet move: there with its git state, work there, back home", async ({ pag
     await expect(page.getByTestId("machine-chip")).toContainText("devbox");
     await expect(page.getByTestId("note").filter({ hasText: "Moved from" })).toBeVisible();
 
-    await page.getByTestId("composer").fill("Run this with the Bash tool, one call: echo three >> a.txt && cat a.txt && pwd. Then reply with the output only.");
+    await page.getByTestId("composer").fill(ask("Run this with the Bash tool, one call: echo three >> a.txt && cat a.txt && pwd. Then reply with the output only.", scriptBash("echo three >> a.txt && cat a.txt && pwd")));
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("turn-end")).toBeVisible({ timeout: 120_000 });
     const tool = page.locator('[data-tool="Bash"]').first();

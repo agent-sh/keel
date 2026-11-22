@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { HAIKU, shoot, choose } from "./shots.ts";
+import { ask, choose, HAIKU, pickModel, scriptBash, shoot } from "./shots.ts";
 
 // Feature: the fleet. Two daemons on this machine stand in for two machines:
 // this one (KEEL_URL) pairs with the other (KEEL_PEER_URL) from the Machines
@@ -85,7 +85,7 @@ test("fleet: pair, the other machine's sessions, a tool on the peer", async ({ p
     await shoot(page, "fleet-02a-peer-models");
     await page.keyboard.press("Escape");
     // Driven through the link: the turn runs on the other daemon, its frames come back over the relay.
-    await page.getByTestId("composer").fill("Reply with the single word: pong");
+    await page.getByTestId("composer").fill(ask("Reply with the single word: pong", "script:say pong"));
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("turn-end")).toBeVisible({ timeout: 90_000 });
     await expect(page.locator("main")).toContainText(/pong/i);
@@ -114,10 +114,9 @@ test("fleet: pair, the other machine's sessions, a tool on the peer", async ({ p
       expect(r.status()).toBe(409);
     }
     expect((await (await request.get("/api/sessions")).json()).sessions.length).toBe(before);
-    await page.getByTestId("model-picker").click();
-    await page.getByPlaceholder("Search models").fill("haiku 5.5");
-    await page.getByRole("option").first().click();
-    await page.getByTestId("composer").fill("Run this with the Bash tool, one call: cat note.txt && pwd. Then reply with the output only.");
+    // The run's model, by its id: both daemons list it.
+    await pickModel(page);
+    await page.getByTestId("composer").fill(ask("Run this with the Bash tool, one call: cat note.txt && pwd. Then reply with the output only.", scriptBash("cat note.txt && pwd")));
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("turn-end")).toBeVisible({ timeout: 120_000 });
     const tool = page.locator('[data-tool="Bash"]').first();
@@ -144,7 +143,10 @@ test("fleet: pair, the other machine's sessions, a tool on the peer", async ({ p
     await page.getByTestId("new-session").click();
     await page.getByTestId("machine-picker").click();
     await page.locator('[data-testid="machine-option"][data-machine="local"]').click();
-    await page.getByTestId("composer").fill("Call keel__run_on once with machine \"devbox\" and command \"cat note.txt\". Then reply with its output only.");
+    await page.getByTestId("composer").fill(ask(
+      "Call keel__run_on once with machine \"devbox\" and command \"cat note.txt\". Then reply with its output only.",
+      `script:calls ${JSON.stringify([{ name: "keel__run_on", input: { machine: "devbox", command: "cat note.txt" } }])}`,
+    ));
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("turn-end")).toBeVisible({ timeout: 120_000 });
     const run = page.locator('[data-tool="keel__run_on"]').first();
