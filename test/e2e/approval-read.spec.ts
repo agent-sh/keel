@@ -379,3 +379,52 @@ test("look-alike letters are named, and a grant popup closes when its card is no
     await drop(request, [alike.id, wide.id]);
   }
 });
+
+// An edit is read like a command: its card shows what it would write under the
+// path, and counts those lines. A file of 300 lines is not allowed by an Enter
+// with none of its content in view.
+test("an edit's card shows what it writes, and takes no answer until that was read", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  const content = `${Array.from({ length: 299 }, (_, i) => `line ${i + 1} of the notes`).join("\n")}\nrm -rf / # the last line\n`;
+  const big = await asking(request, "Read: a file of 300 lines", [{ name: "Write", input: { file_path: "notes/long.md", content } }]);
+  const small = await asking(request, "Read: a replacement", [{ name: "Edit", input: { file_path: "src/a.ts", old_string: "let total = 1;", new_string: "const total = 2;" } }]);
+  try {
+    for (const s of [big, small]) await waits(request, s.id);
+    await page.goto(`/s/${big.id}`);
+    const card = page.getByTestId("approval").first();
+    const text = card.getByTestId("approval-summary");
+    await expect(text).toContainText("notes/long.md");
+    await expect(text).toContainText("line 1 of the notes");
+    await expect(card).toHaveAttribute("data-must-open", "true");
+    await expect(card.getByTestId("approval-expand")).toHaveText("Show all of it");
+    await page.waitForTimeout(1500);
+    expect(await focus(page)).not.toMatch(/allow/);
+    await card.getByTestId("allow-once").click({ force: true });
+    await page.waitForTimeout(300);
+    expect(await states(request, big.id)).toBe("pending");
+    await shoot(page, "approval-read-11-edit");
+    // Opened and scrolled through, it is read.
+    await card.getByTestId("approval-expand").click();
+    await expect(text).toContainText("rm -rf / # the last line");
+    await expect(card.getByTestId("approval-left")).toHaveText(/^\d+ lines not seen yet/);
+    await wheel(page, -6000, 3);
+    await wheel(page, 90, 80);
+    await expect(card).not.toHaveAttribute("data-must-open", "true", { timeout: 10_000 });
+    await card.getByTestId("allow-once").scrollIntoViewIfNeeded();
+    await expect(card).toHaveAttribute("data-live", "true", { timeout: 10_000 });
+    await card.getByTestId("allow-once").click();
+    await expect.poll(() => states(request, big.id)).toBe("allowed/once");
+
+    // A replacement: what goes and what comes, whole on the card, which keeps its rule.
+    await page.goto(`/s/${small.id}`);
+    const c = page.getByTestId("approval").first();
+    await expect(c.getByTestId("approval-summary")).toContainText("- let total = 1;");
+    await expect(c.getByTestId("approval-summary")).toContainText("+ const total = 2;");
+    await expect(c.getByTestId("allow-once")).toBeFocused({ timeout: 5000 });
+    await shoot(page, "approval-read-12-replace");
+    await page.keyboard.press("Enter");
+    await expect.poll(() => states(request, small.id)).toBe("allowed/once");
+  } finally {
+    await drop(request, [big.id, small.id]);
+  }
+});

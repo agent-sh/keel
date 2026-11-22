@@ -5,6 +5,7 @@ import { shownInPart } from "../../../src/safety/summary.ts";
 import { batches, batchName, coverName, hold, nextAction, pressable, READ_MS, sawLines, settled, SETTLE_MS, spentAction, stand, unseenLines, type Action, type Batch, type Hold, type Lines, type Stand } from "../lib/approvals.ts";
 import { arrivalOf, arriving } from "../lib/automation.ts";
 import { wasBrought } from "../lib/shell.ts";
+import { editBody } from "../lib/edit-body.ts";
 import { hasHidden, hasRtl, lookAlikes, spellHidden } from "../lib/hidden-chars.ts";
 import { dropRepeats, keyRefused, keysSettled, mayTake, noteAnswer, sequenceAt, takeKeys, typeToBox, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
@@ -828,6 +829,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   // The whole of what the daemon kept of the input, when the card shows only its start.
   const kept = part ? (typeof a.input?._clipped === "string" ? a.input._clipped : JSON.stringify(a.input ?? {}, null, 2)) : "";
   const short = !whole && (cut || part);
+  // What an edit would write, under its paths: read like any other text of a request (its lines are counted).
+  const body = a.kind === "edit" && !(whole && part) ? editBody(a.input) : null;
   const alike = lookAlikes(whole && part ? kept : a.summary);
   const summary = (
     <>
@@ -846,12 +849,24 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
         data-marks={whole && marked ? "shown" : undefined}
       >
         {a.kind === "shell" && <span className="select-none text-accent">$ </span>}
-        <Spelled text={whole && part ? kept : a.summary} shown={whole} />
+        {body ? <span className="font-semibold"><Spelled text={a.summary} shown={whole} /></span> : <Spelled text={whole && part ? kept : a.summary} shown={whole} />}
+        {body && (
+          <span data-testid="approval-body">
+            {body.lines.map((l, i) => (
+              <span key={i} className={l.tone === "add" ? "text-ok" : l.tone === "del" ? "text-danger" : l.tone === "note" ? "text-faint" : undefined}>{"\n"}{l.text}</span>
+            ))}
+          </span>
+        )}
       </pre>
       {/* A character that hides or reorders text is spelled out above, and the card says that it did so. */}
       {hasHidden(a.summary, "\n\t") && (
         <p className={cn("mt-1 text-micro text-danger", !dense && "mx-4")} data-testid="approval-hidden">
           This text holds characters that do not show as written. Each is spelled out and marked.
+        </p>
+      )}
+      {body?.clipped && (
+        <p className={cn("mt-1 text-micro text-warn", !dense && "mx-4")} data-testid="approval-clipped">
+          It writes more than a card keeps: this is the start of the call as it was sent, and the rest is not shown here.
         </p>
       )}
       {/* Letters that are not plain ASCII and are not hidden either: named, since one can pass for a plain one. */}
