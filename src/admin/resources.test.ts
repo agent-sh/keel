@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { intervalCpu } from "./resources.ts";
+import { intervalCpu, swapFrom } from "./resources.ts";
 
 // Daemon 1,000 ms and a child 2,000 ms; a second later the daemon is at
 // 1,100 and the child is gone: the interval used 100 ms (10%), not 0.
@@ -10,4 +10,25 @@ test("a child that ends does not erase the daemon's CPU, and a reused pid is ano
   // Pid 2 again, started after the last sample: all its CPU is this interval's.
   const reused = intervalCpu(next.at, [{ pid: 1, started_ms: 0, cpu: 1150 }, { pid: 2, started_ms: 2500, cpu: 30 }], 2000);
   expect(reused.used).toBe(80);
+});
+
+// What of the daemon is in swap, from the kernel's own files: the process's status and its unit's two swap files.
+test("swap is read for the process and for its unit, with the unit's limit", () => {
+  const status = "Name:\tkeel\nVmRSS:\t  204800 kB\nVmSwap:\t   51200 kB\nThreads:\t40\n";
+  expect(swapFrom(status, "73400320\n", "max\n")).toEqual({ process_bytes: 51200 * 1024, unit_bytes: 73400320 });
+  // A unit that may not swap says so by a limit of 0; nothing in swap is 0, not absent.
+  expect(swapFrom("VmSwap:\t       0 kB\n", "0\n", "0\n")).toEqual({ process_bytes: 0, unit_bytes: 0, unit_limit_bytes: 0 });
+  // No unit of its own to read (no cgroup files): the process alone.
+  expect(swapFrom(status, "", "")).toEqual({ process_bytes: 51200 * 1024 });
+  // Whose the unit is: the daemon's own service when a service manager runs it, else the scope of the terminal it was started from.
+  expect(swapFrom(status, "1\n", "max\n", "/user.slice/user-1000.slice/user@1000.service/app.slice/keel-bun.service", true)).toMatchObject({ unit: "keel-bun.service", own: true });
+  expect(swapFrom(status, "1\n", "max\n", "/user.slice/user-1000.slice/user@1000.service/app.slice/vte-spawn-1.scope", false)).toMatchObject({ unit: "vte-spawn-1.scope", own: false });
+  // A service that is not the daemon's (it was started by hand inside another unit's shell) is not its own either.
+  expect(swapFrom(status, "1\n", "max\n", "/system.slice/ssh.service", false)).toMatchObject({ unit: "ssh.service", own: false });
+});
+
+// The unit `keel service install` writes keeps the daemon's memory out of swap.
+test("the service unit sets no swap for the daemon", async () => {
+  const { unitFor } = await import("./unit.ts");
+  expect(unitFor({ command: ["/usr/local/bin/keel"], bind: "127.0.0.1:4680" })).toMatch(/^\[Service\][^[]*^MemorySwapMax=0$/ms);
 });

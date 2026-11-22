@@ -122,3 +122,47 @@ test("the resources panel waits for a slow answer and rests while hidden", async
   await expect(panel).toContainText("every 55 s");
   await shoot(page, "resources-03-polling");
 });
+
+// The daemon's report says what of it is in swap (its own process, and its unit from the cgroup's
+// memory.swap.current). The panel says nothing while that is zero, and says how much and what it
+// costs when it is not. The daemon's own answer is shown first; the swapped one is the same answer
+// with the numbers a swapped unit reports.
+test("the resources panel says when the daemon's memory is in swap", async ({ page, request }) => {
+  const real = await (await request.get("/api/resources?refresh=1")).json();
+  expect(typeof real.daemon.swap.process_bytes).toBe("number");
+  let swap: Record<string, number | string | boolean> | undefined;
+  await page.route(/\/api\/resources\?/, async (route) => {
+    const answer = await route.fetch();
+    const body = await answer.json();
+    await route.fulfill({ response: answer, json: swap ? { ...body, daemon: { ...body.daemon, swap } } : body });
+  });
+  await page.goto("/settings/resources");
+  const panel = page.getByTestId("resources-panel");
+  await expect(panel.getByTestId("tile-memory")).not.toContainText("none");
+  if (!real.daemon.swap.process_bytes && !real.daemon.swap.unit_bytes) await expect(panel.getByTestId("resources-swap")).toHaveCount(0);
+
+  // The daemon's own service has pages in swap and no limit on it: the panel says how much, and the setting that stops it.
+  swap = { process_bytes: 0, unit_bytes: 73 * 1024 * 1024, unit: "keel-bun.service", own: true };
+  await page.reload();
+  const line = panel.getByTestId("resources-swap");
+  await expect(line).toContainText("73 MB of the daemon's unit (keel-bun.service) is in swap");
+  await expect(line).toContainText("add MemorySwapMax=0 under [Service] of the unit (systemctl --user edit keel-bun.service)");
+  await expect(line).not.toContainText("keel service install");
+  await shoot(page, "resources-03-swap");
+  // The daemon's own pages: named as the daemon's. A unit that may not swap is not told to set what it has.
+  swap = { process_bytes: 12 * 1024 * 1024, unit_bytes: 73 * 1024 * 1024, unit_limit_bytes: 0, unit: "keel-bun.service", own: true };
+  await page.reload();
+  await expect(line).toContainText("12 MB of the daemon is in swap");
+  await expect(line).not.toContainText("MemorySwapMax");
+  // Started from a terminal: the scope's swap is other programs' too, and is not shown as the daemon's.
+  swap = { process_bytes: 0, unit_bytes: 900 * 1024 * 1024, unit: "vte-spawn-1.scope", own: false };
+  await page.reload();
+  await expect(panel.getByTestId("tile-memory")).not.toContainText("none");
+  await expect(line).toHaveCount(0);
+  // Its own pages there are, with why nothing keeps them in memory.
+  swap = { process_bytes: 12 * 1024 * 1024, unit_bytes: 900 * 1024 * 1024, unit: "vte-spawn-1.scope", own: false };
+  await page.reload();
+  await expect(line).toContainText("12 MB of the daemon is in swap");
+  await expect(line).toContainText("started from a terminal (it runs in vte-spawn-1.scope)");
+  await shoot(page, "resources-04-swap-terminal");
+});

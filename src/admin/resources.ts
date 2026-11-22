@@ -39,6 +39,34 @@ function status(pid: number) {
   return { rss: kb("VmRSS"), hwm: kb("VmHWM"), threads: Number(/^Threads:\s+(\d+)/m.exec(s)?.[1] ?? 0) };
 }
 
+// What of the daemon is in swap: its own process (VmSwap of its status
+// file) and the unit it runs in (the cgroup's memory.swap.current, with the
+// unit's limit: 0 when the unit may not swap at all, absent when it has no
+// limit). A page in swap is read back from the disk when it is next used,
+// and the daemon's loop waits for it.
+// `unit` is the cgroup's last name, and `own` says whether it is the
+// daemon's own service: a daemon started from a terminal runs in the
+// terminal's scope (or the login session's), whose swap is other programs'
+// too and whose settings are not the daemon's to change.
+export type Swap = { process_bytes: number; unit_bytes?: number; unit_limit_bytes?: number; unit?: string; own?: boolean };
+export function swapFrom(statusText: string, current: string, max: string, cgroup = "", supervised = false): Swap {
+  const kb = Number(/^VmSwap:\s+(\d+)/m.exec(statusText)?.[1] ?? 0) * 1024;
+  const unit = current.trim() === "" ? undefined : Number(current.trim());
+  const limit = /^\d+$/.test(max.trim()) ? Number(max.trim()) : undefined;
+  const name = cgroup.replace(/\/+$/, "").split("/").pop() || undefined;
+  return {
+    process_bytes: kb,
+    ...(unit !== undefined && Number.isFinite(unit) ? { unit_bytes: unit } : {}),
+    ...(limit !== undefined ? { unit_limit_bytes: limit } : {}),
+    ...(name ? { unit: name, own: supervised && name.endsWith(".service") } : {}),
+  };
+}
+function swap(): Swap {
+  const own = /^0::(\/.*)$/m.exec(read("/proc/self/cgroup"))?.[1];
+  const dir = own ? `/sys/fs/cgroup${own}`.replace(/\/$/, "") : "";
+  return swapFrom(read(`/proc/${process.pid}/status`), dir ? read(`${dir}/memory.swap.current`) : "", dir ? read(`${dir}/memory.swap.max`) : "", own ?? "", process.env.KEEL_SUPERVISED === "systemd");
+}
+
 const fds = (pid: number) => { try { return readdirSync(`/proc/${pid}/fd`).length; } catch { return undefined; } };
 
 function sessionOf(pid: number): string | undefined {
@@ -253,7 +281,7 @@ export class Resources {
     return {
       pid: process.pid, started_ms: this.started, rss_bytes: s.rss, peak_rss_bytes: s.hwm,
       cpu_user_ms: st.utime, cpu_system_ms: st.stime, cpu_percent: this.percent(process.pid, st.utime + st.stime, now),
-      threads: s.threads, open_files: fds(process.pid), heap_bytes: process.memoryUsage().heapUsed,
+      threads: s.threads, open_files: fds(process.pid), heap_bytes: process.memoryUsage().heapUsed, swap: swap(),
       growth: { start_rss_bytes: this.startRss, per_hour_bytes: now - this.started > 600_000 ? ((s.rss - this.startRss) / (now - this.started)) * 3600_000 : null },
     };
   }

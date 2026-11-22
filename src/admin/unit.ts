@@ -22,6 +22,10 @@ TimeoutStopSec=660
 # Only the daemon is signalled: background commands outlive a restart and the
 # new daemon takes them up again.
 KillMode=process
+# None of the unit's memory goes to swap: a page of the daemon that was
+# swapped out is brought back from the disk on its next use, and its loop
+# waits for as long as that takes.
+MemorySwapMax=0
 
 [Install]
 WantedBy=default.target

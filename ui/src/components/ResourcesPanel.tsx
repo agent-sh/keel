@@ -21,7 +21,7 @@ const fmtCpu = (v: number) => `${v < 10 ? v.toFixed(1) : Math.round(v)}%`;
 type Report = {
   measured_ms: number; interval_ms: number;
   totals: { rss_bytes: number; cpu_percent: number; processes: number; threads: number; cpu_user_ms: number; cpu_system_ms: number };
-  daemon: { pid: number; started_ms: number; rss_bytes: number; peak_rss_bytes: number; cpu_percent: number; cpu_user_ms: number; cpu_system_ms: number; threads: number; open_files?: number; heap_bytes: number; growth: { start_rss_bytes: number; per_hour_bytes: number | null } };
+  daemon: { pid: number; started_ms: number; rss_bytes: number; peak_rss_bytes: number; cpu_percent: number; cpu_user_ms: number; cpu_system_ms: number; threads: number; open_files?: number; heap_bytes: number; growth: { start_rss_bytes: number; per_hour_bytes: number | null }; swap?: { process_bytes: number; unit_bytes?: number; unit_limit_bytes?: number; unit?: string; own?: boolean } };
   processes: { pid: number; name: string; label: string; command: string; kind: string; session_id?: string; rss_bytes: number; cpu_percent: number; cpu_user_ms: number; cpu_system_ms: number; threads: number; open_files?: number }[];
   sessions: { session_id: string; processes: number; rss_bytes: number; cpu_percent: number; total: { cpu_user_ms: number; cpu_system_ms: number; processes: number } }[];
   disk: { path: string; free_bytes: number; total_bytes: number } | null;
@@ -67,6 +67,10 @@ export function ResourcesPanel() {
   const points = [...perMin.entries()];
   const since = Math.min(points[0]?.[0] ?? Date.now(), Date.now() - 60 * 60_000);
   const title = (id?: string) => (id ? sessions[id]?.title || "a session" : "");
+  // What of the daemon itself is in swap, else of its own unit (the unit holds its commands too). A
+  // daemon started from a terminal runs in the terminal's scope: what else is in swap there is not its own.
+  const sw = d.swap;
+  const swapped = sw?.process_bytes || (sw?.own ? sw.unit_bytes : 0) || 0;
 
   return (
     <div className="flex flex-col gap-4" data-testid="resources-panel">
@@ -79,6 +83,14 @@ export function ResourcesPanel() {
         <Stat testid="tile-cpu" label="CPU now" value={fmtCpu(r.totals.cpu_percent)} sub={`daemon ${fmtCpu(d.cpu_percent)}, ${fmtMs(d.cpu_user_ms + d.cpu_system_ms)} in all`} />
         <Stat testid="tile-disk" label="Disk free" value={r.disk ? fmtBytes(r.disk.free_bytes) : "unknown"} sub={r.disk ? `of ${fmtBytes(r.disk.total_bytes)} under the state folder` : undefined} />
       </Stats>
+      {swapped > 0 && (
+        <p className="text-ui text-warn" data-testid="resources-swap">
+          {fmtBytes(swapped)} of the daemon{sw?.process_bytes ? "" : `'s unit${sw?.unit ? ` (${sw.unit})` : ""}`} is in swap. A page there is read back from the disk when it is next used, and every session waits meanwhile.
+          {sw?.own
+            ? sw.unit_limit_bytes === 0 ? "" : ` To keep it out, add MemorySwapMax=0 under [Service] of the unit (systemctl --user edit ${sw.unit}) and restart it.`
+            : ` It was started from a terminal${sw?.unit ? ` (it runs in ${sw.unit})` : ""}, where nothing keeps it out of swap: a service unit with MemorySwapMax=0 does.`}
+        </p>
+      )}
 
       <section className="rounded-lg border border-line bg-raised p-4 shadow-1">
         <h3 className="mb-3 text-base font-medium">Memory <span className="text-caption font-normal text-faint">last hour</span></h3>
