@@ -1,3 +1,4 @@
+import { failWord } from "../../ui/src/lib/state-words.ts";
 import { errorClass } from "../admin/classes.ts";
 import { fingerprint } from "../core/store.ts";
 import { NUDGE_AT } from "../engine/repeat.ts";
@@ -275,7 +276,8 @@ function differing(b: string, a: string): string {
 
 // The first line of an entry, without its total: what failed, how often since the last notice, in how many agents.
 function headOf(g: FailureGroup, refs: FailureRef[]): string {
-  const cls = g.cls && g.cls !== "other" ? ` (${g.cls})` : "";
+  // The class in the vocabulary's word (billing, rate limit, sign-in): the word the owner's page says for it.
+  const cls = g.cls && g.cls !== "other" ? ` (${failWord(g.cls) || g.cls})` : "";
   const n = refs.length;
   const others = othersOf(g);
   if (g.kind === "agent") {

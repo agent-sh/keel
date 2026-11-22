@@ -27,7 +27,7 @@ test("ten agents that failed on one cause are one entry, each listed by id", () 
   expect(r.text!.match(/your credit balance/g)).toHaveLength(1);
   // Three agents have a line, the last to fail first; the words they share are said once. The rest are listed by id.
   expect(entries(r.text!).slice(0, 5)).toEqual([
-    "- 10 agents failed on one cause (quota), with no report of their own",
+    "- 10 agents failed on one cause (billing), with no report of their own",
     '    a10 "Lane 10": HTTP 402: your credit balance is too low to make this request (request 10b7c9d2e4f6a8b1c).',
     '    a9 "Lane 9": the same',
     '    a8 "Lane 8": the same',
@@ -59,7 +59,7 @@ test("a group told once is told again only for what came after, with the total",
   const r = render([g], 3000)!;
   // The total says over what time: the cause was first seen 2 s before this notice.
   expect(entries(r.text!)).toEqual([
-    "- 3 agents failed on one cause (quota), with no report of their own; 13 in all in the last minute",
+    "- 3 agents failed on one cause (billing), with no report of their own; 13 in all in the last minute",
     `    a13 "Lane 13": ${QUOTA}`, '    a12 "Lane 12": the same', '    a11 "Lane 11": the same',
   ]);
   expect(r.text).not.toContain("a10 ");
@@ -74,7 +74,7 @@ test("a cause that twenty agents already failed on still names the next one", ()
   for (let i = 1; i <= MAX_REFS; i++) g = add(g, agent(i), 1000);
   g = add(settled(g!), agent(MAX_REFS + 1), 2000);
   const r = render([g], 2000)!;
-  expect(r.text).toContain(`1 agent failed (quota), with no report of its own; ${MAX_REFS + 1} in all in the last minute\n    a${MAX_REFS + 1} "Lane ${MAX_REFS + 1}": `);
+  expect(r.text).toContain(`1 agent failed (billing), with no report of its own; ${MAX_REFS + 1} in all in the last minute\n    a${MAX_REFS + 1} "Lane ${MAX_REFS + 1}": `);
   expect(r.text).not.toContain("not listed");
   expect(g.refs).toHaveLength(MAX_REFS);
   expect(g.refs.some((r) => r.id === "a1")).toBe(false); // the oldest one already told made room
@@ -142,7 +142,7 @@ test("failures a wait_agent result already returned are not told again", () => {
   for (let i = 1; i <= 3; i++) g = add(g, agent(i), 1000);
   const some = acked(g!, new Set(["a1:1", "a3:1"]));
   expect([some.owed, some.wake, some.count]).toEqual([1, true, 3]);
-  expect(render([some], 1000)!.text).toContain("1 agent failed (quota), with no report of its own; 3 in all in the last minute\n    a2 \"Lane 2\": ");
+  expect(render([some], 1000)!.text).toContain("1 agent failed (billing), with no report of its own; 3 in all in the last minute\n    a2 \"Lane 2\": ");
   const none = acked(some, new Set(["a2:1"]));
   expect([none.owed, none.wake]).toEqual([0, false]);
   expect(render([none], 1000)).toBeUndefined();
@@ -154,7 +154,7 @@ test("a wait that returned a later task's report leaves the earlier task's failu
   // Task 1 failed; the agent was given task 2, which worked, and the wait returned that report.
   const one = add(undefined, agent(1), 1000);
   expect(acked(one, new Set(["a1:2"]))).toBe(one);
-  expect(render([one], 1000)!.text).toContain('1 agent failed (quota), with no report of its own\n    a1 "Lane 1": ');
+  expect(render([one], 1000)!.text).toContain('1 agent failed (billing), with no report of its own\n    a1 "Lane 1": ');
   // Task 2 failed too, on the same cause: the wait's report clears that one only.
   const two = add(one, agent(1, QUOTA, 2), 2000);
   const back = acked(two, new Set(["a1:2"]));
@@ -175,7 +175,7 @@ test("a tool failure of an agent whose report is in the same input gets no line,
   // Its report goes now: the failure it repeated is left to the report.
   const withReport = render([g!, quota], 1000, new Set(["p1"]))!;
   expect(withReport.text).not.toContain("Read failed");
-  expect(withReport.text).toContain("1 agent failed (quota)");
+  expect(withReport.text).toContain("1 agent failed (billing)");
   expect(withReport.told.map((t) => t.kind).sort()).toEqual(["agent", "tool"]);
   // Nothing else to say: no notice, and the tool failure is still settled.
   const only = render([g!], 1000, new Set(["p1"]))!;
@@ -257,7 +257,7 @@ test("request ids and short hex do not split a cause", () => {
 test("an agent that failed twice is one agent, not two", () => {
   let g = add(undefined, agent(1), 1000);
   g = add(g, agent(1), 1000);
-  expect(render([g], 1000)!.text).toContain('1 agent failed (quota), 2 times, with no report of its own\n    a1 "Lane 1", 2 times: ');
+  expect(render([g], 1000)!.text).toContain('1 agent failed (billing), 2 times, with no report of its own\n    a1 "Lane 1", 2 times: ');
 });
 
 test("what a notice told is taken off by ref: a failure that landed after it stays owed", () => {
@@ -268,7 +268,7 @@ test("what a notice told is taken off by ref: a failure that landed after it sta
   g = add(g, agent(4), 1001);
   const after = fg.settledBy(g, told);
   expect([after.owed, after.wake, after.told]).toEqual([1, true, 3]);
-  expect(render([after], 1002)!.text).toContain('1 agent failed (quota), with no report of its own; 4 in all in the last minute\n    a4 "Lane 4": ');
+  expect(render([after], 1002)!.text).toContain('1 agent failed (billing), with no report of its own; 4 in all in the last minute\n    a4 "Lane 4": ');
 });
 
 // The cause folds paths, so three agents and the session itself that each missed

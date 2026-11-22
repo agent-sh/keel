@@ -136,6 +136,55 @@ it go, and the next absence starts a new one. `GET /api/away` gives it (`format=
 for the text form, `since=` for a window you name, at most seven days back),
 `keel status --away` prints it, and `DELETE /api/away` dismisses it.
 
+## The page: one word per state
+
+A session and an agent have one state, and each state has one word on every
+surface: the list's rows and the agents under them, a pane's head, an agent's
+card in the transcript, the list of background work, the Inbox, the home
+screen, the timeline, and what a tool or the command line is told. The words
+are written once, in `ui/src/lib/state-words.ts`; the state itself is the
+daemon's (`src/core/watch.ts`, `src/automation/state.ts`). A check in
+`src/ui-conventions.test.ts` fails when a component writes one of them itself.
+
+| State | Word | With what |
+| --- | --- | --- |
+| Something waits on you | Needs you | an approval, a question, a plan, a secret, an answer, a turn to resume, a message not sent |
+| A turn runs, an agent works, or a command it left in the background still runs | Working | the step, "2 agents", "command in background" |
+| Nothing runs and something it set up starts the next turn | Waiting | for a timer, a file, a log line, an HTTP check, a process, a monitor, a pull request's checks, another session, an agent, the provider |
+| A restart cut the turn and Keel goes on with it | Waiting | to resume |
+| A message you sent that its session has not taken yet | Queued | held until its current step ends, until its turn ends, or until it is resumed |
+| Its last turn ended | Done | |
+| Its last turn failed | Failed | one class: rate limit, overloaded, server error, stream dropped, context full, sign-in, billing, image refused, invalid request, output limit |
+| The model refused the turn | Declined | |
+| You or its parent stopped it, or its step budget ran out | Stopped | at the step budget |
+| No turn yet | Not started | |
+| Its machine does not answer | Offline | |
+
+An agent's word is its session's: the row under its parent, its card, the
+background list and its own pane read the same. A parent's summary counts
+every agent once, what needs you and what failed first, and leaves out a state
+with none: `8 agents: 1 needs you, 1 failed, 3 working, 2 waiting, 1 done`. The
+count after "Working" in a head is the agents that work, the same number as
+the summary's "working".
+
+Three counters, each with one meaning, said in its tooltip and its accessible
+name:
+
+- The tab's title `(3)`, the app's badge and the home headline's "3 need you"
+  count the things that wait on you: approvals, questions, plans and secrets,
+  each once.
+- The bell counts what is unread: alerts that are new since you last looked.
+  Its panel lists what needs you first, then what else is new, then what you
+  have seen. Nothing that waits is ever below a finish.
+- The bug counts errors in Keel itself that you have not looked at.
+
+Unread means not seen. What arrives in a session that is on screen, in any
+pane of a page you are at, is read; a page in the background or a pane that is
+not shown reads nothing. "Mark unread" in a session's menu keeps its mark until
+you open the session again; "Clear all unread" (the Inbox's "Mark all read",
+or the command) clears every mark. An agent that ends while neither its
+session nor its parent's is on screen is marked on its row until one of them is.
+
 ## A model traces a failure by itself
 
 The notice a session gets when an agent it started fails has one entry per

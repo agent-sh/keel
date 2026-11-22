@@ -42,12 +42,20 @@ test("what waits on the owner leads the state, oldest first, in one form", () =>
 test("a session whose turn ended waits while something it set up will wake it", () => {
   const timer = { kind: "timer", text: "check the deploy", since: 5, until: 900 };
   const command = { kind: "command", text: "make test", since: 3 };
-  // What is due first leads; the rest is counted.
-  expect(stateOf(s(), undefined, { pending: [command, timer] })).toEqual({ watch: "wait", agents: 0, why: "timer", text: "Timer: check the deploy, and 1 more", since: 5, until: 900 });
-  expect(stateOf(s(), undefined, { pending: [command] })).toMatchObject({ watch: "wait", why: "command", text: "Command: make test", since: 3 });
+  const file = { kind: "file", text: "the build marker", since: 9 };
+  // What is due first leads; the rest is counted. A wait that is not a timer says its kind.
+  expect(stateOf(s(), undefined, { pending: [file, timer] })).toEqual({ watch: "wait", agents: 0, why: "timer", text: "Timer: check the deploy, and 1 more", since: 5, until: 900 });
+  expect(stateOf(s(), undefined, { pending: [file] })).toEqual({ watch: "wait", agents: 0, why: "wait", on: "file", text: "File: the build marker", since: 9 });
+  // A command it left running in the background is work, not a wait, whatever else is armed.
+  expect(stateOf(s(), undefined, { pending: [command, timer] })).toEqual({ watch: "work", agents: 0, why: "command", text: "Command in background: make test", since: 3 });
+  expect(stateOf(s(), undefined, { pending: [command, { ...command, since: 4 }] })).toMatchObject({ watch: "work", why: "command", text: "Command in background: make test, and 1 more" });
+  // A failure or the owner's Stop is still said first.
+  expect(stateOf(s({ settings: { failed_ms: 1, last_end: "error" } }), undefined, { pending: [command] }).watch).toBe("fail");
+  expect(stateOf(s({ settings: { last_end: "interrupted" } }), undefined, { pending: [command] }).watch).toBe("stop");
   // An agent that waits is waited on, with what it waits for; one that runs is work.
   expect(stateOf(s(), undefined, { agents: 1, parked: 1, pending: [{ kind: "timer", until: 50, agent: "Scout" }] })).toMatchObject({ watch: "wait", why: "agent", text: "Agent Scout: timer", until: 50 });
-  expect(stateOf(s(), undefined, { agents: 2, parked: 1, pending: [{ kind: "timer", agent: "Scout" }] }).watch).toBe("work");
+  // The head counts the agents that work: one of the two here.
+  expect(stateOf(s(), undefined, { agents: 2, parked: 1, pending: [{ kind: "timer", agent: "Scout" }] })).toMatchObject({ watch: "work", agents: 2, parked: 1 });
   // A running turn works, a stopped one stays stopped, a card is still the owner's.
   expect(stateOf(s({ phase: "working" }), undefined, { pending: [timer] }).watch).toBe("work");
   expect(stateOf(s({ settings: { last_end: "interrupted" } }), undefined, { pending: [timer] }).watch).toBe("stop");
@@ -57,7 +65,7 @@ test("a session whose turn ended waits while something it set up will wake it", 
 test("a running turn says what it does now, and a stream that went silent says for how long", () => {
   const on = s({ phase: "working" });
   expect(stateOf(on, undefined, { status: { kind: "tool", since: 7, names: ["Bash"] }, turn: 1 })).toEqual({ watch: "work", agents: 0, why: "tool", text: "Running Bash", since: 7 });
-  expect(stateOf(on, undefined, { status: { kind: "model", since: 9, model: "m" }, turn: 1 })).toMatchObject({ why: "model", text: "Waiting for the model", since: 9 });
+  expect(stateOf(on, undefined, { status: { kind: "model", since: 9, model: "m" }, turn: 1 })).toMatchObject({ why: "model", text: "Calling the model", since: 9 });
   expect(stateOf(on, undefined, { status: { kind: "idle" }, turn: 1, output: 5 })).toEqual({ watch: "work", agents: 0, why: "turn", text: "The model is answering", since: 1 });
   const stalled = stateOf(on, undefined, { status: { kind: "model", since: 60_000, model: "m", connected: 60_000, quiet: 60_000 }, turn: 1 });
   expect(stalled).toMatchObject({ watch: "work", why: "stalled", since: 60_000 });

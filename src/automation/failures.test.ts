@@ -85,7 +85,7 @@ test("the twenty-first agent to fail on one cause before the notice goes keeps i
   flush(p.id);
   const got = to(p.id);
   expect(got).toHaveLength(1);
-  expect(got[0]).toContain("20 agents failed on one cause (quota)");
+  expect(got[0]).toContain("20 agents failed on one cause (billing)");
   expect(got[0]).not.toContain("not listed");
   // Every one of the twenty-one is named once: twenty in the entry, one in its report.
   const said = got[0]!.slice(0, got[0]!.indexOf("\n</failures>"));
@@ -164,7 +164,7 @@ test("a held parent gets the notice after the owner's next turn, not before", as
   flush(p.id);
   const got = to(p.id);
   expect(got).toHaveLength(1);
-  expect(got[0]).toContain("2 agents failed on one cause (quota)");
+  expect(got[0]).toContain("2 agents failed on one cause (billing)");
   expect(got[0]).toContain(a.id);
   expect(got[0]).toContain(b.id);
 });
@@ -192,7 +192,7 @@ test("a wait that returns an agent's later report does not clear its earlier fai
   flush(p.id);
   const got = to(p.id);
   expect(got).toHaveLength(1);
-  expect(got[0]).toContain(`1 agent failed (quota), with no report of its own\n    ${a.id} "Lane": ${QUOTA}`);
+  expect(got[0]).toContain(`1 agent failed (billing), with no report of its own\n    ${a.id} "Lane": ${QUOTA}`);
   expect(got[0]).not.toContain("<subagent_result"); // the wait holds task 2's report
 });
 
@@ -210,7 +210,7 @@ test("a wait that returns a second failure, on another cause, leaves the first o
   flush(p.id);
   const got = to(p.id);
   expect(got).toHaveLength(1);
-  expect(got[0]).toContain(`1 agent failed (quota), with no report of its own\n    ${a.id} "Lane": ${QUOTA}`);
+  expect(got[0]).toContain(`1 agent failed (billing), with no report of its own\n    ${a.id} "Lane": ${QUOTA}`);
   expect(got[0]).not.toContain("overloaded");
   expect(owedRows(p.id)).toBe(0);
 });
@@ -231,7 +231,7 @@ test("an input with a report and a notice says once how many agents still run, a
   const got = to(p.id);
   expect(got).toHaveLength(1);
   expect(got[0]).toContain(`<subagent_result agent_id="${b.id}"`);
-  expect(got[0]).toContain("1 agent failed (quota)");
+  expect(got[0]).toContain("1 agent failed (billing)");
   expect(got[0]!.match(/still running/g)).toHaveLength(1);
   expect(got[0]).not.toContain("Read failed");
   expect(owedRows(p.id)).toBe(0);
@@ -328,7 +328,7 @@ test("a prune that fails after the failure is written does not bring the report 
   flush(p.id);
   const got = to(p.id);
   expect(got).toHaveLength(1);
-  expect(got[0]).toContain(`1 agent failed (server), with no report of its own\n    ${a.id} "Lane": `);
+  expect(got[0]).toContain(`1 agent failed (server error), with no report of its own\n    ${a.id} "Lane": `);
   expect(got[0]).not.toContain("<subagent_result");
 });
 

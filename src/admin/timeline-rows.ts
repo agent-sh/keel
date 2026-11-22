@@ -12,6 +12,7 @@ import { PEER_PREFIX } from "../core/owner.ts";
 import type { ErrorRecord, TurnStatus } from "../core/types.ts";
 import { errorClass } from "./classes.ts";
 import { waitWords } from "../core/watch.ts";
+import { FAIL_WORD } from "../../ui/src/lib/state-words.ts";
 
 export type TimelineKind =
   | "turn" | "agent" | "wait" | "loop" | "approval" | "question" | "compaction" | "model" | "restart" | "error" | "goal" | "limit" | "files"
@@ -338,10 +339,8 @@ export function activityRow(a: ActivityIn, look: Lookups = {}, own = false): Tim
 }
 
 const SOURCE: Record<string, string> = { provider: "Model request", tool: "Tool", server: "Daemon", client: "Page" };
-export const CLASS: Record<string, string> = {
-  rate_limit: "rate limit", overloaded: "overloaded", server: "server error", stream_drop: "dropped stream", context_overflow: "context too long",
-  auth: "sign-in", quota: "quota or billing", refusal: "declined", invalid_request: "refused request",
-};
+// (The vocabulary's one word a class, ui/src/lib/state-words.ts: the timeline, the digest and a session's row say the same.)
+export const CLASS: Record<string, string> = FAIL_WORD;
 // A kind of failure that last happened in this session. The errors table folds
 // repeats across every session, so its count is said as that; the message
 // stays in the Errors panel.

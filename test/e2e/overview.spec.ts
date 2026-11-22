@@ -102,7 +102,7 @@ test("one report tells every session's state, failure, run time and spend, as th
     // A row that names why it failed does not name the same class again after its count.
     const bad = group("Failed (2):");
     expect(bad).toHaveLength(2);
-    expect(bad.filter((l) => /: quota or billing, \d+ m?s ago; 1 turn, 1 failed  \[session=[0-9a-f]{12}\]$/.test(l))).toHaveLength(2);
+    expect(bad.filter((l) => /: billing, \d+ m?s ago; 1 turn, 1 failed  \[session=[0-9a-f]{12}\]$/.test(l))).toHaveLength(2);
     // A turn the provider asked to wait for continues by itself: it waits, and its row says what failed in it.
     expect(group("Waiting (1):")[0]).toMatch(/"Rate limited fetch": waiting; 1 turn, 1 failed \(rate limit\)/);
     // The turn and the error of a failure are in its session's timeline, not in this text.
@@ -300,7 +300,7 @@ test("while the owner is away, one digest tells what each session did, what wait
       expect(row(open1, id)?.turns, id).toBe(n);
     }
     expect(row(open1, fine)).toMatchObject({ watch: "done", turns: 2, failed: {}, approvals: 0, parked: 0 });
-    expect(row(open1, billing)).toMatchObject({ watch: "fail", turns: 1, failed: { "quota or billing": 1 }, bad: "1 failed (quota or billing)" });
+    expect(row(open1, billing)).toMatchObject({ watch: "fail", turns: 1, failed: { "billing": 1 }, bad: "1 failed (billing)" });
     expect(row(open1, declined)).toMatchObject({ turns: 1, failed: { declined: 1 } });
     expect(row(open1, asks)).toMatchObject({ watch: "need", turns: 0, approvals: 1, text: expect.stringMatching(/^1 approval waits/) });
     expect(row(open1, parent)).toMatchObject({ watch: "wait", parked: 1, text: expect.stringContaining("1 agent parked") });
@@ -313,7 +313,7 @@ test("while the owner is away, one digest tells what each session did, what wait
     writeFileSync(join(SHOTS, "overview-02-away.txt"), away1);
     expect(tokensOf(away1)).toBeLessThan(TEXT_TOKENS);
     expect(away1).toMatch(/^While you are away, since \d\d:\d\d UTC \(\d+ s\): \d of the sessions' own turns ended in 4 sessions, 2 failed; 1 approval waits; 1 agent parked; \$\d+\.\d+ spent in all\.\n/);
-    expect(away1).toMatch(new RegExp(`  "Billing check", failed: 1 turn ended, 1 failed \\(quota or billing\\)  \\[session=${billing.slice(-12)}\\]`));
+    expect(away1).toMatch(new RegExp(`  "Billing check", failed: 1 turn ended, 1 failed \\(billing\\)  \\[session=${billing.slice(-12)}\\]`));
     expect(away1).toMatch(/  "Changelog", done: 2 turns ended; \$\d+\.\d+  \[session=/);
     expect(away1).toContain("2 other sessions: nothing happened.");
     for (const word of PRIVATE) expect(away1).not.toContain(word);
@@ -370,7 +370,7 @@ test("while the owner is away, one digest tells what each session did, what wait
       await expect(el).toHaveAttribute("data-watch", r.watch);
       await expect(el.getByTestId("away-facts")).toHaveText(r.text);
     }
-    await expect(block.locator(`[data-session="${billing}"] .text-danger`)).toHaveText("1 failed (quota or billing)");
+    await expect(block.locator(`[data-session="${billing}"] .text-danger`)).toHaveText("1 failed (billing)");
     await expect(block.getByTestId("away-quiet")).toHaveText("2 other sessions: nothing happened.");
     await expect.poll(away).toBeNull();
     await page.mouse.move(1200, 600);

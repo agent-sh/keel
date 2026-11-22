@@ -12,7 +12,8 @@ import type { Store } from "../core/store.ts";
 import type { Session, StoredEvent, TurnStatus } from "../core/types.ts";
 import { statSync } from "node:fs";
 import { STUCK_AFTER, stuckOf, type After, type Progress } from "../core/stuck.ts";
-import { failWord, oneLine, stateOf, watchLabel, watchWord, type Ask, type Pending, type SessionState as State, type Watch, type WatchFacts } from "../core/watch.ts";
+import { oneLine, stateOf, watchWord, type Ask, type Pending, type SessionState as State, type Watch, type WatchFacts } from "../core/watch.ts";
+import { stateLabel, stateWords } from "../../ui/src/lib/state-words.ts";
 import { settings } from "../admin/settings.ts";
 import * as perm from "../server/routes/permissions.ts";
 import { plansWaiting } from "../server/routes/plan.ts";
@@ -242,15 +243,15 @@ export function stuckAfter(): After {
   return set?.model_s && set.tool_s ? { model: set.model_s * 1000, tool: set.tool_s * 1000 } : STUCK_AFTER;
 }
 
-// The state in a tool's words. What a session waits on is named by its kind
-// only: a wait's note or a command line may hold what another session's
-// model should not read.
-const WAITS: Record<string, string> = { timer: "a timer", command: "a background command", agent: "an agent that waits", resume: "the provider, and continues by itself", send: "a message to be delivered" };
-const NEEDS: Record<string, string> = { approval: "an approval", question: "a question", plan: "a plan to approve", secret: "a secret to give", owner: "an answer", resume: "a turn a restart cut, to continue", unsent: "a message that was not sent" };
+// The state in a tool's words: the vocabulary's (ui/src/lib/state-words.ts), in lower case.
+// What a session waits for is named by its kind only: a wait's note or a command line may
+// hold what another session's model should not read.
 export function stateWord(st: State): string {
-  if (st.watch === "need") return `needs you${NEEDS[st.why ?? ""] ? ` (${NEEDS[st.why!]})` : ""}`;
-  if (st.watch === "wait") return `waiting on ${WAITS[st.why ?? ""] ?? "a condition it set"}`;
-  if (st.watch === "fail" && failWord(st.cls)) return `failed (${failWord(st.cls)})`;
+  const said = stateWords(st);
+  if (st.watch === "need") return `needs you${said.what ? ` (${said.what})` : ""}`;
+  if (st.watch === "wait") return st.why === "resume" ? "waiting for the provider, and resumes by itself" : `waiting ${said.what || "for a condition it set"}`;
+  if (st.watch === "work" && st.why === "command") return watchWord("work", st.agents, `working (${said.what})`);
+  if (st.watch === "fail" && said.what) return `failed (${said.what})`;
   if (st.watch === "declined") return "declined by the model";
   if (st.watch === "stop" && st.why === "max_steps") return "stopped at the step budget";
   return watchWord(st.watch, st.agents);
@@ -287,7 +288,7 @@ export function sessionState(s: Session, o: { counts?: Map<string, number>; from
     if (all.failed) st.agents_failed = all.failed;
     if (facts.parked) st.agents_waiting = facts.parked;
   }
-  return { ...st, label: watchLabel(st.watch, st.agents), word: stateWord(st) };
+  return { ...st, label: stateLabel(st), word: stateWord(st) };
 }
 
 export type { Watch };

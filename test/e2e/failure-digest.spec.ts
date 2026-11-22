@@ -54,7 +54,7 @@ test("agents that failed on one cause reach their parent as one grouped notice",
 
     // One notice, one entry for the five, the error said once, every agent by id.
     expect(text.match(/<failures>/g)).toHaveLength(1);
-    expect(text).toContain("5 agents failed on one cause (quota), with no report of their own\n");
+    expect(text).toContain("5 agents failed on one cause (billing), with no report of their own\n");
     expect(text.match(/your credit balance is too low/g)).toHaveLength(1);
     const said = text.slice(0, text.indexOf("\n</failures>"));
     for (const a of lanes) expect(said.split(a.id).length - 1).toBe(1);
@@ -89,7 +89,7 @@ test("agents that failed on one cause reach their parent as one grouped notice",
     const card = page.getByTestId("failure-notice");
     await expect(card).toHaveCount(1);
     await expect(card).toContainText("Failures, grouped by cause");
-    await expect(page.getByTestId("failure-entries")).toContainText("5 agents failed on one cause (quota)");
+    await expect(page.getByTestId("failure-entries")).toContainText("5 agents failed on one cause (billing)");
     await expect(page.getByTestId("agent-report")).toHaveCount(2);
     await card.scrollIntoViewIfNeeded();
     await shoot(page, "failure-digest-01-notice");
