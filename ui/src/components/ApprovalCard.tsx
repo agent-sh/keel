@@ -273,7 +273,7 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
   const hold = useHold(list);
   const groups = batches(waiting, view.read, new Set([...view.cut, ...waiting.filter((c) => hasHidden(c.summary, "\n\t")).map((c) => c.id)]));
   const [hot, setHotTools] = useState<string[]>([]); // the tools whose action the pointer or the keyboard is on
-  const [at, setAt] = useState<{ on: "once" | "all" | "row" | "list"; id?: string } | null>(null); // where the keyboard is in the list
+  const [at, setAt] = useState<{ on: "once" | "all" | "row" | "card" | "list"; id?: string } | null>(null); // where the keyboard is in the list (`card`: on a card itself)
   // The cards the owner opened to their whole text, by the list's Enter or a card's own control.
   const [opened, setOpened] = useState<Record<string, true>>({});
   const shut = waiting.filter((a) => mustBeOpened(a, !!opened[a.id], view.cut.has(a.id), view.unseen.get(a.id)));
@@ -377,7 +377,7 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
     const t = e.target as HTMLElement;
     // (In a field the arrows are the field's: nothing is said.)
     const id = t.closest<HTMLElement>('[data-testid="approval"]')?.dataset.approvalId;
-    setAt(!e.currentTarget.contains(t) || t.tagName === "INPUT" ? null : t.dataset.testid === "allow-once" ? { on: "once", id } : t.dataset.testid === "allow-all" ? { on: "all" } : t === e.currentTarget ? { on: "list" } : id ? { on: "row", id } : null);
+    setAt(!e.currentTarget.contains(t) || t.tagName === "INPUT" ? null : t.dataset.testid === "allow-once" ? { on: "once", id } : t.dataset.testid === "allow-all" ? { on: "all" } : t === e.currentTarget ? { on: "list" } : t.dataset.testid === "approval" ? { on: "card", id } : id ? { on: "row", id } : null);
   };
 
   return (
@@ -413,8 +413,10 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
                 {dull ? "It covers requests that are whole on screen and have stood still for a second"
                   : at?.on === "all" ? "Enter allows the framed ones once"
                   : hot.length ? "A click allows the framed ones once"
-                  : at?.on === "once" && view.live.has(at.id!) ? "Up and Down choose, Enter allows the framed one once"
-                  : at?.on === "once" || at?.on === "row" ? "Up and Down choose a request"
+                  : at?.on === "once" && view.live.has(at.id!) && hold.keys === "ready" ? "Up and Down choose, Enter allows the framed one once"
+                  // (True at every moment: while its Allow waits, Enter does nothing yet, and the line says so.)
+                  : at?.on === "once" && !shut.some((c) => c.id === at.id) ? "Up and Down choose; Enter allows the framed one in a moment"
+                  : at?.on === "once" || at?.on === "row" || at?.on === "card" ? "Up and Down choose a request"
                   : at?.on === "list" && shut.length ? "Enter opens the first request that must be opened"
                   : ""}
               </span>
@@ -460,6 +462,7 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
               whole={!!opened[a.id]}
               onWhole={(on) => setWhole(a.id, on)}
               enterOpens={at?.on === "list" && shut[0]?.id === a.id}
+              keysOn={at?.on === "list" ? "list" : at?.id !== a.id ? "" : at.on === "once" ? "once" : at.on === "card" ? "card" : ""}
             />
           ))}
         </div>
@@ -632,10 +635,12 @@ function AllowAll({ g, ids, on, cards, busy, list, onHot, press, onAllow }: {
 // `unseen`: the lines of its text that have not been in view (none known yet: not read).
 // `whole`: the owner opened its whole text, by the list's Enter or by the card's own control
 // (`onWhole`). `enterOpens`: the list has the keyboard and its Enter would open this card.
-function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, grant, armed, cut, unseen, whole, onWhole, enterOpens }: {
+// `keysOn`: where the keyboard is, as far as this card goes: on its Allow once, on the card
+// itself, or on the list.
+function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, grant, armed, cut, unseen, whole, onWhole, enterOpens, keysOn }: {
   a: Approval; first: boolean; asker?: string; list: RefObject<HTMLDivElement | null>; many: boolean; plain: boolean;
   hot: boolean; locked: boolean; ripe: boolean; live: boolean; grant: boolean; armed: (which: "live" | "grant") => boolean; cut: boolean; unseen?: Unseen;
-  whole: boolean; onWhole: (on: boolean) => void; enterOpens: boolean;
+  whole: boolean; onWhole: (on: boolean) => void; enterOpens: boolean; keysOn: "" | "once" | "card" | "list";
 }) {
   const dense = many && a.risk !== "high"; // a high-risk request keeps its whole card, with why it is one
   const Icon = a.risk === "high" ? ShieldAlert : ICON[a.kind];
@@ -681,13 +686,15 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   const inView = () => { const r = root.current?.getBoundingClientRect(); return !!r && r.width > 0 && r.right > 0 && r.left < innerWidth; };
   // The two questions every way to an answer of this card asks, each answered in one place.
   // The card's own rule is the stricter one and comes first in both.
-  // - May an answer of the card have the keyboard: only when its text is read (every line of
-  //   it has been in view, and what had to be opened was), and the card is in the window.
+  // - May an answer of the card have the keyboard by the page's own doing: only when its text
+  //   is read (every line of it has been in view, and what had to be opened was), the card is
+  //   in the window, and the request is not high risk: that answer is the owner's to go to
+  //   (Down from the card or its list, or Tab), after a load, a return or a step of a sequence.
   // - Why a press on an answer does nothing, or "" when it answers: the card's rule (a text
   //   not all read takes no answer), then the control's (it stands, and has stood for the
   //   settle time: `stood`), then the keyboard's for a press made by a key (lib/asks.ts: not
   //   within the settle time of the keyboard arriving by code, not under a dialog).
-  const mayHold = () => !unread.current && inView();
+  const mayHold = () => !unread.current && inView() && a.risk !== "high";
   const refusalOf = (stood: boolean, key: Element | null): string => {
     // Not read: the text is to be opened first, or so many of its lines have not been in view.
     // (Said on the card from then on, where its text is all out of view and it said nothing by itself.)
@@ -824,6 +831,16 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   const unreadLines = unseen?.out ?? 0;
   const notYet = unreadLines > 0 ? `Not yet: ${unreadLines} line${unreadLines === 1 ? "" : "s"} not seen yet` : ripe ? "Not yet: it moved a moment ago" : "Not yet: it has only just arrived";
   const refused = () => { if (unreadLines > 0) setTold(true); };
+  // What the hint line may say (see where it is drawn): `ready` exactly when Enter on its Allow
+  // would answer; `arming` while the page is about to make that so, or how to get there.
+  const ready = keysOn === "once" && live && !mustOpen && hold.keys === "ready";
+  const coming = keysOn === "card" || (keysOn === "list" && first);
+  const arming = ready || shut || left > 0 ? ""
+    : keysOn === "once" ? "Enter allows once in a moment"
+    : !coming ? ""
+    : a.risk === "high" ? (mustOpen ? "" : "High risk: Down, then Enter allows once")
+    : hold.take ? "Enter allows once in a moment"
+    : "";
 
   const answer = async (body: { choice: string; reason?: string; rules?: Suggest[] }) => {
     noteAnswer(a.id);
@@ -1103,8 +1120,19 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
             // not been in view. (In the answers' own row, so the card keeps its height when it goes.)
             : shut ? <span className="ml-auto text-micro text-warn" role="status" data-testid="approval-open-first">{enterOpens ? enterSays : openFirst}.</span>
             : left > 0 ? <span className="ml-auto text-micro text-warn tabular-nums" role="status" data-testid="approval-left">{leftText}</span>
-            // Said only while its Allow has the keyboard and acts: else Enter is not its, or does nothing yet.
-            : !dense && <span className={cn("invisible ml-auto text-micro text-faint max-sm:hidden pointer-coarse:hidden", live && !mustOpen && "group-has-[.k-allow:focus]/card:visible")} data-testid="approval-hint">Enter allows once, Esc to deny with a reason</span>}
+            // What Enter does, true at every moment. "Enter allows once" stands only while its Allow has
+            // the keyboard and a press would answer. Before that, while the keyboard is on its way to the
+            // Allow or the Allow still waits out its settle time, the line says so, dimmer; for a
+            // high-risk request it says how to reach the answer. The longest line holds the room, so
+            // nothing moves as one gives way to another.
+            : !dense && (
+              <span className="ml-auto grid justify-items-end text-micro text-faint max-sm:hidden pointer-coarse:hidden">
+                <span className="invisible col-start-1 row-start-1" aria-hidden="true">Enter allows once, Esc to deny with a reason</span>
+                {ready ? <span className="col-start-1 row-start-1" data-testid="approval-hint">Enter allows once, Esc to deny with a reason</span>
+                  : arming ? <span className="col-start-1 row-start-1 opacity-70" data-testid="approval-arming">{arming}</span>
+                  : null}
+              </span>
+            )}
         </div>
       )}
     </div>

@@ -778,3 +778,111 @@ test("a step of the sequence onto a long command rests on the list: Enter opens 
   expect(count).toBe(4);
   await drop(request, quiet, short, long);
 });
+
+// After a page load, and after coming back from an agent's page, the keyboard is where the
+// owner works. A request in a pane they are not working in gets none of it, and no answer of a
+// high-risk request has it by the page's own doing in any pane: Enter then allows nothing.
+test("a load or a return never leaves the keyboard on a high-risk answer, or in a pane that is not worked in", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const ws = folder("high-risk");
+  const reader = await create(request, "Reading the logs", ws);
+  // A coordinator whose agent asks to rewrite a remote's history: its request shows on the coordinator's page.
+  const push = { name: "Bash", input: { command: "git push --force-with-lease origin main" } };
+  const coordinator = await create(request, "Coordinator", ws);
+  await request.put(`/api/sessions/${coordinator}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+  await request.post(`/api/sessions/${coordinator}/messages`, { data: { text: calls([{ name: "spawn_agent", input: { message: `Publish the branch\nscript:calls ${JSON.stringify([push])}`, isolation: "none" } }, { name: "wait_agent", input: {} }]) } });
+  const kid = async () => ((await (await request.get(`/api/sessions/${coordinator}/agents`)).json()).agents?.[0]?.session_id ?? "") as string;
+  await expect.poll(async () => { const k = await kid(); return k ? (await approvals(request, k)).map((a) => a.state).join() : ""; }, { timeout: 60_000 }).toBe("pending");
+  const agent = await kid();
+  const keys = () => page.evaluate(() => { const a = document.activeElement as HTMLElement | null; return `${a?.dataset.testid ?? a?.tagName ?? ""} in ${a?.closest<HTMLElement>("[data-station]")?.dataset.station ?? "no pane"}`; });
+  const still = async () => expect((await approvals(request, agent))[0]).toMatchObject({ state: "pending" });
+
+  // Two panes, the reader's the one worked in: the keyboard stays in its message box.
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await open(page, [reader, coordinator]);
+  const risky = pane(page, coordinator).getByTestId("approval");
+  await expect(risky).toHaveAttribute("data-risk", "high");
+  await page.waitForTimeout(1600);
+  expect(await keys()).toBe(`composer in ${reader}`);
+  await expect(pane(page, reader)).toHaveAttribute("data-helm", "true");
+  await expect(pane(page, coordinator)).not.toHaveAttribute("data-helm", "true");
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(300);
+  await still();
+  await shoot(page, "answer-keys-16-two-panes-high-risk");
+
+  // The coordinator alone, the pane worked in: its card may have the keyboard, its answer may not.
+  await page.goto("/api/daemon");
+  await page.evaluate((id) => localStorage.setItem("keel.panes", JSON.stringify({ count: 1, slots: [id], sizes: {}, active: 0 })), coordinator);
+  await page.goto(`/s/${coordinator}`);
+  await expect(risky).toBeVisible();
+  await page.waitForTimeout(1600);
+  expect(await keys()).not.toMatch(/^allow/);
+  await expect(risky.getByTestId("approval-hint")).toBeHidden();
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(300);
+  await still();
+
+  // To the agent's own page and back with Escape: the same.
+  await page.goto(`/s/${agent}`);
+  await expect(page).toHaveURL(new RegExp(`/s/${agent}$`));
+  await page.waitForTimeout(1600);
+  expect(await keys()).not.toMatch(/^allow/);
+  await pane(page, agent).getByTestId("composer").focus();
+  await page.keyboard.press("Escape");
+  await expect(page).toHaveURL(new RegExp(`/s/${coordinator}$`));
+  await expect(risky).toBeVisible();
+  await page.waitForTimeout(1600);
+  expect(await keys()).not.toMatch(/^allow/);
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(300);
+  await still();
+  // The answer is one deliberate key away, and the card says which.
+  await takeToCard(page, coordinator);
+  await expect(risky.getByTestId("approval-arming")).toHaveText("High risk: Down, then Enter allows once");
+  await page.keyboard.press("ArrowDown");
+  await expect(risky.getByTestId("allow-once")).toBeFocused();
+  await expect(risky.getByTestId("approval-hint")).toBeVisible();
+  await page.keyboard.press("Enter");
+  await expect.poll(async () => (await approvals(request, agent))[0]).toMatchObject({ state: "allowed", choice: "once" });
+  await drop(request, reader, coordinator);
+});
+// The key that goes to what waits brings the keyboard to the card of that pane (the owner's own doing).
+async function takeToCard(page: Page, id: string) {
+  const at = await page.evaluate(() => !!document.activeElement?.closest("[data-ask-card]"));
+  if (!at) { await pane(page, id).getByTestId("composer").focus(); await page.keyboard.press("Alt+a"); }
+  await expect.poll(() => page.evaluate(() => !!document.activeElement?.closest("[data-ask-card]"))).toBe(true);
+  await page.waitForTimeout(1100);
+}
+
+// What the card says Enter does is true at every moment: while the keyboard is on its way to
+// Allow once and the settle time runs, "in a moment", dimmer; "Enter allows once" from the
+// moment a press would answer, and not before. Nothing moves as one line gives way to the other.
+test("the hint says Enter allows once exactly when it would, and says so quietly before", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const id = await asksToRun(request, "The hint is true", folder("hint"), "hint");
+  await page.goto(`/s/${id}`);
+  const card = page.getByTestId("approval");
+  const allow = card.getByTestId("allow-once");
+  const arming = card.getByTestId("approval-arming"), hint = card.getByTestId("approval-hint");
+  // Seen within the settle time: it says what is coming, and an Enter now allows nothing.
+  await expect(arming).toHaveText("Enter allows once in a moment");
+  await expect(hint).toBeHidden();
+  const where = async () => (await card.getByTestId("approval-actions").locator("button").evaluateAll((els) => els.map((el) => Math.round(el.getBoundingClientRect().left)))).join();
+  const before = await where(), height = Math.round((await card.boundingBox())!.height);
+  await page.keyboard.press("Enter");
+  expect((await approvals(request, id))[0]).toMatchObject({ state: "pending" });
+  await shoot(page, "answer-keys-17-hint-arming");
+  // The line turns exactly when Enter would act: from then one press allows.
+  await expect(hint).toBeVisible();
+  await expect(arming).toHaveCount(0);
+  await expect(allow).toBeFocused();
+  await expect(card).toHaveAttribute("data-live", "true");
+  expect(await where()).toBe(before);
+  expect(Math.round((await card.boundingBox())!.height)).toBe(height);
+  await page.keyboard.press("Enter");
+  await expect.poll(async () => (await approvals(request, id))[0]).toMatchObject({ state: "allowed", choice: "once" });
+  await drop(request, id);
+});
