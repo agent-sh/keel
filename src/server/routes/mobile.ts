@@ -17,22 +17,24 @@ const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}
 
 // What an alert becomes on the phone: the kind the app's wake handler knows,
 // who asks and what may be answered from the notification.
-// A notification shows one line. It carries Allow only for a request that
-// line shows whole (short, not cut, nothing in it that misleads, low risk:
-// src/safety/card.ts). Any other is held: `hold` says why, and `opts` leaves
-// Deny alone, so an app from before the rule offers no Allow for it either.
-// The app's own notification then leads with Open.
-// `hold`: the card's hold as the gate reads it now (else what the alert recorded).
-export function alertPush(a: Alert, hold?: string[]): push.PushMessage {
+// A notification shows one line, and collapsed it shows the start of that
+// line. It carries Allow once only for a request whose whole line it shows
+// (`glance`, src/safety/card.ts: short, plain, low risk, runs where the session
+// is). Any other gets Deny alone in `opts`, so an app from before the rule
+// offers no Allow for it either; the app's own notification then leads with
+// Open. A standing answer is never a notification's to give. `hold` says why
+// the request is read first (empty when it is not held).
+// `card`: the card's form as the gate reads it now (else what the alert recorded).
+export function alertPush(a: Alert, card?: { hold: string[]; glance: boolean; line: string }): push.PushMessage {
   const kind = a.kind === "question" ? "approval" : a.kind;
-  const data: Record<string, string> = { title: a.title, body: a.body, ek: a.kind, pri: "", reply: a.kind === "finished" || a.kind === "question" ? "1" : "0" };
+  const data: Record<string, string> = { title: a.title, body: card?.line ?? a.body, ek: a.kind, pri: "", reply: a.kind === "finished" || a.kind === "question" ? "1" : "0" };
   const aid = a.data?.approval_id ?? (a.data?.call_id ? `q-${a.data.call_id}` : undefined);
   if (aid) data.aid = String(aid);
   if (a.kind === "approval") {
-    // An alert from before cards recorded their hold says nothing: high risk was held then too.
-    const held: string[] = hold ?? (Array.isArray(a.data?.hold) ? a.data.hold : a.data?.risk === "high" ? ["risk"] : []);
+    // An alert from before cards recorded this says nothing: no Allow.
+    const held: string[] = card?.hold ?? (Array.isArray(a.data?.hold) ? a.data.hold : a.data?.risk === "high" ? ["risk"] : []);
     data.hold = held.join(",");
-    data.opts = JSON.stringify(held.length ? ["deny"] : ["once", "session", "deny"]);
+    data.opts = JSON.stringify((card ? card.glance : a.data?.glance === true) ? ["once", "deny"] : ["deny"]);
   }
   const high = ["approval", "question", "failed", "loop_failed", "limit", "test"].includes(a.kind);
   data.pri = high ? "high" : "normal";
@@ -67,7 +69,7 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
   // An alert as the phone is sent it now: an approval's hold is read from its card as the gate reads it today.
   const pushOf = (a: Alert) => {
     const card = a.kind === "approval" && a.data?.approval_id ? gate?.approval(a.data.approval_id) : undefined;
-    return alertPush(a, card ? gate!.form(card).hold : undefined);
+    return alertPush(a, card ? gate!.form(card) : undefined);
   };
   // Sessions the phone holds a notification for, so a withdraw goes only there.
   const shown = new Set<string>();

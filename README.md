@@ -739,17 +739,10 @@ second look: high risk, an input shown in part, or a text with characters
 that are hidden, reorder it, are written right to left or can pass for plain
 letters. There the answer is one deliberate key away, and the card says which.
 
-That rule is the page's, not the daemon's. Two other ways to answer do not
-have it yet:
-
-- The phone app gets a request's summary alone: the first 400 characters of a
-  tool's input, with no sign that more was cut, and an edit's paths without
-  what it writes. An answer from the phone, or from its notification, is taken
-  as it is.
-- `keel approve ID` allows the oldest waiting request and prints its summary
-  after it did. `keel approve --list` shows the summaries first.
-
-Read a long or unusual request in the page before answering it from either.
+The rule is the daemon's as well, so it holds for every way to answer: the
+phone app and its notification, `keel approve`, `keel attach`, an editor over
+ACP, a script, a page on another machine. See "Approvals away from the page"
+below.
 
 A changed input is the one the gate judges, the one an approval card shows
 and the one that runs. A changed shell command must be text: a list or an
@@ -1221,37 +1214,50 @@ An approval is given only for text that was shown, whatever answers it. The
 daemon holds that rule, not one client. Every client reads a request in one
 form (`GET /api/sessions/:id/approvals/:aid`, `src/safety/card.ts`): the whole
 text to judge (the command, the paths and what an edit writes, a tool's input,
-up to 20,000 characters, with `cut` when only the start is kept), what in it
+up to 20,000 characters, with `cut` when that is only the start), what in it
 can mislead (hidden characters, letters written right to left, letters that
-pass for plain ones), its risk, where it runs and why it is asked.
+pass for plain ones), its risk, where it runs (the machine, the folder a
+command starts in, the shell when it is not the default) and why it is asked.
 
-A request that one line shows whole (160 printable ASCII characters, low
-risk, nothing cut) is allowed from anywhere. Any other is held: an allow of it
-is taken only with the client's word that it showed all of the text
-(`seen: "whole"`), and is otherwise answered `409` with a sentence to show,
-"Open the request to read it first", while the card stays open. A deny is
-taken from anywhere at once. Standing rules, modes and Full auto do not pass
-through a client's answer and are as they were.
+A request that one line shows whole is allowed from anywhere: at most 160
+printable ASCII characters, no tab, low risk, nothing cut, run in the
+session's own folder on the session's machine with the default shell. Any
+other is held: an allow of it is taken only with the client's word that it
+showed all of the text (`seen: "whole"`), and is otherwise answered `409` with
+a sentence to show ("Open the request to read it first: it is 41 lines
+long."), while the card stays open. A deny is taken from anywhere at once.
+
+A standing answer ("for this session", "always") stores a rule, and every
+client names that rule where it offers the answer: "Allow echo * for this
+session". The rule covers later calls. Of the requests that wait beside it, it
+settles the ones a line shows whole; a held one stays open for its own answer,
+whatever rule was made after it opened. A change of mode still settles every
+card: that is the owner's word about every call.
 
 - The page sends the word when its own card was read.
 - The phone app shows the whole text and sends it once the text was scrolled
-  to its end. Its notification carries Allow only for a request the one line
-  shows whole, and Open and Deny for the rest. An app from before the rule
-  gets the sentence.
+  to its end. An app from before the rule gets the sentence.
+- A notification shows a line, and collapsed only its start. It carries Allow
+  once only for a request whose whole line (the tool and the text) fits in 40
+  characters with no run of spaces, and Open and Deny for the rest. Its
+  action never gives a standing answer. The app draws the whole line again
+  before it asks for the fingerprint.
 - `keel approve ID` shows the request (through the pager when it is taller
   than the terminal) and then asks. `--yes` skips the question for a request
   one line shows whole; any other needs `--yes --seen`. With several open it
   lists them and asks which, and without a terminal it lists and exits 2.
   `keel attach` prints each request whole when it opens; `/approve` answers
-  the one it printed, and a held one by its id.
-- An editor over ACP is sent the whole text in the request's content.
+  the one it printed, a held one by its id, and on a pipe no held one at all.
+- An editor over ACP is sent the whole text in the request's content. A
+  script over a run's stream is handed the whole input.
 - A card of a session on another machine is judged by the daemon that owns
   the session; the forwarding daemon passes the word through and adds none.
 
 The answer keeps who gave it: the kind of client, the phone's name, the
-machine it came through, and whether the text was said to be shown. The
-timeline, a trace's wait and the activity list say it ("allowed once from the
-phone").
+machine it came through, whether the text was said to be shown (given, for a
+script and an editor), and for a card a standing answer settled, whose rule
+it was. The timeline, a trace's wait and the activity list say it ("allowed
+once from the phone").
 
 ## Memory observability
 

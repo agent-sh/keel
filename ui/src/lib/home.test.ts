@@ -60,6 +60,12 @@ test("Allow once is offered only for a command the row shows whole", () => {
   // The row shows the summary: it must be the command itself, not a short form of it.
   expect(wholeCommand({ kind: "shell", risk: "low", summary: "npm test", input: { command: "npm test && rm -rf /" } })).toBeNull();
   expect(wholeCommand(undefined)).toBeNull();
+  // Where it runs is not said on a row: another machine, a folder that is not the session's, another shell.
+  expect(wholeCommand(shell("rm -rf build"), true)).toBeNull();
+  expect(wholeCommand({ kind: "shell", risk: "low", summary: "rm -rf build", input: { command: "rm -rf build", machine: "build-box" } })).toBeNull();
+  expect(wholeCommand({ ...shell("rm -rf build"), at: { cwd: "/srv/app", away: true } })).toBeNull();
+  expect(wholeCommand({ ...shell("rm -rf build"), at: { cwd: "/w", shell: "zsh" } })).toBeNull();
+  expect(wholeCommand({ ...shell("rm -rf build"), at: { cwd: "/w/sub" } })).toBe("rm -rf build");
   // A character that hides or reorders what is shown: a right-to-left override, a zero-width space, a tab.
   for (const odd of ["echo \u202Etxt.x > r.txt", "rm -rf di\u200Bst", "ls\t-la", "echo a\u2028b"]) expect(wholeCommand(shell(odd))).toBeNull();
   // Nor one that draws nothing or as a plain space, nor letters a renderer reorders: printable ASCII only.

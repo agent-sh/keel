@@ -11,36 +11,56 @@ import { shownInPart } from "./summary.ts";
 
 // The most of a text a form carries. The gate keeps this much of an input
 // (its `clip`), and the page shows this much: a longer one says that only its
-// start exists.
+// start is here.
 export const TEXT_MAX = 20_000;
-// One line a notification, a home row or a list can show whole: this many
-// printable ASCII characters and no line break. Anything longer is opened.
+// One line a home row or a list can show whole: this many printable ASCII
+// characters and no line break. Anything longer is opened.
 export const SHORT_MAX = 160;
+// What a collapsed notification shows of its content text before it is cut:
+// Android's guide gives 40 characters as the limit for content text, and one
+// line at the system's default size holds about that. A notification carries
+// Allow only for a request whose whole line (the tool's name and the text) is
+// within it. Wide gaps are refused too: a run of spaces pushes a tail out of
+// sight on a line that wraps or scrolls.
+export const NOTE_MAX = 40;
 
 // Whether a text is that one line: nothing in it can hide, wrap out of view,
 // draw as something else or change the order of what is shown.
 export const oneLine = (text: string): boolean => text.length <= SHORT_MAX && plainAscii(text);
 
 // Why an allow of a card needs the text to have been shown whole first:
-// - "long": more than the one line above (a second line, a tab, over 160 characters);
-// - "cut": the daemon holds only the start of it;
-// - "marked": hidden characters, letters written right to left, or look-alikes;
-// - "risk": high risk, a call only the owner answers, a refused call.
-export type Hold = "long" | "cut" | "marked" | "risk";
+// - "long": a second line, over 160 characters, or a tab (a gap of any width);
+// - "cut": the form carries only the start of it;
+// - "marked": hidden characters, letters written right to left, look-alikes,
+//   any character outside plain ASCII;
+// - "risk": high risk, a call only the owner answers, a refused call;
+// - "where": it does not run where a line would let one assume: on another
+//   machine, in a folder that is not the session's, with a shell that is not
+//   the default one.
+export type Hold = "long" | "cut" | "marked" | "risk" | "where";
 
-export type Where = { name: string; cwd?: string; far: boolean };
+// Where a call runs. `far`: on another machine than the daemon that asks.
+// `cwd`: the folder a command starts in, when that is not the session's own
+// folder (or, for another machine, the folder its call names). `away`: it is
+// not under the session's folder either. `shell`: the program that
+// reads the command, when it is not the default shell.
+export type Where = { name: string; cwd?: string; shell?: string; far: boolean; away?: true };
 
 export type CardForm = {
   id: string; session_id: string; call_id: string; tool: string; kind: Approval["kind"]; state: Approval["state"];
   text: string;        // all there is to judge: the command, the paths and what the edit writes, the tool's input
   cut?: true;          // `text` is only the start of it
+  kept?: true;         // and the rest was not kept anywhere (else the daemon holds it, and the page shows it)
   total?: number;      // how long the whole is, when that is known
   chars: number; lines: number;
   risk: "high" | "low";
   marks: Marks;        // read from `text` once, for every client
-  machine?: Where;     // where it runs: `far` when that is not the daemon that asks
+  machine?: Where;     // where it runs
   reason?: string;     // why it is asked, and why only once is offered
-  hold: Hold[];        // empty: one line shows all of it, and a notification may carry Allow
+  hold: Hold[];        // empty: one line shows all of it
+  line: string;        // what a notification says of it: the tool, where it runs when not here, the start of the text
+  glance: boolean;     // that line shows all of it within a collapsed notification: only then may one carry Allow once
+  grants: string[];    // the rules a standing answer would store ("echo *"): a client names them on that answer
   choices: ("once" | "session" | "always" | "deny")[];
 };
 
@@ -90,38 +110,68 @@ export function cardForm(a: Approval, here?: { name: string; far?: boolean }): C
   // A command sent to another machine of the fleet names it in its input: the same text is another act there.
   const named = a.kind === "shell" && a.input && typeof a.input === "object" && typeof a.input.machine === "string" && a.input.machine
     ? { name: spelled(a.input.machine, ""), ...(typeof a.input.cwd === "string" && a.input.cwd ? { cwd: spelled(a.input.cwd, "") } : {}), far: true } : undefined;
-  const machine: Where | undefined = named ?? (here ? { name: here.name, far: !!here.far } : undefined);
+  // Where the gate found the command to start, and what reads it (kept with the card when it opened).
+  const at = a.at ? { ...(a.at.cwd ? { cwd: spelled(a.at.cwd, "") } : {}), ...(a.at.shell ? { shell: spelled(a.at.shell, "") } : {}), ...(a.at.away ? { away: true as const } : {}) } : {};
+  const machine: Where | undefined = named ?? (here || a.at ? { name: here?.name ?? "", far: !!here?.far, ...at } : undefined);
   const reason = [a.risk === "high" ? `High risk${a.why ? `: ${a.why}` : ""}` : a.why, a.notice].filter(Boolean).map((s) => String(s).replace(/[.\s]+$/, "")).join(". ");
   const hold: Hold[] = [];
-  if (!oneLine(text)) hold.push("long");
+  const lines = lineCount(text);
+  if (lines > 1 || text.length > SHORT_MAX || text.includes("\t")) hold.push("long");
   if (cut) hold.push("cut");
-  if (marked(marks)) hold.push("marked");
+  if (marked(marks) || !plainAscii(text.replace(/[\n\t]/g, ""))) hold.push("marked");
   if (a.risk !== "low" || a.once || a.kind === "refused") hold.push("risk");
+  if (machine?.far || machine?.away || machine?.shell) hold.push("where");
   const standing = a.risk === "low" && !a.once && a.suggest.length > 0;
+  // The notification's line: where it runs is said before the text, so a cut never hides it.
+  const place = machine?.far ? ` on ${machine.name}${machine.cwd ? ` in ${machine.cwd}` : ""}` : machine?.away && machine.cwd ? ` in ${machine.cwd}` : "";
+  const line = `${a.tool}${place}: ${spelled(a.summary)}`.slice(0, 500);
   return {
     id: a.id, session_id: a.session_id, call_id: a.call_id, tool: a.tool, kind: a.kind, state: a.state,
-    text, ...(cut ? { cut: true as const } : {}), ...(over ? { total: w.text.length } : w.kept && typeof a.input_len === "number" ? { total: a.input_len } : {}),
-    chars: text.length, lines: lineCount(text),
+    text, ...(cut ? { cut: true as const } : {}), ...(w.kept ? { kept: true as const } : {}),
+    // (An input the gate cut says how long it was; a text the form cut is counted here.)
+    ...(w.kept ? (typeof a.input_len === "number" ? { total: a.input_len } : {}) : over ? { total: w.text.length } : {}),
+    chars: text.length, lines,
     risk: a.risk, marks, ...(machine ? { machine } : {}), ...(reason ? { reason: `${reason}.` } : {}),
-    hold, choices: ["once", ...(standing ? (["session", "always"] as const) : []), "deny"],
+    hold, line, glance: hold.length === 0 && line.length <= NOTE_MAX && !/ {2}/.test(line),
+    grants: standing ? a.suggest.map((r) => r.pattern) : [],
+    choices: ["once", ...(standing ? (["session", "always"] as const) : []), "deny"],
   };
+}
+
+// The first thing in a text that is not plain: a hidden character by its code point, a look-alike by itself and its code.
+function firstMark(f: CardForm): string {
+  for (const ch of f.text) {
+    if (ch === "\n" || ch === "\t" || plainAscii(ch)) continue;
+    const s = spelled(ch, "");
+    return s !== ch ? s.slice(1, -1) : `${ch} U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`;
+  }
+  return "";
 }
 
 // The sentence a client shows when an allow is refused for a card it did not show whole.
 export const HOLD_SAYS = "Open the request to read it first";
 const WHY: Record<Hold, (f: CardForm) => string> = {
-  long: (f) => (f.lines > 1 ? `it is ${f.lines} lines long` : `it is ${f.chars} characters on one line`),
-  cut: () => "only its start is kept",
-  marked: () => "it holds characters that can mislead",
+  long: (f) => (f.lines > 1 ? `it is ${f.lines} lines long` : f.chars > SHORT_MAX ? `it is ${f.chars} characters on one line` : "it holds a tab"),
+  cut: (f) => (f.kept ? "only its start is kept" : `only its start is shown here${f.total ? ` (${f.chars} of ${f.total} characters)` : ""}`),
+  marked: (f) => `it holds characters that can mislead${firstMark(f) ? ` (${firstMark(f)})` : ""}`,
   risk: () => "it is high risk",
+  where: (f) => (f.machine?.far ? `it runs on ${f.machine.name}` : f.machine?.away ? `it runs in ${f.machine.cwd}, not the session's folder` : `it runs with ${f.machine?.shell}, not the default shell`),
 };
 export const holdSaid = (f: CardForm): string => (f.hold.length ? `${HOLD_SAYS}: ${f.hold.map((h) => WHY[h](f)).join(", ")}.` : "");
 
 // The rule. A deny is taken from anywhere at once. An allow of a card that one
 // line does not show whole is taken only with the client's word that it showed
-// all of the text (`seen: "whole"`): otherwise the sentence to show, and the card stays open.
-export function refusal(f: CardForm, choice: string, seen: unknown): string | null {
-  if (choice === "deny" || !f.hold.length || seen === "whole") return null;
+// all of the text (`seen: "whole"`): otherwise the sentence to show, and the
+// card stays open. A notification shows a line and no more: its action allows
+// once, and only a request whose whole line fits a collapsed notification
+// (`glance`), whatever it says it showed. A standing answer is not its to give.
+export function refusal(f: CardForm, choice: string, seen: unknown, client?: Client): string | null {
+  if (choice === "deny") return null;
+  if (client === "notification") {
+    if (choice !== "once") return "A notification allows once or denies. Open the request to give a standing answer.";
+    return f.glance ? null : holdSaid(f) || `${HOLD_SAYS}: a notification shows only its start.`;
+  }
+  if (!f.hold.length || seen === "whole") return null;
   return holdSaid(f);
 }
 
@@ -130,18 +180,24 @@ export function refusal(f: CardForm, choice: string, seen: unknown): string | nu
 //   "notification": an action of a notification; "cli": keel approve, keel attach;
 //   "script": a program over a run's stream; "acp": an editor; "api": a caller that named none.
 // - `device`: the paired phone's name. `peer`: the linked machine the answer came through.
+// - `seen`: the client said the whole text was shown (a script and an editor were handed it).
+// - `grant`: the card was not answered itself: a standing answer this client gave on another card covers it.
 export const CLIENTS = ["page", "phone", "notification", "cli", "script", "acp", "api"] as const;
 export type Client = (typeof CLIENTS)[number];
-export type AnsweredBy = { client: Client; device?: string; peer?: string; seen?: "whole" };
+export type AnsweredBy = { client: Client; device?: string; peer?: string; seen?: "whole"; grant?: true };
 
 const FROM: Record<Client, string> = {
   page: "the page", phone: "the phone", notification: "a notification", cli: "the command line", script: "a script", acp: "an editor", api: "the API",
 };
 // Where an answer was given, in words: "the phone (Pixel)", "the page on studio",
-// and whether the client said it showed the whole text: "the page, its text shown whole".
+// and how: "the page, its text shown whole", "a script, its text given whole" (a
+// program and an editor are handed the text; what they showed is not known),
+// "the phone (Pixel), by its rule for another request" for a card another card's standing answer settled.
 export function fromSaid(by: AnsweredBy | undefined): string {
   if (!by) return "";
-  return `${FROM[by.client] ?? "the API"}${by.device ? ` (${spelled(by.device, "").slice(0, 60)})` : ""}${by.peer ? ` on ${spelled(by.peer, "").slice(0, 60)}` : ""}${by.seen === "whole" ? ", its text shown whole" : ""}`;
+  const handed = by.client === "script" || by.client === "acp";
+  const where = `${FROM[by.client] ?? "the API"}${by.device ? ` (${spelled(by.device, "").slice(0, 60)})` : ""}${by.peer ? ` on ${spelled(by.peer, "").slice(0, 60)}` : ""}`;
+  return by.grant ? `${where}, by its rule for another request` : `${where}${by.seen === "whole" ? `, its text ${handed ? "given" : "shown"} whole` : ""}`;
 }
 
 // A card as lines for a place that draws plain text (a terminal, an editor's
@@ -149,11 +205,14 @@ export function fromSaid(by: AnsweredBy | undefined): string {
 // every hidden character written out, and what the text holds that misleads.
 export function cardLines(f: CardForm): { head: string; notes: string[]; text: string } {
   const thing = f.kind === "shell" ? "command" : "text";
+  const m = f.machine;
   const notes = [
     ...(f.reason ? [f.reason] : []),
-    ...(f.machine?.far ? [`Runs on ${f.machine.name}${f.machine.cwd ? `, in ${f.machine.cwd}` : ""}.`] : []),
+    ...(m?.far ? [`Runs on ${m.name}${m.cwd ? `, in ${m.cwd}` : ""}.`] : m?.cwd ? [m.away ? `Runs in ${m.cwd}, which is not the session's folder.` : `Runs in ${m.cwd}.`] : []),
+    ...(m?.shell ? [`Runs with ${m.shell}, not the default shell.`] : []),
     ...marksSaid(f.marks, thing),
-    ...(f.cut ? [f.total ? `Only its start is kept: ${f.chars} of ${f.total} characters.` : "Only its start is kept: the rest is not shown anywhere."] : []),
+    ...(!f.cut ? [] : f.kept ? [f.total ? `Only its start is kept: ${f.chars} of ${f.total} characters.` : "Only its start is kept: the rest is not shown anywhere."]
+      : [`Only its start is shown here: ${f.chars} of ${f.total ?? "more"} characters. The page shows all of it.`]),
   ];
   const size = f.lines > 1 ? `${f.lines} lines` : f.chars > SHORT_MAX ? `${f.chars} characters` : "";
   return { head: `${f.tool}${f.risk === "high" ? ", high risk" : ""}${size ? `, ${size}` : ""}`, notes, text: spelled(f.text) };

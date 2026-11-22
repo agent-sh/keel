@@ -238,15 +238,22 @@ const STATE: Record<string, string> = { pending: "pending", allowed: "approved",
 //   mislead, and that only its start is kept (`cut`, with `total` when known);
 // - `rtl`: it holds letters written right to left (the app keeps each run in place);
 // - `hold`: why Allow needs the text shown whole first (empty: one line shows
-//   all of it, and a notification may carry Allow).
+//   all of it);
+// - `line` and `glance`: what a notification says of it, and whether that line
+//   shows all of it within a collapsed notification (only then may one carry
+//   Allow once; a notification never gives a standing answer);
+// - `grants`: the rules a standing answer would store. The session action's
+//   label names them, and so does the app's button: never a bare "Allow for
+//   session". Offered only where there is a rule to grant.
 // The app sends `seen: "whole"` with an allow once all of `text` was on its
 // screen; without it the answer to a held card is a 409 with the sentence to
 // show, and the card stays open. A closed card says where it was answered (`from`).
 export function approvalOf(a: Approval, form?: CardForm) {
-  const actions: string[][] = [["Approve", "once", "primary"]];
-  if (a.risk !== "high") actions.push(["This session", "session", ""]);
-  actions.push(["Deny", "deny", "danger"]);
   const l = form && a.state === "pending" ? cardLines(form) : undefined;
+  const actions: string[][] = [["Approve", "once", "primary"]];
+  // (Without the form, a closed card or a caller that has none, the action is as it was.)
+  if (form && l ? form.grants.length : a.risk !== "high") actions.push([form && l ? `Allow ${form.grants.join(", ")} for this session` : "This session", "session", ""]);
+  actions.push(["Deny", "deny", "danger"]);
   return {
     id: a.id, chat_id: a.session_id, session_key: a.session_id, kind: "permission",
     command: spelled(a.summary), description: a.why ? `${a.tool}: ${a.why}` : a.tool,
@@ -255,6 +262,7 @@ export function approvalOf(a: Approval, form?: CardForm) {
     ...(form && l ? {
       text: l.text, notes: l.notes, cut: !!form.cut, total: form.total ?? null, lines: form.lines, chars: form.chars,
       risk: form.risk, rtl: form.marks.rtl, machine: form.machine?.far ? form.machine.name : "", hold: form.hold,
+      line: form.line, glance: form.glance, grants: form.grants,
     } : {}),
   };
 }
@@ -538,12 +546,12 @@ export function mobileApi(ctx: MobileCtx) {
     if (!g || !a) return err("unknown approval", 404);
     if (text) return err("answer only applies to questions", 400);
     if (a.state !== "pending") return err(`this approval is already ${STATE[a.state] ?? a.state}`, 409);
-    // `seen`: the app's word that its card showed the whole text. A
-    // notification shows one line, so an answer from one never carries it.
-    const notified = b.via === "notification";
+    // `seen`: the app's word that its card showed the whole text. The gate
+    // takes it from the app's card only: a notification shows one line, so an
+    // answer from one allows once, and only what that line shows whole.
     const r = g.resolve(aid, a.session_id, {
       choice: choice as any, reason: choice === "deny" ? `denied from ${dev.name}` : undefined,
-      seen: b.seen === "whole" && !notified ? "whole" : undefined, by: { client: notified ? "notification" : "phone", device: dev.name },
+      seen: b.seen === "whole" ? "whole" : undefined, by: { client: b.via === "notification" ? "notification" : "phone", device: dev.name },
     });
     // Held: the card is still open. The sentence is what the app shows; `hold` and the card tell a newer app what to open.
     if ("error" in r && r.hold) return json({ error: r.error, hold: r.hold, approval: cardOf(g.approval(aid)!) }, 409);

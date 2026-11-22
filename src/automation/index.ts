@@ -216,10 +216,10 @@ function init(deps: Deps) {
     if (f.t === "feature" && f.name === "judged") {
       const j = f.data as Judged;
       const ran = j.outcome === "rule" || j.outcome === "judge" || j.outcome === "retry";
-      activity.record("approval", ran ? `allowed by ${j.outcome === "rule" ? "a rule" : j.outcome === "judge" ? "the judge" : "a retry"}` : j.outcome === "repeat" ? "refused again" : "refused", j.session_id, `${j.tool}: ${j.summary}`.slice(0, 300) + ` (${j.reason})`.slice(0, 300), { call_id: j.call_id, blocked_id: j.blocked_id, model: j.model, ms: j.ms });
+      activity.record("approval", ran ? `allowed by ${j.outcome === "rule" ? "a rule" : j.outcome === "judge" ? "the judge" : "a retry"}` : j.outcome === "repeat" ? "refused again" : "refused", j.session_id, `${j.tool}: ${spelled(j.summary)}`.slice(0, 300) + ` (${j.reason})`.slice(0, 300), { call_id: j.call_id, blocked_id: j.blocked_id, model: j.model, ms: j.ms });
       if (!ran && j.outcome !== "repeat") {
         const s = deps.store.session(j.session_id);
-        alerts.raise("refused", j.session_id, `Refused in ${s?.title || "a session"}`, `${j.tool}: ${j.summary}`.slice(0, 200) + ` (${j.reason})`.slice(0, 300), { blocked_id: j.blocked_id, open_session: j.session_id });
+        alerts.raise("refused", j.session_id, `Refused in ${s?.title || "a session"}`, `${j.tool}: ${spelled(j.summary)}`.slice(0, 200) + ` (${j.reason})`.slice(0, 300), { blocked_id: j.blocked_id, open_session: j.session_id });
       }
       return;
     }
@@ -248,14 +248,17 @@ function init(deps: Deps) {
     const a = f.data as { id: string; session_id: string; tool: string; summary: string; risk: string; state: string; by?: AnsweredBy };
     if (a.state === "pending") {
       const s = deps.store.session(a.session_id);
-      // The line a notification shows: each hidden character written out, so it reads as it will run.
-      // `hold`: why the request is opened before it is allowed (none: the line shows all of it).
+      // The line a notification shows: the tool, where it runs when that is not here, then the text
+      // with each hidden character written out. `hold`: why the request is opened before it is
+      // allowed; `glance`: a collapsed notification shows all of the line, so it may carry Allow once.
       const card = perm.gate?.approval(a.id);
-      alerts.raise("approval", a.session_id, `Approval: ${s?.title || "a session"}`, `${a.tool}: ${spelled(a.summary)}`.slice(0, 500), { approval_id: a.id, open_session: a.session_id, risk: a.risk, ...(card ? { hold: perm.gate!.form(card).hold } : {}) });
+      const form = card ? perm.gate!.form(card) : undefined;
+      alerts.raise("approval", a.session_id, `Approval: ${s?.title || "a session"}`, form?.line ?? `${a.tool}: ${spelled(a.summary)}`.slice(0, 500), { approval_id: a.id, open_session: a.session_id, risk: a.risk, ...(form ? { hold: form.hold, glance: form.glance } : {}) });
     } else {
       alerts.readWhere("approval_id", a.id);
       // (Where the owner answered it: "allowed from the phone (Pixel)". A card a grant or a stop closed has no such place.)
-      activity.record("approval", a.state, a.session_id, `${a.tool}: ${a.summary}`.slice(0, 300) + ` (${a.state}${a.by && a.state !== "cancelled" ? ` from ${fromSaid(a.by)}` : ""})`, { approval_id: a.id });
+      // (The text with each hidden character written out: one that reorders would mix the words after it into the command.)
+      activity.record("approval", a.state, a.session_id, `${a.tool}: ${spelled(a.summary)}`.slice(0, 300) + ` (${a.state}${a.by && a.state !== "cancelled" ? ` from ${fromSaid(a.by)}` : ""})`, { approval_id: a.id });
     }
   });
 

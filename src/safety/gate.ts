@@ -66,6 +66,11 @@ export type Approval = {
   input: any;
   input_sha?: string;   // sha256 of the whole input the card was opened for, as stored (secrets out): `input` is only its start when it is long
   input_len?: number;   // how long that whole input was, when `input` holds only its start
+  // Where a command starts and what reads it, as the gate judged it: the folder
+  // when it is not the session's own (a workdir, or where the session's shell
+  // has moved to), `away` when it is not under the session's folder either,
+  // and the shell when it is not the default one.
+  at?: { cwd?: string; shell?: string; away?: true };
   risk: "high" | "low";
   why?: string;         // why only "once" is offered
   notice?: string;      // why the owner is asked (the reviewer could not judge it)
@@ -359,7 +364,8 @@ export class Gate {
   }
 
   addRule(session: Session, kind: RuleKind, pattern: string, lifetime: "always" | "session", bind?: string): Rule {
-    const rule: Rule = { id: crypto.randomUUID(), kind, pattern: pattern.trim(), scope: this.scopeOf(session.workspace), lifetime, session_id: lifetime === "session" ? session.id : null, created: Date.now(), bind: bind ?? null };
+    // (Younger than every card there is: a card that is read first is never settled by a rule made after it, see `recheck`.)
+    const rule: Rule = { id: crypto.randomUUID(), kind, pattern: pattern.trim(), scope: this.scopeOf(session.workspace), lifetime, session_id: lifetime === "session" ? session.id : null, created: Math.max(Date.now(), this.lastCard + 1), bind: bind ?? null };
     this.store.db.query("INSERT INTO perm_rules (id, kind, pattern, scope, lifetime, session_id, created, bind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run(rule.id, rule.kind, rule.pattern, rule.scope, rule.lifetime, rule.session_id ?? null, rule.created, rule.bind ?? null);
     this.invalidateReview();
@@ -454,13 +460,14 @@ export class Gate {
 
   // `real`: for a command that names a program a version manager may stand in for, whether each such name is
   // the program itself here (see `shimmed`). Without it those forms ask.
-  private evaluate(session: Session, name: string, cls: CallClass, bind?: string, real?: (program: string) => boolean): Decision {
+  // `before`: only the standing rules that are not younger than this time (a held card's own).
+  private evaluate(session: Session, name: string, cls: CallClass, bind?: string, real?: (program: string) => boolean, before?: number): Decision {
     const p = this.perm(session.id);
     const { workspace, scratch } = this.scope(session);
     const edit = cls.kind === "edit";
     let own: { home: string; config: string[]; bins: string[]; land: (p: string) => string[] } | undefined;
     return decide(cls, {
-      mode: p.mode, workspace: edit ? workspace : session.workspace, sandboxed: this.sandboxed(session, p), rules: this.rules(session), tool: name, bind, scratch, real,
+      mode: p.mode, workspace: edit ? workspace : session.workspace, sandboxed: this.sandboxed(session, p), rules: before === undefined ? this.rules(session) : this.rules(session).filter((r) => r.created <= before), tool: name, bind, scratch, real,
       // What Keel itself runs things from: a change there is the owner's alone
       // (on this machine's disk). With it, the scripts the owner's hooks and a
       // pinned repository's hooks run: no pin holds one outside .keel/. Read
@@ -570,11 +577,14 @@ export class Gate {
     const dir = mode === "auto" ? localShellDir(session, call, target, cls) : undefined;
     // Nothing is waited for unless the line names such a program.
     const names = this.shimmed(session, cls);
-    const d = this.evaluate(session, name, cls.kind === "shell" && dir ? { ...cls, cwd: dir.path } : cls, target?.source, names.length ? await this.real(names) : undefined);
+    const dNow = this.evaluate(session, name, cls.kind === "shell" && dir ? { ...cls, cwd: dir.path } : cls, target?.source, names.length ? await this.real(names) : undefined);
     // The call a restart cut while its card was open: that card again, settled
     // the way an open card is (the owner's answer, a grant or mode since, or waiting).
     const back = this.recovered(session.id, call, false) ?? (mode === "auto" ? this.recovered(session.id, call, true) : undefined);
     if (back) {
+      // A card that is read first waits for its own answer: a rule made after it opened does not settle it (see `recheck`).
+      const d = back.state === "pending" && this.form(back).hold.length
+        ? this.evaluate(session, name, cls.kind === "shell" && dir ? { ...cls, cwd: dir.path } : cls, target?.source, names.length ? await this.real(names) : undefined, back.created) : dNow;
       // Do not authorize a recovered non-hook card under the new mode. A
       // saved answer is not evidence about the current binding or landing.
       if (mode === "auto" || back.autoOwner) {
@@ -592,6 +602,7 @@ export class Gate {
       }
       return (await this.wait({ ...back, ...settled }, session, call, name, cls)) ?? { cls };
     }
+    const d = dNow;
     if ("deny" in d) return { deny: d.deny };
     if (mode === "auto" && cls.kind !== "read" && hasSecret([call.input, target?.input, cls, dir?.path], vault.pairs().map(([value]) => value))) return secretReview;
     const checkShell = mode === "auto" && (cls.kind === "shell" || !!call.tool.autoShell);
@@ -804,7 +815,7 @@ export class Gate {
       summary, cut: ask.cut, notice: [ask.notice, changed].filter(Boolean).join(" ") || undefined,
       // Cards of one reply are made in the same millisecond: each gets a later time than the one before, so they list in call order.
       input: clip(call.input), input_sha: this.shaOf(session.id, call.input), ...inputLen(call.input), risk: ask.risk, why: ask.why, suggest: ask.suggest, state: "pending", created: (this.lastCard = Math.max(Date.now(), this.lastCard + 1)),
-      once: once || undefined, bind: ask.bind, autoOwner: ask.autoOwner,
+      once: once || undefined, bind: ask.bind, autoOwner: ask.autoOwner, ...placeOf(session, cls),
     };
     return this.wait(a, session, call, name, cls);
   }
@@ -887,9 +898,21 @@ export class Gate {
   // Where a session's calls run, for the form of its cards (set by the fleet's routes).
   machineOf?: (sessionId: string) => { name: string; far?: boolean } | undefined;
 
-  // A card as every client is given it (card.ts).
+  // A card as every client is given it (card.ts). Read once for a card: its
+  // text, marks and hold do not change while it waits (the phone's lists, the
+  // stream, a push and an answer all ask for it).
+  private forms = new Map<string, { key: string; form: CardForm }>();
   form(a: Approval): CardForm {
-    return cardForm(a, this.machineOf?.(a.session_id));
+    const here = this.machineOf?.(a.session_id);
+    const key = `${here?.name ?? ""}\u0000${here?.far ? 1 : 0}`;
+    const hit = this.forms.get(a.id);
+    if (hit?.key === key) return hit.form.state === a.state ? hit.form : { ...hit.form, state: a.state };
+    const form = cardForm(a, here);
+    if (a.state === "pending") {
+      this.forms.set(a.id, { key, form });
+      if (this.forms.size > 500) this.forms.delete(this.forms.keys().next().value!);
+    }
+    return form;
   }
 
   // `hold`: the answer was an allow of a card its client did not show whole. The card stays open.
@@ -914,7 +937,9 @@ export class Gate {
     // would never run, a denial would lose its reason). The card stays open
     // for the next daemon.
     if (parked && this.parking.has(a.session_id)) return { error: "Keel is restarting: answer again in a moment, when it is back", status: 503 };
-    const by: AnsweredBy = { client: "api", ...c.by, ...(c.seen === "whole" ? { seen: "whole" as const } : {}) };
+    // (A notification shows one line: an answer from one never counts as having shown the text.)
+    const seen = c.seen === "whole" && c.by?.client !== "notification" ? ("whole" as const) : undefined;
+    const by: AnsweredBy = { client: "api", ...c.by, ...(seen ? { seen } : {}) };
     if (c.choice === "deny") {
       this.finish(a, { state: "denied", choice: "deny", reason: c.reason?.trim() || undefined, by });
       w?.resolve({ deny: ownerDenial(c.reason?.trim()) });
@@ -923,7 +948,7 @@ export class Gate {
     // The read-first rule, for every client: an allow of a text one line does
     // not show whole comes with the client's word that it showed all of it.
     const form = this.form(a);
-    const unread = refusal(form, c.choice, c.seen);
+    const unread = refusal(form, c.choice, seen, by.client);
     if (unread) return { error: unread, status: 409, approval: a, hold: form.hold };
     if (c.choice === "session" || c.choice === "always") {
       const rules = (c.rules?.length ? c.rules : a.suggest).filter((r) => r.pattern?.trim());
@@ -933,8 +958,9 @@ export class Gate {
     }
     this.finish(a, { state: "allowed", choice: c.choice, by });
     w?.resolve({ allow: true });
-    // A new grant may settle other open cards it covers.
-    if (c.choice !== "once") this.recheck(() => true);
+    // A new grant may settle other open cards it covers: the ones a line shows
+    // whole. A card that is read first stays open for its own answer.
+    if (c.choice !== "once") this.recheck(() => true, { client: by.client, ...(by.device ? { device: by.device } : {}), ...(by.peer ? { peer: by.peer } : {}) });
     return { ok: true };
   }
 
@@ -969,16 +995,23 @@ export class Gate {
 
   private finish(a: Approval, patch: Partial<Approval>) {
     this.waiting.delete(a.id);
+    this.forms.delete(a.id);
     this.save({ ...a, ...patch, resolved: Date.now() });
   }
 
   // After a mode or grant change: open cards that are now settled resolve.
-  private recheck(which: (w: Waiter) => boolean) {
+  // A card that is read first (card.ts: its form has a hold) is never settled
+  // by a rule made after it opened: a standing answer on the short card beside
+  // it would otherwise allow text nobody was shown. It waits for its own
+  // answer; the rule covers later calls, as any rule does. A mode change still
+  // settles it: that is the owner's word about every call.
+  // `from`: the client whose standing answer made the rule. A card it settles keeps that.
+  private recheck(which: (w: Waiter) => boolean, from?: Omit<AnsweredBy, "seen" | "grant">) {
     for (const [id, w] of [...this.waiting]) {
       if (w.once || !which(w)) continue; // a one-call card only the owner answers
-      const d = this.evaluate(w.session, w.name, w.cls, w.bind);
       const a = this.approval(id);
       if (!a) continue;
+      const d = this.evaluate(w.session, w.name, w.cls, w.bind, undefined, this.form(a).hold.length ? a.created : undefined);
       const mode = this.perm(w.session.id).mode;
       if (mode === "auto" || a.autoOwner) {
         if (mode === "auto" && a.autoOwner && !("deny" in d)) continue;
@@ -988,7 +1021,7 @@ export class Gate {
         continue;
       }
       if ("allow" in d) {
-        this.finish(a, { state: "allowed", choice: "once", reason: "settled by a grant or a mode change" });
+        this.finish(a, { state: "allowed", choice: "once", reason: "settled by a grant or a mode change", ...(from ? { by: { ...from, grant: true as const } } : {}) });
         w.resolve({ allow: true });
       } else if ("deny" in d) {
         this.finish(a, { state: "denied", reason: d.deny });
@@ -1037,6 +1070,18 @@ function inShort(cls: CallClass, input: unknown): { summary: string; cut?: true 
 function readWhole(cls: CallClass, input: unknown, summary = ""): boolean {
   const judged = cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : cls.kind === "drive" ? cls.shown : JSON.stringify(input ?? {});
   return Math.max(judged.length, summary.length) <= REVIEW_SUMMARY_LIMIT;
+}
+
+// Where a command starts and what reads it, for its card. The folder is kept
+// when it is not the session's own (a workdir, a session shell that moved);
+// `away` when it is not under the session's folder either (on this machine by
+// where the paths lead; on another machine by the paths as written).
+function placeOf(session: Session, cls: CallClass): { at?: Approval["at"] } {
+  if (cls.kind !== "shell") return {};
+  const [root, cwd] = !cls.cwd ? ["", ""] : session.machine ? [session.workspace, cls.cwd] : [realOf(session.workspace), realOf(cls.cwd)];
+  const moved = cwd !== root, own = contains(root, cwd);
+  if (!moved && !cls.interpreter) return {};
+  return { at: { ...(moved ? { cwd: cls.cwd } : {}), ...(cls.interpreter ? { shell: cls.interpreter } : {}), ...(own ? {} : { away: true as const }) } };
 }
 
 // How long an input was, kept only when the card holds its start alone.

@@ -920,38 +920,59 @@ describe("pairing", () => {
 // allow says it was shown, and a notification allows only what one line shows.
 describe("permission cards", () => {
   const LONG = Array.from({ length: 41 }, (_, i) => `echo step ${i + 1}`).join("\n");
+  // The review's command: 160 plain characters, low risk, its tail padded far out of a notification's sight.
+  const PADDED = `echo ok${" ".repeat(160 - "echo ok".length - "; echo tail > t.txt".length)}; echo tail > t.txt`;
   const answer = (aid: string, body: any) => {
     const ts = String(Math.floor(Date.now() / 1000));
     const asig = sign("sha256", Buffer.from(approvalMessage(aid, body.choice, ts, true, "")), { key: akey.privateKey, dsaEncoding: "der" }).toString("base64");
     return call("POST", `/v1/approvals/${aid}`, body, body.choice === "deny" ? {} : { "x-hm-asig": asig, "x-hm-asig-v": "2" });
   };
-  const pushOf = (a: Approval) => pushData(alertPush({ id: "al", ts: 1, kind: "approval", session_id: a.session_id, title: "t", body: "b", read: false, data: { approval_id: a.id, risk: a.risk, hold: gate.form(a).hold }, channels: [] } as any), 1, "push_x");
+  // The push of a card's alert, as the daemon sends it now (the card's form read from the gate).
+  const pushOf = (a: Approval) => pushData(alertPush({ id: "al", ts: 1, kind: "approval", session_id: a.session_id, title: "t", body: "b", read: false, data: { approval_id: a.id, risk: a.risk }, channels: [] } as any, gate.form(a)), 1, "push_x");
 
   test("a long command is allowed only once the app says it showed all of it; a deny and a short one need nothing", async () => {
     const s = session("Cards");
-    const long = card({ id: "apr-long", session_id: s.id, summary: LONG });
-    const short = card({ id: "apr-short", session_id: s.id, summary: "npm test" });
+    const echo = [{ kind: "shell" as const, pattern: "echo *" }];
+    const long = card({ id: "apr-long", session_id: s.id, summary: LONG, suggest: echo });
+    const short = card({ id: "apr-short", session_id: s.id, summary: "npm test", suggest: [{ kind: "shell", pattern: "npm test" }] });
     const other = card({ id: "apr-other", session_id: s.id, summary: `${LONG}\necho more` });
     const marked = card({ id: "apr-marked", session_id: s.id, summary: "echo txt.r \u202e< x.txt" });
     const risky = card({ id: "apr-risky", session_id: s.id, summary: "sudo reboot", risk: "high", why: "the command runs as root" });
+    const padded = card({ id: "apr-padded", session_id: s.id, summary: PADDED, suggest: echo });
+    const wide = card({ id: "apr-wide", session_id: s.id, summary: "git commit -am fix && git push origin main" });
+    const far = card({ id: "apr-far", session_id: s.id, tool: "keel__run_on", summary: "rm -rf build", input: { machine: "build-box", command: "rm -rf build", cwd: "/srv/app" } });
+    const standing = card({ id: "apr-standing", session_id: s.id, summary: "echo hi > hi.txt", suggest: echo });
     gate = new Gate(store, bus);
     gate.machineOf = () => ({ name: "desk" });
 
     // What the phone is given: the whole text, the count, and why it is held.
     const cards = Object.fromEntries((await call("GET", `/v1/chats/${s.id}/run`)).body.approvals.map((a: any) => [a.id, a]));
-    expect(cards["apr-long"]).toMatchObject({ command: LONG, text: LONG, lines: 41, cut: false, total: null, hold: ["long"], notes: [], rtl: false, machine: "" });
-    expect(cards["apr-short"]).toMatchObject({ text: "npm test", lines: 1, hold: [] });
-    expect(cards["apr-marked"]).toMatchObject({ command: "echo txt.r <U+202E>< x.txt", text: "echo txt.r <U+202E>< x.txt", hold: ["long", "marked"] });
+    expect(cards["apr-long"]).toMatchObject({ command: LONG, text: LONG, lines: 41, cut: false, total: null, hold: ["long"], notes: [], rtl: false, machine: "", glance: false });
+    expect(cards["apr-short"]).toMatchObject({ text: "npm test", lines: 1, hold: [], line: "Bash: npm test", glance: true, grants: ["npm test"] });
+    expect(cards["apr-marked"]).toMatchObject({ command: "echo txt.r <U+202E>< x.txt", text: "echo txt.r <U+202E>< x.txt", hold: ["marked"] });
     expect(cards["apr-marked"].notes[0]).toContain("characters that do not show as written");
-    expect(cards["apr-risky"]).toMatchObject({ hold: ["risk"], notes: ["High risk: the command runs as root."] });
+    expect(cards["apr-risky"]).toMatchObject({ hold: ["risk"], notes: ["High risk: the command runs as root."], grants: [] });
+    // A command for another machine says where, on the card and in the notification's line, and is read first.
+    expect(cards["apr-far"]).toMatchObject({ hold: ["where"], notes: ["Runs on build-box, in /srv/app."], machine: "build-box", line: "keel__run_on on build-box in /srv/app: rm -rf build", glance: false });
+    // A standing answer's action names the rule it stores, and is offered only where there is one.
+    expect(cards["apr-standing"].actions).toEqual([["Approve", "once", "primary"], ["Allow echo * for this session", "session", ""], ["Deny", "deny", "danger"]]);
+    expect(cards["apr-risky"].actions.map((x: string[]) => x[1])).toEqual(["once", "deny"]);
+    expect(cards["apr-wide"].actions.map((x: string[]) => x[1])).toEqual(["once", "deny"]);
 
-    // A notification's actions for each shape, as the daemon sends them.
-    expect([pushOf(short).opts, pushOf(short).hold]).toEqual(['["once","session","deny"]', ""]);
-    expect([pushOf(long).opts, pushOf(long).hold]).toEqual(['["deny"]', "long"]);
-    expect([pushOf(marked).opts, pushOf(marked).hold]).toEqual(['["deny"]', "long,marked"]);
-    expect([pushOf(risky).opts, pushOf(risky).hold]).toEqual(['["deny"]', "risk"]);
-    // An alert raised before cards recorded their hold: high risk offers no Allow, as before the rule it offered no standing one.
-    expect(alertPush({ id: "old", ts: 1, kind: "approval", session_id: s.id, title: "t", body: "b", read: false, data: { approval_id: "x", risk: "high" }, channels: [] } as any).data.opts).toBe('["deny"]');
+    // A notification's actions for each shape, as the daemon sends them: Allow once only where the
+    // collapsed line shows all of it, never a standing answer, and the line it shows.
+    expect(pushOf(short)).toMatchObject({ opts: '["once","deny"]', hold: "", body: "Bash: npm test" });
+    expect(pushOf(long)).toMatchObject({ opts: '["deny"]', hold: "long" });
+    expect(pushOf(marked)).toMatchObject({ opts: '["deny"]', hold: "marked", body: "Bash: echo txt.r <U+202E>< x.txt" });
+    expect(pushOf(risky)).toMatchObject({ opts: '["deny"]', hold: "risk" });
+    // Not held, but more than a collapsed notification shows: 160 characters with a tail, and 42 plain ones.
+    expect(pushOf(padded)).toMatchObject({ opts: '["deny"]', hold: "" });
+    expect(pushOf(wide)).toMatchObject({ opts: '["deny"]', hold: "" });
+    expect(pushOf(far)).toMatchObject({ opts: '["deny"]', hold: "where", body: "keel__run_on on build-box in /srv/app: rm -rf build" });
+    // An alert raised before cards recorded this: no Allow.
+    for (const data of [{ approval_id: "x", risk: "high" }, { approval_id: "x", risk: "low" }, { approval_id: "x", risk: "low", hold: [] }])
+      expect(alertPush({ id: "old", ts: 1, kind: "approval", session_id: s.id, title: "t", body: "b", read: false, data, channels: [] } as any).data.opts).toBe('["deny"]');
+    expect(alertPush({ id: "new", ts: 1, kind: "approval", session_id: s.id, title: "t", body: "Bash: npm test", read: false, data: { approval_id: "x", risk: "low", hold: [], glance: true }, channels: [] } as any).data.opts).toBe('["once","deny"]');
 
     // An app from before the rule sends no `seen`: the long card is held, with the sentence it shows, and stays open.
     const held = await answer("apr-long", { choice: "once" });
@@ -962,8 +983,25 @@ describe("permission cards", () => {
     expect((await answer("apr-long", { choice: "once", seen: "whole", via: "notification" })).status).toBe(409);
     expect((await answer("apr-marked", { choice: "once" })).status).toBe(409);
     expect((await answer("apr-risky", { choice: "once" })).status).toBe(409);
+    expect((await answer("apr-far", { choice: "once" })).status).toBe(409);
     expect(gate.approval("apr-long")).toMatchObject({ state: "pending" });
-    // With the app's word it is taken, and the card says where it was answered.
+
+    // The padded command and the wide one are not held, and the app's card may allow them. A
+    // notification may not: its collapsed line does not show them whole.
+    const tail = await answer("apr-padded", { choice: "once", via: "notification" });
+    expect([tail.status, tail.body.error]).toEqual([409, "Open the request to read it first: a notification shows only its start."]);
+    expect((await answer("apr-wide", { choice: "once", via: "notification", seen: "whole" })).status).toBe(409);
+    expect((await answer("apr-far", { choice: "once", via: "notification" })).body.error).toBe("Open the request to read it first: it runs on build-box.");
+    expect([gate.approval("apr-padded")!.state, gate.approval("apr-wide")!.state, gate.approval("apr-far")!.state]).toEqual(["pending", "pending", "pending"]);
+    expect((await answer("apr-padded", { choice: "once" })).status).toBe(200);
+    // A notification never gives a standing answer, on any card.
+    const stand = await answer("apr-standing", { choice: "session", via: "notification" });
+    expect([stand.status, stand.body.error]).toEqual([409, "A notification allows once or denies. Open the request to give a standing answer."]);
+    expect(gate.approval("apr-standing")!.state).toBe("pending");
+    expect((await answer("apr-standing", { choice: "session" })).status).toBe(200);
+    expect(gate.approval("apr-standing")).toMatchObject({ state: "allowed", choice: "session", by: { client: "phone", device: "phone" } });
+
+    // With the app's word the long one is taken, and the card says where it was answered.
     const ok = await answer("apr-long", { choice: "once", seen: "whole" });
     expect([ok.status, ok.body.approval.state, ok.body.approval.from]).toEqual([200, "approved", "the phone (phone), its text shown whole"]);
     expect(gate.approval("apr-long")!.by).toEqual({ client: "phone", device: "phone", seen: "whole" });
@@ -973,6 +1011,6 @@ describe("permission cards", () => {
     // A deny is taken at once, from anywhere.
     expect((await answer("apr-other", { choice: "deny", via: "notification" })).status).toBe(200);
     expect(gate.approval("apr-other")).toMatchObject({ state: "denied", by: { client: "notification", device: "phone" } });
-    expect((await answer("apr-risky", { choice: "deny" })).status).toBe(200);
+    for (const id of ["apr-risky", "apr-marked", "apr-wide", "apr-far"]) expect((await answer(id, { choice: "deny" })).status).toBe(200);
   });
 });

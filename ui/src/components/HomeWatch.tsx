@@ -113,7 +113,7 @@ function useFact(s: Session, st: SessionState): Fact {
   const approval = useSafety((x) => (asked ? x.approvals[st.child ?? s.id]?.[0] : undefined));
   return {
     approval, kind: rowKind(st, approval?.kind), line: rowLine(st),
-    whole: asked && !st.child ? wholeCommand(approval) : null,
+    whole: asked && !st.child ? wholeCommand(approval, !!s.machine) : null,
     risk: approval?.risk === "high" ? (approval.why ? `High risk: ${approval.why}` : "High risk") : undefined,
   };
 }
