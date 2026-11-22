@@ -114,6 +114,12 @@ const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 export const BLOCK_MAX = 1500;
 const bytes = (s: string) => Buffer.byteLength(s);
 
+// The bytes a tool result has left under its cap for a block and the blank
+// line before it. Counted in bytes where the cap counts characters: never more
+// room than there is.
+export const roomUnder = (content: string | { type: string; text?: string }[], cap: number): number =>
+  cap - (typeof content === "string" ? bytes(content) : content.reduce((n, b) => n + (b.type === "text" ? bytes(b.text ?? "") : 0), 0)) - 2;
+
 export const LIST_MAX = 10;
 
 export type FileDiff = { path: string; diff: DiagDiff; after: Diag[] };

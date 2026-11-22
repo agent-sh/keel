@@ -13,7 +13,7 @@ import { registerSettings, settings } from "../../admin/settings.ts";
 import { registerHooks, type ToolCall } from "../../engine/hooks.ts";
 import { bytesPerToken, utf8Bytes } from "../../engine/compact.ts";
 import type { Session, ToolResultBlock } from "../../core/types.ts";
-import { BLOCK_MAX, type DiagLevel, renderDiagnostics } from "../../lsp/diff.ts";
+import { BLOCK_MAX, type DiagLevel, renderDiagnostics, roomUnder } from "../../lsp/diff.ts";
 import { LspManager, MAX_MEMORY_MB, MAX_SERVERS, type Perm } from "../../lsp/manager.ts";
 import { checkOverrides } from "../../lsp/servers.ts";
 import { classifyCall } from "../../safety/gate.ts";
@@ -165,8 +165,7 @@ export const lspRoutes: RouteModule = ({ store, bus, errors, workspace }) => {
         if (mode === "off" || !here(s, call)) return void m.drop(call.id);
         const level: DiagLevel = mode === "warnings" ? "warnings" : "errors";
         // The result stays under its cap with the block in it: what it has left is the block's room.
-        const size = typeof result.content === "string" ? utf8Bytes(result.content) : result.content.reduce((n, b) => n + (b.type === "text" ? utf8Bytes(b.text) : 0), 0);
-        let room = (call.tool.resultCap ?? OUTPUT_CAP) - size - 2;
+        let room = roomUnder(result.content, call.tool.resultCap ?? OUTPUT_CAP);
         const add = (text: string) => { if (text) { append(result, text); room -= utf8Bytes(text) + 2; } };
         const cls = classifyCall(call);
         if (cls.kind !== "edit") {
@@ -184,6 +183,8 @@ export const lspRoutes: RouteModule = ({ store, bus, errors, workspace }) => {
         // An edit that failed changed nothing.
         if (result.is_error) return void m.drop(call.id);
         const t0 = Date.now();
+        // A result with no room for a block (a patch of hundreds of files) is not waited on: the answers go with a later result.
+        if (room < BLOCK_MAX) return void (await m.after(s, call.id, 0, true));
         const out = await m.after(s, call.id, settings().diagnostics?.wait_ms ?? WAIT_MS);
         // What an earlier edit's late answer found comes first: it is older.
         const late = m.hasLate(s.id) && room >= 2 * BLOCK_MAX ? m.takeLate(s) : { files: [], clean: [], servers: [] };

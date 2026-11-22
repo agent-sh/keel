@@ -122,3 +122,28 @@ test("asking a repository what changed runs no program it names: a monitor, a ho
   expect(await repoHead(top)).toEqual({ repo: false, head: "" });
   rmSync(top, { recursive: true, force: true });
 });
+
+test("an edit whose result has no room for a block: its answer is kept and goes with a later result", async () => {
+  const ws = mkdtempSync(join(tmpdir(), "keel-lsp-room-"));
+  const m = manager();
+  const s = { id: "s1", workspace: ws };
+  try {
+    // A first edit starts the server and is answered as usual.
+    expect((await edit(m, ws, "a.one", "c1"))?.files.map((f) => f.diff.added.length)).toEqual([1]);
+    // The next one's result is full: nothing is returned for it, and nothing is waited for.
+    const path = join(ws, "a.one");
+    await m.before(s, perm, "c2", [path]);
+    writeFileSync(path, "an ERROR\nanother ERROR\n");
+    const t0 = Date.now();
+    expect(await m.after(s, "c2", 0, true)).toBeNull();
+    expect(Date.now() - t0).toBeLessThan(1000);
+    // The answer arrives and is owed to the session: the next result with room carries it, once.
+    expect(await until(() => m.hasLate("s1"))).toBe(true);
+    const late = m.takeLate(s);
+    expect(late.files.map((f) => [f.path, f.diff.added.map((d) => d.line)])).toEqual([["a.one", [2]]]);
+    expect(m.hasLate("s1")).toBe(false);
+  } finally {
+    m.dispose();
+    rmSync(ws, { recursive: true, force: true });
+  }
+});

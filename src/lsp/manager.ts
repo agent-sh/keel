@@ -411,7 +411,9 @@ export class LspManager {
   // After the edit ran: the files as they are now, asked again, and the
   // answers that came within `waitMs` (a server still starting is given the
   // same time to be ready first). Null: no server serves the call's files.
-  async after(s: Sess, callId: string, waitMs: number): Promise<Outcome | null> {
+  // `hold`: the call's result has no room for a block. Nothing is returned,
+  // and what the servers answer is kept for a later result (takeLate).
+  async after(s: Sess, callId: string, waitMs: number, hold = false): Promise<Outcome | null> {
     const call = this.calls.get(callId);
     this.calls.delete(callId);
     if (!call) return null;
@@ -481,6 +483,7 @@ export class LspManager {
       // An earlier edit of the file whose answer never reached the model: compared from before that one.
       const owed = st.owed.get(a.path);
       const base = owed ?? job.base;
+      if (hold) { this.arrived(s.id, a, job.base, job.after); continue; }
       st.owed.delete(a.path);
       st.late.delete(a.path);
       st.told.set(a.path, { key: a.entry.key, diags: job.after, at: Date.now() });
@@ -491,7 +494,7 @@ export class LspManager {
       if (diff.added.length || diff.fixed.length || diff.still.length) { files.push({ path: rel, diff, after: a.beside ? [] : job.after }); servers.add(a.entry.def.id); }
     }
     if (st.told.size > 200) st.told.delete(st.told.keys().next().value!);
-    if (!jobs.length && !unchecked.length) return null;
+    if (hold || (!jobs.length && !unchecked.length)) return null;
     return { files, pending, unchecked, servers: [...servers], ms: Date.now() - t0, cold: call.cold, answered };
   }
 

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { changedLines, codeText, diffDiagnostics, fromLsp, renderDiagnostics, type Diag } from "./diff.ts";
+import { changedLines, codeText, diffDiagnostics, fromLsp, renderDiagnostics, roomUnder, type Diag } from "./diff.ts";
 
 const d = (line: number, message: string, o: Partial<Diag> = {}): Diag => ({ line, col: 1, severity: 1, source: "ts", code: "2322", message, ...o });
 
@@ -147,4 +147,27 @@ test("the comparison and the text are linear in what a server sends, and a file'
   expect(r.errors).toBe(60_000);
   expect(Buffer.byteLength(r.text)).toBeLessThanOrEqual(1500);
   expect(performance.now() - t0).toBeLessThan(1500);
+});
+
+test("a result near its cap: the block takes the room there is, or is not written; the cap holds", () => {
+  const CAP = 30_000;
+  const files = [{ path: "src/a.ts", diff: { added: Array.from({ length: 40 }, (_, i) => d(i + 1, `Type 'number' is not assignable to type 'string' (${i}).`)), fixed: [], still: [] }, after: [] }];
+  const smallest = Buffer.byteLength(renderDiagnostics([{ ...files[0]!, diff: { added: [d(1, "x")], fixed: [], still: [] } }], { server: "typescript", level: "errors" }).text);
+  // Plain text and text of three bytes a character: the cap is in characters, the room in bytes.
+  for (const unit of ["a", "\u20ac"]) {
+    for (const left of [0, 1, 2, 60, smallest + 2, 400, 1499, 1500, 1502, 5000]) {
+      const content = unit.repeat(Math.floor((CAP - left) / Buffer.byteLength(unit)));
+      const room = roomUnder(content, CAP);
+      const r = renderDiagnostics(files, { server: "typescript", level: "errors", room });
+      const whole = r.text ? `${content}\n\n${r.text}` : content;
+      expect([unit, left, Buffer.byteLength(whole) <= CAP, whole.length <= CAP]).toEqual([unit, left, true, true]);
+      expect([unit, left, Buffer.byteLength(r.text) <= Math.max(0, Math.min(1500, room))]).toEqual([unit, left, true]);
+      // Room for a whole block: all of it. Room for less: a shorter list with the count. No room: nothing, not half a block.
+      if (room >= 1500) expect([left, r.listed > 3, /^<diagnostics server="typescript">\n40 new errors\.\n/.test(r.text), r.text.endsWith("</diagnostics>")]).toEqual([left, true, true, true]);
+      else if (room < 60) expect([left, r.text]).toEqual([left, ""]);
+      else if (r.text) expect([left, r.text.startsWith("<diagnostics"), r.text.endsWith("</diagnostics>"), r.text.includes("40 new errors.")]).toEqual([left, true, true, true]);
+    }
+  }
+  // Blocks of text count like a string.
+  expect(roomUnder([{ type: "text", text: "abc" }, { type: "image" }, { type: "text", text: "\u20ac" }], 100)).toBe(100 - 3 - 3 - 2);
 });
