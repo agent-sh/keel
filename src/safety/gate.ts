@@ -3,6 +3,7 @@
 // turn waits on. Cards, grants and modes are stored. A card a restart left
 // open (a crash, a kill, a stop) stays open: the continued turn runs its call
 // again and waits on the same card, and an answer given before that is kept.
+import { heldFile } from "../core/store-files.ts";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize } from "node:path";
@@ -158,7 +159,7 @@ function entriesChanged(c: CallClass, input: any): CallClass {
   const rules = new Set(c.paths.flatMap(programRules));
   if (!rules.size) return c;
   const read = (p: string): string | null => {
-    try { const st = statSync(p); return st.isFile() && st.size <= ENTRY_FILE_MAX ? readFileSync(p, "utf8") : null; } catch (e: any) { return e?.code === "ENOENT" ? "" : null; }
+    try { const st = statSync(p); return st.isFile() && st.size <= ENTRY_FILE_MAX && !heldFile(p) ? readFileSync(p, "utf8") : null; } catch (e: any) { return e?.code === "ENOENT" ? "" : null; }
   };
   const texts = new Map(c.paths.map((p) => [p, read(p)]));
   const names = new Set(c.names ?? []);

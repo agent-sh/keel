@@ -3,6 +3,7 @@
 // by a daemon to the daemons paired with it (behind its link check), and by the
 // helper an ssh machine runs (src/fleet/hands-main.ts), behind a socket only
 // its user can open. The same handlers in both.
+import { heldFile } from "../core/store-files.ts";
 import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { git, gitEnv, innerWork } from "../core/git.ts";
 import { dirname, resolve } from "node:path";
@@ -210,6 +211,7 @@ export function handsRoutes(deps: { spillRoot: string; capture: (err: unknown, c
         const u = new URL(req.url).searchParams;
         const p = resolve(u.get("path") ?? "");
         if (!u.get("root") || !contains(resolve(u.get("root")!), p) || !contains(realOf(u.get("root")!), realOf(p))) return bad("outside the granted directory");
+        { const held = heldFile(p); if (held) return bad(held); }
         mkdirSync(dirname(p), { recursive: true });
         await Bun.write(p, await req.arrayBuffer());
         return json({ ok: true });
@@ -220,6 +222,7 @@ export function handsRoutes(deps: { spillRoot: string; capture: (err: unknown, c
         const u = new URL(req.url).searchParams;
         const p = resolve(u.get("path") ?? "");
         if (!u.get("root") || !contains(resolve(u.get("root")!), p)) return bad("outside the granted directory");
+        { const held = heldFile(p); if (held) return bad(held); }
         const file = Bun.file(p);
         return (await file.exists()) ? new Response(file, { headers: { "content-type": "application/octet-stream" } }) : bad("no such file", 404);
       },

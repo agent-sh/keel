@@ -24,7 +24,7 @@
 // - nothing else opens them: the file tools and the routes that read a path
 //   ask `heldFile` first and leave these files alone. A stat is fine.
 // src/conventions.test.ts holds the list of files that may name them.
-import { fstatSync, openSync, realpathSync, statSync } from "node:fs";
+import { fstatSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { claimNote, isClaimFile } from "./claim.ts";
 
@@ -93,4 +93,25 @@ export function heldFile(path: string): string | undefined {
   if (isClaimFile(path)) return claimNote(path);
   if (isStoreFile(path)) return `${path} is the daemon's own store. It is not opened from inside the daemon: closing it there would drop the daemon's locks on it. Read it with a command (sqlite3 in read-only mode: sqlite3 -readonly), or ask the daemon's API.`;
   return undefined;
+}
+
+// Whether this process still holds a lock on the store's database file, as
+// the kernel's own table has it (Linux: /proc/locks). Every site that reads
+// a path is asked to leave the store's files alone, and this is what says
+// so when one did not: a daemon without its lock looks well and is one
+// foreign close away from losing its log. Undefined where the table cannot
+// be read. The table is read in parts while it changes, so a lock is taken
+// to be gone only when several reads in a row do not show it.
+export function storeLocked(stateDir: string, table: () => string = () => readFileSync("/proc/locks", "utf8"), pid = process.pid): boolean | undefined {
+  let ino: number;
+  try { ino = statSync(storePath(stateDir)).ino; } catch { return undefined; }
+  for (let n = 0; n < 5; n++) {
+    let text: string;
+    try { text = table(); } catch { return undefined; }
+    for (const line of text.split("\n")) {
+      const f = line.trim().split(/\s+/);
+      if (f[1] === "POSIX" && Number(f[4]) === pid && f[5]?.endsWith(`:${ino}`)) return true;
+    }
+  }
+  return false;
 }

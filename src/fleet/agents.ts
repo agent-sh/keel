@@ -8,6 +8,7 @@
 // Starting one is judged by the gate as `keel__spawn_on_machine` (the spawn
 // tools' target); `keel__send_files` copies files of the caller's workspace
 // into the agent's directory there.
+import { heldFile } from "../core/store-files.ts";
 import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { GIT_SHELL_ENV, GIT_SHELL_FETCH, gitReach, type GitFetch } from "../core/git.ts";
 import { isAbsolute, join, relative, resolve } from "node:path";
@@ -224,6 +225,8 @@ export class RemoteAgents implements RemotePlacer {
     try {
       for (const f of files) {
         const to = join(child.workspace, relative(ws, f));
+        const held = heldFile(f);
+        if (held) return err(`Error [PERMISSION_DENIED]: ${held} ${sent.length} file(s) were copied before it.`);
         const data = readFileSync(f);
         const r = await this.fleet.hands(m.id, `/api/fleet/hands/put?path=${encodeURIComponent(to)}&root=${encodeURIComponent(m.workspace_root)}`, { method: "POST", body: data, headers: { "content-type": "application/octet-stream" }, timeout: 120_000 });
         if (!r.ok) {

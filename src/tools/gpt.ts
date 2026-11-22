@@ -3,6 +3,7 @@
 // apply_patch in the V4A grammar, update_plan, request_user_input).
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
+import { heldFile } from "../core/store-files.ts";
 import { APPLY_PATCH_GRAMMAR as grammar } from "./apply_patch_grammar.ts";
 import { ask, type Question } from "./interact.ts";
 import { cleanTerm, findJob, hasUnread, running, startJob, takeUnread, waitJob, writeJob, type Job } from "./jobs.ts";
@@ -208,6 +209,7 @@ const view_image: Tool = {
     let st;
     try { st = statSync(p); } catch { return fail(`unable to locate image at \`${p}\``); }
     if (!st.isFile()) return fail(`image path \`${p}\` is not a file`);
+    { const held = heldFile(p); if (held) return fail(held); }
     const type = Bun.file(p).type;
     if (!/^image\/(png|jpeg|gif|webp)$/.test(type)) return fail(`\`${p}\` is not a PNG, JPEG, GIF or WebP image (${type})`);
     if (st.size > 20 * 1024 * 1024) return fail(`\`${p}\` is ${(st.size / 1048576).toFixed(0)} MB; resize it (e.g. magick) and view the copy`);

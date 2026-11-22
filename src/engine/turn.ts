@@ -1,4 +1,5 @@
 import { type Wire, wireOf, wireScope } from "../providers/wiretap.ts";
+import { heldFile } from "../core/store-files.ts";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -210,7 +211,7 @@ export function expandImports(text: string, from: string, depth = 0, seen = new 
   if (depth >= 4) return text;
   return text.replace(/^@(\S+)[ \t]*$/gm, (line, ref: string) => {
     const p = ref.startsWith("~/") ? join(homedir(), ref.slice(2)) : resolve(dirname(from), ref);
-    if (seen.has(real(p)) || rootOf(dirname(p))) return line;
+    if (seen.has(real(p)) || rootOf(dirname(p)) || heldFile(p)) return line;
     try {
       const t = readFileSync(p, "utf8");
       seen.add(real(p));
@@ -228,6 +229,8 @@ export function instructionFiles(cwd: string): string {
   for (const { path: p } of files) {
     let read: string;
     try {
+      const held = heldFile(p);
+      if (held) throw new Error(held);
       read = readFileSync(p, "utf8");
     } catch (e) {
       // Not left out silently: the model knows a source is missing, not removed.

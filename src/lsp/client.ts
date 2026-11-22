@@ -4,6 +4,7 @@
 // parsed as it arrives, every answer is a promise the caller bounds, and a
 // server that floods, stops answering or speaks something else is ended (the
 // manager starts another, with a growing pause).
+import { heldFile } from "../core/store-files.ts";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chunks, pumpText } from "../core/proc.ts";
 import { type Diag, fromLsp } from "./diff.ts";
@@ -490,6 +491,7 @@ export class LspClient {
 export const SYNC_MAX = 2 * 1024 * 1024;
 export async function readDoc(path: string): Promise<string | null> {
   try {
+    if (heldFile(path)) return null;
     const f = Bun.file(path);
     if (f.size > SYNC_MAX) return null;
     const b = await f.bytes();

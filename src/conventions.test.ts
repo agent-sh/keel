@@ -67,7 +67,28 @@ test("the store's files are named in few places and opened outside SQLite only t
     "src/core/checkpoint.ts",       // the index's kept descriptor, to read how many frames wait
     "src/core/store-files.ts",
   ]);
-  // No call of node:fs or Bun.file that opens a file is given one of their paths.
-  const opens = /\b(openSync|open|readFileSync|readFile|createReadStream|copyFileSync|copyFile|Bun\.file)\([^\n]*(["'`]keel\.db["'`]|keel\.db-(wal|shm)|-(wal|shm)[`"']|storePath\()/;
-  expect(offenders(src.filter((f) => !f.endsWith("core/store-files.ts")), opens)).toEqual([]);
+  // No call of node:fs or Bun.file that opens a file is given one of their paths: written in the
+  // call, through storePath or the names' constants, or through a variable that was given one.
+  const OPENS = "openSync|open|readFileSync|readFile|createReadStream|createWriteStream|copyFileSync|copyFile|writeFileSync|writeFile|appendFileSync|appendFile|truncateSync|truncate|Bun\\.file|Bun\\.write";
+  const STORE = String.raw`["'\`]keel\.db["'\`]|keel\.db-(wal|shm)|-(wal|shm)[\`"']|\bstorePath\(|\bSTORE_DB\b|\bSTORE_FILES\b`;
+  const others = src.filter((f) => !f.endsWith("core/store-files.ts"));
+  const inCall = new RegExp(String.raw`(?<![\w.])(${OPENS})\([^\n]*(${STORE})`);
+  expect(offenders(others, inCall)).toEqual([]);
+  const throughVariable = others.filter((f) => {
+    const text = readFileSync(f, "utf8");
+    const given = [...text.matchAll(new RegExp(String.raw`\b(?:const|let|var)\s+(\w+)\s*(?::[^=\n]+)?=[^\n;]*(${STORE})`, "g"))].map((m) => m[1]!);
+    return given.some((name) => new RegExp(String.raw`(?<![\w.])(${OPENS})\(\s*${name}\b`).test(text));
+  }).map((f) => relative(ROOT, f));
+  expect(throughVariable).toEqual([]);
+  // The lint's own cases: each of these would be caught.
+  const caught = (text: string) => inCall.test(text) || [...text.matchAll(new RegExp(String.raw`\b(?:const|let|var)\s+(\w+)\s*(?::[^=\n]+)?=[^\n;]*(${STORE})`, "g"))].some((m) => new RegExp(String.raw`(?<![\w.])(${OPENS})\(\s*${m[1]}\b`).test(text));
+  for (const bad of [
+    'const fd = openSync(join(dir, "keel.db"), "r");',
+    "const p = storePath(d);\nconst fd = openSync(p);",
+    "openSync(join(d, STORE_DB))",
+    "const shm = `${path}-shm`;\nreadFileSync(shm);",
+    "const db: string = join(state, STORE_FILES[0]);\nawait Bun.file(db).arrayBuffer();",
+    "await Bun.write(storePath(dir), bytes)",
+  ]) expect([bad, caught(bad)]).toEqual([bad, true]);
+  for (const fine of ["const p = storePath(d);\nconst st = statSync(p);", "const fd = storeFd(storePath(dir));", 'new Database(storePath(dir), { readonly: true })', 'openSync(join(tmp, "keel.db.raw"), "r")']) expect([fine, caught(fine)]).toEqual([fine, false]);
 });

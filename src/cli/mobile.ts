@@ -116,10 +116,14 @@ function viaStore(state: string, claim: { release: () => void }): Phone {
 
 function open(dir?: string): Phone {
   const state = stateDirOf(dir);
-  // The claim says whether a daemon holds the folder, whatever its lock file says.
-  const claim = claimState(state);
+  // A daemon holds the folder when it holds the claim, or when the lock file
+  // names one that is still there: a daemon from before the claim has none,
+  // and a claim can be lost (the kernel drops it when its holder closes any
+  // handle of the file). Either way the store is the daemon's to write.
+  const held = lockedDaemon(state);
+  const claim = held && held.pid !== process.pid ? null : claimState(state);
   if (claim) return viaStore(state, claim);
-  const url = lockedDaemon(state)?.url;
+  const url = (held ?? lockedDaemon(state))?.url;
   if (!url) throw new Error(`${state} is in use (a daemon starting, or a restore): run the command again in a moment`);
   return viaDaemon(url.replace(/\/+$/, ""));
 }

@@ -13,6 +13,7 @@
 // earlier copy is in what the model reads. A compaction carries each loaded
 // file unchanged; a rewind to before it lets the next call there load it again.
 // The text goes through the same trust filter as the prompt's files.
+import { heldFile } from "../core/store-files.ts";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { contains } from "../core/paths.ts";
@@ -117,6 +118,7 @@ export function loadedPaths(store: Store, sessionId: string): Set<string> {
 export function block(path: string): string | null {
   let raw: string;
   try {
+    if (heldFile(path)) return null;
     raw = readFileSync(path, "utf8");
   } catch {
     return null;
