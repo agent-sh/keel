@@ -7,7 +7,7 @@
 // apart from the sentence (`about`), only for a reader that asks for it (the
 // owner's page): the route leaves it out otherwise, and the text form, which
 // a model reads, never has it.
-import { localStamp, zoneNote } from "../core/clock.ts";
+import { localStamp, localTime, zoneNote } from "../core/clock.ts";
 import { PEER_PREFIX } from "../core/owner.ts";
 import type { ErrorRecord, TurnStatus } from "../core/types.ts";
 import { errorClass } from "./classes.ts";
@@ -452,9 +452,17 @@ export function nowLines(n: NowInput): TimelineNow {
 // one alerts and the page use, and the first line says which.
 const STATE: Record<TimelineNow["state"], string> = { working: "working", owner: "waiting on the owner", waiting: "waiting", failed: "failed", declined: "declined by the model", stopped: "stopped", resume: "waiting to resume", idle: "idle" };
 const stamp = (ts: number) => localStamp(ts).slice(5);
-export function timelineText(p: TimelinePage, opts: { title?: string; ids?: boolean } = {}): string {
+// What is new to a reader that last read at `mark`: a row that began since, or a turn that ended since
+// (it was running then, told under "now", and had no row).
+export const newSince = (r: TimelineRow, mark: number) => r.ts > mark || (r.kind === "turn" && r.ms !== undefined && r.ts + r.ms > mark);
+// `fresh`: the reader asked only for what is new since it last read (`since`: when that was; null: no
+// earlier read of it is kept, so every row is new to it). With nothing new the answer is one line.
+export function timelineText(p: TimelinePage, opts: { title?: string; ids?: boolean; fresh?: { since: number | null } } = {}): string {
   const at = p.as_of;
-  const out: string[] = [`Timeline of session ${title(opts.title, p.session_id)} (${p.session_id}), newest first. ${zoneNote(at)}; read at ${localStamp(at)}.`];
+  const last = opts.fresh?.since;
+  if (last != null && !p.rows.length && !p.next) return `Nothing new in session ${title(opts.title, p.session_id)} since you last read it at ${localTime(last)} (${dur(at - last)} ago).${p.now ? ` Now: ${STATE[p.now.state]}.` : ""}`;
+  const what = !opts.fresh ? "newest first" : last == null ? "newest first (no earlier read of yours is kept: every row)" : `new since you last read it at ${localTime(last)}, newest first`;
+  const out: string[] = [`Timeline of session ${title(opts.title, p.session_id)} (${p.session_id}), ${what}. ${zoneNote(at)}; read at ${localStamp(at)}.`];
   if (p.now) {
     out.push(`Now: ${STATE[p.now.state]}.`);
     for (const l of p.now.lines) {

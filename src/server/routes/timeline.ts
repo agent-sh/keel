@@ -24,7 +24,7 @@
 import { buildBundle } from "../../admin/bundle.ts";
 import { sessionRef, sessionRefs } from "../../admin/session-ref.ts";
 import { ONLY, PAGE, PAGE_MAX, parseSince, Timeline, type Live, type Only } from "../../admin/timeline.ts";
-import { timelineText } from "../../admin/timeline-rows.ts";
+import { newSince, timelineText } from "../../admin/timeline-rows.ts";
 import { hasPending } from "../../automation/core.ts";
 import { sessionState } from "../../automation/state.ts";
 import { jobsOf, running } from "../../tools/jobs.ts";
@@ -63,6 +63,13 @@ export const liveOf = ({ store, engine }: Pick<Deps, "store" | "engine">): Live 
 
 export const timelineRoutes: RouteModule = ({ store, engine }) => {
   const timeline = new Timeline(store, liveOf({ store, engine }));
+  // When each session last read a timeline with the tool, and the turn that ran in it then (told under
+  // "now", it had no row yet): "what is new since I last read" is answered from here, with no time for
+  // the model to work out. Kept in the store: a restart is when a coordinator asks.
+  store.migrate("CREATE TABLE IF NOT EXISTS timeline_reads (reader TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, ts INTEGER NOT NULL, open_ts INTEGER, PRIMARY KEY (reader, session_id)) WITHOUT ROWID");
+  const lastRead = (reader: string, id: string) => store.db.query<{ ts: number; open_ts: number | null }, [string, string]>("SELECT ts, open_ts FROM timeline_reads WHERE reader = ? AND session_id = ?").get(reader, id);
+  const markRead = (reader: string, id: string, ts: number, open: number | undefined) =>
+    void store.db.query("INSERT INTO timeline_reads (reader, session_id, ts, open_ts) VALUES (?, ?, ?, ?) ON CONFLICT(reader, session_id) DO UPDATE SET ts = excluded.ts, open_ts = excluded.open_ts").run(reader, id, ts, open ?? null);
   // The text form as a tool, for a session with no shell to ask the route:
   // its own timeline, or that of an agent it started, and no other session's.
   const SessionTimeline: Tool = {
@@ -76,6 +83,7 @@ export const timelineRoutes: RouteModule = ({ store, engine }) => {
         session: { type: "string", description: "An agent you started (its id or session id). Omit for this session." },
         open: { type: "string", description: "An id a row ends with (error=ID or turn=ID): that failure, its trace and the events before it, instead of the rows." },
         since: { type: "string", description: "Nothing older: a span back from now (90s, 30m, 1h, 2d) or an ISO time." },
+        new: { type: "boolean", description: "Only what is new since you last read this timeline with this tool (one line when nothing is). No time to work out." },
         only: { type: "string", enum: ONLY },
         limit: { type: "integer", description: `Rows, 1 to ${PAGE_MAX} (default ${PAGE}).` },
         before: { type: "string", description: "The cursor an answer ended with, for older rows." },
@@ -113,12 +121,20 @@ export const timelineRoutes: RouteModule = ({ store, engine }) => {
         return ok(buildBundle(store, tracer, { error, ...(turn ? { session_id: owner, turn_event: turn.id } : {}), daemon: { state_dir: store.stateDir }, own: true, live: (sid) => ({ running: engine.isRunning(sid), status: engine.statusOf(sid) }) }).markdown);
       }
       const { limit, only } = input ?? {};
+      const fresh = input?.new === true;
+      if (fresh && (input?.since !== undefined || input?.before !== undefined)) return fail("new reads from your last read of this timeline: leave since and before out with it.");
       if (limit !== undefined && !(Number.isInteger(limit) && limit >= 1)) return fail(`limit is a whole number of rows from 1 up (${PAGE} by default, at most ${PAGE_MAX})`);
       if (only !== undefined && !ONLY.includes(only)) return fail(`only is one of ${ONLY.join(", ")}`);
       try {
         // Read until its turns are placed on a branch (a long session's first read is not): a model reads this once.
-        const page = await timeline.settled(id, { before: input?.before ? String(input.before) : null, limit, only: only ?? null, since: input?.since ? parseSince(String(input.since)) : null });
-        return ok(timelineText(page, { title: s.title }));
+        const last = fresh ? lastRead(ctx.sessionId, id) : undefined;
+        // A turn that ran at the last read began before it: the read goes back to its start, and what was told then is left out below.
+        const from = last ? Math.min(last.ts, last.open_ts ?? last.ts) : undefined;
+        const page = await timeline.settled(id, { before: input?.before ? String(input.before) : null, limit, only: only ?? null, since: from !== undefined ? from : input?.since ? parseSince(String(input.since)) : null });
+        if (last) page.rows = page.rows.filter((r) => newSince(r, last.ts));
+        // A whole read (no filter, no older page) is what "last read" means from here on.
+        if (!input?.before && !only) markRead(ctx.sessionId, id, page.as_of, page.now?.lines.find((l) => l.kind === "turn" && l.open)?.ts);
+        return ok(timelineText(page, { title: s.title, ...(fresh ? { fresh: { since: last?.ts ?? null } } : {}) }));
       } catch (e) {
         return fail((e as Error).message);
       }

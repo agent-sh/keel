@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { localStamp, zoneLabel } from "../core/clock.ts";
 import { outcomeOf as recorded } from "./outcomes.ts";
-import { ABOUT_MAX, aboutOf, activityRow, dur, errorRow, failureRow, isFailure, markRow, nowLines, originOf, outcomeOf, timelineText, turnRow } from "./timeline-rows.ts";
+import { ABOUT_MAX, aboutOf, activityRow, dur, errorRow, failureRow, isFailure, markRow, newSince, nowLines, originOf, outcomeOf, timelineText, turnRow, type TimelineRow } from "./timeline-rows.ts";
 
 const start = { id: "t1", ts: 1_000 };
 
@@ -257,4 +257,21 @@ test("a turn is about the first words of the owner's prompt, and of no one else'
   const start = { id: "t1", ts: 1 };
   expect(turnRow({ start, opener: { about: "Fix the retry test" }, end: { reason: "end_turn" }, steps: 1, tools: 0, failed_tools: 0 }).about).toBe("Fix the retry test");
   expect(turnRow({ start, opener: { kind: "subagent" }, end: { reason: "end_turn" }, steps: 1, tools: 0, failed_tools: 0 }).about).toBeUndefined();
+});
+
+test("what is new since a reader's last read: rows begun since, a turn that ended since, and one line when nothing is", () => {
+  const mark = new Date(2026, 10, 22, 7, 7, 3).getTime();
+  const row = (o: Partial<TimelineRow> & { id: string; ts: number }): TimelineRow => ({ kind: "agent", sub: "completed", tone: "plain", text: "Agent \"Lane\" reported", ...o });
+  // A turn that ran at the last read (it was under "now" then) and ended since is new; one that had ended is not.
+  expect(newSince(row({ id: "a", ts: mark + 1 }), mark)).toBe(true);
+  expect(newSince(row({ id: "b", ts: mark - 5000 }), mark)).toBe(false);
+  expect(newSince(row({ id: "c", ts: mark - 5000, kind: "turn", ms: 9000 }), mark)).toBe(true);
+  expect(newSince(row({ id: "d", ts: mark - 5000, kind: "turn", ms: 1000 }), mark)).toBe(false);
+  const page = { session_id: "s1", as_of: mark + 120_000, now: { state: "waiting" as const, lines: [] }, rows: [], next: null };
+  expect(timelineText(page, { title: "Dozen lanes", fresh: { since: mark } })).toBe('Nothing new in session "Dozen lanes" since you last read it at 07:07:03 (2 min ago). Now: waiting.');
+  const some = timelineText({ ...page, rows: [row({ id: "a", ts: mark + 1000 })] }, { title: "Dozen lanes", fresh: { since: mark } }).split("\n");
+  expect(some[0]).toStartWith('Timeline of session "Dozen lanes" (s1), new since you last read it at 07:07:03, newest first. Times are local');
+  expect(some).toHaveLength(3);
+  // No earlier read is kept (the first one): every row, and the answer says so.
+  expect(timelineText(page, { title: "Dozen lanes", fresh: { since: null } }).split("\n")[0]).toContain("newest first (no earlier read of yours is kept: every row).");
 });
