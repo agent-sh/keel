@@ -3,12 +3,16 @@
 // address has no navigator.clipboard at all. Then (or when it refuses) the
 // text is copied through a hidden text field, the way browsers always allowed
 // from a click. A copy that fails both ways throws: the caller reports it.
+// In the desktop app the page has no clipboard of its own: the app writes
+// it, for a copy that was announced at the owner's press (lib/shell.ts).
 import { announce } from "./announce.ts";
+import { shell, shellCopy, shellCopying } from "./shell.ts";
 import { reportError } from "./store.ts";
 import { tipSay } from "./tips.ts";
 
 export const COPY_FAILED = "Copy failed";
 export async function copyText(text: string): Promise<void> {
+  if (shell) { shellCopying(); return shellCopy(text); }
   if (window.isSecureContext && navigator.clipboard?.writeText) {
     try { return await navigator.clipboard.writeText(text); } catch { /* the field below */ }
   }
@@ -38,6 +42,8 @@ export async function copyOrSay(text: string | (() => string | Promise<string>),
     reportError(err, { kind: "clipboard" });
     return false;
   };
+  // Said now, at the owner's press: the text may take a moment to get.
+  shellCopying();
   let value: string;
   try { value = typeof text === "function" ? await text() : text; } catch (err) { return failed(err, err instanceof Error ? err.message : String(err)); }
   try { await copyText(value); } catch (err) { return failed(err, "the browser refused the clipboard."); }

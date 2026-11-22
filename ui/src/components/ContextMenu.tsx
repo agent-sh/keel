@@ -2,7 +2,7 @@ import { Menu } from "@base-ui/react/menu";
 import { ClipboardPaste, Copy, ExternalLink, Link2, Scissors, TextSelect } from "lucide-react";
 import { useEffect, useState } from "react";
 import { copyOrSay } from "../lib/copy.ts";
-import { inShell } from "../lib/shell.ts";
+import { inShell, shell, shellPaste } from "../lib/shell.ts";
 import { reportError } from "../lib/store.ts";
 import { itemClass, popupClass } from "./ui.tsx";
 
@@ -47,7 +47,8 @@ export function ContextMenuHost() {
   // Through the shared copy: it works on a page with no async clipboard, and a failure is said.
   const copy = () => copyOrSay(at.picked);
   const cut = async () => { if (await copy()) document.execCommand("delete"); };
-  const paste = async () => { const text = await navigator.clipboard.readText(); if (text) document.execCommand("insertText", false, text); };
+  // (In the desktop app the page has no clipboard of its own: the app reads it at this press.)
+  const paste = async () => { const text = shell ? (await shellPaste())?.text : await navigator.clipboard.readText(); if (text) document.execCommand("insertText", false, text); };
   const all = () => (at.field ? at.field.select() : document.execCommand("selectAll"));
   const writes = !!(at.field || at.editable) && !at.field?.readOnly && !at.field?.disabled;
   const anchor = { getBoundingClientRect: () => DOMRect.fromRect({ x: at.x, y: at.y, width: 0, height: 0 }) };

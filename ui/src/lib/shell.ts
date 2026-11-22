@@ -10,7 +10,9 @@ export type Shell = {
   // "main": the app's window. "session": one session in a window of its own.
   window: "main" | "session";
   can: { titlebar: boolean; windows: boolean; links: boolean; notifications: boolean; tray: boolean };
-  // To the shell: { t: "look", ... }, { t: "window", path }, { t: "paste" }, { t: "start" }.
+  // To the shell: { t: "look", ... }, { t: "window", path }, { t: "start" }, and the
+  // clipboard, which the page reaches only through the app there:
+  // { t: "paste", id }, { t: "copying" }, { t: "copy", id, text }.
   post(message: unknown): void;
 };
 
@@ -57,7 +59,50 @@ export function hexOf(color: string, ctx: Pick<CanvasRenderingContext2D, "fillSt
 //     keyboard is.
 //   daemon: "up" (join it now) or "away" (the title bar says so).
 //   scale: the text size keys, which drive the page's own setting.
-export type ShellTold = { open?: string; from?: string; daemon?: "up" | "away"; scale?: "up" | "down" | "reset" };
+//   pasted, copied: the app's answers to a paste and a copy the page asked for, by number.
+export type Pasted = { id: number; text?: string | null; images: { type: string; data: string }[]; refused?: boolean };
+export type ShellTold = { open?: string; from?: string; daemon?: "up" | "away"; scale?: "up" | "down" | "reset"; pasted?: Pasted; copied?: { id: number; ok: boolean } };
+
+// The clipboard in the app. The app's web view gives a page no clipboard of its own (no frame
+// in it may read or write one), so the page asks the app, which answers only at the owner's own
+// key or press:
+//   - a paste whose event carried nothing (a copied picture): what the clipboard holds;
+//   - a copy: announced at the press (`shellCopying`), then the text once the page has it.
+let asked = 0;
+const waiting = new Map<number, (answer: unknown) => void>();
+if (shell) {
+  addEventListener("keel-shell", (e) => {
+    const d = (e as CustomEvent<ShellTold>).detail;
+    const answer = d?.pasted ?? d?.copied;
+    if (!answer) return;
+    waiting.get(answer.id)?.(answer);
+    waiting.delete(answer.id);
+  });
+}
+function ask<T>(message: object, ms = 8000): Promise<T | null> {
+  return new Promise((done) => {
+    const id = ++asked;
+    waiting.set(id, done as (answer: unknown) => void);
+    shell!.post({ ...message, id });
+    setTimeout(() => { if (waiting.delete(id)) done(null); }, ms);
+  });
+}
+// The pictures of an answer, as files.
+export function pastedFiles(images: Pasted["images"]): File[] {
+  return images.flatMap((im) => {
+    if (!im.type.startsWith("image/")) return [];
+    const raw = atob(im.data);
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    return [new File([bytes], `pasted.${im.type.slice(6).replace(/[^a-z0-9]/g, "") || "png"}`, { type: im.type })];
+  });
+}
+export const shellPaste = () => ask<Pasted>({ t: "paste" });
+export const shellCopying = () => shell?.post({ t: "copying" });
+export async function shellCopy(text: string): Promise<void> {
+  const answer = await ask<{ ok: boolean }>({ t: "copy", text });
+  if (!answer?.ok) throw new Error("The app did not copy to the clipboard");
+}
 
 // A path the shell asked the page to show, as the parts the page acts on.
 export function pathParts(path: string): { pathname: string; event: string | null; approval: string | null; inbox: boolean } {

@@ -58,17 +58,3 @@ export function fromBlock(b: PromptBlock, i: number): Attachment {
   const bytes = Math.floor((b.data.length * 3) / 4);
   return { type: "image", media_type: b.media_type, data: b.data, id: crypto.randomUUID(), name: `image ${i + 1}`, url: `data:${b.media_type};base64,${b.data}`, bytes };
 }
-
-// The images the clipboard holds, as files, read through the clipboard itself:
-// for a paste whose event carries nothing for a copied image. `read` is the
-// clipboard's own (injected for a test); a page that may not read it gets none.
-export async function pastedImages(read: () => Promise<{ types: readonly string[]; getType(t: string): Promise<Blob> }[]> = () => navigator.clipboard.read()): Promise<File[]> {
-  const out: File[] = [];
-  for (const item of await read()) {
-    const type = item.types.find((t) => t.startsWith("image/"));
-    if (!type) continue;
-    const blob = await item.getType(type);
-    out.push(new File([blob], `pasted.${type.slice(6).replace(/[^a-z0-9]/g, "") || "png"}`, { type }));
-  }
-  return out;
-}

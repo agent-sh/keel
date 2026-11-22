@@ -3,7 +3,7 @@ import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, typ
 import type { PromptBlock } from "../../../src/core/types.ts";
 import { slash, type SlashItem } from "../lib/extend.ts";
 import { loadMcpPrompts } from "../lib/tools-ui.ts";
-import { fromBlock, pastedImages, toAttachment, toBlock, type Attachment } from "../lib/images.ts";
+import { fromBlock, toAttachment, toBlock, type Attachment } from "../lib/images.ts";
 import { boxRefused, ownFocus } from "../lib/asks.ts";
 import { composing, fuzzy, isMac, keyLabel, QUEUE_KEYS, SEND_KEYS } from "../lib/keys.ts";
 import { splitId } from "../lib/fleet-ids.ts";
@@ -14,7 +14,7 @@ import { getState, onFeature, reportError, reportUnlessGone, useStore, failed } 
 import { openFocus } from "../lib/self-focus.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { lineage } from "../../../src/core/tree.ts";
-import { shell } from "../lib/shell.ts";
+import { pastedFiles, shell, shellPaste } from "../lib/shell.ts";
 import { cn, scrollMotion } from "../lib/utils.ts";
 import { FallbackChip } from "./Fallback.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
@@ -758,13 +758,11 @@ const SessionComposer = memo(function SessionComposer({
         onPaste={(e) => {
           const fs = [...e.clipboardData.files];
           if (fs.length) { e.preventDefault(); addFiles(fs); return; }
-          // A web view that hands the paste nothing at all for a copied image
-          // (WebKitGTK does): the image is read from the clipboard itself.
-          // Only on the owner's own paste, and the desktop app is told first:
-          // it lets the clipboard be read for this one paste and at no other time.
-          if (!e.clipboardData.types.length && e.nativeEvent.isTrusted) {
-            shell?.post({ t: "paste" });
-            pastedImages().then((images) => { if (images.length) addFiles(images); }).catch(() => {});
+          // In the desktop app the engine hands a paste nothing at all for a copied picture.
+          // There, on the owner's own paste, the app reads the clipboard and hands the picture
+          // over (lib/shell.ts). A browser tab asks no clipboard for anything.
+          if (shell && !e.clipboardData.types.length && e.nativeEvent.isTrusted) {
+            shellPaste().then((got) => { const files = pastedFiles(got?.images ?? []); if (files.length) addFiles(files); }).catch(() => {});
           }
         }}
         onKeyDown={(e) => {

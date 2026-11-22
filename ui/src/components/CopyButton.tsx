@@ -6,6 +6,7 @@ import { Check, Copy, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { announce } from "../lib/announce.ts";
 import { COPY_FAILED, copyText } from "../lib/copy.ts";
+import { shellCopying } from "../lib/shell.ts";
 import { reportError } from "../lib/store.ts";
 import { tipNow } from "../lib/tips.ts";
 import { cn } from "../lib/utils.ts";
@@ -19,7 +20,8 @@ export function CopyButton({ text, label = "Copy", testid = "copy", className }:
     clearTimeout(timer.current);
     timer.current = window.setTimeout(() => setState("idle"), ms);
   };
-  const copy = (button: Element) => Promise.resolve(typeof text === "function" ? text() : text).then(copyText).then(
+  // (In the desktop app a copy is announced at the press: the text may take a moment to get.)
+  const copy = (button: Element) => (shellCopying(), Promise.resolve(typeof text === "function" ? text() : text)).then(copyText).then(
     () => { show("done", 1400); announce("Copied"); },
     (err) => {
       show("failed", 2600);

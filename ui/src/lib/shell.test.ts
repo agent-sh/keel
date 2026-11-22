@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { BROUGHT_MS, broughtHere, hexOf, pathParts, wasBrought } from "./shell.ts";
+import { BROUGHT_MS, broughtHere, hexOf, pastedFiles, pathParts, wasBrought } from "./shell.ts";
 
 // The review's case: a link raised the window and a card took the keyboard on its answer.
 test("an arrival from outside the page holds the keyboard off the answers for a while, then no longer", () => {
@@ -26,14 +26,9 @@ test("a color is told as the bytes the canvas drew", () => {
   expect(hexOf("red", null)).toBeUndefined();
 });
 
-test("a copied image the paste event did not carry is read from the clipboard", async () => {
-  const { pastedImages } = await import("./images.ts");
-  const png = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
-  const items = [
-    { types: ["text/plain"], getType: async () => new Blob(["words"]) },
-    { types: ["text/html", "image/png"], getType: async (t: string) => (t === "image/png" ? png : new Blob([])) },
-  ];
-  const files = await pastedImages(async () => items);
+test("the pictures the app hands a paste are files", () => {
+  const png = btoa(String.fromCharCode(137, 80, 78, 71));
+  const files = pastedFiles([{ type: "text/plain", data: btoa("words") }, { type: "image/png", data: png }]);
   expect(files.map((f) => [f.name, f.type, f.size])).toEqual([["pasted.png", "image/png", 4]]);
-  expect(await pastedImages(async () => [])).toEqual([]);
+  expect(pastedFiles([])).toEqual([]);
 });

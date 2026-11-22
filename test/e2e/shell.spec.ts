@@ -202,6 +202,80 @@ test("shell: the page says the daemon is away unless the app's title bar does, a
   }
 });
 
+// The review's case: the app let the engine grant one clipboard read after the page's paste,
+// and a sandboxed frame could take it. The page now has no clipboard of its own in the app: it
+// asks the app, by number, and the app answers at the owner's press (desktop/src/clip.rs).
+test("shell: a paste and a copy go through the app, and a browser tab asks no clipboard for a paste", async ({ page, request, context }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  const a = await make(request, "Shell: the clipboard");
+  await expect.poll(() => ended(request, a.id), { timeout: 60_000 }).toBe(true);
+  // Every read of the browser's own clipboard is counted.
+  const counted = () => {
+    (window as any).__reads = 0;
+    const c = navigator.clipboard;
+    if (c) for (const name of ["read", "readText"] as const) { const real = (c as any)[name]?.bind(c); (c as any)[name] = (...args: unknown[]) => { (window as any).__reads++; return real ? real(...args) : Promise.reject(new Error("none")); }; }
+  };
+  // The owner's paste key with nothing a paste event can carry: what the engine of the app hands for a copied picture.
+  const pasteNothing = async () => {
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]).catch(() => {});
+    await page.evaluate(() => navigator.clipboard.writeText("").catch(() => {}));
+    await context.clearPermissions().catch(() => {});
+    await page.evaluate(() => { (window as any).__reads = 0; (window as any).__paste = null; addEventListener("paste", (e) => { (window as any).__paste = { trusted: e.isTrusted, types: [...(e as ClipboardEvent).clipboardData!.types] }; }, true); });
+    await page.getByTestId("composer").focus();
+    await page.keyboard.press("Control+v");
+    await expect.poll(() => page.evaluate(() => (window as any).__paste)).toEqual({ trusted: true, types: [] });
+    await page.waitForTimeout(500);
+  };
+  try {
+    // In a browser tab: nothing is asked of the clipboard.
+    await page.addInitScript(counted);
+    await page.goto(`/s/${a.id}`);
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await pasteNothing();
+    expect(await page.evaluate(() => (window as any).__reads)).toBe(0);
+    await expect(page.getByTestId("attachments")).toHaveCount(0);
+
+    // In the app: the page asks the app, and takes the picture the app hands it.
+    await page.addInitScript(shellObject("main"));
+    await page.reload();
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await pasteNothing();
+    await expect.poll(async () => (await posted(page, "paste")).length).toBe(1);
+    expect(await page.evaluate(() => (window as any).__reads)).toBe(0);
+    const asked = (await posted(page, "paste"))[0];
+    expect(asked.id).toBeGreaterThan(0);
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    // An answer with another number is not this paste's.
+    await tell(page, { pasted: { id: asked.id + 100, images: [{ type: "image/png", data: png }] } });
+    await page.waitForTimeout(300);
+    await expect(page.getByTestId("attachments")).toHaveCount(0);
+    await tell(page, { pasted: { id: asked.id, text: null, images: [{ type: "image/png", data: png }] } });
+    await expect(page.getByTestId("attachments").locator("img")).toHaveCount(1);
+    await shoot(page, "shell-05-pasted-picture");
+
+    // A copy is announced at the press, sent with its text, and shown as copied only when the app says so.
+    const copy = page.getByTestId("copy-reply").first();
+    await copy.hover();
+    await copy.click();
+    await expect.poll(async () => (await posted(page, "copy")).length).toBe(1);
+    expect((await posted(page, "copying")).length).toBeGreaterThan(0);
+    const sent = (await posted(page, "copy"))[0];
+    expect(typeof sent.text).toBe("string");
+    expect(sent.text.length).toBeGreaterThan(0);
+    await expect(copy).not.toHaveAttribute("data-copied", "true");
+    await tell(page, { copied: { id: sent.id, ok: true } });
+    await expect(copy).toHaveAttribute("data-copied", "true");
+    // The app refuses one (no press it could tie it to): the button says the copy failed.
+    await page.waitForTimeout(1600);
+    await copy.click();
+    await expect.poll(async () => (await posted(page, "copy")).length).toBe(2);
+    await tell(page, { copied: { id: (await posted(page, "copy"))[1].id, ok: false } });
+    await expect(copy).toHaveAttribute("data-failed", "true");
+  } finally {
+    await request.delete(`/api/sessions/${a.id}`).catch(() => {});
+  }
+});
+
 test("shell: a browser tab has no shell", async ({ page, request }) => {
   test.skip(!(await scripted(request)), "requires the scripted provider");
   const a = await make(request, "Shell: in a browser tab");
