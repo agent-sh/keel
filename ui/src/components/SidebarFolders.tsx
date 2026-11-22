@@ -7,7 +7,7 @@ import { ChevronRight, Folder, FolderPlus, Plus, Trash2 } from "lucide-react";
 import { useRef, useState, useSyncExternalStore, type DragEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { folders, tree, useFolders, type SessionFolder } from "../lib/folders.ts";
-import { actedOn, listActed, useActed } from "../lib/list-hold.ts";
+import { actedOn, actedRev, listActed, useActed } from "../lib/list-hold.ts";
 import { useWatches, type Watch } from "../lib/watch.ts";
 import { Mark } from "./Mark.tsx";
 import { composing } from "../lib/keys.ts";
@@ -25,6 +25,8 @@ const FOLDER = "application/x-keel-folder";
 let landed = 0;
 const landSubs = new Set<() => void>();
 const mine = <T,>(act: Promise<T>): Promise<T> => act.finally(() => { landed++; landSubs.forEach((f) => f()); });
+// The folders the owner folded by their heads, each with the owner's last act on the list when they did.
+const foldedAt = new Map<string, number>();
 const useLanded = () => useSyncExternalStore((f) => (landSubs.add(f), () => landSubs.delete(f)), () => landed);
 // Quiet until the head is hovered or holds the keyboard; shown from the start where nothing hovers.
 const headAct = "grid size-6 shrink-0 place-items-center rounded-sm text-faint opacity-0 hover:bg-hover hover:text-fg group-hover/head:opacity-100 group-focus-within/head:opacity-100 focus-visible:opacity-100 touch:size-7 touch:opacity-100";
@@ -65,7 +67,7 @@ function Head({ f, n, nested, canNest, calls }: { f: SessionFolder; n: number; n
       }}
     >
       {over === "before" && <span aria-hidden="true" className="absolute inset-x-1 -top-px h-0.5 rounded-full bg-accent" />}
-      <button type="button" className="grid size-4 place-items-center" aria-label={f.collapsed ? `Open ${f.name}` : `Fold ${f.name}`} aria-expanded={!f.collapsed} data-testid="folder-toggle" onClick={() => mine(folders.collapse(f.id, !f.collapsed)).catch(reportError)}>
+      <button type="button" className="grid size-4 place-items-center" aria-label={f.collapsed ? `Open ${f.name}` : `Fold ${f.name}`} aria-expanded={!f.collapsed} data-testid="folder-toggle" onClick={() => { if (f.collapsed) foldedAt.delete(f.id); else foldedAt.set(f.id, actedRev()); mine(folders.collapse(f.id, !f.collapsed)).catch(reportError); }}>
         <ChevronRight className={cn("transition-transform", !f.collapsed && "rotate-90")} />
       </button>
       <Folder />
@@ -118,8 +120,10 @@ export function FolderGroups({ list, cmp, current, every }: { list: Session[]; c
   const loose = of("");
   // A folded folder opens for a session the owner went to (a count above the list), and folds
   // again when they have left the list: what they chose for the folder is not changed.
-  useActed();
-  const went = (f: SessionFolder) => of(f.id).some((s) => actedOn(s.id));
+  // A folder the owner folded after that stays folded: the fold is what they did last (a session
+  // dragged into a folder, then its head pressed to fold it). A later act in it opens it again.
+  const rev = useActed();
+  const went = (f: SessionFolder) => foldedAt.get(f.id) !== rev && of(f.id).some((s) => actedOn(s.id));
   // What a folded head says of the sessions it hides, as they are now: needs the owner, else failed.
   const watches = useWatches(list);
   const calls = (ss: Session[]): Watch | undefined => (ss.some((s) => watches[s.id] === "need") ? "need" : ss.some((s) => watches[s.id] === "fail" || watches[s.id] === "declined") ? "fail" : undefined);
@@ -130,7 +134,8 @@ export function FolderGroups({ list, cmp, current, every }: { list: Session[]; c
       {tree(all).map(({ folder: f, kids }) => {
         if (!show(f, kids)) return null;
         const count = of(f.id).length + kids.reduce((n, k) => n + of(k.id).length, 0);
-        const open = every || !f.collapsed || went(f) || kids.some(went);
+        // (A fold of the folder itself stands over what was done in the folders it holds too.)
+        const open = every || !f.collapsed || went(f) || (foldedAt.get(f.id) !== rev && kids.some(went));
         return (
           <section key={f.id} className="k-group" data-testid="folder-group" data-folder={f.id}>
             <Head f={f} n={count} nested={false} canNest={true} calls={open ? undefined : calls([...of(f.id), ...kids.flatMap((k) => of(k.id))])} />

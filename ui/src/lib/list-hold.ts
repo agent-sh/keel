@@ -46,6 +46,8 @@ export function forgetActed() {
   subs.forEach((f) => f());
 }
 export const useActed = () => useSyncExternalStore((f) => (subs.add(f), () => subs.delete(f)), () => rev);
+// Which of the owner's acts on the list was the last one, for what is decided by their order (a fold after a move).
+export const actedRev = () => rev;
 
 // Whether the hand is on the list: `on` is bound to the list itself (its rows
 // and what stands between them). The pointer on the tabs or the filter box

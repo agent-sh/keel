@@ -34,8 +34,11 @@ export const pathOf = (f: SessionFolder, list: SessionFolder[]) => {
 
 const patch = (id: string, body: Partial<SessionFolder>) => api(`/api/session-folders/${id}`, { method: "PATCH", body: JSON.stringify(body) }).then(() => loadFolders());
 export const folders = {
+  // Made when the list has it, as a rename and a move are: the list held under the hand draws what
+  // the owner did once the act has landed, and a folder that came a moment later was not drawn
+  // until the hand had left the list.
   create: (name: string, parent_id: string | null = null) =>
-    api<{ folder: SessionFolder }>("/api/session-folders", { method: "POST", body: JSON.stringify({ name, parent_id }) }).then((r) => { loadFolders(); return r.folder; }),
+    api<{ folder: SessionFolder }>("/api/session-folders", { method: "POST", body: JSON.stringify({ name, parent_id }) }).then(async (r) => { await loadFolders(); return r.folder; }),
   rename: (id: string, name: string) => patch(id, { name }),
   collapse: (id: string, collapsed: boolean) => patch(id, { collapsed }),
   remove: (id: string) => api(`/api/session-folders/${id}`, { method: "DELETE" }).then(() => loadFolders()),
