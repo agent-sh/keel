@@ -36,7 +36,9 @@ test("cache warning before a model or effort switch", async ({ page, request }) 
   await pickModel(page, "Scripted backup");
   await expect(confirm).toContainText("Switch to Scripted backup?");
   await expect(confirm).toContainText(/reads about [\d.]+k? tokens again without the prompt cache/);
-  await expect(confirm).toContainText(/costs about \$[\d.]+, against <?\$[\d.]+ from the cache/);
+  // (How much is in the cache depends on the system prompt, which holds the daemon's folders and instruction
+  // files: on a machine with a bare home both amounts are under a hundredth of a cent.)
+  await expect(confirm).toContainText(/costs about <?\$[\d.]+, against <?\$[\d.]+ from the cache/);
   await shoot(page, "switch-01-model-warning");
   await confirm.getByRole("button", { name: "Cancel" }).click();
   await expect(page.getByTestId("model-picker")).toContainText("Scripted stand-in");
