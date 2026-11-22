@@ -628,6 +628,7 @@ export const vault = new Vault();
 const SEEN = 160, HOLD_MAX = 600, HOLD_KEEP = 300, KEY_MAX = 16_384;
 const KEY_OPEN = /-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----(?![\s\S]*-----END[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----)/;
 const KEY_START = /-----BEGIN[ A-Z0-9_-]{0,100}$/;
+const SPACE = /\s/, LONG_RUN = /\S{12}/;
 export class StreamScan {
   private streams = new Map<string, { seen: string; held: string }>();
   constructor(private v: Vault = vault) {}
@@ -655,7 +656,12 @@ export class StreamScan {
     const known = this.v.knownStart(whole.slice(0, st.seen.length + cut));
     if (known) cut = Math.max(0, cut - known.n);
     // What is given out never ends inside a secret that is whole already (a long run cut before its end): it waits whole.
-    const hits = detect(whole);
+    // Looked at for a secret only when it can hold one: every rule's match, and an assigned value,
+    // is or lies in a run of twelve characters with no space (a key block is told by its words). The
+    // run is looked for from the start of the one the new text begins in. Prose is seldom scanned.
+    let run = st.seen.length;
+    while (run > 0 && !SPACE.test(whole[run - 1]!)) run--;
+    const hits = LONG_RUN.test(whole.slice(run)) || whole.includes("PRIVATE KEY") ? detect(whole) : [];
     for (const h of hits) if (h.start < st.seen.length + cut && h.end > st.seen.length + cut) cut = Math.max(0, h.start - st.seen.length);
     return this.give(st, all, cut, sessionId, hits.filter((h) => h.end <= st.seen.length + cut));
   }
