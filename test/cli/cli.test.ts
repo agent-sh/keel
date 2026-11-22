@@ -1774,7 +1774,9 @@ describe("a session out of memory is never read whole on the loop", () => {
       for (let i = 0; i < 600 && !indexed(); i++) await Bun.sleep(50);
       expect(indexed()).toBe(true);
       const log = () => readFileSync(join(`${state}-logs`, "start-1.log"), "utf8");
-      for (let i = 0; i < 100 && !log().includes("the index is built"); i++) await Bun.sleep(50);
+      // The index exists before its line is written: the line is what is waited for (on a loaded machine it
+      // came after 5 s), up to 60 s.
+      for (let i = 0; i < 1200 && !log().includes("the index is built"); i++) await Bun.sleep(50);
       const said = log();
       expect(said).toMatch(/\[store\] building the index of the events' rows, once \(about \d+ events\): the daemon answers meanwhile/);
       expect(said).toMatch(/\[store\] the index is built \(\d+\.\d s reading the events, \d+\.\d s building\)/);
