@@ -591,6 +591,49 @@ unprivileged user namespaces is needed for the namespaces; `--allow-network`
 runs without them (still no credentials and the same provider check, traffic
 not blocked). Dependencies are installed before the network is cut.
 
+## Checks on another machine
+
+```bash
+scripts/remote-verify.sh --host build-box                        # the commit at HEAD
+scripts/remote-verify.sh --host build-box --e2e test/e2e/chat.spec.ts   # and a browser spec
+scripts/remote-verify.sh --host build-box --only unit,cli COMMIT # some stages of another commit
+```
+
+`--host` is any name `ssh` reaches (or set `KEEL_VERIFY_HOST`). The host needs
+git, Bun and an account; nothing else of this machine is used or copied there:
+no credentials, no config, no state. The commit is pushed to a bare repository
+under `~/.cache/keel-verify` on the host (`--dir` names another folder) and
+checked out in a folder of its own, where its packages are installed from the
+lockfile. Then the typecheck, the unit suite, the page's library tests, the
+scripts' tests and the command line e2e run one after another at a low
+priority, each with a clean environment: a home, a temporary folder and a
+config folder of the run's own, no credential helper, no memory store, no
+keyring. `--e2e` adds the named browser specs through `scripts/smoke.sh`.
+
+Each stage says how it went as it ends, and a table closes the run:
+
+```
+stage       exit   pass   fail  seconds
+install        0      -      -        1
+typecheck      0      -      -        2
+unit           0   1050      0      133
+ui             0     59      0        0
+scripts        0     10      0        7
+cli            0     31      0       93
+```
+
+The logs stay on the host and are copied back (`--out DIR`). The command exits
+0 when every stage passed, 1 when one failed, 2 when it refused to start (a
+tree with changes that are not committed, no host, a tool missing there) and 3
+when the host is busy: at most two runs are on a host at once (a third waits,
+`--wait SECONDS`), and none starts when its load is over 20. A commit's folder
+and a run's logs are kept on the host for a day. Stopping the command stops
+the run on the host.
+
+A second machine is also the check that nothing assumes the first: the test
+files of a run share one process and run in the folder's order on the disk,
+which differs from one machine to the next.
+
 ## Automatic diagnostic notices
 
 Off by default. To opt in, open a dedicated coordinator session, copy its ID

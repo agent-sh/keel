@@ -116,7 +116,8 @@ under `~/.cache/keel-work/bun/research/`.
   environment and puts it back). A setting from the environment is read when
   it is used, not when its module loads. A test that needs what a machine may
   lack (a sandbox, a desktop bus, a program) probes for it and is skipped by
-  that name; it does not pass without checking.
+  that name; it does not pass without checking. A clean second machine is the
+  check: `scripts/remote-verify.sh`.
 - UI: tokens in `ui/src/styles.css` only; components use them (`bg-raised`,
   `text-muted`, `border-line`, `text-accent`). Base UI for behavior, our own
   Tailwind styling. Check the screenshots at 1920x1040 in both themes.
@@ -158,6 +159,14 @@ scripts/smoke.sh [SPEC...]       # browser specs with no credentials and no netw
                                # scripted provider in a throwaway folder and network namespace (default: chat.spec.ts)
 bun test ./test/cli              # the command line e2e (builds the binary, scripted model)
 bun test ./scripts               # the dev launcher's decisions (scripts/dev-watch.ts)
+scripts/remote-verify.sh --host build-box [--e2e SPEC...] [COMMIT]
+                               # a commit (HEAD by default; the tree must be committed) checked on another machine,
+                               # any host `ssh` reaches (or KEEL_VERIFY_HOST): pushed there, installed from the lockfile
+                               # in a folder of its own, then typecheck, unit, ui lib, scripts and the command line e2e
+                               # (and the named browser specs through scripts/smoke.sh) at a low priority with a clean
+                               # environment; one line a stage, a table at the end, the logs copied back (--out DIR).
+                               # At most two runs on a host at once, none when its load is over 20; --only unit,cli
+                               # runs some stages. The host needs git, Bun and ssh, nothing else of this machine.
 bun scripts/build.ts            # dist/keel, one binary (and dist/keel-ui.tar.gz, its page as a bundle)
 bun scripts/release.ts && scripts/release-check.sh   # a release packaged in dist/release (revision, target, checksums),
                                # then verified outside the source tree with no Bun on PATH; nothing is published
