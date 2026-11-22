@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { zoneLabel } from "../core/clock.ts";
-import { ABSENCES, daemonBrief, digest, digestBrief, digestText, Presence, stallsLine, TICK_MS, waits } from "./away.ts";
+import { ABSENCES, daemonBrief, daemonLines, digest, digestBrief, digestText, Presence, stallCause, stallsLine, TICK_MS, waits } from "./away.ts";
+import type { StallFact } from "./daemon-facts.ts";
 import type { Restart } from "./life-rows.ts";
 import { TEXT_TOKENS, tokensOf, type Overview, type OverviewRow } from "./overview.ts";
 
@@ -175,25 +176,74 @@ test("the digest names a kill, what it cut and the stalls of the absence, and co
   const d = digest(o, one, { daemon: { restarts: [killed], stalls }, questions: { [sid(4)]: 2, [sid(9)]: 1 } })!;
   expect(d.totals).toMatchObject({ approvals: 1, questions: 2 });
   const lines = digestText(d).split("\n");
-  expect(lines[0]).toBe(`While you were away, 2026-01-05 22:00:00 to 07:00:00 ${Z} (9 h): the daemon went down and came back after 29 s, 3 turns cut; unresponsive 2 times; 6 of the sessions' own turns ended in 2 sessions, 2 failed; 1 approval and 2 questions wait; $1.25 spent in all.`);
+  expect(lines[0]).toBe(`While you were away, 2026-01-05 22:00:00 to 07:00:00 ${Z} (9 h): the daemon went down and came back after 29 s, 3 turns cut (1 held for the owner); unresponsive twice; 6 of the sessions' own turns ended in 2 sessions, 2 failed; 1 approval and 2 questions wait; $1.25 spent in all.`);
   expect(lines[1]).toBe(`The daemon went down without stopping (killed, or the machine went down) at about 00:00:00 and came back at 00:00:29 ${Z} (down 29 s); 3 turns were cut: 2 resumed, 1 held for the owner.`);
   expect(lines[2]).toBe("The daemon was unresponsive 2 times, 9.9 s in all: 6.0 s blocked by its own code, outside anything it times; 3.9 s waiting for a child: the build.");
   expect(lines[3]).toBe('  "Asks", needs you: 1 turn ended; 1 approval and 2 questions wait  [session=000000000004]');
   // The Inbox's one line says it too, the daemon first.
-  expect(digestBrief(d)).toBe("the daemon went down and came back after 29 s, 3 turns cut; unresponsive 2 times; 6 turns ended, 2 failed; 1 approval and 2 questions wait");
+  expect(digestBrief(d)).toBe("the daemon went down and came back after 29 s, 3 turns cut (1 held for the owner); unresponsive twice; 6 turns ended, 2 failed; 1 approval and 2 questions wait");
   // A kill in an absence in which no turn ended is still told.
   const quiet = digest(page([row(1, { title: "Quiet" })]), one, { daemon: { restarts: [killed], stalls: [] } })!;
   expect(quiet.sessions).toEqual([]);
-  expect(digestBrief(quiet)).toBe("the daemon went down and came back after 29 s, 3 turns cut");
+  expect(digestBrief(quiet)).toBe("the daemon went down and came back after 29 s, 3 turns cut (1 held for the owner)");
   expect(digest(page([row(1, { title: "Quiet" })]), one, { daemon: { restarts: [], stalls: [] } })).toBeNull();
-  // Many restarts and many causes stay a few lines: the newest three starts, the three longest causes.
-  const starts = Array.from({ length: 7 }, (_, i) => ({ ...killed, id: `r${i}`, up_ms: up + i * MIN, before: { ...killed.before!, down_ms: down + i * MIN }, turns: [] }));
-  const causes = Array.from({ length: 9 }, (_, i) => ({ ts_ms: T0 + i, ms: 1000 * (i + 1), what: ` in cause ${i}`, kind: "call" }));
-  const busy = digest(o, one, { daemon: { restarts: starts, stalls: causes } })!;
-  expect(busy.daemon).toHaveLength(5);
-  expect(busy.daemon[0]).toBe("The daemon started 7 times; the last 3:");
-  expect(busy.daemon[4]).toEndWith("9.0 s in cause 8; 8.0 s in cause 7; 7.0 s in cause 6; 6 more causes.");
-  expect(daemonBrief({ restarts: starts, stalls: [] })).toBe("the daemon went down 7 times");
   expect(stallsLine([stalls[0]!])).toBe("The daemon was unresponsive once, 6.0 s: 6.0 s blocked by its own code, outside anything it times.");
   expect([waits(0), waits(1), waits(0, 1), waits(2, 1)]).toEqual(["", "1 approval waits", "1 question waits", "2 approvals and 1 question wait"]);
+});
+
+// A start is told by how it came about. A restart somebody asked for is never the daemon
+// going down; the starts nobody asked for are counted apart and are the ones told one by one.
+test("asked restarts are summed and never told as going down, and a kill among them is told first", () => {
+  const one = { spans: [{ from: T0, to: T0 + 9 * H }], present: true };
+  const turn = (i: number, k: number, state: Restart["turns"][number]["state"] = "continued") => ({ turn_event: `t${i}-${k}`, end_event: `e${i}-${k}`, step: 2, tools: [], ran_ms: 60_000, down_ms: 0, crashed: false, session_id: sid(k), title: `Session ${k}`, state }) as unknown as Restart["turns"][number];
+  const start = (i: number, how: "killed" | "restart" | "crash" | "stop", cut: number): Restart => {
+    const up = T0 + H + i * 10 * MIN, down = up - (how === "restart" ? 300 : 35_000);
+    return { id: `${i}`, up_ms: up, pid: 100 + i, before: { pid: 99 + i, started_ms: up - 10 * MIN, down_ms: down, how }, turns: Array.from({ length: cut }, (_, k) => turn(i, k)), settled_ms: up + 300 };
+  };
+  // Twelve restarts that were asked for in two hours, 71 turns cut and resumed.
+  const twelve = Array.from({ length: 12 }, (_, i) => start(i, "restart", i === 11 ? 5 : 6));
+  expect(daemonBrief({ restarts: twelve, stalls: [] })).toBe("the daemon restarted 12 times when asked, 71 turns cut");
+  const d = digest(page([row(1, { title: "Quiet" })]), one, { daemon: { restarts: twelve, stalls: [] } })!;
+  expect(d.daemon).toEqual(["The daemon restarted 12 times when asked (down 3.6 s in all); 71 turns were cut: 71 resumed."]);
+  expect(digestText(d)).not.toMatch(/went down|stopped by itself/);
+  // One asked restart: its own sentence, and what did not go on by itself is in the short form.
+  const held = { ...start(0, "restart", 2), turns: [turn(0, 0), turn(0, 1, "held")] };
+  expect(daemonBrief({ restarts: [held], stalls: [] })).toBe("the daemon restarted when asked, 2 turns cut (1 held for the owner)");
+  expect(digest(page([row(1, { title: "Quiet" })]), one, { daemon: { restarts: [held], stalls: [] } })!.daemon).toEqual([expect.stringMatching(/^The daemon stopped for a restart at \d\d:\d\d:\d\d and came back at \d\d:\d\d:\d\d UTC\S* \(down 300 ms\); 2 turns were cut: 1 resumed, 1 held for the owner\.$/)]);
+  // Asked restarts that cut nothing are nothing to tell by themselves.
+  const idle = Array.from({ length: 4 }, (_, i) => start(i, "restart", 0));
+  expect(daemonBrief({ restarts: idle, stalls: [] })).toBe("");
+  expect(digest(page([row(1, { title: "Quiet" })]), one, { daemon: { restarts: idle, stalls: [] } })).toBeNull();
+  // Thirty starts, three of them kills, one a failure of its own: counted by how each came about,
+  // the ones nobody asked for told one by one, the asked ones in one sentence.
+  const thirty = Array.from({ length: 30 }, (_, i) => start(i, [4, 17, 26].includes(i) ? "killed" : i === 9 ? "crash" : "restart", (i * 5) % 13));
+  const cutOwn = [4, 9, 17, 26].reduce((n, i) => n + ((i * 5) % 13), 0), cutAll = thirty.reduce((n, r) => n + r.turns.length, 0);
+  expect(daemonBrief({ restarts: thirty, stalls: [] })).toBe(`the daemon stopped by itself 4 times, ${cutOwn} turns cut; restarted 26 times when asked, ${cutAll - cutOwn} turns cut`);
+  const many = digest(page([row(1, { title: "Quiet" })]), one, { daemon: { restarts: thirty, stalls: [] } })!.daemon;
+  expect(many).toHaveLength(5);
+  expect(many[0]).toBe("The daemon stopped by itself 4 times (killed, or the machine went down; ended on a failure); the last 3:");
+  expect(many[1]).toStartWith("The daemon ended on a failure at ");
+  expect(many.slice(2, 4).every((l) => l.startsWith("The daemon went down without stopping (killed, or the machine went down) at about "))).toBe(true);
+  expect(many[4]).toBe(`It also restarted 26 times when asked (down 7.8 s in all); ${cutAll - cutOwn} turns were cut: ${cutAll - cutOwn} resumed.`);
+  expect(Buffer.byteLength(many.join("\n"))).toBeLessThan(900);
+  // Three hundred starts are as short.
+  expect(daemonLines({ restarts: Array.from({ length: 10 }, () => thirty).flat(), stalls: [] })).toHaveLength(5);
+});
+
+// Stalls are grouped by the kind of their cause: a cause's own duration, process id and
+// pressure figure do not make two of a kind read as two causes.
+test("stalls of one kind are one entry, in the words of the longest, without its duration or pid", () => {
+  const stall = (i: number): StallFact => {
+    const ms = 600 + ((i * 977) % 8400);
+    const [what, kind] = [[`${(ms / 1000).toFixed(1)} s waiting for a child: git status (pid ${40000 + i})`, "child"], ["blocked by its own code, outside anything it times", "compute"], [`${(ms / 1000 - 0.2).toFixed(1)} s writing the store's log (keel.db-wal) (IO pressure ${3 + i}%)`, "io"], [`${(ms / 1000).toFixed(1)} s stopped by a signal (continued by SIGCONT)`, "stopped"]][i % 4]!;
+    return { ts_ms: T0 + i * MIN, ms, what: what!, kind: kind! };
+  };
+  const forty = stallsLine(Array.from({ length: 40 }, (_, i) => stall(i)));
+  expect(forty).toBe("The daemon was unresponsive 40 times, 3 min in all: 49 s (10 times) blocked by its own code, outside anything it times; 47 s (10 times) waiting for a child: git status; 43 s (10 times) stopped by a signal (continued by SIGCONT); 1 more kind of cause.");
+  expect(forty).not.toMatch(/pid \d|pressure \d|\d s \d/);
+  expect(stallsLine([stall(3), stall(7)])).toMatch(/^The daemon was unresponsive 2 times, [\d.]+ s in all: [\d.]+ s \(2 times\) stopped by a signal \(continued by SIGCONT\)\.$/);
+  // Two children of different commands are one kind: the longest is named, and that there are others.
+  const kids = [{ ts_ms: T0, ms: 4000, what: "4.0 s waiting for a child: sleep 4 (pid 1)", kind: "child" }, { ts_ms: T0 + 1, ms: 2000, what: "2.0 s waiting for a child: git status (pid 2)", kind: "child" }];
+  expect(stallsLine(kids)).toBe("The daemon was unresponsive 2 times, 6.0 s in all: 6.0 s (2 times) waiting for a child: sleep 4 and others of that kind.");
+  expect(stallCause("2.1 s waiting for a processor (machine load 22, CPU pressure 41%)")).toBe("waiting for a processor");
 });

@@ -20,7 +20,7 @@
 import { zoned, zoneLabel } from "../core/clock.ts";
 import { WATCH_LABEL, WATCH_RANK, type Watch } from "../core/watch.ts";
 import type { DaemonFacts, StallFact } from "./daemon-facts.ts";
-import { type Restart, restartSummary } from "./life-rows.ts";
+import { type Restart, restartSummary, tally } from "./life-rows.ts";
 import { agentsText, costText, cutText, failedText, fitted, MAX, name, plural, shortId, SINCE_MAX_MS, titleAt, usd, type Overview, type OverviewRow } from "./overview.ts";
 import { dur } from "./timeline-rows.ts";
 
@@ -154,45 +154,81 @@ export type DigestMore = { daemon?: DaemonFacts; questions?: Record<string, numb
 const RESTARTS_TOLD = 3;
 const CAUSES_TOLD = 3;
 const secs = (ms: number) => (ms < 10_000 ? `${(ms / 1000).toFixed(1)} s` : dur(ms));
-// "2 times, 9.9 s in all: 6.0 s blocked by its own code; 3.9 s waiting for a child: sleep 4".
+const times = (n: number) => (n === 1 ? "once" : n === 2 ? "twice" : `${n} times`);
+// A stall's cause without what makes two stalls of one cause read differently: the
+// duration it opens with, a process id, a pressure figure.
+export const stallCause = (what: string): string =>
+  what.replace(/^[:\s]+/, "").replace(/^\d+(?:\.\d+)?\s*(?:ms|s|min|h)\s+/, "").replace(/\s*\((?:pid \d+|[A-Za-z ]*pressure \d+%|machine load \d+(?:, [A-Za-z ]*pressure \d+%)?)\)/g, "").trim() || "cause not known";
+// "4 times, 15 s in all: 9.0 s (2 times) stopped by a signal; 6.0 s waiting for a child: git status and others."
+// One entry a kind of cause, the longest first, in the words of its longest stall.
 export function stallsLine(stalls: StallFact[]): string {
   if (!stalls.length) return "";
   const total = stalls.reduce((n, s) => n + s.ms, 0);
-  // One entry a cause, the longest first: the cause is what the stall's row says after its duration.
-  const by = new Map<string, { ms: number; n: number }>();
+  const by = new Map<string, { ms: number; n: number; longest: number; what: string; texts: Set<string> }>();
   for (const s of stalls) {
-    const what = s.what.replace(/^[:\s]+/, "").trim() || "cause not known";
-    const c = by.get(what) ?? by.set(what, { ms: 0, n: 0 }).get(what)!;
+    const what = stallCause(s.what);
+    const c = by.get(s.kind || what) ?? by.set(s.kind || what, { ms: 0, n: 0, longest: -1, what, texts: new Set() }).get(s.kind || what)!;
     c.ms += s.ms;
     c.n++;
+    c.texts.add(what);
+    if (s.ms > c.longest) { c.longest = s.ms; c.what = what; }
   }
-  const causes = [...by].sort((a, b) => b[1].ms - a[1].ms);
-  const told = causes.slice(0, CAUSES_TOLD).map(([what, c]) => `${secs(c.ms)}${c.n > 1 ? ` (${c.n} times)` : ""} ${what}`);
-  if (causes.length > CAUSES_TOLD) told.push(`${causes.length - CAUSES_TOLD} more causes`);
+  const causes = [...by.values()].sort((a, b) => b.ms - a.ms);
+  const told = causes.slice(0, CAUSES_TOLD).map((c) => `${secs(c.ms)}${c.n > 1 ? ` (${c.n} times)` : ""} ${c.what}${c.texts.size > 1 ? " and others of that kind" : ""}`);
+  if (causes.length > CAUSES_TOLD) told.push(`${causes.length - CAUSES_TOLD} more ${causes.length - CAUSES_TOLD === 1 ? "kind of cause" : "kinds of cause"}`);
   return `The daemon was unresponsive ${stalls.length === 1 ? "once" : `${stalls.length} times`}, ${secs(total)}${stalls.length > 1 ? " in all" : ""}: ${told.join("; ")}.`;
 }
-// The sentences, a bounded few: the newest restarts, then the stalls in one.
+
+// How a start came about decides how it is told. `own`: nobody asked the daemon to stop
+// (a kill, the machine, a failure of its own, an end nothing recorded). `asked`: a restart or a
+// stop somebody asked for. An asked one is never told as the daemon going down.
+const wasAsked = (r: Restart) => r.before?.how === "restart" || r.before?.how === "stop";
+const cutOf = (rs: Restart[]) => rs.flatMap((r) => r.turns.filter((t) => !t.earlier));
+const downOf = (rs: Restart[]) => rs.reduce((n, r) => n + (r.before ? Math.max(0, r.up_ms - r.before.down_ms) : 0), 0);
+// "(killed, or the machine went down; ended on a failure)": the ways among these starts.
+function ownWays(rs: Restart[]): string {
+  const has = (how: string | undefined) => rs.some((r) => r.before?.how === how);
+  return [has("killed") ? "killed, or the machine went down" : "", has("crash") ? "ended on a failure" : "", rs.some((r) => !r.before) ? "an end that was not recorded" : ""].filter(Boolean).join("; ");
+}
+// The sentences, a bounded few. The starts nobody asked for come first, the newest of them
+// each in a sentence; the asked ones are one sentence: how many, the time down, what they cut.
+// Then the stalls in one. Asked restarts that cut nothing are not worth a digest by themselves.
 export function daemonLines(f: DaemonFacts | undefined): string[] {
   if (!f) return [];
   const out: string[] = [];
-  const told = f.restarts.slice(-RESTARTS_TOLD);
-  if (f.restarts.length > told.length) out.push(`The daemon started ${f.restarts.length} times; the last ${told.length}:`);
+  const own = f.restarts.filter((r) => !wasAsked(r)), wanted = f.restarts.filter(wasAsked);
+  const told = own.slice(-RESTARTS_TOLD);
+  if (own.length > 1) out.push(`The daemon stopped by itself ${times(own.length)} (${ownWays(own)})${own.length > told.length ? `; the last ${told.length}:` : ":"}`);
   for (const r of told) out.push(restartSummary(r));
   const stalls = stallsLine(f.stalls);
+  if (wanted.length === 1 && !own.length) {
+    if (cutOf(wanted).length || stalls) out.push(restartSummary(wanted[0]!));
+  } else if (wanted.length && (own.length || stalls || cutOf(wanted).length)) {
+    const cut = cutOf(wanted);
+    out.push(`${own.length ? "It also restarted" : "The daemon restarted"} ${times(wanted.length)} when asked (down ${secs(downOf(wanted))} in all); ${cut.length ? `${cut.length} turn${cut.length > 1 ? "s were" : " was"} cut: ${tally(cut)}` : "no turn was cut"}.`);
+  }
   if (stalls) out.push(stalls);
   return out;
 }
-const downWords = (r: Restart) => (r.before ? `${r.before.how === "killed" ? "went down" : r.before.how === "crash" ? "ended on a failure" : r.before.how === "restart" ? "restarted" : "was stopped"} and came back after ${dur(Math.max(0, r.up_ms - r.before.down_ms))}` : "started");
-// "the daemon went down and came back after 29 s, 6 turns cut; unresponsive twice".
+// "3 turns cut", and what did not go on by itself: "3 turns cut (1 held for the owner)".
+function cutBrief(rs: Restart[]): string {
+  const cut = cutOf(rs);
+  if (!cut.length) return "";
+  const stuck = cut.filter((t) => t.state === "held" || t.state === "left");
+  return `, ${plural(cut.length, "turn")} cut${stuck.length ? ` (${tally(stuck)})` : ""}`;
+}
+const downWords = (r: Restart) => (!r.before ? "started after an end that was not recorded" : `${r.before.how === "killed" ? "went down" : "ended on a failure"} and came back after ${dur(Math.max(0, r.up_ms - r.before.down_ms))}`);
+// "the daemon went down and came back after 29 s, 6 turns cut; restarted 12 times when asked, 71 turns cut; unresponsive twice".
 export function daemonBrief(f: DaemonFacts | undefined): string {
   if (!f || (!f.restarts.length && !f.stalls.length)) return "";
-  const cut = f.restarts.reduce((n, r) => n + r.turns.filter((t) => !t.earlier).length, 0);
-  const last = f.restarts.at(-1);
-  // (A start that does not know how the daemon before it ended is a start, not a time it went down.)
-  const downs = f.restarts.filter((r) => r.before).length;
-  const went = !last ? "" : `the daemon ${f.restarts.length > 1 ? (downs === f.restarts.length ? `went down ${downs} times` : `started ${f.restarts.length} times`) : downWords(last)}${cut ? `, ${plural(cut, "turn")} cut` : ""}`;
-  const stalled = f.stalls.length ? `${went ? "" : "the daemon was "}unresponsive ${f.stalls.length === 1 ? "once" : `${f.stalls.length} times`}` : "";
-  return [went, stalled].filter(Boolean).join("; ");
+  const own = f.restarts.filter((r) => !wasAsked(r)), wanted = f.restarts.filter(wasAsked);
+  const parts = [
+    own.length ? `${own.length === 1 ? downWords(own[0]!) : `stopped by itself ${times(own.length)}`}${cutBrief(own)}` : "",
+    // Asked restarts that cut nothing are told only beside something else the daemon went through.
+    wanted.length && (own.length || f.stalls.length || cutOf(wanted).length) ? `restarted ${wanted.length === 1 ? "" : `${times(wanted.length)} `}when asked${cutBrief(wanted)}` : "",
+    f.stalls.length ? `${own.length || wanted.length ? "" : "was "}unresponsive ${times(f.stalls.length)}` : "",
+  ].filter(Boolean);
+  return parts.length ? `the daemon ${parts.join("; ")}` : "";
 }
 
 // "1 approval and 2 questions wait", "1 question waits".
