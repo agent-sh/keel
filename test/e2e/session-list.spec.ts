@@ -79,6 +79,22 @@ test("agents at rest are counted, not listed; the agents line reads the same eit
     await expect(kids.getByTestId("child-row")).toHaveCount(8);
     expect(reads).toEqual(["", `?agents_of=${parent}`]);
 
+    // The palette finds a finished agent by its title, whether the page holds its row or not (the daemon's
+    // search answers for what the page does not hold, as for an archived session), and opens it. The tree
+    // is folded and the page loaded again first: the rows of the agents at rest are not read for it.
+    await toggle.click();
+    await expect(kids.getByTestId("child-row")).toHaveCount(0);
+    await page.goto(`/s/${parent}`);
+    await expect(toggle).toHaveAccessibleName("8 agents: 1 failed, 1 working, 6 done", { timeout: 30_000 });
+    await page.keyboard.press("Control+k");
+    await page.getByTestId("palette-input").fill(`Finished helper 1 ${tag}`);
+    const found = page.locator('[role="option"][id^="palette-opt-t_"], [role="option"][id^="palette-opt-s_"]').filter({ hasText: `Finished helper 1 ${tag}` });
+    await expect(found).toHaveCount(1, { timeout: 15_000 });
+    await shoot(page, "session-list-03-palette");
+    await found.click();
+    await expect(page.getByTestId("transcript")).toContainText("Finished helper 1", { timeout: 30_000 });
+    expect(new URL(page.url()).pathname.split("/").pop()).toBe((await agents()).find((a) => a.title.startsWith("Finished helper 1 "))!.session_id);
+
     // A link to an agent that the list left out opens its session.
     await page.goto(`/s/${finished[1]}`);
     await expect(page.getByTestId("transcript")).toContainText(`Finished helper`, { timeout: 30_000 });

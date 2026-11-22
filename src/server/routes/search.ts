@@ -179,6 +179,20 @@ type Hit = {
 // and the canonically equal spellings (a composed é and e + combining accent) are one.
 export const fold = (s: string) => s.normalize("NFKD").replace(/\p{M}+/gu, "").toLowerCase();
 
+// How well a title holds the words asked for, the lower the better: 0, the words as typed, as whole
+// words ("agent 17" in "Agent 17: check the parser", not in "Agent 170"); 1, as typed; 2, each
+// somewhere in the title or the folder.
+export function titleRank(title: string, words: string[]): number {
+  const hay = fold(title), phrase = words.join(" ");
+  if (!phrase) return 2;
+  for (let at = hay.indexOf(phrase); at >= 0; at = hay.indexOf(phrase, at + 1)) {
+    const before = hay[at - 1], after = hay[at + phrase.length];
+    const edge = (c: string | undefined) => c === undefined || !/[\p{L}\p{N}]/u.test(c);
+    if (edge(before) && edge(after)) return 0;
+  }
+  return hay.includes(phrase) ? 1 : 2;
+}
+
 // Every word must match, the last one as a prefix ("deb func" finds "debounce function").
 export function ftsQuery(q: string): string | null {
   const words = q.normalize("NFKC").split(/\s+/).map((w) => w.replace(/"/g, "")).filter(Boolean);
@@ -247,6 +261,12 @@ export const searchRoutes: RouteModule = ({ store }) => {
           .prepare<any, (string | number)[]>(`SELECT s.id, s.title, s.workspace, s.updated, s.archived, ${pid} AS parent_id FROM sessions s WHERE 1 ${where} ORDER BY s.archived, s.updated DESC`)
           .all(...args)
           .filter((t) => { const hay = fold(`${t.title ?? ""} ${t.workspace}`); return words.every((w) => hay.includes(w)); })
+          // The titles that hold the words as they were typed come first, the ones that hold them as
+          // whole words before those: among hundreds of agents named alike, the one asked for is not
+          // cut off behind the newest dozen that share its words.
+          .map((t, i) => ({ t, i, rank: titleRank(t.title ?? "", words) }))
+          .sort((a, b) => a.rank - b.rank || a.i - b.i)
+          .map((x) => x.t)
           .slice(0, limit);
         // The index is read off the loop: one word can match most of a long history.
         const content = await readsOf(store).run("search.content", {

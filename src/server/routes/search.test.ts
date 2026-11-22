@@ -237,3 +237,15 @@ test("an event's rows wait for the next side commit, are found at once, and surv
     next.store.db.close();
   }
 });
+
+// Among hundreds of sessions named alike (agents), the title asked for by its own words is ranked
+// before the ones that merely share them, whichever was used last.
+test("a title that holds the words as typed, as whole words, comes before one that shares them", async () => {
+  const { titleRank } = await import("./search.ts");
+  const words = ["agent", "17"];
+  expect(titleRank("Agent 17: check the parser against the fixtures of lane 3", words)).toBe(0);
+  expect(titleRank("Agent 170: check the parser against the fixtures of lane 17", words)).toBe(1);
+  expect(titleRank("Agent 4: check the parser against the fixtures of lane 17", words)).toBe(2);
+  expect(titleRank("Ağent 17", ["agent", "17"])).toBe(0);
+  expect(titleRank("anything", [])).toBe(2);
+});
