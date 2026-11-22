@@ -24,25 +24,28 @@ export const toolRoutes: RouteModule = (deps) => {
   // it starts one (an agent's too: it is not done while such a command runs, src/automation/agents.ts).
   // After the step that found the end: at a start the commands are taken back before the turns
   // the last daemon left are closed, and an input must not start a turn ahead of that. A session
-  // whose cut turn is about to be continued gets it after that turn; one the owner stopped, with
-  // its next input.
-  jobEnded.tell = (job, text, sent) => {
+  // whose cut turn is about to be continued gets it after that turn.
+  // It starts no turn where nobody waits for one: a command someone stopped (the owner, an archive,
+  // a delete: that is no result the turn waited for) and a session the owner stopped are told with
+  // the session's next request, whatever starts it, as a background command's end is.
+  jobEnded.tell = (job, text, { sent, note }) => {
     setTimeout(() => {
       try {
+        // Its session is gone or archived: nobody to tell, and nothing left to owe.
+        const s = deps.store.session(job.sessionId);
+        if (!s || s.archived) return sent();
         // An agent that has ended (it reported, or it was a goal's check or a review that answered at its
         // turn's end) is not started again for a command it left running: nobody reads that turn.
         const agent = deps.store.db.query<{ status: string }, [string]>("SELECT status FROM agents WHERE session_id = ?").get(job.sessionId);
         if (agent && agent.status !== "running" && agent.status !== "waiting") return sent();
-        const held = deps.engine.isHeld(job.sessionId);
+        // (An agent parked on the command is the one that still gets its turn after a stop: nothing else ends its wait.)
+        if ((job.stopReason && agent?.status !== "waiting") || deps.engine.isHeld(job.sessionId)) return note();
         // Its branch ends in a turn a restart cut: the engine is about to continue that turn (or holds it for the owner).
         const end = deps.store.db.query<{ kind: string; reason: string | null }, [string]>("SELECT kind, data ->> '$.reason' AS reason FROM events WHERE id = (SELECT head FROM sessions WHERE id = ?)").get(job.sessionId);
         const cut = end?.kind === "turn_end" && end.reason === "restart";
-        const ok = deliver(job.sessionId, text, { kind: "harness", job: job.id }, { ...(held ? { ride: true } : cut ? { hold: true } : {}), onSent: () => sent() });
-        // Its session is gone or archived: nobody to tell, and nothing left to owe.
-        if (!ok) sent();
+        if (!deliver(job.sessionId, text, { kind: "harness", job: job.id }, { ...(cut ? { hold: true } : {}), onSent: () => sent() })) sent();
       } catch (e) { deps.errors.capture("tool", e, { at: "a command's end", session: job.sessionId }); }
     }, 0);
-    return true;
   };
   // Background commands a previous daemon started run on; take them back.
   try { adoptJobs(join(deps.store.stateDir, "spill")); } catch (e) { deps.errors.capture("tool", e, { at: "adopt jobs" }); }

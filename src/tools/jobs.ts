@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { conceal, concealDeep, secretPairs, streamConcealer } from "../core/conceal.ts";
 import { contains, realOf } from "../core/paths.ts";
 import { readStat } from "../core/pid.ts";
+import { readText } from "../core/proc.ts";
 import { RESTART_RAN } from "../core/stops.ts";
 import { sandboxStatus, scopeHead, splitScope } from "../safety/sandbox.ts";
 
@@ -58,6 +59,7 @@ export type Job = {
   taken?: number;        // bytes the last read covered (more than it showed when it was cut)
   decoder: TextDecoder;
   left?: number[];       // what a stop could not end of its group (it still runs)
+  leftStart?: Map<number, string>;   // each one's start time, so a pid given to another process is not taken for it
   proc?: Subprocess<any, any, any>;   // absent for a job adopted after a restart
   exited: Promise<void>;
 };
@@ -261,7 +263,10 @@ function patchMeta(log: string, patch: Partial<Meta>) {
 
 // The start time of a process (Linux), so a reused pid is not taken for the job.
 // `procfs.stat` is the read (a test stands in for it).
-export const procfs = { stat: (pid: number) => readFileSync(`/proc/${pid}/stat`, "utf8"), environ: (pid: number) => readFileSync(`/proc/${pid}/environ`) };
+export const procfs = {
+  stat: (pid: number) => readFileSync(`/proc/${pid}/stat`, "utf8"), environ: (pid: number) => readFileSync(`/proc/${pid}/environ`),
+  marks: (wanted: string[]): Promise<Map<string, number[]>> => grepMarks(wanted),
+};
 const procName = (pid: number) => { try { const st = procfs.stat(pid); return st.slice(st.indexOf("(") + 1, st.lastIndexOf(")")); } catch { return undefined; } };
 function procStart(pid: number): string | undefined {
   try { return procfs.stat(pid).split(") ").pop()!.split(" ")[19]; } catch { return undefined; }
@@ -285,8 +290,10 @@ export function backgrounded(job: Job) {
 
 // What a command's end wakes: a session whose turn was waiting on it when a restart cut the call
 // (`wake`). The daemon delivers `text` as an input that starts a turn and calls `sent` once it is
-// stored; with nobody to deliver it (no daemon: a test, a probe) the end is an ordinary note.
-export const jobEnded: { tell?: (job: Job, text: string, sent: () => void) => boolean } = {};
+// stored, or calls `note` where the end starts no turn (someone stopped the command, the owner
+// stopped the session): it then goes with the session's next request, as a background command's
+// end does. With nobody to deliver it (no daemon: a test, a probe) the end is that note.
+export const jobEnded: { tell?: (job: Job, text: string, then: { sent: () => void; note: () => void }) => void } = {};
 
 // `at`: when it ended, for one that ended while no daemon watched it (its exit file's time).
 function finish(job: Job, code: number | null, signal: string | null, at?: number) {
@@ -301,34 +308,27 @@ function finish(job: Job, code: number | null, signal: string | null, at?: numbe
     writeMeta(job.log, { ...meta(job, job.pid), reported: !job.background, pty: job.pty || undefined, ended: job.ended, exit_code: code, signal, stop_reason: job.stopReason });
   } catch {}
   if (job.background) {
-    const what = job.description ? `"${job.description}"` : `\`${job.command.slice(0, 80)}\``;
+    // (The command and its description are the model's own words; on one line, so nothing of them reads as a line of the harness.)
+    const line = (t: string) => t.replace(/[\x00-\x1f\x7f]+/g, " ");
+    const what = job.description ? `"${line(job.description)}"` : `\`${line(job.command.slice(0, 80))}\``;
     const how = job.stopReason ?? (signal ? `was killed by ${signal}` : code === null ? "ended; its exit code was not recorded (it ended under another daemon, or was killed)" : `exited with code ${code}`);
+    const note = () => {
+      const list = notices.get(job.sessionId) ?? [];
+      list.push({ text: `Background command ${what} (ID ${job.id}) ${how}. Output: ${job.log}`, job: job.id, log: job.log });
+      notices.set(job.sessionId, list);
+    };
     // A command a cut call was waiting on: its end is what that turn waited for, so it starts one.
-    if (job.wake) {
-      const tail = lastLines(job.log, WAKE_TAIL);
-      const text = `[harness] The command you were running when the daemon restarted has ended, after ${span(job.ended - job.started)}: ${what} (ID ${job.id}) ${how}. Its output is in ${job.log}${tail ? `; it ends with:\n${tail}` : "."}`;
+    // What it printed is not part of the input: it is tool output, read from the log with a tool.
+    if (job.wake && jobEnded.tell) {
+      // Named by words of its own that cannot read as a tag or a line of the harness inside this input.
+      const named = what.replace(/[<>\[\]]/g, "'").replace(/(?<=.)`(?=.)/g, "'");
+      const text = `[harness] The command you were running when the daemon restarted has ended, after ${span(job.ended - job.started)}: ${named} (ID ${job.id}) ${how}. Its output is in ${job.log}.`;
       job.owes = true;
-      if (jobEnded.tell?.(job, text, () => { job.owes = false; patchMeta(job.log, { reported: true }); })) return;
-      job.owes = false;
+      jobEnded.tell(job, text, { sent: () => { job.owes = false; patchMeta(job.log, { reported: true }); }, note: () => { job.owes = false; note(); } });
+      return;
     }
-    const list = notices.get(job.sessionId) ?? [];
-    list.push({ text: `Background command ${what} (ID ${job.id}) ${how}. Output: ${job.log}`, job: job.id, log: job.log });
-    notices.set(job.sessionId, list);
+    note();
   }
-}
-// How much of its output the end of a waited-on command carries (the rest is in its log).
-const WAKE_TAIL = 2000;
-function lastLines(log: string, max: number): string {
-  let fd: number | undefined;
-  try {
-    fd = openSync(log, "r");
-    const size = fstatSync(fd).size;
-    const n = Math.min(size, max * 2);
-    const buf = Buffer.alloc(n);
-    readSync(fd, buf, 0, n, size - n);
-    const text = cleanTerm(buf.toString("utf8")).trimEnd();
-    return conceal(text.length > max ? text.slice(text.indexOf("\n", text.length - max) + 1 || text.length - max) : text);
-  } catch { return ""; } finally { if (fd !== undefined) closeSync(fd); }
 }
 
 // The commands of a session that a cut call was waiting on and that still run: its turn ended
@@ -346,6 +346,7 @@ export function adoptJobs(spillRoot: string): number {
   let sessions: string[] = [];
   try { sessions = readdirSync(spillRoot); } catch { return 0; }
   const history: Job[] = [];
+  const terminals: Job[] = [];
   for (const sid of sessions) {
     const dir = join(spillRoot, sid, "jobs");
     let files: string[] = [];
@@ -371,6 +372,8 @@ export function adoptJobs(spillRoot: string): number {
         j.left ??= [m.pid];
         void stopJob(j, m.stop_reason ?? "was stopped").then((left) => {
           if (left.length) addNotice(j.sessionId, `The command \`${j.command.slice(0, 80)}\` (ID ${j.id}) could not be stopped: process ${left.join(", ")} of it still runs. Its output is in ${j.log}.`);
+          // Seen through: the record is not looked at again at a later start.
+          else patchMeta(log, { stopping: undefined });
         }, () => {});
       };
       if (m.reported || m.pty) {
@@ -379,9 +382,9 @@ export function adoptJobs(spillRoot: string): number {
         history.push(j);
         finishStop(j);
         // A terminal the daemon held is gone with it. What ignored the hangup (the daemon was killed, so
-        // nothing ended it as an exit does) is ended here, as a daemon that exits ends its terminals' commands.
+        // nothing ended it as an exit does) is ended below, as a daemon that exits ends its terminals' commands.
         // (Looked at once: the record says it ended, so a later start does not look for it again.)
-        if (m.pty && m.ended === undefined) { j.swept = sweep(j); patchMeta(log, { ended: m.started }); }
+        if (m.pty && m.ended === undefined) { terminals.push(j); patchMeta(log, { ended: m.started }); }
         continue;
       }
       let resolve!: () => void;
@@ -394,8 +397,22 @@ export function adoptJobs(spillRoot: string): number {
     }
   }
   for (const j of history.sort((a, b) => b.started - a.started).slice(0, MAX_ENDED)) jobs.set(j.id, j);
+  // One read of the process table for all of them, however many records an upgrade left without an end.
+  if (terminals.length) { const rows = procTable(true); for (const j of terminals) j.swept = sweep(j, rows); }
   if (adopted.size) { watchAdopted(); watcher ??= setInterval(watchAdopted, 1000); }
   return n;
+}
+
+// The exit code a job's wrapper wrote when its command ended by itself, and when (nothing: it has not).
+function exitOf(log: string): { code: number | null; at?: number } | undefined {
+  const ex = exitPath(log);
+  if (!existsSync(ex)) return undefined;
+  let code: number | null = null;
+  let at: number | undefined;
+  try { const c = Number.parseInt(readFileSync(ex, "utf8"), 10); code = Number.isFinite(c) ? c : null; } catch {}
+  // It ended when its wrapper wrote the code, which may be long before a daemon looked.
+  try { at = Math.floor(statSync(ex).mtimeMs); } catch {}
+  return { code, at };
 }
 
 // How often what is left of an ended job is looked for again.
@@ -404,18 +421,9 @@ const adopted = new Map<string, { job: Job; meta: Meta; resolve: () => void }>()
 let watcher: Timer | undefined;
 function watchAdopted() {
   for (const [id, a] of adopted) {
-    const ex = exitPath(a.job.log);
-    const done = existsSync(ex);
+    const done = exitOf(a.job.log);
     if (!done && alive(a.meta)) continue;
-    let code: number | null = null;
-    let at: number | undefined;
-    if (done) {
-      const c = Number.parseInt(readFileSync(ex, "utf8"), 10);
-      code = Number.isFinite(c) ? c : null;
-      // It ended when its wrapper wrote the code, which may be long before this daemon looked.
-      try { at = Math.max(a.job.started, Math.floor(statSync(ex).mtimeMs)); } catch {}
-    }
-    finish(a.job, code, null, at);
+    finish(a.job, done?.code ?? null, null, done?.at === undefined ? undefined : Math.max(a.job.started, done.at));
     adopted.delete(id);
     a.resolve();
   }
@@ -428,10 +436,18 @@ export const running = (j: Job) => {
   if (j.ended === undefined) return true;
   if (j.left && Date.now() - (j.looked ?? 0) >= LOOK_MS) {
     j.looked = Date.now();
-    if (!members(j).length) j.left = undefined;
+    // The processes known to be left are read one by one. Only when they are gone is the rest looked
+    // for (others of the group, the cgroup, what carries the mark): once, and then by pid again.
+    const still = j.left.filter((pid) => lives(pid, j.leftStart?.get(pid)));
+    if (still.length) j.left = still;
+    else setLeft(j, [...members(j, { fresh: true }), ...markedNow(j)]);
   }
   return !!j.left;
 };
+function setLeft(j: Job, rest: Member[]) {
+  j.left = rest.length ? rest.map((m) => m.pid) : undefined;
+  j.leftStart = rest.length ? new Map(rest.map((m) => [m.pid, m.start])) : undefined;
+}
 // The pids of the jobs still running, adopted ones included (after a restart
 // they are no longer the daemon's children).
 export const jobPids = () => [...jobs.values()].filter(running).map((j) => j.pid);
@@ -505,7 +521,11 @@ export function writeJob(j: Job, chars: string): boolean {
 // so the read and the signal are back to back instead. Resolves with what is
 // still alive (empty when stopped); a job with something left keeps running.
 export async function stopJob(j: Job, reason = "was stopped"): Promise<number[]> {
-  if (!jobLive(j)) return [];
+  if (!jobLive(j)) {
+    // Nothing of it is left: a stop that was under way is over.
+    if (j.stopping) { j.stopping = false; if (!j.pty) patchMeta(j.log, { stopping: undefined }); }
+    return [];
+  }
   if (j.ended === undefined) j.stopReason = reason;
   // Kept with the job: a daemon that goes down before the stop is through leaves it for the next one.
   j.stopping = true;
@@ -514,39 +534,55 @@ export async function stopJob(j: Job, reason = "was stopped"): Promise<number[]>
   // A job stopped while systemd-run still sets up its scope would leave the
   // scope behind empty: its command starts (systemd-run execs it) first.
   if (j.cgroup) for (let i = 0; i < 80 && j.ended === undefined && procName(pid) === "systemd-run"; i++) await Bun.sleep(25);
-  const kill = (sig: NodeJS.Signals) => {
-    const lead = procStart(pid);
-    const reused = !!j.boot && lead !== undefined && lead !== j.boot;
-    const rest = members(j);
-    const groupOk = !reused && (!j.boot || lead !== undefined || rest.some((m) => m.group === pid));
-    if (groupOk) try { process.kill(-pid, sig); } catch {
-      if (lead !== undefined || !j.boot) try { j.proc ? j.proc.kill(sig) : process.kill(pid, sig); } catch {}
-    }
-    // Members outside the group: in the cgroup (setsid, double forks) or
-    // moved to a group of their own within the session.
-    if (sig === "SIGKILL" && j.cgroup) try { writeFileSync(`${j.cgroup}/cgroup.kill`, "1"); } catch {}
-    for (const m of rest) if (m.group !== pid && procStart(m.pid) === m.start && (!m.cg || inCgroup(m.pid, j.cgroup!))) try { process.kill(m.pid, sig); } catch {}
-    if (!rest.length && (reused || (j.boot && lead === undefined))) gone(j);
-  };
-  // The group and the cgroup are looked at often; what only carries the job's mark (it left
-  // both) is looked for once the rest is gone, since that look reads every process.
   const quiet = async (ms: number) => {
     const until = Date.now() + ms;
     if (!(await waitJob(j, ms))) return false;
-    while (members(j, false).length && Date.now() < until) await Bun.sleep(25);
-    while (members(j).length && Date.now() < until) await Bun.sleep(100);
+    while (members(j).length && Date.now() < until) await Bun.sleep(25);
     return !members(j).length;
   };
-  kill("SIGTERM");
-  if (!(await quiet(2000))) kill("SIGKILL");
+  signalJob(j, "SIGTERM");
+  if (!(await quiet(2000))) signalJob(j, "SIGKILL");
   await quiet(2000);
-  const rest = members(j).map((m) => m.pid);
-  j.left = rest.length ? rest : undefined;
+  // What left the group and the session (setsid, a double fork) is found by the job's mark where no
+  // cgroup holds it. That look reads every process's environment: it is made once per stop, when the
+  // group is quiet, off the loop, and shared by the stops of one moment (markedSoon).
+  let marked = await markedSoon(j);
+  const alive = () => marked.filter((m) => lives(m.pid, m.start));
+  const wait = async (ms: number) => { for (const until = Date.now() + ms; alive().length && Date.now() < until;) await Bun.sleep(25); return !alive().length; };
+  if (marked.length) {
+    for (const m of alive()) try { process.kill(m.pid, "SIGTERM"); } catch {}
+    if (!(await wait(2000))) for (const m of alive()) try { process.kill(m.pid, "SIGKILL"); } catch {}
+    await wait(2000);
+    marked = alive();
+  }
+  // (The read the wait above ended on, shared by the stops that end in this moment.)
+  const rest = [...members(j), ...marked];
+  setLeft(j, rest);
   j.looked = Date.now();
   j.stopping = false;
   // A stop that left something alive stays marked: the next daemon tries again, and says so if it cannot.
   if (!j.pty && !rest.length) patchMeta(j.log, { stopping: undefined });
-  return rest;
+  return rest.map((m) => m.pid);
+}
+
+// A signal to everything of a job that its group, its session and its cgroup hold. `more`: processes
+// found another way (by the job's mark), signalled one by one.
+function signalJob(j: Job, sig: NodeJS.Signals, more: Member[] = []) {
+  const pid = j.pid;
+  const lead = procStart(pid);
+  const reused = !!j.boot && lead !== undefined && lead !== j.boot;
+  const rest = members(j);
+  const groupOk = !reused && (!j.boot || lead !== undefined || rest.some((m) => m.group === pid));
+  // A daemon that is itself in the job's group (one the job started) signals the others one by one, never its own group.
+  const own = [...selfLine()].some((p) => procTable().get(p)?.group === pid);
+  if (groupOk && !own) try { process.kill(-pid, sig); } catch {
+    if (lead !== undefined || !j.boot) try { j.proc ? j.proc.kill(sig) : process.kill(pid, sig); } catch {}
+  }
+  // Members outside the group: in the cgroup (setsid, double forks) or
+  // moved to a group of their own within the session.
+  if (sig === "SIGKILL" && j.cgroup) try { writeFileSync(`${j.cgroup}/cgroup.kill`, "1"); } catch {}
+  for (const m of [...rest, ...more]) if ((own || m.group !== pid) && procStart(m.pid) === m.start && (!m.cg || inCgroup(m.pid, j.cgroup!))) try { process.kill(m.pid, sig); } catch {}
+  if (!rest.length && !more.length && (reused || (j.boot && lead === undefined))) gone(j);
 }
 
 // Stops each job; resolves with the ones a stop could not end (part of each still runs).
@@ -564,59 +600,168 @@ function cgroupPids(j: Job): number[] {
 }
 const inCgroup = (pid: number, cg: string) => { try { return readFileSync(`/proc/${pid}/cgroup`, "utf8").trim().endsWith(cg.slice("/sys/fs/cgroup".length)); } catch { return false; } };
 
+// One read of every process's state, group, session and start time. The looks of one moment share
+// it (a stop of a dozen jobs polls each of them), so it is kept for less than a poll; `fresh` reads again.
+type Row = { state: string; group: number; session: number; start: string };
+const TABLE_MS = 15;
+let table: { at: number; rows: Map<number, Row> } | undefined;
+function procTable(fresh = false): Map<number, Row> {
+  if (!fresh && table && Date.now() - table.at < TABLE_MS) return table.rows;
+  const rows = new Map<number, Row>();
+  let names: string[] = [];
+  try { names = readdirSync("/proc"); } catch {}
+  for (const n of names) {
+    if (!/^\d+$/.test(n)) continue;
+    const r = rowOf(Number(n));
+    if (r) rows.set(Number(n), r);
+  }
+  table = { at: Date.now(), rows };
+  return rows;
+}
+function rowOf(pid: number): Row | undefined {
+  try {
+    const st = procfs.stat(pid);
+    const f = st.slice(st.lastIndexOf(") ") + 2).split(" ");
+    return { state: f[0]!, group: Number(f[2]), session: Number(f[3]), start: f[19]! };
+  } catch { return undefined; }
+}
+const dead = (r: Row | undefined) => !r || r.state === "Z" || r.state === "X";
+// Whether a process is alive and still the one it was (`start`: its start time when it was found).
+const lives = (pid: number, start?: string) => { const r = rowOf(pid); return !dead(r) && (start === undefined || r!.start === start); };
+// This daemon and the processes above it: never part of a job it looks at, also when one of them
+// carries a job's mark or sits in its group (a daemon a job started, over the same state folder).
+let line: { at: number; pids: Set<number> } | undefined;
+function selfLine(): Set<number> {
+  if (line && Date.now() - line.at < 1000) return line.pids;
+  const out = new Set<number>([process.pid]);
+  for (let pid = process.pid, i = 0; pid > 1 && i < 64; i++) {
+    let ppid: number;
+    try { const st = procfs.stat(pid); ppid = Number(st.slice(st.lastIndexOf(") ") + 2).split(" ")[1]); } catch { break; }
+    if (!(ppid > 0)) break;
+    out.add(ppid);
+    pid = ppid;
+  }
+  line = { at: Date.now(), pids: out };
+  return out;
+}
+
 // The processes still alive of a job, zombies aside: those in its cgroup,
 // and those in its process group or session (a process that has not reached
 // the scope yet, or a job with no scope). None of the group when its pid now
-// belongs to another process. `marked`: where no cgroup holds the job, also
-// the processes that carry its mark in their environment (one that took a
-// session of its own left the group, and nothing else names it).
+// belongs to another process. `cgroup: false`: its group and session only (what
+// a terminal's end takes with it). What only carries the job's mark is looked
+// for apart (markedNow, markedSoon): that reads every process's environment.
 type Member = { pid: number; group: number; start: string; cg?: boolean };
-function members(j: Job, marked = true): Member[] {
+function members(j: Job, o: { cgroup?: boolean; fresh?: boolean; rows?: Map<number, Row> } = {}): Member[] {
   const out: Member[] = [];
   const seen = new Set<number>();
-  const stat = (pid: number) => { try { const st = procfs.stat(pid); return st.slice(st.lastIndexOf(") ") + 2).split(" "); } catch { return undefined; } };
-  for (const pid of cgroupPids(j)) {
-    const f = stat(pid);
-    if (!f || f[0] === "Z" || f[0] === "X") continue;
+  const self = selfLine();
+  if (o.cgroup !== false) for (const pid of cgroupPids(j)) {
+    const r = rowOf(pid);
+    if (dead(r) || self.has(pid)) continue;
     seen.add(pid);
-    out.push({ pid, group: Number(f[2]), start: f[19]!, cg: true });
+    out.push({ pid, group: r!.group, start: r!.start, cg: true });
   }
-  let names: string[];
-  try { names = readdirSync("/proc").filter((n) => /^\d+$/.test(n)); } catch { return out; }
-  const lead = procStart(j.pid);
+  const rows = o.rows ?? procTable(o.fresh);
+  const lead = rows.get(j.pid)?.start ?? procStart(j.pid);
   // The group and session are the job's only while its pid is still its own.
-  if (!(j.boot && lead !== undefined && lead !== j.boot)) {
-    const id = String(j.pid);
-    for (const n of names) {
-      if (seen.has(Number(n))) continue;
-      const f = stat(Number(n));
-      if (!f || f[0] === "Z" || f[0] === "X" || (f[2] !== id && f[3] !== id)) continue;
-      seen.add(Number(n));
-      out.push({ pid: Number(n), group: Number(f[2]), start: f[19]! });
-    }
-  }
-  if (!marked || j.cgroup) return out;
-  const needle = Buffer.from(`${MARK}=${markOf(j)}\0`);
-  for (const n of names) {
-    if (seen.has(Number(n))) continue;
-    let env: Buffer;
-    try { env = procfs.environ(Number(n)); } catch { continue; }
-    if (!env.includes(needle)) continue;
-    const f = stat(Number(n));
-    if (!f || f[0] === "Z" || f[0] === "X") continue;
-    out.push({ pid: Number(n), group: Number(f[2]), start: f[19]! });
+  if (j.boot && lead !== undefined && lead !== j.boot) return out;
+  for (const [pid, r] of rows) {
+    if (seen.has(pid) || self.has(pid) || dead(r) || (r.group !== j.pid && r.session !== j.pid)) continue;
+    out.push({ pid, group: r.group, start: r.start });
   }
   return out;
 }
 
-// Ends at once what is left of a job whose terminal is gone, as a daemon that exits ends its
-// terminals' commands: its group, its cgroup, and whatever else is its own. Returns how many
-// processes were still alive.
-function sweep(j: Job): number {
-  const rest = members(j);
+// The processes that carry a job's mark in their environment and are in none of its group, session
+// or cgroup: one that took a session of its own left the group, and where no cgroup holds the job
+// nothing else names it. Looking reads every process's environment, so it is made as seldom as the
+// truth allows: by one pass for every job asked about in the same moment, and off the loop where
+// the asker can wait (markedSoon: a stop, the look at what a stop left). With a cgroup nothing is read.
+const MARKS_MS = 300;
+let marks: { at: number; by: Map<string, number[]> } | undefined;
+// Every marked process by its mark, read here and now (a call a restart cut is answered at once).
+function marksNow(fresh = false): Map<string, number[]> {
+  if (!fresh && marks && Date.now() - marks.at < MARKS_MS) return marks.by;
+  const by = new Map<string, number[]>();
+  const head = Buffer.from(`${MARK}=`);
+  let names: string[] = [];
+  try { names = readdirSync("/proc"); } catch {}
+  for (const n of names) {
+    if (!/^\d+$/.test(n)) continue;
+    let env: Buffer;
+    try { env = procfs.environ(Number(n)); } catch { continue; }
+    // The variable at the start of an entry (the first, or after a NUL).
+    for (let at = env.indexOf(head); at >= 0; at = env.indexOf(head, at + 1)) {
+      if (at > 0 && env[at - 1] !== 0) continue;
+      const end = env.indexOf(0, at);
+      const mark = env.subarray(at + head.length, end < 0 ? env.length : end).toString();
+      by.set(mark, [...(by.get(mark) ?? []), Number(n)]);
+      break;
+    }
+  }
+  marks = { at: Date.now(), by };
+  return by;
+}
+// The pass off the loop: grep reads the files in a process of its own. `procfs.marks` is the read
+// (a test counts its passes); it falls back to the read on the loop where grep cannot be started.
+async function grepMarks(wanted: string[]): Promise<Map<string, number[]>> {
+  const by = new Map<string, number[]>();
+  if (!wanted.length) return by;
+  try {
+    const p = Bun.spawn(["sh", "-c", 'exec grep -sazxHF "$@" /proc/[0-9]*/environ', "sh", ...wanted.flatMap((m) => ["-e", `${MARK}=${m}`])], { stdin: "ignore", stdout: "pipe", stderr: "ignore", env: { PATH: process.env.PATH ?? "/usr/bin:/bin" } });
+    const [out, code] = await Promise.all([readText(p.stdout, "the look for jobs' marks"), p.exited]);
+    // 0: found, 1: none, 2: some files could not be read (another user's processes) and the rest were.
+    // Anything else: grep did not run.
+    if (code > 2) throw new Error(`grep exited with ${code}`);
+    for (const rec of out.split("\0")) {
+      const m = rec.match(/^\/proc\/(\d+)\/environ:[^=]+=(.*)$/s);
+      if (m) by.set(m[2]!, [...(by.get(m[2]!) ?? []), Number(m[1])]);
+    }
+    return by;
+  } catch {
+    const all = marksNow(true);
+    for (const m of wanted) if (all.has(m)) by.set(m, all.get(m)!);
+    return by;
+  }
+}
+// How long a pass waits for the other askers of its moment.
+const MARK_WAIT_MS = 30;
+const wanted = new Set<string>();
+let pass: Promise<Map<string, number[]>> | undefined;   // the pass that has not begun to read
+let reading: Promise<unknown> = Promise.resolve();      // the pass that reads now
+const marked = (j: Job, pids: number[]): Member[] => {
+  if (!pids.length) return [];
+  const self = selfLine();
+  const near = new Set(members(j).map((m) => m.pid));
+  return pids.flatMap((pid) => { const r = rowOf(pid); return dead(r) || self.has(pid) || near.has(pid) ? [] : [{ pid, group: r!.group, start: r!.start }]; });
+};
+function markedSoon(j: Job): Promise<Member[]> {
+  if (j.cgroup) return Promise.resolve([]);
+  const mark = markOf(j);
+  wanted.add(mark);
+  pass ??= reading.then(() => Bun.sleep(MARK_WAIT_MS)).then(() => {
+    const now = [...wanted];
+    wanted.clear();
+    pass = undefined;
+    const p = procfs.marks(now);
+    reading = p.catch(() => {});
+    return p;
+  });
+  return pass.then((by) => marked(j, by.get(mark) ?? []), () => []);
+}
+const markedNow = (j: Job, fresh = false): Member[] => (j.cgroup ? [] : marked(j, marksNow(fresh).get(markOf(j)) ?? []));
+// Everything alive of a job, read here and now.
+const aliveNow = (j: Job, fresh = false): Member[] => [...members(j, { fresh }), ...markedNow(j, fresh)];
+
+// Ends at once what a terminal's end takes with it and a hangup did not: what is in the terminal's
+// own process group and session, as a daemon that exits ends its terminals' commands. What the
+// command started outside them (setsid, nohup in a session of its own) is left alone, as a
+// background process of a command that ended is. Returns how many processes were still alive.
+function sweep(j: Job, rows?: Map<number, Row>): number {
+  const rest = members(j, { cgroup: false, rows });
   if (!rest.length) return 0;
   if (rest.some((m) => m.group === j.pid)) try { process.kill(-j.pid, "SIGKILL"); } catch {}
-  if (j.cgroup) try { writeFileSync(`${j.cgroup}/cgroup.kill`, "1"); } catch {}
   for (const m of rest) if (m.group !== j.pid && procStart(m.pid) === m.start) try { process.kill(m.pid, "SIGKILL"); } catch {}
   return rest.length;
 }
@@ -686,11 +831,33 @@ export function cutCommand(sessionId: string, callId: string, o: { since?: numbe
   if (!j) return undefined;
   const again = "Run it again if its work is still needed.";
   const upTo = `Its output up to then is in ${j.log}.`;
+  // What the command started outside its terminal's group and session: left running, and named.
+  const others = (rest: Member[]) => rest.length === 0 ? "" : rest.length === 1 ? ` 1 process it started still runs: pid ${rest[0]!.pid}.`
+    : ` ${rest.length} processes it started still run: pids ${rest.slice(0, 8).map((m) => m.pid).join(", ")}${rest.length > 8 ? ", ..." : ""}.`;
+  const outside = () => { const own = new Set(members(j, { cgroup: false, fresh: true }).map((m) => m.pid)); return aliveNow(j).filter((m) => !own.has(m.pid)); };
   if (j.ended === undefined && j.proc) {
-    // The daemon is stopping: it ends its terminals' commands as it exits, and the call's stop
-    // of a command in front is under way. What either leaves is ended by the next daemon, which says so if it cannot.
-    if (j.pty) return `${RESTART_RAN} It ran in a terminal the daemon held, so it ended with the daemon after ${span(now - j.started)}, before it finished. ${upTo} ${again}`;
-    if (j.stops) return `${RESTART_RAN} The restart stopped the command after ${span(now - j.started)}, before it finished. ${upTo} ${again}`;
+    // The daemon is stopping. It ends its terminals' commands as it exits (a signal none of them can ignore).
+    if (j.pty) return `${RESTART_RAN} It ran in a terminal the daemon held, so it ended with the daemon after ${span(now - j.started)}, before it finished.${others(outside())} ${upTo} ${again}`;
+    if (j.stops) {
+      // The call's stop of a command in front begins now. "Stopped" is said of a command seen to be gone:
+      // it is signalled here and looked at for a moment; one that takes longer is said to be on its way out.
+      // (Its own process is read first, a read each time; the rest only once it has ended.)
+      const far = markedNow(j);
+      signalJob(j, "SIGTERM", far);
+      const look = () => [...members(j, { fresh: true }), ...far.filter((m) => lives(m.pid, m.start))];
+      let left = look();
+      for (const until = Date.now() + CONFIRM_MS; left.length && Date.now() < until;) { Bun.sleepSync(3); if (!lives(j.pid, j.boot)) left = look(); }
+      if (!left.length) {
+        // It finished by itself in the moment of the stop (its wrapper wrote its exit code): it was not stopped.
+        const own = exitOf(j.log);
+        if (own?.code != null) return `${RESTART_RAN} The command was not interrupted: it exited with code ${own.code} after ${span((own.at ?? now) - j.started)}. Its output is in ${j.log}. Do not run it again for its result.`;
+        return `${RESTART_RAN} The restart stopped the command after ${span(now - j.started)}, before it finished. ${upTo} ${again}`;
+      }
+      // What is left is the job's still: it reads as running, and a stop of it goes on from here.
+      setLeft(j, left);
+      j.looked = Date.now();
+      return `${RESTART_RAN} The restart is stopping the command after ${span(now - j.started)}, before it finished: ${left.length === 1 ? "1 process of it has" : `${left.length} processes of it have`} not ended yet, and the next start ends what is left and says so if it cannot. ${upTo} ${again}`;
+    }
   }
   // A stop that was under way when the daemon went down: this start is finishing it (adoptJobs), whether or
   // not the command's own process had ended by then, and says so later if something of it cannot be ended.
@@ -708,14 +875,17 @@ export function cutCommand(sessionId: string, callId: string, o: { since?: numbe
     notices.set(sessionId, (notices.get(sessionId) ?? []).filter((n) => n.job !== j.id));
     ackNotices(mine);
   }
-  // It ended, as far as its own process goes. What is alive of it now? (One ended a moment ago at this start gets that moment.)
-  let left = members(j);
-  for (let i = 0; j.swept && left.length && i < 20; i++) { Bun.sleepSync(5); left = members(j); }
+  // It ended, as far as its own process goes. What is alive of it now? For a terminal's command: what
+  // is in the terminal's own group and session (ended at this start, and given a moment to go); what
+  // it started outside them is left running and named. For any other: all of it.
+  const lost = j.pty && j.exitCode == null && !j.signal && !j.stopReason;
+  let left = lost ? members(j, { cgroup: false, fresh: true }) : aliveNow(j);
+  for (let i = 0; j.swept && left.length && i < 20; i++) { Bun.sleepSync(5); left = members(j, { cgroup: false, fresh: true }); }
   const ended = j.pty && j.exitCode == null && !j.signal && !j.stopReason ? "Its terminal ended with the daemon"
     : j.stopReason ? `The command ${j.stopReason}` : j.exitCode == null ? `The command's own process ended meanwhile${j.signal ? ` (killed by ${j.signal})` : ""}` : `The command's own process exited with code ${j.exitCode}`;
   if (left.length) {
     const pids = left.map((m) => m.pid);
-    j.left = pids;
+    setLeft(j, left);
     j.looked = Date.now();
     jobsChanged.tell?.(sessionId);
     const which = pids.length === 1 ? `process ${pids[0]} of it still runs` : `${pids.length} processes of it still run (${pids.slice(0, 4).join(", ")}${pids.length > 4 ? ", ..." : ""})`;
@@ -723,14 +893,16 @@ export function cutCommand(sessionId: string, callId: string, o: { since?: numbe
     const stop = (j.handle ?? "id") === "id" ? `TaskStop with ID ${j.id}` : `\`kill ${pids.slice(0, 8).join(" ")}\` in the shell`;
     return `${RESTART_RAN} ${ended}, but ${which}. Do not run the command again before ${pids.length === 1 ? "it is" : "they are"} stopped: ${stop}. Its output is in ${j.log}.`;
   }
-  if (j.pty && j.exitCode == null && !j.signal && !j.stopReason) {
+  if (lost) {
     const swept = j.swept ? ` (${j.swept === 1 ? "1 process of it had outlived the terminal and was" : `${j.swept} processes of it had outlived the terminal and were`} ended at this start)` : "";
-    return `${RESTART_RAN} It ran in a terminal the daemon held, so it ended with the daemon${swept}, before it finished. ${upTo} ${again}`;
+    return `${RESTART_RAN} It ran in a terminal the daemon held, so it ended with the daemon${swept}, before it finished.${others(outside())} ${upTo} ${again}`;
   }
   if (j.stopReason) return `${RESTART_RAN} The command ${j.stopReason} after ${span(j.ended - j.started)}, before it finished. ${upTo} ${again}`;
   if (j.exitCode == null) return `${RESTART_RAN} The command ended meanwhile${j.signal ? ` (killed by ${j.signal})` : ""}; its exit code was not recorded. Its output is in ${j.log}: read it before running the command again.`;
   return `${RESTART_RAN} The command was not interrupted: it exited with code ${j.exitCode} after ${span(j.ended - j.started)}. Its output is in ${j.log}. Do not run it again for its result.`;
 }
+// How long a call a restart cut waits to see its command gone before it says so.
+const CONFIRM_MS = 60;
 const span = (ms: number) => { const s = Math.max(0, Math.round(ms / 1000)); return s < 90 ? `${s} s` : s < 5400 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`; };
 
 // The notes are stored: their jobs' ends are reported for good.
