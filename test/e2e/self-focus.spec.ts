@@ -322,6 +322,18 @@ test("the palette closed with no pick gives the keyboard back to where it was", 
     await page.keyboard.press("Escape");
     await expect(rowOf(page, a)).toBeFocused();
 
+    // The keyboard that went elsewhere while the palette was closing stays there: it is not
+    // pulled back to the row a moment later.
+    await page.keyboard.press("Control+k");
+    await palette.waitFor();
+    await page.keyboard.press("Escape");
+    await box.focus();
+    await expect(palette).toHaveCount(0);
+    await expect(box).toBeFocused();
+    await page.keyboard.type("typed after the palette");
+    await expect(box).toHaveValue("typed after the palette");
+    await box.fill("");
+
     // A pick is not put back: the command it ran has the keyboard's next place.
     await box.click();
     await page.keyboard.press("Control+k");
