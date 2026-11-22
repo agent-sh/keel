@@ -55,7 +55,7 @@ export class Reads {
 
   // `thread` false: every read runs on the loop (unit tests of the routes).
   // `program`: another thread program than the daemon's own (a test's).
-  constructor(private store: Pick<Store, "db" | "stateDir">, private thread = process.env.NODE_ENV !== "test", private program?: string, private deadlineMs = DEADLINE_MS) {}
+  constructor(private store: Pick<Store, "db" | "stateDir"> & { side?: { flush(): void } }, private thread = process.env.NODE_ENV !== "test", private program?: string, private deadlineMs = DEADLINE_MS) {}
 
   // Reads held back: a backup takes its snapshot with the write-ahead log
   // empty, and a read in flight on this thread's connection keeps the log
@@ -86,6 +86,8 @@ export class Reads {
 
   run<K extends TaskName>(name: K, args: Args<K>): Promise<Result<K>> {
     if (this.held) return this.held.then(() => this.run(name, args));
+    // The thread reads what is committed: the side rows that wait are written first (src/core/side.ts).
+    this.store.side?.flush();
     const w = this.thread ? this.start() : undefined;
     if (!w) return new Promise((resolve) => resolve(this.onLoop(name, args) as Result<K>));
     this.counts.thread++;
@@ -208,7 +210,7 @@ export class Reads {
 
 const pools = new WeakMap<object, Reads>();
 // The store's read thread (one a store).
-export function readsOf(store: Pick<Store, "db" | "stateDir">): Reads {
+export function readsOf(store: Pick<Store, "db" | "stateDir"> & { side?: { flush(): void } }): Reads {
   let r = pools.get(store);
   if (!r) pools.set(store, (r = new Reads(store)));
   return r;

@@ -129,6 +129,7 @@ export function reportKey(q: Filter, now = Date.now()): string {
   const back = toNow && q.since !== undefined ? `back ${Math.round((now - q.since) / 60_000)} min` : `${q.since ?? ""}..${q.until ?? ""}`;
   return [q.session ?? "", q.model ?? "", q.bucket ?? "", back].join("|");
 }
+type PrevCall = { ts: number; model: string; prompt: number; h_tools: string | null; h_system: string | null; n_msgs: number | null; h_msgs: string | null; h_kept: string | null; cache_ms: number | null; compaction_event: string | null; turn_event: string | null };
 
 export class Telemetry {
   // In flight, by the request object the engine passes to every measuring hook.
@@ -142,6 +143,10 @@ export class Telemetry {
   // resumed after a restart runs the calls it was cut in) reads it from the branch.
   private turnOf = new SessionMap<string | null>(256);
   private toolsets = new Set<string>();
+  // The last answered turn request of each session, as its ledger row holds it: what the next one is
+  // compared with (cacheBreak), kept so that comparison reads no row (a read of the ledger has the
+  // side rows that wait written first: src/core/side.ts). A session not here is read from the ledger.
+  private lastTurnCall = new SessionMap<PrevCall>(512);
 
   constructor(private store: Store, bus: Bus) {
     store.migrate(SCHEMA);
@@ -216,10 +221,12 @@ export class Telemetry {
         let turn = this.turnOf.get(s.id);
         if (turn === undefined) this.turnOf.set(s.id, (turn = openTurn(this.lineageOf(s.id))));
         const tag = armOf(this.store, s.id);
-        this.store.db
+        const row = [s.id, Date.now(), call.tool.name, ran.ms, ran.outcome === "error" ? 1 : 0, call.id, ran.outcome === "error" ? this.scrubbed(s.id, excerpt(result.content)) : null,
+          ran.outcome, ev?.id ?? null, ev?.model ?? null, turn, tag?.exp_id ?? null, tag?.arm ?? null] as const;
+        // (A row of the ledger: written with the next commit, src/core/side.ts.)
+        this.store.side.later("a tool call's ledger row", () => void this.store.db
           .query("INSERT INTO telemetry_tools (session_id, ts, tool, ms, is_error, call_id, error, outcome, event_id, model, turn_event, exp_id, arm) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-          .run(s.id, Date.now(), call.tool.name, ran.ms, ran.outcome === "error" ? 1 : 0, call.id, ran.outcome === "error" ? this.scrubbed(s.id, excerpt(result.content)) : null,
-            ran.outcome, ev?.id ?? null, ev?.model ?? null, turn, tag?.exp_id ?? null, tag?.arm ?? null);
+          .run(...row));
       },
     });
   }
@@ -236,7 +243,7 @@ export class Telemetry {
     const sorted = [...new Set(names)].sort();
     const h = fp(sorted);
     if (!this.toolsets.has(h)) {
-      this.store.db.query("INSERT OR IGNORE INTO telemetry_toolsets (h, names) VALUES (?, ?)").run(h, JSON.stringify(sorted));
+      this.store.side.later("a tool set's names", () => void this.store.db.query("INSERT OR IGNORE INTO telemetry_toolsets (h, names) VALUES (?, ?)").run(h, JSON.stringify(sorted)));
       this.toolsets.add(h);
     }
     return h;
@@ -272,18 +279,28 @@ export class Telemetry {
     const brk = r.outcome === "ok" && p.purpose === "turn" ? this.cacheBreak(p, u) : null;
     const x = p.prefix;
     const tag = armOf(this.store, p.session);
-    const row = this.store.db
-      .query(`INSERT INTO telemetry_calls (session_id, ts, model, latency_ms, ttft_ms, input, output, cache_read, cache_write, cost, unpriced, outcome, stop, error, cache_break,
-                purpose, error_class, turn_event, z_tools, z_system, z_history, z_tail, attempt, step_ms, text_ms, compaction_event,
-                h_tools, h_system, n_msgs, h_msgs, h_kept, break_detail, cache_ms, exp_id, arm, toolset, speed, effort)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(p.session, p.t0, p.model, now - p.t0, p.first === undefined ? null : p.first - p.t0, u.input ?? 0, u.output ?? 0, u.cache_read ?? 0, u.cache_write ?? 0,
+    const row = [p.session, p.t0, p.model, now - p.t0, p.first === undefined ? null : p.first - p.t0, u.input ?? 0, u.output ?? 0, u.cache_read ?? 0, u.cache_write ?? 0,
         typeof u.cost === "number" ? u.cost : null, u.unpriced ? 1 : 0, r.outcome, r.stop ?? null, r.error ? scrubbed(r.error.slice(0, 300)) : null, brk?.cause ?? null,
         p.purpose, r.cls ?? null, p.turn, z?.tools ?? null, z?.system ?? null, z?.history ?? null, z?.tail ?? null,
         p.attempt, now - p.step0, p.text === undefined ? null : p.text - p.t0, p.compaction,
         x?.tools ?? null, x?.system ?? null, x?.n ?? null, x?.msgs ?? null, x?.kept ?? null, brk?.detail ?? null, p.cacheMs,
-        tag?.exp_id ?? null, tag?.arm ?? null, p.toolset, u.speed ?? u.speed_asked ?? null, p.effort);
-    this.spent(p.t0, typeof u.cost === "number" ? u.cost : null, u.unpriced ? 1 : 0, Number(row.lastInsertRowid));
+        tag?.exp_id ?? null, tag?.arm ?? null, p.toolset, u.speed ?? u.speed_asked ?? null, p.effort];
+    // (A row of the ledger: written with the next commit, src/core/side.ts.)
+    this.store.side.later("a model request's ledger row", () => {
+      const id = Number(this.store.db
+      .query(`INSERT INTO telemetry_calls (session_id, ts, model, latency_ms, ttft_ms, input, output, cache_read, cache_write, cost, unpriced, outcome, stop, error, cache_break,
+                purpose, error_class, turn_event, z_tools, z_system, z_history, z_tail, attempt, step_ms, text_ms, compaction_event,
+                h_tools, h_system, n_msgs, h_msgs, h_kept, break_detail, cache_ms, exp_id, arm, toolset, speed, effort)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(...(row as any[])).lastInsertRowid);
+      // (The ledger's newest row is this one: the running total knows it as its own.)
+      if (this.totals && id > this.totals.top) this.totals.top = id;
+    });
+    // (The row with the greatest time is the last: a request that began before the one kept does not replace it.)
+    if (r.outcome === "ok" && p.purpose === "turn" && !((this.lastTurnCall.get(p.session)?.ts ?? -1) > p.t0)) {
+      this.lastTurnCall.set(p.session, { ts: p.t0, model: p.model, prompt, h_tools: x?.tools ?? null, h_system: x?.system ?? null, n_msgs: x?.n ?? null, h_msgs: x?.msgs ?? null, h_kept: x?.kept ?? null, cache_ms: p.cacheMs ?? null, compaction_event: p.compaction ?? null, turn_event: p.turn ?? null });
+    }
+    this.spent(p.t0, typeof u.cost === "number" ? u.cost : null, u.unpriced ? 1 : 0);
   }
 
   // A turn request that read less than half of what it and the last one of the
@@ -295,8 +312,8 @@ export class Telemetry {
   // The request knows the branch it was sent on and that branch's last compaction.
   private cacheBreak(p: Pending, u: any): { cause: string; detail: string | null } | null {
     const { session: sessionId, model, t0: ts, prefix: now } = p;
-    const prev = this.store.db
-      .query<{ ts: number; model: string; prompt: number; h_tools: string | null; h_system: string | null; n_msgs: number | null; h_msgs: string | null; h_kept: string | null; cache_ms: number | null; compaction_event: string | null; turn_event: string | null }, [string]>(
+    const prev = this.lastTurnCall.get(sessionId) ?? this.store.db
+      .query<PrevCall, [string]>(
         "SELECT ts, model, input + cache_read + cache_write AS prompt, h_tools, h_system, n_msgs, h_msgs, h_kept, cache_ms, compaction_event, turn_event FROM telemetry_calls WHERE session_id = ? AND outcome = 'ok' AND COALESCE(purpose, 'turn') = 'turn' ORDER BY ts DESC LIMIT 1")
       .get(sessionId);
     if (!prev || prev.prompt <= 0) return null;
@@ -360,10 +377,10 @@ export class Telemetry {
     };
   }
   // A request was recorded in the ledger with this start time, cost and unpriced mark.
-  private spent(ts: number, cost: number | null, unpriced: number, id: number) {
+  // (Its row is written a moment later, with the other side rows: it is the ledger's newest then: callEnd.)
+  private spent(ts: number, cost: number | null, unpriced: number) {
     const t = this.totals;
     if (!t) return;
-    if (id > t.top) t.top = id;
     for (const [i, since] of [t.day, t.month].entries()) {
       if (ts < since) continue;
       t.sums[i]!.usd += cost ?? 0;

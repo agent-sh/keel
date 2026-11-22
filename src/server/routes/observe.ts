@@ -106,7 +106,7 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
     if (metricsOut.state.endpoint) spanMetrics(meter, s);
     const e = eventsOut.state.endpoint ? spanEvent(s) : null;
     if (e) eventsOut.push(e);
-  }));
+  }), () => !!(exporter.state.endpoint || metricsOut.state.endpoint || eventsOut.state.endpoint));
   // The spans a kill cut: the daemon before this one exported their children as they ended and went down
   // before these ended. They go out now, closed as interrupted, so no exported span lacks its parent.
   // They stay owed in the store until the collector answers a batch that holds them: a daemon that

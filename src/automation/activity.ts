@@ -70,8 +70,10 @@ export function record(kind: ActivityKind, sub: string, sessionId: string | null
     const extra = s?.parent_id ? { ...(data as object), child_session: sessionId, child_title: s.title || undefined, ...(childTurn ? { child_turn: childTurn } : {}) } : data;
     const turnEvent = (s?.parent_id ? running(sid) : turn ?? running(sid)) ?? null;
     const a: Activity = { id: Bun.randomUUIDv7(), ts: Date.now(), kind, sub, session_id: sid, text: clip(text, 500), data: extra, turn_event: turnEvent };
-    D().store.db.query("INSERT INTO activity (id, ts, kind, sub, session_id, text, data, turn_event) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(a.id, a.ts, kind, sub, sid, a.text, extra === undefined ? null : JSON.stringify(extra), turnEvent);
+    // (A row of the list: written with the next commit, src/core/side.ts. A reader of the list has it written first.)
+    const store = D().store, json = extra === undefined ? null : JSON.stringify(extra);
+    store.side.later("an activity row", () => void store.db.query("INSERT INTO activity (id, ts, kind, sub, session_id, text, data, turn_event) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(a.id, a.ts, kind, sub, sid, a.text, json, turnEvent));
     emit("activity", a);
   } catch (e) {
     capture(e, { at: "activity", kind });

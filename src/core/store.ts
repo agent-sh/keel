@@ -14,6 +14,7 @@ import { asker, asking } from "./asker.ts";
 import { labelled } from "./statement-label.ts";
 import { encodeOwed, OWED_FILE, OWED_FILE_MAX, OWED_V, owedLineKey, owedRefusal, owedSql, readOwed, type OwedLine, type OwedRecord, type OwedSql } from "./owed.ts";
 import { holdStore, logBytes, storePath } from "./store-files.ts";
+import { Side } from "./side.ts";
 import type { SettleAsk, Settled } from "../engine/compact.ts";
 
 // Every transaction of this connection begins as a writer (BEGIN IMMEDIATE).
@@ -370,6 +371,11 @@ export class Store {
   // What dropped sessions were charged since the last whole collection.
   private owed = 0;
 
+  // The writes that wait for the next commit (side.ts): spans, the telemetry
+  // ledgers, the activity list. `sideFailed`: told of one that could not be made (set by the daemon).
+  readonly side: Side;
+  sideFailed?: (e: unknown, what: string) => void;
+
   // A read made ahead on the read thread (src/server/reads.ts, readAhead), set
   // by the daemon: what it reads is then in the operating system's memory
   // for the loop. It resolves when that is so, or when it is not worth waiting for.
@@ -703,6 +709,8 @@ export class Store {
       return now - this.busyFrom < BUSY_ALL_MS;
     });
     this.readOwedKey();
+    // Rows beside the conversation wait for the next commit instead of making one each (side.ts).
+    this.side = new Side(this.db, (e, what) => this.sideFailed?.(e, what));
     // The event tree (edit, fork, branches) and per-session settings. One
     // transaction: a start that fails part way leaves the database as it was,
     // and the next start does all of it.

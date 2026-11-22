@@ -2272,8 +2272,9 @@ export class Engine {
     const events = this.lineage(session.id);
     const keep = retention(wire, events, model);
     const facts: IdleFacts = { head: session.head, model, wire: wire ?? "", used: contextTokens(events, model).used, warm: lastWarm(events, model), sure: keep.sure, max: keep.max };
-    this.store.db.query("INSERT OR REPLACE INTO idle_facts (session_id, head, model, wire, used, warm, sure, max) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(session.id, facts.head, facts.model, facts.wire, facts.used, facts.warm, facts.sure, facts.max);
+    // (Kept so a start reads no events for it; one that is lost is read again: written with the next commit, src/core/side.ts.)
+    this.store.side.later("a context's idle facts", () => void this.store.db.query("INSERT OR REPLACE INTO idle_facts (session_id, head, model, wire, used, warm, sure, max) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(session.id, facts.head, facts.model, facts.wire, facts.used, facts.warm, facts.sure, facts.max));
     return facts;
   }
 

@@ -182,8 +182,9 @@ export class Outcomes {
       rating: db.query<{ v: number | null }, [string]>("SELECT MIN(value) AS v FROM reply_ratings WHERE turn_event = ?").get(start.id)?.v ?? null,
     };
     const cols = Object.keys(row);
-    db.query(`INSERT INTO telemetry_turns (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})
-      ON CONFLICT(turn_event) DO UPDATE SET ${cols.filter((c) => c !== "turn_event").map((c) => `${c} = excluded.${c}`).join(", ")}`).run(...cols.map((c) => row[c]));
+    // (Written with the next commit, src/core/side.ts: a reader of the table has it written first.)
+    this.store.side.later("a turn's ledger row", () => void db.query(`INSERT INTO telemetry_turns (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})
+      ON CONFLICT(turn_event) DO UPDATE SET ${cols.filter((c) => c !== "turn_event").map((c) => `${c} = excluded.${c}`).join(", ")}`).run(...cols.map((c) => row[c])));
     return row;
   }
 

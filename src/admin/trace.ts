@@ -213,9 +213,23 @@ export class Tracer {
   private attempts = new WeakMap<ProviderRequest, number>();
   private kept = new WeakMap<ProviderRequest, string>();
   // Each span as it ends (the OTLP exporter listens).
-  private ended = new Set<(s: Span) => void>();
+  private ended = new Map<(s: Span) => void, (() => boolean) | undefined>();
   // The waits open now, by what they wait on: a session's retry or compaction, an approval card.
   private waits = new Map<string, string>();
+  // The attributes of the spans written as running (a request, a wait), until each ends: its end is
+  // then written without reading the row back, so nothing of a step asks for the side rows that
+  // wait (src/core/side.ts) to be written before their commit. `turnMade`: the turn whose span is
+  // written, by session.
+  private running = new Map<string, Record<string, unknown>>();
+  private turnMade = new Map<string, string>();
+  private later(what: string, sql: string, params: unknown[]) {
+    this.store.side.later(what, () => void this.store.db.run(sql, params as any[]));
+  }
+  private began(span: string, attrs: Record<string, unknown>) {
+    if (this.running.size > 10_000) this.running.clear();
+    this.running.set(span, JSON.parse(JSON.stringify(attrs)));
+    return JSON.stringify(attrs);
+  }
   // When each queued prompt joined its queue, from the queue's own frames, until its turn starts.
   private queued = new Map<string, number>();
 
@@ -316,8 +330,10 @@ export class Tracer {
     this.owed = 0;
   }
 
-  onEnd(f: (s: Span) => void) {
-    this.ended.add(f);
+  // `wanted`: whether the listener takes spans right now (an exporter with nowhere to send takes none):
+  // a span that nobody takes is not read back when it ends.
+  onEnd(f: (s: Span) => void, wanted?: () => boolean) {
+    this.ended.set(f, wanted);
     return () => void this.ended.delete(f);
   }
 
@@ -353,10 +369,16 @@ export class Tracer {
 
   private ensureTurn(s: Session, turn: Turn) {
     const p = this.place(s.id, turn);
+    if (this.turnMade.get(s.id) === turn.id) return { trace: p.trace, span: p.span };
+    if (this.turnMade.size > 2_000) this.turnMade.clear();
+    this.turnMade.set(s.id, turn.id);
+    const attrs = { turn_event: turn.id, model: s.model, ...(s.parent_id ? { parent_session: s.parent_id } : {}), ...(p.links.length ? { links: p.links } : {}) };
     const made = this.store.db.run(
       "INSERT OR IGNORE INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, status, attrs) VALUES (?, ?, ?, ?, 'turn', 'invoke_agent', ?, 'running', ?)",
-      [p.span, p.trace, p.parent, s.id, turn.ts, JSON.stringify({ turn_event: turn.id, model: s.model, ...(s.parent_id ? { parent_session: s.parent_id } : {}), ...(p.links.length ? { links: p.links } : {}) })],
+      [p.span, p.trace, p.parent, s.id, turn.ts, JSON.stringify(attrs)],
     );
+    // (Written by this call: its attributes are the ones its end goes on from.)
+    if (made.changes) this.began(p.span, attrs);
     // A prompt that waited in the queue: that wait is the turn's too, before its first step.
     if (made.changes) {
       const qid = this.store.db.query<{ id: string | null }, [string]>(
@@ -364,7 +386,7 @@ export class Tracer {
       const queued = qid ? this.queued.get(qid) : undefined;
       if (qid) this.queued.delete(qid);
       if (queued !== undefined && turn.ts - queued >= QUEUE_WAIT_MS) {
-        this.store.db.run(
+        this.later("a queue wait's span",
           "INSERT OR IGNORE INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, attrs) VALUES (?, ?, ?, ?, 'wait', 'queue wait', ?, ?, 'ok', ?)",
           [newSpanId(), p.trace, p.span, s.id, queued, turn.ts, JSON.stringify({ turn_event: turn.id })],
         );
@@ -382,9 +404,9 @@ export class Tracer {
     if (!s || !turn) return;
     const parent = this.ensureTurn(s, turn);
     const span = newSpanId();
-    this.store.db.run(
+    this.later("a wait's span",
       "INSERT INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, status, attrs) VALUES (?, ?, ?, ?, 'wait', ?, ?, 'running', ?)",
-      [span, parent.trace, parent.span, sessionId, name, Date.now(), JSON.stringify({ ...attrs, turn_event: turn.id })],
+      [span, parent.trace, parent.span, sessionId, name, Date.now(), this.began(span, { ...attrs, turn_event: turn.id })],
     );
     this.waits.set(key, span);
   }
@@ -399,7 +421,7 @@ export class Tracer {
       const turn = s && this.lastTurn(sessionId);
       if (!s || !turn) return;
       const parent = this.ensureTurn(s, turn);
-      this.store.db.run(
+      this.later("a wait's span",
         "INSERT INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, attrs) VALUES (?, ?, ?, ?, 'wait', ?, ?, ?, 'ok', ?)",
         [newSpanId(), parent.trace, parent.span, sessionId, name, startMs, endMs, JSON.stringify({ ...attrs, turn_event: turn.id })],
       );
@@ -418,7 +440,7 @@ export class Tracer {
       if (!s || !turn) continue;
       const parent = this.ensureTurn(s, turn);
       const span = newSpanId();
-      this.store.db.run(
+      this.later("a stall's span",
         "INSERT INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, error_id, attrs) VALUES (?, ?, ?, ?, 'wait', 'daemon stall', ?, ?, 'ok', ?, ?)",
         [span, parent.trace, parent.span, s.id, Math.round(Math.max(turn.ts, ctx.ended_ms - ctx.ms)), Math.round(ctx.ended_ms), errorId ?? null, JSON.stringify({ turn_event: turn.id, ms: ctx.ms, what, ...(ctx.cause ? { cause: ctx.cause } : {}) })],
       );
@@ -445,26 +467,30 @@ export class Tracer {
     const t0 = Date.now();
     this.open.set(req, { span, trace, t0, attempt });
     const model = req.route ?? `${s.model}`;
-    this.store.db.run(
+    this.later("a request's span",
       "INSERT INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, status, attrs) VALUES (?, ?, ?, ?, 'request', ?, ?, 'running', ?)",
-      [span, trace, parent?.span ?? null, s.id, `chat ${req.model}`, t0, JSON.stringify({ route: model, model: req.model, attempt, ...(turn ? { turn_event: turn.id } : {}), shape: requestShape(req) })],
+      [span, trace, parent?.span ?? null, s.id, `chat ${req.model}`, t0, this.began(span, { route: model, model: req.model, attempt, ...(turn ? { turn_event: turn.id } : {}), shape: requestShape(req) })],
     );
   }
 
   private finish(span: string, patch: { status: SpanStatus; error?: string | null; error_type?: string | null; attrs?: Record<string, unknown>; request?: Uint8Array | null }) {
-    const cur = this.store.db.query<{ attrs: string }, [string]>("SELECT attrs FROM spans WHERE span_id = ?").get(span);
+    // (Its attributes as they were written: from memory for a span this daemon began, else read back.)
+    const known = this.running.get(span);
+    this.running.delete(span);
+    const cur = known ?? ((r) => (r ? JSON.parse(r.attrs) : undefined))(this.store.db.query<{ attrs: string }, [string]>("SELECT attrs FROM spans WHERE span_id = ?").get(span));
     if (!cur) return;
-    const attrs = { ...JSON.parse(cur.attrs), ...(patch.attrs ?? {}) };
-    this.store.db.run("UPDATE spans SET end_ms = ?, status = ?, error = ?, error_type = ?, attrs = ?, request = COALESCE(?, request) WHERE span_id = ?", [
+    const attrs = { ...cur, ...(patch.attrs ?? {}) };
+    this.later("a span's end", "UPDATE spans SET end_ms = ?, status = ?, error = ?, error_type = ?, attrs = ?, request = COALESCE(?, request) WHERE span_id = ?", [
       Date.now(), patch.status, patch.error ?? null, patch.error_type ?? null, JSON.stringify(attrs), patch.request ?? null, span,
     ]);
     this.emitEnd(span);
   }
 
   private emitEnd(span: string) {
-    if (!this.ended.size) return;
+    const takers = [...this.ended].filter(([, wanted]) => !wanted || wanted()).map(([f]) => f);
+    if (!takers.length) return;
     const s = this.span(span);
-    if (s) for (const f of this.ended) try { f(s); } catch {}
+    if (s) for (const f of takers) try { f(s); } catch {}
   }
 
   private wireAttrs(req: ProviderRequest, o: Open): Record<string, unknown> {
@@ -513,7 +539,7 @@ export class Tracer {
     if (ran.error && !inner) try { Object.assign(ran.error, { span_id: span, trace_id: trace }); } catch {}
     const content = typeof result.content === "string" ? result.content : JSON.stringify(result.content);
     const inputJson = JSON.stringify(input ?? {});
-    this.store.db.run(
+    this.later("a tool's span",
       "INSERT OR REPLACE INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, error, error_type, attrs) VALUES (?, ?, ?, ?, 'tool', ?, ?, ?, ?, ?, ?, ?)",
       [span, trace, parent?.span ?? null, s.id, `execute_tool ${name}`, now - ran.ms, now, ran.outcome, ran.outcome === "error" ? scrubbed(content.slice(0, 1000), s.id) : null,
         ran.outcome === "error" ? "tool_error" : null,
