@@ -59,6 +59,17 @@ function NotTaken({ items, notes, testid }: { items: { part: string; why: string
   );
 }
 
+// What of Keel's environment the programs get: a command hook all of it, a server it
+// starts all but the names that look like credentials or a provider's or
+// Keel's settings (the MCP manager's serverEnv).
+const envWords = (p: PlanView) => {
+  const hook = p.hooks.length > 0, server = p.mcp.length > 0;
+  if (hook && server) return "A command hook gets Keel's environment; a server started as a program gets it without the names that look like credentials or a provider's or Keel's settings.";
+  if (hook) return "A command hook gets Keel's environment.";
+  if (server) return "A server started as a program gets Keel's environment, without the names that look like credentials or a provider's or Keel's settings.";
+  return "";
+};
+
 // What a prepared plugin is, its yes, and the button that installs or updates it.
 function PlanBody({ plan, onDone, onCancel }: { plan: PlanView; onDone: (u: UnitView) => void; onCancel: () => void }) {
   const [busy, setBusy] = useState(false);
@@ -78,7 +89,7 @@ function PlanBody({ plan, onDone, onCancel }: { plan: PlanView; onDone: (u: Unit
       {update && (
         <div data-testid="plan-changes">
           <div className="k-sub k-label">What changes, from {update.from} to {plan.version}</div>
-          {update.changes.length ? <ul className="k-plain-list">{update.changes.map((c) => <li key={c} className="font-mono text-micro">{c}</li>)}</ul> : <p className="text-caption text-muted">The same parts and the same commands, in a new copy.</p>}
+          {update.changes.length ? <ul className="k-plain-list">{update.changes.map((c, i) => <li key={i} className="font-mono text-micro">{c}</li>)}</ul> : <p className="text-caption text-muted">The same parts and the same commands, in a new copy.</p>}
         </div>
       )}
       <dl className="k-parts" data-testid="plan-parts">
@@ -92,8 +103,9 @@ function PlanBody({ plan, onDone, onCancel }: { plan: PlanView; onDone: (u: Unit
       {plan.runs.length > 0 && (
         <section className="k-runs" data-testid="plan-runs" data-asks={asks || undefined}>
           <h4>{asks ? "It runs these on this machine, as you" : "It runs what you agreed to before"}</h4>
-          <p>{asks ? "Each line starts a program with your files and shell: a hook at its event, a server while the plugin is on. Nothing of it runs before you say yes." : "These lines are the ones you said yes to: no new yes is needed."} Its folder will be <code className="font-mono">{tilde(plan.root)}</code>.</p>
-          <ol>{plan.runs.map((r) => <li key={r} data-testid="plan-run">{r}</li>)}</ol>
+          <p>{asks ? "Each line starts a program with your files and shell: a hook at its event, a server while the plugin is on. Nothing of it runs before you say yes." : "These lines are the ones you said yes to: no new yes is needed."} {envWords(plan) && <span data-testid="plan-env">{envWords(plan)} </span>}Its folder will be <code className="font-mono">{tilde(plan.root)}</code>.</p>
+          {/* Two hooks can run the same line: each line is its own row. */}
+          <ol>{plan.runs.map((r, i) => <li key={i} data-testid="plan-run">{r}</li>)}</ol>
         </section>
       )}
       <NotTaken items={plan.not_taken} notes={plan.notes} testid="plan" />

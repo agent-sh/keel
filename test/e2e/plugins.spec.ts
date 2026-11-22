@@ -79,12 +79,35 @@ test("plugins: install as one unit, each part works, off, update, offered, remov
     await expect(page.getByTestId("turn-end")).toHaveCount(n, { timeout: 60_000 });
   };
 
+  // Two hooks that run the same line are two rows, and the yes says what of
+  // Keel's environment its programs get. Read only, then let go.
+  const twin = join(base, "twin");
+  const twice = { hooks: [{ type: "command", command: "printf twin" }] };
+  put(twin, {
+    ".claude-plugin/plugin.json": JSON.stringify({ name: "e2e-twin", version: "1.0.0" }),
+    "hooks/hooks.json": JSON.stringify({ hooks: { Stop: [twice, twice] } }),
+    ".mcp.json": JSON.stringify({ mcpServers: { twin: { command: "bun", args: ["${CLAUDE_PLUGIN_ROOT}/server.ts"] } } }),
+  });
+  copyFileSync(ECHO, join(twin, "server.ts"));
+  const keyWarnings: string[] = [];
+  page.on("console", (m) => { if (/same key|unique "key"/i.test(m.text())) keyWarnings.push(m.text()); });
+  await page.goto("/settings/plugins");
+  await page.getByTestId("toolkit-add-+install").click();
+  await page.getByTestId("install-source").fill(twin);
+  await page.getByTestId("install-read").click();
+  const plan = page.getByTestId("plugin-plan");
+  await expect(plan).toHaveAttribute("data-id", "e2e-twin");
+  await expect(plan.getByTestId("plan-run").filter({ hasText: "hook on Stop: printf twin" })).toHaveCount(2);
+  await expect(plan.getByTestId("plan-env")).toHaveText("A command hook gets Keel's environment; a server started as a program gets it without the names that look like credentials or a provider's or Keel's settings.");
+  expect(keyWarnings).toEqual([]);
+  await plan.getByTestId("plan-cancel").click();
+  await expect(plan).toHaveCount(0);
+
   // Read it: what it brings, what it does not take, its names, and each line it runs. Nothing runs yet.
   await page.goto("/settings/plugins");
   await page.getByTestId("toolkit-add-+install").click();
   await page.getByTestId("install-source").fill(`file://${repo}`);
   await page.getByTestId("install-read").click();
-  const plan = page.getByTestId("plugin-plan");
   await expect(plan).toHaveAttribute("data-id", "e2e-kit");
   await expect(plan.getByTestId("plan-run")).toHaveCount(3);
   await expect(plan.getByTestId("plan-runs")).toContainText("hook on UserPromptSubmit: printf 'plugin-hook-said-PINEAPPLE'");

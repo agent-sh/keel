@@ -149,11 +149,14 @@ export class Installer {
           const s = entrySource(entry, root, m.pluginRoot);
           if ("unsupported" in s) throw fail(400, `${entry.name}: ${s.unsupported}`);
           let top = root;
+          // The links taken out of what was fetched, by where they were.
+          let dropped = got.left.map((l) => join(root, l));
           if ("dir" in s) pluginDir = s.dir;
           else {
             const at = (top = join(dir, "entry"));
             const c = await cloneInto(s.git, s.ref, at, o.signal);
             commit = c.commit;
+            dropped = c.left.map((l) => join(at, l));
             got.left = c.left.filter((l) => contains(resolve(at, s.sub ?? "."), join(at, l))).map((l) => relative(resolve(at, s.sub ?? "."), join(at, l)));
             fetched.push(`its plugin cloned from ${s.git}${s.ref ? ` at ${s.ref}` : ""}${s.sub ? `, the folder ${s.sub}` : ""}`);
             pluginDir = s.sub ? resolve(at, s.sub) : at;
@@ -162,7 +165,12 @@ export class Installer {
           // Where the folder really is, after every link: inside what was fetched, or it is not taken.
           let real: string | null = null;
           try { real = realpathSync(pluginDir); } catch {}
-          if (!real) throw fail(400, `${entry.name}: ${relative(root, pluginDir) || "."} is not in the marketplace`);
+          if (!real) {
+            // A folder that was a link out of what was fetched was not taken: that is the reason, not its absence.
+            const shown = relative(top, pluginDir) || ".";
+            if (dropped.some((d) => contains(d, pluginDir))) throw fail(400, `${entry.name}: its folder ${shown} is a link that leads out of what was fetched, so it was not taken`);
+            throw fail(400, `${entry.name}: ${shown} is not in ${"dir" in s ? "the marketplace" : "the repository its entry names"}`);
+          }
           if (!contains(realpathSync(top), real)) throw fail(400, `${entry.name}: its folder leads out of what was fetched`);
           // The links taken out of the marketplace that were the plugin's: named from its own folder.
           if ("dir" in s) got.left = got.left.filter((l) => contains(pluginDir, join(root, l))).map((l) => relative(pluginDir, join(root, l)));
