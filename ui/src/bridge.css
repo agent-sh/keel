@@ -406,8 +406,41 @@
 
 /* ---------- Stations ---------- */
 .k-stations { flex: 1; min-width: 0; display: flex; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x proximity; }
-.k-station { position: relative; flex: 1 1 0; min-width: 26rem; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--bg); scroll-snap-align: start; }
+.k-station { --k-band-h: 0.3125rem; position: relative; flex: 1 1 0; min-width: 26rem; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--bg); scroll-snap-align: start; }
 .k-station[data-helm] { background: var(--raised); }
+/* The pane worked in, among several: an ink rule under its band, the width of the pane,
+   on its lighter paper. It lies over the pane (nothing moves when the helm does). The
+   other panes keep their text as it is and lose only the rule. */
+@media (min-width: 768px) {
+  .k-stations:not([data-count="1"]) .k-station[data-helm]::before { content: ""; position: absolute; z-index: 4; top: var(--k-band-h); left: 0; right: 0; height: 2px; background: var(--fg); pointer-events: none; }
+  /* A look is not the pane's session: its rule is dashed, as a place a drop would land is. */
+  .k-stations .k-station[data-helm][data-look]::before { background: repeating-linear-gradient(90deg, var(--fg) 0 0.625rem, transparent 0.625rem 1rem); }
+}
+/* A pane's views. The session it holds fills the pane. What lies over it for now (a look,
+   the start page) is drawn on top, and what is under stays laid out as it was, out of
+   sight and out of reach, so it is as it was when it shows again. */
+.k-view { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.k-view-over { position: absolute; inset: 0; z-index: 2; background: inherit; box-shadow: inherit; }
+.k-view[inert] { visibility: hidden; }
+/* The bar across the top of what lies over a pane's session: the session the pane holds
+   (its mark is live), the way back to it, and the way to keep a look in its place. */
+.k-look-bar { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; min-height: 2.25rem; padding: 0.3125rem 0.75rem 0.25rem 1rem; border-bottom: 1px solid var(--line); background: var(--sunken); font-size: var(--text-caption); line-height: 1.0625rem; }
+.k-look-back { display: inline-flex; align-items: center; gap: 0.4375rem; flex: 0 1 auto; min-width: 0; height: var(--spacing-ctl-md); padding: 0 0.4375rem 0 0.3125rem; border-radius: 0.25rem; color: var(--muted); }
+.k-look-back:hover { background: var(--hover); color: var(--fg); }
+.k-look-back:focus-visible, .k-look-keep:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.k-look-back svg { flex-shrink: 0; width: 0.875rem; height: 0.875rem; }
+.k-look-back .k-mark { flex-shrink: 0; width: 0.5rem; height: 0.5rem; margin-left: 0.125rem; }
+.k-look-to { flex-shrink: 0; white-space: nowrap; }
+.k-look-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--fg); }
+.k-look-back kbd { flex-shrink: 0; }
+.k-look-keep { flex-shrink: 0; height: var(--spacing-ctl-md); margin-left: auto; padding: 0 0.625rem; border-radius: 0.25rem; box-shadow: inset 0 0 0 1px var(--line-strong); background: var(--raised); font-weight: 500; white-space: nowrap; color: var(--fg); }
+.k-look-keep:hover { background: var(--hover); }
+/* Before the click: the pane a row of the list will change, while the pointer or the keys
+   are on that row. Its band goes to ink and a tab hangs from it that says what the click does. */
+.k-station[data-aim] .k-band { background-color: var(--fg); }
+.k-station[data-aim] .k-band::after { content: none; }
+.k-aim { position: absolute; z-index: 31; top: 0; left: 50%; transform: translateX(-50%); padding: 0.0625rem 0.625rem 0.125rem; border-radius: 0 0 0.3125rem 0.3125rem; background: var(--fg); font-weight: 700; font-size: var(--text-micro); line-height: 0.875rem; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; color: var(--bg); pointer-events: none; }
+.k-station[data-drop] .k-aim { display: none; }
 .k-station:has(+ .k-grip) { border-right: 0; }
 /* A header is the pane's handle: drag it onto another pane to trade places. */
 .k-station-head[draggable="true"] { cursor: grab; }
@@ -453,9 +486,10 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-pane-empty-close { display: grid; place-items: center; width: 1.5rem; height: var(--spacing-ctl-sm); margin: -0.25rem -0.25rem -0.25rem auto; align-self: center; border-radius: 0.25rem; color: var(--faint); }
 .k-pane-empty-close:hover { background: var(--hover); color: var(--fg); }
 .k-pane-empty-close svg { width: 0.875rem; height: 0.875rem; }
-.k-pane-empty h2 { margin-top: 0.625rem; font-size: var(--text-title); font-weight: 600; line-height: 1.25; letter-spacing: -0.015em; color: var(--fg); }
-.k-pane-empty-hint { margin-top: 0.375rem; font-size: var(--text-base); line-height: 1.5; color: var(--muted); }
-.k-pane-empty-list { display: flex; flex-direction: column; margin-top: 1.625rem; border-top: 1px solid var(--line); }
+/* What needs the owner, as the start page says it: the headline, then the rows, in the pane's width. */
+.k-pane-empty-watch { margin-top: 0.625rem; }
+.k-pane-empty-hint { margin-top: 1.625rem; font-size: var(--text-base); line-height: 1.5; color: var(--muted); }
+.k-pane-empty-list { display: flex; flex-direction: column; margin-top: 0.625rem; border-top: 1px solid var(--line); }
 .k-pane-empty-list button { display: flex; align-items: center; gap: 0.75rem; min-height: 2.5rem; border-bottom: 1px solid var(--line); text-align: left; font-size: var(--text-ui); color: var(--muted); }
 .k-pane-empty-list button:hover { color: var(--fg); }
 .k-pane-empty-list .k-mark { width: 0.5rem; height: 0.5rem; }
@@ -469,9 +503,11 @@ html[data-resizing] iframe { pointer-events: none; }
 /* The band: the station's state in one bar across its top. A change of
    state moves its colour over half a second; while a turn works it breathes
    between a quiet and a full amber, slowly. Only the colour moves. */
-.k-band { height: 0.3125rem; flex-shrink: 0; position: relative; overflow: hidden; background-color: var(--line-strong); transition: background-color 480ms var(--ease-out); }
-.k-station[data-watch="need"] .k-band { background-color: var(--st-need); height: 0.4375rem; }
-.k-station[data-watch="fail"] .k-band { background-color: var(--st-fail); height: 0.375rem; }
+.k-band { height: var(--k-band-h); flex-shrink: 0; position: relative; overflow: hidden; background-color: var(--line-strong); transition: background-color 480ms var(--ease-out); }
+.k-station[data-watch="need"] { --k-band-h: 0.4375rem; }
+.k-station:is([data-watch="fail"], [data-watch="declined"]) { --k-band-h: 0.375rem; }
+.k-station[data-watch="need"] .k-band { background-color: var(--st-need); }
+.k-station[data-watch="fail"] .k-band { background-color: var(--st-fail); }
 .k-station[data-watch="done"] .k-band { background-color: color-mix(in oklab, var(--st-done) 80%, var(--line)); }
 /* Working: the band breathes between a dim and the full color. The full color
    is a layer over the dim one and only its opacity moves, which the browser
@@ -500,7 +536,7 @@ html[data-resizing] iframe { pointer-events: none; }
 /* Why the pane is in its state, beside the word: one line, cut at the pane's room. */
 .k-station-state { display: inline-flex; align-items: baseline; gap: 0.5rem; min-width: 0; }
 .k-station-state .k-row-class { align-self: center; }
-.k-station-why { min-width: 0; max-width: 28rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-caption); color: var(--muted); }
+.k-station-why { flex: 0 1 auto; min-width: 0; max-width: 28rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-caption); color: var(--muted); }
 .k-station[data-watch="fail"] .k-station-word { color: var(--st-fail-ink); }
 .k-station[data-watch="idle"] .k-station-word { color: var(--faint); }
 .k-station:is([data-watch="stop"], [data-watch="resume"]) .k-station-word { color: var(--muted); }
@@ -521,10 +557,22 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-station[data-helm] .k-station-title { font-size: var(--text-head); }
 .k-station-line { margin-top: 0.1875rem; font-size: var(--text-ui); color: var(--muted); }
 /* In an open session, identity and state share a line. Only the other
-   panes need a preview of a conversation that does not hold the keyboard. */
-.k-station-identity { flex-wrap: wrap; column-gap: 0.625rem; row-gap: 0.25rem; }
-.k-station-identity .k-station-title { flex: 1 1 7rem; min-width: 0; margin: 0; -webkit-line-clamp: 1; }
-.k-station-identity .k-station-state { display: flex; align-items: center; gap: 0.4375rem; }
+   panes need a preview of a conversation that does not hold the keyboard.
+   The title comes first and takes the width it needs, up to the pane's. The
+   state, its reason and the tools stand beside it when all of them fit, else
+   on the line under it: the reason never squeezes the title. Whether they fit
+   is decided by the title and the pane, not by what the reason says (it counts
+   as a fixed width and takes what is left), so the header keeps its height as
+   the state changes. Title and reason are one line each, cut with an ellipsis;
+   the whole is the tooltip, and both show whole while the keys are on the tools. */
+.k-station-identity { flex-wrap: wrap; column-gap: 0.625rem; row-gap: 0.125rem; }
+.k-station-identity .k-station-title { display: block; flex: 0 1 auto; min-width: 0; max-width: 100%; margin: 0; white-space: nowrap; text-overflow: ellipsis; }
+.k-station-rest { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 0.625rem; min-height: 1.625rem; }
+.k-station-identity .k-station-state { display: flex; align-items: center; gap: 0.4375rem; flex: 1 1 auto; min-width: 11rem; }
+.k-station-identity .k-station-why { flex: 1 1 0; width: 0; }
+.k-station-head:has(.k-station-tools :focus-visible) .k-station-title { white-space: normal; overflow-wrap: anywhere; }
+.k-station-head:has(.k-station-tools :focus-visible) .k-station-rest { flex-wrap: wrap; }
+.k-station-head:has(.k-station-tools :focus-visible) .k-station-why { flex-basis: 100%; width: auto; max-width: none; order: 1; white-space: normal; overflow-wrap: anywhere; }
 .k-station-identity .k-station-word { font-family: var(--font-sans); font-stretch: normal; font-weight: 600; text-transform: none; letter-spacing: 0; }
 .k-station-identity .k-station-meta { flex: 0 1 auto; max-width: 13rem; margin: 0; }
 .k-station-identity .k-station-tools { flex-shrink: 0; margin-left: auto; }
@@ -621,6 +669,7 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-home-count:focus-visible { outline: 2px solid var(--ring); outline-offset: 0.1875rem; }
 .k-home-sec { margin-top: 1.875rem; }
 .k-home-list { display: flex; flex-direction: column; margin-top: 0.5rem; border-top: 1px solid var(--line); }
+.k-home-list { container-type: inline-size; }
 /* A row. Its first line opens the session: the mark, the title in the width it has, where and
    when. Its second says what kind of thing waits and what it is, with the row's one action. */
 .k-home-row { display: flex; flex-direction: column; padding: 0.5rem 0 0.625rem; border-bottom: 1px solid var(--line); }
@@ -633,6 +682,8 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-home-row-meta { display: flex; align-items: baseline; gap: 0.75rem; flex-shrink: 0; }
 /* (The empty pane caps its folder at a share of the row; here it has the width it needs.) */
 .k-home-row-meta .k-pane-empty-in { max-width: 9rem; }
+/* In a narrow pane the title has the row: where the session works is cut sooner. */
+@container (max-width: 30rem) { .k-home-row-meta .k-pane-empty-in { max-width: 5.5rem; } }
 .k-home-row-what { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0.375rem 0.5rem; margin-top: 0.25rem; padding-left: 1.75rem; font-size: var(--text-caption); line-height: 1.5; }
 /* The kind of thing that waits (a command, a question, a failure): said once, in the state's ink. */
 .k-home-row-word { flex-shrink: 0; padding: 0.125rem 0; font-weight: 600; color: var(--muted); }
@@ -969,7 +1020,7 @@ div:has(> .k-turn-end) { height: auto; min-height: 1.75rem; flex-wrap: wrap; row
 .k-row[data-watch="declined"] .k-row-state,
 .k-station[data-watch="declined"] .k-station-word { color: var(--st-fail-ink); }
 .k-rail-card[data-watch="declined"] { border-left-color: var(--st-fail); }
-.k-station[data-watch="declined"] .k-band { background-color: var(--st-fail); height: 0.375rem; }
+.k-station[data-watch="declined"] .k-band { background-color: var(--st-fail); }
 .k-station[data-watch="declined"] .k-station-head { box-shadow: inset 3px 0 0 var(--st-fail); }
 :is(.k-alert-icon, .k-inbox-count)[data-watch="declined"] { --k-st: var(--st-fail); }
 

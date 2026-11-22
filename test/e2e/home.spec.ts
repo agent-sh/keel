@@ -291,9 +291,10 @@ test("home: a press meant for one call never allows the next", async ({ page, re
   }
 });
 
-// A "New session" pane that stands beside other panes is the start box alone:
-// the panes and the rail show the sessions.
-test("home: a new-session pane beside others shows the start box alone", async ({ page, request }) => {
+// A "New session" pane that stands beside other panes says what needs the owner
+// as the start page of one pane does: the headline and the rows, answered from
+// there, in the pane's width.
+test("home: a new-session pane beside others lists what needs the owner", async ({ page, request }) => {
   test.skip(!(await scripted(request)), "requires the scripted provider");
   const asks = await asking(request, "Home: clean the build output", [bash("rm -rf dist build")]);
   try {
@@ -303,9 +304,13 @@ test("home: a new-session pane beside others shows the start box alone", async (
     await page.getByRole("button", { name: "New session" }).first().click();
     const pane = page.locator(".k-station-new");
     await expect(pane.getByTestId("new-composer")).toBeVisible();
-    await expect(pane.getByTestId("home-session")).toHaveCount(0);
+    await expect(pane.getByTestId("home-count-need")).toContainText(/\d+ needs? you/);
+    const asking_ = pane.locator(`[data-testid="home-session"][data-session="${asks.id}"]`);
+    await expect(asking_.getByTestId("home-command")).toHaveText("rm -rf dist build");
+    await expect(asking_.getByTestId("home-allow")).toBeVisible();
+    // Beside the titled list the recent sessions are not said again.
     await expect(pane.getByTestId("recent-session")).toHaveCount(0);
-    await expect(pane.getByTestId("home-watch")).toHaveText("What should we work on?");
+    expect(await pane.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
     await shoot(page, "home-06-pane");
     await page.getByTestId("panes-1").click();
   } finally {

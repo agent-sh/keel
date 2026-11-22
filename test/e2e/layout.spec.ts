@@ -6,9 +6,9 @@ import { openPanel, shoot, tabInto } from "./shots.ts";
 
 // Feature: the layout is the owner's. The number of panes is the one picked
 // in the rail (1, 2, 3, more when the window holds them) and Keel never adds
-// one: opening a session opens it in the pane worked in (a pane just added is
-// the one worked in); closing one closes its pane, and an empty pane is not
-// kept over a reload. The list's edge and the line
+// one: opening a session fills a pane just added, else shows it over the pane
+// worked in, which still holds its own session (panes-stay.spec.ts); closing
+// one closes its pane, and an empty pane is not kept over a reload. The list's edge and the line
 // between two panes drag (and move with the arrow keys, reset on a double
 // click), and the sizes are remembered. A session dragged from the list
 // lands in the pane it is dropped on; a pane's header dropped on another
@@ -74,12 +74,13 @@ test("panes by number, dragging, and text size", async ({ page, request }) => {
   expect(await fontPx('[data-testid="session-row"] .k-row-title')).toBeGreaterThanOrEqual(14);
   expect(await fontPx('[data-testid="composer"]')).toBeGreaterThanOrEqual(15);
 
-  // Opening a session never adds a pane: it goes to the pane worked in.
+  // Opening a session never adds a pane: it fills the empty one, and the next lies over the pane worked in, which still holds its own.
   await entry(b).click();
   await expect(pane(1)).toHaveAttribute("data-station", b);
   await expect(panes).toHaveCount(2);
   await entry(c).click();
   await expect(pane(1)).toHaveAttribute("data-station", c);
+  await expect(pane(1)).toHaveAttribute("data-holds", b);
   await expect(pane(0)).toHaveAttribute("data-station", a);
   await expect(panes).toHaveCount(2);
 

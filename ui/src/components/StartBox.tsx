@@ -23,8 +23,10 @@ const WorktreeToggle = lazy(() => import("./WorktreeChip.tsx").then((m) => ({ de
 // The home screen: the state of every session as its headline, the start box
 // (the folder, the model and the first message of a new session), then the
 // sessions that need the owner and the ones at work, then the folder's recent ones.
-// `only`: the start box alone, for a pane that stands beside others (they and the rail show the sessions).
-export function StartBox({ only }: { only?: boolean } = {}) {
+// The same in every layout: in a pane that stands beside others it is one column in
+// the pane's width, with what needs the owner under the start box.
+// `onBack`: it lies over a pane's session, and Escape in the box goes back to that.
+export function StartBox({ onBack }: { onBack?: () => void } = {}) {
   const defaultModel = useStore((s) => s.defaultModel);
   const sessions = useStore((s) => s.sessions);
   const newModel = useUI((s) => s.newModel);
@@ -77,7 +79,7 @@ export function StartBox({ only }: { only?: boolean } = {}) {
       <div className="@container flex flex-1 flex-col items-center overflow-y-auto px-4 pb-[max(1rem,env(safe-area-inset-bottom))] md:px-6">
         <div className="k-home mt-auto grid w-full max-w-[46rem] grid-cols-1 pb-[8vh] pt-6 md:mb-auto md:mt-[9vh] md:pb-8 md:pt-0 @[74rem]:max-w-[88rem] @[74rem]:grid-cols-[minmax(0,46rem)_minmax(0,1fr)] @[74rem]:gap-x-14">
         <div className="min-w-0" data-testid="home-start">
-          {only ? <h1 className="k-home-state" data-testid="home-watch" data-quiet>What should we work on?</h1> : <WatchHeadline />}
+          <WatchHeadline />
           <h2 className="k-pane-empty-word mb-2.5 mt-5">Start a session{machine && <span>{autoThere ? `on ${place!.machine}, in its granted directory` : sshMachine ? `on ${sshMachine.name}` : machine !== "auto" ? `on ${pickedName ?? "the machine you picked"}, in its granted directory` : ""}</span>}</h2>
           <div className="mb-2.5 flex flex-wrap items-center gap-2">
             <MachinePicker />
@@ -102,6 +104,7 @@ export function StartBox({ only }: { only?: boolean } = {}) {
               onModel={(id) => setUI({ newModel: id })}
               workspace={workspace}
               autoFocus
+              onEscape={onBack}
               hold={blocked ? "Not sent: the note above the box says why." : undefined}
               onSend={async (t, images) => {
                 const s = machine
@@ -123,9 +126,9 @@ export function StartBox({ only }: { only?: boolean } = {}) {
           </div>
           {firstRun && <FirstSteps />}
         </div>
-        {!autoThere && !only && <WatchLists className="min-w-0 @[74rem]:col-start-2 @[74rem]:row-span-2 @[74rem]:row-start-1 @[74rem]:[&>section:first-child]:mt-[4.25rem]" />}
+        {!autoThere && <WatchLists className="min-w-0 @[74rem]:col-start-2 @[74rem]:row-span-2 @[74rem]:row-start-1 @[74rem]:[&>section:first-child]:mt-[4.25rem]" />}
           {/* Recent is for where the titled list is not on screen (a phone, a rail folded to its marks): beside the list it would say the same sessions again. */}
-          {recent.length > 0 && !autoThere && !only && !listed && (
+          {recent.length > 0 && !autoThere && !listed && (
             <section className="k-home-sec min-w-0 @[74rem]:col-start-1">
               <h2 className="k-pane-empty-word">Recent</h2>
               <div className="mt-2 flex flex-col border-t border-line">

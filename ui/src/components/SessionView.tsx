@@ -1,5 +1,5 @@
 import type { PromptBlock } from "../../../src/core/types.ts";
-import { lazy, memo, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
+import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { setBaseTitle } from "./Attention.tsx";
 import { FolderX, WifiOff } from "lucide-react";
 import { WaitingElsewhere } from "./AnswerQueue.tsx";
@@ -35,7 +35,10 @@ export { Boundary };
 // One session: header, transcript, the dock, approvals and the composer.
 // `header` replaces the standard header (a shell's own), `missingHeader` heads the
 // view of a session this daemon does not have; `panel` shows the side panel.
-export function SessionView({ id, header, missingHeader, panel = true, focus = true }: { id: string; header?: ReactNode; missingHeader?: ReactNode; panel?: boolean; focus?: boolean }) {
+// `back`: the view lies over something it leads back to (a look over a pane's
+// session): Escape goes back, as it does from an agent's session, and stopping
+// the turn is its own labeled button.
+export function SessionView({ id, header, missingHeader, panel = true, focus = true, back }: { id: string; header?: ReactNode; missingHeader?: ReactNode; panel?: boolean; focus?: boolean; back?: () => void }) {
   const session = useStore((s) => s.sessions[id]);
   // A link to a session that is gone (deleted, another daemon's) says so instead of loading forever.
   const [missing, setMissing] = useState<string | null>(null);
@@ -61,6 +64,10 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
   useEffect(() => { if (focus) setBaseTitle(session?.title ? `${session.title}${on ? ` on ${on}` : ""} - Keel` : "Keel"); }, [session?.title, on, focus]);
   // A panel lying over the conversation covers it: nothing under it takes focus, text or a press.
   const covered = usePanelSheet(session, !!panel);
+  // (One function for the life of the view: the message box is not drawn again for a new one.)
+  const backNow = useRef(back);
+  backNow.current = back;
+  const goBack = useMemo(() => (back ? () => backNow.current?.() : undefined), [!back]);
   if (!session && (missing === id || gone)) {
     return (
       <div className="flex flex-1 flex-col" data-testid="session-missing">
@@ -95,7 +102,7 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
           {/* The stack is one height budget (Composer's Tray): the cards above the box scroll, the box stays. */}
           <div className="k-compose flex min-h-0 flex-col pr-[var(--sbw,0px)]">
             <div className="k-compose-in mx-auto flex min-h-0 w-full max-w-[48rem] flex-col px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6 md:pb-5">
-              <SessionCompose id={session.id} parentId={session.parent_id ?? null} working={session.phase === "working"} model={session.model} workspace={session.workspace} folderGone={!!session.workspace_gone} unreached={unreached === id} focus={focus} />
+              <SessionCompose id={session.id} parentId={session.parent_id ?? null} working={session.phase === "working"} model={session.model} workspace={session.workspace} folderGone={!!session.workspace_gone} unreached={unreached === id} focus={focus} back={goBack} />
             </div>
           </div>
         </div>
@@ -109,15 +116,15 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
 // when one of these facts changes: the session's row changes with every
 // stored event (its head moves), and the box, its pickers and the cards have
 // nothing to say about that.
-const SessionCompose = memo(function SessionCompose({ id, parentId, working, model, workspace, folderGone, unreached, focus }: { id: string; parentId: string | null; working: boolean; model: string; workspace: string; folderGone: boolean; unreached: boolean; focus: boolean }) {
+const SessionCompose = memo(function SessionCompose({ id, parentId, working, model, workspace, folderGone, unreached, focus, back }: { id: string; parentId: string | null; working: boolean; model: string; workspace: string; folderGone: boolean; unreached: boolean; focus: boolean; back?: () => void }) {
   const session = useMemo(() => ({ id }), [id]);
   const does = useMemo(() => ({
     model: (m: string) => switchSession(id, { model: m }).catch(reportError),
     send: (t: string, images: PromptBlock[], client_id?: string) => actions.send(id, t, { images, client_id }),
     queue: (t: string, images: PromptBlock[], client_id?: string) => actions.send(id, t, { mode: "queue", images, client_id }),
     stop: () => void stopHere({ id, parent_id: parentId }),
-    escape: parentId ? () => navigate({ name: "session", id: parentId }) : undefined,
-  }), [id, parentId]);
+    escape: back ?? (parentId ? () => navigate({ name: "session", id: parentId }) : undefined),
+  }), [id, parentId, back]);
   const above = useMemo(() => (
     <>
       {unreached && <Unreached />}
@@ -145,7 +152,7 @@ const SessionCompose = memo(function SessionCompose({ id, parentId, working, mod
       onSend={does.send}
       onQueue={does.queue}
       onStop={does.stop}
-      {...(does.escape ? { onEscape: does.escape, stopLabel: "Stop this agent" } : {})}
+      {...(does.escape ? { onEscape: does.escape, stopLabel: parentId ? "Stop this agent" : "Stop the turn" } : {})}
       focus={focus}
       // (Not in a pane the answering sequence opened to bring the keyboard to its card: lib/asks.ts.)
       autoFocus={focus && matchMedia("(min-width: 768px)").matches && sequenceAt() !== id}

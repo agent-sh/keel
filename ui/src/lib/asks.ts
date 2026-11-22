@@ -53,6 +53,8 @@ const unitOf = (el: Element | null | undefined) => el?.closest(UNIT) ?? null;
 const settledAt = (h: Hold | undefined | null) => !h || !h.code || performance.now() - h.at >= SETTLE_MS;
 // The message boxes the keyboard was moved to by code from a card, and when (boxRefused).
 const BOX = '[data-testid="composer"]';
+// Of what a pane draws, only what is on top: a session under a look or the start page stays drawn, out of reach (components/Bridge.tsx).
+const ON_TOP = ":not([inert] *)";
 const isBox = (el: EventTarget | null): el is HTMLTextAreaElement => el instanceof HTMLTextAreaElement && el.matches(BOX);
 const boxes = new WeakMap<Element, number>();
 let place: Element | null = null; // where in the page the keyboard last was: a message box, a card, or another element (not a popup)
@@ -141,7 +143,7 @@ export const sequenceAt = (): string | null => bound;
 export function restInBox(session: string) {
   const at = document.activeElement;
   if ((at && at !== document.body && at.isConnected) || !matchMedia("(min-width: 768px)").matches) return;
-  document.querySelector<HTMLElement>(`[data-station="${CSS.escape(session)}"] ${BOX}`)?.focus({ preventScroll: true });
+  document.querySelector<HTMLElement>(`[data-station="${CSS.escape(session)}"] ${BOX}${ON_TOP}`)?.focus({ preventScroll: true });
 }
 
 // The keyboard has been in the element's card for the settle time, or the owner brought it there themselves.
@@ -317,7 +319,7 @@ export function keysWhenShown(find: () => Element | null, own: boolean, otherwis
   raf = requestAnimationFrame(look);
 }
 // The first thing that waits above a session's message box.
-export const askIn = (session: string) => document.querySelector<HTMLElement>(`[data-station="${CSS.escape(session)}"] [data-testid="composer-asks"] ${REGION}`);
+export const askIn = (session: string) => document.querySelector<HTMLElement>(`[data-station="${CSS.escape(session)}"] [data-testid="composer-asks"] ${REGION}${ON_TOP}`);
 // The keyboard goes to it (the owner asked: `own`), once it shows. A session
 // that shows nothing to answer in time gets the keyboard in its message box.
 export const focusAsk = (session: string) => keysWhenShown(() => askIn(session), true, () => restInBox(session));
