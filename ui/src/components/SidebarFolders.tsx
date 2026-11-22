@@ -7,6 +7,9 @@ import { ChevronRight, Folder, FolderPlus, Plus, Trash2 } from "lucide-react";
 import { useState, type DragEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { folders, tree, useFolders, type SessionFolder } from "../lib/folders.ts";
+import { actedOn, useActed } from "../lib/list-hold.ts";
+import { useWatches, type Watch } from "../lib/watch.ts";
+import { Mark } from "./Mark.tsx";
 import { composing } from "../lib/keys.ts";
 import { reportError } from "../lib/store.ts";
 import { cn } from "../lib/utils.ts";
@@ -18,7 +21,8 @@ const FOLDER = "application/x-keel-folder";
 // Quiet until the head is hovered or holds the keyboard; shown from the start where nothing hovers.
 const headAct = "grid size-6 shrink-0 place-items-center rounded-sm text-faint opacity-0 hover:bg-hover hover:text-fg group-hover/head:opacity-100 group-focus-within/head:opacity-100 focus-visible:opacity-100 touch:size-7 touch:opacity-100";
 
-function Head({ f, n, nested, canNest }: { f: SessionFolder; n: number; nested: boolean; canNest: boolean }) {
+// `calls`: the folder is folded over a session that needs the owner or failed: its head says so.
+function Head({ f, n, nested, canNest, calls }: { f: SessionFolder; n: number; nested: boolean; canNest: boolean; calls?: Watch }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(f.name);
   const [over, setOver] = useState<"" | "session" | "before" | "into">("");
@@ -72,6 +76,7 @@ function Head({ f, n, nested, canNest }: { f: SessionFolder; n: number; nested: 
         <span className="min-w-0 truncate" onDoubleClick={() => setEditing(true)} title="Double-click to rename">{f.name}</span>
       )}
       <span className="tabular-nums text-faint">{n || ""}</span>
+      {calls && <Mark w={calls} className="k-head-calls" />}
       <span className="ml-auto flex items-center">
         {!nested && <button type="button" className={headAct} aria-label={`New folder in ${f.name}`} title="New folder inside" onClick={() => folders.create("New folder", f.id).catch(reportError)}><FolderPlus /></button>}
         <button
@@ -96,6 +101,13 @@ export function FolderGroups({ list, cmp, current, every }: { list: Session[]; c
   }
   const of = (id: string) => (by.get(id) ?? []).sort(cmp);
   const loose = of("");
+  // A folded folder opens for a session the owner went to (a count above the list), and folds
+  // again when they have left the list: what they chose for the folder is not changed.
+  useActed();
+  const went = (f: SessionFolder) => of(f.id).some((s) => actedOn(s.id));
+  // What a folded head says of the sessions it hides, as they are now: needs the owner, else failed.
+  const watches = useWatches(list);
+  const calls = (ss: Session[]): Watch | undefined => (ss.some((s) => watches[s.id] === "need") ? "need" : ss.some((s) => watches[s.id] === "fail" || watches[s.id] === "declined") ? "fail" : undefined);
   // A filter shows only the folders with a match, open.
   const show = (f: SessionFolder, kids: SessionFolder[] = []) => !every || of(f.id).length > 0 || kids.some((k) => of(k.id).length > 0);
   return (
@@ -103,16 +115,16 @@ export function FolderGroups({ list, cmp, current, every }: { list: Session[]; c
       {tree(all).map(({ folder: f, kids }) => {
         if (!show(f, kids)) return null;
         const count = of(f.id).length + kids.reduce((n, k) => n + of(k.id).length, 0);
-        const open = every || !f.collapsed;
+        const open = every || !f.collapsed || went(f) || kids.some(went);
         return (
           <section key={f.id} className="k-group" data-testid="folder-group" data-folder={f.id}>
-            <Head f={f} n={count} nested={false} canNest={true} />
+            <Head f={f} n={count} nested={false} canNest={true} calls={open ? undefined : calls([...of(f.id), ...kids.flatMap((k) => of(k.id))])} />
             {open && (
               <>
                 {kids.filter((k) => show(k)).map((k) => (
                   <div key={k.id} data-testid="folder-group" data-folder={k.id}>
-                    <Head f={k} n={of(k.id).length} nested canNest={false} />
-                    {(every || !k.collapsed) && of(k.id).length > 0 && <div className="pl-3"><Group list={of(k.id)} current={current} every={every} where /></div>}
+                    <Head f={k} n={of(k.id).length} nested canNest={false} calls={every || !k.collapsed || went(k) ? undefined : calls(of(k.id))} />
+                    {(every || !k.collapsed || went(k)) && of(k.id).length > 0 && <div className="pl-3"><Group list={of(k.id)} current={current} every={every} where /></div>}
                   </div>
                 ))}
                 {of(f.id).length > 0 ? <Group list={of(f.id)} current={current} every={every} where /> : !kids.length && <p className="px-2 pb-1 text-caption text-faint">Drag sessions here</p>}

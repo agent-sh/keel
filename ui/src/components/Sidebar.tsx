@@ -1,22 +1,22 @@
 // The keel: the rail along the left edge. It is the list whenever there is
 // room: sessions by folder and machine, each with its title, state and time,
-// and the archive. A row keeps its place and its height: what its session
-// needs is said by its mark and its word, and counted on the line above the
-// list, where a press goes to the next one. Under the pointer or the keyboard
-// nothing moves at all (lib/list-order.ts, lib/list-hold.ts). With little
-// room beside the panes the list is one line a session, the mark and the
-// title. Folded (Ctrl B, or no room for a title) it is a column of marks,
+// and the archive. A row keeps its place and its height: it is one line (two
+// by the owner's choice), what its session needs is said by its mark, and
+// counted on the line above the list, where a press goes to the next one's
+// row. Under the pointer or the keyboard nothing moves at all
+// (lib/list-order.ts, lib/list-hold.ts). With little room beside the panes a
+// row is the mark and the title alone. Folded (Ctrl B, or no room for a title) it is a column of marks,
 // each a session's state and a short code of its title, banded by what it
 // needs from you. A card beside the entry under the pointer or the focus says
 // the rest. On a phone the list is a drawer.
-import { Archive, ArchiveRestore, Bug, Columns2, Folder, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, Plus, Search, ServerOff, Settings, Sparkles, Sun, SunMoon, Tag } from "lucide-react";
+import { Archive, ArchiveRestore, Bug, Columns2, Folder, MessageSquareMore, Moon, PanelLeftClose, PanelLeftOpen, PanelsTopLeft, Pin, Plus, Search, ServerOff, Settings, Sparkles, Sun, SunMoon, Tag } from "lucide-react";
 import { createContext, Fragment, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { runCommand } from "../lib/keys.ts";
 import { machineName, machineReach, useFleet } from "../lib/fleet.ts";
 import { stations, useStations } from "../lib/stations.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
-import { actedOn, forgetActed, jumpNext, listActed, nameCounts, onUnfilter, useActed, useCounts, useHand, type Hand, type Kind } from "../lib/list-hold.ts";
+import { actedOn, forgetActed, jumpNext, listActed, nameCounts, onReveal, useActed, useCounts, useHand, type Hand, type Kind } from "../lib/list-hold.ts";
 import { folders, held as heldList, tally } from "../lib/list-order.ts";
 import { useQueued } from "../lib/queued.ts";
 import { callsigns, listBounds, listWidth, panesMax, toggleList, useRail } from "../lib/rail.ts";
@@ -24,7 +24,7 @@ import { opened, openFocus } from "../lib/self-focus.ts";
 import { fitBands } from "../lib/rail-fit.ts";
 import { navigate, phone, savePref, setTheme, setUI, useUI } from "../lib/ui.ts";
 import { ago, cn, folderNames, when } from "../lib/utils.ts";
-import { AT_REST, branchOf, lastLine, useSessionState, useSessionStates, WATCH_LABEL, watchLabel, type SessionState, type Watch } from "../lib/watch.ts";
+import { AT_REST, branchOf, lastLine, useSessionState, useSessionStates, watchLabel, type SessionState, type Watch } from "../lib/watch.ts";
 import { useUnsent, useWaitingSend } from "../lib/send-drafts.ts";
 import { MachineSep, machineRuns, useWhere, WherePip, whereWords } from "./Where.tsx";
 import { finished, ListFind, matches, order, setArrange, useArrange } from "./ListArrange.tsx";
@@ -48,13 +48,13 @@ const base = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
 // What the list is drawn from, for every group in it: the states its order and
 // its folds read (held still under the hand), the sessions that left while it
 // was held, and whether the list is the narrow one.
-const ListCtx = createContext<{ watches: Record<string, Watch>; gone: Set<string>; narrow: boolean }>({ watches: {}, gone: new Set(), narrow: false });
+const ListCtx = createContext<{ watches: Record<string, Watch>; gone: Set<string>; narrow: boolean; lines: "one" | "two" }>({ watches: {}, gone: new Set(), narrow: false, lines: "one" });
 
 // The card beside an entry: shown at once for a mark (it has no words of its
 // own), after a pause for a list row (its title is already there), and at
 // once for either on keyboard focus.
 // `row`: the entry is a list row, which already shows the title, the state and the folder
-// (a row of the narrow list shows the title only: its card is the whole one).
+// (a row of one line shows the title only: its card is the whole one).
 type Card = { s: Session; y: number; left: number; row: boolean };
 const CardCtx = createContext<(s: Session, wait: number, row?: boolean) => Record<string, (e: { currentTarget: HTMLElement }) => void>>(() => ({}));
 function useCard() {
@@ -104,7 +104,7 @@ const HandCtx = createContext<Pick<Hand, "held"> & Partial<Pick<Hand, "on">>>({ 
 // `key`: what the owner chose for the list (its tab, filter and arrangement):
 // a change of theirs is drawn at once.
 const NONE = new Set<string>(), NO_LATE: Session[] = [];
-function useHeld(held: boolean, key: string, now: Session[], watches: Record<string, Watch>) {
+function useHeld(held: boolean, key: string, now: Session[], watches: Record<string, Watch>, current: string | null = null) {
   const snap = useRef<{ key: string; list: Session[]; watches: Record<string, Watch> } | null>(null);
   useActed();
   const was = held && snap.current?.key === key ? snap.current : null;
@@ -112,7 +112,7 @@ function useHeld(held: boolean, key: string, now: Session[], watches: Record<str
     snap.current = { key, list: now, watches };
     return { list: now, watches, gone: NONE, late: NO_LATE };
   }
-  const r = heldList(was.list, now, actedOn);
+  const r = heldList(was.list, now, actedOn, (id) => id === current);
   // A session the owner acted on, and one that came since, are in the state they are in now.
   const ws = { ...was.watches };
   for (const s of [...r.list, ...r.late]) if (actedOn(s.id) || !(s.id in ws)) ws[s.id] = watches[s.id] ?? "idle";
@@ -120,7 +120,7 @@ function useHeld(held: boolean, key: string, now: Session[], watches: Record<str
   return { list: r.list, watches: ws, gone: r.gone, late: r.late };
 }
 
-// States a row spells out in their ink; a session at rest says its word quietly.
+// States a row spells out in their ink; a session at rest says none.
 const SPELLED: Watch[] = ["need", "work", "wait", "fail", "declined", "resume", "stop"];
 // States whose session may hold a message of the owner's in its queue.
 const QUEUES: Watch[] = ["work", "wait", "need", "stop", "resume"];
@@ -150,20 +150,28 @@ function neighbour(row: HTMLElement | null): HTMLElement | undefined {
   return i < 0 ? undefined : rows[i + 1] ?? rows[i - 1];
 }
 
+// The second line of a session at rest, in a list of two lines a row: what it last said or did,
+// when this page holds its events (it opened the session), else the model it runs on.
+function RestLine({ s }: { s: Session }) {
+  const line = useStore((x) => lastLine(branchOf(x.events[s.id], s.head), s.workspace));
+  return <span className="k-row-why k-row-last" data-testid="row-last" title={line || undefined}>{line || modelOf(s.model)}</span>;
+}
+
 // `given`: the session as the list ordered it (held still under the hand); the row shows it as it is now.
 // `gone`: it left the list while the list was held, and its row stays, dimmed, until the hand has left.
 function Row({ s: given, active, where, gone }: { s: Session; active: boolean; where?: boolean; gone?: boolean }) {
   const live = useStore((x) => x.sessions[given.id]);
   const deleted = useStore((x) => !!x.gone[given.id]);
   const s = live ?? given;
-  const { narrow } = useContext(ListCtx);
+  const { narrow, lines } = useContext(ListCtx);
   const restore = s.archived;
   const st = useSessionState(s);
   const w = st.watch;
   // A machine that does not answer: what its rows say is the last it told, so they are dimmed and their clocks stand.
   const offline = useWhere(s)?.reach === "offline";
   const now = useNow(timed(st) && !offline);
-  const card = useContext(CardCtx)(s, narrow ? 250 : 450, !narrow);
+  // A row of one line may have no room for its reason: the card beside it comes sooner.
+  const card = useContext(CardCtx)(s, lines === "one" ? 250 : 450, lines === "two");
   // A message of the session waits for the daemon to be back and goes out by itself: said on the
   // state line, whatever the state is (it is the reason itself when the session is otherwise at rest).
   const waitingSend = useWaitingSend(s.id);
@@ -173,11 +181,11 @@ function Row({ s: given, active, where, gone }: { s: Session; active: boolean; w
   const [placing, setPlacing] = useState(false);
   const row = useRef<HTMLDivElement>(null);
   const unread = useAuto((x) => (x.unread.sessions[s.id] ?? 0) > 0);
-  const left = !gone ? null : deleted || (!live && !given.archived) ? "Deleted" : given.archived ? "Restored" : "Archived";
+  const left = !gone ? null : deleted || (!live && !given.archived) ? "deleted" : given.archived ? "restored" : "archived";
   // The card beside the row is away while the menu of panes is open over it.
   useEffect(() => { if (placing && row.current) card.onClick?.({ currentTarget: row.current }); }, [placing]);
   const open = (beside: boolean) => {
-    if (left === "Deleted") return;
+    if (left === "deleted") return;
     if (beside) return openBeside(s.id);
     navigate({ name: "session", id: s.id });
     if (shown) intoBox(s.id);
@@ -194,7 +202,7 @@ function Row({ s: given, active, where, gone }: { s: Session; active: boolean; w
       data-unread={unread || undefined}
       data-offline={offline || undefined}
       data-gone={gone || undefined}
-      aria-disabled={left === "Deleted" || undefined}
+      aria-disabled={left === "deleted" || undefined}
       aria-current={active ? "page" : undefined}
       {...(placing ? {} : card)}
       draggable
@@ -210,29 +218,48 @@ function Row({ s: given, active, where, gone }: { s: Session; active: boolean; w
       className="k-row group"
     >
       <Mark w={w} />
+      {/* The title and the row's own line: the state with why (and the folder, where the list is not
+          grouped by it). In a row of one line the words follow the title where it leaves them room,
+          and are on the card beside the row where it does not; in a row of two they are the second
+          line, as wide as the row. A session at rest says no word the mark already says. */}
       <span className="k-row-main">
         <span className="k-row-title" title={s.title || undefined}>{s.title || "New session"}</span>
+        <span className="k-row-sub">
+          {SPELLED.includes(w)
+            ? <span className="k-row-state" data-testid="row-state">{watchLabel(w, st.agents)}</span>
+            : lines === "two" && <RestLine s={s} />}
+          {w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="row-class">{failWord(st.cls)}</span>}
+          {SPELLED.includes(w) && st.text && st.why !== "send" && <span className="k-row-why" data-testid="row-why" data-why={st.why} title={whyText(st, now)}>{whyText(st, now)}</span>}
+          {waitingSend && <span className="k-row-send" data-testid="waiting-send-mark" title="A message here waits for Keel and goes out by itself when it is back.">waits to send</span>}
+          {where && <span className="k-row-in" data-testid="row-folder">{folderOf(s)}</span>}
+        </span>
       </span>
       {/* The first line's end: the tag, the marks, the time, and under the pointer the row's actions in the time's place. */}
       <span className="k-row-end">
         {(s.settings.tags ?? []).slice(0, 1).map((t) => <span key={t} title={(s.settings.tags ?? []).join(", ")} className="k-row-tag shrink truncate rounded-xs bg-sunken px-1 text-micro text-faint" data-testid="row-tag">{t}</span>)}
         <SessionBadges sessionId={s.id} />
+        {/* A message of theirs that waits in the session's queue. */}
+        {queued > 0 && !left && <span className="k-row-queued" data-testid="row-queued" role="img" aria-label={`${queued} queued`} title={`${queued} message${queued > 1 ? "s" : ""} of yours ${queued > 1 ? "wait" : "waits"} here for the turn to end`}><MessageSquareMore aria-hidden="true" />{queued}</span>}
         {/* The time a glance wants: how long it has needed them, worked on this step or waited (when a timer is due); at rest, when it last moved. */}
-        {offline
+        {left
+          ? <span className="k-row-time" data-testid="row-gone" data-offline title="It left the list while your hand was on it, and goes when your hand has left">{left}</span>
+          : offline
           ? <span className="k-row-time group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-offline title="Its machine does not answer: this is the last it told">offline</span>
           : timed(st)
           ? <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-live title={st.until ? `Due ${when(st.until)}` : `Since ${when(st.since!)}`}>{stateClock(st, now, true)}</span>
           : <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" title={when(s.updated)}>{ago(s.updated)}</span>}
-        {!restore && !shown && !phone() && (
+        {/* (A row whose session left has no actions: there is nothing to act on.) */}
+        {!left && !restore && !shown && !phone() && (
           <button type="button" tabIndex={-1} title="Open beside, in a new pane (Ctrl click)" aria-label="Open beside" data-testid="row-beside" onClick={(e) => { e.stopPropagation(); openBeside(s.id); }} className="k-row-act hidden group-hover:grid group-focus-within:grid">
             <Columns2 />
           </button>
         )}
-        {!restore && panes > 1 && !phone() && (
+        {!left && !restore && panes > 1 && !phone() && (
           <PaneMenu id={s.id} label="Place in a pane (Shift Enter)" testid="row-place" tabIndex={-1} open={placing} onOpenChange={setPlacing} back={row} className="k-row-act hidden group-hover:grid group-focus-within:grid data-popup-open:grid">
             <PanelsTopLeft />
           </PaneMenu>
         )}
+        {!left && (
         <button
           type="button"
           tabIndex={-1}
@@ -251,26 +278,6 @@ function Row({ s: given, active, where, gone }: { s: Session; active: boolean; w
         >
           {restore ? <ArchiveRestore /> : <Archive />}
         </button>
-      </span>
-      {/* The second line is every row's, with words or without: the state with why, as wide as the row
-          (and the folder, where the list is not grouped by it). A row is as high at rest as at work. */}
-      <span className="k-row-sub">
-        {left
-          ? <span className="k-row-state" data-testid="row-gone">{left}</span>
-          : SPELLED.includes(w)
-          ? <span className="k-row-state" data-testid="row-state">{watchLabel(w, st.agents)}</span>
-          : <span className="k-row-state k-row-rest" data-testid="row-rest">{WATCH_LABEL[w]}</span>}
-        {w === "fail" && failWord(st.cls) && <span className="k-row-class" data-testid="row-class">{failWord(st.cls)}</span>}
-        {SPELLED.includes(w) && st.text && st.why !== "send" && <span className="k-row-why" data-testid="row-why" data-why={st.why} title={whyText(st, now)}>{whyText(st, now)}</span>}
-        {waitingSend && <span className="k-row-send" data-testid="waiting-send-mark" title="A message here waits for Keel and goes out by itself when it is back.">waits to send</span>}
-        {where && <span className="k-row-in" data-testid="row-folder">{folderOf(s)}</span>}
-        {/* The line's end, under the time: a message of theirs that waits in the session's queue, and
-            new since they looked (when the state does not already call them). */}
-        {!left && (queued > 0 || (unread && !["need", "fail", "declined"].includes(w))) && (
-          <span className="k-row-marks">
-            {queued > 0 && <span className="k-row-queued" data-testid="row-queued" title={`${queued} message${queued > 1 ? "s" : ""} of yours ${queued > 1 ? "wait" : "waits"} here for the turn to end`}>{queued} queued</span>}
-            {unread && !["need", "fail", "declined"].includes(w) && <span className="k-row-new" data-testid="row-new" title="New since you looked">new</span>}
-          </span>
         )}
       </span>
     </div>
@@ -287,8 +294,9 @@ function rootSessionId(sessions: Record<string, Session>, current: string | null
 // A folder shows its first sessions; the rest open on request (and the open
 // one is always shown, also when it is a subagent's: its parent's row then).
 // A session that needs the owner, failed, works or waits is never folded
-// away: only the ones at rest are (done, stopped, not started), and a press
-// on a count above the list unfolds the one it goes to. A row that was shown
+// away, nor one with something they have not read: only the ones at rest and
+// read are (done, stopped, not started), and a press on a count above the
+// list unfolds the one it goes to. What it reads is held with the list. A row that was shown
 // stays shown until they ask for fewer, so a turn that ends takes no row away. The order is the list's own
 // (lib/list-order.ts): a row is where the arrangement puts it, not where its state would.
 const SHOWN = 6;
@@ -299,7 +307,12 @@ export function Group({ list, current, every, where }: { list: Session[]; curren
   const { watches, gone } = useContext(ListCtx);
   const kept = useRef(new Set<string>());
   useActed();
-  const shown = all ? list : list.filter((s, i) => i < SHOWN || s.id === root || kept.current.has(s.id) || actedOn(s.id) || !AT_REST.includes(watches[s.id] ?? "idle"));
+  const held = useContext(HandCtx).held;
+  const unreadNow = useAuto((x) => x.unread.sessions);
+  const unreadHeld = useRef(unreadNow);
+  if (!held) unreadHeld.current = unreadNow;
+  const unread = unreadHeld.current;
+  const shown = all ? list : list.filter((s, i) => i < SHOWN || s.id === root || kept.current.has(s.id) || actedOn(s.id) || (unread[s.id] ?? 0) > 0 || !AT_REST.includes(watches[s.id] ?? "idle"));
   for (const s of shown) kept.current.add(s.id);
   return (
     <div className="flex flex-col gap-px">
@@ -524,13 +537,60 @@ const COUNTS: { kind: Kind; word: (n: number) => string; watch?: Watch; says: st
   { kind: "unread", word: () => "new", says: "New since you looked" },
   { kind: "offline", word: () => "offline", says: "On a machine that does not answer" },
 ];
+// The line fits its bar at every width and text size, and a figure is never cut: measured on the
+// line itself. Every count keeps its mark and its figure, and the words take the room that is
+// left, the one that calls the owner first. With no room for a word the line's calm sentence
+// goes, then the room between the counts, and at the very narrowest whole counts, the ones that
+// call the owner last.
+const WORDS_STAY: Kind[] = ["need", "fail", "offline", "unread", "work"];
+const COUNTS_GO: Kind[] = ["work", "unread", "offline"];
+function fitSummary(el: HTMLElement) {
+  const chips = [...el.querySelectorAll<HTMLElement>(".k-sum-chip")];
+  const chip = (k: Kind) => chips.find((c) => c.dataset.kind === k);
+  const calm = el.querySelector<HTMLElement>(".k-sum-calm");
+  const over = () => el.scrollWidth > el.clientWidth || (!!calm && !calm.hidden && calm.scrollWidth > calm.clientWidth);
+  el.removeAttribute("data-tight");
+  if (calm) calm.hidden = false;
+  for (const c of chips) { c.hidden = false; c.setAttribute("data-bare", ""); }
+  if (!over()) {
+    for (const k of WORDS_STAY) {
+      const c = chip(k);
+      if (!c) continue;
+      c.removeAttribute("data-bare");
+      // A word that says less is not shown where one that says more has no room.
+      if (over()) { c.setAttribute("data-bare", ""); break; }
+    }
+    return;
+  }
+  const steps: (() => void)[] = [
+    () => { if (calm) calm.hidden = true; },
+    () => el.setAttribute("data-tight", ""),
+    ...COUNTS_GO.map((k) => () => { const c = chip(k); if (c) c.hidden = true; }),
+  ];
+  for (const step of steps) { step(); if (!over()) break; }
+}
+
 function Summary() {
   const counts = useCounts();
   const sessions = useStore((s) => s.sessions);
   const shown = COUNTS.filter((c) => counts[c.kind].length > 0);
   const calls = counts.need.length + counts.fail.length > 0;
+  const line = useRef<HTMLDivElement>(null);
+  const figures = COUNTS.map((c) => counts[c.kind].length).join(" ");
+  useLayoutEffect(() => {
+    const el = line.current;
+    if (!el) return;
+    const fit = () => fitSummary(el);
+    fit();
+    // Measured again when the bar or a count changes width: the edge dragged, the text size, a face that arrived after the first paint.
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    for (const c of el.children) ro.observe(c);
+    document.fonts?.addEventListener("loadingdone", fit);
+    return () => { ro.disconnect(); document.fonts?.removeEventListener("loadingdone", fit); };
+  }, [figures]);
   return (
-    <div className="k-sum" data-testid="list-summary" role="group" aria-label="What the sessions need">
+    <div ref={line} className="k-sum" data-testid="list-summary" role="group" aria-label="What the sessions need">
       {!calls && <span className="k-sum-calm" data-testid="sum-calm">Nothing needs you</span>}
       {shown.map((c) => {
         const ids = counts[c.kind];
@@ -605,7 +665,8 @@ function Index({ current }: { current: string | null }) {
   const states = useSessionStates(base_);
   const liveWatches = useMemo(() => Object.fromEntries(Object.entries(states).map(([id, st]) => [id, st.watch])) as Record<string, Watch>, [states]);
   // Under the hand the list is drawn from what it held when the hand arrived: no row moves.
-  const from = useHeld(held, `${tab}|${tag ?? ""}|${q}|${arr.group}|${arr.sort}|${arr.hideDone}`, base_, liveWatches);
+  // (The session on screen is theirs: one they just made or opened from this page takes its place at once.)
+  const from = useHeld(held, `${tab}|${tag ?? ""}|${q}|${arr.group}|${arr.sort}|${arr.hideDone}`, base_, liveWatches, current);
   const watches = from.watches;
   const fits = (s: Session) => (!tag || (s.settings.tags ?? []).includes(tag)) && (!q || matches(s, q));
   const listed = from.list.filter(fits);
@@ -624,12 +685,13 @@ function Index({ current }: { current: string | null }) {
     for (const el of els) { el.style.height = `${el.getBoundingClientRect().height}px`; el.style.overflow = "clip"; }
     return () => { for (const el of els) { el.style.height = ""; el.style.overflow = ""; } };
   }, [held]);
-  // A count pressed above the list shows every session again when its row is filtered out.
-  useEffect(() => { onUnfilter(() => { setQ(""); setTags({}); }); return () => onUnfilter(null); }, []);
+  // A count pressed above the list goes to a row: one this list does not draw (the archive is open, the
+  // filter leaves it out) is drawn first. Folds open by themselves for a session the owner went to.
+  useEffect(() => { onReveal(() => { setTab("active"); setQ(""); setTags({}); }); return () => onReveal(null); }, []);
   const pinned = listed.filter((s) => s.settings.pinned_ms).sort((a, b) => a.settings.pinned_ms! - b.settings.pinned_ms!);
   // Keep the open branch in the list even when its root finishes.
   const root = rootSessionId(sessions, current);
-  const rest = listed.filter((s) => !s.settings.pinned_ms && !(arr.hideDone && finished(watches[s.id]) && s.id !== current && s.id !== root));
+  const rest = listed.filter((s) => !s.settings.pinned_ms && !(arr.hideDone && finished(watches[s.id]) && s.id !== current && s.id !== root && !actedOn(s.id)));
   const hidden = listed.length - pinned.length - rest.length;
   const cmp = order<Session>(arr, watches);
   const grouped = arr.group === "folder" ? folders(rest, arr, watches) : [];
@@ -661,8 +723,8 @@ function Index({ current }: { current: string | null }) {
       {/* The tabs' panel: it takes no box of its own, the list keeps its place in the rail. */}
       <div role="tabpanel" id={panel} aria-labelledby={tabId(panel, tab)} className="contents">
       <Summary />
-      <ListCtx.Provider value={{ watches, gone: from.gone, narrow }}>
-      <nav ref={nav} className="k-index" data-testid="session-list" data-held={held || undefined} aria-label="Sessions" onKeyDown={stepRows} {...hand.on}>
+      <ListCtx.Provider value={{ watches, gone: from.gone, narrow, lines: narrow ? "one" : arr.lines }}>
+      <nav ref={nav} className="k-index" data-testid="session-list" data-lines={narrow ? "one" : arr.lines} data-held={held || undefined} aria-label="Sessions" onKeyDown={stepRows} {...hand.on}>
         {pinned.length > 0 && (
           <section className="k-group" data-testid="pinned-group">
             <h2 className="k-group-head"><Pin /><span className="truncate">Pinned</span></h2>
@@ -708,7 +770,7 @@ function Index({ current }: { current: string | null }) {
         )}
         {late.length > 0 && (
           <section className="k-group" data-testid="late-group">
-            <h2 className="k-group-head"><Plus /><span className="truncate">New</span></h2>
+            <h2 className="k-group-head"><Plus /><span className="truncate">Just arrived</span></h2>
             <Group list={late} current={current} every where />
           </section>
         )}
