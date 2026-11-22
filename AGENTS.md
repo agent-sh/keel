@@ -103,6 +103,16 @@ under `~/.cache/keel-work/bun/research/`.
   session; a message of the owner's that takes the turn's place (an edit, a
   queued prompt sent now) is not a Stop. An abort that is not the turn's own
   (a hook's or a provider's time limit) is a failure of what aborted.
+- A page costs what it shows. Its socket brings a session's whole stream (its
+  events, the reply as it streams, what its turn is doing, its checkpoints)
+  only while a view shows the session, and of every other session what a list
+  shows, one frame per change: `src/server/scope.ts` says which frame goes
+  where, `ui/src/lib/scope.ts` what the page asks for and when it lets go. A
+  frame that one view reads across sessions is a feed there, never a frame to
+  every socket. A view that lies under another is not drawn again until it
+  shows (`ui/src/lib/cover.ts`). What the page does on a beat runs on its one
+  clock, which stops while the page is hidden (`ui/src/lib/clock.ts`): no
+  timer of its own in a module or a component that is always there.
 - Every failure is captured once in the `errors` table (`ErrorTracker.capture`)
   and shown live in the UI's Errors panel. Browser errors post to `/api/errors`.
 - A session is told what went wrong in its scope without asking: failures of its
