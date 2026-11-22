@@ -40,7 +40,8 @@
 //   the request the model answers by acting (tacit-tools.ts);
 // - a store that often answers late without ever missing twice in a row is
 //   said too: once per session while a quarter of its last calls were late.
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { timed } from "../admin/stall.ts";
 import { availableParallelism } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import type { Bus } from "../core/bus.ts";
@@ -267,6 +268,8 @@ function writeTranscript(path: string, bytes: Buffer) {
   }
 }
 
+// How many events of a transcript written whole are encoded and written in one piece of the loop's time.
+const WHOLE_SLICE = 256;
 type TranscriptMark = { head: Session["head"]; model: string; workspace: string; stamp: string; last: string | null };
 type HookResult = { outcome: HookOutcome; text: string | null; ms?: number };
 // The answers one request waits for; `counted`: their lateness was counted.
@@ -473,10 +476,71 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
       const line = this.store.lineage(s.id);
       let at = -1;
       if (cached && same) for (let i = line.length - 1; i >= 0; i--) if (line[i]!.id === cached.head) { at = i; break; }
+      // A long session's file written whole (its first, or after its model or folder changed) is
+      // encoded and written in slices, the loop given back between them.
+      if (at < 0 && line.length > WHOLE_SLICE) return void (await this.writeWhole(s.id));
       const from = line[at + 1];
       if (from) await this.store.warmBodies(s.id, from.seq);
     } catch {
       // What could not be read ahead is read by transcript(), as it was.
+    }
+  }
+
+  // A session's transcript written whole without holding the loop for it: the branch a slice of
+  // events at a time (their bodies read off the loop), each slice's records hanging under the
+  // last, into a file of its own that takes the transcript's name when the branch's end is
+  // reached. The records are the ones the one-piece write gives (an event's records depend on
+  // the event and on the record before, as for an append). Should the session show another
+  // branch, change its model or folder, or go meanwhile, nothing is published: transcript()
+  // writes it in one piece, as it always did. One writer a session at a time.
+  private wholes = new Set<string>();
+  private async writeWhole(id: string): Promise<boolean> {
+    if (this.wholes.has(id)) return false;
+    this.wholes.add(id);
+    const path = this.transcriptFile(id), tmp = `${path}.${crypto.randomUUID()}.tmp`;
+    const started = performance.now();
+    let fd: number | undefined;
+    try {
+      const first = this.store.session(id);
+      if (!first) return false;
+      mkdirSync(dirname(path), { recursive: true });
+      fd = openSync(tmp, "wx", 0o600);
+      let parent: string | null = null, last: string | undefined, at = 0, bytes = 0;
+      for (;;) {
+        let line = this.store.lineage(id);
+        if (at < line.length) await this.store.warmBodies(id, line[at]!.seq, line[Math.min(line.length, at + WHOLE_SLICE) - 1]!.seq);
+        // (As it is now: the wait gave the loop back.)
+        const now = this.store.session(id);
+        line = this.store.lineage(id);
+        if (!now || now.model !== first.model || now.workspace !== first.workspace || (at > 0 && line[at - 1]?.id !== last)) return false;
+        const end = Math.min(line.length, at + WHOLE_SLICE);
+        const records = toClaudeRecords(now, line.slice(at, end), id, { parent });
+        const buf = Buffer.from(toJsonl(records));
+        if (buf.length) writeSync(fd, buf);
+        bytes += buf.length;
+        parent = (records.at(-1)?.uuid as string | undefined) ?? parent;
+        last = line[end - 1]?.id;
+        at = end;
+        if (at >= line.length) {
+          // The branch's end, in the same piece of the loop's time as its last slice: nothing was stored in between.
+          closeSync(fd);
+          fd = undefined;
+          renameSync(tmp, path);
+          const stamp = fileStamp(path);
+          if (stamp !== undefined) this.setMark(id, { head: now.head, model: now.model, workspace: now.workspace, stamp, last: parent });
+          this.metrics.transcript.rebuilt++;
+          add(this.metrics.transcript.bytes, bytes);
+          add(this.metrics.transcript.duration_ms, performance.now() - started);
+          return true;
+        }
+        await new Promise<void>((r) => setImmediate(r));
+      }
+    } catch {
+      return false;
+    } finally {
+      this.wholes.delete(id);
+      if (fd !== undefined) try { closeSync(fd); } catch {}
+      try { rmSync(tmp, { force: true }); } catch {}
     }
   }
 
@@ -521,9 +585,14 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
       this.dropMark(s.id);
       mkdirSync(dirname(path), { recursive: true });
       // Encode once for the write and reuse its byte length.
-      const records = toClaudeRecords(current, line);
-      const bytes = Buffer.from(toJsonl(records));
-      writeTranscript(path, bytes);
+      // (One piece of the loop's time, named should it be long: a long session's is written in
+      // slices before this is reached, see writeWhole.)
+      const { records, bytes } = timed(() => `writing a session's memory transcript whole (${line.length} events)`, () => {
+        const records = toClaudeRecords(current, line);
+        const bytes = Buffer.from(toJsonl(records));
+        writeTranscript(path, bytes);
+        return { records, bytes };
+      });
       const written = fileStamp(path);
       if (written !== undefined) this.setMark(s.id, { head, model, workspace, stamp: written, last: (records.at(-1)?.uuid as string | undefined) ?? null });
       stat.rebuilt++;

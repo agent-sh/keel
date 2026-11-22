@@ -927,3 +927,75 @@ test("a deleted session's transcript file goes with it, and one left behind is r
   // (The kept session's file and the mark beside it stay.)
   expect(readdirSync(join(dir, "transcripts")).sort()).toEqual([`${b}.jsonl`, `${b}.mark`]);
 }), 30_000);
+
+// A long session's transcript written whole (its first one, or after its model
+// changed) is encoded and written in slices before the hook asks for it, the
+// loop given back between them: in one piece it held the loop for seconds.
+test("a long session's transcript is written whole in slices: the same records, the loop free in between", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-tacit-slices-"));
+  const store = new Store(dir);
+  try {
+    const errors = { capture: () => {} } as unknown as ErrorTracker;
+    const s = store.createSession({ model: "fixture:model", workspace: dir });
+    const fill = (from: number, to: number) => {
+      for (let i = from; i < to; i++) {
+        if (i % 3 === 0) store.append(s.id, "user", { text: `prompt ${i}` });
+        else if (i % 3 === 1) store.append(s.id, "assistant", { blocks: [{ type: "text", text: `reply ${i}` }, { type: "tool_use", id: `c${i}`, name: "Bash", input: { command: `echo ${i}` } }], model: "fixture:model", stop: "tool_use" });
+        else store.append(s.id, "tool_result", { results: [{ type: "tool_result", tool_use_id: `c${i - 1}`, content: `out ${i}` }] });
+        if (i === 400) store.append(s.id, "compaction", { mode: "summary", summary: "what came before" });
+      }
+    };
+    fill(0, 900);
+    // The records without their random ids: each names the place of the record it hangs under.
+    const shape = (text: string) => {
+      const rows = text.trimEnd().split("\n").map((l) => JSON.parse(l));
+      const at = new Map(rows.map((r, i) => [r.uuid, i]));
+      return rows.map((r) => ({ ...r, uuid: undefined, parentUuid: r.parentUuid === null ? null : at.get(r.parentUuid) }));
+    };
+    const tacit = new Tacit(store, new Bus(), errors, null);
+    const path = tacit.transcriptPath(s);
+    let turns = 0, done = false;
+    const tick = () => { if (!done) { turns++; setImmediate(tick); } };
+    setImmediate(tick);
+    const writing = (tacit as any).warmTranscript(store.session(s.id)!) as Promise<void>;
+    // Stored while the slices are written: it is in the file all the same.
+    store.append(s.id, "user", { text: "stored meanwhile" });
+    await writing;
+    done = true;
+    expect(turns).toBeGreaterThanOrEqual(3); // four slices of 256 events
+    expect(tacit.stats().transcript).toMatchObject({ rebuilt: 1, reused: 0, appended: 0, failed: 0 });
+    const sliced = readFileSync(path, "utf8");
+    // The hook's own call finds the file as it is: nothing is written again.
+    expect(tacit.transcript(store.session(s.id)!)).toBe(path);
+    expect(readFileSync(path, "utf8")).toBe(sliced);
+    expect(tacit.stats().transcript).toMatchObject({ rebuilt: 1, reused: 1 });
+    expect(readdirSync(join(dir, "transcripts")).sort()).toEqual([`${s.id}.jsonl`, `${s.id}.mark`]);
+    // The same records as the one-piece write gives.
+    rmSync(path);
+    rmSync(join(dir, "transcripts", `${s.id}.mark`));
+    const plain = new Tacit(store, new Bus(), errors, null);
+    const whole = readFileSync(plain.transcript(store.session(s.id)!), "utf8");
+    expect(shape(sliced)).toEqual(shape(whole));
+    expect(sliced).toContain("stored meanwhile");
+    // What comes after is appended to it, as to any transcript.
+    store.append(s.id, "assistant", { blocks: [{ type: "text", text: "after the slices" }], model: "fixture:model", stop: "end_turn" });
+    await (plain as any).warmTranscript(store.session(s.id)!);
+    plain.transcript(store.session(s.id)!);
+    expect(plain.stats().transcript).toMatchObject({ rebuilt: 1, appended: 1 });
+    // A session that shows another branch while its slices are written publishes nothing; the hook's call writes it in one piece.
+    const third = new Tacit(store, new Bus(), errors, null);
+    rmSync(path);
+    rmSync(join(dir, "transcripts", `${s.id}.mark`));
+    const first = store.lineage(s.id)[0]!;
+    const cut = (third as any).writeWhole(s.id) as Promise<boolean>;
+    await new Promise<void>((r) => setImmediate(r)); // its first slice is written
+    store.append(s.id, "user", { text: "another branch" }, first.id);
+    expect(await cut).toBe(false);
+    expect(readdirSync(join(dir, "transcripts"))).toEqual([]);
+    expect(readFileSync(third.transcript(store.session(s.id)!), "utf8")).toContain("another branch");
+    expect(third.stats().transcript).toMatchObject({ rebuilt: 1, failed: 0 });
+  } finally {
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
