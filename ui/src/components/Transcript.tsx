@@ -453,12 +453,14 @@ function WorkRow({ row, sid }: { row: Row; sid: string }) {
   return <Work row={row} sid={sid} cwd={cwd} remote={remote} />;
 }
 
+// Whether a text holds anything but white space.
+const WORDS = /\S/;
 function Draft({ draft }: { draft: Record<number, DraftBlock> }) {
   const blocks = Object.entries(draft).sort(([a], [b]) => Number(a) - Number(b));
   return (
     <>
       {blocks.map(([i, b]) => {
-        if (b.kind === "text") return b.text.trim() ? <div key={i}><Markdown text={b.text} live /></div> : null;
+        if (b.kind === "text") return WORDS.test(b.text) ? <div key={i}><Markdown text={b.text} live /></div> : null;
         if (b.kind === "thinking") return <Thinking key={i} text={b.text} live />;
         let input: any = {};
         try { input = JSON.parse(b.text); } catch {}
@@ -589,7 +591,8 @@ function Announcer({ sessionId, working, asking }: { sessionId: string; working:
 // question that takes the line's place), so the transcript keeps the height of its end through it.
 function Live({ sessionId, working, asking, since, elsewhere, onTail }: { sessionId: string; working: boolean; asking: boolean; since?: number; elsewhere: "branch" | "earlier" | null; onTail: () => void }) {
   const draft = useStore((s) => s.drafts[sessionId]);
-  const hasDraft = draft && Object.values(draft).some((b) => b.text.trim() || b.kind !== "text");
+  // (Asked without a copy of the text: it grows with every delta, and `trim` would copy it each time.)
+  const hasDraft = draft && Object.values(draft).some((b) => b.kind !== "text" || WORDS.test(b.text));
   const status = useStore((x) => { const st = x.status[sessionId]; return !st || st.kind === "idle" || st.kind === "model" || st.kind === "tool" ? "" : st.kind; });
   useLayoutEffect(() => onTail(), [working, !!hasDraft, asking, status]);
   // The reply streams at the end of the current branch: under another branch,

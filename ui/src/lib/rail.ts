@@ -166,31 +166,4 @@ export function toggleList(show?: boolean) {
   savePref("sidebar", show ?? !ui.sidebar);
 }
 
-// A short code per session for its mark on the folded rail: the initials of
-// the title's first two telling words, so the mark reads as the session.
-// Two sessions never share one, in a folder or across them: the older keeps
-// the initials, the newer takes other letters of its title.
-const FILLER = new Set("a an the to of for and or in on at by with from into is are be how why what when where which that this it its as do does".split(" "));
-const letters = (w: string) => [...w].filter((c) => /[\p{L}\p{N}]/u.test(c));
-export function callsigns(sessions: { id: string; title: string; created: number }[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  const taken = new Set<string>();
-  for (const s of [...sessions].sort((a, b) => a.created - b.created || a.id.localeCompare(b.id))) {
-    const all = s.title.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
-    const telling = all.filter((w) => !FILLER.has(w.toLowerCase()));
-    const words = (telling.length ? telling : all).map(letters).filter((w) => w.length);
-    const [a, b] = words;
-    const tries: string[] = [];
-    if (a && b) tries.push(a[0]! + b[0]!);
-    if (a) for (const c of a.slice(1)) tries.push(a[0]! + c);
-    if (a) for (const w of words.slice(2)) tries.push(a[0]! + w[0]!);
-    if (a && b) for (const c of b.slice(1)) tries.push(a[0]! + c);
-    const head = a?.[0] ?? "N";
-    if (!a) tries.push("NS"); // an untitled session
-    for (let n = 2; n < 100; n++) tries.push(head + n);
-    const code = tries.map((t) => t.toLocaleUpperCase()).find((t) => !taken.has(t)) ?? head.toLocaleUpperCase();
-    taken.add(code);
-    out[s.id] = code;
-  }
-  return out;
-}
+export { callsigns } from "./callsigns.ts";

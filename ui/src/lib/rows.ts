@@ -337,6 +337,18 @@ export function nextLineage(prev: LineageOf | undefined, all: StoredEvent[], hea
   return { all, head, out };
 }
 
+// The branch of a session that ends at `head`, for the parts of a pane that read it at every
+// event (the context ring, the queue, the plan): kept per session from one event to the next, so
+// an event added at the branch's end adds to it, instead of the whole tree being indexed again
+// by each of them.
+const lines = new Map<string, LineageOf>();
+export function branchLine(sessionId: string, all: StoredEvent[], head: string | null): StoredEvent[] {
+  const next = nextLineage(lines.get(sessionId), all, head);
+  if (lines.size > 64 && !lines.has(sessionId)) lines.clear(); // sessions long closed
+  lines.set(sessionId, next);
+  return next.out;
+}
+
 // A list of a whole session a view keeps for itself (lib/whole.ts), with the
 // events the page holds after its last one. What the page lets go of later
 // stays in the list.

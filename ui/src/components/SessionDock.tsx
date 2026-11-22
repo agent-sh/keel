@@ -2,7 +2,7 @@
 import { Collapsible } from "@base-ui/react/collapsible";
 import { ChevronRight, ListChecks, Square, SquareTerminal } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { lineage } from "../../../src/core/tree.ts";
+import { branchLine } from "../lib/rows.ts";
 import { actions, api, liveNow, onFeature, reportError, reportUnlessGone, useStore, type JobView } from "../lib/store.ts";
 import { splitId } from "../lib/fleet-ids.ts";
 import { stopKind } from "../../../src/core/stops.ts";
@@ -66,7 +66,7 @@ export function SessionDock({ sessionId, panel }: { sessionId: string; panel?: b
   // a rejected update (or one still on its way) leaves the one before standing.
   const held = useMemo(() => {
     if (!events) return null;
-    const line = lineage(events, head ?? null);
+    const line = branchLine(sessionId, events, head ?? null);
     const accepted = new Set<string>();
     for (const e of line) if (e.kind === "tool_result") for (const r of e.data.results) if (!r.is_error) accepted.add(r.tool_use_id);
     for (let i = line.length - 1; i >= 0; i--) {

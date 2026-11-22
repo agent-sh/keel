@@ -97,8 +97,26 @@ function Tool({ label, onClick, children, testid, on, move }: { label: string; o
   );
 }
 
+// The tools of a pane's header: drawn again only when one of them changes, not with the header's
+// clock (once a second) or with each event of its session.
+const StationTools = memo(function StationTools({ id, helm, pinned, focus, panes }: { id: string; helm: boolean; pinned: boolean; focus: boolean; panes: number }) {
+  return (
+    <span className="k-station-tools">
+      {!focus && panes > 1 && <PaneMenu id={id} label="Move to a pane" testid="station-place" className="k-tool k-tool-move"><PanelsTopLeft /></PaneMenu>}
+      {!focus && <Tool move label="Move left (Alt Shift [)" onClick={() => stations.move(id, -1)}><ChevronLeft /></Tool>}
+      {!focus && <Tool move label="Move right (Alt Shift ])" onClick={() => stations.move(id, 1)}><ChevronRight /></Tool>}
+      <Tool label={pinned ? "Unpin from the top of the list (Alt P)" : "Pin to the top of the list (Alt P)"} testid="station-pin" on={pinned} onClick={() => pinSession(id, !pinned).catch(reportError)}>{pinned ? <PinOff /> : <Pin />}</Tool>
+      <Tool label={focus ? "Show all panes (Alt Enter)" : "Focus this pane (Alt Enter)"} testid="station-focus" on={focus} onClick={() => { if (!helm) navigate({ name: "session", id }); stations.toggleFocus(); }}>{focus ? <Minimize2 /> : <Maximize2 />}</Tool>
+      <Tool label="Close the session here (Alt W)" testid="station-close" onClick={() => closeStation(id)}><X /></Tool>
+    </span>
+  );
+});
+
 function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: boolean }) {
-  const events = useStore((x) => x.events[s.id]);
+  // What it last did is shown in a pane that is not the helm: only such a pane reads its events,
+  // and works the line out when they changed, not at each tick of its clock.
+  const events = useStore((x) => (helm ? undefined : x.events[s.id]));
+  const line = useMemo(() => (helm ? "" : lastLine(branchOf(events, s.head), s.workspace)), [helm, events, s.head, s.workspace]);
   const st = useSessionState(s);
   const w = st.watch;
   // One clock for one state: the band shows what the row shows (the step's time, the ask's, the wait's).
@@ -130,17 +148,10 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
         <span className="k-station-meta" title={s.workspace}>
           <span className="k-station-where block truncate">{s.workspace_gone ? <span className="k-gone">{folderOf(s)} gone</span> : folderOf(s)}{!helm && ` / ${modelOf(s.model)}`}</span>
         </span>
-        <span className="k-station-tools">
-          {!focus && panes > 1 && <PaneMenu id={s.id} label="Move to a pane" testid="station-place" className="k-tool k-tool-move"><PanelsTopLeft /></PaneMenu>}
-          {!focus && <Tool move label="Move left (Alt Shift [)" onClick={() => stations.move(s.id, -1)}><ChevronLeft /></Tool>}
-          {!focus && <Tool move label="Move right (Alt Shift ])" onClick={() => stations.move(s.id, 1)}><ChevronRight /></Tool>}
-          <Tool label={pinned ? "Unpin from the top of the list (Alt P)" : "Pin to the top of the list (Alt P)"} testid="station-pin" on={pinned} onClick={() => pinSession(s.id, !pinned).catch(reportError)}>{pinned ? <PinOff /> : <Pin />}</Tool>
-          <Tool label={focus ? "Show all panes (Alt Enter)" : "Focus this pane (Alt Enter)"} testid="station-focus" on={focus} onClick={() => { if (!helm) navigate({ name: "session", id: s.id }); stations.toggleFocus(); }}>{focus ? <Minimize2 /> : <Maximize2 />}</Tool>
-          <Tool label="Close the session here (Alt W)" testid="station-close" onClick={() => closeStation(s.id)}><X /></Tool>
-        </span>
+        <StationTools id={s.id} helm={helm} pinned={pinned} focus={focus} panes={panes} />
         </div>
       </div>
-      {!helm && <p className="k-station-line truncate">{lastLine(branchOf(events, s.head), s.workspace) || " "}</p>}
+      {!helm && <p className="k-station-line truncate">{line || " "}</p>}
       {pinned && <span className="k-pin-mark" aria-hidden="true" />}
     </header>
   );

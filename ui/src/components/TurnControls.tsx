@@ -4,7 +4,7 @@ import { Menu } from "@base-ui/react/menu";
 import { Popover } from "@base-ui/react/popover";
 import { ArrowUp, ArrowUpCircle, Check, ChevronDown, CornerDownRight, Gauge, GitBranch, Image as ImageIcon, Layers, ListPlus, Pencil, Play, RotateCcw, Send, Undo2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, memo } from "react";
-import { lineage } from "../../../src/core/tree.ts";
+import { branchLine } from "../lib/rows.ts";
 import { COMPACT_SHARE, contextTokens, setRatio } from "../../../src/engine/compact.ts";
 import type { QueueItem } from "../../../src/core/types.ts";
 import { bodyOf } from "../../../src/mcp/channel-text.ts";
@@ -126,7 +126,7 @@ export function QueuePanel({ sessionId }: { sessionId: string }) {
   // event it was queued at is held and is not on that part, though it is not
   // older than it (an older one may be on the branch further up).
   const branch = useMemo(() => {
-    const line = all ? lineage(all, head) : [];
+    const line = all ? branchLine(sessionId, all, head) : [];
     return { ids: new Set(line.map((e) => e.id)), from: line[0]?.seq ?? Infinity, whole: !line.length || line[0]!.parent === null, seqs: new Map((all ?? []).map((e) => [e.id, e.seq])) };
   }, [all, head]);
   // A prompt queued at an event the page does not hold cannot be told here
@@ -211,7 +211,7 @@ export const ContextMeter = memo(function ContextMeter({ sessionId, above }: { s
   const model = models.find((m) => m.id === session?.model);
   const window_ = model?.context ?? 0;
   // Counted for the session's model, as the daemon counts it: after a switch another model's reply is a floor, not the count.
-  const line = useMemo(() => (all && session ? lineage(all, session.head) : null), [all, session?.head]);
+  const line = useMemo(() => (all && session ? branchLine(sessionId, all, session.head) : null), [all, session?.head]);
   const est = useMemo(() => (line && session ? contextTokens(line, session.model) : null), [line, session?.model]);
   // The page holds the newest part of a long branch. A reply measured in that
   // part counted everything before it, so the count is the whole context's.
