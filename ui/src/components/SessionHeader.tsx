@@ -34,7 +34,7 @@ export function SidebarButton() {
   );
 }
 
-// The toolbar holds what fits. Session actions and the Panels chooser never
+// The toolbar holds what fits, three tools at most. Session actions and the Panels chooser never
 // leave it. The token counts and the panel shortcuts give way first (the turn
 // footer has the counts, the chooser every panel). After them the tools of the
 // session move, lowest rank first, into the More menu: the same controls as a
@@ -42,6 +42,7 @@ export function SidebarButton() {
 type Tool = { id: string; label: string; rank: number; node: ReactNode; item?: (close: () => void) => ReactNode };
 const GIVE_WAY = ["usage", "hand"];
 const TITLE_ROOM = 11; // rem the title's field keeps while it is renamed
+const ROW_TOOLS = 3; // the tools the row shows at most; the rest are in More
 
 function useFit(tools: Tool[], reserve: number) {
   const head = useRef<HTMLElement>(null);
@@ -103,6 +104,12 @@ function useFit(tools: Tool[], reserve: number) {
         if (empty.has(id) || (c && (full || c > left))) { full ||= !empty.has(id); next.push(id); } else left -= c;
       }
     }
+    // However wide the row, it keeps the three tools of the highest rank that have something to show,
+    // and the panel shortcuts go to the Panels chooser: the rest are in More, by name. (A head of nine
+    // controls a pane read as noise, and each pane has its own.)
+    if (!next.includes("hand")) next.push("hand");
+    let kept = 0;
+    for (const id of ranked) if (!next.includes(id) && cost(id) > 0 && ++kept > ROW_TOOLS) next.push(id);
     setOut((prev) => (prev.join() === next.join() ? prev : next));
   };
   // Every render measures before paint. A resize of the row or of a tool, or a

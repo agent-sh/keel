@@ -848,3 +848,40 @@ test("a program's calls stand under its line and mark it, after a reload too", a
   expect([none.status(), await none.json()]).toEqual([200, { marks: {} }]);
   await request.delete(`/api/sessions/${session.id}`);
 });
+
+// Feature: a reply's row (its actions, time, tokens and cost) shows when the reply or the row is pointed
+// at, or the keyboard is in it; the panes are calm otherwise, and every action is still a Tab away.
+test("a reply's row of actions and counts shows on the pointer or the keyboard", async ({ page, request }) => {
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === "scripted:stand-in"), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in", title: "Quiet replies" } })).json();
+  try {
+    for (const t of ["First answer.", "Second answer."]) {
+      await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:say ${t}` } });
+      await expect.poll(async () => { const d = await (await request.get(`/api/sessions/${session.id}`)).json(); return !d.running && d.events.at(-1)?.kind === "turn_end"; }, { timeout: 20_000 }).toBe(true);
+    }
+    await page.goto(`/s/${session.id}`);
+    const foot = page.locator(".k-turn-foot").first();
+    const copy = foot.getByTestId("copy-reply");
+    const counts = foot.getByTestId("turn-end").locator("span").first();
+    await page.mouse.move(5, 1000);
+    const opacity = (l: typeof copy) => l.evaluate((el) => getComputedStyle(el).opacity);
+    await expect.poll(() => opacity(copy)).toBe("0");
+    await expect.poll(() => opacity(counts)).toBe("0");
+    await shoot(page, "transcript-reply-row-quiet");
+    // Pointed at, the reply shows its row (the row keeps its height: nothing under it moves).
+    const h = (await foot.boundingBox())!.height;
+    await page.getByTestId("assistant-text").filter({ hasText: "First answer." }).hover();
+    await expect.poll(() => opacity(copy)).toBe("1");
+    await expect.poll(() => opacity(counts)).toBe("1");
+    expect((await foot.boundingBox())!.height).toBe(h);
+    await shoot(page, "transcript-reply-row-hover");
+    // From the keyboard: the copy button takes the focus and the row shows.
+    await page.mouse.move(5, 1000);
+    await copy.focus();
+    await expect.poll(() => opacity(copy)).toBe("1");
+  } finally {
+    await request.delete(`/api/sessions/${session.id}`);
+  }
+});

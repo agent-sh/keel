@@ -598,11 +598,14 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 .th-inserted { color: var(--syn-inserted); }
 .th-operator { color: var(--muted); }
 
-/* An earlier turn's footer steps back: its action icons go quiet until the row is
-   pointed at. Its words (time, tokens, cost, a note) keep their full contrast. */
-.k-turn-foot[data-quiet] > :is(button, a, span):not(.k-turn-end) svg { opacity: 0.5; transition: opacity 120ms; }
-.k-turn-foot[data-quiet]:is(:hover, :focus-within) svg { opacity: 1; }
-@media (hover: none) { .k-turn-foot[data-quiet] svg { opacity: 1; } }
+/* A reply's row (its actions, its time, tokens and cost) shows when the reply or the row is
+   pointed at, or the keyboard is in it (Tab reaches every action, as before): every reply carried
+   it, and two panes held a hundred controls nobody was reaching for. What a turn ended on (stopped,
+   failed, waits) and Resume stay. The row keeps its height, so nothing moves when it shows. */
+.row-cv:not(:hover) + .k-turn-foot:not(:hover, :focus-within) > :not(.k-turn-resume, .k-turn-end),
+.row-cv:not(:hover) + .k-turn-foot:not(:hover, :focus-within) .k-turn-end > :not(.k-turn-reason) { opacity: 0; }
+.k-turn-foot > *, .k-turn-end > * { transition: opacity 120ms var(--ease-out); }
+@media (hover: none) { .k-turn-foot > *, .k-turn-end > * { opacity: 1 !important; } }
 
 /* The cards above the message box (Composer's Tray): an edge fades where more is scrolled out of view. */
 .k-tray[data-more="up"] { mask-image: linear-gradient(to bottom, transparent, #000 1.25rem); }

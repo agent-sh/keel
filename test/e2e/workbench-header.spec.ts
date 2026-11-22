@@ -416,11 +416,12 @@ test.describe("a crowded toolbar", () => {
       await expect(menu).toBeHidden();
       await expect(more).toBeFocused();
 
-      // A wide pane holds them all: no menu, and the session is named once.
+      // A wide pane keeps three tools, the highest ranks, and the rest in the More menu by name; the session is named once.
       await page.setViewportSize({ width: 1920, height: 1040 });
-      await expect(more).toHaveCount(0);
+      await expect(more).toBeVisible();
       const wide = await reachable(page, station);
-      expect(wide.inMenu).toEqual([]);
+      expect([wide.inRow.length, wide.inMenu.length > 0]).toEqual([3, true]);
+      await expect(station.locator('[data-testid^="panel-toggle-"]')).toHaveCount(0);
       await expect(station.getByRole("heading", { name: "Crowded toolbar", level: 2 })).toBeVisible();
       await expect(station.locator(".k-station-line")).toBeHidden();
       expect(await station.getByTestId("session-title").evaluate((el) => getComputedStyle(el).clipPath)).toBe("inset(50%)");
