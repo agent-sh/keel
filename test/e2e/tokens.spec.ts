@@ -94,3 +94,31 @@ test("tokens panel per turn", async ({ page, request }) => {
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });
+
+// A page holds the few models it shows (the default, the ones its sessions
+// run on). A session's earlier turn may have run on a model no session runs
+// on any more: its price comes with the whole listing, which the panel reads.
+// Without it the turn was unpriced and the panel fell back to tokens.
+test("the tokens panel prices a turn that ran on a model the page does not hold", async ({ page, request }) => {
+  const FIRST = "scripted:stand-in-text", THEN = "scripted:stand-in";
+  const listed = ((await (await request.get("/api/models")).json()).models as { id: string }[]).map((m) => m.id);
+  test.skip(!listed.includes(FIRST) || !listed.includes(THEN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const { session } = await (await request.post("/api/sessions", { data: { model: FIRST, title: "Two models, one bill" } })).json();
+  const ends = async () => ((await (await request.get(`/api/sessions/${session.id}`)).json()).events as { kind: string }[]).filter((e) => e.kind === "turn_end").length;
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "One line." } });
+  await expect.poll(ends, { timeout: 30_000 }).toBe(1);
+  expect((await request.patch(`/api/sessions/${session.id}`, { data: { model: THEN } })).ok()).toBe(true);
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: "Another line." } });
+  await expect.poll(ends, { timeout: 30_000 }).toBe(2);
+  // The page's first read holds the model the session runs on now, not the one it ran on.
+  const brief = ((await (await request.get("/api/models?brief")).json()).models as { id: string }[]).map((m) => m.id);
+  expect(brief).toContain(THEN);
+
+  await page.goto(`/s/${session.id}`);
+  await openPanel(page, "usage");
+  const panel = page.getByTestId("tokens-panel");
+  await expect(panel.getByTestId("usage-turn")).toHaveCount(2);
+  await expect(panel.getByRole("heading", { name: "Where the money went" })).toBeVisible();
+  await expect(panel.getByTestId("usage-split")).toContainText("of cost");
+  await expect(panel.getByTestId("usage-full")).toContainText(/New input, full price\s*<?\$/);
+});

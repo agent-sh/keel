@@ -9,7 +9,7 @@ import { ChevronRight } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useAuto } from "../lib/automation.ts";
 import { KINDS, KIND_LABEL, KIND_WORDS, sent, sum, tokensOf, turnCosts, turnsOf, whyOf, type Costs, type Turn, type Why } from "../lib/spend.ts";
-import { api, reportError, useStore } from "../lib/store.ts";
+import { api, reportError, useModels, useStore } from "../lib/store.ts";
 import { cn, fmtCost, fmtSessionCost, fmtTokens, when } from "../lib/utils.ts";
 import { PART, Split, SplitBar, type Part } from "./Stat.tsx";
 import { useWholeEvents } from "../lib/whole.ts";
@@ -90,7 +90,8 @@ export function SessionUsage({ session }: { session: Session }) {
   // Every turn of the session, not only the part the page holds (that part shows until the rest is read).
   const held = useStore((s) => s.events[session.id]);
   const events = useWholeEvents(session.id) ?? held ?? NONE;
-  const models = useStore((s) => s.models);
+  // The whole listing: a turn may have run on a model no session runs on now, and its price is only there.
+  const models = useModels();
   const turns = useMemo(() => turnsOf(events), [events]);
   // The session's own figure, the one the header shows: it also counts what ran beside the turns.
   const whole = session.usage.cost;

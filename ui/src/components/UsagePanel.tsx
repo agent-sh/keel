@@ -400,7 +400,7 @@ const LINK = "rounded-sm text-accent-ink underline decoration-line-strong underl
 function CallsView({ range }: { range: Range }) {
   const r = useReport(range);
   const [openTool, setOpenTool] = useState<string | null>(null);
-  const models = useStore((s) => s.models);
+  const models = useModels(); // every model the range's calls ran on, not only the ones sessions run on now
   const name = (id: string) => models.find((m) => m.id === id)?.name ?? id.slice(id.indexOf(":") + 1);
   if (!r) return <div className="text-ui text-faint">Reading the measurements.</div>;
   const t = r.total;
