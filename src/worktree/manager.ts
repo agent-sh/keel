@@ -52,12 +52,15 @@ export function git(cwd: string, args: string[], opts: { env?: Record<string, st
 // the owner's when the machine has a git identity, and Keel's when it has
 // none: git refuses to commit without one.
 const KEEL_IDENT = { GIT_AUTHOR_NAME: "Keel", GIT_AUTHOR_EMAIL: "keel@localhost", GIT_COMMITTER_NAME: "Keel", GIT_COMMITTER_EMAIL: "keel@localhost" };
-const NO_IDENTITY = /tell me who you are|auto-detect|ident name|auto-detection is disabled/i;
+// Which of the two it is, is not read from git's words (they follow the
+// machine's language): a commit git refuses is made once more under Keel's
+// name. With no identity that one succeeds; anything else git refused, it
+// refuses again, and that is the failure told.
 async function ownCommit(dir: string, args: string[]): Promise<string> {
   try {
     return await git(dir, args);
   } catch (e) {
-    if (!(e instanceof GitError) || !NO_IDENTITY.test(e.message)) throw e;
+    if (!(e instanceof GitError)) throw e;
     return git(dir, args, { env: KEEL_IDENT });
   }
 }
