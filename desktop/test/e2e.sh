@@ -266,6 +266,7 @@ open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(
   check "the owner's paste of a copied picture attaches it" "wait_for 10 \"said AT | grep -q 'imgs=1'\""
   sleep 4
   check "the frame the owner had clicked in asked for the clipboard and got nothing" "grep -aq '^PROBE ARTIFACT CLICKED' '$D/shell.out' && grep -aq '^PROBE ARTIFACT CLIP timer' '$D/shell.out' && ! grep -a '^PROBE ARTIFACT CLIP timer' '$D/shell.out' | grep -q 'read='"
+  check "it asked for the keyboard too, and the paste did not land in it" "! grep -aq '^PROBE ARTIFACT PASTE landed' '$D/shell.out'"
 else
   echo "# note: the paste of a copied picture needs wl-copy and the native Wayland backend"
 fi

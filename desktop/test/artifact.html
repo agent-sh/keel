@@ -35,6 +35,9 @@ else say("CLIP read refused");
 addEventListener("click", (e) => {
   if (!e.isTrusted) return;
   say("CLICKED");
+  // And it asks for the keyboard again and again, so that the paste lands here.
+  document.addEventListener("paste", (p) => say("PASTE landed in the frame types=" + [...p.clipboardData.types].join("+")));
+  for (let i = 1; i <= 60; i++) setTimeout(() => t.focus(), i * 70);
   for (const ms of [50, 300, 600, 900, 1200, 1500, 1800, 2200, 2600, 3200]) {
     setTimeout(async () => {
       if (!navigator.clipboard || !navigator.clipboard.read) return say("CLIP timer none");

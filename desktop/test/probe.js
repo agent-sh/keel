@@ -19,6 +19,7 @@
     raw = `/api/sessions/${a.session_id}/artifacts/raw?path=${encodeURIComponent(a.path)}`;
     const f = document.createElement("iframe");
     f.setAttribute("sandbox", "allow-scripts");
+    f.setAttribute("data-content-frame", "");
     f.referrerPolicy = "no-referrer";
     f.src = raw;
     f.style.cssText = "position:fixed;right:1rem;bottom:1rem;width:22rem;height:12rem;z-index:99;background:#fff";
@@ -42,9 +43,9 @@
     if (e.key === "F10" && raw) { say("GOING-DOWNLOAD"); location.href = `${raw}&download=1`; }
     // A copy at this press, and one four seconds later that no press allowed.
     if (e.key === "F7") { copy(9001, "copied-by-the-check"); setTimeout(() => copy(9002, "planted-without-a-press"), 4000); }
-    // A paste at this press, and one four seconds later.
     // A paste at this press, of a picture no larger than the page keeps one.
     if (e.key === "F5") window.keelShell.post({ t: "paste", id: 9005, edge: 1568 });
+    // A paste at this press, and one four seconds later.
     if (e.key === "F6") { window.keelShell.post({ t: "paste", id: 9003 }); setTimeout(() => window.keelShell.post({ t: "paste", id: 9004 }), 4000); }
   }, true);
 })();
