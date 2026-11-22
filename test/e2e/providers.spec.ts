@@ -86,3 +86,33 @@ test("providers and a cross-family session", async ({ page, request }) => {
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });
+
+// The report answers within a bound, also while a key is still being read
+// (a keyring that waits on an unlock, a helper that hangs): it then says
+// `keys_read: false`, and a provider it lists as set up may have no key.
+// The page says the keys are still being read and reads again until they
+// are. The daemon is real; its report is answered here as a daemon with a
+// slow key store would: unread at first, with a provider nobody confirmed.
+test("a report whose keys are still being read says so and is read again", async ({ page, request }) => {
+  const real = await (await request.get("/api/providers")).json();
+  expect(real.keys_read).toBe(true);
+  const ghost = { id: "unread-e2e", label: "Unconfirmed provider", wire: "openai_chat", kind: "builtin", available: true, detail: "keyring unread-e2e-key", listing: { state: "never", models: 0 } };
+  let reads = 0, unreadAnswers = 2;
+  await page.route("**/api/providers", (r) => {
+    if (r.request().method() !== "GET") return r.continue();
+    reads++;
+    return r.fulfill({ json: unreadAnswers-- > 0 ? { ...real, keys_read: false, providers: [...real.providers, ghost] } : real });
+  });
+  await page.goto("/settings/providers");
+  const panel = page.getByTestId("providers-panel");
+  await expect(panel.getByTestId("providers-keys-unread")).toBeVisible();
+  await expect(panel).toContainText("Unconfirmed provider");
+  await shoot(page, "providers-05-keys-unread");
+  // Read again without a click, until the keys are read: the unconfirmed provider goes, and so does the notice.
+  await expect(panel.getByTestId("providers-keys-unread")).toHaveCount(0, { timeout: 15_000 });
+  await expect(panel).not.toContainText("Unconfirmed provider");
+  expect(reads).toBe(3);
+  // And no more reads once they are.
+  await page.evaluate(() => new Promise((r) => setTimeout(r, 4000)));
+  expect(reads).toBe(3);
+});

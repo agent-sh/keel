@@ -35,7 +35,8 @@ export const providersRoutes: RouteModule = ({ providers, store }) => {
   const report = async () => {
     // A key nobody has looked for yet counts as there: the report says what was
     // found, and waits a bounded time for that. `keys_read` false: a look is
-    // still out, and an "available" may be one nobody confirmed yet.
+    // still out, and an "available" may be one nobody confirmed yet (the page
+    // says so and reads again). The windows wait on no unread key either.
     const keys_read = await providers.looked(LOOK_WAIT_MS);
     await providers.plugins.freshen();
     const models = providers.current();

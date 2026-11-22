@@ -109,6 +109,9 @@ export function look(src: KeySource): Promise<void> {
   return p;
 }
 
+// Nobody has read this source's keyring entry yet: no look has ended.
+export const unread = (src: KeySource): boolean => !!src.cred && !(src.env && process.env[src.env]) && !cache.has(src.cred) && !missing.has(src.cred);
+
 // How long a source found empty is left alone before a request for its provider reads it again.
 export const MISSING_RECHECK_MS = TTL;
 

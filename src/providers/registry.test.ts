@@ -164,6 +164,31 @@ test("the wait for the first looks is bounded and says when a look is still out"
   expect(await new Providers(dir(), { providers: [quick], capture: () => {} }).looked(30)).toBe(true);
 });
 
+// The usage windows are asked of providers whose key has been read. One
+// whose key is still being read would hold the answer for as long as the
+// read takes (twenty seconds behind a helper that hangs): it is left for the
+// next call, and asked once its key is there.
+test("the usage windows do not wait on a key nobody has read yet", async () => {
+  const look = Promise.withResolvers<void>();
+  let read = false, asked = 0;
+  const slow = {
+    id: "slow-usage", family: "other", available: () => true, list: async () => [],
+    look: () => look.promise.then(() => { read = true; }),
+    unread: () => !read,
+    usage: async () => { asked++; await look.promise; return [{ id: "day", label: "Day", used_percent: 40 }]; },
+  } as any;
+  const r = new Providers(dir(), { providers: [slow], capture: () => {} });
+  const t0 = performance.now();
+  expect(await r.windows()).toEqual([]);
+  expect(performance.now() - t0).toBeLessThan(1000);
+  expect(asked).toBe(0);
+  look.resolve();
+  await look.promise;
+  await Bun.sleep(0);
+  expect((await r.windows()).map((w) => [w.provider, w.id, w.used_percent])).toEqual([["slow-usage", "day", 40]]);
+  expect(asked).toBe(1);
+});
+
 // A refresh looks for each key once: the key its first look found missing is
 // not read again right after (each read is a keyring call and a helper run).
 test("a key found missing is read once by the refresh that looked for it", async () => {

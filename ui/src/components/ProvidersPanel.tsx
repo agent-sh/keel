@@ -142,11 +142,24 @@ function ProviderRow({ p }: { p: Row }) {
   );
 }
 
+// How long after an answer that said the keys were unread the page asks again.
+const KEYS_AGAIN_MS = 3000;
+
 export function ProvidersSettings() {
   const report = useStore((s) => s.providers);
   const defaultModel = useStore((s) => s.defaultModel);
   const [busy, setBusy] = useState(false);
   useEffect(() => { actions.loadProviders().catch(reportError); }, []);
+  // The daemon answers within a bound, also while a key is still being read
+  // (a keyring that waits on an unlock, a helper that is slow): a provider
+  // listed as set up may then be one nobody confirmed. The page says so and
+  // reads again until the keys are read.
+  const unread = report?.keys_read === false;
+  useEffect(() => {
+    if (!unread) return;
+    const t = setTimeout(() => actions.loadProviders().catch(reportError), KEYS_AGAIN_MS);
+    return () => clearTimeout(t);
+  }, [unread, report]);
   const refresh = async () => {
     setBusy(true);
     try { await actions.loadProviders(true); } catch (e) { reportError(e); } finally { setBusy(false); }
@@ -186,6 +199,7 @@ export function ProvidersSettings() {
         </SettingRow>
       </Card>
       {!report && <p className="k-after-card k-empty py-4">Reading the providers.</p>}
+      {unread && <p className="k-after-card k-empty py-4" role="status" data-testid="providers-keys-unread">Still reading the keys. A provider listed as set up may turn out to have none.</p>}
       {ready.length > 0 && heading("Set up")}
       {ready.length > 0 && <Card>{ready.map((p) => <ProviderRow key={p.id} p={p} />)}</Card>}
       {idle.length > 0 && heading("Not set up")}

@@ -128,6 +128,10 @@ export class Providers {
   async windows(force = false): Promise<Window[]> {
     const now = Date.now();
     await Promise.all(this.all().filter((p) => p.usage && p.available()).map(async (p) => {
+      // A provider whose key nobody has read yet is asked once it is read: its
+      // usage would wait on the key (a keyring that waits on an unlock, a
+      // helper that hangs), and this answer with it. The look goes on.
+      if (p.unread?.()) return void p.look?.();
       if (!force && now - (this.usageAt.get(p.id) ?? 0) < USAGE_MAX_AGE) return;
       this.usageAt.set(p.id, now);
       try {
