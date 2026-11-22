@@ -29,6 +29,22 @@
 // that may start the log again (the first frame of a new log, a TRUNCATE
 // checkpoint).
 //
+// A process that ends takes its log with it: the last connection to close
+// copies every frame into the database and removes the log, and the next
+// process begins a log of its own. Two rows carry a backup's place across
+// that:
+//   closed  written as the last thing the daemon does with its store (at the
+//           process's exit): the generation, how far it was read, and a
+//           number written into the store itself in that same moment
+//           (log_starts.ts), whose frame is read too;
+//   ends    written by the next process at its first write, when the closed
+//           row's number is still the one in the store and no log holds a
+//           frame: the closed generation ended there, and this one follows.
+// Whatever writes through a Store after the close changes that number (a
+// Store's first write sets it), and so does the checkpoint thread's own
+// write, so a frame nobody read leaves no chain. A process that was killed
+// leaves its log, which the next one reads from its first frame.
+//
 // The rows are written with no sync (they are an index, not the data): a
 // machine that went down may have lost some, or kept some of a log that did
 // not reach the disk. So the rows of an earlier boot are dropped, and a
@@ -47,6 +63,8 @@ export type LogAt = { s1: number; s2: number; frame: number };
 export type LogHead = LogAt & { copied: number };
 
 const LE = endianness() === "LE";
+// A closing token is two numbers of 26 bits and more: above any time in milliseconds, exact as a double.
+const HALF = 2 ** 26;
 
 // The log's index (the -shm file): the generation, its newest committed
 // frame and how many frames are in the database. Both copies of the header
@@ -176,7 +194,8 @@ export class PageLog {
   witnessed<T>(write: () => T, table?: string): T {
     this.scan();
     const was = this.at, h = this.head();
-    const whole = !!was && !!h && h.s1 === was.s1 && h.s2 === was.s2 && h.frame === this.read;
+    // (An index with no log behind it yet names no generation: nothing ends there.)
+    const whole = !!was && !!h && h.s1 === was.s1 && h.s2 === was.s2 && h.frame === this.read && !(h.frame === 0 && h.s1 === 0 && h.s2 === 0);
     try {
       return write();
     } finally {
@@ -191,6 +210,54 @@ export class PageLog {
       this.scan();
     }
   }
+  // The last thing a process does with its store. `write` puts `token` into
+  // the store (one row of a table nothing else writes): its frame is read
+  // with the rest, and the generation is written down as closed there.
+  // (The write is read as any write that may start the log again: with every frame copied and the
+  // checkpoint thread's mark gone, it does.)
+  seal(write: (token: number) => void, table: string): void {
+    try {
+      const token = (HALF + Math.floor(Math.random() * HALF)) * HALF + Math.floor(Math.random() * HALF);
+      this.witnessed(() => write(token), table);
+      const h = this.head();
+      if (!h || !this.at || h.s1 !== this.at.s1 || h.s2 !== this.at.s2 || h.frame !== this.read || !h.frame) return;
+      const db = this.side();
+      db.transaction(() => {
+        db.exec("DELETE FROM rows WHERE end = 2");
+        db.query("INSERT INTO rows (end, s1, s2, lo, hi, n1, n2) VALUES (2, ?, ?, ?, ?, ?, ?)").run(h.s1, h.s2, this.read, this.read, Math.floor(token / HALF), token % HALF);
+      })();
+    } catch {
+      this.drop();
+    }
+  }
+
+  // A process's first write to its store, read on both sides as any write
+  // that may start the log again (`witnessed`). `token`: the number the store
+  // holds before it. When the process before closed its log with that number
+  // and no log holds a frame now, the closed generation is written down as
+  // ended, with this process's as the one that follows.
+  opened<T>(token: number | undefined, write: () => T, table: string): T {
+    let closed: { s1: number; s2: number; hi: number; n1: number; n2: number } | null | undefined;
+    let empty = false;
+    try {
+      closed = this.side().query<{ s1: number; s2: number; hi: number; n1: number; n2: number }, []>("SELECT s1, s2, hi, n1, n2 FROM rows WHERE end = 2 ORDER BY id DESC LIMIT 1").get();
+      const before = this.head();
+      empty = !before || before.frame === 0;
+    } catch { this.drop(); }
+    try {
+      return this.witnessed(write, table);
+    } finally {
+      try {
+        const db = this.side();
+        db.exec("DELETE FROM rows WHERE end = 2");
+        const now = this.head();
+        if (closed && empty && token === closed.n1 * HALF + closed.n2 && now && now.frame >= 1 && !(now.s1 === closed.s1 && now.s2 === closed.s2) && this.first(now) === this.root(table)) {
+          db.query("INSERT INTO rows (end, s1, s2, lo, hi, n1, n2) VALUES (1, ?, ?, ?, ?, ?, ?)").run(closed.s1, closed.s2, closed.hi, closed.hi, now.s1, now.s2);
+        }
+      } catch { this.drop(); }
+    }
+  }
+
   // The page the first frame of generation `at` names.
   private first(at: { s1: number; s2: number }): number | undefined {
     const out: number[] = [];
@@ -278,5 +345,9 @@ export class PageLog {
 const mine = new Map<string, PageLog>();
 const of = (dbPath: string) => mine.get(dbPath) ?? (mine.set(dbPath, new PageLog(dbPath)), mine.get(dbPath)!);
 export const logOf = of;
+export const sealLog = (dbPath: string, write: (token: number) => void, table: string) => of(dbPath).seal(write, table);
+export const openedLog = <T>(dbPath: string, token: number | undefined, write: () => T, table: string): T => of(dbPath).opened(token, write, table);
+// The thread's reader gives its file back (it opens it again when it next reads).
+export const restLog = (dbPath: string) => void mine.get(dbPath)?.close();
 export const scanLog = (dbPath: string) => of(dbPath).scan();
 export const witnessed = <T>(dbPath: string, write: () => T, table?: string): T => of(dbPath).witnessed(write, table);

@@ -113,7 +113,14 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
     }, 30_000);
     watch.unref?.();
   }
-  const threads = globalThis as { __keelCheckpointer?: Checkpointer };
+  const threads = globalThis as { __keelCheckpointer?: Checkpointer; __keelSeal?: { store: typeof store } };
+  // As the process exits its log is closed where it was read to, so the next start's backups can still
+  // tell which pages changed (Store.sealLog). One listener for the process: a reload names the new store.
+  if (threads.__keelSeal) threads.__keelSeal.store = store;
+  else {
+    const seal = (threads.__keelSeal = { store });
+    process.once("exit", () => seal.store.sealLog());
+  }
   threads.__keelCheckpointer?.stop();
   const checkpointer = (threads.__keelCheckpointer = startCheckpointer(store, (e, group) => {
     errors.capture("server", e, { at: "checkpoint thread" }, group ? { group } : {});

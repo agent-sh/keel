@@ -13,6 +13,7 @@ import { forgetSession } from "./session-map.ts";
 import { asker, asking } from "./asker.ts";
 import { labelled } from "./statement-label.ts";
 import { encodeOwed, OWED_FILE, OWED_FILE_MAX, OWED_V, owedLineKey, owedRefusal, owedSql, readOwed, type OwedLine, type OwedRecord, type OwedSql } from "./owed.ts";
+import { openedLog, restLog, sealLog } from "./log-pages.ts";
 import { holdStore, logBytes, storePath } from "./store-files.ts";
 import { Side } from "./side.ts";
 import type { SettleAsk, Settled } from "../engine/compact.ts";
@@ -590,6 +591,13 @@ export class Store {
   }
   get owes(): number { return this.later.length; }
   // `f` with no wait for a lock at all: what it cannot have at once it does not get.
+  // The last thing the daemon does with its store, as its process exits: the log is read to its end
+  // and closed with a number written into the store, so the process that starts next can follow it
+  // (log-pages.ts). Nothing is written through this store after it.
+  sealLog() {
+    try { sealLog(storePath(this.stateDir), (token) => this.db.run("UPDATE log_starts SET ts = ? WHERE id = 1", [token]), "log_starts"); } catch {}
+  }
+
   noWait<T>(f: () => T): T {
     const was = this.flushing;
     this.flushing = true;
@@ -704,6 +712,14 @@ export class Store {
     if (reading) console.log(`[store] reading ${logMb} MB of the store's log, left by a daemon that did not stop cleanly`);
     this.db = new Database(storePath(stateDir), { create: true, strict: true });
     this.db.exec(SCHEMA);
+    // The first write of this process, made here where it is the only writer: what the log holds from
+    // the process before is read first, and should this write start the log again its end is written
+    // down; a log the process before closed is followed from where it closed (log-pages.ts). A backup
+    // can then still tell which pages changed across the restart.
+    try {
+      const closing = this.db.query<{ ts: number }, []>("SELECT ts FROM log_starts WHERE id = 1").get()?.ts;
+      openedLog(storePath(stateDir), closing, () => this.db.run("UPDATE log_starts SET ts = ? WHERE id = 1", [Date.now()]), "log_starts");
+    } catch {} finally { restLog(storePath(stateDir)); }
     if (reading) console.log(`[store] the log is read (${((performance.now() - reading) / 1000).toFixed(1)} s)`);
     immediate(this.db);
     // Rows beside the conversation wait for the next commit instead of making one each (side.ts). Made before the

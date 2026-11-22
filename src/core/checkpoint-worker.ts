@@ -5,6 +5,7 @@
 import { Database } from "bun:sqlite";
 import { fsyncSync } from "node:fs";
 import { CELL, EXPIRED, HELD, logIndex, type LogIndex, NOT_EMPTIED, type Opts, stamp, TRIED } from "./checkpoint-shared.ts";
+import { scanLog, witnessed } from "./log-pages.ts";
 import { storeFd } from "./store-files.ts";
 
 declare var self: Worker;
@@ -94,7 +95,9 @@ const lock = (): boolean => {
 };
 const unlock = () => { try { W!.exec("ROLLBACK"); } catch {} set(CELL.lock_at, 0); };
 // (The first frame of a log that starts again is written with its header synced: one more sync under the lock.)
-const commit = (restarts: boolean) => { try { W!.exec("COMMIT"); } finally { set(CELL.lock_at, 0); } if (restarts) add(CELL.held_syncs); };
+// (The commit is where a log starts again. It is read on both sides, with the write lock still held before it, so
+// the pages its frames named are kept and its end is written down for the backups: log-pages.ts.)
+const commit = (restarts: boolean) => { try { witnessed(path, () => W!.exec("COMMIT"), "log_starts"); } finally { set(CELL.lock_at, 0); } if (restarts) add(CELL.held_syncs); };
 
 // Holds the mark from here on. With frames waiting the mark is taken as it
 // is. With all copied (a fresh log too) this thread writes one frame first.
@@ -127,7 +130,8 @@ const syncLog = () => {
   add(CELL.syncs);
 };
 const syncFile = () => timedSync(storeFd(path));
-const copy = () => { K!.query("PRAGMA wal_checkpoint(PASSIVE)").get(); add(CELL.passes); };
+// (After a pass the pages the log's new frames name are read, so little is left to read under the write lock.)
+const copy = () => { K!.query("PRAGMA wal_checkpoint(PASSIVE)").get(); add(CELL.passes); scanLog(path); };
 // A copy made with the write lock held: SQLite's own checkpoint, whole. It syncs the log, copies,
 // syncs the database, and only then marks the frames as copied (wal.c, walCheckpoint): that order is
 // SQLite's and is not taken apart here. A frame marked as copied before the database's sync would
