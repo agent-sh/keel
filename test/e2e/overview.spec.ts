@@ -99,10 +99,12 @@ test("one report tells every session's state, failure, run time and spend, as th
     // A parent whose own turn ended is working while its agent is: the agent is counted, not named.
     expect(work.join("\n")).toMatch(new RegExp(`"Coordinator": 1 agent at work, for \\d+ m?s; 1 turn; \\$\\d+\\.\\d+  \\[session=${short(parent)}\\]`));
     expect(text).not.toContain("Slow helper");
-    const bad = group("Failed (3):");
-    expect(bad).toHaveLength(3);
-    expect(bad.filter((l) => /: quota or billing, \d+ m?s ago; 1 turn, 1 failed \(quota or billing\)  \[session=[0-9a-f]{12}\]$/.test(l))).toHaveLength(2);
-    expect(bad.filter((l) => /"Rate limited fetch": rate limit, .* 1 failed \(rate limit\)/.test(l))).toHaveLength(1);
+    // A row that names why it failed does not name the same class again after its count.
+    const bad = group("Failed (2):");
+    expect(bad).toHaveLength(2);
+    expect(bad.filter((l) => /: quota or billing, \d+ m?s ago; 1 turn, 1 failed  \[session=[0-9a-f]{12}\]$/.test(l))).toHaveLength(2);
+    // A turn the provider asked to wait for continues by itself: it waits, and its row says what failed in it.
+    expect(group("Waiting (1):")[0]).toMatch(/"Rate limited fetch": waiting; 1 turn, 1 failed \(rate limit\)/);
     // The turn and the error of a failure are in its session's timeline, not in this text.
     expect(text).not.toMatch(/turn=|error=/);
     expect(group("Stopped (1):")[0]).toMatch(/"Stopped by me": stopped \d+ m?s ago; 1 turn/);
@@ -137,7 +139,8 @@ test("one report tells every session's state, failure, run time and spend, as th
     // Fewer are listed on request, the ones that need the owner first, and the rest are counted.
     const few = await (await fetch(`${d.url}/api/overview?since=1h&format=text&max=3`)).text();
     expect(few).toContain("Needs you (2):");
-    expect(few.trimEnd().split("\n").at(-2)).toBe("17 more sessions not listed, the quietest.");
+    // The ones left out are not all at rest: the line says what they are and what they did.
+    expect(few.trimEnd().split("\n").at(-2)).toMatch(/^17 more sessions not listed: 9 done, 2 working, 4 more \(\d+ turns, \$\d+\.\d+\)\.$/);
 
     // The page says the same of every session: the word on its row is the report's.
     await page.setViewportSize({ width: 1920, height: 1040 });
@@ -148,7 +151,7 @@ test("one report tells every session's state, failure, run time and spend, as th
     expect(o.sessions).toHaveLength(20);
     for (const r of o.sessions) await expect(list.locator(`[data-testid="session-row"][data-session="${r.id}"]`), r.title).toHaveAttribute("data-watch", r.watch);
     await expect(list.locator(`[data-testid="session-row"][data-session="${parent}"]`).getByTestId("row-state")).toHaveText("Working · 1 agent");
-    expect(Object.fromEntries(["need", "work", "fail", "stop", "done", "idle"].map((w) => [w, o.sessions.filter((r) => r.watch === w).length]))).toEqual({ need: 2, work: 3, fail: 3, stop: 1, done: 9, idle: 2 });
+    expect(Object.fromEntries(["need", "work", "wait", "fail", "stop", "done", "idle"].map((w) => [w, o.sessions.filter((r) => r.watch === w).length]))).toEqual({ need: 2, work: 3, wait: 1, fail: 2, stop: 1, done: 9, idle: 2 });
     await shoot(page, "overview-01-twenty-sessions");
 
     // The command prints the route's text, with nothing of a title's own reaching the terminal as a control.
@@ -186,8 +189,8 @@ test("one report tells every session's state, failure, run time and spend, as th
     expect(results[3]).toMatchObject({ is_error: true, content: expect.stringContaining("max is a whole number") });
     expect(results[4]).toMatchObject({ is_error: true, content: "since is at most 7 d back" });
 
-    // A turn a daemon restart cut and the daemon went on with is not a failure: this daemon is stopped
-    // while a tool runs, and the session's two turns (the cut one, the one that continued it) count as turns only.
+    // A turn a daemon restart cut and the daemon went on with is not a failure, and it did not end: this daemon
+    // is stopped while a tool runs, and of the session's two turns the one that continued it ended; the cut one is said apart.
     const cut = await open("Cut and continued");
     await send(cut, "script:long-tool");
     await expect.poll(async () => (await call(`/api/sessions/${cut}/timeline`)).now.lines[0]?.text, { timeout: 30_000 }).toBe("Running a turn started by the owner: step 1, running Bash");
@@ -199,9 +202,11 @@ test("one report tells every session's state, failure, run time and spend, as th
     expect(((await view(cut)).events as StoredEvent[]).filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).toEqual(["restart", "end_turn"]);
     const after = (await call("/api/overview?since=1h")) as Overview;
     const row = after.sessions.find((r) => r.id === cut)!;
-    expect(row).toMatchObject({ watch: "done", did: { turns: 2, failed: {} } });
-    expect(await (await fetch(`${d.url}/api/overview?since=1h&format=text`)).text()).toMatch(/"Cut and continued": finished \d+ m?s ago; 2 turns; /);
-    expect((await (await fetch(`${d.url}/api/overview?since=1h&format=text`)).text())).not.toContain("cut by a restart");
+    expect(row).toMatchObject({ watch: "done", did: { turns: 1, cut: 1, failed: {} } });
+    const cutText = await (await fetch(`${d.url}/api/overview?since=1h&format=text`)).text();
+    expect(cutText).toMatch(/"Cut and continued": finished \d+ m?s ago; 1 turn, 1 cut; /);
+    // The first line says what cut it, once for every row; it is no failure of any.
+    expect(cutText.split("\n")[0]).toMatch(/ of the sessions' own turns ended, 3 failed, \d cut by a restart; /);
   } finally {
     if (!existsSync(gate)) writeFileSync(gate, "go\n");
     d.proc.kill("SIGTERM");
@@ -298,7 +303,7 @@ test("while the owner is away, one digest tells what each session did, what wait
     expect(row(open1, billing)).toMatchObject({ watch: "fail", turns: 1, failed: { "quota or billing": 1 }, bad: "1 failed (quota or billing)" });
     expect(row(open1, declined)).toMatchObject({ turns: 1, failed: { declined: 1 } });
     expect(row(open1, asks)).toMatchObject({ watch: "need", turns: 0, approvals: 1, text: expect.stringMatching(/^1 approval waits/) });
-    expect(row(open1, parent)).toMatchObject({ watch: "work", parked: 1, text: expect.stringContaining("1 agent parked") });
+    expect(row(open1, parent)).toMatchObject({ watch: "wait", parked: 1, text: expect.stringContaining("1 agent parked") });
     // Neither the session nothing happened in nor the one whose turn ended at the desk.
     expect(row(open1, quiet)).toBeUndefined();
     expect(row(open1, desk)).toBeUndefined();
@@ -315,7 +320,7 @@ test("while the owner is away, one digest tells what each session did, what wait
     const keel = (...args: string[]) => execFileSync("bun", ["src/main.ts", ...args, "--url", d.url], { env: d.env, encoding: "utf8" });
     const cli = keel("status", "--away", "--no-ids");
     expect(cli).toMatch(/^While you are away, since /);
-    expect(cli).toContain('  "Policy text", done: 1 turn ended, 1 failed (declined)');
+    expect(cli).toContain('  "Policy text", declined: 1 turn ended, 1 failed (declined)');
     expect(cli).not.toContain("[session=");
 
     // They come back: the absence closes at their first input, and the Inbox has one line for it.

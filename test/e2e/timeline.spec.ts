@@ -122,7 +122,8 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
       'Agent report from "Check the parser", 1 step',
       "Owner prompt, 2 steps",
       expect.stringMatching(/^Wait wake \(a timer, after \d s\), 1 step$/),
-      "Owner prompt, 1 step",
+      // Twice overloaded, then answered: the row says every request it made.
+      "Owner prompt, 1 step, 3 requests, 2 failed",
       "Owner prompt, stopped by the owner after 1 step",
       "Owner prompt, cut when the daemon went down after 1 step",
       "Resumed after a daemon restart, 1 step",
@@ -222,7 +223,7 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     await send("script:slow again", undefined, other);
     await ended(3, other);
     const branched = (await timeline("?only=turns", other)).rows;
-    expect(branched.map(text)).toEqual(["Owner prompt, 1 step", "Owner prompt, 1 step, on a branch not shown", "Owner prompt, 1 step, on a branch not shown"]);
+    expect(branched.map(text)).toEqual(["Owner prompt, 1 step", "Owner prompt, 1 step, on a branch not shown", "Owner prompt, 1 step, 3 requests, 2 failed, on a branch not shown"]);
     expect(branched.map((r) => r.turn?.branch)).toEqual([undefined, "other", "other"]);
 
     // --- the panel
@@ -263,8 +264,9 @@ test("the timeline tells a session's story, live, and opens each turn's receipt"
     const receipt = failedTurn.getByTestId("timeline-receipt");
     await expect(receipt.getByTestId("receipt-inputs")).toContainText("a queued prompt");
     await expect(receipt.getByTestId("receipt-requests")).toContainText("2 model requests");
-    // Each failed call is named by its tool and opens in the trace: the command by its exit code, the call that named no tool as that.
-    await expect(receipt.getByTestId("receipt-tools")).toHaveText("2 tool calls, 2 failed: Bash (exit 1), timeline-no-such-tool (no such tool)");
+    // Each failed call is named by its tool and opens in the trace: the command by its exit code, the call that named no tool as that
+    // (in the order their results came: the call that named no tool was answered at once).
+    await expect(receipt.getByTestId("receipt-tools")).toHaveText("2 tool calls, 2 failed: timeline-no-such-tool (no such tool), Bash (exit 1)");
     await expect(receipt.getByTestId("receipt-end")).toContainText("Finished after");
     await shots("timeline-02-receipt");
     // Escape from inside the open row closes it and puts the keys back on its line.

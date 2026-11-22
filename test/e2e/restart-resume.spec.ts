@@ -793,7 +793,7 @@ test("an approval pending at a crash or a stop is shown again after the restart"
 
     // A parallel batch: the owner denies one call with a reason while the other
     // still runs, then the daemon dies. The denial and its reason reach the
-    // model after the restart; only the call that was running may have partly run.
+    // model after the restart; the call that was running is told its command runs on.
     expect((await call("/api/permissions/grants", { session_id: sid, kind: "shell", pattern: "sleep *", lifetime: "session" })).status).toBe(201);
     const denied = join(state, "denied.txt");
     await page.getByTestId("composer").fill(`script:batch ${JSON.stringify([{ name: "Bash", input: { command: "sleep 20" } }, { name: "Bash", input: { command: `echo no > ${denied}` } }])}`);
@@ -812,8 +812,9 @@ test("an approval pending at a crash or a stop is shown again after the restart"
     await expect(page.getByTestId("assistant-text").last()).toContainText("leave denied.txt alone");
     expect(existsSync(denied)).toBe(false);
     const batch = ((await call(`/api/sessions/${sid}`, undefined, "GET")).events as any[]).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results).filter((r: any) => r.tool_use_id.startsWith("batch-"));
+    // (The command outlived the daemon: its call is not told it was interrupted.)
     expect(batch.map((r: any) => [r.is_error, r.content]).sort()).toEqual([
-      [true, "Interrupted by a daemon restart while this tool ran. It may have partly run: check its effects before running it again."],
+      [true, expect.stringMatching(/^The daemon restarted while this command ran\. The command was not interrupted: it still runs in the background \(ID: \w+\)\. Its output is being written to \S+\.log\. Do not start it again: a notice comes when it ends\.$/)],
       [true, "The owner denied this call: leave denied.txt alone"],
     ]);
 
