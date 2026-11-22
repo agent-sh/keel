@@ -1,6 +1,6 @@
 import { ArrowUp, File as FileIcon, FileText, Folder, ListPlus, Paperclip, Slash, SlidersHorizontal, Square, X } from "lucide-react";
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from "react";
-import type { PromptBlock, Session } from "../../../src/core/types.ts";
+import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from "react";
+import type { PromptBlock } from "../../../src/core/types.ts";
 import { slash, type SlashItem } from "../lib/extend.ts";
 import { loadMcpPrompts } from "../lib/tools-ui.ts";
 import { fromBlock, pastedImages, toAttachment, toBlock, type Attachment } from "../lib/images.ts";
@@ -10,7 +10,7 @@ import { splitId } from "../lib/fleet-ids.ts";
 import { draftGone, draftHere, dropImage, fromServer, getDraft, isKeeping, keepImage, textTaken, typing, type Draft } from "../lib/drafts.ts";
 import { daemonAway, hasSavedImage, messageRefused, namedSends, savedImages, sendDrafts, setSendDraft, setSendImage, shelfKey, shown, unread, useSendDrafts, type SendDraft } from "../lib/send-drafts.ts";
 import { sendWaitingSoon } from "../lib/resend.ts";
-import { onFeature, reportError, reportUnlessGone, useStore, failed } from "../lib/store.ts";
+import { getState, onFeature, reportError, reportUnlessGone, useStore, failed } from "../lib/store.ts";
 import { openFocus } from "../lib/self-focus.ts";
 import { setUI, useUI } from "../lib/ui.ts";
 import { lineage } from "../../../src/core/tree.ts";
@@ -56,7 +56,9 @@ const heading = (d: SendDraft) => (d.state === "waiting" ? "Waiting for Keel" : 
 const OFF_BRANCH = "You are reading another branch. Choose Reply from this branch to reply there, or Back to the current one.";
 
 type ComposerProps = {
-  session?: Session;
+  // The session the box writes to (none: the start page). Only its id: the box is not drawn
+  // again when the session's row changes.
+  session?: { id: string };
   // `id` names the send: a session's route takes the same one once (see lib/resend.ts).
   onSend: (text: string, images: PromptBlock[], id?: string) => Promise<unknown> | void;
   // While a turn runs, Enter steers (the text joins the turn at its next model
@@ -92,7 +94,7 @@ export function Composer(props: ComposerProps) {
   return <SessionComposer key={draftKey(props.session?.id)} {...props} />;
 }
 
-function SessionComposer({
+const SessionComposer = memo(function SessionComposer({
   session, onSend, onQueue, onStop, onEscape, stopLabel = "Stop the turn", working, model, onModel, workspace, autoFocus, focus = true, hold, above, asks,
 }: ComposerProps) {
   const sid = session?.id;
@@ -128,8 +130,10 @@ function SessionComposer({
   const enterSends = useUI((s) => s.enterSends);
   // Reading another branch from search: a reply would go to the session's own branch, so ask first.
   const previewEvent = useUI((s) => (session && s.preview?.session === session.id ? s.preview.event : null));
-  const sessionEvents = useStore((s) => (session ? s.events[session.id] : undefined));
-  const offBranch = !!previewEvent && !!sessionEvents?.some((e) => e.id === previewEvent) && !lineage(sessionEvents!, session!.head).some((e) => e.id === previewEvent);
+  // Read only while a version is previewed: the events change with every step of a turn.
+  const sessionEvents = useStore((s) => (session && previewEvent ? s.events[session.id] : undefined));
+  const head = useStore((s) => (session && previewEvent ? s.sessions[session.id]?.head ?? null : null));
+  const offBranch = !!previewEvent && !!sessionEvents?.some((e) => e.id === previewEvent) && !lineage(sessionEvents!, head).some((e) => e.id === previewEvent);
   const modelSignal = useUI((s) => s.modelMenu);
   const [pickerSignal, setPickerSignal] = useState(0);
   const lastSignal = useRef(modelSignal);
@@ -422,7 +426,8 @@ function SessionComposer({
     return () => { clearTimeout(t); ctl.abort(); };
   }, [menu?.kind, menu?.query, workspace]);
 
-  const ctx = { session, setText };
+  // The session as it is when a command asks, not as it was when the box was drawn.
+  const ctx = { get session() { return sid ? getState().sessions[sid] : undefined; }, setText };
   const runSlash = async (item: SlashItem, arg: string) => {
     if (!item.run) return setNotice(`/${item.id} is not available yet.`);
     // A command that prompts the model is held like a typed message while another branch is read.
@@ -438,6 +443,8 @@ function SessionComposer({
     }
   };
 
+  // While the command menu is open, what it offers follows the session as it changes.
+  const listed = useStore((s) => (sid && menu?.kind === "slash" ? s.sessions[sid] : undefined));
   const options = useMemo<Option[]>(() => {
     if (!menu) return [];
     if (menu.kind === "slash") {
@@ -481,7 +488,7 @@ function SessionComposer({
       },
     }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [menu, slashItems, files, text, session]);
+  }, [menu, slashItems, files, text, listed]);
 
   useEffect(() => setSel(0), [menu?.kind, menu?.query]);
   // The list and its options have ids: the box, which keeps the focus, names
@@ -834,7 +841,7 @@ function SessionComposer({
           </span>
           {sid && <EffortPicker sessionId={sid} />}
           {sid && <SpeedPicker sessionId={sid} />}
-          {session && <FallbackChip session={session} />}
+          {sid && <FallbackChip sessionId={sid} />}
           {model && <LimitChip model={model} />}
           {short && !narrow && sid && <ContextMeter sessionId={sid} />}
           {!short && status}
@@ -891,7 +898,7 @@ function SessionComposer({
     </div>
     </>
   );
-}
+});
 
 // The cards of the region above the box, by their test ids, at any depth.
 const CARDS = ["approval", "question", "plan-card", "secret-request", "trust-card", "blocked", "held-message", "saved-draft", "queue-item", "dock-job", "live-source"].map((t) => `[data-testid="${t}"]`).join(",");

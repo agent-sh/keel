@@ -1,4 +1,5 @@
-import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
+import type { PromptBlock } from "../../../src/core/types.ts";
+import { lazy, memo, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import { setBaseTitle } from "./Attention.tsx";
 import { FolderX, WifiOff } from "lucide-react";
 import { WaitingElsewhere } from "./AnswerQueue.tsx";
@@ -94,37 +95,7 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
           {/* The stack is one height budget (Composer's Tray): the cards above the box scroll, the box stays. */}
           <div className="k-compose flex min-h-0 flex-col pr-[var(--sbw,0px)]">
             <div className="k-compose-in mx-auto flex min-h-0 w-full max-w-[48rem] flex-col px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6 md:pb-5">
-              <Composer
-                session={session}
-                working={session.phase === "working"}
-                model={session.model}
-                workspace={session.workspace}
-                onModel={(m) => switchSession(session.id, { model: m }).catch(reportError)}
-                onSend={(t, images, client_id) => actions.send(session.id, t, { images, client_id })}
-                onQueue={(t, images, client_id) => actions.send(session.id, t, { mode: "queue", images, client_id })}
-                onStop={() => void stopHere(session)}
-                {...(session.parent_id ? { onEscape: () => navigate({ name: "session", id: session.parent_id! }), stopLabel: "Stop this agent" } : {})}
-                focus={focus}
-                // (Not in a pane the answering sequence opened to bring the keyboard to its card: lib/asks.ts.)
-                autoFocus={focus && matchMedia("(min-width: 768px)").matches && sequenceAt() !== session.id}
-                above={
-                  <>
-                    {unreached === id && <Unreached />}
-                    {session.workspace_gone && <FolderGone path={session.workspace} />}
-                    <LiveSourceBanner sessionId={session.id} />
-                    <Suspense fallback={null}><HeldMessages sessionId={session.id} /></Suspense>
-                    <Suspense fallback={null}><SessionDock sessionId={session.id} /></Suspense>
-                  </>
-                }
-                asks={
-                  <>
-                    <WaitingElsewhere sessionId={session.id} />
-                    <Suspense fallback={null}><Questions sessionId={session.id} /></Suspense>
-                    <Suspense fallback={null}><Approvals sessionId={session.id} /></Suspense>
-                    <ChildApprovals parentId={session.id} />
-                  </>
-                }
-              />
+              <SessionCompose id={session.id} parentId={session.parent_id ?? null} working={session.phase === "working"} model={session.model} workspace={session.workspace} folderGone={!!session.workspace_gone} unreached={unreached === id} focus={focus} />
             </div>
           </div>
         </div>
@@ -133,6 +104,56 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
     </>
   );
 }
+
+// The session's message box with the cards above it. It is drawn again only
+// when one of these facts changes: the session's row changes with every
+// stored event (its head moves), and the box, its pickers and the cards have
+// nothing to say about that.
+const SessionCompose = memo(function SessionCompose({ id, parentId, working, model, workspace, folderGone, unreached, focus }: { id: string; parentId: string | null; working: boolean; model: string; workspace: string; folderGone: boolean; unreached: boolean; focus: boolean }) {
+  const session = useMemo(() => ({ id }), [id]);
+  const does = useMemo(() => ({
+    model: (m: string) => switchSession(id, { model: m }).catch(reportError),
+    send: (t: string, images: PromptBlock[], client_id?: string) => actions.send(id, t, { images, client_id }),
+    queue: (t: string, images: PromptBlock[], client_id?: string) => actions.send(id, t, { mode: "queue", images, client_id }),
+    stop: () => void stopHere({ id, parent_id: parentId }),
+    escape: parentId ? () => navigate({ name: "session", id: parentId }) : undefined,
+  }), [id, parentId]);
+  const above = useMemo(() => (
+    <>
+      {unreached && <Unreached />}
+      {folderGone && <FolderGone path={workspace} />}
+      <LiveSourceBanner sessionId={id} />
+      <Suspense fallback={null}><HeldMessages sessionId={id} /></Suspense>
+      <Suspense fallback={null}><SessionDock sessionId={id} /></Suspense>
+    </>
+  ), [id, unreached, folderGone, workspace]);
+  const asks = useMemo(() => (
+    <>
+      <WaitingElsewhere sessionId={id} />
+      <Suspense fallback={null}><Questions sessionId={id} /></Suspense>
+      <Suspense fallback={null}><Approvals sessionId={id} /></Suspense>
+      <ChildApprovals parentId={id} />
+    </>
+  ), [id]);
+  return (
+    <Composer
+      session={session}
+      working={working}
+      model={model}
+      workspace={workspace}
+      onModel={does.model}
+      onSend={does.send}
+      onQueue={does.queue}
+      onStop={does.stop}
+      {...(does.escape ? { onEscape: does.escape, stopLabel: "Stop this agent" } : {})}
+      focus={focus}
+      // (Not in a pane the answering sequence opened to bring the keyboard to its card: lib/asks.ts.)
+      autoFocus={focus && matchMedia("(min-width: 768px)").matches && sequenceAt() !== id}
+      above={above}
+      asks={asks}
+    />
+  );
+});
 
 // The session's folder is not on disk: the transcript reads as before, and
 // the way on is to move the session to a folder that exists.

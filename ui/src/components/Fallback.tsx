@@ -4,8 +4,7 @@
 // card, /fallback or the palette.
 import { CornerDownRight, X } from "lucide-react";
 import { useSyncExternalStore } from "react";
-import type { Session } from "../../../src/core/types.ts";
-import { actions, reportError } from "../lib/store.ts";
+import { actions, reportError, useStore } from "../lib/store.ts";
 import { ModelPicker } from "./ModelPicker.tsx";
 
 // A request from the palette or /fallback to choose one: the chip shows with its picker open.
@@ -20,18 +19,18 @@ const useChoosing = () => useSyncExternalStore((f) => (subs.add(f), () => void s
 const done = () => { choosing = null; subs.forEach((f) => f()); };
 export const setFallback = (sid: string, model: string | null) => actions.patch(sid, { settings: { fallback: model } }).finally(done);
 
-export function FallbackChip({ session }: { session: Session }) {
+export function FallbackChip({ sessionId }: { sessionId: string }) {
   const ch = useChoosing();
-  const fb = session.settings.fallback as string | undefined;
-  const open = ch?.sid === session.id;
+  const fb = useStore((s) => s.sessions[sessionId]?.settings.fallback as string | undefined);
+  const open = ch?.sid === sessionId;
   if (!fb && !open) return null;
   return (
     <span className="inline-flex h-8 items-center rounded-md text-caption text-faint" data-testid="fallback-chip" title="If the model declines a request, the turn goes on once on this model, which then stays">
       <CornerDownRight className="ml-1 size-3.5" />
       <span className="pl-1 max-md:hidden">If declined</span>
-      <ModelPicker compact value={fb ?? ""} openSignal={open ? ch!.n : undefined} onChange={(m) => setFallback(session.id, m).catch(reportError)} />
+      <ModelPicker compact value={fb ?? ""} openSignal={open ? ch!.n : undefined} onChange={(m) => setFallback(sessionId, m).catch(reportError)} />
       {(fb || open) && (
-        <button type="button" aria-label="No fallback model" title="No fallback model" onClick={() => (fb ? setFallback(session.id, null).catch(reportError) : done())} className="grid size-6 place-items-center rounded-sm hover:bg-hover hover:text-fg">
+        <button type="button" aria-label="No fallback model" title="No fallback model" onClick={() => (fb ? setFallback(sessionId, null).catch(reportError) : done())} className="grid size-6 place-items-center rounded-sm hover:bg-hover hover:text-fg">
           <X className="size-3" />
         </button>
       )}
