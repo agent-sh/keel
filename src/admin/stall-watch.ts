@@ -24,11 +24,16 @@
 //
 // It cannot see JavaScript frames of another thread: a stall that computed
 // is named by the section the daemon timed (stall.ts), not by the watcher.
+// One thing it is told: which statement the store's connection is in, by a
+// number the connection writes around each one (src/core/statement-label.ts).
+// A stall in a read of the database, a write to its log or a wait for its
+// write lock then says which query it was.
 // Bun's profiler (node:inspector) samples the thread that starts it, and a
 // held loop cannot start one.
 import { realOf } from "../core/paths.ts";
 import { type Arch, type Cause, type Dirs, STOPPED, unknown } from "./stall-cause.ts";
 import { dropBeat, shareBeat } from "./stall.ts";
+import { onLabels, statementCell } from "../core/statement-label.ts";
 
 declare const __KEEL_STALLWATCH_JS__: string | undefined;
 
@@ -64,6 +69,7 @@ export class StallWatch {
   private unanswered = 0;
   private stopped = false;
   private cells?: Int32Array;
+  private unlabel?: () => void;
   // The watcher's thread id once it runs (its processor time is under /proc/<pid>/task/<tid>).
   tid?: number;
   // The last SIGCONT, on the monotonic clock: a stall that ends with one was a stop by a signal.
@@ -102,7 +108,9 @@ export class StallWatch {
     this.worker = w;
     shareBeat((this.cells = new Int32Array(cells)));
     // A descriptor's link under /proc is a real path: the folders are compared as where their links land.
-    w.postMessage({ start: { beat: cells, dirs: { state: realOf(this.dirs.state), config: realOf(this.dirs.config) }, arch: process.arch as Arch } });
+    w.postMessage({ start: { beat: cells, stmt: statementCell.buffer, dirs: { state: realOf(this.dirs.state), config: realOf(this.dirs.config) }, arch: process.arch as Arch } });
+    // The labels of the store's statements, as they are made: a sample says which statement the loop was in.
+    this.unlabel = onLabels((id, text) => { try { w.postMessage({ label: [id, text] }); } catch {} });
     process.on("SIGCONT", this.onCont);
   }
 
@@ -118,6 +126,8 @@ export class StallWatch {
     const w = this.worker;
     this.worker = undefined;
     if (this.cells) dropBeat(this.cells);
+    this.unlabel?.();
+    this.unlabel = undefined;
     process.off("SIGCONT", this.onCont);
     try { w?.terminate(); } catch {}
     for (const done of this.asked.values()) done(undefined);

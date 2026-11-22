@@ -293,3 +293,37 @@ test("what the watcher did not see is said, and samples of another stall are not
   // A stall seen only at its end says how much of it was seen.
   expect(decide(second, {}, 2000).text).toBe("0.7 s in fsync of a file (seen for the last 0.7 s of it)");
 });
+
+// The store's connection says which statement it is in (src/core/statement-label.ts): a stall in a read
+// of the database, a wait for its write lock or a statement that computed is named by it.
+test("a stall inside a statement of the store names the statement", () => {
+  const read = { name: "pread64", on: placeOf("/home/u/.local/share/keel/state/keel.db", dirs) };
+  const stmt = "SELECT id, seq, parent, kind, ts FROM events WHERE session_id = ? ORDER BY seq";
+  const reading: Sample[] = [];
+  for (let i = 0; i <= 27; i++) reading.push({ t: i * 100, ep: 1, state: "D", run_ns: 0, wait_ns: 0, user_ticks: 0, sys_ticks: 0, call: read, stmt });
+  reading[27]!.state = "R";
+  const c = decide(reading, { pressure: { io: 39 } }, 2700);
+  expect(c.text).toBe(`2.7 s reading the store's database (keel.db), in the statement: ${stmt} (IO pressure 39%)`);
+  expect(c.statement).toBe(stmt);
+  // The row's key is the call and the file, as before: the statement is in its text, not in what groups it.
+  expect(c.key).toBe("pread64 store");
+
+  // A wait for the write lock: SQLite sleeps between its tries, in the transaction's own statement.
+  const lock = "BEGIN (the start of a transaction)";
+  const waiting: Sample[] = [];
+  for (let i = 0; i <= 10; i++) waiting.push({ t: i * 100, ep: 1, state: "S", run_ns: 0, wait_ns: 0, user_ticks: 0, sys_ticks: 0, call: { name: "clock_nanosleep" }, stmt: lock });
+  waiting[10]!.state = "R";
+  expect(decide(waiting, {}, 1000).text).toBe(`1.0 s sleeping (clock_nanosleep), in the statement: ${lock}`);
+
+  // A statement that computed (a scan from memory): the statement is the code, and the row does not say the code is not visible.
+  const scan: Sample[] = [];
+  for (let i = 0; i <= 10; i++) scan.push({ t: i * 100, ep: 1, state: "R", run_ns: i * 100e6, wait_ns: 0, user_ticks: i * 10, sys_ticks: 0, stmt });
+  const computed = decide(scan, {}, 1000);
+  expect(computed.text).toBe(`1.0 s in its own code, in the statement: ${stmt}`);
+  expect(computed.note).toBeUndefined();
+  expect(computed.statement).toBe(stmt);
+  // Outside any statement nothing is added.
+  const plain = decide(scan.map(({ stmt: _, ...s }) => s), {}, 1000);
+  expect(plain.text).toBe("1.0 s in its own code");
+  expect(plain.note).toBe(UNSEEN);
+});

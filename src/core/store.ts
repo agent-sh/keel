@@ -5,6 +5,7 @@ import type { ErrorRecord, EventKind, ImageBlock, QueueItem, Session, StoredEven
 import { addUsage, emptyUsage } from "./types.ts";
 import { totalmem } from "node:os";
 import { forgetSession } from "./session-map.ts";
+import { labelled } from "./statement-label.ts";
 import { holdStore, storePath } from "./store-files.ts";
 
 const SCHEMA = `
@@ -257,6 +258,8 @@ export class Store {
     holdStore(stateDir);
     this.db = new Database(storePath(stateDir), { create: true, strict: true });
     this.db.exec(SCHEMA);
+    // Each statement says which one it is while it runs: a stall in the database is named by its query (statement-label.ts).
+    labelled(this.db);
     // The event tree (edit, fork, branches) and per-session settings. One
     // transaction: a start that fails part way leaves the database as it was,
     // and the next start does all of it.

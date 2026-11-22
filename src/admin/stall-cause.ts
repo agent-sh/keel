@@ -257,6 +257,7 @@ export type Sample = {
   user_ticks: number;
   sys_ticks: number;
   call?: Call;            // what it was asleep in
+  stmt?: string;          // the statement the store's connection was in (src/core/statement-label.ts), by its label
   wchan?: string;         // the kernel function it sleeps in
   // The watcher did not run either between the sample before and this one:
   // the process was stopped, the machine asleep, or every thread of the
@@ -321,6 +322,7 @@ export type Cause = Around & {
   kernel_ms?: number;   // of that, in the kernel
   wait_ms?: number;     // runnable, waiting for a processor
   call?: { name: string; on?: string; child?: { pid: number; command: string } };
+  statement?: string;   // the statement of the store's connection the main part was spent in, by its label
   state?: string;
   wchan?: string;
   note?: string;
@@ -349,6 +351,11 @@ export function decide(samples: Sample[], around: Around, stallMs: number, windo
   const gaps = { stopped: 0, suspended: 0, memory: 0 };
   // Asleep or stopped, by what the thread was seen in at the start of each stretch.
   const asleep = new Map<string, { kind: CauseKind; what: string; ms: number; sample: Sample }>();
+  // On a processor inside a statement of the store's connection, by the statement's label.
+  const inStatement = new Map<string, number>();
+  let ran = 0;
+  // A wait or a read made for a statement of the store says which one.
+  const of = (a: Sample) => (a.stmt ? `, in the statement: ${a.stmt}` : "");
   for (let i = 0; i + 1 < samples.length; i++) {
     const a = samples[i]!, b = samples[i + 1]!;
     if (a.ep !== b.ep) continue;
@@ -359,15 +366,19 @@ export function decide(samples: Sample[], around: Around, stallMs: number, windo
     user += Math.max(0, b.user_ticks - a.user_ticks); sys += Math.max(0, b.sys_ticks - a.sys_ticks);
     if (b.gap) { gaps[b.gap] += Math.max(0, dt - r - w); continue; }
     // Running or runnable: both are in the two counters already.
-    if (a.state === "R") continue;
+    if (a.state === "R") {
+      ran += dt;
+      if (a.stmt) inStatement.set(a.stmt, (inStatement.get(a.stmt) ?? 0) + dt);
+      continue;
+    }
     const stopped = a.state === "T" || a.state === "t";
     const key = stopped ? "stopped" : a.call ? callKey(a.call) : `asleep ${a.state}`;
     const had = asleep.get(key);
-    if (had) { had.ms += dt; had.sample = a; }
+    const what = stopped ? "stopped (a stop signal or a debugger held its thread)" : `${a.call ? callWords(a.call) : a.state === "D" ? "waiting for the disk" : "asleep outside a system call"}${of(a)}`;
+    if (had) { had.ms += dt; had.sample = a; had.what = what; }
     else asleep.set(key, {
       kind: stopped ? "stopped" : a.call?.child ? "child" : a.call && a.call.name !== "none" ? "call" : a.state === "D" ? "disk" : "unknown",
-      what: stopped ? "stopped (a stop signal or a debugger held its thread)" : a.call ? callWords(a.call) : a.state === "D" ? "waiting for the disk" : "asleep outside a system call",
-      ms: dt, sample: a,
+      what, ms: dt, sample: a,
     });
   }
   if (seen <= 0) return { ...unknown("the watcher saw none of it"), ...around };
@@ -381,7 +392,10 @@ export function decide(samples: Sample[], around: Around, stallMs: number, windo
   const shares: (Share & { sample?: Sample })[] = [];
   // Processor time in the kernel is a system call's work (a large write, memory being mapped), not JavaScript.
   const kernel = user + sys > 0 && sys / (user + sys) >= 0.6;
-  if (run > 0) shares.push({ kind: "compute", key: "compute", what: kernel ? "on a processor in the kernel, for system calls of its own" : "in its own code", ms: run });
+  // Most of its time on a processor inside one statement of the store: the statement is the code.
+  const [busiest, inIt] = [...inStatement].sort((x, y) => y[1] - x[1])[0] ?? [undefined, 0];
+  const computed = busiest && inIt >= ran / 2 ? busiest : undefined;
+  if (run > 0) shares.push({ kind: "compute", key: "compute", what: `${kernel ? "on a processor in the kernel, for system calls of its own" : "in its own code"}${computed ? `, in the statement: ${computed}` : ""}`, ms: run });
   if (wait > 0) {
     const bits = [
       around.load !== undefined ? `machine load ${Math.round(around.load)}` : "",
@@ -428,8 +442,9 @@ export function decide(samples: Sample[], around: Around, stallMs: number, windo
     ...(user + sys > 0 ? { kernel_ms: Math.round(run * scale * (sys / (user + sys))) } : {}),
     wait_ms: Math.round(wait * scale),
     ...(at?.call && at.call.name !== "none" ? { call: { name: at.call.name, ...(at.call.on ? { on: at.call.on.text } : {}), ...(at.call.child ? { child: at.call.child } : {}) } } : {}),
+    ...(at?.stmt ?? (main.kind === "compute" ? computed : undefined) ? { statement: at?.stmt ?? computed } : {}),
     ...(at ? { state: at.state } : {}),
     ...(at?.wchan ? { wchan: at.wchan } : {}),
-    ...(main.kind === "compute" && !kernel ? { note: UNSEEN } : {}),
+    ...(main.kind === "compute" && !kernel && !computed ? { note: UNSEEN } : {}),
   };
 }
