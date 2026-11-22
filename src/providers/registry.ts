@@ -499,7 +499,9 @@ export class Providers {
       list: () => p.list(),
       stream: async (req: ProviderRequest, onDelta) => {
         const offer = speedOffer(info, req.speed);
+        let sawHeaders = false;
         const onHeaders = (h: Headers) => {
+          sawHeaders = true;
           const r = fromHeaders(h);
           if (r.length) this.limits.record(p.id, r);
           req.onHeaders?.(h);
@@ -520,8 +522,14 @@ export class Providers {
             extraHeaders: offer?.headers ? { ...req.extraHeaders, ...offer.headers } : req.extraHeaders,
           }, (d) => { onAnswer(); onDelta(d); });
         } catch (e) {
-          // A status of the provider's own is an answer too.
-          if (typeof (e as any)?.status === "number" && !unreachable(e)) onAnswer();
+          // Once a reply began, even a claimed connect error is bounded. A
+          // broker's explicit HTTP refusal can have headers but no model reply.
+          const status = (e as ProviderError)?.status;
+          if (unreachable(e) && (told || (sawHeaders && !status))) {
+            throw new ProviderError("network", `the stream broke: ${(e as Error).message}`);
+          }
+          // Only a provider answer releases other waiters, not a generic gateway error.
+          if (typeof status === "number" && !unreachable(e) && ![502, 503, 504].includes(status)) onAnswer();
           this.note(p.id, e, "turn");
           throw e;
         }

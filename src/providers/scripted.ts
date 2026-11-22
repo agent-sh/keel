@@ -26,15 +26,14 @@
 //   script:outage-count              how many requests and listings the last
 //                                    outage refused
 //   script:outage-end                the provider is back now
-// <kind>: dns (EAI_AGAIN), socket (closed before a response byte), gateway (a
-// broker's 502 with a body of its own), refused, tls. Kept in the state folder,
-// so an outage goes on through a daemon restart and starts once per prompt.
+// <kind>: dns (EAI_AGAIN), gateway (a broker's 502 naming a DNS failure), refused, tls.
+// Kept in the state folder, so an outage survives a restart and starts once per prompt.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { inflateSync } from "node:zlib";
 import type { Message } from "../core/types.ts";
 import { imageSize } from "../engine/images.ts";
-import { classify, notReached, ProviderError } from "./http.ts";
+import { classify, fetchFailure, ProviderError } from "./http.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } from "./types.ts";
 
 export const SCRIPTED_ENV = "KEEL_SCRIPTED_PROVIDER";
@@ -71,12 +70,11 @@ const longRateLimit = (prompt = "") => {
 };
 
 // What a driver throws for each way of not reaching the provider, in the runtime's own words.
-const OUTAGE_KINDS = ["dns", "socket", "gateway", "refused", "tls"] as const;
+const OUTAGE_KINDS = ["dns", "gateway", "refused", "tls"] as const;
 type OutageKind = (typeof OUTAGE_KINDS)[number];
 function outageError(kind: OutageKind): ProviderError {
-  const thrown = (message: string, code: string) => notReached("Scripted", Object.assign(new TypeError(message), { code }));
-  if (kind === "socket") return thrown("The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()", "ECONNRESET");
-  if (kind === "gateway") return classify("Scripted", 502, new Headers(), JSON.stringify({ message: "the broker could not reach scripted-runtime.example.invalid: getaddrinfo EAI_AGAIN scripted-runtime.example.invalid" }));
+  const thrown = (message: string, code: string) => fetchFailure("Scripted", Object.assign(new TypeError(message), { code }));
+  if (kind === "gateway") return classify("Scripted", 502, new Headers(), JSON.stringify({ message: "the broker could not reach runtime.example.invalid: EAI_AGAIN" }));
   if (kind === "refused") return thrown("Unable to connect. Is the computer able to access the url?", "ConnectionRefused");
   if (kind === "tls") return thrown("self signed certificate", "DEPTH_ZERO_SELF_SIGNED_CERT");
   return thrown("getaddrinfo EAI_AGAIN scripted.example.invalid", "EAI_AGAIN");
@@ -290,7 +288,7 @@ export class ScriptedProvider implements Provider {
       case "outage-end":
         return reply("The provider is back.");
       case "outage-mid": {
-        const [, kind = "socket", ms = "5000"] = owner.match(/script:outage-mid[ \t]+([a-z]+)[ \t]+(\d+)/) ?? [];
+        const [, kind = "dns", ms = "5000"] = owner.match(/script:outage-mid[ \t]+([a-z]+)[ \t]+(\d+)/) ?? [];
         if (!this.outage.started.includes(String(Bun.hash(`${req.sessionKey}\u0000${owner}`)))) {
           for (const part of ["This half reply ", "is lost with the provider"]) {
             onDelta({ kind: "text", index: 0, text: part });

@@ -45,17 +45,15 @@ under `~/.cache/keel-work/bun/research/`.
   its provider reports (`token_ratios`). A history too long for one summary
   request is read as a text transcript: long tool outputs shortened oldest first,
   then in parts, each with the summary of the parts before it.
-- A provider that cannot be reached never fails a turn or an agent. Which
-  failures are that is said in one place (`src/providers/unreachable.ts`, beside
-  the failure classes of `src/admin/classes.ts`): the request never got an
-  answer, so no token was spent and it is safe to send again. The turn waits
-  for the provider with every other session of it (`src/providers/outage.ts`:
-  one try at a time, a probe
-  first, the waiting requests spread out when it answers), says so in the
-  state's words (`src/core/state-words.ts`), and goes on by itself, through a
-  daemon restart too. A call its caller can go on without (a reader, a side
-  answer, a summary made ahead) fails at once instead. A stream that began and
-  broke, and a status the provider itself sent, keep the counted retries.
+- A turn or an in-turn summary waits when the driver can tell the model request
+  could not be sent (`src/providers/unreachable.ts`): DNS or connection setup
+  failed, or the broker explicitly reports an upstream DNS or connect failure.
+  Sessions share the wait (`src/providers/outage.ts`), try one at a time, and
+  spread out when the provider answers. The wait spends no counted retry and
+  does not reset the retry budget. Gateway timeouts, resets and broken replies
+  keep the bounded retries, even if no response headers arrived. Readers, side
+  answers and summaries made ahead do not join the wait. The policy judge still
+  fails closed when it cannot give a verdict.
 - An image never breaks a session. It is stored within `STORE`
   (`src/providers/image-limits.ts`, the one place for image limits, each with
   its reason and source), scaled down when it is larger; a larger one already

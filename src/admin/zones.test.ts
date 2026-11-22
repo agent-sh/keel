@@ -55,8 +55,8 @@ test("failures fall into classes by the driver's kind, the status, then the word
   expect(errorClass(Object.assign(new Error("nope"), { status: 401 }))).toBe("auth");
   expect(errorClass(Object.assign(new Error("Overloaded"), { status: 529 }))).toBe("overloaded");
   expect(errorClass(Object.assign(new Error("input is too long for the context window"), { status: 400 }))).toBe("context_overflow");
-  // A connection that was reset before any answer never reached the provider (src/providers/unreachable.ts); a stream that broke did.
-  expect(errorClass(new Error("read ECONNRESET"))).toBe("unreachable");
+  // A reset without an answer is still ambiguous: the request may have reached the provider.
+  expect(errorClass(new Error("read ECONNRESET"))).toBe("stream_drop");
   expect(errorClass(new Error("the stream broke: read ECONNRESET"))).toBe("stream_drop");
   expect(errorClass(new Error("something odd"))).toBe("other");
   // The caller's own stop is decided by its signal, not here: an abort the

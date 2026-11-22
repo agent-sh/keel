@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fingerprint } from "./creds.ts";
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
-import { getJson, notReached, ProviderError, scrub } from "./http.ts";
+import { getJson, fetchFailure, ProviderError, scrub } from "./http.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderStatus } from "./types.ts";
 import { responsesWire } from "./wires/responses.ts";
 import { fromChatgptUsage, type WindowReading } from "./limits.ts";
@@ -114,7 +114,7 @@ export class CodexProvider implements Provider {
       headers: { "content-type": "application/json", accept: "application/json" },
       body: JSON.stringify({ client_id: t.oauth_provenance?.client_id ?? CODEX_CLIENT_ID, grant_type: "refresh_token", refresh_token: t.refresh_token }),
       signal: AbortSignal.timeout(30_000),
-    }).catch((e) => { throw notReached("ChatGPT sign-in renewal", e); });
+    }).catch((e) => { throw fetchFailure("ChatGPT sign-in renewal", e); });
     const body: any = await r.json().catch(() => ({}));
     if (!r.ok || !body.access_token) {
       const code = body.error?.code ?? body.error ?? r.status;

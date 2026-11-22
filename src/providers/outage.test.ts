@@ -1,24 +1,30 @@
 // A provider that cannot be reached: which failures are that, the wait's
 // numbers, and the one wait every session of a provider shares.
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { errorClass } from "../admin/classes.ts";
+import { Bus } from "../core/bus.ts";
+import { Store } from "../core/store.ts";
+import { Engine } from "../engine/turn.ts";
+import { Providers } from "./registry.ts";
+import type { Provider } from "./types.ts";
 import { retryable } from "../engine/retry.ts";
-import { classify, notReached, ProviderError } from "./http.ts";
+import { classify, fetchFailure, ProviderError } from "./http.ts";
 import { OUTAGE, Outages, outageDelayMs, staggerGapMs, type Outage } from "./outage.ts";
 import { gatewayDown, neverSent, unreachable } from "./unreachable.ts";
 
+const brokerBody = JSON.stringify({ message: "the broker could not reach runtime.example.invalid: EAI_AGAIN" });
 const thrown = (message: string, code?: string) => Object.assign(new TypeError(message), code ? { code } : {});
 
-test("a request that never got an answer is unreachable; one that was answered is not", () => {
+test("only a proved pre-send fetch failure is unreachable", () => {
   // What the runtime's fetch throws, as a driver passes it on.
-  const dns = notReached("Bedrock", thrown("getaddrinfo EAI_AGAIN bedrock-runtime.example", "EAI_AGAIN"));
-  const closed = notReached("Bedrock", thrown("The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()", "ECONNRESET"));
-  const refused = notReached("Local", thrown("Unable to connect. Is the computer able to access the url?", "ConnectionRefused"));
-  const tls = notReached("Local", thrown("self signed certificate", "DEPTH_ZERO_SELF_SIGNED_CERT"));
-  for (const e of [dns, closed, refused, tls]) {
+  const dns = fetchFailure("Bedrock", thrown("getaddrinfo EAI_AGAIN bedrock-runtime.example", "EAI_AGAIN"));
+  const closed = fetchFailure("Bedrock", thrown("The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()", "ECONNRESET"));
+  const refused = fetchFailure("Local", thrown("Unable to connect. Is the computer able to access the url?", "ConnectionRefused"));
+  const tls = fetchFailure("Local", thrown("self signed certificate", "DEPTH_ZERO_SELF_SIGNED_CERT"));
+  for (const e of [dns, refused, tls]) {
     expect(e.kind).toBe("unreachable");
     expect(unreachable(e)).toBe(true);
     expect(retryable(e)).toBe(true);
@@ -27,17 +33,19 @@ test("a request that never got an answer is unreachable; one that was answered i
   // The runtime's code goes with words that do not say it.
   expect(refused.message).toBe("Local: Unable to connect. Is the computer able to access the url? (ConnectionRefused)");
   expect(dns.message).toBe("Bedrock: getaddrinfo EAI_AGAIN bedrock-runtime.example");
-  // A failure that is not a driver's (a plugin's, an agent's): by its words.
-  expect(unreachable(new Error("connect ECONNREFUSED 127.0.0.1:11434"))).toBe(true);
-  expect(unreachable(new Error("getaddrinfo ENOTFOUND api.example.com"))).toBe(true);
-  expect(unreachable(Object.assign(new Error("Connection error."), { name: "APIConnectionError" }))).toBe(true);
-  expect(unreachable(new ProviderError("network", "plugin x: connect ETIMEDOUT 10.0.0.1:443"))).toBe(true);
+  // Words from a plugin or a raw SDK error do not prove where the request failed.
+  expect(unreachable(new Error("connect ECONNREFUSED 127.0.0.1:11434"))).toBe(false);
+  expect(unreachable(new Error("getaddrinfo ENOTFOUND api.example.com"))).toBe(false);
+  const sdk = Object.assign(new Error("Connection error."), { name: "APIConnectionError" });
+  expect(unreachable(sdk)).toBe(false);
+  expect(retryable(sdk)).toBe(true);
+  expect(unreachable(new ProviderError("network", "plugin x: connect ETIMEDOUT 10.0.0.1:443"))).toBe(false);
 
   // A stream that began and broke, or went silent: the counted retries, not the wait.
   const broke = new ProviderError("network", "Bedrock: the stream broke: The socket connection was closed unexpectedly");
   const silent = new ProviderError("network", "Bedrock: no data from the model for 300 s; the stream was cut");
   const ws = new ProviderError("network", "ChatGPT: the socket closed during the answer");
-  for (const e of [broke, silent, ws]) {
+  for (const e of [closed, broke, silent, ws]) {
     expect(unreachable(e)).toBe(false);
     expect(retryable(e)).toBe(true);
     expect(errorClass(e)).toBe("stream_drop");
@@ -62,16 +70,18 @@ test("the classification imports nothing and reads nothing of the machine", () =
   expect(classes).not.toMatch(/^import .*providers\/outage\.ts/m);
 });
 
-test("a gateway's own 502, 503 or 504 is unreachable; the provider's own 5xx is not", () => {
+test("only an explicit upstream connect failure is an outage; ambiguous gateway errors keep counted retries", () => {
   const h = new Headers();
-  const broker = classify("Bedrock", 502, h, JSON.stringify({ message: "the Bedrock broker could not reach bedrock-runtime.us-east-1.amazonaws.com: EAI_AGAIN" }));
+  const broker = classify("Bedrock", 502, h, brokerBody);
   expect(broker.kind).toBe("unreachable");
   expect(broker.status).toBe(502);
   expect(unreachable(broker)).toBe(true);
   expect(errorClass(broker)).toBe("unreachable");
-  expect(classify("X", 502, h, "<html><body><h1>502 Bad Gateway</h1></body></html>").kind).toBe("unreachable");
-  expect(classify("X", 504, h, "").kind).toBe("unreachable");
-  expect(classify("X", 503, h, "upstream connect error or disconnect/reset before headers. reset reason: connection failure").kind).toBe("unreachable");
+  expect(classify("X", 502, h, "<html><body><h1>502 Bad Gateway</h1></body></html>").kind).toBe("server");
+  expect(classify("X", 504, h, "").kind).toBe("server");
+  expect(classify("X", 502, h, '{"message":"the broker could not reach runtime.example.invalid: read ECONNRESET"}').kind).toBe("server");
+  expect(classify("X", 502, h, '{"message":"response terminated","debug":"the broker could not reach runtime.example.invalid: EAI_AGAIN"}').kind).toBe("server");
+  expect(classify("X", 503, h, "upstream connect error or disconnect/reset before headers. reset reason: connection failure").kind).toBe("overloaded");
   // The provider's own words.
   expect(classify("X", 503, h, JSON.stringify({ error: { message: "The server is overloaded or not ready yet." } })).kind).toBe("overloaded");
   expect(classify("X", 502, h, JSON.stringify({ error: { type: "api_error", message: "Internal server error" } })).kind).toBe("server");
@@ -109,7 +119,7 @@ test("quick tries first, then one every 15 to 30 s; waiting requests go within a
 
 // Milliseconds instead of seconds: the same steps, a thousand times faster.
 const FAST = { quickMs: [10, 10, 10, 10], slowMinMs: 20, slowMaxMs: 30, probeMs: 200, canaryMs: 60, staggerMs: 10, spreadMs: 100, maxMs: 60_000, carryMs: 60_000 };
-const gone = () => notReached("P", thrown("getaddrinfo EAI_AGAIN p.example", "EAI_AGAIN"));
+const gone = () => fetchFailure("P", thrown("getaddrinfo EAI_AGAIN p.example", "EAI_AGAIN"));
 const never = new AbortController().signal;
 
 test("twelve sessions of one provider share one wait: one probe at a time, none sends, all go when it answers", async () => {
@@ -229,18 +239,21 @@ test("an outage open when the daemon stopped keeps its start in the next one, an
 });
 
 // The same through the driver, on real sockets: what the runtime's fetch throws is classed where it is thrown.
-test("the driver classes a refused connection and a socket closed before a response byte as unreachable, a broken stream as not", async () => {
+test("the driver separates a refused connection and explicit broker DNS failure from a closed socket or broken stream", async () => {
   const { streamEvents } = await import("./http.ts");
   const run = async (url: string) => {
     try { for await (const _ of streamEvents({ label: "stub", url, headers: {}, body: {}, signal: never })) void _; return null; } catch (e) { return e as ProviderError; }
   };
-  const refused = await run("http://127.0.0.1:9/");
+  const free = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+  const port = free.port;
+  free.stop(true);
+  const refused = await run(`http://127.0.0.1:${port}/`);
   expect(refused?.kind).toBe("unreachable");
   const closer = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { open(s) { s.end(); }, data() {} } });
   const closed = await run(`http://127.0.0.1:${closer.port}/`);
   closer.stop(true);
-  expect(closed?.kind).toBe("unreachable");
-  expect(unreachable(closed)).toBe(true);
+  expect(closed?.kind).toBe("network");
+  expect(unreachable(closed)).toBe(false);
   // A 200 whose stream then breaks: the answer began.
   const half = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data(s) { s.write("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n"); setTimeout(() => s.end(), 30); } } });
   let began = false;
@@ -253,7 +266,7 @@ test("the driver classes a refused connection and a socket closed before a respo
   expect(unreachable(broke)).toBe(false);
   // A broker's own 502: unreachable, and not an answer of the provider.
   let answered = false;
-  const broker = Bun.serve({ port: 0, fetch: () => Response.json({ message: "the broker could not reach the runtime: getaddrinfo EAI_AGAIN" }, { status: 502 }) });
+  const broker = Bun.serve({ port: 0, fetch: () => new Response(brokerBody, { status: 502, headers: { "content-type": "application/json" } }) });
   const gate = await (async () => {
     try { for await (const _ of streamEvents({ label: "stub", url: `http://127.0.0.1:${broker.port}/`, headers: {}, body: {}, signal: never, onAnswer: () => { answered = true; } })) void _; return null; } catch (e) { return e as ProviderError; }
   })();
@@ -261,6 +274,60 @@ test("the driver classes a refused connection and a socket closed before a respo
   expect(gate?.kind).toBe("unreachable");
   expect(gate?.status).toBe(502);
   expect(answered).toBe(false);
+});
+
+for (const restart of [false, true]) test(`a broker wait does not refill counted retries (${restart ? "park and resume" : "same turn"})`, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-retry-budget-"));
+  const store = new Store(dir);
+  const model = { model: "fixture", context: 100_000, output: 1000, tools: false };
+  let asked = 0;
+  const waits: unknown[] = [];
+  const p: Provider = {
+    id: "local", family: "other", available: () => true, list: async () => [model],
+    stream: async (req, delta) => {
+      const h = new Headers({ "retry-after-ms": "1" });
+      switch (++asked) {
+        case 2: throw classify("stub", 502, h, brokerBody);
+        case 3:
+          req.onAnswer?.();
+          delta({ kind: "text", index: 0, text: "partial" });
+          // Even a claimed pre-send error is not one after the reply began.
+          throw gone();
+        case 12: throw new ProviderError("invalid", "went past the retry budget");
+        default: throw classify("stub", 504, h, "Gateway timeout");
+      }
+    },
+  };
+  const providers = new Providers(dir, { providers: [p] });
+  providers.catalog.load = async () => {}; // No external catalog or model requests.
+  let waiting!: () => void;
+  const entered = new Promise<void>((resolve) => { waiting = resolve; });
+  providers.outages.wait = async (_provider, error, signal) => {
+    waits.push(error);
+    waiting();
+    if (restart) await new Promise((_, reject) => signal.addEventListener("abort", reject, { once: true }));
+  };
+  try {
+    const errors = { capture: (_: string, e: Error) => ({ message: e.message }) };
+    const makeEngine = () => new Engine(store, new Bus(), providers, errors as any, join(dir, "spill"));
+    let engine = makeEngine();
+    const s = store.createSession({ model: `${p.id}:${model.model}`, workspace: dir });
+    engine.send(s.id, "hello");
+    if (restart) {
+      await entered;
+      await engine.park();
+      engine = makeEngine();
+      engine.resume(s.id);
+    }
+    await engine.idle(s.id);
+    expect(waits).toEqual([expect.objectContaining({ kind: "unreachable", status: 502 })]);
+    expect(asked).toBe(11); // Ten counted failures and one proved pre-send failure.
+    expect(store.events(s.id).find((e) => e.kind === "error")?.data).toMatchObject({ kind: "server", status: 504 });
+  } finally {
+    providers.shutdown();
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // A broker that signs for Keel renews an expired credential itself: the request goes once more, and only for that refusal.

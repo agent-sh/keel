@@ -394,7 +394,9 @@ export class PluginProcess {
         const until = Date.now() + 20_000;
         for (;;) {
           const r = await ch.next(Math.max(1, until - Date.now())).catch(() => ({ done: true }) as any);
-          if (r.done || r.value.kind === "end") break;
+          // A timeout or cut error body cannot prove that the upstream was never reached.
+          if (r.done) { body = ""; break; }
+          if (r.value.kind === "end") break;
           if (r.value.kind === "chunk") body += new TextDecoder().decode(r.value.data);
         }
         throw classify(`${this.entry.id}/${o.provider.id}`, status, new Headers(headers), body);

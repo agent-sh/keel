@@ -13,7 +13,7 @@ import { configDir } from "./config.ts";
 import { writeOwnFile } from "../core/ownfile.ts";
 import { fingerprint } from "./creds.ts";
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
-import { getJson, notReached, ProviderError, scrub } from "./http.ts";
+import { getJson, fetchFailure, ProviderError, scrub } from "./http.ts";
 import { neverSent } from "./unreachable.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderStatus } from "./types.ts";
 import { responsesWire } from "./wires/responses.ts";
@@ -61,7 +61,7 @@ async function postForm(path: string, body: Record<string, string>, secrets: str
     return { status: r.status, json: await r.json().catch(() => ({})) };
   } catch (e) {
     // A request that never left this machine (no address, no connection) changed nothing at xAI.
-    if (neverSent(e)) throw notReached("xAI sign-in request failed", e, secrets);
+    if (neverSent(e)) throw fetchFailure("xAI sign-in request failed", e, secrets);
     throw new ProviderError("network", `xAI sign-in request failed: ${scrub((e as Error).message, secrets)}`);
   }
 }

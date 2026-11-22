@@ -5,11 +5,11 @@ import { join } from "node:path";
 import { shoot } from "./shots.ts";
 
 // Feature: a model provider that cannot be reached makes a turn wait and go on
-// by itself; it never fails the turn or an agent. A real provider cannot be
+// by itself. A real provider cannot be
 // taken off the network on demand, so the scripted stand-in plays the outage
 // (src/providers/scripted.ts, `script:outage`): for a while every request and
-// every listing fails the way a transport fails (a DNS error, a socket closed
-// before a response byte, a broker's 502 with a body of its own), then it
+// every listing fails with a DNS or connection refusal (including an explicit
+// broker 502), then it
 // answers again. The wait is one per provider (src/providers/outage.ts).
 const STAND_IN = "scripted:stand-in";
 const SINCE = /The provider cannot be reached since \d\d:\d\d; trying again/;
@@ -27,7 +27,7 @@ async function open(request: APIRequestContext, title: string, workspace?: strin
 const events = async (request: APIRequestContext, id: string) => (await (await request.get(`/api/sessions/${id}`)).json()).events as any[];
 const stateOf = async (request: APIRequestContext, id: string) => (await (await request.get("/api/state")).json()).states[id] as any;
 // The Errors rows of a provider that was not reached (a stream that began and broke is another failure, with its own row).
-const outageRow = (e: any) => e.source === "provider" && /EAI_AGAIN|socket connection was closed|could not reach|Unable to connect/.test(e.message) && !/the stream broke/.test(e.message);
+const outageRow = (e: any) => e.source === "provider" && /EAI_AGAIN|could not reach|Unable to connect/.test(e.message) && !/the stream broke/.test(e.message);
 const send = async (page: Page, text: string) => {
   await page.getByTestId("composer").fill(text);
   await page.getByTestId("composer").press("Enter");
@@ -104,13 +104,13 @@ test("a turn that loses the provider between two tool calls goes on from where i
   made.push(work);
   const id = await open(request, "Outage: mid tool loop", work);
   await page.goto(`/s/${id}`);
-  // Two steps, each a command that leaves a line. The provider is gone (a socket closed before any
-  // response byte) when the first result is sent, for 6 s.
+  // Two steps, each a command that leaves a line. The provider is gone (a connection refusal
+  // before it can be sent) when the first result is sent, for 6 s.
   const calls = [{ name: "Bash", input: { command: "echo one >> steps.txt" } }, { name: "Bash", input: { command: "echo two >> steps.txt" } }];
-  await send(page, `script:calls ${JSON.stringify(calls)}\nscript:outage-at 1 socket 6000`);
+  await send(page, `script:calls ${JSON.stringify(calls)}\nscript:outage-at 1 refused 6000`);
   const wait = page.getByTestId("provider-wait");
   await expect(wait).toContainText(SINCE);
-  await expect(wait).toContainText("socket connection was closed");
+  await expect(wait).toContainText("ConnectionRefused");
   // The first step is done and stays done while the turn waits.
   expect(readFileSync(join(work, "steps.txt"), "utf8")).toBe("one\n");
   await expect(page.getByTestId("assistant-text").last()).toContainText("Done with 2 calls.", { timeout: 60_000 });
@@ -133,7 +133,7 @@ test("a reply cut mid-stream with the provider gone right after is answered whol
   await page.goto(`/s/${id}`);
   // Half a reply streams, the stream breaks (the counted retry sends the request again), and that
   // retry cannot connect: from there the turn waits for the provider.
-  await send(page, "script:outage-mid socket 6000");
+  await send(page, "script:outage-mid dns 6000");
   await expect(page.getByTestId("transcript")).toContainText("This half reply");
   await expect(page.getByTestId("provider-wait")).toContainText(SINCE, { timeout: 15_000 });
   await expect(page.getByTestId("transcript")).not.toContainText("This half reply"); // the half reply is not kept
@@ -179,7 +179,7 @@ test("twelve agents of one parent wait through an outage of a minute: none fails
   const agents = async () => (await (await request.get(`/api/sessions/${parent}/agents`)).json()).agents as any[];
   await expect.poll(async () => (await agents()).length, { timeout: 30_000 }).toBe(N);
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 30_000 });
-  // The provider is gone for a minute (a broker's 502 with its own body), from another session's request.
+  // The provider is gone for a minute (a broker's 502 naming a DNS failure), from another session's request.
   const starter = await open(request, "Outage: starter");
   await request.post(`/api/sessions/${starter}/messages`, { data: { text: "script:outage gateway 60000" } });
 

@@ -3,12 +3,12 @@
 import { keyShaped } from "../core/conceal.ts";
 import { chunks } from "../core/proc.ts";
 import { EventStreamDecoder } from "./aws.ts";
-import { gatewayDown } from "./unreachable.ts";
+import { gatewayDown, neverSent } from "./unreachable.ts";
 import { JsonArrayDecoder, SseDecoder, type SseEvent } from "./sse.ts";
 import { keptHeaders, redactHeaders, requestId, safeUrl, wire } from "./wiretap.ts";
 
-// "unreachable": the request never got an answer from the provider (src/providers/unreachable.ts);
-// "network": an answer began and broke, or went silent.
+// "unreachable": evidence the model request could not be sent (src/providers/unreachable.ts).
+// "network": an ambiguous transport failure or a response that broke or went silent.
 export type ErrorKind = "auth" | "rate" | "quota" | "overloaded" | "network" | "unreachable" | "invalid" | "context" | "server" | "cancelled";
 
 export class ProviderError extends Error {
@@ -26,12 +26,12 @@ export class ProviderError extends Error {
   }
 }
 
-// What a transport threw before any response: the provider was not reached. The
-// runtime's code goes with its words when they do not say it ("Unable to connect").
-export function notReached(label: string, e: unknown, secrets: string[] = []): ProviderError {
+// A fetch failed before it returned headers. Only an explicit connect-stage
+// error makes the request safe to resend without counting a retry.
+export function fetchFailure(label: string, e: unknown, secrets: string[] = []): ProviderError {
   const msg = scrub(String((e as Error)?.message ?? e), secrets);
-  const code = (e as any)?.code;
-  return new ProviderError("unreachable", `${label}: ${msg}${typeof code === "string" && !msg.includes(code) ? ` (${code})` : ""}`);
+  const code = (e as any)?.code ?? (e as any)?.cause?.code;
+  return new ProviderError(neverSent(e) ? "unreachable" : "network", `${label}: ${msg}${typeof code === "string" && !msg.includes(code) ? ` (${code})` : ""}`);
 }
 
 // No key where the provider looks for one. The provider is not set up: nothing
@@ -85,8 +85,8 @@ export function classify(label: string, status: number, headers: Headers, body: 
   // A model the plan does not include, sent as a 429 by some plans: waiting does not help.
   if (/(does not|doesn't) (yet )?include access|not (available|included) (on|in|with) your (current )?(subscription|plan)/.test(low)) return new ProviderError("invalid", text, status);
   if (status === 429) return new ProviderError("rate", text, status, wait);
-  // A gateway's or a local broker's own 502, 503 or 504: the provider was not reached.
-  if (!/overloaded/.test(low) && gatewayDown(status, body)) return new ProviderError("unreachable", text, status, wait);
+  // The broker named an upstream DNS or connection failure, not just a 5xx.
+  if (gatewayDown(status, msg)) return new ProviderError("unreachable", text, status, wait);
   if (status === 529 || status === 503 || /overloaded/.test(low)) return new ProviderError("overloaded", text, status, wait);
   if (status >= 500) return new ProviderError("server", text, status, wait);
   return new ProviderError("invalid", text, status);
@@ -157,20 +157,21 @@ async function* stream(o: StreamOpts, guard: ReturnType<typeof idleGuard>): Asyn
   const w = wire();
   for (let renewed = false; ; renewed = true) {
     const t0 = Date.now();
+    const body = JSON.stringify(o.body);
+    const sent = { "content-type": "application/json", accept: o.format === "json_array" ? "application/json" : "text/event-stream", ...headers, ...o.sign?.(body) };
+    if (w) Object.assign(w, { method: "POST", url: safeUrl(o.url), req_headers: redactHeaders(sent), body_bytes: Buffer.byteLength(body), transport: "http", resent_after_auth: renewed || undefined });
     try {
-      const body = JSON.stringify(o.body);
-      const sent = { "content-type": "application/json", accept: o.format === "json_array" ? "application/json" : "text/event-stream", ...headers, ...o.sign?.(body) };
-      if (w) Object.assign(w, { method: "POST", url: safeUrl(o.url), req_headers: redactHeaders(sent), body_bytes: Buffer.byteLength(body), transport: "http", resent_after_auth: renewed || undefined });
       res = await fetch(o.url, { method: "POST", headers: sent, body, signal: guard.signal });
     } catch (e) {
       const stalled = guard.stalled();
       if (stalled) throw stalled;
       if (o.signal.aborted) throw new ProviderError("cancelled", "cancelled");
-      throw notReached(o.label, e, o.secrets);
+      throw fetchFailure(o.label, e, o.secrets);
     }
     try { o.onHeaders?.(res.headers); } catch {}
     if (w) Object.assign(w, { status: res.status, request_id: requestId(res.headers), res_headers: keptHeaders(res.headers), headers_ms: Date.now() - t0 });
     if (res.ok) break;
+    // A truncated error body is not a broker's explicit connect failure.
     const text = await res.text().catch(() => "");
     if (w) w.error_body = clip(scrub(text, o.secrets), 2000);
     const err = classify(o.label, res.status, res.headers, scrub(text, o.secrets));
@@ -245,7 +246,7 @@ export async function getJson(label: string, url: string, headers: Record<string
   try {
     r = await fetch(url, { headers: { accept: "application/json", ...headers }, signal: AbortSignal.timeout(until === undefined ? 30_000 : Math.max(1, Math.min(30_000, until - Date.now()))) });
   } catch (e) {
-    throw notReached(label, e, secrets);
+    throw fetchFailure(label, e, secrets);
   }
   const text = await r.text();
   if (!r.ok) throw classify(label, r.status, r.headers, scrub(text, secrets));

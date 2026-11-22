@@ -1,63 +1,38 @@
-// The judge of Auto and Full auto when its provider cannot be reached: the review waits for the
-// provider and is asked again. It never allows unreviewed, and a network blip refuses no work.
 import { expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../core/store.ts";
 import { emptyUsage } from "../core/types.ts";
-import { notReached } from "../providers/http.ts";
-import { Outages } from "../providers/outage.ts";
+import { ProviderError } from "../providers/http.ts";
 import { makeJudge } from "./judge.ts";
 
-const FAST = { quickMs: [10, 10, 10, 10], slowMinMs: 20, slowMaxMs: 30, probeMs: 200, canaryMs: 60, staggerMs: 10, spreadMs: 100, maxMs: 60_000, carryMs: 60_000 };
-const gone = () => notReached("P", Object.assign(new TypeError("getaddrinfo EAI_AGAIN p.example"), { code: "EAI_AGAIN" }));
-
-function rig(downFor: number) {
-  const store = new Store(mkdtempSync(join(tmpdir(), "keel-judge-outage-")));
-  const session = store.createSession({ model: "p:m", workspace: "/w" });
-  let asked = 0;
-  const outages = new Outages({ timing: FAST });
-  const providers = {
-    outages,
-    resolve: async () => ({
-      info: { id: "p:m", name: "M", model: "m", efforts: [], output: 1000 },
-      provider: { stream: async () => {
-        if (++asked <= downFor) throw gone();
-        outages.answered("p");
-        return { blocks: [{ type: "text", text: '{"decision":"allow","risk":"low","reason":"in scope"}' }], usage: emptyUsage() };
-      } },
-    }),
-  } as any;
-  const judge = makeJudge(store, providers, () => undefined);
-  return { judge, session, outages, asked: () => asked };
-}
-
-test("a judge whose provider cannot be reached is waited for with the turn, then gives its verdict", async () => {
-  const r = rig(3);
-  const turn = new AbortController();
-  const verdict = r.judge({ session: r.session, tool: "Bash", kind: "shell", summary: "rm -rf build", input: {}, high: { why: "it deletes files" }, signal: turn.signal });
-  await Bun.sleep(15);
-  // Meanwhile the session waits for the provider: no verdict, no refusal.
-  expect(r.outages.of(r.session.id)?.provider).toBe("p");
-  const v = await verdict;
-  expect(v).toMatchObject({ allow: true, risk: "low", reason: "in scope" });
-  expect(r.asked()).toBe(4);
-  expect(r.outages.of(r.session.id)).toBeUndefined();
-});
-
-test("the owner's stop ends the judge's wait with no verdict, and a caller that gave no signal gets none at once", async () => {
-  const r = rig(Infinity);
-  const turn = new AbortController();
-  const verdict = r.judge({ session: r.session, tool: "Bash", kind: "shell", summary: "rm -rf build", input: {}, high: { why: "it deletes files" }, signal: turn.signal });
-  await Bun.sleep(40);
-  turn.abort();
-  const v = await verdict;
-  expect("unavailable" in v).toBe(true); // never an allow
-  expect(r.outages.of(r.session.id)).toBeUndefined();
-  // Reviewer mode asks the owner instead: it does not wait.
-  const t0 = Date.now();
-  const fast = await rig(Infinity).judge({ session: r.session, tool: "Bash", kind: "shell", summary: "ls", input: {} });
-  expect("unavailable" in fast && fast.unavailable).toContain("EAI_AGAIN");
-  expect(Date.now() - t0).toBeLessThan(500);
+test("an offline policy judge fails closed instead of waiting for a later approval", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-judge-outage-"));
+  const store = new Store(dir);
+  try {
+    const model = "fixture:judge";
+    const session = store.createSession({ model, workspace: dir });
+    let asked = 0;
+    let waited = 0;
+    const providers = {
+      outages: { wait: async () => { waited++; } },
+      resolve: async () => ({
+        info: { id: model, name: "Judge", model: "judge", efforts: [], output: 1000 },
+        provider: { stream: async () => {
+          if (++asked === 1) throw new ProviderError("unreachable", "getaddrinfo EAI_AGAIN");
+          return { blocks: [{ type: "text", text: '{"decision":"allow","risk":"low","reason":"in scope"}' }], usage: emptyUsage() };
+        } },
+      }),
+    } as any;
+    const judge = makeJudge(store, providers, () => model);
+    // Include the old wait trigger to ensure it cannot turn a refusal into an approval.
+    const ask = { session, tool: "Bash", kind: "shell", summary: "remove a build directory", input: {}, mode: "auto" as const, signal: new AbortController().signal };
+    expect(await judge(ask)).toEqual({ unavailable: `${model}: getaddrinfo EAI_AGAIN` });
+    expect(asked).toBe(1);
+    expect(waited).toBe(0);
+  } finally {
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

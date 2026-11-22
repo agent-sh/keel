@@ -8,7 +8,6 @@
 // else the session's own; the first that answers decides.
 import { settings } from "../admin/settings.ts";
 import type { Store } from "../core/store.ts";
-import { unreachable } from "../providers/unreachable.ts";
 import type { Providers } from "../providers/registry.ts";
 import { REVIEW_INPUT_LIMIT, REVIEW_SUMMARY_LIMIT, type ReviewAsk, type Verdict } from "./gate.ts";
 import { vault } from "./secrets.ts";
@@ -126,40 +125,26 @@ export function makeJudge(store: Store, providers: Providers, model: () => strin
       p.system = vault.redact(p.system, null, "output");
       p.text = vault.redact(p.text, null, "output");
     }
-    // A judge whose provider cannot be reached gives no verdict, and a network blip is no reason
-    // to refuse work: where the caller gave the turn's signal the review waits for the provider,
-    // with every other request to it, and is asked again. It never allows unreviewed.
-    for (;;) {
-      const tried: string[] = [];
-      let down: { provider: string; error: unknown } | undefined;
-      let other = false;
-      const t0 = Date.now();
-      for (const id of judgeModels(model(), a.session.model)) {
-        // The next model only while there is time left: a refusal is better than a long wait.
-        const left = JUDGE_TIMEOUT_MS * 2 - (Date.now() - t0);
-        if (left < 5_000) break;
-        try {
-          const r = await askJudge(providers, id, p, `judge-${a.session.id}`, Math.min(JUDGE_TIMEOUT_MS, left));
-          store.addUsage(a.session.id, r.usage);
-          other = true;
-          if (!r.v) { tried.push(`${r.info.name} gave no allow or deny`); continue; }
-          const risk = ["low", "medium", "high", "critical"].includes(r.v.risk) ? r.v.risk : "unknown";
-          if (a.mode === "auto" && (risk === "unknown" || typeof r.v.reason !== "string" || !r.v.reason.trim())) {
-            tried.push(`${r.info.name} gave an incomplete verdict`);
-            continue;
-          }
-          return { allow: r.v.decision === "allow" && risk !== "critical", risk, reason: String(r.v.reason ?? "").slice(0, 400) || "no reason given", model: r.info.id, ms: Date.now() - t0 };
-        } catch (e) {
-          if (unreachable(e)) down ??= { provider: id.slice(0, id.indexOf(":")), error: e };
-          else other = true;
-          tried.push((e as Error).name === "TimeoutError" ? `${id} did not answer within ${Math.round(JUDGE_TIMEOUT_MS / 1000)} seconds` : `${id}: ${(e as Error).message.slice(0, 200)}`);
+    const tried: string[] = [];
+    const t0 = Date.now();
+    for (const id of judgeModels(model(), a.session.model)) {
+      // The next model only while there is time left: a refusal is better than a long wait.
+      const left = JUDGE_TIMEOUT_MS * 2 - (Date.now() - t0);
+      if (left < 5_000) break;
+      try {
+        const r = await askJudge(providers, id, p, `judge-${a.session.id}`, Math.min(JUDGE_TIMEOUT_MS, left));
+        store.addUsage(a.session.id, r.usage);
+        if (!r.v) { tried.push(`${r.info.name} gave no allow or deny`); continue; }
+        const risk = ["low", "medium", "high", "critical"].includes(r.v.risk) ? r.v.risk : "unknown";
+        if (a.mode === "auto" && (risk === "unknown" || typeof r.v.reason !== "string" || !r.v.reason.trim())) {
+          tried.push(`${r.info.name} gave an incomplete verdict`);
+          continue;
         }
+        return { allow: r.v.decision === "allow" && risk !== "critical", risk, reason: String(r.v.reason ?? "").slice(0, 400) || "no reason given", model: r.info.id, ms: Date.now() - t0 };
+      } catch (e) {
+        tried.push((e as Error).name === "TimeoutError" ? `${id} did not answer within ${Math.round(JUDGE_TIMEOUT_MS / 1000)} seconds` : `${id}: ${(e as Error).message.slice(0, 200)}`);
       }
-      // Every judge model failed because its provider was not reached: wait and ask again.
-      if (down && !other && a.signal && providers.outages) {
-        try { await providers.outages.wait(down.provider, down.error, a.signal, { session: a.session.id }); continue; } catch { /* stopped, or the wait's ceiling: no verdict */ }
-      }
-      return { unavailable: tried.join("; ") || "no judge model is set up" };
     }
+    return { unavailable: tried.join("; ") || "no judge model is set up" };
   };
 }

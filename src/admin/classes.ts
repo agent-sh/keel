@@ -2,7 +2,7 @@
 // so failures can be counted per provider and model over time. A driver's own
 // classification (ProviderError.kind) wins; then the HTTP status; then words
 // of the message. This table is the one place the classes are named; which
-// failures are "unreachable" (the request never got an answer) is said in
+// failures are "unreachable" (the request could not be sent) is said in
 // src/providers/unreachable.ts, and a turn waits those out instead of failing
 // (src/providers/outage.ts).
 import { imageRefusal } from "../providers/image-limits.ts";
@@ -38,7 +38,7 @@ export function errorClass(e: unknown): ErrorClass | null {
   // A request refused over one of its images (a size limit, a format, bytes
   // the provider could not decode): told from the other invalid requests.
   if (imageRefusal(e)) return "image";
-  // The provider was never reached (a driver said so, or a transport's own words do).
+  // The request could not be sent (the driver said so, or a stored message does).
   if (unreachable(e) || (!err.kind && !err.status && !err.statusCode && unreachableText(String(err.message ?? err ?? "")))) return "unreachable";
   if (typeof err.kind === "string" && KIND[err.kind]) return KIND[err.kind]!;
   if (err.name === "AbortError" || err.name === "TimeoutError") return "stream_drop";

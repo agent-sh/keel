@@ -285,7 +285,7 @@ function sessionParts(cwd: string, created: number): PromptPart[] {
   return [{ name: "place", text: place, data: place }, { name: "instruction files", text: inst ? `\nInstructions from the owner's files:\n\n${inst}` : "", data: inst }];
 }
 
-type Running = { abort: AbortController; done: Promise<void> };
+type Running = { abort: AbortController; done: Promise<void>; providerWaiting?: boolean };
 // `native`: the request carries deferred tools (src/tools/defer.ts), refreshed per request.
 // A transcript request the provider refused as too long is built again at
 // these shares of the room (OpenCode's ladder), then the failure stands.
@@ -356,6 +356,9 @@ export type Sent = { event?: StoredEvent; queued?: QueueItem; steer?: boolean; d
 
 export class Engine {
   private running = new Map<string, Running>();
+  // The unspent retry budget of a request parked in an outage, for its first
+  // call on the same route and purpose in the continued turn.
+  private resumedProviderRetry = new Map<string, { model: string; purpose: "turn" | "summary"; spent: number }>();
   // The turn_start event of each running turn, from its first event to its end.
   private turns = new Map<string, string>();
   // Sessions whose queue a stop holds: stored, so the hold (and its Resume)
@@ -1165,6 +1168,7 @@ export class Engine {
         this.turns.delete(id);
         this.running.delete(id);
         this.unsaved.delete(id);
+        this.resumedProviderRetry.delete(id);
         this.status(id, { kind: "idle" });
         // (Owed when the store takes no writes: the turn is over in memory either way.)
         if (!this.store.orLater("a session's phase", () => { if (this.store.session(id)) this.setPhase(id, "idle"); })) {
@@ -1406,7 +1410,8 @@ export class Engine {
     let down = false;
     // A request the turn cannot go on without waits for a provider that cannot be reached; a call its
     // caller can go on without (a reader, a side answer, a summary made ahead) fails at once.
-    const outages = purpose === "turn" || (purpose === "summary" && this.running.get(id)?.abort.signal === signal) ? this.providers.outages : undefined;
+    const running = this.running.get(id);
+    const outages = purpose === "turn" || (purpose === "summary" && running?.abort.signal === signal) ? this.providers.outages : undefined;
 
     // The caller's count plus what the request gained since, at the model's bytes a token.
     const fits = () => {
@@ -1417,7 +1422,13 @@ export class Engine {
       if (held >= st.info.context) throw overWindow(st.info, tokens);
     };
     fits();
-    for (let attempt = 0; ; attempt++) {
+    let attempt = 0;
+    const carry = outages && this.resumedProviderRetry.get(id);
+    if (carry && carry.model === st.info.id && carry.purpose === purpose) {
+      attempt = carry.spent;
+      this.resumedProviderRetry.delete(id);
+    }
+    for (;;) {
       partial.clear();
       this.measure(id, (h) => h.requestSent?.(session, req));
       const since = Date.now();
@@ -1470,6 +1481,10 @@ export class Engine {
           outages?.left(id);
           throw abortError();
         }
+        // A canary that did not fail pre-send falls back to the usual policy.
+        // It no longer waits in the outage, even if it did not show recovery.
+        const waitForProvider = outages && unreachable(e);
+        if (down && !waitForProvider) outages?.left(id);
         // A route that cannot take deferred tools gets the search pair, once.
         if (st.native && !retryable(e) && isDeferError(e)) {
           this.errors.capture("provider", e, { session: id, fallback: "deferred tools refused; using search_tools" });
@@ -1479,6 +1494,7 @@ export class Engine {
           st.tools = st.info.id === session.model ? this.pins.tools(session, { model: st.info.id, native: false, own: sessionToolsKey(st.info.family, id) }, eager) : eager;
           req = { ...req, tools: st.tools };
           fits(); // every built-in is in the prompt now
+          attempt++;
           continue;
         }
         // The provider refused the request over an image, or as too large in
@@ -1495,6 +1511,7 @@ export class Engine {
           const wait = backoffMs(0);
           this.status(id, { kind: "retry", attempt: 1, max: 1, at: Date.now() + wait, message: errorText(e) });
           await sleep(wait, signal);
+          attempt++;
           continue;
         }
         const refusal = held.length ? imageRefusal(e) ?? (large ? {} : null) : null;
@@ -1520,26 +1537,32 @@ export class Engine {
             out = new Set([...out, ...drop]);
           }
           req = { ...req, messages: await fitForWire(whole, limits, out, preparing) };
+          attempt++;
           continue;
         }
         // The provider was not reached (src/providers/outage.ts): the request waits for it with every
         // other session of that provider, however long it takes, and no retry of the turn is counted.
         // The row, the footer and the parent read the wait from the outage itself (outageOf).
-        if (outages && unreachable(e)) {
+        if (waitForProvider) {
           if (!down) retried.push(this.errors.capture("provider", e, { session: id, provider: st.provider.id, retry: 1, wait_ms: 0 }, { group: `provider unreachable: ${st.provider.id}` }));
           down = true;
           const back = outages.wait(st.provider.id, e, signal, { session: id });
           if (!quiet) this.status(id, { kind: "retry", attempt: 0, max: 0, at: 0, message: errorText(e), unreachable: outages.of(id)?.since ?? Date.now() });
+          if (running) running.providerWaiting = true;
           try {
             await back;
           } catch (gone) {
             if (!signal.aborted) throw gone; // the wait's ceiling: the failure itself
             // A restart parks the turn while it waits: said, so the next daemon reads a wait and not a stall.
-            if (this.parking.has(id)) this.append(id, "note", { kind: "provider_wait", text: "The provider could not be reached when the daemon restarted: this turn waits for it and goes on by itself." });
+            if (this.parking.has(id)) this.append(id, "note", {
+              kind: "provider_wait", text: "The provider could not be reached when the daemon restarted: this turn waits for it and goes on by itself.",
+              retry: { model: st.info.id, purpose, spent: attempt },
+            });
             else outages.left(id);
             throw abortError();
+          } finally {
+            if (running) running.providerWaiting = false;
           }
-          attempt = -1; // a provider that is back gets the request with its retries whole
           continue;
         }
         if (!retryable(e) || attempt + 1 >= RETRY.max) throw e;
@@ -1548,6 +1571,7 @@ export class Engine {
         retried.push(this.errors.capture("provider", e, { session: id, retry: attempt + 1, wait_ms: wait }));
         this.status(id, { kind: "retry", attempt: attempt + 1, max: RETRY.max - 1, at: Date.now() + wait, message: errorText(e) });
         await sleep(wait, signal);
+        attempt++;
       }
     }
   }
@@ -2649,7 +2673,7 @@ export class Engine {
     const deadline = Date.now() + ms;
     for (;;) {
       // (Nor is a turn that only waits for a provider it cannot reach: it is parked and waits on in the next daemon.)
-      const busy = [...this.running.entries()].filter(([id]) => !this.waitsOnOwner(id) && !this.outageOf(id)).map(([, r]) => r.done);
+      const busy = [...this.running.entries()].filter(([id, r]) => !this.waitsOnOwner(id) && !r.providerWaiting).map(([, r]) => r.done);
       const left = deadline - Date.now();
       if ((!busy.length && !moving) || left <= 0) return;
       await Promise.race([Promise.all([...busy, ...(moving ? moves : [])]), Bun.sleep(Math.min(left, SETTLE_CHECK_MS))]);
@@ -2923,7 +2947,13 @@ export class Engine {
     const owed = owedCalls(id, line).length;
     const told = line.findLastIndex((e) => e.kind === "user" && e.data.origin === "restart");
     if (owed && told >= 0 && !line.slice(told).some((e) => e.kind === "assistant")) return true;
-    const cutTools = line.slice(line.findLastIndex((e) => e.kind === "turn_start")).flatMap((e) => (e.kind === "tool_result" ? e.data.results.filter((r: any) => stopKind(r.content) === "cut") : [])).length;
+    const cut = line.slice(line.findLastIndex((e) => e.kind === "turn_start"));
+    const retry = cut.findLast((e) => e.kind === "note" && e.data.kind === "provider_wait")?.data.retry;
+    if (retry && typeof retry.model === "string" && (retry.purpose === "turn" || retry.purpose === "summary") &&
+        Number.isSafeInteger(retry.spent) && retry.spent > 0) {
+      this.resumedProviderRetry.set(id, retry);
+    }
+    const cutTools = cut.flatMap((e) => (e.kind === "tool_result" ? e.data.results.filter((r: any) => stopKind(r.content) === "cut") : [])).length;
     this.accept(id, { origin: "restart", text: restartText(cutTools, owed, !!end.data.unstarted) });
     return true;
   }
