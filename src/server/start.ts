@@ -1,5 +1,6 @@
 // Starting the daemon: `keel serve`, and the daemon a client command starts in
 // its own process when none answers (runMode.client).
+import { buildBareIndex } from "./index-build.ts";
 import { sleptIn } from "../admin/stall.ts";
 import { endStreams } from "./streams.ts";
 import { setGitViews } from "../core/git.ts";
@@ -209,7 +210,14 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
     // The sessions used in the last hour have their rows brought into memory, off the loop and one
     // after another: after a start nothing is, and the first reader that cannot wait (a report sent
     // into a session, a hook at a turn's end) would read its session whole where the loop waits.
+    // A store from before the index of its events' rows has it built now, with the daemon answering (index-build.ts).
+    const indexed = store.indexOwed
+      // (Begun once the caller has said that the daemon listens: its lines follow that one.)
+      ? during("building the index of the events' rows", new Promise((r) => setTimeout(r, 0)).then(() => buildBareIndex(store, readsOf(store), checkpointer))).catch((e) => void errors.capture("server", e, { at: "building the index of the events' rows" }))
+      : undefined;
     void during("the start's pass bringing the rows of sessions used in the last hour into memory", (async () => {
+      // (After that build: without the index a session's rows are read with their bodies.)
+      await indexed;
       const recent = store.db.query<{ id: string }, [number]>("SELECT id FROM sessions WHERE archived = 0 AND updated >= ? ORDER BY updated DESC LIMIT 200").all(Date.now() - 3_600_000);
       for (const { id } of recent) {
         const kept = store.keptEvents();

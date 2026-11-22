@@ -1744,6 +1744,53 @@ describe("a session out of memory is never read whole on the loop", () => {
     // (A session's rows are given back after a second and a half unread here, not an hour.)
     const d = await restartable(join(SCRATCH, "state-cold-sweep"), { KEEL_EVENTS_IDLE_MS: "50", KEEL_MAIL_STANDIN: join(SCRATCH, "sweep-mail") });
     const cold = async () => (await d.api("/api/resources")).daemon.kept_events.cold_reads as { n: number; rows: number; by: { who: string; n: number; rows: number }[]; start: { n: number; rows: number; by: { who: string; n: number; rows: number }[] } };
+  // A store from before the index of its events' rows (src/core/bare-index.ts): the daemon listens first
+  // and builds the index with the daemon answering. Built in the open, a large store's first start was
+  // down for as long as its disk took to read every event.
+  test("a store without the index of its events' rows: the daemon listens, then builds it", async () => {
+    const state = join(SCRATCH, "state-index-later");
+    let d = await restartable(state);
+    const { Database } = await import("bun:sqlite");
+    try {
+      const sid = (await d.api("/api/sessions", { title: "From before the index" })).session.id as string;
+      await d.api(`/api/sessions/${sid}/messages`, { text: "script:render please" });
+      for (let i = 0; i < 600 && (await d.api(`/api/cli/state/${sid}`)).running; i++) await Bun.sleep(50);
+      await d.stop();
+      // As a build before the index left it: 25,000 events more on the session's branch, and no index.
+      const db = new Database(join(state, "keel.db"));
+      const last = db.query<{ id: string; seq: number }, [string]>("SELECT id, seq FROM events WHERE session_id = ? ORDER BY seq DESC LIMIT 1").get(sid)!;
+      const ins = db.query("INSERT INTO events (id, session_id, seq, parent, kind, data, ts) VALUES (?, ?, ?, ?, 'note', ?, ?)");
+      db.transaction(() => {
+        let prev = last.id;
+        for (let i = 1; i <= 25_000; i++) { const id = Bun.randomUUIDv7(); ins.run(id, sid, last.seq + i, prev, JSON.stringify({ text: `a note ${i} ${"x".repeat(300)}` }), Date.now()); prev = id; }
+        db.query("UPDATE sessions SET head = ? WHERE id = ?").run(prev, sid);
+      })();
+      db.exec("DROP INDEX events_bare");
+      db.close();
+      d = await restartable(state);
+      // It answers, and the index comes: said in its log, after the line that it listens.
+      const indexed = () => { const r = new Database(join(state, "keel.db"), { readonly: true }); try { return !!r.query("SELECT 1 FROM sqlite_master WHERE name = 'events_bare'").get(); } finally { r.close(); } };
+      expect((await d.api("/api/sessions")).sessions.some((x: any) => x.id === sid)).toBe(true);
+      for (let i = 0; i < 600 && !indexed(); i++) await Bun.sleep(50);
+      expect(indexed()).toBe(true);
+      const log = () => readFileSync(join(`${state}-logs`, "start-1.log"), "utf8");
+      for (let i = 0; i < 100 && !log().includes("the index is built"); i++) await Bun.sleep(50);
+      const said = log();
+      expect(said).toMatch(/\[store\] building the index of the events' rows, once \(about \d+ events\): the daemon answers meanwhile/);
+      expect(said).toMatch(/\[store\] the index is built \(\d+\.\d s reading the events, \d+\.\d s building\)/);
+      expect(said.indexOf("keel listening on")).toBeGreaterThan(-1);
+      expect(said.indexOf("keel listening on")).toBeLessThan(said.indexOf("building the index of the events' rows"));
+      // The session is read as before, and a turn runs in it.
+      const page = (await d.api(`/api/sessions/${sid}?page=5`)).events as { kind: string; seq: number }[];
+      expect([page.length >= 5, page.at(-1)!.kind, page.at(-1)!.seq]).toEqual([true, "note", last.seq + 25_000]);
+      await d.api(`/api/sessions/${sid}/messages`, { text: "script:render again" });
+      for (let i = 0; i < 600 && (await d.api(`/api/cli/state/${sid}`)).running; i++) await Bun.sleep(50);
+      expect((await d.api(`/api/sessions/${sid}?page=3`)).events.at(-1).kind).toBe("turn_end");
+    } finally {
+      await d.stop();
+    }
+  }, 120_000);
+
     const send = (method: string, path: string, body?: unknown) => fetch(d.url + path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
     const idle = async (id: string) => {
       for (let i = 0; i < 600; i++) { const st = await d.api(`/api/cli/state/${id}`); if (!st.running && (st.queue === 0 || st.held)) return; await Bun.sleep(50); }

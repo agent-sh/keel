@@ -1,4 +1,5 @@
 import { keyShaped, keyShapedDeep } from "./conceal.ts";
+import { BARE_INDEX_SQL, bareBy, hasBareIndex, INDEX_NOW_ROWS } from "./bare-index.ts";
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { constants } from "node:fs";
@@ -343,6 +344,8 @@ export class Store {
   private budget = eventsBudget();
   private sweeper: ReturnType<typeof setInterval> | undefined;
   // Counts body reads: a run's `used` is the count when it was last read.
+  // About how many events the index of the events' rows is still to be built over (0: it is there).
+  indexOwed = 0;
   private tick = 0;
   // What dropped sessions were charged since the last whole collection.
   private owed = 0;
@@ -717,13 +720,14 @@ export class Store {
     // of 50,000 events, against 7 MB from the index; 3.9 s against 0.16 s
     // with the file's pages not in memory). It costs about 130 bytes an event
     // on disk and one more page written with an append. A store from before
-    // it has it built once, at this start, in one pass over the events.
-    if (!this.db.query("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'events_bare'").get()) {
+    // it has it built once: here when it is small, else after the daemon
+    // listens (`indexOwed`, src/server/index-build.ts): the build reads every
+    // event's body, which a large store's disk takes long over, and until it
+    // is done the rows are read from the table (bare-index.ts).
+    if (!hasBareIndex(this.db)) {
       const n = this.db.query<{ n: number }, []>("SELECT COALESCE(MAX(rowid), 0) AS n FROM events").get()!.n;
-      const t0 = performance.now();
-      if (n > 50_000) console.log(`[store] building the index of the events' rows, once (about ${n} events)`);
-      this.db.exec("CREATE INDEX IF NOT EXISTS events_bare ON events(session_id, seq, id, parent, kind, ts)");
-      if (n > 50_000) console.log(`[store] the index is built (${((performance.now() - t0) / 1000).toFixed(1)} s)`);
+      if (n <= INDEX_NOW_ROWS) this.db.exec(BARE_INDEX_SQL);
+      else this.indexOwed = n;
     }
     // Sessions left "working" by a crash or restart: no turn runs in them now.
     // The mark itself is the list. It stays until the engine has closed the
@@ -1214,7 +1218,7 @@ export class Store {
       if (this.offLoop) {
         await this.offLoop(bodies
           ? "SELECT COUNT(*) AS n, SUM(LENGTH(data)) AS bytes, MAX(ts) AS ts FROM events WHERE session_id = ?"
-          : "SELECT COUNT(*) AS n, MAX(ts) AS ts, MAX(LENGTH(id) + LENGTH(COALESCE(parent, '')) + LENGTH(kind)) AS w FROM events INDEXED BY events_bare WHERE session_id = ?", [session_id]).catch(() => {});
+          : `SELECT COUNT(*) AS n, MAX(ts) AS ts, MAX(LENGTH(id) + LENGTH(COALESCE(parent, '')) + LENGTH(kind)) AS w FROM events ${bareBy(this.db)} WHERE session_id = ?`, [session_id]).catch(() => {});
         k = this.kept.get(session_id);
       }
     }
@@ -1312,7 +1316,7 @@ export class Store {
     const walk = function* (line: readonly StoredEvent[], from: number) { for (let i = from; i >= 0; i--) yield line[i]!; };
     if (this.kept.has(session_id)) { const line = this.lineage(session_id); return yield* walk(line, line.length - 1); }
     let want = this.db.query<{ head: string | null }, [string]>("SELECT head FROM sessions WHERE id = ?").get(session_id)?.head ?? null;
-    const part = this.db.query<Bare, [string, number, number]>("SELECT id, seq, parent, kind, ts FROM events INDEXED BY events_bare WHERE session_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?");
+    const part = this.db.query<Bare, [string, number, number]>(`SELECT id, seq, parent, kind, ts FROM events ${bareBy(this.db)} WHERE session_id = ? AND seq < ? ORDER BY seq DESC LIMIT ?`);
     const body = this.db.query<{ data: string }, [string]>("SELECT data FROM events WHERE id = ?");
     let below = Number.MAX_SAFE_INTEGER;
     for (let read = 0; want; ) {
@@ -1354,7 +1358,7 @@ export class Store {
       return;
     }
     const part = this.db.query<EventRow, [string, string, number, number, number]>(
-      "SELECT e.* FROM events e WHERE e.id IN (SELECT id FROM events INDEXED BY events_bare WHERE session_id = ?1 AND kind = ?2 AND ts >= ?3 AND seq < ?4 ORDER BY seq DESC LIMIT ?5) ORDER BY e.seq DESC");
+      `SELECT e.* FROM events e WHERE e.id IN (SELECT id FROM events ${bareBy(this.db)} WHERE session_id = ?1 AND kind = ?2 AND ts >= ?3 AND seq < ?4 ORDER BY seq DESC LIMIT ?5) ORDER BY e.seq DESC`);
     for (let below = Number.MAX_SAFE_INTEGER; ; ) {
       const rows = part.all(session_id, kind, since, below, NEWEST_PART);
       for (const r of rows) yield deepFreeze(rowToEvent(r));
@@ -1376,7 +1380,7 @@ export class Store {
   hasKind(session_id: string, kind: EventKind): boolean {
     const k = this.kept.get(session_id);
     if (k) return k.all.some((e) => e.kind === kind);
-    return !!this.db.query("SELECT 1 FROM events INDEXED BY events_bare WHERE session_id = ? AND kind = ? LIMIT 1").get(session_id, kind);
+    return !!this.db.query(`SELECT 1 FROM events ${bareBy(this.db)} WHERE session_id = ? AND kind = ? LIMIT 1`).get(session_id, kind);
   }
 
   // Whether the session has any event: one index lookup, and nothing of the

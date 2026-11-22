@@ -371,7 +371,7 @@ const guard = <T>(f: () => T): T | undefined => {
 };
 
 self.onmessage = (ev: MessageEvent) => {
-  const m = ev.data as { open: string; cells: SharedArrayBuffer; opts: Opts } | { snapshot: Int32Array; id: number } | { close: number };
+  const m = ev.data as { open: string; cells: SharedArrayBuffer; opts: Opts } | { snapshot: Int32Array; id: number } | { exec: string; id: number } | { close: number };
   if ("open" in m) {
     guard(() => {
       path = m.open;
@@ -405,6 +405,36 @@ self.onmessage = (ev: MessageEvent) => {
     self.postMessage({ id: m.id, ok: !!ok });
     return;
   }
+  if ("exec" in m) {
+    // (A statement that fails is its own failure, said to who asked: the thread goes on.)
+    let ok = false, error: string | undefined;
+    if (!failed) try { ok = execHeld(m.exec); } catch (e) { error = e instanceof Error ? e.message : String(e); }
+    self.postMessage({ id: m.id, ok, error });
+    return;
+  }
   try { close(); } catch {}
   self.postMessage({ id: m.close, closed: true });
 };
+
+// One statement made with the write lock held by this thread, not by the loop: a piece of work on
+// the store that takes seconds (the index of the events' rows, built once: src/server/index-build.ts).
+// The turns are told before the lock is taken, as before a forced start of the log, and wait off the
+// loop meanwhile; the lock is tried for some seconds.
+function execHeld(sql: string): boolean {
+  set(CELL.lock_soon, 1);
+  Bun.sleepSync(LEAD_MS);
+  try {
+    for (let round = 0; round < 150; round++) {
+      if (!lock()) { Bun.sleepSync(20); continue; }
+      let done = false;
+      try {
+        W!.exec(sql);
+        commit(false);
+        done = true;
+        moved();
+        return true;
+      } finally { if (!done) unlock(); }
+    }
+    return false;
+  } finally { set(CELL.lock_soon, 0); }
+}

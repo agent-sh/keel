@@ -15,13 +15,13 @@ const AWAY_AFTER_MS = 1_000;
 export function AdminBand() {
   const [draining, setDraining] = useState<{ restart: boolean } | null>(null);
   // The store's disk does not answer: since when, and whether nothing new is saved by now.
-  const [disk, setDisk] = useState<{ full?: { since_ms: number; free_mb?: number }; silent_since_ms?: number; refusing?: boolean; slow?: { since_ms: number; sync_ms: number; held_ms: number; refusing?: boolean } } | null>(null);
+  const [disk, setDisk] = useState<{ full?: { since_ms: number; free_mb?: number }; silent_since_ms?: number; refusing?: boolean; slow?: { since_ms: number; sync_ms: number; held_ms: number; refusing?: boolean; building?: string } } | null>(null);
   const [updated, setUpdated] = useState(false);
   const build = useRef<string | null>(null);
   const connected = useStore((s) => s.connected);
   const shellAway = useUI((s) => s.shellAway);
   useEffect(() => {
-    const check = () => api<{ build_id: string; draining: any; store?: { full?: { since_ms: number; free_mb?: number }; silent_since_ms?: number; refusing?: boolean; slow?: { since_ms: number; sync_ms: number; held_ms: number; refusing?: boolean } } | null }>("/api/bootstrap").then((b) => {
+    const check = () => api<{ build_id: string; draining: any; store?: { full?: { since_ms: number; free_mb?: number }; silent_since_ms?: number; refusing?: boolean; slow?: { since_ms: number; sync_ms: number; held_ms: number; refusing?: boolean; building?: string } } | null }>("/api/bootstrap").then((b) => {
       if (build.current && build.current !== b.build_id) setUpdated(true);
       build.current ??= b.build_id;
       setDraining(b.draining);
@@ -80,6 +80,19 @@ export function AdminBand() {
     );
   }
   // The disk is slow: saving waits seconds on it. Said while it is so; nothing is refused.
+  // A build of the store's own, once after an upgrade: nothing is saved for its seconds.
+  if (disk?.slow?.building && disk.silent_since_ms === undefined && !updated) {
+    return (
+      <div role="status" data-testid="store-building" className="flex min-h-9 shrink-0 items-center justify-center gap-3 border-b border-warn/40 bg-brass-soft px-4 py-1 text-ui animate-in">
+        <HardDrive className="size-3.5 shrink-0 text-warn" />
+        <span className="shrink-0 truncate font-medium max-md:hidden">Keel is {disk.slow.building}, once: nothing is saved for some seconds.</span>
+        <span className="min-w-0 truncate text-caption text-muted max-md:hidden" data-testid="store-building-note">What you send waits and goes out by itself; running turns wait.</span>
+        <span className="min-w-0 leading-snug md:hidden" data-testid="store-building-narrow">
+          <span className="font-medium">Keel is working on its store, once.</span> <span className="text-muted">What you send waits and goes out by itself.</span>
+        </span>
+      </div>
+    );
+  }
   if (disk?.slow && disk.silent_since_ms === undefined && !updated) {
     const s = (disk.slow.sync_ms / 1000).toFixed(1);
     return (

@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { bareBy } from "../core/bare-index.ts";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { localTime } from "../core/clock.ts";
@@ -861,7 +862,7 @@ function settle(agentId: string, report: string) {
 // and a parent that is not in memory is not brought in.
 function waitHolds(a: AgentRecord, report = reportId(a)): boolean {
   const { store } = D();
-  const legacy = () => report === reportId(a) && !store.db.query("SELECT 1 FROM events INDEXED BY events_bare WHERE session_id = ? AND kind = 'turn_end' AND seq <= ? LIMIT 1").get(a.session_id, a.first_seq);
+  const legacy = () => report === reportId(a) && !store.db.query(`SELECT 1 FROM events ${bareBy(store.db)} WHERE session_id = ? AND kind = 'turn_end' AND seq <= ? LIMIT 1`).get(a.session_id, a.first_seq);
   for (const e of store.newest(a.parent_id, "tool_result", a.created - CLOCK_SLACK_MS)) {
     for (const r of e.data.results ?? []) {
       if (r.is_error || typeof r.content !== "string" || !r.content.includes(a.id)) continue;

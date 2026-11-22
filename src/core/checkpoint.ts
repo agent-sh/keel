@@ -141,6 +141,8 @@ const noRoom = (e: unknown) => /SQLITE_FULL|database or disk is full|ENOSPC|no s
 // With the disk full, its free space is looked at this often, and writes are taken again from this much room.
 const FULL_LOOK_MS = 2_000;
 const FULL_ROOM_MB = 64;
+// A build the thread was asked for (Checkpointer.build) is given this long before the thread is taken for stuck.
+const BUILD_MAX_MS = 15 * 60_000;
 // A lock the thread has held this long is one a turn holds its writes for (pacing).
 const PACE_AFTER_MS = 100;
 // A turn waits for a thread that moved within this long.
@@ -156,7 +158,7 @@ const SLOW_SHOWN_MS = 30_000;
 const SLOW_MS = 1_000;
 const SLOW_HARD = 4 * HARD;
 
-export type StoreDisk = { full?: { since_ms: number; free_mb?: number }; silent_since_ms?: number; refusing?: boolean; slow?: { since_ms: number; sync_ms: number; held_ms: number; refusing?: boolean } };
+export type StoreDisk = { full?: { since_ms: number; free_mb?: number }; silent_since_ms?: number; refusing?: boolean; slow?: { since_ms: number; sync_ms: number; held_ms: number; refusing?: boolean; building?: string } };
 
 export class Checkpointer {
   private worker?: Worker;
@@ -171,7 +173,7 @@ export class Checkpointer {
   private silent?: { worker: Worker; since: number; refusing: boolean; timer: ReturnType<typeof setInterval> };
   // Since when the log has been past its bound, and whether that was said.
   private long?: { since: number; said: boolean };
-  private asked = new Map<number, (m: { ok?: boolean; closed?: boolean } | undefined) => void>();
+  private asked = new Map<number, (m: { ok?: boolean; closed?: boolean; error?: string } | undefined) => void>();
   private ids = 0;
   private opts: Omit<Opts, "page">;
 
@@ -214,9 +216,9 @@ export class Checkpointer {
     }
     (w as Worker & { unref?: () => void }).unref?.();
     w.onmessage = (ev: MessageEvent) => {
-      const m = ev.data as { armed: true } | { error: string } | { id: number; ok?: boolean; closed?: boolean };
+      const m = ev.data as { armed: true } | { error: string; id?: undefined } | { id: number; ok?: boolean; closed?: boolean; error?: string };
       if (this.worker !== w) return;
-      if ("error" in m) return this.failed(w, new Error(`the checkpoint thread failed: ${m.error}`));
+      if ("error" in m && m.id === undefined) return this.failed(w, new Error(`the checkpoint thread failed: ${m.error}`));
       // It holds its mark: from here the daemon's connection checkpoints nothing.
       if ("armed" in m) return this.own(true);
       const done = this.asked.get(m.id);
@@ -253,6 +255,8 @@ export class Checkpointer {
     const now = performance.now(), beat = Atomics.load(this.cells, CELL.beat);
     this.lookLong(now);
     if (beat !== this.beat.seen) { this.beat = { seen: beat, at: now }; return; }
+    // (A build it was asked for is one statement, however long: it is given its time.)
+    if (this.building && Date.now() - this.building.since < BUILD_MAX_MS) return;
     if (now - this.beat.at >= this.deadlineMs) this.overdue(w, new Error(`the checkpoint thread did not move in ${Math.round(this.deadlineMs / 1000)} s`));
   }
 
@@ -403,16 +407,20 @@ export class Checkpointer {
     // A thread that stands still on a disk it just measured as slow is inside a slow sync (the copy
     // under the lock is one call with two of them): only on a disk that was quick is that a call
     // that does not return.
-    const slow = !still || sync >= this.opts.slowMs;
-    this.locked = { since: Date.now(), timer, still, slow, sync_ms: sync };
-    refuse(slow
+    // (Nor is a build it was asked for: said as that.)
+    const building = this.building?.what;
+    const slow = !still || sync >= this.opts.slowMs || !!building;
+    this.locked = { since: Date.now(), timer, still, slow, sync_ms: sync, building };
+    refuse(building
+      ? `The store is ${building}, once (the write lock held ${secs(held)} s so far, a write waiting ${secs(waited)} s).`
+      : slow
       ? `The store's disk is slow: a sync of it takes ${secs(sync)} s, and its log is being started again (the write lock held ${secs(held)} s so far, a write waiting ${secs(waited)} s).`
       : `The checkpoint thread holds the store's write lock and has not moved for ${secs(stood)} s: it is inside a call that has not returned, most likely a sync of the store's files on a disk that does not answer.`, slow);
     this.changed();
     return true;
   }
   // The store takes no writes because the thread holds the write lock for too long (lockedOut); the thread itself was left alone.
-  private locked?: { since: number; timer: ReturnType<typeof setInterval>; still: boolean; slow: boolean; sync_ms: number };
+  private locked?: { since: number; timer: ReturnType<typeof setInterval>; still: boolean; slow: boolean; sync_ms: number; building?: string };
   // The last waits of over `saidMs` under the thread's lock: since when, the last one, and how slow the disk was then.
   private slowed?: { since: number; last: number; sync_ms: number; held_ms: number };
   private slowTimer?: ReturnType<typeof setTimeout>;
@@ -438,7 +446,7 @@ export class Checkpointer {
     if (full) return { full, refusing: true };
     // (Writes refused for a slow start of the log: the disk is slow, not silent.)
     const l = this.locked;
-    if (l?.slow && !this.silent) return { slow: { since_ms: this.slowed?.since ?? l.since, sync_ms: l.sync_ms, held_ms: Date.now() - l.since, refusing: true } };
+    if (l?.slow && !this.silent) return { slow: { since_ms: l.building ? l.since : this.slowed?.since ?? l.since, sync_ms: l.sync_ms, held_ms: Date.now() - l.since, refusing: true, ...(l.building ? { building: l.building } : {}) } };
     const since = this.silentSince, slow = this.slow;
     if (since === undefined && !slow) return null;
     return { ...(since !== undefined ? { silent_since_ms: since, refusing: this.refusing } : {}), ...(slow ? { slow } : {}) };
@@ -448,6 +456,7 @@ export class Checkpointer {
     const full = this.fullFor;
     if (full) return `the disk is full: ${full.free_mb ?? "?"} MB free: nothing new is saved until there is room. What you send waits and goes out by itself. Sessions can still be read, a running turn stopped, a card answered and the daemon restarted.`;
     const l = this.locked;
+    if (l?.building && !this.silent) return `the daemon is ${l.building}, once, and its store takes no writes for some seconds. What you send waits and goes out by itself. Sessions can still be read, a running turn stopped, a card answered and the daemon restarted.`;
     return l?.slow && !this.silent ? `the daemon's disk is slow (a sync of its store takes ${(l.sync_ms / 1000).toFixed(1)} s) and its store takes no writes until its log has started again, seconds from now. What you send waits and goes out by itself. Sessions can still be read, a running turn stopped, a card answered and the daemon restarted.` : undefined;
   }
   // The disk is slow: writes waited over `saidMs` for the log's restart within the last half minute. Since when, and how slow.
@@ -466,7 +475,9 @@ export class Checkpointer {
   private pacing(): boolean {
     // (A thread that has not moved for this long is inside a call that does not return: a turn stops
     // waiting for it, writes, and ends as any turn the store refuses. On a slow disk the thread moves
-    // between its syncs, and a turn waits through the whole start of the log, however many seconds.)
+    // between its syncs, and a turn waits through the whole start of the log, however many seconds.
+    // Nor does a build the thread was asked for count as standing still.)
+    if (this.building && this.worker) return true;
     if (since(Atomics.load(this.cells, CELL.beat_at)) >= PACE_STILL_MS) return false;
     if (this.locked) return true;
     if (!this.worker || this.silent) return false;
@@ -523,6 +534,27 @@ export class Checkpointer {
       w.postMessage({ snapshot: gate, id });
     });
   }
+
+  // One statement made by the thread under its write lock (a build that takes seconds: the index of
+  // the events' rows). The loop is not held: its turns wait off it (pacing), and a write that waits
+  // past the bound is refused and owed, in words of its own. The thread stands still for as long as
+  // the statement runs: it is not taken for stuck meanwhile, within BUILD_MAX_MS.
+  // Undefined: no thread works (the caller makes the statement itself). Throws what the statement threw.
+  build(sql: string, what: string): Promise<boolean> | undefined {
+    const w = this.worker;
+    if (!w || !this.armed || this.silent || this.building) return undefined;
+    this.building = { what, since: Date.now() };
+    return new Promise<boolean>((resolve, reject) => {
+      const id = ++this.ids;
+      this.asked.set(id, (m) => {
+        this.building = undefined;
+        this.beat = { seen: Atomics.load(this.cells, CELL.beat), at: performance.now() };
+        if (m?.error) reject(new Error(m.error)); else resolve(!!m?.ok);
+      });
+      w.postMessage({ exec: sql, id });
+    });
+  }
+  private building?: { what: string; since: number };
 
   // At a stop: the thread copies what it can, gives its mark up and closes
   // its connections. The daemon's connection is then the last one, and

@@ -8,13 +8,14 @@
 //
 // It imports nothing of the daemon: the read thread loads it (read-tasks.ts).
 import type { Database } from "bun:sqlite";
+import { bareBy } from "../core/bare-index.ts";
 import type { StoredEvent } from "../core/types.ts";
 import { settle, type SettleAsk, type Settled } from "./compact.ts";
 
 export function settleStored(db: Database, a: SettleAsk): Settled {
   // The branch that ends at `upto`: walked back over the session's rows without their bodies.
   const rows = db.query<{ id: string; seq: number; parent: string | null; kind: string }, [string, number]>(
-    "SELECT id, seq, parent, kind FROM events INDEXED BY events_bare WHERE session_id = ? AND seq <= ? ORDER BY seq DESC").all(a.session, a.upto.seq);
+    `SELECT id, seq, parent, kind FROM events ${bareBy(db)} WHERE session_id = ? AND seq <= ? ORDER BY seq DESC`).all(a.session, a.upto.seq);
   const on = new Set<number>();
   let want: string | null = a.upto.id;
   for (const r of rows) {
