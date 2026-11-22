@@ -2591,7 +2591,8 @@ export class Engine {
       try {
         // Checked again right before starting: the owner may have moved on, archived or sent meanwhile.
         const now = this.store.session(s.id);
-        if (!now || now.archived || this.running.has(s.id) || this.lineage(s.id).at(-1)?.id !== end.id) return this.tellCut(s, cut, "moved");
+        // (What it went on with instead, a newer turn and who started it, is read when the record is whole.)
+        if (!now || now.archived || this.running.has(s.id) || this.lineage(s.id).at(-1)?.id !== end.id) return this.tellCut(s, cut, "moved", !now ? "not continued: its session was deleted" : now.archived ? "not continued: its session was archived" : undefined);
         // And its owner is asked again: an agent stopped while its turn waited
         // for its model or a slot (its goal cleared or replaced, its parent's
         // turn stopped) is not continued, as if the stop had come first.
@@ -2713,16 +2714,32 @@ export class Engine {
 // was on, the calls that were running (their results say a restart cut them)
 // and the ones that wait on the owner (an approval, a question or a plan
 // card, left open for the continued turn). `end`: the turn_end that closed it.
-function cutOf(session: string, line: readonly StoredEvent[], end: StoredEvent): CutTurn {
+// A turn that continues one a restart cut is the same work: the steps the
+// model gave and the calls still open on a card are counted from where the
+// first of them began, so a card that was open before an earlier restart is
+// still what the turn waits on, not "the model".
+export function cutOf(session: string, line: readonly StoredEvent[], end: StoredEvent): CutTurn {
   const at = line.findIndex((e) => e.id === end.id);
-  const startAt = line.findLastIndex((e, i) => i < at && e.kind === "turn_start");
-  const turn = line.slice(Math.max(startAt, 0), at < 0 ? line.length : at);
-  const calls = new Map<string, string>(turn.flatMap((e) => (e.kind === "assistant" ? e.data.blocks.filter((b: any) => b.type === "tool_use").map((b: any) => [b.id, b.name] as [string, string]) : [])));
-  const results = turn.flatMap((e) => (e.kind === "tool_result" ? e.data.results : []));
-  const done = new Set(results.map((r: any) => r.tool_use_id));
-  const tools = results.filter((r: any) => stopKind(r.content) === "cut").map((r: any) => calls.get(r.tool_use_id) ?? "a tool");
+  const upto = at < 0 ? line.length : at;
+  const startAt = line.findLastIndex((e, i) => i < upto && e.kind === "turn_start");
+  let first = Math.max(startAt, 0);
+  for (;;) {
+    const before = line.findLastIndex((e, i) => i < first && e.kind === "turn_end");
+    if (before < 0 || line[before]!.data.reason !== "restart") break;
+    // Another prompt between the two (the owner's, a report): a turn of its own, not the cut one going on.
+    if (line.slice(before + 1, first).some((e) => e.kind === "user" && e.data.origin !== "restart")) break;
+    const began = line.findLastIndex((e, i) => i < before && e.kind === "turn_start");
+    if (began < 0) break;
+    first = began;
+  }
+  const turn = line.slice(Math.max(startAt, 0), upto);
+  const whole = line.slice(first, upto);
+  const calls = new Map<string, string>(whole.flatMap((e) => (e.kind === "assistant" ? e.data.blocks.filter((b: any) => b.type === "tool_use").map((b: any) => [b.id, b.name] as [string, string]) : [])));
+  const done = new Set(whole.flatMap((e) => (e.kind === "tool_result" ? e.data.results : [])).map((r: any) => r.tool_use_id));
+  // Cut in this run of the turn: an earlier run's cut calls were told then.
+  const tools = turn.flatMap((e) => (e.kind === "tool_result" ? e.data.results : [])).filter((r: any) => stopKind(r.content) === "cut").map((r: any) => calls.get(r.tool_use_id) ?? "a tool");
   const waiting = [...calls].filter(([id, name]) => !done.has(id) && waitsOnOwner(session, { id, name })).length;
-  const steps = turn.filter((e) => e.kind === "assistant").length;
+  const steps = whole.filter((e) => e.kind === "assistant").length;
   const start = line[startAt];
   const ran = typeof end.data.ms === "number" ? end.data.ms : 0;
   return {
@@ -2730,7 +2747,7 @@ function cutOf(session: string, line: readonly StoredEvent[], end: StoredEvent):
     down_ms: typeof end.data.down_ms === "number" ? end.data.down_ms : end.data.crashed ? (start?.ts ?? end.ts) + ran : end.ts,
     crashed: !!end.data.crashed, unstarted: !!end.data.unstarted,
     // A call that was running or waited is of the step the model had given; else the model was on the next one.
-    step: tools.length || waiting ? steps : steps + 1, tools, waiting,
+    step: tools.length || waiting ? Math.max(steps, 1) : steps + 1, tools, waiting,
   };
 }
 

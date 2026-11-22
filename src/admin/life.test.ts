@@ -72,8 +72,8 @@ test("a start records each cut turn once, what became of it, and is whole once",
     hook.turnCutSettled!(e, cut(5), "continued");
     expect(changes).toBe(8);
     // The two nobody settled: one whose session has a newer turn went on by other means, the other is as the cut left it.
-    rs.finish((id) => id === c.id);
-    rs.finish(() => true);
+    rs.finish((id) => (id === c.id ? "went on in a turn started by the owner" : undefined));
+    rs.finish(() => "went on");
     expect(whole.length).toBe(1);
     const r = rs.last();
     expect(r.turns.map((t) => [t.title, t.state])).toEqual([["Parser refactor", "continued"], ["Flaky fetch", "held"], ["Docs", "moved"], ["", "left"], ["Cut the time before", "continued"]]);
@@ -87,7 +87,7 @@ test("a start records each cut turn once, what became of it, and is whole once",
     expect(r.turns.map(restartTurnLine)).toEqual([
       '"Parser refactor" cut at step 3, during Bash, after 42 s: resumed',
       '"Flaky fetch" cut at step 2, waiting for the model, after 42 s: held for the owner',
-      `"Docs" cut at step 1, waiting for the owner's answer, after 42 s: went on by other means`,
+      `"Docs" cut at step 1, waiting for the owner's answer, after 42 s: went on in a turn started by the owner`,
       "an untitled session cut before its turn began: left as cut",
       '"Cut the time before" cut by an earlier stop at step 3, during Bash, after 42 s: resumed',
     ]);
@@ -121,7 +121,7 @@ test("a start that knows nothing of the daemon before it keeps its own record, n
     const s = f.store.createSession({ title: "Found cut", model: "fixture:m", workspace: f.dir }) as Session;
     hook.turnCut!(s, cut(1));
     hook.turnCutSettled!(s, cut(1), "held", "why");
-    rs.finish(() => false);
+    rs.finish(() => undefined);
     expect(rs.last().turns.map((t) => [t.state, !!t.earlier])).toEqual([["held", false]]);
     expect(restartSummary(rs.last())).toBe(`The daemon started at ${localTime(at(10, 2, 26))}. How the one before it ended is not known: the sign of life was cut while it was written; 1 turn was found cut: 1 held for the owner.`);
     expect(restartNeedsEye(rs.last())).toBe(true);

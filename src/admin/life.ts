@@ -163,11 +163,18 @@ export class Restarts {
 
   // The recovery has decided every turn it had: a turn still pending went on
   // by other means (its owner's own recovery, a prompt that arrived) or was
-  // left as it was. `went`: whether a session has a newer turn than the cut one.
-  finish(went: (sessionId: string, cut: RestartTurn) => boolean) {
+  // left as it was. `went`: what a session went on with instead of the cut
+  // turn being continued, in words (a newer turn and who started it), or
+  // nothing when it is as the cut left it.
+  finish(went: (sessionId: string, cut: RestartTurn) => string | undefined) {
     const r = this.now;
     if (r.settled_ms) return;
-    for (const t of r.turns) if (t.state === "pending") t.state = went(t.session_id, t) ? "moved" : "left";
+    for (const t of r.turns) {
+      if (t.state !== "pending" && t.state !== "moved") continue;
+      const how = went(t.session_id, t);
+      if (t.state === "pending") t.state = how ? "moved" : "left";
+      if (how && t.state === "moved" && !t.why) t.why = how.slice(0, 300);
+    }
     r.settled_ms = Date.now();
     this.save();
     try { this.whole(r); } catch {}

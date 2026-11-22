@@ -2,7 +2,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { leafOf, lineage, versions } from "../core/tree.ts";
 import type { Message, StoredEvent } from "../core/types.ts";
-import { RESTART_CUT, stalledContinuations, toMessages, withPending } from "./turn.ts";
+import { cutOf, RESTART_CUT, stalledContinuations, toMessages, withPending } from "./turn.ts";
 import { keptMessages } from "./compact.ts";
 import { allHooks } from "./hooks.ts";
 
@@ -743,6 +743,39 @@ test("continuations cut in a row count only while none finished a step", () => {
   const worked = [e("user", { origin: "restart" }), e("turn_start"), e("tool_result", { results: [{ content: "ok" }] }), ...cutTurn().slice(2)];
   expect(stalledContinuations([...cutTurn(), ...cutTurn("restart"), ...worked, ...cutTurn("restart")])).toBe(1);
   expect(stalledContinuations([...cutTurn("restart"), e("user", { text: "more" }), e("turn_start"), e("turn_end", { reason: "end_turn" })])).toBe(0);
+});
+
+test("a turn cut again while its card was open is recorded as waiting on the owner, at the step that asked", () => {
+  let n = 0;
+  const e = (kind: string, data: any = {}) => ({ id: `c${++n}`, ts: n, kind, data }) as unknown as StoredEvent;
+  // A question the model asked at its second step; the daemon went down twice with the card open.
+  const line = [
+    e("user", { text: "go" }), e("turn_start"),
+    e("assistant", { blocks: [{ type: "tool_use", id: "r1", name: "Read", input: {} }] }),
+    e("tool_result", { results: [{ type: "tool_result", tool_use_id: "r1", content: "read" }] }),
+    e("assistant", { blocks: [{ type: "tool_use", id: "q1", name: "AskUserQuestion", input: {} }] }),
+    e("turn_end", { reason: "restart", ms: 5000 }),
+    e("user", { text: "[harness] restarted", origin: "restart" }), e("turn_start"),
+    e("turn_end", { reason: "restart", ms: 3000 }),
+  ];
+  const first = cutOf("s", line, line[5]!);
+  expect([first.step, first.tools, first.waiting]).toEqual([2, [], 1]);
+  // The second cut: the same card, the same step. It was "step 1, waiting for the model".
+  const second = cutOf("s", line, line.at(-1)!);
+  expect([second.step, second.tools, second.waiting, second.ran_ms, second.turn_event]).toEqual([2, [], 1, 3000, line[7]!.id]);
+  // A call a restart cut in the first run was told then: the continued run that the model was answering in names no tool.
+  const ran = [
+    e("user", { text: "go" }), e("turn_start"),
+    e("assistant", { blocks: [{ type: "tool_use", id: "b1", name: "Bash", input: {} }] }),
+    e("tool_result", { results: [{ type: "tool_result", tool_use_id: "b1", content: RESTART_CUT, is_error: true }] }),
+    e("turn_end", { reason: "restart", ms: 1 }),
+    e("user", { origin: "restart" }), e("turn_start"), e("turn_end", { reason: "restart", ms: 1 }),
+  ];
+  expect(cutOf("s", ran, ran[4]!)).toMatchObject({ step: 1, tools: ["Bash"], waiting: 0 });
+  expect(cutOf("s", ran, ran.at(-1)!)).toMatchObject({ step: 2, tools: [], waiting: 0 });
+  // The owner's own prompt after a cut starts another turn: its steps are its own.
+  const moved = [...line.slice(0, 6), e("user", { text: "never mind" }), e("turn_start"), e("turn_end", { reason: "restart", ms: 1 })];
+  expect(cutOf("s", moved, moved.at(-1)!)).toMatchObject({ step: 1, waiting: 0 });
 });
 
 test("a side question's stand-in is written on a copy, and an earlier call with the same id keeps its result", () => {

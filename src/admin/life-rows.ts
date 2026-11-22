@@ -10,6 +10,7 @@ import type { CutState, CutTurn } from "../engine/hooks.ts";
 // `crash`: the process ended itself on a failure (`code`: its exit code).
 export type Before = { pid: number; started_ms: number; down_ms: number; how: "killed" | "restart" | "stop" | "crash"; code?: number };
 // `left`: nothing went on with it (its session is archived, say); it is as the cut left it.
+// `why`: for a held turn the reason; for one that went on by other means, what the means were.
 // `earlier`: an earlier stop cut it, and it was still waiting to be decided when this start came.
 export type RestartTurn = CutTurn & { session_id: string; title: string; parent_id?: string | null; state: "pending" | CutState | "left"; why?: string; earlier?: true };
 export type Restart = {
@@ -68,6 +69,6 @@ export const cutWhere = (t: CutTurn): string => t.unstarted ? "before its turn b
 
 // One line a cut turn: where it was cut and what became of it.
 export function restartTurnLine(t: RestartTurn): string {
-  const became = { continued: "resumed", held: "held for the owner", moved: "went on by other means", left: "left as cut", pending: "not decided yet" }[t.state];
+  const became = { continued: "resumed", held: "held for the owner", moved: t.why || "went on by other means", left: "left as cut", pending: "not decided yet" }[t.state];
   return `${title(t.title)}${t.parent_id ? " (an agent)" : ""} cut ${t.earlier ? "by an earlier stop " : ""}${cutWhere(t)}: ${became}`;
 }

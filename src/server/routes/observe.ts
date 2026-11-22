@@ -130,7 +130,7 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
   registerHooks({
     turnCut: (s, cut) => logAt({ session: s.id, turn: cut.turn_event }, `[turn] cut ${cutWhere(cut)}: ${cut.crashed ? "the daemon went down" : "a daemon stop parked it"}`, cut.crashed ? "warn" : "info"),
     turnCutSettled: (s, cut, state, why) => logAt({ session: s.id, turn: cut.turn_event },
-      state === "continued" ? "[turn] continued after the restart" : state === "held" ? `[turn] not continued after the restart: ${why ?? "held for the owner"}` : "[turn] went on by other means after the restart", state === "held" ? "warn" : "info"),
+      state === "continued" ? "[turn] continued after the restart" : state === "held" ? `[turn] not continued after the restart: ${why ?? "held for the owner"}` : `[turn] ${why ?? "went on by other means"} after the restart`, state === "held" ? "warn" : "info"),
   });
   bus.on((f) => {
     if (f.t !== "event") return;

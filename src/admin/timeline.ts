@@ -259,17 +259,21 @@ export class Timeline {
   // The prompt a turn answers: the event before its start, past the notes and
   // checkpoints between. What says who sent it is read off it, and of a prompt
   // the owner typed its first words (`about`, for the owner's page only).
+  // A turn that starts right after one a restart cut, with no prompt between,
+  // goes on with that turn (its card was still open): a restart started it.
   private opener(sessionId: string, parent: string | null): Opener {
     const q = this.store.db.query<{ kind: string; parent: string | null; session_id: string; o: string | null }, [string]>(
       `SELECT kind, parent, session_id, CASE WHEN kind = 'user' THEN json_object('origin', data ->> '$.origin', 'kind', data ->> '$.kind', 'queue_id', data ->> '$.queue_id',
                   'wait_id', data ->> '$.wait_id', 'agent_id', data ->> '$.agent_id', 'loop_id', data ->> '$.loop_id', 'run_id', data ->> '$.run_id', 'from', data ->> '$.from',
          'outcome', data ->> '$.outcome', 'status', data ->> '$.status',
-         'about', CASE WHEN data ->> '$.kind' IS NULL AND COALESCE(data ->> '$.origin', '') IN ('', 'steer', 'queued', 'voice', 'cli') THEN substr(data ->> '$.text', 1, 240) END) END AS o
+         'about', CASE WHEN data ->> '$.kind' IS NULL AND COALESCE(data ->> '$.origin', '') IN ('', 'steer', 'queued', 'voice', 'cli') THEN substr(data ->> '$.text', 1, 240) END)
+         WHEN kind = 'turn_end' THEN json_object('reason', data ->> '$.reason') END AS o
        FROM events WHERE id = ?`);
     for (let id = parent, hops = 0; id && hops < 32; hops++) {
       const e = q.get(id);
       if (!e || e.session_id !== sessionId) return null;
       if (e.kind === "user") return JSON.parse(e.o!);
+      if (e.kind === "turn_end") return JSON.parse(e.o!).reason === "restart" ? { origin: "restart" } : null;
       if (e.kind !== "note" && e.kind !== "compaction") return null;
       id = e.parent;
     }

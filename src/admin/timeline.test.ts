@@ -132,3 +132,29 @@ test("a walk still on its way outlives two hundred other sessions read meanwhile
     f.close();
   }
 });
+
+test("a turn that goes on after a restart with no prompt between (its card was still open) says a restart started it", () => {
+  const f = setup();
+  try {
+    // The owner's prompt, cut with a card open; the turn the next daemon started goes on with the same card and stores no prompt.
+    f.add("user", { text: "go" });
+    f.add("turn_start", { model: "fixture:m" });
+    f.add("assistant", { blocks: [] });
+    f.add("turn_end", { reason: "restart", ms: 5, crashed: true });
+    f.add("user", { text: "[harness] restarted", origin: "restart" });
+    f.add("turn_start", { model: "fixture:m" });
+    f.add("turn_end", { reason: "restart", ms: 4, crashed: true });
+    const again = f.add("turn_start", { model: "fixture:m" });
+    f.add("turn_end", { reason: "restart", ms: 3 });
+    const live = f.add("turn_start", { model: "fixture:m" });
+    const rows = new Timeline(f.store).page(f.id).rows;
+    // It read "Owner prompt, cut by a daemon restart before its first step".
+    expect(rows.find((r) => r.id === again.id)!.text).toBe("Resumed after a daemon restart, cut by a daemon restart before its first step");
+    expect(rows.map((r) => r.turn?.origin)).toEqual(["restart", "restart", "restart", "owner"]);
+    // And what runs now: not "a turn started by the owner".
+    const now = new Timeline(f.store, { turnOf: () => live.id, isRunning: () => true }).now(f.id);
+    expect(now.lines[0]!.text).toStartWith("Running a turn resumed after a daemon restart: step 1");
+  } finally {
+    f.close();
+  }
+});

@@ -23,8 +23,26 @@ import { relayDiagnostics } from "./diagnostics.ts";
 import { beginLife, lifeListening, Restarts } from "../admin/life.ts";
 import { beginWatch, during, timed } from "../admin/stall.ts";
 import { newestTurn } from "../admin/marks.ts";
+import { originOf } from "../admin/timeline-rows.ts";
 
 export { defaultStateDir };
+
+// What a session went on with when the turn a restart cut was not the one
+// continued: its newer turn and who started it, or why nothing could go on.
+// Nothing when the session is as the cut left it.
+function wentOn(store: Store, engine: Engine, sessionId: string, cutTurn: string): string | undefined {
+  const s = store.session(sessionId);
+  if (!s) return "not continued: its session was deleted";
+  const newest = newestTurn(store, sessionId);
+  if (!newest || newest.id === cutTurn) return s.archived ? "not continued: its session was archived" : engine.isRunning(sessionId) ? "went on: a turn is starting in it" : undefined;
+  // The prompt before the newer turn's start, past the notes between, says who started it.
+  let e = store.event(newest.id);
+  for (let hops = 0; e?.parent && hops < 32; hops++) {
+    e = store.event(e.parent);
+    if (!e || (e.kind !== "note" && e.kind !== "compaction")) break;
+  }
+  return `went on in a turn started by ${e?.kind === "user" ? originOf(e.data).words : "something else"}`;
+}
 
 export type Started = { url: string; stateDir: string; engine: Engine; stop: (drainMs?: number) => Promise<void> };
 
@@ -125,7 +143,7 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
       }
     }))).catch((e) => errors.capture("server", e, { at: "recover" }))
       // Every cut turn is decided: one that nobody settled went on by other means when its session has a newer turn.
-      .then(() => restarts?.finish((id, cut) => engine.isRunning(id) || newestTurn(store, id)?.id !== cut.turn_event))
+      .then(() => restarts?.finish((id, cut) => wentOn(store, engine, id, cut.turn_event)))
       .catch((e) => errors.capture("server", e, { at: "restart record" }));
     // It reads the context of every session used in the last hour, an await a session.
     void providers.models().then(() => during("the start's pass over the sessions used in the last hour (idle compaction)", engine.resumeIdle())).catch((e) => errors.capture("server", e, { at: "idle compaction" }));
