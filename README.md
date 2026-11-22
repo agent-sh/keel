@@ -178,7 +178,10 @@ card. Auto also refuses actions it cannot review in full, including
 login shells and actions that require secret substitution. Explicit sandbox
 escalation and other owner-only actions still ask. **Full auto** runs
 ordinary work without review and retains its
-nonblocking high-risk checks. Tools that explicitly require confirmation
+nonblocking high-risk checks. What the judge is sent of a high-risk action
+is its first 4,000 characters, so a longer one (a command, a list of files,
+a tool's input) is refused instead of run partly unread; Reviewer mode sends
+such an action to you. Tools that explicitly require confirmation
 still ask in both modes.
 **Auto edits** still asks about ordinary work outside its safe defaults.
 
@@ -213,9 +216,12 @@ later, for this checkout or another:
   index and the state of a merge, rebase, cherry-pick, revert or bisect it
   is in the middle of cannot be changed, and none can be planted (a planted
   rebase would run its `exec` line when the main checkout next continues
-  one). The view is live: a file there is read as it is now, so what the
-  main checkout stages or checks out while a command runs is seen by it.
-  `info` (exclude patterns, attributes, the sparse list, grafts) is
+  one). The view is live: a file there is read as it is now, also one that
+  did not exist when the command started, so what the main checkout stages
+  or checks out while a command runs is seen by it. Of the logs, those of
+  the shared refs are writable; the main checkout's own `HEAD` log is read
+  where it is, so a prune or a repack in the worktree keeps what that log
+  holds. `info` (exclude patterns, attributes, the sparse list, grafts) is
   read-only too: it steers the main checkout's own git. The worktree's own
   merge, rebase, cherry-pick, revert and bisect keep their state in its own
   directory and work as usual.
@@ -225,15 +231,19 @@ later, for this checkout or another:
   its own, to commit in and to remove.
 - The folders that hold those files cannot be renamed away or replaced.
 
-git is told three things in every sandbox, through the environment
-(`GIT_CONFIG_COUNT`, after any settings your own environment carries): a new
-branch records no upstream, and no gc or maintenance starts after a commit.
-(A worktree session gets two more: `git fsck` does not report that
-`packed-refs` is a link, which it is in the view, and `git repack` does not
-write the server info under `info`, which is read-only there.)
-The config is read-only there, so `git checkout -b x origin/main` would
-otherwise fail on the upstream it cannot write. Branches made in a sandboxed
-session track nothing until you set that outside it.
+git is told a few things in a sandbox, through the environment
+(`GIT_CONFIG_COUNT`, after any settings the command's own environment
+carries):
+
+- In every sandbox a new branch records no upstream. The config is
+  read-only there, so `git checkout -b x origin/main` would otherwise fail
+  on the upstream it cannot write. Branches made in a sandboxed session
+  track nothing until you set that outside it.
+- In a worktree session no gc or maintenance starts after a commit (neither
+  can run there), `git fsck` does not report that `packed-refs` is a link,
+  which it is in the view, and `git repack` does not write the server info
+  under `info`, which is read-only there. A session in the main checkout
+  runs its gc as always.
 
 What still runs into the read-only config, in every sandboxed session:
 `git config`, `git remote add`, `git branch -u`, `git push -u`, `--track`.
@@ -248,13 +258,18 @@ common directory. One oddity there: dropping the last stash when
 `refs/stash` is packed says "Dropped" and leaves the ref (the list is
 empty).
 
+A session whose folder is inside a repository, below its top, cannot commit
+with the sandbox on: the git directory is outside its folder. The same
+holds for a worktree whose git directories the sandbox cannot open safely.
+A command that runs into that is told why.
+
 A command that runs into the read-only top, the read-only config or a
 network that is off is told so in its result, with the way its tool asks to
 run outside the sandbox: Claude Code's Bash takes
 `dangerouslyDisableSandbox: true`, Codex's shell takes
 `sandbox_permissions: "require_escalated"`. Each such call is approved
 first: by you on a card, and in full auto by what settles a high-risk call
-there.
+there, which reads the command whole or refuses it.
 
 `git submodule update` of a submodule that is already checked out rewrites
 that submodule's config, which is read-only: it fails in a sandboxed

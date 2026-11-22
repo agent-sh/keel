@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { confine, linkedGitBinds, sandboxStatus, sandboxTopsDir } from "./sandbox.ts";
+import { confine, gitShut, linkedGitBinds, sandboxStatus, sandboxTopsDir } from "./sandbox.ts";
 
 const git = (cwd: string, ...args: string[]) => {
   const r = Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "protocol.file.allow=always", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
@@ -41,9 +41,11 @@ test("a linked worktree's git directories are writable only when the layout conf
     const top = b[4]!;
     expect([top.startsWith(sandboxTopsDir()), b[5]]).toEqual([true, common]);
     for (const store of ["objects", "refs", "logs/refs"]) expect(has("--bind", join(common, store), join(common, store))).toBe(true);
-    for (const closed of ["hooks", "info", "worktrees"]) expect(has("--ro-bind", join(common, closed), join(common, closed))).toBe(true);
-    // The main checkout's own HEAD log: a link to the file as it is, in a folder that is part of the closed top.
-    expect([b.includes(join(common, "logs")), readlinkSync(join(top, "logs/HEAD"))]).toEqual([false, "../keel-sandbox/top/logs/HEAD"]);
+    // (The logs folder itself is the real one, read-only: the main checkout's own HEAD log is a file git's walks read.)
+    for (const closed of ["hooks", "info", "worktrees", "logs"]) expect(has("--ro-bind", join(common, closed), join(common, closed))).toBe(true);
+    expect(b.indexOf(join(common, "logs"))).toBeLessThan(b.indexOf(join(common, "logs/refs")));
+    // A file git keeps at the top by name is linked also when it is not there yet.
+    expect([existsSync(join(common, "MERGE_HEAD")), readlinkSync(join(top, "MERGE_HEAD")), readlinkSync(join(top, "shallow"))]).toEqual([false, "keel-sandbox/top/MERGE_HEAD", "keel-sandbox/top/shallow"]);
     expect(has("--bind", join(common, "worktrees/wt"), join(common, "worktrees/wt"))).toBe(true);
     for (const f of ["config.worktree", "gitdir", "commondir"]) expect(has("--ro-bind", join(common, "worktrees/wt", f), join(common, "worktrees/wt", f))).toBe(true);
     // No argument names a plain file of the top: each is a link in the folder.
@@ -58,6 +60,16 @@ test("a linked worktree's git directories are writable only when the layout conf
     for (let i = 0; i < 3000; i++) rmSync(join(common, `sharedindex.${i}`));
     linkedGitBinds(wt);
     expect(existsSync(join(top, "sharedindex.0"))).toBe(false);
+    expect(gitShut(wt)).toBeUndefined();
+    // Three thousand folders there are past what a sandbox binds: nothing of git is opened, and the session is told why.
+    for (let i = 0; i < 3000; i++) mkdirSync(join(common, `odd-${i}`));
+    expect(linkedGitBinds(wt)).toEqual([]);
+    expect(gitShut(wt)).toContain("the sandbox could not open this worktree's git directories");
+    for (let i = 0; i < 3000; i++) rmSync(join(common, `odd-${i}`), { recursive: true });
+    // A session in a folder inside a repository: the git directory is above it.
+    mkdirSync(join(main, "pkg/deep"), { recursive: true });
+    expect(gitShut(join(main, "pkg/deep"))).toContain(`this session's folder is inside the repository at ${main}`);
+    expect([gitShut(main), gitShut(root)]).toEqual([undefined, undefined]);
     // Only the worktree's own config.worktree is made (empty): nothing is added to the shared directory.
     expect(readFileSync(join(common, "worktrees/wt/config.worktree"), "utf8")).toBe("");
     for (const absent of ["config.worktree", "modules", "keel-sandbox"]) expect(existsSync(join(common, absent))).toBe(false);
@@ -299,6 +311,26 @@ test.skipIf(!sandboxStatus().available)("a command in a worktree reads the main 
     expect(said).toMatch(/used by worktree|checked out at/);
     git(main, "rev-parse", "--verify", "-q", "refs/heads/elsewhere");
 
+    // A clone made without a checkout has no index yet. It gets one while the
+    // command waits, with a blob only it holds: the command's prune sees it.
+    git(root, "clone", "-q", "--no-checkout", main, "nc");
+    const nc = join(root, "nc"), ncw = join(root, "ncw");
+    git(nc, "worktree", "add", "-q", "-b", "w", ncw, "HEAD");
+    expect(existsSync(join(nc, ".git/index"))).toBe(false);
+    const late = async () => {
+      const p = Bun.spawn(confine(["bash", "-c", `: > ready; while [ ! -e go ]; do sleep 0.05; done; git prune; echo pruned-$?; (echo x > ${nc}/.git/index) 2>/dev/null || echo index-closed`], { sandbox: "workspace-write", network: false }, ncw), { cwd: ncw, stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
+      for (let i = 0; i < 200 && !existsSync(join(ncw, "ready")); i++) await Bun.sleep(25);
+      git(nc, "checkout", "-q", "main");
+      writeFileSync(join(nc, "late"), "only in the new index\n");
+      git(nc, "add", "late");
+      writeFileSync(join(nc, "late"), "changed since\n");
+      writeFileSync(join(ncw, "go"), "");
+      const [out] = await Promise.all([new Response(p.stdout).text(), p.exited]);
+      return out;
+    };
+    expect(await late()).toBe("pruned-0\nindex-closed\n");
+    expect(Bun.spawnSync(["git", "show", ":late"], { cwd: nc, stdout: "pipe" }).stdout.toString()).toBe("only in the new index\n");
+
     // The patterns, attributes and sparse list that steer the main checkout's own git, and its HEAD log: read-only.
     const steer = run(wt, `for f in exclude attributes sparse-checkout grafts; do (echo '*' > ${common}/info/$f) 2>/dev/null && echo wrote-$f; done; (echo x >> ${common}/logs/HEAD) 2>/dev/null && echo wrote-log; (echo x > ${common}/logs/NEW) 2>/dev/null && echo made-log; test -s ${common}/logs/HEAD && echo read-log; echo done`);
     expect(steer.out).toBe("read-log\ndone\n");
@@ -306,6 +338,14 @@ test.skipIf(!sandboxStatus().available)("a command in a worktree reads the main 
     git(main, "update-ref", "refs/remotes/origin/main", "HEAD");
     const made = run(wt, `git checkout -q -b from-remote origin/main && git rev-parse --abbrev-ref HEAD && ${commit}`);
     expect(made.out).toBe("from-remote\ncommitted\n");
+    // The settings come after the ones the command's own environment carries, which still hold.
+    const own = Bun.spawnSync(confine(["bash", "-c", "git config user.name; git config alias.hi; git config gc.auto; git config branch.autoSetupMerge; echo $GIT_CONFIG_COUNT"], { sandbox: "workspace-write", network: false }, wt), {
+      cwd: wt, stdout: "pipe", stderr: "pipe",
+      env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: "user.name", GIT_CONFIG_VALUE_0: "From The Command", GIT_CONFIG_KEY_1: "alias.hi", GIT_CONFIG_VALUE_1: "status" },
+    });
+    expect(own.stdout.toString()).toBe("From The Command\nstatus\n0\nfalse\n7\n");
+    // A session in the main checkout can gc, and is not told otherwise; a new branch still records no upstream.
+    expect(run(main, "git config gc.auto; git config maintenance.auto; git config branch.autoSetupMerge; echo $GIT_CONFIG_COUNT").out).toBe("false\n1\n");
     // A commit starts no gc it could not run, and fsck is not told that packed-refs is a link.
     git(main, "pack-refs", "--all");
     // (And a repack does not try to write the server info under the read-only info folder.)
@@ -317,6 +357,64 @@ test.skipIf(!sandboxStatus().available)("a command in a worktree reads the main 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// A prune or a repack run in a worktree decides what to keep from what every
+// checkout of the repository holds: git reads the main checkout's HEAD, HEAD
+// log, index and stash, and the other worktrees' own, from the worktree. The
+// view of the top must not hide any of it: an object the same commands keep
+// when they run unconfined is kept when they run confined.
+test.skipIf(!sandboxStatus().available)("a prune or a repack in a worktree keeps what every other checkout holds", () => {
+  const sh = (cwd: string, script: string) => {
+    const r = Bun.spawnSync(["bash", "-c", script], { cwd, stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
+    if (r.exitCode !== 0) throw new Error(`${script}: ${r.stderr.toString()}`);
+    return r.stdout.toString().trim();
+  };
+  // A commit on a branch of its own, made in `dir`, with the branch gone: only `keep` holds it afterwards.
+  const lone = (dir: string, name: string) => sh(dir, `git checkout -q -b ${name} && echo ${name} > ${name}.txt && git add ${name}.txt && git commit -qm ${name} && git rev-parse HEAD`);
+  const forget = "git reflog expire --expire=now --all";
+  // Each: what the owner did in the main checkout (or the other worktree), and the object that only that state holds.
+  const cases: Record<string, (r: ReturnType<typeof repo>) => string> = {
+    "the main checkout's HEAD log": ({ main }) => { const c = lone(main, "side"); sh(main, "git checkout -q main && git branch -q -D side"); return c; },
+    "the main checkout's HEAD log, after its own gc": ({ main }) => { const c = lone(main, "side"); sh(main, "git checkout -q main && git branch -q -D side && git gc -q"); return c; },
+    "the main checkout's HEAD, detached": ({ main }) => { const c = lone(main, "side"); sh(main, `git checkout -q --detach && git branch -q -D side && ${forget}`); return c; },
+    "the main checkout's index": ({ main }) => { sh(main, "echo staged > staged.txt && git add staged.txt && echo changed > staged.txt"); return sh(main, "git rev-parse :staged.txt"); },
+    "the main checkout's stash, the entry below the newest": ({ main }) => { sh(main, "echo one > f && git add f && git stash -q && echo two > f && git add f && git stash -q"); return sh(main, "git rev-parse 'stash@{1}'"); },
+    "the main checkout's ORIG_HEAD": ({ main }) => { const c = lone(main, "side"); sh(main, `git reset -q --hard HEAD~1 && git checkout -q main && git branch -q -D side && ${forget}`); return c; },
+    "the main checkout's MERGE_HEAD": ({ main }) => { const c = lone(main, "side"); sh(main, `git checkout -q main && git merge -q --no-ff --no-commit side && git branch -q -D side && ${forget}`); return c; },
+    "the main checkout's CHERRY_PICK_HEAD": ({ main }) => { const c = lone(main, "side"); sh(main, `git checkout -q main && git rev-parse side > .git/CHERRY_PICK_HEAD && git branch -q -D side && ${forget}`); return c; },
+    "a rebase stopped in the main checkout": ({ main }) => {
+      sh(main, "echo base > r.txt && git add r.txt && git commit -qm base && git checkout -q -b topic && echo topic > r.txt && git commit -qam topic && echo more > m.txt && git add m.txt && git commit -qm more && git checkout -q main && echo main > r.txt && git commit -qam main");
+      const c = sh(main, "git rev-parse topic");
+      sh(main, `git checkout -q topic && (git rebase -q main >/dev/null 2>&1 || true) && test -d .git/rebase-merge && git update-ref -d refs/heads/topic && ${forget}`);
+      return c;
+    },
+    "a bisect in the main checkout": ({ main }) => { const c = lone(main, "side"); sh(main, `git checkout -q main && git bisect start -q >/dev/null 2>&1; git bisect bad side >/dev/null 2>&1; git bisect good main >/dev/null 2>&1; git checkout -q main 2>/dev/null; git branch -q -D side && ${forget}`); return c; },
+    "another worktree's HEAD, detached": ({ other }) => { const c = lone(other, "side"); sh(other, `git checkout -q --detach && git branch -q -D side && ${forget}`); return c; },
+    "another worktree's index": ({ other }) => { sh(other, "echo staged > o.txt && git add o.txt && echo changed > o.txt"); return sh(other, "git rev-parse :o.txt"); },
+  };
+  const sweep = "git repack -ad -q 2>&1; git prune 2>&1; git gc -q --prune=now 2>&1; true";
+  const kept: Record<string, [boolean, boolean]> = {};
+  for (const [name, setup] of Object.entries(cases)) {
+    const held = [false, true].map((confined) => {
+      const root = scratch();
+      try {
+        const r = repo(root);
+        const object = setup(r);
+        if (confined) run(r.wt, sweep); else sh(r.wt, sweep);
+        return Bun.spawnSync(["git", "cat-file", "-e", object], { cwd: r.main, stderr: "ignore" }).exitCode === 0;
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+    kept[name] = [held[0]!, held[1]!];
+  }
+  // Confined keeps whatever unconfined keeps.
+  expect(Object.entries(kept).filter(([, [plain, confined]]) => plain && !confined).map(([name]) => name)).toEqual([]);
+  // And what git itself keeps an object by is kept: a log, a HEAD, an index, a stash, of any checkout.
+  for (const name of ["the main checkout's HEAD log", "the main checkout's HEAD log, after its own gc", "the main checkout's HEAD, detached", "the main checkout's index", "the main checkout's stash, the entry below the newest", "another worktree's HEAD, detached", "another worktree's index"]) {
+    expect([name, kept[name]]).toEqual([name, [true, true]]);
+  }
+}, 120_000);
 
 // A bare repository has no log folder until a worktree of it commits, and
 // nothing can be made at its top from inside the sandbox.

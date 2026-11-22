@@ -32,8 +32,10 @@ test("a ref made where other checkouts read from, and a name pointed at another 
   expect(changed(before, all({ "refs/replace/aaaa": B, "refs/notes/commits": C, "refs/other/x": C }))).toBe(
     "While this command ran, what this worktree shares with the repository's other checkouts changed: created refs/replace/aaaa, refs/notes/commits, refs/other/x.",
   );
-  // A branch, a tag, a stash, what a bisect or a rebase keeps, Keel's own: ordinary work.
-  expect(changed(before, all({ "refs/heads/new": B, "refs/tags/v1": B, "refs/stash": B, "refs/bisect/bad": B, "refs/rewritten/x": B, "refs/keel/parked/s": B }))).toBeUndefined();
+  // A branch, a tag, a stash, what a bisect or a rebase keeps: ordinary work.
+  expect(changed(before, all({ "refs/heads/new": B, "refs/tags/v1": B, "refs/stash": B, "refs/bisect/bad": B, "refs/rewritten/x": B }))).toBeUndefined();
+  // One of Keel's own (a parked worktree's state is kept under refs/keel/): said.
+  expect(changed(before, all({ "refs/keel/parked/s": B }))).toContain("created refs/keel/parked/s");
   // main made a name for c, at the same commit or not; a new branch that only names another.
   expect(changed(before, all({ "refs/heads/main": `${B} refs/heads/c` }))).toContain("changed what branch main (now a name for branch c) points at");
   expect(changed(state({ "refs/heads/mine": A, "refs/heads/main": `${B} refs/heads/c`, "refs/heads/c": B }), before)).toContain("changed what branch main (now a ref of its own) points at");
@@ -72,6 +74,11 @@ test("what a confined command ran into gets one sentence each, in the tool's own
   expect(sandboxSaid(lost, at)).toEqual([expect.stringMatching(/^This session's network is off.*The owner turns it on in the session's permissions \("Network in the sandbox"\)\. ESCAPE\.$/)]);
   expect(sandboxSaid(lost, { ...at, network: true })).toEqual([]);
   expect(sandboxSaid("ssh: Could not resolve hostname github.com: Temporary failure in name resolution", at)).toHaveLength(1);
+  // A session none of git's files is open to (its folder is inside a repository, or its worktree could not be opened): why, and nothing else about git.
+  const shut = { ...at, shut: () => "this session's folder is inside the repository at /r, and so on" };
+  expect(sandboxSaid("fatal: Unable to create '/r/.git/index.lock': Read-only file system", shut)).toEqual(["git could not write here: this session's folder is inside the repository at /r, and so on. ESCAPE."]);
+  expect(sandboxSaid("error: could not lock config file /r/.git/config: Read-only file system", shut)).toHaveLength(1);
+  expect(sandboxSaid("ls: cannot access 'x'", shut)).toEqual([]);
   // Not the sandbox's doing.
   expect(sandboxSaid("touch: cannot touch '/etc/x': Read-only file system", at)).toEqual([]);
   expect(sandboxSaid("fatal: Unable to create '/r/.git/worktrees/wt/index.lock': File exists.", at)).toEqual([]);

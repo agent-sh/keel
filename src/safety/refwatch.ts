@@ -89,9 +89,10 @@ const short = (ref: string) => ref.replace(/^refs\/heads\//, "branch ").replace(
 const LISTED = 6;
 const list = (items: string[]) => (items.length > LISTED ? `${items.slice(0, LISTED).join(", ")} and ${items.length - LISTED} more` : items.join(", "));
 // Where a new ref is ordinary work and says nothing: a branch, a tag, what a
-// fetch brings, a stash, the refs a checkout keeps for itself (a bisect, a
-// rebase), and Keel's own.
-const ORDINARY = /^refs\/(heads|tags|remotes|bisect|worktree|rewritten|keel)\/|^refs\/stash$/;
+// fetch brings, a stash, and the refs a checkout keeps for itself (a bisect,
+// a rebase). (Not Keel's own, refs/keel/: a parked worktree's state and a
+// move's are kept there, and a command that makes one is said.)
+const ORDINARY = /^refs\/(heads|tags|remotes|bisect|worktree|rewritten)\/|^refs\/stash$/;
 const commit = (v: string) => v.split(" ")[0]!;
 const target = (v: string) => v.split(" ")[1] ?? "";
 
@@ -140,16 +141,22 @@ export async function report(w: Watch, own: Set<string> = new Set()): Promise<st
 // `linked`: the session works in a linked worktree (the top of the shared git
 // directory is read-only, src/safety/sandbox.ts). `network`: the session's
 // network is on. `escape`: how this tool asks to run a command outside the
-// sandbox, in its own words.
+// sandbox, in its own words. `shut`: why the profile opens none of git's
+// files for this session, when it opens none (asked only for a command that
+// git could not write for).
 const TOP = new RegExp(`/${SCRATCH}/packed-refs\\.\\d+\\.new|/(gc\\.pid|shallow|packed-refs|HEAD)\\.lock'?: Read-only file system|could not create directory (of )?'[^']*/(worktrees/[^']*|rr-cache|lfs[^']*)'|/info/[^'\\s:]*'?: Read-only file system|cannot lock ref '(main-worktree|worktrees)/`);
 const CONFIG = /could not (lock|write) config file|unable to write upstream branch configuration|update of config-file failed/;
 const NETWORK = /Could not resolve host|Could not resolve hostname|Temporary failure in name resolution|Network is unreachable|Couldn't connect to server|Failed to connect to/i;
-export function sandboxSaid(output: string, at: { linked: boolean; network: boolean; escape: string }): string[] {
+const GIT_WRITE = /\.lock'?: Read-only file system|\.git\/[^\n']*'?: Read-only file system|insufficient permission for adding an object|could not (lock|write) config file/;
+export function sandboxSaid(output: string, at: { linked: boolean; network: boolean; escape: string; shut?: () => string | undefined }): string[] {
   const said: string[] = [];
-  if (at.linked && TOP.test(output)) said.push(`This worktree's sandbox keeps the top of the repository's git directory read-only (the main checkout's own state is there). Closed in it: deleting a branch or tag that is packed, git pack-refs, git gc, git worktree add, changing a shallow clone's depth, a first rerere or LFS store, and the files under info (a repack still packs, and says it could not update them). Commits, branches, merges, rebases and stashes work. ${at.escape}`);
+  // None of git's files is open to this session: that is the whole story of a failed git write.
+  const shut = GIT_WRITE.test(output) ? at.shut?.() : undefined;
+  if (shut) said.push(`git could not write here: ${shut}. ${at.escape}`);
+  if (!shut && at.linked && TOP.test(output)) said.push(`This worktree's sandbox keeps the top of the repository's git directory read-only (the main checkout's own state is there). Closed in it: deleting a branch or tag that is packed, git pack-refs, git gc, git worktree add, changing a shallow clone's depth, a first rerere or LFS store, and the files under info (a repack still packs, and says it could not update them). Commits, branches, merges, rebases and stashes work. ${at.escape}`);
   // (A deleted branch whose settings could not be taken out of the config is deleted: git's own warning says the rest.)
   const onlyDeleted = /^Deleted branch /m.test(output) && !/fatal:|unable to write upstream/.test(output);
-  if (CONFIG.test(output) && !onlyDeleted) said.push(`The repository's config is read-only in a sandboxed session (git runs what it names). What writes it fails or is half done: git config, git remote add, git branch -u, git push -u and --track; git branch -m renames the branch and then exits 128, because the branch's settings cannot be moved; deleting a branch leaves its settings behind. Branches made in this session track nothing. ${at.escape}`);
+  if (!shut && CONFIG.test(output) && !onlyDeleted) said.push(`The repository's config is read-only in a sandboxed session (git runs what it names). What writes it fails or is half done: git config, git remote add, git branch -u, git push -u and --track; git branch -m renames the branch and then exits 128, because the branch's settings cannot be moved; deleting a branch leaves its settings behind. Branches made in this session track nothing. ${at.escape}`);
   if (!at.network && NETWORK.test(output)) said.push(`This session's network is off, so fetch, pull, push and whatever else needs the network fail in its sandbox. The owner turns it on in the session's permissions ("Network in the sandbox"). ${at.escape}`);
   return said;
 }

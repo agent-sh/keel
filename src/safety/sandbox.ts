@@ -282,6 +282,14 @@ const CODE = new Set(["hooks", "config", "config.worktree", "modules", "worktree
 // repository as it is, read-only (`top`).
 export const SCRATCH = "keel-sandbox";
 const LINKS = 8;
+// The files git itself keeps at the top of a git directory, by name (the
+// index, the pseudo-refs and the companions of an operation in progress:
+// gitrepository-layout(5), git-merge(1), git-bisect(1)).
+const TOP_FILES = [
+  "index", "HEAD", "ORIG_HEAD", "FETCH_HEAD", "MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "MERGE_RR", "MERGE_AUTOSTASH", "AUTO_MERGE", "SQUASH_MSG",
+  "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "COMMIT_EDITMSG", "shallow",
+  "BISECT_LOG", "BISECT_START", "BISECT_EXPECTED_REV", "BISECT_ANCESTORS_OK", "BISECT_NAMES", "BISECT_TERMS", "BISECT_HEAD", "BISECT_FIRST_PARENT",
+];
 // bubblewrap takes this many arguments at most.
 const ARGS_MAX = 9_000;
 
@@ -338,16 +346,18 @@ function topOf(common: string): string | null {
       const k = kindOf(join(top, name));
       if (k === "other" || k === "file") rmSync(join(top, name), { force: true });
       if (k !== "dir") mkdirSync(join(top, name));
-      // The log folder is not bound whole: the logs of the shared refs are
-      // (logs/refs), and the main checkout's own HEAD log is a link to the
-      // file as it is, read-only. With the folder itself part of the closed
-      // top, a HEAD log that is missing cannot be made either.
-      if (name === "logs") {
-        mkdirSync(join(top, "logs/refs"), { recursive: true });
-        if (!link("logs/HEAD", join("..", SCRATCH, "top/logs/HEAD"))) return null;
-      }
     } else if (st.isFile()) { if (!link(name, join(SCRATCH, "top", name))) return null; }
     else if (st.isSymbolicLink()) { if (!link(name, readlinkSync(p))) return null; }
+  }
+  // The files git keeps at the top by a fixed name, linked also when the
+  // repository has none yet: a link to a file that is not there reads as
+  // absent, goes live when the main checkout makes the file (a clone made
+  // without a checkout gets its index at the first one), and cannot be
+  // written through.
+  for (const name of TOP_FILES) {
+    if (have.has(name)) continue;
+    if (!link(name, join(SCRATCH, "top", name))) return null;
+    have.add(name);
   }
   if (!link("packed-refs", join(SCRATCH, "packed-refs.1"))) return null;
   // What the top no longer has: its link goes (a folder stays, empty).
@@ -379,10 +389,13 @@ export function linkedGitBinds(workspace: string): string[] {
     for (const name of readdirSync(common).sort()) {
       const p = join(common, name);
       if (kindOf(p) !== "dir") continue;
-      // Of the logs, those of the shared refs. The main checkout's own HEAD
-      // log stays read-only (it says which commits that checkout made
-      // itself, see refwatch.ts); the session's own is in its own directory.
-      out.push(...(name === "logs" ? pin(join(p, "refs")) : SHARED_STORES.has(name) ? pin(p) : ro(p)));
+      // The logs: the folder as it is, read-only, and in it the logs of the
+      // shared refs writable. The main checkout's own HEAD log is then the
+      // real file, read-only (it says which commits that checkout made
+      // itself, see refwatch.ts; and git's walk over the logs, which a prune
+      // and a repack keep commits by, steps over a link), and one that is
+      // missing cannot be made. The session's own is in its own directory.
+      out.push(...(name === "logs" ? [...ro(p), ...pin(join(p, "refs"))] : SHARED_STORES.has(name) ? pin(p) : ro(p)));
     }
     out.push(...pin(own));
     for (const f of ["config.worktree", "gitdir", "commondir"]) out.push(...ro(join(own, f)));
@@ -402,17 +415,38 @@ export function linkedGitBinds(workspace: string): string[] {
 }
 
 // What git is told in every sandbox, where the repository's config is
-// read-only and its housekeeping cannot run:
-// - a new branch records no upstream (`git checkout -b x origin/main` would
-//   fail on the write of the tracking lines, and leave HEAD where it was);
-// - no gc and no maintenance is started after a commit (each would print
-//   that it cannot take its lock).
-const SANDBOX_GIT: [string, string][] = [["branch.autoSetupMerge", "false"], ["gc.auto", "0"], ["maintenance.auto", "false"]];
+// read-only: a new branch records no upstream (`git checkout -b x
+// origin/main` would fail on the write of the tracking lines, and leave HEAD
+// where it was).
+const SANDBOX_GIT: [string, string][] = [["branch.autoSetupMerge", "false"]];
 // And in a linked worktree's view of the top:
+// - no gc and no maintenance is started after a commit: neither can run
+//   there (each would print that it cannot take its lock). A session in the
+//   main checkout can gc, and is left to;
 // - packed-refs is a link there: git fsck would report it as a broken ref file;
 // - info is read-only: a repack would say it cannot write the server info
 //   (info/refs, for a dumb http server) after packing.
-const LINKED_GIT: [string, string][] = [["fsck.badRefFiletype", "ignore"], ["repack.updateServerInfo", "false"]];
+const LINKED_GIT: [string, string][] = [["gc.auto", "0"], ["maintenance.auto", "false"], ["fsck.badRefFiletype", "ignore"], ["repack.updateServerInfo", "false"]];
+// The shell line that adds settings to the environment it is run in and then
+// becomes the command (its arguments). The names and values are Keel's own.
+const withGit = (settings: [string, string][]) =>
+  `n=\${GIT_CONFIG_COUNT:-0}; case "$n" in ""|*[!0-9]*) n=0;; esac; ${settings.map(([k, v]) => `export "GIT_CONFIG_KEY_$n=${k}" "GIT_CONFIG_VALUE_$n=${v}"; n=$((n+1))`).join("; ")}; export GIT_CONFIG_COUNT=$n; exec "$@"`;
+
+// Why a confined command in `workspace` cannot write git's files, when the
+// profile opens none of them: said on a command that ran into it.
+export function gitShut(workspace: string): string | undefined {
+  try {
+    const kind = kindOf(join(workspace, ".git"));
+    if (kind === "none") {
+      for (let dir = dirname(workspace); ; dir = dirname(dir)) {
+        if (kindOf(join(dir, ".git")) !== "none") return `this session's folder is inside the repository at ${dir}, and that repository's git directory is outside the session's folder, so it is read-only here. Commits and every other git write fail. A session opened at ${dir} can commit`;
+        if (dir === dirname(dir)) return undefined;
+      }
+    }
+    if (kind !== "dir" && !linkedGitBinds(workspace).length) return "the sandbox could not open this worktree's git directories, so they are read-only here and commits fail: their layout is not the one git makes for a linked worktree, or the repository's git directory holds more folders than a sandbox can bind";
+  } catch {} // unreadable: nothing to say
+  return undefined;
+}
 
 // The argv that runs `argv` confined by the session's profile.
 // `scratch` is the session's own tool folder (a command's working-directory
@@ -437,13 +471,13 @@ export function confine(argv: string[], perm: Pick<SessionPerm, "sandbox" | "net
     b.push(...cloneGitBinds(workspace), ...linked);
     if (linked.length) settings.push(...LINKED_GIT);
   }
-  const first = Math.max(0, Math.trunc(Number(process.env.GIT_CONFIG_COUNT ?? 0)) || 0);
-  settings.forEach(([k, v], i) => b.push("--setenv", `GIT_CONFIG_KEY_${first + i}`, k, "--setenv", `GIT_CONFIG_VALUE_${first + i}`, v));
-  b.push("--setenv", "GIT_CONFIG_COUNT", String(first + settings.length));
   // The views the daemon's own git reads repositories through (src/core/git.ts):
   // never writable, also for a session whose folder holds Keel's state folder.
   if (perm.sandbox === "workspace-write") for (const own of [gitViewsDir(), sandboxTopsDir()]) if (existsSync(own)) b.push("--ro-bind", own, own);
   for (const p of typeof scratch === "string" ? [scratch] : scratch ?? []) if (p && existsSync(p)) b.push("--bind", p, p);
-  b.push("--", ...argv);
+  // The settings are added inside, after any the command's own environment
+  // carries (git-config(1), GIT_CONFIG_COUNT): the count is the command's,
+  // which only the command's own process knows.
+  b.push("--", "/bin/sh", "-c", withGit(settings), "keel-sandbox", ...argv);
   return st.scope ? [...scopeHead(), ...scopeProps(), "--", ...b] : b;
 }

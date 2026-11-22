@@ -535,7 +535,8 @@ export class Gate {
     let notice: string | undefined;
     // Reviewer mode: what would ask goes to the reviewer first; a high-risk
     // action, and anything it cannot judge, still goes to the owner.
-    if (mode === "reviewer" && d.ask.risk === "low") {
+    if (mode === "reviewer" && d.ask.risk === "low" && !readWhole(cls, target ? target.input : call.input)) notice = "Too long for the reviewer to read whole. The owner answers this one.";
+    else if (mode === "reviewer" && d.ask.risk === "low") {
       if (this.retries.delete(`${session.id}\u0000${key}`)) return { cls };
       const v = await this.judge({ session, tool: name, kind: cls.kind, summary, input: clip(call.input) });
       if ("unavailable" in v) notice = `Reviewer unavailable: ${v.unavailable}. The owner answers this one.`;
@@ -625,6 +626,13 @@ export class Gate {
       const parts = splitCommand(cls.command);
       const rule = parts ? preAllow(parts, cls.cwd ?? session.workspace, homedir(), lookRepo) : null;
       if (rule) return ran("rule", rule), { cls };
+    }
+    // What is judged is what runs, whole: the judge is sent the start of a
+    // long action only, so one that does not fit is not sent at all. (Auto
+    // refuses the same before it gets here. A command that asks to leave the
+    // sandbox with its write past the part that is read ran unread.)
+    if (!auto && !readWhole(cls, call.input, summary)) {
+      return { deny: `Refused: the complete action does not fit in the judge's review (${REVIEW_SUMMARY_LIMIT} characters), and no part of it runs unread. Break it into smaller actions, or put a long script in a file and run that; the owner can also run it.` };
     }
     const refuse = (b: Blocked, outcome: Judged["outcome"], text: string) => {
       this.streak.set(session.id, (this.streak.get(session.id) ?? 0) + (outcome === "unavailable" ? 0 : 1));
@@ -918,6 +926,14 @@ function inShort(cls: CallClass, input: unknown): { summary: string; cut?: true 
   if (cls.kind === "drive") return { summary: cls.shown };
   const whole = JSON.stringify(input ?? {});
   return whole.length > SUMMARY_LIMIT ? { summary: whole.slice(0, SUMMARY_LIMIT), cut: true } : { summary: whole };
+}
+
+// Whether the reviewer model is sent the whole of an action: the judge's
+// prompt holds the start of it (REVIEW_SUMMARY_LIMIT), and for a tool that
+// is neither a command nor an edit its input in the same bound.
+function readWhole(cls: CallClass, input: unknown, summary = ""): boolean {
+  const judged = cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : cls.kind === "drive" ? cls.shown : JSON.stringify(input ?? {});
+  return Math.max(judged.length, summary.length) <= REVIEW_SUMMARY_LIMIT;
 }
 
 function clip(v: any): any {

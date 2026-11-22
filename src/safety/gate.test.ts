@@ -81,6 +81,40 @@ test("Claude Code's Bash asks to leave the sandbox with its own parameter, and g
   expect(await asked).toBeUndefined();
 });
 
+// The judge is sent the start of a long action. A command that asks to leave
+// the sandbox with its write past that part would run unread.
+test("full auto: an action the judge would read only in part is refused, for both families' way out of the sandbox", async () => {
+  const { g, session, call } = scratchGate();
+  g.setPerm("s1", { mode: "full-auto", sandbox: "workspace-write" });
+  const read: string[] = [];
+  g.judge = async (a) => (read.push(a.summary), { allow: true, risk: "high", reason: "it looks fine", model: "m" });
+  const claudeBash: Tool = { ...bash, input_schema: { type: "object", properties: { command: {}, dangerouslyDisableSandbox: {} } } };
+  const codexShell: Tool = { ...bash, name: "exec_command", input_schema: { type: "object", properties: { command: {}, sandbox_permissions: {} } } };
+  const long = `echo ${"harmless ".repeat(500)}; echo owned > /etc/keel-outside`;
+  expect(long.length).toBeGreaterThan(4000);
+  for (const [tool, input] of [[claudeBash, { command: long, dangerouslyDisableSandbox: true }], [codexShell, { command: long, sandbox_permissions: "require_escalated" }]] as const) {
+    const r = await g.beforeTool(session, call(tool, input));
+    expect(r).toEqual({ deny: expect.stringContaining("the complete action does not fit in the judge's review (4000 characters), and no part of it runs unread") });
+  }
+  // A high-risk command that stays in the sandbox is read whole or not run, too.
+  expect(await g.beforeTool(session, call(bash, { command: `git push --force origin main # ${"x".repeat(4000)}` }))).toHaveProperty("deny");
+  expect(read).toEqual([]);
+  // One that fits is judged, whole, and runs outside.
+  const short = "git gc";
+  expect(await g.beforeTool(session, call(claudeBash, { command: short, dangerouslyDisableSandbox: true }))).toBeUndefined();
+  expect(read).toEqual([short]);
+
+  // Reviewer mode: a low-risk action too long for the reviewer goes to the owner's card, unread by the reviewer.
+  g.setPerm("s1", { mode: "reviewer", sandbox: "off" });
+  read.length = 0;
+  const stop = new AbortController();
+  const asked = g.beforeTool(session, call(bash, { command: `./build.sh ${"--flag ".repeat(700)}` }, stop.signal));
+  await Bun.sleep(20);
+  expect([read, g.approvals({ session: "s1", pending: true }).map((a) => a.notice)]).toEqual([[], ["Too long for the reviewer to read whole. The owner answers this one."]]);
+  stop.abort();
+  await asked;
+});
+
 test("Auto discards pending permission when policy or cwd changes and does not transfer a retry", async () => {
   const { g, session, call } = scratchGate();
   g.setSandboxCheck(() => false);

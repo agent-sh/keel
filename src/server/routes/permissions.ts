@@ -2,7 +2,7 @@
 // so a throw is captured as an error.
 import { deliver } from "../../automation/core.ts";
 import { sandboxSaid } from "../../safety/refwatch.ts";
-import { linkedWorktree } from "../../safety/sandbox.ts";
+import { gitShut, linkedWorktree } from "../../safety/sandbox.ts";
 import { escapeOf } from "../../safety/policy.ts";
 import * as activity from "../../automation/activity.ts";
 import { stopKind } from "../../core/stops.ts";
@@ -50,7 +50,7 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
       const confined = call.tool.kind === "shell" ? call.ctx.confined : undefined;
       if (!watched && !confined) return;
       const said = typeof result.content === "string" ? result.content : result.content.map((b) => (b.type === "text" ? b.text : "")).join("\n");
-      const shut = confined ? sandboxSaid(said, { linked: !!linkedWorktree(s.workspace), network: !!confined.network, escape: escapeOf(call.tool) }) : [];
+      const shut = confined ? sandboxSaid(said, { linked: !s.machine && !!linkedWorktree(s.workspace), network: !!confined.network, escape: escapeOf(call.tool), ...(s.machine ? {} : { shut: () => gitShut(s.workspace) }) }) : [];
       if (watched?.note) activity.record("approval", "sandbox", s.id, watched.note, { call_id: call.id });
       const text = [watched?.note && `[sandbox] ${watched.note} If this command did that and it was not asked for, put it back and say so.`, ...shut.map((line) => `[sandbox] ${line}`)].filter(Boolean).join("\n\n");
       if (!text) return;
