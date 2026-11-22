@@ -252,8 +252,10 @@ test("a notification's title and body reach gdbus as quoted GVariant strings", (
   const json = String.raw`send: {"text":"line\n\nHis words: \"yes\""}`;
   expect(alerts.gvariantString(json)).toBe(String.raw`'send: {"text":"line\\n\\nHis words: \\"yes\\""}'`);
   expect(alerts.gvariantString("it's\ntwo lines\0")).toBe(String.raw`'it\'s\ntwo lines'`);
-  // The real parser needs the two programs; without them only the quoting above is checked.
-  if (!Bun.which("gdbus") || !Bun.which("dbus-run-session")) return;
+});
+// The real parser: skipped by name on a machine without the two programs (a server has neither).
+test.skipIf(!Bun.which("gdbus") || !Bun.which("dbus-run-session"))("gdbus takes the quoted strings as they are, and refuses the bare ones (needs gdbus and dbus-run-session)", () => {
+  const json = String.raw`send: {"text":"line\n\nHis words: \"yes\""}`;
   // On a method that takes one string and shows nothing, over a bus of the
   // test's own: the caller may have no session bus, or one that is not reachable.
   const env: NodeJS.ProcessEnv = { ...process.env };

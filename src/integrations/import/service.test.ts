@@ -2,6 +2,7 @@
 // happen at once: no page can make a write fail half way, or start a turn
 // while a transcript is being read.
 import { afterAll, expect, test } from "bun:test";
+import { ownEnv } from "../../../test/env.ts";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,9 +13,11 @@ const root = mkdtempSync(join(tmpdir(), "keel-import-service-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 // Nothing of this machine's own is read or written: the config folder and
 // the stores a walk reads are scratch ones, named before any Keel source loads.
-process.env.KEEL_CONFIG_DIR = join(root, "config");
-for (const k of ["CLAUDE_DIR", "CODEX_DIR", "AGY_DIR", "HERMES_DIR"]) process.env[`KEEL_IMPORT_${k}`] = join(root, "stores", k.toLowerCase());
-process.env.KEEL_IMPORT_KEEL_DB = join(root, "stores", "keel.db");
+ownEnv({
+  KEEL_CONFIG_DIR: join(root, "config"),
+  ...Object.fromEntries(["CLAUDE_DIR", "CODEX_DIR", "AGY_DIR", "HERMES_DIR"].map((k) => [`KEEL_IMPORT_${k}`, join(root, "stores", k.toLowerCase())])),
+  KEEL_IMPORT_KEEL_DB: join(root, "stores", "keel.db"),
+});
 const { Store } = await import("../../core/store.ts");
 const { CursorError, offered, page } = await import("./offer.ts");
 const { Imports } = await import("./service.ts");

@@ -1,4 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
+import { ownEnv } from "../../test/env.ts";
 import { chmodSync, cpSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -8,12 +9,13 @@ import { coveredFiles, Hooks, namesOf, parseHooks, pinKey } from "./hooks.ts";
 // Every folder a test makes is removed when the file's tests are over.
 const made: string[] = [];
 afterAll(() => { for (const d of made) rmSync(d, { recursive: true, force: true }); });
+// No test here reads an owner's hooks file: the variable names one that is not there, for this file only.
+ownEnv({ KEEL_HOOKS: "/nonexistent/hooks.json" });
 const scratch = (prefix: string) => { const d = mkdtempSync(join(tmpdir(), prefix)); made.push(d); return d; };
 
 const git = (cwd: string, ...args: string[]) => Bun.spawnSync(["git", ...args], { cwd, stdout: "ignore", stderr: "ignore", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
 
 test("a repository's hook pin covers the scripts it runs and holds in its worktrees", () => {
-  process.env.KEEL_HOOKS = "/nonexistent/hooks.json";
   const repo = scratch("keel-hooks-");
   mkdirSync(join(repo, ".keel/hooks"), { recursive: true });
   writeFileSync(join(repo, ".keel/hooks.json"), JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "bash \"$KEEL_PROJECT_DIR\"/.keel/hooks/check.sh" }] }] } }));
@@ -46,7 +48,6 @@ test("hook matchers and agents' disallowed tools see every name a call answers t
 });
 
 test("a hook script that is a link is pinned with its target; a link out of .keel/ does not run", () => {
-  process.env.KEEL_HOOKS = "/nonexistent/hooks.json";
   const repo = scratch("keel-hooks-link-");
   mkdirSync(join(repo, ".keel/hooks"), { recursive: true });
   writeFileSync(join(repo, ".keel/hooks.json"), JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "bash .keel/hooks/run.sh" }] }] } }));
@@ -144,7 +145,6 @@ const referenceDigest = (root: string) => {
 };
 
 test("a pinned repository file is decided from what is on disk at each event, whatever changed and however", async () => {
-  process.env.KEEL_HOOKS = "/nonexistent/hooks.json";
   const base = scratch("keel-hooks-exact-");
   const repo = join(base, "repo"), outside = join(base, "outside");
   mkdirSync(join(repo, ".keel/hooks"), { recursive: true });

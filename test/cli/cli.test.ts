@@ -576,7 +576,17 @@ function held(args: string[], state: string, env: Record<string, string> = {}) {
   };
 }
 const said = (text: string, uuid?: string) => ({ type: "user", message: { role: "user", content: text }, ...(uuid ? { uuid } : {}) });
-const freePort = () => 20_000 + Math.floor(Math.random() * 20_000);
+// A port for a daemon that must come back on the same one: nothing listens on it now, and it
+// is below the range the kernel gives to outgoing connections (32768 and up), where a port
+// that was free a moment ago is taken before the daemon binds it. A number drawn without a
+// look fails a test on a machine that runs other services.
+const freePort = () => {
+  for (let i = 0; i < 100; i++) {
+    const port = 20_000 + Math.floor(Math.random() * 12_000);
+    try { Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } }).stop(true); return port; } catch {}
+  }
+  throw new Error("no port between 20000 and 32000 is free on 127.0.0.1");
+};
 
 // A daemon on one port and one state folder that is restarted in place:
 // gracefully (it drains, parks its turns and starts itself again) or killed
@@ -792,7 +802,7 @@ describe("a session a script holds open", () => {
 
   test("a daemon restart under a held session: the command waits, the cut turn goes on, and its result comes once", async () => {
     const own = join(SCRATCH, "state-stream-restart");
-    const port = 20_000 + Math.floor(Math.random() * 20_000);
+    const port = freePort();
     const serve = async () => {
       const d = Bun.spawn([BIN, "serve", "--bind", `127.0.0.1:${port}`, "--state-dir", own, "--workspace", WS], { cwd: WS, env: { ...ENV, KEEL_DRAIN_MS: "300", KEEL_RESUME_AT_ONCE: "1" }, stdout: "pipe", stderr: "ignore" });
       const reader = d.stdout.getReader();

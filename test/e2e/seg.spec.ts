@@ -104,12 +104,17 @@ test("an arrow key never loosens permissions, and tabs keep to their own keys", 
   // Home, then Up twice: still the first row, not wrapped to the last.
   await expect(modes.getByRole("radio").first()).toBeFocused();
   expect(await checked(modes).getAttribute("data-testid")).toBe(was);
-  const sandbox = page.getByRole("radiogroup", { name: "Sandbox" });
-  const box = await checked(sandbox).getAttribute("data-testid");
-  await checked(sandbox).focus();
-  for (const key of ["ArrowRight", "ArrowRight", "ArrowRight", "ArrowRight", "Home", "ArrowLeft", "End"]) await page.keyboard.press(key);
-  await expect(sandbox.getByRole("radio").last()).toBeFocused();
-  expect(await checked(sandbox).getAttribute("data-testid")).toBe(box);
+  // The sandbox's choices take the keys the same way where the machine can build a sandbox;
+  // where it cannot, the daemon says why and they are disabled: nothing to walk, and the test says so.
+  const can = (await (await request.get("/api/permissions/settings")).json()).sandbox;
+  if (can.available) {
+    const sandbox = page.getByRole("radiogroup", { name: "Sandbox" });
+    const box = await checked(sandbox).getAttribute("data-testid");
+    await checked(sandbox).focus();
+    for (const key of ["ArrowRight", "ArrowRight", "ArrowRight", "ArrowRight", "Home", "ArrowLeft", "End"]) await page.keyboard.press(key);
+    await expect(sandbox.getByRole("radio").last()).toBeFocused();
+    expect(await checked(sandbox).getAttribute("data-testid")).toBe(box);
+  } else test.info().annotations.push({ type: "skipped: no sandbox on this machine", description: `the arrow keys on the sandbox's choices were not checked (${can.reason})` });
   expect(writes).toEqual([]);
   // Space on a mode chooses it, once.
   const other = modes.getByRole("radio").filter({ hasNot: page.locator('[aria-checked="true"]') }).and(page.locator('[aria-checked="false"]')).first();

@@ -17,11 +17,11 @@ export type DiffResult = { files: FileChange[]; diff: string; truncated: boolean
 
 const DIFF_CAP = 400_000;
 // A file over this is left out of a snapshot (model weights, archives, media);
-// a snapshot that would add more than SNAP_CAP falls back to the files the
+// a snapshot that would add more than the snapshot cap falls back to the files the
 // session's tools write. Both are owner-settable.
 // Read when used, so a setting made after this module loaded applies.
 export const fileCap = () => Number(process.env.KEEL_CHECKPOINT_FILE_MB ?? 10) * 1024 * 1024;
-const SNAP_CAP = Number(process.env.KEEL_CHECKPOINT_SNAPSHOT_MB ?? 1024) * 1024 * 1024;
+const snapCap = () => Number(process.env.KEEL_CHECKPOINT_SNAPSHOT_MB ?? 1024) * 1024 * 1024;
 // Never snapshotted, in any folder: dependency, cache and build trees that are
 // rebuilt, not written by hand (most are gitignored anyway; a folder without a
 // .gitignore still holds them).
@@ -122,9 +122,9 @@ export class Shadow {
       // Drop a grown file even if its version in the private index differs.
       await this.git(["--literal-pathspecs", "rm", "-q", "-f", "--cached", "--ignore-unmatch", "--", ...big], { index });
     }
-    if (total > SNAP_CAP) {
+    if (total > snapCap()) {
       this.mode = "written";
-      this.reason = `the workspace would add ${Math.round(total / 1024 / 1024)} MB to its checkpoints (over ${Math.round(SNAP_CAP / 1024 / 1024)} MB), so only the files the session writes are kept`;
+      this.reason = `the workspace would add ${Math.round(total / 1024 / 1024)} MB to its checkpoints (over ${Math.round(snapCap() / 1024 / 1024)} MB), so only the files the session writes are kept`;
       return false;
     }
     return true;

@@ -329,20 +329,25 @@ test("acp client", async ({ page, request }) => {
   await expect(page.getByTestId("assistant-text").last()).toContainText("Before, you said: hello from the e2e", { timeout: 30_000 });
 
   // What the agent does outside ACP stays in the sandbox: a write outside the folder is refused.
-  await expect(page.getByTestId("note").filter({ hasText: "runs in the command sandbox (workspace-write)" })).toHaveCount(1);
-  const outside = join(process.env.HOME!, ".cache/keel-work/bun", `acp-escape-${Date.now()}.txt`);
-  await page.getByTestId("composer").fill(`escape ${outside}`);
-  await page.keyboard.press("Enter");
-  await expect(page.getByTestId("assistant-text").last()).toContainText("Blocked:", { timeout: 30_000 });
-  expect(existsSync(outside)).toBe(false);
-  await shoot(page, "acp-13-sandboxed");
+  // A machine that cannot build a sandbox (the daemon says which, and why) has none to stay in:
+  // the step is left out there, and the test says so.
+  const { sandbox } = await (await request.get("/api/permissions/settings")).json();
+  if (sandbox.available) {
+    await expect(page.getByTestId("note").filter({ hasText: "runs in the command sandbox (workspace-write)" })).toHaveCount(1);
+    const outside = join(process.env.HOME!, ".cache/keel-work/bun", `acp-escape-${Date.now()}.txt`);
+    await page.getByTestId("composer").fill(`escape ${outside}`);
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("assistant-text").last()).toContainText("Blocked:", { timeout: 30_000 });
+    expect(existsSync(outside)).toBe(false);
+    await shoot(page, "acp-13-sandboxed");
+  } else test.info().annotations.push({ type: "skipped: no sandbox on this machine", description: `the agent's write outside its folder was not tried (${sandbox.reason})` });
 
   // Stop cancels the agent's turn; the call it left running ends with it.
   await page.getByTestId("composer").fill("wait for me");
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("tool-call").filter({ hasText: "sleep 600" })).toBeVisible({ timeout: 30_000 });
   await page.getByTestId("stop").click();
-  await expect(page.getByTestId("turn-end")).toHaveCount(4, { timeout: 30_000 });
+  await expect(page.getByTestId("turn-end")).toHaveCount(sandbox.available ? 4 : 3, { timeout: 30_000 });
   await expect(page.getByTestId("tool-call").filter({ hasText: "sleep 600" })).not.toHaveAttribute("data-state", "running");
 
   // A session that talked keeps its agent: moving it to a model is refused.
@@ -362,14 +367,18 @@ test("acp client", async ({ page, request }) => {
   await expect(folderCard).toHaveAttribute("data-own", "true");
   await expect(folderCard.getByTestId("acp-agent-folder").filter({ hasText: `acp-folder-` })).toBeVisible();
   await shoot(page, "acp-14-folders");
-  await page.getByTestId("acp-agent-standin").getByTestId("acp-agent-start").click();
-  await expect(page).toHaveURL(/\/s\//);
-  const id2 = page.url().split("/s/")[1]!.split(/[?#]/)[0]!;
-  await request.put(`/api/sessions/${id2}/permissions`, { data: { mode: "ask", sandbox: "workspace-write" } });
-  await page.getByTestId("composer").fill(`escape ${own}/written.txt`);
-  await page.keyboard.press("Enter");
-  await expect(page.getByTestId("assistant-text").last()).toContainText("I wrote outside the folder.", { timeout: 30_000 });
-  expect(readFileSync(join(own, "written.txt"), "utf8")).toBe("outside");
+  // The agent's next start has the folder in its sandbox, and writes there. With no sandbox on
+  // the machine no folder is given to anything (the first skip above says so).
+  if (sandbox.available) {
+    await page.getByTestId("acp-agent-standin").getByTestId("acp-agent-start").click();
+    await expect(page).toHaveURL(/\/s\//);
+    const id2 = page.url().split("/s/")[1]!.split(/[?#]/)[0]!;
+    await request.put(`/api/sessions/${id2}/permissions`, { data: { mode: "ask", sandbox: "workspace-write" } });
+    await page.getByTestId("composer").fill(`escape ${own}/written.txt`);
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("assistant-text").last()).toContainText("I wrote outside the folder.", { timeout: 30_000 });
+    expect(readFileSync(join(own, "written.txt"), "utf8")).toBe("outside");
+  }
   // Back to the guess.
   await page.goto("/settings/acp-agents");
   await folderCard.getByTestId("acp-folder-reset").click();

@@ -8,6 +8,11 @@
 // between (another turn starts, one ends, a loop comes due) change what the
 // daemon shows, not the lock, so a dozen working sessions start one
 // `systemd-inhibit`, not one at each change of their count.
+// A machine whose logind does not give this account the lock (a server reached
+// over ssh, a container) says so at once. That is how the machine is set up,
+// not a failure of a turn: it is written to the log once, shown in the
+// daemon's state, and not asked again at every turn. Only a hold the owner
+// asks for asks again, and a refusal of that one is an error they are shown.
 import type { Subprocess } from "bun";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import type { Bus } from "../core/bus.ts";
@@ -52,6 +57,8 @@ export class Awake {
   private reason?: string;
   private locked = false;
   refused?: string;
+  // logind refused a lock that turns wanted: the answer stands until the owner asks for a hold.
+  private denied = false;
   readonly available: boolean;
   draining = false;
 
@@ -74,7 +81,7 @@ export class Awake {
     clearTimeout(this.timer);
     this.untilMs = untilMs;
     if (untilMs) this.timer = setTimeout(() => { this.untilMs = null; this.update(); }, untilMs - Date.now());
-    if (untilMs) this.refused = undefined; // asking again after a refusal tries again
+    if (untilMs) { this.refused = undefined; this.denied = false; } // asking again after a refusal tries again
     this.update();
   }
 
@@ -115,10 +122,15 @@ export class Awake {
     p.exited.then(async (code) => {
       if (this.proc !== p) return;
       this.proc = undefined;
+      const granted = this.locked;
       this.locked = false;
       const err = (await readText(p.stderr).catch(() => "")).trim();
       this.refused = err || `systemd-inhibit ended with ${code}`;
-      this.capture(new Error(`keep-awake refused: ${this.refused}`), { at: "keep-awake" });
+      // Refused at once, with nobody asking for a hold: this machine does not give the lock.
+      if (!granted && !this.untilMs) {
+        this.denied = true;
+        console.warn(`[keep-awake] logind refused the lock (${this.refused}): the machine is not kept awake while turns run, and is not asked again until a hold is asked for`);
+      } else this.capture(new Error(`keep-awake refused: ${this.refused}`), { at: "keep-awake" });
       this.emit();
     });
     this.emit();
@@ -130,7 +142,7 @@ export class Awake {
   }
 
   private release() {
-    if (!this.want()) this.refused = undefined; // the reason went: the next one asks again
+    if (!this.want() && !this.denied) this.refused = undefined; // the reason went: the next one asks again
     if (!this.proc) { if (this.since) { this.since = undefined; this.emit(); } return; }
     const p = this.proc;
     if (this.since) {

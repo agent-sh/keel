@@ -22,6 +22,7 @@
 // difference): on the commit to compare with,
 //   KEEL_IDENTITY_GOLDEN=write bun test src/providers/wires/identity.test.ts
 import { afterAll, expect, test } from "bun:test";
+import { ownEnv } from "../../../test/env.ts";
 import { cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,7 +30,7 @@ import { join } from "node:path";
 // Nothing here reads the owner's configuration or reaches an integration.
 const ROOT = realpathSync(mkdtempSync(join(tmpdir(), "keel-identity-")));
 afterAll(() => rmSync(ROOT, { recursive: true, force: true }));
-Object.assign(process.env, {
+ownEnv({
   KEEL_CONFIG_DIR: join(ROOT, "config"), KEEL_STATE_DIR: join(ROOT, "state-unused"), KEEL_DESKTOP_NOTIFY: "off",
   KEEL_IMPORT_HOME: join(ROOT, "import/home"), KEEL_IMPORT_CLAUDE_DIR: join(ROOT, "import/claude"), KEEL_IMPORT_CODEX_DIR: join(ROOT, "import/codex"),
   KEEL_IMPORT_AGY_DIR: join(ROOT, "import/agy"), KEEL_IMPORT_KEEL_DB: join(ROOT, "import/keel.db"), KEEL_IMPORT_HERMES_DIR: join(ROOT, "import/hermes"),

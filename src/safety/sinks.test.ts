@@ -93,6 +93,10 @@ test("only a shell command gets a secret's value; nothing else stores it or send
     for (const l of loops.list(s.id)) loops.remove(l.id);
     unregisterCatalog("fx");
     vault.forgetSession(s.id);
+    // The vault is process-wide and secretRoutes tied it to this store: untied before the store
+    // closes, or every later file's shell command asks a closed database who holds a secret.
+    vault.ledger = null;
+    vault.parentOf = () => null;
     store.db.close();
   }
 }, 30_000);

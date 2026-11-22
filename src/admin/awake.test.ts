@@ -47,3 +47,41 @@ test("one inhibitor is held while any session works, whatever their count", asyn
   awake.stopAll();
   expect(held()).toBe(0);
 });
+
+// A server reached over ssh has a logind that gives this account no lock: the
+// answer comes at once, every time. It is how the machine is, so it is asked
+// once and no error is recorded for a turn; a hold the owner asks for asks again.
+test("a lock logind refuses at once is not asked again at every turn, and is no error of a turn", async () => {
+  const bus = new Bus();
+  const captured: string[] = [];
+  let asked = 0;
+  const refusing = () => {
+    asked++;
+    return { stdin: { end: () => {} }, stderr: new Response("Failed to inhibit: Access denied\n").body, exitCode: 1, exited: Promise.resolve(1), kill: () => {} } as any;
+  };
+  const warn = console.warn;
+  const warned: string[] = [];
+  console.warn = (...a: unknown[]) => void warned.push(a.join(" "));
+  try {
+    const awake = new Awake(bus, (e) => void captured.push((e as Error).message), refusing);
+    const turn = async (id: string) => {
+      bus.emit({ t: "session", session: { id, phase: "working" } } as any);
+      await Bun.sleep(20);
+      bus.emit({ t: "session", session: { id, phase: "idle" } } as any);
+    };
+    for (const id of ["s1", "s2", "s3"]) await turn(id);
+    expect(asked).toBe(1);
+    expect(captured).toEqual([]);
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toContain("Failed to inhibit: Access denied");
+    // The daemon's state says it, between turns too.
+    expect(awake.state()).toMatchObject({ available: false, held: false, refused: "Failed to inhibit: Access denied" });
+    // The owner asks for a hold: logind is asked again, and that refusal is theirs to see.
+    awake.hold(Date.now() + 60_000);
+    await Bun.sleep(20);
+    expect(asked).toBe(2);
+    expect(captured).toEqual(["keep-awake refused: Failed to inhibit: Access denied"]);
+    awake.hold(null);
+    awake.stopAll();
+  } finally { console.warn = warn; }
+});

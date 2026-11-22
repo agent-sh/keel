@@ -9,7 +9,10 @@ test("an imported server is already configured only when endpoint and account ma
   const dir = join(process.env.TMPDIR ?? join(process.env.HOME!, ".cache"), `mcp-identity-${Date.now()}`);
   mkdirSync(join(dir, "home"), { recursive: true });
   mkdirSync(join(dir, "project"), { recursive: true });
+  // The other agents' home is this test's folder, and the run's own again when the test is over.
+  const homeBefore = process.env.KEEL_IMPORT_HOME;
   process.env.KEEL_IMPORT_HOME = join(dir, "home");
+  try {
   const url = "https://example.invalid/MCP/Lookup", stdio = { command: "node", args: ["fixture-server.js"] };
   const cases: [string, object, object, boolean][] = [
     ["same URL", { url }, { url }, true],
@@ -30,5 +33,8 @@ test("an imported server is already configured only when endpoint and account ma
     // Another account at the same endpoint says which Keel server it shares it with; the values never show.
     if (name.startsWith("different")) expect(item.other_account).toBe("existing");
     expect(JSON.stringify({ group: item.group, endpoint: item.endpoint })).not.toMatch(/synthetic|FIXTURE_ACCOUNT/);
+  }
+  } finally {
+    if (homeBefore === undefined) delete process.env.KEEL_IMPORT_HOME; else process.env.KEEL_IMPORT_HOME = homeBefore;
   }
 });

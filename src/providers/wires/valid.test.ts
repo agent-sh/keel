@@ -9,6 +9,7 @@
 // and that a request whose unrepaired form passes its wire's rules is the
 // same bytes with and without the repairs.
 import { afterAll, expect, test } from "bun:test";
+import { ownEnv } from "../../../test/env.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,7 +18,7 @@ import type { ProviderRequest, ToolSpec } from "../types.ts";
 
 // Nothing here reads the owner's configuration.
 const CONFIG = mkdtempSync(join(tmpdir(), "keel-valid-"));
-process.env.KEEL_CONFIG_DIR = CONFIG;
+ownEnv({ KEEL_CONFIG_DIR: CONFIG });
 afterAll(() => rmSync(CONFIG, { recursive: true, force: true }));
 const { toMessages } = await import("../../engine/turn.ts");
 const { resolveAttachments } = await import("../../engine/attachments.ts");

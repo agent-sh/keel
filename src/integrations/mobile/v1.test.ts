@@ -2,6 +2,7 @@
 // chat, run and usage answers carry, and what its push health says. These are
 // shapes no browser e2e reaches; the app's own reading of them is cited per test.
 import { afterAll, describe, expect, jest, setSystemTime, test } from "bun:test";
+import { ownEnv } from "../../../test/env.ts";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,8 +23,8 @@ import { alertPush } from "../../server/routes/mobile.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "keel-mobile-"));
 // The daemon's config folder is this run's own: what a route reads there (the push files) is what a test put there.
-process.env.KEEL_CONFIG_DIR = join(dir, "config");
-mkdirSync(process.env.KEEL_CONFIG_DIR);
+ownEnv({ KEEL_CONFIG_DIR: join(dir, "config") });
+mkdirSync(process.env.KEEL_CONFIG_DIR!);
 const store = new Store(dir);
 const bus = new Bus();
 setDeps({ store, bus, errors: { capture() {} } } as any);

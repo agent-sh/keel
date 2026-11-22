@@ -3,6 +3,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Plugins } from "./index.ts";
 
+// Each test points the config folder at one of its own and puts back the one the run started with.
+const CONFIG_BEFORE = process.env.KEEL_CONFIG_DIR!;
+
 // A hot reload builds a new plugin registry in the same process: a plugin
 // whose entry did not change keeps its process; a changed entry restarts.
 const stub = join(import.meta.dir, "../../../test/fixtures/plugin-check-stub.ts");
@@ -32,7 +35,7 @@ test("a reload keeps an unchanged plugin's process and restarts a changed one", 
     b.killAll();
   } finally {
     a.killAll();
-    delete process.env.KEEL_CONFIG_DIR;
+    process.env.KEEL_CONFIG_DIR = CONFIG_BEFORE;
     rmSync(dir, { recursive: true, force: true });
   }
 }, 30_000);
@@ -66,7 +69,7 @@ for (const [name, command, said] of [
       expect(got.length).toBe(2);
     } finally {
       p.killAll();
-      delete process.env.KEEL_CONFIG_DIR;
+      process.env.KEEL_CONFIG_DIR = CONFIG_BEFORE;
       rmSync(dir, { recursive: true, force: true });
     }
   }, 30_000);
@@ -90,7 +93,7 @@ test("a plugin that refuses the host is captured once and not started again", as
     expect([proc.state, proc.reason]).toEqual(["stopped", "the plugin refused this host: plugin stub: this host is not supported"]);
   } finally {
     p.killAll();
-    delete process.env.KEEL_CONFIG_DIR;
+    process.env.KEEL_CONFIG_DIR = CONFIG_BEFORE;
     rmSync(dir, { recursive: true, force: true });
   }
 }, 30_000);

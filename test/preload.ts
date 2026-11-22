@@ -10,6 +10,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { allHooks } from "../src/engine/hooks.ts";
+import { vault } from "../src/safety/secrets.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "keel-test-"));
 const made = (...p: string[]) => {
@@ -22,7 +23,7 @@ const made = (...p: string[]) => {
 // test of the memory hooks passes a stand-in of its own.
 const noStore = join(made("bin"), "no-store.sh");
 writeFileSync(noStore, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-Object.assign(process.env, {
+const scratch: Record<string, string> = {
   TACIT_BIN: noStore,
   KEEL_CONFIG_DIR: made("config"),
   KEEL_STATE_DIR: made("state"),
@@ -42,9 +43,13 @@ Object.assign(process.env, {
   // and a test that named a made-up key timed out waiting for it).
   KEEL_KEYRING_SERVICE: "keel-test-empty",
   KEEL_CRED_GET: "/bin/false",
-});
+};
+Object.assign(process.env, scratch);
 // A path the shell names for one config file would point past the scratch folder.
-for (const k of ["KEEL_MCP_CONFIG", "KEEL_HOOKS", "KEEL_ACP_AGENTS", "KEEL_ACP_FOLDERS"]) delete process.env[k];
+const unset = ["KEEL_MCP_CONFIG", "KEEL_HOOKS", "KEEL_ACP_AGENTS", "KEEL_ACP_FOLDERS"];
+for (const k of unset) delete process.env[k];
+// What every file starts with: the settings above, as they are here.
+const start: Record<string, string | undefined> = { ...scratch, ...Object.fromEntries(unset.map((k) => [k, undefined])) };
 
 // Turn hooks are process-wide (src/engine/hooks.ts): one a test file leaves
 // registered runs in every later file's turns, on a store that file closed. A
@@ -61,13 +66,44 @@ const kept = new Set<object>(allHooks());
 const seen = new Set<string>();
 let file = "";
 let afterLast: object[] = []; // registered when the file's last test so far ended
+// The secrets vault is process-wide the same way (src/safety/secrets.ts): the
+// secrets routes tie it to a store, and a file that leaves it tied to a store
+// it closed fails every later file's shell command, which asks the vault who
+// holds a secret. Which files come later is the folder's order on the disk,
+// so it differs from one machine to the next.
+let tiedAfterLast: object | null = null; // the vault's tie when the file's last test so far ended
+// And the settings above are the process's environment: a file that points one
+// at a folder of its own and leaves it there gives that folder, removed by
+// then, to every later file.
+let envAfterLast: Record<string, string | undefined> | null = null; // the settings when the file's last test so far ended
+// The file a changed value was first seen at the end of: a file after it that
+// sets its own and then puts back what it found hands the value on, and is not
+// the one that left it.
+const cameFrom = new Map<string, string>();
 function leftBehind() {
   const left = afterLast.filter((h) => !kept.has(h) && allHooks().includes(h as any));
   afterLast = [];
-  if (!left.length) return;
+  const tied = tiedAfterLast !== null && vault.ledger === tiedAfterLast;
+  tiedAfterLast = null;
+  // Still what the file's last test left, and not what a file starts with (a
+  // new file that set one while loading has its own value by now).
+  const moved = envAfterLast ? Object.keys(start).filter((k) => process.env[k] !== start[k] && process.env[k] === envAfterLast![k]) : [];
+  envAfterLast = null;
+  if (!left.length && !tied && !moved.length) return;
+  const by = new Map<string, string[]>();
+  for (const k of moved) {
+    const value = `${k}=${process.env[k] ?? "(unset)"}`, from = cameFrom.get(value) ?? file;
+    by.set(from, [...(by.get(from) ?? []), value]);
+  }
+  for (const k of moved) { if (start[k] === undefined) delete process.env[k]; else process.env[k] = start[k]; }
   // Taken off, so the files after it are not failed by them as well.
   for (const h of left) allHooks().splice(allHooks().indexOf(h as any), 1);
-  throw new Error(`${file} ended with ${left.length} turn hook${left.length > 1 ? "s" : ""} of its own still registered (${left.map((h) => Object.keys(h).join("+")).join("; ")}). Hooks are process-wide: take them off in the test that adds them, or in afterAll.`);
+  if (tied) { vault.ledger = null; vault.parentOf = () => null; }
+  const said: string[] = [];
+  if (left.length) said.push(`${file} ended with ${left.length} turn hook${left.length > 1 ? "s" : ""} of its own still registered (${left.map((h) => Object.keys(h).join("+")).join("; ")}). Hooks are process-wide: take them off in the test that adds them, or in afterAll.`);
+  if (tied) said.push(`${file} ended with the secrets vault still tied to its store. The vault is process-wide: set vault.ledger to null and vault.parentOf to () => null before the store closes.`);
+  for (const [from, values] of by) said.push(`${from} ended with settings of the environment changed: ${values.join(", ")}. The environment is process-wide: put back what a test changed, in the test or in afterAll (test/env.ts does both).`);
+  throw new Error(said.join("\n"));
 }
 beforeEach(() => {
   // Every test module not seen yet, in the order they loaded: the last is the
@@ -83,7 +119,12 @@ beforeEach(() => {
     file = relative(join(import.meta.dir, ".."), fresh.at(-1)!);
   }
 });
-afterEach(() => { afterLast = [...allHooks()]; });
+afterEach(() => {
+  afterLast = [...allHooks()];
+  tiedAfterLast = vault.ledger;
+  envAfterLast = Object.fromEntries(Object.keys(start).map((k) => [k, process.env[k]]));
+  for (const [k, v] of Object.entries(envAfterLast)) if (v !== start[k] && !cameFrom.has(`${k}=${v ?? "(unset)"}`)) cameFrom.set(`${k}=${v ?? "(unset)"}`, file);
+});
 // Once, after the last test file (bun test fires no exit event from a preload).
 afterAll(() => {
   rmSync(dir, { recursive: true, force: true });

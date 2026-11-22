@@ -108,6 +108,15 @@ under `~/.cache/keel-work/bun/research/`.
   the real UI against the real daemon, with `shoot(page, name)` screenshots in
   both themes. Unit tests (`bun test`, next to the code) only for pure logic an
   e2e cannot reach.
+- A test assumes nothing about the machine it runs on. The test files of a run
+  share one process and run in the folder's order on the disk, which differs
+  from one machine to the next: a file leaves nothing process-wide behind
+  (turn hooks, the secrets vault's tie to a store, the environment;
+  `test/preload.ts` names a file that does, `test/env.ts` sets a file's own
+  environment and puts it back). A setting from the environment is read when
+  it is used, not when its module loads. A test that needs what a machine may
+  lack (a sandbox, a desktop bus, a program) probes for it and is skipped by
+  that name; it does not pass without checking.
 - UI: tokens in `ui/src/styles.css` only; components use them (`bg-raised`,
   `text-muted`, `border-line`, `text-accent`). Base UI for behavior, our own
   Tailwind styling. Check the screenshots at 1920x1040 in both themes.

@@ -51,7 +51,8 @@ const expired = (turn: number) => new Bad(`the snapshot from before that turn ($
 // Retention: the newest KEEP checkpoints of a session (Claude Code keeps the
 // 100 most recent), and a store no larger than the budget (default the
 // smaller of 10 GB and 5% of the disk it is on), oldest first.
-const KEEP = Number(process.env.KEEL_CHECKPOINT_KEEP ?? 100);
+// Read when a store is tended, not when this file loads: a setting made after that counts too.
+const keep = () => Number(process.env.KEEL_CHECKPOINT_KEEP ?? 100);
 function budget(root: string): number {
   if (process.env.KEEL_CHECKPOINT_BUDGET_MB) return Number(process.env.KEEL_CHECKPOINT_BUDGET_MB) * 1024 * 1024;
   try {
@@ -284,7 +285,7 @@ export class Checkpoints {
     const settle = () => db.query("DELETE FROM checkpoints WHERE tree = '' AND at != 'start'").run();
     // Rows of sessions that are gone, and past the newest KEEP of each session.
     removed += db.query("DELETE FROM checkpoints WHERE session_id NOT IN (SELECT id FROM sessions)").run().changes;
-    removed += db.query(`UPDATE checkpoints SET tree = '' WHERE id IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY created DESC) AS r FROM checkpoints WHERE tree != '') WHERE r > ?)`).run(KEEP).changes;
+    removed += db.query(`UPDATE checkpoints SET tree = '' WHERE id IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY created DESC) AS r FROM checkpoints WHERE tree != '') WHERE r > ?)`).run(keep()).changes;
     settle();
     const gcAll = async () => {
       // Each tree is kept in the shadow of the folder it was taken of.
