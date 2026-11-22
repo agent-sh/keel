@@ -6,9 +6,19 @@ what waits on you, native notifications whose click opens the session they are
 about, and `keel://` links. The daemon stays a process of its own. The app
 follows it across restarts and upgrades and never stops it unless asked.
 
-Linux first: GTK 4 and the system web view (WebKitGTK 6), which every GNOME
-desktop already has. Nothing is bundled, so the program is well under a
-megabyte.
+Linux first, and nothing is bundled: the page is drawn by an engine the
+distribution already ships. There are two, behind one seam:
+
+- **Qt WebEngine** (Chromium), where the distribution's package is installed.
+  It is the engine the page is built and tested on, and it keeps up with
+  several panes streaming at once. The windows are then drawn by a second
+  small program, `keel-desktop-qt`, that the app starts and drives.
+- **GTK 4 and the system web view** (WebKitGTK 6), which every GNOME desktop
+  already has. The app draws its windows itself with it whenever the other is
+  not there.
+
+The app picks by itself: Qt WebEngine when `keel-desktop-qt` is beside it and
+runs, else the system web view. Both programs together are about a megabyte.
 
 ## Build and install
 
@@ -23,6 +33,14 @@ Needs cargo and the development files of GTK 4 and WebKitGTK 6 (Debian and
 Ubuntu: `libgtk-4-dev libwebkitgtk-6.0-dev`). At run time: GTK 4.12 or newer
 and WebKitGTK 6.0.
 
+With a C++ compiler and the development files of Qt WebEngine 6.8 or newer
+(Debian and Ubuntu: `qt6-webengine-dev`; Fedora: `qt6-qtwebengine-devel`) the
+same command also builds `desktop/dist/keel-desktop-qt` (`desktop/qt/build.sh`
+alone builds only that). Without them the app is built alone and says so. At
+run time the Qt engine needs the distribution's Qt WebEngine (Debian and
+Ubuntu: `sudo apt install libqt6webenginewidgets6`; the package the build
+makes recommends it and does not require it).
+
 ## Use
 
 ```bash
@@ -32,6 +50,7 @@ keel-desktop --new                 # open on a new session
 keel-desktop --window /s/ID        # a session in a window of its own
 keel-desktop --hidden              # start with the tray mark only
 keel-desktop --quit                # quit the app; the daemon keeps running
+keel-desktop --engine webkit       # draw the page with the system web view (or qt; also KEEL_DESKTOP_ENGINE)
 ```
 
 It finds the daemon the way the command line does: `--url`, `KEEL_URL`, the
@@ -71,6 +90,13 @@ started: the first page says so.
   window's size and the page's colors are remembered. The title bar follows
   the page's theme and text size, says which daemon the app is on when it is
   not the default one, and shows the daemon's state.
+- **Screen readers.** With the Qt engine the page's accessibility tree is
+  built when the desktop says a screen reader is on, as a browser does it;
+  turning one on or off draws the windows again for it. Without one the tree
+  is left off: with it the engine lays out every row of every pane at every
+  change, the ones out of view included. `KEEL_DESKTOP_ACCESSIBILITY=1` turns
+  it on whatever the desktop says, `0` never. The window's own bar and
+  controls, and the system web view's page, are accessible always.
 - **Links and files.** A link out of Keel opens in your browser. A file the
   page offers is saved to your downloads folder, under a free name. A copied
   screenshot pastes into the message box.
@@ -110,19 +136,19 @@ may use it:
 
 | Channel | Who may use it | What it does |
 | --- | --- | --- |
-| Messages to the app (`look`, `window`, `start`, and the clipboard below) | The top frame of a document of the daemon's own origin, and the app's away page. The engine's channel is open to every frame, so each message carries a value of that window alone, held in the top frame's script; a message without it is dropped. | The title bar's colors (checked hex values); a window for a place of the page (at most eight); starting the daemon when it is down and the address is this machine's. No message opens the browser. |
+| Messages to the app (`look`, `window`, `start`, and the clipboard below) | The top frame of a document of the daemon's own origin, and the app's away page. WebKit's channel is open to every frame and Qt's reaches the top frame only; under either, each message carries a value of that window alone, held in the top frame's script, and a message without it is dropped. | The title bar's colors (checked hex values); a window for a place of the page (at most eight); starting the daemon when it is down and the address is this machine's. No message opens the browser. |
 | `window.keelShell` | The top frame of a document whose own origin is the daemon's. The script is injected for that host and tests the document's origin, so a sandboxed document the daemon serves (an artifact's raw address) gets none. | Read-only facts, and `post` above. |
-| Main-frame navigation | The page, to a place of the page at the daemon's origin (`/`, `/s/ID`, `/p/ID`, `/settings`). | Any other document, another origin's or one the daemon serves that is no page, is refused when its answer arrives, and the page stays as it was. A file of the daemon's to keep is saved instead; the page stays there too. |
-| A link out of the daemon's origin | The owner's click. A scripted click or `window.open` without one does nothing. | Opens in the browser: http and https only. |
+| Main-frame navigation | The page, to a place of the page at the daemon's origin (`/`, `/s/ID`, `/p/ID`, `/settings`). | Any other document, another origin's or one the daemon serves that is no page, is refused, and the page stays as it was. WebKit refuses when the answer arrives, so a navigation that turns out to be a file of the daemon's to keep is saved instead; Qt is asked before the request goes out and refuses that too (the page's own links to a file are no navigation, and save under both). |
+| A link out of the daemon's origin | The owner's click. A scripted click or `window.open` without one does nothing. (Qt says of a window asked for whether the owner asked, and says nothing of a link in the main frame: there the owner's press in that window, within a second, is what counts.) | Opens in the browser: http and https only. No other scheme starts a program. |
 | A new window for a place of the page | The owner's click on a link to it, or the page's `window` message. | A window of the app, capped as above. |
-| Clipboard, read | The top frame, by a keyed `paste` message, within a second of the owner's own key or button press in that window: the paste key when the event carried nothing (a copied picture), or Paste in the page's menu. | The app reads the clipboard itself and hands its text and picture to that page, the picture no larger than the page keeps one (scaled and encoded off the main loop). The engine reads it for nobody: its asynchronous clipboard is off and every permission request is refused, in every frame. |
+| Clipboard, read | The top frame, by a keyed `paste` message, within a second of the owner's own key or button press in that window: the paste key when the event carried nothing (a copied picture), or Paste in the page's menu. | The app reads the clipboard itself and hands its text and picture to that page, the picture no larger than the page keeps one (scaled and encoded off the main loop). The engine reads it for nobody: script has no clipboard through it (WebKit's asynchronous clipboard is off; Qt's clipboard access for script is off) and every permission request is refused, in every frame. |
 | The keyboard, for a frame of content (an artifact's page, the preview of a port) | The owner: a press with the pointer over the frame, or Tab into it. | The page's side, in a tab too (`ui/src/lib/frames.ts`): a frame the owner left takes no keyboard until they come back to it, and a focus the frame asks for itself goes back to what had it. So a paste aimed at the message box does not land in a frame. |
-| Clipboard, write | The top frame, by a keyed `copying` message within a second of the owner's press, then `copy` with the text within thirty seconds, once. | The app writes the text. A copy no press announced is refused. A frame can still copy its own selection inside the owner's click in it, as in a browser. |
-| Permission requests (clipboard, location, camera, microphone, notifications, pointer lock) | Nobody. | Refused, always. |
+| Clipboard, write | The top frame, by a keyed `copying` message within a second of the owner's press, then `copy` with the text within thirty seconds, once. | The app writes the text. A copy no press announced is refused. Under WebKit a frame can still copy its own selection inside the owner's click in it, as in a browser; under Qt no script copies, and the owner's own copy key and menu do. |
+| Permission requests (clipboard, location, camera, microphone, notifications, pointer lock, screen capture, full screen) | Nobody. | Refused, always, and none is remembered. |
 | Downloads | The page, and a frame the page allows downloads in (the preview of a port you opened). An HTML artifact's frame cannot. | Saved to the downloads folder under a free name: never over a file, never outside that folder, never into the home folder. |
 | Print, `alert`, `confirm`, `prompt`, a password prompt | Nobody: the page draws its own dialogs. | The engine's dialogs are not shown. |
 | File chooser, a file dropped on the page, a drag out of it | The owner's own act, as in a browser. | The frame under the pointer gets what the owner gave it. |
-| Context menu | The owner. | Copy, paste and the like; no navigation, no "open in a new window", no inspector (unless `--devtools`). |
+| Context menu | The owner. | Copy, paste and the like; no navigation, no "open in a new window", no "save page", no source view, no inspector (unless `--devtools`; without it the Qt engine's debugging port is not opened either). |
 | The app tells the page (`keel-shell` events) | The app only. | A place to show, the daemon's state, the text size keys. |
 | `keel://` links and a second launch | Any program or web page. | A place of the page and nothing more: no query, so no link names a request to approve. The window comes up with the keyboard off every answer: a Return on its way approves nothing. |
 | A notification's click | The desktop's notification service. | Opens where the alert leads now; a click on a request's own notification may land on its answer, as in a browser. |
@@ -134,28 +160,42 @@ Everything that is not the web view itself names no engine: finding or
 starting the daemon and following it (`daemon.rs`, `http.rs`), the tray mark
 (`tray.rs`), notifications and their click (`notify.rs`), one instance and
 `keel://` links (`instance.rs`, `links.rs`), what is remembered (`prefs.rs`),
-the capability object and the away page (`page.rs`), and the decisions between
-them (`main.rs`). The engine sits behind two traits in `view.rs`, implemented
-today by `window.rs` (GTK 4 and WebKitGTK 6).
+the capability object and the away page (`page.rs`), which message of a page
+is acted on (`said.rs`), when the clipboard is touched (`clip.rs`), and the
+decisions between them (`main.rs`). The engine sits behind two traits in
+`view.rs`, and `main.rs` names the engines in one function:
 
-A second engine implements `Engine` and `View` and is named in one line of
-`main.rs`. What that takes:
+- `window.rs`: GTK 4 and WebKitGTK 6, in the app's own process.
+- `qt.rs`: Qt WebEngine, in a program of its own (`qt/main.cpp`, one file of
+  C++). That program opens windows, shows pages and reports; `qt.rs` drives
+  it over its standard input and output in lines of JSON (the list is at the
+  top of `qt.rs`) and decides with the same files as the other engine. So a
+  rule about the token, the alerts, a link or the clipboard is written once.
+  The other program decides only what its engine wants answered at once:
+  whether the main frame may show an address (the same table of paths as
+  `links.rs`: `test/paths.txt`, checked by `cargo test` and by
+  `keel-desktop-qt --self-test`), that no window opens by itself, and that
+  every permission request is refused. When the app goes away the other
+  program ends with it; when the other program stops under the app, the app
+  starts it again and the windows come back on the page.
+
+Another engine implements `Engine` and `View`. What that takes:
 
 - **A window per `Opening`**: the app's window or a session's own, at the
-  given size and look, with the app id `io.github.agent_sh.Keel` so the
-  desktop shows the app's icon. `present(token)` raises it with the desktop's
-  activation token when one is given (xdg-activation on Wayland).
+  given size and look, with the app's id so the desktop shows the app's icon.
+  `present(token)` raises it with the desktop's activation token when one is
+  given (xdg-activation on Wayland).
 - **The page's object**: run `page::bridge(engine, window, tray, post, key,
   origin)` before any script of the top frame of the daemon's origin, and in
   no other frame or origin. `post` is the engine's own way for a page to send
   a string to the app; `key` is a random value of that window.
-- **What the page says** (JSON through `post`), turned into an `Ask` only
-  when it carries the window's `key` (everything in "What the page can
-  reach" holds for a second engine too):
+- **What the page says** (JSON through `post`), read by `said::asked` and
+  acted on only when it carries the window's `key` (everything in "What the
+  page can reach" holds for every engine):
   `{t:"look", dark, bg, panel, fg, muted, line, need, scale}`,
   `{t:"window", path}`, `{t:"start"}`, and the clipboard, decided by
   `clip.rs` from the owner's presses in the window (the engine reports each
-  key and button press to it): `{t:"paste", id}`, `{t:"copying"}`,
+  key and button press to it): `{t:"paste", id, edge}`, `{t:"copying"}`,
   `{t:"copy", id, text}`. Colors are checked hex values.
 - **What the app says to the page**: `go(path, clicked)`, `daemon_back()` and
   `daemon_away()` dispatch a `keel-shell` event on the window with
@@ -181,18 +221,20 @@ A second engine implements `Engine` and `View` and is named in one line of
   `Ask::Close` when the owner closes the window (the app decides between
   hiding and quitting).
 - **A question** (`Engine::confirm`) before something that cannot be taken
-  back.
+  back: the safe answer is the default and shows the focus.
 - **Storage of the page's own** (local storage, cookies) under the app's
   folder, so the theme, the text size and the panes survive a restart.
 
 The daemon's side (`/api/shell/events`, `/api/shell/ack`, `/api/shell/click`) and the page's
 side (`ui/src/lib/shell.ts`, `ui/src/features/shell.ts`) do not change with
-the engine.
+the engine. The page is told which engine draws it (`keelShell.engine`:
+`"qt"` or `"webkit"`) and has no use for it.
 
 ## Check
 
 ```bash
-desktop/test/e2e.sh                         # in a hidden native Wayland GNOME desktop
+desktop/test/e2e.sh                         # in a hidden native Wayland GNOME desktop, with the engine the app picks
+KEEL_DESKTOP_ENGINE=webkit desktop/test/e2e.sh   # the same checks with the system web view (or qt)
 KEEL_E2E_BACKEND=x11 desktop/test/e2e.sh    # in a hidden X11 desktop
 KEEL_URL=... bunx playwright test test/e2e/shell.spec.ts    # the page's side, in Chromium
 ```
@@ -211,7 +253,8 @@ request waiting, quitting the daemon with a turn at work, a frame the owner
 clicked in racing the owner's paste for the clipboard, a copy and a paste
 with no press behind them, the main frame at an artifact's own address, a
 lock whose pid was given to another process, and an address that is not this
-machine's. With another
+machine's. With the Qt engine it also stops the program that draws the
+windows and expects them back on the page. With another
 app in front it checks focus: a launch that carries the desktop's activation
 token brings Keel's window to the front, and one without it, or with a
 made-up one, does not.
@@ -225,13 +268,28 @@ display of the hidden workspace's own.
 `KEEL_DESKTOP_LOG=FILE` makes the app write a line for each thing it does
 (the check reads it), and `KEEL_DESKTOP_NO_BROWSER=1` keeps it from opening
 the browser for a link. `KEEL_DESKTOP_PROBE=FILE` injects a script into the page for measuring it
-inside the app; what is posted to `webkit.messageHandlers.probe` is printed.
+inside the app; what it reports (`window.__keelProbe(s)` under Qt,
+`webkit.messageHandlers.probe` under WebKit) is printed. `KEEL_DESKTOP_QT`
+names the Qt engine's program when it is not beside the app.
 
 ## Limits
 
 - The system web view lays out a heavy page (several long panes streaming at
-  once) more slowly than Chromium does. For that work a browser tab is still
-  the faster window. The engine is a seam (above) so this can change.
+  once) more slowly than Chromium does. That is what the Qt engine is for;
+  without it, a browser tab is still the faster window for that work.
+- The Qt engine runs the Chromium the distribution's Qt WebEngine is built
+  on, which is older than a current browser's. Its script heap is bounded
+  (`HEAP_MB` in `qt/main.cpp`): unbounded, it grows several times further
+  than a browser lets it before it is collected, and the process holds all
+  of it. The bound costs no frames. Should a page ever need more, the engine
+  ends that page's process and the app loads the page again;
+  `QTWEBENGINE_CHROMIUM_FLAGS=--js-flags=--max-old-space-size=N` sets another
+  bound.
+- A window of the Qt engine draws its own bar and has no frame of the
+  desktop's: floating, it has a line around it and no shadow; it is resized
+  from its edges.
+- Each engine keeps the page's own storage in a folder of its own, so the
+  theme, the text size and the panes are set once per engine.
 - Not proven by the check, which has no real pointer or input method: a file
   dropped on the window, and typing through an input method. A real desktop
   session is also what proves the tray with a shell's own tray host, a

@@ -206,6 +206,19 @@ mod tests {
         }
     }
 
+    // The table the other engine's program is held to as well (keel-desktop-qt --self-test).
+    #[test]
+    fn the_shared_table_of_paths_is_decided_as_it_says() {
+        let mut n = 0;
+        for line in include_str!("../test/paths.txt").lines().filter(|l| !l.is_empty() && !l.starts_with('#')) {
+            let (want, path) = line.split_at(3);
+            assert_eq!(page_path(path).is_some(), want == "ok ", "{line}");
+            assert_eq!(main_frame_may_show(&format!("http://127.0.0.1:1{path}"), "http://127.0.0.1:1"), want == "ok ", "{line}");
+            n += 1;
+        }
+        assert!(n > 30);
+    }
+
     #[test]
     fn the_main_frame_origin_is_scheme_host_and_port() {
         assert_eq!(origin("http://127.0.0.1:47960/s/abc?e=1"), "http://127.0.0.1:47960");

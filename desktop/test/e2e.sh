@@ -54,22 +54,24 @@ py() { python3 -c "$@"; }
 # Only this check's own app counts: another keel-desktop on the machine is not its business.
 app_pids() { for p in $(pgrep -x keel-desktop); do tr '\0' '\n' < "/proc/$p/environ" 2> /dev/null | grep -qx "KEEL_DESKTOP_DIR=$D/shell" && echo "$p"; done; }
 app_pid() { local p; p=$(app_pids | tail -1); echo "${p:-0}"; }
+# the process that owns the app's windows: the app, or the program that draws them for it (the Qt engine)
+win_pid() { local a q; a=$(app_pid); q=$(pgrep -x keel-desktop-qt -P "$a" 2> /dev/null | tail -1); echo "${q:-$a}"; }
 logged() { grep -c "\"what\":\"$1\"" "$D/shell.jsonl" 2> /dev/null || true; }
 last() { grep "\"what\":\"$1\"" "$D/shell.jsonl" 2> /dev/null | tail -1; }
 # a picture of the app's largest window alone (of the whole desktop with `all`)
 shot() {
-  local id; id=$($A windows --id "$WS" --pid "$(app_pid)" 2> /dev/null | py 'import json,sys
+  local id; id=$($A windows --id "$WS" --pid "$(win_pid)" 2> /dev/null | py 'import json,sys
 ws=json.load(sys.stdin).get("windows", [])
 print(max(ws, key=lambda w: w["geometry"]["width"]*w["geometry"]["height"])["id"] if ws else "")')
   if [ "${2:-}" = all ] || [ -z "$id" ]; then $A screenshot --id "$WS" --output "$D/shots/$1.png" > /dev/null 2>&1
   else $A screenshot-window --id "$WS" --window "$id" --output "$D/shots/$1.png" > /dev/null 2>&1; fi
 }
 # the main window: "x y width height title"
-geometry() { $A windows --id "$WS" --pid "$(app_pid)" 2> /dev/null | py 'import json,sys
+geometry() { $A windows --id "$WS" --pid "$(win_pid)" 2> /dev/null | py 'import json,sys
 ws=json.load(sys.stdin).get("windows", [])
 w=max(ws, key=lambda w: w["geometry"]["width"]*w["geometry"]["height"]) if ws else None
 print(*( [w["geometry"][k] for k in ("x","y","width","height")] + [w.get("title","")] ) if w else "")'; }
-windows() { $A windows --id "$WS" --pid "$(app_pid)" 2> /dev/null | py 'import json,sys; print(len(json.load(sys.stdin).get("windows", [])))'; }
+windows() { $A windows --id "$WS" --pid "$(win_pid)" 2> /dev/null | py 'import json,sys; print(len(json.load(sys.stdin).get("windows", [])))'; }
 api() { curl -fsS -m 10 -X "${3:-GET}" -H 'content-type: application/json' ${2:+-d "$2"} "$URL$1"; }
 tray() { gdbus call --session --dest "$BUS" --object-path /StatusNotifierItem --method org.freedesktop.DBus.Properties.Get org.kde.StatusNotifierItem "$1" 2> /dev/null; }
 menu() { gdbus call --session --dest "$BUS" --object-path /StatusNotifierItem/Menu --method com.canonical.dbusmenu.GetLayout 0 1 "@as []" 2> /dev/null; }
@@ -79,16 +81,21 @@ pick() { gdbus call --session --dest "$BUS" --object-path /StatusNotifierItem/Me
 # (Asked of ss by port, not found by a search of its whole list: a search that stops at its first
 # match ends the listing early, and under pipefail that reads as "not found".)
 listening() { [ -n "$(ss -ltnH "sport = :$1" 2> /dev/null)" ]; }
-for _ in 1 2 3 4 5 6; do PORT=$((48200 + RANDOM % 1700)); listening "$PORT" || break; done
-URL=http://127.0.0.1:$PORT
-cat > "$D/keel" <<EOF
+# (A port of its own, and the program that starts the daemon on it. Another program may take the
+# port between the look and the daemon's own bind: the check then takes another, once.)
+scratch() {
+  for _ in 1 2 3 4 5 6; do PORT=$((48200 + RANDOM % 1700)); listening "$PORT" || break; done
+  URL=http://127.0.0.1:$PORT
+  cat > "$D/keel" <<EOF
 #!/usr/bin/env bash
 # Stands in for the keel program the shell starts: the scratch daemon of this check.
 cd "$REPO" && exec env -i PATH="$(dirname "$(command -v bun)"):/usr/local/bin:/usr/bin:/bin" HOME="$D/home" ${TMPDIR:+TMPDIR="$TMPDIR"} LANG=C.UTF-8 \\
   KEEL_KEYRING_SERVICE=keel-scratch-empty KEEL_DESKTOP_NOTIFY=off DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent/bus XDG_RUNTIME_DIR="$D/home/run" KEEL_CRED_GET=/bin/false \\
   KEEL_DEV_DIR="$D/dev" KEEL_SCRIPTED_PROVIDER=1 KEEL_DEFAULT_MODEL=scripted:stand-in-strict KEEL_SERVER_NAME=desktop-e2e KEEL_BIN="$KEEL" bash scripts/dev.sh $PORT
 EOF
-chmod +x "$D/keel"
+  chmod +x "$D/keel"
+}
+scratch
 daemon_up() { (setsid nohup "$D/keel" >> "$D/daemon.log" 2>&1 < /dev/null &); wait_for 60 "curl -fsS -m 2 $URL/api/daemon | grep -q '$D/dev'"; }
 daemon_down() {
   for p in $(ss -ltnpH "sport = :$PORT" | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u); do tr '\0' ' ' < "/proc/$p/cmdline" | grep -q "$D/dev" && kill "$p"; done
@@ -103,7 +110,7 @@ cleanup() {
   echo "evidence: $D"
 }
 trap cleanup EXIT
-daemon_up || { echo "the scratch daemon did not come up; see $D/daemon.log"; exit 2; }
+daemon_up || { grep -q "could not be bound" "$D/daemon.log" && scratch && daemon_up; } || { echo "the scratch daemon did not come up; see $D/daemon.log"; exit 2; }
 sleep 8
 real=$(api /api/providers | py 'import json,sys; d=json.load(sys.stdin); d=d.get("providers", d); print(" ".join(x["id"] for x in d if x.get("available") and x["id"] not in ("scripted","acp","alibaba")))')
 [ -z "$real" ] || { echo "the scratch daemon has real providers ($real): stopping"; exit 2; }
@@ -147,6 +154,9 @@ shows() { api /api/shell | grep -q '"acks":true'; }
 # --- 1. the window
 launch
 check "the app's window opens" "wait_for 30 '[ \"\$(windows)\" = 1 ]'"
+# What draws the page in this run (KEEL_DESKTOP_ENGINE=qt|webkit chooses; else Qt where its program and libraries are there).
+ENGINE=$(last engine | sed 's/.*"name":"\([a-z]*\)".*/\1/')
+echo "# engine: $ENGINE $(last qt | sed 's/.*"v":\({[^}]*}\).*/\1/')"
 check "the shell found the daemon and attached to it" "wait_for 20 'last link | grep -q Up' && api /api/shell | grep -q '\"attached\":true'"
 check "the tray host has the app's mark" "wait_for 10 \"grep -q 'ITEM ' '$D/tray-host.out'\""
 sleep 3
@@ -246,7 +256,9 @@ if command -v wl-copy > /dev/null && [ "$BACKEND" != x11 ]; then (wl-copy "$SECR
 sessions_before=$(grep -c '"window":"session"' "$D/shell.jsonl" || true)
 "$SHELL_BIN" "keel://session/$art"
 check "the artifact's frame ran its script" "wait_for 30 \"said 'ARTIFACT DONE' | grep -q DONE\""
-check "it has the engine's channel but not the app's object, and none of its messages was acted on" "grep -aq '^PROBE ARTIFACT handler=true keelShell=undefined' '$D/shell.out' && [ \"\$(grep -c '\"window\":\"session\"' '$D/shell.jsonl' || true)\" = \"$sessions_before\" ] && [ \"\$(windows)\" = 1 ] && ! grep -q '\"what\":\"external\"' '$D/shell.jsonl' && ! grep -qi 'ff0000' '$D/shell/shell.json' && [ \"\$(logged start)\" = 0 ]"
+# (WebKit's channel is open to every frame; Qt's does not reach a frame at all.)
+reach=true; [ "$ENGINE" = qt ] && reach=false
+check "it has the engine's channel ($reach under $ENGINE) but not the app's object, and none of its messages was acted on" "grep -aq '^PROBE ARTIFACT handler=$reach keelShell=undefined' '$D/shell.out' && [ \"\$(grep -c '\"window\":\"session\"' '$D/shell.jsonl' || true)\" = \"$sessions_before\" ] && [ \"\$(windows)\" = 1 ] && ! grep -q '\"what\":\"external\"' '$D/shell.jsonl' && ! grep -qi 'ff0000' '$D/shell/shell.json' && [ \"\$(logged start)\" = 0 ]"
 check "it read nothing from the clipboard" "grep -aq '^PROBE ARTIFACT CLIP exec=' '$D/shell.out' && ! grep -a '^PROBE ARTIFACT CLIP' '$D/shell.out' | grep -q 'clipboard-secret' && ! grep -aq '^PROBE ARTIFACT CLIP event=' '$D/shell.out' && grep -aq '^PROBE ARTIFACT CLIP read refused' '$D/shell.out'"
 [ -n "$SECRET" ] || echo "# note: no wl-copy for this backend, so the clipboard held no secret; the refusal itself was still checked"
 
@@ -314,7 +326,16 @@ $A key --id "$WS" F9 > /dev/null 2>&1
 check "the main frame does not show an artifact's own address, and the artifact gets no app object" "wait_for 10 \"said GOING-RAW | grep -q GOING\" && sleep 5 && grep -a '^PROBE ' '$D/shell.out' | tail -1 | grep -q \"^PROBE AT $URL/s/$art shell=object\" && ! grep -aq '^PROBE ARTIFACT handler=true keelShell=object' '$D/shell.out' && [ \"\$(logged load)\" = \"$loads\" ] && [ \"\$(windows)\" = 1 ]"
 # The same address as a file to keep is saved, and the page is not loaded again.
 $A key --id "$WS" F10 > /dev/null 2>&1
-check "a navigation that is a file to keep is saved, and the page stays" "wait_for 10 \"[ -s '$D/apphome/Downloads/shell-probe.html' ]\" && sleep 3 && grep -a '^PROBE ' '$D/shell.out' | tail -1 | grep -q \"^PROBE AT $URL/s/$art shell=object\" && [ \"\$(logged load)\" = \"$loads\" ]"
+if [ "$ENGINE" = qt ]; then
+  # Qt's engine asks before the answer arrives, so it cannot know the address is a file: the navigation is refused as any other that is no place of the page.
+  check "a navigation to a file of the daemon's is refused like any that is no place of the page, and the page stays" "wait_for 10 \"said GOING-DOWNLOAD | grep -q GOING\" && sleep 3 && [ ! -e '$D/apphome/Downloads/shell-probe.html' ] && grep -a '^PROBE ' '$D/shell.out' | tail -1 | grep -q \"^PROBE AT $URL/s/$art shell=object\" && [ \"\$(logged load)\" = \"$loads\" ]"
+else
+  check "a navigation that is a file to keep is saved, and the page stays" "wait_for 10 \"[ -s '$D/apphome/Downloads/shell-probe.html' ]\" && sleep 3 && grep -a '^PROBE ' '$D/shell.out' | tail -1 | grep -q \"^PROBE AT $URL/s/$art shell=object\" && [ \"\$(logged load)\" = \"$loads\" ]"
+fi
+# The file offered as the page offers one (a link to keep it): saved under a free name in the downloads folder, never over a file.
+kept=$(ls "$D/apphome/Downloads" 2> /dev/null | wc -l); notes=$(logged download)
+$A key --id "$WS" F10 > /dev/null 2>&1
+check "a file the page offers is saved to the downloads folder under a free name, and the page stays" "wait_for 10 \"[ \\\"\\\$(ls '$D/apphome/Downloads' | wc -l)\\\" = $((kept + 1)) ] && [ \\\"\\\$(logged download)\\\" = $((notes + 1)) ]\" && sleep 2 && ls '$D/apphome/Downloads' | grep -q '^shell-probe' && [ -z \"\$(ls -A '$D/apphome' | grep -v '^Downloads\$' | grep -i probe)\" ] && grep -a '^PROBE ' '$D/shell.out' | tail -1 | grep -q \"^PROBE AT $URL/s/$art shell=object\" && [ \"\$(logged load)\" = \"$loads\" ]"
 
 # --- 5d. focus: a launch with the desktop's activation token brings the window in front of another app, and only then
 if [ "$BACKEND" = gnome ]; then
@@ -347,7 +368,8 @@ check "resume lets them through again" "wait_for 10 \"api /api/snooze | grep -q 
 read -r X Y W H _ <<< "$(geometry)"
 for _ in 1 2 3; do
   grep -q '"dark":true' "$D/shell/shell.json" && break
-  $A click --id "$WS" $((X + 288)) $((Y + H - 28)) > /dev/null 2>&1; sleep 1.5
+  # (Each click is given time to arrive: a second one would turn the theme back.)
+  $A click --id "$WS" $((X + 288)) $((Y + H - 28)) > /dev/null 2>&1; wait_for 6 "grep -q '\"dark\":true' '$D/shell/shell.json'" || true
 done
 $A click --id "$WS" $((X + W - 300)) $((Y + H / 2)) > /dev/null 2>&1
 check "the page's theme reached the shell (dark)" "grep -q '\"dark\":true' '$D/shell/shell.json'"
@@ -370,7 +392,7 @@ sleep 1; shot 12-stop-question-dark all
 $A key --id "$WS" Escape > /dev/null 2>&1
 check "Cancel keeps the app, the daemon and the turn" "wait_for 10 \"last confirmed | grep -q '\\\"stop\\\":false'\" && sleep 1 && [ \"\$(app_pids | wc -l)\" = 1 ] && api /api/daemon | grep -q '\"draining\":null' && api /api/shell | grep -q 'a long build'"
 api "/api/sessions/$run/interrupt" '{}' POST > /dev/null 2>&1
-$A resize-window --id "$WS" --pid "$(app_pid)" 1500 900 > /dev/null 2>&1; sleep 1.5
+$A resize-window --id "$WS" --pid "$(win_pid)" 1500 900 > /dev/null 2>&1; sleep 1.5
 pick 10
 check "quit from the tray ends the app" "wait_for 10 '[ \"\$(app_pids | wc -l)\" = 0 ]'"
 check "the daemon keeps running, and sees the app gone" "api /api/health | grep -q pid && wait_for 10 \"api /api/shell | grep -q '\\\"attached\\\":false'\""
@@ -393,15 +415,27 @@ real=$(api /api/providers | py 'import json,sys; d=json.load(sys.stdin); d=d.get
 check "the daemon it started is the scratch one (no real provider)" "[ -z \"$real\" ]"
 
 # --- 10. a session in a window of its own
+said_before=$(wc -l < "$D/shell.out")
 "$SHELL_BIN" --window "/s/$other"
 wait_for 20 '[ "$(windows)" = 2 ]'
 check "a session opens in a window of its own (the app has $(windows) windows)" "[ \"\$(windows)\" = 2 ] && grep '\"what\":\"present\"' '$D/shell.jsonl' | tail -3 | grep -q '\"window\":\"session\"'"
-[ "$(windows)" = 2 ] || $A windows --id "$WS" --pid "$(app_pid)" 2> /dev/null | py 'import json,sys
+[ "$(windows)" = 2 ] || $A windows --id "$WS" --pid "$(win_pid)" 2> /dev/null | py 'import json,sys
 for w in json.load(sys.stdin).get("windows", []): print("# window:", w.get("title"), w["geometry"])'
 sleep 4; shot 11-session-window-dark all
 check "the session's window does not fight for the place it shows (no error from the page)" "! api '/api/errors?limit=100' | grep -qi 'replaceState\|history'"
-if [ "$BACKEND" = gnome ]; then
-  echo "# note: under the headless GNOME workspace a second web view of one process is given no size (a bare WebKitGTK window shows the same), so the session window's content is checked under KEEL_E2E_BACKEND=x11"
+if [ "$BACKEND" = gnome ] && [ "$ENGINE" != qt ]; then
+  echo "# note: under the headless GNOME workspace a second web view of one process is given no size (a bare WebKitGTK window shows the same), so the session window's content is checked under KEEL_E2E_BACKEND=x11, and with the Qt engine"
+else
+  check "the session's window shows its session, with the app's object" "wait_for 15 \"tail -n +$((said_before + 1)) '$D/shell.out' | grep -aq '^PROBE AT $URL/s/$other shell=object'\""
+fi
+
+# --- 10b. the Qt engine's program stops under the app: it is started again and the windows come back
+if [ "$ENGINE" = qt ]; then
+  drew=$(win_pid); loads=$(logged load)
+  kill -9 "$drew"
+  check "the program that draws the windows was killed: the app starts it again and both windows come back on the page" "wait_for 30 \"[ \\\"\\\$(win_pid)\\\" != $drew ] && [ \\\"\\\$(win_pid)\\\" != \\\"\\\$(app_pid)\\\" ] && [ \\\"\\\$(windows)\\\" = 2 ] && [ \\\"\\\$(logged load)\\\" -ge $((loads + 2)) ]\" && [ \"\$(app_pids | wc -l)\" = 1 ]"
+  said_before=$(wc -l < "$D/shell.out")
+  check "and the page in them is the app's again" "wait_for 15 \"tail -n +$((said_before + 1)) '$D/shell.out' | grep -aq '^PROBE AT $URL/s/$other shell=object'\""
 fi
 
 # --- 11. a stranger on the daemon's port while the daemon is down is never sent the token

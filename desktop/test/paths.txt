@@ -1,0 +1,43 @@
+# The places of the page the app's main frame may show ("ok") and what it may not ("no").
+# Two programs decide this, each for its own engine, and both are held to this table:
+# desktop/src/links.rs (cargo test) and desktop/qt/main.cpp (keel-desktop-qt --self-test).
+ok /
+ok /?inbox=1
+ok /s/abc
+ok /s/01a1ffe5-99ea-7c2e-8f8f-000000000000
+ok /s/01a1-ff?e=ev_1&approval=x
+ok /s/abc?approval=ap-1
+ok /s/abc?e=ev1
+ok /p/proj
+ok /p/proj_1-Z
+ok /settings
+ok /settings/models
+no s/abc
+no //evil.example/
+no /api/drain
+no /api/health
+no /api/sessions/abc/artifacts/raw?path=%2Fx%2Fevil.html
+no /api/sessions/abc/artifacts/raw?path=a&download=1
+no /s/
+no /s
+no /p
+no /s/a/b
+no /settings/a/b
+no /settings/
+no /s/a?x=javascript:alert(1)
+no /ws
+no /s/a?q=a b
+no /s/%2e%2e
+no /s/..
+no /s/a.b
+no /s/a~b
+no /?prompt=x
+no /?
+no /s/a?
+no /s/a?approval=
+no /s/a?inbox=2
+no /s/a?e=x&next=y
+no /s/a?e=x&
+no /S/abc
+no /index.html
+no /assets/app.js

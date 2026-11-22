@@ -1757,8 +1757,10 @@ now, and sets them when accepted.
 `desktop/` is Keel in a window of its own: a small native program around the
 daemon's page, with a tray mark that counts what waits on you, native
 notifications whose click opens the session, and `keel://` links. It follows
-the daemon across restarts and never stops it. Build it with
-`desktop/build.sh`; see [desktop/README.md](desktop/README.md).
+the daemon across restarts and never stops it. Nothing is bundled: the page
+is drawn by Qt WebEngine where the distribution has it installed, else by the
+system web view. Build it with `desktop/build.sh`; see
+[desktop/README.md](desktop/README.md).
 
 ## Phone
 

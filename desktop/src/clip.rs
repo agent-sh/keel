@@ -38,7 +38,8 @@ impl Gate {
         self.input = Some(now);
     }
 
-    fn pressed(&self, now: Instant) -> bool {
+    /// Whether the owner pressed a key or a button in the window just now.
+    pub fn pressed(&self, now: Instant) -> bool {
         self.input.is_some_and(|t| now.saturating_duration_since(t) <= GESTURE)
     }
 

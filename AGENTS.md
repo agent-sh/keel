@@ -248,7 +248,11 @@ under `~/.cache/keel-work/bun/research/`.
   user agent, and uses it only where the app does something a tab cannot. The
   daemon knows an app is attached by its open stream (`src/server/shell.ts`):
   a desktop notification goes to the app or is shown by the daemon, never
-  both. Its routes are for the machine itself.
+  both. Its routes are for the machine itself. What content in the page may
+  reach is decided once, in the files every engine shares (`said.rs`,
+  `clip.rs`, `links.rs`; the table is in `desktop/README.md`); an engine
+  decides only what it must answer at once, by the same rule
+  (`desktop/test/paths.txt` holds both to it).
 - Public repo rules (agent-sh): no owner chat quotes, no hostnames or private
   project names, no em dashes in code or docs.
 
@@ -267,7 +271,7 @@ under `~/.cache/keel-work/bun/research/`.
 | `src/admin/stall-watch.ts` | the stall watcher's thread: what the main thread did while the loop was held |
 | `ui/` | React 19 UI, bundled by Bun from `ui/index.html` |
 | `test/e2e/` | Playwright e2e per feature |
-| `desktop/` | the desktop app: a native window, tray mark and notifications around the page (Rust, GTK 4, the system web view) |
+| `desktop/` | the desktop app: a native window, tray mark and notifications around the page (Rust; the page drawn by Qt WebEngine through `desktop/qt/` where it is installed, else by GTK 4 and the system web view) |
 
 ## Commands
 
@@ -304,6 +308,8 @@ bun scripts/release.ts && scripts/release-check.sh   # a release packaged in dis
 bun scripts/build.ts --ui dist/keel-ui.tar.gz && keel ui install dist/keel-ui.tar.gz --url URL
                                # a UI-only change on a running daemon: no restart, turns go on, pages reload;
                                # refused when src/ differs from the daemon's build (that needs a restart)
-desktop/build.sh                # desktop/dist/keel-desktop, the desktop app (install: for this account; deb: a package)
-desktop/test/e2e.sh             # its e2e, in a hidden desktop with a scratch daemon (never the owner's screen)
+desktop/build.sh                # desktop/dist/keel-desktop, the desktop app (install: for this account; deb: a package);
+                               # and dist/keel-desktop-qt, its Qt WebEngine engine, where Qt's development files are installed
+desktop/test/e2e.sh             # its e2e, in a hidden desktop with a scratch daemon (never the owner's screen);
+                               # KEEL_DESKTOP_ENGINE=qt|webkit runs it with one engine
 ```

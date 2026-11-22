@@ -12,6 +12,7 @@ mod links;
 mod notify;
 mod page;
 mod prefs;
+mod qt;
 mod said;
 mod shortcut;
 mod tray;
@@ -45,6 +46,7 @@ usage: keel-desktop [options] [keel://LINK]
   --url URL             the daemon's address on this machine (else KEEL_URL, the state folder's daemon, the default)
   --state-dir DIR       the daemon's state folder (else KEEL_STATE_DIR)
   --keel PATH           the keel program that starts the daemon (else KEEL_BIN, the one beside this, the PATH)
+  --engine NAME         what draws the page: qt (Qt WebEngine, where it is installed) or webkit (else KEEL_DESKTOP_ENGINE)
   --shortcut            ask the desktop for a global shortcut that raises the window
   --devtools            the web inspector in the context menu
   --version, --help
@@ -445,7 +447,7 @@ impl Shell {
                 "--hidden" => hidden = true,
                 // A launch names a place and nothing more, as a link does.
                 "--window" => window = it.next().map(|p| links::place(p).to_string()),
-                "--url" | "--state-dir" | "--keel" => {
+                "--url" | "--state-dir" | "--keel" | "--engine" => {
                     it.next();
                 }
                 link if link.starts_with("keel:") => match links::link_path(link) {
@@ -491,9 +493,25 @@ fn stop_words(running: Option<&[String]>) -> (String, String) {
     (question, detail)
 }
 
-fn place_from(args: &[String]) -> (Where, bool, bool) {
+/// What draws the page: Qt WebEngine in its own program where the distribution has it, else the
+/// system web view in this one. `asked`: the engine the owner named ("qt" or "webkit"), if any.
+fn engine_for(app: &gtk::Application, asked: Option<&str>, devtools: bool) -> Box<dyn Engine> {
+    let dir = prefs::dir();
+    let downloaded = |path: &std::path::Path| with_shell(|s| s.note_done("download", serde_json::json!({ "to": path })));
+    if asked != Some("webkit") {
+        match qt::Qt::start(&dir, &instance::bus_name(), devtools, |what, v| with_shell(|s| s.note_done(what, v))) {
+            Some(engine) => return Box::new(engine),
+            None if asked == Some("qt") => eprintln!("keel-desktop: Qt WebEngine is not there to draw the page (keel-desktop-qt beside the app, and the distribution's Qt WebEngine): using the system web view"),
+            None => {}
+        }
+    }
+    Box::new(window::WebKit::new(app, &dir, downloaded))
+}
+
+fn place_from(args: &[String]) -> (Where, bool, bool, Option<String>) {
     let mut w = Where::default();
     let (mut devtools, mut shortcut) = (false, false);
+    let mut engine = std::env::var("KEEL_DESKTOP_ENGINE").ok().filter(|e| !e.is_empty());
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -502,10 +520,11 @@ fn place_from(args: &[String]) -> (Where, bool, bool) {
             "--keel" => w.keel = it.next().map(PathBuf::from),
             "--devtools" => devtools = true,
             "--shortcut" => shortcut = true,
+            "--engine" => engine = it.next().cloned(),
             _ => {}
         }
     }
-    (w, devtools, shortcut)
+    (w, devtools, shortcut, engine)
 }
 
 fn main() -> glib::ExitCode {
@@ -518,7 +537,7 @@ fn main() -> glib::ExitCode {
         println!("keel-desktop {}", env!("CARGO_PKG_VERSION"));
         return glib::ExitCode::SUCCESS;
     }
-    let (place, devtools, shortcut) = place_from(&args);
+    let (place, devtools, shortcut, engine) = place_from(&args);
     // An app already running takes this launch's words and raises its window.
     if instance::hand_over(&args) {
         return glib::ExitCode::SUCCESS;
@@ -529,13 +548,13 @@ fn main() -> glib::ExitCode {
 
     app.connect_startup(move |app| {
         let prefs = Prefs::load();
-        // The one place an engine is named.
-        let engine = window::WebKit::new(app, &prefs::dir(), |path| with_shell(|s| s.note_done("download", serde_json::json!({ "to": path }))));
+        // The one place the engines are named.
+        let engine = engine_for(app, engine.as_deref(), devtools);
         let shell = Rc::new(Shell {
             app: app.clone(),
             place: place.clone(),
             prefs: RefCell::new(prefs),
-            engine: Box::new(engine),
+            engine,
             link: RefCell::new(Link::Down),
             url: RefCell::new(daemon::find(&place).url),
             main: RefCell::new(None),
@@ -554,6 +573,7 @@ fn main() -> glib::ExitCode {
             log: std::env::var_os("KEEL_DESKTOP_LOG").map(PathBuf::from),
         });
         shell.apply_look();
+        shell.note_done("engine", serde_json::json!({ "name": shell.engine.name() }));
         SHELL.with(|s| *s.borrow_mut() = Some(shell.clone()));
 
         if let Some(conn) = app.dbus_connection() {

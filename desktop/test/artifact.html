@@ -10,10 +10,16 @@
 <a id="out" href="https://example.com/from-a-frame">out</a>
 <script>
 const o = document.getElementById("o");
+// The engine's channel to the app, whichever engine it is: WebKit's message handlers, or
+// Qt's web channel spoken to directly (a call of the app's one object, by its name).
 const handlers = (window.webkit && window.webkit.messageHandlers) || {};
-const say = (s) => { o.textContent += s + "\n"; try { handlers.probe.postMessage("ARTIFACT " + s); } catch (e) {} };
-const post = (m) => { try { handlers.keel.postMessage(JSON.stringify(m)); return "posted"; } catch (e) { return "threw"; } };
-say("handler=" + !!handlers.keel + " keelShell=" + typeof window.keelShell);
+const channel = window.qt && window.qt.webChannelTransport;
+let calls = 0;
+const call = (method, s) => channel.send(JSON.stringify({ type: 6, id: ++calls, object: "keel", method, args: [s] }));
+// (What it saw also goes to the console: an engine whose channel a frame cannot reach reports from there.)
+const say = (s) => { o.textContent += s + "\n"; console.log("KEELPROBE ARTIFACT " + s); try { if (handlers.probe) handlers.probe.postMessage("ARTIFACT " + s); } catch (e) {} };
+const post = (m) => { try { if (handlers.keel) handlers.keel.postMessage(JSON.stringify(m)); else call("post", JSON.stringify(m)); return "posted"; } catch (e) { return "threw"; } };
+say("handler=" + !!(handlers.keel || channel) + " keelShell=" + typeof window.keelShell);
 for (let i = 0; i < 3; i++) post({ t: "window", path: "/settings" });
 post({ t: "look", dark: false, bg: "#ff0000", panel: "#ff0000", fg: "#ff0000", muted: "#ff0000", line: "#ff0000", need: "#ff0000", scale: 3 });
 post({ t: "external", url: "https://example.com/?from=artifact" });

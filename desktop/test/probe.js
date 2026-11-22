@@ -3,9 +3,11 @@
 // daemon's origin and its page paths when asked, asks the app for the clipboard at a press and
 // without one, and says where the page is. It reports on the app's standard output.
 (() => {
-  const say = (s) => { try { window.webkit.messageHandlers.probe.postMessage(s); } catch (e) {} };
+  // (The measuring channel of whichever engine draws the page.)
+  const say = (s) => { try { if (window.__keelProbe) window.__keelProbe(s); else window.webkit.messageHandlers.probe.postMessage(s); } catch (e) {} };
   let shown = false;
   let raw = "";
+  let went = false;
   setInterval(async () => {
     const at = document.activeElement;
     say(`AT ${location.origin}${location.pathname} shell=${typeof window.keelShell} band=${!!document.querySelector("[data-testid=daemon-away]")} scale=${getComputedStyle(document.documentElement).getPropertyValue("--ui-scale").trim()} active=${at ? at.dataset.testid || at.tagName : ""} imgs=${document.querySelectorAll("[data-testid=attachments] img").length}`);
@@ -39,8 +41,10 @@
     if (e.key === "F8") { say("LEAVING"); location.href = "http://127.0.0.1:FOREIGN_PORT/foreign"; }
     // The daemon's own origin, but no place of the page: the artifact's raw address, a sandboxed document.
     if (e.key === "F9" && raw) { say("GOING-RAW"); location.href = raw; }
-    // The same address as a file to keep: a download, and the page stays.
-    if (e.key === "F10" && raw) { say("GOING-DOWNLOAD"); location.href = `${raw}&download=1`; }
+    // The same address as a file to keep: a download, and the page stays. A second press offers
+    // the file as the page offers one: a link to keep it, which is no navigation.
+    if (e.key === "F10" && raw && !went) { went = true; say("GOING-DOWNLOAD"); location.href = `${raw}&download=1`; }
+    else if (e.key === "F10" && raw) { say("OFFERING"); const a = document.createElement("a"); a.href = `${raw}&download=1`; a.download = "shell-probe.html"; document.body.append(a); a.click(); a.remove(); }
     // A copy at this press, and one four seconds later that no press allowed.
     if (e.key === "F7") { copy(9001, "copied-by-the-check"); setTimeout(() => copy(9002, "planted-without-a-press"), 4000); }
     // A paste at this press, of a picture no larger than the page keeps one.
