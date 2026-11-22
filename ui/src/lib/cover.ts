@@ -9,7 +9,9 @@
 //
 // Only what the view draws is held. The page still hears the covered
 // session (lib/scope.ts) and its store goes on: nothing is caught up by a
-// request when the view shows again.
+// request when the view shows again. What the view kept of its session's
+// history (a reader far above the end keeps it whole) it keeps under the
+// cover too: the place it was left at is in it.
 import { createContext, createElement, useLayoutEffect, useMemo, type ReactNode } from "react";
 
 export type Gate<S = unknown> = {
@@ -17,13 +19,11 @@ export type Gate<S = unknown> = {
   held: S | null;
   // A store reader under the gate: told of the store's changes while the view shows, and once when it shows again.
   subscribe: (f: () => void) => () => void;
-  // For a part that does something else while covered (keeps nothing from being let go): told when the cover comes or goes.
-  watch: (f: () => void) => () => void;
   set: (on: boolean) => void;
 };
 
 export function makeGate<S>(subscribe: (f: () => void) => () => void, read: () => S): Gate<S> {
-  const readers = new Set<() => void>(), watchers = new Set<() => void>();
+  const readers = new Set<() => void>();
   const gate: Gate<S> = {
     held: null,
     subscribe: (f) => {
@@ -31,11 +31,9 @@ export function makeGate<S>(subscribe: (f: () => void) => () => void, read: () =
       const off = subscribe(() => { if (gate.held === null) f(); });
       return () => { readers.delete(f); off(); };
     },
-    watch: (f) => { watchers.add(f); return () => void watchers.delete(f); },
     set: (on) => {
       if (on === (gate.held !== null)) return;
       gate.held = on ? read() : null;
-      for (const f of [...watchers]) f();
       if (!on) for (const f of [...readers]) f();
     },
   };

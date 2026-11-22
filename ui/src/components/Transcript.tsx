@@ -16,9 +16,6 @@ import { composing } from "../lib/keys.ts";
 import { Kbd } from "./Kbd.tsx";
 import { clock, cn, fmtCost, fmtTokens, fmtWait, focusBox, scrollMotion } from "../lib/utils.ts";
 import { every } from "../lib/clock.ts";
-import { CoverCtx } from "../lib/cover.ts";
-
-const NEVER = () => () => {};
 import { TurnFailure } from "./TurnFailure.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
@@ -917,12 +914,10 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     return () => { ro.disconnect(); cancelAnimationFrame(late); removeEventListener("keel:end", onEnd); };
   }, [!!events, sessionId]);
 
-  // History read away from the end stays whole in the store meanwhile. Not under a cover (a
-  // look over the pane): nobody reads it there, and a session that works on would be kept
-  // whole for as long as the look lasts.
-  const gate = useContext(CoverCtx);
-  const covered = useSyncExternalStore(gate ? gate.watch : NEVER, () => !!gate?.held);
-  useEffect(() => ((away || reading) && !covered ? keepEvents(sessionId) : undefined), [away, !!reading, sessionId, covered]);
+  // History read away from the end stays whole in the store meanwhile, also under a cover (a
+  // look over the pane): the place the reader left is in it, and a session that takes one
+  // step under the look would otherwise be cut to its newest part and the place lost.
+  useEffect(() => (away || reading ? keepEvents(sessionId) : undefined), [away, !!reading, sessionId]);
 
   // Older events of the branch shown load when the reader nears the top, newer
   // ones of a run that stops short when they near its end.
