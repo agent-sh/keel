@@ -12,6 +12,11 @@
 // `tz_offset_minutes` (0: UTC). `sort` orders non-day groups: total tokens
 // (default), fresh (input without cache plus output) or cost.
 // children_of: the requests of the agents a session started (its delegated spend).
+// group=tree sums each session with the agents under it (and theirs) into the
+// session at the top: `own_cost_usd` is the top session's own, `agents` how
+// many agents spent and `agents_cost_usd` what they spent. With group=session
+// or tree the answer carries `sessions`: each listed id's title, parent and
+// whether it is archived (an id that is not there was removed).
 // The ledger is summed in SQLite: what reaches JS is one row per bucket and
 // purpose, however many requests they hold. And the sums are not made from the
 // ledger: a rollup (usage_rollup) holds them per quarter hour, session, model
@@ -26,7 +31,7 @@ import type { Database } from "bun:sqlite";
 import type { RouteModule } from "../app.ts";
 import { readsOf } from "../reads.ts";
 
-const GROUPS = new Set(["model", "session", "day", "provider"]);
+const GROUPS = new Set(["model", "session", "tree", "day", "provider"]);
 const SORTS = new Set(["total", "fresh", "cost"]);
 
 type Sum = {
@@ -268,7 +273,7 @@ export const usageRoutes: RouteModule = ({ store, errors }) => {
       let src = source(true);
       let key = "model";
       if (group === "provider") key = "substr(model, 1, max(0, instr(model, ':') - 1))";
-      else if (group === "session") key = "session_id";
+      else if (group === "session" || group === "tree") key = "session_id";
       else if (group === "day") {
         // The day number of the local clock: at the zone's offset of that
         // instant (the UTC days that hold requests say where its clock changes),
@@ -306,12 +311,41 @@ export const usageRoutes: RouteModule = ({ store, errors }) => {
       }
       const inOrder = (m: Map<string, Sum & { first: number }>) => [...m.entries()].sort((a, b) => a[1].first - b[1].first).map(([k, { first: _, ...s }]) => [k, s] as const);
       const rank = (s: ReturnType<typeof finish>) => (sort === "fresh" ? s.input_tokens + s.output_tokens : sort === "cost" ? s.priced_cost_usd : s.total_tokens);
-      const list = inOrder(buckets)
+      let list = inOrder(buckets)
         .map(([key, s]) => ({ key, ...finish(s) }))
         .sort((a, b) => (group === "day" ? b.key.localeCompare(a.key) : rank(b) - rank(a)));
+      // Agent trees: every session's sums go to the session at the top of its tree.
+      let sessions: Record<string, { title: string; parent_id?: string; archived?: true }> | undefined;
+      if (group === "tree" || group === "session") {
+        const agents = !!store.db.query("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'parent_id'").get();
+        const parents = new Map<string, string>();
+        if (group === "tree" && agents) for (const r of store.db.query<{ id: string; parent_id: string }, []>("SELECT id, parent_id FROM sessions WHERE parent_id IS NOT NULL").all()) parents.set(r.id, r.parent_id);
+        if (group === "tree") {
+          const trees = new Map<string, Sum & { own: number; agents: number; agents_cost: number }>();
+          const top = (id: string) => { const seen = new Set<string>(); let at = id; for (let p = parents.get(at); p && !seen.has(p); p = parents.get(at)) { seen.add(at); at = p; } return at; };
+          for (const b of list) {
+            const root = top(b.key);
+            const t = trees.get(root) ?? trees.set(root, { ...empty(), own: 0, agents: 0, agents_cost: 0 }).get(root)!;
+            for (const f of FIELDS) t[f] += b[f];
+            if (b.key === root) t.own += b.priced_cost_usd; else { t.agents++; t.agents_cost += b.priced_cost_usd; }
+          }
+          list = [...trees.entries()].map(([key, { own, agents: n, agents_cost, ...s }]) => ({ key, ...finish(s), own_cost_usd: own, agents: n, agents_cost_usd: agents_cost })).sort((a, b) => rank(b) - rank(a));
+        }
+        sessions = {};
+        const shown = list.slice(0, limit).map((b) => b.key);
+        for (let i = 0; i < shown.length; i += 400) {
+          const part = shown.slice(i, i + 400);
+          // Made for this request and freed after it: its text carries how many ids it names.
+          for (const r of store.db.prepare<{ id: string; title: string; archived: number; parent_id: string | null }, string[]>(
+            `SELECT id, title, archived, ${agents ? "parent_id" : "NULL AS parent_id"} FROM sessions WHERE id IN (${part.map(() => "?").join(",")})`).all(...part)) {
+            sessions[r.id] = { title: r.title, ...(r.parent_id ? { parent_id: r.parent_id } : {}), ...(r.archived ? { archived: true as const } : {}) };
+          }
+        }
+      }
       return Response.json({
         group, sort: group === "day" ? "day" : sort, tz: zone ?? undefined, buckets: list.slice(0, limit), has_more: list.length > limit, total: finish(total),
         by_purpose: inOrder(purposes).map(([purpose, s]) => ({ purpose, ...finish(s) })),
+        ...(sessions ? { sessions } : {}),
       });
     },
   },

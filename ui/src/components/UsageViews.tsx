@@ -8,7 +8,8 @@ import { navigate, setUI } from "../lib/ui.ts";
 import { ago, cn, fmtTokens, when } from "../lib/utils.ts";
 import { TimeChart } from "./Chart.tsx";
 import { Segmented } from "./Settings.tsx";
-import { fmtMs, fmtPct, fmtUsd, Panel, RANGES, Table, type Range } from "./UsagePanel.tsx";
+import { fmtMs, fmtPct, fmtUsd, Panel, RANGES, Table, type Range, RANGE_OPTIONS } from "./UsagePanel.tsx";
+import { TurnsCompare } from "./UsagePast.tsx";
 import { Stat, Stats } from "./Stat.tsx";
 import { Select } from "./Select.tsx";
 
@@ -73,7 +74,7 @@ function ZoneLegend() {
 
 type Tokens = {
   since_ms: number; until_ms: number; bucket_ms: number; measured_calls: number; calls: number; total: ZoneSet;
-  series: { t_ms: number; calls: number; zones: ZoneSet }[];
+  series: { t_ms: number; last_ms?: number; calls: number; zones: ZoneSet }[];
   by_purpose: { purpose: string; calls: number; zones: ZoneSet }[];
   turns: { turn_event: string; ts_ms: number; prompt: string; prompt_event?: string; requests: number; zones: ZoneSet; per_request: { ts_ms: number; purpose: string; zones: ZoneSet }[] }[];
 };
@@ -115,14 +116,14 @@ export function TokensView({ range }: { range: Range }) {
       <Panel title="Zones over time" hint="prompt tokens per bucket" testid="zones-chart">
         <TimeChart
           kind="bars" label="Prompt zones over time"
-          data={r.series.map((p) => ({ t: p.t_ms, values: ZONES.map((k) => p.zones[k.key].tokens) }))}
+          data={r.series.map((p) => ({ t: p.t_ms, at: p.last_ms, values: ZONES.map((k) => p.zones[k.key].tokens) }))}
           series={ZONES.map((k) => ({ label: k.label, color: k.color }))}
           bucket={r.bucket_ms} since={r.since_ms} until={r.until_ms} format={fmtTokens}
         />
         <div className="mt-3">
           <TimeChart
             label="Share of each bucket's prompt read from the cache"
-            data={r.series.map((p) => ({ t: p.t_ms, values: (["history", "tail"] as const).map((k) => share(p.zones[k].read, p.zones[k].tokens)) }))}
+            data={r.series.map((p) => ({ t: p.t_ms, at: p.last_ms, values: (["history", "tail"] as const).map((k) => share(p.zones[k].read, p.zones[k].tokens)) }))}
             series={[{ label: "Frozen history read from cache", color: "var(--series-1)" }, { label: "Volatile tail read from cache", color: "var(--series-2)" }]}
             bucket={r.bucket_ms} since={r.since_ms} until={r.until_ms} max={1} height={140} format={(v) => `${Math.round(v * 100)}%`}
           />
@@ -174,14 +175,14 @@ export function TokensView({ range }: { range: Range }) {
   );
 }
 
-const CLASS: Record<string, string> = {
+export const CLASS: Record<string, string> = {
   rate_limit: "Rate limited", overloaded: "Overloaded", server: "Server error", stream_drop: "Stream dropped", context_overflow: "Context overflow",
   auth: "Sign-in or key refused", quota: "Quota or billing", refusal: "Refused", image: "Image refused", invalid_request: "Request refused as invalid", other: "Other",
 };
 
 type Report = {
-  since_ms: number; until_ms: number; bucket_ms: number; total: { calls: number; errors: number; interrupted: number };
-  series: { t_ms: number; calls: number; classes: Record<string, number> }[];
+  since_ms: number; until_ms: number; bucket_ms: number; total: { calls: number; errors: number; interrupted: number; failed: number; failed_share: number };
+  series: { t_ms: number; last_ms?: number; calls: number; classes: Record<string, number> }[];
   error_classes: { provider: string; model: string; class: string; count: number; calls: number; rate: number; last_ms: number; last_error: string | null }[];
 };
 
@@ -197,12 +198,13 @@ export function ErrorsView({ range }: { range: Range }) {
   const shown = top.slice(0, 3);
   const colors = ["var(--series-1)", "var(--series-2)", "var(--series-3)"];
   const series = [...shown.map((c, i) => ({ label: CLASS[c] ?? c, color: colors[i]! })), ...(top.length > 3 ? [{ label: "Other classes", color: "var(--faint)" }] : [])];
-  const failed = [...counts.values()].reduce((n, x) => n + x, 0);
+  // The range's one failed share, the daemon's: the same figure Overview and Compare show.
+  const failed = r.total.failed;
   return (
     <div className="flex flex-col gap-4" data-testid="usage-errors">
       <Stats>
         <Stat label="Requests" value={r.total.calls} sub={`${r.total.interrupted} stopped by the owner`} />
-        <Stat testid="errors-failed" label="Failed or refused" value={failed} tone={failed && failed / Math.max(1, r.total.calls) >= 0.05 ? "danger" : undefined} sub={fmtPct(share(failed, r.total.calls)) + " of requests"} />
+        <Stat testid="errors-failed" label="Failed or refused" value={failed} tone={failed && failed / Math.max(1, r.total.calls) >= 0.05 ? "danger" : undefined} sub={fmtPct(r.total.calls ? r.total.failed_share : null) + " of requests"} />
         <Stat label="Most frequent" value={top[0] ? counts.get(top[0])! : 0} sub={top[0] ? CLASS[top[0]] ?? top[0] : "no failures"} />
         <Stat label="Classes seen" value={top.length} sub={top.length ? top.map((c) => CLASS[c] ?? c).slice(0, 3).join(", ") : "no failures"} />
       </Stats>
@@ -210,7 +212,7 @@ export function ErrorsView({ range }: { range: Range }) {
         {failed ? (
           <TimeChart
             kind="bars" label="Failed requests by class over time"
-            data={r.series.map((p) => ({ t: p.t_ms, values: [...shown.map((c) => p.classes[c] ?? 0), ...(top.length > 3 ? [top.slice(3).reduce((n, c) => n + (p.classes[c] ?? 0), 0)] : [])] }))}
+            data={r.series.map((p) => ({ t: p.t_ms, at: p.last_ms, values: [...shown.map((c) => p.classes[c] ?? 0), ...(top.length > 3 ? [top.slice(3).reduce((n, c) => n + (p.classes[c] ?? 0), 0)] : [])] }))}
             series={series} bucket={r.bucket_ms} since={r.since_ms} until={r.until_ms} format={(v) => String(Math.round(v))}
           />
         ) : <p className="k-empty">No request failed in this range.</p>}
@@ -299,13 +301,13 @@ function CompactionDetail({ c }: { c: Compaction }) {
 }
 
 type Side = {
-  since_ms: number; until_ms: number; model: string | null; calls: number; errors: number; error_rate: number; interrupted: number;
+  since_ms: number; until_ms: number; model: string | null; calls: number; errors: number; error_rate: number; failed: number; failed_share: number; interrupted: number;
   latency_p50: number | null; latency_p95: number | null; ttft_p50: number | null; ttft_p95: number | null; output_tokens_per_s: number | null;
   cache_hit_ratio: number | null; cache_hit_ratio_turns: number | null; breaks: number; compactions: number;
   priced_cost_usd: number; unpriced_calls: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number;
   tool_calls: number; tool_error_rate: number; classes: Record<string, number>;
 };
-type Mode = "ranges" | "models";
+type Mode = "ranges" | "models" | "turns";
 const DAY = 86_400_000;
 // Today runs from local midnight (a clock change included) and yesterday is
 // the whole calendar day before; the others are rolling windows, named so.
@@ -340,7 +342,7 @@ export function CompareView() {
   const q = mode === "ranges"
     ? `a_since_ms=${p.a[0]}&a_until_ms=${p.a[1]}&b_since_ms=${p.b[0]}&b_until_ms=${p.b[1]}`
     : ma && mb ? `a_since_ms=${now - RANGES[range]}&b_since_ms=${now - RANGES[range]}&a_model=${encodeURIComponent(ma)}&b_model=${encodeURIComponent(mb)}` : null;
-  const r = useReport<{ a: Side; b: Side }>(q ? `/api/telemetry/compare?${q}` : null, [mode, preset, range, ma, mb]);
+  const r = useReport<{ a: Side; b: Side }>(q && mode !== "turns" ? `/api/telemetry/compare?${q}` : null, [mode, preset, range, ma, mb]);
   // A name two used models share gets its provider, in the options and the heads.
   const name = (id: string) => (used.some((o) => o !== id && short(o) === short(id)) || (ma !== mb && short(ma) === short(mb) && (id === ma || id === mb)) ? `${short(id)} (${provider(id)})` : short(id));
   const select = (v: string, set: (v: string) => void, label: string) => (
@@ -349,10 +351,10 @@ export function CompareView() {
     </Select>
   );
   const heads = mode === "ranges" ? ["This range", "The range before"] : [ma ? name(ma) : "A", mb ? name(mb) : "B"];
-  const lower = new Set(["Failed requests", "First token, median", "First token, 95th", "Request time, median", "Request time, 95th", "Cache breaks", "Tool failures", "Spend"]);
+  const lower = new Set(["Failed or refused", "First token, median", "First token, 95th", "Request time, median", "Request time, 95th", "Cache breaks", "Tool failures", "Spend"]);
   const rows: [string, (s: Side) => number | null, (v: number | null) => string][] = [
     ["Requests", (s) => s.calls, (v) => String(v ?? 0)],
-    ["Failed requests", (s) => s.error_rate, fmtPct],
+    ["Failed or refused", (s) => s.failed_share, fmtPct],
     ["First token, median", (s) => s.ttft_p50, fmtMs],
     ["First token, 95th", (s) => s.ttft_p95, fmtMs],
     ["Request time, median", (s) => s.latency_p50, fmtMs],
@@ -363,7 +365,7 @@ export function CompareView() {
     ["Compactions", (s) => s.compactions, (v) => String(v ?? 0)],
     ["Tool failures", (s) => s.tool_error_rate, fmtPct],
   ];
-  const rates = new Set(["Failed requests", "Cache hit rate", "Tool failures"]);
+  const rates = new Set(["Failed or refused", "Cache hit rate", "Tool failures"]);
   // Rates differ in points; counts and times by how many times; small moves in percent.
   const change = (label: string, a: number | null, b: number | null) => {
     if (a == null || b == null) return <span className="text-faint">none</span>;
@@ -388,18 +390,19 @@ export function CompareView() {
   return (
     <div className="flex flex-col gap-4" data-testid="usage-compare">
       <div className="flex flex-wrap items-center gap-3">
-        <Segmented<Mode> label="Compare" value={mode} onChange={setMode} options={[{ value: "ranges", label: "Two ranges" }, { value: "models", label: "Two models" }]} />
-        {mode === "ranges" ? (
+        <Segmented<Mode> label="Compare" value={mode} onChange={setMode} options={[{ value: "ranges", label: "Two ranges" }, { value: "models", label: "Two models" }, { value: "turns", label: "Two turns" }]} />
+        {mode === "turns" ? null : mode === "ranges" ? (
           <Select aria-label="ranges" data-testid="compare-preset" value={preset} onChange={(e) => setPreset(e.target.value)} className="h-8 max-w-full min-w-0 rounded-md border border-line-strong bg-raised px-2 text-ui text-fg">
             {Object.entries(PRESETS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
           </Select>
         ) : (
           <>
             {select(ma, setMa, "model-a")}<span className="text-ui text-muted">against</span>{select(mb, setMb, "model-b")}
-            <Segmented<Range> label="Over" value={range} onChange={setRange} options={[{ value: "day", label: "Day" }, { value: "week", label: "Week" }, { value: "month", label: "Month" }]} />
+            <Segmented<Range> label="Over" value={range} onChange={setRange} options={RANGE_OPTIONS} />
           </>
         )}
       </div>
+      {mode === "turns" ? <TurnsCompare table={(heads, rows) => <CompareTable heads={heads} rows={rows} />} /> : (
       <Panel title="Side by side" hint={mode === "ranges" ? "this range against the one before; rates differ in points" : "the first model against the second; rates differ in points"} testid="compare-table">
         {!r ? <p className="text-ui text-faint">{mode === "models" && used.length < 1 ? "No model calls in this range." : "Reading the measurements."}</p> : (
           <CompareTable
@@ -412,6 +415,7 @@ export function CompareView() {
           />
         )}
       </Panel>
+      )}
     </div>
   );
 }

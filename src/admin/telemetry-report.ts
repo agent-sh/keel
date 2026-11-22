@@ -57,6 +57,10 @@ function callStats(list: CallRow[]) {
     cache_breaks: list.filter((c) => c.cache_break).length,
     interrupted: list.filter((c) => c.outcome === "interrupted").length,
     error_rate: list.length ? errors / list.length : 0,
+    // What every view shows as the failed share: the requests with a failure
+    // class (an error, or a reply the model declined), of all of them.
+    failed: list.filter((c) => c.error_class).length,
+    failed_share: list.length ? list.filter((c) => c.error_class).length / list.length : 0,
     latency_p50: pct(list.map((c) => c.latency_ms), 0.5),
     latency_p95: pct(list.map((c) => c.latency_ms), 0.95),
     ttft_p50: pct(list.map((c) => c.ttft_ms), 0.5),
@@ -138,7 +142,8 @@ export function reportOf(db: Database, q: Filter, limits: Limits) {
     until_ms: until,
     bucket_ms: bucket,
     total: { ...callStats(calls), ...toolStats(tools) },
-    series: [...series.entries()].sort(([a], [b]) => a - b).map(([t_ms, b]) => ({ t_ms, ...callStats(b.calls), ...toolStats(b.tools), classes: classCounts(b.calls) })),
+    // `last_ms`: when the bucket's newest request or tool call was (a bucket starts on the clock's grid, which may be the day before).
+    series: [...series.entries()].sort(([a], [b]) => a - b).map(([t_ms, b]) => ({ t_ms, last_ms: Math.max(b.calls.at(-1)?.ts ?? 0, b.tools.at(-1)?.ts ?? 0), ...callStats(b.calls), ...toolStats(b.tools), classes: classCounts(b.calls) })),
     by_model: [...byModel.entries()].map(([model, list]) => ({ model, ...callStats(list) })).sort((a, b) => b.calls - a.calls),
     // total_ms sums the timed calls only (`timed` of `tool_calls`); null when none was timed.
     tools: [...byTool.entries()].map(([tool, list]) => {
@@ -206,7 +211,7 @@ export function tokensOf(db: Database, q: Filter) {
     since_ms: since, until_ms: until, bucket_ms: bucket, zones: ZONES, estimate: true,
     measured_calls: measured.length, calls: calls.length,
     total: sum(measured),
-    series: [...series.entries()].sort(([a], [b]) => a - b).map(([t_ms, list]) => ({ t_ms, calls: list.length, zones: sum(list) })),
+    series: [...series.entries()].sort(([a], [b]) => a - b).map(([t_ms, list]) => ({ t_ms, last_ms: list.at(-1)!.ts, calls: list.length, zones: sum(list) })),
     by_purpose: [...group(measured, (c) => c.purpose ?? "turn").entries()].map(([purpose, list]) => ({ purpose, calls: list.length, zones: sum(list) })),
     turns,
   };

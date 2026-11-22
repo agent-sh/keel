@@ -12,13 +12,14 @@ import { ago, clock, cn, fmtTokens, when } from "../lib/utils.ts";
 import { TimeChart } from "./Chart.tsx";
 import { MemoryUsage, type MemoryTab } from "./MemoryUsage.tsx";
 import { Seg } from "./Seg.tsx";
+import { SlowestRequests, SpendRank } from "./UsagePast.tsx";
 import { Segmented } from "./Settings.tsx";
 import { PART, Split, Stat, Stats } from "./Stat.tsx";
 import { KINDS, KIND_LABEL, addCosts, bucketName, kindCosts, noCosts, spendDrivers, type Costs } from "../lib/spend.ts";
 import { CompactionsView, CompareView, ErrorsView, TokensView } from "./UsageViews.tsx";
 
 type Stats = {
-  calls: number; errors: number; interrupted: number; error_rate: number;
+  calls: number; errors: number; interrupted: number; error_rate: number; failed: number; failed_share: number;
   latency_p50: number | null; latency_p95: number | null; ttft_p50: number | null; ttft_p95: number | null;
   output_tokens_per_s: number | null; speed_sample: { calls: number; output_tokens: number }; first_text_p50: number | null;
   step_latency_p50: number | null; step_latency_p95: number | null; retried_steps: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number;
@@ -27,7 +28,7 @@ type Stats = {
 };
 type Report = {
   since_ms: number; until_ms: number; bucket_ms: number; total: Stats;
-  series: (Stats & { t_ms: number })[];
+  series: (Stats & { t_ms: number; last_ms?: number })[];
   by_model: (Stats & { model: string })[];
   tools: { tool: string; tool_calls: number; tool_errors: number; tool_error_rate: number; p50_ms: number | null; p95_ms: number | null; timed: number; total_ms: number | null }[];
   error_kinds: { message: string; count: number; last_ms: number }[];
@@ -101,9 +102,11 @@ function MoneyField({ value, onSave, label, testid }: { value: number | null; on
 }
 
 // A range as it is said: 30 days is not "this month".
-const PAST: Record<string, string> = { day: "the past 24 hours", week: "the past 7 days", month: "the past 30 days" };
-export const RANGES = { day: 86_400_000, week: 7 * 86_400_000, month: 30 * 86_400_000 } as const;
+const PAST: Record<string, string> = { hour: "the past hour", day: "the past 24 hours", week: "the past 7 days", month: "the past 30 days" };
+export const RANGES = { hour: 3_600_000, day: 86_400_000, week: 7 * 86_400_000, month: 30 * 86_400_000 } as const;
 export type Range = keyof typeof RANGES;
+// The ranges every Usage view offers, shortest first.
+export const RANGE_OPTIONS: { value: Range; label: string }[] = [{ value: "hour", label: "Hour" }, { value: "day", label: "Day" }, { value: "week", label: "Week" }, { value: "month", label: "Month" }];
 
 // A duration as a person says it: milliseconds, seconds, then minutes and hours (not 5462.6 s).
 export const fmtMs = (v: number | null | undefined) => {
@@ -197,7 +200,7 @@ export function UsagePanel() {
           { value: "overview", label: "Overview" }, { value: "calls", label: "Speed and tools" }, { value: "tokens", label: "Token zones" }, { value: "errors", label: "Errors" },
           { value: "compactions", label: "Compactions" }, { value: "memory", label: "Memory" }, { value: "compare", label: "Compare" },
         ]} />
-        {ranged && <Segmented<Range> label="Range" value={range} onChange={setRange} options={[{ value: "day", label: "Day" }, { value: "week", label: "Week" }, { value: "month", label: "Month" }]} />}
+        {ranged && <Segmented<Range> label="Range" value={range} onChange={setRange} options={RANGE_OPTIONS} />}
         <span className="text-caption text-faint">Measured on this machine. Nothing is sent anywhere.</span>
       </div>
       {view === "overview" ? <Overview range={range} go={setView} /> : view === "calls" ? <CallsView range={range} /> : view === "tokens" ? <TokensView range={range} />
@@ -353,10 +356,11 @@ function Overview({ range, go }: { range: Range; go: (v: View) => void }) {
           ) : <p className="k-empty">No requests in this range.</p>}
         </Panel>
       </div>
+      <SpendRank range={range} />
       <Panel plain title="Spend over time" hint={`per ${bucketName(r.bucket_ms)}`} testid="chart-spend">
         <TimeChart
           kind="bars" label="Spend over time" height={150}
-          data={series.map((x) => ({ t: x.t_ms, values: [x.priced_cost_usd] }))}
+          data={series.map((x) => ({ t: x.t_ms, at: x.last_ms, values: [x.priced_cost_usd] }))}
           series={[{ label: "Spend", color: "var(--series-1)" }]}
           bucket={r.bucket_ms} since={r.since_ms} until={r.until_ms} format={fmtUsd}
         />
@@ -367,8 +371,8 @@ function Overview({ range, go }: { range: Range; go: (v: View) => void }) {
         <Stats plain>
           <Stat testid="tile-breaks" label="Cache breaks" value={String(breaks)}
             sub={breaks ? r.breaks.map((b) => `${b.count} ${CAUSE[b.cause] ?? b.cause}`).join("; ") : "every request read at least as much from the cache as the one before"} />
-          <Stat testid="tile-errors" label="Failed requests" value={fmtPct(t.error_rate)} tone={t.error_rate >= 0.05 ? "danger" : undefined}
-            sub={`${t.errors} of ${t.calls.toLocaleString()} requests${r.error_kinds[0] ? `, most often ${r.error_kinds[0].message}` : ""}`} />
+          <Stat testid="tile-errors" label="Failed or refused" value={fmtPct(t.failed_share)} tone={t.failed_share >= 0.05 ? "danger" : undefined}
+            sub={`${t.failed} of ${t.calls.toLocaleString()} requests${r.error_kinds[0] ? `, most often ${r.error_kinds[0].message}` : ""}`} />
           <Stat testid="tile-ttft" label="Wait for the first word" value={fmtMs(t.ttft_p50)} sub={`in half of the requests; a whole reply takes ${fmtMs(t.step_latency_p50)}`} />
         </Stats>
         <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-caption">
@@ -419,7 +423,7 @@ function CallsView({ range }: { range: Range }) {
         </Stats>
         <TimeChart
           label="Wait for the first word and for a whole request over time" height={150}
-          data={series.map((x) => ({ t: x.t_ms, values: [x.ttft_p50, x.latency_p50] }))}
+          data={series.map((x) => ({ t: x.t_ms, at: x.last_ms, values: [x.ttft_p50, x.latency_p50] }))}
           series={[{ label: "First word", color: "var(--series-1)" }, { label: "Whole request", color: "var(--series-2)" }]}
           bucket={r.bucket_ms} since={r.since_ms} until={r.until_ms} format={fmtMs}
         />
@@ -431,11 +435,13 @@ function CallsView({ range }: { range: Range }) {
         )}
       </section>
 
+      <SlowestRequests range={range} />
+
       <Panel plain title="Is the cache holding" hint={`how much of the prompt was read from the provider's cache, not paid in full, per ${span}`} testid="chart-cache">
         {buckets > 1 ? (
           <TimeChart
             label="Share of the prompt read from cache over time" height={150}
-            data={series.map((x) => ({ t: x.t_ms, values: [x.cache_hit_ratio] }))}
+            data={series.map((x) => ({ t: x.t_ms, at: x.last_ms, values: [x.cache_hit_ratio] }))}
             series={[{ label: "Read from cache", color: "var(--series-1)" }]}
             bucket={r.bucket_ms} since={r.since_ms} until={r.until_ms} max={1} format={(v) => `${Math.round(v * 100)}%`}
           />

@@ -40,7 +40,8 @@ export function kindCosts(u: { input: number; output: number; cache_read: number
 
 // One request of a turn: the model's, or the summary a compaction wrote in it.
 export type Req = { u: Usage; model?: string; what?: "compaction" };
-export type Turn = { n: number; prompt: string; ts: number; ms?: number; requests: Req[]; total: Usage; cold: boolean; reused?: { read: number; before: number } };
+// `id`: the turn_start event, which the ledger names the turn by.
+export type Turn = { n: number; id?: string; prompt: string; ts: number; ms?: number; requests: Req[]; total: Usage; cold: boolean; reused?: { read: number; before: number } };
 
 const zero = (): Usage => ({ input: 0, output: 0, cache_read: 0, cache_write: 0 });
 export const addUsage = (a: Usage, b: Usage): Usage => ({
@@ -66,7 +67,7 @@ export function turnsOf(events: StoredEvent[]): Turn[] {
     // A turn is named by the owner's words when they started it, else by what started it (an agent's report, a wake):
     // a delivered input's text is written for the model, not for a list the owner reads.
     if (e.kind === "user") prompt = ownerPrompt(e.data) ? String(e.data.text ?? "") : originOf(e.data).lead;
-    else if (e.kind === "turn_start") cur = { n: out.length + 1, prompt, ts: e.ts, requests: [], total: zero(), cold: false };
+    else if (e.kind === "turn_start") cur = { n: out.length + 1, id: e.id, prompt, ts: e.ts, requests: [], total: zero(), cold: false };
     else if (e.kind === "assistant" && cur && e.data.usage) take(cur, { u: e.data.usage, model: e.data.model });
     else if (e.kind === "compaction" && e.data.usage && (cur ?? out.at(-1))) take((cur ?? out.at(-1))!, { u: e.data.usage, model: e.data.model, what: "compaction" });
     else if (e.kind === "turn_end" && cur) {
@@ -148,6 +149,18 @@ export function bucketName(ms: number): string {
   if (Number.isInteger(hours)) return `${COUNT[hours] ?? hours} hours`;
   const days = ms / 86_400_000;
   return Number.isInteger(days) ? `${COUNT[days] ?? days} days` : `${Math.round(ms / 60_000)} minutes`;
+}
+
+// What a chart says of the one bucket that holds data: the day or the time
+// the data was, not where the bucket starts (a bucket of a rolling day starts
+// at the range's own hour the day before; one on the clock's grid starts at
+// UTC's hour). `at`: when the bucket's newest data was; without it only the
+// bucket's span can be named.
+export function singleLabel(p: { t: number; at?: number }, bucket: number, fmt: (t: number, day: boolean) => string): string {
+  const span = bucketName(bucket);
+  if (p.at === undefined) return `${fmt(p.t, false)} to ${fmt(p.t + bucket, false)}, the only span of ${span.replace(/^(hour|day)$/, "one $1")} with data in this range.`;
+  if (bucket >= 86_400_000) return `${fmt(p.at, true)}, the only ${span === "day" ? "day" : `span of ${span}`} with data in this range.`;
+  return `${fmt(p.at, false)}, in the only ${span === "hour" ? "hour" : `span of ${span}`} with data in this range.`;
 }
 
 // A purpose as the subject of "were": plural, whatever its label on a table row.

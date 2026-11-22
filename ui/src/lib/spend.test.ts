@@ -84,3 +84,16 @@ test("a turn is listed by the owner's words, and a delivered input by what it is
   ] as any);
   expect(turns.map((t) => t.prompt)).toEqual(["Fix the retry test", "Agent report", "Owner's Resume", "And the docs"]);
 });
+
+// A chart with one bucket of data names the day or the time the data was, not where its bucket starts.
+test("a single bucket's label names when the data was", () => {
+  const { singleLabel } = require("./spend.ts") as typeof import("./spend.ts");
+  const fmt = (t: number, day: boolean) => (day ? `day ${new Date(t).getUTCDate()}` : `day ${new Date(t).getUTCDate()} ${String(new Date(t).getUTCHours()).padStart(2, "0")}:00`);
+  const start = Date.UTC(2026, 10, 21, 6), data = Date.UTC(2026, 10, 22, 5);
+  // A rolling day that starts on the 21st and holds data of the 22nd.
+  expect(singleLabel({ t: start, at: data }, 86_400_000, fmt)).toBe("day 22, the only day with data in this range.");
+  expect(singleLabel({ t: Date.UTC(2026, 10, 22, 0), at: data }, 6 * 3_600_000, fmt)).toBe("day 22 05:00, in the only span of six hours with data in this range.");
+  expect(singleLabel({ t: Date.UTC(2026, 10, 22, 5), at: data }, 3_600_000, fmt)).toBe("day 22 05:00, in the only hour with data in this range.");
+  // Without the data's own time only the bucket's span is named.
+  expect(singleLabel({ t: start }, 86_400_000, fmt)).toBe("day 21 06:00 to day 22 06:00, the only span of one day with data in this range.");
+});

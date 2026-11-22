@@ -4,6 +4,8 @@
 // dearest turn, what was spent beside the turns. Then where the money went
 // (by what the tokens were, at their own prices) and the turns, each opening
 // its requests as a table.
+import { type LedgerCounts, requestsWords, type TurnPick } from "../../../src/admin/turn-compare.ts";
+import { Seg } from "./Seg.tsx";
 import type { Session, StoredEvent } from "../../../src/core/types.ts";
 import { ChevronRight } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
@@ -86,6 +88,9 @@ function WhyLine({ why, onTurn }: { why: Why; onTurn: (n: number) => void }) {
   return <p className="mt-1 text-ui leading-relaxed text-muted" data-testid="usage-why">{said.map((x, i) => <span key={i}>{i ? " " : ""}{x}</span>)}</p>;
 }
 
+type Order = "newest" | "oldest" | "dearest" | "longest";
+const fmtDur = (ms: number) => (ms < 1000 ? `${Math.round(ms)} ms` : ms < 60_000 ? `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} s` : `${Math.round(ms / 60_000)} min`);
+
 export function SessionUsage({ session }: { session: Session }) {
   // Every turn of the session, not only the part the page holds (that part shows until the rest is read).
   const held = useStore((s) => s.events[session.id]);
@@ -104,6 +109,21 @@ export function SessionUsage({ session }: { session: Session }) {
   // Every row of the turns' tables, a compaction's included: the same count a turn shows.
   const requests = turns.reduce((n, t) => n + t.requests.length, 0);
   const [open, setOpen] = useState<number | null>(null);
+  // The newest turn first: the one a person opens the panel about. The other orders answer "which was dearest" and "which took longest".
+  const [order, setOrder] = useState<Order>("newest");
+  const listed = useMemo(() => {
+    const at = turns.map((t, i) => ({ t, i }));
+    const cost = (x: { t: Turn; i: number }) => (priced ? sum(costs![x.i]!) : x.t.total.cost ?? sent(x.t.total));
+    return order === "oldest" ? at : order === "newest" ? [...at].reverse() : [...at].sort((a, b) => (order === "dearest" ? cost(b) - cost(a) : (b.t.ms ?? 0) - (a.t.ms ?? 0)) || b.i - a.i);
+  }, [turns, order, priced, costs]);
+  // The ledger's own counts: every request attempt, the failed ones too (the events hold only the answered ones).
+  const [ledger, setLedger] = useState<{ counts: LedgerCounts; turns: TurnPick[] } | null>(null);
+  useEffect(() => {
+    let live = true;
+    api<{ counts: LedgerCounts; turns: TurnPick[] }>(`/api/telemetry/turns?session_id=${encodeURIComponent(session.id)}&limit=5000`).then((r) => { if (live) setLedger(r); }).catch(reportError);
+    return () => { live = false; };
+  }, [session.id, turns.length]);
+  const attempts = useMemo(() => new Map((ledger?.turns ?? []).map((t) => [t.turn_event, t])), [ledger]);
   const show = (n: number) => { setOpen(n); requestAnimationFrame(() => document.querySelector(`[data-turn="${n}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" })); };
   // What the agents this session started spent: the task's cost is both.
   // Re-read when one of them ends; their requests, not their reports, count.
@@ -129,7 +149,7 @@ export function SessionUsage({ session }: { session: Session }) {
             </span>
           )}
           {/* A mean says nothing where one turn holds most of the cost. */}
-          {turns.length ? `${plural(turns.length, "turn")}, ${plural(requests, "request")}${whole !== undefined && turns.length > 1 && !why.turn ? `, ${fmtCost(whole / turns.length)} a turn` : ""}.` : "No turns yet."}
+          {turns.length ? `${plural(turns.length, "turn")}, ${ledger && ledger.counts.requests >= requests ? requestsWords(ledger.counts.requests, ledger.counts.failed) : plural(requests, "request")}${whole !== undefined && turns.length > 1 && !why.turn ? `, ${fmtCost(whole / turns.length)} a turn` : ""}.` : "No turns yet."}
           {session.usage.unpriced ? ` ${plural(session.usage.unpriced, "request")} had no known price.` : ""}
         </p>
         <WhyLine why={why} onTurn={show} />
@@ -144,14 +164,21 @@ export function SessionUsage({ session }: { session: Session }) {
       </section>
 
       <section className="min-h-0">
-        <div className="mb-2 flex items-baseline gap-2">
+        <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1.5">
           <h3 className={h3}>Turns</h3>
           <span className="text-caption text-faint">open one for its requests</span>
+          {turns.length > 1 && (
+            <span className="ml-auto" data-testid="usage-turn-order">
+              <Seg<Order> label="Order of the turns" value={order} onChange={setOrder} options={[{ value: "newest", label: "Newest" }, { value: "oldest", label: "Oldest" }, { value: "dearest", label: "Dearest" }, { value: "longest", label: "Longest" }]} />
+            </span>
+          )}
         </div>
         {!turns.length && <p className="k-empty">No turns yet.</p>}
         <ol className="flex flex-col">
-          {turns.map((t, ti) => {
+          {listed.map(({ t, i: ti }) => {
             const s = sent(t.total);
+            // The turn's attempts as the ledger counted them: the ones that failed are said.
+            const led = t.id ? attempts.get(t.id) : undefined;
             const on = open === t.n;
             const compacted = t.requests.filter((r) => r.what).length;
             return (
@@ -175,7 +202,8 @@ export function SessionUsage({ session }: { session: Session }) {
                   <span className="mt-1 flex flex-wrap gap-x-3 pl-6 text-caption tabular-nums text-muted">
                     <span>{fmtTokens(s)} sent</span>
                     <span>{fmtTokens(t.total.output)} out</span>
-                    <span>{plural(t.requests.length, "request")}</span>
+                    <span data-testid="usage-turn-requests">{led && led.requests >= t.requests.length ? `${plural(led.requests, "request")}${led.failed_attempts ? `, ${led.failed_attempts} failed` : ""}` : plural(t.requests.length, "request")}</span>
+                    {t.ms !== undefined && <span>{fmtDur(t.ms)}</span>}
                   </span>
                 </button>
                 {on && <div className="pb-2.5 pl-6 max-sm:pl-0"><Requests t={t} /></div>}

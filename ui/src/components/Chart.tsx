@@ -9,11 +9,13 @@
 // where a finger on the plot does not cover it and the plot stays readable;
 // or, when the pane shows too little above the plot for it, inside the plot's
 // top, so it is never cut off by what scrolls the chart.
+import { singleLabel } from "../lib/spend.ts";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { clock, cn } from "../lib/utils.ts";
 
 export type Series = { label: string; color: string };
-export type Point = { t: number; values: (number | null)[] };
+// `at`: when the point's data was (its newest), where the bucket's start is not it (a bucket starts on a grid).
+export type Point = { t: number; at?: number; values: (number | null)[] };
 
 const PAD = { top: 8, right: 12, bottom: 22, left: 52 };
 
@@ -122,7 +124,6 @@ export function TimeChart({
   const filled = data.filter((p) => p.values.some((v) => v != null));
   if (filled.length === 1) {
     const p = filled[0]!;
-    const span = bucket >= 86_400_000 ? "day" : bucket >= 3_600_000 ? "hour" : "interval";
     return (
       <figure className="m-0" aria-label={label} data-testid="chart-single">
         <div className="flex flex-wrap gap-x-10 gap-y-3">
@@ -139,7 +140,7 @@ export function TimeChart({
             </div>
           ))}
         </div>
-        <figcaption className="mt-2 text-caption text-faint">{fullTime(p.t)}, the only {span} with data in this range. A trend shows from the second.</figcaption>
+        <figcaption className="mt-2 text-caption text-faint" data-testid="chart-single-when">{singleLabel(p, bucket, (t, day) => (day ? new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : fullTime(t)))} A trend shows from the second.</figcaption>
       </figure>
     );
   }

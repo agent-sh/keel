@@ -11,18 +11,20 @@ import { AFTER_REQUESTS, BREAK_CAUSES, type Filter, Telemetry } from "../../admi
 import { ZONES } from "../../admin/zones.ts";
 import { promptOf } from "../../engine/prompt-store.ts";
 import type { RouteModule } from "../app.ts";
+import { readsOf } from "../reads.ts";
+import { COUNTS_SQL, type LedgerCounts, SLOWEST_SQL, type SlowRequest, TURN_SQL, turnDiff, turnFacts, type TurnPick, TURNS_SQL } from "../../admin/turn-compare.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
 export let telemetry: Telemetry | undefined;
 
 type Bad = { error: string; status: number };
-const PERIODS = { day: 86_400_000, week: 7 * 86_400_000, month: 30 * 86_400_000 };
+const PERIODS = { hour: 3_600_000, day: 86_400_000, week: 7 * 86_400_000, month: 30 * 86_400_000 };
 
 export const telemetryRoutes: RouteModule = ({ store, bus }) => {
   const t = (telemetry = new Telemetry(store, bus));
   // The filters every report takes; `prefix` reads one side of a comparison.
-  // `period` (day, week, month) is the last 24 hours, 7 days or 30 days up
+  // `period` (hour, day, week, month) is the last hour, 24 hours, 7 days or 30 days up
   // to now; it does not mix with explicit bounds, and another word is refused.
   const filter = (q: URLSearchParams, prefix = ""): Filter | Bad => {
     const num = (k: string) => (q.get(prefix + k) ? Number(q.get(prefix + k)) : undefined);
@@ -30,7 +32,7 @@ export const telemetryRoutes: RouteModule = ({ store, bus }) => {
     const bucket = num("bucket_ms");
     const period = q.get(prefix + "period");
     if (period !== null) {
-      if (!(period in PERIODS)) return { error: `unknown period ${period}: day, week or month`, status: 400 };
+      if (!(period in PERIODS)) return { error: `unknown period ${period}: hour, day, week or month`, status: 400 };
       if (since !== undefined || until !== undefined) return { error: "period and since_ms/until_ms do not mix", status: 400 };
       until = Date.now();
       since = until - PERIODS[period as keyof typeof PERIODS];
@@ -71,6 +73,47 @@ export const telemetryRoutes: RouteModule = ({ store, bus }) => {
         if (bad(a)) return json({ error: a.error }, a.status);
         if (bad(b)) return json({ error: b.error }, b.status);
         return json(await t.compare(a, b));
+      },
+    },
+    // GET /api/telemetry/slowest?since_ms=&until_ms=&period=&limit=: the model requests that took longest in the range,
+    // across sessions, slowest first: each with its session, model, time to the first word, outcome and turn.
+    "/api/telemetry/slowest": {
+      GET: async (req: Request) => {
+        const q = new URL(req.url).searchParams;
+        const f = filter(q);
+        if (bad(f)) return json({ error: f.error }, f.status);
+        const limit = q.get("limit") ? Number(q.get("limit")) : 20;
+        if (!Number.isInteger(limit) || limit < 1) return json({ error: "limit is a whole number from 1 up" }, 400);
+        const until = f.until ?? Date.now();
+        const since = f.since ?? until - PERIODS.day;
+        const requests = await readsOf(store).sql<SlowRequest>(SLOWEST_SQL, [since, until, Math.min(limit, 200)]);
+        return json({ since_ms: since, until_ms: until, requests });
+      },
+    },
+    // GET /api/telemetry/turns?session_id=&limit=: the session's turns, newest first, to pick two from.
+    // With a= and b= (turn_start event ids): the two turns side by side, and why a was dearer or slower than b.
+    "/api/telemetry/turns": {
+      GET: async (req: Request) => {
+        const q = new URL(req.url).searchParams;
+        const sid = q.get("session_id") ?? "";
+        if (!store.session(sid)) return json({ error: "no such session" }, 404);
+        const reads = readsOf(store);
+        const a = q.get("a"), b = q.get("b");
+        if (a || b) {
+          if (!a || !b) return json({ error: "name both turns: a and b" }, 400);
+          const one = async (id: string) => (await reads.sql<any>(TURN_SQL, [id]))[0];
+          const [ra, rb] = [await one(a), await one(b)];
+          const mine = (r: any, id: string) => (r && store.db.query("SELECT 1 FROM telemetry_turns WHERE turn_event = ? AND session_id = ?").get(id, sid) ? turnFacts(r) : null);
+          const ta = mine(ra, a), tb = mine(rb, b);
+          if (!ta || !tb) return json({ error: `no turn ${!ta ? a : b} in this session` }, 404);
+          return json({ a: ta, b: tb, diff: turnDiff(ta, tb) });
+        }
+        const limit = q.get("limit") ? Number(q.get("limit")) : 300;
+        if (!Number.isInteger(limit) || limit < 1) return json({ error: "limit is a whole number from 1 up" }, 400);
+        // `counts`: the session's ledger (turns, request attempts, the failed ones), which the turns' places are counted from.
+        const counts = (await reads.sql<LedgerCounts>(COUNTS_SQL, [sid, sid]))[0] ?? { turns: 0, requests: 0, failed: 0 };
+        const turns = await reads.sql<TurnPick>(TURNS_SQL, [sid, Math.min(limit, 5000)]);
+        return json({ counts, turns: turns.map((t, i) => ({ ...t, n: counts.turns - i })) });
       },
     },
     // GET /api/telemetry/examples?tool=&session_id=&limit=&since_ms=&until_ms=  the last failed tool calls (in that interval)

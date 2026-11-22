@@ -2,6 +2,8 @@
 // backups | restore | report | usage | service: the daemon's administration
 // from a terminal. Each asks the running daemon over HTTP, except restore
 // (the daemon must be stopped) and service (writes the systemd unit).
+import { localStamp, zoneNote } from "../core/clock.ts";
+import { rankLines } from "../admin/turn-compare.ts";
 import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -265,19 +267,44 @@ const report = wrap("keel report [--session ID] [--note TEXT] [--dry-run] [--url
     return 0;
   });
 
-const USAGE_USAGE = "keel usage [--days N] [--url URL] [--json]  Tokens, spend, cache and timings of the last N days (default 7).";
-const usage = wrap(USAGE_USAGE, { days: { type: "string" } }, async (v) => {
-  const days = v.days === undefined ? 7 : Number(v.days);
-  if (!(Number.isFinite(days) && days > 0)) return (console.error(`keel usage: --days is a number of days above 0\n\n${USAGE_USAGE}`), 3);
-  const since = Date.now() - days * 86_400_000;
-  const t = await call(urlOf(v.url), `/api/telemetry?since_ms=${since}`);
+const USAGE_USAGE = `keel usage [--days N | --hours N] [--top N] [--slow [N]] [--url URL] [--json]
+  Tokens, spend, cache and timings of the last N days (default 7) or hours, then the spend ranked:
+  by session, and by agent tree (a session with the agents under it). --top N lists N rows of each (default 10).
+  --slow [N] lists instead the N model requests that took longest in the range, across sessions (default 20).`;
+const usage = wrap(USAGE_USAGE, { days: { type: "string" }, hours: { type: "string" }, top: { type: "string" }, slow: { type: "boolean" } }, async (v, pos) => {
+  if (v.days !== undefined && v.hours !== undefined) return (console.error(`keel usage: --days and --hours do not mix\n\n${USAGE_USAGE}`), 3);
+  const n = v.hours !== undefined ? Number(v.hours) : v.days === undefined ? 7 : Number(v.days);
+  if (!(Number.isFinite(n) && n > 0)) return (console.error(`keel usage: --${v.hours !== undefined ? "hours" : "days"} is a number above 0\n\n${USAGE_USAGE}`), 3);
+  const top = v.top === undefined ? 10 : Number(v.top);
+  if (!(Number.isInteger(top) && top > 0)) return (console.error(`keel usage: --top is a whole number above 0\n\n${USAGE_USAGE}`), 3);
+  const since = Date.now() - n * (v.hours !== undefined ? 3_600_000 : 86_400_000);
+  const url = urlOf(v.url);
   const ms = (x: number | null) => (x == null ? "none" : x < 1000 ? `${x} ms` : `${(x / 1000).toFixed(2)} s`);
-  out(t, !!v.json, () => [
+  const range = `the last ${n} ${v.hours !== undefined ? (n === 1 ? "hour" : "hours") : n === 1 ? "day" : "days"}`;
+  if (v.slow) {
+    const limit = pos[0] === undefined ? 20 : Number(pos[0]);
+    if (!(Number.isInteger(limit) && limit > 0)) return (console.error(`keel usage: --slow takes a whole number of requests\n\n${USAGE_USAGE}`), 3);
+    const r = await call(url, `/api/telemetry/slowest?since_ms=${since}&limit=${limit}`);
+    out(r, !!v.json, () => [
+      `The ${r.requests.length} slowest model requests of ${range}. ${zoneNote()}.`,
+      ...r.requests.map((q: any) => `  ${ms(q.latency_ms).padStart(9)}  first word ${ms(q.ttft_ms).padStart(8)}  ${localStamp(q.ts)}  ${q.outcome === "ok" ? "" : `${q.error_class ?? q.outcome}  `}${q.model.slice(q.model.indexOf(":") + 1)}  ${(q.title ?? "a removed session").replace(/\s+/g, " ").slice(0, 48)}  [session=${q.session_id.slice(-12)}]`),
+    ].join("\n"));
+    return 0;
+  }
+  const [t, bySession, byTree] = await Promise.all([
+    call(url, `/api/telemetry?since_ms=${since}`),
+    call(url, `/api/usage?group=session&sort=cost&since_ms=${since}&limit=${top + 200}`),
+    call(url, `/api/usage?group=tree&sort=cost&since_ms=${since}&limit=${top + 200}`),
+  ]);
+  const title = (r: any) => (id: string) => r.sessions?.[id]?.title || (r.sessions?.[id] ? "(untitled)" : undefined);
+  out({ ...t, by_session: bySession.buckets, by_tree: byTree.buckets, sessions: { ...bySession.sessions, ...byTree.sessions } }, !!v.json, () => [
     `${t.total.calls} model calls, ${t.total.errors} failed; ${t.total.tool_calls} tool calls, ${t.total.tool_errors} failed`,
     `spend ${t.total.cost_usd == null ? (t.total.unpriced_calls ? `unknown (${t.total.unpriced_calls} calls without a price)` : "none") : `$${t.total.cost_usd.toFixed(4)}`}`,
     `cache hit ${t.total.cache_hit_ratio == null ? "none" : `${Math.round(t.total.cache_hit_ratio * 100)}%`}; first token ${ms(t.total.ttft_p50)} median, ${ms(t.total.ttft_p95)} p95; request ${ms(t.total.latency_p50)} median`,
     "",
     ...t.by_model.map((m: any) => `  ${m.model.padEnd(48)} ${String(m.calls).padStart(5)} calls  cache ${m.cache_hit_ratio == null ? "  -" : `${Math.round(m.cache_hit_ratio * 100)}%`.padStart(4)}  first token ${ms(m.ttft_p50)}`),
+    ...(bySession.buckets.length ? ["", `Spend by session, ${range}, dearest first:`, ...rankLines(bySession.buckets, title(bySession), top)] : []),
+    ...(byTree.buckets.some((b: any) => b.agents) ? ["", "Spend by agent tree (a session with the agents under it):", ...rankLines(byTree.buckets, title(byTree), top)] : []),
   ].join("\n"));
   return 0;
 });

@@ -9,7 +9,7 @@ import { cn, fmtTokens } from "../lib/utils.ts";
 import { TimeChart } from "./Chart.tsx";
 import { fmtMetric } from "./ExperimentsPanel.tsx";
 import { Segmented } from "./Settings.tsx";
-import { fmtMs, fmtPct, fmtUsd, Panel, RANGES, Table, type Range } from "./UsagePanel.tsx";
+import { fmtMs, fmtPct, fmtUsd, Panel, RANGE_OPTIONS, RANGES, Table, type Range } from "./UsagePanel.tsx";
 import { Stat, Stats } from "./Stat.tsx";
 
 type Interval = { estimate: number; lo: number; hi: number; n: number; method: string };
@@ -23,7 +23,7 @@ type Saving = { feature: string; calls: number; priced: number; cost_usd: number
 type Regression = { metric: string; label: string; bad: "high" | "low"; value: number | null; n: number; baseline_days: number; needs_days: number; limits: { mean: number; lower: number; upper: number } | null; status: string; regression: boolean };
 type Report = {
   since_ms: number; until_ms: number; turns: number; outcomes: Record<string, number>; total: Stats; dimensions: Dimension[]; savings: Saving[];
-  trend: { t_ms: number; turns: number; cost_per_turn: number | null; error_rate: number; cache_read_share: number | null; readers_share: number; run_code_share: number }[];
+  trend: { t_ms: number; last_ms?: number; turns: number; cost_per_turn: number | null; error_rate: number; cache_read_share: number | null; readers_share: number; run_code_share: number }[];
   regressions: Regression[];
 };
 
@@ -57,7 +57,7 @@ export function ObservabilityPanel() {
   return (
     <div className="flex flex-col gap-4" data-testid="observability-panel">
       <div className="flex flex-wrap items-center gap-3">
-        <Segmented<Range> label="Range" value={range} onChange={setRange} options={[{ value: "day", label: "Day" }, { value: "week", label: "Week" }, { value: "month", label: "Month" }]} />
+        <Segmented<Range> label="Range" value={range} onChange={setRange} options={RANGE_OPTIONS} />
         <span className="text-caption text-faint">One row per turn, measured on this machine. A turn that ended normally is not proof the work was right: rate replies, or prove a change with an experiment.</span>
       </div>
 
@@ -111,11 +111,11 @@ export function ObservabilityPanel() {
 
       <div className="grid gap-4 xl:grid-cols-2">
         <Panel title="Cost per turn by day" testid="obs-trend-cost">
-          <TimeChart label="Cost per turn by day" data={r.trend.map((p) => ({ t: p.t_ms, values: [p.cost_per_turn] }))} series={[{ label: "Cost per turn", color: "var(--series-1)" }]}
+          <TimeChart label="Cost per turn by day" data={r.trend.map((p) => ({ t: p.t_ms, at: p.last_ms, values: [p.cost_per_turn] }))} series={[{ label: "Cost per turn", color: "var(--series-1)" }]}
             bucket={86_400_000} since={r.until_ms - RANGES[range]} until={r.until_ms} format={(v) => fmtMetric("usd", v)} />
         </Panel>
         <Panel title="Shares of turns by day" testid="obs-trend-share">
-          <TimeChart label="Shares of turns by day" data={r.trend.map((p) => ({ t: p.t_ms, values: [p.error_rate, p.readers_share, p.run_code_share] }))}
+          <TimeChart label="Shares of turns by day" data={r.trend.map((p) => ({ t: p.t_ms, at: p.last_ms, values: [p.error_rate, p.readers_share, p.run_code_share] }))}
             series={[{ label: "Errors", color: "var(--series-1)" }, { label: "Used readers", color: "var(--series-2)" }, { label: "Used run_code", color: "var(--series-3)" }]}
             bucket={86_400_000} since={r.until_ms - RANGES[range]} until={r.until_ms} max={1} format={(v) => `${Math.round(v * 100)}%`} />
         </Panel>

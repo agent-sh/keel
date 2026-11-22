@@ -300,7 +300,7 @@ export class Outcomes {
       const priced = list.filter((t) => t.cost !== null);
       const prompt = list.reduce((n, t) => n + t.input + t.cache_read + t.cache_write, 0);
       return {
-        t_ms, turns: list.length, cost_per_turn: priced.length ? priced.reduce((n, t) => n + t.cost, 0) / priced.length : null,
+        t_ms, last_ms: Math.max(...list.map((t) => t.ts)), turns: list.length, cost_per_turn: priced.length ? priced.reduce((n, t) => n + t.cost, 0) / priced.length : null,
         error_rate: list.filter((t) => t.outcome === "error").length / list.length, cache_read_share: prompt ? list.reduce((n, t) => n + t.cache_read, 0) / prompt : null,
         readers_share: list.filter((t) => t.readers > 0).length / list.length, run_code_share: list.filter((t) => t.run_code > 0).length / list.length,
       };
