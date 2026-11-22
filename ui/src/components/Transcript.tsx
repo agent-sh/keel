@@ -26,7 +26,8 @@ import { LiveWork, Thinking, Work } from "./Work.tsx";
 import { OwnerWords, ToldModel, toldOf } from "./Words.tsx";
 import { ensureMarks } from "../lib/marks.ts";
 import { isPeerMessage, PeerMessage, RefusedNote } from "./FleetMessages.tsx";
-import { CUT_BY_RESTART, FAIL_WORD, NEEDS, STATE_WORD, stateWords } from "../../../src/core/state-words.ts";
+import { CUT_BY_RESTART, FAIL_WORD, NEEDS, STATE_WORD, stateWords, unreachableSince } from "../../../src/core/state-words.ts";
+import { hhmm } from "../../../src/core/watch.ts";
 
 function ActionButton({ label, onClick, children, testid, idle }: { label: string; onClick: () => void; children: ReactNode; testid?: string; idle?: boolean }) {
   return (
@@ -397,6 +398,16 @@ function Status({ sessionId }: { sessionId: string }) {
   if (st.kind === "compacting") {
     return <div className="flex items-center gap-2 text-ui text-muted animate-pulse-dot" data-testid="compacting"><Layers className="size-3.5 shrink-0" /> <span>Compacting the context{compactPlan(st.plan)}</span></div>;
   }
+  // A provider that cannot be reached is waited for, with no count and no countdown: since when, and what the transport said.
+  if (st.unreachable) {
+    return (
+      <div className="flex items-center gap-2 rounded-lg border border-warn/40 bg-raised px-3 py-2 text-ui" data-testid="provider-wait">
+        <span className="size-1.5 shrink-0 rounded-full bg-warn animate-pulse-dot" />
+        <span className="shrink-0 text-fg">{unreachableSince(hhmm(st.unreachable))}</span>
+        <span className="min-w-0 flex-1 truncate text-faint" title={st.message}>{st.message}</span>
+      </div>
+    );
+  }
   return (
     <div className="flex items-center gap-2 rounded-lg border border-warn/40 bg-raised px-3 py-2 text-ui" data-testid="retrying">
       <span className="size-1.5 rounded-full bg-warn animate-pulse-dot" />
@@ -452,6 +463,8 @@ function Working({ since, sessionId }: { since?: number; sessionId: string }) {
   const [, tick] = useState(0);
   useEffect(() => every(1000, () => tick((n) => n + 1)), []);
   const from = st?.kind === "model" || st?.kind === "tool" ? st.since : since;
+  // A turn that waits for a provider it cannot reach does not work: the line above says what it waits for.
+  if (st?.kind === "retry" && st.unreachable) return null;
   const s = from ? Math.max(0, Math.round((liveNow() - from) / 1000)) : 0; // stopped while the daemon is unreachable
   // What waits on the owner is said as that, in the words every surface uses: an approval, a plan to
   // approve, a secret to give. (A tool that asks is not a tool that runs.)
@@ -533,6 +546,7 @@ function Announcer({ sessionId, working, asking }: { sessionId: string; working:
   if (approving) text = `${STATE_WORD.need}: ${NEEDS.approval}.`;
   // A question card takes the place of the working line: the region says what the turn waits on.
   else if (asking) text = `${STATE_WORD.need}: ${NEEDS.owner}.`;
+  else if (st?.kind === "retry" && st.unreachable) text = `${unreachableSince(hhmm(st.unreachable))}.`;
   else if (st?.kind === "retry") text = `The provider failed: ${st.message}. Retrying, attempt ${st.attempt} of ${st.max}.`;
   else if (st?.kind === "compacting") text = `Compacting the context${compactPlan(st.plan)}.`;
   else if (working) text = `${STATE_WORD.work}.`;

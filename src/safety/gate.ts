@@ -108,7 +108,9 @@ CREATE INDEX IF NOT EXISTS perm_blocked_session ON perm_blocked(session_id, crea
 // and what it answers.
 export const REVIEW_SUMMARY_LIMIT = 4000;
 export const REVIEW_INPUT_LIMIT = 2000;
-export type ReviewAsk = { session: Session; tool: string; kind: string; summary: string; input: any; mode?: "auto"; cwd?: string; interpreter?: string; high?: { why: string; facts?: string } };
+// `signal`: the turn's, where a verdict is the only way on (Auto, Full auto): a judge whose provider
+// cannot be reached is waited for with the turn instead of refusing the call (src/providers/outage.ts).
+export type ReviewAsk = { session: Session; tool: string; kind: string; summary: string; input: any; mode?: "auto"; cwd?: string; interpreter?: string; high?: { why: string; facts?: string }; signal?: AbortSignal };
 export type Verdict = { allow: boolean; risk: string; reason: string; model: string; ms?: number } | { unavailable: string };
 // A call refused without the owner (the judge's refusal, a judge that could
 // not answer, a repeat); the owner can let one retry of it through.
@@ -803,7 +805,7 @@ export class Gate {
     }
     const high = !auto || auto.ask.risk === "high";
     const facts = high && cls.kind === "shell" ? repoContext(cls.command, auto?.cwd ?? cls.cwd ?? session.workspace, homedir(), session) : undefined;
-    const v = await this.judge({ session, tool: name, kind: cls.kind, summary, input: auto ? auto.input : clip(call.input), mode: auto && "auto", cwd: auto?.cwd, interpreter: auto?.interpreter, high: high ? { why, facts } : undefined });
+    const v = await this.judge({ session, tool: name, kind: cls.kind, summary, input: auto ? auto.input : clip(call.input), mode: auto && "auto", cwd: auto?.cwd, interpreter: auto?.interpreter, high: high ? { why, facts } : undefined, signal: call.ctx.signal });
     if (auto && !await auto.valid()) return changedReview;
     if ("unavailable" in v) {
       const b = this.block({ ...base, calls: [call.id], reason: `The judge could not review it: ${v.unavailable}`, risk: "unknown", model: "", key, by: "unavailable" });

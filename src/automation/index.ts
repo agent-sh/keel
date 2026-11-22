@@ -18,6 +18,7 @@ import * as taskRenames from "./task-renames.ts";
 import * as agents from "./agents.ts";
 import * as alerts from "./alerts.ts";
 import * as failures from "./failures.ts";
+import * as outage from "./outage.ts";
 import * as snooze from "./snooze.ts";
 import * as undelivered from "./undelivered.ts";
 import { afterCallOff, afterTurn, capture, clip, D, flush, hasPending, setDeps, stopperOf } from "./core.ts";
@@ -70,6 +71,7 @@ function init(deps: Deps) {
   consult.migrate();
   goals.migrate();
   failures.init();
+  outage.bind();
   // A called-off restart checks the goal turns its drain put off.
   afterCallOff.splice(0, afterCallOff.length, () => goals.recheckOwed());
   registerShared(...automationTools, consult.advisorTool);

@@ -259,7 +259,9 @@ export class Tracer {
         } else if (f.t === "status") {
           const key = `step:${f.session_id}`;
           this.endWait(key);
-          if (f.status.kind === "retry") this.wait(f.session_id, key, "retry wait", { attempt: f.status.attempt, max: f.status.max });
+          // A provider that cannot be reached is waited for, not retried by count: a wait of its own name.
+          if (f.status.kind === "retry" && f.status.unreachable) this.wait(f.session_id, key, "provider wait", { since: f.status.unreachable });
+          else if (f.status.kind === "retry") this.wait(f.session_id, key, "retry wait", { attempt: f.status.attempt, max: f.status.max });
           else if (f.status.kind === "compacting") this.wait(f.session_id, key, "compaction", { auto: f.status.auto });
         } else if (f.t === "feature" && f.name === "approval" && f.data?.id) {
           const a = f.data as { id: string; session_id: string; state: string; tool?: string; risk?: string; call_id?: string; choice?: string; by?: AnsweredBy };

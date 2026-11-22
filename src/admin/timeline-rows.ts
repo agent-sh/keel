@@ -12,7 +12,7 @@ import { PEER_PREFIX } from "../core/owner.ts";
 import type { ErrorRecord, TurnStatus } from "../core/types.ts";
 import { errorClass } from "./classes.ts";
 import { waitWords } from "../core/watch.ts";
-import { FAIL_WORD, NEEDS, STATE_WORD } from "../core/state-words.ts";
+import { FAIL_WORD, NEEDS, STATE_WORD, unreachableSince } from "../core/state-words.ts";
 import { ownerStop, stopSays, stopper } from "../core/stoppers.ts";
 
 export type TimelineKind =
@@ -396,12 +396,14 @@ export type NowInput = {
   loops: { id: string; name: string; next_ms: number }[];
   last?: { ts: number; outcome: string } | null;
 };
+const lower = (t: string) => t.charAt(0).toLowerCase() + t.slice(1);
 const DOING = (s: TurnStatus, now: number, output?: number): string => {
   switch (s.kind) {
     // A stream that gave output and then stopped says so, with how long it has been silent.
     case "model": return s.quiet ? `the model is answering, no output for ${dur(now - s.quiet)}` : s.connected ? "the model is answering" : "waiting for the model";
     case "tool": return `running ${s.names.slice(0, 3).join(", ")}${s.names.length > 3 ? ` and ${s.names.length - 3} more` : ""}`;
-    case "retry": return `retrying the model request (attempt ${s.attempt} of ${s.max})`;
+    // A provider that cannot be reached is waited for, not retried by count.
+    case "retry": return s.unreachable ? `${STATE_WORD.wait.toLowerCase()}: ${lower(unreachableSince(localTime(s.unreachable).slice(0, 5)))}` : `retrying the model request (attempt ${s.attempt} of ${s.max})`;
     case "compacting": return "compacting the context";
     default: return output ? "the model is answering" : "between steps";
   }

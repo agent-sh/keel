@@ -13,7 +13,8 @@ import type { Session, StoredEvent, TurnStatus } from "../core/types.ts";
 import { statSync } from "node:fs";
 import { STUCK_AFTER, stuckOf, type After, type Progress } from "../core/stuck.ts";
 import { oneLine, stateOf, watchWord, type Ask, type Pending, type SessionState as State, type Watch, type WatchFacts } from "../core/watch.ts";
-import { stateLabel, stateWords } from "../core/state-words.ts";
+import { UNREACHABLE_WORD, stateLabel, stateWords } from "../core/state-words.ts";
+import { zonedClock } from "../core/clock.ts";
 import { settings } from "../admin/settings.ts";
 import * as perm from "../server/routes/permissions.ts";
 import { plansWaiting } from "../server/routes/plan.ts";
@@ -33,6 +34,8 @@ export type From = {
     isRunning(id: string): boolean; statusOf?(id: string): TurnStatus; turnOf?(id: string): string | undefined;
     outputOf?(id: string): number | undefined; aliveOf?(id: string): number | undefined; isHeld?(id: string): boolean;
     waitsOnOwner?(id: string): boolean;
+    // The outage of its provider the session's turn waits in (src/providers/outage.ts).
+    outageOf?(id: string): { since: number; message: string } | undefined;
   };
 };
 const from = (): From => D();
@@ -190,17 +193,26 @@ export function factsOf(s: Session, l: Lens): WatchFacts {
   }
   // Its own waits and commands, then what each of its waiting agents waits on.
   const pending: Pending[] = [...(l.pending.get(s.id) ?? [])];
-  const parked = (l.kids.get(s.id) ?? []).filter((k) => k.status === "waiting");
+  // An agent whose turn waits for a provider that cannot be reached waits too: it is not at work.
+  const e = l.d.engine;
+  const downOf = (k: Kid) => (k.status === "running" ? e.outageOf?.(k.session_id) : undefined);
+  const parked = (l.kids.get(s.id) ?? []).filter((k) => k.status === "waiting" || downOf(k));
   for (const k of parked) {
+    const down = downOf(k);
     const theirs = l.pending.get(k.session_id);
-    if (theirs?.length) for (const p of theirs) pending.push({ ...p, agent: k.title });
+    if (down) pending.push({ kind: "unreachable", agent: k.title, since: down.since });
+    else if (theirs?.length) for (const p of theirs) pending.push({ ...p, agent: k.title });
     else pending.push({ kind: "wake", agent: k.title });
   }
   // A running turn: what it waits on now, when it started, whether its reply is streaming.
-  const e = l.d.engine;
   const turn = e.isRunning(s.id) ? e.turnOf?.(s.id) : undefined;
   const status = turn ? e.statusOf?.(s.id) : undefined;
-  const live = turn ? { status, turn: l.d.store.event(turn)?.ts, output: e.outputOf?.(s.id), ...(status?.kind === "tool" ? { step: stepOf(l.d.store, s, status.names) } : {}) } : {};
+  // Its own request waits for the provider; or its step only waits for its agents and each of them does.
+  const own = turn ? e.outageOf?.(s.id) : undefined;
+  const down = pending.filter((p) => p.kind === "unreachable");
+  const blocked = !own && status?.kind === "tool" && status.names.every((n) => WAITING_TOOLS.has(n)) && down.length > 0 && down.length === (l.counts.get(s.id) ?? 0);
+  const outage = own ? { since: own.since, message: own.message } : blocked ? { since: Math.min(...down.map((p) => p.since ?? Date.now())), agents: down.length } : undefined;
+  const live = turn ? { status, turn: l.d.store.event(turn)?.ts, output: e.outputOf?.(s.id), ...(status?.kind === "tool" ? { step: stepOf(l.d.store, s, status.names) } : {}), ...(outage ? { outage } : {}) } : {};
   // Its agents that run, when one of them says more than a count: a goal's check.
   const runs = (l.kids.get(s.id) ?? []).filter((k) => k.status === "running");
   const running = runs.length && runs.every((k) => k.type === "verifier") ? { running: "Checking that the goal is met" } : {};
@@ -249,6 +261,7 @@ export function stuckAfter(): After {
 export function stateWord(st: State): string {
   const said = stateWords(st);
   if (st.watch === "need") return `needs you${said.what ? ` (${said.what})` : ""}`;
+  if (st.watch === "wait" && st.why === "unreachable") return `${UNREACHABLE_WORD}${st.since ? ` since ${zonedClock(st.since)}` : ""}; Keel tries again by itself`;
   if (st.watch === "wait") return st.why === "resume" ? "waiting for the provider, and resumes by itself" : `waiting ${said.what || "for a condition it set"}`;
   if (st.watch === "work" && st.why === "command") return watchWord("work", st.agents, `working (${said.what})`);
   if (st.watch === "fail" && said.what) return `failed (${said.what})`;

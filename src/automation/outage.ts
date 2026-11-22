@@ -1,0 +1,79 @@
+// What the daemon says of a provider that cannot be reached (src/providers/outage.ts):
+// one line in Activity when the outage is known and one when it is over, with
+// its length; and to a session whose agents wait in it, one line with its next
+// request ("12 agents wait: the provider cannot be reached since 16:56") and
+// one more when they went on. Never a line per agent or per try, and it starts
+// no turn: the parent can do nothing about it, and its agents go on by
+// themselves.
+import { zonedClock } from "../core/clock.ts";
+import { agentsWaitLine, agentsWentOnLine, outageBegan, outageEnded } from "../core/state-words.ts";
+import { span } from "../core/watch.ts";
+import type { Outage } from "../providers/outage.ts";
+import { addNotice, hasNotice } from "../tools/jobs.ts";
+import * as activity from "./activity.ts";
+import { D, capture } from "./core.ts";
+
+const keyOf = (o: Pick<Outage, "provider" | "since">) => `outage:${o.provider}:${o.since}`;
+// Per outage, the parents told that their agents wait, with how many they were told of.
+const told = new Map<string, Map<string, number>>();
+
+// The session an agent's wait is told to: its parent, unless the agent is one its parent does not follow.
+function parentOf(sessionId: string): string | undefined {
+  const { store } = D();
+  const s = store.session(sessionId);
+  if (!s?.parent_id) return undefined;
+  const a = store.db.query<{ def: string | null }, [string]>("SELECT def FROM agents WHERE session_id = ?").get(sessionId);
+  if (!a) return undefined;
+  try { if (a.def && JSON.parse(a.def).silent) return undefined; } catch {}
+  return s.parent_id;
+}
+
+const agentsOf = (parent: string, o: Outage) => o.sessions.filter((id) => parentOf(id) === parent).length;
+
+// Lines the notice up for a parent that has none for this outage. Written when
+// it is sent, from the agents that wait then; dropped when the outage is over
+// by then (nothing happened that the parent needs to know).
+function tellParent(parent: string, o: Outage) {
+  const key = keyOf(o);
+  if (hasNotice(parent, key) || told.get(key)?.has(parent)) return;
+  let n = 0;
+  addNotice(parent, "", {
+    key,
+    fresh: () => {
+      const now = D().providers.outages.list().find((x) => x.provider === o.provider && x.since === o.since);
+      n = now ? agentsOf(parent, now) : 0;
+      return n ? `[harness] ${agentsWaitLine(n, zonedClock(o.since))}. Keel tries again by itself and they go on when it answers: nothing to send them, and none of them failed.` : undefined;
+    },
+    stored: () => void (told.get(key) ?? told.set(key, new Map()).get(key)!).set(parent, n),
+  });
+}
+
+export function bind() {
+  const { providers, bus } = D();
+  const label = (id: string) => providers.get(id)?.label ?? id;
+  providers.outages.listen({
+    // The state of the session (and of the sessions above it) is read again: it waits, or it went on.
+    waiting: (session, o) => {
+      bus.emit({ t: "feature", name: "outage", session_id: session, data: o ? { provider: o.provider, since: o.since } : null });
+      try {
+        const parent = o?.confirmed ? parentOf(session) : undefined;
+        if (o && parent) tellParent(parent, o);
+      } catch (e) { capture(e, { at: "outage notice" }); }
+    },
+    open: (o) => {
+      try {
+        activity.record("daemon", "outage", null, outageBegan(label(o.provider), zonedClock(o.since), o.sessions.length), { provider: o.provider, since: o.since, sessions: o.sessions.length, message: o.message });
+        for (const parent of new Set(o.sessions.map(parentOf))) if (parent) tellParent(parent, o);
+      } catch (e) { capture(e, { at: "outage began" }); }
+    },
+    close: (o, ms, answered) => {
+      try {
+        activity.record("daemon", "outage_over", null, outageEnded(label(o.provider), span(ms), answered), { provider: o.provider, since: o.since, ms, answered });
+        const key = keyOf(o);
+        // Only a parent that read the first line gets the second.
+        if (answered) for (const [parent, n] of told.get(key) ?? []) addNotice(parent, `[harness] ${agentsWentOnLine(n, span(ms))}.`);
+        told.delete(key);
+      } catch (e) { capture(e, { at: "outage ended" }); }
+    },
+  });
+}

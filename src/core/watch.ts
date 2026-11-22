@@ -10,7 +10,8 @@
 //   1. something waits on the owner (an approval, a question, a plan, a secret
 //      to give, a turn a restart cut and Keel did not continue, a message that
 //      did not go, a running turn whose every call waits on them): needs you;
-//   2. its own turn runs: working, with the step;
+//   2. its own turn runs: working, with the step; a turn whose provider cannot
+//      be reached waits for it (and tries again by itself): waiting;
 //   3. an agent it started runs: working;
 //   4. its last turn failed and the provider's wait is the reason: waiting,
 //      until the time it continues by itself;
@@ -26,7 +27,7 @@
 // The words are the vocabulary's (src/core/state-words.ts): one word per
 // state, for a session and an agent alike, on the page and in a tool's answer.
 import type { Session, StoredEvent, TurnStatus } from "./types.ts";
-import { COMMAND_IN_BACKGROUND, STATE_WORD, WAITS_FOR, failWord, stateLabel, waitsFor } from "./state-words.ts";
+import { COMMAND_IN_BACKGROUND, STATE_WORD, UNREACHABLE, WAITS_FOR, agentsWait, failWord, stateLabel, unreachableSince, waitsFor } from "./state-words.ts";
 
 // `stop`: the owner (or a parent) stopped the last turn, or it stopped at its
 // step budget; `resume`: a daemon restart cut it and Keel is about to continue
@@ -77,7 +78,8 @@ export type SessionState = {
   // need: the kind of the first thing that waits (approval, question, plan, secret, resume, unsent, owner);
   // work: tool, model, stalled (a stream that went silent), retry, compacting, turn, agents;
   // work: also command (its turn ended and a command it left in the background still runs);
-  // wait: timer, wait, agent, resume (the turn continues by itself), send (a message waits for the daemon);
+  // wait: timer, wait, agent, resume (the turn continues by itself), send (a message waits for the daemon),
+  // unreachable (its turn, or every agent it still has out, waits for a provider that cannot be reached);
   // fail: the failure's class, or max_tokens; declined: refusal; stop: max_steps, held.
   why?: string;
   on?: string;      // wait: the kind of the thing waited for (file, log, http, process, session, ...), when `why` is wait
@@ -124,6 +126,9 @@ export type WatchFacts = {
   held?: { text?: string; since?: number };
   // The queue of a stopped session: prompts that wait until the owner resumes.
   queue?: { held: boolean; queued: number };
+  // Its running turn waits for a provider that cannot be reached (src/providers/outage.ts): since when, and what the transport said.
+  // `agents`: not its own request: its turn only waits for that many agents, and each of them waits for the provider.
+  outage?: { since: number; message?: string; agents?: number };
 };
 
 // An agent still at work: running, or waiting on something it set up.
@@ -212,6 +217,8 @@ function doing(f: WatchFacts): Pick<SessionState, "why" | "text" | "since" | "un
     // (the session works: it is not said to wait, which is the word of a session at rest until something wakes it).
     return { why: "model", text: st.preparing ? "Scaling images for the model" : st.connected ? "The model is answering" : "Calling the model", ...since(st.since) };
   }
+  // The provider answers again and the request that waited for it is on its way.
+  if (st?.kind === "retry" && st.unreachable) return { why: "model", text: "Calling the model", ...since(f.turn) };
   // A retry says when the request goes again: the provider asked for the wait.
   if (st?.kind === "retry") return { why: "retry", text: `Retry ${st.attempt} of ${st.max} of the model request`, ...since(f.turn), ...(st.at ? { until: st.at } : {}) };
   if (st?.kind === "compacting") return { why: "compacting", text: "Compacting the context", ...since(f.turn) };
@@ -219,7 +226,7 @@ function doing(f: WatchFacts): Pick<SessionState, "why" | "text" | "since" | "un
 }
 
 // The time of day on the reader's 24-hour clock: 09:51.
-const hhmm = (ts: number) => new Date(ts).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+export const hhmm = (ts: number) => new Date(ts).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 
 // The time a state's clock reads: now, or when the state was last known (a state that is not current does not count on).
 export const asOf = (st: Pick<SessionState, "as_of">, now: number) => (st.as_of !== undefined ? Math.min(now, st.as_of) : now);
@@ -231,6 +238,8 @@ export function whyText(st: SessionState, at = Date.now()): string {
   const now = asOf(st, at);
   if (st.why === "stalled" && st.since) return `${st.text} for ${span(now - st.since)}`;
   if (st.why === "resume" && st.watch === "wait" && st.until) return `${st.text} at ${hhmm(st.until)}`;
+  // A provider that cannot be reached: since what time of day, and that Keel tries again.
+  if (st.why === "unreachable" && st.watch === "wait" && st.since) return st.text === UNREACHABLE ? unreachableSince(hhmm(st.since)) : `${st.text} since ${hhmm(st.since)}`;
   return st.text ?? "";
 }
 
@@ -294,6 +303,8 @@ export function stateOf(s: Session, events: StoredEvent[] | undefined, f: WatchF
   const { watch: w, end } = own(s, events);
   // How many of its agents wait: the rest work, and a head counts those.
   const parked = f.parked ? { parked: Math.min(agents, f.parked) } : {};
+  // Its turn runs and can do nothing until its provider answers: it waits, and goes on by itself.
+  if (w === "work" && f.outage) return { watch: "wait", agents, ...parked, why: "unreachable", text: f.outage.agents ? agentsWait(f.outage.agents) : UNREACHABLE, since: f.outage.since };
   if (w === "work") return { watch: "work", agents, ...parked, ...(f.status || f.turn ? doing(f) : {}) };
   // Agents that run keep it working, whatever its own last turn came to.
   if (agents - (f.parked ?? 0) > 0) return { watch: "work", agents, ...parked, ...(f.running ? { why: "agents", text: f.running } : {}) };
@@ -323,6 +334,12 @@ export function stateOf(s: Session, events: StoredEvent[] | undefined, f: WatchF
       watch: "work", agents, ...parked, why: "command", text: `${t ? `${lead}: ${t}` : lead}${commands.length > 1 ? `, and ${commands.length - 1} more` : ""}`,
       ...(commands[0]!.since ? { since: commands[0]!.since } : {}),
     };
+  }
+  // Every agent it still has out waits for a provider that cannot be reached: one line for all of them.
+  const down = f.pending.filter((p) => p.kind === "unreachable" && p.agent !== undefined);
+  if (down.length && down.length === f.pending.length) {
+    const since = Math.min(...down.map((p) => p.since ?? Infinity));
+    return { watch: "wait", agents, ...parked, why: "unreachable", text: agentsWait(down.length), ...(Number.isFinite(since) ? { since } : {}) };
   }
   // What is due first leads; without a due time, what has waited longest.
   const pending = [...f.pending].sort((a, b) => (a.until ?? Infinity) - (b.until ?? Infinity) || (a.since ?? Infinity) - (b.since ?? Infinity));

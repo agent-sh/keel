@@ -38,6 +38,7 @@ import { anyOver, damagedImages, fitForWire, fitToolImages, imageKeys } from "./
 import { imageLimits, imageRefusal, requestTooLarge } from "../providers/image-limits.ts";
 import { resolveAttachments } from "./attachments.ts";
 import { RETRY, RETRY_WAIT_MAX_MS, RetryTooLong, backoffMs, errorText, retryable, sleep } from "./retry.ts";
+import { unreachable } from "../providers/unreachable.ts";
 import { capResult, OUTPUT_CAP } from "../tools/spill.ts";
 
 // What a result says of a call a restart cut or the owner's stop reached (src/core/stops.ts).
@@ -691,6 +692,11 @@ export class Engine {
   // What the running turn waits on now (for a page that opens mid-turn).
   statusOf(id: string): TurnStatus {
     return this.statuses.get(id) ?? { kind: "idle" };
+  }
+
+  // The outage of its provider the session's turn waits in (src/providers/outage.ts).
+  outageOf(id: string) {
+    return this.providers.outages?.of(id);
   }
 
   // When the reply being streamed last gave output; undefined between requests.
@@ -1396,6 +1402,11 @@ export class Engine {
     let resent = false;
     // The failures this request was sent again after (a retry that passes heals them).
     const retried: ErrorRecord[] = [];
+    // The provider could not be reached and this request waits for it: captured once, however long it takes.
+    let down = false;
+    // A request the turn cannot go on without waits for a provider that cannot be reached; a call its
+    // caller can go on without (a reader, a side answer, a summary made ahead) fails at once.
+    const outages = purpose === "turn" || (purpose === "summary" && this.running.get(id)?.abort.signal === signal) ? this.providers.outages : undefined;
 
     // The caller's count plus what the request gained since, at the model's bytes a token.
     const fits = () => {
@@ -1455,7 +1466,10 @@ export class Engine {
         clearInterval(hush);
         if (!quiet) { this.outputs.delete(id); this.wires.delete(id); }
         this.measure(id, (h) => h.requestFailed?.(session, req, e, signal.aborted));
-        if (signal.aborted) throw abortError();
+        if (signal.aborted) {
+          outages?.left(id);
+          throw abortError();
+        }
         // A route that cannot take deferred tools gets the search pair, once.
         if (st.native && !retryable(e) && isDeferError(e)) {
           this.errors.capture("provider", e, { session: id, fallback: "deferred tools refused; using search_tools" });
@@ -1506,6 +1520,26 @@ export class Engine {
             out = new Set([...out, ...drop]);
           }
           req = { ...req, messages: await fitForWire(whole, limits, out, preparing) };
+          continue;
+        }
+        // The provider was not reached (src/providers/outage.ts): the request waits for it with every
+        // other session of that provider, however long it takes, and no retry of the turn is counted.
+        // The row, the footer and the parent read the wait from the outage itself (outageOf).
+        if (outages && unreachable(e)) {
+          if (!down) retried.push(this.errors.capture("provider", e, { session: id, provider: st.provider.id, retry: 1, wait_ms: 0 }, { group: `provider unreachable: ${st.provider.id}` }));
+          down = true;
+          const back = outages.wait(st.provider.id, e, signal, { session: id });
+          if (!quiet) this.status(id, { kind: "retry", attempt: 0, max: 0, at: 0, message: errorText(e), unreachable: outages.of(id)?.since ?? Date.now() });
+          try {
+            await back;
+          } catch (gone) {
+            if (!signal.aborted) throw gone; // the wait's ceiling: the failure itself
+            // A restart parks the turn while it waits: said, so the next daemon reads a wait and not a stall.
+            if (this.parking.has(id)) this.append(id, "note", { kind: "provider_wait", text: "The provider could not be reached when the daemon restarted: this turn waits for it and goes on by itself." });
+            else outages.left(id);
+            throw abortError();
+          }
+          attempt = -1; // a provider that is back gets the request with its retries whole
           continue;
         }
         if (!retryable(e) || attempt + 1 >= RETRY.max) throw e;
@@ -2277,6 +2311,8 @@ export class Engine {
       .catch((e) => {
         if (abort.signal.aborted) return;
         this.giveUp(id, events, st, covered, false, e);
+        // A summary made ahead that could not reach the provider is made again later: nothing failed that anyone needs to read.
+        if (unreachable(e)) return;
         this.errors.capture("provider", e, { session: id, at: "preparing a summary" });
       })
       .finally(() => { if (this.preparing.get(id)?.abort === abort) this.preparing.delete(id); });
@@ -2612,7 +2648,8 @@ export class Engine {
     }
     const deadline = Date.now() + ms;
     for (;;) {
-      const busy = [...this.running.entries()].filter(([id]) => !this.waitsOnOwner(id)).map(([, r]) => r.done);
+      // (Nor is a turn that only waits for a provider it cannot reach: it is parked and waits on in the next daemon.)
+      const busy = [...this.running.entries()].filter(([id]) => !this.waitsOnOwner(id) && !this.outageOf(id)).map(([, r]) => r.done);
       const left = deadline - Date.now();
       if ((!busy.length && !moving) || left <= 0) return;
       await Promise.race([Promise.all([...busy, ...(moving ? moves : [])]), Bun.sleep(Math.min(left, SETTLE_CHECK_MS))]);
@@ -2621,6 +2658,8 @@ export class Engine {
 
   // The second half: the turns still running are parked.
   async park() {
+    // The outages stay as they are for the next daemon: a parked turn has not stopped waiting.
+    this.providers.outages?.stop();
     await Promise.all([...this.running.entries()].map(async ([id, r]) => {
       this.parking.add(id);
       for (const h of allHooks()) try { h.turnParking?.(id); } catch (e) { this.errors.capture("server", e, { hook: "turnParking", session: id }); }
@@ -3047,6 +3086,8 @@ export function stalledContinuations(line: readonly StoredEvent[]): number {
     const prompt = line.findLastIndex((x, i) => i < start && x.kind === "user");
     if (prompt < 0 || line[prompt]!.data.origin !== "restart") break;
     if (line.slice(start, end).some((x) => x.kind === "tool_result" && x.data.results.some((r: any) => stopKind(r.content) !== "cut"))) break;
+    // A turn that waited for a provider it could not reach did not stall: it had nothing to do meanwhile.
+    if (line.slice(start, end).some((x) => x.kind === "note" && x.data.kind === "provider_wait")) break;
     n++;
     end = prompt - 1;
   }
