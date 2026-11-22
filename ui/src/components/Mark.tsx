@@ -2,8 +2,8 @@
 // live sessions in order of attention.
 import { useEffect, useMemo, useState } from "react";
 import type { Session } from "../../../src/core/types.ts";
-import { liveNow, useStaleSince, useStore } from "../lib/store.ts";
-import { WATCH_LABEL, WATCH_RANK, useWatches, type SessionState, type Watch } from "../lib/watch.ts";
+import { downSince, liveNow, useStore } from "../lib/store.ts";
+import { WATCH_LABEL, WATCH_RANK, useStatesSince, useWatches, type SessionState, type Watch } from "../lib/watch.ts";
 import { cn } from "../lib/utils.ts";
 import { asOf, span } from "../../../src/core/watch.ts";
 
@@ -17,14 +17,14 @@ export function Mark({ w, className }: { w: Watch; className?: string }) {
 // Re-renders every `ms` while `on`; idle screens do not tick. The time stops
 // while the daemon is unreachable: the page does not know the work goes on.
 export function useNow(on: boolean, ms = 1000) {
-  // Stopped from the loss until the page has caught up again, not only until a socket speaks.
-  const stale = useStaleSince() !== null;
+  // Stopped from the loss until the states are read again, not only until a socket speaks.
+  const stale = useStatesSince() !== null;
   const [now, setNow] = useState(liveNow);
   useEffect(() => {
     if (!on) return;
-    setNow(liveNow());
+    setNow(stale ? liveNow() : Date.now());
     if (stale) return;
-    const t = setInterval(() => setNow(liveNow()), ms);
+    const t = setInterval(() => setNow(Date.now()), ms);
     return () => clearInterval(t);
   }, [on, ms, stale]);
   return now;
@@ -41,7 +41,9 @@ export function elapsed(ms: number) {
 // How long a state has held, or when what it waits for is due. `short`: for a
 // row's narrow time column ("in 14m").
 export function stateClock(st: SessionState, at: number, short = false): string {
-  const now = asOf(st, at); // a state that is not current (the daemon or its machine is not heard) stops where it was last known
+  // A state that is not current (the daemon or its machine is not heard) stops where it was last
+  // known. One told while the page still catches up is current: it counts from the real time.
+  const now = st.as_of === undefined && downSince() !== null ? Math.max(at, Date.now()) : asOf(st, at);
   if (st.until) return st.until > now ? `${short ? "in" : "due in"} ${span(st.until - now)}` : short ? "due" : "due now";
   return st.since ? span(now - st.since) : "";
 }

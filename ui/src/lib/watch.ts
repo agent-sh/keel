@@ -13,7 +13,7 @@ import { useAuto } from "./automation.ts";
 import { remoteId, splitId } from "./fleet-ids.ts";
 import { useSafety } from "./safety.ts";
 import { sendDrafts, unsentOf, useShelfVersion } from "./send-drafts.ts";
-import { actions, api, getState, newer, onFeature, readAtOpen, reportError, useStaleSince, useStore } from "./store.ts";
+import { actions, api, downSince, getState, lastLoss, newer, onFeature, readAtOpen, reportError, useStaleSince, useStore } from "./store.ts";
 import { useReach } from "./reach.ts";
 import { stripAnsi, toolKind, toolLine, type ToolKind } from "./tools.ts";
 
@@ -68,8 +68,57 @@ function useTold<T>(sel: (x: Record<string, SessionState>) => T): T {
 // What the daemon told, as it is: for a part that marks a session by its state without its row (an agent in the tree).
 export const useToldStates = () => useTold((x) => x);
 export const useToldState = (id: string | undefined) => useTold((x) => (id ? x[id] : undefined));
+// Which states are current while the page catches up. From the moment it stops hearing the
+// daemon until it has read everything again, what it shows is as of the loss. A state told
+// since (a frame of the new socket, the snapshot read on it) is not: it is the daemon's word of
+// now, and says so the moment it is in, before the rest of the catch-up is. Lost again before
+// the catch-up ended, such a state is as of that loss, not the first.
+// When each session's state was last told, and this daemon's snapshot of all of its own.
+const toldAt = new Map<string, number>();
+let snapAt = 0;
+let freshRev = 0;
+function toldNow(ids: string[] | "all") {
+  const now = Date.now();
+  if (ids === "all") snapAt = now;
+  else for (const id of ids) toldAt.set(id, now);
+  // Readers are told only while something is not current: at other times nothing reads this.
+  if (downSince() !== null) freshRev++;
+}
+// (Another machine's sessions are not in this daemon's snapshot: its relay tells them.)
+const toldOf = (id: string) => Math.max(toldAt.get(id) ?? 0, splitId(id) ? 0 : snapAt);
+// Since when a session's state is not current (null: it is). `since`: since when the page's are.
+export function staleOf(id: string, since: number | null, connected: boolean, told = toldOf(id), lost = lastLoss()): number | null {
+  if (since === null) return null;
+  if (told <= since) return since; // from before the absence began
+  if (told > lost) return connected ? null : told; // told on the connection the page has now
+  return lost; // told between two losses of one absence
+}
+const useFresh = () => useSyncExternalStore(subscribe, () => freshRev);
+// Since when the states the page shows are not current (null: they are): from the loss until
+// the daemon's snapshot of them is in, which is sooner than the whole catch-up.
+export function useStatesSince(): number | null {
+  const page = useStaleSince();
+  const connected = useStore((x) => x.connected);
+  useFresh();
+  return page !== null && connected && snapAt > lastLoss() ? null : page;
+}
+// The sessions told since the loss, while the snapshot is not in yet: the few a frame was quicker for.
+export function useToldSince(): string[] {
+  const page = useStaleSince();
+  const connected = useStore((x) => x.connected);
+  const rev = useFresh();
+  return useMemo(() => {
+    const lost = lastLoss();
+    if (page === null || !connected || snapAt > lost) return [];
+    const out: string[] = [];
+    for (const [id, at] of toldAt) if (at > lost && out.length < 40) out.push(id);
+    return out;
+  }, [page, connected, rev]);
+}
+
 export async function loadStates() {
   const r = await api<{ states: Record<string, SessionState>; rev?: number }>("/api/state");
+  toldNow("all");
   // The snapshot is every session this daemon tells of: one it leaves out (archived or
   // deleted while the page was away) is told no more, unless a newer frame says otherwise.
   // Another machine's sessions are told by its relay (tellRemote).
@@ -93,11 +142,13 @@ export function tellRemote(machine: string, states: Record<string, SessionState>
     const rid = remoteId(machine, id);
     next[rid] = newer(`${rid}:state`, rev, true) || !told[rid] ? (st.child ? { ...st, child: remoteId(machine, st.child) } : st) : told[rid]!;
   }
+  toldNow(Object.keys(states).map((id) => remoteId(machine, id)));
   setTold(next);
 }
 onFeature({
   frame(f) {
     if (f.name !== "state" || !f.session_id || !newer(`${f.session_id}:state`, f.rev)) return;
+    toldNow([f.session_id]);
     if (f.data) return setTold({ ...told, [f.session_id]: f.data as SessionState });
     const { [f.session_id]: _gone, ...rest } = told;
     setTold(rest);
@@ -141,6 +192,7 @@ const notCurrent = (st: SessionState, page: number | null, machine: number | und
   return machine !== undefined ? { ...st, offline: true, ...(since ? { as_of: since } : {}) } : page !== null ? { ...st, as_of: page } : st;
 };
 // Since when the page's states are not current (null: they are): from when it stopped hearing the daemon until it has caught up.
+// One the daemon told since is current before that (`staleOf`).
 const usePageSince = useStaleSince;
 // The machine a session depends on: the one it lives on (another daemon's session), or the one its tools run on.
 const machineOf = (s: Session | undefined) => (s ? splitId(s.id)?.machine ?? s.machine ?? undefined : undefined);
@@ -148,7 +200,10 @@ const theirs = (s: Session) => !!splitId(s.id);
 
 export function useSessionState(s: Session | undefined): SessionState {
   const state = useTold((x) => (s ? x[s.id] : undefined));
-  const page = usePageSince();
+  const since = usePageSince();
+  const rev = useFresh();
+  const connected = useStore((x) => x.connected);
+  const page = s ? staleOf(s.id, since, connected) : since;
   const far = machineOf(s);
   const machine = useReach((x) => (far ? x.unheard[far]?.since : undefined));
   const n = useSafety((x) => (s ? x.approvals[s.id]?.length ?? 0 : 0));
@@ -158,7 +213,7 @@ export function useSessionState(s: Session | undefined): SessionState {
   const agents = useAgentCount(s?.id);
   return useMemo(
     () => (s ? notCurrent(withUnsent(state ?? fromHeld(s, { approvals: n, asking, agents }), kept), page, machine, theirs(s)) : { watch: "idle", agents: 0 }),
-    [s, state, n, asking, agents, kept, page, machine],
+    [s, state, n, asking, agents, kept, page, machine, rev, connected],
   );
 }
 export const useWatch = (s: Session | undefined): Watch => useSessionState(s).watch;
@@ -195,13 +250,14 @@ export function useSessionStates(list: Session[]): Record<string, SessionState> 
   const agents = useAgentCounts();
   const shelf = useShelfVersion();
   const page = usePageSince();
+  const connected = useStore((x) => x.connected);
   const unheard = useReach((x) => x.unheard);
   return useMemo(() => {
     const out: Record<string, SessionState> = {};
     for (const s of list) {
       const st = states[s.id] ?? fromHeld(s, { approvals: approvals[s.id]?.length, asking: !!(calls[s.id]?.length || children[s.id]?.length), agents: agents[s.id] });
       const far = machineOf(s);
-      out[s.id] = notCurrent(withUnsent(st, keptOf(s.id)), page, far ? unheard[far]?.since : undefined, theirs(s));
+      out[s.id] = notCurrent(withUnsent(st, keptOf(s.id)), staleOf(s.id, page, connected), far ? unheard[far]?.since : undefined, theirs(s));
     }
     return out;
   }, [list, states, calls, children, approvals, agents, shelf, page, unheard]);

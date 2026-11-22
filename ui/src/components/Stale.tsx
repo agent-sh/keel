@@ -8,7 +8,10 @@
 // itself (Sidebar.tsx), and a pane's head gets the same words from the rule
 // here, since a pane is keyed `[data-station]` and another machine's session
 // carries the machine's id in front of its own. While the page itself is cut
-// off every mark also pales and stops moving.
+// off every mark also pales and stops moving. A state the daemon told since
+// the loss is current the moment it is in, before the rest of the catch-up:
+// the marks here go when the daemon's snapshot of the states is read, and a
+// session a frame was quicker for is left out of them until then.
 //
 // The logo's word is the link's: connected, slow to answer (two asks went
 // unanswered), reconnecting, or catching up.
@@ -16,6 +19,7 @@ import { useEffect, useState } from "react";
 import { useReach } from "../lib/reach.ts";
 import { useStaleSince, useStore } from "../lib/store.ts";
 import { clock } from "../lib/utils.ts";
+import { useStatesSince, useToldSince } from "../lib/watch.ts";
 
 // A drop this short is a blip (the socket opened again at once and the page caught up): nothing is said.
 const AWAY_AFTER_MS = 1_000;
@@ -50,16 +54,23 @@ const plain = (id: string) => /^[A-Za-z0-9]+$/.test(id);
 // The marks, as a stylesheet of their own: mounted once, beside the page's band.
 export function StaleMarks() {
   const away = useAway();
+  const since = useStatesSince();
+  const told = useToldSince();
   const unheard = useReach((x) => x.unheard);
-  const css = away !== null
+  const page = away !== null && since !== null;
+  // The sessions told since the loss: their rows and panes say nothing of it.
+  const ids = told.filter((id) => /^[A-Za-z0-9-]+$/.test(id));
+  const but = (attr: string) => (ids.length ? `:not(${ids.map((id) => `[${attr}="${id}"]`).join(", ")})` : "");
+  const row = `.k-row${but("data-session")}`, station = `.k-station${but("data-station")}`;
+  const css = page
     ? [
-      `.k-station .k-station-word::after { ${said(`as of ${clock(away)}`)} }`,
-      `:is(.k-row, .k-station) .k-mark { opacity: 0.45; animation-play-state: paused; }`,
-      `:is(.k-row, .k-station) .k-mark::before, :is(.k-row, .k-station) .k-mark::after { animation-play-state: paused; }`,
-      `:is(.k-row-time[data-live], .k-station-clock) { color: var(--faint); }`,
+      `${station} .k-station-word::after { ${said(`as of ${clock(away)}`)} }`,
+      `:is(${row}, ${station}) .k-mark { opacity: 0.45; animation-play-state: paused; }`,
+      `:is(${row}, ${station}) .k-mark::before, :is(${row}, ${station}) .k-mark::after { animation-play-state: paused; }`,
+      `:is(${row} .k-row-time[data-live], ${station} .k-station-clock) { color: var(--faint); }`,
     ].join("\n")
     : Object.values(unheard).filter((m) => plain(m.id) && m.since > 0)
       .map((m) => `.k-station[data-station^="${m.id}--"] .k-station-word::after { ${said(`as of ${clock(m.since)}`)} }\n.k-station[data-station^="${m.id}--"] .k-mark { opacity: 0.45; animation-play-state: paused; }`).join("\n");
   if (!css) return null;
-  return <style data-testid="stale-marks" data-stale={away !== null ? "page" : "machine"}>{css}</style>;
+  return <style data-testid="stale-marks" data-stale={page ? "page" : "machine"}>{css}</style>;
 }

@@ -791,6 +791,10 @@ let socket: WebSocket | undefined;
 let downAt: number | null = null;
 export const liveNow = () => downAt ?? Date.now();
 export const downSince = () => downAt;
+// When the daemon was last lost: the latest loss, where `downSince` is the first of an absence (it
+// may be lost again while the page catches up). Kept while connected.
+let lostAt = 0;
+export const lastLoss = () => lostAt;
 // Since when what the page shows is not current (null: it is): from the loss until it has caught up.
 export const staleSince = (s: Pick<State, "synced">) => (s.synced ? null : downAt);
 export const useStaleSince = () => useStore(staleSince);
@@ -892,6 +896,7 @@ function lose(why: "silent" | "closed") {
   // Silent: what the page shows is as of the last frame, not of the moment it gave up.
   // Lost again while it was catching up: still as of the first loss.
   if (opened) downAt ??= why === "silent" && beat.heard ? beat.heard : Date.now();
+  lostAt = why === "silent" && beat.heard ? beat.heard : Date.now();
   cutReads();
   downFrom = Date.now();
   absence ??= { why };

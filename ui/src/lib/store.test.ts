@@ -522,3 +522,19 @@ test("a link whose answers take four seconds is measured and not taken for lost"
     Date.now = real;
   }
 });
+
+test("a state says as of the loss it is from, and one told since the page is heard again says nothing", async () => {
+  const { staleOf } = await import("./watch.ts");
+  const since = 1_000;
+  // The page hears the daemon and has caught up: nothing is stale.
+  expect(staleOf("s", null, true, 500, 0)).toBeNull();
+  // Lost at 1000 (the only loss): a state from before is as of then, heard again or not.
+  expect([staleOf("s", since, false, 900, 1_000), staleOf("s", since, true, 900, 1_000)]).toEqual([1_000, 1_000]);
+  // Heard again, catching up: a state the daemon told since is current before the rest is read.
+  expect(staleOf("s", since, true, 1_500, 1_000)).toBeNull();
+  // Lost again at 2000 before the catch-up ended: what was told between the two losses is as of
+  // the second, what was not is still as of the first, and neither is current once it is heard again.
+  expect([staleOf("s", since, false, 1_500, 2_000), staleOf("old", since, false, 900, 2_000)]).toEqual([2_000, 1_000]);
+  expect([staleOf("s", since, true, 1_500, 2_000), staleOf("old", since, true, 900, 2_000)]).toEqual([2_000, 1_000]);
+  expect(staleOf("s", since, true, 2_500, 2_000)).toBeNull();
+});
