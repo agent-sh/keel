@@ -34,16 +34,24 @@
 // process begins a log of its own. Two rows carry a backup's place across
 // that:
 //   closed  written as the last thing the daemon does with its store (at the
-//           process's exit): the generation, how far it was read, and a
+//           process's exit): the generation and how far it was read; a
 //           number written into the store itself in that same moment
-//           (log_starts.ts), whose frame is read too;
-//   ends    written by the next process at its first write, when the closed
-//           row's number is still the one in the store and no log holds a
-//           frame: the closed generation ended there, and this one follows.
-// Whatever writes through a Store after the close changes that number (a
-// Store's first write sets it), and so does the checkpoint thread's own
-// write, so a frame nobody read leaves no chain. A process that was killed
-// leaves its log, which the next one reads from its first frame.
+//           (log_starts.ts), whose frame is read too; and, once the log has
+//           been emptied into the database file with that frame in it, the
+//           file as it then stands: its size, its time of change to the
+//           nanosecond and its inode;
+//   ends    written by the next process at its first write, when the file
+//           was still exactly that before it was opened, no log held a
+//           frame, and the closed row's number is still the one in the
+//           store: the closed generation ended there, and this one follows.
+// Anything that writes to the database while no daemon runs changes the
+// file (another program's write is copied into it when that program closes
+// it), and a Store's first write and the checkpoint thread's own write
+// change the number: either way no chain is left, and the next backup
+// compares every page. A daemon that could not empty its log as it exited
+// (a reader or the checkpoint thread still held it) writes no closed row. A
+// process that was killed leaves its log, which the next one reads from its
+// first frame.
 //
 // The rows are written with no sync (they are an index, not the data): a
 // machine that went down may have lost some, or kept some of a log that did
@@ -51,7 +59,7 @@
 // reader never takes up where an earlier one stopped: it reads its
 // generation from the first frame.
 import { Database } from "bun:sqlite";
-import { readFileSync, readSync } from "node:fs";
+import { readFileSync, readSync, statSync } from "node:fs";
 import { endianness, uptime } from "node:os";
 import { dirname, join } from "node:path";
 import { storeFd } from "./store-files.ts";
@@ -65,6 +73,21 @@ export type LogHead = LogAt & { copied: number };
 const LE = endianness() === "LE";
 // A closing token is two numbers of 26 bits and more: above any time in milliseconds, exact as a double.
 const HALF = 2 ** 26;
+
+// How a database file stands: what tells a file nothing wrote to from one that was written, replaced
+// or restored. `log`: the bytes of the log beside it (none: there is no log, or an empty one).
+export type FileFacts = { size: string; mtime_ns: string; ino: string; log: number };
+export function fileFacts(dbPath: string): FileFacts | undefined {
+  try {
+    const st = statSync(dbPath, { bigint: true });
+    let log = 0;
+    try { log = Number(statSync(`${dbPath}-wal`).size); } catch {}
+    return { size: String(st.size), mtime_ns: String(st.mtimeNs), ino: String(st.ino), log };
+  } catch {
+    return undefined;
+  }
+}
+const sameFile = (f: FileFacts) => `${f.size} ${f.mtime_ns} ${f.ino}`;
 
 // The log's index (the -shm file): the generation, its newest committed
 // frame and how many frames are in the database. Both copies of the header
@@ -212,19 +235,24 @@ export class PageLog {
   }
   // The last thing a process does with its store. `write` puts `token` into
   // the store (one row of a table nothing else writes): its frame is read
-  // with the rest, and the generation is written down as closed there.
+  // with the rest. `settle` then empties the log into the database file and
+  // says how the file stands (nothing: the log could not be emptied, and no
+  // row is written). The generation is written down as closed, with the
+  // number and the file.
   // (The write is read as any write that may start the log again: with every frame copied and the
   // checkpoint thread's mark gone, it does.)
-  seal(write: (token: number) => void, table: string): void {
+  seal(write: (token: number) => void, table: string, settle: () => FileFacts | undefined): void {
     try {
       const token = (HALF + Math.floor(Math.random() * HALF)) * HALF + Math.floor(Math.random() * HALF);
       this.witnessed(() => write(token), table);
       const h = this.head();
       if (!h || !this.at || h.s1 !== this.at.s1 || h.s2 !== this.at.s2 || h.frame !== this.read || !h.frame) return;
+      const file = settle();
+      if (!file || file.log) return;
       const db = this.side();
       db.transaction(() => {
         db.exec("DELETE FROM rows WHERE end = 2");
-        db.query("INSERT INTO rows (end, s1, s2, lo, hi, n1, n2) VALUES (2, ?, ?, ?, ?, ?, ?)").run(h.s1, h.s2, this.read, this.read, Math.floor(token / HALF), token % HALF);
+        db.query("INSERT INTO rows (end, s1, s2, lo, hi, n1, n2, pages) VALUES (2, ?, ?, ?, ?, ?, ?, ?)").run(h.s1, h.s2, this.read, this.read, Math.floor(token / HALF), token % HALF, Buffer.from(sameFile(file)));
       })();
     } catch {
       this.drop();
@@ -233,14 +261,16 @@ export class PageLog {
 
   // A process's first write to its store, read on both sides as any write
   // that may start the log again (`witnessed`). `token`: the number the store
-  // holds before it. When the process before closed its log with that number
-  // and no log holds a frame now, the closed generation is written down as
-  // ended, with this process's as the one that follows.
-  opened<T>(token: number | undefined, write: () => T, table: string): T {
-    let closed: { s1: number; s2: number; hi: number; n1: number; n2: number } | null | undefined;
+  // holds before it; `file`: the database file as it stood before this
+  // process opened it. When the process before closed its log with that
+  // number, the file is still as it left it and no log holds a frame, the
+  // closed generation is written down as ended, with this process's as the
+  // one that follows.
+  opened<T>(token: number | undefined, file: FileFacts | undefined, write: () => T, table: string): T {
+    let closed: { s1: number; s2: number; hi: number; n1: number; n2: number; pages: Uint8Array | null } | null | undefined;
     let empty = false;
     try {
-      closed = this.side().query<{ s1: number; s2: number; hi: number; n1: number; n2: number }, []>("SELECT s1, s2, hi, n1, n2 FROM rows WHERE end = 2 ORDER BY id DESC LIMIT 1").get();
+      closed = this.side().query<{ s1: number; s2: number; hi: number; n1: number; n2: number; pages: Uint8Array | null }, []>("SELECT s1, s2, hi, n1, n2, pages FROM rows WHERE end = 2 ORDER BY id DESC LIMIT 1").get();
       const before = this.head();
       empty = !before || before.frame === 0;
     } catch { this.drop(); }
@@ -251,7 +281,8 @@ export class PageLog {
         const db = this.side();
         db.exec("DELETE FROM rows WHERE end = 2");
         const now = this.head();
-        if (closed && empty && token === closed.n1 * HALF + closed.n2 && now && now.frame >= 1 && !(now.s1 === closed.s1 && now.s2 === closed.s2) && this.first(now) === this.root(table)) {
+        const untouched = !!closed?.pages && !!file && !file.log && Buffer.from(closed.pages).toString() === sameFile(file);
+        if (closed && untouched && empty && token === closed.n1 * HALF + closed.n2 && now && now.frame >= 1 && !(now.s1 === closed.s1 && now.s2 === closed.s2) && this.first(now) === this.root(table)) {
           db.query("INSERT INTO rows (end, s1, s2, lo, hi, n1, n2) VALUES (1, ?, ?, ?, ?, ?, ?)").run(closed.s1, closed.s2, closed.hi, closed.hi, now.s1, now.s2);
         }
       } catch { this.drop(); }
@@ -345,8 +376,8 @@ export class PageLog {
 const mine = new Map<string, PageLog>();
 const of = (dbPath: string) => mine.get(dbPath) ?? (mine.set(dbPath, new PageLog(dbPath)), mine.get(dbPath)!);
 export const logOf = of;
-export const sealLog = (dbPath: string, write: (token: number) => void, table: string) => of(dbPath).seal(write, table);
-export const openedLog = <T>(dbPath: string, token: number | undefined, write: () => T, table: string): T => of(dbPath).opened(token, write, table);
+export const sealLog = (dbPath: string, write: (token: number) => void, table: string, settle: () => FileFacts | undefined) => of(dbPath).seal(write, table, settle);
+export const openedLog = <T>(dbPath: string, token: number | undefined, file: FileFacts | undefined, write: () => T, table: string): T => of(dbPath).opened(token, file, write, table);
 // The thread's reader gives its file back (it opens it again when it next reads).
 export const restLog = (dbPath: string) => void mine.get(dbPath)?.close();
 export const scanLog = (dbPath: string) => of(dbPath).scan();

@@ -13,7 +13,7 @@ import { forgetSession } from "./session-map.ts";
 import { asker, asking } from "./asker.ts";
 import { labelled } from "./statement-label.ts";
 import { encodeOwed, OWED_FILE, OWED_FILE_MAX, OWED_V, owedLineKey, owedRefusal, owedSql, readOwed, type OwedLine, type OwedRecord, type OwedSql } from "./owed.ts";
-import { openedLog, restLog, sealLog } from "./log-pages.ts";
+import { fileFacts, openedLog, restLog, sealLog } from "./log-pages.ts";
 import { holdStore, logBytes, storePath } from "./store-files.ts";
 import { Side } from "./side.ts";
 import type { SettleAsk, Settled } from "../engine/compact.ts";
@@ -594,8 +594,15 @@ export class Store {
   // The last thing the daemon does with its store, as its process exits: the log is read to its end
   // and closed with a number written into the store, so the process that starts next can follow it
   // (log-pages.ts). Nothing is written through this store after it.
+  // The log is then emptied into the database file (given up at once when a reader or the checkpoint
+  // thread still holds it: the thread is closed before the daemon exits), and the file as it stands
+  // is kept with the closing: a file anything wrote to before the next start is not followed.
   sealLog() {
-    try { sealLog(storePath(this.stateDir), (token) => this.db.run("UPDATE log_starts SET ts = ? WHERE id = 1", [token]), "log_starts"); } catch {}
+    const settle = () => {
+      const r = this.noWait(() => this.db.query<{ busy: number; log: number; checkpointed: number }, []>("PRAGMA wal_checkpoint(TRUNCATE)").get());
+      return r && !r.busy ? fileFacts(storePath(this.stateDir)) : undefined;
+    };
+    try { sealLog(storePath(this.stateDir), (token) => this.db.run("UPDATE log_starts SET ts = ? WHERE id = 1", [token]), "log_starts", settle); } catch {}
   }
 
   noWait<T>(f: () => T): T {
@@ -710,15 +717,18 @@ export class Store {
     const logMb = Math.round(logBytes(stateDir) / 1_048_576);
     const reading = logMb > LOG_SAID_MB ? performance.now() : 0;
     if (reading) console.log(`[store] reading ${logMb} MB of the store's log, left by a daemon that did not stop cleanly`);
+    // (The database file as the process before left it, looked at before anything here opens it: log-pages.ts.)
+    const found = fileFacts(storePath(stateDir));
     this.db = new Database(storePath(stateDir), { create: true, strict: true });
     this.db.exec(SCHEMA);
     // The first write of this process, made here where it is the only writer: what the log holds from
     // the process before is read first, and should this write start the log again its end is written
-    // down; a log the process before closed is followed from where it closed (log-pages.ts). A backup
-    // can then still tell which pages changed across the restart.
+    // down; a log the process before closed is followed from where it closed, when the file is still
+    // as that process left it (log-pages.ts). A backup can then still tell which pages changed across
+    // the restart.
     try {
       const closing = this.db.query<{ ts: number }, []>("SELECT ts FROM log_starts WHERE id = 1").get()?.ts;
-      openedLog(storePath(stateDir), closing, () => this.db.run("UPDATE log_starts SET ts = ? WHERE id = 1", [Date.now()]), "log_starts");
+      openedLog(storePath(stateDir), closing, found, () => this.db.run("UPDATE log_starts SET ts = ? WHERE id = 1", [Date.now()]), "log_starts");
     } catch {} finally { restLog(storePath(stateDir)); }
     if (reading) console.log(`[store] the log is read (${((performance.now() - reading) / 1000).toFixed(1)} s)`);
     immediate(this.db);

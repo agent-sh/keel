@@ -333,6 +333,10 @@ export class Daemon {
       off();
       say(exitLine({ restart: this.draining!.restart, parked, upMs: Date.now() - this.started, reason: opts.reason }));
       for (const f of this.beforeExit) await (async () => f())().catch((e) => this.deps.errors.capture("server", e, { at: "shutdown" }));
+      // The checkpoint thread's connections close first, as at a stop: the log can then be emptied
+      // into the database as the process exits, which is what lets the next start follow it
+      // (Store.sealLog).
+      await checkpointerOf(this.deps.store)?.close().catch((e) => this.deps.errors.capture("server", e, { at: "closing the checkpoint thread" }));
       // What the store still owes (the owner's stops and answers from while its disk did not answer) is
       // in its file for the next start, or is said exactly when that file could not be written either.
       const left = await owedAtStop(this.deps.store, this.draining!.restart ? "restart" : "stop");

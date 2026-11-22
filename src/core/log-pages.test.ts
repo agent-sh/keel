@@ -300,7 +300,8 @@ test("with the checkpoint thread, the pages between two of its snapshots are eve
 test("a backup's place is followed across a clean end of the process, and not when anything wrote after the log was closed", async () => {
   const { Store } = await import("./store.ts");
   const { logOf } = await import("./log-pages.ts");
-  const run = (after: (dir: string, path: string) => void, copied = false) => {
+  // `closedFirst`: the daemon is gone (its connection closed) before `after` runs.
+  const run = (after: (dir: string, path: string) => void, copied = false, closedFirst = false) => {
     const dir = mkdtempSync(join(tmpdir(), "keel-log-seal-"));
     const path = join(dir, "keel.db");
     const one = new Store(dir);
@@ -316,8 +317,9 @@ test("a backup's place is followed across a clean end of the process, and not wh
     // (Every frame copied and no reader's mark: the closing write itself starts the log again.)
     if (copied) one.db.exec("PRAGMA wal_checkpoint(PASSIVE)");
     one.sealLog();
+    if (closedFirst) one.db.close();
     after(dir, path);
-    one.db.close();
+    if (!closedFirst) one.db.close();
     const two = new Store(dir);
     write(two, 30, "next");
     logOf(path).scan();
@@ -338,6 +340,16 @@ test("a backup's place is followed across a clean end of the process, and not wh
   const restarted = run(() => {}, true);
   expect(restarted.got).toBeDefined();
   expect(restarted.changed.filter((p) => !restarted.got!.pages.has(p))).toEqual([]);
+  // Another program wrote to the database while no daemon ran, to rows of its own choosing, and closed it:
+  // its write was copied into the file and its log removed, and the store's number is as it was. The file
+  // is not the one the daemon left: not known. (It was followed, and two backups restored without the write.)
+  const outside = run((dir) => {
+    const w = new Database(join(dir, "keel.db"));
+    w.exec("PRAGMA journal_mode = WAL");
+    expect(w.query("UPDATE events SET data = replace(data, 'then', 'THEN') WHERE data LIKE '%then%'").run().changes).toBeGreaterThan(10);
+    w.close();
+  }, false, true);
+  expect(outside.got).toBeUndefined();
   // The checkpoint thread wrote after the log was closed (its one row): not known.
   const late = run((dir) => {
     const w = new Database(join(dir, "keel.db"));

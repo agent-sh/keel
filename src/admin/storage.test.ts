@@ -1362,3 +1362,62 @@ test("a restart waits behind a compare the daemon is making, and not behind the 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// Another program writes to the database while no daemon runs (sqlite3 by hand, a tool that opens the file
+// itself), in place, and closes it: its write is copied into the file and its log removed, and nothing in the
+// store says so. The file is not as the daemon left it, so the next backup compares every page and holds the
+// write. (The daemon's log was followed across it: two backups restored without the write.)
+test("a write to the database while no daemon runs is in the next backup, which compares every page", async () => {
+  const root = mkdtempSync(join(tmpdir(), "keel-backup-"));
+  try {
+    const dir = join(root, "src");
+    const run = async (outside: boolean) => {
+      const src = new Store(dir);
+      const s = src.sessions()[0] ?? src.createSession({ model: "p:m", workspace: root, title: "kept" });
+      const say = (st: Store, t: string) => st.append(s.id, "user", { text: t.padEnd(12) + "x".repeat(3000) });
+      if (src.events(s.id).length === 0) for (let i = 0; i < 300; i++) say(src, `one ${i}`);
+      const storage = new Storage(src, {} as any, new Bus(), {} as any);
+      if (!storage.backups().length) await storage.backup("full");
+      say(src, `two ${outside}`);
+      expect(toldOf(await storage.backup("before the stop"))).toBe(true);
+      say(src, `three ${outside}`);
+      // The daemon stops: its log is closed as its process exits, and its connection goes.
+      src.sealLog();
+      src.db.close();
+      if (outside) {
+        const w = new Database(join(dir, "keel.db"));
+        w.exec("PRAGMA journal_mode = WAL");
+        expect(w.query("UPDATE events SET data = replace(data, 'one 7 ', 'OUT 7 ') WHERE data LIKE '%one 7 %'").run().changes).toBe(1);
+        w.query("UPDATE sessions SET title = 'changed outside' WHERE id = ?").run(s.id);
+        w.close();
+      }
+      // The next daemon.
+      const next = new Store(dir);
+      say(next, `four ${outside}`);
+      const said: string[] = [];
+      const after = await new Storage(next, {} as any, new Bus(), { capture: (_s: string, e: Error) => said.push(e.message) } as any).backupQuick("before a restart") as any;
+      const dst = join(root, `dst-${outside}`);
+      expect(restore(dst, after.path).ok).toBe(true);
+      const got = { told: toldOf(after), texts: textsOf(dst), want: textsOf(dir), title: titles(join(dst, "keel.db")), said };
+      // (And it stops as a daemon does.)
+      next.sealLog();
+      next.db.close();
+      return got;
+    };
+    // Stopped and started with nothing in between: the backup after the start is made from the log.
+    const clean = await run(false);
+    expect(clean.told).toBe(true);
+    expect(clean.texts).toEqual(clean.want);
+    // With the outside write: compared, and the write is in it. Compared because the file is not the one the
+    // daemon left, not because a page the log did not name happened to be among the few read all the same:
+    // nothing is reported as missed by the log.
+    const written = await run(true);
+    expect(written.told).toBe(false);
+    expect(written.said).toEqual([]);
+    expect(written.texts).toEqual(written.want);
+    expect(written.texts).toContain("OUT 7".padEnd(12));
+    expect(written.title).toEqual(["changed outside"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

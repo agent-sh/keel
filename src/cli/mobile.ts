@@ -86,6 +86,11 @@ function viaStore(state: string, claim: { release: () => void }): Phone {
     if (existsSync(path)) {
       db = new Database(path, { strict: true });
       db.exec("PRAGMA busy_timeout = 5000");
+      // This command writes to the store with no daemon and not through a Store: it says so in the
+      // store itself, as a Store's first write does, so a backup made after it does not take the
+      // pages the daemon's log named for all that changed (src/core/log-pages.ts). (A store from
+      // before that table has nothing to follow.)
+      try { db.run("UPDATE log_starts SET ts = ? WHERE id = 1", [Date.now()]); } catch {}
       const conn = db;
       m = new MobileStore({ db: conn, migrate: (sql: string) => void conn.exec(sql) });
     } else {
