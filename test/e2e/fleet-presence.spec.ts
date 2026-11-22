@@ -89,3 +89,56 @@ test("fleet forwarder keeps the caller's presence standing", async ({ page, brow
   const errorsAfter = (await (await request.get("/api/errors")).json()).errors.length;
   expect(errorsAfter).toBe(errorsBefore);
 });
+
+// Feature: another machine's session says its machine in its pane's head at any width of the pane, and
+// that machine's part of the list, when it begins below what the list shows, is named at the list's foot.
+test("another machine is named in a narrow pane's head, and its part of the list is a press away", async ({ page, request }) => {
+  const peerWhy = await peerProblem(request, PEER);
+  test.skip(!!peerWhy, peerWhy ?? "");
+  const old = (await (await request.get("/api/fleet/machines")).json()).machines.filter((m: any) => m.daemon_url === PEER).map((m: any) => m.id);
+  for (const s of (await (await request.get("/api/sessions")).json()).sessions) if (old.includes(s.machine)) await request.delete(`/api/sessions/${s.id}`);
+  for (const id of old) await request.delete(`/api/fleet/machines/${id}`);
+  mkdirSync(ROOT, { recursive: true });
+  const mid = (await (await request.post("/api/fleet/machines", { data: { name: "far-desk", daemon_url: PEER, workspace_root: ROOT } })).json()).id as string;
+  const { session: far } = await (await request.post(`${PEER}/api/sessions`, { data: { workspace: ROOT, title: "Far sweep", model: HAIKU } })).json();
+  const ws = `${process.env.HOME}/.cache/keel-work/bun/e2e-ws/machines-${Date.now().toString(36)}`;
+  const local: string[] = [];
+  try {
+    // Enough of this machine's sessions to fill the list: four folders of six.
+    for (let f = 0; f < 4; f++) { mkdirSync(`${ws}/f${f}`, { recursive: true }); for (let i = 0; i < 6; i++) local.push((await (await request.post("/api/sessions", { data: { model: HAIKU, title: `Here ${f}.${i}`, workspace: `${ws}/f${f}` } })).json()).session.id); }
+    const farId = `${mid}--${far.id}`;
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.goto(`/s/${local[0]}`);
+    // The far machine's sessions are in the list once its relay has told of them.
+    await expect(page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${farId}"]`)).toBeAttached({ timeout: 30_000 });
+    // Four panes: each about 440 px. The far session's head names its machine.
+    await page.evaluate((slots) => { localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.panes", JSON.stringify({ count: 4, slots, sizes: {}, active: 0 })); }, [local[0], farId, local[1], local[2]]);
+    await page.goto(`/s/${local[0]}`);
+    const pane = page.locator(`section.k-station[data-station="${farId}"]`);
+    await expect(pane).toBeVisible({ timeout: 15_000 });
+    expect((await pane.boundingBox())!.width).toBeLessThan(500);
+    await expect(pane.getByTestId("station-machine")).toBeVisible({ timeout: 15_000 });
+    await expect(pane.getByTestId("station-machine")).toHaveText("far-desk");
+    await expect(page.locator(`section.k-station[data-station="${local[1]}"]`).getByTestId("station-machine")).toHaveCount(0);
+    await shoot(page, "fleet-presence-02-narrow-head");
+    // A short window: the far machine's part begins below the list's view, and the foot names it.
+    await page.evaluate((slots) => localStorage.setItem("keel.panes", JSON.stringify({ count: 2, slots, sizes: {}, active: 0 })), [local[0], local[1]]);
+    await page.setViewportSize({ width: 1440, height: 700 });
+    await page.goto(`/s/${local[0]}`);
+    const sep = page.locator(`[data-testid="machine-sep"][data-machine="${mid}"]`);
+    await expect(sep).toBeAttached({ timeout: 15_000 });
+    await page.getByTestId("session-list").evaluate((l) => { l.scrollTop = 0; });
+    await expect(sep).not.toBeInViewport();
+    const foot = page.locator(`[data-testid="machine-foot"][data-machine="${mid}"]`);
+    await expect(foot).toBeInViewport();
+    await expect(foot).toContainText("far-desk");
+    await shoot(page, "fleet-presence-03-machine-foot");
+    await foot.click();
+    await expect(sep).toBeInViewport();
+    await expect(foot).toHaveCount(0);
+  } finally {
+    for (const id of local) await request.delete(`/api/sessions/${id}`);
+    await request.delete(`${PEER}/api/sessions/${far.id}`);
+    await request.delete(`/api/fleet/machines/${mid}`);
+  }
+});

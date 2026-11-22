@@ -253,3 +253,57 @@ test("sessions on another machine sit under that machine's separator; a local on
     await request.delete(`/api/fleet/machines/${mid}`);
   }
 });
+
+// Feature: with many sessions, what needs the owner is named without scrolling: a row out of the list's
+// view is named at the list's foot, a press away; and in a list too narrow for words beside the title
+// (four panes) a row that needs the owner keeps its reason on a line of its own.
+test("what needs you is named in a long list, and keeps its reason in a narrow one", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const tag = Date.now().toString(36);
+  const made: string[] = [];
+  const session = async (title: string, folder: string, mode = "full-auto") => {
+    mkdirSync(`${WS}/${folder}`, { recursive: true });
+    const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title, workspace: `${WS}/${folder}` } })).json();
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode, sandbox: "off" } });
+    made.push(session.id);
+    return session.id as string;
+  };
+  try {
+    const asker = await session("Rotate the long-list certificates", `named-${tag}-ask`, "ask");
+    await request.post(`/api/sessions/${asker}/messages`, { data: { text: script([{ name: "Bash", input: { command: `touch named-${tag}.txt` } }]) } });
+    // A long list: eight more folders of six sessions at rest.
+    for (let f = 0; f < 8; f++) for (let i = 0; i < 6; i++) await session(`Filler ${f}.${i}`, `named-${tag}-${f}`);
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${asker}/approvals`)).json()).approvals?.length ?? 0, { timeout: 20_000 }).toBe(1);
+    const others = made.filter((id) => id !== asker);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(`/s/${others[0]}`);
+    const r = row(page, asker);
+    await expect(r).toHaveAttribute("data-watch", "need");
+    // Its row out of the list's view, whichever end it is at: named at the foot.
+    const list = page.getByTestId("session-list");
+    await list.evaluate((l, id) => { const x = l.querySelector<HTMLElement>(`[data-session="${id}"]`)!; const top = x.getBoundingClientRect().top - l.getBoundingClientRect().top + l.scrollTop; l.scrollTop = top > l.clientHeight ? 0 : l.scrollHeight; }, asker);
+    await expect(r).not.toBeInViewport();
+    const strip = page.getByTestId("need-strip");
+    const named = strip.locator(`[data-session="${asker}"]`);
+    await expect(named).toBeInViewport();
+    await expect(named).toHaveText("Rotate the long-list certificates");
+    // The list's rows did not move for it: what shrank is the room under them.
+    await shoot(page, "session-rows-need-strip");
+    await named.click();
+    await expect(page.getByTestId("approval").first()).toBeVisible();
+    // Four panes: the list is narrow, and the asking row says what it asks on a line of its own.
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await page.evaluate((slots) => { localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.panes", JSON.stringify({ count: 4, slots, sizes: {}, active: 0 })); }, others.slice(0, 4));
+    await page.goto(`/s/${others[0]}`);
+    await expect(page.locator("section.k-station:not([inert] *)")).toHaveCount(4);
+    await expect(page.getByTestId("sidebar")).toHaveAttribute("data-narrow", "true");
+    await r.scrollIntoViewIfNeeded();
+    await expect(r).toHaveAttribute("data-reason", "true");
+    await expect(r.getByTestId("row-why")).toBeVisible();
+    await expect(r.getByTestId("row-why")).toContainText(`named-${tag}.txt`);
+    expect((await r.getByTestId("row-why").boundingBox())!.width).toBeGreaterThan(40);
+    await shoot(page, "session-rows-narrow-reason");
+  } finally {
+    for (const id of made) await request.delete(`/api/sessions/${id}`);
+  }
+});

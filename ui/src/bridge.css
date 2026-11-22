@@ -344,6 +344,17 @@
 .k-pinned { position: relative; }
 .k-drop-line { position: absolute; left: 0.25rem; right: 0.25rem; height: 2px; margin-top: -1px; border-radius: 1px; background: var(--ring); pointer-events: none; }
 /* Sessions that arrived while the list was held, below what it shows: said at the list's foot. */
+/* The names of what calls the owner and is out of the list's view, at its foot. */
+/* It never takes the list's own room: at most a quarter of it, and it scrolls past that. */
+.k-need-strip { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 0.125rem 0.25rem; flex-shrink: 0; max-height: 25%; overflow-y: auto; scrollbar-width: thin; margin: 0 0.625rem; padding: 0.375rem 0 0.25rem; border-top: 1px solid var(--line); }
+.k-need-name { display: inline-flex; align-items: center; gap: 0.375rem; min-width: 0; max-width: 100%; height: var(--spacing-ctl-sm); padding: 0 0.375rem; border-radius: 0.1875rem; font-size: var(--text-caption); color: var(--fg); }
+.k-need-name:hover { background: var(--hover); }
+.k-need-name:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
+.k-need-name .k-mark { flex-shrink: 0; width: 0.5rem; height: 0.5rem; }
+.k-need-title { min-width: 0; max-width: 11rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.k-need-more { font-weight: 700; font-size: var(--text-micro); color: var(--muted); }
+.k-rail[data-narrow] .k-need-strip { margin-inline: 0.375rem; flex-direction: column; }
+.k-rail[data-narrow] .k-need-title { max-width: none; }
 .k-late-line { display: flex; align-items: center; gap: 0.375rem; flex-shrink: 0; height: var(--spacing-ctl-md); margin: 0 0.625rem; padding: 0 0.5rem; border-top: 1px solid var(--line); font-size: var(--text-caption); color: var(--muted); text-align: left; }
 .k-late-line:hover { color: var(--fg); }
 .k-late-line svg { width: 0.875rem; height: 0.875rem; flex-shrink: 0; }
@@ -465,6 +476,13 @@
 .k-rail[data-narrow] .k-index { padding-inline: 0.375rem; }
 .k-rail[data-narrow] .k-row { gap: 0.4375rem; padding: 0 0.25rem 0 0.4375rem; }
 .k-rail[data-narrow] :is(.k-row-sub, .k-row-end) { display: none; }
+/* A row that calls the owner keeps its reason, on a line of its own under the title (the mark says the state). */
+.k-rail[data-narrow] .k-row[data-reason] { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 1.25rem 1rem; column-gap: 0.4375rem; row-gap: 0.0625rem; height: auto; padding-block: 0.25rem; }
+.k-rail[data-narrow] .k-row[data-reason] .k-row-main { display: contents; }
+.k-rail[data-narrow] .k-row[data-reason] > .k-mark { grid-area: 1 / 1; }
+.k-rail[data-narrow] .k-row[data-reason] .k-row-title { grid-area: 1 / 2; }
+.k-rail[data-narrow] .k-row[data-reason] .k-row-sub { display: flex; grid-column: 2 / -1; grid-row: 2; height: 1rem; line-height: 1rem; gap: 0.25rem; }
+.k-rail[data-narrow] .k-row[data-reason] .k-row-sub > :not(.k-row-why, .k-row-class) { display: none; }
 .k-rail[data-narrow] .k-row[data-shown]::before { left: -0.375rem; top: 0.25rem; bottom: 0.25rem; }
 .k-rail[data-narrow] .k-group { margin-top: 0.5rem; }
 .k-rail[data-narrow] .k-group-head { padding: 0 0.375rem; }
@@ -671,6 +689,9 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-station[data-watch="idle"] .k-station-word { color: var(--faint); }
 .k-station:is([data-watch="stop"], [data-watch="resume"]) .k-station-word { color: var(--muted); }
 .k-station-clock { font-size: var(--text-ui); color: var(--fg); }
+/* Another machine's name beside the title, in that machine's colour: kept at every width of the pane. */
+.k-station-machine { --where: var(--faint); flex: 0 1 auto; min-width: 2.5rem; max-width: 9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 0.375rem; border-radius: 0.1875rem; box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--where) 45%, transparent); font-weight: 600; font-size: var(--text-micro); line-height: 1.125rem; color: var(--where); }
+.k-station-machine[data-reach="offline"] { color: var(--faint); box-shadow: inset 0 0 0 1px var(--line-strong); }
 .k-station-meta { margin-left: auto; min-width: 0; font-size: var(--text-micro); color: var(--faint); white-space: pre; }
 .k-gone { color: var(--st-fail-ink); }
 .k-station-tools { display: flex; gap: 1px; opacity: 0; transition: opacity 120ms; }
@@ -718,6 +739,9 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-station-identity .k-station-word { font-family: var(--font-sans); font-stretch: normal; font-weight: 600; text-transform: none; letter-spacing: 0; word-spacing: normal; }
 /* The folder has only the room nothing else wants: it grows from nothing into what the state and its reason leave, and says nothing in a sliver. */
 .k-station-identity .k-station-meta { flex: 1 1 0; width: 0; max-width: 13rem; margin: 0; container-type: inline-size; }
+/* Set at the end of its room: the folder stands still while the state beside it says more or less. */
+.k-station:not([data-helm]) .k-station-identity .k-station-meta { display: flex; justify-content: flex-end; max-width: none; }
+.k-station:not([data-helm]) .k-station-identity .k-station-where { min-width: 0; max-width: 100%; }
 @container (max-width: 2.5rem) { .k-station-where { display: none; } }
 .k-station-identity .k-station-tools { flex-shrink: 0; margin-left: auto; }
 /* A pane that is not worked in shows its tools when it is pointed at or the keys are in it:
@@ -739,9 +763,6 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-station .k-session-header .k-session-title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 /* A narrow pane: the token counts give way (the turn footer has them). The row
    never scrolls: SessionHeader keeps in it what fits and lists the rest behind More. */
-/* Set at the end of its room: the folder stands still while the state beside it says more or less. */
-.k-station:not([data-helm]) .k-station-identity .k-station-meta { display: flex; justify-content: flex-end; max-width: none; }
-.k-station:not([data-helm]) .k-station-identity .k-station-where { min-width: 0; max-width: 100%; }
 .k-station .k-session-header { overflow: hidden; }
 .k-station .k-session-header > * { flex-shrink: 0; }
 /* The tools that can fold sit in one group that may shrink: on the frame before

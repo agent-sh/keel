@@ -16,7 +16,7 @@ import { createContext, Fragment, memo, useContext, useEffect, useId, useLayoutE
 import type { Session } from "../../../src/core/types.ts";
 import { runCommand } from "../lib/keys.ts";
 import { machineName, machineReach, useFleet } from "../lib/fleet.ts";
-import { stations, useStations } from "../lib/stations.ts";
+import { getStations, stations, useStations } from "../lib/stations.ts";
 import { actions, api, reportError, useStore } from "../lib/store.ts";
 import { actedOn, anchorRow, dropAnchor, focusRow, forgetActed, jumpNext, listActed, nameCounts, nameUnder, onReveal, reanchor, useActed, useAnchor, useCounts, useHand, useUnderLook, type Hand, type Kind } from "../lib/list-hold.ts";
 import { around, folders, held as heldList, pinnedOrder, tally } from "../lib/list-order.ts";
@@ -192,7 +192,7 @@ function RowOf({ s: given, active, where, gone }: { s: Session; active: boolean;
   const live = useStore((x) => x.sessions[given.id]);
   const deleted = useStore((x) => !!x.gone[given.id]);
   const s = live ?? given;
-  const { narrow, lines } = useContext(ListCtx);
+  const { narrow, lines, watches: heldWatches } = useContext(ListCtx);
   const restore = s.archived;
   // A session whose agents failed reads Failed until the owner looks at it, as the counters count it (lib/home.ts);
   // as the list shows it: a change that calls the owner at once, any other once it has held (lib/settle.ts).
@@ -259,6 +259,9 @@ function RowOf({ s: given, active, where, gone }: { s: Session; active: boolean;
       data-gone={gone || undefined}
       data-pinned={pinned || undefined}
       data-under={under || undefined}
+      // In a list too narrow for words beside the title, a row that calls the owner keeps its reason on a
+      // line of its own. Decided by the state the list holds: no row grows under the hand.
+      data-reason={(narrow && calls(heldWatches[s.id] ?? w) && !offline && !left) || undefined}
       aria-disabled={left === "deleted" || undefined}
       aria-current={active ? "page" : undefined}
       aria-haspopup="menu"
@@ -323,11 +326,11 @@ function RowOf({ s: given, active, where, gone }: { s: Session; active: boolean;
           ? <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-live title={st.until ? `Due ${when(st.until)}` : `Since ${when(st.since!)}`}>{rowClock(st, now)}</span>
           : <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" title={when(s.updated)}>{ago(s.updated)}</span>}
         {/* (A row whose session left has no actions: there is nothing to act on.) */}
+        {/* (Pressed with the pointer, it leaves the keyboard where it was: a focus the owner did not give
+            the row would hold the list after the pointer left, and the pinned row would not take its place.) */}
         {!left && !restore && !phone() && (
           <button type="button" tabIndex={-1} title={pinned ? "Unpin" : "Pin to the top of the list"} aria-label={pinned ? "Unpin" : "Pin"} aria-pressed={pinned} data-testid="row-pin" onClick={(e) => { e.stopPropagation(); togglePin(e.detail === 0); }} className="k-row-act hidden group-hover:grid group-focus-within:grid">
             {pinned ? <PinOff /> : <Pin />}
-        {/* (Pressed with the pointer, it leaves the keyboard where it was: a focus the owner did not give
-            the row would hold the list after the pointer left, and the pinned row would not take its place.) */}
           </button>
         )}
         {!left && !restore && !shown && !phone() && (
@@ -452,6 +455,86 @@ function LateLine({ n, to }: { n: number; to: { current: HTMLElement | null } })
 }
 
 // The pinned group, in the order of its pins. A session dragged over it is dropped where the line
+// What calls the owner and is out of the list's view: named at the list's foot, each a press away.
+// With many sessions the rows that need the owner or failed are below what the list shows (they are
+// never folded away, but a list of fifty rows is three screens): the line above the list counts them,
+// and here they are named. At the foot, so the list's rows stand where they stand when a name comes
+// or goes: what shrinks is the room under them. A press opens the session, as its row does.
+// Another machine's part of the list, when it begins below what the list shows: its name and count at
+// the list's foot, a press away (a long list of this machine's sessions hid that there are others).
+function MachinesBelow({ nav, machines }: { nav: { current: HTMLElement | null }; machines: { machine: string; count: number }[] }) {
+  const key = machines.map((m) => `${m.machine}:${m.count}`).join(" ");
+  const [below, setBelow] = useState<string[]>([]);
+  useEffect(() => {
+    const root = nav.current;
+    if (!root || !machines.length) return setBelow([]);
+    const at = new Map<string, boolean>();
+    const io = new IntersectionObserver((es) => {
+      for (const e of es) at.set((e.target as HTMLElement).dataset.machine!, !e.isIntersecting && e.boundingClientRect.top >= (e.rootBounds?.bottom ?? 0) - 1);
+      const next = machines.map((m) => m.machine).filter((m) => at.get(m));
+      setBelow((was) => (was.join(" ") === next.join(" ") ? was : next));
+    }, { root });
+    for (const m of machines) { const el = root.querySelector(`[data-testid="machine-sep"][data-machine="${CSS.escape(m.machine)}"]`); if (el) io.observe(el); }
+    return () => io.disconnect();
+  }, [key, nav]);
+  if (!below.length) return null;
+  return (
+    <div className="k-machines-below" data-testid="machines-below">
+      {machines.filter((m) => below.includes(m.machine)).map((m) => (
+        <button key={m.machine} type="button" className="k-late-line" data-testid="machine-foot" data-machine={m.machine} title={`The sessions on ${machineName(m.machine) ?? m.machine}, below`}
+          onClick={() => nav.current?.querySelector(`[data-testid="machine-sep"][data-machine="${CSS.escape(m.machine)}"]`)?.scrollIntoView({ block: "start" })}>
+          <ArrowDown aria-hidden="true" /><span className="min-w-0 truncate">{machineName(m.machine) ?? m.machine}</span><span className="ml-auto tabular-nums text-faint">{m.count}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+const STRIP_MOST = 8;
+function NeedStrip({ nav, open }: { nav: { current: HTMLElement | null }; open: (id: string) => void }) {
+  const counts = useCounts();
+  const ids = useMemo(() => [...counts.need, ...counts.fail], [counts]);
+  const titles = useStore((x) => ids.map((id) => x.sessions[id]?.title || "New session").join("\u0000"));
+  const title = (id: string) => titles.split("\u0000")[ids.indexOf(id)] ?? "New session";
+  const key = ids.join(" ");
+  const [out, setOut] = useState<string[]>([]);
+  useEffect(() => {
+    const root = nav.current;
+    if (!root || !ids.length) return setOut([]);
+    const seen = new Map<string, boolean>();
+    const say = () => { const next = ids.filter((id) => !seen.get(id)); setOut((was) => (was.join(" ") === next.join(" ") ? was : next)); };
+    const io = new IntersectionObserver((es) => { for (const e of es) seen.set((e.target as HTMLElement).dataset.session!, e.intersectionRatio > 0.99); say(); }, { root, threshold: [0, 1] });
+    // The rows are looked for again when the list draws others (a fold, a group, a row that came).
+    let at: Element[] = [], frame = 0;
+    const watch = () => {
+      frame = 0;
+      const rows = ids.map((id) => root.querySelector(`[data-testid="session-row"][data-session="${CSS.escape(id)}"]`));
+      if (rows.length === at.length && rows.every((r, i) => r === at[i])) return;
+      io.disconnect();
+      seen.clear();
+      at = rows.filter((r): r is Element => !!r);
+      for (const r of at) io.observe(r);
+      say();
+    };
+    watch();
+    const mo = new MutationObserver(() => { if (!frame) frame = requestAnimationFrame(watch); });
+    mo.observe(root, { childList: true, subtree: true });
+    return () => { io.disconnect(); mo.disconnect(); cancelAnimationFrame(frame); };
+  }, [key, nav]);
+  if (!out.length) return null;
+  const need = new Set(counts.need);
+  return (
+    <div className="k-need-strip" data-testid="need-strip" role="group" aria-label="Out of view in the list: what needs you or failed">
+      {out.slice(0, STRIP_MOST).map((id) => (
+        <button key={id} type="button" className="k-need-name" data-session={id} data-watch={need.has(id) ? "need" : "fail"} title={`${title(id)}: ${need.has(id) ? STATE_WORD.need.toLowerCase() : STATE_WORD.fail.toLowerCase()}. Open it`} onClick={() => open(id)}>
+          <Mark w={need.has(id) ? "need" : "fail"} /><span className="k-need-title">{title(id)}</span>
+        </button>
+      ))}
+      {out.length > STRIP_MOST && <button type="button" className="k-need-name k-need-more" data-testid="need-strip-more" title={out.slice(STRIP_MOST).map(title).join(", ")} onClick={() => jumpNext(need.has(out[STRIP_MOST]!) ? "need" : "fail")}>+{out.length - STRIP_MOST}</button>}
+    </div>
+  );
+}
+
 // shows: a pinned one moves there, another is pinned there (lib/sessops.ts: the order is stored
 // with the pins, the same on every device). Alt Up and Alt Down on a pinned row move it too.
 function PinnedGroup({ list, current, every }: { list: Session[]; current: string | null; every: boolean }) {
@@ -1017,6 +1100,8 @@ function Index({ current }: { current: string | null }) {
         )}
       </nav>
       {/* They are below what the list shows: said at its foot, and a press goes to them. */}
+      {sections.length > 1 && <MachinesBelow nav={nav} machines={sections.filter((x) => x.machine).map((x) => ({ machine: x.machine!, count: x.list.length }))} />}
+      <NeedStrip nav={nav} open={(id) => { navigate({ name: "session", id }); if (getStations().shown.includes(id)) intoBox(id); }} />
       {waits && !lateSeen && <LateLine n={late.length} to={lateBox} />}
       </ListCtx.Provider>
       </div>

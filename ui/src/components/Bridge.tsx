@@ -33,7 +33,7 @@ import { sequenceAt } from "../lib/asks.ts";
 import { focusBox } from "../lib/utils.ts";
 import { branchOf, lastLine, useNeedCount, useSessionState, useStateLabel, useWatch } from "../lib/watch.ts";
 import { OFFLINE, STATE_WORD, asOf, countWord, lastTold, stateLabel } from "../../../src/core/state-words.ts";
-import { MachineSep, machineRuns, useWhere, whereWords } from "./Where.tsx";
+import { MachineSep, machineRuns, useWhere, whereStyle, whereWords } from "./Where.tsx";
 import { isPinned, pin as pinSession } from "../lib/sessops.ts";
 import { soloWindow } from "../lib/shell.ts";
 import { reportError } from "../lib/store.ts";
@@ -102,7 +102,8 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
   const w = st.watch;
   // One clock for one state: the band shows what the row shows (the step's time, the ask's, the wait's).
   // A machine that does not answer says nothing new: the head reads Offline with when it last told, and its clock stands.
-  const offline = useWhere(s)?.reach === "offline";
+  const where = useWhere(s);
+  const offline = where?.reach === "offline";
   const now = useNow(timed(st) && !offline, tickOf(st));
   const focus = useStations((x) => x.focus);
   const panes = useStations((x) => x.count);
@@ -116,6 +117,8 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
       {/* The title first, in the width it needs. The state and its reason beside it when they fit, else on the line under it. */}
       <div className="k-station-row k-station-identity">
         <h2 className="k-station-title" data-testid="station-title" title={s.title}>{s.title || "New session"}</h2>
+        {/* Another machine's session names it beside the title, at any width of the pane (the folder and model give way first). */}
+        {where && <span className="k-station-machine" data-testid="station-machine" data-reach={where.reach} title={where.title} style={whereStyle(where.colour)}>{where.name}</span>}
         <div className="k-station-rest">
         <span className="k-station-state">
           <span className="k-station-word" data-testid="station-word" data-offline={offline || undefined}><Mark w={w} />{offline ? OFFLINE : stateLabel(st)}</span>
