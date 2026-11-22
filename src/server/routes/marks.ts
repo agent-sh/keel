@@ -138,7 +138,16 @@ export const marksRoutes: RouteModule = ({ store, bus }) => {
   const endOf = (id: string) =>
     store.db.query<{ reason: string | null; by: string | null }, [string]>("SELECT json_extract(data, '$.reason') AS reason, json_extract(data, '$.stopped_by') AS by FROM events WHERE session_id = ? AND kind = 'turn_end' ORDER BY seq DESC LIMIT 1").get(id);
   const lastEnd = (id: string) => endOf(id)?.reason ?? null;
-  for (const s of [...store.sessions(), ...store.sessions({ archived: true })]) {
+  // Every session is read once, at the first start with these marks (a store
+  // says when that was done). After that a start reads only the sessions the
+  // last daemon left working: their turn was closed at this start, before
+  // this module listened. Two reads of its events a session, at every start,
+  // was half a second of a start on a store of 2,600 sessions.
+  store.migrate("CREATE TABLE IF NOT EXISTS admin_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  const marked = !!store.db.query("SELECT 1 FROM admin_meta WHERE key = 'session_marks_read'").get();
+  const boot = new Set(store.bootWorking);
+  const toRead = marked ? (boot.size ? [...store.sessions(), ...store.sessions({ archived: true })].filter((s) => boot.has(s.id)) : []) : [...store.sessions(), ...store.sessions({ archived: true })];
+  for (const s of toRead) {
     // Also a turn closed at this start before this module listened (a cut turn's restart end).
     // (With who stopped it, for lists that read no events: "stopped by a hook".)
     { const e = endOf(s.id), r = e?.reason ?? null; const by = r === "interrupted" ? e?.by ?? null : null; if (r && (r !== s.settings.last_end || by !== (s.settings.stopped_by ?? null))) store.mergeSettings(s.id, { last_end: r, stopped_by: by }); }
@@ -153,6 +162,7 @@ export const marksRoutes: RouteModule = ({ store, bus }) => {
     const before = failSeenBefore({ settings: { ...s.settings, failed_ms: at } }, unread, unread ? lastPrompt() : 0);
     if (before) store.mergeSettings(s.id, before);
   }
+  if (!marked) store.db.query("INSERT OR REPLACE INTO admin_meta (key, value) VALUES ('session_marks_read', ?)").run(String(Date.now()));
   bus.on((f) => {
     if (f.t !== "event") return;
     const { kind, session_id: id, data, ts } = f.event;

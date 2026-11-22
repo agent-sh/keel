@@ -57,7 +57,8 @@ function waitWhile(pid: number, going: () => boolean, stepMs: number, ms: number
 // parent to read its end holds neither, and is not waited for.
 export function waitForPredecessor(ms = GOING_MS) {
   const waitFor = Number(process.env.KEEL_WAIT_FOR_PID || 0);
-  if (waitFor && waitFor !== process.pid) waitWhile(waitFor, () => pidHolds(waitFor), 100, ms);
+  // Looked at often: the time between the old daemon's exit and this look is time nothing answers.
+  if (waitFor && waitFor !== process.pid) waitWhile(waitFor, () => pidHolds(waitFor), 10, ms);
   delete process.env.KEEL_WAIT_FOR_PID;
 }
 

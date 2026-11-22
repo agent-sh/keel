@@ -25,6 +25,9 @@ export function withoutCollectorTimer() {
   if (process.env.BUN_GC_TIMER_DISABLE !== undefined) return;
   const execve = (process as { execve?: (file: string, args: string[], env: Record<string, string | undefined>) => never }).execve;
   if (typeof execve !== "function" || process.platform === "win32") return;
+  // Under the runtime's profiler or inspector the process is signalled all the time, and a signal that lands as the
+  // program is replaced ends it (seen with --cpu-prof): such a run keeps the timer.
+  if (process.execArgv.some((a) => /^--(cpu-prof|heap-prof|inspect)/.test(a))) return;
   const argv = relaunchArgv();
   try { execve.call(process, argv[0]!, argv, { ...process.env, BUN_GC_TIMER_DISABLE: "1" }); } catch {}
 }

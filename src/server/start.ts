@@ -29,6 +29,7 @@ import { drainLine, exitLine, providersLine, say } from "../admin/daemon-log.ts"
 import { beginWatch, during, timed } from "../admin/stall.ts";
 import { newestTurn } from "../admin/marks.ts";
 import { originOf } from "../admin/timeline-rows.ts";
+import { startMark, startTraceBegin } from "../core/start-trace.ts";
 
 export { defaultStateDir };
 
@@ -53,6 +54,7 @@ export type Started = { url: string; stateDir: string; engine: Engine; stop: (dr
 
 export async function startDaemon(opts: { stateDir?: string; bind: string; workspace?: string; dev?: boolean; client?: boolean }): Promise<Started> {
   runMode.client = !!opts.client;
+  startTraceBegin();
   const stateDir = resolve(opts.stateDir ?? defaultStateDir());
   const bind = parseBind(opts.bind);
   if ("error" in bind) throw new Error(bind.error);
@@ -71,6 +73,7 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   // The state folder is claimed before anything of it is opened: a second
   // daemon on it stops here, with the database untouched.
   acquireLock(stateDir);
+  startMark("claim");
   const cut = undoCutRestore(stateDir);
   if (cut === "undone") console.error(`keel: a restore of a backup into ${stateDir} was cut part way. It was undone: the state is the one before it.`);
   if (cut === "unreadable") console.error(`keel: restore.pending in ${stateDir} could not be read, so nothing was undone: the state is as it was found. The file is now restore.pending.unreadable, and what a restore moved aside is in the before-restore folders.`);
@@ -80,9 +83,11 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   // The daemon's git calls keep their views of repositories here, where a confined command cannot write.
   setGitViews(stateDir);
   const store = new Store(stateDir);
+  startMark("store");
   const bus = new Bus();
   const errors = new ErrorTracker(store, bus);
   errors.installGlobal();
+  startMark("errors");
   // The log is synced and checkpointed on a thread, not in the commit that
   // fills it (a hot reload's old store gives its thread up first).
   // A session that is not in memory has its pages read by the read thread before the loop reads them.
@@ -141,11 +146,15 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
       errors.capture("server", new Error(file ? `At this start, ${f}.` : `A write the daemon before this one owed was not made at this start (${f}).`), { at: "the daemon before this one" });
     }
   }
+  startMark("log thread");
   const providers = new Providers(stateDir, { capture: (source, e, ctx, at) => errors.capture(source, e, ctx, at) });
+  startMark("providers");
   const engine = new Engine(store, bus, providers, errors, join(stateDir, "spill"));
+  startMark("engine object");
   engine.wentDown = life?.before?.down_ms;
   // Before any module: the turns this start finds cut are recorded whoever closes them.
   const restarts = life ? new Restarts(store, life) : undefined;
+  startMark("restart record");
   const g = globalThis as { __keelEngine?: Engine; __keelStopDiagnostics?: () => void };
   // A hot reload builds a new engine in the same process: the old one parks its turns first.
   // It is replaced first, so a turn the old one would start meanwhile starts here.
@@ -161,12 +170,14 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   g.__keelStopDiagnostics = stopDiagnostics;
   providers.start();
   process.on("exit", () => providers.plugins.killAll());
+  startMark("engine");
   const server = serve(
     { store, bus, engine, providers, errors, workspace: resolve(opts.workspace ?? process.cwd()) },
     { hostname, port, development: opts.dev },
     routeModules,
   );
   const url = server.url.href.replace(/\/+$/, "");
+  startMark("routes and listen");
   recordUrl(stateDir, url, !!opts.client);
   // It answers from here on: its sign of life says so, and only now is a late
   // timer a stall (the start-up before this is not one).

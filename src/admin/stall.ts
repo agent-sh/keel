@@ -139,6 +139,14 @@ export function inFlight(key: object, label: () => string): () => void {
   return () => void st.flights.delete(key);
 }
 
+// The requests taken and not answered yet. One open for longer than a stream's mark is a stream or a long poll, and is not counted.
+export function unanswered(): number {
+  const now = performance.now();
+  let n = 0;
+  for (const f of state().flights.values()) if (now - f.t0 < WAITING_MS) n++;
+  return n;
+}
+
 // A pass of the daemon's own that goes on over several awaits (so no one
 // section of it can be timed): while it is in progress a stall says so.
 export function during<T>(label: string, work: Promise<T>): Promise<T> {

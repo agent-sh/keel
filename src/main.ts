@@ -97,3 +97,6 @@ if (!g.__keelStartSaid) {
   const [{ startLine }, { buildId }, { configDir }] = await Promise.all([import("./admin/daemon-log.ts"), import("./core/build.ts"), import("./providers/config.ts")]);
   console.log(startLine({ revision: buildId(), pid: process.pid, url: d.url, state: d.stateDir, config: configDir() }));
 }
+// Where the start's time went (src/core/start-trace.ts).
+const took = (await import("./core/start-trace.ts")).startTookLine();
+if (took) console.log(took);

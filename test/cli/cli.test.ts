@@ -202,6 +202,56 @@ describe("keel service install", () => {
     expect(readFileSync(unitPath, "utf8")).toBe(printed.out);
   }, 30_000);
 
+  test("an installed unit is brought up to this build with the owner's own lines kept", async () => {
+    // A unit an older build wrote (a restart wait of two seconds, no bound on starts), with lines its owner added.
+    const home = join(SCRATCH, "service update");
+    const path = join(home, "systemd/user/keel-bun.service");
+    const run = (argv: string[]) => keel(argv, { state, env: { XDG_CONFIG_HOME: home } });
+    // No unit: nothing to update, and nothing is written.
+    const none = await run(["service", "update"]);
+    expect([none.code, none.out, none.err.trim()]).toEqual([1, "", `keel: no unit at ${path}: keel service install writes one`]);
+    expect(existsSync(home)).toBe(false);
+    mkdirSync(join(home, "systemd/user"), { recursive: true });
+    const old = (await run(["service", "install", "--print", "--exec", exec, "--bind", "127.0.0.1:47950"])).out
+      .replace(/^RestartSec=.*$/m, "RestartSec=2")
+      .replace(/^# A daemon that cannot start[^]*?StartLimitBurst=.*\n/m, "")
+      .replace("[Service]\n", "[Service]\nEnvironmentFile=-%h/.config/keel/extra.env\nWorkingDirectory=%h\n")
+      .replace("Description=Keel coding agent daemon (Bun)", "Description=Keel, the owner's sessions");
+    expect(old).not.toMatch(/StartLimit/);
+    writeFileSync(path, old);
+    // A drop-in of the owner's beside it.
+    mkdirSync(`${path}.d`, { recursive: true });
+    writeFileSync(join(`${path}.d`, "50-memory.conf"), "[Service]\nMemorySwapMax=0\n");
+
+    // --print shows the result and writes nothing.
+    const shown = await run(["service", "update", "--print"]);
+    expect(shown.code).toBe(0);
+    expect(readFileSync(path, "utf8")).toBe(old);
+    const updated = await run(["service", "update"]);
+    expect(updated.code).toBe(0);
+    expect(updated.out).toContain("RestartSec=2 is now RestartSec=100ms");
+    expect(updated.out).toContain("added StartLimitBurst=8");
+    expect(updated.out).toContain("systemctl --user daemon-reload");
+    const now = readFileSync(path, "utf8");
+    expect(now).toBe(shown.out);
+    // This build's lines are in, the owner's lines are as they were, and so is the command it starts.
+    expect(now).toMatch(/^RestartSec=100ms$/m);
+    expect(now).toMatch(/^StartLimitIntervalSec=30$/m);
+    for (const kept of ["Description=Keel, the owner's sessions", "EnvironmentFile=-%h/.config/keel/extra.env", "WorkingDirectory=%h", old.split("\n").find((l) => l.startsWith("ExecStart="))!]) expect(now.split("\n")).toContain(kept);
+    // The unit as it was is beside it, and the drop-in was not touched.
+    expect(readFileSync(`${path}.prev`, "utf8")).toBe(old);
+    expect(readFileSync(join(`${path}.d`, "50-memory.conf"), "utf8")).toBe("[Service]\nMemorySwapMax=0\n");
+    // systemd reads the updated unit without a complaint about it.
+    if (Bun.which("systemd-analyze")) {
+      const v = Bun.spawnSync(["systemd-analyze", "--user", "verify", path], { stdout: "pipe", stderr: "pipe" });
+      expect(v.stderr.toString().split("\n").filter((l) => l.includes("keel-bun.service") && !l.includes("50-memory.conf"))).toEqual([]);
+    }
+    // Again: nothing to do, nothing written.
+    const again = await run(["service", "update"]);
+    expect([again.code, again.out.trim()]).toEqual([0, `${path} is up to date with this build`]);
+    expect(readFileSync(`${path}.prev`, "utf8")).toBe(old);
+  }, 30_000);
+
   test("a daemon started by the unit's command line uses the workspace and state it names", async () => {
     const line = readFileSync(unitPath, "utf8").split("\n").find((l) => l.startsWith("ExecStart="))!;
     const p = Bun.spawn(execWords(line.slice("ExecStart=".length)), { cwd: SCRATCH, env: { ...ENV, KEEL_SUPERVISED: "", KEEL_DRAIN_MS: "300" }, stdout: "pipe", stderr: "pipe" });

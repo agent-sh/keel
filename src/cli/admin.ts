@@ -4,11 +4,11 @@
 // (the daemon must be stopped) and service (writes the systemd unit).
 import { zoned, zonedStamp } from "../core/clock.ts";
 import { rankLines } from "../admin/turn-compare.ts";
-import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { unitFor } from "../admin/unit.ts";
+import { unitFor, updateUnit } from "../admin/unit.ts";
 import { claimState, lockHolder } from "../core/daemon-lock.ts";
 import { restartSummary, restartTurnLine, type RestartTurn } from "../admin/life-rows.ts";
 import { parseBind } from "../core/bind.ts";
@@ -370,11 +370,11 @@ const activityCmd = wrap(ACTIVITY_USAGE, {
 });
 
 // The systemd user unit. Written, never enabled or started by this command.
-const SERVICE_USAGE = "keel service install [--bind HOST:PORT] [--workspace DIR] [--state-dir DIR] [--exec PATH] [--print]\n  Writes ~/.config/systemd/user/keel-bun.service for this binary. It does not enable or start it.\n  --workspace and --state-dir are kept in the unit as absolute paths; without them the daemon uses its defaults.\n  --exec names another binary to start; --print shows the unit and writes nothing.";
+const SERVICE_USAGE = "keel service install [--bind HOST:PORT] [--workspace DIR] [--state-dir DIR] [--exec PATH] [--print]\n  Writes ~/.config/systemd/user/keel-bun.service for this binary. It does not enable or start it.\n  --workspace and --state-dir are kept in the unit as absolute paths; without them the daemon uses its defaults.\n  --exec names another binary to start; --print shows the unit and writes nothing.\nkeel service update [--print]\n  Brings the installed unit up to this build: the lines the build owns (the restart wait, the bound on\n  starts, the daemon's settings) are set, every other line and every drop-in stay as they are. The unit\n  as it was is kept beside it as keel-bun.service.prev. --print shows the result and writes nothing.";
 const service = wrap(SERVICE_USAGE,
   { bind: { type: "string", default: "127.0.0.1:47960" }, print: { type: "boolean" }, exec: { type: "string" }, workspace: { type: "string" }, "state-dir": { type: "string" } },
   async (v, pos) => {
-    if (pos[0] !== "install") throw new Error("keel service install");
+    if (pos[0] !== "install" && pos[0] !== "update") throw new Error("keel service install, or keel service update");
     const bind = parseBind(v.bind);
     if ("error" in bind) throw new Error(bind.error);
     // A compiled binary is its own command; under bun it is bun and the script.
@@ -382,11 +382,32 @@ const service = wrap(SERVICE_USAGE,
     const compiled = process.argv[1]?.startsWith("/$bunfs/");
     const command = v.exec ? [resolve(v.exec)] : compiled ? [process.execPath] : [process.execPath, resolve(process.argv[1]!)];
     const unit = unitFor({ command, bind: v.bind, workspace: v.workspace ? resolve(v.workspace) : undefined, stateDir: v["state-dir"] ? resolve(v["state-dir"]) : undefined });
-    if (v.print) return (process.stdout.write(unit), 0);
     const path = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "systemd/user/keel-bun.service");
+    if (pos[0] === "update") {
+      // The unit as it is installed, with the owner's own lines: only what this build owns is set.
+      if (!existsSync(path)) throw new Error(`no unit at ${path}: keel service install writes one`);
+      const was = readFileSync(path, "utf8");
+      const { text, changed } = updateUnit(was, unit);
+      if (v.print) return (process.stdout.write(text), 0);
+      if (!changed.length) return (console.log(`${path} is up to date with this build`), 0);
+      writeFileSync(`${path}.prev`, was);
+      writeFileSync(`${path}.new`, text);
+      renameSync(`${path}.new`, path);
+      console.log([
+        `updated ${path} (the unit as it was: ${path}.prev)`,
+        ...changed.map((c) => `  ${c}`),
+        "every other line, and every drop-in, is as it was. A drop-in that sets one of these still wins.",
+        "to take it up: systemctl --user daemon-reload (the running daemon goes on; the restart wait and the bound on starts hold from then, its settings from its next start)",
+      ].join("\n"));
+      return 0;
+    }
+    if (v.print) return (process.stdout.write(unit), 0);
     mkdirSync(dirname(path), { recursive: true });
+    // A unit already there is written over (it may hold the owner's own lines: keel service update keeps them); what it held stays beside it.
+    const was = existsSync(path) ? readFileSync(path, "utf8") : undefined;
+    if (was !== undefined && was !== unit) writeFileSync(`${path}.prev`, was);
     writeFileSync(path, unit);
-    console.log(`wrote ${path}\nto use it: systemctl --user daemon-reload && systemctl --user enable --now keel-bun.service`);
+    console.log(`wrote ${path}${was !== undefined && was !== unit ? ` (the unit it replaced: ${path}.prev)` : ""}\nto use it: systemctl --user daemon-reload && systemctl --user enable --now keel-bun.service`);
     return 0;
   });
 

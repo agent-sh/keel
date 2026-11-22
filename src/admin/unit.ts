@@ -2,10 +2,31 @@
 // ~/.config/systemd/user/keel-bun.service with ExecStart pointing at the binary
 // that ran it; it never enables or starts it. To use it:
 //   systemctl --user daemon-reload && systemctl --user enable --now keel-bun.service
+//
+// A unit that is already installed is brought up to a newer build by `keel
+// service update` (updateUnit below): the lines this file owns are set, every
+// other line of the unit and every drop-in beside it stay as they are.
+//
+// The restart. `keel restart` drains and exits 75, and the unit starts the
+// daemon again after RestartSec. That wait is time nothing answers, so it is
+// 100 ms: long enough for the old process to be gone from its port, short
+// against the daemon's own start. With a wait that short a daemon that
+// cannot start (a taken port, a broken binary, a state folder it cannot
+// read) would be started ten times a second for ever, so the starts are
+// bounded: 8 in 30 seconds, then the unit is failed and stays down until
+// `systemctl --user reset-failed keel-bun.service` and a start. A start that
+// fails within about 3.6 s of its launch reaches that bound; a restart the
+// owner asks for takes a drain, a backup and a start each and cannot.
+// StartLimitIntervalSec and StartLimitBurst in [Unit] need systemd 230;
+// RestartSec has taken a unit since before that.
 const template = `[Unit]
 Description=Keel coding agent daemon (Bun)
 After=network-online.target
 Wants=network-online.target
+# A daemon that cannot start stops being started: 8 starts in 30 s, then the
+# unit is failed (systemctl --user reset-failed keel-bun.service, then start).
+StartLimitIntervalSec=30
+StartLimitBurst=8
 
 [Service]
 Type=simple
@@ -19,7 +40,8 @@ Environment=KEEL_DRAIN_MS=600000
 # an idle daemon then makes a few wakeups a second, not two hundred).
 Environment=BUN_GC_TIMER_DISABLE=1
 Restart=on-failure
-RestartSec=2
+# The time nothing answers in a restart: the daemon's own start, and this.
+RestartSec=100ms
 KillSignal=SIGTERM
 TimeoutStopSec=660
 # Only the daemon is signalled: background commands outlive a restart and the
@@ -56,4 +78,62 @@ export function unitFor(o: { command: string[]; bind: string; workspace?: string
   if (o.workspace) words.push("--workspace", o.workspace);
   if (o.stateDir) words.push("--state-dir", o.stateDir);
   return template.replace("@EXEC@", () => words.map((w, i) => unitWord(w, i === 0)).join(" "));
+}
+
+// The lines of a unit this file owns: an installed unit gets this build's
+// value of each, wherever the owner put the line, and gets the line when it
+// has none. Every other line is the owner's. An Environment line is owned by
+// the variable it sets.
+const OWNED: { section: string; key: string; name?: string }[] = [
+  { section: "Unit", key: "StartLimitIntervalSec" },
+  { section: "Unit", key: "StartLimitBurst" },
+  { section: "Service", key: "RestartSec" },
+  { section: "Service", key: "Environment", name: "BUN_GC_TIMER_DISABLE" },
+];
+
+type Line = { section: string; text: string };
+const linesOf = (unit: string): Line[] => {
+  let section = "";
+  return unit.split("\n").map((text) => {
+    const m = /^\[(\w+)\]\s*$/.exec(text);
+    if (m) section = m[1]!;
+    return { section, text };
+  });
+};
+const sets = (l: Line, o: { section: string; key: string; name?: string }) =>
+  l.section === o.section && (o.name ? new RegExp(`^${o.key}="?${o.name}=`).test(l.text) : l.text.startsWith(`${o.key}=`));
+
+// An installed unit with this build's values of the owned lines. `generated`:
+// a unit this build writes (unitFor). Returns the new text and what changed,
+// one line each: "RestartSec=2 is now RestartSec=100ms", "added MemoryHigh=...".
+export function updateUnit(installed: string, generated: string): { text: string; changed: string[] } {
+  const want = linesOf(generated);
+  const have = linesOf(installed.replace(/\n$/, ""));
+  const changed: string[] = [];
+  for (const o of OWNED) {
+    const at = want.findIndex((l) => sets(l, o));
+    if (at < 0) continue;
+    const line = want[at]!.text;
+    const found = have.findIndex((l) => sets(l, o));
+    if (found >= 0) {
+      if (have[found]!.text === line) continue;
+      changed.push(`${have[found]!.text} is now ${line}`);
+      have[found] = { section: o.section, text: line };
+      continue;
+    }
+    // Not there: added at the end of its section, with the comment this build writes above it.
+    const comment: Line[] = [];
+    for (let i = at - 1; i >= 0 && want[i]!.text.startsWith("#"); i--) comment.unshift({ section: o.section, text: want[i]!.text });
+    // A comment already added with a line of the same block is not written twice.
+    const fresh = comment.filter((c) => !have.some((l) => l.section === o.section && l.text === c.text));
+    let end = have.findLastIndex((l) => l.section === o.section);
+    if (end < 0) {
+      have.push({ section: "", text: "" }, { section: o.section, text: `[${o.section}]` });
+      end = have.length - 1;
+    }
+    while (end > 0 && have[end]!.text.trim() === "") end--;
+    have.splice(end + 1, 0, ...fresh, { section: o.section, text: line });
+    changed.push(`added ${line}`);
+  }
+  return { text: `${have.map((l) => l.text).join("\n")}\n`, changed };
 }

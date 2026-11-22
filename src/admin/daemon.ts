@@ -9,12 +9,13 @@ import { flushAll } from "../automation/core.ts";
 import { buildInfo } from "../core/build.ts";
 import { handLock } from "../core/daemon-lock.ts";
 import { relaunchArgv } from "../core/relaunch.ts";
+import { startTimes } from "../core/start-trace.ts";
 import { addAdmission } from "../server/admission.ts";
 import { earlierStarts, keepStall, type EarlierStart } from "./daemon-facts.ts";
 import { backupLine, drainLine, exitLine, say } from "./daemon-log.ts";
 import { IDLE_MAX_MS, pulse } from "../core/pulse.ts";
 import { beatLife, endLife, restarts } from "./life.ts";
-import { describeStall, type Stall, StallMonitor, TurnWatch, watchWith } from "./stall.ts";
+import { describeStall, type Stall, StallMonitor, TurnWatch, unanswered, watchWith } from "./stall.ts";
 import type { Dirs } from "./stall-cause.ts";
 import { StallWatch } from "./stall-watch.ts";
 
@@ -86,6 +87,20 @@ export async function owedAtStop(store: Store, how: "restart" | "stop"): Promise
     return { notes: [`${made}Not saved at the ${how} at ${clock(Date.now())}: the store's disk did not answer and the file that keeps what is owed ${kept ? "was full" : "could not be written"}. Lost: ${what}. A turn among them is closed as cut at the next start, and a card among them is asked again.${kept ? ` ${kept} other${kept === 1 ? " is" : "s are"} kept in the file for the next start.` : ""}`], lost: true };
   }
   return { notes: [`${made}${left.owed} write${left.owed === 1 ? "" : "s"} from while the disk did not answer ${left.owed === 1 ? "is" : "are"} kept in a file for the next start${left.synced ? "" : " (the disk has not confirmed the file: a loss of power now would lose it)"}.`], lost: false };
+}
+
+// What an exit waits for: every request taken has its answer, and the loop
+// has turned so the answers and the last frames are written to their
+// sockets. No fixed time: a restart is unanswered for as long as this takes.
+// A request that is still open after EXIT_WAIT_MS does not hold the exit.
+const EXIT_WAIT_MS = 200;
+async function answersOut() {
+  const turn = () => new Promise<void>((r) => setImmediate(r));
+  const until = performance.now() + EXIT_WAIT_MS;
+  await turn();
+  while (unanswered() > 0 && performance.now() < until) await new Promise<void>((r) => setTimeout(r, 2));
+  await turn();
+  await turn();
 }
 
 // One stall as the Daemon panel lists it: when it ended, how long, and what took the time.
@@ -210,6 +225,8 @@ export class Daemon {
       last_start: restarts()?.last() ?? null,
       // The nine starts before it, each with the stalls of its life: the page keeps the last ten.
       earlier_starts: this.earlier(),
+      // How long this start took and where the time went (src/core/start-trace.ts).
+      start_times: startTimes() ?? null,
     };
   }
 
@@ -304,11 +321,13 @@ export class Daemon {
       endLife(this.draining!.restart ? "restart" : "stop");
       if (this.draining!.restart) this.relaunch();
       this.emit();
-      // Let the last frames and the HTTP answer go out (longer when there is a word about what was
-      // owed: the command that follows the stop reads it from here, twice a second). Under systemd a
-      // restart exits 75 (EX_TEMPFAIL): Restart=on-failure starts it again.
+      // Under systemd a restart exits 75 (EX_TEMPFAIL): Restart=on-failure starts it again.
       const code = this.draining!.restart && process.env.KEEL_SUPERVISED === "systemd" ? 75 : 0;
-      setTimeout(() => process.exit(code), left.notes.length ? 1500 : 200);
+      // A word about what was owed stays up for the command that follows the stop: it reads the daemon twice a second.
+      if (left.notes.length) await new Promise<void>((r) => setTimeout(r, 1500));
+      // The answers still on their way go out first (the request that asked for the drain, a page's last read).
+      await answersOut();
+      process.exit(code);
     })();
     return this.finished;
   }

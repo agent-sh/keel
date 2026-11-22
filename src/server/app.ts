@@ -25,6 +25,7 @@ import { fitted } from "../engine/image-fit.ts";
 import { bytesPerToken } from "../engine/compact.ts";
 import { KEEL_FILE_MAX } from "../core/keel-file.ts";
 import { inFlight, timed } from "../admin/stall.ts";
+import { moduleTook } from "../core/start-trace.ts";
 import { routeTable } from "./stable-api.ts";
 import { ownPort } from "../safety/net-proxy.ts";
 
@@ -70,7 +71,10 @@ function withModules(core: Record<string, any>, modules: RouteModule[], deps: De
   const owner: Record<string, string> = {};
   modules.forEach((m, i) => {
     const name = m.name || `module ${i}`;
-    for (const [path, methods] of Object.entries(m(deps))) {
+    const t0 = performance.now();
+    const routes = m(deps);
+    moduleTook(name, performance.now() - t0);
+    for (const [path, methods] of Object.entries(routes)) {
       if (path in core) { clash(`route clash: ${name} redefines core path ${path}`); continue; }
       const table = typeof methods === "function" ? { ALL: methods } : (methods as Record<string, any>);
       const slot = (out[path] ??= {});

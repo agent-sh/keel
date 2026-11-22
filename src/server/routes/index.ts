@@ -62,7 +62,8 @@ import { stateRoutes } from "./state.ts";
 import { shellRoutes } from "./shell.ts";
 
 // Each feature module adds one line here.
-export const routeModules: RouteModule[] = [
+// Each is listed under its name: a built binary's functions lose theirs, and a start says by name which module took its time (src/core/start-trace.ts).
+const modules: Record<string, RouteModule> = {
   codeModeRoutes, // refuses run_code for a session on another machine before the gate asks about it
   repeatRoutes, // before the gate: a repeat it refuses needs no approval; it reads a result before others add to it
   permissionRoutes, // first: its beforeTool gate decides before the others run
@@ -124,4 +125,5 @@ export const routeModules: RouteModule[] = [
   overviewRoutes, // every session's state, failure and spend as one answer
   stateRoutes, // last: it reads every module's cards and records to tell each session's state
   shellRoutes, // after state: it reads the board the state routes make
-];
+};
+export const routeModules: RouteModule[] = Object.entries(modules).map(([name, m]) => Object.defineProperty(m, "name", { value: name }));
