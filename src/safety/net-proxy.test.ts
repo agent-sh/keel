@@ -5,11 +5,11 @@
 // machine's loopback: what a sandbox must never reach.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { createConnection, type Server } from "node:net";
-import { tmpdir } from "node:os";
+import { createConnection, createServer, type Server } from "node:net";
+import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
-import { internalAddress } from "../core/hosts.ts";
-import { ownPort, publicOnly, startProxy, type Policy, type Refusal } from "./net-proxy.ts";
+import { addressBytes, addressText, internalAddress } from "../core/hosts.ts";
+import { ownPort, publicOnly, setInterfaces, startProxy, type Policy, type Refusal } from "./net-proxy.ts";
 import { sandboxSaid } from "./refwatch.ts";
 import { confine, sandboxStatus } from "./sandbox.ts";
 
@@ -46,6 +46,108 @@ test("an address is judged where it is: loopback, private, carrier, link-local, 
   expect(within.filter((a) => !internalAddress(a))).toEqual([]);
   expect(outside.filter((a) => internalAddress(a))).toEqual([]);
 });
+
+// Every way an address can be written. An IPv4 one: dotted, a trailing dot, one number, hex and octal parts, short
+// forms, and inside an IPv6 one (mapped, compatible, NAT64, 6to4), each compressed, written out, zero-padded, in
+// upper case and with a dotted tail. An IPv6 one: the same forms of its own.
+const hex = (n: number) => n.toString(16), pad = (h: string) => h.padStart(4, "0");
+function sixes(groups: number[]): string[] {
+  const g = groups.map(hex);
+  const out = [g.join(":"), g.map(pad).join(":"), g.join(":").toUpperCase(), g.map(pad).join(":").toUpperCase()];
+  // Each run of zero groups, compressed.
+  for (let i = 0; i < 8; i++) for (let j = i + 1; j <= 8; j++) {
+    if (groups.slice(i, j).some((x) => x !== 0)) continue;
+    out.push(`${g.slice(0, i).join(":")}::${g.slice(j).join(":")}`, `${g.slice(0, i).map(pad).join(":")}::${g.slice(j).map(pad).join(":").toUpperCase()}`);
+  }
+  // The last 32 bits as a dotted quad.
+  const tail = `${groups[6]! >> 8}.${groups[6]! & 255}.${groups[7]! >> 8}.${groups[7]! & 255}`;
+  out.push(`${g.slice(0, 6).join(":")}:${tail}`);
+  if (groups.slice(0, 5).every((x) => x === 0)) out.push(`::${groups[5] ? `${g[5]}:` : ""}${tail}`, `::${groups[5] ? `${g[5]!.toUpperCase()}:` : ""}${tail}`);
+  if (groups.slice(2, 6).every((x) => x === 0)) out.push(`${g[0]}:${g[1]}::${tail}`);
+  return [...new Set(out)];
+}
+function fours(b: number[], embedded = true): { plain: string[]; six: string[] } {
+  const [a, x, c, d] = b as [number, number, number, number];
+  const n = ((a * 256 + x) * 256 + c) * 256 + d, h = (v: number) => `0x${hex(v)}`, o = (v: number) => `0${v.toString(8)}`;
+  const plain = [`${a}.${x}.${c}.${d}`, `${a}.${x}.${c}.${d}.`, String(n), h(n), `0X${hex(n).toUpperCase()}`, o(n), `${h(a)}.${h(x)}.${h(c)}.${h(d)}`, `${o(a)}.${o(x)}.${o(c)}.${o(d)}`,
+    `${a}.${x}.${c * 256 + d}`, `${a}.${(x * 256 + c) * 256 + d}`, `${h(a)}.${(x * 256 + c) * 256 + d}`, `${o(a)}.${h(x)}.${c}.${d}`];
+  const hi = (a << 8) | x, lo = (c << 8) | d;
+  const six = [...sixes([0, 0, 0, 0, 0, 0xffff, hi, lo]), ...sixes([0x64, 0xff9b, 0, 0, 0, 0, hi, lo])];
+  if (embedded) six.push(...sixes([0, 0, 0, 0, 0, 0, hi, lo]), ...sixes([0x2002, hi, lo, 0, 0, 0, 0, 1]), ...sixes([0, 0, 0, 0, 0xffff, 0, hi, lo]));
+  return { plain: [...new Set(plain)], six: [...new Set(six)] };
+}
+const groupsOf = (text: string) => { const [l, r = ""] = text.split("::"); const a = l ? l.split(":") : [], z = r ? r.split(":") : []; return [...a, ...Array(8 - a.length - z.length).fill("0"), ...z].map((x) => parseInt(x, 16)); };
+// What a sandbox must never reach: loopback, this machine's own addresses, link-local, private and carrier ranges, the unspecified address.
+const INSIDE4 = ["127.0.0.1", "127.1.2.3", "127.255.255.254", "0.0.0.0", "0.1.2.3", "10.0.0.5", "10.255.255.255", "172.16.0.1", "172.31.255.254", "192.168.1.1", "169.254.169.254", "169.254.0.1", "100.64.0.1", "100.127.255.254"];
+const INSIDE6 = ["::1", "::", "fe80::1", "fe80::abcd:1:2:3", "febf::1", "fc00::1", "fd12:3456:789a::1", "fec0::1", "ff02::1", "64:ff9b:1::1"];
+
+test("an address is judged by its bytes: every spelling of an inside address is inside, and of a public one is not", () => {
+  const wrong: string[] = [];
+  for (const a of INSIDE4) {
+    const s = fours(a.split(".").map(Number));
+    for (const t of [...s.plain, ...s.six, ...s.six.map((x) => `[${x}]`), ...s.six.map((x) => `${x}%eth0`), ...s.six.map((x) => `[${x}%25lo]`)]) if (!internalAddress(t)) wrong.push(t);
+  }
+  for (const a of INSIDE6) for (const t of sixes(groupsOf(a))) for (const u of [t, `[${t}]`, `${t}%lo`, `[${t}%25eth0]`]) if (!internalAddress(u)) wrong.push(u);
+  expect(wrong).toEqual([]);
+  // Public addresses stay public in every spelling of theirs (an IPv4 one also mapped and through NAT64).
+  const closed: string[] = [];
+  for (const a of ["93.184.216.34", "1.1.1.1", "8.8.8.8", "172.32.0.1", "100.128.0.1", "140.82.121.4"]) {
+    const s = fours(a.split(".").map(Number), false);
+    for (const t of [...s.plain, ...s.six, ...s.six.map((x) => `[${x}]`)]) if (internalAddress(t)) closed.push(t);
+  }
+  for (const a of ["2606:4700:4700::1111", "2001:4860:4860::8888", "2a00:1450:4001:81b::200e"]) for (const t of sixes(groupsOf(a))) if (internalAddress(t)) closed.push(t);
+  expect(closed).toEqual([]);
+  // What is not an address is not one: nothing to connect to.
+  for (const t of ["", "example.com", "1.2.3.4.5", "1.2.3.256", "08.1.1.1", "0x", "::1::", "1:2:3:4:5:6:7:8:9", "12345::", ":::", "g::1", "1.2.3.4:80", "::ffff:1.2.3", "::ffff:1.2.3.4.5"]) expect([t, internalAddress(t)]).toEqual([t, true]);
+  // The bytes, and the one text of them: what the proxy connects to.
+  expect(addressText(addressBytes("0:0:0:0:0:FFFF:7F00:1")!)).toBe("127.0.0.1");
+  expect(addressText(addressBytes("0x7f.1")!)).toBe("127.0.0.1");
+  expect(addressText(addressBytes("[2606:4700:4700:0:0:0:0:1111]")!)).toBe("2606:4700:4700::1111");
+  expect(addressText(addressBytes("0000:0000:0000:0000:0000:0000:0000:0001")!)).toBe("::1");
+  expect(addressText(addressBytes("64:FF9B::8.8.8.8")!)).toBe("64:ff9b::808:808");
+  expect(addressBytes("example.com")).toBeNull();
+});
+
+test("the proxy never reaches this machine under any spelling of its addresses, by CONNECT or by a plain request", async () => {
+  // A listener on every address of this machine (IPv4 and IPv6), on a port that is not Keel's own: the address rule alone must hold.
+  const reached: string[] = [];
+  const local = createServer((c) => { c.on("error", () => {}); c.once("data", () => { reached.push("x"); c.end("HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nREACHED\n"); }); });
+  await new Promise<void>((ok) => local.listen(0, "::", ok));
+  const port = (local.address() as { port: number }).port;
+  const sock = join(root, "spell.sock");
+  // (No name resolves here: an address written any way is judged as the address it is, without a resolver.)
+  const server = startProxy(sock, { resolve: async () => { throw new Error("no names in this test"); } });
+  try {
+    // (This machine's own addresses, a public one among them where it has one, and an address the test says is
+    // this machine's: a public one, so the rule for own addresses is tested on every machine.)
+    const PUBLIC4 = "203.0.113.7", PUBLIC6 = "2001:4860:4860::7";
+    setInterfaces(() => ({ ...networkInterfaces(), test0: [{ address: PUBLIC4, family: "IPv4", internal: false }, { address: PUBLIC6, family: "IPv6", internal: false }] as any }));
+    const own = Object.values(networkInterfaces()).flat().filter((a) => a && !a.internal);
+    const table: string[] = [];
+    for (const a of ["127.0.0.1", "127.1.2.3", "0.0.0.0", PUBLIC4, ...own.filter((a) => a!.family === "IPv4").map((a) => a!.address)]) {
+      const s = fours(a.split(".").map(Number));
+      table.push(...s.plain, ...s.six.map((x) => `[${x}]`));
+    }
+    for (const a of ["::1", "::", PUBLIC6, ...own.filter((a) => a!.family === "IPv6").map((a) => a!.address)]) table.push(...sixes(groupsOf(a)).map((x) => `[${x}]`));
+    const got: string[] = [];
+    // (Eight at a time: a few hundred spellings.)
+    const list = [...new Set(table)];
+    for (let i = 0; i < list.length; i += 8) {
+      await Promise.all(list.slice(i, i + 8).map(async (h) => {
+        const a = await ask(sock, `CONNECT ${h}:${port} HTTP/1.1\r\nHost: ${h}:${port}\r\n\r\n`, "GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+        const b = await ask(sock, `GET http://${h}:${port}/ HTTP/1.1\r\nHost: example.com\r\n\r\n`);
+        for (const [how, r] of [["CONNECT", a], ["GET", b]] as const) if (r.includes("REACHED") || !/^HTTP\/1\.1 (403|400) /.test(r)) got.push(`${how} ${h}: ${r.split("\r\n")[0]}`);
+      }));
+    }
+    expect(got).toEqual([]);
+    expect(reached).toEqual([]);
+    expect(list.length).toBeGreaterThan(300);
+  } finally {
+    setInterfaces();
+    server.close();
+    local.close();
+  }
+}, 60_000);
 
 test("the proxy refuses this machine and private networks by the resolved address, and Keel's own port by name", async () => {
   const refusals: Refusal[] = [];

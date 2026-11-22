@@ -24,10 +24,10 @@
 // shape: a private namespace and a bridge over a unix socket).
 import { lookup } from "node:dns/promises";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createConnection, createServer, isIP, type Server, type Socket } from "node:net";
+import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { networkInterfaces } from "node:os";
 import { join } from "node:path";
-import { internalAddress } from "../core/hosts.ts";
+import { addressBytes, addressText, carried, internalBytes } from "../core/hosts.ts";
 
 // ---- the relay: the program that runs inside the sandbox ----
 
@@ -122,11 +122,15 @@ export type Verdict = { allow: true } | { allow: false; why: string };
 export type Policy = (host: string, address: string, port: number) => Verdict;
 
 let mine: { at: number; set: Set<string> } | undefined;
+let interfaces: typeof networkInterfaces = networkInterfaces;
+// (A test says which addresses this machine has.)
+export const setInterfaces = (read?: typeof networkInterfaces) => { interfaces = read ?? networkInterfaces; mine = undefined; };
 // This machine's own addresses (a public one among them is still this machine).
 function ownAddresses(): Set<string> {
   if (mine && Date.now() - mine.at < 30_000) return mine.set;
   const set = new Set<string>();
-  try { for (const list of Object.values(networkInterfaces())) for (const a of list ?? []) set.add(a.address.toLowerCase()); } catch {} // unreadable: the ranges below still hold
+  // (Each by the one text of its bytes: what an address is compared as.)
+  try { for (const list of Object.values(interfaces())) for (const a of list ?? []) { const b = addressBytes(a.address); if (b) set.add(addressText(b)); } } catch {} // unreadable: the ranges below still hold
   mine = { at: Date.now(), set };
   return set;
 }
@@ -135,7 +139,10 @@ const ownPorts = new Set<number>();
 export const ownPort = (port: number | undefined) => { if (port) ownPorts.add(port); };
 
 export const publicOnly: Policy = (_host, address, port) => {
-  const local = internalAddress(address) || ownAddresses().has(address.toLowerCase());
+  // By the address's bytes, never its text: an address has many spellings.
+  // One of this machine's own public addresses is this machine too, also carried inside an IPv6 one.
+  const bytes = addressBytes(address), v4 = bytes && carried(bytes);
+  const local = !bytes || internalBytes(bytes) || ownAddresses().has(addressText(bytes)) || (!!v4 && ownAddresses().has(addressText(v4)));
   if (local && ownPorts.has(port)) return { allow: false, why: "Keel's own API is never reachable from a sandbox" };
   if (local) return { allow: false, why: "it is an address on this machine or a private network" };
   return { allow: true };
@@ -200,9 +207,15 @@ export function startProxy(path: string, o: { policy?: () => Policy; refused?: (
       o.refused?.({ host, port, why, at: Date.now() });
       refuse(c, "403 Forbidden", refusalText(host, port, why));
     };
+    // A host that is an address, however it is written (hex, octal, one number, IPv6 written out, an IPv4 address
+    // inside an IPv6 one), is that address: parsed to bytes here, judged by them, and connected to by the one text
+    // of them. What a name resolves to goes the same way.
     let addresses: string[];
-    try { addresses = isIP(host) ? [host] : await resolve(host); } catch { return refuse(c, "502 Bad Gateway", `Keel's sandbox proxy could not resolve ${host}.`); }
-    if (!addresses.length) return refuse(c, "502 Bad Gateway", `Keel's sandbox proxy could not resolve ${host}.`);
+    const literal = addressBytes(host);
+    try { addresses = literal ? [addressText(literal)] : await resolve(host); } catch { return refuse(c, "502 Bad Gateway", `Keel's sandbox proxy could not resolve ${host}.`); }
+    const parsed = addresses.map((a) => addressBytes(a));
+    if (!addresses.length || parsed.some((b) => !b)) return refuse(c, "502 Bad Gateway", `Keel's sandbox proxy could not resolve ${host}.`);
+    addresses = parsed.map((b) => addressText(b!));
     // Every address the name has must pass: a name with one address inside and one outside is not taken apart.
     const policy = (o.policy ?? (() => publicOnly))();
     for (const a of addresses) { const v = policy(host, a, port); if (!v.allow) return no(v.why); }
