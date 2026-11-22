@@ -1,6 +1,6 @@
 // The permission decision for one tool call, from the session's mode and the
 // standing answers that apply. Pure: the gate supplies the facts.
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { neverAllowed, neverAllowedText } from "./autonomy.ts";
 import type { Looked } from "./looked.ts";
@@ -235,10 +235,11 @@ type OwnerOnly = { why: string; rule: string };
 // and files Keel itself runs things from (its config folder: hooks, MCP
 // servers, skills, agents; the scripts the owner's hooks and a pinned
 // repository's hooks run), which no sandbox confines.
+const RUNS_LATER_RULE = "runs later, outside the sandbox";
 function ownerOnlyEdit(p: string, f: Facts, does = "changes"): OwnerOnly | null {
   const rel = relative(f.workspace, p);
   // (Also in other letter case: on a disk that does not tell cases apart it is the same file.)
-  if (RUNS_LATER.test(rel) || RUNS_LATER.test(rel.toLowerCase())) return { rule: "runs later, outside the sandbox", why: `it ${does} ${rel}, which runs or configures things outside the sandbox later` };
+  if (RUNS_LATER.test(rel) || RUNS_LATER.test(rel.toLowerCase())) return { rule: RUNS_LATER_RULE, why: `it ${does} ${rel}, which runs or configures things outside the sandbox later` };
   const o = f.own?.();
   const own = (f.config ?? o?.config)?.find((c) => contains(c, p));
   if (own) return { rule: "Keel's own configuration", why: `it ${does} ${p}, which Keel runs or reads its configuration from (its hooks and their scripts, MCP servers, skills and agents), outside any sandbox` };
@@ -256,11 +257,28 @@ function ownerOnlyEdit(p: string, f: Facts, does = "changes"): OwnerOnly | null 
 }
 // The same for a path a command or a tool's input names: asked of the path as
 // spelled and of where it lands (an edit's paths come to the gate landed already).
-function ownerOnlyNamed(w: string, cwd: string, f: Facts, does: string): OwnerOnly | null {
+// `shell`: the path is written by a command of the session's shell, which a sandbox confines (see `sandboxHolds`),
+// and the word surely names it (`sureWord` in decideShell).
+function ownerOnlyNamed(w: string, cwd: string, f: Facts, does: string, shell = false): OwnerOnly | null {
   const p = spelled(w, cwd, f.home ?? homedir());
   if (!p) return null;
-  for (const q of f.own?.().land(p) ?? [p]) { const why = ownerOnlyEdit(q, f, does); if (why) return why; }
+  for (const q of f.own?.().land(p) ?? [p]) { const why = ownerOnlyEdit(q, f, does); if (why && !(shell && why.rule === RUNS_LATER_RULE && sandboxHolds(q, f))) return why; }
   return null;
+}
+
+// Whether the session's sandbox is what stops a command's write to this path. A confined command writes its
+// session's folder, the temporary folders and the session's scratch, and nothing else: a project's file
+// somewhere else that would run later (another repository's hooks, a workflow file next door) cannot be
+// written, so nothing is asked for it. Not the user's own configuration: a file that runs later and is the home
+// folder's own (~/.npmrc, ~/.claude/settings.json) stays the owner's, whatever would stop the write.
+const HOME_OWN = new RegExp(RUNS_LATER.source.replace("^(?:.*\\/)?", "^"));
+function sandboxHolds(p: string, f: Facts): boolean {
+  if (!f.sandboxed || contains(f.workspace, p)) return false;
+  // (The kernel's own trees lead back in: /proc/self/cwd is the session's folder.)
+  if (/^\/(proc|dev|sys)(\/|$)/.test(p)) return false;
+  if (["/tmp", "/var/tmp", "/dev/shm", tmpdir(), ...(f.scratch ?? [])].some((t) => contains(t, p))) return false;
+  const home = f.home ?? homedir();
+  return !(contains(home, p) && HOME_OWN.test(relative(home, p)));
 }
 
 // A path as a command or a tool's input spells it: ~ and $HOME are the home
@@ -499,6 +517,8 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
     const links = new Map<string, string>();
     const unread = (what: string): Decision => ({ ask: { risk: "high", why: `the command ${what}: it can put files where they run later`, rule: RULE_WORDS.hidden, suggest: [] } });
     const asked = new Map<string, OwnerOnly | null>();
+    // A line that gives HOME or PWD a value of its own names paths the rules do not follow.
+    const renamed = parts.some((p) => !p.heredoc && p.words.some((a) => /^(HOME|PWD|OLDPWD|CDPATH)=/.test(a)));
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i]!;
       if (part.heredoc) continue;
@@ -510,14 +530,23 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
       // A folder the rules cannot follow: only what is written out from the root or the home is read.
       const at = pre.dirs[i] ?? null;
       // (A path the line names again in the same folder is asked about once.)
+      // Whether a word names the path the kernel will reach: written out from the root or the home with no step
+      // back up (a link there leads elsewhere), or from the folder the part runs in when that folder is certain
+      // (after a `cd` that may have failed the shell is in the folder before it).
+      const sureWord = (w: string) => {
+        if (renamed) return false;
+        const up = /(^|\/)\.\.(\/|$)/.test(w);
+        return /^["']?(\/|~(\/|$)|\$HOME(\/|$)|\$\{HOME\}(\/|$))/.test(w) ? !up : pre.firm[i] === true && (!up || at === cwd);
+      };
       const here = (w0: string) => {
         // (D=.github/workflows; echo x > $D/x.yml: the name is read as the one value the line gave it.)
         const w = w0.includes("$") && !/\$(HOME|\{HOME\})/.test(w0)
           ? w0.replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (all, v: string) => { const k = (vals ??= valuesOf(parts, pre.runs)).get(v); return k && k.text !== undefined && k.at < i ? k.text : all; }) : w0;
-        const key = `${at}\0${w}`;
+        const sure = sureWord(w);
+        const key = `${at}\0${sure}\0${w}`;
         let o = asked.get(key);
         if (o !== undefined) return o;
-        o = at !== null || /^(["']?)(\/|~|\$HOME|\$\{HOME\})/.test(w) ? ownerOnlyNamed(w, at ?? "/", f, "writes") : null;
+        o = at !== null || /^(["']?)(\/|~|\$HOME|\$\{HOME\})/.test(w) ? ownerOnlyNamed(w, at ?? "/", f, "writes", sure) : null;
         // (ln -s .github/workflows w && echo x > w/x.yml: a path under a link the line made is the path under what it links to.)
         if (!o && links.size) {
           const p = spelled(w, at ?? "/", home);
@@ -537,21 +566,24 @@ function decideShell(command: string, f: Facts, cwd = f.workspace, interpreter?:
       for (const w of written) { const o = here(w); if (o) return owners(o); }
       // (The rest reads only the programs that copy into a folder, apply a patch, unpack an archive or are handed code.)
       if (!lands) continue;
+      // (A folder elsewhere that the sandbox keeps the command from writing; not one of the home folder's own.)
+      const heldFolder = (d: string, cwd: string) => { const p = spelled(join(d, "_"), cwd, home); return !!p && sureWord(d) && sandboxHolds(p, f) && dirname(dirname(p)) !== home; };
       for (const d of writesInto(run.words)) {
-        const o = here(join(d, "_")) ?? (HOLDS_RUNS_LATER.test(untrailed(d)) && at !== null ? { rule: "runs later, outside the sandbox", why: `it writes into ${d}, where files that run or configure things later are kept` } : null);
+        const o = here(join(d, "_")) ?? (HOLDS_RUNS_LATER.test(untrailed(d)) && at !== null && !heldFolder(untrailed(d), at) ? { rule: "runs later, outside the sandbox", why: `it writes into ${d}, where files that run or configure things later are kept` } : null);
         if (o) return owners(o);
       }
       // A patch or an archive: the files it writes are read from it, off the loop, before the decision.
       const a = applied(part, run.words);
       // (Only where its files can land in the session's folder or the home: elsewhere nothing of theirs runs later.)
       const into = a && at !== null ? spelled(a.into, at, home) : null;
-      if (a && f.looked && into && (contains(f.workspace, into) || contains(home, into))) {
+      // (Under a sandbox that is the session's folder: a write anywhere else fails by itself.)
+      if (a && f.looked && into && (contains(f.workspace, into) || (contains(home, into) && !(sureWord(a.into) && sandboxHolds(join(into, "_"), f))))) {
         const what = a.kind === "patch" ? "applies a patch" : "unpacks an archive";
         const file = a.file === undefined || /[$`*?]/.test(a.file) ? null : isAbsolute(a.file) ? a.file : resolve(at!, a.file);
         // One that is not there unpacks nothing; one that is there and cannot be read is not known.
         const files = file === null ? null : f.looked.exists(file) === "none" ? [] : f.looked.targets(a.kind, file);
         if (!files) return unread(`${what} the rules could not read${a.file ? ` (${a.file})` : ""}`);
-        for (const t of files) { const o = ownerOnlyNamed(join(a.into, t), at!, f, "writes"); if (o) return owners(o); }
+        for (const t of files) { const o = ownerOnlyNamed(join(a.into, t), at!, f, "writes", sureWord(a.into)); if (o) return owners(o); }
       }
       // Code given to an interpreter that names such a file in its text.
       const code = codeGiven(run);

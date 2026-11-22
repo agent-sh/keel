@@ -286,6 +286,19 @@ a path outside the folder exists, which files a patch or an archive writes,
 and what a file of SQL says. A question the disk does not answer in time is
 read as high risk.
 
+In a sandboxed session a write outside the session's folder fails by itself.
+A command is not asked about only for naming such a path: a delete, a move or
+an overwrite there, or a write to another project's file that runs later
+(another repository's hooks, a workflow file next door). That holds when the
+path is the one the kernel reaches: written out from the root or the home with
+no step back up, or relative to a folder that is certain (not after a `cd`
+that may have failed), and not under `/proc`, `/dev` or `/sys`. The classes
+still decide what the sandbox does not stop: the session's own folder and its
+repository's data, a temporary folder emptied whole, another machine, a send
+of credentials, a publish, a command handed to a service manager, a container,
+another terminal or another root, and the user's own configuration (start
+files, login keys, the home folder's own tool settings).
+
 One decision has budgets. A line past one of them is not read further: it is
 high risk, and the card says the number.
 

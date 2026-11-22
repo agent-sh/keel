@@ -19,7 +19,9 @@ export type Risk = { rule: RiskRule; why: string; git?: true; said?: true };
 // session's commands are confined to its folder, so a write outside it fails by itself. `lost`: the folder the
 // commands run in is not known (a script nested under a cd the rules cannot follow). `away`: they run on another
 // machine or in a container (its name): nothing there is the session's own, and no relative path is known.
-export type Where = { cwd: string; home: string; workspace: string; scratch?: string[]; looked?: Looked; land?: (p: string) => string[]; sandboxed?: boolean; lost?: true; away?: string };
+// `firm`: for each part, whether the folder it runs in is certain (firmOf). `shaky`: the folder this script starts
+// in is not.
+export type Where = { cwd: string; home: string; workspace: string; scratch?: string[]; looked?: Looked; land?: (p: string) => string[]; sandboxed?: boolean; lost?: true; away?: string; firm?: boolean[]; shaky?: true };
 
 // Each class in a few words: what the ask carries as its rule, and a folded call is marked with in the transcript.
 export const RULE_WORDS: Record<RiskRule, string> = {
@@ -39,6 +41,23 @@ export const SCRIPT_MAX = 4_000;
 export const SHELLS = /^(sh|bash|zsh|dash|ksh|fish|ash)$/;
 export const INTERPRETERS = /^(python[0-9.]*|node|nodejs|bun|deno|perl|ruby|php)$/;
 export const GLOB = /[*?[]/;
+// Whether the session's sandbox is what stops a write to this path: the session is confined, the path is surely
+// outside its folder (Target.sure), and it is no part of a repository's own data (a linked worktree's sandbox lets git's shared stores
+// be written). Such a write fails by itself, so nothing is asked for it. A temporary folder, the session's own
+// folder and what holds it are never this.
+export function confined(t: { path: string; place: string; sure?: boolean }, w: Where): boolean {
+  if (!w.sandboxed || w.away || !t.sure || (t.place !== "outside" && t.place !== "cache") || /(^|\/)\.git(\/|$)/.test(t.path)) return false;
+  // (The kernel's own trees lead back in: /proc/self/cwd is the session's folder.)
+  if (/^\/(proc|dev|sys)(\/|$)/.test(t.path)) return false;
+  // (A temporary folder itself, or everything in it at once, is written in the sandbox too.)
+  const at = t.path.search(GLOB);
+  const fixed = at < 0 ? t.path : t.path.slice(0, t.path.lastIndexOf("/", at)) || "/";
+  return !rootsOf(w).temps.some((r) => under(r, fixed));
+}
+// Programs that hand their command to a process that is not this one's child: a service manager, another
+// terminal, a container's daemon, another account. What they start is not in the session's sandbox. With them
+// the programs that give their command another root: a path there is not the path it says.
+export const LEAVES = /^(systemd-run|tmux|screen|docker|podman|nerdctl|at|batch|sudo|doas|pkexec|su|runuser|machinectl|nsenter|flatpak-spawn|distrobox|toolbox|osascript|chroot|proot|fakechroot|bwrap|unshare|firejail)$/;
 export const ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=/;
 export const name = (w: string | undefined) => (w === undefined ? "" : w.slice(w.lastIndexOf("/") + 1));
 
@@ -152,6 +171,8 @@ export function unwrap(words: string[]): Run {
 export function dirsOf(parts: Simple[], runs: Run[], cwd: string | null, home: string): (string | null)[] {
   // No part changes folder: every one runs where the line does.
   if (!runs.some((r) => r.words[0] === "cd" || r.words[0] === "pushd" || r.words[0] === "popd")) return new Array<string | null>(parts.length).fill(cwd);
+  // A function the line gives the name: what `cd` does after it is not known, and no folder is followed.
+  if (parts.some((s, i) => s.words.length === 1 && /^(cd|pushd|popd)$/.test(s.words[0]!) && !!parts[i + 1]?.flow && /^\{/.test(parts[i + 1]!.text))) return new Array<string | null>(parts.length).fill(null);
   let top: string | null = cwd;
   let inner: string | null | undefined; // undefined: nested parts run where the line is
   const to = (from: string | null, w: string[]): string | null | undefined => {
@@ -179,6 +200,28 @@ export function dirsOf(parts: Simple[], runs: Run[], cwd: string | null, home: s
     else if (inner !== undefined && s.sep !== "&&" && s.sep !== "||" && s.sep !== "|" && s.sep !== "|&") inner = null;
     return here;
   });
+}
+
+// For each part, whether the folder it runs in is certain. It is where the line starts until a `cd`; after one it
+// is certain only for the commands joined to that `cd` by `&&` (they do not run where it failed), and only when
+// the `cd` names its folder from the root or from a folder that was certain. Past any other separator the shell
+// may be in the folder before the `cd`.
+export function firmOf(parts: Simple[], runs: Run[], start = true): boolean[] {
+  const out = new Array<boolean>(parts.length).fill(start);
+  if (!runs.some((r) => r.words[0] === "cd" || r.words[0] === "pushd" || r.words[0] === "popd")) return out;
+  let firm = start, moved = false;
+  for (let i = 0; i < parts.length; i++) {
+    const s = parts[i]!;
+    out[i] = firm;
+    if (s.heredoc || s.nested) continue;
+    const w = runs[i]!.words;
+    if (w[0] === "cd" || w[0] === "pushd" || w[0] === "popd") {
+      const arg = w.slice(1).find((a) => !a.startsWith("-"));
+      moved = true;
+      firm = s.sep === "&&" && w[0] === "cd" && arg !== undefined && (arg.startsWith("/") || arg.startsWith("~/") || (firm && !/(^|\/)\.\.(\/|$)/.test(arg)));
+    } else if (moved && s.sep !== "&&") firm = false;
+  }
+  return out;
 }
 
 // ---- variables the line itself gives a value ----
@@ -238,7 +281,9 @@ export function valuesOf(parts: Simple[], runs: Run[]): Values {
 
 export type Place = "scratch" | "cache" | "inside" | "outside" | "folder" | "repo";
 // A word as a path: where it lands, or why that cannot be read.
-export type Target = { path: string; glob: boolean; place: Place; shown: string } | { made: true } | { unread: string };
+// `sure`: the path is what the kernel will reach, and every place it lands is outside the session's folder: it is
+// written out from the root or the home with no step back up, or it starts in a folder that is certain.
+export type Target = { path: string; glob: boolean; place: Place; shown: string; sure?: boolean } | { made: true } | { unread: string };
 
 // A word with the variables the line gives a value written in: null when one of them is not known.
 export function written(word: string, how: Made | undefined, dir: string | null, w: Where, vals: Values, at: number): string | null | { made: true } {
@@ -283,7 +328,13 @@ export function target(word: string, how: Made | undefined, dir: string | null, 
   const places = (w.land?.(fixed) ?? [fixed]).map((p) => placeOf(p, glob, all, w));
   const place = (["outside", "folder", "repo", "inside", "cache", "scratch"] as const).find((x) => places.includes(x))!;
   const root = w.away ? null : rootsOf(w).root;
-  return { path, glob, place, shown: root !== null && under(root, fixed) ? path.slice(root.length + 1) || "." : /[$`]/.test(word) ? path : word };
+  // A step back up after a folder's name is taken by the kernel from where that folder really is (a link leads
+  // elsewhere), and a relative path starts where the shell really is: after a `cd` that may have failed, that is
+  // the folder before it.
+  const up = /(^|\/)\.\.(\/|$)/.test(text);
+  const fromHere = !isAbsolute(text) || /\$\{?PWD\b/.test(word);
+  const sure = !w.lost && (fromHere ? w.firm?.[at] === true && (!up || dir === w.cwd) : !up) && places.every((p) => p === "outside" || p === "cache");
+  return { path, glob, place, sure, shown: root !== null && under(root, fixed) ? path.slice(root.length + 1) || "." : /[$`]/.test(word) ? path : word };
 }
 
 // Folders that hold nothing kept: the system's temporary folders, the
