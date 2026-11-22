@@ -3,9 +3,9 @@
 // turn waits on. Cards, grants and modes are stored. A card a restart left
 // open (a crash, a kill, a stop) stays open: the continued turn runs its call
 // again and waits on the same card, and an answer given before that is kept.
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, normalize } from "node:path";
 import type { Bus } from "../core/bus.ts";
 import { locate } from "../core/git.ts";
 import type { Store } from "../core/store.ts";
@@ -20,16 +20,34 @@ import { readOnlyCommand, shimmedPrograms, splitCommand } from "./shell.ts";
 import { report, watch, type Watch } from "./refwatch.ts";
 import { configDir } from "../providers/config.ts";
 import { artifactsDir, contains, realOf } from "../core/paths.ts";
+import { applyEdit } from "../tools/files.ts";
 import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
-import { classify, decide, isMode, ownPath, pathsNamed, shellText, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
+import { classify, decide, isMode, ownPath, pathsNamed, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 import { timed } from "../admin/stall.ts";
 
 // An edit is judged by where it sits (its folders' links resolved) and by
 // where it lands (the file's own link followed too): a link inside the
 // workspace that points out of it, or into .git, is judged as the place it
 // names, and a link named like a file the repository runs (.envrc) stays that.
+// Only the paths change: everything else the call was classified with (what
+// its words name) goes to the rules as it was.
 export const landing = (c: CallClass): CallClass =>
-  c.kind === "edit" ? { kind: "edit", paths: [...new Set(c.paths.flatMap((p) => [join(realOf(dirname(p)), basename(p)), realOf(p)]))] } : c;
+  c.kind === "edit" ? { ...c, paths: [...new Set(c.paths.flatMap((p) => [join(realOf(dirname(p)), basename(p)), realOf(p)]))] } : c;
+
+// The folders of a PATH that commands are found in by name and that lie
+// inside a session's folder: a whole path there, or a relative entry (bash
+// reads it from the folder a command runs in, so any folder of the workspace
+// that ends with it). An entry that is the running folder itself ("." or an
+// empty one) names every folder and is not a folder to guard: left out.
+export function workspaceBins(path: string, workspace: string): string[] {
+  const out = new Set<string>();
+  for (const e of path.split(":")) {
+    if (isAbsolute(e)) { const r = realOf(e); if (contains(workspace, r)) out.add(r); continue; }
+    const rel = normalize(e).replace(/\/+$/, "");
+    if (rel && rel !== "." && !rel.startsWith("..")) out.add(rel);
+  }
+  return [...out];
+}
 
 // What a call does, its relative paths resolved where the tool resolves them.
 const cwdOf = (call: ToolCall) => call.tool.cwdOf?.(call.ctx, call.input);
@@ -124,7 +142,45 @@ function callClass(call: ToolCall, target: Target): CallClass {
     const paths = pathsNamed(target ? target.input : call.input);
     if (paths.length) return { ...cls, paths };
   }
-  return landing(cls.kind === "shell" && !cls.cwd ? { ...cls, cwd: cwdOf(call) } : cls);
+  return entriesChanged(landing(cls.kind === "shell" && !cls.cwd ? { ...cls, cwd: cwdOf(call) } : cls), target ? undefined : call.input);
+}
+
+// An edit of a file that can name a program (policy.ts NAMES_PROGRAM), read
+// against the file as it is: the entry it changes may be one the file already
+// holds, with none of the entry's own words in the edit (the name inside a
+// plugins entry, the path after pythonPath). The edit is marked when the
+// entries after it are not the entries before it. Where what the file will
+// hold cannot be worked out here (a patch, another server's tool), it is
+// marked when any file it names holds such an entry now.
+const ENTRY_FILE_MAX = 1024 * 1024;
+function entriesChanged(c: CallClass, input: any): CallClass {
+  if (c.kind !== "edit") return c;
+  const rules = new Set(c.paths.flatMap(programRules));
+  if (!rules.size) return c;
+  const read = (p: string): string | null => {
+    try { const st = statSync(p); return st.isFile() && st.size <= ENTRY_FILE_MAX ? readFileSync(p, "utf8") : null; } catch (e: any) { return e?.code === "ENOENT" ? "" : null; }
+  };
+  const texts = new Map(c.paths.map((p) => [p, read(p)]));
+  const names = new Set(c.names ?? []);
+  const whole = typeof input?.content === "string", swap = typeof input?.old_string === "string" && typeof input?.new_string === "string";
+  for (const id of rules) {
+    if (!whole && !swap) {
+      // Unreadable or too large to read here counts as holding one.
+      if ([...texts.values()].some((t) => t === null || wordsNaming(t).includes(id))) names.add(id);
+      continue;
+    }
+    for (const p of c.paths) {
+      if (!programRules(p).includes(id)) continue;
+      const before = texts.get(p);
+      if (before == null) { names.add(id); continue; }
+      let after: string;
+      if (whole) after = input.content;
+      else if (before === "" || input.old_string === "") after = input.new_string;
+      else { const r = applyEdit(before, input.old_string, input.new_string, !!(input.replace_all ?? input.allow_multiple)); if ("error" in r) continue; after = r.text; }
+      if (programEntries(id, before).join("\n") !== programEntries(id, after).join("\n")) names.add(id);
+    }
+  }
+  return names.size === (c.names?.length ?? 0) ? c : { ...c, names: [...names] };
 }
 
 // Auto reviews shell calls only when the actual starting directory is known.
@@ -387,7 +443,7 @@ export class Gate {
     const p = this.perm(session.id);
     const { workspace, scratch } = this.scope(session);
     const edit = cls.kind === "edit";
-    let own: { home: string; config: string[]; land: (p: string) => string[] } | undefined;
+    let own: { home: string; config: string[]; bins: string[]; land: (p: string) => string[] } | undefined;
     return decide(cls, {
       mode: p.mode, workspace: edit ? workspace : session.workspace, sandboxed: this.sandboxed(session, p), rules: this.rules(session), tool: name, bind, scratch, real,
       // What Keel itself runs things from: a change there is the owner's alone
@@ -396,6 +452,8 @@ export class Gate {
       // once, and only for a call that names a file to change.
       ...(session.machine ? {} : { own: () => (own ??= {
         home: realOf(homedir()), config: [...ownConfig(), ...(this.hookFiles?.(session) ?? [])],
+        // The PATH the session's commands get is the daemon's own (toolEnv).
+        bins: workspaceBins(process.env.PATH ?? "", realOf(session.workspace)),
         land: (x: string) => [...new Set([x, join(realOf(dirname(x)), basename(x)), realOf(x)])],
       }) }),
     });

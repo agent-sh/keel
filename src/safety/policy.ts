@@ -52,9 +52,10 @@ export type CallClass =
   // rules read a command as bash does, so none of it is then taken for a read.
   | { kind: "shell"; command: string; escalate?: boolean; cwd?: string; interpreter?: string }
   | { kind: "control" } // input to, or the stop of, a process an allowed call started
-  // `program`: the edit writes words that name a program something runs
-  // later, into the file that says so (NAMES_PROGRAM): what it names.
-  | { kind: "edit"; paths: string[]; program?: { path: string; what: string } }
+  // `names`: the edit writes words that name a program something runs later
+  // (NAMES_PROGRAM, by id). It is the owner's call when one of its files,
+  // where it lands, is a file those words mean that in.
+  | { kind: "edit"; paths: string[]; names?: string[] }
   // `grant` names the standing answer that covers it when the tool's name is
   // too wide (keel__spawn_on_machine:<machine>: one machine, not all of them).
   // `paths`: the strings of its input that are a path by themselves (pathsNamed).
@@ -103,7 +104,8 @@ export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKin
         const base = wrapped.cd ? resolve(cwd, wrapped.cd) : cwd;
         const paths = patchTargetPaths(wrapped.patch);
         if (!paths.length) return { kind: "refused", why: `${tool.name} was given a patch that names no file to change.` };
-        return { kind: "edit", paths: paths.map((p) => (isAbsolute(p) ? p : resolve(base, p))) };
+        const names = wordsNaming(wrapped.patch);
+        return { kind: "edit", paths: paths.map((p) => (isAbsolute(p) ? p : resolve(base, p))), ...(names.length ? { names } : {}) };
       }
       // A tool that offers it (Codex's exec_command) can ask to run outside the sandbox.
       // Read from the running build's schema: a session may carry an older definition (Tool.built).
@@ -124,8 +126,8 @@ export function classify(tool: { name: string; readOnly: boolean; kind?: ToolKin
       if (!paths.length) return { kind: "refused", why: `${tool.name} names no file to change.` };
       const parts = [input?.content, input?.new_string, input?.new_source, patch, ...(Array.isArray(input?.edits) ? input.edits.map((e: any) => e?.new_string) : [])].filter((x): x is string => typeof x === "string" && x.length > 0);
       const full = paths.map((p) => (isAbsolute(p) ? p : resolve(cwd, p)));
-      const program = parts.length ? namesProgram(full, parts.join("\n").slice(0, 200_000)) : null;
-      return { kind: "edit", paths: full, ...(program ? { program } : {}) };
+      const names = parts.length ? wordsNaming(parts.join("\n")) : [];
+      return { kind: "edit", paths: full, ...(names.length ? { names } : {}) };
     }
     default:
       return { kind: "other" };
@@ -154,12 +156,46 @@ export const RUNS_LATER = /^(?:.*\/)?(?:\.git\/(?:hooks\/|config$)|\.envrc$|\.mc
 // (src/lsp/servers.ts): a plugin in a TypeScript project file, the
 // interpreter in a Python one. An edit that writes such an entry is the
 // owner's call like an edit of a hook; any other edit of the file is not.
-const NAMES_PROGRAM: { file: RegExp; words: RegExp; what: string }[] = [
-  { file: /(?:^|\/)(?:tsconfig(?:\.[\w.-]+)?|jsconfig)\.json$/, words: /["']?plugins["']?\s*:/, what: "a plugins entry, which names code a TypeScript language server loads" },
-  { file: /(?:^|\/)(?:pyrightconfig\.json|pyproject\.toml)$/, words: /\b(?:pythonPath|venvPath|venv)\b["']?\s*[:=]/, what: "the interpreter or environment a Python language server runs" },
+// The words are looked for when the call is classified (the text it writes)
+// and the file when it is decided, where the edit lands: a link to such a
+// file under another name is that file. A key that ends its line counts (its
+// colon can come with a later edit). The gate adds what only the file shows:
+// an edit that changes an entry the file already holds (programEntries).
+const NAMES_PROGRAM: { id: string; file: RegExp; words: RegExp; what: string }[] = [
+  { id: "plugins", file: /(?:^|\/)(?:tsconfig(?:\.[\w.-]+)?|jsconfig)\.json$/, words: /["']?plugins["']?\s*(?::|$)/m, what: "a plugins entry, which names code a TypeScript language server loads" },
+  { id: "interpreter", file: /(?:^|\/)(?:pyrightconfig\.json|pyproject\.toml)$/, words: /\b(?:pythonPath|venvPath|venv)\b["']?\s*(?:[:=]|$)/m, what: "the interpreter or environment a Python language server runs" },
 ];
-function namesProgram(paths: string[], writes: string): { path: string; what: string } | null {
-  for (const path of paths) { const hit = NAMES_PROGRAM.find((n) => n.file.test(path) && n.words.test(writes)); if (hit) return { path, what: hit.what }; }
+export const wordsNaming = (writes: string): string[] => NAMES_PROGRAM.filter((n) => n.words.test(writes)).map((n) => n.id);
+// The kinds of entry a file of this name can hold.
+export const programRules = (path: string): string[] => NAMES_PROGRAM.filter((n) => n.file.test(path)).map((n) => n.id);
+// The entries of one kind in a file's text, each from its key to the end of
+// its value (a list or an object to its closing bracket, anything else to the
+// end of its line), spaces folded: two texts with the same entries name the
+// same programs.
+export function programEntries(id: string, text: string): string[] {
+  const n = NAMES_PROGRAM.find((x) => x.id === id);
+  if (!n) return [];
+  const out: string[] = [];
+  for (const m of text.matchAll(new RegExp(n.words.source, "gm"))) {
+    let at = m.index + m[0].length;
+    while (at < text.length && /[\s:=]/.test(text[at]!)) at++;
+    let end = at;
+    if (text[at] === "[" || text[at] === "{") {
+      let depth = 0, quote = "";
+      for (; end < text.length && end - at < 65_536; end++) {
+        const ch = text[end]!;
+        if (quote) { if (ch === "\\") end++; else if (ch === quote) quote = ""; }
+        else if (ch === '"' || ch === "'") quote = ch;
+        else if (ch === "[" || ch === "{") depth++;
+        else if ((ch === "]" || ch === "}") && --depth === 0) { end++; break; }
+      }
+    } else { end = text.indexOf("\n", at); if (end < 0) end = text.length; }
+    out.push(text.slice(m.index, end).replace(/\s+/g, " ").trim());
+  }
+  return out;
+}
+function namesProgram(paths: string[], names: string[]): { path: string; what: string } | null {
+  for (const path of paths) { const hit = NAMES_PROGRAM.find((n) => names.includes(n.id) && n.file.test(path)); if (hit) return { path, what: hit.what }; }
   return null;
 }
 
@@ -181,6 +217,14 @@ function ownerOnlyEdit(p: string, f: Facts, does = "changes"): string | null {
   if (own) return `it ${does} ${p}, which Keel runs or reads its configuration from (its hooks and their scripts, MCP servers, skills and agents), outside any sandbox`;
   const home = f.home ?? o?.home ?? homedir();
   if (contains(home, p) && HOME_RUNS_LATER.test(relative(home, p))) return `it ${does} ${p}, which runs at every login or shell start, or lets someone log in`;
+  // A file of a folder commands are found in by name (an entry of the
+  // session's PATH inside its workspace): its text runs at the next command,
+  // or the next program Keel starts, of that name.
+  const bins = f.bins ?? o?.bins;
+  if (bins?.length) {
+    const dir = dirname(p), inside = contains(f.workspace, p), at = inside ? relative(f.workspace, dir) : null;
+    if (bins.some((b) => (isAbsolute(b) ? b === dir : at !== null && (at === b || at.endsWith(`/${b}`))))) return `it ${does} ${inside ? rel : p}, a file of a folder on this session's PATH, where commands are found by name`;
+  }
   return null;
 }
 // The same for a path a command or a tool's input names: asked of the path as
@@ -241,12 +285,13 @@ const protectedPath = (workspace: string, p: string) => /(^|\/)\.git(\/|$)/.test
 export const ownPath = (p: string, f: Pick<Facts, "workspace" | "scratch">) => (contains(f.workspace, p) && !protectedPath(f.workspace, p)) || !!f.scratch?.some((d) => contains(d, p));
 
 // `scratch`: folders of the harness's own the session writes in like its workspace (its artifacts folder).
-// `config`: Keel's own config folder and files (ownerOnlyEdit). `own`: the
+// `config`: Keel's own config folder and files (ownerOnlyEdit). `bins`: the
+// folders of the session's PATH inside its workspace (workspaceBins). `own`: the
 // home folder, that config and where a path lands, read from the disk only
 // when a call names a file to change (a read never asks for them).
 export type Facts = {
-  mode: Mode; workspace: string; sandboxed: boolean; rules: Rule[]; tool: string; bind?: string; scratch?: string[]; home?: string; config?: string[];
-  own?: () => { home: string; config: string[]; land: (p: string) => string[] };
+  mode: Mode; workspace: string; sandboxed: boolean; rules: Rule[]; tool: string; bind?: string; scratch?: string[]; home?: string; config?: string[]; bins?: string[];
+  own?: () => { home: string; config: string[]; bins?: string[]; land: (p: string) => string[] };
   // Whether a program's name on this machine is the program itself and not a version manager's shim (shims.ts):
   // looked up by the gate before it decides, so this only reads the answer. Without it the reading forms of such
   // programs (node --version) are not reads.
@@ -282,7 +327,8 @@ export function decide(c: CallClass, f: Facts): Decision {
     // start file, the login keys): the owner's call, one at a time. No grant,
     // reviewer or hook answers it.
     for (const p of c.paths) { const why = ownerOnlyEdit(p, f); if (why) return onlyOwner(why); }
-    if (c.program) return onlyOwner(`it writes ${c.program.what}, into ${relative(f.workspace, c.program.path)}`);
+    const program = c.names?.length ? namesProgram(c.paths, c.names) : null;
+    if (program) return onlyOwner(`it writes ${program.what}, into ${relative(f.workspace, program.path)}`);
     const editRules = f.rules.filter((r) => r.kind === "edit");
     const covered = (p: string) => editRules.some((r) => contains(r.pattern, p));
     // The repository's own metadata is not an in-scope edit.

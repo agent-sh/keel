@@ -751,8 +751,18 @@ When a server starts, and where it runs:
   sandbox, no server starts.
 - The files a server starts from are the owner's to change, like a hook:
   `node_modules/.bin`, the TypeScript and Pyright packages, `.venv/bin`, a
-  `plugins` entry written into a tsconfig, the interpreter or environment
-  written into a Pyright configuration. An edit of one asks you.
+  `plugins` entry in a tsconfig, the interpreter or environment in a Pyright
+  configuration. An edit of one asks you, in every mode but Full auto: a new
+  entry, a change inside one the file already holds (read against the file
+  as it is, where the edit lands), and any patch of a file that holds one.
+  The same goes for a file of a folder that is on the session's `PATH` and
+  inside its workspace, whatever would run it: commands are found there by
+  name.
+- What a trusted server loads is still the folder's code. The files a plugin
+  or an interpreter is made of are ordinary files, and a sandboxed command
+  can write any file of the folder. A server started from them runs inside
+  the sandbox in a sandboxed session, trusted or not. Trust in a session
+  without a sandbox is trust in what the folder's servers load.
 - One per language, project root, session folder and sandbox profile.
   Sessions of one folder with the same profile share it; a session in a
   linked worktree gets a server rooted there, and none once that folder is
