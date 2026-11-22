@@ -10,6 +10,7 @@ import { seedComposer } from "./ui.ts";
 import { servedUi } from "./hotui.ts";
 import { dropOrphans, dropSendDrafts } from "./send-drafts.ts";
 import { setRatio } from "../../../src/engine/compact.ts";
+import { BEAT_MS, CONNECT_MS, HIDDEN_RESYNC_MS, look, PING, retryGap, SLOW_BEAT_MS, type Beat } from "./heartbeat.ts";
 
 export type ProvidersReport = {
   keys_read?: boolean; // false: a key is still being looked for, and an "available" may be unconfirmed
@@ -741,15 +742,20 @@ export function mergeEvents(a: StoredEvent[], b: StoredEvent[]): StoredEvent[] {
 // The live feed. On every (re)connect the page names the newest seq it has seen of
 // each loaded session; the daemon replays what came after, and the reply a
 // running turn has streamed so far, then sends live (see src/server/live.ts).
-// A ping every 20 s proves the socket still delivers: when nothing at all
-// arrived for 10 s after one (and still nothing a moment later), it is closed
-// and opened again. A page too busy to read its pong in time is not a dead
-// socket: any frame since the ping counts.
-let retry = 500;
+//
+// The page never takes the feed for live on trust (heartbeat.ts). While it is
+// on screen and the socket is quiet it asks every two seconds; two asks with
+// no word back and the daemon is not heard: the page says so, with the time
+// of the last frame, and its clocks stop there. Then it tries at once and
+// goes on trying (a new socket, and the old one, which a stalled tunnel gives
+// back whole), closer together the shorter the absence. The first frame from
+// either is the way back: the page reads again all it holds, as at any open.
+// A hidden page asks nothing; it asks the moment it is seen again.
 let socket: WebSocket | undefined;
-// When the live feed dropped (null while it is up, and before the page's
-// first socket). A clock of running work reads `liveNow`: it stops at the
-// drop, since the page no longer knows that the work goes on.
+// When the live feed was last known good before a drop (null while it is up,
+// and before the page's first socket). A clock of running work reads
+// `liveNow`: it stops there, since the page no longer knows that the work
+// goes on.
 let downAt: number | null = null;
 export const liveNow = () => downAt ?? Date.now();
 export const downSince = () => downAt;
@@ -774,154 +780,265 @@ let onHello: ((level: number | undefined) => void) | undefined;
 // too large for it): the next one reads the open transcripts by HTTP too.
 let cutShort = false;
 let swept = false;
-export function connect() {
-  const ws = (socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`));
-  let pinger: ReturnType<typeof setInterval> | undefined;
-  let deadline: ReturnType<typeof setTimeout> | undefined;
-  let open = false, caught = false;
-  // When the last ping left and when the socket last delivered anything.
-  let pinged = 0, heard = 0, waited = false;
-  ws.onopen = () => {
-    open = true;
-    retry = 500;
-    downAt = null;
-    const loaded = Object.entries(state.events);
-    const cursors = Object.fromEntries(loaded.filter(([id]) => !splitId(id)).map(([id, list]) => [id, seen.get(id) ?? list.at(-1)?.seq ?? 0]));
-    // A draft from before the drop may be stale (a retry restarts it, the reply
-    // may have finished meanwhile): the replay sends the current one of each
-    // loaded session, and a session opened later reads it from its snapshot.
-    set({ connected: true, synced: false, drafts: Object.fromEntries(Object.entries(state.drafts).filter(([id]) => splitId(id))) });
-    ws.send(JSON.stringify({ op: "resume", cursors }));
-    // What the page loads at start is loaded again: a first load the daemon
-    // was not up for (a restart under the page) comes in now, quietly.
-    const reload = () => {
-      if (!state.loaded.models) actions.loadModelsBrief().catch((e) => reportError(e, { at: "reconnect" }));
-      actions.loadErrors().catch((e) => reportError(e, { at: "reconnect" }));
-      return actions.loadSessions().catch((e) => reportError(e, { at: "reconnect" }));
-    };
-    const first = !opened && bootLoad;
-    opened = true;
-    // The list the page read as it loaded stands for this first open when
-    // nothing moved between the two: the daemon says how far its session
-    // list had moved at each. A session made, renamed or deleted after the
-    // read and before the socket was subscribed was told by no frame: the
-    // list is then read again.
-    const hello = new Promise<number | undefined>((said) => (onHello = said));
-    const level = () => hello.then((at) => (at !== undefined && listLevel !== undefined && at > listLevel ? actions.loadSessions().catch((e) => reportError(e, { at: "reconnect" })) : undefined));
-    const listed = first ? first.then(level, reload) : reload();
-    // Once a page: what this browser kept for sessions that were deleted while no page was open goes.
-    void listed.then(() => {
-      if (swept || !state.loaded.sessions) return; // a list that did not come is asked for again at the next socket
-      swept = true;
-      return dropOrphans(
-        (id) => !!state.sessions[id],
-        // Only the daemon's own "no such session" says it is gone: any other answer (another
-        // daemon's or a proxy's 404 included) keeps what was stored.
-        (id) => fetch(apiPath(`/api/sessions/${id}/draft`)).then(async (r) => r.status !== 404 || (await r.json().catch(() => null))?.error !== "no such session", () => true),
-      );
-    }).catch((e) => reportError(e, { at: "kept sends of deleted sessions" }));
-    const loads: Promise<unknown>[] = [listed];
-    // Where the daemon's replay of each session ended, once it is through.
-    const replayed = new Promise<Record<string, number>>((done) => (onReplayed = done));
-    const whole = cutShort;
-    cutShort = false;
-    // One deleted meanwhile is dropped.
-    const gone = (id: string) => (e: unknown) => {
-      if ((e as { status?: number }).status !== 404) return reportError(e, { at: "reconnect" });
-      const { [id]: _, ...events } = state.events;
-      const { [id]: __, ...sessions } = state.sessions;
-      forgot(id);
-      set({ events, sessions, gone: { ...state.gone, [id]: state.sessions[id]?.parent_id ?? true } });
-      forgetLegacyQuestions(id);
-      dropSendDrafts(id);
-    };
-    // The open sessions moved meanwhile. On the page's first socket the
-    // snapshots were just taken and the replay brings queue and status: no load.
-    for (const [id] of first ? [] : loaded) {
-      // The local resume cannot replay events from a peer, even when the
-      // daemon-to-peer relay stayed up: its transcript is read again by HTTP.
-      // So is every transcript after a socket that closed inside its replay.
-      if (splitId(id) || whole) { loads.push(actions.loadSession(id).catch(gone(id))); continue; }
-      // A session of this daemon: the replay brings every event after the
-      // page's cursor, so it is asked for without its transcript, and only
-      // once the replay and the list are in. Its answer (row, head, queue,
-      // status, draft) is then newer than every replayed frame and lands
-      // after them, and after the list, which holds no archived row.
-      loads.push(Promise.all([replayed, listed]).then(([ends]) => {
-        if (socket !== ws) return;
-        // The daemon holds less of it than the page (its replay ended below the
-        // page's cursor: a restored backup): what the page holds is dropped
-        // and the session is read whole, or its new events would be taken for old ones.
-        const behind = (ends[id] ?? cursors[id]!) < cursors[id]!;
-        if (behind) { const { [id]: _, ...events } = state.events; forgot(id); set({ events }); }
-        return actions.loadSession(id, behind).catch(gone(id));
-      }));
-    }
-    // Caught up when this socket's replay came and the reloads landed; a late
-    // answer from a socket that dropped meanwhile declares nothing.
-    Promise.all(loads).then(() => { if (socket === ws && state.connected) set({ synced: true }); });
-    // Features load their own state here, the first open included.
-    for (const l of features) l.reconnect?.();
-    questionPoll = setInterval(() => {
-      for (const id of Object.keys(state.events)) {
-        if (state.sessions[id]?.phase === "working" || legacyQuestions.has(id)) void loadLegacyQuestions(id);
-      }
-    }, 1_000);
-    pinger = setInterval(() => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      ws.send(JSON.stringify({ op: "ping", nonce: Date.now() }));
-      deadline ??= setTimeout(function check() {
-        deadline = undefined;
-        // Anything the socket delivered since the ping proves it works. A busy
-        // page gets to its frames late: the pong may still wait behind others
-        // (or behind this very timer), so a quiet look is taken once more
-        // before the socket is given up, and only a socket that delivered
-        // nothing in all that time is closed.
-        if (heard >= pinged) return;
-        if (!waited) { waited = true; deadline = setTimeout(check, 5_000); return; }
-        ws.close();
-      }, 10_000);
-      pinged = Date.now();
-      waited = false;
-    }, 20_000);
-  };
-  ws.onmessage = (m) => {
-    heard = Date.now();
-    const f = JSON.parse(m.data) as Frame | SocketFrame;
-    if (f.t === "pong") { clearTimeout(deadline); deadline = undefined; }
-    // The replay's whole draft, also at the rev of a snapshot that came before this socket
-    // opened (nothing was emitted between them): the open dropped the snapshot's copy.
-    else if (f.t === "draft") delivered(() => { if (newer(`${f.session_id}:draft`, f.rev, true)) set({ drafts: { ...state.drafts, [f.session_id]: f.blocks } }); });
-    else if (f.t === "replayed") { caught = true; if (socket === ws) onReplayed?.(f.cursors ?? {}); }
-    else if (f.t === "hello" || f.t === "ui") {
-      if (f.t === "hello" && socket === ws) onHello?.(f.sessions_level);
-      servedUi(f.t === "ui" ? f.version : f.ui);
-    }
-    else delivered(() => apply(f));
-  };
-  ws.onclose = () => {
-    clearInterval(pinger);
-    clearTimeout(deadline);
-    if (socket !== ws) return;
-    onHello?.(undefined); // a socket that closed before it said hello leaves nothing waiting on it
-    if (open && !caught) cutShort = true;
-    clearInterval(questionPoll);
-    drops++;
-    if (opened) downAt ??= Date.now();
-    set({ connected: false, synced: false });
-    again = setTimeout(connect, (retry = Math.min(retry * 2, 8000)));
-  };
+// The socket's replay is through (set again by each resume).
+let caught = false;
+// A resume is out on a socket that was already subscribed: until its replay
+// is through, a live event of a session it names is left to the replay, which
+// brings it in order. (Applied now, it would move the cursor past events the
+// page never got.)
+let replaying: Set<string> | null = null;
+// The looks at the socket (heartbeat.ts), the tries while it is not heard, and when the absence began.
+let beat: Beat = { heard: 0, pings: 0, due: 0 };
+let beatTimer: ReturnType<typeof setTimeout> | undefined;
+let downTimer: ReturnType<typeof setTimeout> | undefined;
+let downFrom = 0;
+const tries = new Map<WebSocket, number>();
+let hiddenAt: number | null = null;
+// The absence being lived through: why it began, and the daemon's start as its last socket told it.
+let absence: { why: "silent" | "closed" } | null = null;
+let daemonStarted = 0;
+let syncs = 0;
+const every = () => ((navigator as { connection?: { saveData?: boolean } }).connection?.saveData ? SLOW_BEAT_MS : BEAT_MS);
+const hidden = () => typeof document !== "undefined" && !!document.hidden;
+const isOpen = (ws: WebSocket | undefined): ws is WebSocket => !!ws && ws.readyState === WebSocket.OPEN;
+
+// The next look at the socket, when it is due.
+function watch() {
+  clearTimeout(beatTimer);
+  if (!socket || !state.connected || hidden()) return;
+  beatTimer = setTimeout(onLook, Math.max(0, beat.due - Date.now()));
+}
+function onLook() {
+  const ws = socket;
+  if (!ws || !state.connected || hidden()) return;
+  const l = look(beat, Date.now(), every());
+  beat = { heard: beat.heard, pings: l.pings, due: l.due };
+  if (l.lost) return lose("silent");
+  if (l.ping && isOpen(ws)) ws.send(PING);
+  watch();
+}
+// Asks now: the page is seen again, or the browser says the network changed.
+function probe() {
+  if (!state.connected || !isOpen(socket)) return;
+  socket.send(PING);
+  beat = { heard: beat.heard, pings: 1, due: Date.now() + every() };
+  watch();
 }
 
-// The wait before the next try, when one is pending.
-let again: ReturnType<typeof setTimeout> | undefined;
-// Tries the daemon now instead of when the wait ends: for a host that knows
-// the daemon is back (the desktop shell follows it by itself).
+// The daemon is not heard: the socket closed, or went silent.
+function lose(why: "silent" | "closed") {
+  clearTimeout(beatTimer);
+  clearInterval(questionPoll);
+  drops++;
+  // Silent: what the page shows is as of the last frame, not of the moment it gave up.
+  if (opened) downAt ??= why === "silent" && beat.heard ? beat.heard : Date.now();
+  downFrom = downAt ?? Date.now();
+  absence ??= { why };
+  set({ connected: false, synced: false });
+  downTick();
+}
+
+// One round of tries while the daemon is not heard.
+function downTick() {
+  clearTimeout(downTimer);
+  if (state.connected) return;
+  const now = Date.now();
+  // The socket that went silent may speak again (a tunnel that stalled gives it back whole).
+  if (isOpen(socket)) try { socket.send(PING); } catch { /* closing */ }
+  for (const [t, born] of tries) if (now - born >= CONNECT_MS) abandon(t);
+  if (tries.size < 2) attempt();
+  downTimer = setTimeout(downTick, retryGap(now - downFrom, hidden()));
+}
+function attempt() {
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  tries.set(ws, Date.now());
+  // Open is not heard: the daemon greets a socket the moment it opens, and that
+  // first frame is what makes this the page's connection. One that opens and
+  // says nothing (something on the way took the handshake) is given up like
+  // one that never opened.
+  ws.onmessage = (m) => { adopt(ws); onMessage(ws, m); };
+  ws.onclose = () => void tries.delete(ws); // refused, or cut before it spoke: the next round tries again
+}
+function abandon(ws: WebSocket) {
+  tries.delete(ws);
+  ws.onopen = ws.onclose = ws.onmessage = null;
+  try { ws.close(); } catch { /* never opened */ }
+}
+// A new socket spoke: it is the page's connection from here.
+function adopt(ws: WebSocket) {
+  for (const t of [...tries.keys()]) if (t !== ws) abandon(t);
+  tries.delete(ws);
+  const old = socket;
+  if (old && old !== ws) {
+    if (!caught) cutShort = true;
+    abandon(old);
+  }
+  socket = ws;
+  ws.onmessage = (m) => onMessage(ws, m);
+  ws.onclose = () => onClose(ws);
+  sync(ws);
+}
+function onClose(ws: WebSocket) {
+  if (socket !== ws) return;
+  socket = undefined;
+  onHello?.(undefined); // a socket that closed before it said hello leaves nothing waiting on it
+  if (!caught) cutShort = true;
+  // Already not heard (it had gone silent): the tries go on.
+  if (state.connected || !downTimer) lose("closed");
+}
+export function connect() {
+  downFrom = Date.now();
+  downTick();
+}
+// Tries the daemon now instead of at the next round: for a host that knows it is back.
 export function reconnectNow() {
-  if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
-  clearTimeout(again);
-  retry = 500;
-  connect();
+  if (!state.connected) downTick();
+}
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", () => {
+    if (hidden()) { hiddenAt = Date.now(); clearTimeout(beatTimer); return; }
+    const away = hiddenAt === null ? 0 : Date.now() - hiddenAt;
+    hiddenAt = null;
+    if (!state.connected) { if (downTimer) downTick(); return; }
+    probe();
+    // Away long enough for the browser to have put the page to sleep: what it holds is read again, quietly.
+    if (away >= HIDDEN_RESYNC_MS && isOpen(socket)) sync(socket, true);
+  });
+  // The browser saw the network change: asked now, in either state.
+  addEventListener("online", () => { if (state.connected) probe(); else if (downTimer) downTick(); });
+}
+
+// Everything the page holds is read again against this socket: the daemon
+// replays what came after the page's cursors, and the lists and the features
+// load as at the page's start. `quiet`: the socket was never lost (the page
+// was hidden a while), so nothing says "Catching up".
+function sync(ws: WebSocket, quiet = false) {
+  const mine = ++syncs;
+  clearTimeout(downTimer);
+  downTimer = undefined;
+  const since = downAt;
+  const was = absence;
+  downAt = null;
+  absence = null;
+  caught = false;
+  beat = { heard: Date.now(), pings: 0, due: Date.now() + every() };
+  const loaded = Object.entries(state.events);
+  const cursors = Object.fromEntries(loaded.filter(([id]) => !splitId(id)).map(([id, list]) => [id, seen.get(id) ?? list.at(-1)?.seq ?? 0]));
+  // A draft from before the drop may be stale (a retry restarts it, the reply
+  // may have finished meanwhile): the replay sends the current one of each
+  // loaded session, and a session opened later reads it from its snapshot.
+  if (!quiet) set({ connected: true, synced: false, drafts: Object.fromEntries(Object.entries(state.drafts).filter(([id]) => splitId(id))) });
+  watch();
+  replaying = new Set(Object.keys(cursors));
+  ws.send(JSON.stringify({ op: "resume", cursors }));
+  // What the page loads at start is loaded again: a first load the daemon
+  // was not up for (a restart under the page) comes in now, quietly.
+  const reload = () => {
+    if (!state.loaded.models) actions.loadModelsBrief().catch((e) => reportError(e, { at: "reconnect" }));
+    actions.loadErrors().catch((e) => reportError(e, { at: "reconnect" }));
+    return actions.loadSessions().catch((e) => reportError(e, { at: "reconnect" }));
+  };
+  const first = !opened && bootLoad;
+  opened = true;
+  // The list the page read as it loaded stands for this first open when
+  // nothing moved between the two: the daemon says how far its session
+  // list had moved at each. A session made, renamed or deleted after the
+  // read and before the socket was subscribed was told by no frame: the
+  // list is then read again.
+  const hello = new Promise<number | undefined>((said) => (onHello = said));
+  const level = () => hello.then((at) => (at !== undefined && listLevel !== undefined && at > listLevel ? actions.loadSessions().catch((e) => reportError(e, { at: "reconnect" })) : undefined));
+  const listed = first ? first.then(level, reload) : reload();
+  // Once a page: what this browser kept for sessions that were deleted while no page was open goes.
+  void listed.then(() => {
+    if (swept || !state.loaded.sessions) return; // a list that did not come is asked for again at the next socket
+    swept = true;
+    return dropOrphans(
+      (id) => !!state.sessions[id],
+      // Only the daemon's own "no such session" says it is gone: any other answer (another
+      // daemon's or a proxy's 404 included) keeps what was stored.
+      (id) => fetch(apiPath(`/api/sessions/${id}/draft`)).then(async (r) => r.status !== 404 || (await r.json().catch(() => null))?.error !== "no such session", () => true),
+    );
+  }).catch((e) => reportError(e, { at: "kept sends of deleted sessions" }));
+  const loads: Promise<unknown>[] = [listed];
+  // Where the daemon's replay of each session ended, once it is through.
+  const replayed = new Promise<Record<string, number>>((done) => (onReplayed = done));
+  const whole = cutShort;
+  cutShort = false;
+  // One deleted meanwhile is dropped.
+  const gone = (id: string) => (e: unknown) => {
+    if ((e as { status?: number }).status !== 404) return reportError(e, { at: "reconnect" });
+    const { [id]: _, ...events } = state.events;
+    const { [id]: __, ...sessions } = state.sessions;
+    forgot(id);
+    set({ events, sessions, gone: { ...state.gone, [id]: state.sessions[id]?.parent_id ?? true } });
+    forgetLegacyQuestions(id);
+    dropSendDrafts(id);
+  };
+  // The open sessions moved meanwhile. On the page's first socket the
+  // snapshots were just taken and the replay brings queue and status: no load.
+  for (const [id] of first ? [] : loaded) {
+    // The local resume cannot replay events from a peer, even when the
+    // daemon-to-peer relay stayed up: its transcript is read again by HTTP.
+    // So is every transcript after a socket that closed inside its replay.
+    if (splitId(id) || whole) { loads.push(actions.loadSession(id).catch(gone(id))); continue; }
+    // A session of this daemon: the replay brings every event after the
+    // page's cursor, so it is asked for without its transcript, and only
+    // once the replay and the list are in. Its answer (row, head, queue,
+    // status, draft) is then newer than every replayed frame and lands
+    // after them, and after the list, which holds no archived row.
+    loads.push(Promise.all([replayed, listed]).then(([ends]) => {
+      if (socket !== ws || mine !== syncs) return;
+      // The daemon holds less of it than the page (its replay ended below the
+      // page's cursor: a restored backup): what the page holds is dropped
+      // and the session is read whole, or its new events would be taken for old ones.
+      const behind = (ends[id] ?? cursors[id]!) < cursors[id]!;
+      if (behind) { const { [id]: _, ...events } = state.events; forgot(id); set({ events }); }
+      return actions.loadSession(id, behind).catch(gone(id));
+    }));
+  }
+  // Caught up when this socket's replay came and the reloads landed; a late
+  // answer from a socket that dropped meanwhile declares nothing.
+  Promise.all(loads).then(() => {
+    if (socket !== ws || mine !== syncs || !state.connected) return;
+    set({ synced: true });
+    // The absence is told to the daemon, which keeps it where the owner can read it
+    // afterwards. Not a daemon that restarted meanwhile: its restart is kept already.
+    if (since !== null && was && Date.now() - since >= 1000 && daemonStarted <= since) {
+      fetch("/api/connection", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ from: since, to: Date.now(), why: was.why }) }).catch(() => {});
+    }
+  });
+  // Features load their own state here, the first open included.
+  for (const l of features) l.reconnect?.();
+  clearInterval(questionPoll);
+  questionPoll = setInterval(() => {
+    for (const id of Object.keys(state.events)) {
+      if (state.sessions[id]?.phase === "working" || legacyQuestions.has(id)) void loadLegacyQuestions(id);
+    }
+  }, 1_000);
+}
+
+function onMessage(ws: WebSocket, m: MessageEvent) {
+  if (socket !== ws) return;
+  beat.heard = Date.now();
+  beat.pings = 0;
+  // The socket that went silent speaks again: it is the connection again, and
+  // what the page holds is read against it before this frame is.
+  if (!state.connected) {
+    for (const t of [...tries.keys()]) abandon(t);
+    sync(ws);
+  }
+  const f = JSON.parse(m.data) as Frame | SocketFrame;
+  if (f.t === "pong") return;
+  // The replay's whole draft, also at the rev of a snapshot that came before this socket
+  // opened (nothing was emitted between them): the open dropped the snapshot's copy.
+  if (f.t === "draft") delivered(() => { if (newer(`${f.session_id}:draft`, f.rev, true)) set({ drafts: { ...state.drafts, [f.session_id]: f.blocks } }); });
+  else if (f.t === "replayed") { caught = true; replaying = null; onReplayed?.(f.cursors ?? {}); }
+  else if (f.t === "hello" || f.t === "ui") {
+    if (f.t === "hello") { daemonStarted = f.started_ms ?? 0; onHello?.(f.sessions_level); }
+    servedUi(f.t === "ui" ? f.version : f.ui);
+  }
+  else if (f.t === "event" && f.rev !== undefined && replaying?.has(f.event.session_id)) return;
+  else delivered(() => apply(f));
 }
 
 // The affected composer claims the notice if it is still on screen.

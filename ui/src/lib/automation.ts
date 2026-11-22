@@ -307,7 +307,9 @@ function presence(now = false) {
   const sid = helm && inView.includes(helm) ? helm : null;
   const shown = inView.filter((id) => id !== sid);
   const key = `${sid}:${focused}:${shown.join()}`;
-  if (now === true || key !== sent.key || Date.now() - sent.at > 20_000) {
+  // A hidden page says once that it is not looked at and then nothing: its word runs out by
+  // itself (45 s), which means the same, and a phone's radio is not woken for it every 20 s.
+  if (now === true || key !== sent.key || (Date.now() - sent.at > 20_000 && document.visibilityState === "visible")) {
     sent = { key, at: Date.now() };
     auto.presence(sid, focused, lastInput ? Date.now() - lastInput : undefined, shown);
   }

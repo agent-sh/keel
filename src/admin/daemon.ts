@@ -212,7 +212,7 @@ export function relaunchArgv(): string[] {
 const DRAIN_PASSES = new RegExp(
   "^/api/(?:" +
     "(?:errors|awake|drain)(?:/|$)" +
-    "|presence$|alerts/read$" +
+    "|presence$|connection$|alerts/read$" +
     "|owner-presence/authenticate/(?:start|finish)$" +
     "|sessions/[^/]+/(?:" +
       "files/exist|call-marks|interrupt|as-agent/stop|presence|draft(?:/files/[^/]+)?" +

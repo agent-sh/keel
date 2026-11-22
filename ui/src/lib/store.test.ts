@@ -62,15 +62,16 @@ const event = (session_id: string, seq: number, kind: StoredEvent["kind"] = "not
 const snapshot = (s: Session, events: StoredEvent[] | undefined, rev: number, draft: Record<number, { kind: string; text: string }> = {}) =>
   ({ session: s, ...(events ? { events } : {}), running: false, queue: [], held: false, draft, rev });
 let sock: Socket;
+// The daemon greets a socket as it opens: that first frame makes it the page's connection.
+const greet = () => sock.onmessage!({ data: JSON.stringify({ t: "hello", pid: 1, started_ms: 1 }) });
 const frame = async (f: Frame | SocketFrame) => { sock.onmessage!({ data: JSON.stringify(f) }); await settle(); };
 // The page's socket is lost and the next one opens. The list and error reloads are answered by `rest`.
 let listed: Session[] = [];
 const rest = async () => { await answer("/api/sessions", { sessions: listed }); await answer("/api/errors", { errors: [] }); await answer("/api/models", { models: [], default: "", pinned: [], providers: [] }); };
 const reconnect = async () => {
-  sock.onclose!();
-  timers.pop()!();
+  sock.onclose!(); // the page tries again at once
   sock = Socket.all.at(-1)!;
-  sock.onopen!();
+  greet();
   await settle();
 };
 // A session the page has open, read once (its newest page).
@@ -86,7 +87,7 @@ const open = async (s: Session, events: StoredEvent[], rev: number) => {
 setBootLoad(Promise.resolve());
 connect();
 sock = Socket.all.at(-1)!;
-sock.onopen!();
+greet();
 await settle();
 await frame({ t: "replayed", cursors: {} });
 
@@ -178,9 +179,11 @@ test("after a socket that closed inside its replay the transcripts are read whol
   await frame({ t: "replayed", cursors: { g: 4 } });
   // A socket that never opened (the daemon is down) is no such case: the next catch-up is the light one.
   sock.onclose!();
-  timers.pop()!();
+  Socket.all.at(-1)!.onclose!(); // the try made at once is refused
+  timers.pop()!(); // the next round of tries
   sock = Socket.all.at(-1)!;
-  await reconnect();
+  greet();
+  await settle();
   await rest();
   expect(asked(`/api/sessions/g?page=${PAGE}`)).toBe(false);
   await frame({ t: "replayed", cursors: { g: 4 } });
@@ -407,4 +410,59 @@ test("a session list that lands after newer frames puts no old row back", async 
   await p;
   expect(Object.keys(getState().sessions).filter((id) => !had.includes(id))).toEqual(["l-renamed"]);
   expect(getState().sessions["l-renamed"]!.title).toBe("renamed again");
+});
+
+// A network that goes silent closes nothing: the page asks, hears no answer
+// twice and says the daemon is not heard. The socket that then speaks again
+// is read against like a new one, and a live event that arrives on it before
+// the replay is left to the replay: applied first, it would move the cursor
+// past the events the silence swallowed.
+test("a socket that went silent and speaks again is read against, with no event skipped", async () => {
+  await open(row("z", "z-e3"), [1, 2, 3].map((n) => event("z", n)), 7000);
+  // The sessions the tests above left open are gone by now: only this one is read again.
+  const others = async () => { for (const w of [...waiting]) if (/^\/api\/sessions\/[^/?]+\?events=0$/.test(w.url) && !w.url.startsWith("/api/sessions/z?")) await answer(w.url, { error: "no such session" }, 404); };
+  // A socket of its own, so the look at it is armed in this test.
+  await reconnect();
+  await rest();
+  await frame({ t: "replayed", cursors: { z: 3 } });
+  expect(await answer("/api/sessions/z?events=0", snapshot(row("z", "z-e3"), undefined, 7050))).toBe(true);
+  await others();
+  expect(getState().synced).toBe(true);
+  listed = [row("z", "z-e6")];
+  const real = Date.now;
+  let t = real();
+  Date.now = () => t;
+  const run = (name: string) => timers.findLast((f) => f.name === name)!();
+  try {
+    t += 2100; run("onLook");
+    expect(sock.sent.at(-1)).toEqual({ op: "ping" });
+    expect(getState().connected).toBe(true);
+    t += 2000; run("onLook");
+    t += 1000; run("onLook");
+    expect(getState().connected).toBe(false);
+    // It tries a new socket at once, and keeps the silent one.
+    const tried = Socket.all.at(-1)!;
+    expect(tried).not.toBe(sock);
+    const at = sock.sent.length;
+    // Events 4 and 5 never reached the page; 6 is live and is the first frame back.
+    await frame({ t: "event", event: event("z", 6), rev: 7100 } as Frame);
+    expect(getState().connected).toBe(true);
+    expect(getState().synced).toBe(false);
+    expect(sock.sent.slice(at).find((m) => m.op === "resume")).toEqual({ op: "resume", cursors: { z: 3 } });
+    expect(Socket.all.at(-1)).toBe(tried); // and no other try was made
+    expect(getState().events.z!.map((e) => e.seq)).toEqual([1, 2, 3]);
+    for (const n of [4, 5, 6]) await frame({ t: "event", event: event("z", n) });
+    await rest();
+    await frame({ t: "replayed", cursors: { z: 6 } });
+    expect(await answer("/api/sessions/z?events=0", snapshot(row("z", "z-e6"), undefined, 7200))).toBe(true);
+    expect(getState().events.z!.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(getState().synced).toBe(true);
+    // After the replay a live event is taken as it comes.
+    await frame({ t: "event", event: event("z", 7), rev: 7300 } as Frame);
+    expect(getState().events.z!.map((e) => e.seq)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    // The absence is told to the daemon once the page is right again.
+    expect(asked("/api/connection")).toBe(true);
+  } finally {
+    Date.now = real;
+  }
 });

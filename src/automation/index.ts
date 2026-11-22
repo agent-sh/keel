@@ -10,6 +10,7 @@ import type { Deps, RouteModule } from "../server/app.ts";
 import { registerShared } from "../tools/registry.ts";
 import { ownerSeen } from "../admin/away.ts";
 import * as activity from "./activity.ts";
+import * as connection from "./connection.ts";
 import * as consult from "./consult.ts";
 import * as goals from "./goals.ts";
 import * as taskOut from "./task-out.ts";
@@ -686,6 +687,13 @@ export const automationRoutes: RouteModule = (deps) => {
         // A page that only has focus says nothing about where the owner is.
         if (typeof b.idle_ms === "number" && b.idle_ms >= 0) ownerSeen(b.idle_ms);
         return json({ ok: true });
+      },
+    },
+    // A page was cut off and is back: kept where the owner can read it afterwards (connection.ts).
+    "/api/connection": {
+      POST: async (req: Request) => {
+        const b = await body(req);
+        return json({ ok: true, listed: connection.pageAbsence(Number(b.from), Number(b.to), String(b.why ?? "")) });
       },
     },
   };
