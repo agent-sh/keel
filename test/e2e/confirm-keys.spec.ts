@@ -89,8 +89,11 @@ test("the question before a model switch is not answered by words typed on after
   const composer = page.getByTestId("composer");
   await composer.click();
   await page.keyboard.type("/model Scripted backup");
+  // The command is whole (a name follows it), so no list of commands is open to take the Enter: one
+  // Enter runs it, and the question comes once the daemon said what the switch costs. A second
+  // Enter sent while waiting for it would be an Enter typed ahead: it lands on Cancel.
+  await expect(page.getByTestId("slash-menu")).toHaveCount(0);
   await page.keyboard.press("Enter");
-  if (!(await confirm.isVisible().catch(() => false))) await page.keyboard.press("Enter"); // the command's hint takes the first Enter
   await expect(confirm).toContainText("Switch to Scripted backup?");
   await expect(confirm.getByRole("button", { name: "Cancel" })).toBeFocused();
   await shoot(page, "confirm-keys-03-switch-on-cancel");
@@ -100,8 +103,8 @@ test("the question before a model switch is not answered by words typed on after
   expect(await model()).toBe(STAND_IN);
   // Asked again and answered by a press that was aimed: it switches.
   await composer.fill("/model Scripted backup");
+  await expect(page.getByTestId("slash-menu")).toHaveCount(0);
   await composer.press("Enter");
-  if (!(await confirm.isVisible().catch(() => false))) await composer.press("Enter");
   await confirm.getByRole("button", { name: "Switch" }).click();
   await expect.poll(model).not.toBe(STAND_IN);
   await request.delete(`/api/sessions/${session.id}`);
