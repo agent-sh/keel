@@ -5,7 +5,7 @@ import { shownInPart } from "../../../src/safety/summary.ts";
 import { batches, batchName, coverName, hold, nextAction, pressable, READ_MS, sawLines, settled, SETTLE_MS, spentAction, stand, unseenLines, type Action, type Batch, type Hold, type Lines, type Stand } from "../lib/approvals.ts";
 import { arrivalOf, arriving } from "../lib/automation.ts";
 import { wasBrought } from "../lib/shell.ts";
-import { hasHidden, hasRtl } from "../lib/hidden-chars.ts";
+import { hasHidden, hasRtl, spellHidden } from "../lib/hidden-chars.ts";
 import { dropRepeats, keyRefused, keysSettled, mayTake, noteAnswer, sequenceAt, takeKeys, typeToBox, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
 import { safety, useSafety, type Approval, type Suggest } from "../lib/safety.ts";
@@ -41,6 +41,11 @@ const EMPTY: Approval[] = [];
 type Unseen = { n: number; out: number; begun: boolean };
 type View = { read: Set<string>; live: Set<string>; grant: Set<string>; ripe: Set<string>; cut: Set<string>; unseen: Map<string, Unseen>; acts: Map<string, Action>; key: string };
 const NO_VIEW: View = { read: new Set(), live: new Set(), grant: new Set(), ripe: new Set(), cut: new Set(), unseen: new Map(), acts: new Map(), key: "" };
+// A card whose text is to be opened before it is answered: the daemon shows only its start, it
+// holds a character that had to be spelled out, or it is longer than its box and not yet read
+// there. `whole`: the owner opened it.
+const mustBeOpened = (a: Approval, whole: boolean, cut: boolean, unseen: Unseen | undefined) =>
+  !whole && (shownInPart(a) || hasHidden(a.summary, "\n\t") || (cut && (!unseen || unseen.n > 0)));
 type Reading = { born: number; sum?: Stand; once?: Hold; always?: Hold; cut: boolean };
 type Clip = { top: number; bottom: number; left: number; right: number };
 
@@ -267,7 +272,11 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
   const hold = useHold(list);
   const groups = batches(waiting, view.read, new Set([...view.cut, ...waiting.filter((c) => hasHidden(c.summary, "\n\t")).map((c) => c.id)]));
   const [hot, setHotTools] = useState<string[]>([]); // the tools whose action the pointer or the keyboard is on
-  const [at, setAt] = useState<{ on: "once" | "all" | "row"; id?: string } | null>(null); // where the keyboard is in the list
+  const [at, setAt] = useState<{ on: "once" | "all" | "row" | "list"; id?: string } | null>(null); // where the keyboard is in the list
+  // The cards the owner opened to their whole text, by the list's Enter or a card's own control.
+  const [opened, setOpened] = useState<Record<string, true>>({});
+  const shut = waiting.filter((a) => mustBeOpened(a, !!opened[a.id], view.cut.has(a.id), view.unseen.get(a.id)));
+  const setWhole = (id: string, on: boolean) => setOpened((o) => { const { [id]: _was, ...rest } = o; return on ? { ...rest, [id]: true } : rest; });
   const [sending, setSending] = useState<string[]>([]); // the ids an action is answering
   const [note, setNote] = useState("");
   const many = cards.length > 1;
@@ -339,6 +348,13 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
     const t = e.target as HTMLElement;
     // Not from a field, and not from a popup a card opened (its events come here through React, not the page).
     if (!e.currentTarget.contains(t) || t.tagName === "INPUT" || e.altKey || e.ctrlKey || e.metaKey || composing(e)) return;
+    // Enter on the list itself opens the first request that must be opened: the step its card asks
+    // for first. It answers nothing.
+    if (e.key === "Enter" && t === e.currentTarget) {
+      // (The owner's own move on the list, lib/asks.ts: the card's Allow may take the keyboard once the text is read.)
+      if (!e.repeat && !e.shiftKey && shut[0]) { e.preventDefault(); setWhole(shut[0].id, true); takeKeys(e.currentTarget, true); }
+      return;
+    }
     // Words typed while a card has the keyboard are for the message box: they go there, and so does the Enter after them.
     if (typeToBox(e)) return;
     // Up and Down move between the list's stops: the "allow all" action, then each card's first answer.
@@ -360,7 +376,7 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
     const t = e.target as HTMLElement;
     // (In a field the arrows are the field's: nothing is said.)
     const id = t.closest<HTMLElement>('[data-testid="approval"]')?.dataset.approvalId;
-    setAt(!e.currentTarget.contains(t) || t.tagName === "INPUT" ? null : t.dataset.testid === "allow-once" ? { on: "once", id } : t.dataset.testid === "allow-all" ? { on: "all" } : id ? { on: "row", id } : null);
+    setAt(!e.currentTarget.contains(t) || t.tagName === "INPUT" ? null : t.dataset.testid === "allow-once" ? { on: "once", id } : t.dataset.testid === "allow-all" ? { on: "all" } : t === e.currentTarget ? { on: "list" } : id ? { on: "row", id } : null);
   };
 
   return (
@@ -398,6 +414,7 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
                   : hot.length ? "A click allows the framed ones once"
                   : at?.on === "once" && view.live.has(at.id!) ? "Up and Down choose, Enter allows the framed one once"
                   : at?.on === "once" || at?.on === "row" ? "Up and Down choose a request"
+                  : at?.on === "list" && shut.length ? "Enter opens the first request that must be opened"
                   : ""}
               </span>
               <span className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
@@ -439,6 +456,9 @@ export function Approvals({ sessionId, asker }: { sessionId: string; asker?: str
               armed={(which) => { const v = tick(); return v[which].has(a.id) && v.unseen.get(a.id)?.n === 0; }}
               cut={view.cut.has(a.id)}
               unseen={view.unseen.get(a.id)}
+              whole={!!opened[a.id]}
+              onWhole={(on) => setWhole(a.id, on)}
+              enterOpens={at?.on === "list" && shut[0]?.id === a.id}
             />
           ))}
         </div>
@@ -588,9 +608,12 @@ function AllowAll({ g, ids, on, cards, busy, list, onHot, press, onAllow }: {
 // for its Always allow; `armed` asks either at the instant of a press. `ripe`:
 // it has been on the page that long. `cut`: its text is longer than its box.
 // `unseen`: the lines of its text that have not been in view (none known yet: not read).
-function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, grant, armed, cut, unseen }: {
+// `whole`: the owner opened its whole text, by the list's Enter or by the card's own control
+// (`onWhole`). `enterOpens`: the list has the keyboard and its Enter would open this card.
+function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, grant, armed, cut, unseen, whole, onWhole, enterOpens }: {
   a: Approval; first: boolean; asker?: string; list: RefObject<HTMLDivElement | null>; many: boolean; plain: boolean;
   hot: boolean; locked: boolean; ripe: boolean; live: boolean; grant: boolean; armed: (which: "live" | "grant") => boolean; cut: boolean; unseen?: Unseen;
+  whole: boolean; onWhole: (on: boolean) => void; enterOpens: boolean;
 }) {
   const dense = many && a.risk !== "high"; // a high-risk request keeps its whole card, with why it is one
   const Icon = a.risk === "high" ? ShieldAlert : ICON[a.kind];
@@ -599,7 +622,6 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   const [answering, setAnswering] = useState(false);
   const [err, setErr] = useState("");
   const [closed, setClosed] = useState(false); // the daemon says it can no longer be answered
-  const [whole, setWhole] = useState(false); // opened to its full text
   const root = useRef<HTMLDivElement>(null);
   const once = useRef<HTMLButtonElement>(null);
   const ids = `approval-${a.id}`;
@@ -617,11 +639,17 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   // (a card that is all out of view says nothing, and so does not change as it comes into view).
   const left = unseen?.begun ? unseen.out : 0;
   const leftText = `${left} line${left === 1 ? "" : "s"} not seen yet`;
-  const mustOpen = !unseen || unseen.n > 0 || (!whole && (part || marked));
+  const shut = mustBeOpened(a, whole, cut, unseen);
+  const mustOpen = !unseen || unseen.n > 0 || shut;
+  // All of a short text with marked characters is on the card: what its first control does is show the marks.
+  const marks = marked ? spellHidden(a.summary).filter((p) => p.hidden).length : 0;
+  const onlyMarks = marked && !part && !cut;
+  const thing = a.kind === "shell" ? "command" : "text";
+  const openLabel = onlyMarks ? `Show the ${marks} marked character${marks === 1 ? "" : "s"}` : a.kind === "shell" ? "Show the whole command" : "Show all of it";
+  const openFirst = onlyMarks ? `Look at the marked character${marks === 1 ? "" : "s"} first` : `Open the whole ${thing} first`;
+  const enterSays = onlyMarks ? `Enter shows the marked character${marks === 1 ? "" : "s"}` : `Enter opens the whole ${thing}`;
   const unread = useRef(mustOpen);
   unread.current = mustOpen;
-  const openFirst = `Open the whole ${a.kind === "shell" ? "command" : "text"} first`;
-  const [told, setTold] = useState(false); // a press was refused for that reason: said on the card until it is opened
   const toList = () => list.current?.focus({ preventScroll: true });
   // Whether the card is in the window: a page of a phone's track that is not the one shown takes no keyboard.
   const inView = () => { const r = root.current?.getBoundingClientRect(); return !!r && r.width > 0 && r.right > 0 && r.left < innerWidth; };
@@ -636,7 +664,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   const mayHold = () => !unread.current && inView();
   const refusalOf = (stood: boolean, key: Element | null): string => {
     // Not read: the text is to be opened first, or so many of its lines have not been in view.
-    if (unread.current) { if (shut) setTold(true); return shut ? openFirst : notYet; }
+    if (unread.current) return shut ? openFirst : notYet;
     if (!stood) return notYet;
     return key ? keyRefused(key) : "";
   };
@@ -709,6 +737,27 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
     moved.current = hold.at;
     once.current?.focus({ preventScroll: true });
   }, [hold.keys, hold.take, hold.at, live, mustOpen]);
+  // The marked characters of a text opened for them are brought into view.
+  useEffect(() => {
+    if (whole && marked) root.current?.querySelector('[data-testid="hidden-char"]')?.scrollIntoView({ block: "nearest" });
+  }, [whole]);
+  // The control that opened or folded the text goes away as it does: the keyboard it held goes to
+  // the list of requests (lib/asks.ts: as the owner's own move, so the card's Allow may take it
+  // once the text is read), and after a fold to the control that opens the text again.
+  const reopen = useRef(false);
+  const lead = useRef<HTMLButtonElement>(null);
+  const setOpen = (on: boolean, from: HTMLElement) => {
+    const had = from === document.activeElement;
+    onWhole(on);
+    if (!had) return;
+    reopen.current = !on;
+    takeKeys(list.current, true);
+  };
+  useEffect(() => {
+    if (!reopen.current || !shut) return;
+    reopen.current = false;
+    if (document.activeElement === list.current) lead.current?.focus({ preventScroll: true });
+  }, [shut]);
   // The keyboard never rests on an answer of a card that is not all read, nor on the card
   // itself (its text was found cut after the keyboard came): it is read on the list.
   useEffect(() => {
@@ -737,8 +786,6 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   const nudge = useNudge();
   // Why a press on one of its answers does nothing now.
   const notYet = left > 0 ? `Not yet: ${leftText}` : ripe ? "Not yet: it moved a moment ago" : "Not yet: it has only just arrived";
-  // The text is to be opened first (its box, or the daemon, shows a part of it; or it holds marked characters).
-  const shut = !whole && (part || marked || (cut && (!unseen || unseen.n > 0)));
 
   const answer = async (body: { choice: string; reason?: string; rules?: Suggest[] }) => {
     noteAnswer(a.id);
@@ -781,10 +828,6 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   // The whole of what the daemon kept of the input, when the card shows only its start.
   const kept = part ? (typeof a.input?._clipped === "string" ? a.input._clipped : JSON.stringify(a.input ?? {}, null, 2)) : "";
   const short = !whole && (cut || part);
-  // The row that opens and folds the text stays once it was used: folded, the text is measured
-  // again a render later, and a control that left for that render would drop the keyboard.
-  const opened = useRef(false);
-  if (whole) opened.current = true;
   const summary = (
     <>
       <pre
@@ -798,9 +841,10 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
         )}
         data-testid="approval-summary"
         data-cut={short || undefined}
+        data-marks={whole && marked ? "shown" : undefined}
       >
         {a.kind === "shell" && <span className="select-none text-accent">$ </span>}
-        <Spelled text={whole && part ? kept : a.summary} />
+        <Spelled text={whole && part ? kept : a.summary} shown={whole} />
       </pre>
       {/* A character that hides or reorders text is spelled out above, and the card says that it did so. */}
       {hasHidden(a.summary, "\n\t") && (
@@ -813,8 +857,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
           It holds letters written right to left: they are shown in the order the command is written.
         </p>
       )}
-      {/* Text that does not fit its box says so, and opens in place. Cut, it is read and answered on its own. */}
-      {(short || whole || marked || opened.current) && (
+      {/* Text that does not fit its box says so. The control that opens it leads the answers; opened, it folds here. */}
+      {(short || whole) && (
         <div className={cn("mt-1 flex flex-wrap items-center gap-x-2 text-micro", !dense && "mx-4")}>
           {short && (
             <span className="text-warn" data-testid="approval-cut">
@@ -826,18 +870,18 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
               {typeof a.input?._clipped === "string" ? "The start of the input: the rest was not kept. It is answered on its own" : "The whole input. It is answered on its own"}
             </span>
           )}
-          <button
-            type="button"
-            data-testid="approval-expand"
-            aria-expanded={whole}
-            aria-controls={`${ids}-summary`}
-            onClick={() => { setWhole(!whole); setTold(false); }}
-            className="k-link rounded-sm text-accent-ink underline underline-offset-2 outline-none hover:text-fg focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            {whole ? "Fold" : a.kind === "shell" ? "Show the whole command" : "Show all of it"}
-          </button>
-          {/* Said once a press was refused for it, where the control that opens the text is. */}
-          {shut && told && <span className="text-warn" role="status" data-testid="approval-open-first">{openFirst}.</span>}
+          {whole && (
+            <button
+              type="button"
+              data-testid="approval-expand"
+              aria-expanded
+              aria-controls={`${ids}-summary`}
+              onClick={(e) => setOpen(false, e.currentTarget)}
+              className="k-link rounded-sm text-accent-ink underline underline-offset-2 outline-none hover:text-fg focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              Fold
+            </button>
+          )}
         </div>
       )}
     </>
@@ -932,6 +976,21 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
       ) : (
         // The three answers keep their order and wrap when the card is narrow: none is cut, Deny least of all.
         <div className={cn("flex flex-wrap items-center gap-1.5", dense ? "px-3 py-2" : "px-4 py-3")} data-testid="approval-actions">
+          {/* A card that must be opened leads with the control that opens it: the step it asks for first. */}
+          {shut && (
+            <button
+              type="button"
+              data-testid="approval-expand"
+              data-stop="card"
+              aria-expanded={false}
+              aria-controls={`${ids}-summary`}
+              ref={lead}
+              onClick={(e) => setOpen(true, e.currentTarget)}
+              className="h-8 shrink-0 whitespace-nowrap rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-raised"
+            >
+              {openLabel}
+            </button>
+          )}
           {/* Marked disabled, not disabled, while it waits: it keeps the keyboard when the list moves, and a press does nothing. */}
           <button
             ref={once}
@@ -939,7 +998,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
             aria-disabled={!live || mustOpen || undefined}
             data-nudge={nudge.mark}
             data-testid="allow-once"
-            data-stop="card"
+            data-stop={shut ? undefined : "card"}
             onPointerDown={pressed.onPointerDown}
             onMouseDown={pressed.onMouseDown}
             onClick={(e) => {
@@ -947,7 +1006,11 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
               if (why) nudge.refuse(why, e.currentTarget);
               else answer({ choice: "once" });
             }}
-            className="k-allow h-8 shrink-0 whitespace-nowrap rounded-lg bg-accent px-3 text-ui font-medium text-accent-fg hover:opacity-90 disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-raised aria-disabled:cursor-default aria-disabled:opacity-50"
+            className={cn(
+              "k-allow h-8 shrink-0 whitespace-nowrap rounded-lg px-3 text-ui font-medium disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-1 focus-visible:ring-offset-raised aria-disabled:cursor-default aria-disabled:opacity-50",
+              // Behind the control that opens the text, it is the second step: drawn as one.
+              shut ? "border border-line text-fg" : "bg-accent text-accent-fg hover:opacity-90",
+            )}
           >
             Allow once
           </button>
@@ -962,8 +1025,10 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
             Deny
           </button>
           {err ? <span className={cn("ml-auto min-w-0 basis-full text-micro text-danger", !dense && "sm:basis-auto sm:truncate")} role="alert" title={err} data-testid="approval-error">{err}</span>
-            // How much of the text has not been in view, beside the answers it holds back: said for as
-            // long as some is left. (In the answers' own row, so the card keeps its height when it goes.)
+            // Why the answers wait, beside them, before anything was pressed: the text is to be opened
+            // (the list's Enter does that while the list has the keyboard), or so many of its lines have
+            // not been in view. (In the answers' own row, so the card keeps its height when it goes.)
+            : shut ? <span className="ml-auto text-micro text-warn" role="status" data-testid="approval-open-first">{enterOpens ? enterSays : openFirst}.</span>
             : left > 0 ? <span className="ml-auto text-micro text-warn tabular-nums" role="status" data-testid="approval-left">{leftText}</span>
             // Said only while its Allow has the keyboard and acts: else Enter is not its, or does nothing yet.
             : !dense && <span className={cn("invisible ml-auto text-micro text-faint max-sm:hidden pointer-coarse:hidden", live && !mustOpen && "group-has-[.k-allow:focus]/card:visible")} data-testid="approval-hint">Enter allows once, Esc to deny with a reason</span>}

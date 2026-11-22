@@ -31,6 +31,7 @@ async function drop(request: APIRequestContext, ids: string[]) {
   await request.post("/api/alerts/read", { data: {} });
 }
 // Enter 1.2 s after arriving and again at 2.7 s: past the card's own settle time, when a whole card would act.
+// (On the list of requests the first Enter opens the text of a card that must be opened; it answers nothing.)
 async function enters(page: Page) {
   await page.waitForTimeout(1200);
   const at = await focus(page);
@@ -61,11 +62,11 @@ test("a cut command takes no answer, and no keyboard on one: the rail, a link, t
     await page.getByTestId("sidebar").locator(`[data-session="${s.id}"]`).first().click();
     await expect(page).toHaveURL(new RegExp(`/s/${s.id}`));
     await expect(page.getByTestId("approval")).toHaveAttribute("data-must-open", "true");
+    await shoot(page, "approval-read-01-cut");
     at = await enters(page);
     expect(at).toBe("approvals");
     expect(await states(request, s.id)).toBe("pending");
     said("Rail row", at, `Enter at 1.2 s and 2.7 s: ${await states(request, s.id)}`);
-    await shoot(page, "approval-read-01-cut");
 
     // A link that names the request, at a desk and at a phone's width.
     const aid = (await (await request.get(`/api/sessions/${s.id}/approvals`)).json()).approvals[0].id as string;
@@ -86,8 +87,10 @@ test("a cut command takes no answer, and no keyboard on one: the rail, a link, t
     const card = page.getByTestId("approval").first();
     await expect(card.getByTestId("allow-once")).toBeDisabled();
     await page.waitForTimeout(1300);
+    // The reason stands beside the answers before any press; a refused press says it again, once, for a screen reader.
+    await expect(card.getByTestId("approval-open-first")).toHaveText(/^(Open the whole command first|Enter opens the whole command)\.$/);
     await card.getByTestId("allow-once").click({ force: true });
-    await expect(card.getByTestId("approval-open-first")).toHaveText("Open the whole command first.");
+    await expect(card.getByTestId("approval-refused").first()).toHaveText("Open the whole command first");
     if (await card.getByTestId("allow-always").count()) {
       await card.getByTestId("allow-always").click({ force: true });
       await expect(card.getByTestId("allow-always")).not.toHaveAttribute("aria-expanded", "true");
@@ -277,5 +280,54 @@ test("a long command opened by one click is read once its lines have been in vie
     await expect.poll(() => states(request, s.id)).toBe("allowed/once");
   } finally {
     await drop(request, [s.id]);
+  }
+});
+
+// The step a card asks for first is the one it leads with. A card that must be
+// opened shows that as its first button, says why its Allow once waits before
+// anything was pressed, and Enter on the list of requests opens it: two keys,
+// each meant, for a command that then fits.
+test("a card that must be opened leads with opening it, and Enter on the list does that", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  // Twelve lines: more than the card's box, less than the region once opened.
+  const TWELVE = `${Array.from({ length: 11 }, (_, i) => `echo step ${i + 1}`).join("\n")}\nrm -rf ./release`;
+  const cut = await asking(request, "Read: twelve lines", [bash(TWELVE)]);
+  const odd = await asking(request, "Read: a marked character", [bash("rm -rf out\u00a0build")]);
+  try {
+    for (const s of [cut, odd]) await waits(request, s.id);
+    await page.goto(`/s/${cut.id}`);
+    const card = page.getByTestId("approval").first();
+    await expect(card).toHaveAttribute("data-must-open", "true");
+    // The first button opens the text, and the reason stands beside the answers before any press.
+    const open = card.getByTestId("approval-expand");
+    await expect(open).toHaveText("Show the whole command");
+    expect(await card.getByTestId("approval-actions").locator("button").first().getAttribute("data-testid")).toBe("approval-expand");
+    expect((await open.boundingBox())!.height).toBeGreaterThanOrEqual(30);
+    await expect(card.getByTestId("approval-open-first")).toHaveText("Open the whole command first.");
+    await expect(card.getByTestId("allow-once")).toBeDisabled();
+    await shoot(page, "approval-read-07-lead");
+    // The keyboard is on the list of requests: Enter opens the text, and says so.
+    await expect.poll(() => focus(page), { timeout: 5000 }).toBe("approvals");
+    await expect(card.getByTestId("approval-open-first")).toHaveText("Enter opens the whole command.");
+    await page.keyboard.press("Enter");
+    await expect(card.getByTestId("approval-summary")).toContainText("rm -rf ./release");
+    expect(await states(request, cut.id)).toBe("pending");
+    // All of it shows now: read, the answer takes the keyboard, and the second Enter allows.
+    await expect(card.getByTestId("allow-once")).toBeFocused({ timeout: 5000 });
+    await page.keyboard.press("Enter");
+    await expect.poll(() => states(request, cut.id)).toBe("allowed/once");
+
+    // A short command with a marked character is all on the card already: its first button says what it does.
+    await page.goto(`/s/${odd.id}`);
+    const c = page.getByTestId("approval").first();
+    await expect(c).toHaveAttribute("data-must-open", "true");
+    await expect(c.getByTestId("approval-expand")).toHaveText("Show the 1 marked character");
+    await expect(c.getByTestId("approval-open-first")).toContainText("marked character");
+    await c.getByTestId("approval-expand").click();
+    await expect(c.getByTestId("approval-summary")).toHaveAttribute("data-marks", "shown");
+    await expect(c).not.toHaveAttribute("data-must-open", "true");
+    await shoot(page, "approval-read-08-marks");
+  } finally {
+    await drop(request, [cut.id, odd.id]);
   }
 });
