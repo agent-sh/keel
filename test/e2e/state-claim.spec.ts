@@ -52,7 +52,8 @@ test("two daemons on one state folder: one owns it, the other opens nothing", as
     const state = join(ROOT, `claim-${stamp}-${round}`);
     const pair = [start(state, await freePort()), start(state, await freePort())];
     const ends = await Promise.all(pair.map(settled));
-    expect([...ends].sort()).toEqual(["exit 1", "owns"]);
+    // (With what each daemon said, should it fail: two that both gave up say why only there.)
+    expect([...ends].sort(), pair.map((p, i) => `daemon ${i + 1} on port ${p.port}:\n${p.out().slice(-600)}`).join("\n---\n")).toEqual(["exit 1", "owns"]);
     const winner = pair[ends.indexOf("owns")]!, loser = pair[ends.indexOf("exit 1")]!;
     expect(loser.out()).toContain(`uses ${state}`);
     expect(loser.out()).not.toContain("keel listening");
