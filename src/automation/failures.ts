@@ -18,7 +18,8 @@ import { acked, add, classOf, cleared, fingerprintOf, render, room, settledBy, S
 // that stands in for a report starts a turn, like the report would have; the
 // rest goes with the next harness input and never starts one. Only what a
 // notice can name is owed: a silent agent's failures, a tool failure no agent
-// repeated and an agent past the ids a cause lists are counted, not told.
+// repeated and an agent past the ids a cause keeps are counted, not told (a
+// tool failure of the agents past them is told once they repeat it together).
 // What is owed is in the table, so a restart delivers it, once. The same rows
 // are the owner's record (GET /api/errors?session=).
 
@@ -207,7 +208,7 @@ const AGENTS_LEFT = "SELECT COUNT(*) AS n FROM agents WHERE parent_id = ? AND st
 function notice(sessionId: string, parts: Record<string, unknown>[] = []): Pending | undefined {
   const { store } = D();
   const reports = parts.filter((p) => p.kind === "subagent");
-  const r = render(owedOf(sessionId), Date.now(), new Set(reports.map((p) => String(p.agent_id))), knownOf(sessionId));
+  const r = render(owedOf(sessionId), Date.now(), new Set(reports.map((p) => String(p.agent_id))), knownOf(sessionId), sessionId);
   if (!r) return undefined;
   if (r.text === null) return void settle(sessionId, r.told); // all of it is in the reports going now
   let tail = "";

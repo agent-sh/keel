@@ -141,12 +141,17 @@ for the text form, `since=` for a window you name, at most seven days back),
 The notice a session gets when an agent it started fails has one entry per
 cause. Under it, each agent that failed since the last notice has a line with
 its own count and its own latest failure as it read (three agents, the last to
-fail first; the rest by ID). A count over more than that says whose it is and
-over what time. The notice ends with one line that names the tool and one of
-those agents, the last to fail whose session is still there:
-`keel__session_timeline with session: ID tells what that agent did and where
-it failed.` It is part of an input in the history, so no session's system
-prompt or cached prefix changes for it.
+fail first; the rest by ID). The agent that failed last shows its failure
+whole, the two under it what differs from that (`…/lane-2/…`), or "the same".
+A count over more than that says whose it is and over what time. The notice
+ends with one line that names the tool and one of those agents, the last to
+fail whose session is still there: `keel__session_timeline with session: ID
+tells what that agent did and where it failed.` A notice is about 2,500
+characters at most: causes past that are one line each (what failed, how
+often, in how many agents), and the last line then also names
+`GET /api/errors?session=ID`, which lists every cause with each agent's own
+failure. It is part of an input in the history, so no session's system prompt
+or cached prefix changes for it.
 
 - `keel__session_timeline` takes `session`: an agent the session started, by
   its ID, a prefix of it or its session ID. `open` (`error=ID` or `turn=ID`,

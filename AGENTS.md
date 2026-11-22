@@ -96,7 +96,8 @@ under `~/.cache/keel-work/bun/research/`.
   (`src/automation/failures.ts`, the grouping in `failure-groups.ts`) and go to
   its model as one harness input, each cause once with a count, and under it
   who failed: each agent with its own count and its own latest failure (three
-  named, the rest by id), never another agent's. An agent that
+  named, the rest by id), never another agent's, within a budget of about
+  2,500 characters a notice (`DETAIL_CHARS`, `BODY_CHARS`). An agent that
   failed with no words of its own is told there instead of in a report of its
   own. Only what a notice can name is owed; a notice never starts a session
   held after the owner's Stop. The same rows are read at

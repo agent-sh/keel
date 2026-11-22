@@ -22,9 +22,14 @@ export type FailureKind = "agent" | "turn" | "provider" | "tool" | "wait" | "loo
 // task it was given), oldest first: a wait that returned one report clears
 // that failure only, never an earlier task's. `eg`: its own latest failure as
 // it read, nothing folded. `ts`: when that was. `from`: when the first of the
-// failures it was not told of yet happened.
-export type FailureRef = { id: string; label?: string; n: number; owed: number; told?: number; reports?: string[]; eg?: string; ts?: number; from?: number };
+// failures it was not told of yet happened (0: not known). `late`: when its
+// newest failures happened that landed while some were owed already. `quiet`:
+// its failures are not told (a silent agent's, the session's own).
+export type FailureRef = { id: string; label?: string; n: number; owed: number; told?: number; reports?: string[]; eg?: string; ts?: number; from?: number; late?: number[]; quiet?: true };
+// The session itself, and the agents of a cause past the ones it keeps by id:
+// neither is ever dropped from a cause, so its count always says whose it is.
 export const SELF = "self";
+export const OTHERS = "others";
 // `sample`: the first failure of the cause, whoever had it (the owner's record
 // shows it; a notice shows each ref's own). `count`: every occurrence, the
 // session's and all its agents', since `first_ts`. `owed`: the sum of its refs' owed, so nothing is
@@ -55,17 +60,32 @@ export type Told = { fp: string; kind: FailureKind; owed: number; said: number; 
 // A tool failure is worth a line once one agent repeated it this often; one
 // call that failed once is work.
 export const REPEAT = NUDGE_AT;
+// The agents a cause keeps by id. The session itself and `others` are kept besides them.
 export const MAX_REFS = 20;
-export const MAX_GROUPS = 8;
 const SAMPLE_CHARS = 400;
 const SAMPLE_LINES = 3;
 const LABEL_CHARS = 40;
-// One ref's own failure in a notice: a line. A first line shorter than
-// SHORT_LINE says little by itself (an exit code), so the next one joins it.
+// A notice is paid for in its reader's context at every wake, so what it says
+// of each agent has a budget (the owner's ruling, in characters as the text is
+// read, code points): the agent that failed last shows its failure whole, up
+// to EXAMPLE_CHARS; the agents under it show what differs from that, or
+// NEXT_CHARS of their own. A first line shorter than SHORT_LINE says little by
+// itself (an exit code), so the next one joins it.
 const EXAMPLE_CHARS = 200;
-const SHORT_LINE = 30;
+const NEXT_CHARS = 100;
+const SHORT_LINE = 20;
+// A side two failures share is left out of the lower line once it is this long.
+const SHARED = 16;
 // A cause names this many agents, each with its own failure; the rest by id.
 export const AGENTS_NAMED = 3;
+// The entries of one notice: in full while they stay within DETAIL_CHARS
+// together, then one line a cause up to BODY_CHARS. With the head, the frame
+// and the last lines a notice is about 2,500 characters at most.
+export const DETAIL_CHARS = 1800;
+export const BODY_CHARS = 2200;
+// The failures that landed while a ref already had some owed, the newest: what a
+// notice leaves untold is these, so its span starts at the first of them.
+const LATE = 3;
 
 // The first lines of a failure: what a group shows, and what makes two failures the same.
 const firstLines = (message: string) => message.split("\n").map((l) => l.trim()).filter(Boolean).slice(0, SAMPLE_LINES);
@@ -82,14 +102,22 @@ export const fingerprintOf = (kind: FailureKind, cls: string, message: string) =
 
 export const sampleOf = (message: string) => clip(firstLines(message).join("\n"), SAMPLE_CHARS);
 
-// What one ref shows of its failure: the text as it was, on one line. One too
-// long keeps its start and its end (a path's file name is at the end).
+// A text within `max` code points: one longer keeps its start and its end (a path's file name is at the end).
+function middle(text: string, max: number): string {
+  const points = [...text];
+  if (points.length <= max) return text;
+  const tail = Math.floor(max * 0.4);
+  return `${points.slice(0, max - tail - 1).join("")}…${points.slice(points.length - tail).join("")}`;
+}
+// A tool's error is the tool's text: control characters, escape sequences and
+// line separators in it are a space where a model reads it.
+const CONTROL = /(?:\s*[\p{Cc}\u2028\u2029]+\s*)+/gu;
+const plain = (text: string) => text.replace(CONTROL, " ").trim();
+
+// What one ref shows of its failure: the text as it was, on one line.
 export function exampleOf(message: string): string {
-  const [first = "", next] = firstLines(message);
-  const text = next && first.length < SHORT_LINE ? `${first.replace(/[:.]$/, "")}: ${next}` : first;
-  if (text.length <= EXAMPLE_CHARS) return text;
-  const tail = Math.floor(EXAMPLE_CHARS * 0.4);
-  return clip(text, EXAMPLE_CHARS - tail) + [...text].slice(-tail).join("");
+  const [first = "", next] = firstLines(message).map(plain).filter(Boolean);
+  return middle(next && first.length < SHORT_LINE ? `${first.replace(/[:.]$/, "")}: ${next}` : first, EXAMPLE_CHARS);
 }
 
 // The class of a failed request, from the text a turn's error is stored as.
@@ -98,14 +126,19 @@ export function classOf(message: string): string {
   return errorClass({ status, message }) ?? "other";
 }
 
-const label = (s?: string) => (s ? clip(s.replace(/[<>"\s]+/g, " ").trim(), LABEL_CHARS) : undefined);
+const label = (s?: string) => (s ? clip(s.replace(/[<>"\s\p{Cc}]+/gu, " ").trim(), LABEL_CHARS) : undefined);
 const sum = (refs: FailureRef[]) => refs.reduce((s, r) => s + r.owed, 0);
+const isAgent = (r: FailureRef) => r.id !== SELF && r.id !== OTHERS;
+// What a ref has that it was not told of: a tool failure counts toward a repeat until it is told.
+const untold = (r: FailureRef, kind: FailureKind) => (kind === "tool" ? r.n - (r.told ?? 0) : r.owed);
+// An agent the list can drop for another: all it had was told, or will never be (a silent agent's).
+const spent = (r: FailureRef, kind: FailureKind) => isAgent(r) && r.owed === 0 && (r.quiet || untold(r, kind) === 0);
 
 // Whether a failure of `id` can be named in the group: it is there already,
-// the list has room, or a ref with nothing owed can make room. When it cannot,
-// the failure is counted only, and an agent keeps its own report.
+// the list has room, or an agent with nothing left to tell can make room. When
+// it cannot, the failure is counted under `others`, and an agent keeps its own report.
 export const room = (g: FailureGroup | undefined, id: string) =>
-  !g || g.refs.length < MAX_REFS || g.refs.some((r) => r.id === id || r.owed === 0);
+  !g || id === SELF || g.refs.filter(isAgent).length < MAX_REFS || g.refs.some((r) => r.id === id || spent(r, g.kind));
 
 // One more occurrence of a group (or its first).
 export function add(g: FailureGroup | undefined, f: Failure, now: number): FailureGroup {
@@ -117,34 +150,51 @@ export function add(g: FailureGroup | undefined, f: Failure, now: number): Failu
   const id = f.ref?.id ?? SELF;
   let at = refs.find((r) => r.id === id);
   if (!at) {
-    // A full list drops its oldest ref with nothing owed; with none, this
-    // occurrence is counted in the group only.
-    const spare = refs.length < MAX_REFS ? -1 : refs.findIndex((r) => r.owed === 0);
+    // A full list drops its oldest agent with nothing left to tell. An agent
+    // still short of a repeat is kept (more than the list holds, taking turns,
+    // would each be dropped before its third failure), and so is the session
+    // itself. With no one to drop, the failure is counted under `others`.
+    const full = id !== SELF && refs.filter(isAgent).length >= MAX_REFS;
+    const spare = full ? refs.findIndex((r) => spent(r, base.kind)) : -1;
     if (spare >= 0) refs.splice(spare, 1);
-    if (refs.length < MAX_REFS) refs.push((at = { id, label: label(f.ref?.label), n: 0, owed: 0 }));
+    if (!full || spare >= 0) refs.push((at = { id, label: label(f.ref?.label), n: 0, owed: 0 }));
+    else if (!(at = refs.find((r) => r.id === OTHERS))) refs.push((at = { id: OTHERS, n: 0, owed: 0 }));
   }
-  if (at) {
-    at.n++;
-    at.eg = exampleOf(f.message);
-    at.ts = now;
-    at.from ??= now;
-    const fresh = at.n - (at.told ?? 0);
-    // A tool failure is owed once this agent repeated it REPEAT times since it was last told.
-    if (f.kind === "tool") at.owed = f.tell && fresh >= REPEAT ? fresh : at.owed;
-    else if (f.tell) {
-      at.owed++;
-      if (f.ref?.report) at.reports = [...(at.reports ?? []), f.ref.report];
-    }
+  const named = at.id !== OTHERS;
+  // The span of what a ref is not told of starts at the first such failure. A
+  // row from before spans were kept is part way through one: its start is not known (0).
+  if (!untold(at, f.kind)) {
+    at.from = now;
+    delete at.late;
+  } else {
+    at.from ??= 0;
+    if (at.owed > 0) at.late = [...(at.late ?? []), now].slice(-LATE);
+  }
+  at.n++;
+  at.eg = exampleOf(f.message);
+  at.ts = now;
+  if (f.tell) delete at.quiet;
+  else at.quiet = true;
+  const fresh = at.n - (at.told ?? 0);
+  // A tool failure is owed once this agent repeated it REPEAT times since it was last told.
+  if (f.kind === "tool") at.owed = f.tell && fresh >= REPEAT ? fresh : at.owed;
+  // An agent `others` stands for has its own report, so nothing is owed for it here.
+  else if (f.tell && named) {
+    at.owed++;
+    if (f.ref?.report) at.reports = [...(at.reports ?? []), f.ref.report];
   }
   const owed = sum(refs);
-  return { ...base, count: base.count + 1, owed, wake: owed > 0 && (base.wake || (f.tell === "wake" && !!at)), last_ts: now, refs };
+  return { ...base, count: base.count + 1, owed, wake: owed > 0 && (base.wake || (f.tell === "wake" && named)), last_ts: now, refs };
 }
 
-// A ref with `took` of what it was owed told. With nothing left owed, what it
-// fails on next starts a new span.
-function told(r: FailureRef, took: number, reports?: string[]): FailureRef {
-  const { from, ...rest } = r;
-  return { ...rest, owed: r.owed - took, told: (r.told ?? 0) + took, reports, ...(r.owed > took && from !== undefined ? { from } : {}) };
+// A ref with `took` of what it was owed told. What is left, if anything,
+// landed after the notice was made: with `newest` it is the ref's newest
+// failures, and its span starts at the first of them when that is still kept.
+function told(r: FailureRef, took: number, reports: string[] | undefined, newest: boolean): FailureRef {
+  const { from: _from, late, ...rest } = r;
+  const left = r.owed - took;
+  const kept = newest && late && left > 0 && left <= late.length ? late.slice(late.length - left) : undefined;
+  return { ...rest, owed: left, told: (r.told ?? 0) + took, reports, ...(left > 0 ? { from: kept?.[0] ?? 0 } : {}), ...(kept ? { late: kept } : {}) };
 }
 
 // What a notice told is no longer owed: by ref, so a failure that landed after
@@ -152,7 +202,7 @@ function told(r: FailureRef, took: number, reports?: string[]): FailureRef {
 export function settledBy(g: FailureGroup, t: Pick<Told, "count" | "refs">): FailureGroup {
   const refs = g.refs.map((r) => {
     const took = Math.min(r.owed, t.refs[r.id] ?? 0);
-    return took ? told(r, took, r.reports?.slice(took)) : r;
+    return took ? told(r, took, r.reports?.slice(took), true) : r;
   });
   const owed = sum(refs);
   return { ...g, owed, wake: g.wake && owed > 0, told: Math.max(g.told, t.count), refs };
@@ -173,7 +223,7 @@ export function acked(g: FailureGroup, reports: Set<string>): FailureGroup {
     const took = Math.min(r.owed, (r.reports?.length ?? 0) - rest.length);
     if (!took) return r;
     any = true;
-    return told(r, took, rest);
+    return told(r, took, rest, false); // any of its tasks' failures may be the ones left
   });
   if (!any) return g;
   const owed = sum(refs);
@@ -193,84 +243,144 @@ const MINUTE = 60_000;
 // when its tools run on another machine (a path it missed is a path there).
 export type Known = (id: string) => { gone?: boolean; where?: string } | undefined;
 
-// The refs an entry tells of, the one that failed last first. `skip`: agents
+// The agents an entry tells of, the one that failed last first. `skip`: agents
 // whose own report is in the same input (see render).
 const tellable = (g: FailureGroup, skip: Set<string>) =>
-  g.refs.filter((r) => r.owed > 0 && r.id !== SELF && !skip.has(r.id)).reverse().sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0));
+  g.refs.filter((r) => r.owed > 0 && isAgent(r) && !skip.has(r.id)).reverse().sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0));
+const othersOf = (g: FailureGroup) => g.refs.find((r) => r.id === OTHERS && r.owed > 0);
 
-// One cause: what failed and how often since the last notice, then who. Each
-// of the first AGENTS_NAMED agents has a line with its own count, when, and
-// its own latest failure (never another ref's: the cause folds paths and ids,
-// so two agents' failures of one cause differ in exactly what the reader
-// needs); the rest are listed by id. A count over more than this notice tells
-// says whose it is and over what time.
-function entry(g: FailureGroup, now: number, skip: Set<string>, known?: Known): string {
+// What `b` says that `a`, the line of the agent that failed last, does not: a
+// side they share (a long path up to the file name, the words after it) is
+// left out, cut at a separator so what stays is whole names. Text with nothing
+// long in common is shown as it is, within NEXT_CHARS.
+const SEPARATOR = /[\s\/\\:=,;'"()[\]{}<>|]/;
+function differing(b: string, a: string): string {
+  const most = Math.min(a.length, b.length);
+  let same = 0;
+  while (same < most && a[same] === b[same]) same++;
+  let after = 0;
+  while (after < most - same && a[a.length - 1 - after] === b[b.length - 1 - after]) after++;
+  let start = same;
+  while (start > 0 && !SEPARATOR.test(b[start - 1]!)) start--;
+  if (start > 0 && !/\s/.test(b[start - 1]!)) start--; // the separator stays: a path keeps its slash
+  let end = b.length - after;
+  while (end < b.length && !SEPARATOR.test(b[end]!)) end++;
+  const head = start >= SHARED;
+  const tail = b.length - end >= SHARED;
+  return middle(`${head ? "…" : ""}${b.slice(head ? start : 0, tail ? end : b.length)}${tail ? "…" : ""}`, NEXT_CHARS);
+}
+
+// The first line of an entry, without its total: what failed, how often since the last notice, in how many agents.
+function headOf(g: FailureGroup, refs: FailureRef[]): string {
   const cls = g.cls && g.cls !== "other" ? ` (${g.cls})` : "";
-  const refs = tellable(g, skip);
   const n = refs.length;
-  const owed = g.kind === "tool" ? sum(refs) : g.owed;
+  const others = othersOf(g);
+  if (g.kind === "agent") {
+    // Agents, not occurrences: one that failed twice is one agent.
+    return `${plural(n, "agent")} failed${n > 1 ? " on one cause" : ""}${cls}${g.owed > n ? `, ${g.owed} times` : ""}, with no report of ${n === 1 ? "its" : "their"} own`;
+  }
+  if (g.kind === "tool") {
+    const who = n ? `${plural(n, "agent")}${others ? " and others" : ""}` : "agents it has no room to name";
+    return `${g.cls} failed ${plural(sum(refs) + (others?.owed ?? 0), "time")} on one cause in ${who}`;
+  }
+  if (g.kind === "turn") return `A turn of this session ended on an error${cls}${g.owed > 1 ? `, ${g.owed} times` : ""}`;
+  return `${g.kind} ${g.cls}: ${plural(g.owed, "failure")}`;
+}
+
+// One cause in full: what failed and how often since the last notice, then
+// who. Each of the first AGENTS_NAMED agents has a line with its own count,
+// when, and its own latest failure (never another ref's: the cause folds paths
+// and ids, so two agents' failures of one cause differ in exactly what the
+// reader needs). The agent that failed last shows it whole; the ones under it
+// show what differs from that. The rest are listed by id. A count over more
+// than this notice tells says whose it is and over what time.
+function entry(g: FailureGroup, now: number, skip: Set<string>, known?: Known): string {
+  const refs = tellable(g, skip);
+  const others = othersOf(g);
+  const owed = g.kind === "tool" ? sum(refs) + (others?.owed ?? 0) : g.owed;
   const span = now - g.first_ts < MINUTE ? "in the last minute" : `over the last ${dur(now - g.first_ts)}`;
   const whose = g.kind !== "tool" ? "in all" : g.refs.some((r) => r.id === SELF) ? "by this session and all its agents" : "by all its agents";
   const all = g.count > owed ? `; ${g.count} ${whose} ${span}` : "";
-  let head: string;
-  if (g.kind === "agent") {
-    // Agents, not occurrences: one that failed twice is one agent.
-    head = `${plural(n, "agent")} failed${n > 1 ? " on one cause" : ""}${cls}${g.owed > n ? `, ${g.owed} times` : ""}, with no report of ${n === 1 ? "its" : "their"} own${all}`;
-  } else if (g.kind === "tool") {
-    head = `${g.cls} failed ${plural(owed, "time")} on one cause in ${plural(n, "agent")}${all}`;
-  } else if (g.kind === "turn") {
-    const age = now - g.last_ts >= MINUTE ? `, last ${dur(now - g.last_ts)} ago` : "";
-    head = `A turn of this session ended on an error${cls}${g.owed > 1 ? `, ${g.owed} times` : ""}${age}${all}`;
-  } else head = `${g.kind} ${g.cls}: ${plural(g.owed, "failure")}${all}`;
+  const age = g.kind === "turn" && now - g.last_ts >= MINUTE ? `, last ${dur(now - g.last_ts)} ago` : "";
+  const ago = (r: FailureRef) => (r.ts !== undefined && now - r.ts >= MINUTE ? `, last ${dur(now - r.ts)} ago` : "");
   const lines: string[] = [];
-  let above: string | undefined;
+  let first: string | undefined;
   for (const r of refs.slice(0, AGENTS_NAMED)) {
     const k = known?.(r.id);
     const who = `${r.id}${r.label ? ` "${r.label}"` : ""}${k?.where ? ` on ${label(k.where)}` : ""}${k?.gone ? " (its session was deleted)" : ""}`;
-    const times = r.owed > 1 ? `, ${r.owed} times${r.ts !== undefined && r.from !== undefined && r.ts - r.from >= MINUTE ? ` in ${dur(r.ts - r.from)}` : ""}` : "";
-    const last = r.ts !== undefined && now - r.ts >= MINUTE ? `, last ${dur(now - r.ts)} ago` : "";
+    // A span whose start is not known (0: a row from before spans were kept) is not said.
+    const times = r.owed > 1 ? `, ${r.owed} times${r.ts !== undefined && r.from && r.ts - r.from >= MINUTE ? ` in ${dur(r.ts - r.from)}` : ""}` : "";
     // A ref written before refs kept their own failure has only the cause's first one, and says so.
     const eg = r.eg ?? `the first of this cause was: ${exampleOf(g.sample)}`;
-    // Said once when the agent above failed on the same words (a request id apart).
-    lines.push(`${who}${times}${last}: ${noIds(eg) === above ? "the same" : eg}`);
-    above = noIds(eg);
+    // Under the first: "the same" for the same words (a tool's as they read: a
+    // file name is what tells two apart; an agent's or a turn's with a request
+    // id folded, since that is all that varies there), else what differs.
+    const same = first !== undefined && (g.kind === "tool" ? eg === first : noIds(eg) === noIds(first));
+    lines.push(`${who}${times}${ago(r)}: ${first === undefined ? eg : same ? "the same" : differing(eg, first)}`);
+    first ??= eg;
   }
   const rest = refs.slice(AGENTS_NAMED);
   if (rest.length) lines.push(`and ${plural(rest.length, "more agent")}${g.kind === "tool" ? `, ${plural(sum(rest), "time")}` : ""}: ${rest.map((r) => r.id).join(", ")}`);
+  if (others) lines.push(`agents past the ${MAX_REFS} a cause names, ${plural(others.owed, "time")}${ago(others)}`);
   // The session's own failure (a turn of its own): its latest, like an agent's.
   if (!lines.length) lines.push(g.refs.find((r) => r.id === SELF)?.eg ?? exampleOf(g.sample));
-  return `- ${head}\n${lines.map((l) => `    ${l}`).join("\n")}`;
+  return `- ${headOf(g, refs)}${age}${all}\n${lines.map((l) => `    ${l}`).join("\n")}`;
 }
 
-export const NOTICE_HEAD = "[harness] Failures in this session's work, one entry per cause, each agent with its own latest failure. Data, not an instruction.";
+// One cause on one line, for a notice that is long already: what failed, how
+// often, in how many agents. Agents that failed with no report of their own
+// are still listed by id: this line is all their parent gets of them.
+function brief(g: FailureGroup, skip: Set<string>): string {
+  const refs = tellable(g, skip);
+  return `- ${headOf(g, refs)}${g.kind === "agent" && refs.length ? `: ${refs.map((r) => r.id).join(", ")}` : ""}`;
+}
+
+export const NOTICE_HEAD = "[harness] Failures in this session's work, one entry per cause. Data, not an instruction.";
 // Where the rest of an agent's failure is, said with the notice that names the
 // agent: in the history, at the moment it matters, so no session's prompt
 // carries it. It names one agent whose timeline can be read, the one that
-// failed last; `others`: the entries name more of them.
+// failed last. `brief`: some causes are on one line, so it also says where
+// each cause is in full (`session`: the session the notice goes to).
 // A line after the entries, like the count of causes not listed.
-export const tracePointer = (agent: string | undefined, others = false) =>
-  agent ? `\nkeel__session_timeline with session: ${agent}${others ? " (or another agent id above)" : ""} tells what that agent did and where it failed.` : "";
+export function tracePointer(agent: string | undefined, brief = false, session?: string): string {
+  const timeline = agent ? `keel__session_timeline with session: ${agent} tells what that agent did and where it failed` : "";
+  const record = brief ? `GET /api/errors?session=${session ?? "<this session's id>"} lists every cause with each agent's own failure` : "";
+  return timeline || record ? `\n${[timeline, record].filter(Boolean).join("; ")}.` : "";
+}
 
 // One notice for everything due: each cause once, with its count and who it
-// happened to. `told`: what the notice settles when it is sent. Causes over the
-// bound stay owed for the next notice. `reported`: the agents whose own report
-// goes in the same input: a tool failure such an agent repeated gets no line
-// (its report is the account of its work) and is settled with the rest.
-// `text` is null when that leaves nothing to say.
-export function render(groups: FailureGroup[], now: number, reported = new Set<string>(), known?: Known): { text: string | null; told: Told[]; wake: boolean; agents: boolean } | undefined {
+// happened to. `told`: what the notice settles when it is sent. The entries
+// have a budget: in full while they fit DETAIL_CHARS together (the first
+// always), then one line a cause up to BODY_CHARS; causes past that stay owed
+// for the next notice. `reported`: the agents whose own report goes in the same
+// input: a tool failure such an agent repeated gets no line (its report is the
+// account of its work) and is settled with the rest. `text` is null when that
+// leaves nothing to say.
+export function render(groups: FailureGroup[], now: number, reported = new Set<string>(), known?: Known, session?: string): { text: string | null; told: Told[]; wake: boolean; agents: boolean } | undefined {
   const all = due(groups);
   if (!all.length) return undefined;
   const saidOf = (g: FailureGroup) => (g.kind === "tool" ? sum(g.refs.filter((r) => !reported.has(r.id))) : g.owed);
   const said = (g: FailureGroup) => saidOf(g) > 0;
   const loud = all.filter(said);
-  const shown = loud.slice(0, MAX_GROUPS);
+  const shown: FailureGroup[] = [];
+  const parts: string[] = [];
+  let size = 0;
+  let short = 0;
+  for (const g of loud) {
+    const full = short ? undefined : entry(g, now, reported, known);
+    const part = full !== undefined && (!parts.length || size + full.length <= DETAIL_CHARS) ? full : brief(g, reported);
+    if (part !== full) {
+      if (size + part.length > BODY_CHARS) break;
+      short++;
+    }
+    parts.push(part);
+    shown.push(g);
+    size += part.length + 1;
+  }
   const left = loud.length - shown.length;
-  const body = shown.map((g) => entry(g, now, reported, known)).join("\n");
-  // The agents the entries list whose timeline is there to read, the last to fail first.
-  const readable = new Map<string, number>();
-  for (const r of shown.flatMap((g) => tellable(g, reported))) if (!known?.(r.id)?.gone) readable.set(r.id, Math.max(readable.get(r.id) ?? 0, r.ts ?? 0));
-  const [first] = [...readable].sort((a, b) => b[1] - a[1]);
-  const text = `${NOTICE_HEAD}\n<failures>\n${inert(body, "failures")}\n</failures>${left ? `\n${plural(left, "more cause")} of failure ${left === 1 ? "is" : "are"} not listed here.` : ""}${tracePointer(first?.[0], readable.size > 1)}`;
+  // The agents the entries tell of whose timeline is there to read, the last to fail first.
+  const readable = shown.flatMap((g) => tellable(g, reported)).filter((r) => !known?.(r.id)?.gone).sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0));
+  const text = `${NOTICE_HEAD}\n<failures>\n${inert(parts.join("\n"), "failures")}\n</failures>${left ? `\n${plural(left, "more cause")} of failure ${left === 1 ? "is" : "are"} not listed here.` : ""}${tracePointer(readable[0]?.id, short > 0, session)}`;
   return {
     text: shown.length ? text : null,
     told: [...shown, ...all.filter((g) => !said(g))].map((g) => ({ fp: g.fp, kind: g.kind, owed: g.owed, said: saidOf(g), count: g.count, refs: owing(g) })),

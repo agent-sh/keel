@@ -86,7 +86,7 @@ test("the twenty-first agent to fail on one cause before the notice goes keeps i
   // Three have a line of their own, the rest are listed by id; the timeline to read is one of theirs.
   expect(entries(got[0]!)).toHaveLength(5);
   expect(entries(got[0]!)[4]).toStartWith("    and 17 more agents: ");
-  expect(got[0]!.split("\n").at(-1)).toBe(`keel__session_timeline with session: ${all[19]!.id} (or another agent id above) tells what that agent did and where it failed.`);
+  expect(got[0]!.split("\n").at(-1)).toBe(`keel__session_timeline with session: ${all[19]!.id} tells what that agent did and where it failed.`);
   expect(got[0]!.match(/<subagent_result [^>]*status="failed"/g)).toHaveLength(1);
   expect(got[0]).toContain(`<subagent_result agent_id="${all[20]!.id}"`);
 });
@@ -287,7 +287,7 @@ test("a cause shared by the session and its agents is told per agent, each with 
   expect(entries(got[1]!)).toEqual([
     "- Read failed 6 times on one cause in 2 agents; 11 by this session and all its agents in the last minute",
     `    ${far.id} "Far lane" on Build box, 3 times: File does not exist: /srv/far/d.txt`,
-    `    ${twice.id} "Twice lane" (its session was deleted), 3 times: File does not exist: /twice/b3.txt`,
+    `    ${twice.id} "Twice lane" (its session was deleted), 3 times: …/twice/b3.txt`,
   ]);
   // The timeline that can be read is the far agent's: the deleted one has none.
   expect(got[1]).toContain(`\nkeel__session_timeline with session: ${far.id} tells what that agent did and where it failed.`);

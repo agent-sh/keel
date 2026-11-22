@@ -96,6 +96,38 @@ test("a request is booked to its own branch, route and turn", () => withStore(as
   expect(await causes()).toEqual([["compaction", 1], ["branch_switch", 2]]);
 }));
 
+// A turn resumed after a restart runs the calls it was cut in before its first
+// request: they are that turn's, so its timeline can count the ones that failed.
+test("a call that runs before its turn's first request is booked to that turn", () => withStore(async (store) => {
+  const s = store.createSession({ model: "p:main", workspace: "/" });
+  new PromptStore(store);
+  new Telemetry(store, new Bus());
+  const hooks = allHooks().at(-1)!;
+  const sess = () => store.session(s.id)!;
+  const run = (id: string, failed: boolean) => hooks.toolRan!(sess(), { id, tool: { name: "Read" }, input: {} } as any, { type: "tool_result", tool_use_id: id, content: failed ? "File does not exist: /x" : "ok", is_error: failed } as any, { ms: 1, outcome: failed ? "error" : "ok" });
+  const turnsOf = () => store.db.query<{ call_id: string; turn_event: string | null }, [string]>("SELECT call_id, turn_event FROM telemetry_tools WHERE session_id = ? ORDER BY rowid").all(s.id).map((r) => [r.call_id, r.turn_event]);
+  const request = () => {
+    const req = { model: "m", system: "", messages: [], tools: [], signal: new AbortController().signal, purpose: "turn", route: "p:main" } as any;
+    hooks.requestSent!(sess(), req);
+    hooks.requestDone!(sess(), req, { blocks: [], stop: "end_turn", usage: { input: 1, output: 1, cache_read: 0, cache_write: 0 } } as any);
+  };
+  store.append(s.id, "user", { text: "go" });
+  hooks.turnStart?.(sess());
+  const first = store.append(s.id, "turn_start", { model: "p:main" });
+  request();
+  run("c1", false);
+  store.append(s.id, "turn_end", { reason: "restart" });
+  // The turn that goes on: its calls run before any request of it.
+  hooks.turnStart?.(sess());
+  const second = store.append(s.id, "turn_start", { model: "p:main" });
+  run("c2", true);
+  run("c3", true);
+  request();
+  run("c4", false);
+  expect(turnsOf()).toEqual([["c1", first.id], ["c2", second.id], ["c3", second.id], ["c4", second.id]]);
+  expect(store.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM telemetry_tools WHERE turn_event = ? AND is_error = 1").get(second.id)!.n).toBe(2);
+}));
+
 test("a cache break is a changed prefix only where a stored fingerprint differs", () => {
   const tool = (name: string, defer = false) => ({ name, description: "d", input_schema: {}, defer }) as any;
   const was = prefixOf({ tools: [tool("Bash")], system: "one" }, ["a", "b"]);

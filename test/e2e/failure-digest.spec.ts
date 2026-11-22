@@ -9,6 +9,8 @@ import { shoot } from "./shots.ts";
 // same cause; the same grouped record is readable over HTTP; a failure a wait
 // already returned is not told again.
 const STAND_IN = "scripted:stand-in";
+// What a line says of time, when the run is slow enough for it to show: the span of an agent's failures, how long ago the last was.
+const WHEN = "(?: in \\d+ min)?(?:, last \\d+ min ago)?";
 const spawn = (message: string) => ({ name: "spawn_agent", input: { message, isolation: "none" } });
 const failing = (n: number) => Array.from({ length: n }, (_, i) => spawn(`Lane ${i + 1}\nscript:billing`));
 
@@ -66,7 +68,7 @@ test("agents that failed on one cause reach their parent as one grouped notice",
     const first = String(inputs[0].data.text);
     expect(first).toContain('title="Fine helper"');
     expect(first.indexOf("<failures>")).toBeGreaterThan(first.indexOf("</subagent_result>"));
-    expect(first).toMatch(/Read failed 3 times on one cause in 1 agent\n    \w+ "Probe", 3 times: File does not exist: \/nonexistent\/keel-failure-digest\.txt\n/);
+    expect(first).toMatch(new RegExp(`Read failed 3 times on one cause in 1 agent\\n    \\w+ "Probe", 3 times${WHEN}: File does not exist: /nonexistent/keel-failure-digest\\.txt\\n`));
     expect(first.match(/still running/g) ?? []).toHaveLength(1);
     // Probe's own report came when it finished, with no second notice.
     expect(String(inputs[1].data.text)).toContain('title="Probe"');
@@ -118,10 +120,9 @@ test("an agent that repeated a shared cause is told with its own failure, not th
     const agents = (await (await request.get(`/api/sessions/${id}/agents`)).json()).agents as any[];
     const loop = agents.find((a) => a.title.startsWith("Loop"));
     const entries = notice.slice(notice.indexOf("<failures>\n") + 11, notice.indexOf("\n</failures>")).split("\n");
-    expect(entries).toEqual([
-      "- Read failed 3 times on one cause in 1 agent; 7 by this session and all its agents in the last minute",
-      `    ${loop.id} "Loop lane", 3 times: File does not exist: /nonexistent/digest/loop/c.txt`,
-    ]);
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatch(/^- Read failed 3 times on one cause in 1 agent; 7 by this session and all its agents (in the last minute|over the last \d+ min)$/);
+    expect(entries[1]).toMatch(new RegExp(`^    ${loop.id} "Loop lane", 3 times${WHEN}: File does not exist: /nonexistent/digest/loop/c\\.txt$`));
     expect(notice).toContain(`\nkeel__session_timeline with session: ${loop.id} tells what that agent did and where it failed.`);
     // The agent still works: its running turn says what failed in it.
     const timeline = await (await request.get(`/api/sessions/${loop.session_id}/timeline?only=failures&since=40m&format=text`)).text();
@@ -139,7 +140,7 @@ test("an agent that repeated a shared cause is told with its own failure, not th
 
     await page.goto(`/s/${id}`);
     const card = page.getByTestId("failure-notice");
-    await expect(page.getByTestId("failure-entries")).toContainText(`${loop.id} "Loop lane", 3 times: File does not exist: /nonexistent/digest/loop/c.txt`);
+    await expect(page.getByTestId("failure-entries")).toContainText(entries[1]!.trim());
     await card.scrollIntoViewIfNeeded();
     await shoot(page, "failure-digest-02-own-failure");
   } finally {

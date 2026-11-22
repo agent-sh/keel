@@ -116,7 +116,9 @@ export class Telemetry {
   private steps = new WeakMap<ProviderRequest, { attempt: number; t0: number }>();
   // The message marks of each session's last turn request (frozen history).
   private prevMarks = new SessionMap<string[]>(256);
-  // Each session's running turn, as its last request saw it: its tool calls belong to it.
+  // Each session's running turn: its tool calls belong to it. Its request
+  // says which it is; a call that runs before the turn's first request (a turn
+  // resumed after a restart runs the calls it was cut in) reads it from the branch.
   private turnOf = new SessionMap<string | null>(256);
   private toolsets = new Set<string>();
 
@@ -185,14 +187,18 @@ export class Telemetry {
         const cls = aborted ? null : errorClass(err);
         this.callEnd(p, aborted || !cls ? { outcome: "interrupted" } : { outcome: "error", error: errorText(err), cls });
       },
+      // A new turn: what the last one's requests said is not this one's.
+      turnStart: (s) => void this.turnOf.delete(s.id),
       toolRan: (s, call, result, ran) => {
         // The assistant step that asked for the call: its event and model.
         const ev = this.callEvent(s.id, call.id);
+        let turn = this.turnOf.get(s.id);
+        if (turn === undefined) this.turnOf.set(s.id, (turn = openTurn(this.lineageOf(s.id))));
         const tag = armOf(this.store, s.id);
         this.store.db
           .query("INSERT INTO telemetry_tools (session_id, ts, tool, ms, is_error, call_id, error, outcome, event_id, model, turn_event, exp_id, arm) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
           .run(s.id, Date.now(), call.tool.name, ran.ms, ran.outcome === "error" ? 1 : 0, call.id, ran.outcome === "error" ? excerpt(result.content) : null,
-            ran.outcome, ev?.id ?? null, ev?.model ?? null, this.turnOf.get(s.id) ?? null, tag?.exp_id ?? null, tag?.arm ?? null);
+            ran.outcome, ev?.id ?? null, ev?.model ?? null, turn, tag?.exp_id ?? null, tag?.arm ?? null);
       },
     });
   }
