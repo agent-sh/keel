@@ -237,8 +237,15 @@ test("a reconnect sends no transcript the page holds, only what it missed", asyn
     const sameAsFresh = async () => {
       const p = await context.newPage();
       const replayed: number[] = [];
+      // (The page is closed only once its socket is let through: where the snapshot alone shows
+      // what the open page shows, the comparison below could pass and close the page while this
+      // wait was between two looks at the transcript, and the wait then failed on a closed page.)
+      let through!: () => void, failed!: (e: unknown) => void;
+      const opened = new Promise<void>((ok, no) => { through = ok; failed = no; });
+      opened.catch(() => {}); // (a wait that fails after the test has moved on is reported by the wait itself)
       await p.routeWebSocket(/\/ws$/, async (ws) => {
-        await expect(p.getByTestId("transcript")).toContainText(shared, { timeout: 30_000 });
+        try { await expect(p.getByTestId("transcript")).toContainText(shared, { timeout: 30_000 }); } catch (e) { failed(e); throw e; }
+        through();
         const server = ws.connectToServer();
         server.onMessage((m) => {
           const f = JSON.parse(String(m));
@@ -250,6 +257,7 @@ test("a reconnect sends no transcript the page holds, only what it missed", asyn
       await expect(p.getByTestId("sync-state")).toHaveCount(0, { timeout: 30_000 });
       const shown = await view(page);
       await expect.poll(() => view(p), { timeout: 10_000 }).toEqual(shown);
+      await opened;
       await p.close();
       return replayed;
     };
