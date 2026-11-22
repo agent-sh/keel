@@ -51,15 +51,18 @@ export class DeltaJoin {
     clearTimeout(o.timer);
     o.timer = undefined;
     if (!o.parts.length) return;
-    o.sent = this.now();
     const parts = o.parts;
     o.parts = [];
+    let sent = false;
     for (const p of parts) {
       // A block the stream has moved on from is whole: what was held of it goes first.
-      for (const [index, b] of o.blocks) if (index !== p.index) { o.blocks.delete(index); this.send(session, b, this.scan.end(session, index)); }
+      for (const [index, b] of o.blocks) if (index !== p.index) { o.blocks.delete(index); sent = this.send(session, b, this.scan.end(session, index)) || sent; }
       o.blocks.set(p.index, { index: p.index, kind: p.kind, name: p.name, text: "" });
-      this.send(session, p, this.scan.piece(session, p.index, p.text));
+      sent = this.send(session, p, this.scan.piece(session, p.index, p.text)) || sent;
     }
+    // The joining time runs from a frame that went out. A piece the scan held whole (a first word
+    // with no space after it yet) sent nothing: the next piece does not wait for it.
+    if (sent) o.sent = this.now();
   }
 
   // The stream ended: everything that waits or was held goes on, and the session's place here is given up.
@@ -71,7 +74,8 @@ export class DeltaJoin {
     this.open.delete(session);
   }
 
-  private send(session: string, d: Delta, text: string) {
+  private send(session: string, d: Delta, text: string): boolean {
     if (text) this.emit(session, { index: d.index, kind: d.kind, ...(d.name !== undefined ? { name: d.name } : {}), text });
+    return !!text;
   }
 }

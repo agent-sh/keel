@@ -77,3 +77,28 @@ test("a secret cut between two pieces never goes on, and the end of a block is s
   const firstText = frames.findIndex((f) => f.index === 1);
   expect(frames.slice(0, firstText).map((f) => f.text).join("")).toBe(shown(0));
 });
+
+// A first word with no space after it is held by the scan (it may still grow into a secret): it sent
+// nothing, so the pieces after it do not wait out a joining time that no frame began.
+test("a first word the scan holds does not make the next pieces wait: the first frame goes with the first space", () => {
+  const frames: (Delta & { at: number })[] = [];
+  let now = 0;
+  const join = new DeltaJoin((_s, d) => frames.push({ ...d, at: now }), 40, () => now);
+  const scan = new StreamScan(new Vault());
+  join.scan = { piece: (s, i, text) => scan.piece(`${s} ${i}`, s, text), end: (s, i) => scan.end(`${s} ${i}`, s) };
+  for (const text of ["Hello", "world", ",", " how", " are", " you", "?"]) { join.push("s", { index: 0, kind: "text", text }); now += 5; }
+  // The word was complete at the fourth piece (15 ms), and went then: not at the end of a 40 ms wait from the first.
+  expect(frames[0]).toMatchObject({ text: "Helloworld, ", at: 15 });
+  // From that frame on the pieces are joined as ever.
+  expect(frames).toHaveLength(1);
+  join.end("s");
+  expect(frames.map((f) => f.text).join("")).toBe("Helloworld, how are you?");
+  // A first piece that can be shown is sent at once, and the joining time runs from it.
+  const plain: Delta[] = [];
+  const two = new DeltaJoin((_s, d) => plain.push(d), 40, () => now);
+  two.push("s", { index: 0, kind: "text", text: "Hello " });
+  two.push("s", { index: 0, kind: "text", text: "there " });
+  expect(plain.map((f) => f.text)).toEqual(["Hello "]);
+  two.end("s");
+  expect(plain.map((f) => f.text)).toEqual(["Hello ", "there "]);
+});
