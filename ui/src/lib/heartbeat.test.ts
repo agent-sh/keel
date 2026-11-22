@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ASKS, BEAT_MS, GRACE_MS, idleCost, look, PROBE_MS, retryGap, rttOf, SLOW_BEAT_MS, socketBound, step, tripped, type Beat, type Trips, type Way } from "./heartbeat.ts";
+import { answerMakesTry, askLife, ASKS, BEAT_MS, GRACE_MS, idleCost, look, noWay, retryGap, rttOf, SLOW_BEAT_MS, socketBound, step, tripped, type Beat, type Trips, type Way } from "./heartbeat.ts";
 
 // A socket on a fake clock. `answer(askedAt)`: when the daemon's answer to an ask
 // sent then reaches the page (null: never). `frames`: other frames, by arrival time.
@@ -134,72 +134,131 @@ test("the slow beat asks a fifth as often", () => {
 });
 
 // ---- the way back, on a fake clock. The absence begins at 0. A browser makes one socket
-// handshake at a time to a host, so there is one try, and small requests ask beside it.
-// `net(sent, kind)`: how long something sent then takes to be answered (null: never; 0: refused at once).
-function back(net: (sent: number, kind: "socket" | "probe") => number | null, until = 120_000, hidden = false) {
-  const w: Way = { socket: { born: null, open: false, life: 0 }, probes: [] };
+// handshake at a time to a host, so there is one try, and small requests ask beside it or alone.
+// `net(sent, kind)`: how long something sent then takes to be answered (null: never; 0: refused
+// at once; below 0: refused after that long, as a socket the browser held back is).
+type Net = (sent: number, kind: "socket" | "probe") => number | null;
+function back(net: Net, until = 120_000, hidden = false) {
+  const w: Way = noWay();
   let round = 0, now = 0;
   const sockets: number[] = [], probes: number[] = [];
-  // What is on its way: when it ends, and how.
-  type Flight = { at: number; kind: "socket" | "probe"; k: number; sent: number; ok: boolean };
+  // What is on its way: when it ends, and how. A request is given up when its time is over.
+  type Flight = { at: number; kind: "socket" | "probe"; sent: number; ok: boolean; life: number };
   let flights: Flight[] = [];
-  const socket = (life: number) => {
-    flights = flights.filter((f) => f.kind !== "socket");
-    w.socket = { born: now, open: true, life };
+  const socket = (life: number, sure = false) => {
+    flights = [];
+    w.socket = { born: now, open: true, life, sure };
+    w.ask = { ...w.ask, open: false };
+    w.refused = false;
     sockets.push(now);
     const n = net(now, "socket");
-    if (n !== null) flights.push({ at: now + n, kind: "socket", k: 0, sent: now, ok: n > 0 });
+    if (n !== null) flights.push({ at: now + Math.max(1, Math.abs(n)), kind: "socket", sent: now, ok: n > 0, life });
   };
   while (now <= until) {
     // What arrives now.
     for (const f of flights.filter((x) => x.at <= now).sort((x, y) => x.at - y.at)) {
+      if (!flights.includes(f)) continue; // given up by what arrived before it
       flights = flights.filter((x) => x !== f);
-      if (f.kind === "socket") { if (f.ok) return { at: f.at, sockets, probes }; w.socket.open = false; continue; }
-      const p = w.probes[f.k];
-      if (!p || p.born !== f.sent) continue; // given up meanwhile
-      p.open = false;
-      // The daemon answered: a try made before this request left is given up for a new one.
-      if (f.ok && !(w.socket.open && w.socket.born! >= f.sent)) { flights = flights.filter((x) => x.kind !== "probe"); w.probes = []; round = 0; socket(socketBound(0, f.at - f.sent)); }
+      if (f.kind === "socket") {
+        if (f.ok) return { at: f.at, sockets, probes };
+        // Ended without a word: requests ask alone from here.
+        w.socket.open = false;
+        w.refused = true;
+        continue;
+      }
+      if (f.at - f.sent > f.life) continue; // its time was over
+      if (w.ask.born === f.sent) w.ask.open = false;
+      if (f.ok) {
+        // The daemon answered: a new try on its word, unless the one out was made on one.
+        if (answerMakesTry(w)) { round = 0; socket(socketBound(0, f.at - f.sent), true); }
+      } else {
+        // Refused: the try that is out and the other requests are given up, and requests ask alone.
+        flights = [];
+        w.socket.open = false;
+        w.ask.open = false;
+        w.refused = true;
+      }
     }
     const gap = retryGap(now, hidden);
-    const s = step(w, now, gap);
+    const s = step(w, now, gap, hidden);
+    if (s.quiet) w.refused = false;
     if (s.socket) { if (w.socket.born !== null && w.socket.open) round++; socket(socketBound(round)); }
-    for (const k of s.probes) {
-      flights = flights.filter((f) => !(f.kind === "probe" && f.k === k));
-      w.probes[k] = { born: now, open: true, life: Math.max(PROBE_MS[k]!, gap) };
+    if (s.ask) {
+      const life = askLife(w);
+      w.ask = { born: now, open: true, life };
       probes.push(now);
       const n = net(now, "probe");
-      if (n !== null) flights.push({ at: now + n, kind: "probe", k, sent: now, ok: n > 0 });
+      if (n !== null) flights.push({ at: now + Math.max(1, Math.abs(n)), kind: "probe", sent: now, ok: n > 0, life });
     }
-    const next = now + step(w, now, gap).wait;
+    const next = now + step(w, now, gap, hidden).wait;
     now = Math.min(next, ...flights.map((f) => f.at).filter((at) => at > now));
   }
   return { at: null, sockets, probes };
 }
 const perMinute = (times: number[], m: number) => times.filter((t) => t >= m * 60_000 && t < (m + 1) * 60_000).length;
 
-test("a daemon next door is back at once; one that is down is asked again after the gap, and less often the longer it is gone", () => {
+test("a daemon next door is back at once; one that is down is asked by requests, one each gap, and a socket is made only on an answer", () => {
   expect(back(() => 5).at).toBe(5);
-  // The daemon is down and its machine says so: every try ends at once, no request asks beside it,
-  // and the next is made after the gap (half a second at first, eight after eight minutes).
+  // The daemon is down and its machine says so: the first try ends at once, and from there
+  // requests ask alone, one each gap (half a second at first, eight after eight minutes). No
+  // socket is made while they are refused: failed sockets are what a browser counts against the page.
   const down = back(() => 0, 10 * 60_000);
-  expect(down.probes).toEqual([]);
-  expect(perMinute(down.sockets, 0)).toBeLessThanOrEqual(121);
-  expect(perMinute(down.sockets, 2)).toBeLessThanOrEqual(31);
-  expect(perMinute(down.sockets, 9)).toBeLessThanOrEqual(8);
-  // It starts ten seconds in: found within the gap.
-  expect(back((sent) => (sent < 10_000 ? 0 : 5)).at).toBeLessThanOrEqual(10_000 + 500 + 5);
+  expect(down.sockets).toEqual([0]);
+  expect(perMinute(down.probes, 0)).toBeLessThanOrEqual(121);
+  expect(perMinute(down.probes, 2)).toBeLessThanOrEqual(31);
+  expect(perMinute(down.probes, 9)).toBeLessThanOrEqual(8);
+  // It starts again: the next request is answered, and the try made on its word is greeted.
+  // Found within the gap, however long it was down.
+  for (const at of [3_000, 10_000, 20_000, 45_000, 60_000, 75_000, 120_000, 180_000, 300_000]) {
+    const r = back((sent) => (sent < at ? 0 : 5), at + 60_000);
+    expect([at, r.at !== null && r.at - at <= retryGap(at) + 20]).toEqual([at, true]);
+    expect([at, r.sockets.length]).toEqual([at, 2]);
+  }
   // A hidden page asks every eight seconds.
-  expect(back(() => 0, 60_000, true).sockets.length).toBeLessThanOrEqual(9);
+  const hid = back(() => 0, 60_000, true);
+  expect(hid.sockets.length + hid.probes.length).toBeLessThanOrEqual(9);
 });
 
-test("on a network that says nothing, one try waits and small requests ask beside it, fewer as time goes", () => {
+// The reviewer's schedule. A browser that has seen many sockets fail holds each new one back
+// one to five seconds before it starts (Chrome counts failed sockets a page), while requests
+// are answered at once. A try that is given up on every answer is then never greeted.
+test("a try made on an answer is kept: a socket greeted two to five seconds after its start is still the way back", () => {
+  for (const held of [2_000, 3_500, 5_000]) {
+    for (const at of [20_000, 45_000, 60_000, 75_000, 120_000]) {
+      // Down until `at`: sockets are refused after the browser's hold, requests at once. Then back.
+      const r = back((sent, kind) => (kind === "probe" ? (sent < at ? 0 : 3) : sent < at ? -held : held + 10), at + 60_000);
+      // Connected within the gap, the hold and a little of the daemon's first answer; with the tries it took.
+      expect([held, at, r.at !== null && r.at - at <= retryGap(at) + held + 100]).toEqual([held, at, true]);
+      // One try after the return, not one a second.
+      expect([held, at, r.sockets.filter((t) => t >= at).length]).toEqual([held, at, 1]);
+    }
+    // The same on a network that had said nothing (a try is out, made into the silence, when the first answer comes).
+    const r = back((sent, kind) => (sent < 30_000 ? null : kind === "probe" ? 3 : held + 10), 90_000);
+    expect([held, r.at !== null && r.at - 30_000 <= 4_000 + held + 100]).toEqual([held, true]);
+    expect([held, r.sockets.filter((t) => t >= 30_000).length]).toEqual([held, 1]);
+  }
+  // A daemon that answers requests and greets no socket at all: the try made on an answer has its nine
+  // seconds, and the one after it is given up for the next answer: two tries in ten seconds, not one an answer.
+  const never = back((_sent, kind) => (kind === "probe" ? 3 : null), 120_000);
+  expect(never.at).toBeNull();
+  expect(never.sockets.length).toBeLessThanOrEqual(24);
+  // A socket the browser holds while the daemon is down is given up when a request is refused, and no more are made.
+  const held = back((sent, kind) => (kind === "probe" ? 0 : -4_000), 120_000);
+  expect(held.sockets).toEqual([0]);
+});
+
+test("on a network that says nothing, one try waits and requests ask beside it, every four seconds from the fourth", () => {
   const dead = back(() => null, 10 * 60_000);
   // One socket at a time, each given its time: nine seconds, then twenty-seven.
   expect(dead.sockets.slice(0, 4)).toEqual([0, 9_000, 36_000, 63_000]);
-  expect(perMinute(dead.probes, 0)).toBeLessThanOrEqual(87);
-  expect(perMinute(dead.probes, 4)).toBeLessThanOrEqual(22);
-  expect(perMinute(dead.probes, 9)).toBeLessThanOrEqual(8);
+  // Beside the first try: a second, two, four and eight seconds in.
+  expect(dead.probes.filter((t) => t < 9_000)).toEqual([1_000, 2_000, 4_000, 8_000]);
+  // Beside each later one: the same, and every four seconds after.
+  expect(dead.probes.filter((t) => t >= 9_000 && t < 36_000).map((t) => t - 9_000)).toEqual([1_000, 2_000, 4_000, 8_000, 12_000, 16_000, 20_000, 24_000]);
+  // So a link that comes back is asked within four seconds, at any time: eighteen requests a minute, and two tries.
+  for (let m = 0; m < 10; m++) expect([m, perMinute(dead.probes, m) <= 19]).toEqual([m, true]);
+  expect(perMinute(dead.sockets, 5)).toBeLessThanOrEqual(3);
+  // A hidden page: a try, and a request every eight seconds.
   const hid = back(() => null, 60_000, true);
   expect(hid.sockets.length + hid.probes.length).toBeLessThanOrEqual(11);
 });
@@ -207,30 +266,33 @@ test("on a network that says nothing, one try waits and small requests ask besid
 // The reviewer's schedule: the old socket is dead for good and so is everything sent before the
 // network is back (a network that changed); from then on the link has a delay each way. A request
 // is answered after a round trip; a socket is greeted after one and a little more.
-test("after ten dead seconds the page is back within about a second on a fast link, and within seconds on a slow one", () => {
-  const after = (each: number, backAt = 10_000) => {
-    const r = back((sent, kind) => (sent < backAt ? null : 2 * each + (kind === "socket" ? 200 : 20)));
-    return r.at === null ? null : r.at - backAt;
-  };
-  // Fast: the next small request is answered, and the try made on its word is greeted at once.
-  // Within about a second for an absence of up to a minute; then within a twentieth of the absence, eight seconds at most.
-  for (let at = 3_000; at < 60_000; at += 700) expect([at, after(0, at)! <= 1_300]).toEqual([at, true]);
-  for (let at = 60_000; at < 15 * 60_000; at += 7_100) expect([at, after(0, at)! <= Math.min(8_300, Math.max(3_300, at / 20))]).toEqual([at, true]);
-  // 1.5, 2 and 2.5 s each way: a request given nine seconds is answered, and the try made on its
-  // word is given the time it needs (before, no try was given more than four seconds in all).
-  // Whenever the link comes back: the request's turn, its round trip, and the try's.
-  for (const each of [1_500, 2_000, 2_500]) {
-    for (let at = 3_000; at < 60_000; at += 700) {
+test("after a dead network the page is back within about a second on a fast link, and within seconds on a slow one", () => {
+  const run = (each: number, backAt = 10_000) => back((sent, kind) => (sent < backAt ? null : 2 * each + (kind === "socket" ? 200 : 20)), backAt + 120_000);
+  const after = (each: number, backAt = 10_000) => { const r = run(each, backAt); return r.at === null ? null : r.at - backAt; };
+  // Fast: the next request is answered, and the try made on its word is greeted at once.
+  // Within about a second in the first seconds of a try, and within four at any time, after any absence.
+  for (let at = 3_000; at < 15 * 60_000; at += 2_300) expect([at, after(0, at)! <= 4_300]).toEqual([at, true]);
+  expect(after(0)).toBeLessThanOrEqual(1_300);
+  expect(after(0, 11 * 60_000)).toBeLessThanOrEqual(4_300);
+  // Half a second to four seconds each way, whenever the link comes back: the next request is
+  // answered after its round trip, and the try made on its word is greeted after its own.
+  for (const each of [500, 1_000, 1_500, 2_000, 2_500, 4_000]) {
+    for (let at = 3_000; at < 90_000; at += 700) {
       const took = after(each, at);
-      expect([each, at, took !== null && took <= 9_000 + 4 * each + 600]).toEqual([each, at, true]);
+      expect([each, at, took !== null && took <= 4_000 + 4 * each + 300]).toEqual([each, at, true]);
     }
   }
   // At the reviewer's ten seconds.
   expect(after(1_500)).toBeLessThanOrEqual(8_000);
   expect(after(2_000)).toBeLessThanOrEqual(10_000);
   expect(after(2_500)).toBeLessThanOrEqual(12_000);
-  // Four seconds each way is still found: by the try itself, in its twenty-seven seconds.
-  expect(after(4_000)).toBeLessThanOrEqual(27_000 + 8_300);
+  // What a return costs in requests, whatever the link: four at most, not one a second.
+  for (const each of [0, 500, 1_500, 2_000, 2_500, 4_000]) {
+    const r = run(each);
+    expect([each, r.probes.filter((t) => t >= 10_000).length <= 4]).toEqual([each, true]);
+  }
+  // A link slower than a request's nine seconds (five each way) is found by the try itself, in its twenty-seven.
+  expect(after(5_000, 9_500)).toBeLessThanOrEqual(27_000 + 10_300);
 });
 
 test("an idle minute on screen costs thirty beats of about a kilobyte in all", () => {
