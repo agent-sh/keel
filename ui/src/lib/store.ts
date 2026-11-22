@@ -187,10 +187,10 @@ export const actions = {
   // `also`: models the page shows that are no session's (the one picked for a new session).
   async loadModelsBrief(also: string[] = []) {
     if (state.loaded.allModels) return actions.loadModels(); // a page that listed them once keeps the whole listing current
-    const r = await api<{ models: ListedModel[]; default: string; total?: number }>(`/api/models?brief${also.filter(Boolean).map((id) => `&id=${encodeURIComponent(id)}`).join("")}`);
+    const r = await api<{ models: ListedModel[]; default: string; total?: number; providers?: { id: string; label: string }[] }>(`/api/models?brief${also.filter(Boolean).map((id) => `&id=${encodeURIComponent(id)}`).join("")}`);
     if (state.loaded.allModels) return; // the whole listing came in meanwhile
     // (A daemon that answers with its whole listing, an older one, gives no count: the list is the count.)
-    set({ loaded: { ...state.loaded, models: true, allModels: r.total === undefined }, models: r.models, modelCount: r.total ?? r.models.length, defaultModel: r.default });
+    set({ loaded: { ...state.loaded, models: true, allModels: r.total === undefined }, models: r.models, modelCount: r.total ?? r.models.length, defaultModel: r.default, ...(r.providers ? { providerLabels: Object.fromEntries(r.providers.map((p) => [p.id, p.label])) } : {}) });
   },
   async loadLimits(refresh = false) {
     set({ limits: await api<Limits>(`/api/limits${refresh ? "?refresh" : ""}`) });

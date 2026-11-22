@@ -90,6 +90,9 @@ test("the whole model listing and this machine's own sessions are not read befor
   const used = new Set<string>([brief.default, ...((await (await request.get("/api/sessions")).json()).sessions as { model: string }[]).map((x) => x.model)]);
   expect(brief.models.map((m: { id: string }) => m.id).filter((id: string) => !used.has(id))).toEqual([]);
   expect(brief.models.map((m: { id: string }) => m.id)).toContain(STAND_IN);
+  // The providers' names come with it: a page names a provider (a limit's, a failure's) before it lists any model.
+  expect(brief.providers).toEqual((await (await request.get("/api/models")).json()).providers);
+  expect(brief.providers.map((p: { id: string }) => p.id)).toContain("scripted");
   // The fleet view for a page: no machine entry of this daemon's own sessions, no recents.
   const others = await (await request.get("/api/fleet?others")).json();
   expect(others.machines.some((m: { id: string }) => m.id === "local")).toBe(false);
