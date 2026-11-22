@@ -1,6 +1,6 @@
 import { expect, test } from "./isolate.ts";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { shoot } from "./shots.ts";
 
@@ -55,6 +55,12 @@ test("what a coordinator and the owner are told about agents, restarts and tools
   const str = (r: any): string => (typeof r.content === "string" ? r.content : r.content.map((c: any) => c.text ?? "").join("\n"));
   const results = async (id: string) => (await events(id)).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results as any[]);
   const inputs = async (id: string) => (await events(id)).filter((e) => e.kind === "user").map((e) => String(e.data.text)).join("\n\n");
+  // What the model was told between its inputs: the notes that go with a request.
+  const notes = async (id: string) => (await events(id)).filter((e) => e.kind === "note" && e.data.model).map((e) => String(e.data.text)).join("\n\n");
+  const count = (all: string, part: string) => all.split(part).length - 1;
+  // A command that runs until the test lets it go: it is still running at a kill, and ends when the test says.
+  const until = (name: string) => bash(`while [ ! -e ${join(state, name)} ]; do sleep 0.2; done; echo ${name}-done`);
+  const release = (...names: string[]) => { for (const n of names) writeFileSync(join(state, n), "go\n"); };
   const idle = (id: string, timeout = 60_000) => expect.poll(async () => (await call(`/api/sessions/${id}?events=0`)).running, { timeout }).toBe(false);
   const atTool = (id: string) => expect.poll(async () => (await call(`/api/sessions/${id}?events=0`)).status?.kind, { timeout: 30_000 }).toBe("tool");
   const calls = (c: unknown[]) => `script:calls ${JSON.stringify(c)}`;
@@ -100,13 +106,21 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     const hung = await open("Hung tool");
     await send(hung, `Wait on the lock\n${calls([bash(`${HUNG}; echo unlocked`)])}`);
     commands.push(hung);
+    // A command its turn waits on in front, cut by the kill: its end is what the turn waited for.
+    const short = await open("Short wait");
+    await send(short, calls([until("short")]));
+    // Two small coordinators, each with one agent that runs two such commands in a row.
+    const small = await open("Small lead");
+    await send(small, calls([agent(`Gate lane\n${calls([until("g1"), until("g2")])}`), bash("echo led")]));
+    const twice = await open("Twice lead");
+    await send(twice, calls([agent(`Twice lane\n${calls([until("t1"), until("t2")])}`), bash("echo led")]));
     const fail3 = (i: number) => bash(`echo 'error: lane ${i} build failed at step ${i}' >&2; exit 2`);
     const coord = await open("Dozen lanes");
     await send(coord, `Run twelve lanes\n${calls([
       ...[1, 2, 3, 4].map((i) => agent(`Quota lane ${i}\nscript:billing`)),
       ...[1, 2, 3].map((i) => agent(`Tool lane ${i}\n${calls([fail3(i), fail3(i), fail3(i), bash("echo recovered")])}`)),
       ...[1, 2].map((i) => agent(`Good lane ${i}\n${calls([bash(`echo built-${i}`), { name: "Write", input: { file_path: join(state, `good-${i}.txt`), content: "built\n" } }])}`)),
-      ...[1, 2].map((i) => agent(`Slow lane ${i}\n${calls([bash(`sleep 60${i}; echo slow-${i}`)])}`)),
+      ...[1, 2].map((i) => agent(`Slow lane ${i}\n${calls([until(`slow-${i}`)])}`)),
       agent(`Parked lane\n${calls([{ name: "wait_for", input: { kind: "timer", seconds: 1800, note: "wait for CI" } }])}`),
       bash("echo started-all"),
     ])}`);
@@ -119,6 +133,11 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     const lanes = await agents();
     const lane = (title: string) => lanes.find((a) => a.title === title)!;
     commands.push(lane("Slow lane 1").session_id, lane("Slow lane 2").session_id);
+    await idle(small);
+    await idle(twice);
+    const only = async (parent: string) => ((await call(`/api/sessions/${parent}/agents`)).agents as any[])[0];
+    const gate = await only(small), other = await only(twice);
+    commands.push(gate.session_id, other.session_id, short);
 
     // --- item 3: the report a coordinator reads, through its own tool; item 6: what is new since its last read
     await send(coord, calls([
@@ -140,7 +159,7 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     const spent = (await call(`/api/sessions/${spender}?events=0`)).session.usage.cost as number;
     expect(spent).toBeGreaterThan(0.01);
     expect(lines.at(-1)!.startsWith(`Most spent since then: "Big spender" $${spent.toFixed(2)}, `), lines.at(-1)).toBe(true);
-    const left = lines.at(-2)!.match(/^(\d+) more sessions not listed: .* \((\d+) turns, \$[\d.]+\)\.$/);
+    const left = lines.at(-2)!.match(/^(\d+) more sessions not listed: .* \((\d+) turns, \$[\d.]+\), the busiest: "Big spender"\.$/);
     expect(left, lines.at(-2)).not.toBeNull();
     expect(Number(left![2])).toBeGreaterThanOrEqual(3); // the spender's two turns and the five calls' one, at least
     expect(lines.at(-2)).not.toContain("the quietest");
@@ -153,6 +172,19 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     // The first read with new has nothing to compare with and says so; the second, a moment later, is one line.
     expect(first.split("\n")[0]).toContain("newest first (no earlier read of yours is kept: every row).");
     expect(again).toMatch(/^Nothing new in session "Dozen lanes" since you last read it at \d\d:\d\d:\d\d \(\d+ m?s ago\)\. Now: working\.$/);
+
+    // A read that was cut (one row asked of several) does not move the cursor past rows it did not show: `new` after
+    // it has no earlier whole read to go from, and shows every row. (It skipped the rows the cut read left out.)
+    await send(spender, calls([{ name: "keel__session_timeline", input: { limit: 1 } }, { name: "keel__session_timeline", input: { new: true } }]));
+    await idle(spender);
+    const [cutRead, wholeRead] = (await results(spender)).slice(-2).map(str) as [string, string];
+    expect(cutRead).toContain("Older rows: before=");
+    expect(wholeRead.split("\n")[0]).toContain("newest first (no earlier read of yours is kept: every row).");
+    expect(count(wholeRead, "Owner prompt, ")).toBe(2);
+    // A session that reads its own timeline again gets the one line: the turn that read last time is not news to it.
+    await send(spender, calls([{ name: "keel__session_timeline", input: { new: true } }]));
+    await idle(spender);
+    expect(str((await results(spender)).at(-1))).toMatch(/^Nothing new in session "Big spender" since you last read it at \d\d:\d\d:\d\d \(\d+ (ms|s) ago\)\. Now: working\.$/);
 
     // --- item 4: a failed agent stays in the numbers served for its parent's row
     expect((await call("/api/state")).states[coord]).toMatchObject({ agents_total: 12, agents_failed: 4, agents_waiting: 1 });
@@ -200,6 +232,7 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     await atTool(hung);
     await atTool(lane("Slow lane 1").session_id);
     await atTool(lane("Slow lane 2").session_id);
+    for (const id of [short, gate.session_id, other.session_id]) await atTool(id);
     const r1 = await restart("SIGKILL");
     const by = (r: any, id: string) => r.turns.find((t: any) => t.session_id === id);
     expect(by(r1, hung)).toMatchObject({ tools: ["Bash"], state: "continued" });
@@ -208,14 +241,53 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     const cut = str((await results(hung)).at(-1));
     const job = (await jobsOf(hung)).find((j) => j.command === `${HUNG}; echo unlocked`);
     expect(job).toMatchObject({ running: true, background: true });
-    expect(cut).toBe(`The daemon restarted while this command ran. The command was not interrupted: it still runs in the background (ID: ${job.id}). Its output is being written to ${job.log}. Do not start it again: a notice comes when it ends.`);
+    expect(cut).toBe(`The daemon restarted while this command ran. The command was not interrupted: it still runs in the background (ID: ${job.id}). Its output is being written to ${job.log}. Do not start it again: you are told when it ends.`);
     expect((await jobsOf(hung)).filter((j) => j.command.startsWith(HUNG))).toHaveLength(1);
     expect(processes(HUNG)).toHaveLength(1);
-    // The coordinator is told which of its agents were cut and what became of each, once, with its next input.
-    const cutLine = `[harness] A daemon restart cut 2 of your agents mid-turn: "Slow lane 1" (${lane("Slow lane 1").id}) resumed; "Slow lane 2" (${lane("Slow lane 2").id}) resumed. A resumed agent reports as before: nothing to send it.`;
-    await expect.poll(async () => (await inputs(coord)).split(cutLine).length - 1, { timeout: 90_000 }).toBe(1);
-    // An agent's cut command went on too, and its report says so in the agent's words (the result it was given).
-    expect(str((await results(lane("Slow lane 1").session_id)).at(-1))).toContain("The command was not interrupted: it still runs in the background");
+
+    // "You are told when it ends" is kept: the end of a command a cut call was waiting on starts a turn. The
+    // session's turn ended on "it still runs"; nothing asked it anything since; the command ends, and a turn starts.
+    await idle(short);
+    const waited = (await jobsOf(short))[0];
+    expect(str((await results(short)).at(-1))).toContain(`it still runs in the background (ID: ${waited.id})`);
+    expect((await events(short)).filter((e) => e.kind === "turn_end").map((e) => e.data.reason)).toEqual(["restart", "end_turn"]);
+    release("short");
+    await expect.poll(async () => (await events(short)).filter((e) => e.kind === "turn_end").length, { timeout: 30_000 }).toBe(3);
+    const woke = (await events(short)).find((e) => e.kind === "user" && e.data.job === waited.id);
+    expect(woke.data.text).toMatch(new RegExp(`^\\[harness\\] The command you were running when the daemon restarted has ended, after \\d+ (s|min): \`while .*\` \\(ID ${waited.id}\\) exited with code 0\\. Its output is in \\S+\\.log; it ends with:\nshort-done$`));
+    expect(await notes(short)).not.toContain(waited.id); // told once, by the input
+
+    // An agent whose command runs on has not finished: it waits on the command, its parent is told so, and no
+    // report says "completed" while the command runs. (Four agents reported "completed" with their commands running.)
+    await expect.poll(tally, { timeout: 90_000 }).toEqual({ failed: 4, completed: 5, waiting: 3 });
+    for (const title of ["Slow lane 1", "Slow lane 2"]) {
+      expect(str((await results(lane(title).session_id)).at(-1))).toContain("The command was not interrupted: it still runs in the background");
+      await expect.poll(async () => inputs(coord), { timeout: 60_000 }).toMatch(new RegExp(`\\[harness\\] Agent "${title}" \\(${lane(title).id}\\) is parked on command \\w+, which runs on after a daemon restart\\. It has not finished; its report comes when it does\\.`));
+      expect(await inputs(coord)).not.toContain(`title="${title}" status="completed"`);
+    }
+    // The coordinator is told which of its agents were cut and what became of each: each once, with a request
+    // of its own that came after the agent was decided (here the turn the parked notice started).
+    for (const title of ["Slow lane 1", "Slow lane 2"]) {
+      await expect.poll(async () => count(await notes(coord), `"${title}" (${lane(title).id}) resumed`), { timeout: 60_000 }).toBe(1);
+    }
+    expect(await notes(coord)).toMatch(/\[harness\] A daemon restart cut [12] of your agents mid-turn: /);
+    // The commands end: each agent gets the turn it was owed, and then reports.
+    release("slow-1", "slow-2");
+    await expect.poll(tally, { timeout: 90_000 }).toEqual({ failed: 4, completed: 7, waiting: 1 });
+    await expect.poll(async () => count(await inputs(coord), 'title="Slow lane 1" status="completed"') + count(await inputs(coord), 'title="Slow lane 2" status="completed"'), { timeout: 60_000 }).toBe(2);
+    for (const title of ["Slow lane 1", "Slow lane 2"]) expect(count(await notes(coord), `"${title}" (${lane(title).id}) resumed`)).toBe(1);
+
+    // The line goes with the parent's next request of any kind, the owner's own prompt too: this agent went on
+    // into its second command and reports nothing, so nothing but the owner asks its parent anything.
+    expect(await notes(small)).not.toContain("Gate lane");
+    await send(small, "script:say noted");
+    await idle(small);
+    const gateLine = `"Gate lane" (${gate.id}) resumed`;
+    expect(count(await notes(small), gateLine)).toBe(1);
+    const order = (await events(small)).map((e) => (e.kind === "user" && e.data.text === "script:say noted" ? "prompt" : e.kind === "note" && String(e.data.text).includes(gateLine) ? "line" : e.kind === "assistant" && e.data.blocks.some((b: any) => b.text === "noted") ? "reply" : "")).filter(Boolean);
+    expect(order).toEqual(["prompt", "line", "reply"]);
+    // The other small coordinator is asked nothing before the next kill: its line is lined up and never sent.
+    expect(await notes(twice)).not.toContain("Twice lane");
     // The cards were open at the kill: the record says so.
     const said1 = status();
     expect(said1).toContain(`"Needs approval" cut at step 1, waiting for the owner's answer, after`);
@@ -234,6 +306,24 @@ test("what a coordinator and the owner are told about agents, restarts and tools
     await expect.poll(async () => text(`/api/sessions/${approval}/timeline?format=text`), { timeout: 30_000 }).toContain("Running a turn resumed after a daemon restart: step 1, waiting for approval");
     expect(await text(`/api/overview?format=text&max=200`)).toMatch(/\n {2}"Needs approval": an approval waits, for [^;]+; 2 turns cut; \$/);
     expect(await text("/api/away?since=1h&format=text")).toMatch(/\n {2}"Needs approval", needs you: 2 turns cut by a restart; 1 approval waits; \$/);
+
+    // Two kills with no request of the parent between them: the first line went down with its daemon. The parent
+    // hears of its agent once, from the start that cut it last. (It heard nothing of an agent cut this way.)
+    const twiceLine = `"Twice lane" (${other.id}) resumed`;
+    await expect.poll(async () => count(await notes(twice), twiceLine), { timeout: 90_000 }).toBe(1);
+    // The one that was told after the first kill hears of the second cut too: another restart, another line, each once.
+    await expect.poll(async () => count(await notes(small), gateLine), { timeout: 90_000 }).toBe(2);
+    // Both agents ran two commands that went on: they wait on them, and report when the last has ended.
+    for (const [lead, a] of [[small, gate], [twice, other]] as const) {
+      await expect.poll(async () => (await only(lead)).status, { timeout: 60_000 }).toBe("waiting");
+      expect(await inputs(lead)).not.toContain('status="completed"');
+    }
+    release("g1", "g2", "t1", "t2");
+    for (const [lead, a] of [[small, gate], [twice, other]] as const) {
+      await expect.poll(async () => (await only(lead)).status, { timeout: 90_000 }).toBe("completed");
+      await expect.poll(async () => inputs(lead), { timeout: 60_000 }).toContain(`title="${a.title}" status="completed"`);
+      expect(count(await notes(lead), `"${a.title}" (${a.id}) resumed`)).toBe(lead === small ? 2 : 1);
+    }
 
     // --- item 1 again: a stop of the daemon stops a command its call runs, and the call is told that
     const stopped = await open("Stopped tool");
