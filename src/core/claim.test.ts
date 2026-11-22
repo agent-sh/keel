@@ -1,12 +1,12 @@
 // The claim on a state folder is a kernel lock another process cannot see
 // from a page: whether a second process gets the folder is asked of a child.
 import { afterAll, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFile } from "../tools/files.ts";
 import { claimState, isClaimFile } from "./claim.ts";
-import { pidState, readStat } from "./pid.ts";
+import { pidBorn, pidState, readStat } from "./pid.ts";
 
 const dirs: string[] = [];
 afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
@@ -19,7 +19,7 @@ function child(code: string, env: Record<string, string> = {}) {
   return { code: p.exitCode, out: p.stdout.toString().trim(), err: p.stderr.toString().trim(), ms: Date.now() - t0 };
 }
 const claimIn = (dir: string) => child(`import { claimState } from "./src/core/claim.ts"; console.log(claimState(${JSON.stringify(dir)}) ? "got it" : "held");`);
-const startIn = (dir: string, env?: Record<string, string>) => child(`import { acquireLock } from "./src/admin/daemon.ts"; acquireLock(${JSON.stringify(dir)}); console.log("owns");`, env);
+const startIn = (dir: string, env?: Record<string, string>, goingMs?: number) => child(`import { acquireLock } from "./src/admin/daemon.ts"; acquireLock(${JSON.stringify(dir)}${goingMs ? `, ${goingMs}` : ""}); console.log("owns");`, env);
 
 test("the daemon's own Read does not open its claim file, so the claim holds", async () => {
   const dir = scratch();
@@ -57,7 +57,43 @@ test("a live daemon named in the lock file is not replaced, with or without its 
   expect(startIn(dir)).toMatchObject({ code: 0, out: "owns" });
 });
 
-const unix = process.platform === "linux" || process.platform === "darwin";
+test.skipIf(process.platform !== "linux")("a pid that went to another process since the lock was written is not the daemon the lock names", () => {
+  const dir = scratch();
+  // The lock says when its daemon was born. This process is that daemon: refused.
+  writeFileSync(join(dir, "daemon.lock"), JSON.stringify({ pid: process.pid, born: pidBorn(process.pid), url: "http://127.0.0.1:1" }));
+  expect(startIn(dir)).toMatchObject({ code: 1, err: expect.stringContaining(`another daemon (pid ${process.pid}, http://127.0.0.1:1) uses ${dir}`) });
+  // The same pid, born at another time or in another boot: the daemon crashed and its pid names something else now.
+  for (const born of [pidBorn(process.pid)!.replace(/\d+$/, (t) => String(Number(t) + 1)), `another-boot:${pidBorn(process.pid)!.split(":")[1]}`]) {
+    writeFileSync(join(dir, "daemon.lock"), JSON.stringify({ pid: process.pid, born, url: "http://127.0.0.1:1" }));
+    const second = startIn(dir);
+    expect(second).toMatchObject({ code: 0, out: "owns" });
+  }
+  // A start writes when it was born itself.
+  const own = child(`import { acquireLock } from "./src/admin/daemon.ts"; import { pidBorn } from "./src/core/pid.ts"; import { readFileSync } from "node:fs"; acquireLock(${JSON.stringify(dir)}); const l = JSON.parse(readFileSync(${JSON.stringify(join(dir, "daemon.lock"))}, "utf8")); console.log(l.pid === process.pid && l.born === pidBorn(process.pid) ? "named" : JSON.stringify(l));`);
+  expect(own).toMatchObject({ code: 0, out: "named" });
+});
+
+test("the daemon a restart handed the folder to gets its claim when a start by hand took it a moment before", async () => {
+  const dir = scratch();
+  // This process stands for the start by hand: it has the claim, and gives it up when it has read the lock.
+  const hand = claimState(dir)!;
+  const lock = JSON.stringify(join(dir, "daemon.lock"));
+  const successor = Bun.spawn(["bun", "-e", `import { acquireLock } from "./src/admin/daemon.ts"; import { writeFileSync } from "node:fs"; writeFileSync(${lock}, JSON.stringify({ pid: process.pid })); console.log("named"); acquireLock(${JSON.stringify(dir)}); console.log("owns");`],
+    { cwd: join(import.meta.dir, "../.."), stdout: "pipe", stderr: "pipe" });
+  const reader = successor.stdout.getReader();
+  const dec = new TextDecoder();
+  let out = "";
+  try {
+    while (!out.includes("named")) { const r = await reader.read(); if (r.done) break; out += dec.decode(r.value); }
+    await Bun.sleep(300);
+  } finally {
+    hand.release();
+  }
+  for (;;) { const r = await reader.read(); if (r.done) break; out += dec.decode(r.value); }
+  expect([await successor.exited, out.trim().split("\n"), await new Response(successor.stderr).text()]).toEqual([0, ["named", "owns"], ""]);
+}, 30_000);
+
+const linux = process.platform === "linux";
 const until = async (ok: () => boolean) => { for (let i = 0; i < 200 && !ok(); i++) await Bun.sleep(25); return ok(); };
 
 // A process that has ended and stays as a zombie: its parent (a sleep) never reads its end.
@@ -67,7 +103,7 @@ async function zombie() {
   return { pid, parent };
 }
 
-test.skipIf(!unix)("a daemon that has ended is replaced while its pid is still there, and a restart does not wait for it", async () => {
+test.skipIf(!linux)("a daemon that has ended is replaced while its pid is still there, and a restart does not wait for it", async () => {
   const dir = scratch();
   const z = await zombie();
   try {
@@ -86,19 +122,25 @@ test.skipIf(!unix)("a daemon that has ended is replaced while its pid is still t
 }, 90_000);
 
 // A process whose first thread has ended while another still runs: what a killed daemon is while its
-// last threads leave the kernel, held here for a second and a half.
-const LEAVING = `
+// last threads leave the kernel, held here for as long as the test says. The worker writes a beat while it runs.
+const leaving = (seconds: number, beat: string) => `
 import ctypes, os, sys, threading, time
 def rest():
-    time.sleep(1.5)
+    until = time.time() + ${seconds}
+    while time.time() < until:
+        open(${JSON.stringify(beat)}, "a").write("beat\\n")
+        time.sleep(0.1)
     os._exit(0)
 threading.Thread(target=rest).start()
 print(os.getpid(), flush=True)
 ctypes.CDLL(None).pthread_exit(None)
 `;
-test.skipIf(process.platform !== "linux" || !Bun.which("python3"))("a start waits for a daemon that is leaving, and then has its folder", async () => {
+const python = linux && !!Bun.which("python3");
+const beats = (file: string) => { try { return readFileSync(file, "utf8").split("\n").length - 1; } catch { return 0; } };
+
+test.skipIf(!python)("a start waits for a daemon that is leaving, says so, and then has its folder", async () => {
   const dir = scratch();
-  const p = Bun.spawn(["python3", "-c", LEAVING], { stdout: "pipe", stderr: "ignore" });
+  const p = Bun.spawn(["python3", "-c", leaving(1.5, join(dir, "beat"))], { stdout: "pipe", stderr: "ignore" });
   try {
     const pid = Number(new TextDecoder().decode((await p.stdout.getReader().read()).value).trim());
     expect(await until(() => pidState(pid) === "leaving")).toBe(true);
@@ -106,8 +148,34 @@ test.skipIf(process.platform !== "linux" || !Bun.which("python3"))("a start wait
     // Refused at once, before: the pid is there. Now the start is there when the process has left.
     const second = startIn(dir);
     expect(second).toMatchObject({ code: 0, out: "owns" });
+    expect(second.err).toMatch(new RegExp(`^keel: waiting for the daemon before this one \\(pid ${pid}\\) to go, up to \\d+ s more$`));
     await p.exited;
     expect(pidState(pid)).toBe("gone");
+  } finally {
+    p.kill("SIGKILL");
+  }
+}, 60_000);
+
+test.skipIf(!python)("a process that is still leaving when the wait is over keeps the folder: its worker still runs", async () => {
+  const dir = scratch();
+  const beat = join(dir, "beat");
+  const p = Bun.spawn(["python3", "-c", leaving(40, beat)], { stdout: "pipe", stderr: "ignore" });
+  try {
+    const pid = Number(new TextDecoder().decode((await p.stdout.getReader().read()).value).trim());
+    expect(await until(() => pidState(pid) === "leaving" && beats(beat) > 0)).toBe(true);
+    // It holds no claim (lost, or never taken): the lock is all that names it.
+    writeFileSync(join(dir, "daemon.lock"), JSON.stringify({ pid, url: "http://127.0.0.1:1" }));
+    // One time for the whole start, however many of its steps wait: a restart's daemon before it, then the lock's.
+    const second = startIn(dir, { KEEL_WAIT_FOR_PID: String(pid) }, 2500);
+    expect(second).toMatchObject({ code: 1, out: "" });
+    expect(second.err.split("\n")).toEqual([
+      expect.stringMatching(new RegExp(`^keel: waiting for the daemon before this one \\(pid ${pid}\\) to go, up to \\d+ s more$`)),
+      `keel: another daemon (pid ${pid}, http://127.0.0.1:1) uses ${dir}`,
+    ]);
+    expect(second.ms).toBeLessThan(4500);
+    expect(JSON.parse(readFileSync(join(dir, "daemon.lock"), "utf8")).pid).toBe(pid);
+    const then = beats(beat);
+    expect(await until(() => beats(beat) > then)).toBe(true);
   } finally {
     p.kill("SIGKILL");
   }

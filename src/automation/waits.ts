@@ -4,6 +4,7 @@ import { isAbsolute, resolve } from "node:path";
 import { D, attr, capture, deliver, emit, inert, isPending } from "./core.ts";
 import * as activity from "./activity.ts";
 import * as failures from "./failures.ts";
+import { readStat } from "../core/pid.ts";
 import { pumpText, readText } from "../core/proc.ts";
 import { lineage } from "../core/tree.ts";
 
@@ -160,9 +161,10 @@ const statFields = (stat: string) => stat.slice(stat.lastIndexOf(")") + 2).split
 
 function procAlive(pid: number): boolean {
   if (!procfs.signal0(pid)) return false;
-  // A zombie has exited: its parent just has not read its status yet.
+  // A zombie has exited: its parent just has not read its status yet. One
+  // whose first thread ended while others still run has not (src/core/pid.ts).
   const stat = procfs.stat(pid);
-  if (stat) return statFields(stat)[0] !== "Z";
+  if (stat) return readStat(stat) !== "ended";
   return existsSync(`/proc/${pid}`) || process.platform !== "linux";
 }
 

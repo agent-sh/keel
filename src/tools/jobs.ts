@@ -13,6 +13,7 @@ import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, 
 import { join } from "node:path";
 import { conceal, concealDeep, secretPairs, streamConcealer } from "../core/conceal.ts";
 import { contains, realOf } from "../core/paths.ts";
+import { readStat } from "../core/pid.ts";
 import { sandboxStatus, scopeHead, splitScope } from "../safety/sandbox.ts";
 
 export type Job = {
@@ -236,6 +237,8 @@ function procStart(pid: number): string | undefined {
 }
 function alive(m: Meta): boolean {
   try { process.kill(m.pid, 0); } catch (e: any) { if (e?.code !== "EPERM") return false; }
+  // One that has ended and stays until its parent reads its end (never, under a parent that does not) runs no more.
+  try { if (readStat(procfs.stat(m.pid)) === "ended") return false; } catch {}
   const now = procStart(m.pid);
   return !m.boot || !now || now === m.boot;
 }

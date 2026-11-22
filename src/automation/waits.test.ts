@@ -100,6 +100,30 @@ test("cancelling a wait that already fired says it did not stop the wake", async
   expect(status(u.id)).toBe("cancelled");
 });
 
+test("a process wait goes on while a thread of the process still runs, and ends when only its zombie is left", async () => {
+  const real = { ...waits.procfs };
+  let state = "S", threads = 3;
+  const line = () => { const f = Array(22).fill("0"); f[0] = state; f[17] = String(threads); f[19] = "100"; return `4243 (job two) ${f.join(" ")}`; };
+  waits.procfs.signal0 = (pid) => (pid === 4243 ? true : real.signal0(pid));
+  waits.procfs.stat = (pid) => (pid === 4243 ? line() : real.stat(pid));
+  try {
+    const w = waits.create(s.id, waits.normalize({ kind: "process", pid: 4243 }, dir), { timeout_seconds: 600 });
+    let t = Date.now();
+    const later = async () => { setSystemTime(new Date((t += 60_000))); await waits.tick(); };
+    await later();
+    expect(status(w.id)).toBe("active");
+    [state, threads] = ["Z", 2]; // its first thread has ended, another still runs
+    await later();
+    expect(status(w.id)).toBe("active");
+    threads = 1; // all of it has ended; its parent has not read that yet
+    await later();
+    expect(status(w.id)).toBe("fired");
+  } finally {
+    Object.assign(waits.procfs, real);
+    setSystemTime();
+  }
+});
+
 test("a process wait ends when its pid comes to name another process", async () => {
   const real = { ...waits.procfs };
   let start = "100", alive = true;

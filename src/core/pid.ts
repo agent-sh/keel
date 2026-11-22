@@ -6,7 +6,9 @@
 //   ended:   a zombie. It holds nothing, and stays until its parent reads its
 //            end: a moment, or for good under a parent that never does.
 // Neither comes back. `live` is everything else, and what is said when the
-// platform does not tell: nothing is taken from a process on a guess.
+// platform does not tell: nothing is taken from a process on a guess. Only
+// Linux tells (its /proc): elsewhere a pid that is there is live, as signal 0
+// says.
 import { readFileSync } from "node:fs";
 
 export type PidState = "live" | "leaving" | "ended" | "gone";
@@ -37,18 +39,25 @@ export function pidState(pid: number): PidState {
       return there(pid) ? "live" : "gone";
     }
   }
-  if (process.platform === "darwin") {
-    // ps: Z is a zombie, E a process that is trying to exit.
-    try {
-      const p = Bun.spawnSync(["ps", "-o", "stat=", "-p", String(pid)], { stdout: "pipe", stderr: "ignore" });
-      const stat = p.stdout.toString().trim();
-      if (!stat) return there(pid) ? "live" : "gone";
-      return stat.includes("Z") ? "ended" : stat.includes("E") ? "leaving" : "live";
-    } catch {
-      return "live";
-    }
-  }
   return "live";
+}
+
+// What names one process for as long as the machine is up: when it started
+// (clock ticks since boot, the 22nd field of its stat line) and which boot
+// that was. A pid alone does not: it is given to another process once its
+// own has gone. Undefined where the platform does not tell.
+let boot: string | undefined;
+export function pidBorn(pid: number): string | undefined {
+  if (process.platform !== "linux") return undefined;
+  try {
+    const line = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const ticks = line.slice(line.lastIndexOf(")") + 2).split(" ")[19];
+    if (!ticks) return undefined;
+    boot ??= readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    return `${boot}:${ticks}`;
+  } catch {
+    return undefined;
+  }
 }
 
 // A process that works: not one that is going or has ended.

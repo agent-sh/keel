@@ -82,6 +82,32 @@ test("a read past the cap keeps the start and the end, and says what it left out
   expect(j.taken).toBe(2_000_019);
 });
 
+// A job whose process has ended and stays as a zombie (its parent never reads its end) is over.
+// A synthetic pid: nothing is signalled for real.
+test("an adopted job whose process is a zombie has ended; one with a thread left still runs", async () => {
+  const pid = 987654322;
+  const real = { kill: process.kill, stat: procfs.stat };
+  let threads = 2;
+  procfs.stat = (p: number) => { if (p !== pid) return real.stat(p); const f = Array(50).fill("0"); f[0] = "Z"; f[17] = String(threads); f[19] = "100"; return `${pid} (fixture) ${f.join(" ")}`; };
+  process.kill = ((p: number, s: any = 0) => (Math.abs(p) === pid ? true : real.kill(p, s))) as typeof process.kill;
+  const root = mkdtempSync(join(process.env.TMPDIR ?? ".", "jobs-zombie-"));
+  const dir = join(root, "spill", "s-zombie", "jobs");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "fixture-zombie.log"), "");
+  writeFileSync(join(dir, "fixture-zombie.json"), JSON.stringify({ id: "fixture-zombie", num: 901, sessionId: "s-zombie", command: "nothing runs", cwd: root, started: Date.now(), background: true, pid, boot: "100" }));
+  try {
+    adoptJobs(join(root, "spill"));
+    const job = jobsOf("s-zombie")[0]!;
+    expect(running(job)).toBe(true);
+    threads = 1;
+    for (let i = 0; i < 40 && running(job); i++) await Bun.sleep(100);
+    expect(running(job)).toBe(false);
+  } finally {
+    process.kill = real.kill;
+    procfs.stat = real.stat;
+  }
+});
+
 // A stop signals the job's process only while it is still the one the job
 // started as: its start time is read right before each signal. A pid reused
 // after adoption (or before it) gets nothing, and the job ends as gone.

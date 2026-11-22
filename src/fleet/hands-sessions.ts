@@ -18,6 +18,7 @@
 import { existsSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { pidHolds } from "../core/pid.ts";
 import { readText } from "../core/proc.ts";
 import { classify, groupsUnder, tailReader, type Activity, type Group, type Proc, type Signals, type Tail } from "../integrations/import/activity.ts";
 import { claudeFiles, claudeFound, claudeRoot, readClaude } from "../integrations/import/claude.ts";
@@ -247,7 +248,8 @@ export async function activityOf(f: Found, at?: Now): Promise<Seen> {
   return { ...a, blocked: h.blocked, revision, process: { pid: h.proc.pid, started_ms: h.proc.started_ms, status: h.status }, groups, checked_ms: Date.now() };
 }
 
-const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+// Still a process with something left that runs: not one that has ended and waits to be read by its parent.
+const alive = pidHolds;
 async function gone(pids: number[], ms: number): Promise<boolean> {
   const until = Date.now() + ms;
   while (pids.some(alive)) {

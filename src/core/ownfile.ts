@@ -13,6 +13,7 @@
 // - a temp file a killed process left beside the file is removed.
 import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { pidHolds } from "./pid.ts";
 
 // A sign-in kept in the config folder: a grant whose tokens rotate. It gets
 // no .prev (a second copy of a token would outlive a sign-out), and a backup
@@ -69,9 +70,8 @@ function target(path: string): string {
   throw new Error(`${path} is a link that leads back to itself`);
 }
 
-const alive = (pid: number) => {
-  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
-};
+// A writer that can still finish its write: not one that has ended and waits to be read by its parent.
+const alive = pidHolds;
 
 // The temp files of writes that never finished (the process was killed
 // between the open and the rename): removed once their process is gone.

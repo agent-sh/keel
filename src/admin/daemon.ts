@@ -9,7 +9,7 @@ import type { Deps } from "../server/app.ts";
 import { flushAll } from "../automation/core.ts";
 import { buildInfo } from "../core/build.ts";
 import { claimState, hasClaim } from "../core/claim.ts";
-import { pidHolds, pidLive, pidState } from "../core/pid.ts";
+import { pidBorn, pidHolds, pidLive, pidState } from "../core/pid.ts";
 import { addAdmission } from "../server/admission.ts";
 import { beatLife, endLife, restarts } from "./life.ts";
 import { describeStall, type Stall, StallMonitor, TurnWatch, watchWith } from "./stall.ts";
@@ -38,18 +38,33 @@ export function servicedDaemon(): { pid: number; url: string; state_dir: string 
 const alive = pidLive;
 
 // How long a start waits for a daemon that is going to be gone: the one a
-// restart names, and one that was killed and is still leaving.
+// restart names, and one that was killed and is still leaving. One minute for
+// the whole start, whichever of them it waits for and however often it looks.
 const GOING_MS = 60_000;
+// A wait this long is said, once for a pid: a start that sits there says why.
+const SAY_AFTER_MS = 1000;
+let goingUntil = 0;
+const waitSaid = new Set<number>();
+
+function waitWhile(pid: number, going: () => boolean, stepMs: number, ms: number) {
+  if (!going()) return;
+  goingUntil ||= Date.now() + ms;
+  const since = Date.now();
+  while (going() && Date.now() < goingUntil) {
+    if (Date.now() - since >= SAY_AFTER_MS && !waitSaid.has(pid)) {
+      waitSaid.add(pid);
+      console.error(`keel: waiting for the daemon before this one (pid ${pid}) to go, up to ${Math.max(1, Math.round((goingUntil - Date.now()) / 1000))} s more`);
+    }
+    Bun.sleepSync(stepMs);
+  }
+}
 
 // A restart passes the old daemon's pid: wait (up to a minute) until it has
 // let go of its port and its folder. One that has ended and only waits for a
 // parent to read its end holds neither, and is not waited for.
-export function waitForPredecessor() {
+export function waitForPredecessor(ms = GOING_MS) {
   const waitFor = Number(process.env.KEEL_WAIT_FOR_PID || 0);
-  if (waitFor && waitFor !== process.pid) {
-    const until = Date.now() + GOING_MS;
-    while (pidHolds(waitFor) && Date.now() < until) Bun.sleepSync(100);
-  }
+  if (waitFor && waitFor !== process.pid) waitWhile(waitFor, () => pidHolds(waitFor), 100, ms);
   delete process.env.KEEL_WAIT_FOR_PID;
 }
 
@@ -57,15 +72,20 @@ export function waitForPredecessor() {
 // that daemon's port and its claim until its last thread is out, which takes
 // a moment, and longer on a busy disk. The start waits for it, as a restart
 // waits for the daemon before it, instead of finding the port taken or the
-// folder claimed by a process that is already going.
-export function waitForLeaving(stateDir: string) {
-  waitForPredecessor();
+// folder claimed by a process that is already going. One that is still
+// leaving when the time is up is refused (acquireLock).
+export function waitForLeaving(stateDir: string, ms = GOING_MS) {
+  waitForPredecessor(ms);
   let pid = 0;
   try { pid = Number(JSON.parse(readFileSync(join(stateDir, LOCK), "utf8")).pid) || 0; } catch {}
   if (!pid || pid === process.pid) return;
-  const until = Date.now() + GOING_MS;
-  while (pidState(pid) === "leaving" && Date.now() < until) Bun.sleepSync(25);
+  waitWhile(pid, () => pidState(pid) === "leaving", 25, ms);
 }
+
+// How long the daemon a restart handed the folder to tries for its claim: a
+// start by hand that took the free claim a moment before it lets go at once,
+// since the lock names this one.
+const HANDED_MS = 2000;
 
 // Who answers on host:port, if anything does: Bun lets a second server bind a
 // port another process listens on, and both then answer. A Keel daemon says
@@ -86,25 +106,37 @@ export async function portHolder(host: string, port: number): Promise<string | n
 // state is opened. A restart passes the old pid: wait for it to exit, and for
 // one that was killed to have left. The lock file says who holds the folder
 // and where it answers; one left by a daemon that died is written over, also
-// while that daemon's pid is still there as a zombie.
-export function acquireLock(stateDir: string) {
+// while that daemon's pid is still there as a zombie, or has gone to another
+// process since.
+export function acquireLock(stateDir: string, goingMs = GOING_MS) {
   if (hasClaim(stateDir)) return;
   const path = join(stateDir, LOCK);
-  waitForLeaving(stateDir);
-  const held = () => {
-    try { return JSON.parse(readFileSync(path, "utf8") || "{}") as { pid?: number; url?: string }; } catch { return {}; }
+  waitForLeaving(stateDir, goingMs);
+  type Held = { pid?: number; url?: string; born?: string };
+  const held = (): Held => {
+    try { return JSON.parse(readFileSync(path, "utf8") || "{}") as Held; } catch { return {}; }
   };
-  const refuse = (h: { pid?: number; url?: string }) => {
-    console.error(`keel: another daemon${h.pid && alive(h.pid) ? ` (pid ${h.pid}${h.url ? `, ${h.url}` : ""})` : ""} uses ${stateDir}`);
+  // The process the lock names, while it still has what a daemon holds. A
+  // pid that has gone to another process since the lock was written (the lock
+  // says when its daemon was born) is not that daemon.
+  const holder = (h: Held) => (h.pid && h.pid !== process.pid && pidHolds(h.pid) && !(h.born && pidBorn(h.pid) !== h.born) ? h.pid : undefined);
+  const refuse = (h: Held) => {
+    console.error(`keel: another daemon${holder(h) ? ` (pid ${h.pid}${h.url ? `, ${h.url}` : ""})` : ""} uses ${stateDir}`);
     process.exit(1);
   };
-  if (!claimState(stateDir)) refuse(held());
-  // A live daemon named in the lock file holds the folder whatever the claim
-  // says: a daemon from before the claim has none, and a claim can be lost
-  // (the kernel drops it when its holder closes any handle of the file).
+  let claimed = claimState(stateDir);
+  // The folder was handed to this daemon by the one that restarted, and
+  // something else took the claim a moment ago: a start by hand, which gives
+  // it up as soon as it reads the lock.
+  for (const until = Date.now() + HANDED_MS; !claimed && held().pid === process.pid && Date.now() < until; claimed = claimState(stateDir)) Bun.sleepSync(25);
+  if (!claimed) refuse(held());
+  // A daemon named in the lock file holds the folder whatever the claim
+  // says, while its process has anything left that runs: a daemon from
+  // before the claim has none, and a claim can be lost (the kernel drops it
+  // when its holder closes any handle of the file).
   const h = held();
-  if (h.pid && h.pid !== process.pid && alive(h.pid)) refuse(h);
-  writeFileSync(path, JSON.stringify({ pid: process.pid, started_ms: Date.now(), argv: process.argv.slice(1) }), { mode: 0o600 });
+  if (holder(h)) refuse(h);
+  writeFileSync(path, JSON.stringify({ pid: process.pid, born: pidBorn(process.pid), started_ms: Date.now(), argv: process.argv.slice(1) }), { mode: 0o600 });
   process.on("exit", () => {
     try { if (JSON.parse(readFileSync(path, "utf8")).pid === process.pid) rmSync(path); } catch {}
   });
@@ -120,7 +152,7 @@ export function handLock(stateDir: string, pid: number) {
   const path = join(stateDir, LOCK);
   try {
     const held = JSON.parse(readFileSync(path, "utf8"));
-    if (held.pid === process.pid) writeFileSync(path, JSON.stringify({ ...held, pid }), { mode: 0o600 });
+    if (held.pid === process.pid) writeFileSync(path, JSON.stringify({ ...held, pid, born: pidBorn(pid) }), { mode: 0o600 });
   } catch {}
 }
 
