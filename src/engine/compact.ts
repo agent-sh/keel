@@ -21,8 +21,10 @@ export function checkpointAt(lineage: readonly StoredEvent[]): { at: number; kee
   for (let i = lineage.length - 1; i >= 0; i--) {
     const e = lineage[i]!;
     if (e.kind !== "compaction") continue;
-    const covered = e.data.covered ? lineage.findIndex((x) => x.id === e.data.covered) : -1;
-    return { at: i, keepFrom: covered >= 0 && covered < i ? covered + 1 : i + 1 };
+    // (The event it covers lies before it, and near: looked for from the checkpoint back, not from the session's first event.)
+    let covered = -1;
+    if (e.data.covered) for (let k = i - 1; k >= 0; k--) if (lineage[k]!.id === e.data.covered) { covered = k; break; }
+    return { at: i, keepFrom: covered >= 0 ? covered + 1 : i + 1 };
   }
   return { at: -1, keepFrom: 0 };
 }

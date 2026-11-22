@@ -58,11 +58,23 @@ const cutResult = (session: string, u: { id: string; name: string }): { content:
 const waitsOnOwner = (session: string, u: { id: string; name: string }) => asksOwner(u.name) || outcomeOf(session, u.id) === "waiting";
 // A call a restart cut while its card was open has no result: the next turn
 // runs it again on that card. These are such calls of the branch.
-const owedCalls = (session: string, line: readonly StoredEvent[]): ToolUseBlock[] => {
-  const done = new Set(line.flatMap((e) => (e.kind === "tool_result" ? e.data.results.map((r: any) => r.tool_use_id) : [])));
-  return line.slice(checkpointAt(line).keepFrom).flatMap((e) => (e.kind === "assistant" ? e.data.blocks : []))
-    .filter((b: any) => b.type === "tool_use" && !done.has(b.id) && waitsOnOwner(session, b));
-};
+const owedCalls = (session: string, line: readonly StoredEvent[]): ToolUseBlock[] => unanswered(line).filter((b) => waitsOnOwner(session, b));
+// The calls of the context the branch shows (from its last checkpoint) that
+// have no result. A result is stored after its call, so one that answers a
+// call of that part lies in that part too: nothing before the checkpoint is
+// read, and a turn's start costs what its context holds, not what the
+// session ever held.
+export function unanswered(line: readonly StoredEvent[]): ToolUseBlock[] {
+  const from = checkpointAt(line).keepFrom;
+  const done = new Set<string>();
+  const calls: ToolUseBlock[] = [];
+  for (let i = from; i < line.length; i++) {
+    const e = line[i]!;
+    if (e.kind === "tool_result") for (const r of e.data.results) done.add(r.tool_use_id);
+    else if (e.kind === "assistant") for (const b of e.data.blocks) if (b.type === "tool_use") calls.push(b);
+  }
+  return calls.filter((b) => !done.has(b.id));
+}
 
 // The message that continues a turn a restart cut. Each cut call's result says
 // what became of it (it may have partly run, or did not run); a call that

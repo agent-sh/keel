@@ -2,8 +2,8 @@
 import { afterAll, expect, test } from "bun:test";
 import { leafOf, lineage, versions } from "../core/tree.ts";
 import type { Message, StoredEvent } from "../core/types.ts";
-import { cutOf, RESTART_CUT, stalledContinuations, toMessages, withPending } from "./turn.ts";
-import { keptMessages } from "./compact.ts";
+import { cutOf, RESTART_CUT, stalledContinuations, toMessages, unanswered, withPending } from "./turn.ts";
+import { checkpointAt, keptMessages } from "./compact.ts";
 import { allHooks } from "./hooks.ts";
 
 // Turn hooks are process-wide: the files after this one run without the ones its tests register.
@@ -797,4 +797,56 @@ test("a side question's stand-in is written on a copy, and an earlier call with 
   expect(JSON.stringify(out.at(-1))).toBe('{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_0_same","content":"(this advisor call: the request follows)","is_error":false}]}');
   expect(JSON.stringify(line)).toBe(stored);
   expect(withPending(messages, { id: "none", text: "x" })).toBe(messages);
+});
+
+// The calls a turn's start owes are looked for in the context the branch
+// shows, not in the whole branch. The answer is the one the whole branch
+// gives: over generated sessions with edited prompts, forks, summaries
+// (prepared ahead and not), cut calls and steps of several calls.
+test("the calls without a result are the same read from the checkpoint as from the whole branch", () => {
+  // As it was: every result of the branch, then the calls after the checkpoint.
+  const whole = (line: readonly StoredEvent[]) => {
+    const done = new Set(line.flatMap((e) => (e.kind === "tool_result" ? e.data.results.map((r: any) => r.tool_use_id) : [])));
+    return line.slice(checkpointAt(line).keepFrom).flatMap((e) => (e.kind === "assistant" ? e.data.blocks : [])).filter((b: any) => b.type === "tool_use" && !done.has(b.id));
+  };
+  let rnd = 7;
+  const rand = () => ((rnd = (rnd * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+  let owed = 0, lines = 0, compacted = 0;
+  for (let session = 0; session < 60; session++) {
+    const all: StoredEvent[] = [];
+    let n = 0;
+    const add = (parent: string | null, kind: StoredEvent["kind"], data: any) => { const e = ev(`g${session}-${++n}`, parent, kind, data); all.push(e); return e.id; };
+    const leaves: string[] = [];
+    let head: string | null = null;
+    for (let turn = 0; turn < 12 + Math.floor(rand() * 30); turn++) {
+      // An edited prompt or a fork: the turn starts from an earlier event of the session.
+      if (all.length > 4 && rand() < 0.15) { if (head) leaves.push(head); head = all[Math.floor(rand() * all.length)]!.id; }
+      head = add(head, "user", { text: `prompt ${turn}` });
+      head = add(head, "turn_start", {});
+      for (let step = 0; step < 1 + Math.floor(rand() * 4); step++) {
+        const ids = Array.from({ length: 1 + Math.floor(rand() * 3) }, (_, i) => `t${session}-${n}-${i}`);
+        head = add(head, "assistant", { blocks: [{ type: "text", text: "on it" }, ...ids.map((id) => ({ type: "tool_use", id, name: rand() < 0.3 ? "AskUserQuestion" : "Bash", input: {} }))], stop: "tool_use" });
+        // Each result is stored by itself; some calls get none (a card a restart cut).
+        for (const id of ids) if (rand() < 0.8) head = add(head, "tool_result", { results: [{ type: "tool_result", tool_use_id: id, content: "ok" }] });
+        // A summary lands between steps too; one prepared ahead covers up to an earlier event of the branch.
+        if (rand() < 0.12) {
+          const line = lineage(all, head);
+          const covered = rand() < 0.5 ? line[Math.max(0, line.length - 1 - Math.floor(rand() * 8))]!.id : undefined;
+          head = add(head, "compaction", { mode: "summary", summary: "so far", ...(covered ? { covered } : {}) });
+        }
+      }
+      // A call answered late, after the turn's end and the next prompt.
+      if (rand() < 0.5) head = add(head, "turn_end", { reason: rand() < 0.3 ? "restart" : "end_turn" });
+    }
+    for (const leaf of [...leaves, head!]) {
+      const line = lineage(all, leaf);
+      const got = unanswered(line);
+      expect(got).toEqual(whole(line));
+      owed += got.length; lines++;
+      if (checkpointAt(line).at >= 0) compacted++;
+    }
+  }
+  // The generated branches do hold what is compared: calls without results, before and after summaries.
+  expect(owed).toBeGreaterThan(100);
+  expect(compacted).toBeGreaterThan(lines / 3);
 });
