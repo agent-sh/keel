@@ -76,6 +76,11 @@ test("why a call failed is a line of its own output", () => {
   expect(failureLine(done("x", "Exit code 1\nbun test v1\n\n\u001b[31m✗\u001b[0m reports each part once\n  error: expect(received).toEqual(expected)\n 1 fail", true))).toBe("error: expect(received).toEqual(expected)");
   expect(failureLine(done("x", "File does not exist: /w/a.md", true))).toBe("File does not exist: /w/a.md");
   expect(failureLine(done("x", "Exit code 2\nplain words", true))).toBe("plain words");
+  // A line longer than the row shows ends at a word, marked: never in the middle of one.
+  const long = `Delivery to receipt-fixture/receiver is unconfirmed (the daemon at http://127.0.0.1:41529 did not prove the pairing (HTTP 200)). The message may have arrived; check the receiving session before retrying.`;
+  expect(long.length).toBeGreaterThan(200);
+  expect(failureLine(done("x", long, true))).toBe(`${long.slice(0, long.lastIndexOf(" before"))} before…`);
+  expect(failureLine(done("x", `error: ${"a".repeat(400)}`, true))).toBe(`error: ${"a".repeat(193)}…`);
 });
 
 test("a line said in passing is short plain words; anything shaped or long is a reply", () => {

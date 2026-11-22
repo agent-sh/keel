@@ -229,14 +229,22 @@ export function refusalOf(result?: ToolResultBlock): { by: string; why: string }
 }
 
 // Why a call failed, in one line of its own output: the first line that names
-// an error, else the first line it printed.
+// an error, else the first line it printed. A line longer than the row shows
+// ends at a word, with a mark that it goes on (the whole of it is in the open
+// call): cut in the middle of a word it read as the end of what was said.
+const LINE_MAX = 200;
 export function failureLine(result?: ToolResultBlock): string {
   // The tool's own output: not what a hook or the harness put into the result for the model (memory,
   // instructions that were loaded, what a language server found).
   const own = splitNested(splitDiagnostics(splitMemory(resultText(result)).text).text).text.replace(/<memory [^>]*>[\s\S]*?(<\/memory>|$)/g, "");
   const lines = own.replace(/\u001b\[[0-9;]*m/g, "").split("\n").map((l) => l.trim()).filter(Boolean);
   const body = lines.filter((l) => !/^(Exit code|Exit Code:|Process exited with code) ?-?\d+$/.test(l));
-  return (body.find((l) => /\b(error|failed|failure|cannot|not found|no such|denied|refused|does not exist|timed out|killed)\b/i.test(l)) ?? body[0] ?? lines[0] ?? "").slice(0, 200);
+  const line = body.find((l) => /\b(error|failed|failure|cannot|not found|no such|denied|refused|does not exist|timed out|killed)\b/i.test(l)) ?? body[0] ?? lines[0] ?? "";
+  if (line.length <= LINE_MAX) return line;
+  const head = line.slice(0, LINE_MAX);
+  // Back to the last whole word, unless that gives up most of the line (one long path or token).
+  const at = head.search(/\s+\S*$/);
+  return `${(at > LINE_MAX / 2 ? head.slice(0, at) : head).replace(/[\s,;:(]+$/, "")}…`;
 }
 
 export type StepSummary = {

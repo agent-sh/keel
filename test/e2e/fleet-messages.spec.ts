@@ -173,7 +173,12 @@ test("fleet messages: a missing or unproven receipt does not confirm delivery", 
     await expect(sendsShown).toHaveCount(2);
     for (const [i, reason] of ["no usable receipt", "did not prove the pairing"].entries()) {
       const send = sendsShown.nth(i);
-      await send.click({ timeout: 15_000 });
+      // Closed, the row says why in one line under its head, ended at a word when it is long. The whole
+      // of it is in the open call, which the row's head opens (a press on the line of words opens nothing).
+      await expect(send.getByTestId("tool-why")).toContainText(`Delivery to ${name}/receiver is unconfirmed`);
+      await expect(send.getByTestId("tool-why")).not.toHaveText(/[a-z]$/);
+      await send.getByRole("button").first().click({ timeout: 15_000 });
+      await expect(send).toHaveAttribute("data-open", "");
       await expect(send).toContainText(reason);
       await expect(send).toContainText("The message may have arrived; check the receiving session before retrying.");
     }
