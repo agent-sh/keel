@@ -176,18 +176,23 @@ test("home: a cut command is reviewed on its card, never allowed from its row", 
     expect(await pending(request, long.id)).toHaveLength(1);
     expect(await pending(request, multi.id)).toHaveLength(1);
 
-    // By keyboard: Enter on Review, Enter again 400 ms later, then Enter held down. The card has the
-    // keyboard on its list, not on an answer, and nothing is allowed.
+    // By keyboard: Enter on Review, Enter again 400 ms later, then Enter held down. On the way in
+    // the card has the keyboard on its list, not on an answer, and nothing is allowed. The whole
+    // command is on the card: once it has stood there for the settle time its answer takes the
+    // keyboard, as on any way to the card, and not before.
     await page.goto("/");
     await expect(row(page, long.id).getByTestId("home-review")).toBeEnabled();
     await row(page, long.id).getByTestId("home-review").focus();
     await page.keyboard.press("Enter");
+    const arrived = Date.now();
     await expect(page.getByTestId("approval").first()).toContainText("drop_table.py");
     await expect(page.getByTestId("approvals")).toBeFocused();
     await page.waitForTimeout(400);
     await page.keyboard.press("Enter");
-    await page.waitForTimeout(1300);
-    await page.keyboard.press("Enter");
+    await page.waitForTimeout(300);
+    expect(await pending(request, long.id)).toHaveLength(1);
+    await expect(page.getByTestId("approval").first().getByTestId("allow-once")).toBeFocused({ timeout: 5000 });
+    expect(Date.now() - arrived).toBeGreaterThanOrEqual(1000);
     expect(await pending(request, long.id)).toHaveLength(1);
     await page.goto("/");
     await expect(row(page, multi.id).getByTestId("home-review")).toBeEnabled();
@@ -581,5 +586,34 @@ test("home: waiting and declined sessions, from the served state", async ({ page
     else await expect(watch.getByTestId("home-count-declined")).toHaveCount(0);
   } finally {
     await drop(request, [timer.id, declined.id]);
+  }
+});
+
+// A short command that is whole on its card needs no second look: reached by
+// its row's title, the card's Allow once takes the keyboard after the settle
+// time and one Enter answers it. (The card guards itself: a text that is not
+// all read keeps the keyboard on the list, as the cases above show.)
+test("home: a whole short command reached by its row's title takes Enter after the settle time", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  const s = await asking(request, "Home: make the reports folder", [bash("mkdir -p out/reports")]);
+  const state = async () => ((await (await request.get(`/api/sessions/${s.id}/approvals?all`)).json()).approvals as any[]).map((a) => `${a.state}${a.choice ? `/${a.choice}` : ""}`).join(",");
+  try {
+    await expect.poll(async () => (await pending(request, s.id)).length, { timeout: 30_000 }).toBe(1);
+    await page.goto("/");
+    const r = row(page, s.id);
+    await expect(r).toBeVisible({ timeout: 30_000 });
+    await r.getByTestId("home-open").focus();
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(new RegExp(`/s/${s.id}`));
+    const card = page.getByTestId("approval").first();
+    // An Enter on the way in answers nothing: the answer has no keyboard before it acts.
+    await page.waitForTimeout(400);
+    await page.keyboard.press("Enter");
+    expect(await state()).toBe("pending");
+    await expect(card.getByTestId("allow-once")).toBeFocused({ timeout: 5000 });
+    await page.keyboard.press("Enter");
+    await expect.poll(state).toBe("allowed/once");
+  } finally {
+    await drop(request, [s.id]);
   }
 });

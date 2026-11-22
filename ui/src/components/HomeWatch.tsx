@@ -49,8 +49,12 @@ const MOST = { attention: 6, working: 4 };
 
 // Opens a session from the home screen: the session itself, or the agent's
 // session its first request waits in (`child`). With an approval waiting
-// there, the card is asked for its list of requests, never for an answer:
-// whatever the owner pressed here showed the request in short, or not at all.
+// there, its card is asked for its answer, and the card decides (lib/asks.ts,
+// ApprovalCard.tsx): a text that is not all read (cut, in part, marked, lines
+// never in view) keeps the keyboard on the list of requests, and one that is
+// whole takes it on Allow once after the settle time, never before. So a
+// short command needs no second look, and a key pressed on the way in answers
+// nothing.
 // With anything else waiting there (a question, a plan, a secret request) the
 // keyboard goes to that card, as the owner's own doing (lib/asks.ts): never to
 // an answer, and a secret's field takes it, since they came to give it.
@@ -59,7 +63,7 @@ export function openWaiting(id: string, child?: string) {
   const to = child ?? id;
   const first = getSafety().approvals[to]?.[0];
   navigate({ name: "session", id: to });
-  if (first) focusApproval(first.id, "card");
+  if (first) focusApproval(first.id, "allow");
   else focusAsk(to);
 }
 

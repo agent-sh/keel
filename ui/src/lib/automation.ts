@@ -281,12 +281,12 @@ export const activityTarget = (id: string) => api<Target>(`/api/activity/${id}/t
 // Where the keyboard is to land on an approval card the owner is on the way to:
 // - "allow": on that card, and on its Allow once after the settle time, so
 //   Enter then answers that card and no other (a link that names one
-//   request). Code never puts the keyboard straight on an answer (lib/asks.ts),
+//   request, a row of the home screen). Code never puts the keyboard straight
+//   on an answer (lib/asks.ts),
 //   and a card whose text is not all shown never has it on one: there it
 //   stays on the list of requests.
-// - "card": on the list of requests, not on an answer. For an arrival from a
-//   row that showed the request in short (the home screen, the Inbox): it is
-//   read here first, and a key pressed on the way in answers nothing.
+// - "card": on the list of requests, not on an answer, whatever the card
+//   holds (a row of the Inbox).
 // - "deny": the card opens its denial, the keyboard in the reason field. Never on Allow.
 // The card itself reads this when it is drawn (`arrivalOf`), however late that
 // is: an arrival is never forgotten in a way that lets the card take the
