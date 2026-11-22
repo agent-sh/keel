@@ -26,6 +26,10 @@ set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
 ID=io.github.agent_sh.Keel
+# The check's app is an instance of its own name: its launches reach no other keel-desktop on
+# the machine (the owner's installed app included), and no other reaches it.
+export KEEL_DESKTOP_INSTANCE="Check$$"
+BUS="$ID.$KEEL_DESKTOP_INSTANCE"
 BACKEND=${KEEL_E2E_BACKEND:-gnome}
 SHELL_BIN=${KEEL_DESKTOP_BIN:-$REPO/desktop/dist/keel-desktop}
 KEEL=${KEEL_BIN:-$REPO/dist/keel}
@@ -49,7 +53,7 @@ py() { python3 -c "$@"; }
 # the running app (the window list is asked by process: the window class differs between Wayland and X11)
 # Only this check's own app counts: another keel-desktop on the machine is not its business.
 app_pids() { for p in $(pgrep -x keel-desktop); do tr '\0' '\n' < "/proc/$p/environ" 2> /dev/null | grep -qx "KEEL_DESKTOP_DIR=$D/shell" && echo "$p"; done; }
-app_pid() { app_pids | tail -1 | grep . || echo 0; }
+app_pid() { local p; p=$(app_pids | tail -1); echo "${p:-0}"; }
 logged() { grep -c "\"what\":\"$1\"" "$D/shell.jsonl" 2> /dev/null || true; }
 last() { grep "\"what\":\"$1\"" "$D/shell.jsonl" 2> /dev/null | tail -1; }
 # a picture of the app's largest window alone (of the whole desktop with `all`)
@@ -67,12 +71,15 @@ w=max(ws, key=lambda w: w["geometry"]["width"]*w["geometry"]["height"]) if ws el
 print(*( [w["geometry"][k] for k in ("x","y","width","height")] + [w.get("title","")] ) if w else "")'; }
 windows() { $A windows --id "$WS" --pid "$(app_pid)" 2> /dev/null | py 'import json,sys; print(len(json.load(sys.stdin).get("windows", [])))'; }
 api() { curl -fsS -m 10 -X "${3:-GET}" -H 'content-type: application/json' ${2:+-d "$2"} "$URL$1"; }
-tray() { gdbus call --session --dest "$ID" --object-path /StatusNotifierItem --method org.freedesktop.DBus.Properties.Get org.kde.StatusNotifierItem "$1" 2> /dev/null; }
-menu() { gdbus call --session --dest "$ID" --object-path /StatusNotifierItem/Menu --method com.canonical.dbusmenu.GetLayout 0 1 "@as []" 2> /dev/null; }
-pick() { gdbus call --session --dest "$ID" --object-path /StatusNotifierItem/Menu --method com.canonical.dbusmenu.Event "$1" clicked "<0>" 0 > /dev/null 2>&1; }
+tray() { gdbus call --session --dest "$BUS" --object-path /StatusNotifierItem --method org.freedesktop.DBus.Properties.Get org.kde.StatusNotifierItem "$1" 2> /dev/null; }
+menu() { gdbus call --session --dest "$BUS" --object-path /StatusNotifierItem/Menu --method com.canonical.dbusmenu.GetLayout 0 1 "@as []" 2> /dev/null; }
+pick() { gdbus call --session --dest "$BUS" --object-path /StatusNotifierItem/Menu --method com.canonical.dbusmenu.Event "$1" clicked "<0>" 0 > /dev/null 2>&1; }
 
 # --- the scratch daemon: a clean environment, a home of its own, the scripted model only
-for _ in 1 2 3 4 5 6; do PORT=$((48200 + RANDOM % 1700)); ss -ltn | grep -q ":$PORT " || break; done
+# (Asked of ss by port, not found by a search of its whole list: a search that stops at its first
+# match ends the listing early, and under pipefail that reads as "not found".)
+listening() { [ -n "$(ss -ltnH "sport = :$1" 2> /dev/null)" ]; }
+for _ in 1 2 3 4 5 6; do PORT=$((48200 + RANDOM % 1700)); listening "$PORT" || break; done
 URL=http://127.0.0.1:$PORT
 cat > "$D/keel" <<EOF
 #!/usr/bin/env bash
@@ -89,6 +96,7 @@ daemon_down() {
 }
 cleanup() {
   [ -n "${WS_UP:-}" ] && (eval "$ENVSH"; KEEL_DESKTOP_DIR="$D/shell" "$SHELL_BIN" --quit > /dev/null 2>&1)
+  for p in $(pgrep -x keel-desktop); do tr '\0' '\n' < "/proc/$p/environ" 2> /dev/null | grep -qx "KEEL_DESKTOP_DIR=$D/owners-app" && kill "$p"; done
   daemon_down > /dev/null 2>&1
   for f in "$D"/host-*.pid; do [ -s "$f" ] && kill "$(cat "$f")" 2> /dev/null; done
   [ -n "${WS_UP:-}" ] && $A stop --id "$WS" > /dev/null 2>&1
@@ -105,8 +113,14 @@ $A start --ack-hidden-workspace --id "$WS" --session "$BACKEND" --width 2560 --h
 WS_UP=1
 ENVSH=$($A env --id "$WS" --shell 2> /dev/null)
 [ -n "$ENVSH" ] || { echo "no environment for the workspace"; exit 2; }
-# Everything below that touches the desktop runs with the workspace's environment.
+# Everything below that touches the desktop runs with the workspace's environment: its own
+# session bus and its own display. Without both, the app would open on the owner's desktop.
+HOST_BUS=${DBUS_SESSION_BUS_ADDRESS:-}; HOST_WAYLAND=${WAYLAND_DISPLAY:-}; HOST_X=${DISPLAY:-}
 eval "$ENVSH"
+case "${DBUS_SESSION_BUS_ADDRESS:-}" in *agent-workspace-linux/"$WS"/*) ;; *) echo "the workspace gave no session bus of its own: stopping"; exit 2 ;; esac
+[ "${DBUS_SESSION_BUS_ADDRESS:-}" != "$HOST_BUS" ] || { echo "the workspace's session bus is the host's: stopping"; exit 2; }
+if [ "$BACKEND" = x11 ]; then [ -n "${DISPLAY:-}" ] && [ "${DISPLAY:-}" != "$HOST_X" ] || { echo "the workspace gave no display of its own: stopping"; exit 2; }
+else [ -n "${WAYLAND_DISPLAY:-}" ] && { [ "${WAYLAND_DISPLAY:-}" != "$HOST_WAYLAND" ] || [ "${XDG_RUNTIME_DIR:-}" != "$HOST_RUNTIME" ]; } || { echo "the workspace gave no display of its own: stopping"; exit 2; }; fi
 [ "$BACKEND" = x11 ] && export GDK_BACKEND=x11
 ( gjs -m "$HERE/tray-host.js" > "$D/tray-host.out" 2>&1 & echo $! > "$D/host-tray.pid" )
 ( gjs -m "$HERE/notify-host.js" > "$D/notify-host.out" 2>&1 & echo $! > "$D/host-notify.pid" )
@@ -114,7 +128,7 @@ wait_for 10 "grep -q READY '$D/tray-host.out' && grep -q READY '$D/notify-host.o
 
 export KEEL_DESKTOP_DIR="$D/shell" KEEL_URL="$URL" KEEL_STATE_DIR="$D/dev/state" KEEL_BIN="$D/keel" KEEL_DESKTOP_LOG="$D/shell.jsonl" KEEL_DESKTOP_NO_BROWSER=1
 # The check's own script in the page (it shows the artifact's frame and tries to leave the origin), and a port nobody of Keel's is on.
-for _ in 1 2 3 4 5 6; do FOREIGN=$((46200 + RANDOM % 1700)); ss -ltn | grep -q ":$FOREIGN " || break; done
+for _ in 1 2 3 4 5 6; do FOREIGN=$((46200 + RANDOM % 1700)); listening "$FOREIGN" || break; done
 sed "s/FOREIGN_PORT/$FOREIGN/" "$HERE/probe.js" > "$D/probe.js"
 export KEEL_DESKTOP_PROBE="$D/probe.js"
 echo '{"width":1920,"height":1040,"maximized":false}' > "$D/shell/shell.json"
@@ -139,6 +153,13 @@ sleep 3
 read -r X Y W H _ <<< "$(geometry)"
 check "the window has the remembered size (1920x1040, got ${W}x${H})" "[ \"$W\" = 1920 ] && [ \"$H\" = 1040 ]"
 shot 01-window-light
+# --- 1b. another keel-desktop on the same desktop and the same session bus, under the app's own
+# name, started after the check's (so its pid is the higher one): the owner's own app, as far as
+# the check can tell. Nothing the check launches may reach it.
+owners_pid() { for p in $(pgrep -x keel-desktop); do tr '\0' '\n' < "/proc/$p/environ" 2> /dev/null | grep -qx "KEEL_DESKTOP_DIR=$D/owners-app" && echo "$p"; done | tail -1; }
+(unset KEEL_DESKTOP_INSTANCE KEEL_DESKTOP_PROBE; export KEEL_DESKTOP_DIR="$D/owners-app" KEEL_URL="http://127.0.0.1:$FOREIGN" KEEL_DESKTOP_LOG="$D/owners-app.jsonl" KEEL_BIN=/bin/false; HOME="$D/apphome" setsid nohup "$SHELL_BIN" --hidden >> "$D/owners-app.out" 2>&1 < /dev/null &)
+check "another keel-desktop runs beside the check's, under the app's own name" "wait_for 15 \"grep -q '\\\"what\\\":\\\"command\\\"' '$D/owners-app.jsonl'\" && [ -n \"\$(owners_pid)\" ] && [ \"\$(app_pid)\" != \"\$(owners_pid)\" ] && [ \"\$(app_pids | wc -l)\" = 1 ]"
+
 # The text size keys drive the page's own setting: one scale, which the title bar follows.
 scale() { py 'import json,sys; print(json.load(open(sys.argv[1])).get("look", {}).get("scale"))' "$D/shell/shell.json"; }
 $A key --id "$WS" ctrl+plus > /dev/null 2>&1
@@ -389,6 +410,11 @@ check "the tray offers no start for it" "! menu | grep -q 'Start Keel'"
 shot 13-refused-address-dark
 $A key --id "$WS" Return > /dev/null 2>&1; sleep 3
 check "Return starts nothing there" "[ ! -e '$D/stub-ran' ] && [ \"\$(logged start)\" = \"$starts\" ]"
+
+# --- 14. the other keel-desktop was never reached: one launch of its own, no window raised, not quit
+check "nothing the check launched reached the other keel-desktop" "[ \"\$(grep -c '\"what\":\"command\"' '$D/owners-app.jsonl')\" = 1 ] && ! grep -q '\"what\":\"present\"\|\"what\":\"quit\"\|\"what\":\"pick\"' '$D/owners-app.jsonl' && [ -n \"\$(owners_pid)\" ]"
+(unset KEEL_DESKTOP_INSTANCE; KEEL_DESKTOP_DIR="$D/owners-app" "$SHELL_BIN" --quit > /dev/null 2>&1)
+check "and its own launch still reaches it" "wait_for 10 '[ -z \"\$(owners_pid)\" ]'"
 
 echo "$((n - fails)) of $n passed"
 [ "$fails" = 0 ]

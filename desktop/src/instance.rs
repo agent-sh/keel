@@ -2,6 +2,11 @@
 //! on the session bus and serves a small interface of its own there; a later
 //! launch calls it with its words (a keel:// link, --new) and the desktop's
 //! activation token, then ends. The running app raises its window.
+//!
+//! `KEEL_DESKTOP_INSTANCE=Name` runs an app of another name beside the
+//! owner's (a check, a development build): it owns `<app id>.Name` instead,
+//! so its launches never reach the owner's running app, nor the owner's
+//! launches it.
 use crate::APP_ID;
 use gtk::prelude::*;
 use gtk::{gio, glib};
@@ -11,6 +16,20 @@ const IFACE: &str = "io.github.agent_sh.Keel.Shell";
 const XML: &str = r#"<node><interface name="io.github.agent_sh.Keel.Shell">
 <method name="Run"><arg name="words" type="as" direction="in"/><arg name="activation_token" type="s" direction="in"/></method>
 </interface></node>"#;
+
+/// The name the app owns on the session bus, and its application id: the app's own, or with
+/// `instance` after it. An instance is one name element: a letter first, then letters, digits
+/// and underscores; anything else is not an instance, and the app's own name stands.
+pub fn name_for(instance: Option<&str>) -> String {
+    match instance {
+        Some(i) if i.len() <= 40 && i.starts_with(|c: char| c.is_ascii_alphabetic()) && i.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => format!("{APP_ID}.{i}"),
+        _ => APP_ID.to_string(),
+    }
+}
+
+pub fn bus_name() -> String {
+    name_for(std::env::var("KEEL_DESKTOP_INSTANCE").ok().as_deref())
+}
 
 /// The words a running app acts on: where this launch should lead. The rest
 /// (which daemon, which keel program) belongs to the first launch alone.
@@ -61,7 +80,7 @@ fn launch_token() -> String {
 pub fn hand_over(args: &[String]) -> bool {
     let Ok(conn) = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) else { return false };
     let params = (words(args), launch_token()).to_variant();
-    conn.call_sync(Some(APP_ID), PATH, IFACE, "Run", Some(&params), None, gio::DBusCallFlags::NO_AUTO_START, 4000, gio::Cancellable::NONE).is_ok()
+    conn.call_sync(Some(&bus_name()), PATH, IFACE, "Run", Some(&params), None, gio::DBusCallFlags::NO_AUTO_START, 4000, gio::Cancellable::NONE).is_ok()
 }
 
 /// Serves later launches: `on_run(words, token)`.
@@ -91,6 +110,16 @@ mod tests {
         let args: Vec<String> = ["--url", "http://127.0.0.1:1", "--devtools", "keel://session/abc", "--state-dir", "/x", "--new", "--window", "/s/a", "--hidden"].iter().map(|s| s.to_string()).collect();
         assert_eq!(words(&args), ["keel://session/abc", "--new", "--window", "/s/a"]);
         assert!(words(&[]).is_empty());
+    }
+
+    // A check's app, or a development build, beside the owner's: another name on the bus.
+    #[test]
+    fn an_instance_has_a_name_of_its_own() {
+        assert_eq!(name_for(None), APP_ID);
+        assert_eq!(name_for(Some("Check4242")), format!("{APP_ID}.Check4242"));
+        for bad in ["", "4242", "a.b", "a-b", "a b", "../x", &"x".repeat(41)] {
+            assert_eq!(name_for(Some(bad)), APP_ID, "{bad}");
+        }
     }
 
     // Found with a second app in front: the toolkit had removed the token from the

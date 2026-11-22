@@ -514,7 +514,8 @@ fn main() -> glib::ExitCode {
     if instance::hand_over(&args) {
         return glib::ExitCode::SUCCESS;
     }
-    let app = gtk::Application::builder().application_id(APP_ID).build();
+    // (Its name on the session bus too: an instance of another name runs beside the owner's app.)
+    let app = gtk::Application::builder().application_id(instance::bus_name()).build();
     glib::set_application_name("Keel");
 
     app.connect_startup(move |app| {
