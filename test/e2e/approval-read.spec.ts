@@ -6,8 +6,9 @@ import { shoot } from "./shots.ts";
 // had to be spelled out) takes no answer and never has the keyboard on one,
 // whatever way the owner came to it: the rail, a link that names the request,
 // a phone, an agent's request (the ways from the home screen are in
-// home.spec.ts). Allow once and Always allow refuse until the whole text was
-// opened. A card that is whole keeps today's rule.
+// home.spec.ts). Allow once and Always allow refuse until every line of the
+// text has been in view (the card keeps count of the lines not seen yet). A
+// card that is whole and all in view keeps today's rule.
 
 const MODEL = "scripted:stand-in";
 const scripted = async (request: APIRequestContext) => (await (await request.get("/api/models")).json()).models.some((m: any) => m.id === MODEL);
@@ -39,6 +40,12 @@ async function enters(page: Page) {
   await page.waitForTimeout(600);
   return at;
 }
+// The owner's own scroll of the region the cards stand in.
+const wheel = async (page: Page, by: number, times: number) => {
+  const tray = (await page.getByTestId("composer-tray").boundingBox())!;
+  await page.mouse.move(tray.x + tray.width / 2, tray.y + tray.height / 2);
+  for (let i = 0; i < times; i++) { await page.mouse.wheel(0, by); await page.waitForTimeout(35); }
+};
 const table: string[] = [];
 const said = (path: string, at: string, then: string) => table.push(`| ${path} | ${at} | ${then} |`);
 
@@ -87,18 +94,22 @@ test("a cut command takes no answer, and no keyboard on one: the rail, a link, t
     }
     expect(await states(request, s.id)).toBe("pending");
     said("Allow once and Always allow on the cut card", "the button pressed", `refused, "Open the whole command first": ${await states(request, s.id)}`);
-    // Opened, the last line is on the card, and after the settle time the answer acts.
+    // Opened, the last line is on the card; scrolled through, every line has been in view, and
+    // after the settle time the answer acts.
     await card.getByTestId("approval-expand").click();
-    await expect(card).not.toHaveAttribute("data-must-open", "true");
     await expect(card.getByTestId("approval-summary")).toContainText("git push --force origin main");
     await expect(card.getByTestId("approval-open-first")).toHaveCount(0);
+    await expect(card.getByTestId("approval-left")).toHaveText(/^\d+ lines not seen yet/);
     await shoot(page, "approval-read-02-opened");
+    await wheel(page, -400, 6);
+    await wheel(page, 70, 24);
+    await expect(card).not.toHaveAttribute("data-must-open", "true", { timeout: 10_000 });
     // (Forty-one lines are taller than the tray: the answer is under them, and acts once it has stood in view.)
     await card.getByTestId("allow-once").scrollIntoViewIfNeeded();
     await expect(card.getByTestId("allow-once")).toBeEnabled({ timeout: 10_000 });
     await card.getByTestId("allow-once").click();
     await expect.poll(() => states(request, s.id)).toBe("allowed/once");
-    said("Allow once after the whole command was opened", "the button pressed", await states(request, s.id));
+    said("Allow once after the whole command was opened and scrolled through", "the button pressed", await states(request, s.id));
   } finally {
     await drop(request, ids);
     console.log(`\nPATH-TABLE\n| Path | Keyboard after arrival | Next key or click |\n| --- | --- | --- |\n${table.join("\n")}\nPATH-TABLE-END`);
@@ -191,5 +202,80 @@ test("a whole card keeps its rule; hidden and reordering characters are shown an
     await shoot(page, "approval-read-04-marked");
   } finally {
     await drop(request, ids);
+  }
+});
+
+// The lines of a text the owner has had in view are what the card counts: a
+// card the region above the message box cuts although its own box is whole
+// takes no answer for the lines outside it, and a long command opened by one
+// click is not read by having its first and its last screen on show.
+test("a card the window cuts takes no answer for lines that were never in view", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  const EIGHT = ["rm -rf ./release", ...Array.from({ length: 7 }, (_, i) => `echo step ${i + 2}`)].join("\n");
+  const s = await asking(request, "Read: eight lines in a short window", [bash(EIGHT)]);
+  try {
+    await waits(request, s.id);
+    // A window too short for the card: some of its lines are outside what the region shows.
+    await page.setViewportSize({ width: 1920, height: 330 });
+    await page.goto(`/s/${s.id}`);
+    const card = page.getByTestId("approval").first();
+    await expect(card).toBeVisible();
+    await expect.poll(() => card.getByTestId("approval-summary").evaluate((el) => { const tray = el.closest('[data-testid="composer-tray"]')!.getBoundingClientRect(), r = el.getBoundingClientRect(); return r.top < tray.top || r.bottom > tray.bottom; })).toBe(true);
+    await page.waitForTimeout(2200);
+    expect(await focus(page)).not.toMatch(/allow/);
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(500);
+    expect(await states(request, s.id)).toBe("pending");
+    await expect(card).toHaveAttribute("data-must-open", "true");
+    await expect(card.getByTestId("approval-left")).toHaveText(/^\d+ lines? not seen yet/);
+    await expect(card.getByTestId("approval-hint")).toBeHidden();
+    await shoot(page, "approval-read-05-tray-cut");
+    // Scrolled through by the owner, the lines the window cut have been in view too: the card is read,
+    // and its answer takes the keyboard.
+    await wheel(page, 40, 16);
+    await wheel(page, -40, 16);
+    await expect(card).not.toHaveAttribute("data-must-open", "true");
+    await expect(card.getByTestId("approval-left")).toHaveCount(0);
+    // (The answer is under the text in a window this short: it acts once it has stood in view.)
+    await card.getByTestId("allow-once").scrollIntoViewIfNeeded();
+    await expect(card.getByTestId("allow-once")).toBeFocused();
+    await expect(card).toHaveAttribute("data-live", "true", { timeout: 10_000 });
+    await page.keyboard.press("Enter");
+    await expect.poll(() => states(request, s.id)).toBe("allowed/once");
+  } finally {
+    await drop(request, [s.id]);
+  }
+});
+
+test("a long command opened by one click is read once its lines have been in view", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  const MANY = `${Array.from({ length: 160 }, (_, i) => `echo step ${i + 1}`).join("\n")}\nrm -rf ./release && git push --force origin main`;
+  const s = await asking(request, "Read: a hundred and sixty lines", [bash(MANY)]);
+  try {
+    await waits(request, s.id);
+    await page.goto(`/s/${s.id}`);
+    const card = page.getByTestId("approval").first();
+    await expect(card).toHaveAttribute("data-must-open", "true");
+    // One click opens it, and the region jumps to its end: the first and the last screen were on show, the middle never.
+    await card.getByTestId("approval-expand").click();
+    await page.waitForTimeout(1500);
+    await expect(card).toHaveAttribute("data-must-open", "true");
+    const left = Number((await card.getByTestId("approval-left").innerText()).match(/\d+/)![0]);
+    expect(left).toBeGreaterThan(80);
+    await card.getByTestId("allow-once").focus();
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(500);
+    expect(await states(request, s.id)).toBe("pending");
+    await shoot(page, "approval-read-06-lines-left");
+    // Scrolled through by the owner, top to bottom: every line has been in view.
+    await wheel(page, -400, 14);
+    await wheel(page, 70, 70);
+    await expect(card).not.toHaveAttribute("data-must-open", "true", { timeout: 10_000 });
+    await card.getByTestId("allow-once").scrollIntoViewIfNeeded();
+    await expect(card).toHaveAttribute("data-live", "true", { timeout: 10_000 });
+    await card.getByTestId("allow-once").click();
+    await expect.poll(() => states(request, s.id)).toBe("allowed/once");
+  } finally {
+    await drop(request, [s.id]);
   }
 });

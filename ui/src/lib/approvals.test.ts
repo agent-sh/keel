@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Approval } from "../../../src/safety/gate.ts";
-import { batches, batchName, coverName, hold, nextAction, pressable, settled, spentAction, stand, SETTLE_MS, type Action, type Hold } from "./approvals.ts";
+import { batches, batchName, coverName, hold, nextAction, pressable, sawLines, settled, spentAction, stand, unseenLines, SETTLE_MS, type Action, type Hold, type Lines } from "./approvals.ts";
 
 const card = (id: string, over: Partial<Approval> = {}): Approval => ({
   id, session_id: "s", call_id: `c-${id}`, tool: "Bash", kind: "shell", summary: `echo ${id}`, input: {}, risk: "low", suggest: [], state: "pending", created: 1, ...over,
@@ -165,4 +165,45 @@ test("the action says what it covers", () => {
   expect(coverName({ tool: "Bash", kind: "shell", waiting: 8 }, 8)).toBe("all 8 Bash commands");
   expect(coverName({ tool: "Bash", kind: "shell", waiting: 8 }, 3)).toBe("3 of 8 Bash commands");
   expect(coverName({ tool: "Bash", kind: "shell", waiting: 4 }, 0)).toBe("0 of 4 Bash commands");
+});
+
+test("a text is read when every line of it has been in view: by the owner's scroll, or standing for the settle time", () => {
+  const H = 20; // a line's height
+  const at = (view: [number, number] | null, total = 41) => ({ total, line: H, view });
+  // A card that has just arrived: what shows counts once it has stood for the settle time.
+  let l: Lines = sawLines(undefined, at([0, 200]), false, 0);
+  expect(unseenLines(l)).toMatchObject({ n: 41, out: 31 });
+  l = sawLines(l, at([0, 200]), false, SETTLE_MS - 1);
+  expect(unseenLines(l).n).toBe(41);
+  l = sawLines(l, at([0, 200]), false, SETTLE_MS);
+  expect(unseenLines(l)).toMatchObject({ n: 31, out: 31 });
+  // Opened by a click, the page jumps to the end: the last screen counts after it stood, what it jumped over never.
+  l = sawLines(l, at([620, 820]), false, 2000);
+  expect(unseenLines(l)).toMatchObject({ n: 31, out: 21 });
+  l = sawLines(l, at([620, 820]), false, 2000 + SETTLE_MS);
+  expect(unseenLines(l)).toMatchObject({ n: 21, out: 21 });
+  // The owner scrolls back through it: each view counts as it is read, a line cut by an edge once all of it was.
+  for (const top of [470, 330, 190, 50, 0]) l = sawLines(l, at([top, top + 200]), true, 3100 - top);
+  expect(unseenLines(l)).toMatchObject({ n: 0, out: 0 });
+  expect(l.seen).toEqual([[0, 820]]);
+  // The owner scrolls away from a view before it has stood: it was in view, and counts.
+  let q = sawLines(sawLines(undefined, at([0, 200]), false, 0), at([100, 300]), true, 50);
+  expect(q.seen).toEqual([[0, 300]]);
+  // A text the owner's scroll brought into view counts as it comes.
+  expect(unseenLines(sawLines(sawLines(undefined, at(null, 5), false, 0), at([0, 100], 5), true, 40)).n).toBe(0);
+  // A jump of the owner's (the scroll bar dragged far) counts where it left and where it lands, not between.
+  q = sawLines(q, at([600, 800]), true, 60);
+  expect(unseenLines(q)).toMatchObject({ n: 16, out: 16 });
+  // A move that was not the owner's (the list changed under it) waits again.
+  let m = sawLines(sawLines(undefined, at([0, 100], 20), false, 0), at([0, 100], 20), false, SETTLE_MS);
+  m = sawLines(m, at([200, 300], 20), false, 1100);
+  expect(unseenLines(m)).toMatchObject({ n: 15, out: 10 });
+  // Out of view, nothing is seen and nothing is forgotten; a text that wraps anew is another text.
+  m = sawLines(m, at(null, 20), true, 1200);
+  expect(unseenLines(m)).toMatchObject({ n: 15, out: 15 });
+  expect(unseenLines(sawLines(m, at([0, 100], 30), true, 1300))).toMatchObject({ n: 25, out: 25 });
+  // The count is worth saying once some of the text is or was in view: not for a card nothing shows of yet.
+  expect(unseenLines(sawLines(undefined, at(null), false, 0)).begun).toBe(false);
+  expect(unseenLines(m).begun).toBe(true);
+  expect(unseenLines(undefined)).toEqual({ n: 1, out: 0, begun: false });
 });

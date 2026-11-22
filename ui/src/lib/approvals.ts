@@ -56,6 +56,66 @@ export function hold(prev: Hold | undefined, at: { x: number; y: number; whole: 
 export const pressable = (h: Hold | undefined, ripe: boolean, scrolling: boolean, now: number): boolean =>
   !!h && h.view.whole && (settled(h.view, now) || (h.own && ripe && !scrolling && settled(h.place, now)));
 
+// ---- The lines of a text the owner has had in view.
+// A request is answered only for what was read, so a card keeps how much of
+// its text has been in view: rows of the text, in the text's own coordinates
+// (0 is the top of its first line), as sorted ranges. A line is seen when all
+// of its height is in them. Only what was in view at a reading counts:
+// - a view that stands counts once it has stood for the settle time: a card
+//   that has just arrived, a view the page itself moved (opening a long text
+//   jumps to its end, and what it jumped over was never in view);
+// - while the owner scrolls, each view counts as it is read, with the one
+//   they scrolled away from. A scroll is read at every step, and its steps
+//   overlap, so what it passes is counted; a jump counts where it lands. (A
+//   row the owner scrolled to is read as the scroll ends: its answer still
+//   waits out the card's first second on the page.)
+// `total`, `line`: the text's lines as it wraps now and a line's height (a text
+// that wraps anew is another text: nothing of it was seen). `view`: the rows
+// in view now; `since`: when exactly those came to be the ones in view.
+type Rows = [number, number];
+export type Lines = { total: number; line: number; seen: Rows[]; view: Rows | null; since: number };
+
+function withRows(seen: Rows[], [a, b]: Rows): Rows[] {
+  const out: Rows[] = [];
+  let lo = a, hi = b;
+  for (const [x, y] of seen) {
+    if (y < lo - 0.5 || x > hi + 0.5) out.push([x, y]);
+    else { lo = Math.min(lo, x); hi = Math.max(hi, y); }
+  }
+  out.push([lo, hi]);
+  return out.sort((p, q) => p[0] - q[0]);
+}
+
+// The next reading of a text. `own`: the view moved by the owner's own scroll
+// since the last reading, with nothing else changed.
+export function sawLines(prev: Lines | undefined, at: { total: number; line: number; view: Rows | null }, own: boolean, now: number): Lines {
+  const same = !!prev && prev.total === at.total && Math.abs(prev.line - at.line) < 0.01;
+  let seen = same ? prev!.seen : [];
+  const was = same ? prev!.view : null;
+  const kept = !!at.view && !!was && Math.abs(was[0] - at.view[0]) < 1 && Math.abs(was[1] - at.view[1]) < 1;
+  const since = kept ? prev!.since : now;
+  if (at.view) {
+    if (own && !kept) seen = withRows(was ? withRows(seen, was) : seen, at.view);
+    else if (now - since >= SETTLE_MS) seen = withRows(seen, at.view);
+  }
+  return { total: at.total, line: at.line, seen, view: at.view, since };
+}
+
+// The lines that have not been in view (`n`), and how many of those are not in
+// view now either (`out`): those the owner has to bring into view. `begun`:
+// some of the text is in view or has been, so the count is worth saying.
+export function unseenLines(l: Lines | undefined): { n: number; out: number; begun: boolean } {
+  if (!l) return { n: 1, out: 0, begun: false };
+  const within = (rows: Rows[], i: number) => rows.some(([a, b]) => a <= i * l.line + 1 && b >= (i + 1) * l.line - 1);
+  let n = 0, out = 0;
+  for (let i = 0; i < l.total; i++) {
+    if (within(l.seen, i)) continue;
+    n++;
+    if (!l.view || !within([l.view], i)) out++;
+  }
+  return { n, out, begun: !!l.view || n < l.total };
+}
+
 export type Batch = {
   tool: string;
   kind: Approval["kind"];

@@ -450,8 +450,15 @@ test("a command cut by its box is answered on its own, and opens in place", asyn
     await cut.getByTestId("allow-once").click({ force: true });
     await expect(cut.getByTestId("approval-open-first")).toHaveText("Open the whole command first.");
     expect(existsSync(join(ws, "script.txt"))).toBe(false);
+    // Opened, it is read once every line of it has been in view: the owner scrolls through it.
     await cut.getByTestId("approval-expand").click();
+    await expect(cut.getByTestId("approval-left")).toHaveText(/^\d+ lines not seen yet/);
+    const tray = (await pane.getByTestId("composer-tray").boundingBox())!;
+    await page.mouse.move(tray.x + tray.width / 2, tray.y + tray.height / 2);
+    for (const by of [...Array(8).fill(-300), ...Array(40).fill(60)]) { await page.mouse.wheel(0, by); await page.waitForTimeout(35); }
+    await expect(cut).not.toHaveAttribute("data-must-open", "true", { timeout: 10_000 });
     await cut.getByTestId("allow-once").scrollIntoViewIfNeeded();
+    await expect(cut).toHaveAttribute("data-live", "true", { timeout: 10_000 });
     await cut.getByTestId("allow-once").click();
     await expect.poll(() => existsSync(join(ws, "script.txt"))).toBe(true);
   } finally { await request.delete(`/api/sessions/${id}`); }
