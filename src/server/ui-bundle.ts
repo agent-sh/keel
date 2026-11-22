@@ -15,24 +15,15 @@
 import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileRoute } from "./compress.ts";
+import { daemonApi, sourceApi } from "../core/api-stamp.ts";
+
+export { daemonApi, sourceApi };
 
 declare const __KEEL_API__: string | undefined;
 declare const __KEEL_UI_BUILT__: number | undefined;
 
 export type UiManifest = { format: 1; version: number; api: string; files: string[] };
 export const UI_PREFIX = "/_ui/";
-
-// The daemon side of the contract: every daemon source but the tests. A UI
-// change that needs a daemon change cannot be installed without a restart.
-export function sourceApi(root: string): string {
-  const h = new Bun.CryptoHasher("sha256");
-  const files = [...new Bun.Glob("src/**/*.ts").scanSync({ cwd: root })].filter((f) => !f.endsWith(".test.ts")).sort();
-  for (const f of files) h.update(f + "\0").update(readFileSync(join(root, f))).update("\0");
-  return h.digest("hex").slice(0, 16);
-}
-
-// What this daemon was built from: stamped in by scripts/build.ts, read from the sources when run from them.
-export const daemonApi = () => (typeof __KEEL_API__ === "string" ? __KEEL_API__ : sourceApi(resolve(import.meta.dir, "../..")));
 
 // The page's version rides in its HTML, so a page always knows which one it loaded.
 export function stamp(html: string, version: string): string {

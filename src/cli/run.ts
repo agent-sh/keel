@@ -6,9 +6,9 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { check as checkSchema, extractJson, validSchema } from "../automation/schema.ts";
-import { lockedDaemon } from "../admin/daemon.ts";
+import { lockedDaemon } from "../core/daemon-lock.ts";
 import type { StoredEvent } from "../core/types.ts";
-import { startDaemon, type Started } from "../server/start.ts";
+import type { Started } from "../server/start.ts";
 import { ApiError, clean, Client, command, EXIT, type Found, out, pipedStdin, promptFiles, usageError } from "./client.ts";
 import { assistantText, deltaLine, Follower, STREAM_SCHEMA, streamLine } from "./events.ts";
 import { runStream } from "./stream.ts";
@@ -334,7 +334,8 @@ export async function daemonFor(c: Client, found: Found, workspace: string): Pro
   const log = console.log;
   console.log = (...a: unknown[]) => console.error(...a);
   try {
-    const own = await startDaemon({ stateDir: found.stateDir, bind: "127.0.0.1:0", workspace, client: true });
+    // The daemon's code is loaded only by a command that runs one in its own process.
+    const own = await (await import("../server/start.ts")).startDaemon({ stateDir: found.stateDir, bind: "127.0.0.1:0", workspace, client: true });
     return { c: new Client(own.url), own };
   } finally {
     console.log = log;

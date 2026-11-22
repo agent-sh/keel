@@ -12,7 +12,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { renderSVG, renderUnicodeCompact } from "uqr";
-import { claimState, lockedDaemon } from "../admin/daemon.ts";
+import { claimState, lockedDaemon } from "../core/daemon-lock.ts";
 import { undoCutRestore } from "../admin/storage.ts";
 import { Store } from "../core/store.ts";
 import { storePath } from "../core/store-files.ts";

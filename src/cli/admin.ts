@@ -9,10 +9,9 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { unitFor } from "../admin/unit.ts";
-import { claimState, lockHolder } from "../admin/daemon.ts";
+import { claimState, lockHolder } from "../core/daemon-lock.ts";
 import { restartSummary, restartTurnLine, type RestartTurn } from "../admin/life-rows.ts";
 import { parseBind } from "../core/bind.ts";
-import { backupConfig, restore as restoreBackup } from "../admin/storage.ts";
 import { configDir } from "../providers/config.ts";
 import { authHeaders, clean, findDaemon, refusal } from "./client.ts";
 import { defaultStateDir } from "../core/paths.ts";
@@ -247,6 +246,8 @@ const restore = (argv: string[]) => {
     if (pid) throw new Error(`a daemon (pid ${pid}) uses ${dir}: stop it first (keel drain)`);
     const src = existsSync(pos[0]) ? resolve(pos[0]) : join(dir, "backups", pos[0]);
     if (!existsSync(src)) throw new Error(`no backup ${pos[0]}`);
+    // The store's own code is loaded for a restore, and by no other command here (the rest ask the daemon).
+    const { backupConfig, restore: restoreBackup } = await import("../admin/storage.ts");
     // Decided before anything moves: a refusal leaves the state as it is too.
     const held = backupConfig(src);
     const from = held.dir ?? "a folder it does not name";

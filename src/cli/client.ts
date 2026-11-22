@@ -5,7 +5,7 @@ import { fstatSync } from "node:fs";
 import { spelled, spellHidden } from "../safety/chars.ts";
 import { join } from "node:path";
 import { parseArgs, type ParseArgsConfig } from "node:util";
-import { lockedDaemon, servicedDaemon } from "../admin/daemon.ts";
+import { lockedDaemon, servicedDaemon } from "../core/daemon-lock.ts";
 import { defaultStateDir } from "../core/paths.ts";
 
 export const EXIT = { ok: 0, owner: 2, error: 3, timeout: 124, sigint: 130, sigterm: 143 } as const;

@@ -8,7 +8,7 @@ import { planWaits, plansWaiting } from "../server/routes/plan.ts";
 import { sessionState } from "./state.ts";
 import { readText } from "../core/proc.ts";
 import { plainLine } from "../core/plain.ts";
-import { lockedDaemon } from "../admin/daemon.ts";
+import { lockedDaemon } from "../core/daemon-lock.ts";
 import { openUrl } from "../cli/client.ts";
 import { desktopNotifications } from "./desktop.ts";
 import { secretsWaiting } from "../server/routes/secrets.ts";

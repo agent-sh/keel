@@ -1,14 +1,9 @@
 #!/usr/bin/env bun
+// The entry of the binary. It imports nothing of the daemon and of no
+// command: `keel --version` and a client command load what they run, the
+// daemon's code is loaded by `keel serve` alone (src/cli/index.ts).
 import { parseArgs } from "node:util";
-import { commands } from "./cli/index.ts";
-import { topHelp, unknownCommand } from "./cli/help.ts";
-import { parseBind } from "./core/bind.ts";
-import { withoutCollectorTimer } from "./core/relaunch.ts";
-import { buildId, versionLine } from "./core/build.ts";
-import { configDir } from "./providers/config.ts";
-import { startLine } from "./admin/daemon-log.ts";
-import { daemonApi } from "./server/ui-bundle.ts";
-import { startDaemon } from "./server/start.ts";
+import { isCommand, commandOf } from "./cli/index.ts";
 
 const SERVE_USAGE = "keel serve [--bind HOST:PORT] [--state-dir DIR] [--workspace DIR] [--dev]\n  Runs the daemon: the agent loop, the HTTP API and the workbench (default bind 127.0.0.1:47960).";
 const sub = Bun.argv[2];
@@ -16,23 +11,26 @@ const sub = Bun.argv[2];
 if (sub === "backup-check") process.exit(await (await import("./admin/backup-check.ts")).main());
 if (sub === undefined || sub === "-h" || sub === "--help" || sub === "help") {
   const of = sub === "help" ? Bun.argv[3] : undefined;
-  if (of && commands[of]) process.exit(await commands[of](["--help"]));
+  if (of && isCommand(of)) process.exit(await (await commandOf(of))!(["--help"]));
   // serve is not a client command: its usage is printed here, and no daemon starts.
   if (of === "serve") process.exit((console.log(SERVE_USAGE), 0));
-  process.exit((console.log(topHelp()), 0));
+  process.exit((console.log((await import("./cli/help.ts")).topHelp()), 0));
 }
 // What this binary was built from: the revision a release names.
-if (sub === "--version" || sub === "-V") process.exit((console.log(versionLine(daemonApi())), 0));
+if (sub === "--version" || sub === "-V") {
+  const [{ versionLine }, { daemonApi }] = await Promise.all([import("./core/build.ts"), import("./core/api-stamp.ts")]);
+  process.exit((console.log(versionLine(daemonApi())), 0));
+}
 // Client commands (keel run, keel send, keel pair, ...) parse their own options.
 // -h is --help for every one of them (up to a `--`, after which words are the caller's).
-if (sub && commands[sub]) {
+if (sub && isCommand(sub)) {
   const rest = Bun.argv.slice(3);
   const end = rest.indexOf("--");
-  process.exit(await commands[sub](rest.map((a, i) => (a === "-h" && (end < 0 || i < end) ? "--help" : a))));
+  process.exit(await (await commandOf(sub))!(rest.map((a, i) => (a === "-h" && (end < 0 || i < end) ? "--help" : a))));
 }
 
 const args = Bun.argv.slice(2);
-if (args[0] && args[0] !== "serve" && !args[0].startsWith("-")) process.exit(unknownCommand(args[0]));
+if (args[0] && args[0] !== "serve" && !args[0].startsWith("-")) process.exit((await import("./cli/help.ts")).unknownCommand(args[0]));
 let parsed;
 try {
   parsed = parseArgs({
@@ -52,6 +50,7 @@ try {
 const { values } = parsed;
 if (values.help) process.exit((console.log(SERVE_USAGE), 0));
 // Checked here, before a state folder is made or claimed.
+const { parseBind } = await import("./core/bind.ts");
 const bind = parseBind(values.bind!);
 if ("error" in bind) {
   console.error(`keel serve: ${bind.error}\n${SERVE_USAGE}`);
@@ -60,7 +59,8 @@ if ("error" in bind) {
 
 const g = globalThis as { __keelSignals?: boolean; __keelStop?: (ms: number) => Promise<void>; __keelStartSaid?: boolean };
 // Before anything is claimed or opened: the daemon runs without the runtime's collector timer.
-if (!g.__keelSignals) withoutCollectorTimer();
+if (!g.__keelSignals) (await import("./core/relaunch.ts")).withoutCollectorTimer();
+const { startDaemon } = await import("./server/start.ts");
 // A daemon that could not start ends here, with what went wrong. Left alone it
 // serves nothing and stays: it holds the state folder, the modules it loaded
 // keep it alive and take its signals, and under --hot the process waits for an
@@ -94,5 +94,6 @@ if (!g.__keelSignals) {
 console.log(`keel listening on ${d.url} (state ${d.stateDir})`);
 if (!g.__keelStartSaid) {
   g.__keelStartSaid = true;
+  const [{ startLine }, { buildId }, { configDir }] = await Promise.all([import("./admin/daemon-log.ts"), import("./core/build.ts"), import("./providers/config.ts")]);
   console.log(startLine({ revision: buildId(), pid: process.pid, url: d.url, state: d.stateDir, config: configDir() }));
 }
