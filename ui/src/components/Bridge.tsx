@@ -18,6 +18,7 @@ import { byAttention, getStations, opened, shares, stations, target, useStations
 import { getState, useStore } from "../lib/store.ts";
 import { getUI, navigate, savePref, setUI, useUI } from "../lib/ui.ts";
 import { ago, scrollMotion, when } from "../lib/utils.ts";
+import { sequenceAt } from "../lib/asks.ts";
 import { focusBox } from "../lib/utils.ts";
 import { branchOf, lastLine, useAgentCount, useAgentCounts, useSessionState, useWatch, watchLabel, type Watch } from "../lib/watch.ts";
 import { MachineSep, machineRuns, whereWords } from "./Where.tsx";
@@ -311,7 +312,9 @@ export function Bridge() {
     const at = document.activeElement as HTMLElement | null;
     const from = at?.closest<HTMLElement>("[data-station]")?.dataset.station;
     if (at && at !== document.body && (!from || from === helm)) return;
-    focusBox(helm);
+    // The answering sequence moved the helm: it brings the keyboard to that pane's card, not to its box.
+    if (sequenceAt() === helm) return;
+    focusBox(helm, false);
   }, [helm]);
   // A session that is gone (deleted, archived) leaves its pane empty.
   const gone = (id: string) => id !== helm && (!sessions[id] || sessions[id]!.archived);

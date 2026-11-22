@@ -10,6 +10,8 @@
 const BACKDROP = '[role="presentation"][data-base-ui-inert]:not([inert])';
 const POPUP = '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]';
 
+// The element is inside a popup (a dialog, a menu, a list of choices), not in the page under it.
+export const inPopup = (el: Element | null | undefined): boolean => !!el?.closest(POPUP);
 // A modal dialog or menu is open over the page.
 export const modalOpen = (): boolean => [...document.querySelectorAll<HTMLElement>(BACKDROP)].some((el) => el.style.position === "fixed");
 // Something lies over `el` (over the page, when none is given). What is inside a popup is not under it.

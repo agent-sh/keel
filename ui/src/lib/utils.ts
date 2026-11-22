@@ -1,4 +1,5 @@
 import { clsx, type ClassValue } from "clsx";
+import { ownFocus } from "./asks.ts";
 import { extendTailwindMerge } from "tailwind-merge";
 
 // The type scale of styles.css (--text-*) is font sizes: without this, a color
@@ -79,5 +80,12 @@ export function folderNames(paths: Iterable<string>): Map<string, string> {
 export const scrollMotion = (): ScrollBehavior => (matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth");
 
 // The message box of a session's pane takes the keyboard. (No other pane's box stands in
-// for one that is not drawn yet: what is typed would go to another session.)
-export const focusBox = (id: string) => document.querySelector<HTMLElement>(`[data-station="${CSS.escape(id)}"] [data-testid="composer"]`)?.focus();
+// for one that is not drawn yet: what is typed would go to another session.) `own`: a key
+// of the owner's that names the box asked for it (the command that goes to it, Escape from
+// a row of the conversation); else it is a move by code, and when that takes the keyboard
+// from a card, Enter in the box sends nothing within the settle time of it (lib/asks.ts).
+export const focusBox = (id: string, own = true) => {
+  const box = document.querySelector<HTMLElement>(`[data-station="${CSS.escape(id)}"] [data-testid="composer"]`);
+  if (own) ownFocus(box, true);
+  else box?.focus();
+};

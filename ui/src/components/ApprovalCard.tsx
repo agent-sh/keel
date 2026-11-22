@@ -5,7 +5,7 @@ import { shownInPart } from "../../../src/safety/summary.ts";
 import { batches, batchName, coverName, hold, nextAction, pressable, READ_MS, settled, SETTLE_MS, spentAction, stand, type Action, type Batch, type Hold, type Stand } from "../lib/approvals.ts";
 import { arrivalOf, arriving } from "../lib/automation.ts";
 import { hasHidden, hasRtl } from "../lib/hidden-chars.ts";
-import { dropRepeats, keyRefused, keysSettled, mayTake, noteAnswer, takeKeys, typeToBox, useHold } from "../lib/asks.ts";
+import { dropRepeats, keyRefused, keysSettled, mayTake, noteAnswer, sequenceAt, takeKeys, typeToBox, useHold } from "../lib/asks.ts";
 import { composing } from "../lib/keys.ts";
 import { safety, useSafety, type Approval, type Suggest } from "../lib/safety.ts";
 import { failed, reportError } from "../lib/store.ts";
@@ -472,7 +472,8 @@ function useHandBack(root: RefObject<HTMLElement | null>, list: RefObject<HTMLDi
     const box = root.current?.closest(".k-session")?.querySelector<HTMLElement>('[data-testid="composer"]');
     queueMicrotask(() => {
       if (to?.isConnected) to.focus({ preventScroll: true });
-      else if (matchMedia("(min-width: 768px)").matches) box?.focus({ preventScroll: true });
+      // (Not while the answering sequence is on: it moves the keyboard to what waits next, never by way of a message box.)
+      else if (!sequenceAt() && matchMedia("(min-width: 768px)").matches) box?.focus({ preventScroll: true });
     });
   }, []);
   return held;

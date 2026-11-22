@@ -4,6 +4,7 @@ import type { PromptBlock, Session } from "../../../src/core/types.ts";
 import { slash, type SlashItem } from "../lib/extend.ts";
 import { loadMcpPrompts } from "../lib/tools-ui.ts";
 import { fromBlock, toAttachment, toBlock, type Attachment } from "../lib/images.ts";
+import { boxRefused, ownFocus } from "../lib/asks.ts";
 import { composing, fuzzy, isMac, keyLabel, QUEUE_KEYS, SEND_KEYS } from "../lib/keys.ts";
 import { splitId } from "../lib/fleet-ids.ts";
 import { draftGone, draftHere, dropImage, fromServer, getDraft, isKeeping, keepImage, textTaken, typing, type Draft } from "../lib/drafts.ts";
@@ -260,9 +261,10 @@ function SessionComposer({
       setImages((cur) => [...cur, ...add]);
       if (sid) for (const a of add) if (!a.file) keep(sid, a);
     }
+    // (What the owner asked to have put in the box: the keyboard goes with it as theirs.)
     requestAnimationFrame(() => {
       const el = ref.current;
-      if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+      if (el) { ownFocus(el, true); el.setSelectionRange(el.value.length, el.value.length); }
     });
   }, [seed]);
 
@@ -770,13 +772,18 @@ function SessionComposer({
           }
           // Ctrl Shift Enter queues for after the running turn, whichever key sends; with no
           // turn running it sends (the turn may have ended a moment before the press).
-          if (e.key === "Enter" && mod && e.shiftKey && !e.altKey) {
-            e.preventDefault();
-            if (!e.repeat) submit(!!working && !!onQueue);
+          const queues = e.key === "Enter" && mod && e.shiftKey && !e.altKey;
           // Alt Enter is the pane's (focus it, or show all): not a send.
-          } else if (e.key === "Enter" && !e.altKey && ((enterSends && !e.shiftKey && !mod) || (!enterSends && mod))) {
+          if (queues || (e.key === "Enter" && !e.altKey && ((enterSends && !e.shiftKey && !mod) || (!enterSends && mod)))) {
             e.preventDefault();
-            submit();
+            // A held Enter sends nothing: it may have gone down somewhere else (on an answer that was
+            // given, and the keyboard came here). And Enter sends nothing from a box that code moved
+            // the keyboard to from a card within the settle time, until the owner typed in it or
+            // pressed it (lib/asks.ts): a second Enter after an answer does not send what this box holds.
+            if (e.repeat) return;
+            const no = canSend ? boxRefused(e.currentTarget) : "";
+            if (no) return setNotice(no);
+            submit(queues && !!working && !!onQueue);
           }
           // Tab with a draft while a turn runs goes to the queue button (Enter there queues),
           // and the key that queues from the box is said, once.

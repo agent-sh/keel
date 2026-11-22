@@ -4,6 +4,7 @@ import { FolderX, WifiOff } from "lucide-react";
 import { WaitingElsewhere } from "./AnswerQueue.tsx";
 import { Boundary } from "./Boundary.tsx";
 import { ChildApprovals } from "./automation/ChildApprovals.tsx";
+import { sequenceAt } from "../lib/asks.ts";
 import { stopHere } from "../lib/automation.ts";
 import { Composer } from "./Composer.tsx";
 import { SessionHeader, SidebarButton } from "./SessionHeader.tsx";
@@ -104,7 +105,8 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
                 onStop={() => void stopHere(session)}
                 {...(session.parent_id ? { onEscape: () => navigate({ name: "session", id: session.parent_id! }), stopLabel: "Stop this agent" } : {})}
                 focus={focus}
-                autoFocus={focus && matchMedia("(min-width: 768px)").matches}
+                // (Not in a pane the answering sequence opened to bring the keyboard to its card: lib/asks.ts.)
+                autoFocus={focus && matchMedia("(min-width: 768px)").matches && sequenceAt() !== session.id}
                 above={
                   <>
                     {unreached === id && <Unreached />}

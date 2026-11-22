@@ -17,9 +17,15 @@
 //   that picks an option) act only once the owner put the keyboard there.
 // - A card takes the keyboard only in the pane worked in, from that pane's
 //   empty message box or from nothing.
+// - A message box is held to the same rule from the other side: Enter sends
+//   nothing from a box that code moved the keyboard to from a card (the card
+//   left, it was answered elsewhere, the keys went on to another pane) within
+//   the settle time, until the owner types in it or presses it: an Enter
+//   meant for the card's answer does not send what the box holds. And a move
+//   the answering sequence makes never puts the keyboard in a message box.
 import { useEffect, useLayoutEffect, useRef, useSyncExternalStore, type RefObject } from "react";
 import { SETTLE_MS } from "./approvals.ts";
-import { overlayOver } from "./overlay.ts";
+import { inPopup, overlayOver } from "./overlay.ts";
 
 const UNIT = "[data-ask-card]";
 const REGION = "[data-ask]";
@@ -36,17 +42,33 @@ const holds = new WeakMap<Element, Hold>();
 let current: Element | null = null; // the unit the keyboard is in
 let moving: { own: boolean; take: boolean } | null = null; // set while takeKeys moves the focus
 let tabbed = -Infinity; // the owner's last Tab
-let pressed: { at: number; unit: Element | null } = { at: -Infinity, unit: null }; // their last press, and the unit it was on
+let pressed: { at: number; unit: Element | null; box: Element | null } = { at: -Infinity, unit: null, box: null }; // their last press, and the unit or the message box it was on
 let last: Element | null = null; // the unit the focus was last given to (null: something that is no card)
 let version = 0;
 const subs = new Set<() => void>();
 const changed = () => { version++; subs.forEach((f) => f()); };
 const unitOf = (el: Element | null | undefined) => el?.closest(UNIT) ?? null;
 const settledAt = (h: Hold | undefined | null) => !h || !h.code || performance.now() - h.at >= SETTLE_MS;
+// The message boxes the keyboard was moved to by code from a card, and when (boxRefused).
+const BOX = '[data-testid="composer"]';
+const isBox = (el: EventTarget | null): el is HTMLTextAreaElement => el instanceof HTMLTextAreaElement && el.matches(BOX);
+const boxes = new WeakMap<Element, number>();
+let place: Element | null = null; // where in the page the keyboard last was: a message box, a card, or another element (not a popup)
+let theirs = false; // set while a key of the owner's that names a box moves the keyboard to it (ownFocus)
+// The session whose card the answering sequence is moving the keyboard to, or is on (setSequence).
+let bound: string | null = null;
 
 if (typeof window !== "undefined") {
   addEventListener("focusin", (e) => {
+    // A message box: code moved the keyboard to it from a card (where it last was in the page), or
+    // the owner's own Tab, press on it or key that names it brought it there.
+    if (isBox(e.target)) {
+      const now = performance.now();
+      if (!place?.matches(UNIT) || theirs || now - tabbed <= ACT_MS || (pressed.box === e.target && now - pressed.at <= ACT_MS)) boxes.delete(e.target);
+      else boxes.set(e.target, now);
+    }
     const unit = unitOf(e.target as Element);
+    if (!inPopup(e.target as Element)) place = isBox(e.target) ? e.target : unit ?? (e.target as Element);
     const from = (e as FocusEvent).relatedTarget as Node | null;
     const was = last;
     last = current = unit;
@@ -77,10 +99,44 @@ if (typeof window !== "undefined") {
   }, true);
   addEventListener("pointerdown", (e) => {
     const unit = unitOf(e.target as Element);
-    pressed = { at: performance.now(), unit };
+    const box = (e.target as Element).closest?.(".k-box")?.querySelector(BOX) ?? null;
+    pressed = { at: performance.now(), unit, box };
+    // A press on the message box makes the keyboard there the owner's.
+    if (box) boxes.delete(box);
     // A press on the card the keyboard is in makes it the owner's, as if their press had brought it.
     if (unit?.contains(document.activeElement)) { holds.set(unit, { at: pressed.at, code: false, take: false, own: true }); changed(); }
   }, true);
+  // What the owner types into a message box makes the keyboard there theirs.
+  addEventListener("input", (e) => { if (isBox(e.target)) boxes.delete(e.target); }, true);
+}
+
+// The owner's own key names an element (the command that goes to the message
+// box, Escape from a row of the conversation, a typed character on its way to
+// the box): the keyboard goes there as theirs, with no settle time.
+export function ownFocus(el: HTMLElement | null | undefined, scroll = false) {
+  theirs = true;
+  try { el?.focus({ preventScroll: !scroll }); } finally { theirs = false; }
+}
+// Why Enter in a message box sends nothing now, or "" when it may: not within
+// the settle time of code moving the keyboard to the box from a card. (A held
+// Enter sends nothing either: the box drops those itself.)
+export const boxRefused = (box: Element | null): string => {
+  const at = box ? boxes.get(box) : undefined;
+  return at !== undefined && performance.now() - at < SETTLE_MS ? "Not yet: the keyboard has only just arrived" : "";
+};
+// The answering sequence (components/AnswerQueue.tsx) says which session's
+// card it is bringing the keyboard to, or is on. While it does, no message
+// box takes the keyboard by code: not that session's as its pane opens or
+// takes the helm, and none when a card that was answered leaves. The sequence
+// puts the keyboard where it goes next, or in the box when it ends (restInBox).
+export const setSequence = (session: string | null) => { bound = session; };
+export const sequenceAt = (): string | null => bound;
+// The keyboard goes to a session's message box when nothing holds it (at a
+// desk; on a phone that would raise the keyboard).
+export function restInBox(session: string) {
+  const at = document.activeElement;
+  if ((at && at !== document.body && at.isConnected) || !matchMedia("(min-width: 768px)").matches) return;
+  document.querySelector<HTMLElement>(`[data-station="${CSS.escape(session)}"] ${BOX}`)?.focus({ preventScroll: true });
 }
 
 // The keyboard has been in the element's card for the settle time, or the owner brought it there themselves.
@@ -164,10 +220,10 @@ export function typeToBox(e: { key: string; altKey: boolean; ctrlKey: boolean; m
   if (e.altKey || e.ctrlKey || e.metaKey || e.key.length !== 1) return false;
   if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable) return false;
   if (e.key === " " && owned(t)) return false;
-  const box = (e.currentTarget as HTMLElement).closest(".k-session")?.querySelector<HTMLElement>('[data-testid="composer"]');
+  const box = (e.currentTarget as HTMLElement).closest(".k-session")?.querySelector<HTMLElement>(BOX);
   if (!box) return false;
-  box.focus({ preventScroll: true });
-  return true;
+  ownFocus(box);
+  return document.activeElement === box;
 }
 
 // What the owner answered from this page, by the id of the request (an
@@ -200,9 +256,10 @@ export function useHold(unit: RefObject<Element | null>): { keys: "" | "wait" | 
 // A card that takes the keyboard as it appears (`take`: it is the first of
 // its kind in the pane), onto its region, when mayTake allows. When the card
 // leaves while it held the keyboard, the pane's message box gets it (at a
-// desk; on a phone that would raise the keyboard). An answer disables the
-// card's controls and the browser then takes the focus off them: set `held`
-// as the answer is sent.
+// desk; on a phone that would raise the keyboard), unless the answering
+// sequence is on: then the sequence moves the keyboard. An answer disables
+// the card's controls and the browser then takes the focus off them: set
+// `held` as the answer is sent.
 export function useAskKeys(unit: RefObject<HTMLElement | null>, take = true) {
   const held = useRef(false);
   useEffect(() => {
@@ -211,10 +268,10 @@ export function useAskKeys(unit: RefObject<HTMLElement | null>, take = true) {
   useLayoutEffect(() => () => {
     const a = document.activeElement;
     if (!unit.current?.contains(a) && !(held.current && (!a || a === document.body))) return;
-    const box = unit.current?.closest(".k-session")?.querySelector<HTMLElement>('[data-testid="composer"]');
+    const box = unit.current?.closest(".k-session")?.querySelector<HTMLElement>(BOX);
     queueMicrotask(() => {
       const now = document.activeElement;
-      if ((!now || now === document.body || !now.isConnected) && matchMedia("(min-width: 768px)").matches) box?.focus({ preventScroll: true });
+      if (!bound && (!now || now === document.body || !now.isConnected) && matchMedia("(min-width: 768px)").matches) box?.focus({ preventScroll: true });
     });
   }, []);
   return held;
@@ -224,10 +281,20 @@ export function useAskKeys(unit: RefObject<HTMLElement | null>, take = true) {
 // lies over it (a few seconds at most: a pane may still be drawing, a dialog
 // closing). Two frames after it shows, so that of several cards drawn one
 // after another the first in the pane is the one found. The wait ends when the
-// owner's hands go elsewhere meanwhile: a key or a press.
-export function keysWhenShown(find: () => Element | null, own: boolean) {
+// owner's hands go elsewhere meanwhile: a press, a key in a field, a key that
+// moves (Tab, Escape) or a command key. Not a plain key pressed on nothing: an
+// Enter pressed again right after an answer was aimed at where the keyboard
+// was, and the move goes on (the key answers nothing: the settle time runs
+// from the arrival). `otherwise` is run when the time is up and nothing took
+// the keyboard.
+export function keysWhenShown(find: () => Element | null, own: boolean, otherwise?: () => void) {
   let raf = 0, seen = 0, taken: Element | null = null, at = 0;
-  const stop = () => { cancelAnimationFrame(raf); clearTimeout(t); removeEventListener("keydown", stop, true); removeEventListener("pointerdown", stop, true); };
+  const stop = () => { cancelAnimationFrame(raf); clearTimeout(t); removeEventListener("keydown", key, true); removeEventListener("pointerdown", stop, true); };
+  const key = (e: KeyboardEvent) => {
+    const on = e.target as HTMLElement | null;
+    const field = !!on && (on.tagName === "INPUT" || on.tagName === "TEXTAREA" || on.tagName === "SELECT" || on.isContentEditable);
+    if (field || e.altKey || e.ctrlKey || e.metaKey || e.key === "Tab" || e.key === "Escape") stop();
+  };
   const look = () => {
     const el = find();
     seen = el ? seen + 1 : 0;
@@ -236,12 +303,13 @@ export function keysWhenShown(find: () => Element | null, own: boolean) {
     if (el && seen > 2 && unitOf(el) !== taken && takeKeys(el, own)) { taken = unitOf(el); at = performance.now(); }
     raf = requestAnimationFrame(look);
   };
-  const t = setTimeout(stop, 4000);
-  addEventListener("keydown", stop, true);
+  const t = setTimeout(() => { stop(); if (!taken) otherwise?.(); }, 4000);
+  addEventListener("keydown", key, true);
   addEventListener("pointerdown", stop, true);
   raf = requestAnimationFrame(look);
 }
 // The first thing that waits above a session's message box.
 export const askIn = (session: string) => document.querySelector<HTMLElement>(`[data-station="${CSS.escape(session)}"] [data-testid="composer-asks"] ${REGION}`);
-// The keyboard goes to it (the owner asked: `own`), once it shows.
-export const focusAsk = (session: string) => keysWhenShown(() => askIn(session), true);
+// The keyboard goes to it (the owner asked: `own`), once it shows. A session
+// that shows nothing to answer in time gets the keyboard in its message box.
+export const focusAsk = (session: string) => keysWhenShown(() => askIn(session), true, () => restInBox(session));

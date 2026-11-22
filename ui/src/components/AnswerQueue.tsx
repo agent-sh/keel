@@ -14,9 +14,16 @@
 // where it is. And it ends as soon as they do something else: go to another
 // session or page, press outside the cards, type into a field that is not a
 // card's, press Escape outside a card, or leave the window.
+//
+// A move the sequence makes never puts the keyboard in a message box, not for
+// a frame: a key pressed again right after an answer would send what that box
+// holds. The pane it moves to opens without its box taking the keyboard, and
+// a card that was answered hands it to none (lib/asks.ts: setSequence). Where
+// the sequence ends because nothing is left to answer here, the keyboard goes
+// to the session's message box, as a move by code.
 import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { announce } from "../lib/announce.ts";
-import { answeredHere, askIn, focusAsk } from "../lib/asks.ts";
+import { answeredHere, askIn, focusAsk, restInBox, sequenceAt, setSequence } from "../lib/asks.ts";
 import { isMac, registerCommand } from "../lib/keys.ts";
 import { usePlans } from "../lib/plans.ts";
 import { useSafety } from "../lib/safety.ts";
@@ -25,18 +32,22 @@ import { unsentOf, useShelfVersion } from "../lib/send-drafts.ts";
 import { useStore } from "../lib/store.ts";
 import { tipSay } from "../lib/tips.ts";
 import { getUI, navigate, useUI } from "../lib/ui.ts";
+import { keepBoxOut } from "../lib/self-focus.ts";
 import { nextWaiting, waitingOrder } from "../lib/waiting.ts";
 import { useSessionStates } from "../lib/watch.ts";
 import { Kbd } from "./Kbd.tsx";
 
 const KEYS = "alt+a";
+// What a session that needs the owner shows as a card above its message box (the daemon's `why`).
+const CARDS = new Set(["approval", "question", "plan", "secret"]);
 type State = {
   order: string[]; // the sessions that wait, the longest wait first
   parent: Record<string, string>; // of those, the agents' sessions: the session that started each
+  card: Record<string, boolean>; // of those, the ones that wait with a card (not with a message that did not go)
   on: boolean; // a sequence is being answered
   at: string | null; // the session the sequence is on
 };
-let state: State = { order: [], parent: {}, on: false, at: null };
+let state: State = { order: [], parent: {}, card: {}, on: false, at: null };
 const subs = new Set<() => void>();
 const set = (patch: Partial<State>) => { state = { ...state, ...patch }; subs.forEach((f) => f()); };
 const useQueue = <T,>(sel: (s: State) => T): T => useSyncExternalStore((f) => (subs.add(f), () => void subs.delete(f)), () => sel(state));
@@ -44,15 +55,22 @@ const here = () => { const r = getUI().route; return r.name === "session" ? r.id
 const say = (text: string) => { tipSay(null, text, 2400); announce(text); };
 
 // The sequence goes to a session: its pane takes the helm and its card the
-// keyboard, once it shows and nothing lies over it.
+// keyboard, once it shows and nothing lies over it. Its message box takes
+// none on the way (a session with no card to answer, only a message that did
+// not go, is opened as any other: there the box is where the keyboard goes).
 function go(id: string) {
   // Where it goes is known before the page moves: the move is the sequence's own.
   state = { ...state, on: true, at: id };
+  setSequence(state.card[id] === false ? null : id);
   if (here() !== id) navigate({ name: "session", id });
   set({});
   focusAsk(id);
 }
-const end = () => { if (state.on) set({ on: false, at: null }); };
+const end = () => { setSequence(null); if (state.on) set({ on: false, at: null }); };
+// The page's own rule for a focus it makes by itself (lib/self-focus.ts) is told the same: the
+// message box of the session the sequence brings the keyboard to takes none, neither as its
+// pane opens nor when what held the keyboard goes away.
+keepBoxOut((pane) => sequenceAt() === (pane as HTMLElement).dataset.station);
 
 // Goes to what waits on the owner and starts the sequence there: to what the
 // session on screen asks when the keyboard is not on it yet, else to the next
@@ -88,7 +106,12 @@ export function AnswerQueue() {
   const held = (id: string) => [...(approvals[id] ?? []).map((a) => a.id), ...(questions[id] ?? []), ...(plans[id] ?? []), ...(wanted[id] ?? []).map((r) => r.id)];
   const order = waitingOrder(list, (id) => states[id], (id) => held(id).length > 0 || !!unsentOf(id));
   const key = order.join();
-  useEffect(() => set({ order, parent: Object.fromEntries(order.flatMap((id) => (sessions[id]?.parent_id ? [[id, sessions[id]!.parent_id!]] : []))) }), [key]);
+  const cardKey = order.map((id) => (CARDS.has(states[id]?.why ?? "") || held(id).length > 0 ? 1 : 0)).join("");
+  useEffect(() => set({
+    order,
+    parent: Object.fromEntries(order.flatMap((id) => (sessions[id]?.parent_id ? [[id, sessions[id]!.parent_id!]] : []))),
+    card: Object.fromEntries(order.map((id, i) => [id, cardKey[i] === "1"])),
+  }), [key, cardKey]);
 
   const cur = useUI((s) => (s.route.name === "session" ? s.route.id : null));
   const on = useQueue((s) => s.on);
@@ -105,13 +128,15 @@ export function AnswerQueue() {
     const gone = before.cur === cur ? before.ids.filter((id) => !ids.includes(id)) : [];
     // Nothing was answered: nothing moves (a card that arrives moves nothing under the owner's hands).
     if (!cur || !gone.length) return;
-    // It left for another reason than the owner's answer from this page: the sequence ends where it is.
-    if (!gone.every(answeredHere)) return end();
+    // It left for another reason than the owner's answer from this page: the sequence ends where it
+    // is, and the keyboard the card held goes to the message box (where Enter sends nothing yet).
+    if (!gone.every(answeredHere)) { end(); return restInBox(cur); }
     // More waits here: the keyboard goes to it. Else on to the next session.
     if (ids.length) return focusAsk(cur);
     const next = order.find((id) => id !== cur);
     if (next) return go(next);
     end();
+    restInBox(cur);
     say("Nothing else waits for you.");
   }, [on, cur, idsKey, key]);
 
