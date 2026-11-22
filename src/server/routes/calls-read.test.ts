@@ -9,7 +9,7 @@ import { Store } from "../../core/store.ts";
 import { firstAt } from "../../core/tree.ts";
 import type { StoredEvent } from "../../core/types.ts";
 import { callAnswered, callsNamed, lastCall } from "./calls-read.ts";
-import { initSearchIndex } from "./search.ts";
+import { initSearchIndex, keepIndexed } from "./search.ts";
 
 const dirs: string[] = [];
 afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
@@ -34,6 +34,7 @@ test("the last accepted call is the one a walk over the branch finds, with no bo
   dirs.push(dir);
   const store = new Store(dir);
   initSearchIndex(store.db);
+  keepIndexed(store);
   let rnd = 11;
   const rand = () => ((rnd = (rnd * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
   const pick = <T,>(a: T[]) => a[Math.floor(rand() * a.length)]!;

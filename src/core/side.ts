@@ -82,20 +82,27 @@ export class Side {
     try { for (const w of all) this.make(w); } finally { this.making = false; }
   }
 
-  // What waits is made now, as one commit. A store that takes no write keeps it waiting (within SIDE_MAX) for the next try.
+  // What waits is made now, as one commit. A store that takes no write keeps it waiting (within
+  // SIDE_MAX) for the next try, a few times; a store that is closed has nothing written again.
+  private tries = 0;
   flush() {
     if (this.making || !this.waiting.length) return;
     const n = this.waiting.length;
-    if (this.db.inTransaction) return this.join();
     const kept = this.waiting;
     try {
+      if (this.db.inTransaction) return this.join();
       this.db.transaction(() => this.join())();
       this.counts.commits++;
+      this.tries = 0;
     } catch (e) {
       // The transaction did not begin or did not commit (the store takes no write, its lock was not had): nothing of it is stored.
+      clearTimeout(this.timer);
+      this.timer = undefined;
+      const closed = /closed|not open/i.test(String((e as Error)?.message ?? e));
+      if (closed || ++this.tries > 5) { this.waiting = []; this.tries = 0; if (!closed) try { this.failed(e, `${n} side writes`); } catch {} return; }
       if (!this.waiting.length) this.waiting = kept.slice(-SIDE_MAX);
       try { this.failed(e, `${n} side writes`); } catch {}
-      this.timer ??= setTimeout(() => { this.timer = undefined; this.flush(); }, this.ms * 5);
+      this.timer = setTimeout(() => { this.timer = undefined; this.flush(); }, this.ms * 5);
       (this.timer as { unref?: () => void }).unref?.();
     }
   }

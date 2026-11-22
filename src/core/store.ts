@@ -1322,7 +1322,10 @@ export class Store {
     const k = this.kept.get(session_id);
     if (!k || !k.all.length) return;
     const last = firstAfter(k.all, Math.min(to, Number.MAX_SAFE_INTEGER - 1));
-    await this.fill(k, Math.min(firstAfter(k.all, from - 1), k.all.length - 1), Math.max(last, 1));
+    const a = Math.min(firstAfter(k.all, from - 1), k.all.length - 1), b = Math.max(last, 1);
+    let missing = false;
+    for (let i = Math.floor(a / RUN); i * RUN < Math.min(b, k.all.length); i++) if (!k.runs[i]) { missing = true; break; }
+    if (missing) await this.fill(k, a, b);
     if (!k.gone) this.touch(session_id, k);
   }
 

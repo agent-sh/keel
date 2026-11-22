@@ -414,7 +414,8 @@ test("a restart sets the idle timers from kept facts and reads no session's even
   // The delays the idle timers are set with (no timer is left running).
   const timers = async (f: () => unknown) => {
     const out: number[] = [];
-    (globalThis as any).setTimeout = (_f: unknown, ms: number) => { out.push(Math.round(ms / MIN)); return real(() => {}, 0); };
+    // (The timers of minutes: the store's own half-second timer for its side rows is not one of them.)
+    (globalThis as any).setTimeout = (_f: unknown, ms: number) => { if (ms >= 1000) out.push(Math.round(ms / MIN)); return real(() => {}, 0); };
     try { await f(); } finally { globalThis.setTimeout = real; }
     return out;
   };

@@ -120,7 +120,8 @@ export const secretRoutes: RouteModule = (deps: Deps) => {
   // A reply's text as it streams is scanned before it is a frame, each piece with the ones before it
   // in view (a key cut by a piece's end is caught when the next piece completes it).
   const streams = new StreamScan(vault);
-  deps.engine.deltas.scan = {
+  // (A module started without an engine, as a test does, has no stream to scan.)
+  if (deps.engine?.deltas) deps.engine.deltas.scan = {
     piece: (session, index, text) => streams.piece(`${session} ${index}`, session, text),
     end: (session, index) => streams.end(`${session} ${index}`, session),
   };

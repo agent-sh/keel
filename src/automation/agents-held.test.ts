@@ -94,6 +94,7 @@ const heldWith = async (title: string, n: number) => {
   hangs.add(p.id);
   engine.send(p.id, "owner: start");
   await until(() => engine.isRunning(p.id));
+  await until(() => !hangs.has(p.id)); // its request is with the provider, hung there
   const lanes = [];
   for (let i = 0; i < n; i++) lanes.push(await lane(p.id, `${title} lane ${i}`));
   await engine.interrupt(p.id, "owner");
@@ -112,6 +113,7 @@ test("a held parent that goes on by harness inputs gets its agents' reports, eac
   hangs.add(p.id);
   await goals.set(p.id, { objective: "ship it" }); // its first turn hangs in the model
   await until(() => engine.isRunning(p.id));
+  await until(() => !hangs.has(p.id)); // its request is with the provider, hung there
   const a = await lane(p.id, "lane one");
   await engine.interrupt(p.id, "owner");
   await a.ended();
@@ -155,6 +157,7 @@ test("a hold released with no turn sends the held report, and the report ends th
   hangs.add(p.id);
   engine.send(p.id, "owner: start");
   await until(() => engine.isRunning(p.id));
+  await until(() => !hangs.has(p.id)); // its request is with the provider, hung there
   let open!: () => void;
   gate = new Promise<void>((r) => (open = r));
   const a = await lane(p.id, "lane");
@@ -246,6 +249,7 @@ test("what rides one input is bounded by the model's window, and the rest keep r
   hangs.add(p.id);
   engine.send(p.id, "owner: start");
   await until(() => engine.isRunning(p.id));
+  await until(() => !hangs.has(p.id)); // its request is with the provider, hung there
   report = "r".repeat(45_000);
   const lanes = [];
   for (let i = 0; i < 12; i++) lanes.push(await lane(p.id, `long lane ${i}`));
