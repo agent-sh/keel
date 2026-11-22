@@ -29,7 +29,10 @@ const LABEL_MAX = 200;
 const FIELDS_MAX = 20;
 // The options a field shows, and the ones kept so a typed answer can still name one.
 const OPTIONS_MAX = 50;
-const OPTIONS_KEPT = 2000;
+const OPTIONS_KEPT = 1000;
+// The whole request, as JSON: a larger one is no question for a person, and
+// is not parsed at all (every step below is linear in what it is given).
+const SCHEMA_MAX = 64_000;
 
 // What a form must not ask for (2025-11-25 client/elicitation: "Servers MUST
 // NOT use form mode elicitation to request sensitive information such as
@@ -40,21 +43,33 @@ const OPTIONS_KEPT = 2000;
 export const MUST_NOT = "The MCP specification says a server must not ask for passwords, API keys, access tokens or payment details in a form like this one.";
 const SECRET_WORDS = new Set([
   "password", "passwd", "pwd", "passphrase", "passcode", "secret", "token", "apikey", "credential", "cvv", "cvc", "pin", "otp", "totp", "mfa", "2fa", "tfa",
-  "ssn", "iban", "bearer",
+  "ssn", "iban", "bearer", "jwt", "cookie", "pat", "cred", "mnemonic",
+  // The same word in a few more languages (a form is written in the owner's).
+  "passwort", "kennwort", "contrasena", "clave", "senha", "motdepasse", "wachtwoord", "haslo", "parola",
 ]);
+// Other scripts have no word breaks to split on: looked for anywhere in the name.
+const SECRET_ANYWHERE = /пароль|парол|סיסמ|密码|密碼|パスワード|비밀번호|كلمة السر|كلمة المرور/;
 // A word that is one only next to another: "key" after one of these, a code that proves who you are, a number that pays.
 const KEY_OF = new Set(["api", "access", "secret", "private", "license", "licence", "encryption", "signing", "ssh", "auth"]);
 const CODE_OF = new Set(["security", "verification", "auth", "authentication", "login", "recovery", "backup", "sms", "access"]);
 const NUMBER_OF = new Set(["card", "account", "routing", "social", "passport", "tax"]);
-// The same words written as one or split another way ("pass_word", "passWord1", "api-key").
-const JOINED = /pass(word|wd|phrase|code)|apikey|secretkey|privatekey|accesskey|accesstoken|authtoken|bearertoken|creditcard|cardnumber|socialsecurity|onetime(code|password|pin)/;
+// The same words written as one or split another way ("pass_word", "passWord1", "api-key", "mot de passe").
+const JOINED = /pass(word|wd|phrase|code)|apikey|secretkey|privatekey|accesskey|accesstoken|authtoken|bearertoken|creditcard|cardnumber|socialsecurity|onetime(code|password|pin)|motdepasse|sessioncookie|githubpat|personalaccesstoken|(seed|recovery)phrase/;
 // A plural or a trailing number is the same word ("tokens", "secret2").
 const stem = (w: string) => { const bare = w.replace(/\d+$/, "") || w; return bare.length > 3 && bare.endsWith("s") && !bare.endsWith("ss") ? bare.slice(0, -1) : bare; };
+// Letters that only look like the Latin ones, accents, and digits written for letters ("pаssword" with a Cyrillic а, "contraseña", "passw0rd").
+const LOOKALIKE: Record<string, string> = { "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "х": "x", "у": "y", "к": "k", "і": "i", "ѕ": "s", "ԁ": "d", "ո": "n", "α": "a", "ο": "o", "ρ": "p", "ε": "e" };
+const plainLetters = (n: string) => [...n.normalize("NFKD").replace(/\p{M}/gu, "")].map((c) => LOOKALIKE[c] ?? c).join("");
+const unleet = (w: string) => w.replace(/0/g, "o").replace(/1/g, "l").replace(/3/g, "e").replace(/4/g, "a").replace(/5/g, "s").replace(/@/g, "a").replace(/\$/g, "s");
 export function looksSecret(...names: unknown[]): boolean {
   return names.some((n) => {
     if (typeof n !== "string") return false;
-    const words = n.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).map(stem);
-    if (JOINED.test(words.join(""))) return true;
+    if (SECRET_ANYWHERE.test(n)) return true;
+    const latin = plainLetters(n);
+    const words = latin.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9@$]+/).filter(Boolean).map(stem);
+    const joined = words.join("");
+    if (JOINED.test(joined) || JOINED.test(unleet(joined))) return true;
+    if (words.some((w) => /[0-9@$]/.test(w) && SECRET_WORDS.has(stem(unleet(w))))) return true;
     return words.some((w, i) => SECRET_WORDS.has(w)
       || (w === "key" && (words.length === 1 || KEY_OF.has(words[i - 1] ?? "")))
       || (w === "code" && CODE_OF.has(words[i - 1] ?? ""))
@@ -83,11 +98,20 @@ function choicesOf(s: Record<string, any>): Choice[] | undefined {
     : Array.isArray(s.enum) ? s.enum.map((v: unknown, i: number) => [v, Array.isArray(s.enumNames) ? s.enumNames[i] : undefined]) : undefined;
   if (!raw?.length) return undefined;
   const seen = new Set<string>();
+  // The next number for a label that was taken, kept per label: a thousand
+  // options of one name cost a thousand steps, not a million.
+  const next = new Map<string, number>();
   return raw.slice(0, OPTIONS_KEPT).map(([value, title]) => {
     // Two options never share a label: the label is what the owner picks.
     let label = plain(title ?? value, LABEL_MAX) || plain(value, LABEL_MAX) || "(empty)";
     if (seen.has(label)) label = `${label} (${plain(value, LABEL_MAX)})`;
-    for (let n = 2; seen.has(label); n++) label = `${label} ${n}`;
+    if (seen.has(label)) {
+      const base = label;
+      let n = next.get(base) ?? 2;
+      while (seen.has(`${base} ${n}`)) n++;
+      next.set(base, n + 1);
+      label = `${base} ${n}`;
+    }
     seen.add(label);
     return { label, value };
   });
@@ -108,7 +132,35 @@ export type Form = {
 
 const own = (o: unknown, k: string): any => (o && typeof o === "object" && Object.hasOwn(o, k) ? (o as any)[k] : undefined);
 
+// Whether a value is larger than `max` as JSON, about: read only as far as
+// the bound, so a request of any size costs no more than the bound to refuse.
+function over(value: unknown, max: number): boolean {
+  let left = max;
+  const todo: unknown[] = [value];
+  while (todo.length) {
+    const v = todo.pop();
+    if (typeof v === "string") left -= v.length + 2;
+    else if (Array.isArray(v)) {
+      left -= v.length + 2;
+      if (left < 0) return true;
+      for (const x of v) todo.push(x);
+    } else if (v && typeof v === "object") {
+      for (const k in v) {
+        left -= k.length + 4;
+        if (left < 0) return true;
+        todo.push((v as Record<string, unknown>)[k]);
+      }
+    } else left -= 4;
+    if (left < 0) return true;
+  }
+  return false;
+}
+
 export function formOf(params: any): Form {
+  // Bounded before any work is done on it.
+  if (over(params, SCHEMA_MAX)) {
+    return { message: plain(own(params, "message"), MESSAGE_MAX), questions: [], notes: [], sensitive: false, content: () => ({ problems: ["the form is too large"] }), unanswerable: `it is larger than ${SCHEMA_MAX / 1000} KB, the most a form is` };
+  }
   const schema = own(params, "requestedSchema") && typeof params.requestedSchema === "object" ? params.requestedSchema : {};
   const properties = own(schema, "properties");
   const props: [string, any][] = Object.entries(properties && typeof properties === "object" ? properties : {});
@@ -147,7 +199,12 @@ export function formOf(params: any): Form {
       ...(f.secret ? { secret: true } : {}),
     };
   });
-  const sensitive = fields.some((f) => f.secret);
+  // (A form whose own words ask for a secret is one too, whatever its fields are called.)
+  const sensitive = fields.some((f) => f.secret) || looksSecret(own(params, "message"));
+  // A field of a kind a form does not have (2025-11-25: flat, primitive
+  // properties only): an object, or a list of free text. Shown as text it
+  // would be sent as a string the server did not ask for.
+  const odd = [...fields, ...rest].find((f) => f.schema.type === "object" || (f.schema.type === "array" && f.kind !== "many"));
   const notes = [
     sensitive ? MUST_NOT : "",
     props.length > FIELDS_MAX ? `${props.length - FIELDS_MAX} more field${props.length - FIELDS_MAX === 1 ? " is" : "s are"} not shown: a card asks ${FIELDS_MAX} at most. ${stuck.length ? "" : "They are optional and are left as the server defaults them."}`.trim() : "",
@@ -212,6 +269,7 @@ export function formOf(params: any): Form {
   };
   return {
     message: plain(own(params, "message"), MESSAGE_MAX), questions, notes, sensitive, content,
-    ...(stuck.length ? { unanswerable: `it needs ${stuck.length === 1 ? "a field" : `${stuck.length} fields`} beyond the ${FIELDS_MAX} a card shows (${plain(stuck[0]!.name, 60)}${stuck.length > 1 ? " and more" : ""})` } : {}),
+    ...(odd ? { unanswerable: `its field ${plain(odd.name, 60)} is ${odd.schema.type === "object" ? "an object" : "a list of free text"}, which a form does not have` } : {}),
+    ...(!odd && stuck.length ? { unanswerable: `it needs ${stuck.length === 1 ? "a field" : `${stuck.length} fields`} beyond the ${FIELDS_MAX} a card shows (${plain(stuck[0]!.name, 60)}${stuck.length > 1 ? " and more" : ""})` } : {}),
   };
 }

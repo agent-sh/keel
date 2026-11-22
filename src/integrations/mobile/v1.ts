@@ -466,7 +466,8 @@ export function mobileApi(ctx: MobileCtx) {
       const qs = card.questions as { id: string; options: string[]; multi: boolean }[];
       // Dismissing a question a server asked is the protocol's decline.
       if (choice === "deny" && askedOf(s.id, callId)) {
-        if (!decline(s.id, callId)) return err("this question is no longer waiting", 409);
+        // (The phone's answer is signed and taken once, so it cannot land a second time on the next question: it is for the one that waits now.)
+        if (decline(s.id, callId, askedOf(s.id, callId)?.id) !== true) return err("this question is no longer waiting", 409);
         return json({ approval: { ...card, actions: [], state: "denied", choice }, resolved: 1 });
       }
       if (choice !== "deny" && !byId && qs.length > 1) return err(`this card asks ${qs.length} questions; answer each by its id (answers: { id: answer })`, 400);
@@ -479,10 +480,10 @@ export function mobileApi(ctx: MobileCtx) {
         for (const v of vals) { const hit = q.options.find((o) => o.toLowerCase() === v.toLowerCase()); (hit ? picked : other).push(hit ?? v); }
         answers[q.id] = other.length ? { picked, other: other.join(", ") } : { picked };
       }
-      const sent = answer(s.id, callId, answers);
+      const sent = answer(s.id, callId, answers, false, askedOf(s.id, callId)?.id);
       // A form that asks for what looks like a secret is sent from the workbench only, on the owner's word there.
       if (sent === "unsent") return err("this form asks for what looks like a secret: dismiss it here, or answer it in the workbench", 409);
-      if (!sent) return err("this question is no longer waiting", 409);
+      if (sent !== true) return err("this question is no longer waiting", 409);
       // (What was typed for a server's question is the server's alone: it is not sent back.)
       return json({ approval: { ...card, actions: [], state: choice === "deny" ? "denied" : "approved", choice, ...(askedOf(s.id, callId) ? {} : { answers }) }, resolved: 1 });
     }

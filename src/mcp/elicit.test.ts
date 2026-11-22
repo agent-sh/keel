@@ -25,7 +25,6 @@ test("each kind of field is a question, and the answers become the schema's cont
         tags: { type: "array", minItems: 1, maxItems: 2, items: { anyOf: [{ const: "a", title: "Alpha" }, { const: "b", title: "Beta" }, { const: "c", title: "Alpha" }] } },
         level: { type: "string", enum: ["low", "high"], enumNames: ["Low", "High"] },
         ratio: { type: "number", minimum: 0, default: 0.5 },
-        nested: { type: "object", properties: { deep: { type: "string" } } },
       },
     },
   });
@@ -35,7 +34,6 @@ test("each kind of field is a question, and the answers become the schema's cont
     ["tags", ["Alpha", "Beta", "Alpha (c)"], true, false],
     ["level", ["Low", "High"], false, true],
     ["ratio", [], false, true],
-    ["nested", [], false, true],
   ]);
   expect(form.questions[4]!.question).toBe("ratio (left empty: 0.5)");
   expect(form.questions[3]!.question).toBe("level (optional)");
@@ -98,4 +96,52 @@ test("more fields than a card shows: optional ones are left to their defaults, a
   expect(many.questions[0]!.options).toHaveLength(50);
   expect(many.questions[0]!.question).toBe("n (optional, 10 more options not shown: type one)");
   expect(many.content({ n: { picked: [], other: "v59" } })).toEqual({ content: { n: "v59" } });
+});
+
+test("a secret is found in other languages, in look-alike letters and digits, and in the form's own words", () => {
+  for (const name of ["Passwort", "Kennwort", "contraseña", "mot de passe", "senha", "пароль", "סיסמה", "密码", "pаssword" /* a Cyrillic а */, "passw0rd", "p@ssword", "s3cret", "github_pat", "session cookie", "jwt", "personal access token", "seed phrase", "mnemonic", "creds"]) {
+    expect([name, looksSecret(name)]).toEqual([name, true]);
+  }
+  for (const name of ["Pass", "path", "pattern", "c0de", "field1", "user@example.com", "clavier", "título", "名前"]) expect([name, looksSecret(name)]).toEqual([name, false]);
+  // The fields are plain, the message asks for a password: sent only on the owner's explicit word.
+  const form = formOf({ message: "Please enter your account password to continue", requestedSchema: { type: "object", properties: { value: { type: "string", title: "Value" } } } });
+  expect([form.sensitive, form.notes]).toEqual([true, [MUST_NOT]]);
+});
+
+test("a field of a kind a form does not have makes the form unanswerable, not a string", () => {
+  const object = formOf({ message: "m", requestedSchema: { type: "object", properties: { where: { type: "object", properties: { x: { type: "string" } } } } } });
+  expect(object.unanswerable).toBe("its field where is an object, which a form does not have");
+  const list = formOf({ message: "m", requestedSchema: { type: "object", properties: { tags: { type: "array", items: { type: "string" } } } } });
+  expect(list.unanswerable).toBe("its field tags is a list of free text, which a form does not have");
+  // A list of choices is a field a form has.
+  expect(formOf({ message: "m", requestedSchema: { type: "object", properties: { tags: { type: "array", items: { type: "string", enum: ["a", "b"] } } } } }).unanswerable).toBeUndefined();
+});
+
+// The parser runs on the daemon's loop with what a server sent: its time is
+// bounded by the size it accepts, and grows no faster than that size.
+test("a form is parsed in time linear in its size, and one over the size it takes is not parsed", () => {
+  const equal = (n: number) => ({ message: "m", requestedSchema: { type: "object", properties: { pick: { type: "string", enum: Array.from({ length: n }, () => "same") } } } });
+  const timed = (params: unknown) => { const t = performance.now(); const f = formOf(params); return { ms: performance.now() - t, f }; };
+  timed(equal(50)); // (warm)
+  const small = timed(equal(500)), large = timed(equal(4000));
+  // A thousand options are kept, each with a label of its own that stays short.
+  expect(large.f.questions[0]!.options).toHaveLength(50);
+  expect(large.ms).toBeLessThan(100);
+  expect(large.ms).toBeLessThan(Math.max(20, small.ms * 30));
+  const labels = new Set<string>();
+  const one = formOf(equal(1000));
+  expect(one.content({ pick: { picked: [], other: "same (same) 500" } })).toEqual({ content: { pick: "same" } });
+  for (const o of one.questions[0]!.options) labels.add(o.label);
+  expect([...labels].slice(0, 4)).toEqual(["same", "same (same)", "same (same) 2", "same (same) 3"]);
+  // 14 KB of one long enum value repeated, and a request past the bound.
+  const wide = timed({ message: "m", requestedSchema: { type: "object", properties: Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`f${i}`, { type: "string", enum: Array.from({ length: 20 }, () => "v") }])) } });
+  expect(wide.ms).toBeLessThan(100);
+  const huge = timed({ message: "m", requestedSchema: { type: "object", properties: { pick: { type: "string", enum: Array.from({ length: 20_000 }, (_, i) => `value ${i}`) } } } });
+  expect(huge.f.unanswerable).toBe("it is larger than 64 KB, the most a form is");
+  expect(huge.f.questions).toEqual([]);
+  expect(huge.ms).toBeLessThan(100);
+  // A request far over the bound is refused at the cost of the bound, not of its size.
+  const vast = { message: "m", requestedSchema: { type: "object", properties: Object.fromEntries(Array.from({ length: 50_000 }, (_, i) => [`f${i}`, { type: "string", enum: Array.from({ length: 50 }, (_, j) => `o${j}`) }])) } };
+  const refused = timed(vast);
+  expect([refused.f.unanswerable, refused.ms < 50]).toEqual(["it is larger than 64 KB, the most a form is", true]);
 });

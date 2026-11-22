@@ -49,6 +49,10 @@ const TOOLS = [
   tool("roots", "Returns the folders the client offers"),
   tool("caps", "Returns the client capabilities"),
   tool("start", "Returns the roots it was given when it connected"),
+  // A server that never has enough: every answer gets another question (`loop`),
+  // a form no card can show, which needs no owner to be answered (`blind`),
+  // or the session's folder again (`folders`).
+  ...(modern ? [tool("loop", "Asks again after every answer, for ever"), tool("blind", "Asks a form that cannot be answered, for ever"), tool("folders", "Asks for the folders, for ever")] : []),
   ...(modern ? [] : [
     tool("twice", "Asks two questions, one after the other"),
     tool("work", "Does something, asks, and does more"),
@@ -60,6 +64,7 @@ const TOOLS = [
     tool("forever", "Asks again after every answer"),
     tool("many", "Asks many questions at once"),
     tool("later", "Asks after two seconds"),
+    tool("slow", "Works for a while before each of its questions"),
     tool("hold", "Waits"),
   ]),
 ];
@@ -104,6 +109,11 @@ async function legacy(name: string): Promise<unknown> {
     }
     case "many":
       return (await Promise.all(Array.from({ length: Number(process.env.ASK_MCP_MANY ?? 12) }, (_, i) => elicit(YESNO(`Question ${i + 1} of many: go on?`))))).map((a) => a?.action);
+    case "slow": {
+      const got = [];
+      for (let i = 0; i < 5; i++) { await sleep(400); got.push((await elicit(YESNO(`Slow question ${i + 1}: go on?`)))?.action); }
+      return got;
+    }
     case "later":
       await sleep(2000);
       return elicit(YESNO("A question that came late: go on?"));
@@ -147,6 +157,12 @@ async function handle(m: any) {
       if (!TOOLS.some((t) => t.name === name)) return fail(-32602, `no tool ${name}`);
       if (name === "caps") return reply(text(JSON.stringify(caps)));
       if (name === "start") return reply(text(`start: ${JSON.stringify(atStart)}`));
+      if (modern && (name === "loop" || name === "blind" || name === "folders")) {
+        const round = Number(m.params?.requestState ?? 0) + 1;
+        if (name === "folders") return reply({ resultType: "input_required", inputRequests: { q: { method: "roots/list" } }, requestState: String(round) });
+        const params = name === "loop" ? YESNO(`Round ${round}: go on?`) : form("A form with a part no card has.", { where: { type: "object" } }, ["where"]);
+        return reply({ resultType: "input_required", inputRequests: { q: { method: "elicitation/create", params } }, requestState: String(round) });
+      }
       const ask: { method: string; params?: unknown } | null = name === "ask" ? { method: "elicitation/create", params: FORM } : name === "roots" ? { method: "roots/list" } : null;
       if (!ask) {
         const got = await legacy(name);

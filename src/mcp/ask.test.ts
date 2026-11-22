@@ -46,3 +46,41 @@ test("a server's request is never guessed between two calls, and goes to a call 
     c.close();
   }
 }, 30_000);
+
+// One timeout bounds a call, however often its server asks: the time the
+// server works counts, the time the owner takes to answer does not.
+test("a call's timeout counts the server's time across its questions, and not the owner's", async () => {
+  const env = process.env as Record<string, string>;
+  const legacy = await McpClient.connect({ kind: "stdio", command: "bun", args: [FIXTURE], env }, 10_000, "legacy", undefined, undefined, async () => ({ roots: [] }));
+  const modern = await McpClient.connect({ kind: "stdio", command: "bun", args: [FIXTURE, "--modern"], env }, 10_000, undefined, undefined, undefined, async () => ({ roots: [] }));
+  try {
+    const answering = (ms: number): CallInput => ({ session: "s", ask: async () => { await Bun.sleep(ms); return { action: "accept", content: { ok: true } }; } });
+    // The stand-in works 400 ms before each of five questions: two seconds of its own.
+    // A timer that started over at each question would never fire at 1.2 s.
+    const t0 = Date.now();
+    await expect(legacy.callTool("slow", {}, undefined, 1200, undefined, undefined, answering(0))).rejects.toThrow("tools/call timed out after 1s");
+    expect(Date.now() - t0).toBeLessThan(2000);
+    // The owner takes 600 ms a question, three seconds in all: within a timeout of 2.8 s, because that time is not the server's.
+    expect(text(await legacy.callTool("slow", {}, undefined, 2800, undefined, undefined, answering(600)))).toBe('slow: ["accept","accept","accept","accept","accept"]');
+    // A server of the newer protocol that asks to be called again whatever it is answered: the call ends.
+    await expect(modern.callTool("loop", {}, undefined, 10_000, undefined, undefined, answering(0))).rejects.toThrow("the server asked to be called again 64 times in one call");
+  } finally {
+    legacy.close();
+    modern.close();
+  }
+}, 30_000);
+
+// A call that was ended does not stop its server from asking. What it asks
+// then has no call to go to: a few are answered, and a server that goes on
+// loses its connection instead of being answered for as long as it likes.
+test("a server that keeps asking after its call ended loses its connection", async () => {
+  const c = await McpClient.connect({ kind: "stdio", command: "bun", args: [FIXTURE], env: { ...(process.env as Record<string, string>), ASK_MCP_FOREVER: "100000" } }, 10_000, "legacy", undefined, undefined, async (q) => (q.method === "roots/list" ? { roots: [] } : { action: "cancel" }));
+  let why = "";
+  c.onClose = (w) => { why = w; };
+  const stop = new AbortController();
+  let asked = 0;
+  const call = c.callTool("forever", {}, stop.signal, 10_000, undefined, undefined, { session: "s", ask: async () => { if (++asked === 3) stop.abort(); return { action: "decline" }; } });
+  await expect(call).rejects.toThrow("cancelled");
+  for (let i = 0; i < 100 && !c.isClosed; i++) await Bun.sleep(50);
+  expect([c.isClosed, why, asked]).toEqual([true, "the server made more than 120 requests of its own in a minute that no call was waiting for", 3]);
+}, 30_000);

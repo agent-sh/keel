@@ -42,6 +42,16 @@ export type CallInput = { session: string; ask: InputHandler; dropped?: (method:
 // called again with its state. Each such round is sent at once with no owner
 // in it, so a server that never stops would spin: this many in a row end the call.
 const QUIET_ROUNDS = 3;
+// The most rounds one call takes, whatever its handler answers: more than the
+// manager's own bounds on a call's questions allow (src/mcp/manager.ts), so
+// it is met only by a server that is called again for ever.
+const ROUNDS_MAX = 64;
+// The most requests of its own a server makes in a minute that no call
+// answers (outside any call, after its call ended, or with nothing to say
+// which call it is for). A server asks for the folders once or twice; one
+// that asks on and on would be answered as fast as it can ask, so its
+// connection is ended.
+const LOOSE_MAX = 120;
 
 // Error codes the modern spec reserves; seeing one means the server is modern.
 const MODERN_ERRORS = new Set([-32020, -32021, -32022]);
@@ -324,11 +334,13 @@ export class McpClient {
           ? `calls of ${sessions.size} sessions were in flight on this server, and nothing names the call such a request belongs to`
           : `${calls.length} calls were in flight on this server, and nothing names the call a question belongs to`;
         for (const p of calls) p.input!.dropped?.(method, why);
+        if (this.looseOver()) return;
         return question ? reply({ result: { action: "cancel" } }) : refuse(-32603, `not answered: ${why}`);
       }
       asker = calls[0];
     }
     const handler = asker?.input?.ask ?? this.outside;
+    if (!asker?.input && this.looseOver()) return;
     if (!handler) return refuse(-32603, "nothing here answers this");
     // The owner's time is not the server's: the call's timer waits with it.
     const resume = asker?.hold();
@@ -339,6 +351,21 @@ export class McpClient {
     } finally {
       resume?.();
     }
+  }
+
+  // Counts a request no call answers; past the bound the connection is ended and its owner told why.
+  private loose = { since: 0, n: 0 };
+  private looseOver(): boolean {
+    const now = Date.now();
+    if (now - this.loose.since > 60_000) this.loose = { since: now, n: 0 };
+    if (++this.loose.n <= LOOSE_MAX) return false;
+    const why = `the server made more than ${LOOSE_MAX} requests of its own in a minute that no call was waiting for`;
+    if (!this.closed) {
+      this.closedWhy = why;
+      this.close();
+      this.closeHook?.(why);
+    }
+    return true;
   }
 
   private write(msg: unknown) {
@@ -667,10 +694,14 @@ export class McpClient {
         if (told && !opt.modern && method !== "initialize" && !this.closed) this.write({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id, reason } });
       };
       const onAbort = () => giveUp("cancelled", "cancelled");
-      const arm = () => { timer = setTimeout(() => giveUp(`${method} timed out after ${Math.round(timeoutMs / 1000)}s`, "timed out"), timeoutMs); };
+      // The owner's time is not the server's: the timer stops while the owner
+      // is asked and goes on with what was left, so a server that keeps
+      // asking still has one timeout for its call, not a new one a question.
+      let left = timeoutMs, since = 0;
+      const arm = () => { since = Date.now(); timer = setTimeout(() => giveUp(`${method} timed out after ${Math.round(timeoutMs / 1000)}s`, "timed out"), left); };
       let held = 0;
       const hold = () => {
-        if (held++ === 0) clearTimeout(timer);
+        if (held++ === 0) { clearTimeout(timer); left = Math.max(0, left - (Date.now() - since)); }
         return () => { if (--held === 0 && this.pending.has(id)) arm(); };
       };
       this.pending.set(id, { resolve: done(resolve), reject: fail, input: opt.input, hold });
@@ -742,8 +773,16 @@ export class McpClient {
   // questions as requests of its own while the call is open (serverRequest).
   private async rounds(method: string, params: Record<string, unknown>, opt: NonNullable<Parameters<McpClient["rpc"]>[2]>): Promise<any> {
     let next = params;
-    for (let quiet = 0; ;) {
-      const r = await this.rpc(method, next, opt);
+    // One timeout for the whole call, however many rounds it takes: the time
+    // the server works counts, the time the owner takes to answer does not.
+    const whole = opt.timeoutMs ?? this.timeoutMs;
+    let left = whole;
+    for (let quiet = 0, round = 1; ; round++) {
+      if (left <= 0) throw new Error(`${method} timed out after ${Math.round(whole / 1000)}s`);
+      if (round > ROUNDS_MAX) throw new Error(`the server asked to be called again ${ROUNDS_MAX} times in one call`);
+      const began = Date.now();
+      const r = await this.rpc(method, next, { ...opt, timeoutMs: left });
+      left -= Date.now() - began;
       if (r?.resultType !== "input_required") return r;
       const asked = Object.entries((r.inputRequests ?? {}) as Record<string, InputRequest>);
       if (!asked.length && ++quiet > QUIET_ROUNDS) throw new Error("the server kept asking to be called again without asking for anything");

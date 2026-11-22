@@ -33,6 +33,7 @@ export const mcpRoutes: RouteModule = (deps) => {
   g.__keelMcp?.dispose();
   // The daemon's manager is the one that reads and writes the owner's server list.
   const m = new McpManager(deps.errors, deps.store.stateDir, deps.workspace, configPath());
+  m.elsewhere = (id) => { const at = deps.store.session(id)?.machine; return !!at && at !== "local"; };
   g.__keelMcp = m;
   installMcpTools(m);
   // A call whose server asked the owner a question waits on the owner: a

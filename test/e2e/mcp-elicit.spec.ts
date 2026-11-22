@@ -69,6 +69,8 @@ async function setup(name: string, env: Record<string, string> = {}) {
     side: () => (existsSync(side) ? readFileSync(side, "utf8").trim().split("\n") : []),
     send: (id: string, tool: string) => call(`/api/sessions/${id}/messages`, { text: `script:calls ${JSON.stringify([{ name: "mcp_call", input: { tool, arguments: {} } }])}` }),
     pending: async (id: string) => (await call(`/api/sessions/${id}/questions`, undefined, "GET")).pending as string[],
+    // The id of the server's question that is on the session's card now.
+    asked: async (id: string) => ((await call(`/api/cli/state/${id}`, undefined, "GET")).questions as any[]).find((q) => q.asked)?.asked.id as string | undefined,
     results: async (id: string) => ((await call(`/api/sessions/${id}`, undefined, "GET")).events as any[]).filter((e) => e.kind === "tool_result").map((e) => String(e.data.results[0].content)),
     errors: async () => ((await call("/api/errors?resolved=0", undefined, "GET")).errors as any[]).filter((e) => e.context?.at !== "listing"),
     stop: async () => {
@@ -164,8 +166,14 @@ test("an MCP server's question is a card the owner answers, declines or leaves",
     // of its own, empty, and takes its answer.
     await run(page, "asker__twice");
     await expect(words).toContainText("First question: go on?", { timeout: 30_000 });
+    const firstQuestion = await k.asked(id);
+    const [twice] = await k.pending(id);
     await card.getByTestId("question-option").filter({ hasText: "Yes" }).click();
     await card.getByTestId("question-submit").click();
+    await expect(words).toContainText("Second question: which name?");
+    // The first answer sent again (a double click, a retry) does not answer the second question unseen.
+    expect((await k.call(`/api/sessions/${id}/questions/${twice}`, { answers: { ok: { picked: ["Yes"] } }, question: firstQuestion })).status).toBe(409);
+    expect((await k.call(`/api/sessions/${id}/questions/${twice}`, { answers: { ok: { picked: ["Yes"] } } })).status).toBe(409);
     await expect(words).toContainText("Second question: which name?");
     await expect(card.getByTestId("question-option")).toHaveCount(0);
     await expect(card.getByTestId("question-decline")).toBeEnabled();
@@ -196,7 +204,12 @@ test("an MCP server's question is a card the owner answers, declines or leaves",
     await field(1).fill("hunter2-not-kept");
     await expect(card.getByTestId("question-submit")).toBeDisabled();
     const [open] = await k.pending(id);
-    expect((await k.call(`/api/sessions/${id}/questions/${open}`, { answers: { user: { picked: [], other: "ada" }, password: { picked: [], other: "x" } } })).status).toBe(409);
+    const question = await k.asked(id);
+    const typed = { answers: { user: { picked: [], other: "ada" }, password: { picked: [], other: "x" } } };
+    // Not sent without the owner's word, and that word is for this question only.
+    expect(await k.call(`/api/sessions/${id}/questions/${open}`, { ...typed, question })).toMatchObject({ status: 409, error: expect.stringContaining("looks like a secret") });
+    expect(await k.call(`/api/sessions/${id}/questions/${open}`, { ...typed, send_anyway: true, question: "another" })).toMatchObject({ status: 409, error: expect.stringContaining("not the one this answers") });
+    expect(await k.pending(id)).toEqual([open]);
     await shoot(page, "mcp-elicit-04-secret");
     await card.getByTestId("question-send-anyway").check();
     await expect(card.getByTestId("question-submit")).toBeEnabled();
@@ -242,16 +255,17 @@ test("a server's questions are bounded, and none is shown in a session that did 
     const card = page.getByTestId("question");
     const words = card.getByTestId("question-message");
 
-    // After five declines in one call the rest of its questions get no card.
+    // After five declines in one call its next question ends the call: the
+    // server is not answered "no choice" for as long as it likes to ask.
     await run(page, "asker__forever");
     for (let i = 1; i <= 5; i++) {
       await expect(words).toContainText(`Question ${i}: go on?`, { timeout: 30_000 });
       await card.getByTestId("question-decline").click();
     }
     await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 30_000 });
-    const forever = (await k.results(id)).at(-1)!;
-    expect(k.answers().at(-1).answer).toEqual([...Array(5).fill("decline"), ...Array(25).fill("cancel")]);
-    expect(forever).toContain("[keel] asker went on asking after the owner declined 5 of its questions in this call. It was answered as if the owner made no choice.");
+    expect((await k.results(id)).at(-1)).toBe("asker__forever was ended: asker went on asking after the owner declined 5 of its questions in this call. Its work may be half done: check before calling it again.");
+    // What the server asked after its call was ended had no call to go to: no card, no choice.
+    await expect.poll(() => k.answers().filter((a) => a.tool === "forever").at(-1)?.answer, { timeout: 30_000 }).toEqual([...Array(5).fill("decline"), null, ...Array(24).fill("cancel")]);
 
     // Twelve at once: one card and five behind it; the rest are not kept waiting.
     await run(page, "asker__many");
@@ -275,8 +289,24 @@ test("a server's questions are bounded, and none is shown in a session that did 
       await card.getByTestId("question-submit").click();
     }
     await expect(page.getByTestId("turn-end")).toHaveCount(3, { timeout: 30_000 });
-    expect(k.answers().at(-1).answer).toEqual([...Array(20).fill("accept"), ...Array(10).fill("cancel")]);
-    expect((await k.results(id)).at(-1)).toContain("[keel] asker asked more than 20 questions in this call. It was answered as if the owner made no choice.");
+    expect((await k.results(id)).at(-1)).toBe("asker__forever was ended: asker asked more than 20 questions in this call. Its work may be half done: check before calling it again.");
+
+    // A server of the newer protocol that asks again after every answer, and
+    // one whose form cannot be shown (no owner is needed to answer it): each
+    // call ends, and the daemon is not kept answering.
+    await run(page, "modern__loop");
+    for (let i = 1; i <= 5; i++) {
+      await expect(words).toContainText(`Round ${i}: go on?`, { timeout: 30_000 });
+      await card.getByTestId("question-decline").click();
+    }
+    await expect(page.getByTestId("turn-end")).toHaveCount(4, { timeout: 30_000 });
+    expect((await k.results(id)).at(-1)).toBe("modern__loop was ended: modern went on asking after the owner declined 5 of its questions in this call. Its work may be half done: check before calling it again.");
+    await run(page, "modern__blind");
+    await expect(page.getByTestId("turn-end")).toHaveCount(5, { timeout: 30_000 });
+    expect((await k.results(id)).at(-1)).toContain("modern__blind was ended: modern asked the owner a form that cannot be answered: its field where is an object, which a form does not have. It asked 11 questions that could not be put to the owner.");
+    await run(page, "modern__folders");
+    await expect(page.getByTestId("turn-end")).toHaveCount(6, { timeout: 30_000 });
+    expect((await k.results(id)).at(-1)).toBe("modern__folders was ended: modern asked for the session's folder more than 20 times in this call. Its work may be half done: check before calling it again.");
 
     // Two sessions with a call each on the one server: over stdio nothing names
     // the call a question belongs to, so nobody is asked, and both calls say so.
@@ -339,7 +369,7 @@ test("a server's question across a daemon restart", async ({ page }) => {
     await expect.poll(() => k.pending(reader), { timeout: 60_000 }).toHaveLength(1);
     expect(JSON.parse(readFileSync(join(k.state, "mcp-asked.json"), "utf8"))).toHaveLength(1);
     const [again] = await k.pending(reader);
-    await k.call(`/api/sessions/${reader}/questions/${again}`, { decline: true });
+    await k.call(`/api/sessions/${reader}/questions/${again}`, { decline: true, question: await k.asked(reader) });
     await expect.poll(async () => (await k.results(reader)).at(-1), { timeout: 30_000 }).toContain('look: {"action":"decline"}');
     expect(JSON.parse(readFileSync(join(k.state, "mcp-asked.json"), "utf8"))).toEqual([]);
 

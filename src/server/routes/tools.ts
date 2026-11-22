@@ -4,7 +4,7 @@
 // request, so the bytes stay the same on every later request.
 import { join } from "node:path";
 import { registerHooks } from "../../engine/hooks.ts";
-import { answer, decline, pendingQuestions, type Answers } from "../../tools/interact.ts";
+import { answer, askedOf, decline, pendingQuestions, type Answers } from "../../tools/interact.ts";
 import { conceal } from "../../core/conceal.ts";
 import { ackNotices, adoptJobs, drainNotices, findJob, jobsChanged, jobsOf, jobView, running, stopJob } from "../../tools/jobs.ts";
 import { renderForOwner } from "../../tools/skills.ts";
@@ -46,11 +46,18 @@ export const toolRoutes: RouteModule = (deps) => {
     },
     "/api/sessions/:id/questions/:call": {
       POST: async (req: any) => {
-        const body = (await req.json().catch(() => ({}))) as { answers?: Answers; decline?: boolean; send_anyway?: boolean };
+        const body = (await req.json().catch(() => ({}))) as { answers?: Answers; decline?: boolean; send_anyway?: boolean; question?: string };
+        // (`question`: the id of the server's question this is for. One for another question is not taken.)
+        const question = typeof body.question === "string" ? body.question : undefined;
+        const stale = () => json({ error: "the question on that call is not the one this answers: read the one that is asked now", asked: askedOf(req.params.id, req.params.call)?.id }, 409);
         // A question a server asked can be declined; the model's own takes an answer.
-        if (body.decline === true) return decline(req.params.id, req.params.call) ? json({ ok: true }) : json({ error: "no question that can be declined is waiting for that call" }, 404);
+        if (body.decline === true) {
+          const d = decline(req.params.id, req.params.call, question);
+          return d === "stale" ? stale() : d ? json({ ok: true }) : json({ error: "no question that can be declined is waiting for that call" }, 404);
+        }
         if (!body.answers || typeof body.answers !== "object") return json({ error: "answers must be an object" }, 400);
-        const sent = answer(req.params.id, req.params.call, body.answers, body.send_anyway === true);
+        const sent = answer(req.params.id, req.params.call, body.answers, body.send_anyway === true, question);
+        if (sent === "stale") return stale();
         if (sent === "unsent") return json({ error: "this form asks for what looks like a secret: decline it, or send the answer with send_anyway" }, 409);
         return sent ? json({ ok: true }) : json({ error: "no question is waiting for that call" }, 404);
       },

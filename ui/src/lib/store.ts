@@ -344,8 +344,9 @@ export const actions = {
   edit: (id: string, eventId: string, text: string) =>
     api(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ text, edit_of: eventId }) }),
   // `sendAnyway`: the owner's word for a server's form that asks for what looks like a secret.
-  answer: (id: string, callId: string, answers: Record<string, { picked: string[]; other?: string }>, sendAnyway = false) =>
-    api(`/api/sessions/${id}/questions/${callId}`, { method: "POST", body: JSON.stringify({ answers, ...(sendAnyway ? { send_anyway: true } : {}) }) }),
+  // `question`: the id of a server's question, so the answer lands on that one and no other.
+  answer: (id: string, callId: string, answers: Record<string, { picked: string[]; other?: string }>, sendAnyway = false, question?: string) =>
+    api(`/api/sessions/${id}/questions/${callId}`, { method: "POST", body: JSON.stringify({ answers, ...(sendAnyway ? { send_anyway: true } : {}), ...(question ? { question } : {}) }) }),
   // The whole reply of a turn the page holds only the end of (see the route).
   reply: (id: string, ask: { before?: number; head?: string; last?: boolean }) => {
     const q = new URLSearchParams();
@@ -355,8 +356,8 @@ export const actions = {
     return api<{ texts: string[] }>(`/api/sessions/${id}/reply?${q}`).then((r) => r.texts.join("\n\n"));
   },
   // Says no to a question a server asked on the call's card.
-  declineQuestion: (id: string, callId: string) =>
-    api(`/api/sessions/${id}/questions/${callId}`, { method: "POST", body: JSON.stringify({ decline: true }) }),
+  declineQuestion: (id: string, callId: string, question?: string) =>
+    api(`/api/sessions/${id}/questions/${callId}`, { method: "POST", body: JSON.stringify({ decline: true, ...(question ? { question } : {}) }) }),
   jobs: (id: string) => api<{ jobs: JobView[] }>(`/api/sessions/${id}/jobs`),
   stopJob: (id: string, job: string) => api(`/api/sessions/${id}/jobs/${job}/stop`, { method: "POST" }),
   interrupt: (id: string) => api(`/api/sessions/${id}/interrupt`, { method: "POST", body: JSON.stringify({ by: "owner" }) }),

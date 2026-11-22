@@ -25,17 +25,24 @@ import { conceal } from "../core/conceal.ts";
 import { runMode } from "../core/runmode.ts";
 
 // How often one call's server may ask (2025-11-25 client/elicitation, security
-// considerations: "Clients SHOULD implement rate limiting"). Past it the rest
-// of the call's questions are answered as if the owner made no choice.
+// considerations: "Clients SHOULD implement rate limiting"). A question past
+// a bound is not answered again and again: the call ends with what the bound
+// was, so a server that keeps asking cannot hold its session (it would get
+// "no choice" as fast as it can ask, for as long as the turn runs).
+// - 20 questions in one call, each counted when it arrives;
+// - 5 that the owner declined;
+// - 10 that Keel had to answer by itself, because there was no card to ask
+//   on, the form could not be answered, or too many came at once.
 const QUESTIONS_MAX = 20;
 const DECLINES_MAX = 5;
+const SELF_MAX = 10;
 // The questions that wait behind the one on the card.
 const QUEUED_MAX = 5;
-type CallAsks = { asked: number; declined: number; queued: number; notes: Set<string>; readOnly: boolean };
-// The two bounds of one call. Declines are counted when the owner answers, so
-// that one is looked at again when a queued question's turn comes; the count
-// of questions is looked at once, before the question is counted (the
-// twentieth is still shown).
+// `end`: stops the call (its request is cancelled); `ended`: why it was.
+type CallAsks = { asked: number; declined: number; queued: number; self: number; roots: number; notes: Set<string>; readOnly: boolean; end?: () => void; ended?: string };
+// Declines are counted when the owner answers, so that bound is looked at
+// again when a queued question's turn comes; the count of questions is
+// looked at once, before the question is counted (the twentieth is shown).
 const declinedOut = (server: string, c: CallAsks): string | undefined =>
   c.declined >= DECLINES_MAX ? `${server} went on asking after the owner declined ${DECLINES_MAX} of its questions in this call.` : undefined;
 const overLimit = (server: string, c: CallAsks): string | undefined =>
@@ -333,6 +340,8 @@ export class McpManager {
   // What became of a session's own server: it started, it did not connect (or
   // went away), it ended. `target` is its command and arguments, or its
   // address without what follows a `?`: never an environment or header value.
+  // Whether a session's tools run on another machine (set where the sessions are known).
+  elsewhere?: (sessionId: string) => boolean;
   onSessionServer?: (e: { session: string; name: string; what: "started" | "failed" | "ended"; target: string; error?: string }) => void;
   private told(e: Entry, what: "started" | "failed" | "ended", error?: string) {
     if (!e.session) return;
@@ -776,7 +785,10 @@ export class McpManager {
         ? "Refused: the MCP server or tool changed before invocation. Look up the tool again." : undefined) : undefined;
     // A call a program made has no card of its own: its questions get no answer.
     const card = ctx.callId && !ctx.nestedIn ? `${ctx.sessionId}:${ctx.callId}` : undefined;
-    const call: CallAsks = { asked: 0, declined: 0, queued: 0, notes: new Set(), readOnly: e ? (e.bundled ? e.bundled.reads(tool) : !!e.config.read_tools?.includes(tool)) : false };
+    // A call that asks past a bound is ended here: its own stop, beside the session's.
+    const limit = new AbortController();
+    const signal = AbortSignal.any([ctx.signal, limit.signal]);
+    const call: CallAsks = { asked: 0, declined: 0, queued: 0, self: 0, roots: 0, notes: new Set(), end: () => limit.abort(), readOnly: e ? (e.bundled ? e.bundled.reads(tool) : !!e.config.read_tools?.includes(tool)) : false };
     // What the model is told besides the result: what the server asked that got no answer, and why.
     const noted = (out: ToolOutput): ToolOutput => {
       if (!call.notes.size) return out;
@@ -785,7 +797,7 @@ export class McpManager {
     };
     let r: McpCallResult;
     try {
-      r = await client.callTool(tool, input, ctx.signal, (e?.config.tool_timeout_secs ?? 600) * 1000, meta, authorize, {
+      r = await client.callTool(tool, input, signal, (e?.config.tool_timeout_secs ?? 600) * 1000, meta, authorize, {
         session: ctx.sessionId,
         // (By the name the session knows the server by: the card and the notes show it.)
         ask: (q) => this.input(shown, q, ctx, card, call),
@@ -793,6 +805,8 @@ export class McpManager {
       });
     } catch (err) {
       this.callEnded(ctx.sessionId, card);
+      // Ended for a bound on its questions: the result says which, and that the call did not finish.
+      if (call.ended) return noted({ content: `${shown}__${tool} was ended: ${call.ended} Its work may be half done: check before calling it again.`, is_error: true });
       if (err instanceof McpAuthorizationError) return { content: err.message, is_error: true };
       if (err instanceof AuthRequired && e) {
         e.state = "needs_auth";
@@ -836,23 +850,44 @@ export class McpManager {
 
   private input(server: string, q: InputRequest, ctx: ToolContext, card: string | undefined, call: CallAsks): Promise<unknown> {
     // The folders of the session whose call the server works on.
-    if (q.method === "roots/list") return Promise.resolve(rootsOf(ctx.cwd));
+    // (None for a session whose tools run on another machine: its folder is a path there, and this server runs here.)
+    if (q.method === "roots/list") {
+      // The folder does not change under a call: a server that asks for it over and over is ended like one that keeps asking the owner.
+      if (++call.roots > QUESTIONS_MAX) {
+        call.ended ??= `${server} asked for the session's folder more than ${QUESTIONS_MAX} times in this call.`;
+        call.end?.();
+        throw new RpcError(-32603, call.ended);
+      }
+      return Promise.resolve(this.elsewhere?.(ctx.sessionId) ? { roots: [] } : rootsOf(ctx.cwd));
+    }
     if (q.method !== "elicitation/create") throw new RpcError(-32601, `keel does not support ${q.method}`);
     const mode = q.params?.mode ?? "form";
     // 2025-11-25 elicitation, Error Handling: a mode the client did not declare is invalid params.
     if (mode !== "form") throw new RpcError(-32602, `keel offers form elicitation only, not ${mode} mode`);
+    // Past a bound: the call ends, here and for every question it still sends.
+    const end = (why: string): never => {
+      call.ended ??= why;
+      call.end?.();
+      throw new RpcError(-32603, call.ended);
+    };
+    if (call.ended) end(call.ended);
+    // Answered by Keel itself, as if the owner made no choice: a few times, then the call ends.
     const unasked = (why: string) => {
+      if (++call.self > SELF_MAX) end(`${why} It asked ${call.self} questions that could not be put to the owner.`);
       call.notes.add(`${why} It was answered as if the owner made no choice.`);
       return Promise.resolve<ElicitResult>({ action: "cancel" });
     };
-    if (!card) return unasked(`${server} asked the owner a question, and a call a program made has no card to show it on: call the tool directly.`);
     const over = overLimit(server, call);
-    if (over) return unasked(over);
-    if (call.queued > QUEUED_MAX) return unasked(`${server} asked more than ${QUEUED_MAX} questions at once: one card is shown at a time, and no more than that wait behind it.`);
+    if (over) end(over);
     call.asked++;
+    if (!card) return unasked(`${server} asked the owner a question, and a call a program made has no card to show it on: call the tool directly.`);
+    if (call.queued >= QUEUED_MAX + 1) return unasked(`${server} asked more than ${QUEUED_MAX} questions at once: one card is shown at a time, and no more than that wait behind it.`);
     call.queued++;
     // One card per call: a second question waits for the first.
-    const run = (this.queue.get(card) ?? Promise.resolve()).then(() => (declinedOut(server, call) ? unasked(declinedOut(server, call)!) : this.elicit(server, q.params, ctx, card, call))).finally(() => { call.queued--; });
+    const run = (this.queue.get(card) ?? Promise.resolve()).then(() => {
+      const out = call.ended ?? declinedOut(server, call);
+      return out ? end(out) : this.elicit(server, q.params, ctx, card, call, unasked);
+    }).finally(() => { call.queued--; });
     const tail = run.catch(() => {});
     this.queue.set(card, tail);
     void tail.then(() => { if (this.queue.get(card) === tail) this.queue.delete(card); });
@@ -872,12 +907,9 @@ export class McpManager {
   // not take is asked again with what was wrong; a declined card is the
   // protocol's decline; a stopped turn (or a stopping daemon) is its cancel.
   private questions = 0;
-  private async elicit(server: string, params: unknown, ctx: ToolContext, card: string, call: CallAsks): Promise<ElicitResult> {
+  private async elicit(server: string, params: unknown, ctx: ToolContext, card: string, call: CallAsks, unasked: (why: string) => Promise<ElicitResult>): Promise<ElicitResult> {
     const form = formOf(params);
-    if (form.unanswerable) {
-      call.notes.add(`${server} asked the owner a form that cannot be answered: ${form.unanswerable}. It was answered as if the owner made no choice.`);
-      return { action: "cancel" };
-    }
+    if (form.unanswerable) return unasked(`${server} asked the owner a form that cannot be answered: ${form.unanswerable}.`);
     // One id per question, so the card knows a new question from the last one on the same call.
     const id = `${Date.now().toString(36)}-${++this.questions}`;
     if (call.readOnly && !this.asked.has(card)) {

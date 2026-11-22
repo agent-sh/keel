@@ -331,7 +331,8 @@ const approve = command("approve", APPROVE_USAGE, {
     return [x.id, v.deny ? { picked: [] } : pick ? { picked: [pick] } : { picked: [], other: v.answer }];
   }));
   // Refusing a server's question is the protocol's decline.
-  await c.post(`/api/sessions/${q.session_id}/questions/${q.call_id}`, q.asked && v.deny ? { decline: true } : { answers });
+  // (A server's question is answered by its own id: an answer never lands on the next one.)
+  await c.post(`/api/sessions/${q.session_id}/questions/${q.call_id}`, q.asked ? { ...(v.deny ? { decline: true } : { answers }), question: q.asked.id } : { answers });
   if (v.json) console.log(JSON.stringify({ ok: true, question: q.call_id }));
   else console.log(v.deny ? "the question was left without an answer" : "answered");
   return EXIT.ok;
@@ -383,7 +384,7 @@ export async function attachTo(c: Client, sessionId: string, v: { thoughts?: boo
   console.error(`-- attached to ${sessionId} (${line(s.title) || "untitled"}); /detach leaves`);
   let seenCards = new Set<string>();
   // The open question cards, each shown once: its questions, and the answers given so far.
-  const asked = new Map<string, Promise<{ session_id: string; call_id: string; qs: UiQuestion[]; answers: Record<string, Answer> }>>();
+  const asked = new Map<string, Promise<{ session_id: string; call_id: string; question?: string; qs: UiQuestion[]; answers: Record<string, Answer> }>>();
   // The cards whose questions this terminal has printed.
   const shown = new Set<string>();
   // What is open now: a card or a question not shown yet is printed, one that closed is forgotten.
@@ -413,7 +414,7 @@ export async function attachTo(c: Client, sessionId: string, v: { thoughts?: boo
         }
         if (qs.length) for (const l of questionLines(qs, q.session_id !== sessionId ? `  (subagent ${q.session_id})` : "")) console.log(l);
         shown.add(key);
-        return { session_id: q.session_id, call_id: q.call_id, qs, answers: {} };
+        return { session_id: q.session_id, call_id: q.call_id, ...(q.asked ? { question: q.asked.id as string } : {}), qs, answers: {} };
       })();
       asked.set(key, card);
       // A card that could not be read is not kept: the next look reads it again.
@@ -470,7 +471,7 @@ export async function attachTo(c: Client, sessionId: string, v: { thoughts?: boo
             // A card that did not take the answers is asked again from its first question.
             const answers = q.answers;
             q.answers = {};
-            await c.post(`/api/sessions/${q.session_id}/questions/${q.call_id}`, { answers });
+            await c.post(`/api/sessions/${q.session_id}/questions/${q.call_id}`, { answers, ...(q.question ? { question: q.question } : {}) });
           }
         } else console.error("this question has nothing to choose: answer it in the workbench");
       } else if (cmd!.startsWith("/") && !cmd!.startsWith("//")) console.error(`unknown command ${cmd}; /steer, /queue, /approve, /deny, /answer, /stop, /detach`);

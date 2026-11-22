@@ -59,18 +59,24 @@ export function askFor(ctx: ToolContext, asked?: Asked): Promise<Reply> {
 // `sendAnyway`: the owner's word for a form that asks for what looks like a
 // secret. Without it such a form takes no answer ("unsent"): it is declined,
 // or sent on purpose.
-export function answer(sessionId: string, callId: string, answers: Answers, sendAnyway = false): boolean | "unsent" {
+// `question`: the id of the question the answer is for. A server can ask one
+// question after another on one call: an answer sent twice, or sent for the
+// question that was on the card a moment ago, must not answer the next one
+// unseen ("stale"). The model's own question has no id: one waits per call.
+export function answer(sessionId: string, callId: string, answers: Answers, sendAnyway = false, question?: string): boolean | "unsent" | "stale" {
   const p = pending.get(keyOf(sessionId, callId));
   if (!p) return false;
+  if (p.question.asked && p.question.asked.id !== question) return "stale";
   if (p.question.asked?.sensitive && !sendAnyway) return "unsent";
   p.resolve(answers);
   return true;
 }
 
 // Only a question a server asked can be declined: the model's own takes an answer.
-export function decline(sessionId: string, callId: string): boolean {
+export function decline(sessionId: string, callId: string, question?: string): boolean | "stale" {
   const p = pending.get(keyOf(sessionId, callId));
   if (!p?.question.asked) return false;
+  if (p.question.asked.id !== question) return "stale";
   p.resolve(DECLINED);
   return true;
 }

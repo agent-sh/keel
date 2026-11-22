@@ -14,12 +14,18 @@ test("a server's question can be declined, and what was typed for it is not kept
 
   const first = askFor(ctx("c-srv"), asked("q1"));
   expect(askedOf("s-interact", "c-srv")?.id).toBe("q1");
-  expect(answer("s-interact", "c-srv", { pw: { picked: [], other: "hunter2" } })).toBe(true);
+  // An answer names the question it is for: one with no id, or another question's, is not taken.
+  expect(answer("s-interact", "c-srv", { pw: { picked: [], other: "hunter2" } })).toBe("stale");
+  expect(answer("s-interact", "c-srv", { pw: { picked: [], other: "hunter2" } }, false, "q1")).toBe(true);
   expect(await first).toEqual({ pw: { picked: [], other: "hunter2" } });
-  // The next question on the same call is a new entry with its own id.
+  // The next question on the same call is a new entry with its own id: the
+  // same answer sent again, or a decline of the first, does not land on it.
   const second = askFor(ctx("c-srv"), asked("q2"));
   expect(askedOf("s-interact", "c-srv")?.id).toBe("q2");
-  expect(decline("s-interact", "c-srv")).toBe(true);
+  expect(answer("s-interact", "c-srv", { pw: { picked: [], other: "hunter2" } }, true, "q1")).toBe("stale");
+  expect(decline("s-interact", "c-srv", "q1")).toBe("stale");
+  expect(pendingQuestions("s-interact")).toEqual(["c-srv"]);
+  expect(decline("s-interact", "c-srv", "q2")).toBe(true);
   expect(await second).toBe(DECLINED);
   expect(pendingQuestions("s-interact")).toEqual([]);
 
@@ -30,8 +36,10 @@ test("a server's question can be declined, and what was typed for it is not kept
 
 test("a form that asks for what looks like a secret takes an answer only on the owner's word", async () => {
   const q = askFor(ctx("c-secret"), asked("q3", { sensitive: true }));
-  expect(answer("s-interact", "c-secret", { pw: { picked: [], other: "x" } })).toBe("unsent");
+  expect(answer("s-interact", "c-secret", { pw: { picked: [], other: "x" } }, false, "q3")).toBe("unsent");
   expect(pendingQuestions("s-interact")).toEqual(["c-secret"]);
-  expect(answer("s-interact", "c-secret", { pw: { picked: [], other: "x" } }, true)).toBe(true);
+  // The owner's "send anyway" is for that question too.
+  expect(answer("s-interact", "c-secret", { pw: { picked: [], other: "x" } }, true, "q0")).toBe("stale");
+  expect(answer("s-interact", "c-secret", { pw: { picked: [], other: "x" } }, true, "q3")).toBe(true);
   expect(await q).toEqual({ pw: { picked: [], other: "x" } });
 });
