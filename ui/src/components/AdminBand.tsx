@@ -4,6 +4,7 @@
 // reloading, so nothing typed is lost).
 import { HardDrive, RotateCw, Unplug } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { drainWords, setDrain, useDrain } from "../lib/drain.ts";
 import { shell } from "../lib/shell.ts";
 import { api, downSince, onFeature, readAtOpen, useStore } from "../lib/store.ts";
 import { setUI, useUI } from "../lib/ui.ts";
@@ -13,7 +14,8 @@ import { clock } from "../lib/utils.ts";
 const AWAY_AFTER_MS = 1_000;
 
 export function AdminBand() {
-  const [draining, setDraining] = useState<{ restart: boolean } | null>(null);
+  // A drain is said from the daemon's first word of it (a stop signal, a restart asked for), with the turns it waits for.
+  const draining = useDrain();
   // The store's disk does not answer: since when, and whether nothing new is saved by now.
   const [disk, setDisk] = useState<{ full?: { since_ms: number; free_mb?: number }; silent_since_ms?: number; refusing?: boolean; slow?: { since_ms: number; sync_ms: number; held_ms: number; refusing?: boolean; building?: string } } | null>(null);
   const [updated, setUpdated] = useState(false);
@@ -22,13 +24,13 @@ export function AdminBand() {
   const shellAway = useUI((s) => s.shellAway);
   const shellNote = useUI((s) => s.shellNote);
   useEffect(() => {
-    const check = () => api<{ build_id: string; draining: any; store?: { full?: { since_ms: number; free_mb?: number }; silent_since_ms?: number; refusing?: boolean; slow?: { since_ms: number; sync_ms: number; held_ms: number; refusing?: boolean; building?: string } } | null }>("/api/bootstrap").then((b) => {
+    const check = () => api<{ build_id: string; draining: any; running?: number; store?: { full?: { since_ms: number; free_mb?: number }; silent_since_ms?: number; refusing?: boolean; slow?: { since_ms: number; sync_ms: number; held_ms: number; refusing?: boolean; building?: string } } | null }>("/api/bootstrap").then((b) => {
       if (build.current && build.current !== b.build_id) setUpdated(true);
       build.current ??= b.build_id;
-      setDraining(b.draining);
+      setDrain(b.draining, b.running);
       setDisk(b.store ?? null);
     });
-    return onFeature({ frame: (f) => { if (f.name === "daemon") { setDraining(f.data.draining); setDisk(f.data.store ?? null); } else if (f.name === "store") setDisk(f.data ?? null); }, reconnect: readAtOpen(check, "daemon status") });
+    return onFeature({ frame: (f) => { if (f.name === "daemon") { setDrain(f.data.draining, f.data.running); setDisk(f.data.store ?? null); } else if (f.name === "store") setDisk(f.data ?? null); }, reconnect: readAtOpen(check, "daemon status") });
   }, []);
   // A request the daemon turned away while draining (reportError says so): shown for a moment.
   const [refused, setRefused] = useState(false);
@@ -139,7 +141,7 @@ export function AdminBand() {
       </div>
     );
   }
-  const text = updated ? "Keel was updated." : draining && connected ? (draining.restart ? "Keel restarts when the running turns finish." : "Keel is stopping when the running turns finish.") : null;
+  const text = updated ? "Keel was updated." : draining && connected ? drainWords(draining) : null;
   if (!text) return null;
   // A row of the page's own, above everything: it never sits on a message box or a card.
   return (

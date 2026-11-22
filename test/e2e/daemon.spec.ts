@@ -73,7 +73,7 @@ test("keep awake, restart after turns, a parked turn continues", async ({ page, 
   await panel.getByTestId("daemon-restart").click();
   await page.getByTestId("confirm").getByRole("button", { name: "Restart" }).click();
   await expect(panel.getByTestId("daemon-status")).toContainText(/Restarting|Reconnecting/);
-  await expect(page.getByTestId("admin-band")).toContainText("Keel restarts when the running turns finish");
+  await expect(page.getByTestId("admin-band")).toContainText("Keel is restarting: 1 turn finishing.");
   expect((await request.post("/api/sessions", { data: { model: HAIKU, title: "refused" } })).status()).toBe(503);
   await shoot(page, "daemon-02-draining");
   await expect.poll(async () => { const d = await daemon(request); return d && d.pid !== pid0 ? d.pid : 0; }, { timeout: 120_000, intervals: [1000] }).toBeGreaterThan(0);
@@ -184,7 +184,7 @@ test("a draining daemon still answers reads and the answers its running turns wa
     const refused: string[] = [];
     page.on("response", (r) => { if (r.status() === 503) refused.push(`${r.request().method()} ${new URL(r.url()).pathname.replace(session.id, ":id")}`); });
     await page.goto(`${d.url}/s/${session.id}`);
-    await expect(page.getByTestId("admin-band")).toContainText("Keel is stopping when the running turns finish");
+    await expect(page.getByTestId("admin-band")).toContainText(/Keel is stopping: \d turns? finishing\./);
     await expect(page.locator('code.k-fileref[data-rel="notes/plan.md"]')).toHaveAttribute("role", "link");
     await expect(page.locator('code.k-fileref[data-path="src/parse.ts"]').first()).toHaveAttribute("data-checked", "1");
 

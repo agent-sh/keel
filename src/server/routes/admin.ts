@@ -162,6 +162,8 @@ export const adminRoutes: RouteModule = (deps) => {
         pid: process.pid,
         started_ms: daemon.started,
         draining: daemon.draining,
+        // The sessions with a turn running: what a drain waits for, said with it.
+        running: daemon.runningSessions().length,
         // The store's disk does not answer (src/core/checkpoint.ts): the page says so across its top.
         store: daemon.status().store,
         home: homedir(),

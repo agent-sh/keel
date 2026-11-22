@@ -147,7 +147,7 @@ export class Daemon {
   onRestart(f: () => void | string | { owed: string } | Promise<void | string | { owed: string }>) { this.beforeRestart.push(f); }
 
   runningSessions(): string[] {
-    return this.deps.store.db.query<{ id: string }, []>("SELECT id FROM sessions").all().map((r) => r.id).filter((id) => this.deps.engine.isRunning(id));
+    return this.deps.engine.runningIds();
   }
 
   // The daemon's own unresponsiveness (src/admin/stall.ts): each stall is one

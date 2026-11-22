@@ -14,8 +14,9 @@
 // session a frame was quicker for is left out of them until then.
 //
 // The logo's word is the link's: connected, slow to answer (two asks went
-// unanswered), reconnecting, or catching up.
+// unanswered), reconnecting, catching up, or the daemon stopping or restarting.
 import { useEffect, useState } from "react";
+import { drainWords, useDrain } from "../lib/drain.ts";
 import { useReach } from "../lib/reach.ts";
 import { useStaleSince, useStore } from "../lib/store.ts";
 import { clock } from "../lib/utils.ts";
@@ -41,9 +42,12 @@ export function useLink(): { live: boolean; word: string } {
   const connected = useStore((s) => s.connected);
   const synced = useStore((s) => s.synced);
   const slow = useStore((s) => s.slow);
+  const drain = useDrain();
   if (!connected) return { live: false, word: "Reconnecting to the daemon" };
   if (!synced) return { live: false, word: "Catching up with the daemon" };
   if (slow) return { live: true, word: "Keel is slow to answer" };
+  // A daemon that is going is heard, and still is not simply connected: it takes no new work.
+  if (drain) return { live: true, word: drainWords(drain) };
   return { live: true, word: "Connected to the daemon" };
 }
 
