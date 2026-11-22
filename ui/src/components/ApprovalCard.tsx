@@ -834,11 +834,12 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
         id={`${ids}-summary`}
         className={cn(
           "overflow-auto bg-code font-mono text-caption leading-relaxed whitespace-pre-wrap break-all",
-          // A command is shown in the order it is written: letters written right to left are not reordered among the rest.
-          a.kind === "shell" && "[direction:ltr] [unicode-bidi:bidi-override]",
           dense ? "rounded-md px-2.5 py-1.5" : "mx-4 mt-2.5 rounded-lg px-3 py-2",
           !whole && (dense ? "max-h-32" : "max-h-48"),
         )}
+        // Whatever is asked (a command, a path, a tool's input) is shown in the order it is written:
+        // letters written right to left stand in their runs (Spelled) and are not reordered among the rest.
+        dir="ltr"
         data-testid="approval-summary"
         data-cut={short || undefined}
         data-marks={whole && marked ? "shown" : undefined}
@@ -852,9 +853,9 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
           This text holds characters that do not show as written. Each is spelled out and marked.
         </p>
       )}
-      {a.kind === "shell" && hasRtl(a.summary) && (
+      {hasRtl(whole && part ? kept : a.summary) && (
         <p className={cn("mt-1 text-micro text-warn", !dense && "mx-4")} data-testid="approval-rtl">
-          It holds letters written right to left: they are shown in the order the command is written.
+          It holds letters written right to left: each word reads as written, and the words stand in the order the {a.kind === "shell" ? "command" : "text"} is written.
         </p>
       )}
       {/* Text that does not fit its box says so. The control that opens it leads the answers; opened, it folds here. */}

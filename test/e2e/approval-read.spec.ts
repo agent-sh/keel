@@ -189,20 +189,37 @@ test("a whole card keeps its rule; hidden and reordering characters are shown an
         await expect(c).not.toHaveAttribute("data-must-open", "true");
       } else {
         // Letters written right to left stand where they are written: the text is not mirrored.
-        expect(await text.evaluate((el) => { const s = getComputedStyle(el); return `${s.direction} ${s.unicodeBidi}`; })).toBe("ltr bidi-override");
+        await expect(text).toHaveAttribute("dir", "ltr");
         await expect(c.getByTestId("approval-rtl")).toContainText("in the order the command is written");
-        const xs = await text.evaluate((el) => {
-          const node = [...el.childNodes].find((n) => n.nodeType === 3 || (n as HTMLElement).tagName === "SPAN" && !(n as HTMLElement).className) as Node;
-          const t = (node.nodeType === 3 ? node : node.firstChild) as Text;
-          const x = (ch: string) => { const i = t.data.indexOf(ch); const r = document.createRange(); r.setStart(t, i); r.setEnd(t, i + 1); return r.getBoundingClientRect().left; };
-          return [x("\u05d0"), x("\u05d1"), x("\u05d2")];
-        });
+        const xs = await text.getByTestId("rtl-run").evaluateAll((els) => els.map((el) => el.getBoundingClientRect().left));
+        expect(xs).toHaveLength(3);
         expect(xs[0]!).toBeLessThan(xs[1]!);
         expect(xs[1]!).toBeLessThan(xs[2]!);
         await shoot(page, "approval-read-03-rtl");
       }
     }
     await shoot(page, "approval-read-04-marked");
+
+    // The same for every kind of request, and a word reads as a word: an edit's path keeps the
+    // order it is written in, with the notice, and the letters of one word run right to left.
+    const edit = await asking(request, "Read: a path with letters written right to left", [{ name: "Write", input: { file_path: "notes/\u05d0 1 2 \u05d1.md", content: "x" } }]);
+    ids.push(edit.id);
+    const word = await asking(request, "Read: a word written right to left", [bash("touch \u05d3\u05d5\u05d7.txt")]);
+    ids.push(word.id);
+    for (const s of [edit, word]) await waits(request, s.id);
+    await page.goto(`/s/${edit.id}`);
+    const path = page.getByTestId("approval").first();
+    await expect(path).toHaveAttribute("data-tool", "Write");
+    await expect(path.getByTestId("approval-rtl")).toContainText("in the order the text is written");
+    const ps = await path.getByTestId("approval-summary").getByTestId("rtl-run").evaluateAll((els) => els.map((el) => [el.textContent, el.getBoundingClientRect().left] as const));
+    expect(ps.map((x) => x[0])).toEqual(["\u05d0", "\u05d1"]);
+    expect(ps[0]![1]).toBeLessThan(ps[1]![1]);
+    await shoot(page, "approval-read-09-rtl-path");
+    await page.goto(`/s/${word.id}`);
+    const run = page.getByTestId("approval").first().getByTestId("approval-summary").getByTestId("rtl-run");
+    await expect(run).toHaveText("\u05d3\u05d5\u05d7");
+    const letters = await run.evaluate((el) => { const t = el.firstChild as Text; return [0, 2].map((i) => { const r = document.createRange(); r.setStart(t, i); r.setEnd(t, i + 1); return r.getBoundingClientRect().left; }); });
+    expect(letters[0]!).toBeGreaterThan(letters[1]!);
   } finally {
     await drop(request, ids);
   }

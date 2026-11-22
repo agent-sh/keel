@@ -16,9 +16,25 @@ const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800\
 export const plainAscii = (text: string): boolean => /^[\x20-\x7E]*$/.test(text);
 
 // Letters written right to left (Hebrew, Arabic and the like): among left-to-right text a
-// renderer reorders them, so "cp \u05d0 1 2 \u05d1 > \u05d2" reads as its mirror. A command
-// that holds them is shown in the order it is written.
-export const hasRtl = (text: string): boolean => /[\p{Script=Hebrew}\p{Script=Arabic}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Nko}\p{Script=Samaritan}\p{Script=Mandaic}\p{Script=Adlam}]/u.test(text);
+// renderer reorders them, so "cp \u05d0 1 2 \u05d1 > \u05d2" reads as its mirror. Text
+// that holds them is shown in the order it is written, each run of them by itself
+// (`rtlRuns`): a word reads as a word, and nothing around it changes places.
+const RTL = "\\p{Script=Hebrew}\\p{Script=Arabic}\\p{Script=Syriac}\\p{Script=Thaana}\\p{Script=Nko}\\p{Script=Samaritan}\\p{Script=Mandaic}\\p{Script=Adlam}";
+export const hasRtl = (text: string): boolean => new RegExp(`[${RTL}]`, "u").test(text);
+
+// The text cut at its right-to-left runs: a run is letters of those scripts with
+// the marks that sit on them (a word; a space ends it). The rest is as written.
+export function rtlRuns(text: string): { text: string; rtl?: true }[] {
+  const out: { text: string; rtl?: true }[] = [];
+  let at = 0;
+  for (const m of text.matchAll(new RegExp(`[${RTL}][${RTL}\\p{M}]*`, "gu"))) {
+    if (m.index > at) out.push({ text: text.slice(at, m.index) });
+    out.push({ text: m[0], rtl: true });
+    at = m.index + m[0].length;
+  }
+  if (at < text.length) out.push({ text: text.slice(at) });
+  return out;
+}
 
 // `allow`: characters of those classes that are plain here (a newline and a tab in a text of many lines).
 export const hasHidden = (text: string, allow = ""): boolean => {
