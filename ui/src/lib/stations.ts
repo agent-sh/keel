@@ -54,7 +54,8 @@ export const shares = (s: Pick<State, "count" | "sizes">): number[] => {
 export const stations = {
   // The first layout, once: one pane, with the session open.
   seed(id: string | null) {
-    if (!state.seeded) set({ seeded: true, count: 1, slots: [id], over: [null], keys: [paneKey()], active: 0 });
+    // (The pane keeps its name: what it shows is drawn once, not again as the layout is first kept.)
+    if (!state.seeded) set({ seeded: true, count: 1, slots: [id], over: [null], keys: [state.keys[0] ?? paneKey()], active: 0 });
   },
   // The owner's number. Fewer panes: empty ones go first, then the rightmost; the pane worked in stays.
   setCount(count: number) {
