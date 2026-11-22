@@ -36,7 +36,7 @@ export function UndoToast() {
     <div role="status" data-testid="undo-toast" key={u.n} data-at={spot ? "list" : "top"}
       style={spot ? ({ left: spot.left, width: spot.width } as CSSProperties) : undefined}
       className={cn(
-        "fixed z-50 flex h-9 items-center gap-2 border border-line-strong bg-raised pl-3 pr-1 text-caption shadow-2 animate-in",
+        "fixed z-50 flex h-9 items-center gap-2 border border-line-strong bg-raised pl-3 pr-1 text-caption shadow-2 animate-appear",
         spot ? "bottom-12 rounded-md" : "top-0 left-1/2 max-w-[calc(100vw-1rem)] -translate-x-1/2 rounded-b-md border-t-0",
       )}>
       <span className="min-w-0 flex-1 truncate" dir="auto" data-testid="undo-words" title={u.words}>{u.words}</span>
