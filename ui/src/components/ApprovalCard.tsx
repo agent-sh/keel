@@ -636,9 +636,11 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   // refuse, and say what is left. Bringing the text into view is the owner's own act.
   const part = shownInPart(a); // the daemon kept more of the input than the card shows
   const marked = hasHidden(a.summary, "\n\t");
-  // The lines the owner has yet to bring into view: said where the text is in view or has been
-  // (a card that is all out of view says nothing, and so does not change as it comes into view).
-  const left = unseen?.begun ? unseen.out : 0;
+  // The lines the owner has yet to bring into view: said where the text is in view or has been, or
+  // once a press was refused for them (a card whose text is all out of view says nothing by
+  // itself, and so does not change as it comes into view).
+  const [told, setTold] = useState(false);
+  const left = unseen && (unseen.begun || told) ? unseen.out : 0;
   const leftText = `${left} line${left === 1 ? "" : "s"} not seen yet`;
   const shut = mustBeOpened(a, whole, cut, unseen);
   const mustOpen = !unseen || unseen.n > 0 || shut;
@@ -665,7 +667,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   const mayHold = () => !unread.current && inView();
   const refusalOf = (stood: boolean, key: Element | null): string => {
     // Not read: the text is to be opened first, or so many of its lines have not been in view.
-    if (unread.current) return shut ? openFirst : notYet;
+    // (Said on the card from then on, where its text is all out of view and it said nothing by itself.)
+    if (unread.current) { refused(); return shut ? openFirst : notYet; }
     if (!stood) return notYet;
     return key ? keyRefused(key) : "";
   };
@@ -786,7 +789,9 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   const pressed = usePress(() => !unread.current && armed("live"), (ok) => ok);
   const nudge = useNudge();
   // Why a press on one of its answers does nothing now.
-  const notYet = left > 0 ? `Not yet: ${leftText}` : ripe ? "Not yet: it moved a moment ago" : "Not yet: it has only just arrived";
+  const unreadLines = unseen?.out ?? 0;
+  const notYet = unreadLines > 0 ? `Not yet: ${unreadLines} line${unreadLines === 1 ? "" : "s"} not seen yet` : ripe ? "Not yet: it moved a moment ago" : "Not yet: it has only just arrived";
+  const refused = () => { if (unreadLines > 0) setTold(true); };
 
   const answer = async (body: { choice: string; reason?: string; rules?: Suggest[] }) => {
     noteAnswer(a.id);

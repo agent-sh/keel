@@ -220,6 +220,18 @@ test("permission card answers wrap on a narrow screen", async ({ page, request }
     await expect(l).toBeEnabled();
     await page.keyboard.press("Enter");
   };
+  // The region shows less than the card here, and the command is not in it: nothing is answered
+  // for a text that was never in view. Allow once says how much is left; scrolled through by the
+  // owner, the card is read.
+  await once.focus();
+  await page.waitForTimeout(1300);
+  await page.keyboard.press("Enter");
+  await expect(card.getByTestId("approval-left")).toHaveText(/^\d+ lines? not seen yet/);
+  expect(existsSync(join(ws, "alpha.txt"))).toBe(false);
+  const tray = (await page.locator(`[data-station="${session.id}"]`).getByTestId("composer-tray").boundingBox())!;
+  await page.mouse.move(tray.x + tray.width / 2, tray.y + tray.height / 2);
+  for (const by of [...Array(40).fill(-12), ...Array(40).fill(12)]) { await page.mouse.wheel(0, by); await page.waitForTimeout(30); }
+  await expect(card).not.toHaveAttribute("data-must-open", "true");
   await press(always);
   await expect(page.getByTestId("grant-pattern")).toHaveValue("touch *");
   await page.keyboard.press("Escape");
