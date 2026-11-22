@@ -135,10 +135,11 @@ test("three waiting sessions are answered by mouse and both panes are as they we
       // A look: the pane still holds its session and names it, with the way back and the way to keep the look.
       await expect(slot(page, 0)).toHaveAttribute("data-station", id);
       await expect(slot(page, 0)).toHaveAttribute("data-holds", reader);
+      // The bar says what this is and whose pane it is, then the two acts with their keys.
       const bar = slot(page, 0).getByTestId("look-bar");
-      await expect(bar.getByTestId("look-back")).toContainText("Back to");
-      await expect(bar.getByTestId("look-back")).toContainText("Spike: full-text search over the notes");
-      await expect(bar.getByTestId("look-keep")).toHaveText("Keep here");
+      await expect(bar.getByTestId("look-says")).toHaveText("Looking at Standup notes for Thursday. This pane holds Spike: full-text search over the notes.");
+      await expect(bar.getByTestId("look-back")).toHaveText("BackEsc");
+      await expect(bar.getByTestId("look-keep")).toHaveText("Keep hereAltK");
       await expect(slot(page, 1)).toHaveAttribute("data-station", coord);
       await expect(cardIn(page, id, "question")).toBeVisible();
       await shoot(page, "panes-stay-02-look");
@@ -349,7 +350,9 @@ test("the start page lists what needs the owner in a pane beside others, and a p
   expect(fits.out).toEqual([]);
   // The pane still holds the reader, and says so.
   await expect(home).toHaveAttribute("data-holds", reader);
-  await expect(home.getByTestId("look-back")).toContainText("Spike: full-text search over the notes");
+  await expect(home.getByTestId("look-says")).toHaveText("The start page. This pane holds Spike: full-text search over the notes.");
+  // What needs the owner comes first, above the start box, as in an empty pane.
+  expect((await home.getByTestId("home-attention").boundingBox())!.y).toBeLessThan((await home.getByTestId("new-composer").boundingBox())!.y);
   await shoot(page, "panes-stay-05-home-pane-480");
 
   // A row's Answer opens that session as a look; answering leads back to the list, which has one row fewer.
@@ -405,7 +408,7 @@ test("four panes, a smaller window and a phone", async ({ page, request }) => {
   await row(page, bench).hover();
   await expect(slot(page, 2).getByTestId("pane-aim")).toHaveText("Is here");
   await shoot(page, "panes-stay-07-four-panes");
-  await page.keyboard.press("Escape");
+  await slot(page, 0).getByTestId("look-back").click();
   await expect(slot(page, 0)).toHaveAttribute("data-station", reader);
 
   // Two panes of 800 px: the coordinator's title is whole beside a long reason.
@@ -436,4 +439,371 @@ test("four panes, a smaller window and a phone", async ({ page, request }) => {
   await expect(page.getByTestId("home-count-need")).toContainText("2 need you");
   await shoot(page, "panes-stay-11-phone-home");
   await drop(request, reader, coord, bench, port, q);
+});
+
+// A session at work until the test ends it: its turn holds for a file that never comes.
+async function works(request: APIRequestContext, id: string, ws: string) {
+  await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:hold ${ws}/never-${id.slice(-6)}` } });
+  await expect.poll(() => phase(request, id), { timeout: 30_000 }).toBe("working");
+}
+const phase = async (request: APIRequestContext, id: string) => ((await (await request.get("/api/sessions")).json()).sessions as { id: string; phase: string }[]).find((s) => s.id === id)?.phase;
+const tip = (page: Page) => page.locator(".k-tip");
+
+test("Escape goes back in a look and never stops the pane's own turn right after", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const ws = folder("panes-stay-esc");
+  const coord = await long(request, "Coordinator: release train 2.4", ws);
+  const reader = await long(request, "Spike: full-text search over the notes", ws);
+  const other = await long(request, "Draft the 2.4 changelog", ws);
+  await works(request, coord, ws);
+  await works(request, other, ws);
+  await open(page, [coord, reader]);
+
+  // A look over the working coordinator; the look works too. Escape leaves the look and stops neither.
+  // The next Escape, at each gap, stops nothing: it says how to stop.
+  for (const gap of [150, 400, 1000, 2500]) {
+    await row(page, other).click();
+    await expect(slot(page, 0)).toHaveAttribute("data-station", other);
+    await expect(slot(page, 0).locator('.k-view[data-view="look"]').getByTestId("composer")).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(slot(page, 0)).toHaveAttribute("data-station", coord);
+    // The look's turn goes on, and the pane says where it went.
+    await expect(slot(page, 0).getByTestId("pane-note")).toHaveText("Draft the 2.4 changelog keeps working, in the list");
+    await page.waitForTimeout(gap);
+    await page.keyboard.press("Escape");
+    await expect(tip(page)).toHaveText("Esc again stops the turn");
+    await page.waitForTimeout(700);
+    expect(await phase(request, coord), `Escape ${gap} ms after the look was left`).toBe("working");
+    expect(await phase(request, other)).toBe("working");
+    // Anything else the owner does ends that: a key in the box, taken out again.
+    await page.keyboard.type("x");
+    await page.keyboard.press("Backspace");
+  }
+  await expect(page.getByTestId("announce-status")).toHaveCount(1);
+
+  // After an answer the look leaves by itself and the keyboard is in the coordinator's box: Escape there stops nothing either.
+  for (const gap of [300, 800, 1500]) {
+    const q = await asksWhich(request, `Standup notes ${gap}`, ws);
+    await expect(row(page, q)).toHaveAttribute("data-watch", "need");
+    await row(page, q).click();
+    await pick(page, q, 0);
+    await expect(slot(page, 0)).toHaveAttribute("data-station", coord);
+    await expect(slot(page, 0).getByTestId("composer")).toBeFocused();
+    await page.waitForTimeout(gap);
+    await page.keyboard.press("Escape");
+    await expect(tip(page)).toHaveText("Esc again stops the turn");
+    await page.waitForTimeout(700);
+    expect(await phase(request, coord), `Escape ${gap} ms after the answered look left`).toBe("working");
+    await page.keyboard.type("x");
+    await page.keyboard.press("Backspace");
+    await drop(request, q);
+  }
+
+  // The start page over the working coordinator's pane: Escape leaves it, Escape again stops nothing.
+  await page.keyboard.press("Control+Shift+o");
+  await expect(slot(page, 0).getByTestId("new-composer")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(slot(page, 0)).toHaveAttribute("data-station", coord);
+  await page.keyboard.press("Escape");
+  await expect(tip(page)).toHaveText("Esc again stops the turn");
+  await page.waitForTimeout(700);
+  expect(await phase(request, coord)).toBe("working");
+  // Said once, and meant: after the settle time the next Escape stops the turn, as it does in any pane.
+  await page.waitForTimeout(1100);
+  await page.keyboard.press("Escape");
+  await expect.poll(() => phase(request, coord), { timeout: 15_000 }).not.toBe("working");
+
+  // On a card of a look Escape is the card's key, from the first moment: the look stays, and its bar does not offer the key.
+  const run = await asksToRun(request, "Rotate the staging certificates", ws, "certs");
+  await expect(row(page, run)).toHaveAttribute("data-watch", "need");
+  await row(page, run).click();
+  const card = cardIn(page, run, "approval");
+  await expect(card).toBeFocused();
+  await expect(slot(page, 0).getByTestId("look-back").locator("kbd")).toBeHidden();
+  await page.keyboard.press("Escape");
+  await expect(slot(page, 0)).toHaveAttribute("data-station", run);
+  await expect(card.getByTestId("approval")).toHaveAttribute("data-live", "true");
+  await page.keyboard.press("Escape");
+  await expect(slot(page, 0)).toHaveAttribute("data-station", run);
+  expect(await waiting(request, run)).toBe(1);
+  // From the look's message box Escape goes back, and the bar says so.
+  await slot(page, 0).locator('.k-view[data-view="look"]').getByTestId("composer").click();
+  await expect(slot(page, 0).getByTestId("look-back").locator("kbd")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(slot(page, 0)).toHaveAttribute("data-station", coord);
+  await drop(request, coord, reader, other, run);
+});
+
+test("the first pane is drawn once, a double click places only the row it began on, and what the owner starts is placed", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const ws = folder("panes-stay-first");
+  const reader = await long(request, "Spike: full-text search over the notes", ws);
+  const coord = await long(request, "Coordinator: release train 2.4", ws);
+  const a = await long(request, "Draft the 2.4 changelog", ws);
+  const b = await long(request, "Bench the cache under load", ws);
+
+  // A browser with no kept layout: the session is asked for once.
+  const asked: string[] = [];
+  page.on("request", (r) => { if (r.method() === "GET" && new URL(r.url()).pathname === `/api/sessions/${reader}`) asked.push(r.url()); });
+  await page.goto("/api/daemon");
+  await page.evaluate(() => { localStorage.removeItem("keel.panes"); localStorage.setItem("keel.focus", "false"); });
+  await page.goto(`/s/${reader}`);
+  await expect(slot(page, 0).locator(".k-reading")).toContainText("lorem ipsum");
+  await page.waitForTimeout(1500);
+  expect(asked.length, "the session was asked for more than once").toBe(1);
+
+  // The list moved between the two clicks of a double click: the second hit another row. Nothing is placed; that row is a look.
+  await open(page, [reader, coord]);
+  const at = async (id: string) => { const r = (await row(page, id).boundingBox())!; return { x: r.x + 60, y: r.y + r.height / 2 }; };
+  const pa = await at(a), pb = await at(b);
+  await page.mouse.click(pa.x, pa.y);
+  await page.mouse.move(pb.x, pb.y);
+  await page.mouse.down({ clickCount: 2 });
+  await page.mouse.up({ clickCount: 2 });
+  await expect(slot(page, 0)).toHaveAttribute("data-station", b);
+  await expect(slot(page, 0)).toHaveAttribute("data-holds", reader);
+  await expect(slot(page, 0).getByTestId("look-bar")).toBeVisible();
+  // Both clicks on one row place it.
+  await row(page, a).dblclick();
+  await expect(slot(page, 0)).toHaveAttribute("data-holds", a);
+  await expect(slot(page, 0).getByTestId("look-bar")).toHaveCount(0);
+
+  // A session started from the start page over a pane is that pane's session: no look, and the pane says where the former one is.
+  await open(page, [reader, coord]);
+  await page.keyboard.press("Control+Shift+o");
+  const box = slot(page, 0).getByTestId("new-composer").getByTestId("composer");
+  await box.fill("Write the release notes");
+  await box.press("Enter");
+  await expect(slot(page, 0)).not.toHaveAttribute("data-holds", reader);
+  await expect(slot(page, 0).getByTestId("look-bar")).toHaveCount(0);
+  await expect(slot(page, 0)).toHaveAttribute("data-station", /./);
+  await expect(slot(page, 0).getByTestId("pane-note")).toHaveText("Spike: full-text search over the notes is in the list");
+  await expect(slot(page, 1)).toHaveAttribute("data-station", coord);
+  const made = (await slot(page, 0).getAttribute("data-station"))!;
+  expect(await slot(page, 0).getAttribute("data-holds")).toBe(made);
+  // A fork takes the pane of the session it was made from.
+  await idle(request, made);
+  await slot(page, 0).getByTestId("session-menu").click();
+  await page.getByTestId("menu-fork").click();
+  await expect(slot(page, 0)).not.toHaveAttribute("data-station", made);
+  const fork = (await slot(page, 0).getAttribute("data-station"))!;
+  expect(await slot(page, 0).getAttribute("data-holds")).toBe(fork);
+  await expect(slot(page, 0).getByTestId("look-bar")).toHaveCount(0);
+  await drop(request, reader, coord, a, b, made, fork);
+});
+
+test("answering leaves a look only when the owner came to answer, and the bar says what waits under it", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  test.setTimeout(240_000);
+  const ws = folder("panes-stay-read");
+  const reader = await long(request, "Spike: full-text search over the notes", ws);
+  const coord = await long(request, "Coordinator: release train 2.4", ws);
+  const start = await reading(page, reader, coord);
+  // What the owner did in the look before answering, and whether the pane then returns by itself.
+  const cases: [string, (id: string) => Promise<void>][] = [
+    ["scrolled its conversation with the wheel", async () => { const b = (await slot(page, 0).boundingBox())!; await page.mouse.move(b.x + b.width / 2, b.y + 300); await page.mouse.wheel(0, -200); }],
+    ["pressed in its conversation", async () => { await slot(page, 0).locator('.k-view[data-view="look"] .k-reading').click({ position: { x: 40, y: 40 } }); }],
+    ["scrolled it with a key from its empty box", async () => { await slot(page, 0).locator('.k-view[data-view="look"]').getByTestId("composer").focus(); await page.keyboard.press("PageUp"); }],
+    ["selected text in it", async () => { await page.evaluate(() => { const el = document.querySelector('[data-view="look"] [data-testid="transcript"]')!; const r = document.createRange(); r.selectNodeContents(el); getSelection()!.removeAllRanges(); getSelection()!.addRange(r); }); }],
+    ["read for ten seconds once it could be answered", async () => { await page.waitForTimeout(11_500); }],
+  ];
+  for (const [what, act] of cases) {
+    const q = await asksWhich(request, `Standup notes: ${what}`, ws);
+    await expect(row(page, q)).toHaveAttribute("data-watch", "need");
+    await row(page, q).click();
+    await expect(cardIn(page, q, "question")).toBeVisible();
+    await act(q);
+    await pick(page, q, 0);
+    await expect.poll(() => waiting(request, q)).toBe(0);
+    await page.waitForTimeout(600);
+    expect(await slot(page, 0).getAttribute("data-station"), `the look was left although the owner ${what}`).toBe(q);
+    // Left by its bar, the pane is as it was.
+    await slot(page, 0).getByTestId("look-back").click();
+    await expect(slot(page, 0)).toHaveAttribute("data-station", reader);
+    expect(Math.abs((await look(page)).panes[0]!.top! - start.panes[0]!.top!)).toBeLessThan(4);
+    await slot(page, 0).getByTestId("composer").click();
+    await drop(request, q);
+  }
+  // The coordinator's own pane, gone to by its row, then a press in its conversation: answered, the owner stays there.
+  await request.post(`/api/sessions/${coord}/messages`, { data: { text: calls([question]) } });
+  await expect(row(page, coord)).toHaveAttribute("data-watch", "need");
+  await row(page, coord).click();
+  await slot(page, 1).locator(".k-reading").click({ position: { x: 40, y: 40 } });
+  await pick(page, coord, 0);
+  await expect.poll(() => waiting(request, coord)).toBe(0);
+  await page.waitForTimeout(600);
+  await expect(slot(page, 1)).toHaveAttribute("data-helm", "true");
+  expect((await look(page)).panes[0]!.draft).toBe("draft: keep me");
+
+  // The coordinator asks while a look lies over it: the bar says so in words, and the bridge counts it for whoever sums up what waits.
+  await idle(request, coord);
+  await slot(page, 1).getByTestId("composer").click();
+  await row(page, reader).hover();
+  const other = await long(request, "Draft the 2.4 changelog", ws);
+  await row(page, other).click();
+  await expect(slot(page, 1)).toHaveAttribute("data-station", other);
+  await expect(slot(page, 1).getByTestId("look-state")).toHaveCount(0);
+  await request.post(`/api/sessions/${coord}/messages`, { data: { text: calls([question]) } });
+  await expect(slot(page, 1).getByTestId("look-says")).toHaveText("Looking at Draft the 2.4 changelog. This pane holds Coordinator: release train 2.4, needs you.");
+  await expect(slot(page, 1).getByTestId("look-back")).toHaveAttribute("aria-label", /Coordinator: release train 2\.4, needs you/);
+  await expect(bridge(page)).toHaveAttribute("data-need-under", "1");
+  await shoot(page, "panes-stay-12-needs-you-under-a-look");
+  await drop(request, reader, coord, other);
+});
+
+test("the row tab is said, stays out of the bar's way and points at a pane out of view; the header is one line when it fits", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const ws = folder("ps");
+  const reader = await long(request, "Spike: full-text search", ws);
+  const coord = await create(request, "Coordinator: release train 2.4", ws);
+  await ask(request, coord, "approval", "release");
+  const other = await long(request, "Draft the 2.4 changelog", ws);
+  const more = [await long(request, "Bench the cache under load", ws), await long(request, "Port the parser", ws), await long(request, "Review pull request 212", ws), await long(request, "Wait for the staging deploy", ws)];
+  await open(page, [reader, coord]);
+
+  // 800 px panes. The helm's header is one line: the title, the state and the tools side by side.
+  const head = (i: number) => slot(page, i).getByTestId("station-head").first();
+  const oneLine = async (i: number) => { const t = (await head(i).getByTestId("station-title").boundingBox())!, w = (await head(i).getByTestId("station-word").boundingBox())!; return Math.abs(t.y + t.height / 2 - (w.y + w.height / 2)) < 6; };
+  expect(await oneLine(0), "the state stands under a short title in a wide pane").toBe(true);
+  // The coordinator: title whole; where room is short the folder gives way before the reason is cut.
+  const cut = await head(1).evaluate((h) => {
+    const why = h.querySelector<HTMLElement>('[data-testid="station-why"]')!, meta = h.querySelector<HTMLElement>(".k-station-meta")!, title = h.querySelector<HTMLElement>('[data-testid="station-title"]')!;
+    return { title: title.scrollWidth > title.clientWidth + 1, why: why.scrollWidth > why.clientWidth + 1, meta: Math.round(meta.getBoundingClientRect().width) };
+  });
+  expect(cut.title).toBe(false);
+  expect(cut.why && cut.meta > 0, "the reason is cut while the folder still shows").toBe(false);
+  // The keys on a header tool: the header keeps its height, and a note under it shows the title and the reason whole.
+  await slot(page, 0).getByTestId("composer").click();
+  const h0 = (await head(0).boundingBox())!.height;
+  await head(0).getByTestId("station-pin").focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  await expect(head(0).getByTestId("station-pin")).toBeFocused();
+  expect((await head(0).boundingBox())!.height).toBe(h0);
+  expect(await head(0).evaluate((h) => getComputedStyle(h, "::after").content)).toContain("Spike: full-text search");
+
+  // The keys on a row: the row is described by what a press there will do.
+  await page.keyboard.press("Alt+l");
+  await row(page, other).focus();
+  await expect(row(page, other)).toHaveAttribute("aria-describedby", "k-aim-says");
+  await expect(page.locator("#k-aim-says")).toHaveText("Opens here for a look, in pane 1");
+  await expect(slot(page, 0).getByTestId("pane-aim")).toHaveText("Opens here for a look");
+  // The pointer crossing the folder's heading between rows: the tab stays.
+  await row(page, other).hover();
+  await page.getByTestId("session-list").locator(".k-group-head").first().hover();
+  await expect(slot(page, 0).getByTestId("pane-aim")).toHaveText("Opens here for a look");
+  // Off the list, it goes.
+  await slot(page, 1).hover();
+  await expect(slot(page, 0).getByTestId("pane-aim")).toHaveCount(0);
+  // Over a look the tab hangs under the bar: it covers none of the bar's words or keys. At 800 and at 560 px.
+  for (const width of [1920, 1440]) {
+    await page.setViewportSize({ width, height: 1040 });
+    await row(page, other).click();
+    await expect(slot(page, 0).getByTestId("look-bar")).toBeVisible();
+    await row(page, more[0]!).hover();
+    await expect(slot(page, 0).getByTestId("pane-aim")).toHaveText("Opens here for a look");
+    const tab = (await slot(page, 0).getByTestId("pane-aim").boundingBox())!, bar = (await slot(page, 0).getByTestId("look-bar").boundingBox())!;
+    expect(tab.y, `the tab lies over the bar in a pane of ${Math.round(bar.width)} px`).toBeGreaterThanOrEqual(bar.y + bar.height - 1);
+    if (width === 1920) await shoot(page, "panes-stay-13-tab-under-the-bar");
+    await slot(page, 0).getByTestId("look-back").click();
+    await expect(slot(page, 0)).toHaveAttribute("data-station", reader);
+  }
+  // A look in a pane that is not worked in is as compact as any other pane: no row of tools.
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await row(page, other).click();
+  await expect(slot(page, 0).locator('.k-view[data-view="look"] .k-session-header')).toHaveCount(1);
+  await slot(page, 1).getByTestId("composer").click();
+  await expect(slot(page, 1)).toHaveAttribute("data-helm", "true");
+  await expect(slot(page, 0)).toHaveAttribute("data-station", other);
+  await expect(slot(page, 0).locator('.k-view[data-view="look"] .k-session-header')).toHaveCount(0);
+
+  // A window narrowed to a phone's width and widened again: each pane's look is where it was.
+  await row(page, more[1]!).click();
+  await expect(slot(page, 1)).toHaveAttribute("data-station", more[1]!);
+  const wide = (await look(page)).panes.map((p) => [p.holds, p.shows]);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByTestId("look-bar")).toHaveCount(0);
+  await page.waitForTimeout(800);
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  await expect.poll(async () => (await look(page)).panes.map((p) => [p.holds, p.shows])).toEqual(wide);
+
+  // Six panes: the row of panes scrolls sideways. A row whose pane is out of view shows its tab at that edge, with the pane's number.
+  await open(page, [reader, coord, other, ...more.slice(0, 3)]);
+  await expect(bridge(page).locator(":scope > [data-slot]")).toHaveCount(6);
+  const scrolls = await bridge(page).evaluate((el) => el.scrollWidth > el.clientWidth + 1);
+  if (scrolls) {
+    await bridge(page).evaluate((el) => { el.scrollLeft = 0; });
+    await row(page, more[2]!).hover();
+    await expect(page.getByTestId("pane-aim-edge")).toHaveText("Is here, pane 6");
+    await expect(page.getByTestId("pane-aim-edge")).toHaveAttribute("data-side", "right");
+  }
+  await shoot(page, "panes-stay-14-six-panes");
+
+  // The start page in a pane at the largest text size: the list is above the start box, in view.
+  await open(page, [reader, coord]);
+  await page.evaluate(() => localStorage.setItem("keel.textScale", "1.5"));
+  await page.reload();
+  await expect(slot(page, 0)).toHaveAttribute("data-station", reader);
+  await page.getByRole("button", { name: "New session" }).first().click();
+  const home = slot(page, 0);
+  await expect(home.getByTestId("home-session").first()).toBeVisible();
+  const first = (await home.getByTestId("home-session").first().boundingBox())!, start = (await home.getByTestId("new-composer").boundingBox())!;
+  expect(first.y + first.height).toBeLessThan(start.y);
+  expect(first.y + first.height).toBeLessThan(1040);
+  expect(await bridge(page).evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+  await shoot(page, "panes-stay-15-text-size-150");
+  await page.evaluate(() => localStorage.setItem("keel.textScale", "1"));
+  await drop(request, reader, coord, other, ...more);
+});
+
+test("a waiting session opened from the palette is answered and left in about ten keys", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const ws = folder("panes-stay-palette");
+  const reader = await long(request, "Spike: full-text search over the notes", ws);
+  const coord = await long(request, "Coordinator: release train 2.4", ws);
+  const run = await asksToRun(request, "Rotate the staging certificates", ws, "certs");
+  const before = await reading(page, reader, coord);
+  await expect(row(page, run)).toHaveAttribute("data-watch", "need");
+  let keys = 0;
+  const press = async (k: string) => { keys++; await page.keyboard.press(k); };
+  const t0 = Date.now();
+  await press("Control+k");
+  await page.getByTestId("palette-input").waitFor();
+  for (const ch of "rotate") await press(ch);
+  await expect(page.getByRole("option").first()).toContainText("Rotate the staging certificates");
+  await press("Enter");
+  // The keyboard is on the card's list of requests, on no answer; one deliberate key goes to Allow once.
+  const card = cardIn(page, run, "approval");
+  await expect(card).toBeFocused();
+  await expect(card).toHaveAttribute("data-keys", "ready");
+  await press("ArrowDown");
+  await expect(card.getByTestId("allow-once")).toBeFocused();
+  await expect(card.getByTestId("approval")).toHaveAttribute("data-live", "true");
+  await press("Enter");
+  await expect.poll(() => waiting(request, run)).toBe(0);
+  // Answered: the look is left by itself and everything is as it was.
+  await same(page, before);
+  console.log(`TRIAGE palette: 1 approval, ${keys} keys, ${Date.now() - t0} ms; as before with no further key`);
+  expect(keys).toBeLessThanOrEqual(11);
+
+  // The answering sequence started inside a look leaves that look when nothing else waits.
+  const q = await asksWhich(request, "Standup notes for Thursday", ws);
+  await expect(row(page, q)).toHaveAttribute("data-watch", "need");
+  await slot(page, 0).getByTestId("composer").click();
+  await row(page, q).click();
+  await expect(slot(page, 0)).toHaveAttribute("data-station", q);
+  await slot(page, 0).locator('.k-view[data-view="look"]').getByTestId("composer").click();
+  await page.keyboard.press("Alt+a");
+  const asked = cardIn(page, q, "question");
+  await expect(asked).toHaveAttribute("data-keys", "ready");
+  await page.keyboard.press("2");
+  await expect.poll(() => waiting(request, q)).toBe(0);
+  await expect(slot(page, 0)).toHaveAttribute("data-station", reader);
+  await expect(slot(page, 0).getByTestId("look-bar")).toHaveCount(0);
+  await drop(request, reader, coord, run, q);
 });
