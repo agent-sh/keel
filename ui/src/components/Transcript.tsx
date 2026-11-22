@@ -675,95 +675,66 @@ export function Transcript({ sessionId }: { sessionId: string }) {
   useEffect(() => { if (view?.other && preview !== view.event) setView(null); }, [preview, view]);
   const short = useRef(false); // the run shown stops short of its branch's end
   short.current = !!reading?.end;
-  // While a turn works, the conversation never gets shorter under the reader:
-  // the tallest it has stood is kept as its least height, so when something
-  // folds (a command's card as it ends), the height it gave up stays as room
-  // at the foot, which what comes next fills. Otherwise every line on screen
-  // would drop by that much in one frame. The layout itself keeps the height
-  // (a least height, not a size written when a fold is seen), so there is no
-  // frame, and no reading of the layout, in which the lines stand lower.
-  // The room is never more than a third of the view, and it closes over a
-  // moment, not in a frame: to that third while the turn works, and whole when
-  // the turn ends. `high`: the height held, 0 when none is.
-  const high = useRef(0);
-  const closing = useRef(0); // the timer of a room that is closing
-  const capping = useRef(0); // the frame in which room over the cap starts to close
-  const working = useRef(false);
-  working.current = session.phase === "working";
-  const holds = () => !short.current && (working.current || high.current > 0);
-  // The conversation's own height: to the end of its last child in the flow (the line said to a
-  // screen reader stands outside it), with the foot's padding.
-  const ownHeight = (c: HTMLElement) => {
-    let last = c.lastElementChild;
-    while (last && getComputedStyle(last).position === "absolute") last = last.previousElementSibling;
-    return last ? Math.ceil(last.getBoundingClientRect().bottom - c.getBoundingClientRect().top + parseFloat(getComputedStyle(c).paddingBottom)) : 0;
+  // While the reader follows the end, nothing above the end gets shorter. What was open while
+  // it ran stays open when it ends, as it was (lib/held.ts: a command's card with the tail of its
+  // output, what the model thought), and folds once it has left the view. What is left of that is
+  // caught here: when an event makes the end of the conversation shorter (a streamed reply's row
+  // that stands lower than the reply did), its last row keeps what was lost as room at its own end,
+  // which what the next event adds there takes up, and which goes when the row has left the view.
+  // No room is kept at the conversation's foot, and nothing closes over time.
+  // `foot`: at the last frame's layout, the last row and how far its top stood from the
+  // conversation's end. Only what an event takes away below that top is kept (what changes above it
+  // moves no line a reader at the end sees), and only what an event adds after a kept room takes it
+  // up (taken up by anything else, the lines between would drop by it).
+  type Kept = { row: HTMLElement; room: number; mark: Element | null; after: number };
+  const foot = useRef<{ ref: Element | null; len: number }>({ ref: null, len: 0 });
+  const kept = useRef<Kept[]>([]);
+  const unseen = useRef<IntersectionObserver | null>(null);
+  const setRoom = (k: Kept, room: number) => {
+    k.room = room;
+    k.row.style.paddingBottom = room ? `${room}px` : "";
+    if (!room) { kept.current = kept.current.filter((x) => x !== k); unseen.current?.unobserve(k.row); }
   };
-  // The height held is set: `to` 0 holds none. `over`: it closes to that over a moment (a least height
-  // written from the size observer's own call, when it changes a size, is an error to the browser: a
-  // closing room is always written a frame later).
-  const CLOSE_MS = 150;
-  const setHeld = (c: HTMLElement, to: number, over = false) => {
-    clearTimeout(closing.current);
-    cancelAnimationFrame(capping.current);
-    closing.current = capping.current = 0;
-    const done = () => { closing.current = 0; c.style.transition = ""; c.style.minHeight = to ? `${to}px` : ""; };
-    high.current = to;
-    if (!over || matchMedia("(prefers-reduced-motion: reduce)").matches) return done();
-    c.style.transition = `min-height ${CLOSE_MS}ms linear`;
-    c.style.minHeight = `${to || ownHeight(c)}px`;
-    closing.current = window.setTimeout(done, CLOSE_MS + 30);
+  // At the frame's layout: where the tail stands, and how much stands after each kept room.
+  const standing = (c: HTMLElement) => {
+    const end = c.getBoundingClientRect().bottom;
+    const ref = lastRow.current;
+    foot.current = { ref, len: ref ? end - ref.getBoundingClientRect().top : 0 };
+    for (const k of kept.current) { k.mark = k.row.lastElementChild; k.after = k.mark ? end - k.mark.getBoundingClientRect().bottom - k.room : 0; }
   };
-  // At the frame's layout: the height held follows the content up (set no higher than the content
-  // stands, so it changes no size), and room over a third of the view starts to close.
-  const holdHeight = () => {
-    const c = content.current, el = scroller.current;
-    if (!c || !el || closing.current || capping.current || !holds()) return;
-    const h = Math.floor(c.getBoundingClientRect().height);
-    if (h > high.current) { high.current = h; c.style.minHeight = `${h}px`; return; }
-    if (!working.current) return;
-    const over = high.current - ownHeight(c) - Math.floor(el.clientHeight / 3);
-    if (over > 1) { const to = high.current - over; capping.current = requestAnimationFrame(() => { capping.current = 0; if (high.current > to) setHeld(c, to, true); }); }
-  };
-  // The turn ended, or the reader came back to its end after it did: the room closes, and the
-  // conversation ends at the message box again.
-  const closeRoom = () => {
-    const c = content.current;
-    if (c && high.current && !working.current && !closing.current && !capping.current) setHeld(c, 0, c.getBoundingClientRect().height - ownHeight(c) > 1);
-  };
-  // The reader left the end: the room below the view goes, and what of it is in view stays until it
-  // is scrolled out (taking it away under the view would move the lines being read). `now`: all of
-  // it at once (another run of events is shown).
-  const letGo = (now = false) => {
-    const el = scroller.current, c = content.current;
-    if (!c || !high.current) return;
-    if (now || !el) return setHeld(c, 0);
-    const own = ownHeight(c);
-    const seen = Math.floor(el.getBoundingClientRect().bottom - c.getBoundingClientRect().top);
-    if (seen <= own) setHeld(c, 0);
-    else if (seen < high.current) setHeld(c, seen);
-  };
-  // The rows an event added at the end, and the last row whatever it is (an event may have joined
-  // it), are drawn at their own height at once: they take the place of the reply as it streamed, and
-  // standing at an estimated or an earlier height until they are seen would move every line under
-  // the reader, or leave the reply off the screen for good. (A row's size is remembered from then on,
-  // so off the screen it skips layout as every other row does.) `lastRow`: the last row seen so far.
-  const lastRow = useRef<Element | null>(null);
-  const drawNew = (first: boolean) => {
-    const c = content.current;
-    if (!c) return;
-    const fresh: HTMLElement[] = [];
-    let end: Element | null = null;
-    for (let el = c.lastElementChild; el && fresh.length < 12; el = el.previousElementSibling) {
-      if (!el.classList.contains("row-cv")) continue;
-      end ??= el;
-      if (first) break;
-      if (el === lastRow.current) { if (el === end) fresh.push(el as HTMLElement); break; }
-      fresh.push(el as HTMLElement);
+  // After an event's rows are drawn. `was`: the tail as it stood before them.
+  const keepHeight = (was: { ref: Element | null; len: number }) => {
+    const c = content.current, el = scroller.current, row = lastRow.current as HTMLElement | null;
+    if (!c || !el || !was.ref?.isConnected) return;
+    const end = c.getBoundingClientRect().bottom;
+    const lost = was.len - (end - was.ref.getBoundingClientRect().top);
+    if (lost >= 1) {
+      // (Only for a row the reader can see: one below the view moves nothing by standing lower.)
+      if (!row || row.getBoundingClientRect().top >= el.getBoundingClientRect().bottom) return;
+      const k = kept.current.find((x) => x.row === row) ?? { row, room: 0, mark: null, after: 0 };
+      if (!kept.current.includes(k)) kept.current.push(k);
+      setRoom(k, k.room + Math.ceil(lost));
+      unseen.current ??= new IntersectionObserver((seen) => {
+        for (const e of seen) if (!e.isIntersecting) { const gone = kept.current.find((x) => x.row === e.target); if (gone) setRoom(gone, 0); }
+      }, { root: el });
+      unseen.current.observe(row);
+      return;
     }
-    lastRow.current = end;
-    if (!fresh.length) return;
-    for (const el of fresh) el.style.contentVisibility = "visible";
-    requestAnimationFrame(() => requestAnimationFrame(() => { for (const el of fresh) el.style.contentVisibility = ""; }));
+    // What this event added after a kept room stands where the blank was.
+    for (const k of [...kept.current].reverse()) {
+      if (!k.mark?.isConnected) continue;
+      const grew = c.getBoundingClientRect().bottom - k.mark.getBoundingClientRect().bottom - k.room - k.after;
+      if (grew >= 1) setRoom(k, k.room - Math.min(k.room, Math.floor(grew)));
+    }
+  };
+  useEffect(() => () => unseen.current?.disconnect(), []);
+  // (The rows at the conversation's end are drawn at their own height from their first layout, by
+  // the style sheet: see .row-cv in styles.css.) `lastRow`: the last row of the conversation.
+  const lastRow = useRef<Element | null>(null);
+  const findLast = () => {
+    let el = content.current?.lastElementChild ?? null;
+    while (el && !el.classList.contains("row-cv")) el = el.previousElementSibling;
+    lastRow.current = el;
   };
   // The branch shown, its prompts' versions and its rows, each from the one
   // before: an event added at the end is read alone (see rows.ts).
@@ -875,19 +846,13 @@ export function Transcript({ sessionId }: { sessionId: string }) {
     const from = events?.[0]?.id;
     const same = shownFrom.current !== undefined && shownFrom.current === from;
     shownFrom.current = from;
-    // Another run of events: no height of the one before is held.
-    if (!same) letGo(true);
-    drawNew(!same);
+    const was = foot.current;
+    findLast();
+    // (Not for another run of events, or an earlier part read above this one.)
+    if (same) keepHeight(was);
+    else { foot.current = { ref: null, len: 0 }; for (const k of [...kept.current]) setRoom(k, 0); }
     if (el && !same && stick.current && !reading?.end) pin(el);
   }, [events]);
-  // The turn ended: once its last rows stand (two frames), the room kept at the foot closes if the
-  // reader is at the end; elsewhere it goes as it leaves the view.
-  useEffect(() => {
-    if (session.phase === "working" || !high.current) return;
-    let second = 0;
-    const first = requestAnimationFrame(() => { second = requestAnimationFrame(() => (stick.current ? closeRoom() : letGo())); });
-    return () => { cancelAnimationFrame(first); cancelAnimationFrame(second); };
-  }, [session.phase === "working"]);
   useEffect(() => {
     const c = content.current;
     if (!c) return;
@@ -905,7 +870,7 @@ export function Transcript({ sessionId }: { sessionId: string }) {
       const box = el.closest<HTMLElement>(".k-session");
       const sbw = `${el.offsetWidth - el.clientWidth}px`;
       if (box && box.style.getPropertyValue("--sbw") !== sbw) { cancelAnimationFrame(late); late = requestAnimationFrame(() => box.style.setProperty("--sbw", sbw)); }
-      holdHeight();
+      standing(c);
       if (stick.current && !short.current) pin(el);
       else if (anchor.current && !anchor.current.el.isConnected && anchor.current.ev && holderOf(anchor.current.ev)) {
         // The element read was made again: its event's row or step is put back where it stood.
@@ -1251,14 +1216,12 @@ export function Transcript({ sessionId }: { sessionId: string }) {
           if (near) stick.current = !reading?.end;
           else if (up) stick.current = false;
           lastTop.current = el.scrollTop;
-          if (stick.current && down) closeRoom();
           if (away === stick.current) setAway(!stick.current);
           // The scroll this transcript made itself to hold the anchor in place is not the reader's.
           if (settling.current) settling.current = false;
           else remember();
           // The reader moving toward an edge reads the part beyond it (not a
           // scroll that only followed the content changing size).
-          if (!stick.current) letGo();
           if (!stick.current && up && el.scrollTop < el.clientHeight) older(true);
           if (near && down) later(true);
         }}
@@ -1296,7 +1259,9 @@ export function Transcript({ sessionId }: { sessionId: string }) {
               <button type="button" data-testid="load-later" onClick={() => void later()} className="h-7 rounded-md px-2 font-medium text-accent-ink hover:bg-accent-soft">{unread.later ? "Try again" : "Load later messages"}</button>
             </div>
           )}
-          <Live sessionId={sessionId} working={session.phase === "working"} asking={asking} since={lastStart?.ts} elsewhere={previewing ? "branch" : earlier ? "earlier" : null} />
+          {/* (Once the turn's end is on the page nothing says it works: its footer takes the working line's
+              place in the same frame, so the lines above do not drop when the session's state follows.) */}
+          <Live sessionId={sessionId} working={session.phase === "working" && events?.at(-1)?.kind !== "turn_end"} asking={asking} since={lastStart?.ts} elsewhere={previewing ? "branch" : earlier ? "earlier" : null} />
         </div>
       </div>
       {at && (

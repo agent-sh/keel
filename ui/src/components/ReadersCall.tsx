@@ -64,7 +64,7 @@ export function ReadersCall({ use, result, live, sessionId, cwd }: Props) {
         </span>
         <span className="k-line-end">
           {parts.length > 0 && (
-            <span className="k-chip" data-testid="readers-parts">
+            <span className="k-line-chip" data-testid="readers-parts">
               {result ? `${parts.length} part${parts.length === 1 ? "" : "s"}` : `${done}/${parts.length} read${now?.compiling ? " · compiling" : ""}`}
             </span>
           )}

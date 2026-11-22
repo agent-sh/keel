@@ -18,11 +18,7 @@ test("a class's own rule is read as the selector alone", () => {
 
 // Collisions that stand today, each owed to the lane that owns the sheet. A name leaves this list
 // with its fix: the test fails for a name listed here that no longer collides, and for any new one.
-//   .k-chip: toolkit.css rules it for the surfaces' chips (a height, a weight, no ground) and
-//   transcript.css for a call's chips (a sunken ground, another radius). Each sheet's rule reaches
-//   the other's chips: a language server's chip gets the transcript's ground, a call's chip the
-//   toolkit's height and weight.
-const KNOWN = [".k-chip in toolkit.css and transcript.css"];
+const KNOWN: string[] = [];
 
 test("no class has a rule of its own in two stylesheets", () => {
   const where = new Map<string, Set<string>>();

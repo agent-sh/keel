@@ -42,7 +42,7 @@ md.use({
       // of the session's folder is shown from it (the page fills in the address).
       if (/^https?:/i.test(href)) return `<a href="${esc(href)}" target="_blank" rel="noreferrer">${esc(text || href)}</a>`;
       const p = href.replace(/^file:\/\//, "");
-      return /\.(png|jpe?g|gif|webp)$/i.test(p) && !/^[a-z][a-z0-9+.-]*:/i.test(p) ? `<img data-local="${esc(p)}" alt="${esc(text)}" class="max-w-full rounded-md border border-line">` : esc(text);
+      return /\.(png|jpe?g|gif|webp)$/i.test(p) && !/^[a-z][a-z0-9+.-]*:/i.test(p) ? `<img data-local="${esc(p)}" alt="${esc(text)}" class="h-auto max-w-full rounded-md border border-line">` : esc(text);
     },
     code({ text, lang }) {
       // A fence with nothing in it yet (a reply streaming its opener, or an empty block) is no block.
@@ -183,9 +183,18 @@ function localImages(root: Element, sessionId?: string) {
     const alt = () => img.replaceWith(document.createTextNode(img.alt));
     if (!sessionId) return alt();
     img.onerror = alt;
-    img.src = `/api/sessions/${sessionId}/file?raw=1&path=${encodeURIComponent(img.dataset.local!)}`;
+    const src = `/api/sessions/${sessionId}/file?raw=1&path=${encodeURIComponent(img.dataset.local!)}`;
+    // A picture that was drawn before stands in its own box from the first layout: the row that takes a
+    // streamed reply's place draws its pictures again, and without their size it would stand lower
+    // until they are decoded, and every line under it would move.
+    const size = imageSizes.get(src);
+    if (size) { img.width = size.w; img.height = size.h; }
+    img.onload = () => { if (img.naturalWidth) { if (imageSizes.size > 400) imageSizes.clear(); imageSizes.set(src, { w: img.naturalWidth, h: img.naturalHeight }); } };
+    img.src = src;
   });
 }
+// The size of each picture drawn so far, by its address.
+const imageSizes = new Map<string, { w: number; h: number }>();
 
 const onClick = (sessionId?: string) => (e: React.MouseEvent | React.KeyboardEvent) => {
   const link = (e.target as HTMLElement).closest<HTMLElement>("code.k-fileref[data-rel]");

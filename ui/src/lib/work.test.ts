@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { APPROVAL_CUT, denialReason, ownerDenial, RESTART_CUT, STOPPED_BEFORE, STOPPED_WHILE, turnedAway } from "../../../src/core/stops.ts";
-import { addCall, addMeta, besideOf, callState, callsOf, carriedOut, changedName, changeOf, commandText, edgeOf, failureLine, isAside, isTable, moreLines, ranOf, refusalOf, sentence, setResult, smallChange, stateWords, summarize, targetOf, type Step } from "./work.ts";
+import { addCall, addMeta, besideOf, callState, callsOf, carriedOut, changedName, changeOf, commandText, edgeOf, failureLine, isAside, isTable, moreLines, noSuchTool, ranOf, refusalOf, sentence, setResult, smallChange, stateWords, summarize, targetOf, type Step } from "./work.ts";
 
 let n = 0;
 const use = (name: string, input: Record<string, unknown> = {}): ToolUseBlock => ({ type: "tool_use", id: `c${++n}`, name, input });
@@ -216,4 +216,15 @@ test("a refusal says who refused and why, without what was written for the model
   expect(refusalOf(r("Refused by the judge (risk high): The command discards work. Do not retry it as it is or work around it."))).toEqual({ by: "Judge", why: "The command discards work." });
   expect(refusalOf(r("Refused: the command deletes / recursively, which never runs without the owner. Do not try another form of it; say what you wanted it for."))).toEqual({ by: "Keel", why: "the command deletes / recursively, which never runs without the owner." });
   expect(refusalOf(r("This session is read-only: only read-only commands run, and `rm x` is not one."))).toEqual({ by: "Read only", why: "only read-only commands run, and `rm x` is not one." });
+});
+
+test("a failure's reason is the tool's own output, and a call to a tool that is not there did not run", () => {
+  const r = (content: string): ToolResultBlock => done("x", content, true);
+  // A command that failed with no output: what a hook put into its result is not its reason.
+  const hooked = r('Exit code 3\n\n<memory source="tacit" hook="pre-tool">\nFrom the owner\'s memory store.\n- a fact\n</memory>');
+  expect(failureLine(hooked)).toBe("Exit code 3");
+  expect(failureLine(r('<memory source="tacit" hook="pre-tool">\n- a fact\n</memory>\nrm: cannot remove x: No such file'))).toBe("rm: cannot remove x: No such file");
+  expect(failureLine(r("cat: gone.md: No such file or directory\nExit code 1"))).toBe("cat: gone.md: No such file or directory");
+  const missing = r("No tool named exec_command.");
+  expect([noSuchTool(missing), ranOf("error", missing), ranOf("error", r("boom")), noSuchTool(done("x", "No tool named x."))]).toEqual([true, false, true, false]);
 });

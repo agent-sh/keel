@@ -6,11 +6,12 @@
 // a line of its own, so nothing that matters is behind "+N".
 import { Collapsible } from "@base-ui/react/collapsible";
 import { Brain, ChevronDown } from "lucide-react";
-import { Fragment, memo, useEffect, useMemo, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { Fragment, memo, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import type { Row } from "../lib/rows.ts";
 import { useBlocked } from "../lib/blocked.ts";
 import { useCallsLive } from "../lib/call-live.ts";
 import { marksOf, useMarked } from "../lib/marks.ts";
+import { callHeld, callKey, drop, letGo, thoughtHeld, thoughtKey, thoughtLive, useHeld, useLetGoUnseen } from "../lib/held.ts";
 import { resultText, splitDiagnostics, toolKind } from "../lib/tools.ts";
 import { besideOf, callsOf, carriedOut, edgeOf, isTable, lookOf, sentence, stateWords, summarize, type Live, type Step, type StepSummary, type WorkItem } from "../lib/work.ts";
 import { useUI } from "../lib/ui.ts";
@@ -18,9 +19,16 @@ import { Markdown } from "./Markdown.tsx";
 import { Delta, hookOf, ToolCall } from "./ToolCall.tsx";
 
 export function Thinking({ text, live }: { text: string; live?: boolean }) {
+  // What was thought stays open when the thinking ends, as the reader had it, until it has left the
+  // view (lib/held.ts): folding it then would drop every line under it.
+  useHeld();
+  if (live) thoughtLive(text);
+  const held = !live && thoughtHeld(text);
+  const box = useRef<HTMLDetailsElement>(null);
+  useLetGoUnseen(box, thoughtKey(text), held);
   if (!text.trim() && !live) return null;
   return (
-    <details className="group/think text-ui text-muted" open={live} data-testid="thinking">
+    <details ref={box} className="group/think text-ui text-muted" open={live || held} data-testid="thinking" data-held={held ? "" : undefined} onToggle={(e) => { if (held && !e.currentTarget.open) letGo(thoughtKey(text)); }}>
       <summary className="inline-flex cursor-default list-none items-center gap-1.5 rounded-sm py-0.5 pr-1 select-none hover:text-fg">
         <Brain className="size-3.5" />
         <span className={live ? "animate-pulse-dot" : ""}>{live ? "Thinking" : "Thought"}</span>
@@ -90,10 +98,15 @@ const Thoughts = ({ items }: { items: WorkItem[] }) => <>{items.map((i) => (i.t 
 // reason, said once.
 const PEEK = 3;
 type Call = ReturnType<typeof callsOf>[number];
-function peekOf(calls: Call[], live: Live, marks: (id: string) => string) {
+// `held`: the calls that ran on this page and stay as they stood until they leave the view: a
+// command's open card stays; of the others, the last one keeps its line until another line takes
+// its place, a call that runs or the step after this one (`end`: there is none), so the run never
+// gets shorter while it is read.
+function peekOf(calls: Call[], live: Live, marks: (id: string) => string, held: ReadonlySet<string>, end: boolean) {
   const alone: Call[] = [];
   const groups = new Map<string, Call[]>();
   let running = 0, failed = 0;
+  let last: Call | undefined;
   for (const c of calls) {
     const look = lookOf(c, live);
     const why = marks(c.id);
@@ -101,7 +114,9 @@ function peekOf(calls: Call[], live: Live, marks: (id: string) => string) {
     else if (why || look === "waiting" || look === "cut" || look === "denied" || look === "refused" || found(c)) alone.push(c);
     else if (look === "running") { if (running++ < PEEK) alone.push(c); }
     else if (look === "error") { if (failed++ < PEEK) alone.push(c); }
+    else if (held.has(c.id)) { if (toolKind(c.use.name) === "shell") alone.push(c); else { if (last) drop(callKey(last.id)); last = c; } }
   }
+  if (last) { if (running || !end) drop(callKey(last.id)); else alone.push(last); }
   // A reason only one call has is said on that call's own line.
   const same: { why: string; calls: Call[] }[] = [];
   for (const [why, list] of groups) { if (list.length > 1) same.push({ why, calls: list }); else alone.push(list[0]!); }
@@ -113,7 +128,8 @@ function peekOf(calls: Call[], live: Live, marks: (id: string) => string) {
 const found = (c: Call) => { const t = c.result ? resultText(c.result) : ""; return t.includes("<diagnostics server=") && splitDiagnostics(t).diagnostics.some((d) => d.lines.length > 0); };
 
 // `table`: the run is set as a table, so a few words stand beside this step's line.
-const StepView = memo(function StepView({ step, sid, cwd, remote, all, table }: { step: Step; sid: string; cwd?: string; remote: boolean; all: All; table: boolean }) {
+// `end`: the last step of its run (a step with one after it gave its place to that one's line).
+const StepView = memo(function StepView({ step, sid, cwd, remote, all, table, end }: { step: Step; sid: string; cwd?: string; remote: boolean; all: All; table: boolean; end: boolean }) {
   const calls = callsOf(step);
   const { working, waiting } = useCallsLive(sid, calls);
   const marked = useMarked(sid, calls);
@@ -135,6 +151,9 @@ const StepView = memo(function StepView({ step, sid, cwd, remote, all, table }: 
   }, [marked, step, sid]);
   const [open, setOpen] = useState(false);
   useEffect(() => { if (all.n) setOpen(all.open); }, [all]);
+  // What ran on this page and is held as it stood (lib/held.ts).
+  useHeld();
+  const held = new Set(calls.filter((c) => callHeld(c.id, !c.result && live.working && !live.waiting?.has(c.id))).map((c) => c.id));
   // A search hit inside a folded step opens it; the call's own line takes it from there.
   const hit = useUI((u) => !!u.focusCall && calls.some((c) => c.id === u.focusCall));
   useEffect(() => { if (hit) setOpen(true); }, [hit]);
@@ -145,6 +164,9 @@ const StepView = memo(function StepView({ step, sid, cwd, remote, all, table }: 
     <div key={n.id} className={n === beside ? "k-aside k-said" : "k-aside"} data-testid="assistant-text"><Markdown text={(n as { text: string }).text} sessionId={remote ? undefined : sid} /></div>
   ));
   const thoughts = step.items.filter((i) => i.t === "thought");
+  // What the model thought, open as it streamed, stays on the page above the step until it has left the view.
+  const stillOpen = thoughts.filter((i) => thoughtHeld((i as { text: string }).text));
+  const leadHeld = stillOpen.length > 0 && <div className="k-step-lead"><Thoughts items={stillOpen} /></div>;
   if (!calls.length) return <div className="k-step" data-events={events}>{said}{thoughts.length > 0 && <div className="k-step-lead"><Thoughts items={thoughts} /></div>}</div>;
   if (calls.length === 1) {
     const c = calls[0]!;
@@ -157,13 +179,13 @@ const StepView = memo(function StepView({ step, sid, cwd, remote, all, table }: 
       <div className="k-step" data-events={events} data-state={edge}>
         {said}
         <div className="k-did">
-          {card && thoughts.length > 0 && <div className="k-step-lead"><Thoughts items={thoughts} /></div>}
+          {card ? thoughts.length > 0 && <div className="k-step-lead"><Thoughts items={thoughts} /></div> : leadHeld}
           <ToolCall use={c.use} result={c.result} sessionId={sid} cwd={cwd} event={c.event} auto lead={!card && thoughts.length ? <Thoughts items={thoughts} /> : undefined} />
         </div>
       </div>
     );
   }
-  const peek = open ? null : peekOf(calls, live, markOf);
+  const peek = open ? null : peekOf(calls, live, markOf, held, end);
   // Closed, the line names what has no line of its own under it; opened, every call is under it.
   const s = summarize(step, peek ? { ...live, own: new Set([...peek.alone, ...peek.same.flatMap((g) => g.calls)].map((c) => c.id)) } : live);
   const edge = edgeOf(s.looks, s.soft);
@@ -172,6 +194,7 @@ const StepView = memo(function StepView({ step, sid, cwd, remote, all, table }: 
     <div className="k-step" data-events={events} data-state={edge}>
       {said}
       <div className="k-did">
+        {leadHeld}
         <Collapsible.Root open={open} onOpenChange={setOpen} data-testid="work-step" data-family={step.family} data-state={edge} data-calls={calls.length}>
           <Collapsible.Trigger className="k-line" data-all="" data-step="" aria-label={sentence(s, words)}>
             <StepLine s={s} words={words} />
@@ -219,7 +242,7 @@ export function Work({ row, sid, cwd, remote }: { row: Row; sid: string; cwd?: s
   const table = isTable(row.steps!);
   return (
     <div className="k-work row-cv" data-testid="work" data-run={row.id} data-said={table ? "" : undefined} role="group" aria-label="What the model did" onClickCapture={onAll} onKeyDownCapture={onAll} onKeyDown={lineKeys}>
-      {row.steps!.map((st) => <StepView key={st.key} step={st} sid={sid} cwd={cwd} remote={remote} all={all} table={table} />)}
+      {row.steps!.map((st, i) => <StepView key={st.key} step={st} sid={sid} cwd={cwd} remote={remote} all={all} table={table} end={i === row.steps!.length - 1} />)}
     </div>
   );
 }

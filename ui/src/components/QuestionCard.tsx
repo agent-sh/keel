@@ -152,19 +152,19 @@ export function Questions({ sessionId }: { sessionId: string }) {
 // line that says so (the card is above the message box).
 export function AskedUnder({ use, sessionId, children }: { use: ToolUseBlock; sessionId?: string; children: ReactNode }) {
   const asked = useStore((s) => (sessionId ? at(s.questionAsks[sessionId], use.id) : undefined));
-  if (!asked) return children;
+  // (The call is at the same place in the tree with the line and without: it is never made again.)
   return (
-    <div className="flex flex-col">
+    <>
       {children}
       {/* A line of the rail, as the call above it is. */}
-      <div className="k-line" data-testid="question-asked">
+      {asked && <div className="k-line" data-testid="question-asked">
         <span className="k-line-text">
           <span className="k-line-verb">Asks</span>{" "}
           <span className="k-line-state" data-tone="need">{NEEDS_ANSWER}</span>{" "}
           <span className="k-line-what" data-words="">MCP server {asked.from}: {asked.message || "a question"}</span>
         </span>
-      </div>
-    </div>
+      </div>}
+    </>
   );
 }
 

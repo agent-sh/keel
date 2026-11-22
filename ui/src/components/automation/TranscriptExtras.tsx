@@ -320,7 +320,7 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
               to the icon and the count, and its tooltip says the rest. */}
           {!!agent?.messages_waiting && (
             <span
-              className="k-chip k-chip-gives"
+              className="k-line-chip k-line-chip-gives"
               data-testid="agent-call-waiting"
               title={`${agent.messages_waiting === 1 ? "1 message" : `${agent.messages_waiting} messages`} sent to this agent and kept in its queue: it reads ${agent.messages_waiting === 1 ? "it" : "them"} at its next step, or when it goes on`}
             >
@@ -329,10 +329,10 @@ export function AgentCall({ use, result, live }: { use: ToolUseBlock; result?: T
           )}
           <span className="k-line-end">
             <Apart />
-            <span className="k-chip">{type}</span>
-            {agent?.branch && <span className="k-chip" data-code="" data-testid="agent-call-branch" title={`Its own worktree: ${agent.worktree}`}><GitBranch className="size-3" />{agent.branch}</span>}
-            {(agent?.machine || input.machine) && <span className="k-chip" data-testid="agent-call-machine" title="Its tools run on this machine"><Network className="size-3" />{machineName(agent?.machine) ?? String(input.machine)}</span>}
-            {agent?.structured && <span className="k-chip" data-code="" data-testid="agent-call-structured">json</span>}
+            <span className="k-line-chip">{type}</span>
+            {agent?.branch && <span className="k-line-chip" data-code="" data-testid="agent-call-branch" title={`Its own worktree: ${agent.worktree}`}><GitBranch className="size-3" />{agent.branch}</span>}
+            {(agent?.machine || input.machine) && <span className="k-line-chip" data-testid="agent-call-machine" title="Its tools run on this machine"><Network className="size-3" />{machineName(agent?.machine) ?? String(input.machine)}</span>}
+            {agent?.structured && <span className="k-line-chip" data-code="" data-testid="agent-call-structured">json</span>}
             {(agent ? isLive(agent) && !asking : live) && <span className="k-line-run" aria-hidden="true" />}
           </span>
         </Collapsible.Trigger>

@@ -97,17 +97,18 @@ export function TurnFailure({ e, s, live }: { e: StoredEvent; s: Session; live: 
       </div>
       {due !== undefined && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pl-[1.625rem] text-fg" data-testid="resume-at">
-          <span className="flex items-center gap-1.5">
+          {/* In a narrow pane the parts go to rows of their own before one of them is squeezed into a column. */}
+          <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
             <Clock className="size-3.5 shrink-0 text-muted" />
             <span>Resumes by itself at <span className="font-medium tabular-nums">{clock(due)}</span></span>
-            <span className="tabular-nums text-muted" data-testid="resume-in">{due > now ? `in ${fmtWait(due - now)}` : "now"}</span>
+            <span className="whitespace-nowrap tabular-nums text-muted" data-testid="resume-in">{due > now ? `in ${fmtWait(due - now)}` : "now"}</span>
             {round > 0 && <span className="text-muted" data-testid="resume-round">after {round} {round === 1 ? "try" : "tries"}, waiting longer each time</span>}
           </span>
-          <span className="flex items-center gap-1">
-            <button type="button" data-testid="resume-now" className={cn(button, primary)} onClick={again}>
+          <span className="flex flex-wrap items-center gap-1">
+            <button type="button" data-testid="resume-now" className={cn(button, primary, "shrink-0 whitespace-nowrap")} onClick={again}>
               <Play className="size-3" /> Resume now
             </button>
-            <button type="button" data-testid="resume-cancel" className={cn(button, "text-muted hover:bg-hover hover:text-fg")} onClick={() => actions.cancelContinue(s.id).catch(reportError)}>
+            <button type="button" data-testid="resume-cancel" className={cn(button, "shrink-0 whitespace-nowrap text-muted hover:bg-hover hover:text-fg")} onClick={() => actions.cancelContinue(s.id).catch(reportError)}>
               Do not resume
             </button>
           </span>

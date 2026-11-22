@@ -54,7 +54,8 @@
    said on the left, what it did on the right, a row a call. Longer words
    stand above their line, across both. The column of what was said is as
    wide as the longest of them, up to a bound: one column down the whole run. */
-.k-work[data-said] { display: grid; grid-template-columns: fit-content(10.5rem) minmax(0, 1fr); column-gap: 0.5rem; }
+/* (Its rows stand at the top: a run that keeps a height it had does not spread its steps over it.) */
+.k-work[data-said] { display: grid; grid-template-columns: fit-content(10.5rem) minmax(0, 1fr); column-gap: 0.5rem; align-content: start; }
 .k-work[data-said] > .k-step { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: start; }
 .k-work[data-said] > .k-step > :where(.k-aside, .k-step-lead) { grid-column: 1 / -1; }
 .k-work[data-said] > .k-step > .k-said { grid-column: 1; }
@@ -115,12 +116,13 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 .k-line-run { width: 0.375rem; height: 0.375rem; border-radius: 50%; background: var(--st-work); animation: var(--animate-pulse-dot); }
 .k-line-thought { width: 0.8125rem; height: 0.8125rem; color: var(--faint); }
 .k-delta { font-family: var(--font-mono); }
-.k-chip { display: inline-flex; flex-shrink: 0; align-items: center; gap: 0.25rem; padding: 0 0.375rem; border-radius: var(--radius-sm); background: var(--sunken); color: var(--muted); font-size: var(--text-micro); box-shadow: inset 0 0 0 1px var(--line); }
-.k-chip[data-code] { font-family: var(--font-mono); }
+/* A chip at a line's end (a name of its own: the surfaces' chips are the toolkit's .k-line-chip). */
+.k-line-chip { display: inline-flex; flex-shrink: 0; align-items: center; gap: 0.25rem; height: 1.25rem; padding: 0 0.375rem; border-radius: var(--radius-sm); background: var(--sunken); color: var(--muted); font-weight: 500; font-size: var(--text-micro); line-height: 1; box-shadow: inset 0 0 0 1px var(--line); white-space: nowrap; }
+.k-line-chip[data-code] { font-family: var(--font-mono); }
 /* A chip that gives way before the words beside it are cut: down to its icon and count. (The shrink factor is that
    large so the words' share of the squeeze rounds to nothing: any part of a pixel would put an ellipsis on them.) */
-.k-chip-gives { min-width: 2.25rem; flex-shrink: 1000000; margin-left: auto; overflow: hidden; white-space: nowrap; }
-.k-chip-gives + .k-line-end { margin-left: 0; }
+.k-line-chip-gives { min-width: 2.25rem; flex-shrink: 1000000; margin-left: auto; overflow: hidden; white-space: nowrap; }
+.k-line-chip-gives + .k-line-end { margin-left: 0; }
 /* A plan's steps as marks. */
 .k-line-plan { display: inline-flex; align-items: center; gap: 0.375rem; color: var(--muted); }
 .k-pips { display: inline-flex; gap: 2px; }
@@ -155,7 +157,7 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
   .k-line-agent .k-line-end { min-width: 3.5rem; justify-content: flex-end; }
   .k-line-acts { position: absolute; top: 50%; right: 1.375rem; padding-right: 0; opacity: 0; transform: translateY(-50%); transition: opacity 120ms; }
   .k-line-agent:is(:hover, :focus-within) > .k-line-acts { opacity: 1; }
-  .k-line-agent:is(:hover, :focus-within) .k-line-end > :is(.k-chip, .k-line-run) { visibility: hidden; }
+  .k-line-agent:is(:hover, :focus-within) .k-line-end > :is(.k-line-chip, .k-line-run) { visibility: hidden; }
 }
 
 /* Under a call's line, opened or not: rows of who said or did something about it, and what. One grammar for
@@ -181,6 +183,8 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 /* Under a closed line: how many more like it there are, what a small change changed. */
 .k-line-more { padding: 0.125rem 0.375rem 0.25rem; font-size: var(--text-caption); color: var(--faint); }
 .k-line-more[data-tone="fail"] { color: var(--danger-ink); }
+.k-line-more-open { display: block; width: 100%; border-radius: var(--radius-sm); text-align: left; }
+.k-line-more-open:hover { background: var(--hover); color: var(--fg); }
 .k-line-change { margin: 0 0.25rem 0.3125rem calc(var(--k-hang) + 0.375rem); overflow: hidden; border-radius: var(--radius-xs); font-family: var(--font-mono); font-size: var(--text-caption); line-height: 1.5; color: var(--fg); }
 .k-line-change > div { padding: 0 0.5rem 0 0.25rem; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
 .k-line-change > div > span { display: inline-block; width: 1rem; text-align: center; color: var(--muted); user-select: none; }
@@ -217,6 +221,9 @@ button.k-line[aria-expanded="true"] > .k-line-end::after { transform: rotate(135
 /* Steps and calls open and close at their own height (Base UI sets the variable). */
 .k-tool-panel { height: var(--collapsible-panel-height); transition: height 180ms var(--ease-out); }
 .k-tool-panel[data-starting-style], .k-tool-panel[data-ending-style] { height: 0; }
+/* What opens and folds by itself (a command's card as it runs, and once it has left the view) does
+   so in one step: only the owner's own opening and folding moves. */
+.k-tool-call[data-auto] > .k-tool-panel { transition: none; }
 
 /* The way to the end of the conversation, while an earlier part is read: a
    strip of its own under the text, so it never lies over a line being read. */

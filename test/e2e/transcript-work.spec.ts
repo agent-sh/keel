@@ -178,7 +178,7 @@ test("a turn of forty calls is a rail of steps that open on demand", async ({ pa
   }
 });
 
-test("a running command shows its output as it arrives, then folds", async ({ page, request }) => {
+test("a running command shows its output as it arrives, stays as it stood when it ends, and is a line once it has left the view", async ({ page, request }) => {
   const { session } = await (await request.post("/api/sessions", { data: { model: HAIKU } })).json();
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
   await page.goto(`/s/${session.id}`);
@@ -192,15 +192,32 @@ test("a running command shows its output as it arrives, then folds", async ({ pa
   await expect(call).toHaveAttribute("data-state", "running");
   await expect(call.getByTestId("live-output")).not.toContainText("part 6 of 6 written");
   await shoot(page, "work-08-running-output");
-  // Over, it is a line again: what ran, and nothing to scroll past.
+  // Over, its line says it ran, and its card stays as it stood with the end of its output: folding it
+  // under a reader who follows the end would drop every line below it. It asks for no more output.
   await expect(page.getByTestId("turn-end")).toHaveCount(1, { timeout: 60_000 });
   await expect(call).toHaveAttribute("data-state", "ok");
   await expect(call.locator(".k-line")).toContainText("Ran");
+  await expect(call.locator(".k-line")).toHaveAttribute("aria-expanded", "true");
+  await expect(call.getByTestId("live-output")).toContainText("part 6 of 6 written");
+  let asked = 0;
+  page.on("request", (r) => { if (r.url().includes("/terminal/") && r.url().includes("/log")) asked++; });
+  await page.waitForTimeout(3500);
+  // (At most the one read of what was left when it ended.)
+  expect(asked).toBeLessThanOrEqual(1);
+  // Once it has left the view it is a line: what ran, and nothing to scroll past. A long reply pushes it out.
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:say ${Array.from({ length: 60 }, (_, i) => `Paragraph ${i + 1} of a long reply.`).join("\\n\\n")}` } });
+  await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 60_000 });
   await expect(call.locator(".k-line")).toHaveAttribute("aria-expanded", "false");
   await expect(call.getByTestId("terminal")).toHaveCount(0);
-  // Opened, it has the whole output.
+  // The owner's own fold is theirs: opened, it has the whole output; closed, it stays closed.
+  await call.locator(".k-line").scrollIntoViewIfNeeded();
   await call.locator(".k-line").click();
   await expect(call.getByTestId("terminal")).toContainText("part 6 of 6 written");
+  await call.locator(".k-line").click();
+  await expect(call.getByTestId("terminal")).toHaveCount(0);
+  // After a reload everything is folded as stored.
+  await page.reload();
+  await expect(call.locator(".k-line")).toHaveAttribute("aria-expanded", "false");
 });
 
 test("an edit's diff is numbered from the file's own lines and folds what did not change", async ({ page, request }) => {
@@ -458,106 +475,153 @@ test("a search hit in a failed call of a folded step opens the step and the call
   await request.delete(`/api/sessions/${session.id}`);
 });
 
-// Where a mark on the page stands at every frame of a turn: how often it moved down, how often at all.
-// `mark`: the last block of the owner's words above the turn that is watched.
-// A move down is a snap unless the room kept at the conversation's foot is closing just then (it
-// closes over a moment: to a third of the view while the turn works, whole at its end); how far the
-// lines went down that way is summed for each. (Frames are not counted for that: a busy machine
-// draws a moment's motion in one.)
-const watchMoves = (page: Page) => page.evaluate(() => {
-  const sc = document.querySelector<HTMLElement>(".k-reading")!;
-  const mark = [...document.querySelectorAll('[data-testid="user-message"]')].at(-1)!;
+// Where every line on screen stands at each frame of a turn: how often one of them moved down, how
+// often any moved at all. A line is counted when it was on screen in the frame before and is in this
+// one (what folds once it has left the view moves nothing that is seen). `foot`: the reader follows
+// the end, and reads against the message box: a line dropped when it moved down on the screen and
+// against the view's foot (a message box that changes height moves the foot: the lines that go with
+// it, or that it passes, did not drop); else, when it moved down on the screen.
+// The conversation of a session, as a page may hold more than one (other panes, a pane under a look):
+// the one in that session's pane that is not covered.
+const READING = (id: string) => `[data-station="${id}"] .k-reading`;
+const watchMoves = (page: Page, id: string, foot: boolean) => page.evaluate(([sel, foot]) => {
+  const sc = ([...document.querySelectorAll<HTMLElement>(sel)].find((x) => !x.closest("[inert]")) ?? document.querySelector<HTMLElement>(sel))!, c = sc.querySelector<HTMLElement>('[data-testid="transcript"]')!;
   const w = window as any;
-  const c = sc.querySelector<HTMLElement>('[data-testid="transcript"]')!;
-  w.__moves = { frames: 0, down: 0, up: 0, largestDown: 0, snaps: 0, closedWorking: 0, closedAtEnd: 0, view: sc.clientHeight, shrank: 0, awayFromEnd: 0, at: [] as string[] };
-  let was = mark.getBoundingClientRect().bottom - sc.getBoundingClientRect().top, height = sc.scrollHeight;
+  w.__moves = { frames: 0, down: 0, up: 0, largestDown: 0, awayFromEnd: 0, at: [] as string[] };
+  const seen = () => {
+    const v = sc.getBoundingClientRect();
+    const out = new Map<Element, [number, number]>();
+    for (const el of c.querySelectorAll("p, li, pre, tr, .k-line, [data-testid='user-message']")) {
+      const b = el.getBoundingClientRect();
+      if (!(b.height > 0 && b.bottom > v.top && b.top < v.bottom)) continue;
+      // What is seen of it: not what a closed block holds, and not the part a folding card has cut off
+      // (a card that folds above the view still has its lines' boxes reaching into it).
+      if (!el.checkVisibility()) continue;
+      const cut = el.closest(".k-tool-panel")?.getBoundingClientRect();
+      if (cut && !(Math.min(b.bottom, cut.bottom) > v.top && Math.max(b.top, cut.top) < v.bottom)) continue;
+      out.set(el, [b.top, b.top - v.bottom]);
+    }
+    return out;
+  };
+  let was = seen(), height = sc.scrollHeight;
   const tick = () => {
     const m = w.__moves;
-    const y = mark.getBoundingClientRect().bottom - sc.getBoundingClientRect().top;
-    const d = y - was;
-    m.frames++;
-    if (d > 1) {
-      m.down++; m.largestDown = Math.max(m.largestDown, Math.round(d));
-      if (!c.style.transition.includes("min-height")) { m.snaps++; m.at.push(`down ${Math.round(d)}px, height ${height} to ${sc.scrollHeight}`); }
-      else if (c.hasAttribute("data-working")) m.closedWorking += d;
-      else m.closedAtEnd += d;
+    const now = seen();
+    let d = 0, u = 0, who = "";
+    for (const [el, [y, f]] of now) {
+      const old = was.get(el);
+      if (!old) continue;
+      const fell = foot ? Math.min(y - old[0], f - old[1]) : y - old[0], rose = foot ? Math.min(old[0] - y, old[1] - f) : old[0] - y;
+      if (fell > d) { d = fell; who = (el.textContent ?? "").trim().slice(0, 40); }
+      if (rose > u) u = rose;
     }
-    else if (d < -1) m.up++;
-    if (sc.scrollHeight < height - 1) m.shrank++;
+    m.frames++;
+    if (d > 1) { m.down++; m.largestDown = Math.max(m.largestDown, Math.round(d)); if (m.at.length < 8) m.at.push(`down ${Math.round(d)}px at frame ${m.frames} ("${who}"), height ${height} to ${sc.scrollHeight}`); }
+    else if (u > 1) m.up++;
     if (sc.scrollHeight - sc.scrollTop - sc.clientHeight > 2) m.awayFromEnd++;
-    was = y; height = sc.scrollHeight;
+    was = now; height = sc.scrollHeight;
     w.__raf = requestAnimationFrame(tick);
   };
   w.__raf = requestAnimationFrame(tick);
-});
-const movesSeen = (page: Page) => page.evaluate(() => { const w = window as any; cancelAnimationFrame(w.__raf); return w.__moves as { frames: number; down: number; up: number; largestDown: number; snaps: number; closedWorking: number; closedAtEnd: number; view: number; shrank: number; awayFromEnd: number; at: string[] }; });
+}, [READING(id), foot] as const);
+const movesSeen = (page: Page) => page.evaluate(() => { const w = window as any; cancelAnimationFrame(w.__raf); return w.__moves as { frames: number; down: number; up: number; largestDown: number; awayFromEnd: number; at: string[] }; });
 
-test("nothing on the page moves down while a turn's commands run and fold, and nothing moves at all while scrolled up", async ({ page, request }) => {
-  test.setTimeout(180_000);
-  // Commands that print 1, 12 and 200 lines, with a read between them: each card opens as it runs and folds as it ends.
-  const lines = (n: number, each: number) => `for i in $(seq 1 ${n}); do echo "line $i of ${n} ... ok"; sleep ${each}; done`;
-  const calls = [
-    { name: "Bash", input: { command: lines(1, 0.6) }, after_ms: 300 },
-    { name: "Read", input: { file_path: "package.json" }, after_ms: 600 },
-    { name: "Bash", input: { command: lines(12, 0.2) }, after_ms: 300 },
-    { name: "Read", input: { file_path: "package.json" }, after_ms: 900 },
-    { name: "Bash", input: { command: lines(200, 0.012) }, after_ms: 300 },
-    { name: "Read", input: { file_path: "package.json" }, after_ms: 900 },
-    { name: "Bash", input: { command: lines(12, 0.2) }, after_ms: 300 },
-  ];
-  const run = async (scrolledUp: boolean) => {
-    const { session } = await (await request.post("/api/sessions", { data: { model: "scripted:stand-in" } })).json();
-    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
-    // An earlier reply, so there are lines above the turn to move.
-    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:say ${"A line of the earlier reply. ".repeat(160)}` } });
-    await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).events.some((e: any) => e.kind === "turn_end"), { timeout: 30_000 }).toBe(true);
-    await page.goto(`/s/${session.id}`);
-    await expect(page.getByTestId("turn-end")).toHaveCount(1);
-    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify(calls)}` } });
-    await expect(page.getByTestId("user-message")).toHaveCount(2, { timeout: 30_000 });
-    if (scrolledUp) {
+// The turns that fold something as they go: commands that print 1, 12 and 200 lines with a read between
+// them (each card opens as it runs), and one that ends right after a command of 200 lines.
+const printing = (n: number, each: number) => `for i in $(seq 1 ${n}); do echo "line $i of ${n} ... ok"; sleep ${each}; done`;
+const SEVEN = [
+  { name: "Bash", input: { command: printing(1, 0.6) }, after_ms: 300 },
+  { name: "Read", input: { file_path: "package.json" }, after_ms: 600 },
+  { name: "Bash", input: { command: printing(12, 0.2) }, after_ms: 300 },
+  { name: "Read", input: { file_path: "package.json" }, after_ms: 900 },
+  { name: "Bash", input: { command: printing(200, 0.012) }, after_ms: 300 },
+  { name: "Read", input: { file_path: "package.json" }, after_ms: 900 },
+  { name: "Bash", input: { command: printing(12, 0.2) }, after_ms: 300 },
+];
+const TWO_HUNDRED = [{ name: "Read", input: { file_path: "package.json" }, after_ms: 300 }, { name: "Bash", input: { command: printing(200, 0.012) }, after_ms: 300 }];
+type Watched = { name: string; calls: typeof SEVEN; width?: number; height?: number; scale?: number; reduced?: boolean; panes?: boolean; scrolledUp?: boolean };
+const WATCHED: Watched[] = [
+  { name: "seven calls", calls: SEVEN },
+  { name: "a 200-line command", calls: TWO_HUNDRED },
+  { name: "seven calls, four panes", calls: SEVEN, panes: true },
+  { name: "a 200-line command, text size 1.5", calls: TWO_HUNDRED, scale: 1.5 },
+  { name: "seven calls, 390 px", calls: SEVEN, width: 390, height: 844 },
+  { name: "a 200-line command, reduced motion", calls: TWO_HUNDRED, reduced: true },
+  { name: "seven calls, scrolled up", calls: SEVEN, scrolledUp: true },
+];
+
+test("no line moves down while a turn runs, at its end or after it, and nothing moves at all while scrolled up", async ({ page, request }) => {
+  test.setTimeout(420_000);
+  const table: string[] = [];
+  for (const w of WATCHED) {
+    const make = async () => ((await (await request.post("/api/sessions", { data: { model: "scripted:stand-in" } })).json()).session.id as string);
+    const id = await make();
+    const others = w.panes ? [await make(), await make(), await make()] : [];
+    await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+    const ends = async () => (await (await request.get(`/api/sessions/${id}`)).json()).events.filter((e: any) => e.kind === "turn_end").length;
+    // An earlier reply, so there are lines above the turn to move. Its end is the ordinary gap to the message box.
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:say ${"A line of the earlier reply. ".repeat(160)}` } });
+    await expect.poll(ends, { timeout: 30_000 }).toBe(1);
+    await page.setViewportSize({ width: w.width ?? 1920, height: w.height ?? 1040 });
+    await page.emulateMedia({ reducedMotion: w.reduced ? "reduce" : "no-preference" });
+    await page.addInitScript(([scale, slots]) => {
+      localStorage.setItem("keel.textScale", JSON.stringify(scale));
+      if (slots) localStorage.setItem("keel.panes", JSON.stringify({ count: 4, slots, sizes: {}, active: 0 }));
+      else localStorage.removeItem("keel.panes");
+      localStorage.setItem("keel.focus", slots ? "false" : "true");
+    }, [w.scale ?? 1, w.panes ? [id, ...others] : null] as const);
+    await page.goto(`/s/${id}`);
+    const pane = page.locator(READING(id)).first();
+    await expect(pane.getByTestId("turn-end")).toHaveCount(1);
+    await page.waitForTimeout(500);
+    const ordinary = (await endOf(page, id)).lastToViewBottom;
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:calls ${JSON.stringify(w.calls)}` } });
+    await expect(pane.getByTestId("user-message")).toHaveCount(2, { timeout: 30_000 });
+    if (w.scrolledUp) {
       // The reader goes up to the earlier reply and stays there.
-      await page.locator(".k-reading").evaluate((el) => { el.scrollTop = 40; });
+      await pane.evaluate((el) => { el.scrollTop = 40; });
       await page.mouse.move(900, 400);
       await page.mouse.wheel(0, -10);
       await page.waitForTimeout(300);
     }
-    await watchMoves(page);
-    // Until the last command has folded and the turn's last reply is being written.
-    await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).events.filter((e: any) => e.kind === "tool_result").length, { timeout: 120_000 }).toBe(calls.length);
-    if (!scrolledUp) await shoot(page, "work-14-followed-turn");
+    await watchMoves(page, id, !w.scrolledUp);
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${id}`)).json()).events.filter((e: any) => e.kind === "tool_result").length, { timeout: 120_000 }).toBe(w.calls.length);
+    if (w.name === "seven calls") await shoot(page, "work-14-followed-turn");
     // Through the turn's end, and a moment past it.
-    await expect.poll(async () => (await (await request.get(`/api/sessions/${session.id}`)).json()).events.filter((e: any) => e.kind === "turn_end").length, { timeout: 60_000 }).toBe(2);
-    await page.waitForTimeout(800);
+    await expect.poll(ends, { timeout: 60_000 }).toBe(2);
+    await page.waitForTimeout(1000);
+    const end = await endOf(page, id);
+    if (w.name === "a 200-line command") await shoot(page, "work-17-turn-ended-card-as-it-stood");
+    // A second prompt right after: its arrival moves nothing down either.
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: "script:say A short second reply." } });
+    await expect.poll(ends, { timeout: 60_000 }).toBe(3);
+    await page.waitForTimeout(600);
     const seen = await movesSeen(page);
-    const end = await endOf(page);
-    await request.delete(`/api/sessions/${session.id}`);
-    return { ...seen, end };
-  };
-  const following = await run(false);
-  console.log("MOVES following the end", JSON.stringify(following));
-  expect(following.frames).toBeGreaterThan(200);
-  // The cards did open and fold (the lines above went up as they grew), and the reader stayed at the end.
-  expect(following.up).toBeGreaterThan(2);
-  // No line dropped in a frame. The room a fold left closed to a third of the view while the turn
-  // worked (a little: the tallest card is hardly taller than that), and whole at the turn's end.
-  expect([following.snaps, following.at]).toEqual([0, []]);
-  expect(following.closedWorking).toBeLessThanOrEqual(60);
-  expect(following.closedAtEnd).toBeLessThanOrEqual(Math.ceil(following.view / 3) + 2);
-  // Nothing is kept once the turn has ended: the conversation ends at the message box.
-  expect(following.end).toMatchObject({ kept: "", gap: 0 });
-  expect(following.end.lastToViewBottom).toBeLessThanOrEqual(60);
-  const away = await run(true);
-  console.log("MOVES scrolled up", JSON.stringify(away));
-  expect(away.frames).toBeGreaterThan(200);
-  expect([away.down, away.up]).toEqual([0, 0]);
+    const after = await endOf(page, id);
+    table.push(`${w.name} | frames ${seen.frames} | down ${seen.down} (largest ${seen.largestDown}) | gap at the end ${end.lastToViewBottom}, ordinary ${ordinary} | blank kept ${end.blank} | gap after a second prompt ${after.lastToViewBottom}`);
+    const where = `${w.name}: ${JSON.stringify({ ...seen, ordinary, end, after })}`;
+    expect(seen.frames, where).toBeGreaterThan(200);
+    if (w.scrolledUp) expect([seen.down, seen.up], where).toEqual([0, 0]);
+    else {
+      // The cards did open (the lines above went up as they grew), the reader stayed at the end, and no
+      // line dropped in any frame: not as a card's command ended, not at the turn's end, not after it.
+      expect(seen.up, where).toBeGreaterThan(2);
+      expect([seen.down, seen.at], where).toEqual([0, []]);
+      // The conversation ends at the message box as after any turn: no room is kept under it.
+      expect(Math.abs(end.lastToViewBottom - ordinary), where).toBeLessThanOrEqual(4);
+      expect(Math.abs(after.lastToViewBottom - ordinary), where).toBeLessThanOrEqual(4);
+      expect(end.gap, where).toBe(0);
+    }
+    for (const sid of [id, ...others]) await request.delete(`/api/sessions/${sid}`);
+  }
+  console.log(`MOVES\n${table.join("\n")}`);
 });
 
 // Where one line of text stands at every frame, found again by its words (the element that holds it is
 // made again when the streamed reply becomes a row). `after`: counted only once these words are on the page.
-const watchLine = (page: Page, needle: string, after: string) => page.evaluate(([needle, after]) => {
+const watchLine = (page: Page, id: string, needle: string, after: string) => page.evaluate(([sel, needle, after]) => {
   // (Following a reply, its line is not looked for in the owner's own message: a scripted prompt holds the words of its reply.)
-  const sc = document.querySelector<HTMLElement>(".k-reading")!, c = sc.querySelector<HTMLElement>('[data-testid="transcript"]')!;
+  const sc = ([...document.querySelectorAll<HTMLElement>(sel)].find((x) => !x.closest("[inert]")) ?? document.querySelector<HTMLElement>(sel))!, c = sc.querySelector<HTMLElement>('[data-testid="transcript"]')!;
   const w = window as any;
   const m = (w.__line = { frames: 0, tracked: 0, largestDown: 0, largestUp: 0, snaps: 0, drift: 0, lost: 0, at: [] as string[] });
   let was: number | null = null, first: number | null = null, on = !after;
@@ -576,28 +640,31 @@ const watchLine = (page: Page, needle: string, after: string) => page.evaluate((
         if (was !== null) {
           const d = y - was;
           if (d > m.largestDown) m.largestDown = Math.round(d);
-          // A drop is a snap unless the room at the foot is closing over a moment just then.
-          if (d > 3 && !c.style.transition.includes("min-height")) m.snaps++;
+          if (d > 3) m.snaps++;
+          if (Math.abs(d) > 3 && m.at.length < 12) m.at.push(`scroll ${Math.round(w.__top ?? 0)} to ${Math.round(sc.scrollTop)}`);
           if (-d > m.largestUp) m.largestUp = Math.round(-d);
           if (Math.abs(d) > 3 && m.at.length < 12) m.at.push(`${d > 0 ? "down" : "up"} ${Math.round(Math.abs(d))}px at frame ${m.frames}`);
         }
         first ??= y; was = y; m.drift = Math.round(y - first); m.tracked++;
+        w.__top = sc.scrollTop;
       }
     }
     w.__lineRaf = requestAnimationFrame(tick);
   };
   w.__lineRaf = requestAnimationFrame(tick);
-}, [needle, after] as const);
+}, [READING(id), needle, after] as const);
 const lineSeen = (page: Page) => page.evaluate(() => { const w = window as any; cancelAnimationFrame(w.__lineRaf); return w.__line as { frames: number; tracked: number; largestDown: number; largestUp: number; snaps: number; drift: number; lost: number; at: string[] }; });
 // How the conversation stands in its view: how far its last child in the flow ends above the view's
-// bottom, how many lines of it are on screen, and whether a least height is still kept.
-const endOf = (page: Page) => page.evaluate(() => {
-  const sc = document.querySelector<HTMLElement>(".k-reading")!, c = sc.querySelector<HTMLElement>('[data-testid="transcript"]')!;
+// foot, how many lines of it are on screen, and how much blank its rows keep (a row that took a taller
+// draft's place stands at the draft's height until it has left the view).
+const endOf = (page: Page, id: string) => page.evaluate((sel) => {
+  const sc = ([...document.querySelectorAll<HTMLElement>(sel)].find((x) => !x.closest("[inert]")) ?? document.querySelector<HTMLElement>(sel))!, c = sc.querySelector<HTMLElement>('[data-testid="transcript"]')!;
   const flow = [...c.children].filter((k) => getComputedStyle(k).position !== "absolute");
   const view = sc.getBoundingClientRect();
   const lines = [...c.querySelectorAll("p, li, pre, tr, .k-line")].filter((el) => { const b = el.getBoundingClientRect(); return b.height > 0 && b.bottom > view.top && b.top < view.bottom; }).length;
-  return { lastToViewBottom: Math.round(view.bottom - flow.at(-1)!.getBoundingClientRect().bottom), lines, kept: c.style.minHeight, gap: Math.round(sc.scrollHeight - sc.scrollTop - sc.clientHeight) };
-});
+  const blank = [...c.children].reduce((n, k) => n + (parseFloat((k as HTMLElement).style.paddingBottom) || 0), 0);
+  return { lastToViewBottom: Math.round(view.bottom - flow.at(-1)!.getBoundingClientRect().bottom), lines, blank, kept: c.style.minHeight, gap: Math.round(sc.scrollHeight - sc.scrollTop - sc.clientHeight) };
+}, READING(id));
 
 // The replies a turn can end with: short and long ones, one paragraph of many screens, one with a table,
 // code and a picture, and one that ends in a call. `needle`: a line near its end; `last`: its last words.
@@ -640,22 +707,22 @@ for (const view of [{ name: "1920x1040", width: 1920, height: 1040 }, { name: "3
           // The reader goes up into the reply as it streams, and reads a line there.
           await expect(page.getByTestId("draft")).toBeVisible({ timeout: 30_000 });
           await page.waitForTimeout(250);
-          const box = (await page.locator(".k-reading").boundingBox())!;
+          const box = (await page.locator(READING(session.id)).first().boundingBox())!;
           await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
           await page.mouse.wheel(0, -Math.round(box.height * 0.6));
           await page.waitForTimeout(200);
-          needle = await page.evaluate(() => {
-            const sc = document.querySelector<HTMLElement>(".k-reading")!.getBoundingClientRect();
-            const seen = [...document.querySelectorAll<HTMLElement>('[data-testid="transcript"] p')].find((p) => { const b = p.getBoundingClientRect(); return b.bottom > sc.top + 8 && b.top < sc.bottom; });
+          needle = await page.evaluate((sel) => {
+            const sc = ([...document.querySelectorAll<HTMLElement>(sel)].find((x) => !x.closest("[inert]")) ?? document.querySelector<HTMLElement>(sel))!.getBoundingClientRect();
+            const seen = [...document.querySelectorAll<HTMLElement>(`${sel} [data-testid="transcript"] p`)].find((p) => { const b = p.getBoundingClientRect(); return b.bottom > sc.top + 8 && b.top < sc.bottom; });
             return (seen?.textContent ?? "").slice(0, 60);
-          });
+          }, READING(session.id));
           expect(needle.length).toBeGreaterThan(5);
         }
-        await watchLine(page, needle, scrolledUp ? "" : reply.last);
+        await watchLine(page, session.id, needle, scrolledUp ? "" : reply.last);
         await expect.poll(ends, { timeout: 120_000 }).toBe(2);
         await page.waitForTimeout(900);
         const seen = await lineSeen(page);
-        const end = await endOf(page);
+        const end = await endOf(page, session.id);
         table.push(`${view.name} | ${reply.name} | ${scrolledUp ? "scrolled up" : "following"} | frames ${seen.tracked} | down ${seen.largestDown} | up ${seen.largestUp} | drift ${seen.drift} | last line to view bottom ${end.lastToViewBottom} | lines on screen ${end.lines} | kept ${end.kept || "none"}`);
         const where = `${reply.name}, ${scrolledUp ? "scrolled up" : "following"}: ${JSON.stringify({ ...seen, ...end })}`;
         expect(seen.tracked, where).toBeGreaterThan(20);
@@ -708,7 +775,8 @@ test("a program's calls stand under its line and mark it, after a reload too", a
     await expect(program).toHaveAttribute("data-calls-marked", "", { timeout: 15_000 });
     // The program's own line is one row: what marks it is said on the call under it.
     expect((await program.locator("> .k-line").boundingBox())!.height).toBeLessThan(40);
-    await expect(program.getByTestId("code-call-count")).toHaveText("2 calls");
+    // (The owner's denial is counted as that, apart from a failure.)
+    await expect(program.getByTestId("code-call-count")).toHaveText("2 calls, 1 denied by you");
     const under = program.getByTestId("code-peek").getByTestId("tool-call");
     await expect(under).toHaveCount(1);
     await expect(under.locator(".k-line-what")).toHaveText("git push --force origin main");
@@ -717,15 +785,44 @@ test("a program's calls stand under its line and mark it, after a reload too", a
     await expect(under.getByTestId("tool-denial")).toHaveText("Younot from a program");
     await expect(under).toHaveAttribute("data-marked", "");
   };
-  await stands();
-  await shoot(page, "work-16-program-calls");
+  // It ran on this page, so it stays open as it stood, with both its calls, until it leaves the view;
+  // folded, as after a reload, the push stands under its line.
+  const made = program.getByTestId("code-calls").getByTestId("tool-call");
+  await expect(made).toHaveCount(2);
+  await expect(made.nth(1).getByTestId("call-state")).toHaveText("denied by you");
+  await expect(made.nth(1).getByTestId("call-mark")).toHaveText("rewrites or deletes history on a remote");
   await page.reload();
   await stands();
+  await shoot(page, "work-16-program-calls");
   // Opened: its code, both calls and what it printed.
   await program.locator("> .k-line").click();
   await expect(program.getByTestId("code-calls").getByTestId("tool-call")).toHaveCount(2);
   await expect(program.getByTestId("code-peek")).toHaveCount(0);
   await expect(program.getByTestId("code-output")).toContainText("fulfilled rejected");
+  // A program whose calls fail by the dozen: the first three stand under its line, the rest are
+  // counted, and the count opens the program. Then a call to a tool the session does not have (it did
+  // not run), and a wait for agents, said in words.
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+  const many = `const got = await Promise.allSettled(Array.from({ length: 12 }, (_, i) => tools.Read({ file_path: "no-such-" + i + ".md" })));\nconsole.log(got.length);`;
+  await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "run_code", input: { code: many } }, { name: "exec_command", input: { cmd: "ls" } }, { name: "wait_agent", input: { timeout_ms: 1000 } }])}` } });
+  await expect(page.getByTestId("turn-end")).toHaveCount(2, { timeout: 90_000 });
+  const second = page.locator('[data-testid="tool-call"][data-tool="run_code"]').nth(1);
+  // (A program that ran on this page stays open as it stood until it leaves the view; folded, as after a reload:)
+  await page.reload();
+  await expect(second.getByTestId("code-call-count")).toHaveText("12 calls, 12 failed");
+  await expect(second.getByTestId("code-peek").getByTestId("tool-call")).toHaveCount(3);
+  await expect(second.getByTestId("code-peek-more")).toHaveText("and 9 more like these: open the program");
+  expect((await second.boundingBox())!.height).toBeLessThan(260);
+  const noTool = page.locator('[data-testid="tool-call"][data-tool="exec_command"]');
+  await expect(noTool.locator(".k-line-verb")).toHaveText("Run");
+  await expect(noTool.getByTestId("call-state")).toHaveText("no such tool");
+  await expect(noTool.getByTestId("tool-why")).toHaveText("No tool named exec_command.");
+  const waited = page.locator('[data-testid="tool-call"][data-tool="wait_agent"]');
+  console.log("WAIT_AGENT", JSON.stringify(await waited.locator(".k-line-text").textContent()));
+  await bring(page, '[data-testid="tool-call"][data-tool="run_code"]', 1, 80);
+  await shoot(page, "work-18-program-many-and-no-tool");
+  await second.getByTestId("code-peek-more").click();
+  await expect(second.getByTestId("code-calls").getByTestId("tool-call")).toHaveCount(12);
   // A request with no body is answered as one that names no event.
   const none = await request.post(`/api/sessions/${session.id}/call-marks`, { data: null as any, headers: { "content-type": "application/json" } });
   expect([none.status(), await none.json()]).toEqual([200, { marks: {} }]);

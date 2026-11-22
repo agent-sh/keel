@@ -8,7 +8,7 @@ import type { ToolResultBlock, ToolUseBlock } from "../../../src/core/types.ts";
 import { commandOf } from "../../../src/core/command.ts";
 import { diffLines, splitLines } from "../../../src/tools/diff.ts";
 import { RESTART_CUT, STOPPED_WHILE, stopKind, turnedAway } from "../../../src/core/stops.ts";
-import { patchFiles, resultText, shellStatus, toolKind, type ToolKind } from "./tools.ts";
+import { patchFiles, resultText, shellStatus, toolKind, type ToolKind, splitDiagnostics, splitMemory, splitNested } from "./tools.ts";
 import { NEEDS, STATE_WORD, countWord } from "../../../src/core/state-words.ts";
 
 // `card`: a call with a card of its own (a question, an agent, code, readers): always a step by itself, as is a plan update.
@@ -136,10 +136,12 @@ export type Look = "running" | "waiting" | "unfinished" | "ok" | "error" | "deni
 export type Live = { working: boolean; waiting?: ReadonlySet<string>; refused?: ReadonlySet<string>; own?: ReadonlySet<string>; cwd?: string };
 export const lookOf = (c: { id: string; result?: ToolResultBlock }, live: Live): Look =>
   c.result ? (live.refused?.has(c.id) ? "refused" : callState(c.result)) : live.waiting?.has(c.id) ? "waiting" : live.working ? "running" : "unfinished";
+// A call to a tool the session does not have: it did not run.
+export const noSuchTool = (result?: ToolResultBlock): boolean => !!result?.is_error && /^No tool named /.test(resultText(result));
 // Whether the call was carried out, in whole or in part: it ran, runs, or was ended while it ran.
 // `change`: the call changes a file: one that failed changed nothing (a command that failed did run).
 export const ranOf = (look: Look, result?: ToolResultBlock, change = false): boolean =>
-  look === "ok" || (look === "error" && !change) || look === "running" || (look === "stopped" && result?.content === STOPPED_WHILE) || (look === "cut" && result?.content === RESTART_CUT);
+  look === "ok" || (look === "error" && !change && !noSuchTool(result)) || look === "running" || (look === "stopped" && result?.content === STOPPED_WHILE) || (look === "cut" && result?.content === RESTART_CUT);
 
 const base = (p: string) => p.replace(/\/+$/, "").split("/").at(-1) || p;
 // A changed file as a step's line names it: its name, and for a file under a
@@ -229,7 +231,10 @@ export function refusalOf(result?: ToolResultBlock): { by: string; why: string }
 // Why a call failed, in one line of its own output: the first line that names
 // an error, else the first line it printed.
 export function failureLine(result?: ToolResultBlock): string {
-  const lines = resultText(result).replace(/\u001b\[[0-9;]*m/g, "").split("\n").map((l) => l.trim()).filter(Boolean);
+  // The tool's own output: not what a hook or the harness put into the result for the model (memory,
+  // instructions that were loaded, what a language server found).
+  const own = splitNested(splitDiagnostics(splitMemory(resultText(result)).text).text).text.replace(/<memory [^>]*>[\s\S]*?(<\/memory>|$)/g, "");
+  const lines = own.replace(/\u001b\[[0-9;]*m/g, "").split("\n").map((l) => l.trim()).filter(Boolean);
   const body = lines.filter((l) => !/^(Exit code|Exit Code:|Process exited with code) ?-?\d+$/.test(l));
   return (body.find((l) => /\b(error|failed|failure|cannot|not found|no such|denied|refused|does not exist|timed out|killed)\b/i.test(l)) ?? body[0] ?? lines[0] ?? "").slice(0, 200);
 }

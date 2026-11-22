@@ -8,9 +8,12 @@ import { diffLines, splitLines } from "../../../src/tools/diff.ts";
 import type { PatchLine } from "../../../src/safety/patch.ts";
 import { actions, api, failed, reportError } from "../lib/store.ts";
 import { bounded } from "../lib/scrollback.ts";
-import { CALL_STOPPED, callState, changeOf, commandText, failureLine, familyOf, moreLines, NEEDS_APPROVAL, ranOf, refusalOf, smallChange } from "../lib/work.ts";
+import { CALL_STOPPED, callState, changeOf, commandText, failureLine, familyOf, moreLines, NEEDS_APPROVAL, noSuchTool, ranOf, refusalOf, smallChange } from "../lib/work.ts";
 import { useCallsLive } from "../lib/call-live.ts";
 import { marksOf, useMarked } from "../lib/marks.ts";
+import { callHeld, callKey, letGo, useHeld, useLetGoUnseen } from "../lib/held.ts";
+import { useAuto } from "../lib/automation.ts";
+import { STATE_WORD } from "../../../src/core/state-words.ts";
 import { commandOf } from "../../../src/core/command.ts";
 import { ThoughtMark } from "./Work.tsx";
 import { CallDiff, type CallFile } from "./DiffView.tsx";
@@ -21,7 +24,7 @@ import {
   type ToolKind,
 } from "../lib/tools.ts";
 import { FLEET_LABEL, fleetSummary, MachineBadge } from "./Fleet.tsx";
-import { cn } from "../lib/utils.ts";
+import { cn, fmtWait } from "../lib/utils.ts";
 import { AGENT_TOOLS, AgentCall, toolSummary } from "./automation/TranscriptExtras.tsx";
 import { CodeCall } from "./CodeCall.tsx";
 import { ReadersCall } from "./ReadersCall.tsx";
@@ -161,7 +164,9 @@ export function ToolCall({ use: asked, result, live, sessionId, cwd, lead, auto,
   const hook = hookOf(result);
   // Every call shows the input that ran.
   const use = hook?.input !== undefined ? { ...asked, input: hook.input } : asked;
-  const beside = (card: ReactNode) => (hook ? <div className="flex flex-col">{card}<HookRows hook={hook} asked={asked.input} name={use.name} cwd={cwd} /></div> : card);
+  // (The card stands at the same place in the tree before and after its result, with a hook's rows and
+  // without: made again there, it would lose what it holds, and a card that stays open would stand empty.)
+  const beside = (card: ReactNode) => <>{card}{hook && <HookRows hook={hook} asked={asked.input} name={use.name} cwd={cwd} />}</>;
   if (AGENT_TOOLS.has(use.name)) return beside(<AgentCall use={use} result={result} live={live} />);
   if (use.name === "run_code") return beside(<CodeCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} event={event} />);
   if (use.name === "AskReaders" || use.name === "ask_readers") return beside(<ReadersCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} />);
@@ -170,7 +175,7 @@ export function ToolCall({ use: asked, result, live, sessionId, cwd, lead, auto,
   if (kind === "ask" && !live) return beside(<QuestionCard use={use} result={result} sessionId={sessionId} />);
   const call = <GenericCall use={use} result={result} live={live} sessionId={sessionId} cwd={cwd} kind={kind} input={input} lead={lead} auto={auto} peek={peek} quiet={quiet} hook={hook} asked={asked.input} />;
   // A server asked the owner something while this call runs: a line says so under the call.
-  return result ? call : <AskedUnder use={use} sessionId={sessionId}>{call}</AskedUnder>;
+  return <AskedUnder use={use} sessionId={result ? undefined : sessionId}>{call}</AskedUnder>;
 }
 
 // A command longer than this, or of more than one line, is shown whole where the call is opened; a shorter one is all on its line.
@@ -202,13 +207,19 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
   const plan = kind === "plan" ? planItems(use.name, input) : null;
   // Closed until asked for: its line says what it did. A command that runs is
   // open while it does, so its output shows as it arrives.
-  const [picked, setPicked] = useState<boolean | null>(null);
-  const open = picked ?? (!!auto && kind === "shell" && state === "running" && !!sessionId);
+  // When it ends it stays as it stood, with the tail of its output, until it has left the view
+  // (lib/held.ts): folding it then would drop every line under it. The owner's own fold lets it go.
+  const [picked, pick] = useState<boolean | null>(null);
+  useHeld();
+  const held = !!auto && callHeld(use.id, state === "running" && !!sessionId);
+  const setPicked = (to: boolean) => { pick(to); if (!to) letGo(callKey(use.id)); };
+  const open = picked ?? (!!auto && kind === "shell" && !!sessionId && (state === "running" || held));
   const files = useMemo(() => (open ? callFiles(kind, use, cwd, (result as { shown?: { line?: number } } | undefined)?.shown?.line) : null), [open, kind, use, cwd, result]);
   const change = useMemo(() => (kind === "edit" || kind === "write" || kind === "patch" ? changeOf(use) : null), [kind, use]);
   // A search hit on this call or its output opens this card (not a sibling call of the same reply).
   const focused = useUI((s) => !peek && s.focusCall === use.id);
   const root = useRef<HTMLDivElement>(null);
+  useLetGoUnseen(root, callKey(use.id), held);
   useEffect(() => {
     if (!focused) return;
     setPicked(true);
@@ -226,27 +237,30 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
   const planNow = plan?.find((i) => i.status === "in_progress");
   const planDone = plan?.filter((i) => i.status === "completed").length ?? 0;
   const command = isShell ? commandText(use) : "";
+  // A wait for agents says whom it waited for, by their titles, and for how long at most.
+  const waits = use.name === "wait_agent";
+  const waitsFor = useAuto((s) => (!waits ? "" : Array.isArray(input.targets) && input.targets.length ? input.targets.map((id: string) => s.agents[id]?.title ?? "an agent").join(", ") : "every running agent"));
   // A marked command is on its line whole, every line of it: it is never cut by the line's end.
   const isMarked = marks.length > 0 || !!hook;
   const whole = isMarked && kind === "shell";
   // (A plan update that was not applied says so as its verb, with the reason under its line: no state word, no step.)
-  const what = rejected ? "" : plan ? (planNow ? planNow.active ?? planNow.text : plan.length && planDone === plan.length ? "Every step done" : plan.length ? "Not started" : "No steps") : whole ? command.trim() : summary(kind, use.name, input, cwd);
+  const what = rejected ? "" : waits ? `for ${waitsFor}, up to ${fmtWait(Number(input.timeout_ms ?? 300_000))}` : plan ? (planNow ? planNow.active ?? planNow.text : plan.length && planDone === plan.length ? "Every step done" : plan.length ? "Not started" : "No steps") : whole ? command.trim() : summary(kind, use.name, input, cwd);
   const more = kind === "shell" && !whole ? moreLines(use) : 0;
   const words = kind === "plan" || kind === "skill" || kind === "other" || kind === "mcp" || kind === "stop";
-  const verb = rejected ? "Plan update not applied" : LABEL[kind]?.[state === "running" || state === "live" ? 0 : ran ? 1 : 2] ?? FLEET_LABEL[use.name] ?? use.name;
+  const verb = rejected ? "Plan update not applied" : waits ? (state === "running" || state === "live" ? STATE_WORD.wait : ran ? "Waited" : "Wait") : LABEL[kind]?.[state === "running" || state === "live" ? 0 : ran ? 1 : 2] ?? FLEET_LABEL[use.name] ?? use.name;
   // What a change that was made, is being made or waits to be made adds and removes: one that failed or was turned away changed nothing.
   const changed = state === "ok" || state === "running" || state === "live" || state === "waiting";
   // A small change shows its lines under the closed line, as a failure shows its reason.
   const small = useMemo(() => (!open && !peek && change && changed ? smallChange(use) : null), [open, peek, change, changed, use]);
   return (
-    <Collapsible.Root ref={root} open={open} onOpenChange={setPicked} className="k-tool-call group/tool" data-testid="tool-call" data-call={use.id} data-tool={use.name} data-state={state} data-kind={kind} data-marked={isMarked ? "" : undefined} data-soft={soft ? "" : undefined}>
+    <Collapsible.Root ref={root} open={open} onOpenChange={setPicked} className="k-tool-call group/tool" data-testid="tool-call" data-call={use.id} data-tool={use.name} data-state={state} data-kind={kind} data-marked={isMarked ? "" : undefined} data-soft={soft ? "" : undefined} data-auto={picked === null ? "" : undefined}>
       <Collapsible.Trigger className="k-line" title={isShell && input.description ? `The model's note: ${input.description}` : undefined}>
         {/* The line's words, as one run of text: the verb, how it stands, why it is marked, what it was made on.
             A marked call's words wrap, so what it was made on is whole on the page. */}
         <span className="k-line-text" data-wrap={isMarked ? "" : undefined}>
           <span className="k-line-verb">{verb}</span>{" "}
           {state === "waiting" && <><span className="k-line-state" data-tone="need" data-testid="call-state">{NEEDS_APPROVAL}</span>{" "}</>}
-          {state === "error" && !rejected && <><span className="k-line-state" data-tone={soft ? "note" : "fail"} data-testid="call-state">{shell.exit !== undefined ? `exit ${shell.exit}` : "failed"}</span>{" "}</>}
+          {state === "error" && !rejected && <><span className="k-line-state" data-tone={soft ? "note" : "fail"} data-testid="call-state">{noSuchTool(result) ? "no such tool" : shell.exit !== undefined ? `exit ${shell.exit}` : "failed"}</span>{" "}</>}
           {state === "denied" && <><span className="k-line-state" data-tone="own" data-testid="call-state">denied by you</span>{" "}</>}
           {state === "refused" && <><span className="k-line-state" data-tone="warn" data-testid="tool-refused">refused</span>{" "}</>}
           {ended && <><span className="k-line-state" data-tone={ended === "cut" ? "warn" : "idle"} data-testid="tool-ended" title={ended === "cut" ? "A daemon restart cut this call. It may have partly run." : "You stopped the turn while this call ran."}>{ended === "cut" ? "cut by a restart" : CALL_STOPPED}</span>{" "}</>}
@@ -264,9 +278,9 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
           <MachineBadge sessionId={sessionId} callId={use.id} />
           {plan && plan.length > 0 && !rejected && <span className="k-line-plan" data-testid="plan-count"><Pips done={planDone} total={plan.length} />{planDone}/{plan.length}</span>}
           {change && changed && (change.added > 0 || change.removed > 0) && <Delta added={change.added} removed={change.removed} />}
-          {nested.length > 0 && <span className="k-chip" data-testid="tool-nested" title={nested.map((n) => n.path).join("\n")}>+ {nested.length === 1 ? shortPath(nested[0]!.path, cwd) : `${nested.length} instruction files`}</span>}
-          {shell.background && <span className="k-chip" data-testid="tool-background">background</span>}
-          {shell.session && <span className="k-chip">session {shell.session}</span>}
+          {nested.length > 0 && <span className="k-line-chip" data-testid="tool-nested" title={nested.map((n) => n.path).join("\n")}>+ {nested.length === 1 ? shortPath(nested[0]!.path, cwd) : `${nested.length} instruction files`}</span>}
+          {shell.background && <span className="k-line-chip" data-testid="tool-background">background</span>}
+          {shell.session && <span className="k-line-chip">session {shell.session}</span>}
           {lead && <ThoughtMark />}
           {(state === "running" || state === "live") && <span className="k-line-run" aria-label="running" />}
         </span>
@@ -299,7 +313,7 @@ function GenericCall({ use, result, live, sessionId, cwd, kind, input, lead, aut
         <div className="k-tool-body">
           {marks.length > 0 && <p className="k-mark-why" data-testid="mark-why">{marks.map((m) => m.why).join(" ")}</p>}
           {lead}
-          {isShell && <Terminal name={use.name} input={input} command={command} whole={whole} out={out} running={state === "running"} sessionId={sessionId} callId={use.id} />}
+          {isShell && <Terminal name={use.name} input={input} command={command} whole={whole} out={out} running={state === "running"} held={held && picked === null && !shell.background} sessionId={sessionId} callId={use.id} />}
           {plan && plan.length > 0 && <div className={rejected ? "opacity-60" : undefined}><PlanCard items={plan} explanation={input.explanation} /></div>}
           {files && (
             <CallDiff files={files} actions={(f) => (
@@ -408,7 +422,9 @@ const CUT = /\n\n\[\.\.\. (\d+) (?:characters|chars) cut[^\]]*\]\n\n/;
 // The output of a command, in the program's own colors (a test run's red and green): a failed
 // command's passing lines are not red. The command stands above it only where the call's line
 // cannot hold it (several lines, or a long one); `whole`: the line shows all of it already.
-function Terminal({ name, input, command, whole: onLine, out, running, sessionId, callId }: { name: string; input: any; command: string; whole: boolean; out: string; running?: boolean; sessionId?: string; callId?: string }) {
+// `held`: the command has ended and its card stays as it stood: the tail of the output it was following.
+// (Not a command that was moved to the background: its result says so, and that is what its card shows.)
+function Terminal({ name, input, command, whole: onLine, out, running, held, sessionId, callId }: { name: string; input: any; command: string; whole: boolean; out: string; running?: boolean; held?: boolean; sessionId?: string; callId?: string }) {
   const body = shellBody(name, out).trimEnd();
   const big = TOO_LARGE.exec(body);
   const cut = big ? null : CUT.exec(body);
@@ -425,7 +441,7 @@ function Terminal({ name, input, command, whole: onLine, out, running, sessionId
         </Copyable>
       )}
       {name === "write_stdin" && input.chars && <pre className="border-b border-line px-2.5 py-1.5 text-accent-ink">{JSON.stringify(input.chars)}</pre>}
-      {running && sessionId && callId ? <CallLog sessionId={sessionId} callId={callId} follow />
+      {(running || held) && sessionId && callId ? <CallLog sessionId={sessionId} callId={callId} follow ended={!running} />
         : whole && sessionId && callId ? <CallLog sessionId={sessionId} callId={callId} onLeave={() => setWhole(false)} />
         : shown ? (
           <Copyable text={() => stripAnsiText(shown)} label="Copy the output" testid="copy-output">
@@ -440,7 +456,7 @@ function Terminal({ name, input, command, whole: onLine, out, running, sessionId
         ) : !running && <p className="px-2.5 py-2 pr-16 font-sans text-faint" data-testid="no-output">No output.</p>}
       {/* The command is on the call's line: its copy button stands with the output's. */}
       {!above && command && <CopyButton text={command} label="Copy the command" testid="copy-command" icon={<SquareTerminal />} className="k-copy-corner k-copy-second" />}
-      {(big || cut) && !whole && !running && (
+      {(big || cut) && !whole && !running && !held && (
         <div className="k-out-more" data-testid="output-more">
           <span>{big ? `The first ${big[2]} of ${big[1]} of output.` : "The start and the end of a long output."}</span>
           {sessionId && callId && <button type="button" data-testid="output-whole" onClick={() => setWhole(true)} className="k-out-link">Show the whole output</button>}
@@ -459,8 +475,15 @@ function Terminal({ name, input, command, whole: onLine, out, running, sessionId
 // `none`: no command of the call has started yet (a follower's answer).
 type LogPart = { text: string; from: number; to: number; size: number; running?: boolean; job?: string; none?: boolean };
 const POLL_MS = 1000, POLL_MAX_MS = 15_000;
-function CallLog({ sessionId, callId, follow, onLeave }: { sessionId: string; callId: string; follow?: boolean; onLeave?: () => void }) {
-  const [text, setText] = useState("");
+// What a follower has shown of a call's output, and how far it has read, by call.
+const tails = new Map<string, { text: string; at: number }>();
+// `ended`: the command a follower follows has ended: it reads what is left once and asks no more.
+function CallLog({ sessionId, callId, follow, ended, onLeave }: { sessionId: string; callId: string; follow?: boolean; ended?: boolean; onLeave?: () => void }) {
+  const over = useRef(false);
+  over.current = !!ended;
+  // (A follower starts from what was followed of this call before: the call is drawn by more than one
+  // component in its life, a step of one call and then of several, and its card must not stand empty between.)
+  const [text, setText] = useState(follow ? tails.get(callId)?.text ?? "" : "");
   const [part, setPart] = useState<{ from: number; to: number; size: number; before: number[] } | null>(null);
   const [gone, setGone] = useState(false);
   const pre = useRef<HTMLPreElement>(null);
@@ -474,7 +497,7 @@ function CallLog({ sessionId, callId, follow, onLeave }: { sessionId: string; ca
       read(0).then((r) => { if (!stop) { setText(r.text); setPart({ ...r, before: [] }); } }).catch((e) => ((e as { status?: number }).status === 404 ? setGone(true) : reportError(e, { at: "call log" })));
       return () => { stop = true; };
     }
-    let at = 0, wait = POLL_MS;
+    let at = tails.get(callId)?.at ?? 0, wait = POLL_MS;
     const pull = async () => {
       t = undefined;
       // Not while the page is hidden: it goes on when the page shows again.
@@ -486,7 +509,11 @@ function CallLog({ sessionId, callId, follow, onLeave }: { sessionId: string; ca
           // No command of this call yet: asked again later, each time later.
           if (r.none) { wait = Math.min(wait * 2, POLL_MAX_MS); break; }
           wait = POLL_MS;
-          if (r.to > at) { const add = r.text; setText((m) => bounded(m + add, 64 * 1024).text); at = r.to; }
+          if (r.to > at) {
+            const add = r.text, to = r.to;
+            setText((m) => { const next = bounded(m + add, 64 * 1024).text; if (tails.size > 24) tails.clear(); tails.set(callId, { text: next, at: to }); return next; });
+            at = r.to;
+          }
           if (r.to >= r.size) break;
           if (n === 7) at = Math.max(at, r.size - 32 * 1024);
         }
@@ -495,7 +522,7 @@ function CallLog({ sessionId, callId, follow, onLeave }: { sessionId: string; ca
         if ((e as { status?: number }).status === 404) wait = Math.min(wait * 2, POLL_MAX_MS);
         else { reportError(e, { at: "call log" }); return; }
       }
-      if (!stop) t = setTimeout(pull, wait);
+      if (!stop && !over.current) t = setTimeout(pull, wait);
     };
     const shown = () => { if (!document.hidden && !stop && t === undefined) t = setTimeout(pull, 0); };
     document.addEventListener("visibilitychange", shown);

@@ -5,7 +5,7 @@
 // and idle time as a gap. A row opens its detail: a turn's receipt as a short
 // chain of cause, with the way into its trace, its error and its place in the
 // conversation.
-import { STATE_WORD, stateLabel } from "../../../src/core/state-words.ts";
+import { CUT_BY_RESTART, FAIL_WORD, STATE_WORD, stateLabel, stateWords } from "../../../src/core/state-words.ts";
 import { PeerMessages } from "./PeerMessages.tsx";
 import {
   Anchor, ArrowLeftRight, Bot, ClipboardCopy, CornerDownRight, FileClock, Flag, FoldVertical, Gauge, Hand, ListEnd, MessageCircleQuestionMark, MessagesSquare, Power, Repeat,
@@ -532,9 +532,10 @@ function Detail({ row, sessionId }: { row: TimelineRow; sessionId: string }) {
   );
 }
 
+// How a turn ended, in the words the conversation's own footer uses for it (one word per state, from the vocabulary).
 const ENDED: Record<string, string> = {
-  end_turn: STATE_WORD.done, error: STATE_WORD.fail, interrupted: STATE_WORD.stop, restart: "Cut by a daemon restart", max_steps: "Out of its step budget", max_tokens: "Hit the output limit",
-  refusal: "The model declined", stop_sequence: STATE_WORD.done, tool_use: "Ended at a tool call", pause_turn: "Paused", model_context_window_exceeded: "The context was too long", other: "Ended",
+  end_turn: STATE_WORD.done, error: STATE_WORD.fail, interrupted: STATE_WORD.stop, restart: CUT_BY_RESTART, max_steps: stateWords({ watch: "stop", why: "max_steps" }).phrase, max_tokens: `${STATE_WORD.fail}: ${FAIL_WORD.max_tokens}`,
+  refusal: STATE_WORD.declined, stop_sequence: STATE_WORD.done, tool_use: "Ended at a tool call", pause_turn: "Paused", model_context_window_exceeded: "The context was too long", other: "Ended",
 };
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const RECEIPT_MS = 2000;

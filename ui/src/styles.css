@@ -621,6 +621,12 @@ code, pre, .font-mono { font-variant-ligatures: none; font-feature-settings: "ca
 /* Long transcripts: rows off screen skip layout and paint. A row paints a
    little past its box, so the focus ring of a control on its edge is whole. */
 .row-cv { content-visibility: auto; contain-intrinsic-size: auto 7.5rem; overflow-clip-margin: 0.375rem; }
+/* The rows at the conversation's end are always drawn at their own height: the row that takes a
+   streamed reply's place stands as tall as the reply did from its first layout, whoever reads the
+   layout first. At an estimated height it would pull the view up to the end (a reader further up
+   would lose their place), or stay off the screen for good. (Its size is remembered from then on,
+   so further up and off the screen it skips layout as every other row does.) */
+.k-transcript > .row-cv:nth-last-child(-n+8) { content-visibility: visible; }
 
 /* Each row of a transcript lays out by itself: what a streamed reply changes
    stays in its row instead of the whole pane being laid out again. Layout
