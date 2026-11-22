@@ -106,6 +106,18 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
     const e = eventsOut.state.endpoint ? spanEvent(s) : null;
     if (e) eventsOut.push(e);
   }));
+  // The spans a kill cut: the daemon before this one exported their children as they ended and went down
+  // before these ended. They go out now, closed as interrupted, so no exported span lacks its parent.
+  const left = t.closedAtStart();
+  if (left.length) detached(() => {
+    for (const s of left) {
+      exporter.push(s);
+      if (metricsOut.state.endpoint) spanMetrics(meter, s);
+      const e = eventsOut.state.endpoint ? spanEvent(s) : null;
+      if (e) eventsOut.push(e);
+    }
+    console.log(`[daemon] ${left.length} span${left.length === 1 ? "" : "s"} the last daemon left running ${left.length === 1 ? "was" : "were"} closed as interrupted${exporter.state.endpoint ? " and sent to the collector" : ""}`);
+  });
   // What no span holds: a prompt arriving, and what a turn cost.
   const offBus = bus.on((f) => {
     if (f.t !== "event" || (!metricsOut.state.endpoint && !eventsOut.state.endpoint)) return;

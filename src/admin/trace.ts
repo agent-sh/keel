@@ -5,7 +5,7 @@
 // and the failure. A failed request also keeps the request itself, gzipped, so
 // it can be sent again (replay). The trace id is the turn's turn_start event
 // id, so an error that names its turn names its trace. Kept SPAN_DAYS days.
-import { conceal } from "../core/conceal.ts";
+import { scrubbed } from "../core/conceal.ts";
 import { gunzipSync, gzipSync } from "node:zlib";
 import type { Bus } from "../core/bus.ts";
 import { errorScope } from "../core/errors.ts";
@@ -218,11 +218,14 @@ export class Tracer {
     store.migrate(SCHEMA);
     // A span still running when the daemon stopped did not end on its own: it
     // ran until the daemon went down, when that is known (src/admin/life.ts).
+    // The ones a daemon before this process left (they began before it did) are handed once to whoever
+    // exports spans (closedAtStart): a collector that got their children gets them too, closed as interrupted.
+    this.left = store.db.query<{ span_id: string }, [number]>("SELECT span_id FROM spans WHERE status = 'running' AND start_ms < ? ORDER BY start_ms").all(Math.floor(performance.timeOrigin)).map((r) => r.span_id);
     store.db.run("UPDATE spans SET status = 'interrupted', end_ms = COALESCE(end_ms, MAX(start_ms, ?)) WHERE status = 'running'", [wentDownAt() ?? 0]);
     this.prune();
     // Failure text an older build kept as it was: anything that reads as a secret becomes a placeholder.
     for (const r of store.db.query<{ span_id: string; error: string }, []>("SELECT span_id, error FROM spans WHERE error IS NOT NULL").all()) {
-      const shown = conceal(r.error);
+      const shown = scrubbed(r.error);
       if (shown !== r.error) store.db.run("UPDATE spans SET error = ? WHERE span_id = ?", [shown, r.span_id]);
     }
     // The error row a failed span became: linked both ways.
@@ -262,6 +265,14 @@ export class Tracer {
       toolRan: (s, call, result, ran) => this.tool(s, call.id, call.tool.name, call.input, result, ran, call.hook),
       turnEnd: (s, reason) => this.turnEnd(s, reason),
     });
+  }
+
+  // The spans the daemon before this one left running, as this start closed them. Given once.
+  private left: string[] = [];
+  closedAtStart(): Span[] {
+    const ids = this.left;
+    this.left = [];
+    return ids.map((id) => this.span(id)).filter((s): s is Span => !!s);
   }
 
   onEnd(f: (s: Span) => void) {
@@ -425,7 +436,7 @@ export class Tracer {
     if (!o) return;
     this.open.delete(req);
     const refused = res.stop === "refusal";
-    this.finish(o.span, { status: refused ? "error" : "ok", error: refused ? res.stop_details?.explanation ?? "refusal" : null, error_type: refused ? "refusal" : null, attrs: { ...this.wireAttrs(req, o), result: resultShape(res) } });
+    this.finish(o.span, { status: refused ? "error" : "ok", error: refused ? scrubbed(res.stop_details?.explanation ?? "refusal") : null, error_type: refused ? "refusal" : null, attrs: { ...this.wireAttrs(req, o), result: resultShape(res) } });
   }
 
   private failed(req: ProviderRequest, err: unknown, aborted: boolean) {
@@ -440,7 +451,7 @@ export class Tracer {
     if (packed) this.kept.set(req, o.span);
     this.finish(o.span, {
       status: aborted ? "interrupted" : "error",
-      error: aborted ? null : conceal(errorText(err).slice(0, 4000)),
+      error: aborted ? null : scrubbed(errorText(err).slice(0, 4000)),
       error_type: type,
       attrs: { ...this.wireAttrs(req, o), ...(e?.status ? { http_status: e.status } : {}), ...(e?.kind ? { error_kind: e.kind } : {}), ...(e?.retryAfterMs ? { retry_after_ms: e.retryAfterMs } : {}), ...(prior && !aborted ? { request_in: prior } : {}) },
       request: packed,
@@ -463,7 +474,7 @@ export class Tracer {
     const inputJson = JSON.stringify(input ?? {});
     this.store.db.run(
       "INSERT OR REPLACE INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, error, error_type, attrs) VALUES (?, ?, ?, ?, 'tool', ?, ?, ?, ?, ?, ?, ?)",
-      [span, trace, parent?.span ?? null, s.id, `execute_tool ${name}`, now - ran.ms, now, ran.outcome, ran.outcome === "error" ? conceal(content.slice(0, 1000), s.id) : null,
+      [span, trace, parent?.span ?? null, s.id, `execute_tool ${name}`, now - ran.ms, now, ran.outcome, ran.outcome === "error" ? scrubbed(content.slice(0, 1000), s.id) : null,
         ran.outcome === "error" ? "tool_error" : null,
         JSON.stringify({ tool: name, call_id: callId, input_keys: input && typeof input === "object" ? Object.keys(input) : [], input_bytes: Buffer.byteLength(inputJson), result_bytes: Buffer.byteLength(content), ...(turn ? { turn_event: turn.id } : {}),
           ...(hook?.from !== undefined ? { hook_rewrote: true, asked_input_bytes: Buffer.byteLength(JSON.stringify(hook.from ?? {})) } : {}), ...(hook?.skipped ? { hook_allowed: true } : {}) })],
@@ -522,7 +533,7 @@ export class Tracer {
     const span = newSpanId();
     this.store.db.run(
       "INSERT INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, error, error_type, attrs) VALUES (?, ?, NULL, ?, 'request', ?, ?, ?, ?, ?, ?, ?)",
-      [span, hex(16), of.session_id, `chat ${route.split(":").slice(1).join(":") || route}`, t0, Date.now(), out.ok ? "ok" : "error", out.error ?? null, out.error_type ?? null,
+      [span, hex(16), of.session_id, `chat ${route.split(":").slice(1).join(":") || route}`, t0, Date.now(), out.ok ? "ok" : "error", out.error ? scrubbed(out.error) : null, out.error_type ?? null,
         JSON.stringify({ route, replay_of: of.span_id, shape: of.attrs.shape, ...(out.wire && Object.keys(out.wire).length ? { wire: out.wire } : {}), ...(out.ttft ? { ttft_ms: out.ttft } : {}), ...(out.result ? { result: resultShape(out.result) } : {}) })],
     );
     this.emitEnd(span);

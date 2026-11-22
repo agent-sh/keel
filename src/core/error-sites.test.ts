@@ -94,3 +94,14 @@ test("recovered only when every counted occurrence was healed in a session", () 
   expect(recoveredAt(4, [site(3, 3)])).toBeUndefined();
   expect(recoveredAt(1, [])).toBeUndefined();
 });
+
+// A captured failure whose text or context holds a key-shaped string is stored without it.
+test("a key in a captured error is not in its row", () => {
+  const { store, errors, done } = fresh();
+  try {
+    const key = ["sk", "ant", "api03", "PLANTEDKEY0123456789abcdefghijklmnopqrstuvwxyzABCDEFGH"].join("-");
+    const rec = errors.capture("tool", new Error(`the tool printed ${key}`), { tool: "Bash", stderr: `marker ${key}` });
+    expect(rec.message).toBe("the tool printed <redacted>");
+    expect(JSON.stringify(store.db.query("SELECT * FROM errors").all())).not.toContain("PLANTEDKEY");
+  } finally { done(); }
+});

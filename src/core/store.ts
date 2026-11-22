@@ -1,3 +1,4 @@
+import { keyShaped, keyShapedDeep } from "./conceal.ts";
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -1009,8 +1010,9 @@ export class Store {
   // `group`: what repeats of this failure share, when the message alone does not say (ErrorPlace).
   recordError(raw: Omit<ErrorRecord, "id" | "ts">, group?: string): ErrorRecord {
     const ts = Date.now();
-    // Kept like events: a secret in a failure's text is its placeholder.
-    const e = { ...raw, message: this.redact(null, "error", raw.message), stack: raw.stack && this.redact(null, "error", raw.stack), context: raw.context && this.redact(null, "error", raw.context) };
+    // Kept like events: a secret in a failure's text is its placeholder. And what only looks like a key
+    // (one Keel does not know: a tool printed it, a provider echoed it) is hidden here, where the row is made.
+    const e = { ...raw, message: keyShaped(String(this.redact(null, "error", raw.message))), stack: raw.stack && keyShaped(String(this.redact(null, "error", raw.stack))), context: raw.context && keyShapedDeep(this.redact(null, "error", raw.context)) };
     const fp = `${e.source}\u0000${fingerprint(group ?? e.message)}`;
     const session_id = e.session_id ?? sessionOf(e.context);
     const live = session_id ? this.session(session_id) : undefined;

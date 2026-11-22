@@ -1,3 +1,4 @@
+import { keyShaped } from "../core/conceal.ts";
 import { errorClass } from "../admin/classes.ts";
 import type { Store } from "../core/store.ts";
 import type { Session, ToolResultBlock } from "../core/types.ts";
@@ -85,7 +86,8 @@ export function record(sessionId: string, f: Failure, from = sessionId): boolean
   try {
     const { store } = D();
     if (!store.session(sessionId)) return false;
-    const clean = (s: string) => String(store.redact(from, "error", s));
+    // The known secrets as their placeholders, then anything else shaped like a key: before the sample is made.
+    const clean = (s: string) => keyShaped(String(store.redact(from, "error", s)));
     const safe: Failure = { ...f, cls: clip(clean(f.cls), CLASS_CHARS), message: clean(f.message), ref: f.ref && { ...f.ref, label: f.ref.label && clean(f.ref.label) } };
     const had = one(sessionId, fingerprintOf(safe.kind, safe.cls, safe.message));
     const named = safe.tell !== "wake" || room(had, safe.ref?.id ?? SELF);

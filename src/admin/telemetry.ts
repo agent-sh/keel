@@ -2,6 +2,7 @@
 // tokens, cost, outcome) and one per tool call that ran (duration, failure).
 // Nothing leaves the machine. Rows are small and kept; a deleted session's
 // rows stay so the totals over time do not change.
+import { keyShaped, scrubbed } from "../core/conceal.ts";
 import { reasonLine } from "./reason.ts";
 import type { Bus } from "../core/bus.ts";
 import type { Store } from "../core/store.ts";
@@ -207,7 +208,8 @@ export class Telemetry {
   // The line of a failure as it is kept: a key-shaped token a command printed is scrubbed as in any
   // error text the store keeps.
   private scrubbed(sessionId: string, line: string): string {
-    try { return String(this.store.redact(sessionId, "error", line)); } catch { return line; }
+    // The secrets Keel knows become their placeholders; anything else shaped like a key is hidden too (conceal.ts).
+    try { return keyShaped(String(this.store.redact(sessionId, "error", line))); } catch { return keyShaped(line); }
   }
 
   // The fingerprint of a set of offered tool names, the names kept once.
@@ -257,7 +259,7 @@ export class Telemetry {
                 h_tools, h_system, n_msgs, h_msgs, h_kept, break_detail, cache_ms, exp_id, arm, toolset, speed, effort)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(p.session, p.t0, p.model, now - p.t0, p.first === undefined ? null : p.first - p.t0, u.input ?? 0, u.output ?? 0, u.cache_read ?? 0, u.cache_write ?? 0,
-        typeof u.cost === "number" ? u.cost : null, u.unpriced ? 1 : 0, r.outcome, r.stop ?? null, r.error?.slice(0, 300) ?? null, brk?.cause ?? null,
+        typeof u.cost === "number" ? u.cost : null, u.unpriced ? 1 : 0, r.outcome, r.stop ?? null, r.error ? scrubbed(r.error.slice(0, 300)) : null, brk?.cause ?? null,
         p.purpose, r.cls ?? null, p.turn, z?.tools ?? null, z?.system ?? null, z?.history ?? null, z?.tail ?? null,
         p.attempt, now - p.step0, p.text === undefined ? null : p.text - p.t0, p.compaction,
         x?.tools ?? null, x?.system ?? null, x?.n ?? null, x?.msgs ?? null, x?.kept ?? null, brk?.detail ?? null, p.cacheMs,

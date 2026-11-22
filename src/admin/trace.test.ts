@@ -251,3 +251,59 @@ test("a retry is replayable only while the span that kept its request is", () =>
     x.close();
   }
 });
+
+// A kill cuts a turn: its ended children went to the collector, the turn and the tool it ran under did not.
+// The next start closes them as interrupted and hands them out once, so no exported span lacks its parent.
+test("the spans a kill left running are closed as interrupted and handed out once at the next start", () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? ".", "trace-test-"));
+  const store = new Store(dir);
+  const first = new Tracer(store, new Bus(), () => false);
+  const drop = () => { const h = allHooks().at(-1)!; allHooks().splice(allHooks().indexOf(h), 1); };
+  drop();
+  const old = Math.floor(performance.timeOrigin) - 60_000;
+  const add = (id: string, parent: string | null, kind: string, status: string, start: number, end: number | null) =>
+    store.db.run("INSERT INTO spans (span_id, trace_id, parent_id, session_id, kind, name, start_ms, end_ms, status, attrs) VALUES (?, 'aaaabbbbccccddddaaaabbbbccccdddd', ?, 's1', ?, ?, ?, ?, ?, '{}')", [id, parent, kind, id, start, end, status]);
+  add("1111111111111111", null, "turn", "running", old, null); // the turn the kill cut
+  add("2222222222222222", "1111111111111111", "request", "ok", old + 10, old + 500); // exported before the kill
+  add("3333333333333333", "1111111111111111", "tool", "running", old + 600, null); // the tool that ran
+  add("4444444444444444", "3333333333333333", "wait", "ok", old + 700, old + 900); // exported before the kill
+  // A span of this process (a hot reload makes a new tracer while a turn runs) is nobody's left-over.
+  add("5555555555555555", null, "turn", "running", Date.now(), null);
+  expect(first.closedAtStart()).toEqual([]);
+  const exported = new Map<string, Span>([["2222222222222222", first.span("2222222222222222")!], ["4444444444444444", first.span("4444444444444444")!]]);
+  const orphans = () => [...exported.values()].filter((s) => s.parent_id && !exported.has(s.parent_id)).map((s) => s.span_id);
+  expect(orphans()).toEqual(["2222222222222222", "4444444444444444"]);
+
+  const next = new Tracer(store, new Bus(), () => false);
+  drop();
+  try {
+    const left = next.closedAtStart();
+    expect(left.map((s) => [s.span_id, s.status, s.end_ms !== null])).toEqual([["1111111111111111", "interrupted", true], ["3333333333333333", "interrupted", true]]);
+    for (const s of left) exported.set(s.span_id, s);
+    expect(orphans()).toEqual([]);
+    // Once: a second ask hands out nothing, and the collector is told they were cut, not that they failed or passed.
+    expect(next.closedAtStart()).toEqual([]);
+    const sent = toOtlp(left, {}).resourceSpans[0]!.scopeSpans[0]!.spans;
+    expect(sent.map((s: any) => [s.spanId, s.parentSpanId ?? "", s.status, s.attributes.some((a: any) => a.key === "keel.interrupted" && a.value.boolValue === true)])).toEqual([
+      ["1111111111111111", "", {}, true], ["3333333333333333", "1111111111111111", {}, true],
+    ]);
+  } finally {
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A tool that failed and printed a key: its span's error is stored without it.
+test("a key a failed tool printed is not in its span's error", () => {
+  const x = tracer();
+  try {
+    const key = ["sk", "ant", "api03", "PLANTEDKEY0123456789abcdefghijklmnopqrstuvwxyzABCDEFGH"].join("-");
+    const s = x.store.createSession({ workspace: x.dir, model: "p:m" });
+    x.hooks.toolRan!(s, { id: "c9", tool: { name: "Bash" }, input: { command: "deploy" } } as any, { type: "tool_result", tool_use_id: "c9", is_error: true, content: `tool-marker ${key}\nExit code 5` } as any, { ms: 1, outcome: "error" });
+    const span = x.t.span(toolSpanId(s.id, "c9"))!;
+    expect(span.error).toBe("tool-marker <redacted>\nExit code 5");
+    expect(JSON.stringify(x.store.db.query("SELECT * FROM spans").all())).not.toContain("PLANTEDKEY");
+  } finally {
+    x.close();
+  }
+});

@@ -42,7 +42,8 @@ export const registerSessionTags = (f: typeof sessionTags) => void (sessionTags 
 
 export function spanAttrs(s: Span): Record<string, unknown> {
   const a = s.attrs;
-  const common = { "gen_ai.conversation.id": s.session_id, ...(s.error_type ? { "error.type": s.error_type } : {}), ...sessionTags(s.session_id) };
+  // A span the daemon went down under says so: it did not end, it was cut (its end is when the daemon went down).
+  const common = { "gen_ai.conversation.id": s.session_id, ...(s.error_type ? { "error.type": s.error_type } : {}), ...(s.status === "interrupted" ? { "keel.interrupted": true } : {}), ...sessionTags(s.session_id) };
   if (s.kind === "turn") {
     return { "gen_ai.operation.name": "invoke_agent", "gen_ai.agent.name": "keel", "gen_ai.request.model": a.model, "keel.turn.reason": a.reason, "keel.parent_session": a.parent_session, ...common };
   }

@@ -20,6 +20,31 @@ export function concealDeep<T>(v: T, sessionId: string | null = null): T {
 }
 export const secretPairs = (): [string, string][] => current?.pairs() ?? [];
 
+// Anything shaped like a credential, whoever's it is and whether or not Keel
+// knows it: a bearer token, a key in a query, and the key forms of the common
+// providers and hosts. Wider than the vault's rules on purpose (those issue a
+// placeholder that can be sent again, so they must be exact): this is for
+// text that is only read, where a string that merely looks like a key costs
+// nothing to hide.
+const KEY_SHAPES = /\b(?:(?:sk|xai|AIza)[-_A-Za-z0-9]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|(?:AKIA|ASIA)[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})/g;
+export function keyShaped(text: string): string {
+  return text
+    .replace(/(bearer\s+)[A-Za-z0-9._~+/=-]{12,}/gi, "$1<redacted>")
+    .replace(/((?:api[_-]?)?key=)[^&\s"]+/gi, "$1<redacted>")
+    .replace(KEY_SHAPES, "<redacted>");
+}
+// The one scrub of what is stored about a failure (an error row, a span's
+// error, a failure's sample, a tool's failure line), applied where it is
+// captured: the known secrets as their placeholders, then anything else that
+// is shaped like a key. So no notice, list or bundle made from those rows can
+// carry one.
+export const scrubbed = (text: string, sessionId: string | null = null): string => (text ? keyShaped(conceal(text, sessionId)) : text);
+export function keyShapedDeep<T>(v: T): T {
+  const walk = (x: any): any =>
+    typeof x === "string" ? keyShaped(x) : Array.isArray(x) ? x.map(walk) : x && typeof x === "object" ? Object.fromEntries(Object.entries(x).map(([k, y]) => [k, walk(y)])) : x;
+  return walk(v);
+}
+
 // A byte stream with known values replaced as it passes, a value split across
 // chunks included: only the end of a chunk that could start a value is held
 // back until the next chunk (or the end) says what it is. Self-contained (it

@@ -1,5 +1,6 @@
 // One HTTP path for every fetch-based driver: the request, the classification
 // of a failed answer, and the retry of a step that has shown nothing yet.
+import { keyShaped } from "../core/conceal.ts";
 import { chunks } from "../core/proc.ts";
 import { EventStreamDecoder } from "./aws.ts";
 import { JsonArrayDecoder, SseDecoder, type SseEvent } from "./sse.ts";
@@ -34,10 +35,7 @@ export class NoKey extends ProviderError {
 export function scrub(text: string, secrets: string[] = []): string {
   let out = text;
   for (const s of secrets) if (s && s.length > 6) out = out.split(s).join("<redacted>");
-  return out
-    .replace(/(bearer\s+)[A-Za-z0-9._~+/=-]{12,}/gi, "$1<redacted>")
-    .replace(/((?:api[_-]?)?key=)[^&\s"]+/gi, "$1<redacted>")
-    .replace(/\b(sk|xai|AIza)[-_A-Za-z0-9]{16,}/g, "<redacted>");
+  return keyShaped(out);
 }
 
 const clip = (s: string, n = 400) => (s.length > n ? s.slice(0, n) + "..." : s);
