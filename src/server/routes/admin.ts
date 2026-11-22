@@ -26,6 +26,7 @@ import { Daemon } from "../../admin/daemon.ts";
 import { restarts } from "../../admin/life.ts";
 import { restartNeedsEye, restartSummary, restartTurnLine } from "../../admin/life-rows.ts";
 import * as activity from "../../automation/activity.ts";
+import { tellCutAgents } from "../../automation/restart-told.ts";
 import { loadSettings, onSettings, patchSettings, resetSettings, settings, settingsUnreadable } from "../../admin/settings.ts";
 import { Storage } from "../../admin/storage.ts";
 import { PROPOSED, Retention, retentionOf } from "../../admin/retention.ts";
@@ -121,6 +122,8 @@ export const adminRoutes: RouteModule = (deps) => {
     starts.whole = (r) => {
       if (r.before || r.turns.length) console.log(`[daemon] ${restartSummary(r)}`);
       if (restartNeedsEye(r)) activity.record("daemon", r.before?.how ?? "unknown", null, [restartSummary(r), ...r.turns.map(restartTurnLine)].join(" "), { restart: r });
+      // A session whose agents were cut is told which, and what became of each, with its next input.
+      try { tellCutAgents(r); } catch (e) { errors.capture("server", e, { at: "restart told to parents" }); }
     };
   }
 
