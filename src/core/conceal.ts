@@ -70,6 +70,15 @@ export function keyShaped(text: string): string {
 // is shaped like a key. So no notice, list or bundle made from those rows can
 // carry one.
 export const scrubbed = (text: string, sessionId: string | null = null): string => (text ? keyShaped(conceal(text, sessionId)) : text);
+// The same for a line of the log. It teaches the vault nothing (the vault's own redaction
+// issues a placeholder for what it finds, and a log line is no place to learn a secret from):
+// the values it already knows become their placeholders, anything else key-shaped is hidden.
+export function scrubbedLine(text: string): string {
+  if (!text) return text;
+  let out = text;
+  for (const [value, placeholder] of secretPairs()) if (value.length >= 8 && out.includes(value)) out = out.split(value).join(placeholder);
+  return keyShaped(out);
+}
 export function keyShapedDeep<T>(v: T): T {
   const walk = (x: any): any =>
     typeof x === "string" ? keyShaped(x) : Array.isArray(x) ? x.map(walk) : x && typeof x === "object" ? Object.fromEntries(Object.entries(x).map(([k, y]) => [k, walk(y)])) : x;

@@ -135,12 +135,13 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="activity">
       <div className="flex flex-col gap-2 border-b border-line px-3 py-2.5">
-        <div className="flex gap-2">
-          <label className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg border border-line bg-bg px-2.5 focus-within:border-line-strong">
+        {/* A phone has no room for the three in a row: the words get a row of their own, the two ranges share the next. */}
+        <div className="flex gap-2 max-sm:flex-wrap">
+          <label className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg border border-line bg-bg px-2.5 focus-within:border-line-strong max-sm:basis-full">
             <Search className="size-3.5 shrink-0 text-faint" />
             <input data-testid="activity-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search activity" className="min-w-0 flex-1 bg-transparent text-ui outline-none placeholder:text-faint" />
           </label>
-          <Select data-testid="activity-since" aria-label="Time range" value={since} onChange={(e) => setSince(e.target.value)} className="h-8 w-28 rounded-lg border border-line bg-bg px-2 text-caption text-muted outline-none focus:border-line-strong max-sm:hidden">
+          <Select data-testid="activity-since" aria-label="Time range" value={since} onChange={(e) => setSince(e.target.value)} className="h-8 w-28 rounded-lg border border-line bg-bg px-2 text-caption text-muted outline-none focus:border-line-strong max-sm:w-auto max-sm:flex-1">
             {SINCE.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </Select>
           <Select
@@ -148,7 +149,7 @@ export function ActivityList({ onClose }: { onClose: () => void }) {
             aria-label="Session"
             value={sid}
             onChange={(e) => setSid(e.target.value)}
-            className="h-8 w-44 rounded-lg border border-line bg-bg px-2 text-caption text-muted outline-none focus:border-line-strong"
+            className="h-8 w-44 rounded-lg border border-line bg-bg px-2 text-caption text-muted outline-none focus:border-line-strong max-sm:w-auto max-sm:flex-1"
           >
             <option value="">All sessions</option>
             {options.map((p) => <option key={p.session_id} value={p.session_id}>{(sessions[p.session_id]?.title || `Session ${p.session_id.slice(-6)}`).slice(0, 40)}</option>)}

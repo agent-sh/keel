@@ -398,6 +398,13 @@ test.describe("after a kill", () => {
     await expect(page.getByTestId("activity-item").filter({ hasText: "Reply" })).toHaveCount(0);
     await expect(page.getByTestId("activity-item").filter({ hasText: "Billing A, turn failed" }).first()).toBeVisible();
     await shoot(page, "past-truth-04-activity-failures");
+    // A turn's row leads with what the turn said; how it ended stands beside the session's name, said once.
+    const failedRow = page.getByTestId("activity-item").filter({ hasText: "Billing A, turn failed" }).first();
+    await expect(failedRow.getByTestId("activity-said")).toContainText("credit balance is too low");
+    expect((await failedRow.innerText()).match(/Billing A/g)).toHaveLength(1);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await shoot(page, "past-truth-04-activity-failures-phone");
+    await page.setViewportSize({ width: 1920, height: 1040 });
     await page.keyboard.press("Escape");
     // Usage: spend ranked by session, and two turns side by side.
     await page.goto(`${url()}/settings/usage`);
@@ -406,6 +413,13 @@ test.describe("after a kill", () => {
     await page.getByRole("radio", { name: "Agent trees" }).click();
     await expect(page.getByTestId("rank-agents")).toHaveText(/of it in 1 agent$/);
     await shoot(page, "past-truth-05-usage-rank");
+    // A phone has room for three columns: the tokens and requests stand under the name.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.getByTestId("rank-phone").first()).toBeVisible();
+    await expect(page.getByTestId("rank-phone").first()).toHaveText(/^[\d.]+k? tokens, \d+ requests?$/);
+    await shoot(page, "past-truth-05-usage-rank-phone");
+    await page.setViewportSize({ width: 1920, height: 1040 });
+    await expect(page.getByTestId("rank-phone").first()).toBeHidden();
     await page.getByTestId("usage-panel").getByRole("radio", { name: "Compare" }).click();
     await page.getByRole("radio", { name: "Two turns" }).click();
     await choose(page.getByTestId("compare-session"), ids["Many turns"]!);
@@ -414,6 +428,27 @@ test.describe("after a kill", () => {
     await expect(page.getByTestId("compare-why")).toContainText("Turn 4 cost");
     await expect(page.getByTestId("compare-why")).toContainText("Turn 4 made 4 requests; turn 3 1 request.");
     await shoot(page, "past-truth-06-two-turns");
+    // Every turn can be picked: by its number, or by words of its prompt.
+    await page.getByTestId("compare-turn-b").click();
+    await expect(page.getByTestId("turn-option")).toHaveCount(6);
+    await page.getByTestId("turn-picker-input").fill("2");
+    await expect(page.getByTestId("turn-option")).toHaveCount(1);
+    await shoot(page, "past-truth-06-turn-picker");
+    await page.getByTestId("turn-picker-input").fill("turn 1 script");
+    await expect(page.getByTestId("turn-option")).toHaveCount(1);
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("compare-why")).toContainText("turn 2");
+    // Another session: its own turns are asked, and nothing is reported as a failure of the page.
+    const clientErrors = async () => ((await call("/api/errors")).errors as ErrorRecord[]).filter((e) => e.source === "client").reduce((n, e) => n + (e.count ?? 1), 0);
+    const before = await clientErrors();
+    await choose(page.getByTestId("compare-session"), ids.Overloaded!);
+    await expect(page.getByTestId("compare-table")).toContainText("This session has one turn");
+    await choose(page.getByTestId("compare-session"), ids["Billing A"]!);
+    await expect(page.getByTestId("compare-why")).toContainText("Turn 2");
+    expect(await clientErrors()).toBe(before);
+    await choose(page.getByTestId("compare-session"), ids["Many turns"]!);
+    await choose(page.getByTestId("compare-turn-a"), t4.turn_event);
+    await choose(page.getByTestId("compare-turn-b"), t3.turn_event);
     await page.setViewportSize({ width: 390, height: 844 });
     await shoot(page, "past-truth-07-two-turns-narrow");
     await page.setViewportSize({ width: 1920, height: 1040 });
@@ -430,6 +465,9 @@ test.describe("after a kill", () => {
     await page.getByTestId("usage-turn-order").getByRole("radio", { name: "Dearest" }).click();
     await expect(page.getByTestId("usage-turn").first()).toHaveAttribute("data-turn", "4");
     await shoot(page, "past-truth-08-tokens");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await shoot(page, "past-truth-08-tokens-phone");
+    await page.setViewportSize({ width: 1920, height: 1040 });
 
   });
 

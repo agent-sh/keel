@@ -7,7 +7,7 @@
 // daemon's story across restarts (the log is kept per day and read back at a
 // start: logs.ts). The words are here; the callers say when.
 import type { AgentRecord } from "../automation/agents.ts";
-import { scrubbed } from "../core/conceal.ts";
+import { scrubbedLine } from "../core/conceal.ts";
 import { runMode } from "../core/runmode.ts";
 import { logAt } from "./logs.ts";
 import { dur } from "./timeline-rows.ts";
@@ -28,7 +28,7 @@ const clip = (s: string, n = LINE) => (s.length > n ? `${s.slice(0, n - 1)}…` 
 // A value that came from outside (a title, a name, a reason, a failure's words, a path): scrubbed
 // whole, before it is cut or put in a line. A cut can leave half a key that no pattern knows, so
 // the scrub never runs on a cut text; the log's sinks scrub the finished line once more (logs.ts).
-const val = (v: unknown) => scrubbed(String(v ?? "")).replace(/\s+/g, " ").trim();
+const val = (v: unknown) => scrubbedLine(String(v ?? "")).replace(/\s+/g, " ").trim();
 const list = (names: string[], max = 8) => { const all = names.map(val); return all.length > max ? `${all.slice(0, max).join(", ")} and ${all.length - max} more` : all.join(", "); };
 const title = (t: string | undefined) => { const s = val(t); return s ? `"${s.length > 48 ? `${s.slice(0, 47)}…` : s}"` : "an untitled session"; };
 

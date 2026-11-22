@@ -15,7 +15,7 @@ test("a dearer, slower turn is explained by what it sent, what the cache gave an
   });
   const d = turnDiff(cold, turn(11, {}));
   expect(d.cost).toBe("Turn 12 cost $0.04 more than turn 11 ($0.05 against $0.01): 46,000 more tokens written to the cache, 38,000 more prompt tokens sent (history +38,000), 1,000 more input tokens paid in full (not read from cache).");
-  expect(d.time).toBe("Turn 12 took 41 s longer than turn 11 (45 s against 4.0 s): 30 s more in tools, 6.0 s more in model requests, 5.0 s more waiting (approvals, questions, retries, the daemon).");
+  expect(d.time).toBe("Turn 12 took 41 s longer than turn 11 (45 s against 4.0 s): 30 s more in tools, 6.0 s more in model requests, 5.0 s more outside requests and tools.");
   expect(d.also).toEqual([
     "Turn 12 read 0% of its prompt from the cache, turn 11 90%.",
     "Turn 12 made 3 requests, 2 of them failed attempts; turn 11 1 request.",

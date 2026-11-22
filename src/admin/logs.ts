@@ -13,7 +13,7 @@ import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readdirSync,
 import { join } from "node:path";
 import { localDay, zoned, type Zoned } from "../core/clock.ts";
 import { errorScope } from "../core/errors.ts";
-import { scrubbed } from "../core/conceal.ts";
+import { scrubbedLine } from "../core/conceal.ts";
 import { runMode } from "../core/runmode.ts";
 
 // `session`, `turn`: where the code that wrote the line ran (its turn_start event), when it ran in one.
@@ -35,7 +35,7 @@ function safeJson(x: unknown) {
 
 // A console call's arguments as the one line every sink gets: the secrets Keel knows as their
 // placeholders, anything else shaped like a key hidden, bounded.
-export const logText = (a: unknown[]): string => scrubbed(fmt(a)).slice(0, 20_000);
+export const logText = (a: unknown[]): string => scrubbedLine(fmt(a)).slice(0, 20_000);
 
 const dayOf = (ts: number) => new Date(ts).toISOString().slice(0, 10);
 const fileOf = (dir: string, day: string) => join(dir, `keel-${day}.log`);
