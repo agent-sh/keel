@@ -82,4 +82,41 @@ class WireTest {
         assertEquals("5m", ago(0.0, 300.0))
         assertEquals("4m 05s", elapsed(0.0, 245.0))
     }
+
+    // A permission is allowed only for what was read. The daemon says why a request is held;
+    // the app says, with an allow, that all of its text was on screen.
+    @Test fun aHeldRequestIsAllowedOnlyOnceItWasRead() {
+        val held = Card.of(JSONObject("""{"id":"a1","kind":"permission","command":"cd /srv","text":"cd /srv\nrm -rf build","lines":2,"hold":["long"],"notes":["Runs on build box."],"state":"pending"}"""))
+        assertEquals(listOf(true, false, true), listOf(held.held, held.mayAllow(false), held.mayAllow(true)))
+        assertEquals("cd /srv\nrm -rf build", held.shown)
+        assertEquals("Scroll to the end of all 2 lines to allow it.", held.readFirst)
+        assertEquals("Read the whole request to allow it.", held.copy(lines = 1, hold = listOf("risk")).readFirst)
+        // One line shows all of it: nothing stands in the way.
+        val short = Card.of(JSONObject("""{"id":"a2","kind":"permission","command":"npm test","text":"npm test","lines":1,"hold":[],"state":"pending"}"""))
+        assertEquals(listOf(false, true, ""), listOf(short.held, short.mayAllow(false), short.readFirst))
+        // A daemon from before the rule sends no text and no hold: the card shows its command, as it did.
+        val old = Card.of(JSONObject("""{"id":"a3","kind":"permission","command":"npm test","state":"pending"}"""))
+        assertEquals(listOf("npm test", false, true), listOf(old.shown, old.held, old.mayAllow(false)))
+
+        // An allow says the text was read; a refusal and a notification's answer never do.
+        assertEquals("""{"choice":"once","seen":"whole"}""", Wire.answerBody("once", null, seen = true).toString())
+        assertEquals("""{"choice":"once"}""", Wire.answerBody("once", null).toString())
+        assertEquals("""{"choice":"deny"}""", Wire.answerBody("deny", null, seen = true).toString())
+        assertEquals("""{"choice":"once","via":"notification"}""", Wire.answerBody("once", null, seen = true, via = "notification").toString())
+        assertEquals("""{"choice":"deny","via":"notification"}""", Wire.answerBody("deny", null, via = "notification").toString())
+
+        // A push for a held request carries no Allow: the notification offers Open and Deny.
+        assertEquals(listOf(true, listOf("deny")), PushMsg.of(mapOf("t" to "approval", "aid" to "a1", "opts" to "[\"deny\"]", "hold" to "long,marked")).let { listOf(it.held, it.choices) })
+        assertEquals(false, PushMsg.of(mapOf("t" to "approval", "aid" to "a2", "opts" to "[\"once\",\"deny\"]", "hold" to "")).held)
+        assertEquals(false, PushMsg.of(mapOf("t" to "approval", "aid" to "a2")).held)
+    }
+
+    @Test fun lettersWrittenRightToLeftStayWhereTheyAreWritten() {
+        // Each run is set apart, so it reads as written and the words around it keep their order.
+        assertEquals("cp \u2067\u05d0\u2069 1 2 \u2067\u05d1\u05d2\u2069 > x", Wire.inPlace("cp \u05d0 1 2 \u05d1\u05d2 > x"))
+        assertEquals("npm test", Wire.inPlace("npm test"))
+        assertEquals("\u2067\u0645\u0631\u2069", Wire.inPlace("\u0645\u0631"))
+        val card = Card.of(JSONObject().put("id", "a4").put("text", "cp \u05d0 b").put("rtl", true).put("hold", org.json.JSONArray().put("marked")))
+        assertEquals("cp \u2067\u05d0\u2069 b", card.shown)
+    }
 }

@@ -50,7 +50,9 @@ class ContractTest {
             assertEquals(canon(send), canon(Wire.sendBody(send.getString("text"), send.getString("mode"), send.getString("client_id"))))
         }
         for (answer in examples("answer")) {
-            assertEquals(canon(answer), canon(Wire.answerBody(answer.getString("choice"), answer.optJSONObject("answers")?.let(::answersOf))))
+            // (`seen`: the card's text was read; `via`: where the answer was given.)
+            val via = if (answer.has("via")) answer.getString("via") else null
+            assertEquals(canon(answer), canon(Wire.answerBody(answer.getString("choice"), answer.optJSONObject("answers")?.let(::answersOf), answer.optString("seen") == "whole", via)))
         }
     }
 

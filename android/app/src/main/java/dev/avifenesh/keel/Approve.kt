@@ -16,8 +16,9 @@ import kotlinx.coroutines.withContext
 
 object Approvals {
     /** done(null): applied; done(""): the owner cancelled the prompt; done(text): what went wrong. */
-    fun run(act: FragmentActivity, aid: String, choice: String, summary: String, answers: Map<String, Any>?, done: (String?) -> Unit) {
-        val body = Wire.answerBody(choice, answers)
+    /** seen: the whole text of the request was on screen before this answer. via: "notification" from a notification's action. */
+    fun run(act: FragmentActivity, aid: String, choice: String, summary: String, answers: Map<String, Any>?, seen: Boolean = false, via: String? = null, done: (String?) -> Unit) {
+        val body = Wire.answerBody(choice, answers, seen, via)
         fun submit(headers: Map<String, String>) {
             Hub.scope.launch {
                 val r = runCatching { Hub.resolve(aid, body, headers) }
@@ -64,13 +65,16 @@ object Approvals {
     }
 }
 
-/** Allow from a notification: the prompt over the lock screen, then gone. */
+/**
+ * Allow from a notification: the prompt over the lock screen, then gone. The notification offers it
+ * only for a request its one line shows whole; the daemon refuses it for any other, with the reason.
+ */
 class ApproveActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setShowWhenLocked(true); setTurnScreenOn(true)
         val aid = intent.getStringExtra("aid") ?: return finish()
-        Approvals.run(this, aid, intent.getStringExtra("choice") ?: "once", intent.getStringExtra("summary").orEmpty(), null) { err ->
+        Approvals.run(this, aid, intent.getStringExtra("choice") ?: "once", intent.getStringExtra("summary").orEmpty(), null, via = "notification") { err ->
             when {
                 err == null -> Toast.makeText(this, "Allowed", Toast.LENGTH_SHORT).show()
                 err.isNotEmpty() -> Toast.makeText(this, err, Toast.LENGTH_LONG).show()

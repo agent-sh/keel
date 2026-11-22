@@ -59,9 +59,11 @@ object Notify {
 
     /**
      * One alert. A permission card gets Allow (biometric, over the lock screen)
-     * and Deny; a question opens its session.
+     * and Deny; a question opens its session. A notification shows one line, so
+     * Allow sits on it only for a request that line shows whole: a held one
+     * (long, cut, marked, high risk) gets Open and Deny, and is read in the app.
      */
-    fun post(c: Context, kind: String, chat: String?, title: String, body: String, aid: String?, opts: List<String>) {
+    fun post(c: Context, kind: String, chat: String?, title: String, body: String, aid: String?, opts: List<String>, held: Boolean = false) {
         val high = kind in setOf("approval", "question", "failed", "loop_failed", "limit", "test")
         val b = NotificationCompat.Builder(c, if (high) NEEDS else UPDATES)
             .setSmallIcon(R.drawable.ic_stat).setColor(0xFF0E6A80.toInt())
@@ -70,7 +72,8 @@ object Notify {
             .setCategory(if (kind == "approval") NotificationCompat.CATEGORY_REMINDER else NotificationCompat.CATEGORY_STATUS)
             .setPriority(if (high) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
         if (aid != null && !aid.startsWith("q-") && kind == "approval") {
-            if ("once" in opts || opts.isEmpty()) b.addAction(0, "Allow once", PendingIntent.getActivity(c, idOf("$aid/once"),
+            if (held) b.addAction(0, "Open", open(c, chat))
+            else if ("once" in opts || opts.isEmpty()) b.addAction(0, "Allow once", PendingIntent.getActivity(c, idOf("$aid/once"),
                 Intent(c, ApproveActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("aid", aid).putExtra("choice", "once").putExtra("summary", body),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
             b.addAction(0, "Deny", PendingIntent.getBroadcast(c, idOf("$aid/deny"),
@@ -100,7 +103,7 @@ class NotifyReceiver : BroadcastReceiver() {
         val aid = i.getStringExtra("aid") ?: return
         val done = goAsync()
         Hub.scope.launch {
-            val r = runCatching { Hub.resolve(aid, JSONObject().put("choice", "deny"), emptyMap()) }
+            val r = runCatching { Hub.resolve(aid, Wire.answerBody("deny", null, via = "notification"), emptyMap()) }
             withContext(Dispatchers.Main) {
                 Notify.cancelCard(c, aid)
                 Toast.makeText(c, if (r.isSuccess) "Denied" else "Not sent: ${r.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
@@ -117,7 +120,7 @@ class PushService : FirebaseMessagingService() {
         when (m.kind) {
             "withdraw" -> m.chat?.let { Notify.cancelChat(this, it) }
             "live" -> {}
-            else -> Notify.post(this, m.kind, m.chat, m.title, m.body, m.card, m.choices)
+            else -> Notify.post(this, m.kind, m.chat, m.title, m.body, m.card, m.choices, m.held)
         }
         m.id?.let { id -> Hub.scope.launch { runCatching { Api.post("/v1/push/ack", JSONObject().put("id", id)) } } }
     }
@@ -183,7 +186,7 @@ class CheckWorker(c: Context, p: WorkerParameters) : CoroutineWorker(c, p) {
         for (card in open) if (card.id !in seen) {
             val title = titles[card.chatId]?.takeIf { it.isNotBlank() } ?: "A session"
             Notify.post(applicationContext, "approval", card.chatId, if (card.question) "$title asks" else "$title needs your approval",
-                card.command.ifBlank { card.description }, card.id, card.actions.map { it.choice })
+                card.command.ifBlank { card.description }, card.id, card.actions.map { it.choice }, card.held)
             seen += card.id
         }
         // Keep only what is still open, so the list stays small.

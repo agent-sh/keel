@@ -19,6 +19,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -29,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.dp
 import dev.avifenesh.keel.Approvals
 import dev.avifenesh.keel.Card
@@ -59,9 +62,14 @@ fun CardView(act: MainActivity, c: Card, title: String? = null, onOpen: (() -> U
     var error by remember(c.id) { mutableStateOf("") }
     val picks = remember(c.id) { mutableStateMapOf<String, List<String>>() }
     val other = remember(c.id) { mutableStateMapOf<String, String>() }
+    // A permission is allowed only for what was read: every line of its text has been on screen
+    // (it fits its box, or the owner scrolled to its end). The daemon holds an allow without that word.
+    val scroll = rememberScrollState()
+    var read by remember(c.id) { mutableStateOf(false) }
+    LaunchedEffect(c.id) { snapshotFlow { scroll.maxValue != Int.MAX_VALUE && scroll.value >= scroll.maxValue }.collect { if (it) read = true } }
     fun act(choice: String, answers: Map<String, Any>?) {
         busy = true; error = ""
-        Approvals.run(act, c.id, choice, c.command.ifBlank { c.description }, answers) { err ->
+        Approvals.run(act, c.id, choice, c.command.ifBlank { c.description }, answers, seen = read && !c.question) { err ->
             busy = false
             if (!err.isNullOrEmpty()) error = err
         }
@@ -74,6 +82,8 @@ fun CardView(act: MainActivity, c: Card, title: String? = null, onOpen: (() -> U
                 Spacer(Modifier.weight(1f))
                 if (c.ts > 0) Txt(ago(c.ts), T.meta, k.faint)
             }
+            // Where a closed permission was answered, when the daemon says: "from the phone (Pixel 8)".
+            if (!c.pending && !c.question && c.from.isNotBlank()) { Spacer(Modifier.height(4.dp)); Txt("Answered from ${c.from}", T.meta, k.faint) }
             if (title != null) {
                 Spacer(Modifier.height(6.dp))
                 Txt(title, T.uiStrong, k.fg, if (onOpen != null) Modifier.press(onOpen) else Modifier, maxLines = 1)
@@ -82,10 +92,15 @@ fun CardView(act: MainActivity, c: Card, title: String? = null, onOpen: (() -> U
             if (c.question) Questions(c, picks, other, enabled = c.pending && !busy)
             else {
                 if (c.description.isNotBlank()) { Txt(c.description, T.small, k.muted); Spacer(Modifier.height(8.dp)) }
-                if (c.command.isNotBlank()) Box(
+                // Why it is asked, where it runs, what in the text can mislead, that only its start is kept.
+                for (n in c.notes) { Txt(n, T.small, k.need, Modifier.semantics { contentDescription = "note-${c.id}" }); Spacer(Modifier.height(6.dp)) }
+                // The whole request, drawn left to right in the order it is written. A held one gets more room to read in.
+                if (c.shown.isNotBlank()) Box(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(S.r)).background(k.code).border(1.dp, k.line, RoundedCornerShape(S.r))
-                        .heightIn(max = 180.dp).verticalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 10.dp),
-                ) { Txt(c.command, T.code, k.fg) }
+                        .heightIn(max = if (c.held) 360.dp else 180.dp).verticalScroll(scroll).padding(horizontal = 12.dp, vertical = 10.dp)
+                        .semantics { contentDescription = "request-${c.id}" },
+                ) { Txt(c.shown, T.code.copy(textDirection = TextDirection.Ltr), k.fg) }
+                if (c.pending && !c.mayAllow(read)) { Spacer(Modifier.height(8.dp)); Txt(c.readFirst, T.small, k.muted, Modifier.semantics { contentDescription = "read-first-${c.id}" }) }
             }
             if (c.pending) {
                 Spacer(Modifier.height(14.dp))
@@ -104,8 +119,9 @@ fun CardView(act: MainActivity, c: Card, title: String? = null, onOpen: (() -> U
                     // The daemon offers the session choice where it is safe; a phone with no screen lock approves once only.
                     for (a in c.actions.filter { !(Prefs.noLock && (it.choice == "session" || it.choice == "always")) }) {
                         val label = when (a.choice) { "once" -> "Allow once"; "session" -> "Allow for session"; "deny" -> "Deny"; else -> a.label }
+                        // Deny is taken at once; an allow waits for the text to have been read.
                         Btn(label, { act(a.choice, null) }, when (a.style) { "primary" -> Tone.INK; "danger" -> Tone.DANGER; else -> Tone.LINE },
-                            enabled = !busy, compact = true, tag = "${a.choice}-${c.id}")
+                            enabled = !busy && (a.choice == "deny" || c.mayAllow(read)), compact = true, tag = "${a.choice}-${c.id}")
                     }
                 }
             }

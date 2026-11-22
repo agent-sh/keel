@@ -54,13 +54,45 @@ object Wire {
     fun sendBody(text: String, mode: String, clientId: String): JSONObject =
         JSONObject().put("text", text).put("mode", mode).put("client_id", clientId)
 
-    /** A card's answer as the daemon takes it (POST /v1/approvals/:id). answers: by question id, one label or a list of them. */
-    fun answerBody(choice: String, answers: Map<String, Any>?): JSONObject {
+    /**
+     * A card's answer as the daemon takes it (POST /v1/approvals/:id). answers: by question id, one label or a list of them.
+     * seen: all of the request's text was on this screen before the answer. The daemon takes an allow of a
+     * request that one line does not show whole only with it; a refusal needs none. via: "notification"
+     * for an answer given from a notification, which shows one line and so never says seen.
+     */
+    fun answerBody(choice: String, answers: Map<String, Any>?, seen: Boolean = false, via: String? = null): JSONObject {
         val body = JSONObject().put("choice", choice)
         if (answers != null && choice != "deny") body.put("answers", JSONObject().apply {
             answers.forEach { (k, v) -> put(k, if (v is List<*>) JSONArray(v) else v.toString()) }
         })
+        if (seen && choice != "deny" && via != "notification") body.put("seen", "whole")
+        if (via != null) body.put("via", via)
         return body
+    }
+
+    private val RTL: Set<Character.UnicodeScript> = listOf("HEBREW", "ARABIC", "SYRIAC", "THAANA", "NKO", "SAMARITAN", "MANDAIC", "ADLAM")
+        .mapNotNull { runCatching { Character.UnicodeScript.valueOf(it) }.getOrNull() }.toSet()
+    private val MARKS = setOf(Character.NON_SPACING_MARK.toInt(), Character.ENCLOSING_MARK.toInt(), Character.COMBINING_SPACING_MARK.toInt())
+
+    /**
+     * A request's text with each run of letters written right to left set apart (an isolate around it),
+     * so the run reads as it is written and nothing around it changes places: "cp A 1 2 B > C" in Hebrew
+     * letters would otherwise show as its mirror. Drawn left to right, the words stand in the order written.
+     */
+    fun inPlace(text: String): String {
+        val b = StringBuilder()
+        var open = false
+        var i = 0
+        while (i < text.length) {
+            val cp = text.codePointAt(i)
+            val rtl = Character.UnicodeScript.of(cp) in RTL
+            if (rtl && !open) { b.append('\u2067'); open = true }
+            else if (!rtl && open && Character.getType(cp) !in MARKS) { b.append('\u2069'); open = false }
+            b.appendCodePoint(cp)
+            i += Character.charCount(cp)
+        }
+        if (open) b.append('\u2069')
+        return b.toString()
     }
 
     data class PairLink(val base: String, val code: String, val name: String)
@@ -162,16 +194,39 @@ data class Msg(
     }
 }
 
+private fun strings(a: JSONArray?): List<String> = if (a == null) emptyList() else (0 until a.length()).map { a.optString(it) }
+
 data class Question(val id: String, val question: String, val options: List<String>, val multi: Boolean)
 data class Act(val label: String, val choice: String, val style: String)
 
+/**
+ * A card. For a permission that waits, the daemon also sends all there is to judge:
+ * text (the whole request, each hidden character written as its code point), notes (why it is asked,
+ * where it runs, what in the text can mislead, that only its start is kept), and hold: why Allow
+ * needs the text shown whole first (long, cut, marked, risk). An empty hold: one line shows all of it.
+ * A daemon from before these fields sends none: the card shows its command, and nothing is held here.
+ */
 data class Card(
     val id: String, val chatId: String, val kind: String, val command: String, val description: String,
     val actions: List<Act>, val state: String, val choice: String?, val ts: Double, val questions: List<Question>,
     val answers: Map<String, List<String>> = emptyMap(),
+    val text: String = "", val notes: List<String> = emptyList(), val cut: Boolean = false, val total: Int? = null, val lines: Int = 0,
+    val hold: List<String> = emptyList(), val rtl: Boolean = false, val machine: String = "", val from: String = "",
 ) {
     val pending get() = state == "pending"
     val question get() = kind == "question"
+    /** Allow is given only once the whole text was on screen. */
+    val held get() = hold.isNotEmpty()
+    /** What the card draws of the request: the whole text when the daemon sent it, else the summary. */
+    val shown get() = (text.ifBlank { command }).let { if (rtl) Wire.inPlace(it) else it }
+    /** Whether an allow may be sent. read: every line of the text has been on screen. */
+    fun mayAllow(read: Boolean) = !held || read
+    /** What stands in the way of Allow, said under the text. */
+    val readFirst get() = when {
+        !held -> ""
+        lines > 1 -> "Scroll to the end of all $lines lines to allow it."
+        else -> "Read the whole request to allow it."
+    }
     companion object {
         fun of(o: JSONObject): Card {
             val acts = o.optJSONArray("actions") ?: JSONArray()
@@ -191,6 +246,9 @@ data class Card(
                     val picked = a?.optJSONArray("picked")?.let { p -> (0 until p.length()).map { p.optString(it) } }.orEmpty()
                     k to (picked + listOfNotNull(a?.str("other")?.takeIf { it.isNotBlank() }))
                 }.orEmpty(),
+                text = o.str("text"), notes = strings(o.optJSONArray("notes")), cut = o.optBoolean("cut"),
+                total = if (o.isNull("total")) null else o.optInt("total"), lines = o.optInt("lines"),
+                hold = strings(o.optJSONArray("hold")), rtl = o.optBoolean("rtl"), machine = o.str("machine"), from = o.str("from"),
             )
         }
     }
@@ -278,13 +336,15 @@ data class PushConfig(val enabled: Boolean, val missing: String, val apiKey: Str
 }
 
 /** One push, as its data arrives: the kind, the session, the alert's words, the card it is about, the choices a notification offers, the id to confirm. */
-data class PushMsg(val kind: String, val chat: String?, val title: String, val body: String, val card: String?, val choices: List<String>, val id: String?) {
+data class PushMsg(val kind: String, val chat: String?, val title: String, val body: String, val card: String?, val choices: List<String>, val id: String?, val held: Boolean = false) {
     companion object {
         fun of(d: Map<String, String>) = PushMsg(
             kind = d["t"].orEmpty(), chat = d["c"]?.takeIf { it.isNotBlank() }, title = d["title"].orEmpty(), body = d["body"].orEmpty(),
             card = d["aid"]?.takeIf { it.isNotBlank() },
             choices = runCatching { JSONArray(d["opts"] ?: "[]").let { a -> (0 until a.length()).map { a.getString(it) } } }.getOrDefault(emptyList()),
             id = d["n"]?.takeIf { it.isNotBlank() },
+            // The request is opened and read before it is allowed: its notification carries no Allow.
+            held = !d["hold"].isNullOrBlank(),
         )
     }
 }
