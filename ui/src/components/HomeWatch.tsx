@@ -40,8 +40,8 @@ import { pickRows, rowKind, rowLine, sayMore, unseenFailures, watchSummary, whol
 import { getSafety, safety, useSafety, type Approval } from "../lib/safety.ts";
 import { actions, reportError, useStore } from "../lib/store.ts";
 import { navigate } from "../lib/ui.ts";
-import { COUNTERS, STATE_WORD } from "../../../src/core/state-words.ts";
-import { ago, cn, when } from "../lib/utils.ts";
+import { COUNTERS, OFFLINE, STATE_WORD, asOf } from "../../../src/core/state-words.ts";
+import { ago, clock, cn, when } from "../lib/utils.ts";
 import { WATCH_RANK, useSessionStates, type SessionState, type Watch } from "../lib/watch.ts";
 import { usePress } from "./ApprovalCard.tsx";
 import { Mark, folderOf } from "./Mark.tsx";
@@ -76,7 +76,9 @@ export function useHome() {
   return useMemo(() => {
     const watches = Object.fromEntries(own.map((s) => [s.id, states[s.id]!.watch])) as Record<string, Watch>;
     const ranked = [...own].sort((a, b) => WATCH_RANK[watches[a.id]!] - WATCH_RANK[watches[b.id]!] || b.updated - a.updated);
-    const sum = watchSummary(ranked.map((s) => ({ id: s.id, st: states[s.id]! })), unseenFailures(own, watches));
+    const told = ranked.map((s) => ({ id: s.id, st: states[s.id]! })), unseen = unseenFailures(own, watches);
+    // A session whose machine does not answer is not counted: its state is the last it told, not what it is.
+    const sum = { ...watchSummary(told, unseen), head: watchSummary(told.filter((r) => !r.st.offline), unseen).head };
     return { ...sum, all: own, byId: Object.fromEntries(own.map((s) => [s.id, s])) as Record<string, Session>, states };
   }, [own, states]);
 }
@@ -216,9 +218,9 @@ function Row({ s, st, lead, stands }: { s: Session; st: SessionState; lead: bool
   return (
     <div className="k-home-row" data-testid="home-session" data-watch={w} data-session={s.id}>
       <button type="button" className="k-home-row-main" data-testid="home-open" onClick={open}>
-        <span className="k-home-row-mark"><Mark w={w} /></span>
+        <span className={cn("k-home-row-mark", st.offline && "opacity-45 grayscale [&_.k-mark]:[animation-play-state:paused]")}><Mark w={w} /></span>
         <span dir="auto" className="k-home-row-title">{s.title || "New session"}</span>
-        <span className="k-home-row-meta"><span className="k-pane-empty-in">{folderOf(s)}</span><span className="k-pane-empty-time tabular-nums" title={when(s.updated)}>{ago(s.updated)}</span></span>
+        <span className="k-home-row-meta"><span className="k-pane-empty-in">{folderOf(s)}</span><span className="k-pane-empty-time tabular-nums" data-testid={st.as_of ? "home-asof" : undefined} title={st.offline ? "Its machine does not answer: this is the last it told" : when(s.updated)}>{st.as_of ? `${st.offline ? `${OFFLINE}, ` : ""}${asOf(clock(st.as_of))}` : st.offline ? OFFLINE : ago(s.updated)}</span></span>
       </button>
       <div className="k-home-row-what">
         <span className="k-home-row-word" data-testid="home-kind">{f.kind}</span>
