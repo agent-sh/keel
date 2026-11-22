@@ -113,7 +113,8 @@ const sessions = command("sessions", SESSIONS_USAGE, {
     return EXIT.ok;
   }
   // --all: both partitions, merged before the sort and the cut.
-  const { sessions: live } = await c.get<{ sessions: any[] }>("/api/sessions");
+  // (The list leaves out agents at rest unless every agent is asked for: src/server/session-list.ts.)
+  const { sessions: live } = await c.get<{ sessions: any[] }>(v.subagents ? "/api/sessions?agents=all" : "/api/sessions");
   const all = v.all ? live.concat((await c.get<{ sessions: any[] }>("/api/sessions?archived=1")).sessions) : live;
   const list = all.filter((s) => (v.subagents || !s.parent_id) && (!cwd || s.workspace === cwd)).sort((a, b) => b.updated - a.updated).slice(0, limit);
   if (v.ids) return (list.forEach((s) => console.log(s.id)), EXIT.ok);

@@ -46,7 +46,7 @@ function fixture(sessions: any[], events: Record<string, any[]>) {
     get: async (path: string) => {
       calls.push(`GET ${path}`);
       if (path === "/api/models") return { models: d.models, default: "p:alpha" };
-      if (path === "/api/sessions") return { sessions };
+      if (path === "/api/sessions?agents=all") return { sessions };
       if (path.endsWith("/permissions")) return { perm: { mode: "ask" } };
       const s = sessions.find((x) => path === `/api/sessions/${x.id}`);
       return { session: s, events: events[s.id] ?? [], running: false };

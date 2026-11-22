@@ -3,7 +3,7 @@ import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { endedUnseen, useAgentsSeen } from "../../lib/agent-seen.ts";
 import { isLive, openSession, snoozeText, useAuto } from "../../lib/automation.ts";
 import { COUNTERS, NEW, agentTally, countName } from "../../../../src/core/state-words.ts";
-import { useStore } from "../../lib/store.ts";
+import { actions, reportError, useStore } from "../../lib/store.ts";
 import { cn } from "../../lib/utils.ts";
 import { AgentMark, agentSaid, ALERT_STATE, StopAgent } from "./bits.tsx";
 import { Mark } from "../Mark.tsx";
@@ -38,6 +38,9 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
   const sum = useMemo(() => agentTally(said.map((x) => x.watch)), [said]);
   const viewing = kids.find((k) => k.session_id === current);
   const [expanded, setExpanded] = useState(() => openKept()[parentId] === true);
+  // The list leaves out the sessions of agents at rest: their rows (a title the owner gave one) are read once the agents are opened.
+  const left = useStore((s) => s.agentsLeft[parentId] ?? 0);
+  useEffect(() => { if (expanded && left) actions.loadAgentsOf(parentId).catch(reportError); }, [expanded, left, parentId]);
   const setOpen = (o: boolean) => {
     setExpanded(o);
     const m = openKept();

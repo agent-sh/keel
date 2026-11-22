@@ -13,6 +13,7 @@ import type { Engine } from "../engine/turn.ts";
 import type { Providers } from "../providers/registry.ts";
 import { jobsOf, leftText, jobLive, stopJobs } from "../tools/jobs.ts";
 import { admit, initAccess } from "./admission.ts";
+import { agentsUnder, leanSessions } from "./session-list.ts";
 import { Live } from "./live.ts";
 import { readsOf } from "./reads.ts";
 import { lastCall } from "./routes/calls-read.ts";
@@ -249,7 +250,16 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
           const fs = [...listFilters.values()];
           // `level`: how far the list had moved when it was read (the socket's hello says the same of its open).
           // `rev`: the last frame the list reflects, so a page keeps what a newer frame told it of a row.
-          return json({ sessions: store.sessions({ archived: q.has("archived") }).filter((s) => fs.every((f) => f(s, q))), level: bus.sessionsLevel(), rev: bus.rev() });
+          const all = store.sessions({ archived: q.has("archived") }).filter((s) => fs.every((f) => f(s, q)));
+          const at = { level: bus.sessionsLevel(), rev: bus.rev() };
+          // Agents' sessions at rest are left out and counted (session-list.ts); the archive and `agents=all` carry every row.
+          const of = q.get("agents_of");
+          if (of) return json({ sessions: agentsUnder(all, of), ...at });
+          if (q.has("archived") || q.get("agents") === "all") return json({ sessions: all, ...at });
+          const live = new Set<string>();
+          try { for (const r of store.db.query<{ session_id: string }, []>("SELECT session_id FROM agents WHERE status IN ('running', 'waiting')").all()) live.add(r.session_id); } catch {} // no agents table: no agent was ever started
+          const lean = leanSessions(all, (id) => live.has(id) || engine.isRunning(id));
+          return json({ sessions: lean.sessions, agents_left: lean.left, ...at });
         }),
         POST: wrap(async (req) => {
           const body = (await req.json().catch(() => ({}))) as any;

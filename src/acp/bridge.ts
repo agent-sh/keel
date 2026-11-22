@@ -489,7 +489,7 @@ export class AcpBridge {
           if (m[2] !== filter) throw Object.assign(new Error("invalid cursor: it was given for a list with another cwd"), { code: -32602 });
           from = Number(m[1]);
         }
-        const { sessions } = await this.daemon.get("/api/sessions");
+        const { sessions } = await this.daemon.get("/api/sessions?agents=all");
         const rows = (sessions as Json[]).filter((s) => !p.cwd || s.workspace === p.cwd);
         const page = rows.slice(from, from + LIST_PAGE);
         const more = from + LIST_PAGE < rows.length;

@@ -78,7 +78,7 @@ export async function restore(request: Api, before: Snapshot): Promise<void> {
 
 async function sessionIds(request: APIRequestContext) {
   const ids = new Set<string>();
-  for (const q of ["", "?archived=1"]) {
+  for (const q of ["?agents=all", "?archived=1"]) {
     const r = await request.get(`/api/sessions${q}`, { timeout: 10_000 }).catch(() => null);
     if (r?.ok()) for (const s of ((await r.json()).sessions ?? []) as { id: string }[]) ids.add(s.id);
   }

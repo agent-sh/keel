@@ -44,6 +44,10 @@ export type DraftBlock = { kind: "text" | "thinking" | "tool_input"; text: strin
 
 type State = {
   sessions: Record<string, Session>;
+  // The list leaves out the sessions of agents at rest and counts them
+  // (src/server/session-list.ts): how many are left out under each session
+  // the list carries. Taken off once they were read (loadAgentsOf).
+  agentsLeft: Record<string, number>;
   // Ready to answer, not historical question tool calls. A child's call
   // belongs to it; its parent needs the owner too.
   questionCalls: Record<string, string[]>;
@@ -81,7 +85,7 @@ type State = {
 };
 
 let state: State = { loaded: { sessions: false, models: false, allModels: false }, modelCount: 0,
-  sessions: {}, questionCalls: {}, questionChildren: {}, questionAsks: {}, gone: {}, events: {}, drafts: {}, models: [], defaultModel: "", pinned: [], providerLabels: {}, limits: null, errors: [], connected: false, synced: false, slow: false, providers: null, queues: {}, status: {},
+  sessions: {}, agentsLeft: {}, questionCalls: {}, questionChildren: {}, questionAsks: {}, gone: {}, events: {}, drafts: {}, models: [], defaultModel: "", pinned: [], providerLabels: {}, limits: null, errors: [], connected: false, synced: false, slow: false, providers: null, queues: {}, status: {},
 };
 const subs = new Set<() => void>();
 // What the socket brings is put into the state at once, in its order, and
@@ -206,9 +210,12 @@ export async function api<T = any>(path: string, init?: RequestInit): Promise<T>
   return body as T;
 }
 
+// The reads of a session's agents that are on their way (loadAgentsOf).
+const agentsAsked = new Map<string, Promise<void>>();
+
 export const actions = {
   async loadSessions() {
-    const { sessions, level, rev } = await api<{ sessions: Session[]; level?: number; rev?: number }>("/api/sessions");
+    const { sessions, level, rev, agents_left } = await api<{ sessions: Session[]; level?: number; rev?: number; agents_left?: Record<string, number> }>("/api/sessions");
     listLevel = level;
     // The list is as it was at `rev`. It can land after frames the socket
     // already brought (it was read before them): a row a newer frame told of
@@ -222,7 +229,40 @@ export const actions = {
       if (newer(`${s.id}:session`, rev, true)) next[s.id] = s;
       else if (state.sessions[s.id]) next[s.id] = state.sessions[s.id]!;
     }
-    set({ sessions: next, loaded: { ...state.loaded, sessions: true } });
+    // An agent's session the list left out (it is at rest) and this page holds, because it was
+    // listed while it worked, opened, or read with its parent's agents, stays for as long as the
+    // session above it does: the list no longer says it is gone by not carrying it.
+    const agentsLeft = { ...(agents_left ?? {}) };
+    if (agents_left) {
+      const held = Object.values(state.sessions).filter((s) => s.parent_id && !next[s.id] && !splitId(s.id) && !state.gone[s.id]);
+      for (let more = true; more; ) {
+        more = false;
+        for (const s of held) if (!next[s.id] && next[s.parent_id!]) { next[s.id] = s; more = true; }
+      }
+      // Each one held is one less to read: counted off the session of the list it is under.
+      for (const s of held) {
+        if (!next[s.id]) continue;
+        let a: Session | undefined = next[s.parent_id!];
+        for (let n = 0; a && !listed.has(a.id) && n < 64; n++) a = a.parent_id ? next[a.parent_id] : undefined;
+        if (a && agentsLeft[a.id]) { if (--agentsLeft[a.id]! <= 0) delete agentsLeft[a.id]; }
+      }
+    }
+    set({ sessions: next, agentsLeft, loaded: { ...state.loaded, sessions: true } });
+  },
+  // The sessions of the agents under `id` that the list left out: read when
+  // their rows are wanted (the session's agents are opened, it is about to be
+  // deleted with them). A list read later keeps them, and counts only what is not held.
+  async loadAgentsOf(id: string) {
+    if (!state.agentsLeft[id] || agentsAsked.has(id)) return agentsAsked.get(id);
+    const ask = (async () => {
+      const { sessions, rev } = await api<{ sessions: Session[]; rev?: number }>(`/api/sessions?agents_of=${encodeURIComponent(id)}`);
+      const next = { ...state.sessions };
+      for (const s of sessions) if (!state.gone[s.id] && (newer(`${s.id}:session`, rev, true) || !next[s.id])) next[s.id] = s;
+      const { [id]: _, ...agentsLeft } = state.agentsLeft;
+      set({ sessions: next, agentsLeft });
+    })().finally(() => agentsAsked.delete(id));
+    agentsAsked.set(id, ask);
+    return ask;
   },
   // The whole model listing. It can hold hundreds of entries, so a page
   // reads it when something lists models (the picker, the palette, a

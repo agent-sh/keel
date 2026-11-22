@@ -35,7 +35,7 @@ let withAgents: string | undefined;
 test.afterEach(async ({ request }) => {
   const parent = withAgents, mine = started.splice(0);
   withAgents = undefined;
-  const sessions = (await (await request.get("/api/sessions")).json()).sessions as { id: string; parent_id?: string | null }[];
+  const sessions = (await (await request.get("/api/sessions?agents=all")).json()).sessions as { id: string; parent_id?: string | null }[];
   const family = parent ? [...sessions.filter((s) => s.parent_id === parent).map((s) => s.id), parent] : [];
   for (const id of mine) if (!family.includes(id)) await request.post(`/api/sessions/${id}/interrupt`, { data: { by: "owner" } }).catch(() => {});
   for (const id of family) await request.delete(`/api/sessions/${id}`);

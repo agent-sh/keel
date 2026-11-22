@@ -571,3 +571,50 @@ test("a queue count orders by daemon rev without changing the full queue", async
   tellQueueCounts({ [id]: 1 }, 3_001); // an older HTTP answer arrives last
   expect(count()).toBe(2);
 });
+
+// The list leaves out the sessions of agents at rest and counts them. A row
+// of one that this page holds is not taken for deleted because a later list
+// does not carry it; the count is of the ones the page does not hold; and
+// they are read once when asked for.
+test("an agent's session the list leaves out stays, and the rest are read when asked for", async () => {
+  // (Reads of the list that earlier tests left unanswered are not this test's.)
+  for (let i = waiting.length - 1; i >= 0; i--) if (waiting[i]!.url.startsWith("/api/sessions")) waiting.splice(i, 1);
+  const had = Object.keys(getState().sessions);
+  // The list at first: the parent and its one working agent; two agents at rest are counted.
+  let p = actions.loadSessions();
+  await settle();
+  expect(await answer("/api/sessions", { sessions: [row("a-top", ""), row("a-works", "", { parent_id: "a-top" })], agents_left: { "a-top": 2 }, rev: 7000 })).toBe(true);
+  await p;
+  expect(getState().agentsLeft).toEqual({ "a-top": 2 });
+  // The agent finishes. The next list leaves it out and counts three: the page holds one of them.
+  await frame({ t: "session", session: row("a-works", "", { parent_id: "a-top", title: "finished" }), rev: 7001 });
+  p = actions.loadSessions();
+  await settle();
+  expect(await answer("/api/sessions", { sessions: [row("a-top", "")], agents_left: { "a-top": 3 }, rev: 7002 })).toBe(true);
+  await p;
+  expect(getState().sessions["a-works"]!.title).toBe("finished");
+  expect(getState().agentsLeft).toEqual({ "a-top": 2 });
+  // Asked for (the agents are opened): one read, whoever asks while it is on its way.
+  const first = actions.loadAgentsOf("a-top"), second = actions.loadAgentsOf("a-top");
+  await settle();
+  expect(await answer("/api/sessions?agents_of=a-top", { sessions: ["a-works", "a-done-1", "a-done-2"].map((id) => row(id, "", { parent_id: "a-top" })), rev: 7003 })).toBe(true);
+  expect(asked("/api/sessions?agents_of=a-top")).toBe(false);
+  await Promise.all([first, second]);
+  expect(Object.keys(getState().sessions).filter((id) => !had.includes(id)).sort()).toEqual(["a-done-1", "a-done-2", "a-top", "a-works"]);
+  expect(getState().agentsLeft).toEqual({});
+  await actions.loadAgentsOf("a-top");
+  expect(asked("/api/sessions?agents_of=a-top")).toBe(false);
+  // A list read later keeps them all and has nothing left to read.
+  p = actions.loadSessions();
+  await settle();
+  expect(await answer("/api/sessions", { sessions: [row("a-top", "")], agents_left: { "a-top": 3 }, rev: 7004 })).toBe(true);
+  await p;
+  expect(Object.keys(getState().sessions).filter((id) => !had.includes(id)).sort()).toEqual(["a-done-1", "a-done-2", "a-top", "a-works"]);
+  expect(getState().agentsLeft).toEqual({});
+  // The parent is deleted while the page was away: its agents go with it.
+  p = actions.loadSessions();
+  await settle();
+  expect(await answer("/api/sessions", { sessions: [], agents_left: {}, rev: 7005 })).toBe(true);
+  await p;
+  expect(Object.keys(getState().sessions).filter((id) => !had.includes(id))).toEqual([]);
+});

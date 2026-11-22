@@ -307,8 +307,9 @@ export function SessionHeader({ session }: { session: Session }) {
                 data-testid="menu-delete"
                 onClick={async () => {
                   // Its subagents' sessions go with it: the dialog says how many before anything is removed.
-                  const all = Object.values(getState().sessions);
-                  const below = (id: string): number => all.filter((x) => x.parent_id === id).reduce((n, x) => n + 1 + below(x.id), 0);
+                  // (The list leaves out the ones at rest and counts them under the session it carries.)
+                  const all = Object.values(getState().sessions), left = getState().agentsLeft;
+                  const below = (id: string): number => (left[id] ?? 0) + all.filter((x) => x.parent_id === id).reduce((n, x) => n + 1 + below(x.id), 0);
                   const kids = below(session.id);
                   const ok = await confirmAction({ title: "Delete this session?", body: `"${session.title || "New session"}" and its whole history are removed${kids ? `, with the sessions of its ${kids === 1 ? "subagent" : `${kids} subagents`}` : ""}. This cannot be undone; Archive keeps it.`, action: "Delete", danger: true });
                   if (ok) { actions.remove(session.id).catch(reportError); navigate({ name: "new" }); }
