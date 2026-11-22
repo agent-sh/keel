@@ -98,6 +98,8 @@ export class LspClient {
   // Whether the server's pushes name the version they are for (learned from its first push).
   private versioned = false;
   private backlog = 0;
+  // A server that pushes: when the first question since its last push was asked.
+  private silentSince: number | null = null;
 
   constructor(private o: ClientOpts) {
     this.name = o.name;
@@ -119,6 +121,10 @@ export class LspClient {
   // Whether the server says it is still loading or checking.
   get busy(): boolean { return this.progress.size > 0 || !this.quiescent; }
   get openDocs(): number { return this.docs.size; }
+  // What this client holds of the server's words, for a test of its bounds.
+  get held(): { docs: number; pushed: number; pulled: number; waiters: number; progress: number } {
+    return { docs: this.docs.size, pushed: this.pushed.size, pulled: this.lastPull.size, waiters: this.waiters.size, progress: this.progress.size };
+  }
   // Told to stop, and on its way out.
   get stopping(): boolean { return this.stopWhy !== null; }
 
@@ -281,8 +287,12 @@ export class LspClient {
         // Only for a document this client has open: a server that publishes
         // for every file of a project (or for names it made up) fills nothing here.
         if (typeof p?.uri !== "string" || !this.docs.has(p.uri)) return;
-        const rec: Pushed = { version: typeof p.version === "number" ? p.version : undefined, diags: fromLsp(p.diagnostics), seq: ++this.seq, at: Date.now() };
+        const doc = this.docs.get(p.uri)!;
+        const version = typeof p.version === "number" ? p.version : undefined;
+        const rec: Pushed = { version, diags: fromLsp(p.diagnostics, version === undefined || version === doc.version ? doc.text : undefined), seq: ++this.seq, at: Date.now() };
         if (rec.version !== undefined) this.versioned = true;
+        this.silentSince = null;
+        this.hung = 0;
         this.pushed.set(p.uri, rec);
         for (const w of [...this.waiters]) if (w.uri === p.uri) this.offer(w, rec);
         try { this.o.onPush?.(pathOf(p.uri), rec.version, rec.diags); } catch {}
@@ -320,8 +330,7 @@ export class LspClient {
   private settle(w: Waiter, d: Diag[] | null) {
     if (!this.waiters.delete(w)) return;
     clearTimeout(w.timer);
-    clearTimeout(w.give);
-    if (d !== null) this.hung = 0;
+    // Its timer stays: it is what notices a server that answers no question at all.
     w.done(d);
   }
 
@@ -384,25 +393,31 @@ export class LspClient {
   // caller bounds the wait; an answer that comes later is still the answer.
   diagnostics(path: string, version: number): Promise<Diag[] | null> {
     const uri = uriOf(path);
+    // The text asked about, for the words of each diagnostic's line.
+    const now = this.docs.get(uri);
+    const text = now?.version === version ? now.text : undefined;
     return new Promise((done) => {
       const afterSeq = this.seq;
       this.post(() => {
         // Sent in order with the document's changes: the question follows the
         // text it is about on the wire, also when the document has moved on in
         // this client since (an edit is often faster than a server's start).
-        if (this.pull) return void this.pullOnce(uri, version, 0).then(async (d) => {
+        if (this.pull) return void this.pullOnce(uri, version, 0, text).then(async (d) => {
           // An answer given while the server was still loading the project may miss what it has not read yet.
           if (d === null || !this.busy || this.docs.get(uri)?.version !== version) return done(d);
           await this.idle();
-          done(this.ended ? null : this.docs.get(uri)?.version !== version ? d : await this.pullOnce(uri, version, 0));
+          done(this.ended ? null : this.docs.get(uri)?.version !== version ? d : await this.pullOnce(uri, version, 0, text));
         });
         const w: Waiter = { uri, version, afterSeq, done };
-        // A push that never comes is a server that stopped answering.
+        // A push that never comes is a server that stopped answering: one that
+        // has pushed nothing since the first question still open, for as long
+        // as a request may take, is ended (however many later questions took that one's place).
+        this.silentSince ??= Date.now();
         w.give = setTimeout(() => {
-          if (!this.waiters.has(w)) return;
-          this.settle(w, w.last ?? null);
-          if (!w.last && ++this.hung >= this.limits.hangs) this.end(`it stopped answering (${this.hung} documents in a row with no diagnostics pushed)`);
+          if (this.waiters.has(w)) this.settle(w, w.last ?? null);
+          if (this.silentSince !== null && Date.now() - this.silentSince >= this.limits.requestMs) this.end(`it stopped answering (no diagnostics pushed in ${Math.round(this.limits.requestMs / 1000)} s of asking)`);
         }, this.limits.requestMs);
+        (w.give as { unref?: () => void }).unref?.();
         this.waiters.add(w);
         const have = this.pushed.get(uri);
         if (have) this.offer(w, have);
@@ -412,7 +427,7 @@ export class LspClient {
     });
   }
 
-  private async pullOnce(uri: string, version: number, tries: number): Promise<Diag[] | null> {
+  private async pullOnce(uri: string, version: number, tries: number, text?: string): Promise<Diag[] | null> {
     const all: Diag[] = [];
     let unchanged = false;
     for (const identifier of this.pullIds.length ? [...new Set(this.pullIds)] : [undefined]) {
@@ -423,12 +438,12 @@ export class LspClient {
       if (r.error) {
         // The server cannot say right now and asks to be asked again: only for the text asked about.
         const again = r.error.code === SERVER_CANCELLED && (r.error.data as any)?.retriggerRequest !== false;
-        if (again && tries < 20 && !this.ended && this.docs.get(uri)?.version === version) { await Bun.sleep(100 + tries * 50); return this.pullOnce(uri, version, tries + 1); }
+        if (again && tries < 20 && !this.ended && this.docs.get(uri)?.version === version) { await Bun.sleep(100 + tries * 50); return this.pullOnce(uri, version, tries + 1, text); }
         return null;
       }
       const res = r.result as any;
       if (res?.kind === "unchanged") unchanged = true;
-      else all.push(...fromLsp(res?.items));
+      else all.push(...fromLsp(res?.items, text));
     }
     if (unchanged && !all.length) return this.lastPull.get(uri) ?? [];
     this.lastPull.set(uri, all);
@@ -440,7 +455,7 @@ export class LspClient {
     this.ended = why;
     for (const w of this.waiting.values()) { clearTimeout(w.timer); w.done({ error: { code: -1, message: `the server ended: ${why}` } }); }
     this.waiting.clear();
-    for (const w of this.waiters) { clearTimeout(w.timer); clearTimeout(w.give); w.done(null); }
+    for (const w of this.waiters) { clearTimeout(w.timer); w.done(null); }
     this.waiters.clear();
     this.calm();
     // Nothing of an ended server is kept: its documents, what it pushed, what was half read.

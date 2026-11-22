@@ -1,13 +1,16 @@
 import { hookSaid } from "../engine/hooks.ts";
 // What an edit did to a file's diagnostics, and the words the model reads
 // about it. An edit moves lines, so a diagnostic is the same one before and
-// after when its severity, code, source and message match, wherever it sits:
-// the ones the file has more of afterwards are new, the ones it has fewer of
-// are fixed. The text is written once, into the edit's own result: only what
+// after when its severity, code, source and message match and the line it
+// sits on reads the same, whatever that line's number: the ones the file has
+// more of afterwards are new, the ones it has fewer of are fixed. (With the
+// line's words in the comparison, an error fixed in one place while the same
+// message appears in another is one fixed and one new, not nothing.) The text is written once, into the edit's own result: only what
 // is new, errors first, a bounded list, and nothing when nothing changed.
 
 // 1 error, 2 warning, 3 information, 4 hint (the protocol's DiagnosticSeverity).
-export type Diag = { line: number; col: number; severity: 1 | 2 | 3 | 4; code?: string; source?: string; message: string };
+// `at`: the words of the line it is on, when the document's text was at hand.
+export type Diag = { line: number; col: number; severity: 1 | 2 | 3 | 4; code?: string; source?: string; message: string; at?: string };
 
 // What is kept of one file's diagnostics and of each one's text: a server
 // that sends a hundred thousand, or a megabyte in one field, costs the daemon
@@ -17,8 +20,9 @@ const FIELD_MAX = { message: 600, code: 40, source: 40 };
 
 // A server's diagnostic as the protocol sends it, read defensively: a server
 // that sends nonsense gives no diagnostic, never an exception.
-export function fromLsp(raw: unknown): Diag[] {
+export function fromLsp(raw: unknown, text?: string): Diag[] {
   if (!Array.isArray(raw)) return [];
+  const lines = text === undefined || !raw.length ? undefined : text.split("\n");
   const out: Diag[] = [];
   for (const d of raw) {
     if (out.length >= FILE_MAX) break;
@@ -26,12 +30,12 @@ export function fromLsp(raw: unknown): Diag[] {
     if (typeof d?.message !== "string" || typeof start?.line !== "number") continue;
     const sev = d.severity === 2 || d.severity === 3 || d.severity === 4 ? d.severity : 1; // no severity: the client decides, and an unmarked problem is an error
     const code = typeof d.code === "string" || typeof d.code === "number" ? String(d.code).slice(0, FIELD_MAX.code) : undefined;
-    out.push({ line: start.line + 1, col: (typeof start.character === "number" ? start.character : 0) + 1, severity: sev, ...(code ? { code } : {}), ...(typeof d.source === "string" && d.source ? { source: d.source.slice(0, FIELD_MAX.source) } : {}), message: d.message.slice(0, FIELD_MAX.message) });
+    out.push({ line: start.line + 1, col: (typeof start.character === "number" ? start.character : 0) + 1, severity: sev, ...(code ? { code } : {}), ...(typeof d.source === "string" && d.source ? { source: d.source.slice(0, FIELD_MAX.source) } : {}), message: d.message.slice(0, FIELD_MAX.message), ...(lines ? { at: (lines[start.line] ?? "").trim().slice(0, 160) } : {}) });
   }
   return out;
 }
 
-const keyOf = (d: Diag) => `${d.severity}\0${d.source ?? ""}\0${d.code ?? ""}\0${d.message}`;
+const keyOf = (d: Diag) => `${d.severity}\0${d.source ?? ""}\0${d.code ?? ""}\0${d.message}\0${d.at ?? ""}`;
 
 export type DiagDiff = { added: Diag[]; fixed: Diag[] };
 

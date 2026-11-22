@@ -654,9 +654,10 @@ the parent counts its agents even when their tools run on another machine.
 
 ## Diagnostics after an edit
 
-After a model edits a file, the edit's own result carries the type errors and
-other compiler diagnostics that edit caused, from the language server of the
-file's project. No build runs, and an edit that caused none adds nothing.
+Off unless you turn it on (Settings, Language servers, or `diagnostics.mode`).
+On, an edit's own result carries the type errors and other compiler
+diagnostics that edit caused, from the language server of the file's project.
+No build runs, and an edit that caused none adds nothing.
 
 ```
 <diagnostics server="typescript">
@@ -665,46 +666,62 @@ src/math.ts:2:3 error TS2322 Type 'string' is not assignable to type 'number'.
 </diagnostics>
 ```
 
+What it costs: a language server per folder being edited. The TypeScript 7
+server holds about 0.6 to 1.2 GB on a project of two thousand files. At most
+four servers are alive and hold 3 GB together (`max_servers`,
+`max_memory_mb`); the one used least recently ends first and starts again at
+the next edit in its folder. Each runs in a scope of its own with a 1.5 GB
+memory limit and half the CPU and IO weight, sandboxed or not.
+
 What the model is told:
 
 - Only what the edit changed. The file's diagnostics are asked before the
-  edit and after it, and compared without line numbers: the ones it has more
-  of are new and listed, the ones it has fewer of are a count (`1 fixed, no
-  errors left.`). A file that was already broken is not blamed on the edit.
+  edit and after it. A diagnostic is the same one when its message, code and
+  the words of its line match, whatever the line's number: the ones the file
+  has more of are new and listed, the ones it has fewer of are a count
+  (`1 fixed, no errors left.`). A file that was already broken is not blamed
+  on the edit.
 - Errors only, unless the mode is "errors and warnings". At most ten are
-  listed, errors first, each as `file:line:col`, its code and its message;
-  the rest is a count.
+  listed, errors first, each as `file:line:col`, its code and its message.
+  The block is at most 1,500 bytes and fits inside the result's cap; a
+  server's words reach the model on one line, with no tag, harness mark,
+  control or direction character in them.
 - Files the session edited before are asked again too, for a server that
   answers requests: an edit that breaks a caller it wrote earlier says so.
 - The block is part of the tool result, written once. Nothing is sent as a
   separate message, so the provider's cache prefix is as it was.
 
-The wait is bounded (`wait_ms`, 1500). A server that has not answered by then
-is not waited for: the result names the file as not checked yet, and what the
-server finds goes with the result of the session's next edit, or of its next
-read of that file.
+The wait is bounded (`wait_ms`, 1500; a server still starting gets the same
+time to be ready first). A server that has not answered by then is not
+waited for: the result says the file is not checked yet, and the answer goes
+with the result of the session's next edit, or of its next read of that
+file, also when it is "checked: no new errors". A file a server could not be
+asked about is said to be not checked, never passed over.
 
 Servers are found, never installed. Each is an entry of data: the extensions
 it reads, the files that mark a project root, and the commands that may start
-it, looked for in the workspace's own modules and on `PATH`.
+it. The built-in ones are looked for in the modules of the project root and
+of the folders up to the session's folder (no higher), then on `PATH`.
 
-| Server | Files | Found when | Starts by itself |
+| Server | Files | Found when | On by itself |
 | --- | --- | --- | --- |
-| TypeScript | `.ts .tsx .mts .cts .js .jsx .mjs .cjs` | the workspace has TypeScript 7 (its compiler is its own server), `tsgo`, or `typescript-language-server` | yes |
+| TypeScript | `.ts .tsx .mts .cts .js .jsx .mjs .cjs` | the project has TypeScript 7 (its compiler is its own server) or `tsgo` | yes |
+| TypeScript 6 and older | the same | `typescript-language-server`, once you turn the TypeScript server on by name: it loads the project's tsserver and tsconfig plugins | no |
 | Ruff | `.py .pyi` | `ruff` is on `PATH` or in `.venv/bin` | yes |
 | Pyright | `.py .pyi` | `basedpyright-langserver` or `pyright-langserver` | no |
 | Go | `.go` | `gopls` | no |
 | Rust | `.rs` | `rust-analyzer` | no |
 | C and C++ | `.c .h .cc .cpp ...` | `clangd`, and a `compile_commands.json`, `compile_flags.txt` or `.clangd` | no |
 
-A server that does not start by itself runs code of the workspace, or was not
-measured to answer in milliseconds: turn it on in Settings, Language servers,
-or in the settings file. The same entry adds a server or changes one:
+The same settings entry turns a server on, changes one or adds one. A command
+you write there is a name on `PATH` or a whole path, never a file of a
+repository with that name.
 
 ```json
 { "diagnostics": {
     "mode": "errors",
     "workspaces": { "/path/to/repo": "off" },
+    "max_servers": 4, "max_memory_mb": 3072,
     "servers": {
       "rust-analyzer": { "enabled": true },
       "zls": { "command": ["zls"], "extensions": { ".zig": "zig" } }
@@ -714,26 +731,40 @@ or in the settings file. The same entry adds a server or changes one:
 `mode` is `off`, `errors` or `warnings` (errors and warnings); `workspaces`
 gives a folder its own.
 
-Where a server runs:
+When a server starts, and where it runs:
 
-- Inside the sandbox of the session whose edit started it: the same
+- A server whose program is a file of the workspace (its modules, its
+  virtual environment), or that loads the workspace's code (a plugin, a build
+  script, an interpreter), is the workspace's program. An edit starts it only
+  where the session already runs commands without asking: inside the sandbox
+  in Auto edits, Auto and Full auto; outside a sandbox only in Full auto with
+  the sandbox off. In any other session it starts once you trust that
+  folder's language servers in Settings. First sight is no trust, a folder
+  that is no repository is not trusted for being none, and opening the page
+  writes nothing.
+- A program of the machine that loads nothing of the workspace (a `ruff` on
+  `PATH`) starts in any mode.
+- It runs inside the sandbox of the session whose edit started it: the same
   bubblewrap profile as that session's commands, the network off unless the
-  session has it. A session without a sandbox gets a server without one. When
-  the session is sandboxed and the machine cannot sandbox, no server starts.
+  session has it. When the session is sandboxed and the machine cannot
+  sandbox, no server starts.
+- The files a server starts from are the owner's to change, like a hook:
+  `node_modules/.bin`, the TypeScript and Pyright packages, `.venv/bin`, a
+  `plugins` entry written into a tsconfig, the interpreter or environment
+  written into a Pyright configuration. An edit of one asks you.
 - One per language, project root, session folder and sandbox profile.
   Sessions of one folder with the same profile share it; a session in a
-  linked worktree gets a server rooted there.
-- Only in a repository whose files you trust: on first sight where new files
-  are trusted on first sight, else after you trust its language servers in
-  Settings.
-- It starts at the first edit of a file it serves, ends after `idle_minutes`
-  (5) without an edit, and starts again when its configuration files change
-  or the checkout moves to another commit. Files a command changed are named
-  to it before the next edit is compared.
-- A server that floods, stops answering or exits is ended and started again
-  at a later edit, after a pause that grows from one second to ten minutes.
-  No server starts while the machine has less than `min_free_mb` (2048) of
-  memory available.
+  linked worktree gets a server rooted there, and none once that folder is
+  gone.
+- It ends after `idle_minutes` (5) without an edit and starts again when its
+  configuration files change. After a command, every document it has open is
+  given again from disk, the files the repository says changed are named to
+  it, and a commit restarts nothing. Outside a repository nothing says what a
+  command changed, so the server starts again.
+- A server that floods, stops reading, stops answering or exits is ended and
+  started again at a later edit, after a pause that grows from one second to
+  ten minutes. No server starts while the machine has less than
+  `min_free_mb` (2048) of memory available or reports memory pressure.
 - Its processes are in the Resources panel as kind `lsp`, booked to the
   session that started it. It ends with the daemon; one a killed daemon left
   is ended by the next start.
@@ -741,7 +772,8 @@ Where a server runs:
 Each wait is a span of its turn (kind `wait`, name `diagnostics`): the
 server, the milliseconds, whether it timed out, the errors, warnings and fixes
 it found, and the tokens the block added. Settings, Language servers shows
-the totals since the daemon started.
+the totals since the daemon started, how many servers are alive and what they
+hold.
 
 Not covered: a session whose tools run on another machine (its files are
 there, and no server is started for it), and diagnostics in files the session

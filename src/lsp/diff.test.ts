@@ -15,6 +15,19 @@ test("a diagnostic an edit moved is the same diagnostic; more of one is new, few
   expect(diffDiagnostics([d(1, "x", { severity: 2 })], [d(1, "x")]).added).toHaveLength(1);
 });
 
+test("an error fixed in one place while the same message appears in another is one fixed and one new", () => {
+  const raw = (line: number) => [{ range: { start: { line, character: 6 } }, severity: 1, code: 2322, source: "ts", message: "Type 'string' is not assignable to type 'number'." }];
+  const before = fromLsp(raw(0), "const a: number = 'x';\nconst b: number = 2;\n");
+  // The first line is fixed, and the second now has the same mistake.
+  const after = fromLsp(raw(1), "const a: number = 1;\nconst b: number = 'y';\n");
+  const x = diffDiagnostics(before, after);
+  expect(x.added.map((a) => a.line)).toEqual([2]);
+  expect(x.fixed.map((f) => f.line)).toEqual([1]);
+  // The same line three lines further down is the same diagnostic.
+  const moved = fromLsp(raw(3), "\n\n\nconst a: number = 'x';\nconst b: number = 2;\n");
+  expect(diffDiagnostics(before, moved)).toEqual({ added: [], fixed: [] });
+});
+
 test("a server's diagnostics are read defensively", () => {
   expect(fromLsp(null)).toEqual([]);
   expect(fromLsp([{ message: 1 }, { range: { start: { line: 4, character: 2 } }, message: "m", code: 7006, source: "ts" }, { range: { start: { line: 0 } }, message: "w", severity: 2 }])).toEqual([

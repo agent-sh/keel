@@ -40,7 +40,7 @@ test("an edit's type error reaches the model and the tool card, and its fix", as
 
   // Off unless the owner turns it on (the fixture puts the setting back).
   expect((await (await request.get(`/api/lsp?cwd=${encodeURIComponent(ws)}`)).json()).mode).toBe("off");
-  expect((await request.patch("/api/settings", { data: { diagnostics: { mode: "errors" } } })).ok()).toBe(true);
+  expect((await request.patch("/api/settings", { data: { diagnostics: { mode: "errors", min_free_mb: 0 } } })).ok()).toBe(true);
   const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
   const sandboxed = (await (await request.get("/api/permissions/settings")).json()).sandbox.available as boolean;
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", ...(sandboxed ? { sandbox: "workspace-write", network: false } : { sandbox: "off" }) } });
@@ -145,7 +145,7 @@ test("a slow, a flooding and a crashing server: the edit is never held", async (
   const standin = resolve("test/e2e/fixtures/lsp-standin.ts");
   const server = (mode: string, ext: string) => ({ command: ["bun", standin, mode, "1500"], extensions: { [ext]: "plaintext" } });
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
-  expect((await request.patch("/api/settings", { data: { diagnostics: { mode: "errors", wait_ms: 400, servers: { "standin-slow": server("slow", ".slow"), "standin-flood": server("flood", ".flood"), "standin-crash": server("crash", ".crash") } } } })).ok()).toBe(true);
+  expect((await request.patch("/api/settings", { data: { diagnostics: { mode: "errors", min_free_mb: 0, wait_ms: 400, servers: { "standin-slow": server("slow", ".slow"), "standin-flood": server("flood", ".flood"), "standin-crash": server("crash", ".crash") } } } })).ok()).toBe(true);
   try {
     const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
     await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
@@ -196,6 +196,22 @@ test("a slow, a flooding and a crashing server: the edit is never held", async (
     // No stand-in is left running by the flood: it was ended.
     expect(view.servers.find((s: any) => s.id === "standin-flood").running[0].pid).toBeUndefined();
 
+    // The daemon keeps only so many alive: with room for one, the second server's start ends the first,
+    // which starts again at the next edit of its file.
+    expect((await request.patch("/api/settings", { data: { diagnostics: { max_servers: 1, servers: { "standin-one": server("plain", ".one"), "standin-two": server("plain", ".two") } } } })).ok()).toBe(true);
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: calls([write("a.one", "an ERROR\n"), write("a.two", "an ERROR\n")]) } });
+    await turnsDone(request, session.id, 3);
+    const capped = (await results(request, session.id)).slice(8);
+    expect(capped[0]).toContain("a.one:1:4 error STAND1");
+    expect(capped[1]).toContain("a.two:1:4 error STAND1");
+    const after = await (await request.get(`/api/lsp?cwd=${encodeURIComponent(ws)}`)).json();
+    await expect.poll(async () => (await (await request.get(`/api/lsp?cwd=${encodeURIComponent(ws)}`)).json()).totals.alive).toBe(1);
+    expect(after.totals.max_servers).toBe(1);
+    const one = (await (await request.get(`/api/lsp?cwd=${encodeURIComponent(ws)}`)).json()).servers.find((s: any) => s.id === "standin-one").running[0];
+    expect(one).toMatchObject({ state: "stopped" });
+    expect(one.error).toContain("no more than 1 of the language servers are alive at once");
+    expect(one.pid).toBeUndefined();
+
     await page.goto("/settings/lsp");
     await page.locator('[data-testid="lsp-server"][data-name="standin-crash"]').click();
     await expect(page.getByTestId("lsp-running")).toHaveAttribute("data-state", "failed");
@@ -203,7 +219,7 @@ test("a slow, a flooding and a crashing server: the edit is never held", async (
     await shoot(page, "lsp-04-failed");
     await request.delete(`/api/sessions/${session.id}`);
   } finally {
-    await request.patch("/api/settings", { data: { diagnostics: { servers: { "standin-slow": null, "standin-flood": null, "standin-crash": null } } } });
+    await request.patch("/api/settings", { data: { diagnostics: { servers: { "standin-slow": null, "standin-flood": null, "standin-crash": null, "standin-one": null, "standin-two": null } } } });
     expect(existsSync(ws)).toBe(true);
   }
 });
@@ -220,7 +236,7 @@ test("a workspace's own server waits for trust in a session that asks before com
   symlinkSync(modules, join(ws, "node_modules"));
   writeFileSync(join(ws, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true, noEmit: true, module: "esnext", target: "esnext", moduleResolution: "bundler", types: [] }, include: ["src"] }));
   writeFileSync(join(ws, "src/a.ts"), "export const n: number = 1;\n");
-  expect((await request.patch("/api/settings", { data: { diagnostics: { mode: "errors" } } })).ok()).toBe(true);
+  expect((await request.patch("/api/settings", { data: { diagnostics: { mode: "errors", min_free_mb: 0 } } })).ok()).toBe(true);
   const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
   // Edits run by themselves, commands ask, no sandbox: what a fresh clone gets in Auto edits.
   await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "auto-edits", sandbox: "off" } });
@@ -262,4 +278,78 @@ test("a workspace's own server waits for trust in a session that asks before com
   await request.post("/api/lsp/trust", { data: { cwd: ws, trusted: false } });
   await expect.poll(async () => tsOf(await lspView()).running.some((r: any) => r.pid)).toBe(false);
   await request.delete(`/api/sessions/${session.id}`);
+});
+
+// The first edit of a project is compared although its server is still
+// starting; a commit restarts nothing; and a file a command changed, deleted
+// or moved is seen as it is on disk, in a repository and outside one.
+test("a cold start, a commit and a command's changes leave no edit unchecked or wrongly blamed", async ({ request }) => {
+  test.skip(!scripted, "the edits are handed to the scripted model exactly");
+  const modules = resolve("node_modules");
+  test.skip(Number(JSON.parse(readFileSync(join(modules, "typescript/package.json"), "utf8")).version.split(".")[0]) < 7, "needs the workspace's TypeScript 7");
+  expect((await request.patch("/api/settings", { data: { diagnostics: { mode: "errors", min_free_mb: 0 } } })).ok()).toBe(true);
+  const make = (name: string, git: boolean) => {
+    const ws = join(base(), `${name}-${Date.now()}`);
+    mkdirSync(join(ws, "src"), { recursive: true });
+    symlinkSync(modules, join(ws, "node_modules"));
+    writeFileSync(join(ws, ".gitignore"), "node_modules\n");
+    writeFileSync(join(ws, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true, noEmit: true, module: "esnext", target: "esnext", moduleResolution: "bundler", allowImportingTsExtensions: true, types: [] }, include: ["src"] }));
+    writeFileSync(join(ws, "src/a.ts"), "export const n: number = 1;\n");
+    writeFileSync(join(ws, "src/b.ts"), "export const answer: number = 42;\n");
+    writeFileSync(join(ws, "src/c.ts"), "export const c = 1;\n");
+    if (git) { execFileSync("git", ["init", "-q"], { cwd: ws }); execFileSync("git", ["add", "-A"], { cwd: ws }); execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "init"], { cwd: ws }); }
+    return ws;
+  };
+  const start = async (ws: string) => {
+    const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto", sandbox: "off" } });
+    return session.id as string;
+  };
+  const pidOf = async (ws: string) => (await (await request.get(`/api/lsp?cwd=${encodeURIComponent(ws)}`)).json()).servers.find((s: any) => s.id === "typescript").running[0]?.pid;
+  const edit = (file: string, old_string: string, new_string: string) => ({ name: "Edit", input: { file_path: file, old_string, new_string } });
+
+  // In a repository.
+  const ws = make("lsp-cold", true);
+  const a = join(ws, "src/a.ts"), c = join(ws, "src/c.ts");
+  const sid = await start(ws);
+  // The very first edit breaks a type: the server is not up yet when the edit lands.
+  await request.post(`/api/sessions/${sid}/messages`, { data: { text: calls([{ name: "Read", input: { file_path: a } }, edit(a, "= 1;", '= "one";')]) } });
+  await turnsDone(request, sid, 1);
+  expect((await results(request, sid))[1]).toContain("1 new error.\nsrc/a.ts:1:14 error TS2322");
+  const pid = await pidOf(ws);
+  expect(pid).toBeGreaterThan(0);
+  // A commit of the session's own work, then the fix: the same server answers, with no edit left out.
+  await request.post(`/api/sessions/${sid}/messages`, { data: { text: calls([
+    { name: "Bash", input: { command: "git add -A && git -c user.name=t -c user.email=t@example.com commit -qm broken" } },
+    edit(a, '= "one";', "= 1;"),
+  ]) } });
+  await turnsDone(request, sid, 2);
+  expect((await results(request, sid))[3]).toContain("1 fixed, no errors left.");
+  expect(await pidOf(ws)).toBe(pid);
+  // A command moves a file another one imports: the new import of the old name is an error, not silence.
+  await request.post(`/api/sessions/${sid}/messages`, { data: { text: calls([
+    { name: "Bash", input: { command: "git mv src/b.ts src/b2.ts" } },
+    { name: "Read", input: { file_path: c } },
+    edit(c, "export const c = 1;", 'import { answer } from "./b.ts";\nexport const c = answer;'),
+  ]) } });
+  await turnsDone(request, sid, 3);
+  expect((await results(request, sid))[6]).toMatch(/1 new error\.\nsrc\/c\.ts:1:24 error TS2307/);
+  await request.delete(`/api/sessions/${sid}`);
+
+  // Outside a repository: nothing says what a command changed, so the server reads the files again.
+  const plain = make("lsp-plain", false);
+  const pc = join(plain, "src/c.ts");
+  const sid2 = await start(plain);
+  await request.post(`/api/sessions/${sid2}/messages`, { data: { text: calls([
+    { name: "Read", input: { file_path: pc } },
+    edit(pc, "export const c = 1;", "export const c = 2;"),
+    { name: "Bash", input: { command: "sed -i 's/answer/reply/' src/b.ts" } },
+    edit(pc, "export const c = 2;", 'import { reply } from "./b.ts";\nexport const c = reply;'),
+  ]) } });
+  await turnsDone(request, sid2, 1);
+  const got = await results(request, sid2);
+  expect(got[1]).not.toContain("<diagnostics");
+  // `reply` exists on disk: a server still holding the old b.ts would call this import an error.
+  expect(got[3]).not.toContain("error");
+  await request.delete(`/api/sessions/${sid2}`);
 });

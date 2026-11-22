@@ -1,7 +1,9 @@
 // A stand-in language server for the cases a real one cannot be forced into:
 // `slow` answers a diagnostics request after a pause, `flood` pours log
 // messages once a document opens and answers nothing, `crash` exits when one opens, `push`
-// answers by pushing (no version). Each line of a document that holds the
+// answers by pushing (no version), `deaf` says it pushes and never does,
+// `slowinit` answers initialize after the pause, `pushmany` pushes for
+// hundreds of files nobody opened and starts as many progress tokens. Each line of a document that holds the
 // word ERROR is one error diagnostic.
 //   bun lsp-standin.ts <slow|flood|crash|push|plain> [pause ms]
 const mode = process.argv[2] ?? "plain";
@@ -30,12 +32,20 @@ function opened(uri: string) {
     pour();
   }
   if (mode === "push") send({ method: "textDocument/publishDiagnostics", params: { uri, diagnostics: diagnose(uri) } });
+  if (mode === "pushmany") {
+    for (let i = 0; i < 600; i++) {
+      send({ method: "textDocument/publishDiagnostics", params: { uri: `file:///nobody/opened/${i}.txt`, diagnostics: [{ range: { start: { line: 0, character: 0 } }, severity: 1, message: "x".repeat(2000) }] } });
+      send({ method: "$/progress", params: { token: `t${i}`, value: { kind: "begin", title: "work" } } });
+    }
+    for (let i = 0; i < 600; i++) send({ method: "$/progress", params: { token: `t${i}`, value: { kind: "end" } } });
+    send({ method: "textDocument/publishDiagnostics", params: { uri, diagnostics: diagnose(uri) } });
+  }
 }
 
 function handle(m: any) {
   switch (m.method) {
     case "initialize":
-      return send({ id: m.id, result: { capabilities: { textDocumentSync: 1, ...(mode === "push" ? {} : { diagnosticProvider: { interFileDependencies: false, workspaceDiagnostics: false } }) }, serverInfo: { name: "standin", version: mode } } });
+      return void setTimeout(() => send({ id: m.id, result: { capabilities: { textDocumentSync: 1, ...(mode === "push" || mode === "deaf" || mode === "pushmany" ? {} : { diagnosticProvider: { interFileDependencies: false, workspaceDiagnostics: false } }) }, serverInfo: { name: "standin", version: mode } } }), mode === "slowinit" ? pause : 0);
     case "textDocument/didOpen":
       docs.set(m.params.textDocument.uri, m.params.textDocument.text);
       return opened(m.params.textDocument.uri);

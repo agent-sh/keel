@@ -210,7 +210,7 @@ export class LspManager {
     // Room for it: the least recently used server ends first, and starts again at the next edit of its root.
     const others = this.alive().filter((x) => x !== e && !x.client!.stopping).sort((a, b) => a.lastUsed - b.lastUsed);
     const max = Math.max(1, this.d.maxServers?.() ?? MAX_SERVERS);
-    for (const x of others.slice(0, Math.max(0, others.length + 1 - max))) void x.client!.stop(`stopped: ${max} language servers at most are alive at once (diagnostics.max_servers), and this one was used least recently`);
+    for (const x of others.slice(0, Math.max(0, others.length + 1 - max))) void x.client!.stop(`stopped: no more than ${max} of the language servers are alive at once (diagnostics.max_servers), and this one was used least recently`);
     const run = this.d.confine(found.argv, perm, s.workspace, SERVER_MEMORY_MB);
     if ("refuse" in run) { e.state = "refused"; e.error = run.refuse; return null; }
     e.argv = run.argv;
@@ -305,8 +305,14 @@ export class LspManager {
       moved = true;
     }
     e.head = head;
-    const listed = await gitOut(e.root, ["ls-files", "-m", "-o", "-d", "--exclude-standard", "-z"]);
-    if (listed === null || client.ended) return;
+    // By the files' size and time only: `ls-files -m` reads a changed file through
+    // the repository's clean filter, a program its configuration names.
+    const tracked = await gitOut(e.root, ["diff-files", "--name-only", "--no-renames", "-z"]);
+    // What is staged (a file moved or removed with git, a new one added): the index against the head, no file read.
+    const staged = head ? await gitOut(e.root, ["diff-index", "--cached", "--name-only", "--no-renames", "-z", "HEAD"]) : "";
+    const untracked = await gitOut(e.root, ["ls-files", "-o", "--exclude-standard", "-z"]);
+    if (tracked === null || staged === null || untracked === null || client.ended) return;
+    const listed = `${tracked}\0${staged}\0${untracked}`;
     // After a move the lists start over: what differed from the old head says nothing about the new one.
     const quiet = first || moved;
     if (moved) { e.seen = new Set(); e.gone = new Set(); }
@@ -324,7 +330,8 @@ export class LspManager {
       e.gone.delete(path);
       const known = e.seen.has(path);
       e.seen.add(path);
-      if (first || client.has(path) || mtime < since - 2000) continue;
+      // A name the server has not been told of is told whatever its time (a moved file keeps its old one).
+      if (first || client.has(path) || ((known || moved) && mtime < since - 2000)) continue;
       changes.push({ path, type: known || moved ? "changed" : "created" });
       if (changes.length >= 500) break;
     }
