@@ -10,6 +10,9 @@ test("an editor's permission request carries the card's reason", () => {
   const low = permissionRequest({ ...card, risk: "low", why: undefined, notice: "Reviewer unavailable: no reviewer is set up. The owner answers this one.", suggest: [{ kind: "shell", pattern: "git push *" }] }, "Bash");
   expect(low.toolCall.content[0].content.text).toContain("Reviewer unavailable");
   expect(low.options.map((o: any) => o.optionId)).toEqual(["once", "always", "deny"]);
+  // The rule a standing answer stores is named with nothing hidden in it.
+  const odd = permissionRequest({ ...card, risk: "low", why: undefined, suggest: [{ kind: "shell", pattern: "git push \u202e*" }] }, "Bash");
+  expect(odd.options[1].name).toBe("Always allow git push <U+202E>*");
 });
 
 test("an editor's request for a card that is read first carries the whole text in its content", () => {

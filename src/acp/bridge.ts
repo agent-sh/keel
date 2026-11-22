@@ -77,7 +77,8 @@ export function toolDetail(name: string, input: Json): { locations?: Json[]; con
 export function permissionRequest(a: Json, name: string, form?: CardForm): Json {
   const options = [
     { optionId: "once", name: "Allow once", kind: "allow_once" },
-    ...(a.risk !== "high" && a.suggest?.length ? [{ optionId: "always", name: `Always allow ${a.suggest.map((s: Json) => s.pattern).join(", ")}`, kind: "allow_always" }] : []),
+    // (The rule it stores, with any character that hides or reorders text written out.)
+    ...(a.risk !== "high" && a.suggest?.length ? [{ optionId: "always", name: `Always allow ${a.suggest.map((s: Json) => spelled(String(s.pattern ?? ""), "")).join(", ")}`, kind: "allow_always" }] : []),
     { optionId: "deny", name: "Deny", kind: "reject_once" },
   ];
   const l = form ? cardLines(form) : undefined;
@@ -87,7 +88,7 @@ export function permissionRequest(a: Json, name: string, form?: CardForm): Json 
   const fence = "`".repeat(Math.max(3, ...(l?.text.match(/`+/g) ?? []).map((r) => r.length + 1)));
   const first = (l?.text.split("\n")[0] ?? "").slice(0, 120);
   const title = held && form && l
-    ? `${name}: ${first}${form.lines > 1 || first.length < l.text.length ? " ..." : ""} (${form.lines > 1 ? `${form.lines} lines` : `${form.chars} characters`}: the whole request is below)`
+    ? `${spelled(name, "")}: ${first}${form.lines > 1 || first.length < l.text.length ? " ..." : ""} (${form.lines > 1 ? `${form.lines} lines` : `${form.chars} characters`}: the whole request is below)`
     : (l ? spelled(a.summary ?? "") : a.summary) || toolTitle(name, a.input);
   const content = [
     ...(why ? [{ type: "content", content: { type: "text", text: why } }] : []),
