@@ -42,17 +42,25 @@ test("a queued turn has a content-free receipt linked to its exact events and sp
     expect(body.inputs).toHaveLength(1);
     expect(body.requests.map((s: any) => s.span_id)).toEqual(spans.filter((s: any) => s.kind === "request").map((s: any) => s.span_id));
     expect(body.requests.map((s: any) => [s.purpose, s.status])).toEqual([["turn", "ok"], ["turn", "ok"]]);
-    const tool = spans.find((s: any) => s.kind === "tool");
-    expect(tool.error).toContain("receipt-tool-payload");
+    // Each call has its span: the command that ran and failed, with what it printed, and the call of a
+    // tool the session does not have, a failed call like any other, whose span says there is no such tool.
+    const toolSpans = spans.filter((s: any) => s.kind === "tool");
+    expect(toolSpans).toHaveLength(2);
+    const tool = toolSpans.find((s: any) => String(s.error ?? "").includes("receipt-tool-payload"));
+    const unknown = toolSpans.find((s: any) => s.error === "No tool named receipt-unknown-tool.");
+    expect([!!tool, !!unknown]).toEqual([true, true]);
     const results = stored.filter((e) => e.kind === "tool_result");
-    const ran = results.find((e) => e.data.results.some((r: any) => r.tool_use_id === tool.attrs.call_id))!;
-    const notRun = results.find((e) => e.id !== ran.id)!;
+    const resultOf = (span: any) => results.find((e) => e.data.results.some((r: any) => r.tool_use_id === span.attrs.call_id))!;
+    // The receipt says of each call its result, its span, how it ended and the tool it named, and of the
+    // second that the session has no such tool.
     expect(body.tools).toEqual(expect.arrayContaining([
-      { result_event_id: ran.id, span_id: tool.span_id, status: "error" },
-      { result_event_id: notRun.id, span_id: null, status: "error" },
+      expect.objectContaining({ result_event_id: resultOf(tool).id, span_id: tool.span_id, status: "error", name: "Bash" }),
+      { result_event_id: resultOf(unknown).id, span_id: unknown.span_id, status: "error", name: "receipt-unknown-tool", unknown: true },
     ]));
     expect(body.tools).toHaveLength(2);
-    for (const marker of ["Receipt title marker", "receipt-owner-marker", "receipt-tool-payload", "receipt-unknown-tool", "receipt-input-key", "receipt-input-value", "script:batch"]) {
+    // Nothing that was said is in it: no title, no prompt, no output or input of a tool, no script.
+    // (A call's tool is named, also one the session does not have: the name says which call failed.)
+    for (const marker of ["Receipt title marker", "receipt-owner-marker", "receipt-tool-payload", "receipt-input-key", "receipt-input-value", "script:batch"]) {
       expect(JSON.stringify(body)).not.toContain(marker);
     }
     expect((await receipt(first.id)).status()).toBe(404);
