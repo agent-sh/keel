@@ -51,3 +51,20 @@ test("a command whose working directory is gone says so and runs nothing", async
   // Any other caller of a job gets the folder named too.
   expect(() => startJob({ sessionId: "owner", command: "true", cwd: gone, logDir: join(root, "spill/owner/jobs") })).toThrow(gone);
 });
+
+// The trap that records where a command ended names a file under the state
+// folder, which can hold any character: it is quoted for the trap's own words.
+test("the shell's folder is tracked under a state folder of any name", async () => {
+  const base = mkdtempSync(join(process.env.TMPDIR ?? ".", "shell-"));
+  const root = join(base, `st ate'q"d$HOME`);
+  mkdirSync(join(root, "work", "sub"), { recursive: true });
+  const ctx: any = { sessionId: "odd", cwd: join(root, "work"), spillDir: join(root, "spill"), signal: new AbortController().signal, seen: new Map() };
+  const bash = claudeTools.find((t) => t.name === "Bash")!;
+  const a = await bash.run({ command: "cd sub && echo moved" }, ctx);
+  expect(a.is_error).toBeFalsy();
+  expect(a.content).not.toContain("trap");
+  expect(a.content).not.toContain("invalid signal");
+  const b = await bash.run({ command: "pwd" }, ctx);
+  expect(b.content).toContain(join(root, "work", "sub"));
+  rmSync(base, { recursive: true });
+});

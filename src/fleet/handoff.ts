@@ -576,7 +576,7 @@ ${GIT} update-index -q --refresh >/dev/null || true`, "the folder could not take
             const remoteFile = join(root, ".keel", "handoff", `${sid}.bundle`);
             try { await this.put(dest, remoteFile, readFileSync(file)); } finally { rmSync(file, { force: true }); }
             // The bundle there goes whether the fetch took it or not.
-            await this.must(dest, root, `trap 'rm -f ${q(remoteFile)}' EXIT\ngit -C ${q(repo)} fetch ${q(remoteFile)} ${q(`+${ref}:${ref}`)}`, "unbundle there");
+            await this.must(dest, root, `trap ${q(`rm -f ${q(remoteFile)}`)} EXIT\ngit -C ${q(repo)} fetch ${q(remoteFile)} ${q(`+${ref}:${ref}`)}`, "unbundle there");
           });
           target = (await step("worktree", async () => {
             const wt = moves.away[dest.id];
