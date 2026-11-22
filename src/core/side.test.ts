@@ -109,3 +109,73 @@ test("a kill loses the side rows that waited and nothing else; rows that share a
   w.other.close();
   w.store.db.close();
 });
+
+// One side row must not be lost apart from an event: what a reply cost. Asked for as durable, it
+// is written in the commit of the next event stored, and the other side rows go on waiting.
+test("a durable side write is stored in the next event's commit, and only that one", () => {
+  const w = open();
+  const s = w.store.createSession({ model: "m", workspace: "/" });
+  const add = (text: string, durable = false) => w.store.side.later(`row ${text}`, () => void w.store.db.query("INSERT INTO activity (text) VALUES (?)").run(text), { durable });
+  add("a span");
+  add("what the reply cost", true);
+  add("another span");
+  expect(w.committed()).toEqual([]);
+  const reply = w.store.append(s.id, "assistant", { blocks: [] });
+  // Killed here: the reply is stored, and so is its ledger row; the two other rows waited.
+  expect(w.committed()).toEqual(["what the reply cost"]);
+  expect(w.store.side.pending).toBe(2);
+  const after = new Database(join(w.dir, "keel.db"), { readonly: true });
+  expect(after.query<{ id: string }, [string]>("SELECT id FROM events WHERE session_id = ?").all(s.id).map((r) => r.id)).toEqual([reply.id]);
+  after.close();
+  w.store.side.flush();
+  expect(w.committed()).toEqual(["what the reply cost", "a span", "another span"]);
+  // With no event stored, it is written with the others when their time comes.
+  add("a side request's cost", true);
+  expect(w.store.side.pending).toBe(1);
+  w.store.side.flush();
+  expect(w.committed().at(-1)).toBe("a side request's cost");
+  w.other.close();
+  w.store.db.close();
+});
+
+// A side write made inside a transaction is stored when that transaction commits. When it is
+// undone, the write is undone with it and waits again: it is made once, by the next commit.
+test("side writes made in a transaction that is undone wait again, and are stored once", () => {
+  const w = open();
+  const s = w.store.createSession({ model: "m", workspace: "/" });
+  const rows = () => w.store.db.query<{ text: string }, []>("SELECT text FROM plain ORDER BY id").all().length;
+  w.add("one");
+  w.add("two");
+  // A transaction that reads the side table (the rows are made in it) and then fails.
+  expect(() => w.store.db.transaction(() => {
+    expect(w.store.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM activity").get()!.n).toBe(2);
+    throw new Error("undone");
+  })()).toThrow("undone");
+  expect(w.committed()).toEqual([]);
+  expect(w.store.side.pending).toBe(2);
+  w.store.side.flush();
+  expect(w.committed()).toEqual(["one", "two"]);
+  // The same for a durable write in an event's commit that is undone (a step whose write is refused): the event is not stored, and neither is the row.
+  w.store.side.later("row three", () => void w.store.db.query("INSERT INTO activity (text) VALUES (?)").run("three"), { durable: true });
+  expect(() => w.store.atomic(s.id, () => { w.store.append(s.id, "assistant", { blocks: [] }); throw new Error("refused"); })).toThrow("refused");
+  expect(w.store.events(s.id)).toEqual([]);
+  expect(w.committed()).toEqual(["one", "two"]);
+  expect(w.store.side.pending).toBe(1);
+  // The step taken again stores both.
+  w.store.atomic(s.id, () => w.store.append(s.id, "assistant", { blocks: [] }));
+  expect(w.committed()).toEqual(["one", "two", "three"]);
+  // Inside a transaction within another: undone alone, its rows wait and the outer one's stay; the outer one stores its own.
+  w.add("outer");
+  w.store.db.transaction(() => {
+    w.store.db.query("SELECT COUNT(*) FROM activity").get();
+    w.add("inner");
+    try { w.store.db.transaction(() => { w.store.db.query("SELECT COUNT(*) FROM activity").get(); throw new Error("inner undone"); })(); } catch {}
+    w.store.db.query("INSERT INTO plain (text) VALUES ('kept')").run();
+  })();
+  expect(w.committed()).toEqual(["one", "two", "three", "outer"]);
+  expect(rows()).toBe(1);
+  w.store.side.flush();
+  expect(w.committed()).toEqual(["one", "two", "three", "outer", "inner"]);
+  w.other.close();
+  w.store.db.close();
+});

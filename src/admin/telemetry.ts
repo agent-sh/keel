@@ -285,7 +285,8 @@ export class Telemetry {
         p.attempt, now - p.step0, p.text === undefined ? null : p.text - p.t0, p.compaction,
         x?.tools ?? null, x?.system ?? null, x?.n ?? null, x?.msgs ?? null, x?.kept ?? null, brk?.detail ?? null, p.cacheMs,
         tag?.exp_id ?? null, tag?.arm ?? null, p.toolset, u.speed ?? u.speed_asked ?? null, p.effort];
-    // (A row of the ledger: written with the next commit, src/core/side.ts.)
+    // A row of the ledger, written with the next commit (src/core/side.ts), and never later than the
+    // event the request's reply is stored as: a kill does not lose what a stored reply cost.
     this.store.side.later("a model request's ledger row", () => {
       const id = Number(this.store.db
       .query(`INSERT INTO telemetry_calls (session_id, ts, model, latency_ms, ttft_ms, input, output, cache_read, cache_write, cost, unpriced, outcome, stop, error, cache_break,
@@ -299,7 +300,7 @@ export class Telemetry {
       const t = this.totals;
       if (t && id === t.top + 1) t.top = id;
       else if (t && id > t.top) this.totals = undefined;
-    });
+    }, { durable: true });
     // (The row with the greatest time is the last: a request that began before the one kept does not replace it.)
     if (r.outcome === "ok" && p.purpose === "turn" && !((this.lastTurnCall.get(p.session)?.ts ?? -1) > p.t0)) {
       this.lastTurnCall.set(p.session, { ts: p.t0, model: p.model, prompt, h_tools: x?.tools ?? null, h_system: x?.system ?? null, n_msgs: x?.n ?? null, h_msgs: x?.msgs ?? null, h_kept: x?.kept ?? null, cache_ms: p.cacheMs ?? null, compaction_event: p.compaction ?? null, turn_event: p.turn ?? null });

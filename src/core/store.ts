@@ -706,6 +706,9 @@ export class Store {
     this.db.exec(SCHEMA);
     if (reading) console.log(`[store] the log is read (${((performance.now() - reading) / 1000).toFixed(1)} s)`);
     immediate(this.db);
+    // Rows beside the conversation wait for the next commit instead of making one each (side.ts). Made before the
+    // statements are labelled: it is told of each try the labelling makes of a transaction.
+    this.side = new Side(this.db, (e, what) => this.sideFailed?.(e, what), undefined, (label, f) => (this.timed ? this.timed(label, f) : f()));
     // Each statement says which one it is while it runs: a stall in the database is named by its query (statement-label.ts).
     // (And one that ends without the write lock it waited for is told to whoever watches the lock's holder: `lockedOut`.)
     // The wait for the write lock is a fifth of a second at a time, made again (true) while its
@@ -726,8 +729,6 @@ export class Store {
       return now - this.busyFrom < BUSY_ALL_MS;
     });
     this.readOwedKey();
-    // Rows beside the conversation wait for the next commit instead of making one each (side.ts).
-    this.side = new Side(this.db, (e, what) => this.sideFailed?.(e, what), undefined, (label, f) => (this.timed ? this.timed(label, f) : f()));
     // The event tree (edit, fork, branches) and per-session settings. One
     // transaction: a start that fails part way leaves the database as it was,
     // and the next start does all of it.
@@ -945,6 +946,8 @@ export class Store {
         .query("INSERT INTO events (id, session_id, seq, parent, kind, data, ts) VALUES (?, ?, ?, ?, ?, ?, ?)")
         .run(id, session_id, n, p, kind, text, ts).lastInsertRowid;
       this.db.query("UPDATE sessions SET updated = ?, head = ? WHERE id = ?").run(now, id, session_id);
+      // (What a kill must not lose apart from this event: what the reply it stores cost.)
+      this.side.joinDurable();
       return { n, p, row: Number(row) };
     });
     const { n, p, row } = tx();

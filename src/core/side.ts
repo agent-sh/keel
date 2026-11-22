@@ -41,12 +41,15 @@ export const SIDE_MAX = 512;
 
 const TRACE = process.env.KEEL_TRACE_SIDE;
 
-type Waiting = { what: string; write: () => void };
+type Waiting = { what: string; write: () => void; durable?: boolean };
 
 export class Side {
   private waiting: Waiting[] = [];
   private timer: ReturnType<typeof setTimeout> | undefined;
   private making = false;
+  // The writes made inside each transaction that is open on the connection, the innermost last:
+  // they are stored when it commits, and wait again when it is undone (enter, leave).
+  private levels: Waiting[][] = [];
   // Counted for the tests: writes asked for, the commits they were made in, and the ones that failed.
   readonly counts = { asked: 0, commits: 0, failed: 0 };
 
@@ -57,30 +60,56 @@ export class Side {
   }
 
   // `write` is made later, in the order asked for (see above). Inside a flush (a side write that asks for another) it is made at once.
-  later(what: string, write: () => void) {
+  // `durable`: it does not wait for the timer when an event is stored first: it is written in that
+  // event's commit (Store.append). For the one row a kill must not lose with the side rows: what a
+  // reply cost, written with the reply.
+  later(what: string, write: () => void, opts: { durable?: boolean } = {}) {
     this.counts.asked++;
-    if (this.making) return this.make({ what, write });
-    this.waiting.push({ what, write });
+    const w: Waiting = { what, write, ...(opts.durable ? { durable: true } : {}) };
+    if (this.making) { this.make(w); this.levels.at(-1)?.push(w); return; }
+    this.waiting.push(w);
     if (this.waiting.length >= SIDE_MAX) return this.flush();
-    this.timer ??= setTimeout(() => { this.timer = undefined; this.flush(); }, this.ms);
-    (this.timer as { unref?: () => void }).unref?.();
+    this.arm(this.ms);
   }
 
   get pending(): number { return this.waiting.length; }
+
+  private arm(ms: number) {
+    this.timer ??= setTimeout(() => { this.timer = undefined; this.flush(); }, ms);
+    (this.timer as { unref?: () => void }).unref?.();
+  }
 
   private make(w: Waiting) {
     try { w.write(); } catch (e) { this.counts.failed++; try { this.failed(e, w.what); } catch {} }
   }
 
-  // Inside a transaction: what waits is made in it, in order, and commits with it.
-  private join() {
+  // Inside a transaction: what waits (`durable`: only the writes marked so) is made in it, in
+  // order, and is stored when it commits. Undone with it, they wait again (leave).
+  private join(durable = false) {
     if (this.making || !this.waiting.length) return;
-    const all = this.waiting;
-    this.waiting = [];
-    clearTimeout(this.timer);
-    this.timer = undefined;
+    const all = durable ? this.waiting.filter((w) => w.durable) : this.waiting;
+    if (!all.length) return;
+    this.waiting = durable ? this.waiting.filter((w) => !w.durable) : [];
+    if (!this.waiting.length) { clearTimeout(this.timer); this.timer = undefined; }
     this.making = true;
     try { for (const w of all) this.make(w); } finally { this.making = false; }
+    this.levels.at(-1)?.push(...all);
+  }
+  // In a transaction that stores an event: the writes that must not be lost apart from it.
+  joinDurable() {
+    if (this.waiting.length && this.db.inTransaction) this.join(true);
+  }
+
+  // A transaction begins on the connection; it ended, stored or undone (the wrapper below says so
+  // for each try of each transaction). What was made in one that was undone waits again, first in
+  // line; what was made in one inside another is the outer one's to store.
+  enter() { this.levels.push([]); }
+  leave(stored: boolean) {
+    const mine = this.levels.pop();
+    if (!mine?.length) return;
+    if (stored) { this.levels.at(-1)?.push(...mine); return; }
+    this.waiting = [...mine, ...this.waiting];
+    this.arm(this.ms);
   }
 
   // What waits is made now, as one commit. A store that takes no write keeps it waiting (within
@@ -89,22 +118,21 @@ export class Side {
   flush() {
     if (this.making || !this.waiting.length) return;
     const n = this.waiting.length;
-    const kept = this.waiting;
     try {
       if (this.db.inTransaction) return this.join();
       this.around(() => `writing ${n} rows beside the conversation (spans, ledgers, the search index)`, () => this.db.transaction(() => this.join())());
       this.counts.commits++;
       this.tries = 0;
     } catch (e) {
-      // The transaction did not begin or did not commit (the store takes no write, its lock was not had): nothing of it is stored.
+      // The transaction did not begin or did not commit (the store takes no write, its lock was not had):
+      // nothing of it is stored, and what it had made waits again (leave).
       clearTimeout(this.timer);
       this.timer = undefined;
       const closed = /closed|not open/i.test(String((e as Error)?.message ?? e));
       if (closed || ++this.tries > 5) { this.waiting = []; this.tries = 0; if (!closed) try { this.failed(e, `${n} side writes`); } catch {} return; }
-      if (!this.waiting.length) this.waiting = kept.slice(-SIDE_MAX);
+      this.waiting = this.waiting.slice(-SIDE_MAX);
       try { this.failed(e, `${n} side writes`); } catch {}
-      this.timer = setTimeout(() => { this.timer = undefined; this.flush(); }, this.ms * 5);
-      (this.timer as { unref?: () => void }).unref?.();
+      this.arm(this.ms * 5);
     }
   }
 }
@@ -145,4 +173,19 @@ function aware(db: Database, side: Side) {
     const call = d[m]!.bind(db);
     d[m] = (sql: string, ...a: unknown[]) => { if (side.pending && names(sql)) { said(sql); side.flush(); } return call(sql, ...a); };
   }
+  // Each try of each transaction says when it begins and how it ended, so a side write made in
+  // one that was undone is not taken for stored. (Wrapped under the store's own wrapper, which
+  // tries a transaction again when the write lock was not had: each try is told apart.)
+  const tx = d.transaction!.bind(db);
+  d.transaction = (fn: (...a: unknown[]) => unknown) => {
+    const t = tx(fn) as ((...a: unknown[]) => unknown) & Record<string, (...a: unknown[]) => unknown>;
+    const told = (run: (...a: unknown[]) => unknown) => function (this: unknown, ...a: unknown[]) {
+      side.enter();
+      let stored = false;
+      try { const r = run.apply(this, a); stored = true; return r; } finally { side.leave(stored); }
+    };
+    const out = told(t) as ((...a: unknown[]) => unknown) & Record<string, unknown>;
+    for (const k of ["deferred", "immediate", "exclusive"]) if (typeof t[k] === "function") out[k] = told(t[k]!.bind(t));
+    return out;
+  };
 }
