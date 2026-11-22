@@ -10,6 +10,7 @@ import { Store } from "../core/store.ts";
 import { allHooks } from "../engine/hooks.ts";
 import { Engine } from "../engine/turn.ts";
 import { hookRoutes } from "../server/routes/hooks.ts";
+import { RECORD_FORMAT } from "./claude-format.ts";
 import { MEMORY_CAP, START_WAIT_MS, Tacit } from "./tacit.ts";
 
 // Turn hooks are process-wide: the files after this one run without the ones its tests register.
@@ -145,10 +146,27 @@ test("after a restart a transcript is found as it was left: nothing is written f
     expect(third.stats().transcript).toMatchObject({ rebuilt: 1, appended: 0, reused: 0 });
     expect(readFileSync(path, "utf8")).toContain("After the restart");
     // And a mark that cannot be read is no mark.
-    writeFileSync(join(dir, "transcripts", `${s.id}.mark`), "{");
+    const markPath = join(dir, "transcripts", `${s.id}.mark`);
+    writeFileSync(markPath, "{");
     const fourth = new Tacit(store, new Bus(), errors, null);
     fourth.transcript(s);
     expect(fourth.stats().transcript).toMatchObject({ rebuilt: 1 });
+    // The mark names the format of the records it stands for, and is written whole (no temporary file stays).
+    const kept = JSON.parse(readFileSync(markPath, "utf8"));
+    expect(kept.format).toBe(RECORD_FORMAT);
+    expect(readdirSync(join(dir, "transcripts")).sort()).toEqual([`${s.id}.jsonl`, `${s.id}.mark`]);
+    // A mark from before the format was kept is of the first format: the file is used as it is.
+    const { format: _f, ...old } = kept;
+    writeFileSync(markPath, JSON.stringify(old));
+    const fifth = new Tacit(store, new Bus(), errors, null);
+    fifth.transcript(s);
+    expect(fifth.stats().transcript).toMatchObject({ rebuilt: 0, reused: 1 });
+    // A file whose records are of another format is not appended to: written whole, in this one.
+    writeFileSync(markPath, JSON.stringify({ ...kept, format: RECORD_FORMAT + 1 }));
+    const sixth = new Tacit(store, new Bus(), errors, null);
+    sixth.transcript(s);
+    expect(sixth.stats().transcript).toMatchObject({ rebuilt: 1, appended: 0, reused: 0 });
+    expect(JSON.parse(readFileSync(markPath, "utf8")).format).toBe(RECORD_FORMAT);
   } finally {
     store.db.close();
     rmSync(dir, { recursive: true, force: true });

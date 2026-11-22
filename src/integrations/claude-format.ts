@@ -14,6 +14,11 @@ const usageOf = (u: any) => ({
   cache_creation_input_tokens: u?.cache_write ?? 0,
 });
 
+// The version of what toClaudeRecords gives for an event. A file written in
+// one version is not appended to in another (the memory tool's transcript,
+// src/integrations/tacit.ts): bump it with any change of a record's shape.
+export const RECORD_FORMAT = 1;
+
 // `parent`: the uuid the first record hangs under, when these events go on
 // from records already written (the memory tool's transcript grows by appending).
 export function toClaudeRecords(s: Session, events: readonly StoredEvent[], sessionId: string = s.id, opts: { version?: string; parent?: string | null } = {}): ClaudeRecord[] {

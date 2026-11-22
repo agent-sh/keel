@@ -51,7 +51,7 @@ import type { Session, StoredEvent } from "../core/types.ts";
 import { checkpointAt } from "../engine/compact.ts";
 import { registerHooks } from "../engine/hooks.ts";
 import { toMessages } from "../engine/turn.ts";
-import { toClaudeRecords, toJsonl } from "./claude-format.ts";
+import { RECORD_FORMAT, toClaudeRecords, toJsonl } from "./claude-format.ts";
 import { readText } from "../core/proc.ts";
 import { asksMemory, factLines, factOf, memoryMeter, type MemoryMeter, type MemoryPath } from "./memory-meter.ts";
 import { changesSomething, namesStore, neverAnswered } from "./tacit-tools.ts";
@@ -431,7 +431,9 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
     if (held) return held;
     let m: any;
     try { m = JSON.parse(readFileSync(this.markFile(id), "utf8")); } catch { return undefined; }
-    if (!m || typeof m.model !== "string" || typeof m.workspace !== "string" || typeof m.stamp !== "string" || (m.head !== null && typeof m.head !== "string") || (m.last !== null && typeof m.last !== "string")) return undefined;
+    // (A mark from before the format was kept is of the first one.)
+    if (!m || (m.format ?? 1) !== RECORD_FORMAT) return undefined;
+    if (typeof m.model !== "string" || typeof m.workspace !== "string" || typeof m.stamp !== "string" || (m.head !== null && typeof m.head !== "string") || (m.last !== null && typeof m.last !== "string")) return undefined;
     const mark: TranscriptMark = { head: m.head, model: m.model, workspace: m.workspace, stamp: m.stamp, last: m.last };
     this.transcriptVersions.set(id, mark);
     return mark;
@@ -440,8 +442,14 @@ CREATE TABLE IF NOT EXISTS memory_sessions (session_id TEXT PRIMARY KEY REFERENC
   // that is not the file's, and writes the transcript whole.
   private setMark(id: string, mark: TranscriptMark) {
     this.transcriptVersions.set(id, mark);
-    try { writeFileSync(this.markFile(id), JSON.stringify(mark), { mode: 0o600 }); } catch {
+    // Whole or not at all: a file of its own, then its name (a reader never finds half a mark).
+    const path = this.markFile(id), tmp = `${path}.${crypto.randomUUID()}.tmp`;
+    try {
+      writeFileSync(tmp, JSON.stringify({ format: RECORD_FORMAT, ...mark }), { mode: 0o600, flag: "wx" });
+      renameSync(tmp, path);
+    } catch {
       // Without it the next daemon writes the transcript whole, as before marks were kept.
+      try { rmSync(tmp, { force: true }); } catch {}
     }
   }
   private dropMark(id: string) {
