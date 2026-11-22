@@ -67,6 +67,11 @@ pub fn main_frame_may_show(uri: &str, origin: &str) -> bool {
     !origin.is_empty() && uri.strip_prefix(origin).is_some_and(|rest| page_path(rest.split('#').next().unwrap_or(rest)).is_some())
 }
 
+/// `scheme://host:port` of an address.
+pub fn origin(u: &str) -> String {
+    u.split('/').take(3).collect::<Vec<_>>().join("/")
+}
+
 /// A path without its query: what a launch or a link may name.
 pub fn place(path: &str) -> &str {
     path.split(['?', '#']).next().unwrap_or(path)
@@ -199,5 +204,12 @@ mod tests {
         for bad in ["file:///etc/passwd", "javascript:alert(1)", "keel://new", "ftp://x/", "https://exa mple.com", "http://x\n/"] {
             assert!(web_url(bad).is_none(), "{bad}");
         }
+    }
+
+    #[test]
+    fn the_main_frame_origin_is_scheme_host_and_port() {
+        assert_eq!(origin("http://127.0.0.1:47960/s/abc?e=1"), "http://127.0.0.1:47960");
+        assert_eq!(origin("http://127.0.0.1:47961/"), "http://127.0.0.1:47961");
+        assert_ne!(origin("http://127.0.0.1:47960/"), origin("http://127.0.0.1:47961/"));
     }
 }

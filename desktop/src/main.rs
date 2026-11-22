@@ -12,6 +12,7 @@ mod links;
 mod notify;
 mod page;
 mod prefs;
+mod said;
 mod shortcut;
 mod tray;
 mod view;

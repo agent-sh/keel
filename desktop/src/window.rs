@@ -12,9 +12,10 @@
 //! copy of the page reach the clipboard instead).
 use crate::clip::Gate;
 use crate::daemon::{Link, DEFAULT_URL};
-use crate::links;
+use crate::links::{self, origin};
 use crate::page;
 use crate::prefs::Look;
+use crate::said::{asked, Asked1};
 use crate::view::{Ask, Asked, Away, Engine, Opening, Showing, View};
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
@@ -84,11 +85,6 @@ fn png_within(texture: &gdk::Texture, edge: Option<i32>) -> Option<(Vec<u8>, i32
     let whole = gtk::gdk_pixbuf::Pixbuf::from_bytes(&bytes, gtk::gdk_pixbuf::Colorspace::Rgb, true, 8, w, h, stride as i32);
     let small = whole.scale_simple(nw, nh, gtk::gdk_pixbuf::InterpType::Bilinear)?;
     small.save_to_bufferv("png", &[]).ok().map(|png| (png, nw, nh))
-}
-
-/// `scheme://host:port` of an address.
-fn origin(u: &str) -> String {
-    u.split('/').take(3).collect::<Vec<_>>().join("/")
 }
 
 /// The pattern of the engine's user scripts for an origin: its scheme and host, any port
@@ -206,51 +202,6 @@ struct Win {
 
 fn rgba(hex: &str) -> gdk::RGBA {
     gdk::RGBA::parse(hex).unwrap_or(gdk::RGBA::WHITE)
-}
-
-/// What a message from the page asks, once its key was checked. `None` for anything else.
-pub fn asked(m: &Value, key: &str) -> Option<Asked1> {
-    if key.is_empty() || m.get("key").and_then(Value::as_str) != Some(key) {
-        return None;
-    }
-    let s = |k: &str| m.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-    let id = || m.get("id").and_then(Value::as_u64).unwrap_or(0);
-    match m.get("t").and_then(Value::as_str)? {
-        "start" => Some(Asked1::Ask(Ask::Start)),
-        "window" => Some(Asked1::Ask(Ask::Window(s("path")))),
-        // (`edge`: the longer side the page keeps a picture at.)
-        "paste" => Some(Asked1::Paste(id(), m.get("edge").and_then(Value::as_i64).filter(|e| (64..=16384).contains(e)).map(|e| e as i32))),
-        "copying" => Some(Asked1::Copying),
-        "copy" => Some(Asked1::Copy(id(), s("text"))),
-        "look" => {
-            let base = Look::of(m.get("dark").and_then(Value::as_bool).unwrap_or(false));
-            let color = |k: &str, or: &str| m.get(k).and_then(Value::as_str).and_then(crate::prefs::hex).unwrap_or(or).to_string();
-            Some(Asked1::Ask(Ask::Look(Look {
-                dark: base.dark,
-                bg: color("bg", &base.bg),
-                panel: color("panel", &base.panel),
-                fg: color("fg", &base.fg),
-                muted: color("muted", &base.muted),
-                line: color("line", &base.line),
-                need: color("need", &base.need),
-                scale: m.get("scale").and_then(Value::as_f64).filter(|s| (0.5..=3.0).contains(s)).unwrap_or(1.0),
-            })))
-        }
-        _ => None,
-    }
-}
-
-/// A checked message: something for the application, or the page's use of the clipboard
-/// (each with the number its answer carries back).
-#[derive(Debug)]
-pub enum Asked1 {
-    Ask(Ask),
-    /// The owner pasted and the paste event carried nothing: what the clipboard holds
-    /// (a picture no larger than the edge the page named).
-    Paste(u64, Option<i32>),
-    /// A copy is coming, said at the owner's press.
-    Copying,
-    Copy(u64, String),
 }
 
 impl Win {
@@ -741,52 +692,11 @@ mod tests {
         assert!(style(&l).contains(&l.panel));
     }
 
-    // The reviewer's reproduction: model-written HTML in a sandboxed frame posted these with no key.
-    #[test]
-    fn a_message_without_the_windows_key_is_not_acted_on() {
-        let key = "k-123";
-        for raw in [
-            r#"{"t":"window","path":"/s/abc"}"#,
-            r##"{"t":"look","dark":true,"bg":"#ff0000","scale":3}"##,
-            r#"{"t":"start"}"#,
-            r#"{"t":"paste","id":1}"#,
-            r#"{"t":"copying"}"#,
-            r#"{"t":"copy","id":2,"text":"planted"}"#,
-            r#"{"t":"window","path":"/s/abc","key":"guess"}"#,
-            r#"{"t":"window","path":"/s/abc","key":""}"#,
-        ] {
-            assert!(asked(&serde_json::from_str(raw).unwrap(), key).is_none(), "{raw}");
-        }
-        assert!(asked(&serde_json::from_str(r#"{"t":"window","path":"/s/abc","key":""}"#).unwrap(), "").is_none());
-    }
-
-    #[test]
-    fn a_keyed_message_is_read_and_a_link_for_the_browser_is_not_a_message() {
-        let m = |raw: &str| asked(&serde_json::from_str(raw).unwrap(), "k-123");
-        assert!(matches!(m(r#"{"t":"window","path":"/s/abc","key":"k-123"}"#), Some(Asked1::Ask(Ask::Window(p))) if p == "/s/abc"));
-        assert!(matches!(m(r#"{"t":"start","key":"k-123"}"#), Some(Asked1::Ask(Ask::Start))));
-        assert!(matches!(m(r#"{"t":"paste","id":7,"key":"k-123"}"#), Some(Asked1::Paste(7, None))));
-        assert!(matches!(m(r#"{"t":"paste","id":7,"edge":1568,"key":"k-123"}"#), Some(Asked1::Paste(7, Some(1568)))));
-        assert!(matches!(m(r#"{"t":"paste","id":7,"edge":1,"key":"k-123"}"#), Some(Asked1::Paste(7, None))));
-        assert!(matches!(m(r#"{"t":"copying","key":"k-123"}"#), Some(Asked1::Copying)));
-        assert!(matches!(m(r#"{"t":"copy","id":8,"text":"words","key":"k-123"}"#), Some(Asked1::Copy(8, t)) if t == "words"));
-        assert!(matches!(m(r#"{"t":"look","dark":true,"bg":"red","key":"k-123"}"#), Some(Asked1::Ask(Ask::Look(l))) if l.dark && l.bg == Look::of(true).bg));
-        // No message opens the browser: only the owner's click on a link does.
-        assert!(m(r#"{"t":"external","url":"https://x.example/","key":"k-123"}"#).is_none());
-    }
-
     #[test]
     fn the_script_pattern_names_the_host_without_its_port() {
         assert_eq!(pattern("http://127.0.0.1:47960"), "http://127.0.0.1/*");
         assert_eq!(pattern("http://localhost:8080"), "http://localhost/*");
         assert_eq!(pattern("http://[::1]:47960"), "http://[::1]/*");
         assert_eq!(pattern("http://keel.localhost"), "http://keel.localhost/*");
-    }
-
-    #[test]
-    fn the_main_frame_origin_is_scheme_host_and_port() {
-        assert_eq!(origin("http://127.0.0.1:47960/s/abc?e=1"), "http://127.0.0.1:47960");
-        assert_eq!(origin("http://127.0.0.1:47961/"), "http://127.0.0.1:47961");
-        assert_ne!(origin("http://127.0.0.1:47960/"), origin("http://127.0.0.1:47961/"));
     }
 }
