@@ -578,7 +578,13 @@ const TAIL = 150; // events rendered first when a long session opens
 const isPrompt = shownAsPrompt;
 
 // Who stopped a turn, as the footer says it (a child's turn records the same actor as its agent card).
-const STOP_BY: Record<string, string> = { owner: " by you", parent: " by the parent agent", parent_turn: " with the parent's turn", time_limit: ": its time limit passed", parent_archived: ": its parent session was archived" };
+// The stoppers of src/core/stoppers.ts, as the owner reads them; a stop nobody named is "Stopped" and no more.
+const STOP_BY: Record<string, string> = {
+  owner: " by you", phone: " by you, from the phone", edit: ": you edited an earlier prompt", send_now: ": you sent a new message",
+  parent: " by the parent agent", parent_turn: " with the parent's turn", time_limit: ": its time limit passed", parent_archived: ": its parent session was archived",
+  hook: " by a hook", supervisor: " by the supervisor", review: " with its review", handoff: " to move the session",
+  archive: ": the session was archived", delete: ": the session was deleted", api: " through the API",
+};
 
 const isInput = (e: StoredEvent) => SYSTEM_INPUT.has(e.data.kind) || isPeerMessage(e);
 

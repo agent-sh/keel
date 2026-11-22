@@ -15,6 +15,7 @@ import { lineage } from "../core/tree.ts";
 import { registerHooks } from "../engine/hooks.ts";
 import { armOf, type Experiments } from "./experiments.ts";
 import { meanInterval, xmr, XMR_MIN, type Interval } from "./stats.ts";
+import { ownerStop, stopper } from "../core/stoppers.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS telemetry_turns (
@@ -65,13 +66,15 @@ const NORMAL = new Set(["end_turn", "stop_sequence", "stop"]);
 // A turn's end reason as an outcome class.
 export function outcomeOf(reason: string, stoppedBy?: string | null): string {
   if (NORMAL.has(reason)) return "ok";
-  if (reason === "interrupted") return stoppedBy && stoppedBy !== "owner" ? "stopped_by_parent" : "stopped_by_owner";
+  // The owner's own Stop, the stop of an agent by its side, or a stop by anything else (a message of
+  // the owner's that took the turn's place, a hook, a stop nobody named).
+  if (reason === "interrupted") return ownerStop(stoppedBy) ? "stopped_by_owner" : stopper(stoppedBy).parent ? "stopped_by_parent" : "stopped";
   if (reason === "restart") return "cut";
   if (reason === "max_steps" || reason === "max_tokens") return "budget";
   if (reason === "refusal") return "refusal";
   return "error";
 }
-export const OUTCOMES = ["ok", "error", "refusal", "stopped_by_owner", "stopped_by_parent", "cut", "budget"] as const;
+export const OUTCOMES = ["ok", "error", "refusal", "stopped_by_owner", "stopped_by_parent", "stopped", "cut", "budget"] as const;
 
 type Turn = Record<string, any>;
 export type Filter = { since?: number; until?: number };

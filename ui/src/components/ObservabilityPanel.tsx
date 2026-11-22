@@ -28,7 +28,7 @@ type Report = {
 };
 
 const OUTCOME: Record<string, string> = {
-  ok: "ended normally", error: "error", refusal: "refused", stopped_by_owner: "stopped by you", stopped_by_parent: "stopped by its parent", cut: "cut by a restart", budget: "step or output budget",
+  ok: "ended normally", error: "error", refusal: "refused", stopped_by_owner: "stopped by you", stopped_by_parent: "stopped by its parent", stopped: "stopped otherwise", cut: "cut by a restart", budget: "step or output budget",
 };
 const cost = (i: Interval | null) => (!i ? "unknown" : (
   <span className="whitespace-nowrap"><span className="text-fg">{fmtMetric("usd", i.estimate)}</span>{i.method !== "none" && <span className="text-faint"> [{fmtMetric("usd", i.lo)}, {fmtMetric("usd", i.hi)}]</span>}</span>

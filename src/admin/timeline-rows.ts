@@ -13,6 +13,7 @@ import type { ErrorRecord, TurnStatus } from "../core/types.ts";
 import { errorClass } from "./classes.ts";
 import { waitWords } from "../core/watch.ts";
 import { FAIL_WORD, NEEDS, STATE_WORD } from "../core/state-words.ts";
+import { ownerStop, stopSays, stopper } from "../core/stoppers.ts";
 
 export type TimelineKind =
   | "turn" | "agent" | "wait" | "loop" | "approval" | "question" | "compaction" | "model" | "restart" | "error" | "goal" | "limit" | "files"
@@ -116,7 +117,7 @@ export function originOf(o: Opener): { key: string; words: string; lead: string;
 const NORMAL = new Set(["end_turn", "stop_sequence", "stop"]);
 export function outcomeOf(reason: string, stoppedBy?: string | null): string {
   if (NORMAL.has(reason)) return "ok";
-  if (reason === "interrupted") return stoppedBy && stoppedBy !== "owner" ? "stopped_by_parent" : "stopped_by_owner";
+  if (reason === "interrupted") return ownerStop(stoppedBy) ? "stopped_by_owner" : stopper(stoppedBy).parent ? "stopped_by_parent" : "stopped";
   if (reason === "restart") return "cut";
   if (reason === "max_steps" || reason === "max_tokens") return "budget";
   if (reason === "refusal") return "refusal";
@@ -177,8 +178,8 @@ export function turnRow(t: TurnInput): TimelineRow {
     case "ok": text = `${head}, ${n}`; break;
     case "error": text = `${head}: failed${after}`; tone = "failed"; break;
     case "refusal": text = `${head}: the model declined${after}`; tone = "failed"; break;
-    case "stopped_by_owner": text = `${head}, stopped by the owner${after}`; break;
-    case "stopped_by_parent": text = `${head}, stopped by its parent${after}`; break;
+    // In the stopper's own words (src/core/stoppers.ts): the owner only when the owner stopped it.
+    case "stopped_by_owner": case "stopped_by_parent": case "stopped": text = `${head}, ${stopSays(t.end!.stopped_by)}${after}`; break;
     case "cut": text = `${head}, cut ${t.end!.crashed ? "when the daemon went down" : "by a daemon restart"}${after}`; break;
     case "budget": text = `${head}, ended at ${t.end!.reason === "max_tokens" ? "the output limit" : "its step budget"}${after}`; break;
     // No turn ran: the row says what happened instead of a turn of no length.
@@ -408,10 +409,10 @@ const DOING = (s: TurnStatus, now: number, output?: number): string => {
 const TIMER_SLACK_MS = 60_000;
 const NOW_STATE: Record<string, TimelineNow["state"]> = { need: "owner", work: "working", wait: "waiting", fail: "failed", declined: "declined", stop: "stopped", resume: "resume", done: "done" };
 // How the last turn ended, as a state, where the daemon's own word is not at hand.
-const LAST_STATE: Record<string, TimelineNow["state"]> = { ok: "done", error: "failed", refusal: "declined", stopped_by_owner: "stopped", stopped_by_parent: "stopped", cut: "stopped", budget: "stopped" };
+const LAST_STATE: Record<string, TimelineNow["state"]> = { ok: "done", error: "failed", refusal: "declined", stopped_by_owner: "stopped", stopped_by_parent: "stopped", stopped: "stopped", cut: "stopped", budget: "stopped" };
 const ENDED: Record<string, string> = {
   ok: "finished", error: "failed", refusal: "was declined by the model", stopped_by_owner: "was stopped by the owner",
-  stopped_by_parent: "was stopped by its parent", cut: "was cut by a daemon restart", budget: "ended at its budget",
+  stopped_by_parent: "was stopped by its parent", stopped: "was stopped", cut: "was cut by a daemon restart", budget: "ended at its budget",
 };
 const AGENTS_SHOWN = 4;
 export function nowLines(n: NowInput): TimelineNow {

@@ -46,7 +46,8 @@ test("a settings change names what changed and never shows a text or a secret-sh
 });
 
 test("the owner's Stop and an agent's start and end", () => {
-  expect([stopLine("owner"), stopLine(undefined), stopLine("hook")]).toEqual(["[turn] stopped by the owner", "[turn] stopped by the owner", "[turn] stopped by a hook"]);
+  // A stop nobody named is a stop, and nobody's: it read "stopped by the owner".
+  expect([stopLine("owner"), stopLine(undefined), stopLine("hook"), stopLine("send_now")]).toEqual(["[turn] stopped by the owner", "[turn] stopped", "[turn] stopped by a hook", "[turn] ended when the owner sent a new message"]);
   const a = { title: "Tool lane 3", type: "general", status: "running" as const, created: 1000, ended: null, end_reason: null, background: true, machine: null };
   expect(agentLine(a, undefined)).toBe('[agent] started: "Tool lane 3" (general, in the background)');
   // The same state again says nothing; its end says how and after how long.
@@ -86,6 +87,7 @@ test("no secret reaches the log file or standard output, in any field a line car
   delete G.__keelLogs;
   const S = "01a1fd57-0861-7438-b6d5-030fa4213433";
   let lines = 0;
+  let wordless = 0; // lines that print no value at all
   try {
     installLogs(dir);
     for (const [, secret] of SECRET_KINDS) {
@@ -102,7 +104,8 @@ test("no secret reaches the log file or standard output, in any field a line car
         [exitLine({ restart: true, parked: 0, upMs: 1, reason: secret })], [startLine({ revision: "r", pid: 1, url: "http://127.0.0.1:1", state: `/state/${secret}`, config: "/c" })],
       ];
       for (const [text, level] of texts) { say(text, level); lines++; }
-      sayAt({ session: S }, stopLine(`a hook that printed ${secret}`)); lines++;
+      // (A stopper is one of a fixed set of words: one that is not is said as a stop, and never printed.)
+      sayAt({ session: S }, stopLine(`a hook that printed ${secret}`)); lines++; wordless++;
       // Lines of other code: an MCP server's environment and stderr, a provider's error as text, as an Error and as an object.
       console.error(`[mcp] leaky failed to start with env GITHUB_TOKEN=${secret}: ${secret}`); lines++;
       console.error("[provider]", new Error(`401 invalid credentials: ${secret}`)); lines++;
@@ -123,7 +126,7 @@ test("no secret reaches the log file or standard output, in any field a line car
     }
     // The lines are still what they say: the words around the value stay.
     expect(hidden(printed[0]!)).toBe('[agent] started: "Deploy <redacted>" (general, in the background, on box <redacted>)');
-    expect(printed.filter((l) => hidden(l).includes("<redacted>")).length).toBe(lines);
+    expect(printed.filter((l) => hidden(l).includes("<redacted>")).length).toBe(lines - wordless);
   } finally {
     for (const m of methods) (console as any)[m] = saved[m];
     if (had) G.__keelLogs = had; else delete G.__keelLogs;

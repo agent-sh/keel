@@ -11,6 +11,7 @@ import { scrubbedLine } from "../core/conceal.ts";
 import { runMode } from "../core/runmode.ts";
 import { logAt, logOwn } from "./logs.ts";
 import { dur } from "./timeline-rows.ts";
+import { stopSays } from "../core/stoppers.ts";
 
 // Where the lines go: the daemon's log (logs.ts logOwn). A daemon a command runs inside its own
 // process (keel run with no daemon answering) says none of them: they are a serving daemon's story,
@@ -77,7 +78,8 @@ export function settingsChanges(before: Record<string, any>, after: Record<strin
 }
 export const settingsLine = (changes: string[]) => clip(`[daemon] settings changed: ${list(changes, 12)}`);
 
-export const stopLine = (by: string | undefined) => clip(`[turn] stopped by ${!by || by === "owner" ? "the owner" : by === "hook" ? "a hook" : val(by)}`);
+// A stopped turn, in the stopper's own words; one nobody named is "stopped", never the owner's.
+export const stopLine = (by: string | undefined) => clip(`[turn] ${stopSays(by)}`);
 
 const ENDED: Record<string, string> = { completed: "reported", failed: "failed", stopped: "was stopped", incomplete: "ended without finishing" };
 // An agent's start and end, on its parent's session. Null for a state that is neither.

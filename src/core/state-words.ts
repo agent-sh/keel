@@ -178,6 +178,8 @@ export function agentState(a: AgentLike, told?: SessionState): SessionState {
 const STOPPED_BY: Record<string, string> = {
   owner: "You stopped this agent", parent: "Its parent agent stopped it", parent_turn: "Stopped with its parent's turn",
   time_limit: "Its time limit passed", parent_archived: "Its parent session was archived",
+  hook: "A hook stopped its turn", supervisor: "The supervisor stopped its turn", api: "Its turn was stopped through the API",
+  handoff: "Its turn was stopped to move its session", unknown: "Its turn was stopped",
 };
 const PARTIAL: Record<string, string> = {
   refusal: "The model declined; the report is partial", max_tokens: "Output limit reached; the report is partial", max_steps: "Step budget spent; the report is partial",

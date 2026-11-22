@@ -33,8 +33,12 @@ test("a turn's sentence leads with who started it, then how it ended and what it
   expect(never).toMatchObject({ sub: "unstarted", tone: "plain", text: "A prompt was accepted; the daemon went down before its turn started" });
   expect(never.ms).toBeUndefined();
   // Stopped while it was set up: a turn of no length says no duration.
-  expect(row({}, { reason: "interrupted", ms: 0 }, 0)).toMatchObject({ text: "Owner prompt, stopped by the owner before its first step" });
-  expect(row({}, { reason: "interrupted", ms: 0 }, 0).ms).toBeUndefined();
+  expect(row({}, { reason: "interrupted", stopped_by: "owner", ms: 0 }, 0)).toMatchObject({ sub: "stopped_by_owner", text: "Owner prompt, stopped by the owner before its first step" });
+  expect(row({}, { reason: "interrupted", stopped_by: "owner", ms: 0 }, 0).ms).toBeUndefined();
+  // Who stopped it is said in the stopper's own words, and a stop nobody named names nobody (it read "stopped by the owner").
+  expect(row({}, { reason: "interrupted", ms: 0 }, 0)).toMatchObject({ sub: "stopped", text: "Owner prompt, stopped before its first step" });
+  expect(row({ origin: "restart" }, { reason: "interrupted", stopped_by: "send_now" }, 0)).toMatchObject({ sub: "stopped", text: "Resumed after a daemon restart, ended when the owner sent a new message before its first step" });
+  expect(row({}, { reason: "interrupted", stopped_by: "parent" }, 2)).toMatchObject({ sub: "stopped_by_parent", text: "Owner prompt, stopped by its parent after 2 steps" });
   // A call the owner, a rule or the judge denied is a decision: it is said, and it is not a failure.
   const refused = row({}, { reason: "end_turn" }, 2, { tools: 1, denied_tools: 1 });
   expect(refused).toMatchObject({ tone: "plain", text: "Owner prompt, 2 steps, 1 denied call", turn: { denied_tools: 1, failed_tools: 0 } });
