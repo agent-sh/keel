@@ -91,7 +91,8 @@ test("an edit's type error reaches the model and the tool card, and its fix", as
   expect(run).toMatchObject({ state: "running", root: ws, started_by: session.id, pull: true });
   if (sandboxed) {
     expect(run.sandbox).toBe("workspace-write, no network");
-    expect(run.argv.join(" ")).toMatch(/bwrap .*--unshare-net .*--bind \S+lsp-\d+ .* -- \S+tsc --lsp --stdio$/);
+    // The session's profile, and the server's program as the last thing it runs (after the sandbox's own git settings).
+    expect(run.argv.join(" ")).toMatch(/bwrap .*--unshare-net .*--bind \S+lsp-\d+ .* -- .*\S+tsc --lsp --stdio$/);
   }
   expect(view.stats).toMatchObject({ edits: 3, answered: 3, timed_out: 0, errors: 1, fixed: 1 });
   expect(view.stats.tokens).toBeGreaterThan(20);
