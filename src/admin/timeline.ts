@@ -96,7 +96,10 @@ type Line = { head: string; top: number; low: { id: string; seq: number; parent:
 // stopped for time, short of what it was asked) is the last to go: dropped, a
 // long session starts over and never gets there.
 const LINES_KEPT = 256;
-type ErrorLite = Pick<ErrorRecord, "id" | "ts" | "source" | "message" | "count" | "turn_event" | "span_id" | "resolved_ts">;
+type ErrorLite = Pick<ErrorRecord, "id" | "ts" | "source" | "message" | "count" | "turn_event" | "span_id" | "resolved_ts" | "recovered_ts">;
+const ERROR_COLS = "e.id, e.ts, e.source, e.message, e.count, e.turn_event, e.span_id, e.resolved_ts";
+const RECOVERED = ", CASE WHEN t.open - t.pending <= 0 THEN t.healed_ts END AS recovered_ts";
+const ERROR_TALLY = " LEFT JOIN error_tally t ON t.error_id = e.id";
 // What every part of one page reads the same: looked up once, when first asked.
 type Ctx = {
   look: Lookups; told: Set<string>;
@@ -494,8 +497,9 @@ export class Timeline {
   // session from before the record), and as the way into the Errors panel.
   private errors(sessionId: string, at: Cursor, n: number, since: number, ctx: Ctx): TimelineRow[] {
     const db = this.store.db;
+    const tally = this.table("error_tally");
     const mine = db.query<ErrorLite, [string, number, number, string, number]>(
-      "SELECT id, ts, source, message, count, turn_event, span_id, resolved_ts FROM errors WHERE session_id = ? AND ts >= ? AND (ts, id) < (?, ?) ORDER BY ts DESC, id DESC LIMIT ?");
+      `SELECT ${ERROR_COLS}${tally ? RECOVERED : ""} FROM errors e${tally ? ERROR_TALLY : ""} WHERE e.session_id = ? AND e.ts >= ? AND (e.ts, e.id) < (?, ?) ORDER BY e.ts DESC, e.id DESC LIMIT ?`);
     const c = ctx.causes();
     if (!c) return mine.all(sessionId, since, at.ts, at.id, n).map((e) => errorRow(lite(e)));
     const groups = db.query<{ fp: string; cls: string; count: number; last_ts: number; refs: string }, [string, number, number, string, number]>(
@@ -595,7 +599,7 @@ export class Timeline {
   }
 }
 
-const lite = (e: ErrorLite): ErrorLite => ({ ...e, turn_event: e.turn_event ?? undefined, span_id: e.span_id ?? undefined, resolved_ts: e.resolved_ts ?? undefined });
+const lite = (e: ErrorLite): ErrorLite => ({ ...e, turn_event: e.turn_event ?? undefined, span_id: e.span_id ?? undefined, resolved_ts: e.resolved_ts ?? undefined, recovered_ts: e.recovered_ts ?? undefined });
 
 // "1h", "30m", "2d", "90s", or a time in epoch milliseconds or ISO form.
 export function parseSince(v: string, now = Date.now()): number {

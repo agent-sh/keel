@@ -171,6 +171,8 @@ export class Outages {
   }
 
   // Whether an outage of the provider is known: one that is open, or one the last daemon left open.
+  active(provider: string): boolean { return this.opens.has(provider); }
+
   known(provider: string): boolean {
     return this.opens.has(provider) || this.carried.has(provider);
   }

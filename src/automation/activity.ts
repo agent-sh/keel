@@ -75,9 +75,17 @@ export function record(kind: ActivityKind, sub: string, sessionId: string | null
     store.side.later("an activity row", () => void store.db.query("INSERT INTO activity (id, ts, kind, sub, session_id, text, data, turn_event) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run(a.id, a.ts, kind, sub, sid, a.text, json, turnEvent));
     emit("activity", a);
+    return a;
   } catch (e) {
     capture(e, { at: "activity", kind });
   }
+}
+
+// Update the one outage row in place; never append a row per waiting session.
+export function outageCount(id: string, sessions: number, text: string) {
+  const r = D().store.db.query<Row, [string, number, string]>(`UPDATE activity SET text = ?1, data = json_set(data, '$.sessions', ?2)
+    WHERE id = ?3 AND kind = 'daemon' AND sub = 'outage' AND json_extract(data, '$.sessions') < ?2 RETURNING *`).get(clip(text, 500), sessions, id);
+  if (r) emit("activity", { ...r, data: JSON.parse(r.data!) });
 }
 
 type Row = Omit<Activity, "data" | "said" | "more"> & { data: string | null; said?: string | null; rn?: number; of_session?: number };

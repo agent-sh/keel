@@ -356,14 +356,14 @@ export const CLASS: Record<string, string> = FAIL_WORD;
 // A kind of failure that last happened in this session. The errors table folds
 // repeats across every session, so its count is said as that; the message
 // stays in the Errors panel.
-export function errorRow(e: Pick<ErrorRecord, "id" | "ts" | "source" | "message" | "count" | "turn_event" | "span_id" | "resolved_ts">): TimelineRow {
+export function errorRow(e: Pick<ErrorRecord, "id" | "ts" | "source" | "message" | "count" | "turn_event" | "span_id" | "resolved_ts" | "recovered_ts">): TimelineRow {
   const cls = e.source === "provider" ? errorClass({ message: e.message }) : null;
   const n = e.count ?? 1;
   // A hook of the owner's that failed is the hook's, in its own words: the tool it ran for did not fail.
   const hook = e.source === "tool" && /^Hook (timed out|failed on) /.test(e.message) ? e.message.split("\n")[0]!.slice(0, 200) : undefined;
   return clean({
-    id: e.id, ts: e.ts, kind: "error" as const, sub: e.source, tone: (e.resolved_ts ? "plain" : "failed") as Tone,
-    text: `${hook ?? `${SOURCE[e.source] ?? "Other"} error${cls && CLASS[cls] ? ` (${CLASS[cls]})` : ""}`}${n > 1 ? `, ${n} times in all sessions` : ""}${e.resolved_ts ? ", marked fixed" : ""}`,
+    id: e.id, ts: e.ts, kind: "error" as const, sub: e.source, tone: (e.resolved_ts || e.recovered_ts ? "plain" : "failed") as Tone,
+    text: `${hook ?? `${SOURCE[e.source] ?? "Other"} error${cls && CLASS[cls] ? ` (${CLASS[cls]})` : ""}`}${n > 1 ? `, ${n} times in all sessions` : ""}${e.resolved_ts ? ", marked fixed" : e.recovered_ts ? ", recovered" : ""}`,
     turn_event: e.turn_event, ...refs({ error_id: e.id, span_id: e.span_id }),
   });
 }

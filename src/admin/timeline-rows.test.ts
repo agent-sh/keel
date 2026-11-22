@@ -141,6 +141,7 @@ test("a failure row counts what happened in this session, never what happened el
   const row = errorRow({ id: "e1", ts: 9, source: "provider", message: "Scripted: 529 overloaded for prompt SECRET-TEXT", count: 3, turn_event: "t1", span_id: "s1" });
   expect(row).toMatchObject({ kind: "error", tone: "failed", text: "Model request error (overloaded), 3 times in all sessions", turn_event: "t1", refs: { error_id: "e1", span_id: "s1" } });
   expect(errorRow({ id: "e2", ts: 9, source: "tool", message: "x", resolved_ts: 10 })).toMatchObject({ tone: "plain", text: "Tool error, marked fixed" });
+  expect(errorRow({ id: "e3", ts: 9, source: "tool", message: "x", recovered_ts: 10 })).toMatchObject({ tone: "plain", text: "Tool error, recovered" });
 });
 
 const quiet = { ts: 100_000, approvals: [], questions: [], waits: [], agents: [], loops: [], queue: { queued: 0, steers: 0, held: false, owed: false } };

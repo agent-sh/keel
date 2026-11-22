@@ -1472,7 +1472,7 @@ export class Engine {
         if (!quiet) this.wires.set(id, tap);
         // (The hooks that time a stream's pieces, looked up once a request, not at every piece.)
         const timing = allHooks().filter((h) => h.requestDelta);
-        const res = await wireScope.run(tap, () => st.provider.stream({ ...req, onHeaders, connectWaitMs: outages ? OUTAGE.probeMs : undefined }, (d) => {
+        const res = await wireScope.run(tap, () => st.provider.stream({ ...req, onHeaders, connectWaitMs: outages?.active(st.provider.id) ? OUTAGE.probeMs : undefined }, (d) => {
           if ((first || silent) && !quiet) { first = silent = false; this.status(id, { kind: "idle" }); }
           last = Date.now();
           if (!quiet) this.outputs.set(id, last);

@@ -78,10 +78,10 @@ export class AnthropicProvider implements Provider {
     return {};
   }
 
-  private signer(url: string, method = "POST") {
+  private signer(method = "POST") {
     const a = this.auth;
     if (a?.kind !== "sigv4") return undefined;
-    return (body: string) => sigv4({ method, url, body, region: this.region, service: "bedrock", creds: a.creds });
+    return (body: string, url: string) => sigv4({ method, url, body, region: this.region, service: "bedrock", creds: a.creds });
   }
 
   // What the account can use, from the provider's own listing.
@@ -102,7 +102,7 @@ export class AnthropicProvider implements Provider {
     let next = "";
     for (let page = 0; page < 20; page++) {
       const url = `${base}/inference-profiles?maxResults=1000${next ? `&nextToken=${encodeURIComponent(next)}` : ""}`;
-      const d = await getJson(this.label, url, { ...this.headers(), ...this.signer(url, "GET")?.("") }, this.secrets);
+      const d = await getJson(this.label, url, this.headers(), this.secrets, undefined, (target) => this.signer("GET")?.("", target));
       for (const p of d.inferenceProfileSummaries ?? []) {
         if (p.status === "ACTIVE" && /\.anthropic\.claude-/.test(p.inferenceProfileId)) ids.push(p.inferenceProfileId);
       }
@@ -166,7 +166,7 @@ export class AnthropicProvider implements Provider {
     req = { ...req, extraHeaders: req.extraHeaders ? headers : undefined };
     const sent = { ...this.headers(), accept: "application/vnd.amazon.eventstream" };
     return runEvents(codec, req, ctx, onDelta, httpEvents({
-      label: this.label, url, secrets: this.secrets, headers: sent, sign: this.signer(url),
+      label: this.label, url, secrets: this.secrets, headers: sent, sign: this.signer(),
       // A broker that signs for us renews an expired credential itself: the request goes once more after it had time to.
       ...(this.auth.kind === "none" ? { onAuthFailure: async (err: ProviderError) => (EXPIRED.test(err.message) ? (await Bun.sleep(BROKER_RENEW_MS), sent) : null) } : {}),
     }, req));

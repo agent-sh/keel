@@ -430,6 +430,120 @@ const sse = ['event: message_start\ndata: {"type":"message_start","message":{"id
     'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}', 'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}',
     'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}', 'event: message_stop\ndata: {"type":"message_stop"}'].join("\n\n") + "\n\n";
 
+test("healthy first headers can take 12 or 30 seconds without a second model request", async () => {
+  const { httpEvents, runEvents, ctxFor } = await import("./drive.ts");
+  const { anthropicWire } = await import("./wires/anthropic.ts");
+  const dir = mkdtempSync(join(tmpdir(), "keel-slow-first-"));
+  const store = new Store(dir);
+  const bus = new Bus();
+  const model = { model: "fixture", context: 100_000, output: 1000, tools: false };
+  const requests = new Map<number, number>();
+  const ctl = new AbortController();
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 0, async fetch(req) {
+    const delay = Number(new URL(req.url).pathname.slice(1));
+    requests.set(delay, (requests.get(delay) ?? 0) + 1);
+    await Promise.race([Bun.sleep(delay), new Promise((ok) => ctl.signal.addEventListener("abort", ok, { once: true }))]);
+    return new Response(sse, { headers: { "content-type": "text/event-stream" } });
+  } });
+  const delays = new Map<string, number>();
+  const provider: Provider = {
+    id: "local", family: "other", available: () => true, list: async () => [model],
+    stream: (req, delta) => runEvents(anthropicWire, req, ctxFor("local", req, []), delta, httpEvents({
+      label: "stub", url: `http://127.0.0.1:${server.port}/${delays.get(req.sessionKey!)}`, headers: {}, idleMs: 40_000,
+    }, req)),
+  };
+  const providers = new Providers(dir, { providers: [provider] });
+  providers.catalog.load = async () => {};
+  const engine = new Engine(store, bus, providers, new ErrorTracker(store, bus), join(dir, "spill"));
+  try {
+    // A healthy provider should not enter the outage path even once.
+    let unexpected!: () => void;
+    const waiting = new Promise<"wait">((resolve) => { unexpected = () => resolve("wait"); });
+    providers.outages.listen({ waiting: (_id, o) => { if (o) unexpected(); } });
+    const sessions = [12_000, 30_000].map((delay) => {
+      const s = store.createSession({ model: `${provider.id}:${model.model}`, workspace: dir });
+      delays.set(s.id, delay);
+      engine.send(s.id, "hello");
+      return s.id;
+    });
+    expect(await Promise.race([waiting, Promise.all(sessions.map((id) => engine.idle(id))).then(() => "done")])).toBe("done");
+    expect([...requests].sort()).toEqual([[12_000, 1], [30_000, 1]]);
+    for (const id of sessions) expect(store.events(id).find((e) => e.kind === "turn_end")?.data.reason).toBe("end_turn");
+  } finally {
+    await engine.drain(0);
+    ctl.abort();
+    providers.shutdown();
+    server.stop(true);
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 45_000);
+
+test("307 and 308 preserve API requests on the same origin, not across hosts", async () => {
+  const { streamEvents, getJson } = await import("./http.ts");
+  const requests: { method: string; auth: string | null; body: string }[] = [];
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
+    const u = new URL(req.url);
+    if (u.pathname === "/307" || u.pathname === "/308") return new Response(null, { status: Number(u.pathname.slice(1)), headers: { location: "/api" } });
+    if (u.pathname === "/external") return new Response(null, { status: 307, headers: { location: `http://localhost:${u.port}/api` } });
+    requests.push({ method: req.method, auth: req.headers.get("authorization"), body: await req.text() });
+    return req.method === "GET" ? Response.json({ models: [] }) : new Response(sse);
+  } });
+  const url = `http://127.0.0.1:${server.port}`;
+  const headers = { authorization: "Bearer fixture" };
+  const post = async (path: string) => {
+    const events = [];
+    for await (const e of streamEvents({ label: "stub", url: url + path, headers, body: { test: true }, signal: never })) events.push(e);
+    return events;
+  };
+  try {
+    for (const path of ["/307", "/308"]) {
+      expect(await getJson("stub", url + path, headers)).toEqual({ models: [] });
+      expect(await post(path)).not.toHaveLength(0);
+    }
+    await expect(post("/external")).rejects.toMatchObject({ kind: "unreachable", status: 307 });
+    expect(requests).toEqual(["GET", "POST", "GET", "POST"].map((method) => ({ method, auth: headers.authorization, body: method === "GET" ? "" : '{"test":true}' })));
+  } finally { server.stop(true); }
+});
+
+test("a listing timeout is recovered by its own provider, not another one", async () => {
+  const { getJson } = await import("./http.ts");
+  const dir = mkdtempSync(join(tmpdir(), "keel-listing-recovery-"));
+  const store = new Store(dir);
+  const errors = new ErrorTracker(store, new Bus());
+  let ready = false;
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch() {
+    if (!ready) await Bun.sleep(80);
+    return Response.json([]);
+  } });
+  const p: Provider = { id: "slow", family: "other", available: () => true, stream: async () => { throw new Error("unused"); },
+    list: () => getJson("stub", `http://127.0.0.1:${server.port}/`, {}, [], Date.now() + (ready ? 1000 : 20)),
+  };
+  const providers = new Providers(dir, {
+    providers: [p, { ...p, id: "other", list: async () => [] }],
+    capture: (source, error, ctx, at) => errors.capture(source, error, ctx, at),
+    recover: (group) => errors.recoverGroup("provider", group),
+  });
+  providers.catalog.load = async () => {};
+  try {
+    await providers.refresh("slow");
+    const row = errors.list().find((e) => e.message.includes("listing timed out"));
+    expect(row).toBeDefined();
+    expect(row?.recovered_ts).toBeUndefined();
+    await providers.refresh("other");
+    expect(errors.get(row!.id)?.recovered_ts).toBeUndefined();
+    ready = true;
+    await providers.refresh("slow");
+    expect(errors.get(row!.id)?.recovered_ts).toBeGreaterThanOrEqual(row!.ts);
+    expect(errors.get(row!.id)?.read_ts).toBeTruthy();
+  } finally {
+    providers.shutdown();
+    server.stop(true);
+    store.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a waiting Bedrock turn follows its broker to a new loopback port", async () => {
   const { AnthropicProvider } = await import("./anthropic.ts");
   const dir = mkdtempSync(join(tmpdir(), "keel-broker-move-"));

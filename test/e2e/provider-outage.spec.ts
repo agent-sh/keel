@@ -223,6 +223,12 @@ test("twelve agents of one parent wait through an outage of a minute: none fails
   expect(waits).toHaveLength(1);
   expect(waits[0]).toContain("[harness] 12 agents wait: the provider cannot be reached since ");
   expect(notes.filter((t) => /the 12 agents that waited for it went on/.test(t))).toHaveLength(1);
+  // Waiters that joined after confirmation update the same Activity row.
+  const { items } = await (await request.get("/api/activity?kind=daemon&limit=20")).json();
+  const outage = items.find((a: any) => a.sub === "outage");
+  expect(outage?.data.sessions).toBe(N + 2); // agents, starter and parent
+  expect(outage?.text).toContain(`${N + 2} sessions wait`);
+
   // The whole daemon sent a handful of requests into the outage, not one per agent per try.
   const counter = await open(request, "Outage: count");
   await request.post(`/api/sessions/${counter}/messages`, { data: { text: "script:outage-count" } });

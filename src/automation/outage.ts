@@ -12,7 +12,7 @@ import { span } from "../core/watch.ts";
 import type { Outage } from "../providers/outage.ts";
 import { addNotice, hasNotice } from "../tools/jobs.ts";
 import * as activity from "./activity.ts";
-import { raise } from "./alerts.ts";
+import { raise, readWhere } from "./alerts.ts";
 import { D, capture } from "./core.ts";
 
 const keyOf = (o: Pick<Outage, "provider" | "since">) => `outage:${o.provider}:${o.since}`;
@@ -51,29 +51,46 @@ function tellParent(parent: string, o: Outage) {
 export function bind() {
   const { providers, bus } = D();
   const label = (id: string) => providers.get(id)?.label ?? id;
+  const rows = new Map<string, string>();
+  const began = (o: Outage) => outageBegan(label(o.provider), zonedClock(o.since), o.sessions.length);
   providers.outages.listen({
     // The state of the session (and of the sessions above it) is read again: it waits, or it went on.
     waiting: (session, o) => {
       bus.emit({ t: "feature", name: "outage", session_id: session, data: o ? { provider: o.provider, since: o.since } : null });
       try {
+        if (o?.confirmed) {
+          const key = keyOf(o);
+          let id = rows.get(key);
+          // A resumed outage can still grow. Its original row is close to its start.
+          if (!id) {
+            id = D().store.db.query<{ id: string }, [number, string, number]>(`SELECT id FROM activity WHERE ts >= ? AND kind = 'daemon' AND sub = 'outage'
+              AND json_extract(data, '$.provider') = ? AND json_extract(data, '$.since') = ? ORDER BY ts LIMIT 1`).get(o.since, o.provider, o.since)?.id;
+            if (id) rows.set(key, id);
+          }
+          if (id) activity.outageCount(id, o.sessions.length, began(o));
+        }
         const parent = o?.confirmed ? parentOf(session) : undefined;
         if (o && parent) tellParent(parent, o);
       } catch (e) { capture(e, { at: "outage notice" }); }
     },
     open: (o) => {
-      const text = outageBegan(label(o.provider), zonedClock(o.since), o.sessions.length);
+      const text = began(o);
       say(`[provider] ${text}`, "warn");
       try {
-        activity.record("daemon", "outage", null, text, { provider: o.provider, since: o.since, sessions: o.sessions.length, message: o.message });
+        const row = activity.record("daemon", "outage", null, text, { provider: o.provider, since: o.since, sessions: o.sessions.length, message: o.message });
+        if (row) rows.set(keyOf(o), row.id);
         for (const parent of new Set(o.sessions.map(parentOf))) if (parent) tellParent(parent, o);
       } catch (e) { capture(e, { at: "outage began" }); }
     },
     long: (o) => {
-      raise("outage", null, "Work is waiting for a provider", outageBegan(label(o.provider), zonedClock(o.since), o.sessions.length), { provider: o.provider, since: o.since });
+      raise("outage", null, "Work is waiting for a provider", began(o), { provider: o.provider, since: o.since, provider_outage: keyOf(o) });
     },
     close: (o, ms, answered, parents) => {
       const text = outageEnded(label(o.provider), span(ms), answered);
       say(`[provider] ${text}`);
+      const key = keyOf(o);
+      rows.delete(key);
+      try { readWhere("provider_outage", key); } catch (e) { capture(e, { at: "outage alert" }); }
       try {
         activity.record("daemon", "outage_over", null, text, { provider: o.provider, since: o.since, ms, answered });
         // Only a parent that read the first line gets the second.

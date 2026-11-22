@@ -112,6 +112,10 @@ export class ErrorSites {
       .run(rec.id, rec.session_id, rec.ts, rec.turn_event ?? null, rec.span_id ?? null);
   }
 
+  healGroup(id: string) {
+    this.db.query("UPDATE error_tally SET open = 0, pending = 0, healed_ts = ? WHERE error_id = ?").run(Date.now(), id);
+  }
+
   // A retry of the request passed: `n` occurrences of this kind in the session were healed.
   heal(errorId: string, sessionId: string, n = 1, now = Date.now()): boolean {
     const site = this.db.query<{ count: number; healed: number }, [string, string]>("SELECT count, healed FROM error_sites WHERE error_id = ?1 AND session_id = ?2").get(errorId, sessionId);

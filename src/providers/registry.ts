@@ -47,11 +47,13 @@ export type Choices = { default?: string; hidden: Record<string, string[]>; hidd
 // Settings says it once instead of every turn failing anew.
 export type Problem = { kind: "auth" | "billing"; message: string; at: number; source: "listing" | "turn"; link?: string };
 
+// Keep each provider's listing timeouts in their own recoverable group.
+const timeoutGroup = (id: string) => `provider listing timeout: ${Bun.hash(id).toString(16).replace(/\d/g, (n) => String.fromCharCode(103 + Number(n)))}`;
 const USAGE_MAX_AGE = 60_000;
 
 type ListingResult = { ok: true } | { ok: false; error: unknown };
 
-type Opts = { capture?: (source: "provider", e: unknown, ctx?: unknown, at?: { recovered?: true }) => void; providers?: Provider[] };
+type Opts = { capture?: (source: "provider", e: unknown, ctx?: unknown, at?: { recovered?: true; group?: string }) => void; recover?: (group: string) => void; providers?: Provider[] };
 
 // A key read this recently is not read again by the refresh that asked for it.
 const JUST_LOOKED_MS = 1000;
@@ -284,7 +286,10 @@ export class Providers {
       this.listings.set(p.id, { state: "ok", fetched: Date.now(), models, identity });
       this.cleared(p.id, "listing");
       this.brokerAnswered(p, base);
-      if (base === p.broker?.value && !(p instanceof EndpointProvider && p.cfg.listing === false)) this.outages.answered(p.id);
+      if (base === p.broker?.value && !(p instanceof EndpointProvider && p.cfg.listing === false)) {
+        this.opts.recover?.(timeoutGroup(p.id));
+        this.outages.answered(p.id);
+      }
       return { ok: true };
     } catch (e) {
       p.broker?.noteRefusal(e);
@@ -306,8 +311,11 @@ export class Providers {
       const prev = this.listing(p.id);
       this.listings.set(p.id, { state: "failed", fetched: prev.fetched, error, models: prev.models, identity: prev.identity ?? identity });
       // A failed listing during a known outage belongs to its shared error row.
-      const outage = unreachable(e) && this.outages.known(p.id);
-      if (prev?.error !== error && !outage) this.capture(e, { provider: p.id, at: "listing" });
+      const timedOut = !!(e as { listingTimeout?: boolean })?.listingTimeout;
+      const outage = (unreachable(e) || timedOut) && this.outages.known(p.id);
+      if (prev?.error !== error && !outage) {
+        this.opts.capture?.("provider", e, { provider: p.id, at: "listing" }, timedOut ? { group: timeoutGroup(p.id) } : undefined);
+      }
       this.note(p.id, e, "listing");
       return { ok: false, error: e };
     }
@@ -529,6 +537,7 @@ export class Providers {
           // A response from the retired port cannot recover the new one.
           if (base === p.broker?.value) {
             this.brokerAnswered(p, base);
+            if (this.outages.known(p.id)) this.opts.recover?.(timeoutGroup(p.id));
             this.outages.answered(p.id);
           }
           req.onAnswer?.();

@@ -164,7 +164,10 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
     }
   }
   startMark("log thread");
-  const providers = new Providers(stateDir, { capture: (source, e, ctx, at) => errors.capture(source, e, ctx, at) });
+  const providers = new Providers(stateDir, {
+    capture: (source, e, ctx, at) => errors.capture(source, e, ctx, at),
+    recover: (group) => errors.recoverGroup("provider", group),
+  });
   startMark("providers");
   const engine = new Engine(store, bus, providers, errors, join(stateDir, "spill"));
   startMark("engine object");

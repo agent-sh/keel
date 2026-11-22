@@ -25,9 +25,9 @@ A turn waiting on a provider gets the shared quick checks, then a check every
 five seconds for the first ten minutes. A return to the same outage schedule
 within five minutes keeps its backoff. A long outage raises one notification
 after five minutes. The wait is separate from work time in the timeline and
-receipts. A model request still missing HTTP headers at ten seconds joins the
-shared check before retrying, but spends a counted attempt because it might
-have reached the model.
+receipts. Only requests sent during an open outage use the ten-second header
+check. A request cut by that check spends a counted attempt because it might
+have reached the model. Other requests keep the provider's own idle limit.
 
 ### A local broker that changes ports
 

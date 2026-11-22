@@ -104,6 +104,22 @@ export class ErrorTracker {
     }
   }
 
+  // A daemon-wide failure has no session site to heal. Its producer names
+  // the exact group whose own retry has recovered.
+  recoverGroup(source: ErrorRecord["source"], group: string) {
+    try {
+      const row = this.store.db.query<{ id: string }, [string]>(`SELECT e.id FROM errors e JOIN error_tally t ON t.error_id = e.id
+        WHERE e.fingerprint = ? AND e.session_id IS NULL AND t.open > 0`).get(`${source}\u0000${fingerprint(group)}`);
+      if (!row) return;
+      this.sites.healGroup(row.id);
+      const rec = this.get(row.id);
+      if (rec) {
+        if (!rec.read_ts) this.store.readError(rec.id, true);
+        this.bus.emit({ t: "error", error: this.get(rec.id)! });
+      }
+    } catch (e) { console.error(`[errors] a healed failure was not marked: ${(e as Error).message}`); }
+  }
+
   // The UI's error frames also carry read/resolved changes. Observe actual
   // captures separately, with this occurrence's context, not the folded row's session.
   onCapture(listener: (e: ErrorCapture) => void) {

@@ -98,8 +98,27 @@ export function classify(label: string, status: number, headers: Headers, body: 
   return new ProviderError("invalid", text, status);
 }
 
-// Redirects are not API answers; do not follow a portal to its sign-in page.
+// Only method-preserving redirects within the API origin (or an HTTP upgrade
+// on the same hostname) can carry the request and its credentials.
 const redirected = (r: Response) => r.status >= 300 && r.status < 400 && !!r.headers.get("location");
+async function apiFetch(url: string, request: RequestInit, sign?: (url: string) => Record<string, string> | undefined) {
+  for (let hops = 0; ; hops++) {
+    const headers = { ...request.headers, ...sign?.(url) };
+    const r = await fetch(url, { ...request, redirect: "manual", headers }).catch((e) => {
+      // A later-hop refusal did not happen at the original broker address.
+      if (hops) throw new ProviderError("network", "the redirected provider request did not answer");
+      throw e;
+    });
+    if ((r.status !== 307 && r.status !== 308) || hops >= 3 || !redirected(r)) return r;
+    let next: URL;
+    const from = new URL(url);
+    try { next = new URL(r.headers.get("location")!, from); } catch { return r; }
+    const upgrade = from.protocol === "http:" && next.protocol === "https:" && from.hostname === next.hostname;
+    if (next.username || next.password || (next.origin !== from.origin && !upgrade)) return r;
+    void r.body?.cancel().catch(() => {});
+    url = next.href;
+  }
+}
 const html = (r: Response) => /^(?:text\/html|application\/xhtml\+xml)\s*(?:;|$)/i.test(r.headers.get("content-type") ?? "");
 const mayBePortal = (r: Response) => r.ok || r.status === 401 || r.status === 403;
 const intercepted = (r: Response) => r.status === 511 || redirected(r) || (mayBePortal(r) && html(r));
@@ -151,7 +170,7 @@ export type StreamOpts = {
   // refreshable sign-in renews and returns fresh headers for one resend.
   onAuthFailure?: (err: ProviderError) => Promise<Record<string, string> | null>;
   // Headers that depend on the exact body bytes and the time (AWS SigV4), made per attempt.
-  sign?: (body: string) => Record<string, string>;
+  sign?: (body: string, url: string) => Record<string, string>;
 };
 
 // Opens the stream: one attempt. Retries belong to the engine, which reads
@@ -173,12 +192,12 @@ async function* stream(o: StreamOpts, guard: ReturnType<typeof idleGuard>): Asyn
   for (let renewed = false; ; renewed = true) {
     const t0 = Date.now();
     const body = JSON.stringify(o.body);
-    const sent = { "content-type": "application/json", accept: o.format === "json_array" ? "application/json" : "text/event-stream", ...headers, ...o.sign?.(body) };
+    const sent = { "content-type": "application/json", accept: o.format === "json_array" ? "application/json" : "text/event-stream", ...headers };
     if (w) Object.assign(w, { method: "POST", url: safeUrl(o.url), req_headers: redactHeaders(sent), body_bytes: Buffer.byteLength(body), transport: "http", resent_after_auth: renewed || undefined });
     const headersMs = o.connectWaitMs && Math.min(o.connectWaitMs, streamIdleMs(o.idleMs));
     if (headersMs) guard.touch(headersMs);
     try {
-      res = await fetch(o.url, { redirect: "manual", method: "POST", headers: sent, body, signal: guard.signal });
+      res = await apiFetch(o.url, { method: "POST", headers: sent, body, signal: guard.signal }, (url) => o.sign?.(body, url));
     } catch (e) {
       const stalled = guard.stalled();
       if (stalled) {
@@ -186,6 +205,7 @@ async function* stream(o: StreamOpts, guard: ReturnType<typeof idleGuard>): Asyn
         throw stalled;
       }
       if (o.signal.aborted) throw new ProviderError("cancelled", "cancelled");
+      if (e instanceof ProviderError) throw e;
       throw fetchFailure(o.label, e, o.secrets, o.url);
     }
     guard.touch();
@@ -210,7 +230,8 @@ async function* stream(o: StreamOpts, guard: ReturnType<typeof idleGuard>): Asyn
     let leading = true, answered = false;
     const bom = new TextDecoder();
     const answer = () => { if (!answered) { answered = true; try { o.onAnswer?.(); } catch {} } };
-    for await (const chunk of res.body ? chunks(res.body) : []) {
+    const body = res.body;
+    for await (const chunk of body ? chunks(body) : []) {
       guard.touch();
       if (leading) {
         // Empty/whitespace frames do not validate the API. Keep streaming the
@@ -257,7 +278,7 @@ export async function allPages<T>(label: string, read: (cursor: string, until: n
   const out: T[] = [];
   const seen = new Set<string>();
   const until = Date.now() + ms;
-  const late = (page: number) => new ProviderError("server", `${label}: the model listing took more than ${Math.round(ms / 1000)} s (it was on page ${page}); ${out.length} models were read and the list is not complete`);
+  const late = (page: number) => listingTimeout(`${label}: the model listing took more than ${Math.round(ms / 1000)} s (it was on page ${page}); ${out.length} models were read and the list is not complete`);
   let cursor = "";
   for (let page = 1; ; page++) {
     if (page > 1 && Date.now() >= until) throw late(page);
@@ -274,17 +295,25 @@ export async function allPages<T>(label: string, read: (cursor: string, until: n
   }
 }
 
+const listingTimeout = (message: string) => Object.assign(new ProviderError("server", message), { listingTimeout: true });
+
 // A GET that returns JSON, for listings. `until`: the time the whole listing
 // this page belongs to must be done by; the request is cut then at the latest.
-export async function getJson(label: string, url: string, headers: Record<string, string>, secrets: string[] = [], until?: number): Promise<any> {
+export async function getJson(label: string, url: string, headers: Record<string, string>, secrets: string[] = [], until?: number, sign?: (url: string) => Record<string, string> | undefined): Promise<any> {
   let r: Response;
+  const signal = AbortSignal.timeout(until === undefined ? 30_000 : Math.max(1, Math.min(30_000, until - Date.now())));
   try {
-    r = await fetch(url, { redirect: "manual", headers: { accept: "application/json", ...headers }, signal: AbortSignal.timeout(until === undefined ? 30_000 : Math.max(1, Math.min(30_000, until - Date.now()))) });
+    r = await apiFetch(url, { headers: { accept: "application/json", ...headers }, signal }, sign);
   } catch (e) {
+    if (signal.aborted) throw listingTimeout(`${label}: the listing timed out`);
+    if (e instanceof ProviderError) throw e;
     throw fetchFailure(label, e, secrets, url);
   }
   if (intercepted(r)) { void r.body?.cancel().catch(() => {}); throw portal(label, r); }
-  const text = await r.text();
+  const text = await r.text().catch((e) => {
+    if (signal.aborted) throw listingTimeout(`${label}: the listing timed out`);
+    throw new ProviderError("network", `${label}: the listing response broke: ${scrub(String((e as Error)?.message ?? e), secrets)}`);
+  });
   if (mayBePortal(r) && startsHtml(text)) throw portal(label, r);
   if (!r.ok) throw classify(label, r.status, r.headers, scrub(text, secrets));
   try {
