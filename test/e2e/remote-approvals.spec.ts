@@ -312,6 +312,112 @@ test("the page's own Allow carries its word, and the answer says it came from th
   await expect.poll(() => existsSync(join(ws, "a.txt")), { timeout: 30_000 }).toBe(true);
 });
 
+// An MCP server names its own tools, and Keel checks none of those names. The reviewer's two:
+// twenty wide letters (a line of 40 characters and about 60 columns), and one with U+202E in it.
+// A name is written with nothing hidden in it wherever it is shown, and a line that is not plain
+// ASCII is never a notification's to allow.
+test("a tool's name is spelled wherever it is shown, and counts in what a notification may allow", async ({ page, request }) => {
+  const model = await scripted(request);
+  test.skip(!model, "requires a scripted scratch daemon");
+  const WIDE = "\u5168".repeat(20);
+  await request.delete("/api/mcp/servers/srv");
+  expect((await request.post("/api/mcp/servers", { data: { name: "srv", command: "bun", args: [`${import.meta.dirname}/fixtures/odd-names-mcp.ts`] } })).ok()).toBe(true);
+  try {
+    await expect.poll(async () => (await (await request.get("/api/mcp/servers")).json()).servers.find((x: any) => x.name === "srv")?.state, { timeout: 30_000 }).toBe("ready");
+    const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `remote-approvals-names-${Date.now()}`);
+    mkdirSync(ws, { recursive: true });
+    const { session } = await (await request.post("/api/sessions", { data: { title: "Odd tool names", model, workspace: ws } })).json();
+    const id = session.id as string;
+    await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+    // The name as Keel shows it is what a model calls it by: the one with the override is written out.
+    const calls = [{ name: "mcp_call", input: { tool: `srv__${WIDE}`, arguments: { to: "evil" } } }, { name: "mcp_call", input: { tool: "srv__a<U+202E>b", arguments: { to: "evil" } } }];
+    await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:batch ${JSON.stringify(calls)}` } });
+    const all = async () => (await (await request.get(`/api/sessions/${id}/approvals?all`)).json()).approvals as any[];
+    await expect.poll(async () => (await all()).length, { timeout: 30_000 }).toBe(2);
+    const [wide, turned] = await all();
+    expect([wide.tool, turned.tool]).toEqual([`srv__${WIDE}`, "srv__a<U+202E>b"]);
+    const form = async (a: any) => (await (await request.get(`/api/sessions/${id}/approvals/${a.id}`)).json()).card;
+    const alerts = (await (await request.get("/api/alerts?limit=200")).json()).alerts as any[];
+    const pushOf = async (a: any) => {
+      const { push } = await (await request.get(`/api/mobile/alerts/${alerts.find((x) => x.data?.approval_id === a.id).id}/push`)).json();
+      return { opts: JSON.parse(push.data.opts), hold: push.data.hold, body: push.data.body as string };
+    };
+    // Forty characters, but not forty columns: read first, and no Allow on a notification.
+    const wideForm = await form(wide);
+    expect([wideForm.line, wideForm.line.length, wideForm.glance, wideForm.hold]).toEqual([`srv__${WIDE}: {"to":"evil"}`, 40, false, ["marked"]]);
+    expect(await pushOf(wide)).toMatchObject({ opts: ["deny"], hold: "marked" });
+    // The override is written out in the name, so the line reads as it is: nothing after it changes places.
+    expect(await form(turned)).toMatchObject({ line: 'srv__a<U+202E>b: {"to":"evil"}', hold: [] });
+    expect((await pushOf(turned)).body).toBe('srv__a<U+202E>b: {"to":"evil"}');
+    const phone = await new Phone(request).pair("Pixel stand-in");
+    const cards = (await (await phone.call("GET", `/v1/chats/${id}/run`)).json()).approvals as any[];
+    expect(cards.map((c) => c.description)).toEqual([`srv__${WIDE}`, "srv__a<U+202E>b"]);
+    // Nothing the daemon says of either card carries the override itself.
+    for (const said of [await all(), wideForm, await form(turned), alerts.filter((x) => x.session_id === id), cards]) expect(JSON.stringify(said)).not.toContain("\u202e");
+    const refused = await answer(request, phone, wide.id, { choice: "once", via: "notification" });
+    expect([refused.status(), (await refused.json()).error]).toEqual([409, "Open the request to read it first: it holds characters that can mislead (\u5168 U+5168)."]);
+    expect((await answer(request, phone, wide.id, { choice: "once" })).status()).toBe(409);
+    // The call still goes out under the server's own name.
+    expect((await request.post(`/api/sessions/${id}/approvals/${turned.id}`, { data: { choice: "once" } })).status()).toBe(200);
+    expect((await answer(request, phone, wide.id, { choice: "deny" })).status()).toBe(200);
+    await expect.poll(async () => (await (await request.get(`/api/cli/state/${id}`)).json()).running, { timeout: 30_000 }).toBe(false);
+    const { events } = await (await request.get(`/api/sessions/${id}/events`)).json();
+    const results = (events as any[]).filter((e) => e.kind === "tool_result").flatMap((e) => e.data.results).map((r: any) => (typeof r.content === "string" ? r.content : JSON.stringify(r.content)));
+    expect(results.some((r) => r.includes("sent to evil by the turned one"))).toBe(true);
+    // The timeline and the transcript show the name the same way.
+    const rows = (await (await request.get(`/api/sessions/${id}/timeline`)).json()).rows as { kind: string; text: string }[];
+    expect(rows.some((r) => r.kind === "approval" && r.text.startsWith("Approval for srv__a<U+202E>b allowed once from the API"))).toBe(true);
+    expect(JSON.stringify(rows)).not.toContain("\u202e");
+    await page.goto(`/s/${id}`);
+    await expect(page.getByTestId("transcript")).toContainText("srv__a<U+202E>b");
+    expect(await page.getByTestId("transcript").innerText()).not.toContain("\u202e");
+    await shoot(page, "remote-approvals-02-tool-names");
+    await request.delete(`/api/mobile/devices/${phone.id}`);
+  } finally {
+    await request.delete("/api/mcp/servers/srv");
+  }
+});
+
+// What a notification may allow follows the policy's own answer for the command, read from its
+// card: its risk, and the class of the rule that asked. A delete outside the session's folder
+// after a harmless word is the case: while the policy rates it low and names no class, its
+// 31-character line is a notification's to allow; once the policy rates it high or names it as
+// what destroys, it is held and the notification carries no Allow. This test never allows it.
+test("a short delete outside the session's folder is a notification's to allow only while the policy says so", async ({ request }) => {
+  const model = await scripted(request);
+  test.skip(!model, "requires a scripted scratch daemon");
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `remote-approvals-policy-${Date.now()}`);
+  mkdirSync(ws, { recursive: true });
+  const { session } = await (await request.post("/api/sessions", { data: { title: "Policy decides", model, workspace: ws } })).json();
+  const id = session.id as string;
+  await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+  const command = "echo ok;rm -rf ~/projects";
+  await request.post(`/api/sessions/${id}/messages`, { data: { text: `script:calls ${JSON.stringify([{ name: "Bash", input: { command } }])}` } });
+  const all = async () => (await (await request.get(`/api/sessions/${id}/approvals?all`)).json()).approvals as any[];
+  await expect.poll(async () => (await all()).length, { timeout: 30_000 }).toBe(1);
+  const [a] = await all();
+  const card = (await (await request.get(`/api/sessions/${id}/approvals/${a.id}`)).json()).card;
+  const alert = ((await (await request.get("/api/alerts?limit=200")).json()).alerts as any[]).find((x) => x.data?.approval_id === a.id);
+  const { push } = await (await request.get(`/api/mobile/alerts/${alert.id}/push`)).json();
+  expect([card.line, card.line.length]).toEqual([`Bash: ${command}`, 31]);
+  // The policy's answer, as the card keeps it.
+  const grave = /\b(destroys|remote|exposes|hidden|machine)\b/.test(a.rule ?? "");
+  const mayGlance = a.risk === "low" && !grave;
+  expect([card.risk, card.rule ?? null]).toEqual([a.risk, a.rule ?? null]);
+  expect(card.glance).toBe(mayGlance);
+  expect(JSON.parse(push.data.opts)).toEqual(mayGlance ? ["once", "deny"] : ["deny"]);
+  expect(card.hold.includes("risk")).toBe(a.risk !== "low");
+  if (!mayGlance) {
+    // Held, or of a class a notification never allows: its Allow is refused and the card stays open.
+    const phone = await new Phone(request).pair("Pixel stand-in");
+    expect((await answer(request, phone, a.id, { choice: "once", via: "notification" })).status()).toBe(409);
+    expect((await all())[0].state).toBe("pending");
+    await request.delete(`/api/mobile/devices/${phone.id}`);
+  }
+  expect((await request.post(`/api/sessions/${id}/approvals/${a.id}`, { data: { choice: "deny" } })).status()).toBe(200);
+  expect(existsSync(join(ws, "projects"))).toBe(false);
+});
+
 // Two daemons stand in for two machines. A card of a session on the other one, answered here,
 // goes through this daemon's forwarder: the daemon that owns the session decides, and the
 // forwarder passes the client's word through as it came.
