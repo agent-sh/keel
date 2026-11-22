@@ -1,5 +1,5 @@
 import { expect, test } from "./isolate.ts";
-import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
+import { ask, HAIKU, pickModel, shoot } from "./shots.ts";
 
 const FIXTURE = `${import.meta.dirname}/fixtures/echo-mcp.ts`;
 
@@ -19,7 +19,6 @@ test.afterEach(async ({ request }) => {
 });
 
 test("mcp servers", async ({ page, request }) => {
-  test.skip(SCRIPTED, "needs a real model: it has to find and call the MCP server's tools from a plain prompt");
   await request.delete("/api/mcp/servers/echo").catch(() => {});
   const errorsBefore = (await (await request.get("/api/errors")).json()).errors.length;
   // This feature is the tools, not the approval cards: run them without asking.
@@ -118,23 +117,26 @@ test("mcp servers", async ({ page, request }) => {
   await expect(row).toHaveAttribute("data-state", "ready", { timeout: 20_000 });
   await page.goto("/");
 
-  await page.getByTestId("model-picker").click();
-  await page.getByPlaceholder("Search models").fill("haiku 5.5");
-  await page.getByRole("option").first().click();
-  await page.getByTestId("composer").fill(
+  // The server's tool is found and run from a session. A Claude model loads it with ToolSearch and
+  // calls it by its own name; any other family (the stand-in's) finds it with search_tools and runs
+  // it with mcp_call. A real model does so from words, the stand-in from its script.
+  await pickModel(page);
+  await page.getByTestId("composer").fill(ask(
     "Use ToolSearch to find the echo tool, then run it with the text pelican. Then reply with the tool's output only.",
-  );
+    `script:calls ${JSON.stringify([{ name: "search_tools", input: { query: "select:echo__echo" } }, { name: "mcp_call", input: { tool: "echo__echo", arguments: { text: "pelican" } } }])}`,
+  ));
   await page.keyboard.press("Enter");
 
   await expect(page.getByTestId("turn-end")).toBeVisible({ timeout: 120_000 });
   const calls = page.getByTestId("tool-call");
-  await expect(calls.filter({ hasText: "ToolSearch" }).first()).toBeVisible();
-  await expect(calls.filter({ hasText: "mcp__echo__echo" }).first()).toBeVisible();
+  const search = ask("ToolSearch", "search_tools"), ran = ask("mcp__echo__echo", "echo__echo");
+  await expect(calls.filter({ hasText: search }).first()).toBeVisible();
+  await expect(calls.filter({ hasText: ran }).last()).toBeVisible();
   await expect(page.getByTestId("assistant-text").last()).toContainText("echo: pelican");
-  // The search's card names what it loaded.
-  await calls.filter({ hasText: "ToolSearch" }).first().click();
-  await expect(calls.filter({ hasText: "ToolSearch" }).first()).toContainText("Loaded mcp__echo__echo");
-  await calls.filter({ hasText: "mcp__echo__echo" }).first().click();
+  // The search's card names what it found.
+  await calls.filter({ hasText: search }).first().click();
+  await expect(calls.filter({ hasText: search }).first()).toContainText(ask("Loaded mcp__echo__echo", "echo__echo"));
+  await calls.filter({ hasText: ran }).last().click();
   await shoot(page, "mcp-04-chat");
 
   // The server's prompts are slash commands, as Claude Code lists them
