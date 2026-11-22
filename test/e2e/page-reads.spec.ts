@@ -272,9 +272,11 @@ test("unopened queue badges catch up on reconnect without replacing a newer fram
   const mk = async (title: string) => {
     const { session: { id } } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title } })).json();
     ids.push(id);
-    await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "ask", sandbox: "off" } });
-    await request.post(`/api/sessions/${id}/messages`, { data: { text: ask("Run echo ready.", `script:calls ${JSON.stringify([{ name: "Bash", input: { command: "echo ready" } }])}`) } });
-    await expect.poll(async () => (await (await request.get(`/api/sessions/${id}/approvals`)).json()).approvals.length).toBe(1);
+    await expect(await request.put(`/api/sessions/${id}/permissions`, { data: { mode: "ask", sandbox: "off" } })).toBeOK();
+    // A write needs approval in Ask mode. Read-only commands such as echo do not.
+    const command = "touch queue-ready.txt";
+    await expect(await request.post(`/api/sessions/${id}/messages`, { data: { text: ask(`Run ${command}.`, `script:calls ${JSON.stringify([{ name: "Bash", input: { command } }])}`) } })).toBeOK();
+    await expect.poll(async () => (await (await request.get(`/api/sessions/${id}/approvals`)).json()).approvals.length, { timeout: 30_000 }).toBe(1);
     return id as string;
   };
   const enqueue = async (id: string) => {
