@@ -27,14 +27,30 @@ test("Esc twice on an approval gives the keyboard back to Allow once", async ({ 
   // Esc opens the reason, Esc again leaves it: the keyboard is on Allow once, not on the page.
   await page.keyboard.press("Escape");
   await expect(card.getByTestId("deny-reason")).toBeFocused();
+  let left = Date.now();
   await page.keyboard.press("Escape");
   await expect(allow).toBeFocused();
   expect(await keysOn(page)).toBe("allow-once");
+  // Right away it answers nothing, and says so in words that show: Enter in the reason field would
+  // have sent the denial, so an Enter pressed as the field was left may have been meant for that.
+  // (A machine too slow to press well inside the settle time does not press, and says so.)
+  const tip = page.locator(".k-tip");
+  const early = async (how: string, press: () => Promise<void>) => {
+    if (Date.now() - left > 500) return console.log(`slow: ${how} would come ${Date.now() - left} ms after the reason was left`);
+    await press();
+    await expect(tip).toHaveText(/^Not yet/);
+    expect((await approvals(request, id))[0]).toMatchObject({ state: "pending" });
+  };
+  await early("Enter", () => page.keyboard.press("Enter"));
   await shoot(page, "answer-keys-01-esc-back");
-  // The Back button does the same.
+  // The Back button does the same, and so does a press with the pointer: on a narrow screen
+  // "Send denial" stands where Allow once comes back, and a second tap meant for it must not allow.
   await page.keyboard.press("Escape");
+  left = Date.now();
   await card.getByRole("button", { name: "Back" }).click();
   await expect(allow).toBeFocused();
+  const at = (await allow.boundingBox())!;
+  await early("a press", () => page.mouse.click(at.x + at.width / 2, at.y + at.height / 2));
   // And Enter still allows, once the button has stood for its second.
   await expect(card).toHaveAttribute("data-live", "true");
   await page.keyboard.press("Enter");

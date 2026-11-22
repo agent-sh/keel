@@ -666,6 +666,12 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
   // Leaving the reason (Esc, Back) puts the keyboard where the card's own rule would: on
   // Allow once for a card that is whole and read, so Enter answers again, and on the list
   // of requests for one whose text is not all on it. It is never lost to the page.
+  // The answers that come back act only after the settle time, by a key and by a press: in
+  // the reason field Enter sends the denial, and on a narrow screen "Send denial" stands
+  // where Allow once comes back and "Back" where Always allow does. An Enter or a second
+  // tap meant for the denial must not allow the request. So the answers are read as gone
+  // the moment the reason opens: however short it was open, they stand anew when they return.
+  useEffect(() => { if (denying) armed("live"); }, [denying]);
   const back = useRef(false);
   const leaveDeny = () => { back.current = true; setDenying(false); };
   useEffect(() => {

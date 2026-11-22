@@ -194,12 +194,26 @@ test("permission card answers wrap on a narrow screen", async ({ page, request }
   // The reason has a line of its own to type in, not what the buttons leave.
   expect((await reason.boundingBox())!.width).toBeGreaterThan(0.7 * (await card.boundingBox())!.width);
   await shoot(page, "perm-08-deny-narrow");
+  const left = Date.now();
   await page.keyboard.press("Escape");
   await expect(once).toBeVisible();
+  // The keyboard is back on Allow once. On a screen this narrow "Send denial" stood where the
+  // answers come back, and Enter in the field would have sent the denial: Enter at once answers
+  // nothing, and says so in words that show. (A machine too slow to press well inside the settle
+  // time does not press.)
+  await expect(once).toBeFocused();
+  if (Date.now() - left < 500) {
+    await page.keyboard.press("Enter");
+    await expect(page.locator(".k-tip")).toHaveText(/^Not yet/);
+    await expect(card).toBeVisible();
+    expect(existsSync(join(ws, "alpha.txt"))).toBe(false);
+  }
   // Always allow still offers the suggested rule, and Allow once still runs the command.
   // (An answer acts once it has stood in view for a moment. The card is taller than the
   // region that shows it here: the keyboard brings each answer into view, the page gets
-  // two frames to mark it as waiting, and Enter presses it when it no longer waits.)
+  // two frames to mark it as waiting, and Enter presses it when it no longer waits.
+  // Closing the grant's popup with Escape is no new arrival of the keyboard on the card:
+  // it was in the card's own popup, so Allow once acts as soon as it stands.)
   const press = async (l: typeof once) => {
     await l.focus();
     await l.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(null)))));

@@ -29,6 +29,8 @@ import { inPopup, overlayOver } from "./overlay.ts";
 
 const UNIT = "[data-ask-card]";
 const REGION = "[data-ask]";
+// A popup that is a card's own, drawn outside it (the grant of an approval).
+const PART = "[data-ask-part]";
 // How long after a Tab or a press a focus is still that key's or press's own.
 const ACT_MS = 100;
 
@@ -70,6 +72,9 @@ if (typeof window !== "undefined") {
     const unit = unitOf(e.target as Element);
     if (!inPopup(e.target as Element)) place = isBox(e.target) ? e.target : unit ?? (e.target as Element);
     const from = (e as FocusEvent).relatedTarget as Node | null;
+    // In a popup that is the card's own the keyboard is still with that card: it has not left
+    // it, and coming back from the popup (the owner closed it) is no arrival.
+    if (!unit && last && (e.target as Element).closest?.(PART)) { current = null; return changed(); }
     const was = last;
     last = current = unit;
     // The focus moved inside the card: no arrival.
@@ -80,7 +85,7 @@ if (typeof window !== "undefined") {
     else if (now - tabbed <= ACT_MS || (pressed.unit === unit && now - pressed.at <= ACT_MS)) holds.set(unit, { at: now, code: false, take: false, own: true });
     // Back from nothing in the card the keyboard was last in (the part that held it went away: a
     // field the owner closed, an answer they gave, the window they came back to): the same stay.
-    else if (!from && was === unit && holds.has(unit)) return changed();
+    else if ((!from || (from as Element).closest?.(PART)) && was === unit && holds.has(unit)) return changed();
     else holds.set(unit, { at: now, code: true, take: false, own: holds.get(unit)?.own ?? false });
     changed();
   }, true);
