@@ -741,7 +741,7 @@ export function onTurnEnd(sessionId: string, reason: string, opts: { subagent: b
     if (opts.loopRun) return;
     const said = evs.findLast((e) => e.kind === "assistant" && (e.data.blocks as any[]).some((b) => b.type === "text" && b.text.trim()));
     const text = said ? (said.data.blocks as any[]).filter((b) => b.type === "text").map((b) => b.text).join(" ").trim() : "";
-    raise("declined", sessionId, `Declined: ${title}`, plainLine(text) || "The model declined the turn.", said ? { event_id: said.id } : undefined);
+    raise("declined", sessionId, `${STATE_WORD.declined}: ${title}`, plainLine(text) || "The model declined the turn.", said ? { event_id: said.id } : undefined);
     return;
   }
   if (reason === "interrupted" || opts.loopRun) return;
@@ -765,9 +765,5 @@ export function onTurnEnd(sessionId: string, reason: string, opts: { subagent: b
   }
   // How long the turn ran: a long one is worth a desktop notice (LONG_TURN_MS).
   const ran_ms = start >= 0 ? Date.now() - all[start]!.ts : undefined;
-  // A turn the model declined is filed as a finish until it has a kind of its own: its notification says so
-  // in the state's word, on every channel, and the Inbox reads the word from `end`.
-  const declined = reason === "refusal";
-  raise("finished", sessionId, declined ? `${STATE_WORD.declined}: ${title}` : title, plainLine(text) || (declined ? "The model declined the turn." : "The turn finished."),
-    event || ran_ms !== undefined || declined ? { ...(event ? { event_id: event } : {}), ...(ran_ms !== undefined ? { ran_ms } : {}), ...(declined ? { end: "refusal" } : {}) } : undefined);
+  raise("finished", sessionId, title, plainLine(text) || "The turn finished.", event || ran_ms !== undefined ? { ...(event ? { event_id: event } : {}), ...(ran_ms !== undefined ? { ran_ms } : {}) } : undefined);
 }

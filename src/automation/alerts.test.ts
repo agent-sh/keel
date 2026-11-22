@@ -296,7 +296,7 @@ test("an approval the owner looked at, told of again while it waits, is one row"
   expect(alerts.unreadCounts().sessions[s]).toBe(1);
 });
 
-// Until a declined turn has an alert kind of its own it is filed as a finish: every channel reads its title.
+// A declined turn has an alert kind of its own, and every channel reads its title.
 test("a turn the model declined is told as Declined, on every channel", () => {
   const { store, session } = scratch();
   const s = session("Draft the notice");
@@ -304,7 +304,7 @@ test("a turn the model declined is told as Declined, on every channel", () => {
   store.append(s, "assistant", { blocks: [{ type: "text", text: "I will not" }] });
   alerts.onTurnEnd(s, "refusal", { subagent: false, loopRun: false, more: false });
   const a = alerts.list({ limit: 1 })[0]!;
-  expect([a.kind, a.title, a.body, a.data.end]).toEqual(["finished", "Declined: Draft the notice", "I will not", "refusal"]);
+  expect([a.kind, a.title, a.body]).toEqual(["declined", "Declined: Draft the notice", "I will not"]);
 });
 
 // A question whose turn was stopped has no card left: nothing waits on the owner.
