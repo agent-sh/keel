@@ -11,8 +11,10 @@ import { RESTART_CUT, notRun, stopKind, stoppedRunning, turnedAway } from "../..
 import { patchFiles, resultText, shellStatus, toolKind, type ToolKind, splitDiagnostics, splitMemory, splitNested } from "./tools.ts";
 import { NEEDS, STATE_WORD, countWord } from "../../../src/core/state-words.ts";
 
-// `card`: a call with a card of its own (a question, an agent, code, readers): always a step by itself, as is a plan update.
-export type Family = "explore" | "change" | "run" | "use" | "card" | "plan" | "said";
+// `card`: a call with a card of its own (a question, code, readers): always a step by itself, as is a plan update.
+// `agents`: agents started; the ones started one after another are one step, also across the few words
+// the model says between them (a coordinator that starts twelve says twelve lines).
+export type Family = "explore" | "change" | "run" | "use" | "card" | "agents" | "plan" | "said";
 export type WorkItem =
   | { t: "call"; id: string; use: ToolUseBlock; result?: ToolResultBlock; event: string }
   | { t: "note"; id: string; text: string; event: string }
@@ -27,8 +29,9 @@ const FAMILY: Partial<Record<ToolKind, Family>> = {
   shell: "run", stdin: "run", stop: "run",
   ask: "card", plan: "plan",
 };
-const CARDS = new Set(["Agent", "spawn_agent", "run_code", "AskReaders", "ask_readers"]);
-export const familyOf = (name: string): Family => (CARDS.has(name) ? "card" : FAMILY[toolKind(name)] ?? "use");
+const CARDS = new Set(["run_code", "AskReaders", "ask_readers"]);
+const AGENTS = new Set(["Agent", "spawn_agent"]);
+export const familyOf = (name: string): Family => (AGENTS.has(name) ? "agents" : CARDS.has(name) ? "card" : FAMILY[toolKind(name)] ?? "use");
 const ALONE = new Set<Family>(["card", "plan"]);
 
 // A line the model says in passing (one short paragraph of plain words) stands
@@ -77,6 +80,10 @@ export function addCall(steps: Step[], use: ToolUseBlock, event: string): Step[]
   const family = familyOf(use.name);
   const last = steps.at(-1);
   if (!last) return [{ key: item.id, family, items: [item] }];
+  // An agent started after a few words of the model's (no more than an aside) joins the agents started just before them.
+  const before = steps.at(-2);
+  if (family === "agents" && last.family === "said" && before?.family === "agents" && last.items.every((i) => i.t === "thought" || (i.t === "note" && isAside(i.text))))
+    return [...steps.slice(0, -2), { ...before, items: [...before.items, ...last.items, item] }];
   if (last.family === "said") return [...steps.slice(0, -1), { ...last, family, items: [...last.items, item] }];
   if (last.family === family && !ALONE.has(family)) return [...steps.slice(0, -1), { ...last, items: [...last.items, item] }];
   let cut = last.items.length;
@@ -202,6 +209,9 @@ export function smallChange(use: ToolUseBlock): { t: "+" | "-"; text: string }[]
   return null;
 }
 
+// What an agent was started for: the first line of its task.
+export const agentTask = (use: ToolUseBlock): string => { const i: any = use.input ?? {}; return String(i.description ?? i.message ?? i.prompt ?? "").split("\n")[0]!.trim(); };
+
 // What a call was made on, as its line names it: a file, a pattern, a command.
 export function targetOf(use: ToolUseBlock): string {
   const input: any = use.input ?? {};
@@ -326,6 +336,12 @@ export function summarize(step: Step, live: Live = { working: true }): StepSumma
     // A command of several lines is named by its first, with how many follow.
     name(named.filter((c) => toolKind(c.use.name) === "shell").map((c) => { const more = moreLines(c.use); return more ? `${targetOf(c.use)} (+${more} ${more === 1 ? "line" : "lines"})` : targetOf(c.use); }));
     if (commands.length === 1 && work.length === 1 && looks.error) s.exit = shellStatus(resultText(commands[0]!.result)).exit;
+  } else if (step.family === "agents") {
+    // Named by their tasks' first lines: what each was started for.
+    s.label = "Started";
+    s.code = false;
+    s.counts = plural(work.length, "agent", "agents");
+    name(named.map((c) => agentTask(c.use)));
   } else {
     s.label = "Used";
     s.code = false;

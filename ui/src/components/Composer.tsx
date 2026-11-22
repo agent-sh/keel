@@ -22,6 +22,17 @@ import { ModelPicker } from "./ModelPicker.tsx";
 import { ContextMeter, EffortPicker, QueuePanel } from "./TurnControls.tsx";
 import { SpeedPicker } from "./SpeedPicker.tsx";
 import { LimitChip } from "./Limits.tsx";
+import { SETTLE_MS } from "../lib/settle.ts";
+
+// The box's tools draw again only when what they show changes, not with every render of the box (a
+// turn that starts or ends, a key): a field drawn again is written again (React sets its name and
+// type), and a list of panes that follow busy sessions changed many times a second for nothing.
+const Pickers = {
+  Model: memo(ModelPicker), Effort: memo(EffortPicker), Speed: memo(SpeedPicker), Fallback: memo(FallbackChip), Limit: memo(LimitChip), Meter: memo(ContextMeter),
+};
+const FileInput = memo(function FileInput({ at, take }: { at: { current: HTMLInputElement | null }; take: { current: (files: File[]) => void } }) {
+  return <input ref={at} type="file" multiple hidden data-testid="attach-input" onChange={(e) => { take.current([...(e.target.files ?? [])]); e.target.value = ""; }} />;
+});
 
 type Menu =
   | { kind: "slash"; query: string; start: number }
@@ -322,6 +333,20 @@ const SessionComposer = memo(function SessionComposer({
     document.addEventListener("pointerdown", away, true);
     return () => document.removeEventListener("pointerdown", away, true);
   }, [tapped]);
+  // What the box shows of a turn that runs (its hint, Stop, Queue): at once for a turn sent from this box,
+  // and for one that started elsewhere (a report, a loop, another device) once it has run SETTLE_MS, as the
+  // list shows it: a turn of a second came and went with the box's tools moving twice. What a key does
+  // (Enter steers, Esc stops) follows the turn itself.
+  const sentHere = useRef(0);
+  const [runShown, setRunShown] = useState(!!working);
+  useEffect(() => {
+    if (!working) return setRunShown(false);
+    if (Date.now() - sentHere.current < 5000) return setRunShown(true);
+    const t = setTimeout(() => setRunShown(true), SETTLE_MS);
+    return () => clearTimeout(t);
+  }, [working]);
+  const busy = !!working && runShown;
+  // (Whether the box rests follows the turn itself: it changes the box's height, which a turn that has begun to stream must not see change.)
   const rest = narrow && !!session && !tapped && !text && !images.length && !working && !notice && synced;
   // Whether the window is low changes with the window and the text size, never with what is
   // typed: it is not asked at every key (the question makes the browser style the whole page
@@ -370,12 +395,17 @@ const SessionComposer = memo(function SessionComposer({
   };
   const fitNow = useRef(fit);
   fitNow.current = fit;
+  // Measured again only when what it measures changed: a turn that starts or ends changes the hint,
+  // and a hint of the same length in a box of the same width is the same height (each measure writes the box's styles).
+  const fitSig = useRef("");
   useEffect(() => {
-    fit();
+    const el = ref.current;
+    const sig = el ? `${el.value}|${el.placeholder}|${el.clientWidth}|${scale}|${short}|${images.length}|${notice}|${synced}|${rest}|${info?.id ?? ""}` : "";
+    if (!el || sig !== fitSig.current) { fitSig.current = sig; fit(); }
     const resized = () => fit(true);
     addEventListener("resize", resized);
     return () => removeEventListener("resize", resized);
-  }, [text, scale, short, images.length, notice, synced, info, working, rest]);
+  }, [text, scale, short, images.length, notice, synced, info, busy, rest]);
   // A pane made wider or narrower (its divider, the list, a side panel) wraps the draft and
   // the tools anew with no resize of the window: measured again then, a frame later (a size
   // written inside the observer's own call would loop it), not at the next key.
@@ -410,6 +440,8 @@ const SessionComposer = memo(function SessionComposer({
   }, [session?.id]);
 
   // Files dropped or pasted anywhere on the page land here.
+  const takeFiles = useRef((list: File[]) => {});
+  takeFiles.current = (list: File[]) => void addFiles(list);
   const addFiles = async (list: File[]) => {
     for (const f of list) {
       try {
@@ -617,6 +649,7 @@ const SessionComposer = memo(function SessionComposer({
   };
 
   const submit = (queue = false) => {
+    sentHere.current = Date.now();
     const { text, images } = draft.current;
     const t = text.trim();
     if (!t && !images.length) return;
@@ -808,7 +841,7 @@ const SessionComposer = memo(function SessionComposer({
         aria-haspopup="listbox"
         aria-controls={open ? listId : undefined}
         aria-activedescendant={open && options[sel] ? optionId(sel) : undefined}
-        placeholder={working ? (TOUCH.matches ? (onQueue ? "Send steers, the list button queues" : "Send steers the running turn") : `Enter steers, ${queueKeys} queues`) : rest ? "Reply" : session ? "Reply, / for commands, @ for files" : "Describe the task, / for commands, @ for files"}
+        placeholder={busy ? (TOUCH.matches ? (onQueue ? "Send steers, the list button queues" : "Send steers the running turn") : `Enter steers, ${queueKeys} queues`) : rest ? "Reply" : session ? "Reply, / for commands, @ for files" : "Describe the task, / for commands, @ for files"}
         onChange={(e) => { setText(e.target.value); detect(e.target.value, e.target.selectionStart); }}
         onSelect={(e) => detect(e.currentTarget.value, e.currentTarget.selectionStart)}
         onBlur={() => setTimeout(() => setMenu(null), 100)}
@@ -858,7 +891,7 @@ const SessionComposer = memo(function SessionComposer({
           }
           // Tab with a draft while a turn runs goes to the queue button (Enter there queues),
           // and the key that queues from the box is said, once.
-          if (e.key === "Tab" && !e.shiftKey && !mod && !e.altKey && working && onQueue && canSend && queueButton.current) {
+          if (e.key === "Tab" && !e.shiftKey && !mod && !e.altKey && busy && onQueue && canSend && queueButton.current) {
             e.preventDefault();
             queueButton.current.focus();
             if (!queueKeySaid) { queueKeySaid = true; setNotice(`${queueKeys} queues`); }
@@ -879,7 +912,7 @@ const SessionComposer = memo(function SessionComposer({
       )}
       {/* The tools wrap onto more rows in a narrow box. In a short window they keep one row: the ones on the left scroll sideways, Send and Stop stay. */}
       {short && status}
-      <div className={cn("k-compose-tools flex shrink-0 items-center gap-x-0.5 gap-y-1 px-2 pb-2", !short && "flex-wrap", rest && "hidden")} data-short={short || undefined} data-busy={(narrow && working) || undefined} data-talk={session ? "" : undefined} data-testid="composer-tools">
+      <div className={cn("k-compose-tools flex shrink-0 items-center gap-x-0.5 gap-y-1 px-2 pb-2", !short && "flex-wrap", rest && "hidden")} data-short={short || undefined} data-busy={(narrow && busy) || undefined} data-talk={session ? "" : undefined} data-testid="composer-tools">
         <div className={short ? "-my-1 flex min-w-0 flex-1 items-center gap-x-0.5 overflow-x-auto py-1 pr-4 [mask-image:linear-gradient(to_left,transparent,#000_1rem)] [scrollbar-width:none]" : "contents"}>
           <span className={cn("k-compose-lead flex items-center gap-x-0.5", short ? "shrink-0" : "min-w-0 max-w-full [&>[data-testid=model-picker]]:min-w-0")}>
             <button
@@ -892,20 +925,20 @@ const SessionComposer = memo(function SessionComposer({
             >
               <Paperclip className="size-4" />
             </button>
-            <input ref={fileInput} type="file" multiple hidden data-testid="attach-input" onChange={(e) => { addFiles([...(e.target.files ?? [])]); e.target.value = ""; }} />
-            <ModelPicker value={model} onChange={pickModel} openSignal={pickerSignal} machine={sid ? splitId(sid)?.machine : undefined} />
+            <FileInput at={fileInput} take={takeFiles} />
+            <Pickers.Model value={model} onChange={pickModel} openSignal={pickerSignal} machine={sid ? splitId(sid)?.machine : undefined} />
           </span>
-          {sid && <EffortPicker sessionId={sid} />}
-          {sid && <SpeedPicker sessionId={sid} />}
-          {sid && <FallbackChip sessionId={sid} />}
-          {model && <LimitChip model={model} />}
-          {short && !narrow && sid && <ContextMeter sessionId={sid} />}
+          {sid && <Pickers.Effort sessionId={sid} />}
+          {sid && <Pickers.Speed sessionId={sid} />}
+          {sid && <Pickers.Fallback sessionId={sid} />}
+          {model && <Pickers.Limit model={model} />}
+          {short && !narrow && sid && <Pickers.Meter sessionId={sid} />}
           {!short && status}
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {/* On a phone the ring stands with Send, out of what scrolls. */}
-          {(!short || narrow) && sid && <ContextMeter sessionId={sid} />}
-          {working && onQueue && (
+          {(!short || narrow) && sid && <Pickers.Meter sessionId={sid} />}
+          {busy && onQueue && (
             <button
               ref={queueButton}
               type="button"
@@ -920,7 +953,7 @@ const SessionComposer = memo(function SessionComposer({
               <ListPlus className="size-4" />
             </button>
           )}
-          {working && (
+          {busy && (
             <button
               type="button"
               data-testid="stop"
@@ -940,7 +973,7 @@ const SessionComposer = memo(function SessionComposer({
             data-testid="send"
             onClick={() => submit()}
             disabled={!canSend}
-            title={working ? "Steer into the running turn" : `Send (${keyLabel(SEND_KEYS(enterSends).send).join(" ")})`}
+            title={busy ? "Steer into the running turn" : `Send (${keyLabel(SEND_KEYS(enterSends).send).join(" ")})`}
             aria-label="Send"
             className={cn(
               "k-send grid size-8 place-items-center rounded-full bg-accent text-accent-fg transition-[background-color,opacity,transform] duration-150",

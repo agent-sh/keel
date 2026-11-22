@@ -112,7 +112,8 @@ test("agents on another machine: spawn there, send files, the gate per machine",
     await expect(page.getByTestId("grant-pattern")).toHaveValue(`keel__spawn_on_machine:${NAME.toLowerCase()}`);
     await page.getByTestId("grant-session").click();
     await expect(page.getByTestId("turn-end").first()).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByTestId("agent-call")).toHaveCount(2);
+    // The two agents started together are one line in the conversation.
+    await expect(page.locator('[data-testid="work-step"][data-family="agents"][data-calls="2"]')).toHaveCount(1);
     // The second start ran under the grant: no second card held the turn.
     await expect(page.getByTestId("approval")).toHaveCount(0);
   } finally {

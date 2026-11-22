@@ -1,4 +1,5 @@
 import { expect, test } from "./isolate.ts";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { HAIKU, shoot, SCRIPTED } from "./shots.ts";
 
 // Feature: the model starts two background subagents in one step; they run as
@@ -18,7 +19,11 @@ test("subagents run in parallel, report back, and stop", async ({ page, request 
   );
   await page.keyboard.press("Enter");
 
-  await expect(page.getByTestId("agent-call")).toHaveCount(2, { timeout: 60_000 });
+  // Started together, the two agents are one line, which opens to each agent's own.
+  const started = page.locator('[data-testid="work-step"][data-family="agents"]').locator("button.k-line").first();
+  await expect(started).toContainText("Started 2 agents", { timeout: 60_000 });
+  await started.click();
+  await expect(page.getByTestId("agent-call")).toHaveCount(2);
   // The agents under the session row are folded to a count until opened.
   const kids = page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${session.id}"]`).locator("xpath=..").getByTestId("session-children");
   await expect(kids.getByTestId("child-session")).toHaveCount(0);
@@ -53,8 +58,8 @@ test("subagents run in parallel, report back, and stop", async ({ page, request 
   await expect.poll(idle, { timeout: 60_000 }).toBe(true);
   await page.getByTestId("composer").fill("Call the Agent tool once with run_in_background true: the agent runs `sleep 120` with Bash, then reports. End your turn right after starting it.");
   await page.keyboard.press("Enter");
-  await expect(page.getByTestId("agent-call")).toHaveCount(3, { timeout: 60_000 });
-  const card = page.getByTestId("agent-call").nth(2);
+  const card = page.getByTestId("agent-call").last();
+  await expect(card).toBeVisible({ timeout: 60_000 });
   await expect(card.getByTestId("agent-call-status")).toHaveText("Working, in background", { timeout: 30_000 });
   await shoot(page, "agents-05-running");
   // Reading the running agent is safe: Escape from the page or from its
@@ -303,4 +308,68 @@ test("a late automation snapshot never brings back an older agent state", async 
   expect((await page.evaluate(() => (window as any).__seen as string[])).filter((t) => !t.includes("Stopped"))).toEqual([]);
   await page.unroute("**/api/automation");
   await request.delete(`/api/sessions/${session.id}`);
+});
+
+// Feature (a coordinator's minute): agents started together are one line in the parent's conversation, which
+// opens to each agent's own; the parent's row and its agents' line change once for the batch, not with each
+// agent; and the row counts its working agents of the total its agents' line gives.
+test("agents started together are one line, and the parent's row moves once for them", async ({ page, request }) => {
+  const STAND_IN = "scripted:stand-in";
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const ws = `${process.env.HOME}/.cache/keel-work/bun/e2e-ws`;
+  mkdirSync(ws, { recursive: true });
+  const gate = `${ws}/batch-${Date.now().toString(36)}.go`;
+  const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title: "Coordinator of a batch", workspace: ws } })).json();
+  await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode: "full-auto" } });
+  const hold = (title: string) => ({ name: "spawn_agent", input: { message: `${title}\nscript:calls ${JSON.stringify([{ name: "Bash", input: { command: `until [ -f ${gate} ]; do sleep 0.2; done; echo released` } }])}`, isolation: "none" } });
+  const lanes = ["Lane one", "Lane two", "Lane three", "Lane four", "Lane five"];
+  try {
+    await page.goto(`/s/${session.id}`);
+    const row = page.getByTestId("session-list").locator(`[data-testid="session-row"][data-session="${session.id}"]`);
+    await expect(row).toBeVisible();
+    // Every frame: what the row says with its agents' line, each change once.
+    await row.evaluate((r) => {
+      const w = window as unknown as { __said: string[] };
+      w.__said = [];
+      const look = () => {
+        const kids = r.parentElement?.querySelector('[data-testid="children-toggle"]')?.getAttribute("aria-label") ?? "";
+        const now = `${r.querySelector('[data-testid="row-state"]')?.textContent ?? ""}|${kids}`;
+        if (kids && w.__said.at(-1) !== now) w.__said.push(now);
+        requestAnimationFrame(look);
+      };
+      requestAnimationFrame(look);
+    });
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([...lanes.map(hold), { name: "spawn_agent", input: { message: "Quick report\nscript:say Report: nothing to change.", isolation: "none" } }])}` } });
+    const agents = async () => (await (await request.get(`/api/sessions/${session.id}/agents`)).json()).agents as { status: string }[];
+    await expect.poll(async () => (await agents()).map((a) => a.status).sort().join(" "), { timeout: 60_000 }).toBe("completed running running running running running");
+    const toggle = row.locator("xpath=..").getByTestId("children-toggle");
+    await expect(toggle).toHaveAccessibleName("6 agents: 5 working, 1 done", { timeout: 20_000 });
+    // One total: the row counts its working agents of every agent it started, the number its agents' line starts with.
+    await expect(row.getByTestId("row-state")).toHaveText("Working · 5 of 6 agents", { timeout: 20_000 });
+    await expect(page.getByTestId("station-word")).toHaveText("Working · 5 of 6 agents");
+    // The row and its line changed a few times for six agents (they came, one reported), not at each.
+    const said = await page.evaluate(() => (window as unknown as { __said: string[] }).__said);
+    expect(said.length, said.join(" ;; ")).toBeLessThanOrEqual(3);
+    // In the conversation: one line, with the first tasks named; nothing under it calls the owner.
+    const step = page.locator('[data-testid="work-step"][data-family="agents"]');
+    await expect(step).toHaveCount(1);
+    await expect(step.locator("button.k-line").first()).toContainText("Started 6 agents");
+    await expect(step.locator("button.k-line").first()).toContainText("Lane one");
+    await expect(page.getByTestId("agent-call")).toHaveCount(0);
+    await shoot(page, "agents-batch-01-closed");
+    // Opened: each agent on its own line, with what the model said before it.
+    await step.locator("button.k-line").first().click();
+    await expect(step.getByTestId("agent-call")).toHaveCount(6);
+    await expect(step.getByTestId("agent-call").filter({ hasText: "Lane three" }).getByTestId("agent-call-state")).toHaveText("Working");
+    await shoot(page, "agents-batch-02-open");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`/s/${session.id}`);
+    await expect(page.locator('[data-testid="work-step"][data-family="agents"]')).toBeVisible();
+    await shoot(page, "agents-batch-03-phone");
+  } finally {
+    writeFileSync(gate, "go\n");
+    await request.delete(`/api/sessions/${session.id}`);
+  }
 });

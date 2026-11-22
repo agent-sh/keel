@@ -81,6 +81,10 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     const kids = row(page, coord).locator("xpath=..").getByTestId("session-children");
     const tree = (title: string) => kids.getByTestId("child-session").filter({ hasText: title });
     const card = (title: string) => station(page, coord).getByTestId("agent-call").filter({ hasText: title });
+    // Eight agents started together are one line in the conversation, which opens to each agent's own line.
+    const started = station(page, coord).locator('[data-testid="work-step"][data-family="agents"]').locator("button.k-line").first();
+    const open = async () => { await expect(started).toContainText("Started 8 agents"); if ((await started.getAttribute("aria-expanded")) !== "true") await started.click(); };
+    await open();
 
     // The summary counts every agent by state: what needs the owner and what failed first, and the parts add up.
     // It is one line: how many, then each state's mark and count; the sentence is the line's name and tooltip.
@@ -230,6 +234,7 @@ test("eight agents read the same on every surface, and the summary adds up", asy
     await confirm.getByTestId("confirm-action").click();
     await expect.poll(async () => (await by("Review pull request 212")).status, { timeout: 30_000 }).toBe("stopped");
     await expect(tree("Review pull request 212").getByTestId("child-state")).toHaveText("Stopped");
+    await open();
     await expect(card("Review pull request 212").getByTestId("agent-call-status")).toHaveText("Stopped · You stopped this agent");
     await summary.toHaveText("8 agents: 1 failed, 1 working, 2 waiting, 1 stopped, 3 done", { timeout: 60_000 });
     expect(await counts()).toBe(8);

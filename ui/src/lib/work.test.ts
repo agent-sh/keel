@@ -14,9 +14,26 @@ test("calls of one family in a row are one step, and another family starts the n
   expect(steps.map((s) => [s.family, callsOf(s).length])).toEqual([["explore", 3], ["change", 1], ["run", 2]]);
 });
 
-test("a plan update, a question and an agent are each a step of their own", () => {
-  const steps = run([use("Read", { file_path: "/w/a.ts" }), use("TodoWrite", { todos: [] }), use("TodoWrite", { todos: [] }), use("Read", { file_path: "/w/b.ts" }), use("Agent", {}), use("Agent", {}), use("AskUserQuestion", {})]);
-  expect(steps.map((s) => s.family)).toEqual(["explore", "plan", "plan", "explore", "card", "card", "card"]);
+test("a plan update and a question are each a step of their own; agents started together are one", () => {
+  const steps = run([use("Read", { file_path: "/w/a.ts" }), use("TodoWrite", { todos: [] }), use("TodoWrite", { todos: [] }), use("Read", { file_path: "/w/b.ts" }), use("Agent", {}), use("Agent", {}), use("AskUserQuestion", {}), use("AskUserQuestion", {})]);
+  expect(steps.map((s) => s.family)).toEqual(["explore", "plan", "plan", "explore", "agents", "card", "card"]);
+});
+
+test("agents started one a reply, with a few words between them, are one step named by their tasks", () => {
+  let steps: Step[] = [];
+  for (let k = 1; k <= 12; k++) {
+    steps = addMeta(steps, { t: "note", id: `n${k}`, text: `Step ${k} of 13.`, event: `e${k}` });
+    steps = addCall(steps, use("spawn_agent", { message: `Lane ${k}\nscript:say done` }), `e${k}`);
+  }
+  steps = addMeta(steps, { t: "note", id: "n13", text: "Step 13 of 13.", event: "e13" });
+  steps = addCall(steps, use("Bash", { command: "make check" }), "e13");
+  expect(steps.map((s) => [s.family, callsOf(s).length])).toEqual([["agents", 12], ["run", 1]]);
+  const s = summarize(steps[0]!);
+  expect([s.label, s.counts, s.targets, s.more]).toEqual(["Started", "12 agents", ["Lane 1", "Lane 2", "Lane 3", "Lane 4"], 8]);
+  // Words that are more than an aside are said on their own: the agents after them are a step of their own.
+  steps = addMeta(steps, { t: "note", id: "n14", text: "## Second wave\n\nThese need the new schema.", event: "e14" });
+  steps = addCall(steps, use("spawn_agent", { message: "Lane 13" }), "e14");
+  expect(steps.map((x) => x.family)).toEqual(["agents", "run", "agents"]);
 });
 
 test("what the model says in passing starts a step; what it thought goes to the step it led to", () => {

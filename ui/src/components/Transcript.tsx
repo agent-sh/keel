@@ -513,24 +513,24 @@ function TurnFooter({ e, reply, prompt, sid, notes, boxed = false, times = 1, pa
   return (
     <div className="k-turn-foot group/foot -mt-1 flex h-7 items-center gap-0.5" data-quiet={!last || undefined}>
       {(reply.length > 0 || partial) && <CopyButton text={() => (partial ? actions.reply(sid, { before: e.seq, head: tailOf.get().other }) : reply.join("\n\n"))} label="Copy the reply" testid="copy-reply" className="size-7" />}
-      {prompt && last && !working && (
+      {prompt && last && !working ? (
         <ActionButton label="Answer again (a new version; this one stays a branch)" testid="retry" onClick={() => actions.edit(sid, prompt.id, prompt.data.text).catch(reportError)}>
           <RotateCcw className="size-3.5" />
         </ActionButton>
-      )}
+      ) : prompt ? <span className="size-7 shrink-0" aria-hidden="true" /> /* its place, kept: the rest of the row does not move when a turn starts or ends */ : null}
       {!(boxed && !reply.length) && <Extra on="assistant" e={e} />}
       <TurnNotes notes={notes} working={working} />
       <span className="k-turn-end ml-2 flex gap-3 text-micro tabular-nums text-faint select-none" data-testid="turn-end">
         {REASONS[e.data.reason] && (waits
-          ? <span className="text-muted" data-testid="turn-reason">{waits}</span>
-          : <span className={e.data.reason === "error" || e.data.reason === "max_tokens" ? "text-st-fail" : "text-warn"} data-testid="turn-reason">{REASONS[e.data.reason]}{STOP_BY[e.data.stopped_by] ?? ""}{times > 1 ? `, ${times} times` : ""}</span>)}
+          ? <span className="k-turn-reason text-muted" data-testid="turn-reason">{waits}</span>
+          : <span className={cn("k-turn-reason", e.data.reason === "error" || e.data.reason === "max_tokens" ? "text-st-fail" : "text-warn")} data-testid="turn-reason">{REASONS[e.data.reason]}{STOP_BY[e.data.stopped_by] ?? ""}{times > 1 ? `, ${times} times` : ""}</span>)}
         <span>{(e.data.ms / 1000).toFixed(1)}s</span>
         {u && <span>{fmtTokens(input)} in{cached ? `, ${cached}% cached` : ""}</span>}
         {u && <span>{fmtTokens(u.output)} out</span>}
         {u?.cost !== undefined && !u.unpriced ? <span data-testid="turn-cost">{fmtCost(u.cost)}</span> : u?.unpriced ? <span>cost unknown</span> : null}
       </span>
       {last && !working && REASONS[e.data.reason] && !boxed && (
-        <button type="button" data-testid="resume" onClick={() => actions.resume(sid).catch(reportError)} className="ml-2 flex h-6 items-center gap-1 rounded-sm px-1.5 text-caption font-medium text-accent-ink hover:bg-accent-soft">
+        <button type="button" data-testid="resume" onClick={() => actions.resume(sid).catch(reportError)} className="k-turn-resume ml-2 flex h-6 items-center gap-1 rounded-sm px-1.5 text-caption font-medium text-accent-ink hover:bg-accent-soft">
           <Play className="size-3" /> Resume
         </button>
       )}

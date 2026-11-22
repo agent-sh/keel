@@ -9,6 +9,7 @@ import { AgentMark, agentSaid, ALERT_STATE, StopAgent } from "./bits.tsx";
 import { Mark } from "../Mark.tsx";
 import { useToldStates } from "../../lib/watch.ts";
 import { Where } from "../Where.tsx";
+import { useSettled } from "../../lib/settle.ts";
 
 // The panels load the first time they open.
 const InboxPanel = lazy(() => import("./InboxPanel.tsx").then((m) => ({ default: m.InboxPanel })));
@@ -31,10 +32,15 @@ export function SessionChildren({ parentId, current }: { parentId: string; curre
   const sessions = useStore((s) => s.sessions);
   // Which agent the parent's unread alerts came from (looking is not reading).
   const unread = useAuto((s) => s.unread.children ?? {});
-  const kids = useMemo(() => Object.values(all).filter((a) => a.parent_id === parentId).sort((a, b) => a.created - b.created), [all, parentId]);
+  const liveKids = useMemo(() => Object.values(all).filter((a) => a.parent_id === parentId).sort((a, b) => a.created - b.created), [all, parentId]);
   const told = useToldStates();
   const seen = useAgentsSeen();
-  const said = useMemo(() => kids.map((k) => agentSaid(k, told[k.session_id])), [kids, told]);
+  const liveSaid = useMemo(() => liveKids.map((k) => agentSaid(k, told[k.session_id])), [liveKids, told]);
+  // As the list shows them (lib/settle.ts): twelve agents started in a breath are one change of the
+  // line, made with the parent's row; an agent that comes to need the owner is shown at once.
+  const asking = (v: { said: { watch: string }[] }) => v.said.filter((x) => x.watch === "need").length;
+  const live = useMemo(() => ({ kids: liveKids, said: liveSaid }), [liveKids, liveSaid]);
+  const { kids, said } = useSettled(`kids:${parentId}`, live, liveKids.map((k, i) => `${k.id}:${liveSaid[i]!.watch}:${liveSaid[i]!.title}`).join(" "), (was) => asking(live) !== asking(was), (was) => was.kids.length === live.kids.length);
   const sum = useMemo(() => agentTally(said.map((x) => x.watch)), [said]);
   const viewing = kids.find((k) => k.session_id === current);
   const [expanded, setExpanded] = useState(() => openKept()[parentId] === true);
@@ -173,14 +179,17 @@ export function AutomationFooter() {
 }
 
 function FooterButtons({ onInbox, onLoops }: { onInbox: () => void; onLoops: () => void }) {
-  const unread = useAuto((s) => s.unread.total);
+  const liveUnread = useAuto((s) => s.unread.total);
   const loops = useAuto((s) => Object.values(s.loops).filter((l) => l.enabled).length);
   const held = useAuto((s) => !!s.snoozes["*"]);
   // The count takes the color of the most urgent unread alert.
-  const top = useAuto((s) => {
+  const liveTop = useAuto((s) => {
     const ws = new Set(s.alerts.filter((a) => !a.read).map((a) => ALERT_STATE[a.kind]));
     return (["need", "fail", "work", "done"] as const).find((w) => ws.has(w)) ?? "idle";
   });
+  // Counted as the list counts (lib/settle.ts): finishes coming one after another move the bell once
+  // they have settled; what needs the owner or failed, and what they read, move it at once.
+  const { unread, top } = useSettled("bell", { unread: liveUnread, top: liveTop }, `${liveUnread}|${liveTop}`, (was) => liveTop === "need" || liveTop === "fail" || was.top !== liveTop || liveUnread < was.unread, () => true);
   return (
     <>
       <button

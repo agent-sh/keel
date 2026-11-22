@@ -48,6 +48,15 @@ export function stateClock(st: SessionState, at: number, short = false): string 
   if (st.until) return st.until > now ? `${short ? "in" : "due in"} ${span(st.until - now)}` : short ? "due" : "due now";
   return st.since ? span(now - st.since) : "";
 }
+// The clock of a row in a list: to the minute ("now" under one, as a row at rest says it), so a list of
+// sessions that work does not tick every second; the pane and the card beside the row say the seconds.
+export function rowClock(st: SessionState, at: number): string {
+  const now = st.as_of === undefined && downSince() !== null ? Math.max(at, Date.now()) : asOf(st, at);
+  if (st.until) return st.until - now >= 60_000 ? `in ${span(st.until - now)}` : st.until > now ? "in <1m" : "due";
+  return st.since && now - st.since >= 60_000 ? span(now - st.since) : "now";
+}
+export const ROW_BEAT = 15_000;
+
 // How often a timed state's clock changes what it says: each second under a minute, a few times a minute after.
 export const tickOf = (st: SessionState) => beatOf(st.until ?? st.since);
 // A state that moves by itself or waits on the owner is timed; one at rest is not.

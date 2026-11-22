@@ -17,6 +17,10 @@ import { besideOf, callsOf, carriedOut, edgeOf, isTable, lookOf, sentence, state
 import { useUI } from "../lib/ui.ts";
 import { Markdown } from "./Markdown.tsx";
 import { Delta, hookOf, ToolCall } from "./ToolCall.tsx";
+import { isLive, useAuto } from "../lib/automation.ts";
+import { useToldStates } from "../lib/watch.ts";
+import { agentSaid } from "./automation/bits.tsx";
+import { countWord } from "../../../src/core/state-words.ts";
 
 export function Thinking({ text, live }: { text: string; live?: boolean }) {
   // What was thought stays open when the thinking ends, as the reader had it, until it has left the
@@ -168,11 +172,12 @@ const StepView = memo(function StepView({ step, sid, cwd, remote, all, table, en
   const stillOpen = thoughts.filter((i) => thoughtHeld((i as { text: string }).text));
   const leadHeld = stillOpen.length > 0 && <div className="k-step-lead"><Thoughts items={stillOpen} /></div>;
   if (!calls.length) return <div className="k-step" data-events={events}>{said}{thoughts.length > 0 && <div className="k-step-lead"><Thoughts items={thoughts} /></div>}</div>;
+  if (step.family === "agents" && calls.length > 1) return <AgentsStep step={step} sid={sid} cwd={cwd} remote={remote} events={events} live={live} all={all} />;
   if (calls.length === 1) {
     const c = calls[0]!;
     const one = summarize(step, live);
     // A card of its own (an agent, a question, code, readers) has what the model thought on the rail above it.
-    const card = step.family === "card";
+    const card = step.family === "card" || step.family === "agents";
     // (A question that waits is the owner's: its part of the rail says so, not that something runs.)
     const edge = card && toolKind(c.use.name) === "ask" && !c.result ? "need" : edgeOf(one.looks, one.soft);
     return (
@@ -229,6 +234,52 @@ const StepView = memo(function StepView({ step, sid, cwd, remote, all, table, en
     </div>
   );
 });
+
+// Agents started together, one after another: one line ("Started 12 agents" and the first tasks), which
+// opens to each agent's own line with the few words the model said before it. Closed, the agents that call
+// the owner stand under it, each on its own line (one that needs them, one that failed); how the others
+// stand is the agents' line under the session's row and their own rows, so the conversation does not
+// change with each of them.
+function AgentsStep({ step, sid, cwd, remote, events, live, all }: { step: Step; sid: string; cwd?: string; remote: boolean; events: string; live: Live; all: All }) {
+  const calls = callsOf(step);
+  const [open, setOpen] = useState(false);
+  useEffect(() => { if (all.n) setOpen(all.open); }, [all]);
+  const hit = useUI((u) => !!u.focusCall && calls.some((c) => c.id === u.focusCall));
+  useEffect(() => { if (hit) setOpen(true); }, [hit]);
+  const agents = useAuto((x) => x.agents);
+  const told = useToldStates();
+  // Each call's agent: the one recorded with the call's id (never a guess by title).
+  const byCall = useMemo(() => new Map(Object.values(agents).filter((a) => a.parent_id === sid && a.call_id).map((a) => [a.call_id!, a])), [agents, sid]);
+  const calling = calls.filter((c) => { const a = byCall.get(c.id); const w = a ? agentSaid(a, told[a.session_id]).watch : undefined; return w === "need" || w === "fail" || w === "declined"; });
+  const asking = calling.filter((c) => { const a = byCall.get(c.id)!; return agentSaid(a, told[a.session_id]).watch === "need"; }).length;
+  const failed = calling.length - asking;
+  const s = summarize(step, live);
+  const running = calls.some((c) => { const a = byCall.get(c.id); return a ? isLive(a) : !c.result; });
+  const words: ReturnType<typeof stateWords> = [...(asking ? [{ text: countWord("need", asking), tone: "need" as const }] : []), ...(failed ? [{ text: countWord("fail", failed), tone: "fail" as const }] : [])];
+  const edge = asking ? "need" : failed ? "error" : running ? "running" : "ok";
+  return (
+    <div className="k-step" data-events={events} data-state={edge}>
+      <div className="k-did">
+        <Collapsible.Root open={open} onOpenChange={setOpen} data-testid="work-step" data-family="agents" data-state={edge} data-calls={calls.length}>
+          <Collapsible.Trigger className="k-line" data-all="" data-step="" aria-label={sentence(s, words)}>
+            <StepLine s={s} words={words} />
+            <span className="k-line-end">{running && <span className="k-line-run" aria-hidden="true" />}</span>
+          </Collapsible.Trigger>
+          {!open && calling.length > 0 && (
+            <div className="k-step-calls" data-testid="step-peek">
+              {calling.map((c) => <ToolCall key={c.id} use={c.use} result={c.result} sessionId={sid} cwd={cwd} peek auto />)}
+            </div>
+          )}
+          <Collapsible.Panel className="k-tool-panel overflow-hidden">
+            <div className="k-step-calls">
+              {step.items.map((i) => (i.t === "call" ? <ToolCall key={i.id} use={i.use} result={i.result} sessionId={sid} cwd={cwd} /> : i.t === "thought" ? <Thinking key={i.id} text={i.text} /> : <div key={i.id} className="k-aside" data-testid="assistant-text"><Markdown text={i.text} sessionId={remote ? undefined : sid} /></div>))}
+            </div>
+          </Collapsible.Panel>
+        </Collapsible.Root>
+      </div>
+    </div>
+  );
+}
 
 // A run of tool calls: one rail. Shift with a click or a key on a step's line opens or closes every step of the run.
 export function Work({ row, sid, cwd, remote }: { row: Row; sid: string; cwd?: string; remote: boolean }) {

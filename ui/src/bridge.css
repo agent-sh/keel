@@ -280,7 +280,7 @@
 .k-row[data-unread] .k-row-title { color: var(--fg); font-weight: 550; }
 .k-row .k-unread-dot { width: 0.375rem; height: 0.375rem; background: var(--accent-ink); }
 .k-row:is([data-watch="need"], [data-watch="fail"], [data-watch="declined"], [data-gone]) .k-unread-dot { display: none; }
-.k-row-time { flex-shrink: 0; min-width: 1.375rem; text-align: right; font-size: var(--text-micro); line-height: 1.25rem; color: var(--faint); }
+.k-row-time { flex-shrink: 0; min-width: 1.75rem; text-align: right; font-size: var(--text-micro); line-height: 1.25rem; color: var(--faint); }
 /* The time column of a live row is the state's own clock, in its ink. */
 .k-row-time[data-live] { color: var(--muted); font-weight: 600; }
 .k-row[data-watch="need"] .k-row-time[data-live] { color: var(--st-need-ink); }
@@ -370,7 +370,7 @@
 /* (The first thing on a line never wraps, however little room: an empty first item lets the real ones go.) */
 .k-kids-extra::before { content: ""; width: 0; height: 1.5rem; }
 .k-kids-extra > * { display: inline-block; height: 1.5rem; line-height: 1.5rem; }
-.k-kids-extra > * + * { margin-left: 0.4375rem; }
+.k-kids-extra > :not(:first-child) { margin-left: 0.4375rem; }
 /* With every state in it the line still holds each count: the word "agents" gives way first. */
 .k-kids-sum[data-many] .k-kids-label { display: none; }
 .k-kids-part .k-mark { width: 0.5rem; height: 0.5rem; animation: none; }
@@ -739,6 +739,9 @@ html[data-resizing] iframe { pointer-events: none; }
 .k-station .k-session-header .k-session-title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 /* A narrow pane: the token counts give way (the turn footer has them). The row
    never scrolls: SessionHeader keeps in it what fits and lists the rest behind More. */
+/* Set at the end of its room: the folder stands still while the state beside it says more or less. */
+.k-station:not([data-helm]) .k-station-identity .k-station-meta { display: flex; justify-content: flex-end; max-width: none; }
+.k-station:not([data-helm]) .k-station-identity .k-station-where { min-width: 0; max-width: 100%; }
 .k-station .k-session-header { overflow: hidden; }
 .k-station .k-session-header > * { flex-shrink: 0; }
 /* The tools that can fold sit in one group that may shrink: on the frame before

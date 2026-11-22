@@ -275,7 +275,8 @@ export const ContextMeter = memo(function ContextMeter({ sessionId, above }: { s
         className="inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-caption text-muted tabular-nums hover:bg-hover hover:text-fg outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
       >
         <Ring share={fill} />
-        <span>{!window_ ? fmtTokens(used) : `${fill < 0.01 && used ? "<1" : Math.round(fill * 100)}%${model?.context_assumed ? "?" : ""}`}</span>
+        {/* As wide for "<1%" as for "88%": the tools beside it do not move as it fills. */}
+        <span className="min-w-[1.75rem] text-left">{!window_ ? fmtTokens(used) : `${fill < 0.01 && used ? "<1" : Math.round(fill * 100)}%${model?.context_assumed ? "?" : ""}`}</span>
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner side="top" align="end" sideOffset={8} className="z-50">

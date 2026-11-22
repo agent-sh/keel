@@ -38,7 +38,7 @@ import { finished, ListFind, matches, order, readNote, setArrange, useArrange, u
 import { useLink } from "./Stale.tsx";
 import { useReach } from "../lib/reach.ts";
 import { useAuto } from "../lib/automation.ts";
-import { failWord, folderOf, Mark, modelOf, stateClock, tickOf, timed, useNow, whyText } from "./Mark.tsx";
+import { failWord, folderOf, Mark, modelOf, ROW_BEAT, rowClock, stateClock, tickOf, timed, useNow, whyText } from "./Mark.tsx";
 import { AutomationFooter, SessionBadges, SessionChildren } from "./automation/SidebarExtras.tsx";
 import { DRAG, dragSession, PaneCount } from "./Panes.tsx";
 import { PaneMenu } from "./PaneMenu.tsx";
@@ -52,8 +52,12 @@ import { FolderGroups } from "./SidebarFolders.tsx";
 import { openHelper } from "../lib/helper.ts";
 import { Seg, tabId } from "./Seg.tsx";
 import { StuckStrip } from "./Stuck.tsx";
+import { calls, useSettled, useSettledState, useSettledStates } from "../lib/settle.ts";
 
 const base = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
+// The filter box draws again only when its words or its width change, not with every change of the list
+// under it (a field drawn again is written again: React sets its name, many times a second in a busy list).
+const Find = memo(ListFind);
 
 // What the list is drawn from, for every group in it: the states its order and
 // its folds read (held still under the hand), the sessions that left while it
@@ -190,14 +194,17 @@ function RowOf({ s: given, active, where, gone }: { s: Session; active: boolean;
   const s = live ?? given;
   const { narrow, lines } = useContext(ListCtx);
   const restore = s.archived;
-  // A session whose agents failed reads Failed until the owner looks at it, as the counters count it (lib/home.ts).
+  // A session whose agents failed reads Failed until the owner looks at it, as the counters count it (lib/home.ts);
+  // as the list shows it: a change that calls the owner at once, any other once it has held (lib/settle.ts).
   const own = useSessionState(s);
-  const st = useMemo(() => countedState(s, own), [s, own]);
+  const counted = useMemo(() => countedState(s, own), [s, own]);
+  // (Its own entry: the counted state can differ from the one the order and the counts read.)
+  const st = useSettledState(`row:${s.id}`, counted);
   const w = st.watch;
   // A machine that does not answer: what its rows say is the last it told, so they are dimmed and their clocks stand.
   // The state says so itself (lib/watch.ts: `offline`, and `as_of` when it was last told), until the machine has stayed heard.
   const offline = !!st.offline;
-  const now = useNow(timed(st) && !offline, tickOf(st));
+  const now = useNow(timed(st) && !offline, ROW_BEAT);
   // A row of one line may have no room for its reason: the card beside it comes sooner.
   const card = useContext(CardCtx)(s, lines === "one" ? 250 : 450, lines === "two");
   // A message of the session waits for the daemon to be back and goes out by itself: said on the
@@ -313,12 +320,14 @@ function RowOf({ s: given, active, where, gone }: { s: Session; active: boolean;
           : offline
           ? <span className="k-row-time group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-offline title={`Its machine does not answer: this is the last it told, ${when(toldAt)}`}>{OFFLINE}</span>
           : timed(st)
-          ? <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-live title={st.until ? `Due ${when(st.until)}` : `Since ${when(st.since!)}`}>{stateClock(st, now, true)}</span>
+          ? <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" data-live title={st.until ? `Due ${when(st.until)}` : `Since ${when(st.since!)}`}>{rowClock(st, now)}</span>
           : <span className="k-row-time tabular-nums group-hover:hidden group-focus-within:hidden" data-testid="row-time" title={when(s.updated)}>{ago(s.updated)}</span>}
         {/* (A row whose session left has no actions: there is nothing to act on.) */}
         {!left && !restore && !phone() && (
           <button type="button" tabIndex={-1} title={pinned ? "Unpin" : "Pin to the top of the list"} aria-label={pinned ? "Unpin" : "Pin"} aria-pressed={pinned} data-testid="row-pin" onClick={(e) => { e.stopPropagation(); togglePin(e.detail === 0); }} className="k-row-act hidden group-hover:grid group-focus-within:grid">
             {pinned ? <PinOff /> : <Pin />}
+        {/* (Pressed with the pointer, it leaves the keyboard where it was: a focus the owner did not give
+            the row would hold the list after the pointer left, and the pinned row would not take its place.) */}
           </button>
         )}
         {!left && !restore && !shown && !phone() && (
@@ -542,7 +551,7 @@ function Marks({ current }: { current: string | null }) {
   const sessions = useStore((s) => s.sessions);
   const live = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id && !s.settings.helper).sort((a, b) => b.created - a.created || b.id.localeCompare(a.id)), [sessions]);
   const codes = useMemo(() => callsigns(live), [live]);
-  const states = useSessionStates(live);
+  const states = useSettledStates(useSessionStates(live));
   const now = useMemo(() => Object.fromEntries(live.map((s) => [s.id, states[s.id]!.watch])) as Record<string, Watch>, [live, states]);
   // Held: each mark in the band it was in, one whose session left still there (dimmed), and what came since in a band of its own at the end.
   const { list: ordered, watches: banded, gone, late } = useHeld(useContext(HandCtx).held, "marks", live, now);
@@ -745,7 +754,9 @@ function Summary() {
     if (kind === "fail") return { n: ids.length, word: wentWrongWord(ids.length - declined, declined) };
     return { n: ids.length, word: kind === "work" ? countName("work", ids.length) : kind === "unread" ? NEW.toLowerCase() : OFFLINE.toLowerCase() };
   };
-  const figures = COUNTS.map((c) => { const x = said(c.kind, counts[c.kind]); return `${x.n} ${x.word}`; }).join("|");
+  // What the fit depends on: which counts show, how many figures each has and its word. A count that
+  // goes from 4 to 5 is as wide as it was, and is not measured again (a fit writes every chip twice).
+  const figures = COUNTS.filter((c) => counts[c.kind].length > 0).map((c) => { const x = said(c.kind, counts[c.kind]); return `${c.kind}:${String(x.n).length}:${x.word}`; }).join("|");
   useLayoutEffect(() => {
     const el = line.current;
     if (!el) return;
@@ -793,8 +804,12 @@ function Summary() {
 function CountsKeeper() {
   const sessions = useStore((s) => s.sessions);
   const top = useMemo(() => Object.values(sessions).filter((s) => !s.archived && !s.parent_id && !s.settings.helper), [sessions]);
-  const states = useSessionStates(top);
-  const unread = useAuto((x) => x.unread.sessions);
+  // Counted as the rows show them (lib/settle.ts): the line above the list moves with the rows.
+  const states = useSettledStates(useSessionStates(top));
+  // What is new, as the rows show it: a finish comes to the count once it has settled, a read leaves it at once.
+  const liveUnread = useAuto((x) => x.unread.sessions);
+  const unreadKey = Object.entries(liveUnread).filter(([, n]) => (n ?? 0) > 0).map(([id]) => id).sort().join(" ");
+  const unread = useSettled("unread", liveUnread, unreadKey, (was) => Object.keys(was).some((id) => (was[id] ?? 0) > 0 && !((liveUnread[id] ?? 0) > 0)), () => true);
   // The machines that do not answer, as one word: it changes when one of them does. A machine is
   // among them until it has stayed heard a while (lib/reach.ts), so the count does not come and go with a link that does.
   const down = useReach((x) => Object.keys(x.unheard).sort().join(" "));
@@ -860,7 +875,7 @@ function Index({ current }: { current: string | null }) {
   // The filter words and the arrangement (ListArrange.tsx): pinned sessions stay in view unless the words leave them out.
   const [q, setQ] = useState("");
   const arr = useArrange();
-  const states = useSessionStates(base_);
+  const states = useSettledStates(useSessionStates(base_));
   const liveWatches = useMemo(() => Object.fromEntries(Object.entries(states).map(([id, st]) => [id, st.watch])) as Record<string, Watch>, [states]);
   // Under the hand the list is drawn from what it held when the hand arrived: no row moves.
   // (The session on screen is theirs: one they just made or opened from this page takes its place at once.)
@@ -929,7 +944,7 @@ function Index({ current }: { current: string | null }) {
   return (
     <>
       <Seg kind="tabs" panel={panel} fill className="k-list-tabs mx-2.5 mb-1" label="Session list" value={tab} onChange={setTab} options={[{ value: "active", label: "Sessions", testid: "tab-active" }, { value: "archived", label: "Archived", testid: "tab-archived" }]} />
-      <ListFind q={q} setQ={setQ} narrow={narrow} />
+      <Find q={q} setQ={setQ} narrow={narrow} />
       {tags.length > 0 && !narrow && (
         <div className="flex flex-wrap gap-1 px-3 pb-2" role="group" aria-label="Filter by tag" data-testid="tag-filter">
           {tags.map((t) => (

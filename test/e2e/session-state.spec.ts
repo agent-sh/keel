@@ -110,7 +110,7 @@ test("a session waiting on a timer says so, with what it waits for and since whe
     await expect(j).toHaveAttribute("data-watch", "work");
     await expect(j.getByTestId("row-state")).toHaveText("Working");
     await expect(j.getByTestId("row-why")).toHaveText("Command in background: sleep 300");
-    await expect(j.getByTestId("row-time")).toHaveText(/^\d+s$/);
+    await expect(j.getByTestId("row-time")).toHaveText("now");
     expect(await stateOf(request, timer)).toMatchObject({ watch: "wait", why: "timer", text: "Timer: check the deploy" });
     expect(await stateOf(request, job)).toMatchObject({ watch: "work", why: "command" });
     // The timeline's Now says waiting too, and on what.
@@ -414,7 +414,7 @@ test("a row says why once: what is asked of the owner, the step with its time, t
       // Said once: no second "needs you" on the row.
       expect((await r.innerText()).match(/needs you/gi)).toHaveLength(1);
       await expect(r.getByTestId("needs-you")).toHaveCount(0);
-      await expect(r.getByTestId("row-time")).toHaveText(/^\d+[sm]$/);
+      await expect(r.getByTestId("row-time")).toHaveText(/^(now|\d+m)$/);
     }
     // A message this browser could not send is the same kind of reason.
     // (The refusal arrives after the owner moved to another session, so the message is kept for its own.)
@@ -433,7 +433,7 @@ test("a row says why once: what is asked of the owner, the step with its time, t
     await expect(row(page, watcher).getByTestId("row-state")).toHaveText("Needs you");
     // Working: the command it runs and how long that step has run.
     await expect(why(working)).toHaveText("bun test --slow");
-    await expect(row(page, working).getByTestId("row-time")).toHaveText(/^\d+s$/);
+    await expect(row(page, working).getByTestId("row-time")).toHaveText("now");
     // Failed: the class beside the word and what the provider said.
     await expect(row(page, failed).getByTestId("row-class")).toHaveText("billing");
     await expect(why(failed)).toContainText("credit balance is too low");
@@ -491,7 +491,8 @@ test("an agent that asks the owner is marked as asking in the tree, on its card 
     await expect(asking).toContainText("Ask about scope");
     await expect(asking.getByTestId("child-state")).toHaveText("Needs you");
     await expect(kids.getByTestId("child-session")).toHaveCount(2);
-    // Its card in the parent's transcript.
+    // Its card in the parent's transcript: the two agents started together are one line, which opens to each.
+    await page.locator('[data-testid="work-step"][data-family="agents"] button.k-line').first().click();
     const card = page.getByTestId("agent-call").filter({ hasText: "Ask about scope" });
     await expect(card.getByTestId("agent-call-status")).toHaveText("Needs you: a question");
     await expect(page.getByTestId("agent-call").filter({ hasText: "Count the handlers" }).getByTestId("agent-call-status")).toHaveText("Working, in background");
