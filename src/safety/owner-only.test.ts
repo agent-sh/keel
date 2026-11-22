@@ -150,7 +150,7 @@ test("a card is for the whole input: one whose tail changed past the stored copy
       stop.abort();
       await asked;
       restart();
-      gate.resolve(card.id, sid, { choice: "once" });
+      gate.resolve(card.id, sid, { choice: "once", seen: "whole" });
       const again = new AbortController();
       let done: unknown = "waiting";
       const second_ = gate.beforeTool(session, call(id, second, again.signal, hook)).then((r) => (done = r));
@@ -185,7 +185,7 @@ test("a card is for the whole input: one whose tail changed past the stored copy
     expect(typeof input_sha).toBe("string");
     store.db.query("UPDATE approvals SET data = ? WHERE id = ?").run(JSON.stringify(older), card.id);
     restart();
-    gate.resolve(card.id, sid, { choice: "once" });
+    gate.resolve(card.id, sid, { choice: "once", seen: "whole" });
     expect(await gate.beforeTool(session, call("old", "npm install kept", new AbortController().signal))).toBeUndefined();
   } finally {
     rmSync(dir, { recursive: true, force: true });

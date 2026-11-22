@@ -16,7 +16,8 @@ import { readsOf } from "../reads.ts";
 import { Gate, type SandboxProfile } from "../../safety/gate.ts";
 import { asksLess, isMode, MODE_GROUPS, MODES } from "../../safety/policy.ts";
 import { makeJudge } from "../../safety/judge.ts";
-import { isLocal, Presence } from "../../safety/presence.ts";
+import { forwardedPeer, isLocal, Presence } from "../../safety/presence.ts";
+import { CLIENTS, type AnsweredBy } from "../../safety/card.ts";
 import { sandboxStatus } from "../../safety/sandbox.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { setGitReach } from "../../core/git.ts";
@@ -83,6 +84,15 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
     }
   };
   const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}) as any;
+  // How an answer was given, as its client says: `seen` is its word that it
+  // showed the whole text, `via` its kind (the phone's kinds are the phone
+  // API's to give). A daemon that forwards the answer passes both through as
+  // they came; the machine it came through is added here, from the link.
+  const given = (req: Request, b: any): { seen?: "whole"; by: Omit<AnsweredBy, "seen"> } => {
+    const peer = forwardedPeer(req);
+    const client = (CLIENTS as readonly string[]).includes(b.via) && b.via !== "phone" && b.via !== "notification" ? (b.via as AnsweredBy["client"]) : "api";
+    return { ...(b.seen === "whole" ? { seen: "whole" as const } : {}), by: { client, ...(peer ? { peer } : {}) } };
+  };
   const settings = () => ({ default_mode: g.defaultMode(), default_sandbox: g.defaultSandbox(), reviewer_model: g.setting("reviewer_model") ?? null, reviewer_policy: g.setting("reviewer_policy") ?? "", modes: MODES, mode_groups: MODE_GROUPS, sandbox: sandboxStatus() });
 
   return {
@@ -192,11 +202,18 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
         if (!Array.isArray(b.ids) || !b.ids.length || !b.ids.every((x: unknown) => typeof x === "string")) return bad("ids is a list of approval ids");
         // More than a page can show to be read at once is not a list the owner answered.
         if (b.ids.length > MANY) return bad(`at most ${MANY} requests are answered together`);
-        const r = g.resolveMany(s.id, b.ids, (e, id) => deps.errors.capture("server", e, { at: "approvals answered together", approval: id }));
+        const r = g.resolveMany(s.id, b.ids, (e, id) => deps.errors.capture("server", e, { at: "approvals answered together", approval: id }), given(req, b));
         return "error" in r ? json({ error: r.error, alone: r.alone }, r.status) : json(r);
       },
     },
     "/api/sessions/:id/approvals/:aid": {
+      // One card as every client is given it: the whole text to judge, whether
+      // it is cut, the marks in it, its risk, where it runs, why it is asked,
+      // and why an allow needs the text shown first (`card.hold`).
+      GET: (req: any) => {
+        const a = g.approval(req.params.aid);
+        return a && a.session_id === req.params.id ? json({ approval: a, card: g.form(a) }) : bad("no such approval", 404);
+      },
       POST: async (req: any) => {
         const b = await body(req);
         if (!["once", "session", "always", "deny"].includes(b.choice)) return bad("choice is once, session, always or deny");
@@ -207,8 +224,9 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
           if (guard) return guard;
         }
         const rules = Array.isArray(b.rules) ? b.rules.filter((r: any) => ["shell", "edit", "tool"].includes(r?.kind) && typeof r.pattern === "string") : undefined;
-        const r = g.resolve(req.params.aid, req.params.id, { choice: b.choice, reason: typeof b.reason === "string" ? b.reason : undefined, rules });
-        return "error" in r ? json({ error: r.error, approval: r.approval }, r.status) : json(r);
+        const r = g.resolve(req.params.aid, req.params.id, { choice: b.choice, reason: typeof b.reason === "string" ? b.reason : undefined, rules, ...given(req, b) });
+        // (`hold`: the card is still open; the client is to show the whole text and answer again with `seen`.)
+        return "error" in r ? json({ error: r.error, approval: r.approval, ...(r.hold ? { hold: r.hold } : {}) }, r.status) : json(r);
       },
     },
     "/api/permissions/grants": {

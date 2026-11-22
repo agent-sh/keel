@@ -314,7 +314,7 @@ test("PermissionRequest, PermissionDenied", async () => {
   // Exit code 2 is not a decision here: the card opens as without the hook.
   const two = run(s, "npm install w-exit2");
   expect(await card()).toMatchObject({ risk: "low", summary: "npm install w-exit2" });
-  gate.resolve(open()[0]!.id, s.id, { choice: "once" });
+  gate.resolve(open()[0]!.id, s.id, { choice: "once", seen: "whole" });
   expect((await two.result).content).toStartWith("ran: npm install w-exit2");
   // A high-risk card still opens whatever the hook allows.
   const stop = new AbortController();
@@ -357,7 +357,7 @@ test("what a call's hooks left is kept for its session: two sessions with one ca
   for (let i = 0; i < 300 && !gate.approvals({ session: a.id, pending: true }).length; i++) await Bun.sleep(10);
   const [card] = gate.approvals({ session: a.id, pending: true });
   expect(card).toMatchObject({ once: true, why: "a hook asks: look at this one" });
-  gate.resolve(card!.id, a.id, { choice: "once" });
+  gate.resolve(card!.id, a.id, { choice: "once", seen: "whole" });
   expect((await first.result).content).toStartWith("ran: echo w-slow-ask from-a");
   // Each session's PostToolUse hook got its own command.
   const post = await given("PostToolUse", 2);

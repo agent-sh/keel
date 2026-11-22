@@ -30,7 +30,17 @@ const g = globalThis as { __keelInnerKey?: string };
 const INNER = (g.__keelInnerKey ??= randomBytes(32).toString("hex"));
 const FORGED: Standing = { local: false, enrolled: true, present: null };
 
-export const innerHeaders = (s: Standing): Record<string, string> => ({ "x-keel-standing": JSON.stringify(s), "x-keel-standing-key": INNER });
+// `peer`: the name this daemon knows the forwarding daemon by. It is said in
+// the record of an answer that came through it, and decides nothing.
+export const innerHeaders = (s: Standing, peer?: string): Record<string, string> => ({ "x-keel-standing": JSON.stringify(s), "x-keel-standing-key": INNER, ...(peer ? { "x-keel-standing-peer": encodeURIComponent(peer) } : {}) });
+
+// The linked machine a forwarded request came through, by this daemon's name for it; null for a request that was not forwarded.
+export function forwardedPeer(req: Request): string | null {
+  const key = req.headers.get("x-keel-standing-key") ?? "";
+  if (key.length !== INNER.length || !timingSafeEqual(Buffer.from(key), Buffer.from(INNER))) return null;
+  if (req.headers.get("x-keel-standing") === null) return null;
+  try { return decodeURIComponent(req.headers.get("x-keel-standing-peer") ?? "") || "a linked machine"; } catch { return "a linked machine"; }
+}
 
 export function forwardedStanding(req: Request): Standing | null {
   const raw = req.headers.get("x-keel-standing");

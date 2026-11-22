@@ -70,6 +70,11 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
   }));
   // Queued input that named a sender left a queue unread: where the engine tells of it, the message is dropped with the engine's reason.
   registerHooks({ inputDropped: (rows, why) => states.dropped(rows, why) });
+  // An approval card says where its call runs: this daemon's machine, or the one the session works on.
+  if (gate) gate.machineOf = (id) => {
+    const on = store.session(id)?.machine;
+    return on ? { name: f.row(on)?.name ?? on, far: true } : { name: f.name };
+  };
   const moves = new Handoffs(store, bus, engine, f);
   const remoteAgents = new RemoteAgents(store, f, errors, (id) => gate?.perm(id).sandbox ?? "off");
   setRemotePlacer(remoteAgents);
@@ -746,7 +751,8 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       const r = await fetch(`http://127.0.0.1:${srv.port}/api/${rest}${url.search}`, {
         method: req.method,
         body: ["GET", "HEAD"].includes(req.method) ? undefined : await req.arrayBuffer(),
-        headers: { "content-type": req.headers.get("content-type") ?? "application/json", ...innerHeaders(standing) },
+        // (The caller's name here is kept with an answer it carried: an approval says where it was given.)
+        headers: { "content-type": req.headers.get("content-type") ?? "application/json", ...innerHeaders(standing, f.pairs().find((p) => p.daemon_id === c.daemonId)?.name ?? f.rows().find((m) => m.link_daemon_id === c.daemonId)?.name ?? undefined) },
         redirect: "manual",
       });
       return new Response(r.body, { status: r.status, headers: { "content-type": r.headers.get("content-type") ?? "application/octet-stream" } });

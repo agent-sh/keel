@@ -930,7 +930,7 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
     setAnswering(true);
     setErr("");
     try {
-      await safety.answer(a.session_id, a.id, body);
+      await safety.answer(a.session_id, a.id, body.choice === "deny" ? body : { ...body, seen: "whole" });
     } catch (e) {
       const st = (e as { status?: number }).status;
       const was = (e as { body?: { approval?: Approval } }).body?.approval;

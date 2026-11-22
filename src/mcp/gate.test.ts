@@ -77,7 +77,7 @@ test("an answer waiting on a card runs only on the source it was given for (nati
       else if (change === "source") put("B");
       else if (change === "schema") put("B", "string");
       else put("A"); // a no-op refresh or a reconnect of the same server
-      expect(g.resolve(card.id, s.id, { choice: "once" })).toEqual({ ok: true });
+      expect(g.resolve(card.id, s.id, { choice: "once", seen: "whole" })).toEqual({ ok: true });
       expect(await pending).toBeUndefined();
       const out = await tool.run(input, ctx as any);
       results[`${profile}/${change}`] = { error: !!out.is_error, runs, text: String(out.content) };
@@ -107,7 +107,7 @@ test("an always grant for an MCP tool covers the source it was given for, not a 
   bus.on((f: any) => { if (f.name === "approval" && f.data?.state === "pending") cards.push(f.data); });
   const first = g.beforeTool(s, { id: "1", tool: on("A"), input: {}, ctx } as any);
   await Bun.sleep(0);
-  g.resolve(cards[0].id, s.id, { choice: "always" });
+  g.resolve(cards[0].id, s.id, { choice: "always", seen: "whole" });
   await first;
   expect(await g.beforeTool(s, { id: "2", tool: on("A"), input: {}, ctx } as any)).toBeUndefined();
   void g.beforeTool(s, { id: "3", tool: on("B"), input: {}, ctx } as any);

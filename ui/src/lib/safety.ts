@@ -115,12 +115,17 @@ export const safety = {
     const r = await api<{ perm: SessionPerm; rev?: number }>(`/api/sessions/${id}/permissions`, { method: "PUT", body: JSON.stringify(patch) });
     if (newer(`${id}:perm`, r.rev, true)) set({ perms: { ...state.perms, [id]: r.perm } });
   },
-  answer: (sessionId: string, approvalId: string, body: { choice: string; reason?: string; rules?: Suggest[] }) =>
-    api(`/api/sessions/${sessionId}/approvals/${approvalId}`, { method: "POST", body: JSON.stringify(body) }),
+  // `seen: "whole"`: the card's word that all of the request's text was on
+  // screen before the answer. The daemon takes an allow of a text one line
+  // does not show whole only with it (src/safety/card.ts), from any client.
+  answer: (sessionId: string, approvalId: string, body: { choice: string; reason?: string; rules?: Suggest[]; seen?: "whole" }) =>
+    api(`/api/sessions/${sessionId}/approvals/${approvalId}`, { method: "POST", body: JSON.stringify({ ...body, via: "page" }) }),
   // Several cards allowed once with one answer: the daemon refuses the whole
   // list if it names one that is answered alone, and says how each went.
+  // (The one caller is "allow all", which covers only requests whose text
+  // stood whole on screen: lib/approvals.ts, batches.)
   answerMany: (sessionId: string, ids: string[]) =>
-    api<{ results: BatchResult[] }>(`/api/sessions/${sessionId}/approvals`, { method: "POST", body: JSON.stringify({ choice: "once", ids }) }),
+    api<{ results: BatchResult[] }>(`/api/sessions/${sessionId}/approvals`, { method: "POST", body: JSON.stringify({ choice: "once", ids, seen: "whole", via: "page" }) }),
   restore: async (id: string) => {
     await api(`/api/permissions/grants/${id}/restore`, { method: "POST" });
     await safety.loadGrants();

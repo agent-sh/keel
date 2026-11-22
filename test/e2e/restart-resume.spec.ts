@@ -1295,7 +1295,8 @@ test("a secret card, a call blocked on an asking agent and a program's card do n
     const waitsOf = async () => ((await call(`/api/sessions/${parent}`, undefined, "GET")).events as any[]).filter((e) => e.kind === "assistant" && e.data.blocks.some((b: any) => b.type === "tool_use" && b.name === "wait_agent")).length;
     // The program is let run; the card that then waits is the one of the command it runs.
     await expect.poll(async () => (await cardsOf()).map((a) => a.tool), { timeout: 30_000 }).toEqual(["run_code"]);
-    expect((await call(`/api/sessions/${coder}/approvals/${(await cardsOf())[0]!.id}`, { choice: "once" })).status).toBe(200);
+    // (A program is more than one line shows: the allow says its text was read.)
+    expect((await call(`/api/sessions/${coder}/approvals/${(await cardsOf())[0]!.id}`, { choice: "once", seen: "whole" })).status).toBe(200);
     await expect.poll(async () => [(await secrets()).length, (await asked()).length, (await cardsOf()).map((a) => a.tool), await waitsOf()], { timeout: 30_000 }).toEqual([1, 1, ["Bash"], 1]);
     const [secretId] = await secrets(), [askedId] = await asked(), [inner] = await cardsOf();
 

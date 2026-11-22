@@ -4,7 +4,7 @@
 // happened.
 import { askThing, whyText, type SessionState, type Watch } from "../../../src/core/watch.ts";
 import { backgroundWord, countWord, inBackground, stateLabel, stateWords, waitsOnOwner } from "../../../src/core/state-words.ts";
-import { plainAscii } from "./hidden-chars.ts";
+import { oneLine, SHORT_MAX } from "../../../src/safety/card.ts";
 
 export type Row = { id: string; w: Watch };
 // The headline's parts. `wait` is every session that goes on by itself: one
@@ -76,13 +76,15 @@ export const sayMore = (more: More[]) => `${more.reduce((n, p) => n + p.ids.leng
 // else or reorder what is shown (a tab, a no-break space, a letter written
 // right to left: a row has no place to mark them). Anything else (a long or
 // many-line command, an edit, a tool call) is reviewed on its card.
-export const WHOLE_MAX = 160;
+// (The daemon's own test of a request one line shows whole: an allow of any
+// other needs the card's word that its text was shown, src/safety/card.ts.)
+export const WHOLE_MAX = SHORT_MAX;
 export function wholeCommand(a: { kind: string; risk: string; summary: string; input?: unknown } | undefined): string | null {
   if (!a || a.risk !== "low" || a.kind !== "shell") return null;
   const input = a.input as { command?: unknown; cmd?: unknown } | undefined;
   const typed = typeof input?.command === "string" ? input.command : typeof input?.cmd === "string" ? input.cmd : null;
   if (typed === null || typed !== a.summary) return null;
-  return !plainAscii(typed) || typed.length > WHOLE_MAX ? null : typed;
+  return oneLine(typed) ? typed : null;
 }
 
 // What a row is, in a word: the kind of thing that waits, not the state again

@@ -101,7 +101,7 @@ test("Claude Code's Bash asks to leave the sandbox with its own parameter, and g
   const cards = g.approvals({ session: "s1", pending: true });
   expect(cards.map((a) => [a.tool, a.risk, a.why])).toEqual([["Bash", "high", "the command asks to run outside the sandbox"]]);
   // Approved once: it runs with no confinement.
-  expect(g.resolve(cards[0]!.id, "s1", { choice: "once" })).toEqual({ ok: true });
+  expect(g.resolve(cards[0]!.id, "s1", { choice: "once", seen: "whole" })).toEqual({ ok: true });
   expect(await asked).toBeUndefined();
 });
 
@@ -213,7 +213,7 @@ test("Auto escalation shows and stays bound to the resolved invocation", async (
   expect(a?.summary).toBe(`pwd\n\nStarting directory: ${realOf(initial)}\nInterpreter: bash -c`);
   unlinkSync(link);
   symlinkSync(later, link);
-  expect(g.resolve(a!.id, session.id, { choice: "once" })).toEqual({ ok: true });
+  expect(g.resolve(a!.id, session.id, { choice: "once", seen: "whole" })).toEqual({ ok: true });
   expect(await pending).toHaveProperty("deny");
 });
 
@@ -259,7 +259,7 @@ test("Auto does not reuse a parked approval or let it create a standing grant", 
   stop.abort();
   await checking;
   g.setPerm(session.id, { mode: "auto" });
-  expect(g.resolve(a!.id, session.id, { choice: "always" })).toHaveProperty("status", 409);
+  expect(g.resolve(a!.id, session.id, { choice: "always", seen: "whole" })).toHaveProperty("status", 409);
   expect(g.rules()).toEqual([]);
   const resumed = await g.check(session, { ...call, ctx: { ...call.ctx, signal: new AbortController().signal } });
   expect("deny" in resumed ? resumed.deny : "").toContain("Check the prior outcome");
@@ -286,13 +286,13 @@ test("a parked card takes no answer until the next daemon; a program's card clos
   stop.abort();
   await Promise.all([own, inner]);
   // On its way out: neither an allow nor a denial is taken, and the card stays open.
-  expect(g.resolve(card.id, session.id, { choice: "once" })).toHaveProperty("status", 503);
+  expect(g.resolve(card.id, session.id, { choice: "once", seen: "whole" })).toHaveProperty("status", 503);
   expect(g.resolve(card.id, session.id, { choice: "deny", reason: "not this one" })).toHaveProperty("status", 503);
   expect(g.approval(card.id)!.state).toBe("pending");
   expect(g.callOutcome(session.id, "own")).toBe("waiting");
   // The program's card is closed, and says why.
   expect(g.approval(nested.id)!.state).toBe("cancelled");
-  expect(g.resolve(nested.id, session.id, { choice: "once" })).toHaveProperty("status", 409);
+  expect(g.resolve(nested.id, session.id, { choice: "once", seen: "whole" })).toHaveProperty("status", 409);
   expect(g.callOutcome(session.id, "inner")).toBe("not_run");
   // The next daemon takes the answer.
   const next = new Gate(store, new Bus());
@@ -402,7 +402,7 @@ test("one answer for several cards covers none that must be read alone", async (
   expect(g.resolveMany("s1", [left.id, long.id, right.id])).toMatchObject({ status: 400, alone: [long.id] });
   expect(open().length).toBe(5);
   // Each of those is still answered on its own.
-  expect(g.resolve(root.id, "s1", { choice: "once" })).toEqual({ ok: true });
+  expect(g.resolve(root.id, "s1", { choice: "once", seen: "whole" })).toEqual({ ok: true });
   expect(g.resolve(long.id, "s1", { choice: "deny" })).toEqual({ ok: true });
 
   // The rest together, in the order given; one that is no longer open, or of another session, is passed over and said.

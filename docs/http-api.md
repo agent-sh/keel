@@ -71,12 +71,18 @@ The session's permission mode.
 
 - Response: `{ perm: { mode, ... }, scope, rev }`
 
+### GET /api/sessions/:id/approvals/:aid
+
+One permission request as every client is given it: all there is to judge, and why it is read before it is allowed.
+
+- Response: `{ approval, card }`. `card` has `text` (the command, the paths and what an edit writes, or the tool's input: all of it up to 20,000 characters), `cut` and `total` when only the start is kept, `lines`, `chars`, `risk`, `marks` (`hidden`: characters that do not show as written, `rtl`: letters written right to left, `alike`: characters that can pass for plain ASCII letters), `machine` (`name`, `far` when the call runs on another machine), `reason`, `choices`, and `hold`: why an allow needs `seen` (`long`, `cut`, `marked`, `risk`; empty when one line shows all of it). `404`: no such request.
+
 ### POST /api/sessions/:id/approvals/:aid
 
 Answers one open permission request.
 
-- Request: `{ choice, reason? }`. `choice` is `once` or `deny` (`session` and `always` store a standing grant: from a remote device they need the owner's passkey). `reason` reaches the model with a refusal.
-- Response: `{ ok: true }`. `404` or `409` with `error`: the request is not open any more. `503`: the daemon is restarting, answer again. `428`: the answer needs the owner's passkey.
+- Request: `{ choice, reason?, seen?, via? }`. `choice` is `once` or `deny` (`session` and `always` store a standing grant: from a remote device they need the owner's passkey). `reason` reaches the model with a refusal. `seen: "whole"` is the caller's word that it showed the whole text of the request before the answer (`GET` on the same path gives it as `card.text`): an allow of a request that one line of 160 printable ASCII characters does not show whole, that is cut, that holds marked characters or that is high risk is taken only with it. `via` says what answers (`cli`, `script`, `acp`, `page`) and is kept with the answer.
+- Response: `{ ok: true }`. `404` or `409` with `error`: the request is not open any more. `409` with `hold`: the request is still open, and the allow needs `seen` (the `error` is the sentence to show: open the request to read it first). `503`: the daemon is restarting, answer again. `428`: the answer needs the owner's passkey.
 
 ### POST /api/sessions/:id/questions/:call
 

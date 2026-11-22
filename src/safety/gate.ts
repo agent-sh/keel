@@ -23,6 +23,7 @@ import { configDir } from "../providers/config.ts";
 import { artifactsDir, contains, realOf } from "../core/paths.ts";
 import { applyEdit } from "../tools/files.ts";
 import { SUMMARY_LIMIT, shownInPart } from "./summary.ts";
+import { cardForm, refusal, type AnsweredBy, type CardForm, type Hold } from "./card.ts";
 import { classify, decide, isMode, ownPath, pathsNamed, programEntries, programRules, shellText, wordsNaming, type Ask, type CallClass, type Decision, type Mode, type Rule, type RuleKind, type Suggest } from "./policy.ts";
 import { timed } from "../admin/stall.ts";
 import { ownerDenial } from "../core/stops.ts";
@@ -64,6 +65,7 @@ export type Approval = {
   cut?: true;           // the summary is only the start of the input: the card says so, and it is answered alone
   input: any;
   input_sha?: string;   // sha256 of the whole input the card was opened for, as stored (secrets out): `input` is only its start when it is long
+  input_len?: number;   // how long that whole input was, when `input` holds only its start
   risk: "high" | "low";
   why?: string;         // why only "once" is offered
   notice?: string;      // why the owner is asked (the reviewer could not judge it)
@@ -74,12 +76,14 @@ export type Approval = {
   state: "pending" | "allowed" | "denied" | "cancelled";
   choice?: "once" | "session" | "always" | "deny";
   reason?: string;
+  by?: AnsweredBy;      // who answered it: the kind of client, its name, whether it said it showed the whole text
   created: number;
   resolved?: number;
 };
 
 export type BatchResult = { id: string; ok: true } | { id: string; error: string; status: number; state?: Approval["state"] };
-export type Choice = { choice: "once" | "session" | "always" | "deny"; reason?: string; rules?: Suggest[] };
+// `seen`: the client's word that it showed the whole text before the answer (card.ts: refusal). `by`: who answers.
+export type Choice = { choice: "once" | "session" | "always" | "deny"; reason?: string; rules?: Suggest[]; seen?: "whole"; by?: Omit<AnsweredBy, "seen"> };
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS perm_sessions (session_id TEXT PRIMARY KEY, mode TEXT NOT NULL, sandbox TEXT NOT NULL DEFAULT 'off', network INTEGER NOT NULL DEFAULT 1);
@@ -799,7 +803,7 @@ export class Gate {
       id: crypto.randomUUID(), session_id: session.id, call_id: call.id, tool: name, kind: cls.kind as Approval["kind"],
       summary, cut: ask.cut, notice: [ask.notice, changed].filter(Boolean).join(" ") || undefined,
       // Cards of one reply are made in the same millisecond: each gets a later time than the one before, so they list in call order.
-      input: clip(call.input), input_sha: this.shaOf(session.id, call.input), risk: ask.risk, why: ask.why, suggest: ask.suggest, state: "pending", created: (this.lastCard = Math.max(Date.now(), this.lastCard + 1)),
+      input: clip(call.input), input_sha: this.shaOf(session.id, call.input), ...inputLen(call.input), risk: ask.risk, why: ask.why, suggest: ask.suggest, state: "pending", created: (this.lastCard = Math.max(Date.now(), this.lastCard + 1)),
       once: once || undefined, bind: ask.bind, autoOwner: ask.autoOwner,
     };
     return this.wait(a, session, call, name, cls);
@@ -880,7 +884,16 @@ export class Gate {
     if (this.allowedCalls.size > 2000) this.allowedCalls.delete(this.allowedCalls.values().next().value!);
   }
 
-  resolve(id: string, sessionId: string, c: Choice): { ok: true } | { error: string; status: number; approval?: Approval } {
+  // Where a session's calls run, for the form of its cards (set by the fleet's routes).
+  machineOf?: (sessionId: string) => { name: string; far?: boolean } | undefined;
+
+  // A card as every client is given it (card.ts).
+  form(a: Approval): CardForm {
+    return cardForm(a, this.machineOf?.(a.session_id));
+  }
+
+  // `hold`: the answer was an allow of a card its client did not show whole. The card stays open.
+  resolve(id: string, sessionId: string, c: Choice): { ok: true } | { error: string; status: number; approval?: Approval; hold?: Hold[] } {
     const a = this.approval(id);
     if (!a || a.session_id !== sessionId) return { error: "no such approval", status: 404 };
     const w = this.waiting.get(id);
@@ -901,18 +914,24 @@ export class Gate {
     // would never run, a denial would lose its reason). The card stays open
     // for the next daemon.
     if (parked && this.parking.has(a.session_id)) return { error: "Keel is restarting: answer again in a moment, when it is back", status: 503 };
+    const by: AnsweredBy = { client: "api", ...c.by, ...(c.seen === "whole" ? { seen: "whole" as const } : {}) };
     if (c.choice === "deny") {
-      this.finish(a, { state: "denied", choice: "deny", reason: c.reason?.trim() || undefined });
+      this.finish(a, { state: "denied", choice: "deny", reason: c.reason?.trim() || undefined, by });
       w?.resolve({ deny: ownerDenial(c.reason?.trim()) });
       return { ok: true };
     }
+    // The read-first rule, for every client: an allow of a text one line does
+    // not show whole comes with the client's word that it showed all of it.
+    const form = this.form(a);
+    const unread = refusal(form, c.choice, c.seen);
+    if (unread) return { error: unread, status: 409, approval: a, hold: form.hold };
     if (c.choice === "session" || c.choice === "always") {
       const rules = (c.rules?.length ? c.rules : a.suggest).filter((r) => r.pattern?.trim());
       if (!rules.length) return { error: "nothing to grant: give a rule", status: 400 };
       // A tool grant is for the source the card judged (taken from the card, never the client).
       for (const r of rules) this.addRule(session, r.kind, r.pattern, c.choice, a.suggest.find((x) => x.kind === r.kind && x.pattern === r.pattern?.trim())?.bind ?? (r.kind === "tool" ? w?.bind ?? a.bind : undefined));
     }
-    this.finish(a, { state: "allowed", choice: c.choice });
+    this.finish(a, { state: "allowed", choice: c.choice, by });
     w?.resolve({ allow: true });
     // A new grant may settle other open cards it covers.
     if (c.choice !== "once") this.recheck(() => true);
@@ -928,7 +947,7 @@ export class Gate {
   // rest are answered; the reply says how each one went, also when answering
   // one of them threw (`caught` records it): the ones before it stay allowed
   // and the page is told which.
-  resolveMany(sessionId: string, ids: string[], caught?: (e: unknown, id: string) => void): { results: BatchResult[] } | { error: string; status: number; alone: string[] } {
+  resolveMany(sessionId: string, ids: string[], caught?: (e: unknown, id: string) => void, from: Pick<Choice, "seen" | "by"> = {}): { results: BatchResult[] } | { error: string; status: number; alone: string[] } {
     const list = [...new Set(ids)];
     const alone = list.filter((id) => {
       const a = this.approval(id);
@@ -938,7 +957,7 @@ export class Gate {
     return {
       results: list.map((id) => {
         try {
-          const r = this.resolve(id, sessionId, { choice: "once" });
+          const r = this.resolve(id, sessionId, { choice: "once", ...from });
           return "error" in r ? { id, error: r.error, status: r.status, state: r.approval?.state } : { id, ok: true as const };
         } catch (e) {
           caught?.(e, id);
@@ -1019,6 +1038,9 @@ function readWhole(cls: CallClass, input: unknown, summary = ""): boolean {
   const judged = cls.kind === "shell" ? cls.command : cls.kind === "edit" ? cls.paths.join("\n") : cls.kind === "drive" ? cls.shown : JSON.stringify(input ?? {});
   return Math.max(judged.length, summary.length) <= REVIEW_SUMMARY_LIMIT;
 }
+
+// How long an input was, kept only when the card holds its start alone.
+const inputLen = (v: any): { input_len?: number } => { const n = JSON.stringify(v ?? {}).length; return n > 20_000 ? { input_len: n } : {}; };
 
 function clip(v: any): any {
   const s = JSON.stringify(v ?? {});

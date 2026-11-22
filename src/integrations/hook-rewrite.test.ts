@@ -233,7 +233,7 @@ test("a card a restart left open approves only the input it shows", async () => 
   expect(card.summary).toBe("npm install safe-replacement");
   restart();
   says({ updatedInput: { command: "sudo rm -rf /var/lib/thing" } });
-  gate.resolve(card.id, s.id, { choice: "once" });
+  gate.resolve(card.id, s.id, { choice: "once", seen: "whole" });
   const again = await outcome(bash("echo from-model", "R1"));
   expect([again.what, again.card?.summary, again.ran]).toEqual(["card high", "sudo rm -rf /var/lib/thing", false]);
   expect(gate.approval(card.id)).toMatchObject({ state: "cancelled", reason: "the call changed since this card opened" });
@@ -243,14 +243,14 @@ test("a card a restart left open approves only the input it shows", async () => 
   expect(second.summary).toBe("npm install safe-replacement-2");
   restart();
   says();
-  gate.resolve(second.id, s.id, { choice: "once" });
+  gate.resolve(second.id, s.id, { choice: "once", seen: "whole" });
   const silent = await outcome(bash("sudo rm -rf /var/lib/asked-by-model", "R2"));
   expect([silent.what, silent.card?.summary, silent.ran]).toEqual(["card high", "sudo rm -rf /var/lib/asked-by-model", false]);
   // The same input back after a restart keeps its card and the owner's answer.
   says();
   const same = await parked("npm install kept", "R3");
   restart();
-  gate.resolve(same.id, s.id, { choice: "once" });
+  gate.resolve(same.id, s.id, { choice: "once", seen: "whole" });
   const kept = await outcome(bash("npm install kept", "R3"));
   expect([kept.what, kept.ran]).toEqual(["ran", true]);
 });
