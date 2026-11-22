@@ -6,10 +6,13 @@ import { useSyncExternalStore } from "react";
 import type { Frame, Session } from "../../../src/core/types.ts";
 import { asRemote, relayed, splitId } from "./fleet-ids.ts";
 import { actions, api, apply, dropSession, getState, onFeature, reportError, reportUnlessGone } from "./store.ts";
+import { setBack, setUnheard } from "./reach.ts";
 
 export type Facts = { hostname: string; os: string; arch: string; cpus: number; load1: number; mem_total_mb: number; mem_available_mb?: number; gpu?: string; tools: string[]; sandbox: boolean; keel_version: string; root?: string; measured_ms?: number; helper_dir?: string; home?: string };
 export type Machine = {
   id: string; name: string; source: "local" | "daemon" | "ssh"; enabled: boolean; state: string; reason?: string; checked_ms?: number;
+  // When it was last heard before it went out of reach (absent while it answers).
+  offline_since_ms?: number;
   auto_connect?: boolean; messages?: "allow" | "hold"; queue?: { running: number; waiting: number; limit?: number }; facts?: Facts;
   daemon?: { state: string; reason?: string; daemon_id?: string; server_name?: string; version?: string; retry_at_ms?: number };
   ssh_host?: string; workspace_root?: string; colour?: string; daemon_url?: string; daemon_port?: number; max_jobs?: number; detail?: string;
@@ -17,7 +20,7 @@ export type Machine = {
   transport?: "ssh" | "daemon"; routes?: string[]; route?: string; helper?: { runtime: string; helper: string; uploaded: string[]; dir: string };
 };
 export type RemoteDirs = { path: string; parent: string | null; root: string; is_git: boolean; dirs: { name: string; path: string; is_git: boolean }[] };
-export type FleetMachineView = { id: string; name: string; state: string; sessions: Session[]; states?: Record<string, SessionState>; states_rev?: number; questions?: Extract<Frame, { t: "questions" }>; reason?: string; colour?: string; stale?: boolean; retry_at_ms?: number };
+export type FleetMachineView = { id: string; name: string; state: string; sessions: Session[]; states?: Record<string, SessionState>; states_rev?: number; questions?: Extract<Frame, { t: "questions" }>; reason?: string; colour?: string; stale?: boolean; retry_at_ms?: number; since_ms?: number };
 
 type State = {
   machines: Machine[];
@@ -53,6 +56,14 @@ export function machineReach(id: string, s: Pick<State, "machines" | "view"> = s
   return { state: "ok" };
 }
 
+// The machines that were heard and are not now, with since when: what the list's
+// summary says and what marks their sessions' states (lib/reach.ts). A machine
+// that was never reached (not connected since it was added) is not among them.
+function tellReach() {
+  setUnheard(state.machines.filter((m) => m.enabled && m.id !== "local" && m.offline_since_ms && machineReach(m.id).state === "offline")
+    .map((m) => ({ id: m.id, name: m.name, since: m.offline_since_ms!, reason: m.daemon?.reason ?? m.reason })));
+}
+
 export function setNewMachine(id: string) {
   localStorage.setItem("keel.newMachine", id);
   set({ newMachine: id });
@@ -77,6 +88,7 @@ export const fleet = {
       api<{ rules: Rule[] }>("/api/fleet/placement"),
     ]);
     set({ machines: m.machines, pairs: p.pairs, rules: r.rules });
+    tellReach();
   },
   // One view across machines: the other daemons' sessions join the main store.
   async loadView() {
@@ -87,6 +99,7 @@ export const fleet = {
     if (mine < viewApplied) return;
     viewApplied = mine;
     set({ view: r.machines });
+    tellReach();
     const { sessions: cur, events } = getState();
     const next: Record<string, Session> = Object.fromEntries(Object.entries(cur).filter(([id]) => !splitId(id)));
     for (const m of r.machines) {
@@ -156,9 +169,15 @@ onFeature({
     if (f.name === "fleet_frame") {
       // The states that come with a relay's snapshot.
       if ((f.data.frame as { t: string }).t === "states") return tellRemote(f.data.machine, (f.data.frame as unknown as { states: Record<string, SessionState> }).states ?? {}, (f.data.frame as { rev?: number }).rev);
+      // That daemon's inbox is its own. What it raises for a session shown here, this
+      // daemon keeps as an alert of its own and tells in its own frame (src/fleet/follow.ts).
+      const inner = f.data.frame as { t: string; name?: string; data?: { kind?: string } };
+      if (inner.t === "feature" && inner.name === "automation" && (inner.data?.kind === "alert" || inner.data?.kind === "alerts_read")) return;
       const fr = relayed(f.data.machine, f.data.frame);
       if (fr) apply(fr);
     } else if (f.name === "fleet_machines") reloadMachines();
+    // A machine that was out of reach is heard again: said for a moment where its absence was.
+    else if (f.name === "fleet_back") setBack({ id: f.data.machine, name: f.data.name, since: f.data.since, at: f.data.at });
     else if (f.name === "fleet_sessions") {
       reloadView();
       // The link to that machine came back: transcripts of its sessions open

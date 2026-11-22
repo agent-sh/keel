@@ -10,6 +10,7 @@ import "./lib/tools-ui.ts";
 import "./lib/providers-ui.ts";
 import "./lib/admin-ui.ts";
 import { AdminBand } from "./components/AdminBand.tsx";
+import { StaleMarks } from "./components/Stale.tsx";
 import "./lib/integrations-ui.ts";
 import "./lib/port-ui.ts";
 import "./lib/surfaces-ui.ts";
@@ -147,6 +148,7 @@ export function App() {
   return (
     <Boundary>
       <Attention />
+      <StaleMarks />
       <AnswerQueue />
       <div className="k-shell">
         <AdminBand />

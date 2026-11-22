@@ -5,7 +5,7 @@ import type { Session } from "../../../src/core/types.ts";
 import { liveNow, useStore } from "../lib/store.ts";
 import { WATCH_LABEL, WATCH_RANK, useWatches, type SessionState, type Watch } from "../lib/watch.ts";
 import { cn } from "../lib/utils.ts";
-import { span } from "../../../src/core/watch.ts";
+import { asOf, span } from "../../../src/core/watch.ts";
 
 export { failWord, span, whyText } from "../../../src/core/watch.ts";
 
@@ -39,7 +39,8 @@ export function elapsed(ms: number) {
 
 // How long a state has held, or when what it waits for is due. `short`: for a
 // row's narrow time column ("in 14m").
-export function stateClock(st: SessionState, now: number, short = false): string {
+export function stateClock(st: SessionState, at: number, short = false): string {
+  const now = asOf(st, at); // a state that is not current (the daemon or its machine is not heard) stops where it was last known
   if (st.until) return st.until > now ? `${short ? "in" : "due in"} ${span(st.until - now)}` : short ? "due" : "due now";
   return st.since ? span(now - st.since) : "";
 }

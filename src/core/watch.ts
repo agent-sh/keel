@@ -88,6 +88,11 @@ export type SessionState = {
   cls?: string;     // fail: the failure's class (rate_limit, quota, auth, ...: src/admin/classes.ts), when it has one
   asks?: number;    // how many things wait on the owner here, each counted once
   child?: string;   // the agent session the first of them waits in
+  // Set by a page, never by the daemon: the state is not current. `as_of`: when it was last
+  // known (the page does not hear the daemon since then, or the machine the session is on is
+  // out of reach); `offline`: it is the machine. A clock of the state stops there.
+  as_of?: number;
+  offline?: boolean;
   stuck?: StuckMark; // the daemon's word that the running step is stuck
 };
 
@@ -216,10 +221,14 @@ function doing(f: WatchFacts): Pick<SessionState, "why" | "text" | "since" | "un
 // The time of day on the reader's 24-hour clock: 09:51.
 const hhmm = (ts: number) => new Date(ts).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 
+// The time a state's clock reads: now, or when the state was last known (a state that is not current does not count on).
+export const asOf = (st: Pick<SessionState, "as_of">, now: number) => (st.as_of !== undefined ? Math.min(now, st.as_of) : now);
+
 // The reason as one sentence part: a silence says how long it has lasted, a
 // turn that resumes by itself at what time (worked out where it is read, so
 // in the reader's own time zone).
-export function whyText(st: SessionState, now = Date.now()): string {
+export function whyText(st: SessionState, at = Date.now()): string {
+  const now = asOf(st, at);
   if (st.why === "stalled" && st.since) return `${st.text} for ${span(now - st.since)}`;
   if (st.why === "resume" && st.watch === "wait" && st.until) return `${st.text} at ${hhmm(st.until)}`;
   return st.text ?? "";
@@ -229,7 +238,8 @@ export function whyText(st: SessionState, now = Date.now()): string {
 export { failWord };
 
 // How long a state has held, or when what it waits for is due: "4m", "due in 14m".
-export function clockText(st: SessionState, now = Date.now()): string {
+export function clockText(st: SessionState, at = Date.now()): string {
+  const now = asOf(st, at);
   if (st.until) return st.until > now ? `due in ${span(st.until - now)}` : "due now";
   return st.since ? span(now - st.since) : "";
 }

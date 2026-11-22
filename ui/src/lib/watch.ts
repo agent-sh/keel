@@ -13,7 +13,8 @@ import { useAuto } from "./automation.ts";
 import { remoteId, splitId } from "./fleet-ids.ts";
 import { useSafety } from "./safety.ts";
 import { sendDrafts, unsentOf, useShelfVersion } from "./send-drafts.ts";
-import { actions, api, getState, newer, onFeature, readAtOpen, reportError, useStore } from "./store.ts";
+import { actions, api, downSince, getState, newer, onFeature, readAtOpen, reportError, useStore } from "./store.ts";
+import { useReach } from "./reach.ts";
 import { stripAnsi, toolKind, toolLine, type ToolKind } from "./tools.ts";
 
 export { toolLine };
@@ -128,16 +129,29 @@ function withUnsent(st: SessionState, kept: Kept): SessionState {
 type Held = { approvals?: number; asking?: boolean; agents?: number };
 const fromHeld = (s: Session, h: Held): SessionState => stateOf(s, undefined, { approvals: h.approvals, asking: h.asking, agents: h.agents });
 
+// A state the page cannot vouch for says so: `as_of` is when it was last known.
+// The page does not hear the daemon (every state, as of the last frame), or
+// the machine the session is on is out of reach (`offline`, as of when it was
+// last heard). A reader shows the word with "as of HH:MM"; the clocks stop there.
+const notCurrent = (st: SessionState, page: number | null, machine: number | undefined): SessionState =>
+  machine !== undefined ? { ...st, as_of: Math.min(machine, page ?? machine), offline: true } : page !== null ? { ...st, as_of: page } : st;
+// When the page stopped hearing the daemon (null while it hears it).
+const usePageSince = () => (useStore((x) => x.connected) ? null : downSince());
+const machineOf = (s: Session | undefined) => (s ? splitId(s.id)?.machine : undefined);
+
 export function useSessionState(s: Session | undefined): SessionState {
   const state = useTold((x) => (s ? x[s.id] : undefined));
+  const page = usePageSince();
+  const far = machineOf(s);
+  const machine = useReach((x) => (far ? x.unheard[far]?.since : undefined));
   const n = useSafety((x) => (s ? x.approvals[s.id]?.length ?? 0 : 0));
   const asking = useStore((x) => !!s && !!(x.questionCalls[s.id]?.length || x.questionChildren[s.id]?.length));
   useShelfVersion();
   const kept = s ? keptOf(s.id) : null;
   const agents = useAgentCount(s?.id);
   return useMemo(
-    () => (s ? withUnsent(state ?? fromHeld(s, { approvals: n, asking, agents }), kept) : { watch: "idle", agents: 0 }),
-    [s, state, n, asking, agents, kept],
+    () => (s ? notCurrent(withUnsent(state ?? fromHeld(s, { approvals: n, asking, agents }), kept), page, machine) : { watch: "idle", agents: 0 }),
+    [s, state, n, asking, agents, kept, page, machine],
   );
 }
 export const useWatch = (s: Session | undefined): Watch => useSessionState(s).watch;
@@ -173,14 +187,17 @@ export function useSessionStates(list: Session[]): Record<string, SessionState> 
   const approvals = useSafety((x) => x.approvals);
   const agents = useAgentCounts();
   const shelf = useShelfVersion();
+  const page = usePageSince();
+  const unheard = useReach((x) => x.unheard);
   return useMemo(() => {
     const out: Record<string, SessionState> = {};
     for (const s of list) {
       const st = states[s.id] ?? fromHeld(s, { approvals: approvals[s.id]?.length, asking: !!(calls[s.id]?.length || children[s.id]?.length), agents: agents[s.id] });
-      out[s.id] = withUnsent(st, keptOf(s.id));
+      const far = machineOf(s);
+      out[s.id] = notCurrent(withUnsent(st, keptOf(s.id)), page, far ? unheard[far]?.since : undefined);
     }
     return out;
-  }, [list, states, calls, children, approvals, agents, shelf]);
+  }, [list, states, calls, children, approvals, agents, shelf, page, unheard]);
 }
 export function useWatches(list: Session[]): Record<string, Watch> {
   const states = useSessionStates(list);
