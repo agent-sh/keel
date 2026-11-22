@@ -26,7 +26,7 @@ export const MODES = [
   { id: "ask", name: "Ask", group: "you", summary: "Reads run; changes ask unless granted", description: "Reads run. Edits, commands and other tools ask first unless a grant covers them." },
   { id: "auto-edits", name: "Auto edits", group: "you", summary: "Folder edits run; commands ask unless read-only or sandboxed", description: "Edits inside the folder run. Commands ask, except read-only ones and sandboxed ones." },
   { id: "auto", name: "Auto", group: "model", summary: "A judge reviews what no rule covers", description: "Reads, edits inside the folder, read-only or sandboxed commands, and standing grants run as usual. The judge reviews other calls and refuses them if it cannot approve. Actions requiring your consent still ask." },
-  { id: "full-auto", name: "Full auto", group: "model", summary: "Runs; only flagged calls are judged", description: "Ordinary calls run without review. Flagged calls go to the safety rules and judge model. Refusals are listed for you to let one retry through. Tools that explicitly require your confirmation still ask." },
+  { id: "full-auto", name: "Full auto", group: "model", summary: "Runs everything; nothing is checked", description: "Every call runs without review, high-risk ones too; the activity list names what was flagged. Use Auto for a judge model. Tools that explicitly require your confirmation still ask." },
   { id: "read-only", name: "Read only", group: "none", summary: "Reads and read-only commands; the rest is refused", description: "Reads and read-only commands run. Everything else is refused." },
   { id: "plan", name: "Plan", group: "none", summary: "Plans first; you approve the plan", description: "Reads and read-only commands run. The model plans, and you approve the plan before anything changes." },
   { id: "reviewer", name: "Reviewer", group: "model", summary: "A reviewer model answers; high risk asks you", description: "A reviewer model decides what would ask. High-risk actions and anything it cannot judge still ask you." },
@@ -465,10 +465,12 @@ export function decide(c: CallClass, f: Facts): Decision {
   return { ask: { risk: "low", suggest: [{ kind: "tool", pattern: grant, ...(f.bind ? { bind: f.bind } : {}) }] } };
 }
 
-// Never allowed on its own: in modes with a judge it is refused, whatever a
-// judge would say; elsewhere it is the owner's call, one at a time.
+// Never allowed on its own: in Auto and Reviewer it is refused, whatever a
+// judge would say; in Full auto, which checks nothing, it runs (flagged as
+// high risk, so the activity list says so); elsewhere it is the owner's call.
 const never = (why: string, f: Facts): Decision =>
-  f.mode === "auto" || f.mode === "full-auto" || f.mode === "reviewer"
+  f.mode === "full-auto" ? { ask: { risk: "high", why: `the command ${why}`, rule: why, suggest: [] } }
+  : f.mode === "auto" || f.mode === "reviewer"
     ? { deny: `Refused: the command ${why}, which never runs without the owner. Do not try another form of it; say what you wanted it for and go on with the rest.` }
     : onlyOwner(`the command ${why}`, why);
 

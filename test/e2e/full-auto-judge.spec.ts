@@ -8,7 +8,7 @@ const MODEL = "scripted:stand-in";
 const shell = (command: string) => ({ name: "Bash", input: { command } });
 const write = (file_path: string, content: string) => ({ name: "Write", input: { file_path, content } });
 
-test("Auto reviews uncovered work while Full auto reviews only flagged calls", async ({ page, request }) => {
+test("Auto reviews uncovered work while Full auto runs everything unreviewed", async ({ page, request }) => {
   const scratch = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws");
   mkdirSync(scratch, { recursive: true });
   const work = mkdtempSync(join(scratch, "permission-review-"));
@@ -40,14 +40,15 @@ test("Auto reviews uncovered work while Full auto reviews only flagged calls", a
   await send(shell(clean));
   await turnsDone(1);
   const { items } = await (await request.get(`/api/activity?kind=approval&session_id=${session.id}&limit=50`)).json();
-  expect(items.map((a: any) => a.sub)).toContain("allowed by a rule");
+  // Full auto checks nothing: the flagged call ran, and the activity list says so.
+  expect(items.map((a: any) => a.sub)).toContain("ran unreviewed (Full auto)");
   expect(await blocked()).toEqual([]);
   expect(await cards()).toEqual([]);
 
   await choose("auto", "Auto");
   await page.getByTestId("permission-menu").click();
   // Each mode says what it does in one line; the mode in use says the whole of it.
-  await expect(page.getByTestId("mode-full-auto")).toContainText("Runs; only flagged calls are judged");
+  await expect(page.getByTestId("mode-full-auto")).toContainText("Runs everything; nothing is checked");
   await expect(page.getByTestId("mode-description")).toBeVisible();
   await shoot(page, "permission-review-01-modes");
   await page.keyboard.press("Escape");

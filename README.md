@@ -267,13 +267,14 @@ judge reviews other ordinary calls and flagged high-risk calls.
 A refusal or unavailable judge does not open an approval
 card. Auto also refuses actions it cannot review in full, including
 login shells and actions that require secret substitution. Explicit sandbox
-escalation and other owner-only actions still ask. **Full auto** runs
-ordinary work without review and retains its
-nonblocking high-risk checks. What the judge is sent of a high-risk action
-is its first 4,000 characters, so a longer one (a command, a list of files,
-a tool's input) is refused instead of run partly unread; Reviewer mode sends
-such an action to you. Tools that explicitly require confirmation
-still ask in both modes.
+escalation and other owner-only actions still ask. What the judge is sent of
+a high-risk action is its first 4,000 characters, so a longer one (a command,
+a list of files, a tool's input) is refused instead of run partly unread;
+Reviewer mode sends such an action to you. **Full auto** checks nothing: every
+call runs without review, high-risk ones too, and no judge is asked; the
+activity list names each call the rules flagged as "ran unreviewed". A
+sandbox, if the session has one, still confines its commands. Tools that
+explicitly require confirmation still ask in both modes.
 **Auto edits** still asks about ordinary work outside its safe defaults.
 
 [Claude Code](https://code.claude.com/docs/en/permission-modes) separates
@@ -288,7 +289,7 @@ automatically. [OpenCode](https://opencode.ai/docs/permissions/) uses
 
 A command is high risk when what it runs is in one of five classes. Such a
 command gets a card of its own in Ask, Auto edits and Reviewer, also under a
-sandbox, and goes to the judge in Auto and Full auto. No standing rule covers
+sandbox, goes to the judge in Auto, and runs unreviewed in Full auto. No standing rule covers
 it, and the card says which rule of yours it overrode. The class is on the
 card and in the `PermissionRequest` hook's `keel_rule`.
 
@@ -788,7 +789,7 @@ else. Exactly:
 | A command with no sandbox to confine it | Still asks |
 | A tool (an MCP tool too) or a message into another session | Still asks: only your own rule allows it |
 | Anything in Auto or Reviewer | The judge or the reviewer still decides, and the Auto size limit holds |
-| Anything in Full auto | Unchanged: ordinary calls run, flagged ones go to the judge |
+| Anything in Full auto | Unchanged: everything runs, nothing is checked |
 | A high-risk action, a tool that confirms every call, an escalation out of the sandbox | Still asks |
 | A command that never runs without you | Still refused or asked |
 | Anything in Read only or Plan | Still refused |

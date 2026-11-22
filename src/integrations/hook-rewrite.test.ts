@@ -132,10 +132,11 @@ test("a hook's allow answers the card the owner would have got, for a call insid
   }
   mode("reviewer");
   expect((await outcome(bash("npm install left-pad"))).what).toBe("judge");
-  // Read only refuses it whatever the hook says, and a command that never runs without the owner is refused.
+  // Read only refuses it whatever the hook says, and in Auto a command that never runs without the owner is refused.
   mode("read-only");
   expect(text((await outcome(write(within()))).result)).toContain("read-only");
-  mode("full-auto");
+  // (In Auto; Full auto checks nothing, so there it would run.)
+  mode("auto");
   expect(text((await outcome(bash("rm -rf ~"))).result)).toContain("never runs without the owner");
 });
 

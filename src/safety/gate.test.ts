@@ -77,14 +77,12 @@ test("confinement follows the class the gate judged, not an input field", async 
   // A shell tool that offers no escalation runs confined whatever its input says.
   const plain = await g.beforeTool(session, call(bash, { command: "npm test", sandbox_permissions: "require_escalated" }));
   expect(plain && "ctx" in plain && typeof plain.ctx?.wrapSpawn).toBe("function");
-  // A program that asks to leave the sandbox goes to the judge in full auto,
-  // never to a card: with no judge to answer it is refused at once.
-  const asked = await g.beforeTool(session, call(runCode, { code: "1", sandbox_permissions: "require_escalated" }));
-  expect(g.approvals({ session: "s1", pending: true })).toEqual([]);
-  expect(asked).toHaveProperty("deny");
-  // The judge allows it: it runs outside the sandbox.
-  g.judge = async () => ({ allow: true, risk: "high", reason: "the owner asked for it", model: "m" });
+  // A program that asks to leave the sandbox runs outside it in full auto,
+  // which checks nothing: no card, no judge.
+  let judged = 0;
+  g.judge = async () => (judged++, { allow: false, risk: "high", reason: "never asked", model: "m" });
   expect(await g.beforeTool(session, call(runCode, { code: "1", sandbox_permissions: "require_escalated" }))).toBeUndefined();
+  expect([g.approvals({ session: "s1", pending: true }), judged]).toEqual([[], 0]);
 });
 
 test("Claude Code's Bash asks to leave the sandbox with its own parameter, and gets the same card", async () => {
@@ -107,7 +105,7 @@ test("Claude Code's Bash asks to leave the sandbox with its own parameter, and g
 
 // The judge is sent the start of a long action. A command that asks to leave
 // the sandbox with its write past that part would run unread.
-test("full auto: an action the judge would read only in part is refused, for both families' way out of the sandbox", async () => {
+test("full auto runs a long action unread, for both families' way out of the sandbox; Reviewer sends a long one to the owner", async () => {
   const { g, session, call } = scratchGate();
   g.setPerm("s1", { mode: "full-auto", sandbox: "workspace-write" });
   const read: string[] = [];
@@ -117,16 +115,13 @@ test("full auto: an action the judge would read only in part is refused, for bot
   const long = `echo ${"harmless ".repeat(500)}; echo owned > /etc/keel-outside`;
   expect(long.length).toBeGreaterThan(4000);
   for (const [tool, input] of [[claudeBash, { command: long, dangerouslyDisableSandbox: true }], [codexShell, { command: long, sandbox_permissions: "require_escalated" }]] as const) {
-    const r = await g.beforeTool(session, call(tool, input));
-    expect(r).toEqual({ deny: expect.stringContaining("the complete action does not fit in the judge's review (4000 characters), and no part of it runs unread") });
+    expect(await g.beforeTool(session, call(tool, input))).toBeUndefined();
   }
-  // A high-risk command that stays in the sandbox is read whole or not run, too.
-  expect(await g.beforeTool(session, call(bash, { command: `git push --force origin main # ${"x".repeat(4000)}` }))).toHaveProperty("deny");
+  // (It stays in the sandbox and runs there: confined, not refused.)
+  expect(await g.beforeTool(session, call(bash, { command: `git push --force origin main # ${"x".repeat(4000)}` }))).not.toHaveProperty("deny");
+  expect(await g.beforeTool(session, call(claudeBash, { command: "git gc", dangerouslyDisableSandbox: true }))).toBeUndefined();
+  // Full auto asks no judge, of a long action or a short one.
   expect(read).toEqual([]);
-  // One that fits is judged, whole, and runs outside.
-  const short = "git gc";
-  expect(await g.beforeTool(session, call(claudeBash, { command: short, dangerouslyDisableSandbox: true }))).toBeUndefined();
-  expect(read).toEqual([short]);
 
   // Reviewer mode: a low-risk action too long for the reviewer goes to the owner's card, unread by the reviewer.
   g.setPerm("s1", { mode: "reviewer", sandbox: "off" });
@@ -300,30 +295,18 @@ test("a parked card takes no answer until the next daemon; a program's card clos
   expect(next.approval(card.id)).toMatchObject({ state: "denied", reason: "not this one" });
 });
 
-test("full auto: a refused call is refused again without review, and a run of refusals stops the judging", async () => {
+test("full auto runs a flagged call unreviewed, asks no judge, keeps no refusal, and says what ran", async () => {
   const { g, session, call } = scratchGate();
   g.setPerm("s1", { mode: "full-auto", sandbox: "off" });
   let asked = 0;
   g.judge = async () => (asked++, { allow: false, risk: "high", reason: "it rewrites the default branch", model: "m" });
+  const said: { outcome: string; reason: string }[] = [];
+  (g as unknown as { bus: { on(f: (x: any) => void): void } }).bus.on((x) => { if (x.t === "feature" && x.name === "judged") said.push({ outcome: x.data.outcome, reason: x.data.reason }); });
   const run = (command: string) => g.beforeTool(session, call(bash, { command }));
-  const first = await run("git push -f origin main");
-  expect(first && "deny" in first && first.deny).toContain("rewrites the default branch");
-  const again = await run("git push -f origin main");
-  expect(again && "deny" in again && again.deny).toContain("already refused");
-  expect(asked).toBe(1);
-  expect(g.blocked("s1")).toHaveLength(1);
-  expect(g.blocked("s1")[0]!.count).toBe(2);
-  // Two refusals in a row so far; one more reviewed refusal, then no more reviews this turn.
-  await run("sudo systemctl stop x");
-  const streak = await run("sudo reboot");
-  expect(streak && "deny" in streak && streak.deny).toContain("in a row");
-  expect(asked).toBe(2);
-  // A new turn reviews again; the owner's one retry lets exactly that call through.
-  g.turnStarted("s1");
-  const b = g.blocked("s1").find((x) => x.summary === "git push -f origin main")!;
-  g.allowRetry("s1", b.id);
-  expect(await run("git push -f origin main")).toBeUndefined();
-  expect(g.approvals({ session: "s1" })).toEqual([]);
+  for (const command of ["git push -f origin main", "git push -f origin main", "sudo systemctl stop x", "sudo reboot"]) expect([command, await run(command)]).toEqual([command, undefined]);
+  expect([asked, g.blocked("s1"), g.approvals({ session: "s1" })]).toEqual([0, [], []]);
+  expect(said.length).toBe(4);
+  expect(said.every((x) => x.outcome === "unreviewed" && x.reason.length > 0)).toBe(true);
 });
 
 test("open cards are read whole and in one order, however much history there is", () => {
@@ -521,12 +504,13 @@ test("a delete inside the folder is high risk by what git cannot bring back ther
   await other;
   expect(open().map((a) => a.id)).toEqual([held.a.id]);
   await answer(held);
-  // Full auto: what is high risk goes to the judge, what is not runs, and the rules settle only what they can read.
+  // Full auto: everything runs, the high-risk lines too, and no judge is asked.
   let judged: string[] = [];
   g.judge = async (r) => (judged.push(r.summary), { allow: true, risk: "high", reason: "fixture", model: "m" });
   g.setPerm("s1", { mode: "full-auto", sandbox: "off" });
   // (The changed files are put back first: a reset over them is not the rules' to settle, and with them back the folder is git's to bring back.)
   git("checkout", "--", "build");
   for (const command of ["rm -rf out", "git reset --hard", "rm -rf build", "rm -rf fresh", "git reset --hard && npm publish"]) expect([command, await g.beforeTool(session, call(bash, { command }))]).toEqual([command, undefined]);
-  expect(judged).toEqual(["rm -rf fresh", "git reset --hard && npm publish"]);
+  // (Full auto checks nothing: no judge is asked.)
+  expect(judged).toEqual([]);
 });

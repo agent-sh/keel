@@ -150,7 +150,9 @@ test("every hook event fires", async ({ page, request }) => {
   expect(given("SubagentStart")[0]).toMatchObject({ session_id: id, agent_type: "general-purpose" });
   expect(given("SubagentStop")[0].agent_id).toBe(given("SubagentStart")[0].agent_id);
 
-  // A high-risk call in Full auto: no judge model answers here, so it is refused without the owner.
+  // A high-risk call in Auto: no judge model answers here, so it is refused without the owner.
+  // (Full auto checks nothing: there it would run.)
+  await mode("auto");
   await say(calls("sudo rm -rf /var/lib/hook-e2e-thing"));
   await fired("PermissionDenied");
   expect(given("PermissionDenied")[0]).toMatchObject({ tool_name: "Bash", tool_input: { command: "sudo rm -rf /var/lib/hook-e2e-thing" } });

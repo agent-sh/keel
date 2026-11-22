@@ -118,7 +118,7 @@ export type Blocked = {
   by?: "reviewer" | "judge" | "unavailable" | "streak"; count?: number; retry?: boolean; created: number; last?: number;
 };
 // How a full-auto high-risk call was settled, for the activity list and alerts.
-export type Judged = { session_id: string; call_id: string; tool: string; summary: string; outcome: "rule" | "judge" | "retry" | "refused" | "repeat" | "unavailable" | "streak"; reason: string; model?: string; ms?: number; blocked_id?: string };
+export type Judged = { session_id: string; call_id: string; tool: string; summary: string; outcome: "rule" | "judge" | "retry" | "refused" | "repeat" | "unavailable" | "streak" | "unreviewed"; reason: string; model?: string; ms?: number; blocked_id?: string };
 
 // Refusals in a row in one turn after which the rest of its high-risk calls
 // are refused without review (Claude Code falls back after 3 in a row, Codex
@@ -764,6 +764,10 @@ export class Gate {
       if (outcome === "rule" || outcome === "judge" || outcome === "retry") this.streak.delete(session.id);
       this.bus.emit({ t: "feature", name: "judged", session_id: session.id, data: this.redactAny({ ...base, call_id: call.id, outcome, reason, ...more }) });
     };
+    // Full auto checks nothing: a call the rules flag runs as it is, and the
+    // activity list says it ran unreviewed and why it was flagged. (Auto, which
+    // passes `auto`, keeps its judge.)
+    if (!auto) return ran("unreviewed", why), { cls };
     const retry = `${session.id}\u0000${key}`;
     if (this.retries.has(retry)) {
       if (auto && !await auto.valid()) return changedReview;

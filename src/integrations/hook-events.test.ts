@@ -325,12 +325,12 @@ test("PermissionRequest, PermissionDenied", async () => {
   expect((await given("PermissionRequest", 5)).find((x) => x.tool_input.command.startsWith("sudo rm"))).toMatchObject({ keel_risk: "high", keel_rule: expect.stringMatching(/^runs as root/), keel_reason: expect.stringContaining("runs as root") });
   stop.abort();
   await high;
-  // The judge refuses a call without the owner: the hook is told why.
-  gate.setPerm(s.id, { mode: "full-auto", sandbox: "off" });
-  gate.judge = async () => ({ allow: false, risk: "high", reason: "it deletes system files", model: "m" });
-  const refused = run(s, "sudo rm -rf /var/lib/thing");
+  // The reviewer refuses an ordinary call without the owner (Full auto checks nothing, so it is shown in Reviewer mode): the hook is told why.
+  gate.setPerm(s.id, { mode: "reviewer", sandbox: "off" });
+  gate.judge = async () => ({ allow: false, risk: "high", reason: "it installs an unknown package", model: "m" });
+  const refused = run(s, "npm install w-judged");
   expect(await refused.result).toMatchObject({ is_error: true });
-  expect((await given("PermissionDenied"))[0]).toMatchObject({ tool_name: "Bash", tool_input: { command: "sudo rm -rf /var/lib/thing" }, tool_use_id: refused.id, reason: "it deletes system files" });
+  expect((await given("PermissionDenied"))[0]).toMatchObject({ tool_name: "Bash", tool_input: { command: "npm install w-judged" }, tool_use_id: refused.id, reason: "it installs an unknown package" });
 });
 
 test("UserPromptExpansion, PreModelRequest, PostModelRequest", async () => {
