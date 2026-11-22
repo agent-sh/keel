@@ -10,6 +10,7 @@ import type { McpServerState } from "../../../../src/mcp/manager.ts";
 import { api, reportError, failed } from "../../lib/store.ts";
 import { ago, cn } from "../../lib/utils.ts";
 import { Connect } from "./McpConnect.tsx";
+import { navigate } from "../../lib/ui.ts";
 import { Blank, FolderLine, Ledger, ReaderHead, Seg, tilde, Toggle, type Group, type Mark } from "./kit.tsx";
 
 // A command line to argv: spaces split, quotes group.
@@ -57,12 +58,13 @@ function ServerReader({ s, act }: { s: McpServerState; act: Act }) {
       <ReaderHead
         title={s.name}
         path={s.target}
-        right={<span data-testid="mcp-toggle-wrap"><Toggle testid="mcp-toggle" on={s.enabled} label={`Turn ${s.name} ${s.enabled ? "off" : "on"}`} onChange={(on) => act(`${base}/toggle`, { enabled: on })} /></span>}
+        right={s.plugin ? undefined : <span data-testid="mcp-toggle-wrap"><Toggle testid="mcp-toggle" on={s.enabled} label={`Turn ${s.name} ${s.enabled ? "off" : "on"}`} onChange={(on) => act(`${base}/toggle`, { enabled: on })} /></span>}
         facts={[
           ["State", LABEL[s.state]],
           ["Tools", <span data-testid="mcp-tool-count">{toolCount(s)}</span>],
           ["Transport", s.sse ? "http, SSE (older)" : s.transport],
           ...(s.bundled ? [["Source", <span data-testid="mcp-bundled">Built in · {s.bundled}</span>] as [string, React.ReactNode]] : []),
+          ...(s.plugin ? [["Source", <button type="button" className="underline decoration-line-strong underline-offset-2 hover:text-accent" data-testid="mcp-plugin" onClick={() => navigate({ name: "settings", section: "plugins" })}>Plugin · {s.plugin}</button>] as [string, React.ReactNode]] : []),
           ...(s.sync ? [["Follows", <span data-testid="mcp-sync" data-gone={s.sync.gone || undefined}>{s.sync.label}{s.sync.name !== s.name ? ` (${s.sync.name})` : ""}{s.sync.gone ? ", which no longer has it" : ""}</span>] as [string, React.ReactNode]] : []),
           ...(s.state === "ready" && s.server_info?.name ? [["Server", `${s.server_info.name}${s.server_info.version ? ` ${s.server_info.version}` : ""}, MCP ${s.version}`] as [string, string]] : []),
           ...(s.state === "ready" && s.last_connected ? [["Connected", ago(s.last_connected)] as [string, string]] : []),
@@ -77,14 +79,14 @@ function ServerReader({ s, act }: { s: McpServerState; act: Act }) {
           )}
           {s.signed_in && <button type="button" className="k-btn" onClick={() => act(`${base}/sign-out`)}><LogOut /> Sign out</button>}
           <button type="button" className="k-btn" data-testid="mcp-reconnect" onClick={() => act(`${base}/reconnect`)}><RotateCw /> Reconnect</button>
-          {!s.bundled && <button type="button" className="k-btn" data-quiet data-testid="mcp-remove" onClick={() => act(base, undefined, "DELETE")}><Trash2 /> Remove</button>}
+          {!s.bundled && !s.plugin && <button type="button" className="k-btn" data-quiet data-testid="mcp-remove" onClick={() => act(base, undefined, "DELETE")}><Trash2 /> Remove</button>}
         </div>
         {s.error && s.state !== "disabled" && (
           <div className="k-issue mt-3" data-tone={s.state === "missing" || s.state === "not_armed" ? "quiet" : s.state === "needs_auth" ? "need" : undefined} data-testid="mcp-error">{s.error.slice(0, 600)}</div>
         )}
       </ReaderHead>
       <div className="k-reader-body">
-        {offered(s) && s.tool_names.length > 0 && (s.bundled ? (
+        {offered(s) && s.tool_names.length > 0 && (s.bundled || s.plugin ? (
           <div>
             <div className="k-sub k-label">Tools</div>
             <div className="flex flex-wrap gap-1">{s.tool_names.map((t) => <span key={t} className="k-chip font-mono">{t}</span>)}</div>
@@ -476,7 +478,8 @@ export default function McpServers() {
   const all = servers ?? [];
   const entry = (s: McpServerState) => ({ id: s.name, name: s.name, desc: s.bundled ?? tilde(s.target), mark: mcpMark(s), markLabel: LABEL[s.state], aside: s.state === "ready" || s.state === "idle" ? `${s.tools}` : LABEL[s.state].toLowerCase(), testid: "mcp-entry" });
   const groups: Group[] = [
-    { id: "yours", title: "Yours", path: "mcp.json", entries: all.filter((s) => !s.bundled).map(entry) },
+    { id: "yours", title: "Yours", path: "mcp.json", entries: all.filter((s) => !s.bundled && !s.plugin).map(entry) },
+    { id: "plugins", title: "From plugins", entries: all.filter((s) => s.plugin).map((s) => ({ ...entry(s), desc: `${s.plugin} · ${tilde(s.target)}` })) },
     { id: "bundled", title: "Built into Keel", entries: all.filter((s) => s.bundled).map(entry) },
   ];
   const cur = all.find((s) => s.name === sel);

@@ -24,6 +24,7 @@ import { readText } from "../core/proc.ts";
 import { toOutput } from "./result.ts";
 import { conceal } from "../core/conceal.ts";
 import { runMode } from "../core/runmode.ts";
+import { serverName } from "../plugins/manifest.ts";
 
 // How often one call's server may ask (2025-11-25 client/elicitation, security
 // considerations: "Clients SHOULD implement rate limiting"). A question past
@@ -106,6 +107,7 @@ export type McpServerState = {
   resources_rev: number; // goes up when its resource list changed (a list read again shows it)
   resource_updates: Record<string, number>; // per subscribed URI: goes up when its body changed
   sync?: { source: string; name: string; label: string; gone: boolean }; // follows another agent's entry
+  plugin?: string; // the installed plugin it comes with (it goes and stops with the plugin)
   endpoint?: string; // what the server is, whatever it is called (sources.ts endpoint)
 };
 
@@ -175,6 +177,8 @@ type Entry = {
   abort?: AbortController;
   // It connected at least once: its end is told.
   ran?: boolean;
+  // A server an installed plugin brought: the plugin's id (`given` is the plugin's name for the server).
+  plugin?: string;
 };
 
 // What a session's own server is: the session, the name it knows it by, the editor's name for it, who holds it.
@@ -245,6 +249,8 @@ async function helperHeaders(cmd: string, timeoutMs = 10_000): Promise<Record<st
   if (!h || typeof h !== "object" || Array.isArray(h) || Object.values(h).some((v) => typeof v !== "string")) throw new Error("the headers helper did not print a JSON object of strings");
   return h as Record<string, string>;
 }
+
+const pluginWord = (plugin: string) => `it comes with the plugin ${plugin}: turn the plugin off or remove it in Settings > Plugins`;
 
 const same = (a: McpServerConfig, b: McpServerConfig) => JSON.stringify({ ...a, enabled: undefined }) === JSON.stringify({ ...b, enabled: undefined });
 
@@ -398,6 +404,60 @@ export class McpManager {
     return out;
   }
 
+  // The MCP servers of an installed plugin: the whole list each time (none
+  // when it is disabled or removed). They run as the owner's own servers do,
+  // under the name the installer gave each, and are kept in memory only: the
+  // owner's file is never written for them. One named again unchanged keeps
+  // its connection.
+  setPluginServers(plugin: string, servers: { name: string; label: string; config: Record<string, unknown> }[]) {
+    const keep = new Set<string>();
+    for (const s of servers) {
+      const config = s.config as McpServerConfig;
+      const had = [...this.entries.values()].find((e) => e.plugin === plugin && e.given === s.name);
+      if (had && same(had.config, config) && (had.name === s.label || this.entries.get(s.label)?.plugin !== plugin)) { keep.add(had.name); continue; }
+      if (had) this.drop(had.name);
+      // A name taken since the install (the owner added a server by it): the plugin's id goes before it.
+      const taken = (n: string) => RESERVED.has(n.toLowerCase()) || n in this.cfg.servers || (this.entries.has(n) && !keep.has(n) && this.entries.get(n)!.plugin !== plugin) || keep.has(n);
+      let label = s.label;
+      for (let n = 1; taken(label); n++) label = serverName(`${plugin}-${s.name}${n > 1 ? `-${n}` : ""}`);
+      if (validate(label, config)) continue;
+      const e = this.addEntry(label, config);
+      e.plugin = plugin;
+      e.given = s.name;
+      keep.add(label);
+      if (!runMode.client && config.enabled !== false) this.ensure(label).catch(() => {});
+    }
+    for (const e of [...this.entries.values()]) if (e.plugin === plugin && !keep.has(e.name)) this.drop(e.name);
+  }
+
+  // Every server name in use now (the owner's, the built-in ones, every plugin's but `except`'s).
+  takenNames(except?: string): Set<string> {
+    const out = new Set<string>([...RESERVED, ...Object.keys(this.cfg.servers)]);
+    for (const e of this.entries.values()) if (!e.session && (!e.plugin || e.plugin !== except)) out.add(e.name);
+    return out;
+  }
+
+  // The plugin a server came with, if it did.
+  pluginOf(name: string): string | undefined {
+    return this.entries.get(name)?.plugin;
+  }
+
+  // A plugin's server whose name the owner's file now gives to one of the
+  // owner's: it goes on under the plugin's id as a prefix.
+  private movePlugin(name: string) {
+    const e = this.entries.get(name);
+    if (!e?.plugin) return;
+    const { plugin, given, config } = e;
+    this.drop(name);
+    let label = serverName(`${plugin}-${given ?? name}`);
+    for (let n = 2; this.entries.has(label) || label in this.cfg.servers || label === name; n++) label = serverName(`${plugin}-${given ?? name}-${n}`);
+    const moved = this.addEntry(label, config);
+    moved.plugin = plugin;
+    moved.given = given;
+    if (config.enabled !== false) this.ensure(label).catch(() => {});
+    this.errors.capture("server", new Error(`MCP server ${name} of the plugin ${plugin} is now ${label}: your own server has the name ${name}`), { at: "mcp plugin", mcp: label });
+  }
+
   // The editor that passed them is gone (its socket closed): its servers end.
   releaseHolder(holder: string) {
     for (const e of [...this.entries.values()]) if (e.holder === holder) this.drop(e.name);
@@ -473,6 +533,11 @@ export class McpManager {
   // What the file says about one server now, taken up: added, restarted with
   // its new config, or dropped. Null for a name that is not the file's to set.
   private adopt(name: string, now: McpServerConfig | undefined): McpReloadedServer["change"] | null {
+    // A plugin's server is not the file's; one the file now names gives way under the plugin's prefix.
+    if (this.entries.get(name)?.plugin) {
+      if (!now) return null;
+      this.movePlugin(name);
+    }
     const e = this.entries.get(name);
     if (e?.bundled || e?.session) return null;
     if (!now) return e ? (this.drop(name), "removed") : null;
@@ -979,6 +1044,7 @@ export class McpManager {
       server_info: e.client?.serverInfo ? { name: e.client.serverInfo.name, title: (e.client.serverInfo as any).title, version: e.client.serverInfo.version } : undefined,
       endpoint: e.bundled ? undefined : endpoint(e.config),
       sign_in: !!e.config.url && !e.config.bearer_env && !e.config.headers_helper,
+      ...(e.plugin ? { plugin: e.plugin } : {}),
       sync: e.config.sync ? { ...e.config.sync, label: this.labels.get(e.config.sync.source) ?? e.config.sync.source, gone: this.gone.has(e.name) } : undefined,
       signed_in: !!e.config.url && this.oauth.signedIn(e.name),
       bundled: e.bundled?.label,
@@ -1001,6 +1067,7 @@ export class McpManager {
     const bad = validate(name, config);
     if (bad) return bad;
     this.save({ ...this.cfg.servers, [name]: config });
+    if (this.entries.get(name)?.plugin) this.movePlugin(name);
     this.drop(name);
     this.addEntry(name, config);
     if (config.enabled !== false) this.ensure(name).catch(() => {});
@@ -1011,6 +1078,7 @@ export class McpManager {
   setReads(name: string, tools: string[]) {
     const e = this.entries.get(name)!;
     if (e.bundled) throw new Error(`${name} is built in: its reads are its own`);
+    if (e.plugin) throw new Error(pluginWord(e.plugin));
     const c: McpServerConfig = { ...e.config, read_tools: [...new Set(tools.map(String))] };
     if (!c.read_tools!.length) delete c.read_tools;
     this.save({ ...this.cfg.servers, [name]: c });
@@ -1019,6 +1087,8 @@ export class McpManager {
 
   remove(name: string) {
     if (this.entries.get(name)?.bundled) throw new Error(`${name} is built in: turn it off instead`);
+    const by = this.entries.get(name)?.plugin;
+    if (by) throw new Error(pluginWord(by));
     const { [name]: _gone, ...rest } = this.cfg.servers;
     this.save(rest);
     this.drop(name);
@@ -1042,6 +1112,7 @@ export class McpManager {
 
   toggle(name: string, enabled: boolean) {
     const e = this.entries.get(name)!;
+    if (e.plugin) throw new Error(pluginWord(e.plugin));
     if (e.bundled) {
       const off = new Set(this.bundledOff());
       if (enabled) off.delete(name);

@@ -4,10 +4,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, reportError, failed } from "../../lib/store.ts";
 import { Blank, FileEditor, FolderLine, Ledger, ReaderHead, tilde, type Group } from "./kit.tsx";
+import { navigate } from "../../lib/ui.ts";
 
 // `whole`: the text is all of the file (a longer one is not pinned). `notes`: what loads and never runs here.
 // `reaches`: where its hooks send what they are given.
-type Source = { path: string; scope: "owner" | "project"; root: string; text: string; sha256: string; active: boolean; events: Record<string, number>; problems: string[]; covers?: string[]; whole?: boolean; notes?: string[]; reaches?: { urls: string[]; tools: string[] }; unheld?: string[] };
+type Source = { path: string; scope: "owner" | "project" | "plugin"; plugin?: string; root: string; text: string; sha256: string; active: boolean; events: Record<string, number>; problems: string[]; covers?: string[]; whole?: boolean; notes?: string[]; reaches?: { urls: string[]; tools: string[] }; unheld?: string[] };
 
 const host = (url: string) => { try { return new URL(url).host; } catch { return url; } };
 
@@ -44,6 +45,7 @@ export default function Hooks() {
 
   const mine = sources?.find((s) => s.scope === "owner");
   const repos = sources?.filter((s) => s.scope === "project") ?? [];
+  const plugins = sources?.filter((s) => s.scope === "plugin") ?? [];
   const events = (s: Source) => Object.values(s.events).reduce((n, x) => n + x, 0);
   const groups: Group[] = [
     {
@@ -57,6 +59,12 @@ export default function Hooks() {
       id: "repos", title: "Repositories", entries: repos.map((s) => ({
         id: s.path, name: tilde(s.root).split("/").pop() || s.root, desc: tilde(s.root), mark: s.active ? "on" as const : "need" as const,
         aside: s.active ? `${events(s)}` : "not pinned", testid: "hook-source", data: { "data-scope": "project", "data-active": String(s.active) },
+      })),
+    },
+    {
+      id: "plugins", title: "From plugins", entries: plugins.map((s) => ({
+        id: s.path, name: s.plugin ?? tilde(s.path), desc: Object.keys(s.events).join(", "), mark: "on" as const,
+        aside: `${events(s)}`, testid: "hook-source", data: { "data-scope": "plugin", "data-active": "true", "data-plugin": s.plugin ?? "" },
       })),
     },
   ];
@@ -99,6 +107,20 @@ export default function Hooks() {
                 return r.problems.length ? `Saved, with problems: ${r.problems.join("; ")}` : undefined; // (what loads and never runs is listed above, and is no problem)
               }}
             />
+          </>
+        ) : cur?.scope === "plugin" ? (
+          <>
+            <ReaderHead
+              title={cur.plugin ?? "Plugin"}
+              path={cur.path}
+              desc="A plugin's hooks run as you agreed when you installed it, while the plugin is on. Turn it off or remove it in Settings > Plugins."
+              right={<button type="button" className="k-btn" data-testid="hook-plugin" onClick={() => navigate({ name: "settings", section: "plugins" })}>Open in Plugins</button>}
+              facts={Object.entries(cur.events).map(([e, n]) => [e, `${n}`] as [string, string])}
+            >
+              {cur.problems.length > 0 && <ul className="k-issue mt-3" data-testid="hook-problems">{cur.problems.map((p) => <li key={p}>{p}</li>)}</ul>}
+              <Reach s={cur} />
+            </ReaderHead>
+            <FileEditor name="its hooks" text={cur.text} readOnly="a plugin's hooks change with the plugin: update it in Settings > Plugins" testid="hook-text" />
           </>
         ) : cur ? (
           <>

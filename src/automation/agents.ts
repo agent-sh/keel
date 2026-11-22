@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { bareBy } from "../core/bare-index.ts";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { localTime } from "../core/clock.ts";
 import { dur } from "../admin/timeline-rows.ts";
 import { didLine } from "./report-did.ts";
@@ -20,6 +20,7 @@ import { contains } from "../core/paths.ts";
 import { childMode, writesNothing, type Mode } from "../safety/policy.ts";
 import { configDir } from "../providers/config.ts";
 import { carriedPlugins } from "../tools/skills.ts";
+import { enabledUnits } from "../plugins/registry.ts";
 import { checkpointAt } from "../engine/compact.ts";
 import { STALLED_MAX, type Sent } from "../engine/turn.ts";
 import { spawnContext } from "../admin/trace.ts";
@@ -249,10 +250,13 @@ const listOf = (v: string | string[] | undefined) =>
 
 function readDir(dir: string, source: string): AgentDef[] {
   if (!existsSync(dir)) return [];
+  return readFiles(readdirSync(dir).filter((f) => f.endsWith(".md")).map((f) => join(dir, f)), source);
+}
+
+function readFiles(files: string[], source: string): AgentDef[] {
   const out: AgentDef[] = [];
-  for (const f of readdirSync(dir)) {
-    if (!f.endsWith(".md")) continue;
-    const p = join(dir, f);
+  for (const p of files) {
+    const f = basename(p);
     try {
       if (statSync(p).size > 32 * 1024) continue; // the budget of repository instructions
       const fm = frontMatter(readFileSync(p, "utf8"));
@@ -312,7 +316,9 @@ export function definitions(cwd: string): AgentDef[] {
   // The owner's: the Rust Keel's folder, Claude Code's, then keel-bun's own (it wins a name).
   const codexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex");
   for (const d of [...readDir(join(config, "keel", "agents"), "owner"), ...readCodexDir(join(codexHome, "agents"), "owner"), ...readDir(join(homedir(), ".claude", "agents"), "owner"), ...readDir(join(configDir(), "agents"), "owner")]) byName.set(d.name, d);
-  // Agents of the Claude Code plugins the owner carried, as Claude Code names them (<plugin>:<agent>).
+  // Agents of the plugins Keel installed (while enabled) and of the Claude Code
+  // plugins the owner carried, as Claude Code names them (<plugin>:<agent>).
+  for (const u of enabledUnits()) for (const d of readFiles(u.agents.map((a) => a.file), "owner")) byName.set(`${u.id}:${d.name}`, { ...d, name: `${u.id}:${d.name}` });
   for (const p of carriedPlugins()) for (const d of readDir(join(p.dir, "agents"), "owner")) byName.set(`${p.name}:${d.name}`, { ...d, name: `${p.name}:${d.name}` });
   const dirs: string[] = [];
   for (let d = cwd; ; d = dirname(d)) {

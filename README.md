@@ -856,6 +856,39 @@ one the model sent. [Codex hooks](https://developers.openai.com/codex/hooks)
 accepts `updatedInput` together with `allow`. Keel's allow is narrower than
 both: it never answers for a call that leaves the session's own scope.
 
+## Plugins
+
+A plugin in the [Claude Code format](https://code.claude.com/docs/en/plugins-reference)
+installs unchanged, as one unit: its skills, commands and agents (named
+`<plugin>:<name>`), its hooks and its MCP servers come and go together.
+Install from a folder, a git URL (`#branch`, tag or commit) or a GitHub
+`owner/repo`; a marketplace (`.claude-plugin/marketplace.json`) lists plugins,
+and one is picked from it.
+
+```bash
+keel plugin install ~/plugins/review-kit
+keel plugin install https://example.com/tools.git --plugin review-kit
+keel plugin list
+keel plugin disable review-kit      # its hooks and servers stop, its skills, commands and agents are hidden
+keel plugin update review-kit       # says what changes before it applies it
+keel plugin remove review-kit
+```
+
+The same is in Settings > Plugins. Reading a plugin runs nothing. Each hook
+command and each MCP server command or address it would run is shown line by
+line, and nothing of it runs before a yes to those lines; an update that
+changes them asks again. A copy is kept under `<config>/plugins/<id>/` by
+version, with a `data/` folder that outlives updates (`${CLAUDE_PLUGIN_DATA}`),
+and its record in `<config>/plugins.json`. Installing never writes your
+`mcp.json`, `hooks.json` or skills. An MCP server keeps its name unless one of
+yours, a built-in one or another plugin's has it; then the plugin's id goes
+before it. A plugin that a repository's `.claude/settings.json` names
+(`enabledPlugins`, from a marketplace in `extraKnownMarketplaces`) is offered
+in Settings > Plugins for that folder and installed only when you say yes.
+Parts Keel has no equivalent of (output styles, LSP servers, monitors, themes,
+`bin/`, `userConfig`, MCP bundles, npm and archive sources) are named at
+install as not taken, with why.
+
 ## Subagent concurrency
 
 From the machine running the session's daemon, set a limit for that session:

@@ -28,6 +28,7 @@ import { hookSaid } from "../engine/hooks.ts";
 import { shellText } from "../safety/policy.ts";
 import { splitCommand } from "../safety/shell.ts";
 import { timed } from "../admin/stall.ts";
+import { enabledUnits, type Unit } from "../plugins/registry.ts";
 
 // The events Keel fires, the ones existing hook files use most first. What
 // each carries and what its hooks can answer: README, Hooks.
@@ -119,7 +120,8 @@ export const hookMcp: { call?: (server: string, tool: string, input: unknown, ms
 type Group = { matcher?: string; hooks: Handler[] };
 
 // `covers`: the files under .keel/ the pin covers besides hooks.json (what its commands run).
-export type Source = { path: string; scope: "owner" | "project"; root: string; text: string; sha256: string; active: boolean; events: Record<string, number>; problems: string[]; covers: string[]; groups: Partial<Record<HookEvent, Group[]>> };
+// `plugin`: the installed plugin a source is (scope "plugin"): its hooks as the owner agreed to them at install.
+export type Source = { path: string; scope: "owner" | "project" | "plugin"; plugin?: string; root: string; text: string; sha256: string; active: boolean; events: Record<string, number>; problems: string[]; covers: string[]; groups: Partial<Record<HookEvent, Group[]>> };
 
 export const ownerHooksPath = () => process.env.KEEL_HOOKS ?? join(configDir(), "hooks.json");
 
@@ -470,11 +472,12 @@ export class Hooks {
   // answers only "does any file name this event" and "which files do the hooks
   // run", both of which the full read (`sources`) then settles.
   private named = new Map<string, { text: string; files: string[] }>();
-  private texts(cwd: string): { scope: "owner" | "project"; root: string; text: string; groups: Source["groups"] }[] {
+  private texts(cwd: string): { scope: Source["scope"]; root: string; text: string; groups: Source["groups"] }[] {
     const root = projectRoot(cwd);
     const out: ReturnType<Hooks["texts"]> = [];
     const owner = this.ownerSource(root);
     if (owner) out.push({ scope: "owner", root, text: owner.sha256, groups: owner.groups });
+    for (const p of this.pluginSources(root)) out.push({ scope: "plugin", root, text: p.sha256, groups: p.groups });
     if (!this.pinned(root)) return out;
     let text: string;
     try { text = readFileSync(join(root, ".keel", "hooks.json"), "utf8"); } catch { return out; }
@@ -507,7 +510,30 @@ export class Hooks {
   // `run`: for an event, which needs only what can run (a file with no pin is left out unread).
   sources(cwd: string, run = false): Source[] {
     const root = projectRoot(cwd);
-    return [this.ownerSource(root), this.projectSource(root, run)].filter((s) => s !== undefined);
+    return [this.ownerSource(root), this.projectSource(root, run), ...this.pluginSources(root)].filter((s) => s !== undefined);
+  }
+
+  // The hooks of each enabled plugin Keel installed: its record holds them as
+  // they were when the owner agreed to what they run, with the plugin's folder
+  // filled in. A record is read again only when plugins.json changed.
+  private plugins = new WeakMap<Unit, Omit<Source, "root">>();
+  private pluginSources(root: string): Source[] {
+    const out: Source[] = [];
+    for (const u of enabledUnits()) {
+      if (!u.hooks || !Object.keys(u.hooks).length) continue;
+      let src = this.plugins.get(u);
+      if (!src) {
+        const text = JSON.stringify({ hooks: u.hooks }, null, 2);
+        const { groups, problems } = parseHooks(text);
+        const env = { CLAUDE_PLUGIN_ROOT: u.dir, CLAUDE_PLUGIN_DATA: u.data, KEEL_PLUGIN_ROOT: u.dir, KEEL_PLUGIN_DATA: u.data };
+        for (const g of Object.values(groups)) for (const x of g ?? []) for (const h of x.hooks) PLUGIN_ENV.set(h, env);
+        const events = Object.fromEntries(Object.entries(groups).map(([e, g]) => [e, g!.reduce((n, x) => n + x.hooks.length, 0)]));
+        src = { path: u.dir, scope: "plugin", plugin: u.id, text, sha256: sha(text), active: true, events, problems, covers: [], groups };
+        this.plugins.set(u, src);
+      }
+      out.push({ ...src, root });
+    }
+    return out;
   }
 
   pin(cwd: string, digest: string): string | null {
@@ -631,6 +657,9 @@ const OUT_MAX = 1_000_000;
 
 type Out = { code: number | null; stdout: string; stderr: string };
 
+// A plugin's hook runs with its folders in its environment (code.claude.com/docs/en/plugins-reference).
+const PLUGIN_ENV = new WeakMap<object, Record<string, string>>();
+
 async function runHook(h: Extract<Handler, { type: "command" }>, input: string, folder: string, ms: number): Promise<Out> {
   const root = projectRoot(folder);
   // A session whose folder is gone, or is on another machine, still runs its hooks (one that denies must still deny): in the home folder.
@@ -640,7 +669,7 @@ async function runHook(h: Extract<Handler, { type: "command" }>, input: string, 
   const argv = h.args ? [place(h.command), ...h.args.map(place)] : ["bash", "-c", h.command];
   let p: ReturnType<typeof Bun.spawn>;
   try {
-    p = Bun.spawn(argv, { cwd, stdin: Buffer.from(input), stdout: "pipe", stderr: "pipe", detached: true, env: { ...process.env, KEEL_PROJECT_DIR: root, CLAUDE_PROJECT_DIR: root } });
+    p = Bun.spawn(argv, { cwd, stdin: Buffer.from(input), stdout: "pipe", stderr: "pipe", detached: true, env: { ...process.env, ...PLUGIN_ENV.get(h), KEEL_PROJECT_DIR: root, CLAUDE_PROJECT_DIR: root } });
   } catch (e) {
     return { code: -1, stdout: "", stderr: (e as Error).message };
   }

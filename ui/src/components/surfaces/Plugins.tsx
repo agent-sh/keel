@@ -1,13 +1,16 @@
-// Settings > Plugins: the provider plugins Keel runs (protocol v1) with their
-// state, providers and conformance check, the servers Keel bundles, and
-// plugins.toml itself.
+// Settings > Plugins: the plugins installed as one unit (skills, commands,
+// agents, hooks and MCP servers together; PluginUnits.tsx), the ones this
+// folder's repository offers, the provider plugins Keel runs (protocol v1)
+// with their state, providers and conformance check, the servers Keel
+// bundles, and plugins.toml itself.
 import { ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { McpServerState } from "../../../../src/mcp/manager.ts";
 import { api, failed, reportError } from "../../lib/store.ts";
 import { cn } from "../../lib/utils.ts";
 import { navigate } from "../../lib/ui.ts";
-import { Blank, FileEditor, FolderLine, Ledger, ReaderHead, type Group, type Mark } from "./kit.tsx";
+import { Blank, FileEditor, FolderLine, Ledger, ReaderHead, tilde, useFolder, type Group, type Mark } from "./kit.tsx";
+import { InstallReader, OfferReader, unitBrings, unitMark, UnitReader, type Units } from "./PluginUnits.tsx";
 import { mcpMark } from "./Mcp.tsx";
 
 type Plugin = {
@@ -22,29 +25,58 @@ export default function Plugins() {
   const [toml, setToml] = useState<Toml | null>(null);
   const [bundled, setBundled] = useState<McpServerState[]>([]);
   const [sel, setSel] = useState<string | null>(null);
+  const [units, setUnits] = useState<Units | null>(null);
+  const [folder] = useFolder();
+  const loadUnits = useCallback(() => {
+    if (folder) api<Units>(`/api/plugins/installed?cwd=${encodeURIComponent(folder)}`).then(setUnits).catch(reportError);
+  }, [folder]);
+  useEffect(() => { loadUnits(); }, [loadUnits]);
+  // A plugin's server still connecting: its state is read again until it settles.
+  const settling = !!units?.plugins.some((x) => x.mcp.some((m) => m.state === "connecting"));
+  useEffect(() => {
+    if (!settling) return;
+    const t = setInterval(loadUnits, 1500);
+    return () => clearInterval(t);
+  }, [settling, loadUnits]);
   const load = useCallback(() => {
     api<{ plugins: Plugin[] }>("/api/providers").then((r) => setPlugins(r.plugins)).catch(reportError);
     api<Toml>("/api/plugins").then(setToml).catch(reportError);
     api<{ servers: McpServerState[] }>("/api/mcp/servers").then((r) => setBundled(r.servers.filter((s) => s.bundled))).catch(reportError);
   }, []);
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { if (plugins && !sel) setSel(plugins[0] ? `p:${plugins[0].id}` : "toml"); }, [plugins]);
+  useEffect(() => { if (plugins && units && !sel) setSel(units.plugins[0] ? `u:${units.plugins[0].id}` : plugins[0] ? `p:${plugins[0].id}` : "toml"); }, [plugins, units]);
+  const offers = (units?.offers ?? []).filter((o) => !o.installed);
 
   const groups: Group[] = [
+    { id: "installed", title: "Installed", path: units?.home, entries: (units?.plugins ?? []).map((u) => ({ id: `u:${u.id}`, name: u.id, desc: u.description ?? unitBrings(u), mark: unitMark(u), markLabel: u.enabled ? "on" : "off", aside: u.version.length > 14 ? `${u.version.slice(0, 12)}…` : u.version, testid: "unit-entry", data: { "data-id": u.id } })) },
+    { id: "offered", title: "Offered by this folder", entries: offers.map((o) => ({ id: `o:${o.key}`, name: o.plugin, desc: o.problem ?? `from ${o.marketplace}, named in ${tilde(o.from).split("/").slice(-2).join("/")}`, mark: o.problem ? "fail" as const : "need" as const, aside: "offered", testid: "offer-entry", data: { "data-key": o.key } })) },
     { id: "providers", title: "Provider plugins", path: toml?.file ?? undefined, entries: (plugins ?? []).map((p) => ({ id: `p:${p.id}`, name: p.name ?? p.id, desc: p.providers.map((x) => x.label ?? x.id).join(", ") || p.reason, mark: MARK[p.state] ?? "fail", aside: p.state.replace("_", " "), testid: "plugin-entry" })) },
     { id: "bundled", title: "Built into Keel", entries: bundled.map((s) => ({ id: `b:${s.name}`, name: s.bundled ?? s.name, desc: `${s.tools} tool${s.tools === 1 ? "" : "s"}, as the ${s.name} server`, mark: mcpMark(s), aside: s.transport, testid: "plugin-entry" })) },
     { id: "config", title: "Configuration", entries: [{ id: "toml", name: "plugins.toml", desc: toml?.borrowed ? "read from the Rust Keel's folder" : toml?.file ? "keel-bun's own" : "not written yet", mark: toml?.error ? "fail" : toml?.file ? "on" : "off", testid: "plugin-entry" }] },
   ];
   const p = sel?.startsWith("p:") ? plugins?.find((x) => `p:${x.id}` === sel) : undefined;
+  const u = sel?.startsWith("u:") ? units?.plugins.find((x) => `u:${x.id}` === sel) : undefined;
+  const o = sel?.startsWith("o:") ? offers.find((x) => `o:${x.key}` === sel) : undefined;
+  const installed = (id: string) => { loadUnits(); load(); setSel(`u:${id}`); };
   const b = sel?.startsWith("b:") ? bundled.find((x) => `b:${x.name}` === sel) : undefined;
   const ready = plugins?.filter((x) => x.state === "ready").length ?? 0;
   const failing = plugins?.filter((x) => MARK[x.state] === "fail").length ?? 0;
 
   return (
     <div data-testid="plugins-settings">
-      <FolderLine global="The same in every folder" tally={[{ n: plugins?.length ?? 0, label: "provider plugins" }, { n: ready, label: "ready" }, ...(failing ? [{ n: failing, label: "failing", tone: "fail" as const }] : []), { n: bundled.length, label: "built in" }]} />
-      <Ledger testid="plugins-ledger" groups={groups} selected={sel} onSelect={setSel}>
-        {p ? (
+      <FolderLine tally={[
+        { n: units?.plugins.length ?? 0, label: "installed" }, { n: units?.plugins.filter((x) => x.enabled).length ?? 0, label: "on" },
+        ...(offers.length ? [{ n: offers.length, label: "offered", tone: "need" as const }] : []),
+        { n: plugins?.length ?? 0, label: "provider plugins" }, { n: ready, label: "ready" }, ...(failing ? [{ n: failing, label: "failing", tone: "fail" as const }] : []), { n: bundled.length, label: "built in" },
+      ]} />
+      <Ledger testid="plugins-ledger" groups={groups} selected={sel} onSelect={setSel} add={[{ label: "Install a plugin", id: "+install" }]}>
+        {sel === "+install" ? (
+          <InstallReader key={folder} folder={folder} onDone={(x) => installed(x.id)} />
+        ) : u ? (
+          <UnitReader key={u.id} u={u} folder={folder} onChange={(removed) => { loadUnits(); load(); if (removed) setSel(null); }} />
+        ) : o ? (
+          <OfferReader key={o.key} o={o} folder={folder} onDone={(x) => installed(x.id)} />
+        ) : p ? (
           <>
             <ReaderHead
               title={p.name ?? p.id}

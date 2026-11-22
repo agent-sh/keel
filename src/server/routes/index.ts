@@ -34,6 +34,7 @@ import { takeoverRoutes } from "./takeover.ts";
 import { resumeRoutes } from "./resume.ts";
 import { hookRoutes } from "./hooks.ts";
 import { surfaceRoutes } from "./surfaces.ts";
+import { pluginUnitRoutes } from "./plugin-units.ts";
 import { workspaceRoutes } from "./workspace.ts";
 import { worktreeRoutes } from "./worktrees.ts";
 import { reviewRoutes } from "./reviews.ts";
@@ -114,6 +115,7 @@ export const routeModules: RouteModule[] = [
   resumeRoutes, // the same for a conversation on an ssh machine: its state, wait or resume now
   hookRoutes,
   surfaceRoutes, // Settings: skills, agent files, instruction files, the hooks file, plugins.toml
+  pluginUnitRoutes, // after mcp and hooks: plugins installed as one unit start their servers
   runRoutes, // the command line: keel run, keel send
   secretRoutes, // the last gate: a call runs with its secrets put back, after every hook saw the placeholder
   telemetryRoutes, // its tool timing starts after every gate

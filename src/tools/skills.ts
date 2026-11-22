@@ -4,10 +4,11 @@
 // calls the skill tool, with Claude Code's argument substitution.
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { configDir } from "../providers/config.ts";
 import { writeOwnFile } from "../core/ownfile.ts";
 import { registerHooks } from "../engine/hooks.ts";
+import { enabledUnits } from "../plugins/registry.ts";
 import { fail, ok, type Tool, type ToolContext } from "./types.ts";
 
 export type Skill = {
@@ -23,6 +24,8 @@ export type Skill = {
   kind: "skill" | "command"; // a SKILL.md folder, or a command file (<name>.md)
   root: string; // the folder it was found in (~/.claude/skills, <repo>/.agents/skills)
   enabled: boolean; // the owner can turn a skill off without deleting it
+  data?: string; // a plugin's folder that outlives its updates (${CLAUDE_PLUGIN_DATA})
+  plugin?: string; // the installed plugin it came with
 };
 
 // <config>/skills.json: the skills the owner turned off, by name ("off"), the
@@ -152,7 +155,7 @@ export function discoverSkills(cwd: string): Skill[] {
   const off = skillsOff();
   const seenReal = new Set<string>();
   // `held` is what the trust pin decides on: a skill's folder, a command's file.
-  const add = (file: string, held: string, fallback: string, root: string, scope: Skill["scope"], kind: Skill["kind"], prefix = "", chosen = false) => {
+  const add = (file: string, held: string, fallback: string, root: string, scope: Skill["scope"], kind: Skill["kind"], prefix = "", chosen = false, unit?: { id: string; data: string }) => {
     let real: string;
     try { if (!statSync(file).isFile()) return; real = realpathSync(file); } catch { return; }
     if (seenReal.has(real)) return;
@@ -176,6 +179,7 @@ export function discoverSkills(cwd: string): Skill[] {
       arguments: args,
       root,
       enabled: !off.has(name),
+      ...(unit ? { data: unit.data, plugin: unit.id } : {}),
     });
   };
   const list = (dir: string) => { try { return readdirSync(dir).sort(); } catch { return []; } };
@@ -200,7 +204,10 @@ export function discoverSkills(cwd: string): Skill[] {
     };
     walk(r.dir, 0);
   }
-  // Claude Code plugins the owner carried: <plugin>:<skill>, as Claude Code names them.
+  // The plugins Keel installed, while they are enabled, then the Claude Code
+  // plugins the owner carried: <plugin>:<skill>, as Claude Code names them.
+  const units = enabledUnits();
+  for (const u of units) for (const k of u.skills) add(join(k.dir, "SKILL.md"), k.dir, basename(k.dir), u.dir, "plugin", "skill", `${u.id}:`, true, u);
   for (const p of carriedPlugins()) {
     for (const n of list(join(p.dir, "skills"))) if (!n.startsWith(".")) add(join(p.dir, "skills", n, "SKILL.md"), join(p.dir, "skills", n), n, p.dir, "plugin", "skill", `${p.name}:`);
   }
@@ -211,6 +218,7 @@ export function discoverSkills(cwd: string): Skill[] {
   for (const { dir, scope } of commandRoots(cwd)) {
     for (const n of list(dir)) if (n.endsWith(".md") && !n.startsWith(".")) add(join(dir, n), join(dir, n), n.slice(0, -3), dir, scope, "command");
   }
+  for (const u of units) for (const c of u.commands) add(c.file, c.file, c.name, u.dir, "plugin", "command", `${u.id}:`, true, u);
   for (const p of carriedPlugins()) {
     for (const n of list(join(p.dir, "commands"))) if (n.endsWith(".md") && !n.startsWith(".")) add(join(p.dir, "commands", n), join(p.dir, "commands", n), n.slice(0, -3), p.dir, "plugin", "command", `${p.name}:`);
   }
@@ -256,7 +264,7 @@ export function renderSkill(body: string, args: string, names: string[], vars: R
     }
     out += c;
   }
-  out = out.replace(/\$\{(CLAUDE_SKILL_DIR|CLAUDE_PROJECT_DIR|CLAUDE_SESSION_ID|CLAUDE_PLUGIN_ROOT|KEEL_SKILL_DIR|KEEL_SESSION_ID)\}/g, (all, k) => vars[k] ?? all);
+  out = out.replace(/\$\{(CLAUDE_SKILL_DIR|CLAUDE_PROJECT_DIR|CLAUDE_SESSION_ID|CLAUDE_PLUGIN_ROOT|CLAUDE_PLUGIN_DATA|KEEL_SKILL_DIR|KEEL_SESSION_ID)\}/g, (all, k) => vars[k] ?? all);
   if (args.trim() && !used) out = `${out.trimEnd()}\n\nARGUMENTS: ${args}`;
   return out;
 }
@@ -270,7 +278,7 @@ export function loadSkill(name: string, args: string, ctx: ToolContext) {
   if (!skill.modelInvocable) return fail(`The skill "${skill.name}" is only for the owner to invoke.`);
   const { body } = frontmatter(readFileSync(skill.file, "utf8"));
   const text = renderSkill(body, args ?? "", skill.arguments, {
-    CLAUDE_SKILL_DIR: skill.dir, KEEL_SKILL_DIR: skill.dir, ...(skill.scope === "plugin" ? { CLAUDE_PLUGIN_ROOT: skill.root } : {}), CLAUDE_PROJECT_DIR: gitRoot(ctx.cwd) ?? ctx.cwd,
+    CLAUDE_SKILL_DIR: skill.dir, KEEL_SKILL_DIR: skill.dir, ...(skill.scope === "plugin" ? { CLAUDE_PLUGIN_ROOT: skill.root, ...(skill.data ? { CLAUDE_PLUGIN_DATA: skill.data } : {}) } : {}), CLAUDE_PROJECT_DIR: gitRoot(ctx.cwd) ?? ctx.cwd,
     CLAUDE_SESSION_ID: ctx.sessionId, KEEL_SESSION_ID: ctx.sessionId,
   });
   // Sent again unless the model can still see it: after a clear, a rewind or
@@ -289,7 +297,7 @@ export function renderForOwner(name: string, args: string, cwd: string, sessionI
   if (!skill.enabled) return { error: `${name} is turned off in Settings > Skills` };
   const { body } = frontmatter(readFileSync(skill.file, "utf8"));
   const text = renderSkill(body, args, skill.arguments, {
-    CLAUDE_SKILL_DIR: skill.dir, KEEL_SKILL_DIR: skill.dir, ...(skill.scope === "plugin" ? { CLAUDE_PLUGIN_ROOT: skill.root } : {}), CLAUDE_PROJECT_DIR: gitRoot(cwd) ?? cwd,
+    CLAUDE_SKILL_DIR: skill.dir, KEEL_SKILL_DIR: skill.dir, ...(skill.scope === "plugin" ? { CLAUDE_PLUGIN_ROOT: skill.root, ...(skill.data ? { CLAUDE_PLUGIN_DATA: skill.data } : {}) } : {}), CLAUDE_PROJECT_DIR: gitRoot(cwd) ?? cwd,
     CLAUDE_SESSION_ID: sessionId, KEEL_SESSION_ID: sessionId,
   });
   usage?.record(skill.name);

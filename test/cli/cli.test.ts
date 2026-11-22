@@ -1894,3 +1894,52 @@ describe("a session out of memory is never read whole on the loop", () => {
     }
   }, 180_000);
 });
+
+describe("keel plugin", () => {
+  const state = join(SCRATCH, "state-plugin");
+  const config = join(SCRATCH, "plugin-config");
+  const plugin = join(SCRATCH, "plugin-src");
+  let d: Bun.Subprocess<"ignore", "pipe", "ignore">;
+  const k = (args: string[], o: { stdin?: string } = {}) => keel(args, { state, ...o, env: { KEEL_CONFIG_DIR: config } });
+  beforeAll(async () => {
+    mkdirSync(join(plugin, ".claude-plugin"), { recursive: true });
+    mkdirSync(join(plugin, "skills", "note"), { recursive: true });
+    mkdirSync(join(plugin, "hooks"), { recursive: true });
+    writeFileSync(join(plugin, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "cli-kit", version: "0.1.0" }));
+    writeFileSync(join(plugin, "skills", "note", "SKILL.md"), "---\nname: note\ndescription: Take a note.\n---\nNote it.\n");
+    writeFileSync(join(plugin, "hooks", "hooks.json"), JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "true cli-kit-stop" }] }] } }));
+    d = Bun.spawn([BIN, "serve", "--bind", "127.0.0.1:0", "--state-dir", state, "--workspace", WS], { cwd: WS, env: { ...ENV, KEEL_CONFIG_DIR: config }, stdout: "pipe", stderr: "ignore" });
+    const reader = d.stdout.getReader();
+    let seen = "";
+    while (!seen.includes("listening")) seen += new TextDecoder().decode((await reader.read()).value);
+    reader.releaseLock();
+  }, 30_000);
+  afterAll(() => d?.kill("SIGTERM"));
+
+  test("install says what it runs and asks; list, disable, enable, update and remove", async () => {
+    // No terminal and no --yes: what it runs is printed, and nothing is installed.
+    const asked = await k(["plugin", "install", plugin]);
+    expect(asked.code).toBe(3);
+    expect(asked.out).toContain("hook on Stop: true cli-kit-stop");
+    expect(asked.err).toContain("read them above, then pass --yes");
+    expect((await k(["plugin", "list"])).out).toContain("no plugins installed");
+    const done = await k(["plugin", "install", plugin, "--yes"]);
+    expect(done.code).toBe(0);
+    expect(done.out).toContain("installed cli-kit 0.1.0");
+    const listed = json((await k(["plugin", "list", "--json"])).out);
+    expect(listed.plugins[0]).toMatchObject({ id: "cli-kit", enabled: true, skills: ["cli-kit:note"], runs: ["hook on Stop: true cli-kit-stop"] });
+    expect((await k(["plugin", "disable", "cli-kit"])).out).toContain("cli-kit is off");
+    expect(json((await k(["plugin", "list", "--json"])).out).plugins[0].enabled).toBe(false);
+    expect((await k(["plugin", "enable", "cli-kit"])).code).toBe(0);
+    // The same source again: nothing changed, nothing to apply.
+    expect((await k(["plugin", "update", "cli-kit"])).out).toContain("which is what its source holds now");
+    writeFileSync(join(plugin, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "cli-kit", version: "0.2.0" }));
+    const up = await k(["plugin", "update", "cli-kit"]);
+    expect(up.out).toContain("version 0.1.0 to 0.2.0");
+    expect(up.code).toBe(0); // what it runs did not change: the yes given at install holds
+    expect(json((await k(["plugin", "list", "--json"])).out).plugins[0].version).toBe("0.2.0");
+    expect((await k(["plugin", "remove", "cli-kit"])).code).toBe(0);
+    expect(json((await k(["plugin", "list", "--json"])).out).plugins).toEqual([]);
+    expect(existsSync(join(config, "plugins", "cli-kit"))).toBe(false);
+  }, 60_000);
+});

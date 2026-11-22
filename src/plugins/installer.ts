@@ -1,0 +1,332 @@
+// A plugin installed, enabled, disabled, updated and removed as one unit.
+//
+// prepare: the source is fetched into a folder of Keel's own and read; what
+//   the plugin gives (skills, commands, agents, hooks, MCP servers), what it
+//   holds that Keel does not take, how its names stand beside the owner's,
+//   and every line of what it would run is said. Nothing of it runs.
+// install: with the owner's yes to exactly those lines (a plugin that runs
+//   nothing needs none), its copy goes under <config>/plugins/<id>/ and its
+//   record into plugins.json, and its servers start.
+// disable / enable: everything it brought stops or comes back at once: its
+//   hooks are not read, its servers stop, its skills, commands and agents
+//   are not offered.
+// update: the source fetched again and what changes said first; a change
+//   of what it runs asks again.
+// remove: its record and its folder go. Nothing of the owner's is written:
+//   not mcp.json, not hooks.json, not skills.json.
+import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
+import { rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { dirname, join, relative, resolve } from "node:path";
+import { definitions } from "../automation/agents.ts";
+import { parseHooks, projectRoot } from "../integrations/hooks.ts";
+import { parseConfig, validate, type McpServerConfig } from "../mcp/config.ts";
+import { carriedPlugins, discoverSkills } from "../tools/skills.ts";
+import { cloneInto, copyFolder, folderDigest, parseSource, type Source } from "./fetch.ts";
+import { changes, chooseId, consentKey, entrySource, fill, readMarketplace, readPlugin, resolveNames, runLine, runsOf, type HookGroups, type MarketEntry, type NotTaken, type Plugin, type Run, type Summary } from "./manifest.ts";
+import { installedUnits, pluginsHome, readRegistry, unitOf, writeRegistry, type Unit, type UnitSource } from "./registry.ts";
+
+// What the daemon gives the installer: the MCP servers' names and the way to start and stop a plugin's.
+export type Host = {
+  // Every MCP server name taken now (the owner's, the built-in ones, every plugin's), but this plugin's own.
+  mcpTaken(except?: string): Set<string>;
+  setServers(id: string, servers: Unit["mcp"]): void;
+  mcpState?(label: string): { state: string; tools: string[]; error?: string } | undefined;
+};
+
+export type Market = { kind: "marketplace"; token: string; input: string; name: string; owner?: string; description?: string; plugins: { name: string; description?: string; version?: string; from: string; unsupported?: string }[] };
+export type Plan = {
+  kind: "plugin"; token: string; input: string; id: string; name: string; version: string; description?: string; author?: string; homepage?: string;
+  root: string; skills: string[]; commands: string[]; agents: string[];
+  hooks: { event: string; matcher?: string; what: string }[]; mcp: { name: string; label: string; what: string }[];
+  runs: string[]; consent: string | null; not_taken: NotTaken[]; notes: string[]; problems: string[];
+  update?: { id: string; from: string; changes: string[]; runs_changed: boolean; same: boolean };
+};
+
+type Staged = {
+  token: string; at: number; dir: string; pluginDir: string; plugin: Plugin; source: UnitSource; commit?: string; version: string; id: string;
+  hooks: HookGroups; mcp: { name: string; label: string; config: McpServerConfig }[]; runs: Run[]; notTaken: NotTaken[]; notes: string[]; problems: string[];
+  update?: string; offeredBy?: string;
+};
+
+// A prepared plugin waits this long for the owner's answer; then its copy is let go.
+const STAGED_MS = 60 * 60_000;
+const ROOT_WORD = "${CLAUDE_PLUGIN_ROOT}";
+const safe = (v: string) => v.replace(/[^\w.+-]/g, "_").slice(0, 80) || "0";
+const fail = (status: number, message: string) => Object.assign(new Error(message), { status });
+
+export class Installer {
+  private staged = new Map<string, Staged | { market: true; token: string; at: number; dir: string; input: string; source: Source; commit?: string }>();
+  private chain: Promise<unknown> = Promise.resolve();
+
+  constructor(private host: Host) {
+    // A daemon before this one may have left a prepared copy.
+    void rm(join(pluginsHome(), ".staging"), { recursive: true, force: true }).catch(() => {});
+  }
+
+  // One change at a time: two installs never write the record over each other.
+  private serial<T>(f: () => Promise<T>): Promise<T> {
+    const run = this.chain.then(f, f);
+    this.chain = run.catch(() => {});
+    return run;
+  }
+
+  // Every installed plugin's servers started (the daemon's start).
+  startAll() {
+    for (const u of installedUnits()) this.host.setServers(u.id, u.enabled ? u.mcp : []);
+  }
+
+  private sweep() {
+    const now = Date.now();
+    for (const [t, s] of this.staged) if (now - s.at > STAGED_MS) { this.staged.delete(t); void rm(s.dir, { recursive: true, force: true }).catch(() => {}); }
+  }
+
+  private async fetch(src: Source, into: string): Promise<{ commit?: string; left: string[] }> {
+    if ("path" in src) return { left: await copyFolder(src.path, into) };
+    return { commit: await cloneInto(src.git, src.ref, into), left: [] };
+  }
+
+  // `input`: a folder, a git URL or owner/repo. `entry`: the plugin to take from a marketplace.
+  prepare(o: { input: string; entry?: string; cwd: string; update?: string; offeredBy?: string }): Promise<Plan | Market> {
+    return this.serial(async () => {
+      this.sweep();
+      const src = parseSource(o.input, o.cwd);
+      if ("error" in src) throw fail(400, src.error);
+      const token = randomUUID();
+      const dir = join(pluginsHome(), ".staging", token);
+      mkdirSync(dir, { recursive: true });
+      try {
+        const got = await this.fetch(src, join(dir, "source"));
+        const root = join(dir, "source");
+        const mk = readMarketplace(root);
+        if (mk?.error) throw fail(400, mk.error);
+        let pluginDir = root, entry: MarketEntry | undefined, commit = got.commit, sub: string | undefined;
+        if (mk?.market) {
+          const m = mk.market;
+          if (!o.entry) {
+            this.staged.set(token, { market: true, token, at: Date.now(), dir, input: o.input, source: src, commit });
+            return {
+              kind: "marketplace", token, input: o.input, name: m.name, ...(m.owner ? { owner: m.owner } : {}), ...(m.description ? { description: m.description } : {}),
+              plugins: m.plugins.map((e) => {
+                const s = entrySource(e, root, m.pluginRoot);
+                return { name: e.name, ...(e.description ? { description: e.description } : {}), ...(e.version ? { version: e.version } : {}), from: "dir" in s ? relative(root, s.dir) || "." : "git" in s ? s.git : "", ...("unsupported" in s ? { unsupported: s.unsupported } : {}) };
+              }),
+            } satisfies Market;
+          }
+          entry = m.plugins.find((e) => e.name === o.entry);
+          if (!entry) throw fail(404, `the marketplace ${m.name} lists no plugin named ${o.entry}`);
+          const s = entrySource(entry, root, m.pluginRoot);
+          if ("unsupported" in s) throw fail(400, `${entry.name}: ${s.unsupported}`);
+          if ("dir" in s) pluginDir = s.dir;
+          else {
+            const at = join(dir, "entry");
+            commit = await cloneInto(s.git, s.ref, at);
+            pluginDir = s.sub ? resolve(at, s.sub) : at;
+            sub = s.sub;
+            if (!pluginDir.startsWith(at)) throw fail(400, `${entry.name}: its path leaves the repository`);
+          }
+          if (!existsSync(pluginDir)) throw fail(400, `${entry.name}: ${relative(root, pluginDir)} is not in the marketplace`);
+        } else if (o.entry) throw fail(400, `${o.input} is a plugin, not a marketplace: it has no plugin named ${o.entry} to pick`);
+        const plugin = readPlugin(pluginDir, entry);
+        const version = plugin.version ?? (commit ? commit.slice(0, 12) : await folderDigest(pluginDir));
+        const source: UnitSource = { input: o.input, ...("path" in src ? { path: src.path } : { git: src.git, ...(src.ref ? { ref: src.ref } : {}) }), ...(entry ? { entry: entry.name } : {}), ...(sub ? { sub } : {}) };
+        // The same plugin from the same place is an update of the one installed.
+        const same = installedUnits().find((u) => u.id === o.update || (!o.update && u.name === plugin.name && u.source.input === o.input && u.source.entry === source.entry));
+        const others = new Set([...installedUnits().filter((u) => u !== same).map((u) => u.id), ...carriedPlugins().map((p) => p.name)]);
+        const id = same?.id ?? chooseId(plugin.name, others);
+        const s = this.plan({ token, at: Date.now(), dir, pluginDir, plugin, source, commit, version, id, update: same?.id, offeredBy: o.offeredBy ?? same?.offeredBy }, o.cwd, got.left);
+        this.staged.set(token, s);
+        return this.view(s);
+      } catch (e) {
+        this.staged.delete(token);
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+        throw e;
+      }
+    });
+  }
+
+  // What the plugin brings, its names beside the owner's, and what it runs.
+  private plan(b: Omit<Staged, "hooks" | "mcp" | "runs" | "notTaken" | "notes" | "problems">, cwd: string, left: string[]): Staged {
+    const p = b.plugin;
+    const notTaken = [...p.notTaken, ...left.map((f) => ({ part: f, why: "a link out of the plugin's folder: not copied" }))];
+    const problems = [...p.problems];
+    const own = discoverSkills(cwd).filter((s) => s.scope !== "plugin").map((s) => s.name);
+    const ownAgents = definitions(cwd).filter((d) => !d.name.includes(":")).map((d) => d.name);
+    const names = resolveNames({ id: b.id, skills: p.skills.map((s) => s.name), commands: p.commands.map((c) => c.name), agents: p.agents.map((a) => a.name), mcp: Object.keys(p.mcp) }, { skills: new Set(own), agents: new Set(ownAgents), mcp: this.host.mcpTaken(b.update) });
+    // The plugin's servers as Keel starts them: Claude Code's shape read as mcp.json reads it.
+    const mcp: Staged["mcp"] = [];
+    for (const [name, raw] of Object.entries(p.mcp)) {
+      let config: McpServerConfig;
+      try { config = parseConfig(JSON.stringify({ servers: { [name]: raw } })).servers[name]!; } catch (e) { notTaken.push({ part: `MCP server ${name}`, why: (e as Error).message }); continue; }
+      if ((raw as any).type === "ws") { notTaken.push({ part: `MCP server ${name}`, why: "a WebSocket server, which Keel's MCP client does not speak" }); continue; }
+      const label = names.mcp[name]!;
+      const bad = validate(label, config);
+      if (bad) { notTaken.push({ part: `MCP server ${name}`, why: bad }); continue; }
+      mcp.push({ name, label, config });
+    }
+    // An mcp_tool hook names a server of the plugin by its own name or by Claude Code's plugin:<name>:<server>.
+    const byName = new Map(mcp.flatMap((s) => [[s.name, s.label], [`plugin:${p.name}:${s.name}`, s.label]] as [string, string][]));
+    const mapped: HookGroups = Object.fromEntries(Object.entries(p.hooks).map(([ev, groups]) => [ev, groups.map((g) => ({ ...g, hooks: (g.hooks ?? []).map((h: any) => (h?.type === "mcp_tool" && byName.has(h.server) ? { ...h, server: byName.get(h.server) } : h)) }))]));
+    const parsed = parseHooks(JSON.stringify({ hooks: mapped }));
+    for (const x of [...parsed.problems, ...parsed.notes]) notTaken.push({ part: "hooks", why: x });
+    const hooks = parsed.groups as HookGroups;
+    const runs = runsOf(hooks, Object.fromEntries(mcp.map((s) => [s.label, s.config as Record<string, unknown>])));
+    return { ...b, hooks, mcp, runs, notTaken, notes: names.notes, problems };
+  }
+
+  private final(s: { id: string; version: string }) {
+    return { dir: join(pluginsHome(), s.id, "versions", safe(s.version)), data: join(pluginsHome(), s.id, "data") };
+  }
+
+  private summary(u: Pick<Unit, "version" | "skills" | "commands" | "agents" | "mcp" | "notTaken" | "consent">): Summary {
+    return { version: u.version, skills: u.skills.map((x) => x.name), commands: u.commands.map((x) => x.name), agents: u.agents.map((x) => x.name), mcp: u.mcp.map((x) => x.label), runs: u.consent.lines, notTaken: u.notTaken.map((n) => n.part) };
+  }
+
+  private view(s: Staged): Plan {
+    const lines = s.runs.map(runLine);
+    const p = s.plugin;
+    const ns = (n: string) => `${s.id}:${n}`;
+    const plan: Plan = {
+      kind: "plugin", token: s.token, input: s.source.input, id: s.id, name: p.name, version: s.version,
+      ...(p.description ? { description: p.description } : {}), ...(p.author ? { author: p.author } : {}), ...(p.homepage ? { homepage: p.homepage } : {}),
+      root: this.final(s).dir,
+      skills: p.skills.map((x) => ns(x.name)), commands: p.commands.filter((c) => !p.skills.some((k) => k.name === c.name)).map((x) => ns(x.name)), agents: p.agents.map((x) => ns(x.name)),
+      hooks: s.runs.filter((r) => r.kind === "hook").map((r) => ({ event: (r as any).event, ...((r as any).matcher ? { matcher: (r as any).matcher } : {}), what: r.what })),
+      mcp: s.mcp.map((m) => ({ name: m.name, label: m.label, what: s.runs.find((r) => r.kind === "mcp" && r.name === m.label)?.what ?? "" })),
+      runs: lines, consent: lines.length ? consentKey(lines) : null, not_taken: s.notTaken, notes: s.notes, problems: s.problems,
+    };
+    if (s.update) {
+      const u = unitOf(s.update)!;
+      const next = this.summary({ version: s.version, skills: p.skills, commands: p.commands, agents: p.agents, mcp: s.mcp, notTaken: s.notTaken, consent: { at: 0, lines } });
+      const c = changes(this.summary(u), next);
+      plan.update = { id: u.id, from: u.version, changes: c.lines, runs_changed: c.runsChanged, same: !c.lines.length && u.version === s.version };
+    }
+    return plan;
+  }
+
+  // The owner said yes (`consent`: the key of the lines they were shown), or the plugin runs nothing.
+  install(token: string, consent: string | null | undefined): Promise<Unit> {
+    return this.serial(async () => {
+      const s = this.staged.get(token);
+      if (!s || "market" in s) throw fail(404, "that plugin is no longer prepared: read it again");
+      if (s.problems.length) throw fail(400, `it cannot be installed: ${s.problems.join("; ")}`);
+      const lines = s.runs.map(runLine);
+      const prev = s.update ? unitOf(s.update) : undefined;
+      // An update that runs exactly what was agreed to keeps that yes.
+      const agreed = prev && prev.consent.lines.join("\n") === lines.join("\n");
+      if (lines.length && !agreed && consent !== consentKey(lines)) throw fail(409, `it runs ${lines.length} thing${lines.length === 1 ? "" : "s"} on this machine: say yes to exactly what was shown`);
+      const { dir, data } = this.final(s);
+      const vars = { root: dir, data };
+      const at = (p: string) => join(dir, relative(s.pluginDir, p));
+      // The copy goes in whole under its own name; a copy of the same version is replaced.
+      mkdirSync(dirname(dir), { recursive: true });
+      mkdirSync(data, { recursive: true });
+      const trash = existsSync(dir) ? `${dir}.old-${s.token}` : null;
+      if (trash) renameSync(dir, trash);
+      renameSync(s.pluginDir, dir);
+      const now = Date.now();
+      const unit: Unit = {
+        id: s.id, name: s.plugin.name, version: s.version,
+        ...(s.plugin.description ? { description: s.plugin.description } : {}), ...(s.plugin.author ? { author: s.plugin.author } : {}), ...(s.plugin.homepage ? { homepage: s.plugin.homepage } : {}),
+        source: s.source, ...(s.commit ? { commit: s.commit } : {}), dir, data,
+        enabled: prev ? prev.enabled : true, installed: prev?.installed ?? now, updated: now,
+        skills: s.plugin.skills.map((x) => ({ name: x.name, dir: at(x.dir) })),
+        commands: s.plugin.commands.map((x) => ({ name: x.name, file: at(x.file) })),
+        agents: s.plugin.agents.map((x) => ({ name: x.name, file: at(x.file) })),
+        hooks: fill(s.hooks, vars),
+        mcp: s.mcp.map((m) => {
+          const c = fill(m.config, vars) as McpServerConfig;
+          return { name: m.name, label: m.label, config: { ...c, env: { ...c.env, CLAUDE_PLUGIN_ROOT: dir, CLAUDE_PLUGIN_DATA: data } } as Record<string, unknown> };
+        }),
+        notTaken: s.notTaken, notes: s.notes,
+        consent: { at: agreed ? prev!.consent.at : now, lines },
+        ...(s.offeredBy ? { offeredBy: s.offeredBy } : {}),
+      };
+      const reg = readRegistry();
+      try {
+        writeRegistry({ plugins: [...reg.plugins.filter((u) => u.id !== unit.id), unit] });
+      } catch (e) {
+        // The record was not written: the copy goes back as it was.
+        renameSync(dir, s.pluginDir);
+        if (trash) renameSync(trash, dir);
+        throw e;
+      }
+      this.staged.delete(token);
+      this.host.setServers(unit.id, unit.enabled ? unit.mcp : []);
+      if (prev && prev.dir !== dir) await rm(prev.dir, { recursive: true, force: true }).catch(() => {});
+      if (trash) await rm(trash, { recursive: true, force: true }).catch(() => {});
+      await rm(s.dir, { recursive: true, force: true }).catch(() => {});
+      return unit;
+    });
+  }
+
+  // Let a prepared copy go without installing it.
+  discard(token: string) {
+    const s = this.staged.get(token);
+    if (!s) return;
+    this.staged.delete(token);
+    void rm(s.dir, { recursive: true, force: true }).catch(() => {});
+  }
+
+  setEnabled(id: string, enabled: boolean): Promise<Unit> {
+    return this.serial(async () => {
+      const reg = readRegistry();
+      const u = reg.plugins.find((x) => x.id === id);
+      if (!u) throw fail(404, `no plugin ${id} is installed`);
+      const next = { ...u, enabled };
+      if (u.enabled !== enabled) writeRegistry({ plugins: reg.plugins.map((x) => (x.id === id ? next : x)) });
+      this.host.setServers(id, enabled ? next.mcp : []);
+      return next;
+    });
+  }
+
+  update(id: string, cwd: string): Promise<Plan | Market> {
+    const u = unitOf(id);
+    if (!u) return Promise.reject(fail(404, `no plugin ${id} is installed`));
+    return this.prepare({ input: u.source.input, entry: u.source.entry, cwd, update: id });
+  }
+
+  remove(id: string): Promise<Unit> {
+    return this.serial(async () => {
+      const reg = readRegistry();
+      const u = reg.plugins.find((x) => x.id === id);
+      if (!u) throw fail(404, `no plugin ${id} is installed`);
+      this.host.setServers(id, []);
+      writeRegistry({ plugins: reg.plugins.filter((x) => x.id !== id) });
+      await rm(join(pluginsHome(), id), { recursive: true, force: true });
+      return u;
+    });
+  }
+
+  // The plugins a folder's repository names (Claude Code's project settings:
+  // enabledPlugins, with the marketplaces they come from in
+  // extraKnownMarketplaces). Offered only: one is installed when the owner says yes.
+  offers(cwd: string): Offer[] {
+    const root = projectRoot(cwd);
+    const out: Offer[] = [];
+    for (const f of [join(root, ".claude", "settings.json"), join(root, ".claude", "settings.local.json")]) {
+      let v: any;
+      try { v = JSON.parse(readFileSync(f, "utf8")); } catch { continue; }
+      const markets = v?.extraKnownMarketplaces && typeof v.extraKnownMarketplaces === "object" ? v.extraKnownMarketplaces : {};
+      for (const [key, on] of Object.entries<any>(v?.enabledPlugins ?? {})) {
+        if (on !== true || out.some((o) => o.key === key)) continue;
+        const at = key.lastIndexOf("@");
+        const plugin = at > 0 ? key.slice(0, at) : key, market = at > 0 ? key.slice(at + 1) : "";
+        const base = { key, plugin, marketplace: market, from: f };
+        const src = markets[market]?.source;
+        const input = !src ? null
+          : src.source === "directory" && typeof src.path === "string" ? resolve(root, src.path)
+          : src.source === "github" && typeof src.repo === "string" ? `https://github.com/${src.repo}.git${src.ref ? `#${src.ref}` : ""}`
+          : src.source === "git" && typeof src.url === "string" ? `${src.url}${src.ref ? `#${src.ref}` : ""}`
+          : null;
+        if (!input) { out.push({ ...base, problem: !market ? "it names no marketplace" : !src ? `the repository names the marketplace ${market} without saying where it is` : `the marketplace ${market} is a ${src.source} source, which Keel cannot fetch` }); continue; }
+        const done = installedUnits().find((u) => u.name === plugin && u.source.entry === plugin && (u.source.input === input || u.source.path === input));
+        out.push({ ...base, input, ...(done ? { installed: done.id } : {}) });
+      }
+    }
+    return out;
+  }
+}
+
+export type Offer = { key: string; plugin: string; marketplace: string; from: string; input?: string; installed?: string; problem?: string };
+export { ROOT_WORD };

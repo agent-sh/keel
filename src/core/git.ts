@@ -552,6 +552,9 @@ function plan(dir: string, args: string[], o: GitOpts): Plan {
       if (!args.includes("--no-checkout")) argv.splice(argv.indexOf("add") + 1, 0, "--no-checkout");
     }
   }
+  // A clone names what it fetches on its own command line: the transports a
+  // fetch may use, and a local path as git's own default allows it ("user").
+  if (sub === "clone") setKeys(env, "user", true);
   if (mode === "plain") return { argv, env, cwd: dir, after };
   if (mode === "own") {
     if (!o.gitDir) return { fail: "git: no git directory given" };

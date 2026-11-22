@@ -103,6 +103,8 @@ export const mcpRoutes: RouteModule = (deps) => {
 
   const servers = () => json({ servers: m.list() });
   const known = (name: string) => (m.has(name) ? null : bad(`no MCP server named ${name}`, 404));
+  // A plugin's server goes and stops with its plugin (Settings > Plugins).
+  const plugins = (name: string) => { const p = m.pluginOf(name); return p ? bad(`${name} comes with the plugin ${p}: turn the plugin off or remove it in Settings > Plugins`, 409) : null; };
   const body = async (req: Request) => ((await req.json().catch(() => ({}))) ?? {}) as any;
   // A server that is a command runs a program as the owner: from a remote device that takes the passkey.
   const needs = (req: Request) => (!presence || presence.allows(req, "mcp-command") ? null : json({ error: "this needs your passkey from a remote device", presence: { action: "mcp-command" } }, 428));
@@ -168,7 +170,7 @@ export const mcpRoutes: RouteModule = (deps) => {
     },
     "/api/mcp/servers/:name": {
       DELETE: (req: any) =>
-        known(req.params.name) ?? (m.isBundled(req.params.name) ? bad(`${req.params.name} is built in: turn it off instead`, 409) : (m.remove(req.params.name), servers())),
+        known(req.params.name) ?? plugins(req.params.name) ?? (m.isBundled(req.params.name) ? bad(`${req.params.name} is built in: turn it off instead`, 409) : (m.remove(req.params.name), servers())),
     },
     // The owner marks tools of a server as reads; a remote device needs the passkey.
     "/api/mcp/servers/:name/reads": {
@@ -184,7 +186,7 @@ export const mcpRoutes: RouteModule = (deps) => {
       },
     },
     "/api/mcp/servers/:name/toggle": {
-      POST: async (req: any) => known(req.params.name) ?? (m.toggle(req.params.name, (await body(req)).enabled !== false), servers()),
+      POST: async (req: any) => known(req.params.name) ?? plugins(req.params.name) ?? (m.toggle(req.params.name, (await body(req)).enabled !== false), servers()),
     },
     "/api/mcp/servers/:name/reconnect": {
       POST: async (req: any) => known(req.params.name) ?? (await m.reconnect(req.params.name), servers()),
