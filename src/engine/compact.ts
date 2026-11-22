@@ -166,7 +166,7 @@ export function summaryPrompt(focus?: string): string {
 }
 
 export type Statement = { by: "owner" | "work"; text: string; kind: "standing" | "request" };
-type StoredStatement = Omit<Statement, "kind"> & { kind?: Statement["kind"] };
+export type StoredStatement = Omit<Statement, "kind"> & { kind?: Statement["kind"] };
 export type Settled = { summary: string; statements?: Statement[]; statements_dropped?: string[]; statements_lifted?: { text: string; by: string }[]; statements_done?: string[] };
 
 // Formatting the model may add or leave out around quoted words.
@@ -235,12 +235,19 @@ export function settle(lineage: readonly StoredEvent[], text: string, stored: St
   // Legacy checkpoints did not distinguish requests from rules. Keep their
   // quotes as standing statements rather than letting the model retype them.
   const prior: Statement[] = stored.map((s) => ({ ...s, kind: s.kind === "request" ? "request" : "standing" }));
-  const owner: string[] = [], all: string[] = [];
-  for (const e of lineage) {
-    if (whose(e) === "owner") { owner.push(String(e.data.text ?? "")); all.push(String(e.data.text ?? "")); }
-    else if (e.kind === "user" && e.data.text) all.push(String(e.data.text));
-    else if (e.kind === "assistant") for (const b of e.data.blocks ?? []) if (b.type === "text") all.push(b.text);
-  }
+  // What was said, read when a quote is checked against it: a summary that
+  // quotes nothing (a handoff note) reads none of the conversation.
+  let texts: { owner: string[]; all: string[] } | undefined;
+  const said_ = () => {
+    if (texts) return texts;
+    const owner: string[] = [], all: string[] = [];
+    for (const e of lineage) {
+      if (whose(e) === "owner") { owner.push(String(e.data.text ?? "")); all.push(String(e.data.text ?? "")); }
+      else if (e.kind === "user" && e.data.text) all.push(String(e.data.text));
+      else if (e.kind === "assistant") for (const b of e.data.blocks ?? []) if (b.type === "text") all.push(b.text);
+    }
+    return (texts = { owner, all });
+  };
   const statements = section(text, "Statements");
   const requests = section(text, "Requests");
   const structured = statements !== null || requests !== null;
@@ -253,8 +260,8 @@ export function settle(lineage: readonly StoredEvent[], text: string, stored: St
       const q = m ? quoted(m[2]!) : null;
       // The harness's own request (its text, the owner's focus line) is not the conversation.
       if (!m || q === null || /^\s*(\[harness\]|Keep above all:)/.test(q)) continue;
-      const mine = m[1]!.toLowerCase() === "owner" ? sourceOf(q, owner) : null;
-      const src = mine ?? sourceOf(q, all);
+      const mine = m[1]!.toLowerCase() === "owner" ? sourceOf(q, said_().owner) : null;
+      const src = mine ?? sourceOf(q, said_().all);
       if (src === null) { dropped.push(q); continue; }
       said.push({ by: mine !== null ? "owner" : "work", text: src, kind });
     }
@@ -268,7 +275,7 @@ export function settle(lineage: readonly StoredEvent[], text: string, stored: St
     const exact = prior.find((p) => p.text === q);
     const old = exact ? null : sourceOf(q, prior.map((p) => p.text));
     const target = exact ?? (old === null ? undefined : prior.find((p) => norm(p.text).includes(norm(old))));
-    const by = target ? sourceOf(w, target.by === "owner" ? owner : all) : null;
+    const by = target ? sourceOf(w, target.by === "owner" ? said_().owner : said_().all) : null;
     if (target && by !== null) lifted.push({ text: target.text, by });
   }
   const gone = new Set(lifted.map((l) => l.text));
@@ -336,10 +343,31 @@ export function whose(e: StoredEvent): "owner" | "other" | null {
 function entries(lineage: readonly StoredEvent[], who: "owner" | "other"): Entry[] {
   let all: Entry[] = [];
   const at: number[] = []; // the index of each message's event
-  lineage.forEach((e, i) => {
+  // A checkpoint replaces what came before it with the messages it kept, and
+  // those of its verbatim tail. So the walk starts where the last checkpoint's
+  // answer starts, not at the session's first event: at that checkpoint, or
+  // behind the event it covers when it was prepared ahead (and then at the
+  // checkpoint before it, when that one lies in the tail).
+  const coveredAt = (i: number) => {
+    const id = lineage[i]!.data.covered;
+    if (id) for (let k = lineage.length - 1; k >= 0; k--) if (lineage[k]!.id === id) return k;
+    return -1;
+  };
+  let start = 0;
+  for (let i = lineage.length - 1; i >= 0; i--) {
+    if (lineage[i]!.kind !== "compaction") continue;
+    const covered = coveredAt(i);
+    if (covered < 0 || covered >= i) { start = i; break; }
+    let before = i - 1;
+    while (before > covered && lineage[before]!.kind !== "compaction") before--;
+    if (before <= covered) { start = covered + 1; break; }
+    i = before + 1; // a checkpoint lies in the tail: its answer is needed too
+  }
+  for (let i = start; i < lineage.length; i++) {
+    const e = lineage[i]!;
     if (e.kind === "compaction") {
       // Messages of the verbatim tail of a summary prepared ahead stay.
-      const covered = e.data.covered ? lineage.findIndex((x) => x.id === e.data.covered) : -1;
+      const covered = coveredAt(i);
       const tail = covered >= 0 ? all.filter((_, k) => at[k]! > covered) : [];
       const texts: string[] = e.data.mode !== "summary" ? [] : (who === "owner" ? e.data.owner_messages : e.data.other_messages) ?? [];
       const kept: Entry[] = texts.map((t, k) => ({ text: t, media: who === "owner" ? (e.data.owner_media?.[k] ?? []) : [] }));
@@ -350,7 +378,7 @@ function entries(lineage: readonly StoredEvent[], who: "owner" | "other"): Entry
       all.push({ text: e.data.text, media: who === "owner" ? (e.data.images ?? []).filter((b: any) => b.type === "image" || b.type === "attachment") : [] });
       at.push(i);
     }
-  });
+  }
   return all;
 }
 
@@ -436,13 +464,30 @@ export function fixedContext(lineage: readonly StoredEvent[], prior: { key: stri
 // What a summary checkpoint stores besides how it was made: the settled
 // summary and its statements, the fixed context it carries, and the owner's
 // newest words in what the statements leave of the budget.
-export function checkpointData(lineage: readonly StoredEvent[], summary: string, budget = OWNER_WORDS_BYTES) {
+// `settled`: the summary already checked against the conversation (settleAsk:
+// the check reads every message of the branch, and a caller that can wait has
+// it made off the loop).
+export function checkpointData(lineage: readonly StoredEvent[], summary: string, budget = OWNER_WORDS_BYTES, settled: Settled = settle(lineage, summary, earlierStatements(lineage))) {
   const cp = checkpointAt(lineage);
   const prev = cp.at >= 0 && lineage[cp.at]!.data.mode === "summary" ? lineage[cp.at]!.data : undefined;
-  const settled = settle(lineage, summary, prev?.statements ?? []);
   const fixed = fixedContext(lineage, prev?.fixed ?? []);
   const said = (settled.statements ?? []).reduce((n, s) => n + utf8Bytes(s.text), 0);
   return { ...settled, ...(fixed.length ? { fixed } : {}), ...keptMessages(lineage, Math.max(0, budget - said)) };
+}
+
+// The statements the branch's last summary stored.
+function earlierStatements(lineage: readonly StoredEvent[]): StoredStatement[] {
+  const cp = checkpointAt(lineage);
+  return (cp.at >= 0 && lineage[cp.at]!.data.mode === "summary" ? lineage[cp.at]!.data.statements : undefined) ?? [];
+}
+// What a read of the stored events needs to settle a summary of this branch
+// as settle() does (src/engine/settle-read.ts); null when `lineage` is not a
+// branch from its first event (a part of one is settled from what is given).
+export type SettleAsk = { session: string; upto: { id: string; seq: number }; text: string; stored: StoredStatement[] };
+export function settleAsk(lineage: readonly StoredEvent[], text: string): SettleAsk | null {
+  const first = lineage[0], last = lineage.at(-1);
+  if (!first || !last || first.parent !== null) return null;
+  return { session: last.session_id, upto: { id: last.id, seq: last.seq }, text, stored: earlierStatements(lineage) };
 }
 
 // What a compaction at this point summarizes. A turn that has not had a reply

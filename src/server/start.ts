@@ -83,6 +83,8 @@ export async function startDaemon(opts: { stateDir?: string; bind: string; works
   // fills it (a hot reload's old store gives its thread up first).
   // A session that is not in memory has its pages read by the read thread before the loop reads them.
   store.offLoop = (sql, params) => readsOf(store).readAhead(sql, params);
+  // And a compaction has its summary checked against the whole conversation there, not on the loop.
+  store.settleOff = (ask) => readsOf(store).run("compact.settle", ask);
   // The daemon's lock on its store, looked at in the kernel's table twice a
   // minute: a lock that is gone (some code of this process closed a
   // descriptor of keel.db: src/core/store-files.ts) is said once, loudly.

@@ -5,6 +5,7 @@
 // adds nothing, a note for the model adds its text, an attached text file adds
 // its size, and bytes are UTF-8 bytes.
 import { expect, test } from "bun:test";
+import type { StoredEvent } from "../core/types.ts";
 import { BYTES_PER_TOKEN, bytesPerToken, capRatio, contextTokens, learnRatio, partPrompt, preparedHolds, replyBytes, transcriptParts, transcriptPartsPaced, TRANSCRIPT_PARTS_MAX, OWNER_MEDIA_BYTES, OWNER_WORDS_BYTES, keptMessages, checkpointData, settle, summarizable, summaryMessage, utf8Bytes } from "./compact.ts";
 
 let seq = 0;
@@ -407,4 +408,64 @@ test("a transcript is planned in at most the most parts, the oldest steps left o
   const kept = transcriptParts(said, 20_000, 4);
   expect(kept.left_out.steps).toBe(0);
   for (let n = 0; n < 40; n++) expect(kept.parts.join("")).toContain(`said ${n} w`);
+});
+
+// The messages a compaction keeps are read from where the last checkpoint's
+// answer starts, not from the session's first event. The answer is the one a
+// walk over the whole branch gives: over generated branches with summaries,
+// summaries prepared ahead (covering up to an earlier event), and a summary
+// lying in the verbatim tail of the next one.
+test("the kept messages read from the last checkpoint are the ones a walk over the whole branch keeps", () => {
+  type Entry = { text: string; media: any[] };
+  // As it was: every event of the branch, from the first.
+  const whole = (lineage: StoredEvent[], who: "owner" | "other"): Entry[] => {
+    let all: Entry[] = [];
+    const at: number[] = [];
+    lineage.forEach((e, i) => {
+      if (e.kind === "compaction") {
+        const covered = e.data.covered ? lineage.findIndex((x) => x.id === e.data.covered) : -1;
+        const tail = covered >= 0 ? all.filter((_, k) => at[k]! > covered) : [];
+        const texts: string[] = e.data.mode !== "summary" ? [] : (who === "owner" ? e.data.owner_messages : e.data.other_messages) ?? [];
+        const kept: Entry[] = texts.map((t, k) => ({ text: t, media: who === "owner" ? (e.data.owner_media?.[k] ?? []) : [] }));
+        all = [...kept, ...tail];
+        at.length = 0;
+        at.push(...all.map(() => i));
+      } else if (e.kind === "user" && (who === "owner" ? !e.data.kind && !e.data.origin : !!e.data.kind && e.data.kind !== "harness")) {
+        all.push({ text: e.data.text, media: [] });
+        at.push(i);
+      }
+    });
+    return all;
+  };
+  let rnd = 3;
+  const rand = () => ((rnd = (rnd * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+  let n = 0, summaries = 0, ahead = 0, nested = 0;
+  for (let session = 0; session < 80; session++) {
+    const line: StoredEvent[] = [];
+    const add = (kind: StoredEvent["kind"], data: any) => { line.push({ id: `k${session}-${++n}`, session_id: "s", seq: n, parent: line.at(-1)?.id ?? null, kind, data, ts: 0 }); };
+    let last = -1; // the last checkpoint's index
+    for (let turn = 0; turn < 6 + Math.floor(rand() * 30); turn++) {
+      add("user", rand() < 0.6 ? { text: `owner ${n}` } : { text: `report ${n}`, kind: "subagent" });
+      add("assistant", { blocks: [{ type: "text", text: "ok" }], stop: "end_turn" });
+      if (rand() < 0.25) {
+        const kept = keptMessages(line, 1e9);
+        // Prepared ahead: it covers up to an earlier event, now and then one before the checkpoint before it.
+        const back = rand() < 0.5 ? Math.floor(rand() * (rand() < 0.3 ? 14 : 5)) : -1;
+        const covered = back >= 0 ? line[Math.max(0, line.length - 1 - back)] : undefined;
+        if (covered) { ahead++; if (line.indexOf(covered) < last) nested++; }
+        last = line.length;
+        add("compaction", { mode: rand() < 0.9 ? "summary" : "clear", summary: "so far", ...kept, ...(covered ? { covered: covered.id } : {}) });
+        summaries++;
+      }
+      for (const who of ["owner", "other"] as const) {
+        const want = whole(line, who).map((e) => e.text);
+        const got = keptMessages(line, 1e9)[who === "owner" ? "owner_messages" : "other_messages"] ?? [];
+        expect({ session, at: line.length, who, kept: got }).toEqual({ session, at: line.length, who, kept: want });
+      }
+    }
+  }
+  // The generated branches hold what is compared.
+  expect(summaries).toBeGreaterThan(100);
+  expect(ahead).toBeGreaterThan(30);
+  expect(nested).toBeGreaterThan(3);
 });

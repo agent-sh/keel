@@ -9,6 +9,8 @@ import { marksOf, type MarkArgs } from "../safety/marks.ts";
 import { searchContent, type ContentQuery } from "./routes/search-content.ts";
 import { callAnswered, callsNamed, type AnsweredAsk, type NamedAsk } from "./routes/calls-read.ts";
 import { sessionWhole, type WholeAsk } from "./routes/session-read.ts";
+import { settleStored } from "../engine/settle-read.ts";
+import type { SettleAsk } from "../engine/compact.ts";
 
 export const tasks = {
   // One statement and its rows. The statement is not kept: its text may carry
@@ -28,6 +30,8 @@ export const tasks = {
   "calls.answered": (db: Database, a: AnsweredAsk) => callAnswered(db, a),
   // A whole session as the bytes of its answer (GET /api/sessions/:id with no page).
   "session.whole": (db: Database, a: WholeAsk) => sessionWhole(db, a),
+  // A summary checked against every message of its branch (a compaction).
+  "compact.settle": (db: Database, a: SettleAsk) => settleStored(db, a),
 };
 
 export type Tasks = typeof tasks;

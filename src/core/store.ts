@@ -9,6 +9,7 @@ import { forgetSession } from "./session-map.ts";
 import { asker, asking } from "./asker.ts";
 import { labelled } from "./statement-label.ts";
 import { holdStore, storePath } from "./store-files.ts";
+import type { SettleAsk, Settled } from "../engine/compact.ts";
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -285,6 +286,9 @@ export class Store {
   // by the daemon: what it reads is then in the operating system's memory
   // for the loop. It resolves when that is so, or when it is not worth waiting for.
   offLoop?: (sql: string, params: (string | number | null)[]) => Promise<unknown>;
+  // A summary settled against its branch on the read thread (src/engine/settle-read.ts), set by the
+  // daemon: without it the caller settles on the loop.
+  settleOff?: (ask: SettleAsk) => Promise<Settled>;
 
   constructor(readonly stateDir: string) {
     mkdirSync(stateDir, { recursive: true });

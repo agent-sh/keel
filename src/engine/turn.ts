@@ -29,7 +29,7 @@ import type { Tool, ToolContext } from "../tools/types.ts";
 import { READER_OUTPUT, READER_SYSTEM, type Material } from "./reader.ts";
 import { readBudget, readMaterial, readSource, type ReaderHost, type ReadOutcome } from "./readers.ts";
 import { STALE_BIND } from "../providers/wires/binding.ts";
-import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, type IdleFacts, checkpointData, lastWarm, preparedWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
+import { TRANSCRIPT_PARTS_MAX, transcriptPartsPaced, bytesPerToken, capRatio, checkpointAt, OWNER_WORDS_BYTES, COMPACT_SHARE, contextBytes, contextTokens, messagesBytes, RATIO_MAX, headMoved, learnRatio, partPrompt, setRatio, transcriptParts, recut, condensePrompt, shorterPrompt, utf8Bytes, IDLE_MARGIN_MS, idleDue, type IdleFacts, checkpointData, settleAsk, type Settled, lastWarm, preparedWarm, preparedHolds, PREPARE_SHARE, summarizable, summaryMessage, summaryPrompt, worthSummarizing } from "./compact.ts";
 import { effectiveEffort, longestSure, PAUSE_MARGIN_MS, retention } from "./cachewarn.ts";
 import { askedLife, cacheLives } from "../providers/wires/common.ts";
 import { withoutImages } from "./images.ts";
@@ -2111,11 +2111,12 @@ export class Engine {
     const before = this.used(events, st);
     const t0 = Date.now();
     this.summarize(id, st, session, events, abort.signal)
-      .then((res) => {
+      .then(async (res) => {
         this.emitSession(id);
         const summary = res.summary;
         if (!summary) return;
-        const data = { mode: "summary", ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped, ...(res.steps_left_out ? { steps_left_out: res.steps_left_out } : {}) } : {}), ...checkpointData(events, summary, this.wordsBudget(st)), auto: true, ahead: !idle, trigger: idle ? "idle" : "threshold", covered: covered.id, tokens_before: before, usage: res.usage, model: st.info.id, prepared_ms: Date.now(), duration_ms: Date.now() - t0 };
+        const settled = await this.settled(events, summary);
+        const data = { mode: "summary", ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped, ...(res.steps_left_out ? { steps_left_out: res.steps_left_out } : {}) } : {}), ...checkpointData(events, summary, this.wordsBudget(st), settled), auto: true, ahead: !idle, trigger: idle ? "idle" : "threshold", covered: covered.id, tokens_before: before, usage: res.usage, model: st.info.id, prepared_ms: Date.now(), duration_ms: Date.now() - t0 };
         if (abort.signal.aborted || !this.preparationHolds(id, covered.id, data)) return;
         this.store.db.run("INSERT OR REPLACE INTO prepared_summaries (session_id, covered, data, ts) VALUES (?, ?, ?, ?)", [id, covered.id, JSON.stringify(data), Date.now()]);
       })
@@ -2127,14 +2128,41 @@ export class Engine {
       .finally(() => { if (this.preparing.get(id)?.abort === abort) this.preparing.delete(id); });
   }
 
+  // A summary's statements checked against every message of the branch it
+  // summarizes (settle). The messages before the last checkpoint are in
+  // nobody's memory, so the check is made on the read thread from the stored
+  // events; undefined where it cannot be (no thread, a part of a branch):
+  // checkpointData then makes it in place.
+  private async settled(lineage: readonly StoredEvent[], summary: string): Promise<Settled | undefined> {
+    const ask = this.store.settleOff && settleAsk(lineage, summary);
+    if (!ask) return undefined;
+    try {
+      return await this.store.settleOff!(ask);
+    } catch (e) {
+      this.errors.capture("server", e, { at: "settling a summary off the loop", session: ask.session });
+      return undefined;
+    }
+  }
+
   private preparationHolds(id: string, covered: string, data?: { statements_done?: string[] }): boolean {
     const s = this.store.session(id);
     return !!s && !s.archived && !this.draining && preparedHolds(this.lineage(id), covered, false, data);
   }
 
+  // Asked at every frame of a session whose summary is being prepared (it is
+  // idle meanwhile, and its rows may have been given back): whether the event
+  // the summary covers up to is still on the branch after its last checkpoint
+  // is looked for from the branch's end back, so nothing is brought in for it.
   private dropObsolete(id: string) {
     const p = this.preparing.get(id);
-    if (p && !p.abort.signal.aborted && !this.preparationHolds(id, p.covered)) p.abort.abort();
+    if (!p || p.abort.signal.aborted) return;
+    const s = this.store.session(id);
+    let holds = false;
+    if (s && !s.archived && !this.draining) for (const e of this.store.back(id)) {
+      if (e.kind === "compaction") break;
+      if (e.id === p.covered) { holds = true; break; }
+    }
+    if (!holds) p.abort.abort();
   }
 
   // The prepared summary as a checkpoint, when it covers part of this branch
@@ -2371,6 +2399,8 @@ export class Engine {
       const u: Usage = res.usage;
       const summary = res.summary;
       if (!summary) throw Object.assign(new Error("the model wrote no summary"), { status: 409 });
+      // (Checked against the conversation before anything below is decided: that waits for the read thread.)
+      const settled = await this.settled(upto, summary);
       // Bound to the branch it summarized; the owner's compaction also to no turn having started since.
       const moved = headMoved(events.at(-1)?.id, this.store.session(id)?.head);
       // Inside a turn, a note a hook stored for the summary request itself (memory
@@ -2385,7 +2415,7 @@ export class Engine {
       }
       if (!opts.auto && this.running.has(id)) throw Object.assign(new Error("a turn started while the summary was written: nothing was applied; compact when it has ended"), { status: 409, code: "head_moved" });
       const ev = this.append(id, "compaction", {
-        mode: "summary", ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped, ...(res.steps_left_out ? { steps_left_out: res.steps_left_out } : {}) } : {}), ...checkpointData(upto, summary, this.wordsBudget(st, opts.next)), focus: opts.focus, auto: !!opts.auto,
+        mode: "summary", ...(res.parts ? { parts: res.parts, outputs_shortened: res.clipped, ...(res.steps_left_out ? { steps_left_out: res.steps_left_out } : {}) } : {}), ...checkpointData(upto, summary, this.wordsBudget(st, opts.next), settled), focus: opts.focus, auto: !!opts.auto,
         trigger: opts.trigger ?? (opts.auto ? "threshold" : "owner"), tokens_before: before, usage: u, model: st.info.id, duration_ms: Date.now() - t0, ...(covered ? { covered } : {}),
       });
       this.emitSession(id);
@@ -2652,7 +2682,8 @@ export class Engine {
         // Checked again right before starting: the owner may have moved on, archived or sent meanwhile.
         const now = this.store.session(s.id);
         // (What it went on with instead, a newer turn and who started it, is read when the record is whole.)
-        if (!now || now.archived || this.running.has(s.id) || this.lineage(s.id).at(-1)?.id !== end.id) return this.tellCut(s, cut, "moved", !now ? "not continued: its session was deleted" : now.archived ? "not continued: its session was archived" : undefined);
+        // (The branch's end is the session's head: the session may be out of memory again by now, and is not read for it.)
+        if (!now || now.archived || this.running.has(s.id) || now.head !== end.id) return this.tellCut(s, cut, "moved", !now ? "not continued: its session was deleted" : now.archived ? "not continued: its session was archived" : undefined);
         // And its owner is asked again: an agent stopped while its turn waited
         // for its model or a slot (its goal cleared or replaced, its parent's
         // turn stopped) is not continued, as if the stop had come first.
