@@ -1,16 +1,20 @@
 // What kind of failure a provider call ended with, in a few stable classes,
 // so failures can be counted per provider and model over time. A driver's own
 // classification (ProviderError.kind) wins; then the HTTP status; then words
-// of the message.
+// of the message. This table is the one place the classes are named; which
+// failures are "unreachable" (the request never got an answer) is said in
+// src/providers/unreachable.ts, and a turn waits those out instead of failing
+// (src/providers/outage.ts).
 import { imageRefusal } from "../providers/image-limits.ts";
+import { unreachable, unreachableText } from "../providers/unreachable.ts";
 
 export const ERROR_CLASSES = [
-  "rate_limit", "overloaded", "server", "stream_drop", "context_overflow", "auth", "quota", "refusal", "image", "invalid_request", "other",
+  "rate_limit", "overloaded", "server", "stream_drop", "unreachable", "context_overflow", "auth", "quota", "refusal", "image", "invalid_request", "other",
 ] as const;
 export type ErrorClass = (typeof ERROR_CLASSES)[number];
 
 const KIND: Record<string, ErrorClass> = {
-  rate: "rate_limit", overloaded: "overloaded", server: "server", network: "stream_drop", context: "context_overflow",
+  rate: "rate_limit", overloaded: "overloaded", server: "server", network: "stream_drop", unreachable: "unreachable", context: "context_overflow",
   auth: "auth", quota: "quota", invalid: "invalid_request",
 };
 
@@ -34,6 +38,8 @@ export function errorClass(e: unknown): ErrorClass | null {
   // A request refused over one of its images (a size limit, a format, bytes
   // the provider could not decode): told from the other invalid requests.
   if (imageRefusal(e)) return "image";
+  // The provider was never reached (a driver said so, or a transport's own words do).
+  if (unreachable(e) || (!err.kind && !err.status && !err.statusCode && unreachableText(String(err.message ?? err ?? "")))) return "unreachable";
   if (typeof err.kind === "string" && KIND[err.kind]) return KIND[err.kind]!;
   if (err.name === "AbortError" || err.name === "TimeoutError") return "stream_drop";
   const status = Number(err.status ?? err.statusCode ?? 0);

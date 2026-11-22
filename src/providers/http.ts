@@ -3,10 +3,13 @@
 import { keyShaped } from "../core/conceal.ts";
 import { chunks } from "../core/proc.ts";
 import { EventStreamDecoder } from "./aws.ts";
+import { gatewayDown } from "./unreachable.ts";
 import { JsonArrayDecoder, SseDecoder, type SseEvent } from "./sse.ts";
 import { keptHeaders, redactHeaders, requestId, safeUrl, wire } from "./wiretap.ts";
 
-export type ErrorKind = "auth" | "rate" | "quota" | "overloaded" | "network" | "invalid" | "context" | "server" | "cancelled";
+// "unreachable": the request never got an answer from the provider (src/providers/unreachable.ts);
+// "network": an answer began and broke, or went silent.
+export type ErrorKind = "auth" | "rate" | "quota" | "overloaded" | "network" | "unreachable" | "invalid" | "context" | "server" | "cancelled";
 
 export class ProviderError extends Error {
   constructor(
@@ -19,8 +22,16 @@ export class ProviderError extends Error {
   }
   // Read by the engine's retry policy. A quota that is spent does not pass by waiting.
   get retryable() {
-    return this.kind === "rate" || this.kind === "overloaded" || this.kind === "network" || this.kind === "server";
+    return this.kind === "rate" || this.kind === "overloaded" || this.kind === "network" || this.kind === "unreachable" || this.kind === "server";
   }
+}
+
+// What a transport threw before any response: the provider was not reached. The
+// runtime's code goes with its words when they do not say it ("Unable to connect").
+export function notReached(label: string, e: unknown, secrets: string[] = []): ProviderError {
+  const msg = scrub(String((e as Error)?.message ?? e), secrets);
+  const code = (e as any)?.code;
+  return new ProviderError("unreachable", `${label}: ${msg}${typeof code === "string" && !msg.includes(code) ? ` (${code})` : ""}`);
 }
 
 // No key where the provider looks for one. The provider is not set up: nothing
@@ -74,6 +85,8 @@ export function classify(label: string, status: number, headers: Headers, body: 
   // A model the plan does not include, sent as a 429 by some plans: waiting does not help.
   if (/(does not|doesn't) (yet )?include access|not (available|included) (on|in|with) your (current )?(subscription|plan)/.test(low)) return new ProviderError("invalid", text, status);
   if (status === 429) return new ProviderError("rate", text, status, wait);
+  // A gateway's or a local broker's own 502, 503 or 504: the provider was not reached.
+  if (!/overloaded/.test(low) && gatewayDown(status, body)) return new ProviderError("unreachable", text, status, wait);
   if (status === 529 || status === 503 || /overloaded/.test(low)) return new ProviderError("overloaded", text, status, wait);
   if (status >= 500) return new ProviderError("server", text, status, wait);
   return new ProviderError("invalid", text, status);
@@ -117,9 +130,11 @@ export type StreamOpts = {
   secrets?: string[];
   idleMs?: number;
   onHeaders?: (h: Headers) => void;
-  // Called on a 401 once: a driver with a refreshable sign-in renews and
-  // returns fresh headers for one resend.
-  onAuthFailure?: () => Promise<Record<string, string> | null>;
+  // The provider accepted the request (a 2xx): its answer begins.
+  onAnswer?: () => void;
+  // Called once on a refused credential (`err`: the refusal): a driver with a
+  // refreshable sign-in renews and returns fresh headers for one resend.
+  onAuthFailure?: (err: ProviderError) => Promise<Record<string, string> | null>;
   // Headers that depend on the exact body bytes and the time (AWS SigV4), made per attempt.
   sign?: (body: string) => Record<string, string>;
 };
@@ -151,7 +166,7 @@ async function* stream(o: StreamOpts, guard: ReturnType<typeof idleGuard>): Asyn
       const stalled = guard.stalled();
       if (stalled) throw stalled;
       if (o.signal.aborted) throw new ProviderError("cancelled", "cancelled");
-      throw new ProviderError("network", `${o.label}: ${scrub((e as Error).message, o.secrets)}`);
+      throw notReached(o.label, e, o.secrets);
     }
     try { o.onHeaders?.(res.headers); } catch {}
     if (w) Object.assign(w, { status: res.status, request_id: requestId(res.headers), res_headers: keptHeaders(res.headers), headers_ms: Date.now() - t0 });
@@ -160,11 +175,12 @@ async function* stream(o: StreamOpts, guard: ReturnType<typeof idleGuard>): Asyn
     if (w) w.error_body = clip(scrub(text, o.secrets), 2000);
     const err = classify(o.label, res.status, res.headers, scrub(text, o.secrets));
     if (err.kind === "auth" && o.onAuthFailure && !renewed) {
-      const h = await o.onAuthFailure();
+      const h = await o.onAuthFailure(err);
       if (h) { headers = h; continue; }
     }
     throw err;
   }
+  try { o.onAnswer?.(); } catch {}
   const dec = o.format === "json_array" ? new JsonArrayDecoder()
     : res.headers.get("content-type")?.includes("application/vnd.amazon.eventstream") ? new EventStreamDecoder() : new SseDecoder();
   try {
@@ -229,7 +245,7 @@ export async function getJson(label: string, url: string, headers: Record<string
   try {
     r = await fetch(url, { headers: { accept: "application/json", ...headers }, signal: AbortSignal.timeout(until === undefined ? 30_000 : Math.max(1, Math.min(30_000, until - Date.now()))) });
   } catch (e) {
-    throw new ProviderError("network", `${label}: ${scrub((e as Error).message, secrets)}`);
+    throw notReached(label, e, secrets);
   }
   const text = await r.text();
   if (!r.ok) throw classify(label, r.status, r.headers, scrub(text, secrets));

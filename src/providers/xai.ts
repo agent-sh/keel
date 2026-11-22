@@ -13,7 +13,8 @@ import { configDir } from "./config.ts";
 import { writeOwnFile } from "../core/ownfile.ts";
 import { fingerprint } from "./creds.ts";
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
-import { getJson, ProviderError, scrub } from "./http.ts";
+import { getJson, notReached, ProviderError, scrub } from "./http.ts";
+import { neverSent } from "./unreachable.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderStatus } from "./types.ts";
 import { responsesWire } from "./wires/responses.ts";
 
@@ -59,6 +60,8 @@ async function postForm(path: string, body: Record<string, string>, secrets: str
     });
     return { status: r.status, json: await r.json().catch(() => ({})) };
   } catch (e) {
+    // A request that never left this machine (no address, no connection) changed nothing at xAI.
+    if (neverSent(e)) throw notReached("xAI sign-in request failed", e, secrets);
     throw new ProviderError("network", `xAI sign-in request failed: ${scrub((e as Error).message, secrets)}`);
   }
 }
@@ -228,6 +231,8 @@ export class XaiProvider implements Provider {
     try {
       r = await postForm("/oauth2/token", { grant_type: "refresh_token", client_id: CLIENT_ID, refresh_token: cur.refresh_token }, [cur.refresh_token]);
     } catch (e) {
+      // Never sent: the token is as it was, and the renewal is tried again when xAI can be reached.
+      if ((e as ProviderError).kind === "unreachable") throw e;
       // The renewal may have reached xAI and rotated the token: never resend it.
       this.save({ ...cur, refresh_lost: true });
       throw new ProviderError("auth", `Grok: the answer to a renewal was lost (${(e as Error).message}); the sign-in lasts until it expires`);

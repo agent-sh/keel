@@ -15,14 +15,16 @@ import { clock, cn, fmtWait } from "../lib/utils.ts";
 import { useNow } from "./Mark.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
 
-type Kind = "auth" | "rate" | "quota" | "overloaded" | "network" | "invalid" | "context" | "server";
+type Kind = "auth" | "rate" | "quota" | "overloaded" | "network" | "unreachable" | "invalid" | "context" | "server";
 // What failed, in the owner's words. The provider's own message follows it.
 const LEAD: Record<Kind, string> = {
   quota: "The provider's account is out of credit or over its quota.",
   rate: "The provider is limiting how often this account may ask.",
   auth: "The provider did not accept the credentials.",
   overloaded: "The provider is overloaded.",
-  network: "The provider could not be reached.",
+  network: "The provider's answer broke off or went silent.",
+  // A turn waits for a provider it cannot reach (src/providers/outage.ts): this box is a request made outside that wait, or the wait's end a week on.
+  unreachable: "The provider could not be reached.",
   server: "The provider failed on its side.",
   context: "The conversation no longer fits the model's window.",
   invalid: "The provider refused the request as it was sent.",

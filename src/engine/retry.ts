@@ -1,4 +1,5 @@
 import { zonedClock } from "../core/clock.ts";
+import { unreachable } from "../providers/unreachable.ts";
 
 // Provider calls that fail for a passing reason (rate limit, overload, a 5xx,
 // a dropped stream) are tried again with exponential backoff. Anything else
@@ -33,6 +34,8 @@ const PASSING = /overloaded|rate.?limit|terminated|econnreset|econnrefused|etime
 export function retryable(e: unknown): boolean {
   const err = e as any;
   if (!err || err.name === "AbortError") return false;
+  // A provider that was not reached is tried again; the engine waits for it without counting (src/providers/outage.ts).
+  if (unreachable(e)) return true;
   // A driver's own classification (ProviderError) wins when it gives one.
   if (typeof err.kind === "string" && typeof err.retryable === "boolean") return err.retryable;
   const status = Number(err.status ?? err.statusCode ?? 0);

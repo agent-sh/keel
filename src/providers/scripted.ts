@@ -13,11 +13,28 @@
 // `script:find` (text the request carries outside the owner's prompts),
 // `script:color` (the newest picture), `script:count` (a long reply that
 // streams for a while) and `script:say` (the reply is the words given).
-import { appendFileSync, existsSync } from "node:fs";
+//
+// An outage of the whole provider (src/providers/outage.ts), for every session
+// and for the listing a probe asks for:
+//   script:outage <kind> <ms>        the provider cannot be reached for <ms>
+//                                    from this prompt's first request on
+//   script:outage-at <n> <kind> <ms> on a later line of any prompt: the same,
+//                                    from its request number <n> on (0 is the
+//                                    first; 1 follows the first tool result)
+//   script:outage-mid <kind> <ms>    half a reply streams, the stream breaks,
+//                                    and the provider is gone for <ms>
+//   script:outage-count              how many requests and listings the last
+//                                    outage refused
+//   script:outage-end                the provider is back now
+// <kind>: dns (EAI_AGAIN), socket (closed before a response byte), gateway (a
+// broker's 502 with a body of its own), refused, tls. Kept in the state folder,
+// so an outage goes on through a daemon restart and starts once per prompt.
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { inflateSync } from "node:zlib";
 import type { Message } from "../core/types.ts";
 import { imageSize } from "../engine/images.ts";
-import { classify, ProviderError } from "./http.ts";
+import { classify, notReached, ProviderError } from "./http.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } from "./types.ts";
 
 export const SCRIPTED_ENV = "KEEL_SCRIPTED_PROVIDER";
@@ -53,6 +70,19 @@ const longRateLimit = (prompt = "") => {
   return new ProviderError("rate", `Scripted: 429 rate limited, retry after ${ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`}`, 429, ms);
 };
 
+// What a driver throws for each way of not reaching the provider, in the runtime's own words.
+const OUTAGE_KINDS = ["dns", "socket", "gateway", "refused", "tls"] as const;
+type OutageKind = (typeof OUTAGE_KINDS)[number];
+function outageError(kind: OutageKind): ProviderError {
+  const thrown = (message: string, code: string) => notReached("Scripted", Object.assign(new TypeError(message), { code }));
+  if (kind === "socket") return thrown("The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()", "ECONNRESET");
+  if (kind === "gateway") return classify("Scripted", 502, new Headers(), JSON.stringify({ message: "the broker could not reach scripted-runtime.example.invalid: getaddrinfo EAI_AGAIN scripted-runtime.example.invalid" }));
+  if (kind === "refused") return thrown("Unable to connect. Is the computer able to access the url?", "ConnectionRefused");
+  if (kind === "tls") return thrown("self signed certificate", "DEPTH_ZERO_SELF_SIGNED_CERT");
+  return thrown("getaddrinfo EAI_AGAIN scripted.example.invalid", "EAI_AGAIN");
+}
+type OutageState = { kind: OutageKind; until: number; started: string[]; requests: number; listings: number };
+
 export class ScriptedProvider implements Provider {
   readonly id = "scripted";
   readonly label = "Scripted (test)";
@@ -67,11 +97,37 @@ export class ScriptedProvider implements Provider {
   // that no oversized request reached the provider.
   private counted = new Map<string, { requests: number; largest: number; refused: number }>();
 
+  // `stateDir`: where an outage is kept across a daemon restart.
+  constructor(private stateDir?: string) {
+    try { if (stateDir) this.outage = JSON.parse(readFileSync(join(stateDir, "scripted-outage.json"), "utf8")); } catch {}
+  }
+
   available() {
     return scriptedEnabled();
   }
 
+  private outage: OutageState = { kind: "dns", until: 0, started: [], requests: 0, listings: 0 };
+  private saveOutage() {
+    try { if (this.stateDir) writeFileSync(join(this.stateDir, "scripted-outage.json"), JSON.stringify(this.outage)); } catch {}
+  }
+  // The failure of a request or a listing made while the provider is gone, counted.
+  private down(what: "requests" | "listings"): ProviderError | undefined {
+    if (Date.now() >= this.outage.until) return undefined;
+    this.outage[what]++;
+    this.saveOutage();
+    return outageError(this.outage.kind);
+  }
+  // Starts the outage a prompt asks for, once per prompt (a restart or a later request does not start it again).
+  private begin(key: string, kind: string, ms: number): boolean {
+    if (this.outage.started.includes(key)) return false;
+    this.outage = { kind: (OUTAGE_KINDS as readonly string[]).includes(kind) ? (kind as OutageKind) : "dns", until: Date.now() + Math.min(ms, 600_000), started: [...this.outage.started.slice(-200), key], requests: 0, listings: 0 };
+    this.saveOutage();
+    return true;
+  }
+
   async list(): Promise<ListedModel[]> {
+    const gone = this.down("listings");
+    if (gone) throw gone;
     const price = { input: 1, output: 5, cache_read: 0.1, cache_write: 1.25 };
     return [
       // Reads PDFs (`script:find` looks inside one); says nothing about images.
@@ -90,6 +146,10 @@ export class ScriptedProvider implements Provider {
     if (process.env.KEEL_SCRIPTED_LOG) appendFileSync(process.env.KEEL_SCRIPTED_LOG, JSON.stringify({ ts: Date.now(), session: req.sessionKey, purpose: req.purpose ?? "turn", system: req.system, tools: req.tools.map((t) => t.name), tools_hash: Bun.hash(JSON.stringify(req.tools.map((t) => [t.name, t.description, t.input_schema, t.freeform ?? null, !!t.defer]))).toString(36), messages: msgs.length }) + "\n");
     const last = msgs.at(-1);
     const lastText = textOf(last);
+    // `script:outage-end` as the newest message: the provider is back at once (a spec ends what it began).
+    if (/^script:outage-end\b/.test(lastText) && this.outage.until) { this.outage.until = 0; this.saveOutage(); }
+    const gone = this.down("requests");
+    if (gone) throw gone;
     // A retry is the same request: system, messages, tools, model and effort, byte for byte.
     const key = String(Bun.hash(JSON.stringify([req.sessionKey, req.model, req.effort, req.system, msgs, req.tools.map((t) => t.name)])));
     const attempt = this.seen.get(key) ?? 0;
@@ -215,9 +275,34 @@ export class ScriptedProvider implements Provider {
       return reply(texts[Math.min(said, texts.length - 1)] ?? "Scripted reply.");
     }
     const scenario = owner.match(/script:([a-z-]+)/)?.[1] ?? "";
+    // An outage the prompt asks for, at the request it names. Its start is this request's own failure.
+    const ownerAt = msgs.findLastIndex((m) => m.role === "user" && own(m) === owner);
+    const round = msgs.slice(ownerAt + 1).filter((m) => m.role === "assistant").length;
+    const asked = scenario === "outage" ? owner.match(/script:outage[ \t]+([a-z]+)[ \t]+(\d+)/) : null;
+    const later = owner.match(/\nscript:outage-at[ \t]+(\d+)[ \t]+([a-z]+)[ \t]+(\d+)/);
+    const due = asked ? { n: 0, kind: asked[1]!, ms: Number(asked[2]) } : later ? { n: Number(later[1]), kind: later[2]!, ms: Number(later[3]) } : undefined;
+    if (due && round === due.n && this.begin(String(Bun.hash(`${req.sessionKey}\u0000${owner}`)), due.kind, due.ms)) throw this.down("requests")!;
     const compacted = msgs.some((m) => textOf(m).startsWith("[harness] This conversation was compacted"));
 
     switch (scenario) {
+      case "outage":
+        return reply("Answered after the outage.");
+      case "outage-end":
+        return reply("The provider is back.");
+      case "outage-mid": {
+        const [, kind = "socket", ms = "5000"] = owner.match(/script:outage-mid[ \t]+([a-z]+)[ \t]+(\d+)/) ?? [];
+        if (!this.outage.started.includes(String(Bun.hash(`${req.sessionKey}\u0000${owner}`)))) {
+          for (const part of ["This half reply ", "is lost with the provider"]) {
+            onDelta({ kind: "text", index: 0, text: part });
+            await Bun.sleep(300);
+          }
+          this.begin(String(Bun.hash(`${req.sessionKey}\u0000${owner}`)), kind, Number(ms));
+          throw new ProviderError("network", "Scripted: the stream broke: The socket connection was closed unexpectedly");
+        }
+        return reply("The whole reply, after the broken stream and the outage.");
+      }
+      case "outage-count":
+        return reply(`The last outage refused ${this.outage.requests} requests and ${this.outage.listings} listings.`);
       case "counted":
         return reply(`counted ${JSON.stringify({ window: STRICT_WINDOW, ...(this.counted.get(owner.match(/script:counted\s+(\S+)/)?.[1] ?? "") ?? { requests: 0, largest: 0, refused: 0 }) })}`);
       case "billing":

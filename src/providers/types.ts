@@ -74,6 +74,9 @@ export type ProviderRequest = {
   dropThinking?: boolean;
   // Set by the registry: every answer's headers, for its rate-limit windows.
   onHeaders?: (h: Headers) => void;
+  // Set by the registry: the provider accepted the request and its answer begins
+  // (an outage of the provider is over: src/providers/outage.ts).
+  onAnswer?: () => void;
 };
 
 export type Delta =

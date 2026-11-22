@@ -13,13 +13,14 @@
 //                            "command in background"
 //   wait       Waiting       for a timer, a file, a log line, an HTTP check, a process,
 //                            a monitor, a pull request's checks, another session,
-//                            an agent, the provider, Keel to be back
+//                            an agent, the provider (a wait it asked for, or it
+//                            cannot be reached), Keel to be back
 //   resume     Waiting       to resume (a restart cut the turn; Keel goes on with it)
 //   (message)  Queued        held until its current step ends, until its turn ends,
 //                            until it is resumed
 //   done       Done
 //   fail       Failed        one class: rate limit, overloaded, server error,
-//                            stream dropped, context full, sign-in, billing,
+//                            stream dropped, provider unreachable, context full, sign-in, billing,
 //                            image refused, invalid request, output limit
 //   declined   Declined
 //   stop       Stopped       at the step budget, by you, by its parent
@@ -56,7 +57,7 @@ export const NEEDS: Record<string, string> = {
 export const WAITS_FOR: Record<string, string> = {
   timer: "a timer", file: "a file", log: "a log line", http: "an HTTP check", process: "a process", monitor: "a monitor",
   websocket: "a WebSocket", pr_checks: "a pull request's checks", session: "another session", wake: "a wake of its own",
-  agent: "an agent", resume: "the provider", send: "Keel to be back",
+  agent: "an agent", resume: "the provider", unreachable: "the provider", send: "Keel to be back",
 };
 export const waitsFor = (kind: unknown) => WAITS_FOR[String(kind)] ?? "a condition";
 // A command the session left running after its turn: the session works.
@@ -65,12 +66,27 @@ export const COMMAND_IN_BACKGROUND = "command in background";
 // A failure's class: one fixed word each. A class with no better word than
 // the failure itself (other) has none.
 export const FAIL_WORD: Record<string, string> = {
-  rate_limit: "rate limit", overloaded: "overloaded", server: "server error", stream_drop: "stream dropped", context_overflow: "context full",
+  rate_limit: "rate limit", overloaded: "overloaded", server: "server error", stream_drop: "stream dropped", unreachable: "provider unreachable", context_overflow: "context full",
   auth: "sign-in", quota: "billing", refusal: "declined", image: "image refused", invalid_request: "invalid request", max_tokens: "output limit",
 };
 export const failWord = (cls: string | undefined) => (cls ? FAIL_WORD[cls] ?? "" : "");
 
 const plural = (n: number) => `${n} agent${n === 1 ? "" : "s"}`;
+
+// ---- A provider that cannot be reached. The turn waits and tries again by
+// itself (src/providers/outage.ts); every surface says it in these words.
+// `since`: the time of day the outage began, as the reader's clock says it.
+export const UNREACHABLE = "The provider cannot be reached";
+export const unreachableSince = (since: string) => `${UNREACHABLE} since ${since}; trying again`;
+// In a tool's answer about a session or an agent.
+export const UNREACHABLE_WORD = "waiting: the provider cannot be reached";
+// What a parent is told of its agents, once when the outage is known and once when it is over.
+export const agentsWait = (n: number) => `${n} ${n === 1 ? "agent waits" : "agents wait"}: the provider cannot be reached`;
+export const agentsWaitLine = (n: number, since: string) => `${agentsWait(n)} since ${since}`;
+export const agentsWentOnLine = (n: number, lasted: string) => `The provider answers again after ${lasted}: ${n === 1 ? "the agent that waited for it went on" : `the ${n} agents that waited for it went on`}`;
+// The Activity list's two lines of an outage.
+export const outageBegan = (provider: string, since: string, sessions: number) => `${provider} cannot be reached since ${since}: ${sessions === 1 ? "1 session waits" : `${sessions} sessions wait`} and ${sessions === 1 ? "goes" : "go"} on when it answers`;
+export const outageEnded = (provider: string, lasted: string, answered: boolean) => (answered ? `${provider} answers again: it could not be reached for ${lasted}` : `${provider} could not be reached for ${lasted}: no session waits for it any more`);
 
 // The fields of the served state the words are read from.
 export type Stated = Pick<SessionState, "watch"> & Partial<Pick<SessionState, "why" | "on" | "cls" | "agents" | "parked">>;

@@ -4,7 +4,7 @@
 import { sigv4, type AwsCreds } from "./aws.ts";
 import { fingerprint } from "./creds.ts";
 import { ctxFor, httpEvents, runEvents } from "./drive.ts";
-import { allPages, getJson } from "./http.ts";
+import { allPages, getJson, type ProviderError } from "./http.ts";
 import type { Delta, ListedModel, Provider, ProviderRequest, ProviderResult } from "./types.ts";
 import { anthropicWire } from "./wires/anthropic.ts";
 
@@ -161,13 +161,18 @@ export class AnthropicProvider implements Provider {
     const { "anthropic-beta": beta, ...headers } = req.extraHeaders ?? {};
     const betas = beta ? beta.split(",").map((b) => b.trim()).filter(Boolean) : [];
     req = { ...req, extraHeaders: req.extraHeaders ? headers : undefined };
+    const sent = { ...this.headers(), accept: "application/vnd.amazon.eventstream" };
     return runEvents(codec, req, ctx, onDelta, httpEvents({
-      label: this.label, url, secrets: this.secrets,
-      headers: { ...this.headers(), accept: "application/vnd.amazon.eventstream" }, sign: this.signer(url),
+      label: this.label, url, secrets: this.secrets, headers: sent, sign: this.signer(url),
+      // A broker that signs for us renews an expired credential itself: the request goes once more after it had time to.
+      ...(this.auth.kind === "none" ? { onAuthFailure: async (err: ProviderError) => (EXPIRED.test(err.message) ? (await Bun.sleep(BROKER_RENEW_MS), sent) : null) } : {}),
     }, req));
   }
 }
 
+// A credential the broker's own source says has expired, and how long the broker gets to renew it.
+const EXPIRED = /expired/i;
+const BROKER_RENEW_MS = 1_000;
 const BINDING_BETA = "thinking-binding-controls-2026-08-01";
 // Anthropic says to match this refusal by these words only; the rest of its text can change.
 const BOUND_ELSEWHERE = /The block is bound to a different conversation/;

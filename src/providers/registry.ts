@@ -12,6 +12,8 @@ import { familyOf } from "./family.ts";
 import { EndpointProvider } from "./endpoint.ts";
 import { MISSING_RECHECK_MS } from "./creds.ts";
 import { GeminiProvider, OpenAIProvider } from "./keyed.ts";
+import { Outages } from "./outage.ts";
+import { unreachable } from "./unreachable.ts";
 import { Probes } from "./probe.ts";
 import { PluginProvider, Plugins } from "./plugins/index.ts";
 import { priceOf } from "./pricing.ts";
@@ -46,6 +48,8 @@ export type Problem = { kind: "auth" | "billing"; message: string; at: number; s
 
 const USAGE_MAX_AGE = 60_000;
 
+type ListingResult = { ok: true } | { ok: false; error: unknown };
+
 type Opts = { capture?: (source: "provider", e: unknown, ctx?: unknown) => void; providers?: Provider[] };
 
 // A key read this recently is not read again by the refresh that asked for it.
@@ -65,18 +69,21 @@ export class Providers {
   private started = new Map<string, number>();
   private applied = new Map<string, number>();
   private pending: Promise<void> | null = null;
-  private refreshing = new Map<string, { identity?: string; done: Promise<void> }>();
+  private refreshing = new Map<string, { identity?: string; done: Promise<ListingResult> }>();
   private fixed: Provider[] | null;
   readonly limits = new Limits();
   private usageAt = new Map<string, number>();
   private problems = new Map<string, Problem>();
   readonly probes: Probes;
+  // The providers that cannot be reached now, and the wait their sessions share (src/providers/outage.ts).
+  readonly outages: Outages;
   private badFiles = new Set<string>();
 
   constructor(readonly stateDir: string, private opts: Opts = {}) {
     this.catalog = new Catalog(stateDir);
     this.probes = new Probes(stateDir, (e) => this.capture(e, { at: "provider-probes.json" }));
     this.fixed = opts.providers ?? null;
+    this.outages = new Outages({ file: join(stateDir, "provider-outages.json"), probe: (id) => this.reach(id) });
     this.builtins = [
       new AnthropicProvider("bedrock"),
       new AnthropicProvider("anthropic"),
@@ -87,7 +94,7 @@ export class Providers {
       // ACP agents installed here (the registry and the owner's own entries), driven by src/acp/external.ts.
       new AcpProvider(stateDir),
       // Test-only, never listed unless the daemon starts with KEEL_SCRIPTED_PROVIDER=1.
-      ...(scriptedEnabled() ? [new ScriptedProvider()] : []),
+      ...(scriptedEnabled() ? [new ScriptedProvider(stateDir)] : []),
     ];
     this.plugins = new Plugins(stateDir, (e, ctx) => this.capture(e, ctx));
     this.xai.onSignedIn = () => void this.refresh("grok");
@@ -247,6 +254,11 @@ export class Providers {
     // provider available. Not one found missing a moment ago (by the look above).
     await p.recheck?.(JUST_LOOKED_MS);
     if (!p.available()) return;
+    await this.listOnce(p);
+  }
+
+  // Outage probes and both kinds of refresh share the same listing in flight.
+  private listOnce(p: Provider): Promise<ListingResult> {
     const identity = p.identity?.();
     const active = this.refreshing.get(p.id);
     if (active && active.identity === identity) return active.done;
@@ -254,21 +266,22 @@ export class Providers {
       if (this.refreshing.get(p.id)?.done === done) this.refreshing.delete(p.id);
     });
     this.refreshing.set(p.id, { identity, done });
-    await done;
+    return done;
   }
 
-  private async fetchListing(p: Provider, identity?: string): Promise<void> {
+  private async fetchListing(p: Provider, identity?: string): Promise<ListingResult> {
     const seq = (this.started.get(p.id) ?? 0) + 1;
     this.started.set(p.id, seq);
     try {
       const models = p instanceof EndpointProvider && p.cfg.listing === false ? this.sectionModels(p) : await p.list();
-      if ((this.applied.get(p.id) ?? 0) > seq) return;
+      if ((this.applied.get(p.id) ?? 0) > seq) return { ok: true };
       this.applied.set(p.id, seq);
       this.listings.set(p.id, { state: "ok", fetched: Date.now(), models, identity });
       this.cleared(p.id, "listing");
+      return { ok: true };
     } catch (e) {
       // A newer answer already landed: this older failure says nothing about it.
-      if ((this.applied.get(p.id) ?? 0) > seq) return;
+      if ((this.applied.get(p.id) ?? 0) > seq) return { ok: false, error: e };
       this.applied.set(p.id, seq);
       if (e instanceof NoKey) {
         // The first read of its key found none: the provider is not set up
@@ -278,15 +291,17 @@ export class Providers {
         if (last.models.length) this.listings.set(p.id, { ...last, state: "saved", error: undefined });
         else this.listings.delete(p.id);
         this.cleared(p.id, "listing");
-        return;
+        return { ok: false, error: e };
       }
       const error = (e as Error).message;
       // The last good list as it is now (not as it was when this refresh began).
       const prev = this.listing(p.id);
       this.listings.set(p.id, { state: "failed", fetched: prev.fetched, error, models: prev.models, identity: prev.identity ?? identity });
-      // Recorded once: the same failure on every refresh is one error.
-      if (prev?.error !== error) this.capture(e, { provider: p.id, at: "listing" });
+      // A failed listing during a known outage belongs to its shared error row.
+      const outage = unreachable(e) && this.outages.known(p.id);
+      if (prev?.error !== error && !outage) this.capture(e, { provider: p.id, at: "listing" });
       this.note(p.id, e, "listing");
+      return { ok: false, error: e };
     }
   }
 
@@ -429,6 +444,14 @@ export class Providers {
 
   // ---- requests ----
 
+  // An endpoint without a listing uses its next waiting request as the probe.
+  private async reach(id: string): Promise<void> {
+    const p = this.get(id);
+    if (!p || (p instanceof EndpointProvider && p.cfg.listing === false)) return;
+    const result = await this.listOnce(p);
+    if (!result.ok) throw result.error;
+  }
+
   cachedModel(id: string): ModelInfo | undefined {
     const provider = this.get(id.slice(0, id.indexOf(":")));
     if (!provider?.available()) return;
@@ -481,17 +504,28 @@ export class Providers {
           if (r.length) this.limits.record(p.id, r);
           req.onHeaders?.(h);
         };
+        // The provider answered: an outage of it is over, and what waited for it goes (once a request).
+        let told = false;
+        const onAnswer = () => {
+          if (told) return;
+          told = true;
+          this.outages.answered(p.id);
+          req.onAnswer?.();
+        };
         let res: Awaited<ReturnType<Provider["stream"]>>;
         try {
           res = await p.stream({
-            ...req, onHeaders, efforts: info.efforts, maxTokens: info.output || undefined,
+            ...req, onHeaders, onAnswer, efforts: info.efforts, maxTokens: info.output || undefined,
             extraBody: offer ? { ...req.extraBody, ...offer.body } : req.extraBody,
             extraHeaders: offer?.headers ? { ...req.extraHeaders, ...offer.headers } : req.extraHeaders,
-          }, onDelta);
+          }, (d) => { onAnswer(); onDelta(d); });
         } catch (e) {
+          // A status of the provider's own is an answer too.
+          if (typeof (e as any)?.status === "number" && !unreachable(e)) onAnswer();
           this.note(p.id, e, "turn");
           throw e;
         }
+        onAnswer();
         this.cleared(p.id);
         const origin = `${p.id}:${req.model}`;
         for (const b of res.blocks) if ((b.type === "thinking" || b.type === "tool_use" || b.type === "text") && !b.origin && (b.type === "thinking" || b.signature)) b.origin = origin;
@@ -505,6 +539,7 @@ export class Providers {
   }
 
   shutdown() {
+    this.outages.stop();
     this.plugins.stopAll();
   }
 }
