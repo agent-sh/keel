@@ -36,7 +36,7 @@ const safe = (s: unknown) => { const t = String(s).replace(/[\x00-\x1f\x7f]+/g, 
 // A path as short as it can be said: its last two parts.
 const short = (p: string) => safe(p.split("/").filter(Boolean).slice(-2).join("/"));
 
-// `evs`: the agent's events since its task. Nothing for an agent that only answered (one step, no call).
+// `evs`: the agent's events since its task. Nothing for an agent that only answered (no call of a tool).
 export function didLine(evs: readonly StoredEvent[]): string {
   const calls = new Map<string, { name: string; input: unknown }>();
   let steps = 0;
@@ -61,7 +61,8 @@ export function didLine(evs: readonly StoredEvent[]): string {
       }
     }
   }
-  if (!results && steps <= 1) return "";
+  // (Also one that answered a message after its answer: more steps, still nothing but words.)
+  if (!results) return "";
   const by = Object.entries(failed).sort((a, b) => b[1] - a[1]);
   const which = by.slice(0, 3).map(([n, c]) => (c > 1 ? `${n} ${c}` : n)).join(", ") + (by.length > 3 ? `, ${by.length - 3} more` : "");
   const count = `${plural(steps, "step")}, ${plural(results, "tool call")}`;

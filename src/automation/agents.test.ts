@@ -944,7 +944,8 @@ test("a final answer is kept when the turn goes on with a message that arrived a
   message(e, "Do not forget the tests.");
   store.append(e.session_id, "user", { text: "[harness] This is the last model step this turn may take.", origin: "harness" });
   end(e, "end_turn", "Done, with the tests.");
-  expect(await result(e)).toBe("Done, with the tests.");
+  // (It called a tool, so its report says what it did, after its own words.)
+  expect(await result(e)).toBe("Done, with the tests.\n\n(What it did: 2 steps, 1 tool call.)");
 
   // A reply cut at the output limit and the one that continues it are one answer, not two reports.
   const f = await spawn();
