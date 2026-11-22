@@ -81,6 +81,8 @@ export const mobileRoutes: RouteModule = (deps: Deps) => {
       const read = () => !!store.db.query<{ read: number }, [string]>("SELECT read FROM alerts WHERE id = ?").get(a.id)?.read;
       const stillOpen = () => {
         if (read()) return false;
+        // Another daemon's session: its daemon says when the request is answered, and the alert is read then.
+        if (a.data?.far) return true;
         if (a.kind === "approval") return gate?.approval(a.data?.approval_id)?.state === "pending";
         // The question is the asking session's (a child's, when a subagent asks),
         // while the alert sits on the parent where it is answered.

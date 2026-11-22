@@ -52,6 +52,7 @@ export type MachineRow = {
   daemon_port: number | null; workspace_root: string | null; auto_connect: number; colour: string | null;
   messages: "allow" | "hold"; max_jobs: number | null; link_daemon_id: string | null; link_key: string | null;
   facts: string | null; state: string; reason: string | null; checked_ms: number | null; created: number;
+  offline_since: number | null; // when it was last heard before it went out of reach; null while it answers
 };
 
 export function migrate(store: Store) {
@@ -59,6 +60,7 @@ export function migrate(store: Store) {
   if (!store.columnExists("sessions", "machine")) store.migrate("ALTER TABLE sessions ADD COLUMN machine TEXT");
   // What the receiving daemon called the session of a refused outbox message.
   if (!store.columnExists("fleet_messages", "to_title")) store.migrate("ALTER TABLE fleet_messages ADD COLUMN to_title TEXT");
+  if (!store.columnExists("fleet_machines", "offline_since")) store.migrate("ALTER TABLE fleet_machines ADD COLUMN offline_since INTEGER");
 }
 
 export function meta(store: Store, key: string, make: () => string): string {

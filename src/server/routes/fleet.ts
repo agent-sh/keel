@@ -6,7 +6,8 @@ import { boundedFeed, FEED_LIMIT } from "../streams.ts";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { registerHooks } from "../../engine/hooks.ts";
 import { instructionFiles } from "../../engine/turn.ts";
-import { Fleet } from "../../fleet/fleet.ts";
+import { Fleet, RELAY_PING_MS } from "../../fleet/fleet.ts";
+import { bindFollow } from "../../fleet/follow.ts";
 import { WORKSPACE_TOOLS } from "../../fleet/hands.ts";
 import { handsRoutes } from "../../fleet/hands-routes.ts";
 import { callerOf, LinkError, linkFetch, linkJson, loopbackUrl, proof, proven, standingFrom } from "../../fleet/link.ts";
@@ -47,7 +48,6 @@ const daemonPort = (v: unknown): number | null | undefined => {
   const n = typeof v === "number" ? v : typeof v === "string" && /^\d+$/.test(v.trim()) ? Number(v) : NaN;
   return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : undefined;
 };
-const KEEPALIVE_MS = 5_000; // under Bun's 10 s idle timeout: a long call keeps its connection
 
 export let fleet: Fleet | undefined;
 
@@ -103,6 +103,10 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     failed: (e, machineId) => errors.capture("server", e, { at: "fleet outbox", machine: machineId }),
   }));
   f.onOutbox = (machineId) => outbox.kick(machineId);
+  // Other machines' sessions are followed like this daemon's own, and a machine out of reach is said (fleet/follow.ts).
+  const gf = globalThis as { __keelFollow?: () => void };
+  gf.__keelFollow?.();
+  gf.__keelFollow = runMode.client ? undefined : bindFollow(f, bus, errors);
   if (!runMode.client) {
     f.start();
     msgs.tellPending(); // refusals a previous run settled and did not get to say
@@ -250,7 +254,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
       if ((!m.link_key && m.state === "unknown") || f.isSsh(m)) continue; // an ssh machine has no sessions of its own
       const r = f.remoteSessions(m.id);
       const v = f.view(m);
-      machines.push({ id: m.id, name: m.name, state: v.daemon.state === "linked" ? m.state : "offline", sessions: r.sessions, states: r.states, states_rev: r.states_rev, questions: showQuestions ? r.questions : undefined, reason: v.daemon.reason ?? m.reason ?? undefined, colour: m.colour ?? undefined, stale: r.stale || undefined, retry_at_ms: r.retry_at_ms });
+      machines.push({ id: m.id, name: m.name, state: v.daemon.state === "linked" ? m.state : "offline", sessions: r.sessions, states: r.states, states_rev: r.states_rev, questions: showQuestions ? r.questions : undefined, reason: v.daemon.reason ?? m.reason ?? undefined, colour: m.colour ?? undefined, since_ms: m.offline_since ?? undefined, stale: r.stale || undefined, retry_at_ms: r.retry_at_ms });
       if (!others && !r.stale) for (const s of r.sessions) recents.push({ machine_id: m.id, machine: m.name, session_id: s.id, title: s.title, phase: s.phase, updated_ms: s.updated, failed: s.phase === "error" });
     }
     recents.sort((a, b) => b.updated_ms - a.updated_ms);
@@ -384,6 +388,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         const users = store.sessions().filter((s) => s.machine === id);
         if (users.length) return bad(`sessions run their tools there: ${users.map((s) => s.title || s.id).join(", ")}`, 409);
         await f.remove(id);
+        alerts.farGone(id); // what was kept of its sessions' alerts goes with it
         return json({ machines: await machinesList() });
       },
     },
@@ -683,7 +688,8 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
     ...handsLinked,
 
     // This daemon's live frames, for the other daemon's relay. Opens with the
-    // sessions it shows; a comment line every 5 s keeps the stream and proves it alive.
+    // sessions it shows and how often it pings; a comment line that often keeps the
+    // stream and proves it alive (the reader gives it up after two missed: fleet.ts).
     // A reader that stops reading is cut at the feed's bound (streams.ts) with a
     // last line that says so: it reconnects and starts from a new snapshot.
     "/api/fleet/stream": {
@@ -702,7 +708,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
         }, {
           last: enc.encode(": stalled\n\n"),
           // The sessions, then each one's state (src/core/watch.ts) and the questions that wait: what the other daemon's pages show at once.
-          open: [frame({ t: "snapshot", sessions: store.sessions() }), frame({ t: "states", states: board?.all() ?? {}, rev: bus.rev() }), frame({ t: "questions", pending: allPendingQuestions(), rev: bus.rev() })],
+          open: [frame({ t: "snapshot", sessions: store.sessions(), ping_ms: RELAY_PING_MS }), frame({ t: "states", states: board?.all() ?? {}, rev: bus.rev() }), frame({ t: "questions", pending: allPendingQuestions(), rev: bus.rev() })],
         });
         mine.feeds.add(feed);
         const send = (x: unknown) => feed.send(frame(x));
@@ -711,7 +717,7 @@ export const fleetRoutes: RouteModule = (deps: Deps) => {
           if (fr.t === "error" || (fr.t === "feature" && fr.name.startsWith("fleet_"))) return; // never relay a relay
           send(fr);
         });
-        ping = setInterval(() => feed.send(enc.encode(": ping\n\n")), KEEPALIVE_MS);
+        ping = setInterval(() => feed.send(enc.encode(": ping\n\n")), RELAY_PING_MS);
         if (feed.ended()) { off(); clearInterval(ping); }
         req.signal?.addEventListener("abort", feed.end, { once: true });
         return new Response(feed.stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-store" } });

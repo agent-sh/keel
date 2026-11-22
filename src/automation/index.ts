@@ -543,9 +543,9 @@ export const automationRoutes: RouteModule = (deps) => {
     // came from (or its own), the parent when that agent was deleted, and
     // whether its approval still waits.
     "/api/alerts/:id/target": {
-      GET: (req: any) => {
+      GET: async (req: any) => {
         const a = alerts.get(req.params.id);
-        return a ? json(alerts.alertTarget(a)) : bad("no such alert", 404);
+        return a ? json(await alerts.alertTargetNow(a)) : bad("no such alert", 404);
       },
     },
     "/api/activity/:id/target": {

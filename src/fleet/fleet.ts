@@ -22,7 +22,8 @@ type Questions = Extract<Frame, { t: "questions" }>;
 // `states`: each of that daemon's sessions' state as it tells it (src/core/watch.ts), kept current by its frames.
 // `statesRev`: that daemon's bus rev the states reflect (its snapshot's, then its newest state frame's).
 // `cut`: why its last stream was lost, when that stream had opened and did not hold (RELAY_STEADY_MS).
-type Relay = { abort: AbortController; sessions: Map<string, Session>; states: Map<string, SessionState>; statesRev?: number; questions?: Questions; live: boolean; stale: boolean; retry: number; retryAt?: number; timer?: Timer; cut?: string };
+// `silence`: how long its stream may say nothing before it is taken for dead (from the ping interval it states).
+type Relay = { abort: AbortController; sessions: Map<string, Session>; states: Map<string, SessionState>; statesRev?: number; questions?: Questions; live: boolean; stale: boolean; retry: number; retryAt?: number; timer?: Timer; cut?: string; silence?: number };
 type Tunnel = { proc: Bun.Subprocess; port: number };
 type Queue = { running: number; waiting: { resolve: () => void; reject: (e: Error) => void }[] };
 
@@ -35,8 +36,19 @@ if (!g.__keelTunnelsExit) {
   process.on("exit", () => { for (const p of openTunnels) try { p.kill(); } catch {} });
 }
 
-const RELAY_MAX_BACKOFF = 60_000; // a lost relay is reopened after 1, 2, 4 s ... up to a minute
-const RELAY_SILENCE_MS = 45_000; // the far daemon pings every 5 s: nine missed pings and the stream is dead
+const RELAY_MAX_BACKOFF = 60_000; // a relay cut as it opens is reopened after 1, 2, 4 s ... up to a minute
+// The wait before a machine that does not answer is asked again, from how long it has been out.
+export const relayRetry = (outMs: number) => Math.min(RELAY_MAX_BACKOFF, Math.max(1000, Math.round(outMs / 10)));
+// A stream's liveness. The far daemon says how often it pings (RELAY_PING_MS,
+// in its first frame): two pings missed and a second of grace, and the stream
+// is dead, so a machine that went silent without closing anything (its
+// network, a tunnel) is known within about six seconds. A daemon that does
+// not say (an older build) pings every 5 s and keeps the long bound it had.
+export const RELAY_PING_MS = 2_500;
+const RELAY_SILENCE_MS = 45_000;
+const RELAY_GRACE_MS = 1_000;
+const RELAY_LATE_MS = 250; // a watchdog that ran this late was held up: chunks may wait behind it
+export const relaySilence = (pingMs: unknown) => (typeof pingMs === "number" && pingMs >= 500 && pingMs <= 60_000 ? 2 * pingMs + RELAY_GRACE_MS : RELAY_SILENCE_MS);
 const RELAY_STEADY_MS = 30_000; // a stream that lived this long was being read: losing it starts the backoff over
 const FACTS_FRESH_MS = 60_000; // load1 averages a minute: a queue limit older than that is read again
 
@@ -124,10 +136,32 @@ export class Fleet {
     return this.rows().find((m) => m.id === name || m.name.toLowerCase() === n || m.link_daemon_id === name);
   }
   private set(id: string, patch: Partial<MachineRow>) {
+    // Out of reach, and heard again: since when is kept with the machine (across a
+    // restart of this daemon), and told once each way (onReach).
+    let told: (() => void) | undefined;
+    if (patch.state !== undefined) {
+      const was = this.row(id);
+      if (was && patch.state === "offline" && !was.offline_since) {
+        const since = patch.offline_since ?? Date.now();
+        patch = { ...patch, offline_since: since };
+        told = () => this.onReach?.(this.row(id) ?? was, { state: "offline", since });
+      } else if (was?.offline_since && patch.state === "offline") {
+        patch = { ...patch, offline_since: was.offline_since };
+      } else if (was?.offline_since && ["ready", "busy", "starting"].includes(patch.state)) {
+        const since = was.offline_since;
+        patch = { ...patch, offline_since: null };
+        // With why it was out, which the row no longer says.
+        told = () => this.onReach?.({ ...(this.row(id) ?? was), reason: was.reason }, { state: "back", since });
+      }
+    }
     const keys = Object.keys(patch);
     if (!keys.length) return;
     this.store.db.query(`UPDATE fleet_machines SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE id = ?`).run(...(Object.values(patch) as any[]), id);
+    try { told?.(); } catch (e) { this.errors.capture("server", e, { at: "fleet reach", machine: id }); }
   }
+
+  // A machine went out of reach (`since`: when it was last heard), or is heard again (`since`: from when it was not).
+  onReach?: (m: MachineRow, change: { state: "offline" | "back"; since: number }) => void;
 
   add(m: { name: string; source: "daemon" | "ssh"; daemon_url?: string; ssh_host?: string; daemon_port?: number; workspace_root?: string }): MachineRow {
     const id = `m${Buffer.from(crypto.getRandomValues(new Uint8Array(4))).toString("hex")}`;
@@ -197,7 +231,7 @@ export class Fleet {
     return {
       id: m.id, name: m.name, source: m.source, enabled: true, state: m.state, auto_connect: !!m.auto_connect, messages: m.messages,
       queue: { running: q?.running ?? 0, waiting: q?.waiting.length ?? 0, limit: this.limitOf(m) },
-      reason: m.reason ?? undefined, checked_ms: m.checked_ms ?? undefined, facts,
+      reason: m.reason ?? undefined, checked_ms: m.checked_ms ?? undefined, offline_since_ms: m.offline_since ?? undefined, facts,
       daemon: { ...link, daemon_id: m.link_daemon_id ?? link.daemon_id },
       ssh_host: m.ssh_host ?? undefined, workspace_root: m.workspace_root ?? undefined, colour: m.colour ?? undefined,
       daemon_url: m.daemon_url ?? undefined, daemon_port: m.daemon_port ?? undefined, max_jobs: m.max_jobs ?? undefined,
@@ -463,6 +497,9 @@ export class Fleet {
     const relay: Relay = { abort: new AbortController(), sessions: prev?.sessions ?? new Map(), states: prev?.states ?? new Map(), statesRev: prev?.statesRev, live: false, stale: !!prev?.sessions.size, retry: prev?.retry ?? 0 };
     this.relays.set(id, relay);
     let opened = 0;
+    // When the stream last said anything: a stream that goes silent was last heard then, not when it is given up.
+    let heard = 0;
+    let silent = false;
     const lost = (reason: string) => {
       if (relay.abort.signal.aborted && this.relays.get(id) !== relay) return;
       relay.live = false;
@@ -472,10 +509,15 @@ export class Fleet {
       const held = opened && Date.now() - opened >= RELAY_STEADY_MS;
       if (held) relay.retry = 0;
       relay.cut = opened && !held ? reason : undefined;
-      const wait = Math.min(1000 * 2 ** relay.retry++, RELAY_MAX_BACKOFF);
+      this.set(id, { state: "offline", reason, ...(silent && heard ? { offline_since: heard } : {}) });
+      // A stream cut as it opens backs off twice as long each time. A machine
+      // that simply does not answer is asked again after a tenth of the time
+      // it has been out (a second at least): one that was out half a minute
+      // is heard within three seconds of its return, one out for hours once a minute.
+      const out = Date.now() - (this.row(id)?.offline_since ?? Date.now());
+      const wait = relay.cut ? Math.min(1000 * 2 ** relay.retry++, RELAY_MAX_BACKOFF) : (relay.retry++, relayRetry(out));
       relay.retryAt = Date.now() + wait;
       this.links.set(id, { ...this.links.get(id), state: "offline", reason, retry_at_ms: relay.retryAt });
-      this.set(id, { state: "offline", reason });
       this.emitMachines();
       relay.timer = setTimeout(() => { if (this.relays.get(id) === relay && this.row(id)) this.openRelay(id, relay); }, wait);
     };
@@ -488,10 +530,23 @@ export class Fleet {
       relay.retryAt = undefined;
       const dec = new TextDecoder();
       let buf = "";
-      let watchdog = setTimeout(() => relay.abort.abort(), RELAY_SILENCE_MS);
+      heard = Date.now();
+      let watchdog: Timer | undefined;
+      const give = () => { silent = true; relay.abort.abort(); };
+      const arm = () => {
+        const bound = relay.silence ?? RELAY_SILENCE_MS;
+        const due = Date.now() + bound;
+        // A watchdog this daemon ran late (it was busy) looks once more a moment later: what the stream sent may wait behind it.
+        watchdog = setTimeout(() => {
+          if (Date.now() - due <= RELAY_LATE_MS) return give();
+          watchdog = setTimeout(() => { if (Date.now() - heard >= bound) give(); else arm(); }, RELAY_GRACE_MS);
+        }, bound);
+      };
+      arm();
       for await (const value of chunks(res.body)) {
+        heard = Date.now();
         clearTimeout(watchdog);
-        watchdog = setTimeout(() => relay.abort.abort(), RELAY_SILENCE_MS);
+        arm();
         buf += dec.decode(value, { stream: true });
         let i: number;
         while ((i = buf.indexOf("\n\n")) >= 0) {
@@ -517,6 +572,10 @@ export class Fleet {
   relayLive(id: string): boolean {
     return this.relays.get(id)?.live ?? false;
   }
+  // Whether that machine's daemon lists the session (as of its last word, when it is out of reach).
+  remoteHas(id: string, session: string): boolean {
+    return this.relays.get(id)?.sessions.has(session) ?? false;
+  }
 
   private onRelayFrame(id: string, relay: Relay, f: any) {
     if (f.t === "feature" && f.name === "fleet_outbox") { this.onOutbox?.(id); return; }
@@ -524,6 +583,7 @@ export class Fleet {
       this.onOutbox?.(id);
       relay.sessions = new Map((f.sessions as Session[]).map((s) => [s.id, s]));
       relay.stale = false;
+      relay.silence = relaySilence(f.ping_ms);
       const link = this.links.get(id);
       this.links.set(id, { state: "linked", daemon_id: link?.daemon_id, server_name: link?.server_name, version: link?.version });
       // The stream proves the link, not spare capacity: a machine that was
