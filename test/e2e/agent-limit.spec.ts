@@ -48,6 +48,10 @@ test("the owner can refill one session to its subagent limit without oversubscri
     expect(raised.ok()).toBe(true);
     expect((await raised.json()).limit).toBe(12);
     expect((await read(`/api/sessions/${other}/agents`)).limit).toBe(fallback);
+    // One agent that ends by itself: it holds no slot once it reported, and is there to be asked again below.
+    await run([{ name: "spawn_agent", input: { message: "Quick worker\nscript:say done", isolation: "none" } }]);
+    const over = (a: { status: string }) => !["waiting", "running", "stopped"].includes(a.status);
+    await expect.poll(async () => (await read()).agents.filter(over).length, { timeout: 30_000 }).toBe(1);
     await batch(13 - (fallback < 12 ? fallback : 0), 1, 12);
     const kid = (await read()).agents[0]!;
     expect((await request.patch(`/api/sessions/${kid.session_id}/agents`, { data: { limit: 12 } })).status()).toBe(409);
@@ -60,13 +64,21 @@ test("the owner can refill one session to its subagent limit without oversubscri
       await stop();
       await batch(n, n - 1, 12);
     }
-    const ended = (await read()).agents.find((a) => a.status === "stopped")!;
+    // An agent that ended is not started again over the limit: the message that would is refused.
+    const ended = (await read()).agents.find(over)!;
     const [resume] = await run([{ name: "send_input", input: { target: ended.id, message: "Continue" } }]);
     expect(resume.is_error).toBe(true);
     expect(JSON.stringify(resume.content)).toContain("AGENT_LIMIT: 12");
+    // One the owner stopped is not started by a message at all: it waits for the owner, the sender is
+    // told so, and the session still holds its twelve.
+    const held = (await read()).agents.find((a) => a.status === "stopped")!;
+    const [waits] = await run([{ name: "send_input", input: { target: held.id, message: "Continue" } }]);
+    expect(JSON.stringify(waits.content)).toContain("the owner stopped that agent");
+    expect((await read()).agents.find((a) => a.id === held.id)?.status).toBe("stopped");
+    expect((await read()).agents.filter((a) => a.status === "waiting")).toHaveLength(12);
     await page.goto(`/s/${id}`);
     await page.getByTestId("background-button").click();
-    await expect(page.getByTestId("bg-agent")).toHaveCount(14);
+    await expect(page.getByTestId("bg-agent")).toHaveCount(15);
     await shoot(page, "agents-limit-refilled");
     const reset = await patch(null);
     expect(reset.ok()).toBe(true);
