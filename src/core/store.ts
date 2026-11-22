@@ -386,10 +386,17 @@ export class Store {
       .map((r) => r.id);
   }
 
+  // What a deleted session never read of what others sent it (its queued rows
+  // that name a sender go with it): told to whoever set this, after the delete.
+  queueGone?: (rows: QueueItem[], session: Session) => void;
+
   deleteSession(id: string) {
+    const unread = this.queueGone ? this.queue(id).filter((q) => q.meta) : [];
+    const session = unread.length ? this.session(id) : undefined;
     this.db.query("DELETE FROM sessions WHERE id = ?").run(id);
     this.forget(id);
     forgetSession(id);
+    if (session) this.queueGone?.(unread, session);
   }
 
   // A new event at the head of the session's branch (or after `parent`, which

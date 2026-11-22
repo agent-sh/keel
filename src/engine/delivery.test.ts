@@ -417,3 +417,129 @@ test("two Send now calls on different rows during one stop start one turn, then 
   ]);
   for (const q of [a!, b!, c!]) expect(promptsOf(store, s.id, q.id)).toHaveLength(1);
 });
+
+// A sender names its input with a key of its own (a tool call, a send id).
+// Asked twice, it is delivered once: whether the first was stored as the
+// session's prompt, is still a row in its queue, or has left the queue since.
+test("an input sent again under its sender's key is stored once", async () => {
+  let reached!: () => void;
+  const waiting = new Promise<void>((r) => (reached = r));
+  let go!: () => void;
+  const gate = new Promise<void>((r) => (go = r));
+  let held = false;
+  const { store, engine, session } = rig(scratch("input-key"), {
+    request: async (req) => {
+      if (held || !JSON.stringify(req.messages).includes("held open")) return;
+      held = true;
+      reached();
+      await gate;
+    },
+  });
+  const s = session();
+  const texts = () => store.events(s.id).filter((e) => e.kind === "user").map((e) => e.data.text);
+  const meta = { kind: "steer", agent_id: "ag_1" };
+
+  // To an idle session: the prompt, once.
+  expect(engine.send(s.id, "a wake, sent once", { meta: { kind: "wait" }, key: "wake-1" }).event).toBeTruthy();
+  expect(engine.send(s.id, "a wake, sent once", { meta: { kind: "wait" }, key: "wake-1" })).toEqual({ duplicate: true });
+  await engine.idle(s.id);
+
+  // To a working one: one row in its queue, however often it is asked.
+  engine.send(s.id, "held open");
+  await waiting;
+  const first = engine.message(s.id, "from the parent", meta, "call-7");
+  expect(first.queued).toMatchObject({ steer: true, text: "from the parent", meta });
+  expect(engine.message(s.id, "from the parent", meta, "call-7")).toEqual({ duplicate: true });
+  expect(store.queue(s.id).map((q) => q.id)).toEqual([first.queued!.id]);
+
+  // The running turn takes it at its next step; asked again after that, nothing is stored.
+  go();
+  await engine.idle(s.id);
+  expect(engine.message(s.id, "from the parent", meta, "call-7")).toEqual({ duplicate: true });
+  await engine.idle(s.id);
+  expect(texts()).toEqual(["a wake, sent once", "held open", "from the parent"]);
+  expect(promptsOf(store, s.id, first.queued!.id)).toHaveLength(1);
+  expect(store.events(s.id).filter((e) => e.kind === "turn_start")).toHaveLength(2);
+  expect(store.queue(s.id)).toEqual([]);
+
+  // A key names an input of one session: another session's sender may use the same.
+  const other = session();
+  expect(engine.message(other.id, "from the parent", meta, "call-7").event).toBeTruthy();
+  await engine.idle(other.id);
+});
+
+// A stop leaves the messages the turn had not read in the queue, held. The
+// sender's next message continues the session: the earlier ones go first, in
+// the order they were sent, in one turn, and the hold is off.
+test("messages a stop left unread are read first, in order, when the next one arrives", async () => {
+  let reached!: () => void;
+  const waiting = new Promise<void>((r) => (reached = r));
+  let stopped = false;
+  const { store, engine, requests, session } = rig(scratch("message-order"), {
+    request: async (req) => {
+      if (stopped) return;
+      stopped = true;
+      reached();
+      await untilStopped(req);
+    },
+  });
+  const s = session();
+  const meta = { kind: "steer", agent_id: "ag_1" };
+  engine.send(s.id, "the task");
+  await waiting;
+  engine.message(s.id, "one", meta);
+  engine.message(s.id, "two", meta);
+  await engine.interrupt(s.id, "parent");
+  expect(store.queue(s.id).map((q) => [q.text, q.steer])).toEqual([["one", false], ["two", false]]);
+  expect(engine.isHeld(s.id)).toBe(true);
+
+  expect(engine.message(s.id, "three", meta).queued).toBeTruthy();
+  for (let i = 0; i < 200 && (engine.isRunning(s.id) || store.queue(s.id).length); i++) await engine.idle(s.id).then(() => Bun.sleep(1));
+  expect(engine.isHeld(s.id)).toBe(false);
+  const line = engine.lineage(s.id);
+  expect(line.filter((e) => e.kind === "user").map((e) => e.data.text)).toEqual(["the task", "one", "two", "three"]);
+  expect(line.filter((e) => e.kind === "turn_start")).toHaveLength(2);
+  // The first request after the stop carried all of them.
+  expect(requests[1]).toEqual(["the task", "one", "two", "three"]);
+  expect(line.at(-1)).toMatchObject({ kind: "turn_end", data: { reason: "end_turn" } });
+});
+
+// A daemon on its way down starts no turn. A turn that ends by itself in that
+// time leaves the prompt queued behind it with nothing to take it: the next
+// start does, once. A queue the owner's stop holds stays as it is.
+test("a prompt left queued when its turn ended while the daemon stopped starts at the next start", async () => {
+  const dir = scratch("queued-at-stop");
+  let reached!: () => void;
+  const waiting = new Promise<void>((r) => (reached = r));
+  let go!: () => void;
+  const gate = new Promise<void>((r) => (go = r));
+  const a = rig(dir, { request: async () => { reached(); await gate; } });
+  const s = a.session();
+  const stopped = a.session();
+  a.store.enqueue(stopped.id, "held by the owner's stop", false);
+  a.store.db.run("INSERT INTO queue_holds (session_id) VALUES (?)", [stopped.id]);
+  a.engine.send(s.id, "first");
+  await waiting;
+  const q = a.engine.send(s.id, "queued while the first turn ran", { mode: "queue" }).queued!;
+  const down = a.engine.drain(5_000);
+  go();
+  await down;
+  expect(a.engine.lineage(s.id).at(-1)).toMatchObject({ kind: "turn_end", data: { reason: "end_turn" } });
+  expect(a.store.queue(s.id).map((x) => x.id)).toEqual([q.id]);
+
+  const b = rig(dir);
+  await b.engine.recover(b.store.bootWorking, noRecover);
+  for (let i = 0; i < 200 && (b.engine.isRunning(s.id) || b.store.queue(s.id).length); i++) await b.engine.idle(s.id).then(() => Bun.sleep(1));
+  expect(promptsOf(b.store, s.id, q.id).map((e) => e.data.origin)).toEqual(["queued"]);
+  expect(b.requests).toEqual([["first", "queued while the first turn ran"]]);
+  expect(b.engine.lineage(s.id).at(-1)).toMatchObject({ kind: "turn_end", data: { reason: "end_turn" } });
+  expect(b.store.queue(stopped.id).map((x) => x.text)).toEqual(["held by the owner's stop"]);
+  expect(b.store.events(stopped.id)).toEqual([]);
+
+  // A start after that has nothing left to deliver.
+  const c = rig(dir);
+  await c.engine.recover(c.store.bootWorking, noRecover);
+  await Bun.sleep(20);
+  expect(c.requests).toEqual([]);
+  expect(promptsOf(c.store, s.id, q.id)).toHaveLength(1);
+});

@@ -1,4 +1,4 @@
-import type { Message, Session, StoredEvent, ToolResultBlock, TurnStatus, Usage } from "../core/types.ts";
+import type { Message, QueueItem, Session, StoredEvent, ToolResultBlock, TurnStatus, Usage } from "../core/types.ts";
 import type { ModelInfo, ProviderRequest, ProviderResult } from "../providers/types.ts";
 import type { Tool, ToolContext } from "../tools/types.ts";
 
@@ -142,6 +142,11 @@ export type TurnHooks = {
   // `askId`: one per question (a call's server can ask more than one).
   ownerAsked?: (sessionId: string, callId: string, text: string, askId: string) => void;
   ownerAnswered?: (sessionId: string, callId: string, answered: boolean, askId: string) => void;
+  // Queued input that named a sender left a session's queue unread: its
+  // session was deleted or archived, or the owner removed the row. Whoever
+  // knows the sender tells it (src/automation/undelivered.ts).
+  // `session`: the receiver, when it is gone from the store by now.
+  inputDropped?: (rows: QueueItem[], why: "deleted" | "archived" | "removed", session?: Session) => void;
   // The daemon stops and parks this session's turn (before its signal aborts).
   turnParking?: (sessionId: string) => void;
   // Work that is not a turn and that a stop should not cut (a session moving
