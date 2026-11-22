@@ -137,7 +137,10 @@ export type SessionSettings = {
   done_ms?: number;    // the owner marked the work finished; their next prompt clears it
   failed_ms?: number;  // the last turn ended in a failure; the next turn's start clears it
   fail_seen_ms?: number; // the failure (its failed_ms) the owner has looked at, on any device; 0: not looked at
+  agents_failed_ms?: number; // when an agent under it last failed (its tree's root keeps it); news until agents_fail_seen_ms is that time
+  agents_fail_seen_ms?: number; // the agents' failure (its agents_failed_ms) the owner has looked at, on any device
   last_end?: string;   // why the last turn ended (turn_end's reason: end_turn, interrupted, restart, error...)
+  stopped_by?: string | null; // who stopped it, when it ended as interrupted (a word of src/core/stoppers.ts)
   accept_messages?: boolean; // false: messages from other sessions are refused
   peer_turns?: number; // turns other sessions may start before the owner speaks here again
   max_steps?: number;  // model steps one turn may take; absent = no budget

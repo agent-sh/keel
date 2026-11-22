@@ -1,5 +1,7 @@
 import type { StoredEvent } from "../core/types.ts";
 import { heldSays } from "../core/stoppers.ts";
+import { waitWords } from "../core/watch.ts";
+import { liveJobs, running } from "../tools/jobs.ts";
 import { bytesPerToken, utf8Bytes } from "../engine/compact.ts";
 import type { Deps } from "../server/app.ts";
 
@@ -253,10 +255,27 @@ export const heldWhy = (sessionId: string): string | undefined => (D().engine.is
 // still run (models set timers to wait for the rest). In a session held after
 // the owner's Stop a report starts no turn, so it is not said to wake it.
 // `held`: why its queue is held (heldWhy), when it is.
-export const stillRunning = (left: number, held: string | undefined) =>
-  `\n${left} more of your agents ${left === 1 ? "is" : "are"} still running; ${held
+// `parked`: what each of them that is parked waits on (a wait's kind; "command" for a command it left
+// running): those are not running, and the line says so ("0 running, 1 parked on a file").
+export const stillRunning = (left: number, held: string | undefined, parked: string[] = []) =>
+  `\n${left} more of your agents ${left === 1 ? "is" : "are"} ${parked.length ? `not done: ${left - parked.length} running, ${parked.length} parked on ${onWhat(parked)}` : "still running"}; ${held
     ? `${held}, so ${left === 1 ? "its report does" : "their reports do"} not wake you: ${left === 1 ? "it comes" : "they come"} with your next input.`
     : `${left === 1 ? "its report wakes" : "their reports wake"} you when ready, so end your turn unless you have other work.`}`;
+
+// "a file", "a timer and a file", "2 timers and a file": what parked agents wait on.
+function onWhat(kinds: string[]): string {
+  const by = new Map<string, number>();
+  for (const k of kinds) by.set(k, (by.get(k) ?? 0) + 1);
+  const said = [...by].map(([k, n]) => (n === 1 ? waitWords(k) : `${n} ${waitWords(k).replace(/^an? /, "")}s`));
+  return said.length > 1 ? `${said.slice(0, -1).join(", ")} and ${said.at(-1)}` : said[0]!;
+}
+// What each parked agent of a session waits on: its first wait, else a command it left running, else a wake.
+export function parkedOn(parentId: string): string[] {
+  const rows = D().store.db.query<{ session_id: string; on: string | null }, [string]>(
+    "SELECT a.session_id, (SELECT w.kind FROM waits w WHERE w.session_id = a.session_id AND w.status = 'active' ORDER BY w.created LIMIT 1) AS on FROM agents a WHERE a.parent_id = ? AND a.status = 'waiting' AND a.type != 'reviewer'").all(parentId);
+  const commands = new Set(liveJobs().filter((j) => j.background && running(j)).map((j) => j.sessionId));
+  return rows.map((r) => r.on ?? (commands.has(r.session_id) ? "command" : "wake"));
+}
 
 // Text a model or a webhook wrote is put inside a frame it cannot close.
 export function inert(text: string, tag: string): string {

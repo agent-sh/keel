@@ -4,7 +4,7 @@ import type { Store } from "../core/store.ts";
 import type { Session, ToolResultBlock } from "../core/types.ts";
 import type { TurnHooks } from "../engine/hooks.ts";
 import { errorText } from "../engine/retry.ts";
-import { D, capture, clip, deliver, isPending, rider, stillRunning, type Pending, heldWhy } from "./core.ts";
+import { D, capture, clip, deliver, isPending, parkedOn, rider, stillRunning, type Pending, heldWhy } from "./core.ts";
 import { cutTurn } from "./waits.ts";
 import { acked, add, classOf, cleared, fingerprintOf, render, room, settledBy, SELF, type Failure, type FailureGroup, type FailureKind, type Known, type Told } from "./failure-groups.ts";
 
@@ -217,7 +217,7 @@ function notice(sessionId: string, parts: Record<string, unknown>[] = []): Pendi
   if (r.agents) {
     const left = store.db.query<{ n: number }, [string]>(AGENTS_LEFT).get(sessionId)!.n;
     if (!left) tail = notes.get(sessionId) ?? "";
-    else if (!reports.length) tail = stillRunning(left, heldWhy(sessionId));
+    else if (!reports.length) tail = stillRunning(left, heldWhy(sessionId), parkedOn(sessionId));
   }
   return {
     text: r.text + tail,

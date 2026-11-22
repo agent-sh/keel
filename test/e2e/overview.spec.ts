@@ -86,7 +86,7 @@ test("one report tells every session's state, failure, run time and spend, as th
     // Under 1.5k tokens, counted from the text's shape, never under what a local BPE measured (src/admin/overview.ts).
     expect(tokensOf(text)).toBeLessThan(TEXT_TOKENS);
     // The turns counted are the sessions' own (the agent's is its own row's); no agent ended yet.
-    expect(text).toMatch(/^Sessions, read \d{4}-\d\d-\d\d \d\d:\d\d UTC: 20 open\. Since \d\d:\d\d \(1 h\): 15 of the sessions' own turns ended, 3 failed; \$\d+\.\d+ spent in all\.\n/);
+    expect(text).toMatch(/^Sessions, read \d{4}-\d\d-\d\d \d\d:\d\d UTC(?:[+-]\d\d:\d\d)?: 20 open\. Since \d\d:\d\d \(1 h\): 15 of the sessions' own turns ended, 3 failed; \$\d+\.\d+ spent in all\.\n/);
     const lines = text.trimEnd().split("\n");
     const group = (head: string) => { const at = lines.findIndex((l) => l.startsWith(head)); const rest = lines.slice(at + 1); const to = rest.findIndex((l) => !l.startsWith("  ")); return at < 0 ? [] : rest.slice(0, to < 0 ? rest.length : to); };
     expect(group("Needs you (2):")).toHaveLength(2);
@@ -160,7 +160,7 @@ test("one report tells every session's state, failure, run time and spend, as th
     const cli = keel("status", "--sessions", "--since", "1h");
     const body = (t: string) => t.trimEnd().split("\n").slice(1).map((l) => l.replace(/\d+ (ms|s|min)( ago)?/g, "T"));
     expect(body(cli)).toEqual(body(await (await fetch(`${d.url}/api/overview?since=1h&format=text`)).text()));
-    expect(cli.split("\n")[0]).toMatch(/^Sessions, read .* UTC: 20 open\./);
+    expect(cli.split("\n")[0]).toMatch(/^Sessions, read .* UTC(?:[+-]\d\d:\d\d)?: 20 open\./);
     expect(keel("status", "--sessions", "--max", "3")).toContain("17 more sessions not listed");
     await call(`/api/sessions/${done[1]}`, { title: "Lint \u001b[31mcleanup\u0007" }, "PATCH");
     const raw = keel("status", "--sessions", "--since", "1h");
@@ -176,7 +176,7 @@ test("one report tells every session's state, failure, run time and spend, as th
     const results = ((await view(parent)).events as StoredEvent[]).flatMap((e) => (e.kind === "tool_result" ? (e.data.results as { content: string; is_error?: boolean }[]) : [])).slice(-5);
     const told = results[0]!.content;
     expect(results[0]!.is_error ?? false).toBe(false);
-    expect(told).toMatch(/UTC: 19 open\. Since/);
+    expect(told).toMatch(/UTC(?:[+-]\d\d:\d\d)?: 19 open\. Since/);
     const agent = (await call(`/api/sessions/${parent}/agents`)).agents[0] as { id: string; session_id: string };
     // Its own agent is named, with the id the timeline tool takes.
     expect(told).toMatch(new RegExp(`Your agents \\(1\\):\n  "Slow helper": step 1, running Bash, for \\d+ m?s; \\$\\d+\\.\\d+  \\[agent=${agent.id}\\]`));

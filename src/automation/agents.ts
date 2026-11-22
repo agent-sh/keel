@@ -8,7 +8,7 @@ import { didLine } from "./report-did.ts";
 import { awaited } from "../tools/jobs.ts";
 import { ownerStop } from "../core/stoppers.ts";
 import type { Session, StoredEvent } from "../core/types.ts";
-import { D, attr, capture, deliver, dropPending, emit, hasPending, heldWhy, inert, isPending, stillRunning, stopperOf, takeRiding, withdraw } from "./core.ts";
+import { D, attr, capture, deliver, dropPending, emit, hasPending, heldWhy, inert, isPending, parkedOn, stillRunning, stopperOf, takeRiding, withdraw } from "./core.ts";
 import * as perm from "../server/routes/permissions.ts";
 import * as waits from "./waits.ts";
 import * as activity from "./activity.ts";
@@ -926,7 +926,7 @@ function handback(a: AgentRecord, grouped = false) {
 function tail(parentId: string): { text: string; timers: string[] } {
   const mine = list(parentId);
   const left = mine.filter((o) => !isEnded(o) && o.type !== "reviewer").length;
-  if (left) return { text: stillRunning(left, heldWhy(parentId)), timers: [] };
+  if (left) return { text: stillRunning(left, heldWhy(parentId), parkedOn(parentId)), timers: [] };
   const during = (t: number) => mine.some((o) => o.created <= t && (o.ended ?? Date.now()) >= t);
   const timers = waits.list(parentId, 0).filter((w) => w.status === "active" && w.kind === "timer" && during(w.created)).map((w) => w.id);
   return { text: timers.length ? `\nThe timer wait${timers.length > 1 ? "s" : ""} ${timers.join(", ")} you set while your agents ran ${timers.length > 1 ? "are" : "is"} cancelled now that their reports are in; set a new one if it was for something else.` : "", timers };

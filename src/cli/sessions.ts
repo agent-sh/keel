@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 import type { StoredEvent } from "../core/types.ts";
 import { stuckText, type After, type StuckItem } from "../core/stuck.ts";
 import { stateLine, WATCH_LABEL, type SessionState } from "../core/watch.ts";
+import { stopSays } from "../core/stoppers.ts";
 import { questions as askedOf, type UiQuestion } from "../../ui/src/lib/tools.ts";
 import { ago, ApiError, clean, Client, command, EXIT, line, openUrl, out, pipedStdin, printJson, promptFiles, usageError, authHeaders } from "./client.ts";
 import { assistantText, Follower, streamLine, textLines } from "./events.ts";
@@ -128,6 +129,8 @@ const sessions = command("sessions", SESSIONS_USAGE, {
     console.log(`${s.id}  ${ago(s.updated).padStart(4)}  ${state.padEnd(9)}  ${modelName(s.model).slice(0, 28).padEnd(28)}  ${(line(s.title) || "(untitled)").slice(0, 60)}  ${tilde(s.workspace)}`);
     // Why, when the word alone does not say it: what waits on the owner, the step, what is waited on.
     if (st && (st.text || st.agents > 0) && st.watch !== "done") console.log(`${" ".repeat(s.id.length + 8)}${line(stateLine(st, now))}`);
+    // Who stopped it, when the word alone does not say ("stopped by a hook").
+    else if (st?.watch === "stop" && st.by) console.log(`${" ".repeat(s.id.length + 8)}${stopSays(st.by)}`);
   }
   return EXIT.ok;
 });

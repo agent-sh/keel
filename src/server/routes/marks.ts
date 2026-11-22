@@ -82,13 +82,14 @@ export const marksRoutes: RouteModule = ({ store, bus }) => {
 
   registerSessionPatch({
     id: "marks",
-    fields: ["pinned", "tags", "done", "max_steps", "fail_seen"],
+    fields: ["pinned", "tags", "done", "max_steps", "fail_seen", "agents_fail_seen"],
     check(_s, b) {
       if (b.pinned !== undefined && typeof b.pinned !== "boolean") throw refuse("pinned is true or false");
       if (b.done !== undefined && typeof b.done !== "boolean") throw refuse("done is true or false");
       if (b.tags !== undefined) cleanTags(b.tags);
       if (b.max_steps !== undefined) steps(b.max_steps);
       if (b.fail_seen !== undefined && !Number.isFinite(b.fail_seen)) throw refuse("fail_seen is the time of the failure that was shown");
+      if (b.agents_fail_seen !== undefined && !Number.isFinite(b.agents_fail_seen)) throw refuse("agents_fail_seen is the time of the agents' failure that was shown");
     },
     apply(s, b) {
       const patch: Record<string, unknown> = {};
@@ -97,6 +98,8 @@ export const marksRoutes: RouteModule = ({ store, bus }) => {
       if (b.done !== undefined) patch.done_ms = b.done ? Date.now() : null;
       if (b.max_steps !== undefined) patch.max_steps = steps(b.max_steps) || null;
       if (b.fail_seen !== undefined) Object.assign(patch, failSeen(s, b.fail_seen));
+      // Kept only when it names the agents' failure it is in now (one that came meanwhile is news again).
+      if (b.agents_fail_seen !== undefined && b.agents_fail_seen === s.settings.agents_failed_ms) patch.agents_fail_seen_ms = b.agents_fail_seen;
       store.mergeSettings(s.id, patch);
     },
   });
@@ -132,11 +135,13 @@ export const marksRoutes: RouteModule = ({ store, bus }) => {
       "SELECT ts, json_extract(data, '$.origin') AS origin, json_extract(data, '$.kind') AS kind FROM events WHERE session_id = ? AND kind = 'user' ORDER BY seq DESC LIMIT 20");
     return (prompted = lastOwnerPrompt([...store.sessions(), ...store.sessions({ archived: true })], (id) => q.all(id)));
   };
-  const lastEnd = (id: string) =>
-    store.db.query<{ reason: string | null }, [string]>("SELECT json_extract(data, '$.reason') AS reason FROM events WHERE session_id = ? AND kind = 'turn_end' ORDER BY seq DESC LIMIT 1").get(id)?.reason ?? null;
+  const endOf = (id: string) =>
+    store.db.query<{ reason: string | null; by: string | null }, [string]>("SELECT json_extract(data, '$.reason') AS reason, json_extract(data, '$.stopped_by') AS by FROM events WHERE session_id = ? AND kind = 'turn_end' ORDER BY seq DESC LIMIT 1").get(id);
+  const lastEnd = (id: string) => endOf(id)?.reason ?? null;
   for (const s of [...store.sessions(), ...store.sessions({ archived: true })]) {
     // Also a turn closed at this start before this module listened (a cut turn's restart end).
-    { const r = lastEnd(s.id); if (r && r !== s.settings.last_end) store.mergeSettings(s.id, { last_end: r }); }
+    // (With who stopped it, for lists that read no events: "stopped by a hook".)
+    { const e = endOf(s.id), r = e?.reason ?? null; const by = r === "interrupted" ? e?.by ?? null : null; if (r && (r !== s.settings.last_end || by !== (s.settings.stopped_by ?? null))) store.mergeSettings(s.id, { last_end: r, stopped_by: by }); }
     const at = s.settings.failed_ms ?? failedAt(s.id);
     // A declined turn from before the mark counts as seen (a new one is marked unseen as it ends).
     if (!at && s.settings.fail_seen_ms === undefined && (s.settings.last_end ?? lastEnd(s.id)) === "refusal") store.mergeSettings(s.id, { fail_seen_ms: NO_FAIL_MARK });
@@ -161,7 +166,7 @@ export const marksRoutes: RouteModule = ({ store, bus }) => {
       store.mergeSettings(id, { ...(same ? {} : { failed_ms: ts, fail_seen_ms: 0 }), ...(kind === "turn_end" ? { last_end: "error" } : {}) });
     }
     // A turn the model declined is a failure under its own word: news until some device shows it.
-    else if (kind === "turn_end" && data.reason) store.mergeSettings(id, { last_end: String(data.reason), ...(data.reason === "refusal" ? { fail_seen_ms: 0 } : {}) });
+    else if (kind === "turn_end" && data.reason) store.mergeSettings(id, { last_end: String(data.reason), stopped_by: data.reason === "interrupted" && typeof data.stopped_by === "string" ? data.stopped_by : null, ...(data.reason === "refusal" ? { fail_seen_ms: 0 } : {}) });
     else return;
     emit(id);
   });

@@ -2,10 +2,14 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../core/store.ts";
+import { localDay, localTime, zoneLabel } from "../core/clock.ts";
 import type { Watch } from "../core/watch.ts";
-import { didText, overview, overviewText, TEXT_TOKENS, tokensOf, topTwo, totalsText, type Overview, type OverviewRow } from "./overview.ts";
+import { didText, overview, overviewText, TEXT_TOKENS, tokensOf, topTwo, totalsText, unlistedText, type Overview, type OverviewRow } from "./overview.ts";
 
 const AT = Date.UTC(2026, 0, 5, 12, 0, 0);
+// The report's times are the machine's own, with its offset: "2026-01-05 14:00 UTC+02:00".
+const hm = (ts: number) => localTime(ts).slice(0, 5);
+const READ = `${localDay(AT)} ${hm(AT)} ${zoneLabel(AT)}`;
 const sid = (n: number) => `01a1fd4b-73d5-7478-a92a-${String(n).padStart(12, "0")}`;
 const row = (n: number, r: Partial<OverviewRow> & { title: string }): OverviewRow => ({ id: sid(n), watch: "done", agents: 0, approvals: 0, parked: 0, ...r });
 const page = (o: Partial<Overview>): Overview => ({ as_of: AT, since: AT - 3_600_000, until: AT + 1, sessions: [], hidden: 0, totals: { turns: 0, failed: 0, agents: {}, cost: 0 }, ...o });
@@ -28,7 +32,7 @@ test("the text groups by state, folds the quiet rows and counts what is not list
     ],
   }));
   expect(text.split("\n")).toEqual([
-    "Sessions, read 2026-01-05 12:00 UTC: 8 open. Since 11:00 (1 h): 4 of the sessions' own turns ended, 1 failed; agents: 3 ended, 1 failed; $0.50 + unpriced spent in all.",
+    `Sessions, read ${READ}: 8 open. Since ${hm(AT - 3_600_000)} (1 h): 4 of the sessions' own turns ended, 1 failed; agents: 3 ended, 1 failed; $0.50 + unpriced spent in all.`,
     "Your agents (1):",
     '  "Scout": failed 2 min ago: rate limit  [agent=4aa654d842fb]',
     "Needs you (1):",
@@ -41,13 +45,27 @@ test("the text groups by state, folds the quiet rows and counts what is not list
     "3 more sessions not listed, the quietest.",
   ]);
   expect(overviewText(page({ agents: [], since: AT - 2 * 86_400_000 })).split("\n")).toEqual([
-    "Sessions, read 2026-01-05 12:00 UTC: 0 open. Since 2026-01-03 12:00 (2 d): 0 of the sessions' own turns ended; $0.00 spent in all.",
+    `Sessions, read ${READ}: 0 open. Since ${localDay(AT - 2 * 86_400_000)} ${hm(AT - 2 * 86_400_000)} (2 d): 0 of the sessions' own turns ended; $0.00 spent in all.`,
     "Your agents: none at work, none ended since then.",
   ]);
   expect(didText({ turns: 1, failed: {}, agents: { completed: 2 }, cost: 0.004 })).toBe("1 turn; agents: 2 reported; $0.0040");
   // A list of classes says its two largest and counts the rest.
   expect(topTwo({ "rate limit": 6, overloaded: 2, declined: 1, budget: 1, "server error": 3 })).toBe("6 rate limit, 3 server error, 3 more");
   expect(didText({ turns: 2, failed: { "rate limit": 1 }, agents: {}, cost: 0 })).toBe("2 turns, 1 failed (rate limit)");
+});
+
+// Every agent past the rows is said by how it ended, the failed first, and the parts add up.
+// (It read "36 not listed: 30 reported, 3 stopped, 2 more", and the failed one was in "2 more".)
+test("the agents past the rows are all said, a failed one first, and a stopped one says who stopped it", () => {
+  expect(unlistedText({ completed: 30, stopped: 3, declined: 2, failed: 1 })).toBe("1 failed, 2 declined, 3 stopped, 30 reported");
+  const text = overviewText(page({
+    agents: [row(1, { title: "Hook lane", watch: "stop", agent: { id: "4aa654d842fb", status: "stopped", stopped_by: "hook" }, last: AT - 12 * 60_000 })],
+    agents_total: 37, agents_unlisted: { completed: 30, stopped: 3, declined: 2, failed: 1 },
+    sessions: [row(2, { title: "Held", watch: "stop", stopped_by: "api", last: AT - 60_000 })],
+  })).split("\n");
+  expect(text[1]).toBe("Your agents (37; 36 not listed: 1 failed, 2 declined, 3 stopped, 30 reported):");
+  expect(text[2]).toBe('  "Hook lane": stopped by a hook 12 min ago  [agent=4aa654d842fb]');
+  expect(text).toContain('  "Held": stopped through the API 1 min ago  [session=000000000002]');
 });
 
 // The bound the row asks, 1.5k tokens for twenty sessions, in the heavy cases:

@@ -302,3 +302,11 @@ test("an input that arrives while a continued turn is set up joins it or queues 
   expect(inputs(s).slice(2)).toEqual(expect.arrayContaining(["restart", "steer", "wait+subagent", "peer"]));
   expect(engine.isHeld(s)).toBe(false);
 });
+
+// "Still running" counts the agents that run: a parked one is said parked, with what it waits on.
+// (It read "1 more of your agents is still running" for an agent parked on a file.)
+test("the line after a report counts running agents and says the parked ones apart", () => {
+  expect(core.stillRunning(1, undefined, ["file"])).toStartWith("\n1 more of your agents is not done: 0 running, 1 parked on a file; its report wakes you");
+  expect(core.stillRunning(4, undefined, ["timer", "timer", "file"])).toStartWith("\n4 more of your agents are not done: 1 running, 3 parked on 2 timers and a file;");
+  expect(core.stillRunning(2, undefined)).toStartWith("\n2 more of your agents are still running;");
+});

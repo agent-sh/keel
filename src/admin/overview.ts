@@ -13,6 +13,8 @@
 import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import { WATCH_LABEL, WATCH_RANK, type Watch } from "../core/watch.ts";
+import { localDay, localTime, zoneLabel } from "../core/clock.ts";
+import { stopSays } from "../core/stoppers.ts";
 import { CLASS, dur, type Refs, type TimelineNow, type TimelineRow } from "./timeline-rows.ts";
 import { waitingOf } from "./waiting-line.ts";
 
@@ -28,7 +30,8 @@ export type OverviewRow = {
   title: string;
   watch: Watch;
   agents: number; // agents still at work
-  agent?: { id: string; status: string }; // the row is an agent of the asking session
+  agent?: { id: string; status: string; stopped_by?: string }; // the row is an agent of the asking session
+  stopped_by?: string; // a stopped row: who stopped it (a word of src/core/stoppers.ts)
   line?: string; // what it does or waits on now, most pressing first
   from?: number; // since when
   until?: number; // when what it waits on is due
@@ -66,7 +69,7 @@ export type Overview = {
 // What the builder asks of the running daemon.
 export type From = {
   store: Store;
-  state(s: Session, counts: Map<string, number>): { watch: Watch; agents: number };
+  state(s: Session, counts: Map<string, number>): { watch: Watch; agents: number; by?: string };
   counts(): Map<string, number>;
   now(id: string): TimelineNow;
 };
@@ -103,7 +106,8 @@ function nowWords(l: TimelineRow, agents: number, parked = 0): string {
     case "restart": return "a turn cut by a restart was not resumed";
     // "Running a turn started by the owner: step 2, running Bash" is told as its step.
     case "turn": { const at = l.text.indexOf(": "); return at < 0 ? lower(l.text) : l.text.slice(at + 2); }
-    case "agent": { const n = Math.max(agents, 1); return `${n} agent${n === 1 ? "" : "s"} at work`; }
+    // At work and parked said apart: an agent parked on a timer is not at work.
+    case "agent": { const n = Math.max(agents - parked, parked ? 0 : 1); return `${n} agent${n === 1 ? "" : "s"} at work${parked ? `, ${parked} parked` : ""}`; }
     case "loop": return "a loop runs next";
     default: return lower(l.text);
   }
@@ -198,6 +202,7 @@ export function overview(from: From, opts: OverviewOpts): Overview {
     const r: OverviewRow = {
       id: s.id, title: s.title, watch: st.watch, agents: st.agents,
       approvals: [s.id, ...below].reduce((n, id) => n + (pending.get(id) ?? 0), 0), parked: parked.get(s.id) ?? 0,
+      ...(st.watch === "stop" && st.by ? { stopped_by: st.by } : {}),
     };
     // A waiting session says what it waits for, as one that works says its step: a turn that
     // continues by itself when a provider's wait is over, a timer, a command, a parked agent.
@@ -228,18 +233,19 @@ export function overview(from: From, opts: OverviewOpts): Overview {
   let agentsUnlisted: Record<string, number> | undefined;
   if (opts.of && tables.agents) {
     mine = [];
-    const all = db.query<{ id: string; session_id: string; status: string; ended: number | null }, [string, number, number]>(
-      "SELECT id, session_id, status, ended FROM agents WHERE parent_id = ? AND (status IN ('running', 'waiting') OR ended >= ? OR created >= ?) ORDER BY (status = 'failed') DESC, (status IN ('running', 'waiting')) DESC, COALESCE(ended, created) DESC").all(opts.of, since, since);
+    const all = db.query<{ id: string; session_id: string; status: string; ended: number | null; stopped_by: string | null; end_reason: string | null }, [string, number, number]>(
+      `SELECT id, session_id, status, ended, ${from.store.columnExists("agents", "stopped_by") ? "stopped_by, end_reason" : "NULL AS stopped_by, NULL AS end_reason"} FROM agents WHERE parent_id = ? AND (status IN ('running', 'waiting') OR ended >= ? OR created >= ?) ORDER BY (status = 'failed') DESC, (status IN ('running', 'waiting')) DESC, COALESCE(ended, created) DESC`).all(opts.of, since, since);
     agentsTotal = all.length;
     const shown = Math.min(Math.max(opts.agentsMax ?? AGENTS_MAX, 1), 40);
     for (const a of all.slice(0, shown)) {
       const s = from.store.session(a.session_id);
       if (!s) continue;
-      const r = { ...row(s), agent: { id: a.id, status: a.status } };
+      const r = { ...row(s), agent: { id: a.id, status: a.status, ...(a.status === "stopped" && a.stopped_by ? { stopped_by: a.stopped_by } : {}) } };
       if (ENDED.includes(a.status)) r.last = a.ended ?? s.updated;
       mine.push(r);
     }
-    for (const a of all.slice(shown)) (agentsUnlisted ??= {})[a.status] = (agentsUnlisted[a.status] ?? 0) + 1;
+    // An agent the model declined is said so, apart from one that did not finish otherwise.
+    for (const a of all.slice(shown)) { const k = a.status === "incomplete" && a.end_reason === "refusal" ? "declined" : a.status; (agentsUnlisted ??= {})[k] = (agentsUnlisted[k] ?? 0) + 1; }
     ranked(mine);
   }
 
@@ -288,7 +294,7 @@ export function overview(from: From, opts: OverviewOpts): Overview {
   };
 }
 
-// --- the text form. Times are UTC, as the timeline's. Kept short for a
+// --- the text form. Times are the machine's local time with its offset, as every other text says them. Kept short for a
 // model: twenty rows stay under 1.5k tokens also when every row is heavy. A
 // row names its session only, by the last twelve characters of its id
 // (session-ref.ts takes them; the session's timeline has its turns and
@@ -332,10 +338,17 @@ export function fitted(render: (level: number) => string, rows: number, bound = 
 export const shortId = (id: string) => id.slice(-12);
 export const name = (t: string, fallback = "(untitled)", max = TITLE) => { const s = t.replace(/\s+/g, " ").trim(); return s ? `"${s.length > max ? `${s.slice(0, max - 1)}…` : s}"` : fallback; };
 export const usd = (c: number) => `$${c > 0 && c < 0.01 ? c.toFixed(4) : c.toFixed(2)}`;
-const stamp = (ts: number) => new Date(ts).toISOString().slice(0, 16).replace("T", " ");
-const clock = (ts: number, by: number) => (new Date(ts).toISOString().slice(0, 10) === new Date(by).toISOString().slice(0, 10) ? new Date(ts).toISOString().slice(11, 16) : stamp(ts));
+const stamp = (ts: number) => `${localDay(ts)} ${localTime(ts).slice(0, 5)}`;
+const clock = (ts: number, by: number) => (localDay(ts) === localDay(by) ? localTime(ts).slice(0, 5) : stamp(ts));
 export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const AGENT_WORD: Record<string, string> = { completed: "reported", failed: "failed", incomplete: "unfinished", stopped: "stopped" };
+const UNLISTED_WORD: Record<string, string> = { ...AGENT_WORD, declined: "declined", running: "at work", waiting: "parked" };
+// The ends of agents past the listed rows, every one with its count, the failed first: the parts add up to the whole.
+const ORDER = ["failed", "declined", "incomplete", "stopped", "completed", "waiting", "running"];
+export function unlistedText(by: Record<string, number>): string {
+  const rank = (k: string) => (ORDER.includes(k) ? ORDER.indexOf(k) : ORDER.length);
+  return Object.entries(by).filter(([, n]) => n > 0).sort((a, b) => rank(a[0]) - rank(b[0]) || b[1] - a[1]).map(([k, n]) => `${n} ${UNLISTED_WORD[k] ?? k}`).join(", ");
+}
 
 // The two largest of a count by name, and how many more names there are: "6 rate limit, 2 overloaded, 5 more".
 export function topTwo(by: Record<string, number>, word: (k: string) => string = (k) => k, bare = false): string {
@@ -372,12 +385,13 @@ const SAYS_HOW_LONG = / for \d+ (ms|s|min|h|d)\b[^,]*$/;
 // What a row says after its title.
 function what(r: OverviewRow, at: number, level = 0): string {
   const ago = (ts: number) => `${dur(Math.max(at - ts, 0))} ago`;
-  if (r.agent && r.last !== undefined && AGENT_WORD[r.agent.status]) return `${AGENT_WORD[r.agent.status]} ${ago(r.last)}${r.failed ? `: ${r.failed.why}` : ""}`;
+  // A stopped one says who stopped it: "stopped by a hook 12 min ago".
+  if (r.agent && r.last !== undefined && AGENT_WORD[r.agent.status]) return `${r.agent.stopped_by ? stopSays(r.agent.stopped_by) : AGENT_WORD[r.agent.status]} ${ago(r.last)}${r.failed ? `: ${r.failed.why}` : ""}`;
   if (r.failed) return `${r.failed.why}, ${ago(r.failed.ts)}`;
   const line = r.line && level >= 2 && r.line.length > LINE ? `${r.line.slice(0, LINE - 1)}…` : r.line;
   // A line that says how long itself (a stream gone silent) is not given the turn's time after it: one duration.
   if (line) return `${line}${r.from !== undefined && !SAYS_HOW_LONG.test(line) ? `, for ${dur(at - r.from)}` : ""}${r.until ? (r.until > at ? `, due in ${dur(r.until - at)}` : ", due now") : ""}`;
-  if (r.watch === "stop") return `stopped${r.last ? ` ${ago(r.last)}` : ""}`;
+  if (r.watch === "stop") return `${r.stopped_by ? stopSays(r.stopped_by) : "stopped"}${r.last ? ` ${ago(r.last)}` : ""}`;
   if (r.watch === "done") return `finished${r.last ? ` ${ago(r.last)}` : ""}`;
   return WATCH_LABEL[r.watch].toLowerCase();
 }
@@ -401,11 +415,11 @@ function overviewAt(o: Overview, opts: { ids?: boolean }, level: number): string
   const ids = (r: OverviewRow) => (opts.ids === false ? "" : `  [${r.agent ? `agent=${r.agent.id}` : `session=${shortId(r.id)}`}]`);
   const did = (r: OverviewRow) => { const t = r.did ? didText(r.did, level, r.failed?.why) : ""; return t ? `; ${t}` : ""; };
   const line = (r: OverviewRow) => `  ${title(r)}: ${what(r, at, level)}${did(r)}${ids(r)}`;
-  const out: string[] = [`Sessions, read ${stamp(at)} UTC: ${o.sessions.length + o.hidden} open. Since ${clock(o.since, at)} (${dur(at - o.since)}): ${totalsText(o.totals)}.`];
+  const out: string[] = [`Sessions, read ${stamp(at)} ${zoneLabel(at)}: ${o.sessions.length + o.hidden} open. Since ${clock(o.since, at)} (${dur(at - o.since)}): ${totalsText(o.totals)}.`];
   if (o.agents) {
     // Every agent is counted, also the ones past the rows: what those are is said by status.
     const total = o.agents_total ?? o.agents.length;
-    const rest = o.agents_unlisted ? `; ${count(o.agents_unlisted)} not listed: ${topTwo(o.agents_unlisted, (k) => AGENT_WORD[k] ?? (k === "running" ? "at work" : k))}` : "";
+    const rest = o.agents_unlisted ? `; ${count(o.agents_unlisted)} not listed: ${unlistedText(o.agents_unlisted)}` : "";
     out.push(total ? `Your agents (${total}${rest}):` : "Your agents: none at work, none ended since then.");
     for (const r of o.agents) out.push(line(r));
   }
