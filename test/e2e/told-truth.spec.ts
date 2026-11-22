@@ -343,12 +343,14 @@ test("what a coordinator and the owner are told about agents, restarts and tools
       await expect.poll(async () => inputs(coord), { timeout: 60_000 }).toMatch(new RegExp(`\\[harness\\] Agent "${title}" \\(${lane(title).id}\\) is waiting for command \\w+, which runs on after a daemon restart\\. It has not finished; its report comes when it does\\.`));
       expect(await inputs(coord)).not.toContain(`title="${title}" status="completed"`);
     }
-    // The coordinator is told which of its agents were cut and what became of each: each once, with a request
-    // of its own that came after the agent was decided (here the turn the parked notice started).
+    // The coordinator is told which of its agents were cut and what became of each: one line for the restart,
+    // naming both, with a request of its own that came after the last of them was decided (here a turn a parked
+    // notice started). (It was told in a line for each wave of agents that came back.)
     for (const title of ["Slow lane 1", "Slow lane 2"]) {
       await expect.poll(async () => count(await notes(coord), `"${title}" (${lane(title).id}) resumed`), { timeout: 60_000 }).toBe(1);
     }
-    expect(await notes(coord)).toMatch(/\[harness\] A daemon restart cut [12] of your agents mid-turn: /);
+    expect(await notes(coord)).toMatch(/\[harness\] A daemon restart cut 2 of your agents mid-turn: /);
+    expect(count(await notes(coord), "A daemon restart cut ")).toBe(1);
     // The commands end: each agent gets the turn it was owed, and then reports.
     release("slow-1", "slow-2");
     await expect.poll(tally, { timeout: 90_000 }).toEqual({ failed: 4, completed: 7, waiting: 1 });

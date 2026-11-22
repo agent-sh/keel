@@ -1,15 +1,20 @@
 // After a daemon restart a session that has agents is told which of them the
-// restart cut and what became of each: one line, with its next request of any
-// kind (the owner's prompt, a report, a wake, the next step of a turn that
-// runs). It starts no turn.
+// restart cut and what became of each: one line a restart, with its next
+// request of any kind (the owner's prompt, a report, a wake, the next step of
+// a turn that runs) once every one of them is decided. It starts no turn.
 //
-// Read from the start's record (src/admin/life.ts) and kept there: which
-// agent's fate each parent was told. The line is lined up as soon as the
-// first cut agent of a parent is decided and is written when it is sent, from
-// what is known then; an agent decided later, or one whose fate changed, gets
-// a line of its own, and nothing is said twice. A parent is marked told when
-// the line is stored, so a daemon that goes down first tells it at its next
-// start, from the record of the start before.
+// Read from the start's record (src/admin/life.ts) and kept there: that a
+// parent was told, and what of each agent. Cut agents are resumed a few at a
+// time, so they are decided over seconds: the line waits for the last of
+// them, and names them all. It does not wait longer than SETTLE_MS from the
+// start: an agent whose resume waits on something (a card of the owner's, a
+// provider that does not answer) is then named as not decided yet, and the
+// parent hears of it by that agent's own report. An agent that has reported
+// since the restart is not named: its report said what became of it. Nothing
+// is said twice: a parent is marked told when the line is stored, so a daemon
+// that goes down first tells it at its next start, from the record of the
+// start before, unless the parent was given input since that start: what it
+// was told or did since is newer than the record.
 import type { Restart, RestartTurn } from "../admin/life-rows.ts";
 import { restarts } from "../admin/life.ts";
 import { addNotice, hasNotice } from "../tools/jobs.ts";
@@ -40,23 +45,39 @@ export function cutAgentsLine(fates: Fate[], earlier = false): string | undefine
   return `[harness] ${earlier ? "An earlier daemon restart" : "A daemon restart"} cut ${said.length === 1 ? "1 of your agents" : `${said.length} of your agents`} mid-turn: ${said.join("; ")}.${on ? " A resumed agent reports as before: nothing to send it." : ""}`;
 }
 
-// The fates of a parent's cut agents that are decided and that it was not told (or was told otherwise).
-// `skip`: agents another record tells of.
-function owed(r: Restart, parent: string, skip?: Set<string>): Fate[] {
+// How long after a start the line waits for the last cut agent to be decided. Three turns are
+// resumed at a time, a second apart (src/engine/turn.ts), so a dozen agents are decided within
+// seconds; one that is not by now waits on something that may take minutes.
+export const SETTLE_MS = 60_000;
+
+// The cut agents of a parent that it is told of, each with what became of it. `skip`: agents another
+// record tells of. Left out: a silent agent (a reviewer, a goal's check: not one its parent follows),
+// and one that ended since the start: its report tells the parent.
+// `ready`: every one of them is decided, or the start is SETTLE_MS old.
+function owed(r: Restart, parent: string, skip?: Set<string>, now = Date.now()): { fates: Fate[]; ready: boolean } {
   const { store } = D();
-  const agent = store.db.query<{ id: string; title: string; def: string | null }, [string]>("SELECT id, title, def FROM agents WHERE session_id = ?");
-  const told = r.told?.[parent] ?? {};
-  const out: Fate[] = [];
+  const agent = store.db.query<{ id: string; title: string; def: string | null; status: string; ended: number | null }, [string]>("SELECT id, title, def, status, ended FROM agents WHERE session_id = ?");
+  const fates: Fate[] = [];
+  let pending = 0;
+  // Told already: a restart is one line to a parent.
+  if (r.told?.[parent]) return { fates, ready: true };
   for (const t of r.turns) {
     if (t.parent_id !== parent || skip?.has(t.session_id)) continue;
     const a = agent.get(t.session_id);
-    // A silent agent (a reviewer, a goal's check) is not one its parent follows.
     if (!a || (a.def && JSON.parse(a.def).silent)) continue;
+    if (a.status !== "running" && a.status !== "waiting" && (a.ended ?? 0) >= r.up_ms) continue;
     const s = store.session(t.session_id);
     const fate = fateOf(t, !!s && t.state === "continued" && sessionState(s).watch === "need");
-    if (fate && told[t.session_id] !== fate) out.push({ session: t.session_id, id: a.id, title: a.title, fate });
+    if (!fate) pending++;
+    fates.push({ session: t.session_id, id: a.id, title: a.title, fate: fate ?? "not decided yet: it reports when it goes on" });
   }
-  return out;
+  return { fates, ready: !pending || now - r.up_ms >= SETTLE_MS };
+}
+
+// When the parent was last given input (a prompt, a report, a wake, a line of the harness).
+function lastInput(parent: string): number | undefined {
+  for (const e of D().store.back(parent)) if (e.kind === "user") return e.ts;
+  return undefined;
 }
 
 // Lines up the line for each parent that is owed one. `current`: the record as it stands when the
@@ -64,14 +85,22 @@ function owed(r: Restart, parent: string, skip?: Set<string>): Fate[] {
 function tell(r: Restart, current: () => Restart, earlier: boolean, skip?: Set<string>) {
   const key = `restart:${r.id}`;
   for (const parent of new Set(r.turns.map((t) => t.parent_id).filter((p): p is string => !!p))) {
-    // Lined up already: it is written when it is sent, with whatever is decided by then.
-    if (hasNotice(parent, key) || !owed(r, parent, skip).length) continue;
-    let sent: Fate[] = [];
-    addNotice(parent, "", {
-      key,
-      fresh: () => cutAgentsLine((sent = owed(current(), parent, skip)), earlier),
-      stored: () => restarts()?.told(r.id, parent, Object.fromEntries(sent.map((f) => [f.session, f.fate]))),
-    });
+    // Lined up already: it is written when it is sent, with what holds then.
+    if (hasNotice(parent, key) || !owed(r, parent, skip).fates.length) continue;
+    const line = () => {
+      let sent: Fate[] = [];
+      addNotice(parent, "", {
+        key,
+        fresh: () => {
+          const now = owed(current(), parent, skip);
+          // Not every agent is decided yet: the line waits for the parent's next request after this one.
+          if (!now.ready) { line(); return undefined; }
+          return cutAgentsLine((sent = now.fates), earlier);
+        },
+        stored: () => restarts()?.told(r.id, parent, Object.fromEntries(sent.map((f) => [f.session, f.fate]))),
+      });
+    };
+    line();
   }
 }
 
@@ -88,13 +117,17 @@ export function tellEarlier(now: Restart) {
   const again = new Set(now.turns.map((t) => t.session_id));
   for (const r of restarts()?.recent(EARLIER_STARTS) ?? []) {
     if (r.id === now.id || now.up_ms - r.up_ms > EARLIER_MS) continue;
-    // What this start tells instead is settled in the earlier record too: a later start does not bring it up again.
     for (const parent of new Set(r.turns.map((t) => t.parent_id).filter((p): p is string => !!p))) {
-      const over = owed(r, parent).filter((f) => again.has(f.session));
-      if (over.length) {
-        const fates = Object.fromEntries(over.map((f) => [f.session, f.fate]));
-        r.told = { ...r.told, [parent]: { ...r.told?.[parent], ...fates } };
-        restarts()?.told(r.id, parent, fates);
+      if (r.told?.[parent]) continue;
+      // The parent was given input since that start: the record is older than what it knows. And a
+      // parent all of whose cut agents this start cut again is told by this start's line. Either is
+      // settled in the earlier record too: a later start does not bring it up again.
+      const fates = owed(r, parent).fates;
+      const since = lastInput(parent);
+      if (!fates.length || (since !== undefined && since > r.up_ms) || fates.every((f) => again.has(f.session))) {
+        const said = Object.fromEntries(fates.filter((f) => again.has(f.session)).map((f) => [f.session, f.fate]));
+        r.told = { ...r.told, [parent]: said };
+        restarts()?.told(r.id, parent, said);
       }
     }
     tell(r, () => r, true, again);

@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +11,7 @@ import { Restarts, type Life } from "../admin/life.ts";
 import { drainNotices, type Notice } from "../tools/jobs.ts";
 import * as agents from "./agents.ts";
 import { setDeps } from "./core.ts";
-import { cutAgentsLine, fateOf, tellCutAgents, tellEarlier } from "./restart-told.ts";
+import { cutAgentsLine, fateOf, SETTLE_MS, tellCutAgents, tellEarlier } from "./restart-told.ts";
 
 // Turn hooks are process-wide: the files after this one run without the ones its tests register.
 const hooksAtStart = allHooks().length;
@@ -42,9 +42,9 @@ test("the line names each cut agent and what became of it, in words that are pla
   expect(cutAgentsLine([])).toBeUndefined();
 });
 
-// The review's schedule: three agents cut; one is decided and reports before the others are; a
-// second kill comes before the parent's next request. The parent heard nothing of two of them.
-test("a parent is told of each cut agent once, as each is decided, and a line a daemon died with is told by the next one", () => {
+// What every test below stands on: a parent, agents under it, a start's record, and what the
+// parent's next request would carry (the notes lined up, written as they are sent).
+function world() {
   const dir = mkdtempSync(join(tmpdir(), "keel-told-"));
   const store = new Store(join(dir, "state"));
   const engine = { isRunning: () => false, isHeld: () => false };
@@ -59,51 +59,121 @@ test("a parent is told of each cut agent once, as each is decided, and a line a 
     store.db.query("INSERT INTO agents (id, parent_id, session_id, title, type, model, background, status, created) VALUES (?, ?, ?, ?, 'general-purpose', 'm:x', 1, 'running', ?)").run(id, parent.id, s.id, title, Date.now());
     return { s: store.session(s.id)!, id };
   };
-  const [a, b, c] = [kid("A01"), kid("A02"), kid("A04")];
   const life = (pid: number, at: number): Life => ({ before: { pid: pid - 1, started_ms: at - 60_000, down_ms: at - 1000, how: "killed" }, started_ms: at, beat() {}, listening() {}, end() {} });
   const cut = (n: number): CutTurn => ({ turn_event: `t${n}`, end_event: `e${n}`, started_ms: 1, ran_ms: 1000, down_ms: Date.now() - 500, crashed: true, unstarted: false, step: 1, tools: ["Bash"], waiting: 0 });
-  // What the parent's next request would carry: the notes lined up, written as they are sent.
   const send = () => drainNotices(parent.id).flatMap((n: Notice) => { const t = n.fresh ? n.fresh() : n.text; if (t) n.stored?.(); return t ? [t] : []; });
-  const hooks = () => allHooks().at(-1)!;
+  const start = (pid: number, at: number) => {
+    const r = new Restarts(store, life(pid, at));
+    r.changed = () => tellCutAgents(r.last());
+    return { r, h: allHooks().at(-1)! };
+  };
+  return { store, parent, kid, cut, send, start };
+}
 
-  // --- the first start: three agents found cut
-  const t1 = Date.now();
-  const r1 = new Restarts(store, life(1001, t1));
-  const h1 = hooks();
-  r1.changed = () => tellCutAgents(r1.last());
-  for (const [i, k] of [a, b, c].entries()) h1.turnCut!(k.s, cut(i + 1));
-  expect(send()).toEqual([]); // none decided: nothing to say yet
-  // The first is decided and reports at once: the line is there for that report, with what is known.
-  h1.turnCutSettled!(a.s, cut(1), "continued");
-  expect(send()).toEqual([`[harness] A daemon restart cut 1 of your agents mid-turn: "A01" (${a.id}) resumed. A resumed agent reports as before: nothing to send it.`]);
-  // The other two are decided; before the parent's next request the daemon is killed again: their line was lined up, never sent.
-  h1.turnCutSettled!(b.s, cut(2), "continued");
-  h1.turnCutSettled!(c.s, cut(3), "held", "This agent was resumed 3 times in a row.");
-  expect(r1.last().told).toEqual({ [parent.id]: { [a.s.id]: "resumed" } });
+// Seen on a daemon with a dozen agents: they are resumed a few at a time, and the parent, which
+// was working, was told in three lines as they came back. A restart is one line.
+test("twelve agents cut by one restart and resumed over ten seconds are one line that names twelve", () => {
+  const w = world();
+  const t0 = Date.now();
+  try {
+    const kids = Array.from({ length: 12 }, (_, i) => w.kid(`A${String(i + 1).padStart(2, "0")}`));
+    const { r, h } = w.start(1001, t0);
+    for (const [i, k] of kids.entries()) h.turnCut!(k.s, w.cut(i + 1));
+    expect(w.send()).toEqual([]);
+    // One is decided every 0.9 s, and the parent makes a request after each (it is at work itself).
+    const said: string[] = [];
+    for (const [i, k] of kids.entries()) {
+      setSystemTime(new Date(t0 + (i + 1) * 900));
+      h.turnCutSettled!(k.s, w.cut(i + 1), "continued");
+      const now = w.send();
+      if (i < 11) expect([i, now]).toEqual([i, []]);
+      said.push(...now);
+    }
+    expect(said).toHaveLength(1);
+    expect(said[0]).toStartWith("[harness] A daemon restart cut 12 of your agents mid-turn: ");
+    for (const k of kids) expect(said[0]).toContain(`"${k.s.title}" (${k.id}) resumed`);
+    // Nothing more, whatever changes later.
+    r.changed();
+    expect(w.send()).toEqual([]);
+    expect(Object.keys(r.last().told![w.parent.id]!)).toHaveLength(12);
+  } finally {
+    setSystemTime();
+    w.store.db.close();
+  }
+});
+
+test("the line does not wait past the settle time, and does not name an agent that has reported since", () => {
+  const w = world();
+  const t0 = Date.now();
+  try {
+    const [a, b, c] = [w.kid("A01"), w.kid("A02"), w.kid("A03")];
+    const { r, h } = w.start(1001, t0);
+    for (const [i, k] of [a, b, c].entries()) h.turnCut!(k.s, w.cut(i + 1));
+    h.turnCutSettled!(a.s, w.cut(1), "continued");
+    h.turnCutSettled!(c.s, w.cut(3), "continued");
+    // The third went on and ended: its report is what the parent hears of it.
+    w.store.db.query("UPDATE agents SET status = 'completed', ended = ? WHERE id = ?").run(t0 + 5000, c.id);
+    setSystemTime(new Date(t0 + SETTLE_MS - 1000));
+    expect(w.send()).toEqual([]);
+    // A minute after the start the second is still not decided (its resume waits on something).
+    setSystemTime(new Date(t0 + SETTLE_MS));
+    expect(w.send()).toEqual([`[harness] A daemon restart cut 2 of your agents mid-turn: "A01" (${a.id}) resumed; "A02" (${b.id}) not decided yet: it reports when it goes on. A resumed agent reports as before: nothing to send it.`]);
+    // Decided later: no second line for the same restart.
+    h.turnCutSettled!(b.s, w.cut(2), "continued");
+    expect(w.send()).toEqual([]);
+    expect(r.last().told![w.parent.id]).toEqual({ [a.s.id]: "resumed", [b.s.id]: "not decided yet: it reports when it goes on" });
+  } finally {
+    setSystemTime();
+    w.store.db.close();
+  }
+});
+
+// Three agents cut and decided; the daemon is killed again before the parent's next request.
+test("a line a daemon died with is told by the next start, once, unless the parent was given input since", () => {
+  const w = world();
+  const { store, parent, send } = w;
+  const [a, b, c] = [w.kid("A01"), w.kid("A02"), w.kid("A04")];
+
+  // --- the first start: three agents found cut and decided; the line is lined up, never sent
+  const t1 = Date.now() - 120_000;
+  const { r: r1, h: h1 } = w.start(1001, t1);
+  for (const [i, k] of [a, b, c].entries()) h1.turnCut!(k.s, w.cut(i + 1));
+  h1.turnCutSettled!(a.s, w.cut(1), "continued");
+  h1.turnCutSettled!(b.s, w.cut(2), "continued");
+  h1.turnCutSettled!(c.s, w.cut(3), "held", "This agent was resumed 3 times in a row.");
+  expect(r1.last().told).toBeUndefined();
   drainNotices(parent.id); // the daemon is gone, and what it had lined up with it
 
   // --- the next start: it cut A02 again; A04 was not continued and has no turn to cut
-  const r2 = new Restarts(store, life(1002, t1 + 30_000));
-  const h2 = hooks();
-  r2.changed = () => tellCutAgents(r2.last());
-  h2.turnCut!(b.s, cut(12));
-  h2.turnCutSettled!(b.s, cut(12), "continued");
+  const { r: r2, h: h2 } = w.start(1002, t1 + 30_000);
+  h2.turnCut!(b.s, w.cut(12));
+  h2.turnCutSettled!(b.s, w.cut(12), "continued");
   r2.finish(() => undefined);
   tellEarlier(r2.last());
   // The parent's next request, whatever starts it: this start's line for the agent it cut, and what the start
-  // before still owed. A02 is told once, by the start that cut it last; A01 was told and is not said again.
+  // before still owed. A02 is told once, by the start that cut it last.
   expect(send().sort()).toEqual([
     `[harness] A daemon restart cut 1 of your agents mid-turn: "A02" (${b.id}) resumed. A resumed agent reports as before: nothing to send it.`,
-    `[harness] An earlier daemon restart cut 1 of your agents mid-turn: "A04" (${c.id}) not continued: This agent was resumed 3 times in a row.`,
+    `[harness] An earlier daemon restart cut 2 of your agents mid-turn: "A01" (${a.id}) resumed; "A04" (${c.id}) not continued: This agent was resumed 3 times in a row. A resumed agent reports as before: nothing to send it.`,
   ]);
   // Kept with each start's record, so nothing is said twice: not at a later change, not at a third start.
   r2.changed();
   tellEarlier(r2.last());
   expect(send()).toEqual([]);
-  expect(r2.recent(3).map((r) => r.told?.[parent.id])).toEqual([{ [b.s.id]: "resumed" }, { [a.s.id]: "resumed", [b.s.id]: "resumed", [c.s.id]: "not continued: This agent was resumed 3 times in a row" }]);
-  const r3 = new Restarts(store, life(1003, t1 + 60_000));
+  expect(r2.recent(3).map((r) => r.told?.[parent.id])).toEqual([{ [b.s.id]: "resumed" }, { [a.s.id]: "resumed", [c.s.id]: "not continued: This agent was resumed 3 times in a row" }]);
+  const { r: r3, h: h3 } = w.start(1003, t1 + 60_000);
+  // --- this start cuts A01, decides it, and goes down before the parent's next request. The parent
+  // is then given a prompt: what it knows is newer than that record, and a later start does not bring it up.
+  h3.turnCut!(a.s, w.cut(21));
+  h3.turnCutSettled!(a.s, w.cut(21), "continued");
   r3.finish(() => undefined);
   tellEarlier(r3.last());
+  drainNotices(parent.id);
+  store.append(parent.id, "user", { text: "go on" });
+  const { r: r4 } = w.start(1004, Date.now() + 1000);
+  r4.finish(() => undefined);
+  tellEarlier(r4.last());
   expect(send()).toEqual([]);
+  expect(r4.recent(2)[1]!.told).toEqual({ [parent.id]: {} });
   store.db.close();
 });
