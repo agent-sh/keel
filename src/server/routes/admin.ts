@@ -24,7 +24,7 @@ import { join } from "node:path";
 import { Awake } from "../../admin/awake.ts";
 import { Daemon } from "../../admin/daemon.ts";
 import { restarts } from "../../admin/life.ts";
-import { restartNeedsEye, restartSummary, restartTurnLine } from "../../admin/life-rows.ts";
+import { restartNeedsEye, restartSummary, restartTurnLine, type Restart } from "../../admin/life-rows.ts";
 import * as activity from "../../automation/activity.ts";
 import { tellCutAgents } from "../../automation/restart-told.ts";
 import { loadSettings, onSettings, patchSettings, resetSettings, settings, settingsUnreadable } from "../../admin/settings.ts";
@@ -117,13 +117,16 @@ export const adminRoutes: RouteModule = (deps) => {
   // daemon did not choose to go down, or a turn was not continued).
   const starts = restarts();
   if (starts) {
-    starts.changed = () => daemon.emit();
+    // Each change is a cut turn found or decided: a session whose cut agents are all decided is told of them
+    // then, with its next input (before the first of them reports again), and the rest when the record is whole.
+    const tell = (r: Restart, whole = false) => { try { tellCutAgents(r, whole); } catch (e) { errors.capture("server", e, { at: "restart told to parents" }); } };
+    // (After the step that changed it: a start finds every cut turn before it decides the first.)
+    starts.changed = () => { daemon.emit(); queueMicrotask(() => tell(starts.last())); };
     // The log has a line a turn already, under the turn's own name (observe.ts).
     starts.whole = (r) => {
       if (r.before || r.turns.length) console.log(`[daemon] ${restartSummary(r)}`);
       if (restartNeedsEye(r)) activity.record("daemon", r.before?.how ?? "unknown", null, [restartSummary(r), ...r.turns.map(restartTurnLine)].join(" "), { restart: r });
-      // A session whose agents were cut is told which, and what became of each, with its next input.
-      try { tellCutAgents(r); } catch (e) { errors.capture("server", e, { at: "restart told to parents" }); }
+      tell(r, true);
     };
   }
 
