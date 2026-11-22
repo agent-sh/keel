@@ -14,6 +14,7 @@ import type { Store } from "../core/store.ts";
 import type { Session } from "../core/types.ts";
 import { WATCH_LABEL, WATCH_RANK, type Watch } from "../core/watch.ts";
 import { CLASS, dur, type Refs, type TimelineNow, type TimelineRow } from "./timeline-rows.ts";
+import { waitingOf } from "./waiting-line.ts";
 
 // What a row did since the asked time. `turns`: its own turns that ended.
 // `cut`: those a daemon restart cut, which did not end: they are continued
@@ -209,7 +210,7 @@ export function overview(from: From, opts: OverviewOpts): Overview {
         if (l.until) r.until = l.until;
         if (lines.length > 1) r.more = lines.length - 1;
         if (l.refs) r.refs = l.refs;
-      }
+      } else Object.assign(r, waitingOf(st, as_of)); // no line of its own: what it waits on and until when, from its state (waiting-line.ts)
     } else if (st.watch === "fail") r.failed = failure(s);
     else if (st.watch !== "idle") r.last = s.updated;
     const d = rolled(s.id);
