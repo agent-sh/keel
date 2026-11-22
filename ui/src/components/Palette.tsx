@@ -198,7 +198,12 @@ export function Palette() {
           finalFocus={() => {
             const el = from.current;
             from.current = null;
-            return !picked.current && el instanceof HTMLElement && el !== document.body && el.isConnected && el.getClientRects().length > 0 ? el : false;
+            // The keyboard goes back to where it was only while it is still the palette's, or nowhere. This runs
+            // when the palette has finished closing: a person who put the keyboard somewhere else meanwhile
+            // (the message box, a button) keeps it there.
+            const now = document.activeElement;
+            const moved = now instanceof HTMLElement && now !== document.body && !now.closest('[data-testid="palette"]');
+            return !picked.current && !moved && el instanceof HTMLElement && el !== document.body && el.isConnected && el.getClientRects().length > 0 ? el : false;
           }}
           aria-label="Search and commands"
           className={cn(
