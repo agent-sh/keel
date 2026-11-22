@@ -40,6 +40,8 @@ const DEADLINE_MS = 5 * 60_000;
 // thousands of events from a cold disk, which takes the loop as long when
 // the loop makes it.
 const AHEAD_MS = 5_000;
+// And how long when its read waits behind another read like it.
+const AHEAD_QUEUED_MS = 300;
 
 export class Reads {
   private worker?: Worker;
@@ -116,10 +118,15 @@ export class Reads {
   // runs and has nothing in flight but reads like this one, and skipped
   // otherwise. Resolves when the read is done, at once when it is skipped,
   // and after `ms` at the latest (the caller then reads for itself, while
-  // the thread's read still brings pages in). Never rejects.
+  // the thread's read still brings pages in). One that queues behind
+  // another read like it (several sessions first used together) is still
+  // made, and waited for AHEAD_QUEUED_MS at most: the one before it may be
+  // a session of tens of thousands of events, and a small session's own
+  // read is over long before that. Never rejects.
   private ahead = 0;
   readAhead(sql: string, params: (string | number | null)[], ms = AHEAD_MS): Promise<void> {
     if (!this.thread || this.held || this.waiting.size > this.ahead || !this.start()) return Promise.resolve();
+    if (this.ahead > 0) ms = Math.min(ms, AHEAD_QUEUED_MS);
     this.ahead++;
     const read = this.sql(sql, params).then(() => {}, () => {}).finally(() => { this.ahead--; });
     return new Promise<void>((ok) => {

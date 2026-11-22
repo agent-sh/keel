@@ -31,6 +31,10 @@ test("a label is built from SQL's words and the schema's names, and everything e
     expect(made).toMatch(/^(\? )?(UPDATE sessions SET title = \?|VACUUM INTO \?)/);
   }
   expect(label(`UPDATE sessions SET title = "sk-live-1 hunter2" WHERE id = ?`)).toBe("UPDATE sessions SET title = ? WHERE id = ?");
+  // A `--` inside a string is the string's, and an apostrophe in a comment is the comment's: the label reads as the statement does.
+  expect(label("UPDATE sessions SET title = 'a -- b', kind = 'hunter2' WHERE id = ?")).toBe("UPDATE sessions SET title = ?, kind = ? WHERE id = ?");
+  expect(label("SELECT id FROM events -- it's the newest 'hunter2'\n WHERE seq > 4")).toBe("SELECT id FROM events WHERE seq > ?");
+  expect(label("SELECT id /* don't */ FROM events WHERE kind = '/* not a comment */'")).toBe("SELECT id FROM events WHERE kind = ?");
   // A name the schema does not hold is not shown either, and a long text is cut.
   expect(label("SELECT secret_column FROM events")).toBe("SELECT ? FROM events");
   expect(label(`SELECT ${"id, ".repeat(100)}seq FROM events`).length).toBe(160);

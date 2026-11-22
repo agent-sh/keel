@@ -63,11 +63,11 @@ const known = (word: string) => {
 // the vocabulary does not hold, an alias). That step alone decides what a
 // label can hold. Before it, comments and quoted strings are taken out
 // whole, so a label reads as its statement does; a text that fools that
-// (an apostrophe in a comment) still passes the step above.
+// still passes the step above.
 export function labelText(sql: string, knows: (word: string) => boolean = known): string {
   const t = sql
-    .replace(/--[^\n]*|\/\*[\s\S]*?\*\//g, " ")
-    .replace(/'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]/g, "?")
+    // (One pass from the left: a `--` inside a string is the string's, and an apostrophe in a comment is the comment's.)
+    .replace(/'(?:[^']|'')*'|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]|--[^\n]*|\/\*[\s\S]*?\*\//g, (m) => (m.startsWith("--") || m.startsWith("/*") ? " " : "?"))
     .replace(/[A-Za-z_][A-Za-z0-9_]*|[^\sA-Za-z_(),.*=<>!+\-/|;%?]+/g, (tok) => (/^[A-Za-z_]/.test(tok) && knows(tok) ? tok : "?"))
     .replace(/\s+/g, " ")
     .trim()

@@ -130,13 +130,29 @@ test("a read made ahead runs when the thread is free, and is skipped behind othe
     // Several at once (every session is cold after a start) take their turns: none is skipped for the others.
     await Promise.all([reads.readAhead(ahead, [s.id]), reads.readAhead(ahead, [s.id]), reads.readAhead(ahead, [s.id])]);
     expect(reads.counts).toEqual({ thread: 4, loop: 0 });
+    // Behind another read like it that takes long (a session of tens of thousands of events): made all the
+    // same, and waited for a few hundred milliseconds at most.
+    {
+      const long = "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 12000000) SELECT count(*) AS n FROM c";
+      const before = reads.counts.thread;
+      const big = reads.readAhead(long, [], 30_000);
+      const t = performance.now();
+      await reads.readAhead(ahead, [s.id]);
+      const waited = performance.now() - t;
+      let bigDone = false;
+      void big.then(() => (bigDone = true));
+      await new Promise((ok) => setTimeout(ok, 0));
+      expect([waited >= 250 || bigDone, waited < 1_000 || bigDone]).toEqual([true, true]);
+      await big;
+      expect(reads.counts.thread - before).toBe(2);
+    }
     // Behind a report of seconds: skipped, and the caller goes on at once.
     const slow = "WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 12000000) SELECT count(*) AS n FROM c";
     const report = reads.sql(slow);
     const t0 = performance.now();
     await reads.readAhead(ahead, [s.id]);
     const waited = performance.now() - t0;
-    expect(reads.counts).toEqual({ thread: 5, loop: 0 });
+    expect(reads.counts).toEqual({ thread: 7, loop: 0 });
     let done = false;
     void report.then(() => (done = true));
     await new Promise((ok) => setTimeout(ok, 0));
@@ -150,13 +166,13 @@ test("a read made ahead runs when the thread is free, and is skipped behind othe
     const t2 = performance.now();
     await reads.readAhead(slow, [], 30);
     expect(performance.now() - t2).toBeLessThan((await whole) / 2);
-    expect(reads.counts.thread).toBe(7);
+    expect(reads.counts.thread).toBe(9);
     // While reads are held back for a backup: skipped.
     await reads.sql("SELECT 1");
     const release = await reads.hold(30_000);
     await reads.readAhead(ahead, [s.id]);
     release();
-    expect(reads.counts).toEqual({ thread: 8, loop: 0 });
+    expect(reads.counts).toEqual({ thread: 10, loop: 0 });
   } finally {
     reads.close();
   }
