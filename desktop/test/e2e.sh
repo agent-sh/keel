@@ -278,6 +278,18 @@ check "a copy four seconds later, with no press, is refused" "wait_for 8 \"grep 
 if [ -n "$SECRET" ] && command -v wl-paste > /dev/null; then
   check "the clipboard holds the copy the press allowed" "[ \"\$(wl-paste -n 2> /dev/null)\" = copied-by-the-check ]"
 fi
+if [ -n "$SECRET" ]; then
+  # A picture larger than the page keeps one is handed over at that size, made ready off the main loop.
+  py 'import struct,sys,zlib
+def chunk(t, d): return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+w, h = 3000, 2000
+row = b"\x00" + bytes([18, 128, 153]) * w
+open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(row * h, 1)) + chunk(b"IEND", b""))' "$D/large.png"
+  (wl-copy -t image/png < "$D/large.png" > /dev/null 2>&1 &); sleep 1.5
+  $A key --id "$WS" F5 > /dev/null 2>&1
+  check "a large pasted picture is handed over at the size the page keeps (3000x2000 as 1568x1045)" "wait_for 15 \"grep -aq '^PROBE PASTED id=9005 refused=false .*images=1 size=1568x1045 from=3000x2000' '$D/shell.out'\""
+  (wl-copy copied-by-the-check > /dev/null 2>&1 &); sleep 1
+fi
 $A key --id "$WS" F6 > /dev/null 2>&1
 check "a paste is read at the owner's press" "wait_for 5 \"grep -aq '^PROBE PASTED id=9003 refused=false' '$D/shell.out'\""
 check "a paste four seconds later, with no press, is refused" "wait_for 8 \"grep -aq '^PROBE PASTED id=9004 refused=true' '$D/shell.out'\""

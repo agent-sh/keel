@@ -7,7 +7,7 @@ import type { AttachmentBlock, ImageBlock, PromptBlock } from "../../../src/core
 // as a reference the daemon resolves per model: text inline, PDF as a document).
 export type Attachment = ImageBlock & { id: string; name: string; url: string; bytes: number; file?: AttachmentBlock };
 
-const MAX_EDGE = 1568;
+export const MAX_EDGE = 1568;
 const MAX_BYTES = 3_750_000; // providers refuse a base64 image over 5 MB
 const SUPPORTED = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 

@@ -60,7 +60,8 @@ export function hexOf(color: string, ctx: Pick<CanvasRenderingContext2D, "fillSt
 //   daemon: "up" (join it now) or "away" (the title bar says so).
 //   scale: the text size keys, which drive the page's own setting.
 //   pasted, copied: the app's answers to a paste and a copy the page asked for, by number.
-export type Pasted = { id: number; text?: string | null; images: { type: string; data: string }[]; refused?: boolean };
+// (`failed`: the clipboard held a picture the app could not make ready.)
+export type Pasted = { id: number; text?: string | null; images: { type: string; data: string }[]; refused?: boolean; failed?: boolean };
 export type ShellTold = { open?: string; from?: string; daemon?: "up" | "away"; scale?: "up" | "down" | "reset"; pasted?: Pasted; copied?: { id: number; ok: boolean } };
 
 // The clipboard in the app. The app's web view gives a page no clipboard of its own (no frame
@@ -97,7 +98,9 @@ export function pastedFiles(images: Pasted["images"]): File[] {
     return [new File([bytes], `pasted.${im.type.slice(6).replace(/[^a-z0-9]/g, "") || "png"}`, { type: im.type })];
   });
 }
-export const shellPaste = () => ask<Pasted>({ t: "paste" });
+// `edge`: the longer side the page keeps a picture at; the app hands a larger one over at that
+// size, so what crosses is never larger than the page would keep. Null: the app did not answer.
+export const shellPaste = (edge?: number) => ask<Pasted>({ t: "paste", ...(edge ? { edge } : {}) });
 export const shellCopying = () => shell?.post({ t: "copying" });
 export async function shellCopy(text: string): Promise<void> {
   const answer = await ask<{ ok: boolean }>({ t: "copy", text });

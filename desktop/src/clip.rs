@@ -10,6 +10,17 @@ pub const GESTURE: Duration = Duration::from_secs(1);
 /// How long a copy the press allowed may take to arrive (its text may have to be fetched first).
 pub const PERMIT: Duration = Duration::from_secs(30);
 
+/// The size a picture is handed to the page at: its own, or scaled down so its longer side is
+/// `edge` (the size the page keeps a picture at: it would scale a larger one down itself).
+pub fn fit(width: i32, height: i32, edge: i32) -> (i32, i32) {
+    let long = width.max(height);
+    if edge <= 0 || long <= edge || width <= 0 || height <= 0 {
+        return (width, height);
+    }
+    let scale = edge as f64 / long as f64;
+    (((width as f64 * scale).round() as i32).max(1), ((height as f64 * scale).round() as i32).max(1))
+}
+
 #[derive(Default)]
 pub struct Gate {
     input: Option<Instant>,
@@ -48,6 +59,17 @@ impl Gate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The review's case: a 2700 by 2600 picture was encoded whole on the main loop.
+    #[test]
+    fn a_large_picture_is_handed_over_at_the_size_the_page_keeps() {
+        assert_eq!(fit(2700, 2600, 1568), (1568, 1510));
+        assert_eq!(fit(1000, 4000, 1568), (392, 1568));
+        assert_eq!(fit(1568, 900, 1568), (1568, 900));
+        assert_eq!(fit(40, 30, 1568), (40, 30));
+        assert_eq!(fit(30000, 2, 1568), (1568, 1));
+        assert_eq!(fit(800, 600, 0), (800, 600));
+    }
 
     #[test]
     fn a_paste_is_read_only_at_the_owners_press() {

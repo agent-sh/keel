@@ -3,7 +3,7 @@ import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, typ
 import type { PromptBlock, Session } from "../../../src/core/types.ts";
 import { slash, type SlashItem } from "../lib/extend.ts";
 import { loadMcpPrompts } from "../lib/tools-ui.ts";
-import { fromBlock, toAttachment, toBlock, type Attachment } from "../lib/images.ts";
+import { fromBlock, MAX_EDGE, toAttachment, toBlock, type Attachment } from "../lib/images.ts";
 import { boxRefused, ownFocus } from "../lib/asks.ts";
 import { composing, fuzzy, isMac, keyLabel, QUEUE_KEYS, SEND_KEYS } from "../lib/keys.ts";
 import { splitId } from "../lib/fleet-ids.ts";
@@ -865,7 +865,12 @@ const SessionComposer = memo(function SessionComposer({
           // There, on the owner's own paste, the app reads the clipboard and hands the picture
           // over (lib/shell.ts). A browser tab asks no clipboard for anything.
           if (shell && !e.clipboardData.types.length && e.nativeEvent.isTrusted) {
-            shellPaste().then((got) => { const files = pastedFiles(got?.images ?? []); if (files.length) addFiles(files); }).catch(() => {});
+            shellPaste(MAX_EDGE).then((got) => {
+              // A picture that did not come is said, not dropped in silence.
+              if (!got || got.failed) return setNotice(got ? "The picture on the clipboard could not be read." : "The clipboard was not read in time. Paste again, or attach the picture as a file.");
+              const files = pastedFiles(got.images);
+              if (files.length) addFiles(files);
+            }).catch(() => {});
           }
         }}
         onKeyDown={(e) => {

@@ -70,6 +70,22 @@ window.dialog.message .dialog-action-area button:focus {{ outline: 2px solid {ne
     )
 }
 
+/// A picture as PNG, scaled down to fit `edge` on its longer side when it is larger. It runs
+/// off the main loop: a large picture takes a while to encode.
+fn png_within(texture: &gdk::Texture, edge: Option<i32>) -> Option<(Vec<u8>, i32, i32)> {
+    let (w, h) = (texture.width(), texture.height());
+    let (nw, nh) = edge.map_or((w, h), |e| crate::clip::fit(w, h, e));
+    if (nw, nh) == (w, h) {
+        return Some((texture.save_to_png_bytes().to_vec(), w, h));
+    }
+    let mut pixels = gdk::TextureDownloader::new(texture);
+    pixels.set_format(gdk::MemoryFormat::R8g8b8a8);
+    let (bytes, stride) = pixels.download_bytes();
+    let whole = gtk::gdk_pixbuf::Pixbuf::from_bytes(&bytes, gtk::gdk_pixbuf::Colorspace::Rgb, true, 8, w, h, stride as i32);
+    let small = whole.scale_simple(nw, nh, gtk::gdk_pixbuf::InterpType::Bilinear)?;
+    small.save_to_bufferv("png", &[]).ok().map(|png| (png, nw, nh))
+}
+
 /// `scheme://host:port` of an address.
 fn origin(u: &str) -> String {
     u.split('/').take(3).collect::<Vec<_>>().join("/")
@@ -202,7 +218,8 @@ pub fn asked(m: &Value, key: &str) -> Option<Asked1> {
     match m.get("t").and_then(Value::as_str)? {
         "start" => Some(Asked1::Ask(Ask::Start)),
         "window" => Some(Asked1::Ask(Ask::Window(s("path")))),
-        "paste" => Some(Asked1::Paste(id())),
+        // (`edge`: the longer side the page keeps a picture at.)
+        "paste" => Some(Asked1::Paste(id(), m.get("edge").and_then(Value::as_i64).filter(|e| (64..=16384).contains(e)).map(|e| e as i32))),
         "copying" => Some(Asked1::Copying),
         "copy" => Some(Asked1::Copy(id(), s("text"))),
         "look" => {
@@ -228,8 +245,9 @@ pub fn asked(m: &Value, key: &str) -> Option<Asked1> {
 #[derive(Debug)]
 pub enum Asked1 {
     Ask(Ask),
-    /// The owner pasted and the paste event carried nothing: what the clipboard holds.
-    Paste(u64),
+    /// The owner pasted and the paste event carried nothing: what the clipboard holds
+    /// (a picture no larger than the edge the page named).
+    Paste(u64, Option<i32>),
     /// A copy is coming, said at the owner's press.
     Copying,
     Copy(u64, String),
@@ -334,9 +352,9 @@ impl Win {
             let Ok(m) = serde_json::from_str::<Value>(&value.to_str()) else { return };
             match asked(&m, &win.key) {
                 Some(Asked1::Ask(what)) => a(&win, what),
-                Some(Asked1::Paste(id)) => {
+                Some(Asked1::Paste(id, edge)) => {
                     if win.gate.borrow().may_read(Instant::now()) {
-                        win.paste(id);
+                        win.paste(id, edge);
                     } else {
                         win.tell(&serde_json::json!({ "pasted": { "id": id, "refused": true, "images": [] } }));
                     }
@@ -543,20 +561,30 @@ impl Win {
     }
 
     /// What the clipboard holds, read by the app and handed to the page that asked: its text,
-    /// and a picture as PNG. Nothing else of the web view ever sees it.
-    fn paste(self: &Rc<Self>, id: u64) {
+    /// and a picture as PNG, no larger than the page keeps one. Nothing else of the web view ever
+    /// sees it. The picture is scaled and encoded off the main loop.
+    fn paste(self: &Rc<Self>, id: u64, edge: Option<i32>) {
         let clipboard = self.window.clipboard();
         let (win, board) = (self.clone(), clipboard.clone());
         clipboard.read_text_async(gio::Cancellable::NONE, move |text| {
             let text = text.ok().flatten().map(|t| t.to_string());
             board.read_texture_async(gio::Cancellable::NONE, move |texture| {
-                let images: Vec<Value> = texture
-                    .ok()
-                    .flatten()
-                    .map(|t| serde_json::json!({ "type": "image/png", "data": glib::base64_encode(&t.save_to_png_bytes()).to_string() }))
-                    .into_iter()
-                    .collect();
-                win.tell(&serde_json::json!({ "pasted": { "id": id, "text": text, "images": images } }));
+                let Some(texture) = texture.ok().flatten() else {
+                    return win.tell(&serde_json::json!({ "pasted": { "id": id, "text": text, "images": [] } }));
+                };
+                let (width, height) = (texture.width(), texture.height());
+                glib::spawn_future_local(async move {
+                    let images: Vec<Value> = gio::spawn_blocking(move || png_within(&texture, edge))
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|(png, w, h)| serde_json::json!({ "type": "image/png", "data": glib::base64_encode(&png).to_string(), "width": w, "height": h }))
+                        .into_iter()
+                        .collect();
+                    // A picture that could not be made ready is said, not dropped.
+                    let failed = images.is_empty();
+                    win.tell(&serde_json::json!({ "pasted": { "id": id, "text": text, "images": images, "failed": failed, "from": [width, height] } }));
+                });
             });
         });
     }
@@ -737,7 +765,9 @@ mod tests {
         let m = |raw: &str| asked(&serde_json::from_str(raw).unwrap(), "k-123");
         assert!(matches!(m(r#"{"t":"window","path":"/s/abc","key":"k-123"}"#), Some(Asked1::Ask(Ask::Window(p))) if p == "/s/abc"));
         assert!(matches!(m(r#"{"t":"start","key":"k-123"}"#), Some(Asked1::Ask(Ask::Start))));
-        assert!(matches!(m(r#"{"t":"paste","id":7,"key":"k-123"}"#), Some(Asked1::Paste(7))));
+        assert!(matches!(m(r#"{"t":"paste","id":7,"key":"k-123"}"#), Some(Asked1::Paste(7, None))));
+        assert!(matches!(m(r#"{"t":"paste","id":7,"edge":1568,"key":"k-123"}"#), Some(Asked1::Paste(7, Some(1568)))));
+        assert!(matches!(m(r#"{"t":"paste","id":7,"edge":1,"key":"k-123"}"#), Some(Asked1::Paste(7, None))));
         assert!(matches!(m(r#"{"t":"copying","key":"k-123"}"#), Some(Asked1::Copying)));
         assert!(matches!(m(r#"{"t":"copy","id":8,"text":"words","key":"k-123"}"#), Some(Asked1::Copy(8, t)) if t == "words"));
         assert!(matches!(m(r#"{"t":"look","dark":true,"bg":"red","key":"k-123"}"#), Some(Asked1::Ask(Ask::Look(l))) if l.dark && l.bg == Look::of(true).bg));

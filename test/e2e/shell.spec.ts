@@ -252,6 +252,14 @@ test("shell: a paste and a copy go through the app, and a browser tab asks no cl
     await tell(page, { pasted: { id: asked.id, text: null, images: [{ type: "image/png", data: png }] } });
     await expect(page.getByTestId("attachments").locator("img")).toHaveCount(1);
     await shoot(page, "shell-05-pasted-picture");
+    // The page names the size it keeps a picture at: the app hands a larger one over at that size.
+    expect(asked.edge).toBe(1568);
+    // A picture the app could not make ready is said, not dropped in silence.
+    await pasteNothing();
+    await expect.poll(async () => (await posted(page, "paste")).length).toBe(2);
+    await tell(page, { pasted: { id: (await posted(page, "paste"))[1].id, text: null, images: [], failed: true } });
+    await expect(page.getByText("The picture on the clipboard could not be read.")).toBeVisible();
+    await expect(page.getByTestId("attachments").locator("img")).toHaveCount(1);
 
     // A copy is announced at the press, sent with its text, and shown as copied only when the app says so.
     const copy = page.getByTestId("copy-reply").first();
