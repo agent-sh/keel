@@ -256,3 +256,18 @@ test("a budget is refused at the request the ledger's sum says, also when costs 
     patchSettings({ budget: { daily_usd: null, monthly_usd: null } });
   }
 }));
+
+test("a failed call's reason is kept as the cause line, scrubbed like any error text the store keeps", () => withStore(async (store) => {
+  const s = store.createSession({ model: "p:main", workspace: store.stateDir });
+  new PromptStore(store);
+  new Telemetry(store, new Bus());
+  const hooks = allHooks().at(-1)!;
+  // The store's scrub, as the secrets module sets it: a key-shaped token becomes a placeholder.
+  store.redact = (_session, kind, v) => (kind === "error" ? String(v).replace(/sk-[A-Za-z0-9-]{16,}/g, "[secret:test]") : v);
+  // A token of a key's shape, made here so that none stands in this file.
+  const key = `sk-${"k".repeat(24)}`;
+  hooks.toolRan!(store.session(s.id)!, { id: "c1", tool: { name: "Bash" }, input: {} } as any,
+    { type: "tool_result", tool_use_id: "c1", is_error: true, content: `Exit code 1\nconnecting\n\x1b[31merror\x1b[0m: Authorization: Bearer ${key} was rejected\nsee the log` } as any, { ms: 1, outcome: "error" });
+  // It read "Exit code 1", then "see the log" with the key as printed.
+  expect(store.db.query<{ error: string }, []>("SELECT error FROM telemetry_tools").all().map((r) => r.error)).toEqual(["error: Authorization: Bearer [secret:test] was rejected (exit code 1)"]);
+}));

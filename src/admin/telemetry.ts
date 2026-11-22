@@ -198,10 +198,16 @@ export class Telemetry {
         const tag = armOf(this.store, s.id);
         this.store.db
           .query("INSERT INTO telemetry_tools (session_id, ts, tool, ms, is_error, call_id, error, outcome, event_id, model, turn_event, exp_id, arm) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-          .run(s.id, Date.now(), call.tool.name, ran.ms, ran.outcome === "error" ? 1 : 0, call.id, ran.outcome === "error" ? excerpt(result.content) : null,
+          .run(s.id, Date.now(), call.tool.name, ran.ms, ran.outcome === "error" ? 1 : 0, call.id, ran.outcome === "error" ? this.scrubbed(s.id, excerpt(result.content)) : null,
             ran.outcome, ev?.id ?? null, ev?.model ?? null, turn, tag?.exp_id ?? null, tag?.arm ?? null);
       },
     });
+  }
+
+  // The line of a failure as it is kept: a key-shaped token a command printed is scrubbed as in any
+  // error text the store keeps.
+  private scrubbed(sessionId: string, line: string): string {
+    try { return String(this.store.redact(sessionId, "error", line)); } catch { return line; }
   }
 
   // The fingerprint of a set of offered tool names, the names kept once.
@@ -427,7 +433,7 @@ export class Telemetry {
           const use = r.call ? uses.get(r.call) : undefined;
           let content: unknown = r.content;
           if (r.is_error && !r.text && typeof content === "string") { try { content = JSON.parse(content); } catch { content = ""; } }
-          insert.run(id, r.ts, use?.name ?? "?", r.is_error ? 1 : 0, r.call ?? null, r.is_error ? excerpt(content) : null, r.is_error ? "error" : "ok", use?.id ?? null, use?.model ?? null);
+          insert.run(id, r.ts, use?.name ?? "?", r.is_error ? 1 : 0, r.call ?? null, r.is_error ? this.scrubbed(id, excerpt(content)) : null, r.is_error ? "error" : "ok", use?.id ?? null, use?.model ?? null);
         }
       }
       db.exec("DROP TABLE temp.telemetry_backfill_at");

@@ -66,10 +66,11 @@ export const timelineRoutes: RouteModule = ({ store, engine }) => {
   // When each session last read a timeline with the tool, and the turn that ran in it then (told under
   // "now", it had no row yet): "what is new since I last read" is answered from here, with no time for
   // the model to work out. Kept in the store: a restart is when a coordinator asks.
-  store.migrate("CREATE TABLE IF NOT EXISTS timeline_reads (reader TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, ts INTEGER NOT NULL, open_ts INTEGER, PRIMARY KEY (reader, session_id)) WITHOUT ROWID");
-  const lastRead = (reader: string, id: string) => store.db.query<{ ts: number; open_ts: number | null }, [string, string]>("SELECT ts, open_ts FROM timeline_reads WHERE reader = ? AND session_id = ?").get(reader, id);
-  const markRead = (reader: string, id: string, ts: number, open: number | undefined) =>
-    void store.db.query("INSERT INTO timeline_reads (reader, session_id, ts, open_ts) VALUES (?, ?, ?, ?) ON CONFLICT(reader, session_id) DO UPDATE SET ts = excluded.ts, open_ts = excluded.open_ts").run(reader, id, ts, open ?? null);
+  // `open_id`: that turn's id. A session that reads its own timeline is that turn: it is not news to it later.
+  store.migrate("CREATE TABLE IF NOT EXISTS timeline_reads (reader TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, ts INTEGER NOT NULL, open_ts INTEGER, open_id TEXT, PRIMARY KEY (reader, session_id)) WITHOUT ROWID");
+  const lastRead = (reader: string, id: string) => store.db.query<{ ts: number; open_ts: number | null; open_id: string | null }, [string, string]>("SELECT ts, open_ts, open_id FROM timeline_reads WHERE reader = ? AND session_id = ?").get(reader, id);
+  const markRead = (reader: string, id: string, ts: number, open: { ts: number; id?: string } | undefined) =>
+    void store.db.query("INSERT INTO timeline_reads (reader, session_id, ts, open_ts, open_id) VALUES (?, ?, ?, ?, ?) ON CONFLICT(reader, session_id) DO UPDATE SET ts = excluded.ts, open_ts = excluded.open_ts, open_id = excluded.open_id").run(reader, id, ts, open?.ts ?? null, open?.id ?? null);
   // The text form as a tool, for a session with no shell to ask the route:
   // its own timeline, or that of an agent it started, and no other session's.
   const SessionTimeline: Tool = {
@@ -131,9 +132,13 @@ export const timelineRoutes: RouteModule = ({ store, engine }) => {
         // A turn that ran at the last read began before it: the read goes back to its start, and what was told then is left out below.
         const from = last ? Math.min(last.ts, last.open_ts ?? last.ts) : undefined;
         const page = await timeline.settled(id, { before: input?.before ? String(input.before) : null, limit, only: only ?? null, since: from !== undefined ? from : input?.since ? parseSince(String(input.since)) : null });
-        if (last) page.rows = page.rows.filter((r) => newSince(r, last.ts));
-        // A whole read (no filter, no older page) is what "last read" means from here on.
-        if (!input?.before && !only) markRead(ctx.sessionId, id, page.as_of, page.now?.lines.find((l) => l.kind === "turn" && l.open)?.ts);
+        // Its own reading turn (the one that ran at its last read, since ended) is not news to the session that read.
+        if (last) page.rows = page.rows.filter((r) => newSince(r, last.ts) && !(id === ctx.sessionId && r.kind === "turn" && r.id === last.open_id));
+        // "Last read" moves only over what a read showed whole: no filter, no older page, no bound of its
+        // own, and nothing left for a next page. A read that was cut keeps the cursor, so the rows it did
+        // not show are still new to the next read.
+        const turn = page.now?.lines.find((l) => l.kind === "turn" && l.open);
+        if (!input?.before && !only && input?.since === undefined && !page.next) markRead(ctx.sessionId, id, page.as_of, turn && { ts: turn.ts, id: turn.turn_event });
         return ok(timelineText(page, { title: s.title, ...(fresh ? { fresh: { since: last?.ts ?? null } } : {}) }));
       } catch (e) {
         return fail((e as Error).message);

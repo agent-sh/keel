@@ -1,19 +1,35 @@
-// A failed tool result in one line. For a shell command that is the last line
-// it printed that says something (what it wrote before it gave up), with how
-// it ended: "Exit code 4" alone names no cause, and seven failures that read
-// the same cannot be told apart. Any other result is its first line.
-// Pure: read by the telemetry's examples and the turn receipt.
+// A failed tool result in one line. For a shell command that is the line it
+// printed that names the cause, with how it ended: "Exit code 4" alone names
+// no cause, and seven failures that read the same cannot be told apart. The
+// cause is the last line shaped like an error (`error:`, `SomeError:`,
+// `fatal:`, `panic`, FAILED), else the last line that names a place in a file
+// (file:line:col), else the last line that says anything: a compiler's caret
+// line, a runtime's version line, a test runner's tally or a tool's "a
+// complete log is in" come after the cause and are not it. Any other result
+// is its first line.
+// Pure: read by the telemetry's examples and the turn receipt. What stores
+// the line scrubs it as it scrubs any error text (src/admin/telemetry.ts).
 
 const text = (content: unknown): string =>
   typeof content === "string" ? content : Array.isArray(content) ? content.map((b: any) => (b?.type === "text" ? b.text : "")).join("\n") : "";
 // What hooks add after a result (memory, reminders) is not the tool's output.
 const own = (t: string) => t.replace(/<(memory|system-reminder)\b[\s\S]*?<\/\1>/g, "");
-const lines = (t: string) => own(t).split("\n").map((l) => l.trim()).filter(Boolean);
+// One printable line: no escape sequences (colors, cursor moves), of a line redrawn with carriage returns
+// its last frame, and no other control character.
+const printable = (l: string) => l
+  .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/\x1b[@-_]?/g, "")
+  .replace(/\r+$/, "").replace(/^.*\r/, "").replace(/[\x00-\x08\x0b-\x1f\x7f]+/g, "").trim();
+const lines = (t: string) => own(t).split("\n").map(printable).filter(Boolean);
 // Lines the shell tools write around the output: no cause is in them.
 const NOISE = /^(Shell cwd was reset to .*|\[\.\.\. \d+ characters cut \.\.\.\]|\(empty\)|\(no output\))$/;
 // How a shell result says the command ended: Claude's Bash leads with it, Gemini's ends with it.
 const HEAD = /^(Exit code -?\d+|Killed by \w+|Command (was|did) .*)$/;
 const TAIL = /^(Exit Code: .*|Signal: .*)$/;
+// A line shaped like an error, and one that names a place in a file.
+const ERROR = /\b\w*(?:error|Error|ERROR)(?:\s?[\[A-Z][\w\]]{0,12})?:|\b(?:fatal|FATAL|panic|PANIC)\b|\bFAILED\b|\bFAIL\b|^npm (?:error|ERR!) (?!A complete log|To see a list)\S/;
+const PLACE = /[\w./-]+:\d+:\d+/;
+// A frame of a stack names a place, not the cause.
+const FRAME = /^at\s/;
 
 // The exit code a shell result names, if it names one.
 export function exitOf(content: unknown): number | undefined {
@@ -38,6 +54,7 @@ export function reasonLine(content: unknown, max = 140): string {
   }
   const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, Math.max(n - 3, 0))}...` : s);
   if (how === undefined) return clip(head, max);
-  const last = body.filter((l) => l && !NOISE.test(l) && !TAIL.test(l)).at(-1);
-  return last ? `${clip(last, max - how.length - 3)} (${how})` : clip(head, max);
+  const said = body.filter((l) => l && !NOISE.test(l) && !TAIL.test(l));
+  const cause = said.findLast((l) => ERROR.test(l) && !FRAME.test(l)) ?? said.findLast((l) => PLACE.test(l) && !FRAME.test(l)) ?? said.at(-1);
+  return cause ? `${clip(cause, max - how.length - 3)} (${how})` : clip(head, max);
 }
