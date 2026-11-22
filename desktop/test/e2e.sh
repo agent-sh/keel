@@ -5,7 +5,13 @@
 # stand-in tray host and a stand-in notification service on that workspace's
 # session bus, and the shell inside it. It proves the window, the survival of
 # a daemon restart, the tray count, a notification's click, a second launch,
-# a keel:// link, the remembered size, and the start button.
+# a keel:// link, the text size keys, the remembered size, and the start button.
+# It also runs the reproductions of the first build's review: HTML shown in a
+# sandboxed frame that tries to drive the app and read the clipboard, a page
+# that tries to leave the daemon's origin, a stranger on the daemon's port
+# (who must never be sent the token), an app that is stopped or has no
+# notification service when an alert comes, a link to a session with a
+# request waiting followed by Return, and quitting with a turn at work.
 #
 #   desktop/test/e2e.sh                   native Wayland GNOME workspace
 #   KEEL_E2E_BACKEND=x11 desktop/test/e2e.sh   an X11 workspace (also checks a session's own window)
@@ -104,8 +110,20 @@ eval "$ENVSH"
 wait_for 10 "grep -q READY '$D/tray-host.out' && grep -q READY '$D/notify-host.out'" || { echo "the stand-in hosts did not start"; exit 2; }
 
 export KEEL_DESKTOP_DIR="$D/shell" KEEL_URL="$URL" KEEL_STATE_DIR="$D/dev/state" KEEL_BIN="$D/keel" KEEL_DESKTOP_LOG="$D/shell.jsonl" KEEL_DESKTOP_NO_BROWSER=1
-echo '{"width":1920,"height":1040,"maximized":false,"zoom":1}' > "$D/shell/shell.json"
+# The check's own script in the page (it shows the artifact's frame and tries to leave the origin), and a port nobody of Keel's is on.
+for _ in 1 2 3 4 5 6; do FOREIGN=$((46200 + RANDOM % 1700)); ss -ltn | grep -q ":$FOREIGN " || break; done
+sed "s/FOREIGN_PORT/$FOREIGN/" "$HERE/probe.js" > "$D/probe.js"
+export KEEL_DESKTOP_PROBE="$D/probe.js"
+echo '{"width":1920,"height":1040,"maximized":false}' > "$D/shell/shell.json"
 launch() { (setsid nohup "$SHELL_BIN" "$@" >> "$D/shell.out" 2>&1 < /dev/null &); }
+said() { grep -a "^PROBE $1" "$D/shell.out" 2> /dev/null | tail -1; }
+delivery() { api "/api/alerts?limit=20" | py 'import json,sys
+d=json.load(sys.stdin); d=d.get("alerts", d)
+print(next((a.get("delivery", {}).get("desktop", {}).get("state", "") for a in d if a["id"] == sys.argv[1]), ""))' "$1"; }
+shows() { api /api/shell | grep -q '"acks":true'; }
+
+# A reader of the app's stream that is not the app, attached before it: it must hold no alert.
+(curl -sN -m 900 "$URL/api/shell/events" > "$D/reader.out" 2>&1 & echo $! > "$D/host-reader.pid")
 
 # --- 1. the window
 launch
@@ -116,11 +134,12 @@ sleep 3
 read -r X Y W H _ <<< "$(geometry)"
 check "the window has the remembered size (1920x1040, got ${W}x${H})" "[ \"$W\" = 1920 ] && [ \"$H\" = 1040 ]"
 shot 01-window-light
-zoom() { py 'import json,sys; print(json.load(open(sys.argv[1])).get("zoom"))' "$D/shell/shell.json"; }
-$A key --id "$WS" ctrl+plus > /dev/null 2>&1; sleep 0.6
-check "Ctrl and plus zooms the page, and the zoom is remembered" "[ \"\$(zoom)\" = 1.1 ]"
-$A key --id "$WS" ctrl+0 > /dev/null 2>&1; sleep 0.6
-check "Ctrl and zero puts it back" "[ \"\$(zoom)\" = 1.0 ]"
+# The text size keys drive the page's own setting: one scale, which the title bar follows.
+scale() { py 'import json,sys; print(json.load(open(sys.argv[1])).get("look", {}).get("scale"))' "$D/shell/shell.json"; }
+$A key --id "$WS" ctrl+plus > /dev/null 2>&1
+check "Ctrl and plus makes the page's text larger, and the title bar follows" "wait_for 5 '[ \"\$(scale)\" = 1.1 ]' && wait_for 5 \"said AT | grep -q 'scale=1.1'\""
+$A key --id "$WS" ctrl+0 > /dev/null 2>&1
+check "Ctrl and zero puts it back" "wait_for 5 '[ \"\$(scale)\" = 1.0 ]'"
 
 # --- 2. a daemon restart under the window
 $A click --id "$WS" $((X + 320 + (W - 320) / 2)) $((Y + 336)) > /dev/null 2>&1
@@ -138,7 +157,9 @@ check "the window stayed: the page was not loaded again" "[ \"\$(logged load)\" 
 # --- 3. the tray count: a session that asks before it runs a command
 ask=$(api /api/sessions '{"model":"scripted:stand-in","title":"Desktop: clean the build output"}' POST | py 'import json,sys; print(json.load(sys.stdin)["session"]["id"])')
 api "/api/sessions/$ask/permissions" '{"mode":"ask","sandbox":"off"}' PUT > /dev/null
-api "/api/sessions/$ask/messages" '{"text":"script:calls [{\"name\":\"Bash\",\"input\":{\"command\":\"rm -rf dist build\"}}]"}' POST > /dev/null
+# (What it asks for leaves a mark when it runs: the check below presses Return after a link and the mark must not appear.)
+MARK="$D/approved-by-link"
+api "/api/sessions/$ask/messages" "{\"text\":\"script:calls [{\\\"name\\\":\\\"Bash\\\",\\\"input\\\":{\\\"command\\\":\\\"touch $MARK\\\"}}]\"}" POST > /dev/null
 check "the tray counts what waits: 1 needs you" "wait_for 30 \"tray ToolTip | grep -q '1 needs you'\""
 check "the mark asks for attention" "tray Status | grep -q NeedsAttention"
 check "the menu leads with the count" "menu | grep -q '1 needs you'"
@@ -158,14 +179,78 @@ check "its click opens the session it names, in the window, with the desktop's a
 check "the window's title is the session's" "wait_for 10 \"geometry | grep -q 'the failed deploy'\""
 check "still without loading the page again" "[ \"\$(logged load)\" = \"$loads\" ]"
 shot 04-notification-click-light
+check "the reader of the stream that is not the app was handed no alert" "! grep -q 'event: notify' '$D/reader.out' && grep -q 'event: hello' '$D/reader.out'"
+
+# --- 4b. an alert the app cannot show is the daemon's again (this scratch daemon shows none itself, so it records a failure, never "sent")
+# (A session that is not on screen: the daemon sends no desktop alert for the one the owner is looking at.)
+quiet=$(api /api/sessions '{"model":"scripted:stand-in","title":"Desktop: not on screen","text":"One line."}' POST | py 'import json,sys; print(json.load(sys.stdin)["session"]["id"])')
+sleep 3
+kill -STOP "$(app_pid)"
+stopped=$(api /api/alerts/test "{\"kind\":\"failed\",\"session_id\":\"$quiet\"}" POST | py 'import json,sys; print(json.load(sys.stdin)["alert"]["id"])')
+check "with the app stopped by a signal, the alert is not recorded as shown and the app is detached" "wait_for 10 '[ \"\$(delivery $stopped)\" = failed ]' && ! shows"
+kill -CONT "$(app_pid)"
+check "the app attaches again when it runs on" "wait_for 20 shows"
+kill "$(cat "$D/host-notify.pid")"; sleep 1
+unshown=$(api /api/alerts/test "{\"kind\":\"failed\",\"session_id\":\"$quiet\"}" POST | py 'import json,sys; print(json.load(sys.stdin)["alert"]["id"])')
+check "with no notification service, the alert is not recorded as shown" "wait_for 10 '[ \"\$(delivery $unshown)\" = failed ]'"
+( gjs -m "$HERE/notify-host.js" >> "$D/notify-host.out" 2>&1 & echo $! > "$D/host-notify.pid" ); sleep 1
+check "and the app attaches again" "wait_for 20 shows"
+notes=$(grep -c '^NOTIFY ' "$D/notify-host.out" || true)
+again=$(api /api/alerts/test "{\"kind\":\"failed\",\"session_id\":\"$quiet\"}" POST | py 'import json,sys; print(json.load(sys.stdin)["alert"]["id"])')
+check "the next alert is the app's again: shown once and recorded as sent" "wait_for 10 '[ \"\$(delivery $again)\" = sent ]' && [ \"\$(grep -c '^NOTIFY ' '$D/notify-host.out')\" = $((notes + 1)) ]"
 
 # --- 5. a second launch and a keel:// link
 "$SHELL_BIN" "keel://session/$ask"; code=$?
 check "a second launch ends at once and hands its link to the first" "[ $code = 0 ] && wait_for 10 \"last present | grep -q '/s/$ask'\" && [ \"\$(app_pids | wc -l)\" = 1 ]"
 check "the link's session is on screen" "wait_for 10 \"geometry | grep -q 'clean the build output'\""
 "$SHELL_BIN" "keel://session/../../etc/passwd" 2> /dev/null
-check "a link to anything but a place of the page is refused" "sleep 1; ! last present | grep -q passwd"
-sleep 1; shot 05-link-approval-light
+"$SHELL_BIN" "keel://session/%2e%2e%2fapi%2fdrain" 2> /dev/null
+"$SHELL_BIN" "keel://session/$other?approval=x" 2> /dev/null
+check "a link to anything but a place of the page is refused, and so is one that carries a query" "sleep 3; ! grep '\"what\":\"present\"' '$D/shell.jsonl' | grep -q 'passwd\|drain\|approval' && said AT | grep -q \"AT $URL/s/$ask \""
+sleep 2; shot 05-link-approval-light
+# The link raised the window on a session with a request waiting: a Return on its way answers nothing.
+$A key --id "$WS" Return > /dev/null 2>&1; sleep 3
+check "Return after a link does not answer the waiting request" "[ ! -e '$MARK' ] && api /api/approvals | grep -q '$ask' && ! said AT | grep -q 'active=allow'"
+
+# --- 5b. HTML a session wrote, shown in the sandboxed frame of the Artifacts panel: it drives nothing and reads nothing
+art=$(api /api/sessions '{"model":"scripted:stand-in","title":"Desktop: a page the model wrote","text":"One line."}' POST | py 'import json,sys; print(json.load(sys.stdin)["session"]["id"])')
+mkdir -p "$D/dev/state/artifacts/$art" && cp "$HERE/artifact.html" "$D/dev/state/artifacts/$art/shell-probe.html"
+SECRET="clipboard-secret-$RANDOM"
+if command -v wl-copy > /dev/null && [ "$BACKEND" != x11 ]; then (wl-copy "$SECRET" > /dev/null 2>&1 &); else SECRET=; fi
+sessions_before=$(grep -c '"window":"session"' "$D/shell.jsonl" || true)
+"$SHELL_BIN" "keel://session/$art"
+check "the artifact's frame ran its script" "wait_for 30 \"said 'ARTIFACT DONE' | grep -q DONE\""
+check "it has the engine's channel but not the app's object, and none of its messages was acted on" "grep -aq '^PROBE ARTIFACT handler=true keelShell=undefined' '$D/shell.out' && [ \"\$(grep -c '\"window\":\"session\"' '$D/shell.jsonl' || true)\" = \"$sessions_before\" ] && [ \"\$(windows)\" = 1 ] && ! grep -q '\"what\":\"external\"' '$D/shell.jsonl' && ! grep -qi 'ff0000' '$D/shell/shell.json' && [ \"\$(logged start)\" = 0 ]"
+check "it read nothing from the clipboard" "grep -a '^PROBE ARTIFACT CLIP' '$D/shell.out' | grep -q . && ! grep -a '^PROBE ARTIFACT CLIP' '$D/shell.out' | grep -q 'clipboard-secret' && grep -aq '^PROBE ARTIFACT CLIP read refused' '$D/shell.out'"
+[ -n "$SECRET" ] || echo "# note: no wl-copy for this backend, so the clipboard held no secret; the refusal itself was still checked"
+
+# --- 5c. the main frame stays on the daemon's origin
+(python3 "$HERE/listener.py" "$FOREIGN" 200 12 > "$D/foreign.out" 2>&1 &)
+read -r X Y W H _ <<< "$(geometry)"
+$A click --id "$WS" $((X + W / 2)) $((Y + 200)) > /dev/null 2>&1; sleep 0.5
+$A key --id "$WS" F8 > /dev/null 2>&1
+# The page's own script still reports after the attempt: the page that was there is the page that is there.
+check "a page that tries to leave the daemon's origin stays where it was, not loaded again" "wait_for 10 \"said LEAVING | grep -q LEAVING\" && sleep 5 && grep -a '^PROBE ' '$D/shell.out' | tail -1 | grep -q \"^PROBE AT $URL/s/$art shell=object\" && [ \"\$(logged load)\" = \"$loads\" ] && [ \"\$(windows)\" = 1 ] && ! geometry | grep -qi foreign"
+
+# --- 5d. focus: a launch with the desktop's activation token brings the window in front of another app, and only then
+if [ "$BACKEND" = gnome ]; then
+  active() { $A active-window --id "$WS" 2> /dev/null | py 'import json,sys; print((json.load(sys.stdin).get("active_window") or {}).get("title", ""))'; }
+  ( gjs -m "$HERE/other-app.js" "$D/token" > "$D/other-app.out" 2>&1 & echo $! > "$D/host-other.pid" )
+  wait_for 10 "grep -q READY '$D/other-app.out'"; sleep 1
+  oid=$($A windows --id "$WS" 2> /dev/null | py 'import json,sys; print(next((w["id"] for w in json.load(sys.stdin).get("windows", []) if w.get("title") == "Another app"), ""))')
+  $A focus-window --id "$WS" "$oid" > /dev/null 2>&1
+  check "another app has the keyboard" "wait_for 5 \"active | grep -q 'Another app'\""
+  env -u XDG_ACTIVATION_TOKEN -u DESKTOP_STARTUP_ID "$SHELL_BIN"
+  XDG_ACTIVATION_TOKEN=made-up-token "$SHELL_BIN"
+  check "a launch without the desktop's token, or with a made-up one, does not take the keyboard from it" "sleep 2; active | grep -q 'Another app'"
+  $A key --id "$WS" t > /dev/null 2>&1
+  wait_for 5 "[ -s '$D/token' ]"
+  XDG_ACTIVATION_TOKEN=$(cat "$D/token") "$SHELL_BIN"
+  check "a launch with the desktop's token brings Keel's window to the front" "wait_for 5 \"active | grep -q 'Keel'\" && last present | grep -q '\"token\":true'"
+  kill "$(cat "$D/host-other.pid")" 2> /dev/null
+else
+  echo "# note: focus on a launch with the desktop's activation token is checked under the native Wayland backend"
+fi
 
 # --- 6. the tray menu: pause and resume
 check "the menu offers open, new session, pause and quit" "menu | grep -q 'Open Keel' && menu | grep -q 'New Session' && menu | grep -q 'Pause Notifications' && menu | grep -q \"'Quit'\""
@@ -190,6 +275,17 @@ sleep 1; shot 08-not-running-dark
 
 # --- 8. the size is remembered, and quitting leaves the daemon alone
 daemon_up; wait_for 20 'last link | grep -q Up'
+# Quit and stop the daemon asks first, and names the turn it would end.
+run=$(api /api/sessions '{"model":"scripted:stand-in","title":"Desktop: a long build"}' POST | py 'import json,sys; print(json.load(sys.stdin)["session"]["id"])')
+api "/api/sessions/$run/permissions" '{"mode":"full-auto","sandbox":"off"}' PUT > /dev/null
+api "/api/sessions/$run/messages" '{"text":"script:calls [{\"name\":\"Bash\",\"input\":{\"command\":\"sleep 40; echo ok\"}}]"}' POST > /dev/null
+wait_for 15 "api /api/shell | grep -q 'a long build'"
+pick 11
+check "quit and stop the daemon asks first, naming the session at work" "wait_for 10 \"last confirm | grep -q 'a long build'\" && [ \"\$(app_pids | wc -l)\" = 1 ] && api /api/daemon | grep -q '\"draining\":null'"
+sleep 1; shot 12-stop-question-dark all
+$A key --id "$WS" Escape > /dev/null 2>&1
+check "Cancel keeps the app, the daemon and the turn" "wait_for 10 \"last confirmed | grep -q '\\\"stop\\\":false'\" && sleep 1 && [ \"\$(app_pids | wc -l)\" = 1 ] && api /api/daemon | grep -q '\"draining\":null' && api /api/shell | grep -q 'a long build'"
+api "/api/sessions/$run/interrupt" '{}' POST > /dev/null 2>&1
 $A resize-window --id "$WS" --pid "$(app_pid)" 1500 900 > /dev/null 2>&1; sleep 1.5
 pick 10
 check "quit from the tray ends the app" "wait_for 10 '[ \"\$(app_pids | wc -l)\" = 0 ]'"
@@ -216,9 +312,20 @@ check "the daemon it started is the scratch one (no real provider)" "[ -z \"$rea
 "$SHELL_BIN" --window "/s/$other"
 check "a session opens in a window of its own" "wait_for 20 '[ \"\$(windows)\" = 2 ]' && last present | grep -q '\"window\":\"session\"'"
 sleep 4; shot 11-session-window-dark all
+check "the session's window does not fight for the place it shows (no error from the page)" "! api '/api/errors?limit=100' | grep -qi 'replaceState\|history'"
 if [ "$BACKEND" = gnome ]; then
   echo "# note: under the headless GNOME workspace a second web view of one process is given no size (a bare WebKitGTK window shows the same), so the session window's content is checked under KEEL_E2E_BACKEND=x11"
 fi
+
+# --- 11. a stranger on the daemon's port while the daemon is down is never sent the token
+(eval "$ENVSH"; "$SHELL_BIN" --quit > /dev/null 2>&1); wait_for 10 '[ "$(app_pids | wc -l)" = 0 ]'
+daemon_down
+check "the state folder holds a token to protect" "[ -s '$D/dev/state/api-token' ]"
+(python3 "$HERE/listener.py" "$PORT" 403 14 health > "$D/stranger.out" 2>&1 &)
+sleep 0.5; launch
+check "the app spoke to the stranger, on the health path and past it" "wait_for 12 \"grep -q 'REQUEST GET /api/health' '$D/stranger.out' && grep -q 'REQUEST GET /api/shell' '$D/stranger.out'\""
+sleep 3
+check "and never sent it the token" "! grep -q 'authorization=yes' '$D/stranger.out'"
 
 echo "$((n - fails)) of $n passed"
 [ "$fails" = 0 ]

@@ -1,0 +1,34 @@
+<!doctype html>
+<meta charset="utf-8">
+<!-- What model-written HTML in a sandboxed preview frame tried against the desktop app
+     (the review of the first build): none of it may work. It says what it saw on the app's
+     standard output, through the measuring channel the end-to-end check turns on. -->
+<body style="font: 13px monospace">
+<h3>artifact</h3>
+<pre id="o"></pre>
+<textarea id="t"></textarea>
+<a id="out" href="https://example.com/from-a-frame">out</a>
+<script>
+const o = document.getElementById("o");
+const handlers = (window.webkit && window.webkit.messageHandlers) || {};
+const say = (s) => { o.textContent += s + "\n"; try { handlers.probe.postMessage("ARTIFACT " + s); } catch (e) {} };
+const post = (m) => { try { handlers.keel.postMessage(JSON.stringify(m)); return "posted"; } catch (e) { return "threw"; } };
+say("handler=" + !!handlers.keel + " keelShell=" + typeof window.keelShell);
+for (let i = 0; i < 3; i++) post({ t: "window", path: "/settings" });
+post({ t: "look", dark: false, bg: "#ff0000", panel: "#ff0000", fg: "#ff0000", muted: "#ff0000", line: "#ff0000", need: "#ff0000", scale: 3 });
+post({ t: "external", url: "https://example.com/?from=artifact" });
+post({ t: "start" });
+post({ t: "paste" });
+post({ t: "window", path: "/settings", key: "" });
+const t = document.getElementById("t");
+t.focus();
+let pasted = false;
+try { pasted = document.execCommand("paste"); } catch (e) {}
+say("CLIP exec=" + pasted + " value=" + JSON.stringify(t.value));
+if (navigator.clipboard && navigator.clipboard.readText) navigator.clipboard.readText().then((v) => say("CLIP read=" + JSON.stringify(v)), (e) => say("CLIP read refused"));
+else say("CLIP read refused");
+// A click no owner made.
+document.getElementById("out").click();
+try { window.open("https://example.com/opened-by-a-frame"); } catch (e) {}
+setTimeout(() => say("DONE"), 1500);
+</script>

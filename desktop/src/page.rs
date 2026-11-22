@@ -6,14 +6,22 @@
 use crate::daemon::Link;
 use crate::prefs::Look;
 
-/// Injected before the page's own scripts. The page reads `window.keelShell`
-/// (ui/src/lib/shell.ts); it is never told by its user agent. `post` is the
-/// page's way to the app; the app answers with `keel-shell` events.
-pub fn bridge(engine: &str, window: &str, tray: bool, post: &str) -> String {
+/// Injected before the page's own scripts, in the top frame of the daemon's
+/// own origin only. The page reads `window.keelShell` (ui/src/lib/shell.ts);
+/// it is never told by its user agent. `post` is the page's way to the app,
+/// and the app answers with `keel-shell` events.
+///
+/// The engine's message channel is open to every frame of the web view, a
+/// sandboxed preview of model-written HTML included. So every message carries
+/// `key`, a value of this window alone that lives in this closure: a frame
+/// that cannot reach the top frame's script cannot send a message the app
+/// acts on.
+pub fn bridge(engine: &str, window: &str, tray: bool, post: &str, key: &str, origin: &str) -> String {
     format!(
         r#"(() => {{
-  if (window.top !== window || window.keelShell) return;
-  const post = (m) => {{ try {{ const s = JSON.stringify(m); {post}; }} catch (e) {{}} }};
+  if (window.top !== window || window.keelShell || location.origin !== {origin}) return;
+  const key = {key};
+  const post = (m) => {{ try {{ const s = JSON.stringify({{ ...m, key }}); {post}; }} catch (e) {{}} }};
   Object.defineProperty(window, "keelShell", {{ value: Object.freeze({{
     name: "keel-desktop", version: "{version}", engine: "{engine}", platform: "{platform}", window: "{window}",
     can: Object.freeze({{ titlebar: true, windows: true, links: true, notifications: true, tray: {tray} }}), post,
@@ -21,6 +29,8 @@ pub fn bridge(engine: &str, window: &str, tray: bool, post: &str) -> String {
 }})();"#,
         version = env!("CARGO_PKG_VERSION"),
         platform = std::env::consts::OS,
+        key = serde_json::Value::String(key.to_string()),
+        origin = serde_json::Value::String(origin.to_string()),
     )
 }
 
@@ -41,7 +51,7 @@ pub fn words(link: &Link, starting: bool) -> (&'static str, &'static str, bool) 
 /// The page shown while the daemon is away: the product's mark, what is
 /// happening in one line, and one button. `setState` moves it between its
 /// states without a reload, so nothing flashes.
-pub fn away(l: &Look, link: &Link, starting: bool, url: &str, note: &str, post: &str) -> String {
+pub fn away(l: &Look, link: &Link, starting: bool, url: &str, note: &str, post: &str, key: &str) -> String {
     let (head, line, button) = words(link, starting);
     format!(
         r##"<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Keel</title><style>
@@ -71,7 +81,7 @@ button:focus-visible {{ outline: 2px solid {need}; outline-offset: 2px; }}
 <div class="where" id="where">{url}</div>
 </main><script>
 const $ = (id) => document.getElementById(id);
-const post = (m) => {{ const s = JSON.stringify(m); {post}; }};
+const post = (m) => {{ const s = JSON.stringify({{ ...m, key: {key} }}); {post}; }};
 $("start").addEventListener("click", () => post({{ t: "start" }}));
 window.setState = (s) => {{
   $("head").textContent = s.head; $("line").textContent = s.line;
@@ -89,7 +99,7 @@ if (!$("start").hidden) $("start").focus();
         hide_button = if button { "" } else { "hidden" },
         hide_bar = if button { "hidden" } else { "" },
         hide_note = if note.is_empty() { "hidden" } else { "" },
-        note = esc(note), url = esc(url), post = post,
+        note = esc(note), url = esc(url), post = post, key = serde_json::Value::String(key.to_string()),
     )
 }
 
@@ -113,7 +123,7 @@ mod tests {
 
     #[test]
     fn what_is_shown_is_text_not_markup() {
-        let html = away(&Look::of(true), &Link::Down, false, "http://127.0.0.1:1/<b>", "could not start: <script>alert(1)</script>", "send(s)");
+        let html = away(&Look::of(true), &Link::Down, false, "http://127.0.0.1:1/<b>", "could not start: <script>alert(1)</script>", "send(s)", "k1");
         assert!(html.contains("send(s)"));
         assert!(!html.contains("<script>alert(1)"));
         assert!(html.contains("&lt;script&gt;alert(1)"));
@@ -123,7 +133,17 @@ mod tests {
 
     #[test]
     fn the_bridge_names_the_shell() {
-        let b = bridge("webkit", "main", true, "send(s)");
+        let b = bridge("webkit", "main", true, "send(s)", "k1", "http://127.0.0.1:47960");
         assert!(b.contains(r#"window: "main""#) && b.contains("tray: true") && b.contains("keelShell") && b.contains(r#"engine: "webkit""#) && b.contains("send(s)"));
+    }
+
+    #[test]
+    fn the_bridge_is_for_the_daemons_origin_and_keys_every_message() {
+        let b = bridge("webkit", "main", true, "send(s)", "secret\"-key", "http://127.0.0.1:47960");
+        assert!(b.contains(r#"location.origin !== "http://127.0.0.1:47960""#));
+        // The key is a string of the script, whatever it holds, and goes into every message.
+        assert!(b.contains(r#"const key = "secret\"-key";"#) && b.contains("...m, key"));
+        let a = away(&Look::of(false), &Link::Down, false, "u", "", "send(s)", "k2");
+        assert!(a.contains(r#"key: "k2""#));
     }
 }

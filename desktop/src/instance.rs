@@ -33,9 +33,28 @@ pub fn words(args: &[String]) -> Vec<String> {
     out
 }
 
-/// The token the desktop gave this launch, so the running app's window may take the focus.
+/// The activation token in an environment block (`NAME=value` parts, NUL between them).
+pub fn token_in(environ: &[u8]) -> Option<String> {
+    let find = |name: &str| {
+        environ.split(|b| *b == 0).find_map(|part| {
+            let part = std::str::from_utf8(part).ok()?;
+            part.strip_prefix(name)?.strip_prefix('=').filter(|v| !v.is_empty()).map(String::from)
+        })
+    };
+    find("XDG_ACTIVATION_TOKEN").or_else(|| find("DESKTOP_STARTUP_ID"))
+}
+
+/// The token the desktop gave this launch, so the running app's window may
+/// take the focus. The toolkit takes it out of the environment while the
+/// program loads (so no child inherits it), before any of this runs: it is
+/// read from the environment the process was started with.
 fn launch_token() -> String {
-    std::env::var("XDG_ACTIVATION_TOKEN").or_else(|_| std::env::var("DESKTOP_STARTUP_ID")).unwrap_or_default()
+    std::fs::read("/proc/self/environ")
+        .ok()
+        .and_then(|e| token_in(&e))
+        .or_else(|| std::env::var("XDG_ACTIVATION_TOKEN").ok())
+        .or_else(|| std::env::var("DESKTOP_STARTUP_ID").ok())
+        .unwrap_or_default()
 }
 
 /// True when a running app took this launch.
@@ -72,5 +91,16 @@ mod tests {
         let args: Vec<String> = ["--url", "http://127.0.0.1:1", "--devtools", "keel://session/abc", "--state-dir", "/x", "--new", "--window", "/s/a", "--hidden"].iter().map(|s| s.to_string()).collect();
         assert_eq!(words(&args), ["keel://session/abc", "--new", "--window", "/s/a"]);
         assert!(words(&[]).is_empty());
+    }
+
+    // Found with a second app in front: the toolkit had removed the token from the
+    // environment before the program read it, so a second launch never took the focus.
+    #[test]
+    fn the_launch_token_is_read_from_the_environment_the_process_started_with() {
+        assert_eq!(token_in(b"HOME=/h\0XDG_ACTIVATION_TOKEN=tok-1\0PATH=/bin\0").as_deref(), Some("tok-1"));
+        assert_eq!(token_in(b"DESKTOP_STARTUP_ID=id_TIME5\0HOME=/h\0").as_deref(), Some("id_TIME5"));
+        assert_eq!(token_in(b"DESKTOP_STARTUP_ID=old\0XDG_ACTIVATION_TOKEN=new\0").as_deref(), Some("new"));
+        assert_eq!(token_in(b"NOT_XDG_ACTIVATION_TOKEN=x\0XDG_ACTIVATION_TOKEN=\0"), None);
+        assert_eq!(token_in(b""), None);
     }
 }

@@ -18,14 +18,12 @@ use std::rc::Rc;
 pub enum Ask {
     /// Start the daemon (the one button of the away page, or of the title bar).
     Start,
-    /// Open this address in the owner's browser.
+    /// Open this address in the owner's browser (the owner clicked a link).
     External(String),
     /// Open this path of the page in a window of its own.
     Window(String),
     /// The page's colors and text size, for the title bar and the first frame.
     Look(Look),
-    /// The zoom the owner set with the keys.
-    Zoom(f64),
     /// The owner closed the window.
     Close,
     /// A load of the page failed: the daemon went away under it.
@@ -48,7 +46,6 @@ pub struct Opening {
     pub main: bool,
     pub size: (i32, i32),
     pub maximized: bool,
-    pub zoom: f64,
     pub look: Look,
     /// Whether a tray shows the app's mark (the page is told).
     pub tray: bool,
@@ -71,15 +68,19 @@ pub trait View {
     /// Loads the page at a path of the daemon at `base`.
     fn load(&self, base: &str, path: &str);
     /// Tells the loaded page to go to a path, without a reload.
-    fn go(&self, path: &str);
+    /// `clicked`: the owner clicked the notification of that very place. Anything else
+    /// (a link, a second launch, the tray) brought them there without choosing where the keyboard is.
+    fn go(&self, path: &str, clicked: bool);
     /// Tells the loaded page the daemon answers again, so it joins it at once.
     fn daemon_back(&self);
+    /// Tells the loaded page the app itself shows that the daemon is away (the
+    /// page then leaves that to the title bar; any other loss it shows itself).
+    fn daemon_away(&self);
     /// Shows the calm page for a daemon that is away; one already showing changes its words in place.
     fn away(&self, look: &Look, link: &Link, starting: bool, url: &str, note: &str);
     /// The daemon's state beside the window's controls, while the page is up without its daemon.
     fn link(&self, link: &Link);
     fn look(&self, look: &Look);
-    fn zoom(&self, zoom: f64);
     /// Raises the window. With the desktop's activation token of the request
     /// it takes the focus; without one the desktop decides.
     fn present(&self, token: Option<&str>);
@@ -99,4 +100,6 @@ pub trait Engine {
     fn open(&self, opening: Opening, ask: Asked) -> Rc<dyn View>;
     /// The app's own widgets take the page's look.
     fn look(&self, look: &Look);
+    /// Asks the owner before something that cannot be taken back; `answer(true)` when they agree.
+    fn confirm(&self, question: &str, detail: &str, agree: &str, answer: Box<dyn FnOnce(bool)>);
 }

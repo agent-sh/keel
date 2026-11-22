@@ -10,11 +10,11 @@ set -euo pipefail
 cd "$(dirname "$0")"
 ID=io.github.agent_sh.Keel
 what="${1:-build}"
-if [ "$what" = test ]; then exec cargo test; fi
+if [ "$what" = test ]; then exec cargo test --locked; fi
 for lib in gtk4 webkitgtk-6.0; do
   pkg-config --exists "$lib" || { echo "build.sh: the development files of $lib are missing (see the top of this file)" >&2; exit 1; }
 done
-cargo build --release
+cargo build --release --locked
 target="${CARGO_TARGET_DIR:-target}"
 mkdir -p dist
 install -m 755 "$target/release/keel-desktop" dist/keel-desktop

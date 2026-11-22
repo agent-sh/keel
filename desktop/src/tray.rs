@@ -109,33 +109,41 @@ pub fn menu(s: &Shown) -> Vec<(i32, String, bool, Option<Pick>)> {
     m
 }
 
-/// The mark as pixels: the keel of the product's icon in the panel's ink, with
-/// the count on a badge. ARGB32 in network byte order, as the tray asks.
-fn pixmap(size: i32, s: &Shown) -> Option<(i32, i32, Vec<u8>)> {
+/// The mark's name in the icon theme: a symbolic icon, so the panel paints it
+/// in its own ink, light or dark.
+pub const SYMBOLIC: &str = "io.github.agent_sh.Keel-symbolic";
+
+/// Pixels for the tray, ARGB32 in network byte order as it asks: the count on
+/// a badge, and under it the keel itself only when `mark` is set (a desktop
+/// whose icon theme does not have the symbolic icon; its ink is then light,
+/// for a dark panel).
+fn pixmap(size: i32, s: &Shown, mark: bool) -> Option<(i32, i32, Vec<u8>)> {
     let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, size, size).ok()?;
     {
         let c = cairo::Context::new(&surface).ok()?;
         let k = size as f64 / 32.0;
         c.scale(k, k);
-        let dim = if s.link == Link::Up { 0.96 } else { 0.5 };
-        c.set_source_rgba(0.96, 0.98, 0.98, dim);
-        // The hull and the fin of ui/public/icon.svg, a little larger: the mark has no plate behind it here.
-        c.translate(16.0, 17.0);
-        c.scale(1.28, 1.28);
-        c.translate(-16.0, -17.5);
-        c.move_to(6.0, 11.5);
-        c.rel_line_to(20.0, 0.0);
-        c.rel_curve_to(-1.1, 4.9, -5.0, 7.6, -10.0, 7.6);
-        c.rel_curve_to(-5.0, 0.0, -8.9, -2.7, -10.0, -7.6);
-        c.close_path();
-        c.move_to(14.6, 18.6);
-        c.rel_line_to(2.8, 0.0);
-        c.rel_line_to(-0.7, 6.4);
-        c.rel_line_to(-1.4, 0.0);
-        c.close_path();
-        c.fill().ok()?;
-        c.identity_matrix();
-        c.scale(k, k);
+        if mark {
+            let dim = if s.link == Link::Up { 0.96 } else { 0.5 };
+            c.set_source_rgba(0.96, 0.98, 0.98, dim);
+            // The hull and the fin of ui/public/icon.svg, a little larger: the mark has no plate behind it here.
+            c.translate(16.0, 17.0);
+            c.scale(1.28, 1.28);
+            c.translate(-16.0, -17.5);
+            c.move_to(6.0, 11.5);
+            c.rel_line_to(20.0, 0.0);
+            c.rel_curve_to(-1.1, 4.9, -5.0, 7.6, -10.0, 7.6);
+            c.rel_curve_to(-5.0, 0.0, -8.9, -2.7, -10.0, -7.6);
+            c.close_path();
+            c.move_to(14.6, 18.6);
+            c.rel_line_to(2.8, 0.0);
+            c.rel_line_to(-0.7, 6.4);
+            c.rel_line_to(-1.4, 0.0);
+            c.close_path();
+            c.fill().ok()?;
+            c.identity_matrix();
+            c.scale(k, k);
+        }
         if let (Some(text), Link::Up) = (badge(s.needs), &s.link) {
             let (cx, cy, r) = (22.5, 9.5, 8.5);
             c.set_source_rgba(0.478, 0.247, 0.878, 1.0);
@@ -147,7 +155,7 @@ fn pixmap(size: i32, s: &Shown) -> Option<(i32, i32, Vec<u8>)> {
             let e = c.text_extents(&text).ok()?;
             c.move_to(cx - e.width() / 2.0 - e.x_bearing(), cy - e.height() / 2.0 - e.y_bearing());
             c.show_text(&text).ok()?;
-        } else if s.paused && s.link == Link::Up {
+        } else if mark && s.paused && s.link == Link::Up {
             // Paused: two short bars where the badge sits.
             c.set_source_rgba(0.96, 0.98, 0.98, 0.96);
             c.rectangle(20.5, 4.0, 2.4, 8.0);
@@ -171,6 +179,18 @@ fn pixmap(size: i32, s: &Shown) -> Option<(i32, i32, Vec<u8>)> {
     Some((size, size, out))
 }
 
+/// What the tray is told to draw. With the symbolic icon in the theme: its
+/// name, and pixels only for the count laid over it. Without: the drawn mark.
+pub fn icons(s: &Shown, symbolic: bool) -> (&'static str, Vec<(i32, i32, Vec<u8>)>, Vec<(i32, i32, Vec<u8>)>) {
+    let sizes = [24, 48];
+    if symbolic {
+        let over = if s.needs > 0 && s.link == Link::Up { sizes.iter().filter_map(|z| pixmap(*z, s, false)).collect() } else { Vec::new() };
+        (SYMBOLIC, Vec::new(), over)
+    } else {
+        ("", sizes.iter().filter_map(|z| pixmap(*z, s, true)).collect(), Vec::new())
+    }
+}
+
 pub struct Tray {
     conn: gio::DBusConnection,
     shown: Rc<RefCell<Shown>>,
@@ -179,7 +199,7 @@ pub struct Tray {
 }
 
 impl Tray {
-    pub fn new(conn: &gio::DBusConnection, on_pick: impl Fn(Pick) + 'static, on_host: impl Fn(bool) + 'static) -> Result<Self, glib::Error> {
+    pub fn new(conn: &gio::DBusConnection, symbolic: bool, on_pick: impl Fn(Pick) + 'static, on_host: impl Fn(bool) + 'static) -> Result<Self, glib::Error> {
         let shown = Rc::new(RefCell::new(Shown { needs: 0, paused: false, link: Link::Down }));
         let revision = Rc::new(Cell::new(1u32));
         let available = Rc::new(Cell::new(false));
@@ -197,14 +217,16 @@ impl Tray {
             .property(move |_, _, _, _, name| {
                 let s = s.borrow();
                 let none: Vec<(i32, i32, Vec<u8>)> = Vec::new();
+                let (icon, pixels, over) = icons(&s, symbolic);
                 match name {
                     "Category" => "ApplicationStatus".to_variant(),
                     "Id" => "keel".to_variant(),
                     "Title" => "Keel".to_variant(),
                     "Status" => (if s.needs > 0 && s.link == Link::Up { "NeedsAttention" } else { "Active" }).to_variant(),
                     "WindowId" => 0i32.to_variant(),
-                    "IconPixmap" | "AttentionIconPixmap" => [24, 48].iter().filter_map(|z| pixmap(*z, &s)).collect::<Vec<_>>().to_variant(),
-                    "OverlayIconPixmap" => none.to_variant(),
+                    "IconName" | "AttentionIconName" => icon.to_variant(),
+                    "IconPixmap" | "AttentionIconPixmap" => pixels.to_variant(),
+                    "OverlayIconPixmap" => over.to_variant(),
                     "ToolTip" => ("", none, "Keel", headline(&s).as_str()).to_variant(),
                     "ItemIsMenu" => false.to_variant(),
                     "Menu" => glib::variant::ObjectPath::try_from(MENU_PATH).expect("a path").to_variant(),
@@ -334,6 +356,7 @@ impl Tray {
         let item = "org.kde.StatusNotifierItem";
         emit(ITEM_PATH, item, "NewIcon", None);
         emit(ITEM_PATH, item, "NewAttentionIcon", None);
+        emit(ITEM_PATH, item, "NewOverlayIcon", None);
         emit(ITEM_PATH, item, "NewToolTip", None);
         emit(ITEM_PATH, item, "NewStatus", Some((if next.needs > 0 && next.link == Link::Up { "NeedsAttention" } else { "Active" },).to_variant()));
         if menu(&before) != menu(&next) {
@@ -384,11 +407,29 @@ mod tests {
 
     #[test]
     fn the_mark_is_drawn_at_its_size() {
-        let (w, h, px) = pixmap(24, &s(3, false, Link::Up)).unwrap();
+        let (w, h, px) = pixmap(24, &s(3, false, Link::Up), true).unwrap();
         assert_eq!((w, h, px.len()), (24, 24, 24 * 24 * 4));
         // Something is drawn, and the badge adds its own color.
         assert!(px.chunks(4).any(|p| p[0] > 200));
-        let plain = pixmap(24, &s(0, false, Link::Up)).unwrap().2;
+        let plain = pixmap(24, &s(0, false, Link::Up), true).unwrap().2;
         assert_ne!(px, plain);
+    }
+
+    // The review's case: fixed near-white ink was invisible on a light panel.
+    #[test]
+    fn the_panel_paints_the_mark_and_pixels_carry_only_the_count() {
+        let (name, pixels, over) = icons(&s(0, false, Link::Up), true);
+        assert_eq!((name, pixels.len(), over.len()), (SYMBOLIC, 0, 0));
+        let (name, pixels, over) = icons(&s(2, false, Link::Up), true);
+        assert_eq!((name, pixels.len(), over.len()), (SYMBOLIC, 0, 2));
+        // The overlay is the badge alone: nothing is drawn where the mark's hull is.
+        let (size, _, px) = &over[0];
+        let at = |x: i32, y: i32| px[((y * size + x) * 4) as usize];
+        assert_eq!(at(6, 14), 0);
+        assert!(at(17, 7) > 200);
+        // No count while the daemon is away, and the drawn mark only where the theme has no symbolic icon.
+        assert_eq!(icons(&s(2, false, Link::Down), true).2.len(), 0);
+        let (name, pixels, over) = icons(&s(2, false, Link::Up), false);
+        assert_eq!((name, pixels.len(), over.len()), ("", 2, 0));
     }
 }

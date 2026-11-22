@@ -2,7 +2,12 @@
 //! with the page in a web view under a title bar the app owns. The title bar
 //! is the platform's (drag, double click, the window menu and the controls
 //! the desktop is set to show) in the page's colors.
-use crate::daemon::Link;
+//!
+//! What content inside the web view can reach, and who may use it, is listed
+//! in desktop/README.md ("What the page can reach"). The rule here: only the
+//! top frame of the daemon's own origin, or the app's own away page, is
+//! listened to; everything else in the view is content.
+use crate::daemon::{Link, DEFAULT_URL};
 use crate::links;
 use crate::page;
 use crate::prefs::Look;
@@ -11,14 +16,15 @@ use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 use serde_json::Value;
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
+use std::time::{Duration, Instant};
 use webkit::prelude::*;
 
 /// How a page of this engine posts the string `s` to the app.
 const POST: &str = "window.webkit.messageHandlers.keel.postMessage(s)";
+/// How long after the page's own paste handler asked the clipboard may be read.
+const PASTE_WINDOW: Duration = Duration::from_secs(2);
 
-/// The style of the shell's own widgets, in the page's colors. Every color is
-/// a checked hex value (prefs::hex), so nothing a page says can add a rule.
 fn style(l: &Look) -> String {
     let px = |n: f64| format!("{:.0}px", (n * l.scale).round());
     format!(
@@ -40,11 +46,51 @@ window.keel .titlebar {{ min-height: 0; padding: 0; margin: 0; border: none; bac
 .keel-start:hover {{ background: alpha({fg}, 0.85); }}
 .keel-start:active {{ background: alpha({fg}, 0.7); }}
 @keyframes keel-pulse {{ 0% {{ opacity: 0.3; }} 50% {{ opacity: 1; }} 100% {{ opacity: 0.3; }} }}
+window.dialog.message {{ background: {panel}; color: {fg}; border: 1px solid {line}; border-radius: {sheet}; box-shadow: 0 18px 48px alpha(black, 0.28); }}
+window.dialog.message headerbar, window.dialog.message .titlebar {{ min-height: 0; padding: 0; margin: 0; border: none; background: transparent; box-shadow: none; }}
+window.dialog.message .dialog-vbox {{ background: transparent; }}
+window.dialog.message label {{ font-size: {font}; color: {muted}; }}
+window.dialog.message label.title {{ font-size: {head}; font-weight: 600; color: {fg}; }}
+window.dialog.message .dialog-action-area {{ border-top: 1px solid {line}; margin: 0; padding: 0; border-spacing: 0; }}
+window.dialog.message .dialog-action-area button {{ min-height: {row}; margin: 0; padding: 0 {pill_x}; border: none; border-radius: 0; background: transparent; color: {fg}; font-size: {font}; font-weight: 500; box-shadow: none; outline-offset: -3px; transition: background 120ms ease; }}
+window.dialog.message .dialog-action-area button:not(:first-child) {{ border-left: 1px solid {line}; }}
+window.dialog.message .dialog-action-area button:hover {{ background: alpha({fg}, 0.06); }}
+window.dialog.message .dialog-action-area button:active {{ background: alpha({fg}, 0.12); }}
+window.dialog.message .dialog-action-area button:first-child {{ border-bottom-left-radius: {sheet}; }}
+window.dialog.message .dialog-action-area button label {{ color: {fg}; }}
+window.dialog.message .dialog-action-area button:last-child {{ border-bottom-right-radius: {sheet}; font-weight: 600; }}
 "#,
         bg = l.bg, panel = l.panel, fg = l.fg, muted = l.muted, line = l.line, need = l.need,
         h = px(34.0), pad = px(6.0), font = px(13.0), small = px(12.0), btn = px(26.0), radius = px(7.0), icon = px(16.0),
-        gap = px(4.0), dot = px(6.0), pill_y = px(2.0), pill_x = px(10.0), start_y = px(3.0),
+        gap = px(4.0), dot = px(6.0), pill_y = px(2.0), pill_x = px(10.0), start_y = px(3.0), sheet = px(12.0), head = px(15.0), row = px(40.0),
     )
+}
+
+/// `scheme://host:port` of an address.
+fn origin(u: &str) -> String {
+    u.split('/').take(3).collect::<Vec<_>>().join("/")
+}
+
+/// The pattern of the engine's user scripts for an origin: its scheme and host, any port
+/// (the engine's patterns name no port; the injected script checks the whole origin itself).
+fn pattern(origin: &str) -> String {
+    let (scheme, authority) = origin.split_once("://").unwrap_or(("http", origin));
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => format!("[{}]", v6.split(']').next().unwrap_or("")),
+        None => authority.rsplit_once(':').map_or(authority, |(h, _)| h).to_string(),
+    };
+    format!("{scheme}://{host}/*")
+}
+
+/// Where a file the page offers is saved: the desktop's downloads folder, else
+/// a Downloads folder of its own under the home folder. Never the home folder
+/// itself, where a name the page chose could be a dotfile the shell reads.
+fn downloads() -> std::path::PathBuf {
+    let home = glib::home_dir();
+    match glib::user_special_dir(glib::UserDirectory::Downloads) {
+        Some(d) if d != home => d,
+        _ => home.join("Downloads"),
+    }
 }
 
 /// GTK 4 and the system web view.
@@ -63,13 +109,13 @@ impl WebKit {
             gtk::style_context_add_provider_for_display(&d, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
         }
         let session = webkit::NetworkSession::new(dir.join("web").to_str(), dir.join("web-cache").to_str());
-        // A file the page offers is saved where the owner's downloads go, under the name it suggests.
         let on_download = Rc::new(on_download);
         session.connect_download_started(move |_, download| {
             let on_download = on_download.clone();
             download.connect_decide_destination(move |d, suggested| {
-                let folder = glib::user_special_dir(glib::UserDirectory::Downloads).unwrap_or_else(glib::home_dir);
-                let path = crate::links::free_name(&folder, suggested, |p| p.exists());
+                let folder = downloads();
+                let _ = std::fs::create_dir_all(&folder);
+                let path = links::free_name(&folder, suggested, |p| p.exists());
                 d.set_destination(&path.to_string_lossy());
                 on_download(&path);
                 true
@@ -95,16 +141,41 @@ impl Engine for WebKit {
             s.set_gtk_application_prefer_dark_theme(look.dark);
         }
     }
+
+    fn confirm(&self, question: &str, detail: &str, agree: &str, answer: Box<dyn FnOnce(bool)>) {
+        let dialog = gtk::AlertDialog::builder().message(question).detail(detail).buttons(["Cancel", agree]).cancel_button(0).default_button(0).modal(true).build();
+        let parent = self.app.active_window();
+        let answer = RefCell::new(Some(answer));
+        dialog.choose(parent.as_ref(), gio::Cancellable::NONE, move |picked| {
+            if let Some(f) = answer.borrow_mut().take() {
+                f(picked == Ok(1));
+            }
+        });
+    }
 }
 
 struct Win {
     id: u32,
     window: gtk::ApplicationWindow,
     view: webkit::WebView,
+    ucm: webkit::UserContentManager,
     main: bool,
+    tray: bool,
     showing: Cell<Showing>,
     /// The path to open once the daemon answers.
     wanted: RefCell<String>,
+    /// This window's own value: a message without it is not from the top frame's bridge or the away page.
+    key: String,
+    /// The daemon's origin the page is loaded from; the main frame stays there.
+    origin: RefCell<String>,
+    link: RefCell<Link>,
+    /// The page is being loaded; `slow` once that took long enough to say so.
+    loading: Cell<bool>,
+    slow: Cell<bool>,
+    me: RefCell<Weak<Win>>,
+    /// Until when the clipboard may be read: set by the page's own paste handler, for one read.
+    paste_until: Cell<Option<Instant>>,
+    title: gtk::Label,
     pill: gtk::Box,
     pill_text: gtk::Label,
     pill_start: gtk::Button,
@@ -115,20 +186,53 @@ fn rgba(hex: &str) -> gdk::RGBA {
     gdk::RGBA::parse(hex).unwrap_or(gdk::RGBA::WHITE)
 }
 
+/// What a message from the page asks, once its key was checked. `None` for anything else.
+pub fn asked(m: &Value, key: &str) -> Option<Asked1> {
+    if key.is_empty() || m.get("key").and_then(Value::as_str) != Some(key) {
+        return None;
+    }
+    let s = |k: &str| m.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    match m.get("t").and_then(Value::as_str)? {
+        "start" => Some(Asked1::Ask(Ask::Start)),
+        "window" => Some(Asked1::Ask(Ask::Window(s("path")))),
+        "paste" => Some(Asked1::Paste),
+        "look" => {
+            let base = Look::of(m.get("dark").and_then(Value::as_bool).unwrap_or(false));
+            let color = |k: &str, or: &str| m.get(k).and_then(Value::as_str).and_then(crate::prefs::hex).unwrap_or(or).to_string();
+            Some(Asked1::Ask(Ask::Look(Look {
+                dark: base.dark,
+                bg: color("bg", &base.bg),
+                panel: color("panel", &base.panel),
+                fg: color("fg", &base.fg),
+                muted: color("muted", &base.muted),
+                line: color("line", &base.line),
+                need: color("need", &base.need),
+                scale: m.get("scale").and_then(Value::as_f64).filter(|s| (0.5..=3.0).contains(s)).unwrap_or(1.0),
+            })))
+        }
+        _ => None,
+    }
+}
+
+/// A checked message: something for the application, or the page's paste handler about to read the clipboard.
+#[derive(Debug)]
+pub enum Asked1 {
+    Ask(Ask),
+    Paste,
+}
+
 impl Win {
     fn new(app: &gtk::Application, session: &webkit::NetworkSession, id: u32, opening: Opening, ask: Asked) -> Rc<dyn View> {
-        let Opening { main, size, maximized, zoom, look, tray, devtools } = opening;
+        let Opening { main, size, maximized, look, tray, devtools } = opening;
         // What a closure of the window asks goes out as the view it is.
         let ask: Rc<dyn Fn(&Rc<Win>, Ask)> = Rc::new(move |win, what| {
             let view: Rc<dyn View> = win.clone();
             ask(&view, what)
         });
         let ucm = webkit::UserContentManager::new();
-        ucm.add_script(&webkit::UserScript::new(&page::bridge("webkit", if main { "main" } else { "session" }, tray, POST), webkit::UserContentInjectedFrames::TopFrame, webkit::UserScriptInjectionTime::Start, &[], &[]));
         ucm.register_script_message_handler("keel", None);
-        // For measuring the page inside the shell: a script of the measurer's, whose reports go to standard output.
-        if let Some(src) = std::env::var_os("KEEL_DESKTOP_PROBE").and_then(|p| std::fs::read_to_string(p).ok()) {
-            ucm.add_script(&webkit::UserScript::new(&src, webkit::UserContentInjectedFrames::TopFrame, webkit::UserScriptInjectionTime::Start, &[], &[]));
+        // For measuring the page inside the app: the measurer's reports go to standard output.
+        if std::env::var_os("KEEL_DESKTOP_PROBE").is_some() {
             ucm.register_script_message_handler("probe", None);
             ucm.connect_script_message_received(Some("probe"), |_, value| println!("PROBE {}", value.to_str()));
         }
@@ -136,15 +240,14 @@ impl Win {
         let settings = webkit::Settings::new();
         settings.set_enable_developer_extras(devtools);
         settings.set_enable_write_console_messages_to_stdout(devtools);
-        settings.set_javascript_can_access_clipboard(true);
         settings.set_enable_back_forward_navigation_gestures(false);
         settings.set_user_agent_with_application_details(Some("Keel"), Some(env!("CARGO_PKG_VERSION")));
 
         let view = webkit::WebView::builder().network_session(session).user_content_manager(&ucm).settings(&settings).hexpand(true).vexpand(true).build();
         view.set_background_color(&rgba(&look.bg));
-        view.set_zoom_level(zoom);
 
-        // The title bar: the page's title in the middle, the daemon's state and the controls at the end.
+        // The title bar: the app's name (and which daemon, when it is not the usual one), the daemon's state and the controls.
+        // The session's title sits right below in the page, so it is not said twice.
         let title = gtk::Label::builder().label("Keel").ellipsize(gtk::pango::EllipsizeMode::End).css_classes(["keel-title"]).build();
         let dot = gtk::Box::builder().css_classes(["keel-dot"]).valign(gtk::Align::Center).build();
         let pill_text = gtk::Label::new(None);
@@ -166,80 +269,130 @@ impl Win {
         window.set_titlebar(Some(&handle));
         window.set_child(Some(&view));
 
-        let win = Rc::new(Self { id, window, view, main, showing: Cell::new(Showing::Nothing), wanted: RefCell::new("/".into()), pill, pill_text, pill_start, dot });
+        let win = Rc::new(Self {
+            id,
+            window,
+            view,
+            ucm: ucm.clone(),
+            main,
+            tray,
+            showing: Cell::new(Showing::Nothing),
+            wanted: RefCell::new("/".into()),
+            key: glib::uuid_string_random().to_string(),
+            origin: RefCell::new(String::new()),
+            link: RefCell::new(Link::Down),
+            loading: Cell::new(false),
+            slow: Cell::new(false),
+            me: RefCell::new(Weak::new()),
+            paste_until: Cell::new(None),
+            title,
+            pill,
+            pill_text,
+            pill_start,
+            dot,
+        });
 
-        // The page's title is the window's.
-        let (w, t) = (win.window.clone(), title.clone());
+        *win.me.borrow_mut() = Rc::downgrade(&win);
+
+        // The page's title is the window's name on the desktop (the overview, the task switcher).
+        let w = win.window.clone();
         win.view.connect_title_notify(move |v| {
             let s = v.title().map(|s| s.to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "Keel".into());
-            t.set_label(&s);
             w.set_title(Some(&s));
         });
 
-        // What the page says to the shell.
+        // What the page says to the app: only with this window's key.
         let (weak, a) = (Rc::downgrade(&win), ask.clone());
         ucm.connect_script_message_received(Some("keel"), move |_, value| {
             let Some(win) = weak.upgrade() else { return };
             let Ok(m) = serde_json::from_str::<Value>(&value.to_str()) else { return };
-            let s = |k: &str| m.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-            match m.get("t").and_then(Value::as_str) {
-                Some("start") => a(&win, Ask::Start),
-                Some("external") => a(&win, Ask::External(s("url"))),
-                Some("window") => a(&win, Ask::Window(s("path"))),
-                Some("look") => {
-                    let base = Look::of(m.get("dark").and_then(Value::as_bool).unwrap_or(false));
-                    let color = |k: &str, or: &str| m.get(k).and_then(Value::as_str).and_then(crate::prefs::hex).unwrap_or(or).to_string();
-                    a(&win, Ask::Look(Look {
-                        dark: base.dark,
-                        bg: color("bg", &base.bg),
-                        panel: color("panel", &base.panel),
-                        fg: color("fg", &base.fg),
-                        muted: color("muted", &base.muted),
-                        line: color("line", &base.line),
-                        need: color("need", &base.need),
-                        scale: m.get("scale").and_then(Value::as_f64).filter(|s| (0.5..=3.0).contains(s)).unwrap_or(1.0),
-                    }));
-                }
-                _ => {}
+            match asked(&m, &win.key) {
+                Some(Asked1::Ask(what)) => a(&win, what),
+                Some(Asked1::Paste) => win.paste_until.set(Some(Instant::now() + PASTE_WINDOW)),
+                None => {}
             }
         });
 
-        // A link out of the page goes to the owner's browser; a page of Keel asked for in a new window gets a window of the shell.
+        // Where a navigation goes. The owner's click on a link out of Keel opens the browser; a place
+        // of the page asked for in a new window gets a window of the app. A script cannot do either.
         let (weak, a) = (Rc::downgrade(&win), ask.clone());
-        win.view.connect_decide_policy(move |view, decision, kind| {
+        win.view.connect_decide_policy(move |_, decision, kind| {
             let Some(win) = weak.upgrade() else { return false };
+            // The main frame stays on the daemon's own origin: a document from anywhere else is
+            // refused when its answer arrives, before any of it is shown or run, and the page stays.
+            if let Some(r) = decision.downcast_ref::<webkit::ResponsePolicyDecision>() {
+                let uri = r.request().and_then(|q| q.uri()).map(|u| u.to_string()).unwrap_or_default();
+                if r.is_main_frame_main_resource() && !win.ours(&uri) {
+                    decision.ignore();
+                    return true;
+                }
+                return false;
+            }
             let Some(d) = decision.downcast_ref::<webkit::NavigationPolicyDecision>() else { return false };
             let Some(action) = d.navigation_action() else { return false };
             let uri = action.request().and_then(|r| r.uri()).map(|u| u.to_string()).unwrap_or_default();
-            let here = view.uri().map(|u| u.to_string()).unwrap_or_default();
-            let origin = |u: &str| u.split('/').take(3).collect::<Vec<_>>().join("/");
-            let inside = uri.starts_with("about:") || uri.starts_with("blob:") || uri.starts_with("data:") || (win.showing.get() == Showing::App && origin(&uri) == origin(&here));
-            let new_window = kind == webkit::PolicyDecisionType::NewWindowAction;
-            if new_window {
+            let here = win.origin.borrow().clone();
+            let inside = uri.starts_with("about:") || uri.starts_with("blob:") || uri.starts_with("data:") || (win.showing.get() == Showing::App && origin(&uri) == here);
+            let gesture = action.is_user_gesture();
+            if kind == webkit::PolicyDecisionType::NewWindowAction {
                 decision.ignore();
-                // A place of the page gets a window of the app. Anything else the daemon serves
-                // (a file to look at, an export) has no place in the app: the browser shows it.
-                match uri.strip_prefix(&origin(&here)).filter(|_| inside).and_then(links::page_path) {
-                    Some(path) => a(&win, Ask::Window(path)),
-                    None => a(&win, Ask::External(uri)),
+                if gesture {
+                    match uri.strip_prefix(&here).filter(|_| inside).and_then(links::page_path) {
+                        Some(path) => a(&win, Ask::Window(path)),
+                        None => a(&win, Ask::External(uri)),
+                    }
                 }
                 return true;
             }
             if !inside && action.navigation_type() == webkit::NavigationType::LinkClicked {
                 decision.ignore();
-                a(&win, Ask::External(uri));
+                if gesture {
+                    a(&win, Ask::External(uri));
+                }
                 return true;
             }
             false
         });
 
-        // The page asks for nothing the shell does for it; the rest is refused quietly.
-        win.view.connect_permission_request(|_, req| {
-            if req.is::<webkit::ClipboardPermissionRequest>() {
+        // Should a document from anywhere else reach the main frame all the same (one that came
+        // with no answer to refuse), the daemon's page is loaded again over it.
+        let (weak, a) = (Rc::downgrade(&win), ask.clone());
+        win.view.connect_load_changed(move |v, event| {
+            let Some(win) = weak.upgrade() else { return };
+            let uri = v.uri().map(|u| u.to_string()).unwrap_or_default();
+            if !win.ours(&uri) {
+                if matches!(event, webkit::LoadEvent::Committed | webkit::LoadEvent::Finished) && win.showing.get() == Showing::App {
+                    win.showing.set(Showing::Nothing);
+                    a(&win, Ask::Lost);
+                }
+                return;
+            }
+            if event == webkit::LoadEvent::Finished {
+                win.loading.set(false);
+                win.slow.set(false);
+                win.pill_now();
+            }
+        });
+
+        // The clipboard is read only right after the page's own paste handler said it would; nothing else is granted.
+        let weak = Rc::downgrade(&win);
+        win.view.connect_permission_request(move |_, req| {
+            let armed = weak.upgrade().and_then(|w| w.paste_until.take()).is_some_and(|t| Instant::now() < t);
+            if armed && req.is::<webkit::ClipboardPermissionRequest>() {
                 req.allow();
             } else {
                 req.deny();
             }
+            true
+        });
+
+        // The page has no use for the engine's own windows, and content inside it must not raise one
+        // that reads as the app's: no print dialog, no script dialog (alert, confirm, prompt: the
+        // page draws its own), no password dialog.
+        win.view.connect_print(|_, _| true);
+        win.view.connect_script_dialog(|_, _| true);
+        win.view.connect_authenticate(|_, request| {
+            request.cancel();
             true
         });
 
@@ -256,8 +409,12 @@ impl Win {
 
         // The daemon went away under a load: the calm page, not the engine's error page.
         let (weak, a) = (Rc::downgrade(&win), ask.clone());
-        win.view.connect_load_failed(move |_, _, _, _| {
+        win.view.connect_load_failed(move |_, _, uri, _| {
             if let Some(win) = weak.upgrade() {
+                // A document refused above is no loss of the daemon: the page that was there stays.
+                if !win.ours(uri) {
+                    return true;
+                }
                 if win.showing.get() == Showing::App {
                     win.showing.set(Showing::Nothing);
                     a(&win, Ask::Lost);
@@ -272,25 +429,28 @@ impl Win {
             }
         });
 
-        // Zoom with the keys every desktop app uses; the page's own keys are untouched.
+        // The keys every desktop app uses for text size drive the page's own setting: one scale, not two.
+        // The toolkit's inspector keys are the developer's, not the owner's.
         let keys = gtk::EventControllerKey::new();
         keys.set_propagation_phase(gtk::PropagationPhase::Capture);
-        let (weak, a) = (Rc::downgrade(&win), ask.clone());
+        let weak = Rc::downgrade(&win);
         keys.connect_key_pressed(move |_, key, _, mods| {
             let Some(win) = weak.upgrade() else { return glib::Propagation::Proceed };
             if !mods.contains(gdk::ModifierType::CONTROL_MASK) || mods.contains(gdk::ModifierType::ALT_MASK) {
                 return glib::Propagation::Proceed;
             }
-            let z = win.view.zoom_level();
-            let next = match key {
-                gdk::Key::plus | gdk::Key::equal | gdk::Key::KP_Add => z + 0.1,
-                gdk::Key::minus | gdk::Key::KP_Subtract => z - 0.1,
-                gdk::Key::_0 | gdk::Key::KP_0 => 1.0,
+            if mods.contains(gdk::ModifierType::SHIFT_MASK) && matches!(key, gdk::Key::I | gdk::Key::i | gdk::Key::D | gdk::Key::d) {
+                return if devtools { glib::Propagation::Proceed } else { glib::Propagation::Stop };
+            }
+            let step = match key {
+                gdk::Key::plus | gdk::Key::equal | gdk::Key::KP_Add => "up",
+                gdk::Key::minus | gdk::Key::KP_Subtract => "down",
+                gdk::Key::_0 | gdk::Key::KP_0 => "reset",
                 _ => return glib::Propagation::Proceed,
             };
-            let next = crate::prefs::clamp_zoom((next * 10.0).round() / 10.0);
-            win.view.set_zoom_level(next);
-            a(&win, Ask::Zoom(next));
+            if win.showing.get() == Showing::App {
+                win.tell(&serde_json::json!({ "scale": step }));
+            }
             glib::Propagation::Stop
         });
         win.window.add_controller(keys);
@@ -313,9 +473,32 @@ impl Win {
         win
     }
 
+    /// An address the main frame may show: the app's own page (about:blank), or the daemon's origin while its page is up.
+    /// (An event of the away page may still come after the daemon's page was asked for: it is the app's own too.)
+    fn ours(&self, uri: &str) -> bool {
+        uri.is_empty() || uri.starts_with("about:") || (self.showing.get() == Showing::App && origin(uri) == *self.origin.borrow())
+    }
+
     fn tell(&self, detail: &Value) {
         let js = format!("window.dispatchEvent(new CustomEvent('keel-shell', {{ detail: {detail} }}))");
         self.view.evaluate_javascript(&js, None, None, gio::Cancellable::NONE, |_| {});
+    }
+
+    /// The state beside the controls: the daemon away while its page is up, or the page still coming.
+    fn pill_now(&self) {
+        let link = self.link.borrow().clone();
+        let over_page = self.showing.get() == Showing::App;
+        let coming = over_page && link == Link::Up && self.loading.get() && self.slow.get();
+        self.pill.set_visible(over_page && (link != Link::Up || coming));
+        self.pill_start.set_visible(over_page && link == Link::Down);
+        self.dot.set_visible(link == Link::Restarting || coming);
+        self.pill.set_tooltip_text(if coming { None } else { Some("What the sessions were doing is not known until Keel is back. Messages you send wait and go out then.") });
+        self.pill_text.set_label(match link {
+            Link::Restarting => "Reconnecting",
+            Link::Down => "Keel is not running",
+            Link::Up if coming => "Opening",
+            Link::Up => "",
+        });
     }
 }
 
@@ -345,46 +528,71 @@ impl View for Win {
     }
 
     fn load(&self, base: &str, path: &str) {
+        // The capability object goes to the top frame of this daemon's origin, and nowhere else.
+        let at = origin(base);
+        self.ucm.remove_all_scripts();
+        let bridge = page::bridge("webkit", if self.main { "main" } else { "session" }, self.tray, POST, &self.key, &at);
+        let only = pattern(&at);
+        self.ucm.add_script(&webkit::UserScript::new(&bridge, webkit::UserContentInjectedFrames::TopFrame, webkit::UserScriptInjectionTime::Start, &[only.as_str()], &[]));
+        if let Some(src) = std::env::var_os("KEEL_DESKTOP_PROBE").and_then(|p| std::fs::read_to_string(p).ok()) {
+            // The measurer's script, for this daemon's origin alone as well.
+            let src = format!("if (location.origin === {}) {{ {src} }}", Value::String(at.clone()));
+            self.ucm.add_script(&webkit::UserScript::new(&src, webkit::UserContentInjectedFrames::TopFrame, webkit::UserScriptInjectionTime::Start, &[only.as_str()], &[]));
+        }
+        *self.origin.borrow_mut() = at;
+        // Which daemon, when it is not the one a bare launch finds.
+        self.title.set_label(&match crate::http::authority(base) {
+            Ok(host) if base != DEFAULT_URL => format!("Keel  \u{b7}  {host}"),
+            _ => "Keel".to_string(),
+        });
         self.showing.set(Showing::App);
+        self.loading.set(true);
+        self.slow.set(false);
         self.view.load_uri(&format!("{base}{}", links::page_path(path).unwrap_or_else(|| "/".into())));
+        // A daemon that is slow to answer: after a moment the title bar says the page is coming, instead of an empty window.
+        let weak = self.me.borrow().clone();
+        glib::timeout_add_local_once(Duration::from_millis(1200), move || {
+            if let Some(win) = weak.upgrade() {
+                if win.loading.get() {
+                    win.slow.set(true);
+                    win.pill_now();
+                }
+            }
+        });
     }
 
-    fn go(&self, path: &str) {
-        self.tell(&serde_json::json!({ "open": path }));
+    fn go(&self, path: &str, clicked: bool) {
+        self.tell(&serde_json::json!({ "open": path, "from": if clicked { "click" } else { "link" } }));
     }
 
     fn daemon_back(&self) {
         self.tell(&serde_json::json!({ "daemon": "up" }));
     }
 
+    fn daemon_away(&self) {
+        self.tell(&serde_json::json!({ "daemon": "away" }));
+    }
+
     fn away(&self, look: &Look, link: &Link, starting: bool, url: &str, note: &str) {
         if self.showing.get() == Showing::Away {
             self.view.evaluate_javascript(&page::away_state(link, starting, url, note), None, None, gio::Cancellable::NONE, |_| {});
         } else {
+            self.ucm.remove_all_scripts();
             self.showing.set(Showing::Away);
-            self.view.load_html(&page::away(look, link, starting, url, note, POST), Some("about:blank"));
+            self.loading.set(false);
+            self.slow.set(false);
+            self.title.set_label("Keel");
+            self.view.load_html(&page::away(look, link, starting, url, note, POST, &self.key), Some("about:blank"));
         }
     }
 
     fn link(&self, link: &Link) {
-        let over_page = self.showing.get() == Showing::App;
-        self.pill.set_visible(over_page && *link != Link::Up);
-        self.pill_start.set_visible(over_page && *link == Link::Down);
-        self.dot.set_visible(*link == Link::Restarting);
-        self.pill.set_tooltip_text(Some("What the sessions were doing is not known until Keel is back. Messages you send wait and go out then."));
-        self.pill_text.set_label(match link {
-            Link::Restarting => "Reconnecting",
-            Link::Down => "Keel is not running",
-            Link::Up => "",
-        });
+        *self.link.borrow_mut() = link.clone();
+        self.pill_now();
     }
 
     fn look(&self, look: &Look) {
         self.view.set_background_color(&rgba(&look.bg));
-    }
-
-    fn zoom(&self, zoom: f64) {
-        self.view.set_zoom_level(zoom);
     }
 
     fn present(&self, token: Option<&str>) {
@@ -419,5 +627,48 @@ mod tests {
         l.scale = 1.5;
         assert!(style(&l).contains("min-height: 51px"));
         assert!(style(&l).contains(&l.panel));
+    }
+
+    // The reviewer's reproduction: model-written HTML in a sandboxed frame posted these with no key.
+    #[test]
+    fn a_message_without_the_windows_key_is_not_acted_on() {
+        let key = "k-123";
+        for raw in [
+            r#"{"t":"window","path":"/s/abc"}"#,
+            r##"{"t":"look","dark":true,"bg":"#ff0000","scale":3}"##,
+            r#"{"t":"start"}"#,
+            r#"{"t":"paste"}"#,
+            r#"{"t":"window","path":"/s/abc","key":"guess"}"#,
+            r#"{"t":"window","path":"/s/abc","key":""}"#,
+        ] {
+            assert!(asked(&serde_json::from_str(raw).unwrap(), key).is_none(), "{raw}");
+        }
+        assert!(asked(&serde_json::from_str(r#"{"t":"window","path":"/s/abc","key":""}"#).unwrap(), "").is_none());
+    }
+
+    #[test]
+    fn a_keyed_message_is_read_and_a_link_for_the_browser_is_not_a_message() {
+        let m = |raw: &str| asked(&serde_json::from_str(raw).unwrap(), "k-123");
+        assert!(matches!(m(r#"{"t":"window","path":"/s/abc","key":"k-123"}"#), Some(Asked1::Ask(Ask::Window(p))) if p == "/s/abc"));
+        assert!(matches!(m(r#"{"t":"start","key":"k-123"}"#), Some(Asked1::Ask(Ask::Start))));
+        assert!(matches!(m(r#"{"t":"paste","key":"k-123"}"#), Some(Asked1::Paste)));
+        assert!(matches!(m(r#"{"t":"look","dark":true,"bg":"red","key":"k-123"}"#), Some(Asked1::Ask(Ask::Look(l))) if l.dark && l.bg == Look::of(true).bg));
+        // No message opens the browser: only the owner's click on a link does.
+        assert!(m(r#"{"t":"external","url":"https://x.example/","key":"k-123"}"#).is_none());
+    }
+
+    #[test]
+    fn the_script_pattern_names_the_host_without_its_port() {
+        assert_eq!(pattern("http://127.0.0.1:47960"), "http://127.0.0.1/*");
+        assert_eq!(pattern("http://localhost:8080"), "http://localhost/*");
+        assert_eq!(pattern("http://[::1]:47960"), "http://[::1]/*");
+        assert_eq!(pattern("http://keel.localhost"), "http://keel.localhost/*");
+    }
+
+    #[test]
+    fn the_main_frame_origin_is_scheme_host_and_port() {
+        assert_eq!(origin("http://127.0.0.1:47960/s/abc?e=1"), "http://127.0.0.1:47960");
+        assert_eq!(origin("http://127.0.0.1:47961/"), "http://127.0.0.1:47961");
+        assert_ne!(origin("http://127.0.0.1:47960/"), origin("http://127.0.0.1:47961/"));
     }
 }

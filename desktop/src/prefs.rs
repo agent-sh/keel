@@ -1,4 +1,4 @@
-//! What the shell remembers between runs: the window's size, the zoom and the
+//! What the shell remembers between runs: the window's size and the
 //! page's last colors (so the title bar and the first frame match the page
 //! before it has loaded). One small JSON file in the shell's own folder.
 use serde_json::{json, Value};
@@ -39,13 +39,12 @@ pub struct Prefs {
     pub width: i32,
     pub height: i32,
     pub maximized: bool,
-    pub zoom: f64,
     pub look: Look,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Self { width: 1320, height: 860, maximized: false, zoom: 1.0, look: Look::of(false) }
+        Self { width: 1320, height: 860, maximized: false, look: Look::of(false) }
     }
 }
 
@@ -53,10 +52,6 @@ impl Default for Prefs {
 pub fn dir() -> PathBuf {
     let env = |n: &str| std::env::var_os(n).filter(|v| !v.is_empty()).map(PathBuf::from);
     env("KEEL_DESKTOP_DIR").unwrap_or_else(|| env("XDG_DATA_HOME").unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/share")).join("keel-desktop"))
-}
-
-pub fn clamp_zoom(z: f64) -> f64 {
-    if z.is_finite() { z.clamp(0.5, 3.0) } else { 1.0 }
 }
 
 impl Prefs {
@@ -70,7 +65,6 @@ impl Prefs {
             width: int("width", 480, d.width),
             height: int("height", 320, d.height),
             maximized: v.get("maximized").and_then(Value::as_bool).unwrap_or(false),
-            zoom: clamp_zoom(v.get("zoom").and_then(Value::as_f64).unwrap_or(1.0)),
             look: Look {
                 dark: base.dark,
                 bg: color("bg", &base.bg),
@@ -90,7 +84,7 @@ impl Prefs {
 
     pub fn text(&self) -> String {
         let l = &self.look;
-        json!({ "width": self.width, "height": self.height, "maximized": self.maximized, "zoom": self.zoom,
+        json!({ "width": self.width, "height": self.height, "maximized": self.maximized,
             "look": { "dark": l.dark, "bg": l.bg, "panel": l.panel, "fg": l.fg, "muted": l.muted, "line": l.line, "need": l.need, "scale": l.scale } })
         .to_string()
     }
@@ -116,10 +110,9 @@ mod tests {
         p.width = 1920;
         p.height = 1040;
         p.maximized = true;
-        p.zoom = 1.25;
         p.look = Look { scale: 1.2, ..Look::of(true) };
         let q = Prefs::parse(&p.text());
-        assert_eq!((q.width, q.height, q.maximized, q.zoom), (1920, 1040, true, 1.25));
+        assert_eq!((q.width, q.height, q.maximized), (1920, 1040, true));
         assert_eq!(q.look, p.look);
     }
 
@@ -129,7 +122,6 @@ mod tests {
         for text in ["", "not json", "[]", r#"{"width":-5,"height":99999999,"zoom":"big"}"#, r#"{"width":10,"zoom":900}"#] {
             let p = Prefs::parse(text);
             assert_eq!((p.width, p.height), (d.width, d.height), "{text}");
-            assert!((0.5..=3.0).contains(&p.zoom), "{text}");
         }
     }
 
@@ -141,13 +133,5 @@ mod tests {
         assert_eq!(p.look.fg, "#fff");
         assert_eq!(p.look.line, d.line);
         assert!(hex("#a1b2c3").is_some() && hex("#a1b2c3d4").is_some() && hex("a1b2c3").is_none() && hex("#zzz").is_none());
-    }
-
-    #[test]
-    fn zoom_stays_in_range() {
-        assert_eq!(clamp_zoom(0.1), 0.5);
-        assert_eq!(clamp_zoom(9.0), 3.0);
-        assert_eq!(clamp_zoom(f64::NAN), 1.0);
-        assert_eq!(clamp_zoom(1.1), 1.1);
     }
 }

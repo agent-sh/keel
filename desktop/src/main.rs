@@ -2,8 +2,8 @@
 //! (or starts it), shows its page in a window with no browser around it,
 //! keeps a mark in the tray with the count of what waits, shows the daemon's
 //! alerts as native notifications whose click lands in the window, and opens
-//! keel:// links. The daemon is a process of its own: the shell follows it
-//! across restarts and never stops it unless asked.
+//! keel:// links. The daemon is a process of its own: the app follows it
+//! across restarts and never stops it unless asked, and asks first then.
 mod daemon;
 mod http;
 mod instance;
@@ -40,7 +40,7 @@ usage: keel-desktop [options] [keel://LINK]
   --window PATH         open a path of the page in a window of its own (/s/ID)
   --hidden              start with the tray mark only
   --quit                quit the running app (the daemon keeps running)
-  --url URL             the daemon's address (else KEEL_URL, the state folder's daemon, the default)
+  --url URL             the daemon's address on this machine (else KEEL_URL, the state folder's daemon, the default)
   --state-dir DIR       the daemon's state folder (else KEEL_STATE_DIR)
   --keel PATH           the keel program that starts the daemon (else KEEL_BIN, the one beside this, the PATH)
   --shortcut            ask the desktop for a global shortcut that raises the window
@@ -61,6 +61,9 @@ fn with_shell(f: impl FnOnce(&Rc<Shell>)) {
         }
     });
 }
+
+/// Windows of single sessions open at once: a page cannot fill the desktop with them.
+const SESSION_WINDOWS: usize = 8;
 
 /// Runs on the main loop, from any thread.
 fn on_main(f: impl FnOnce(&Rc<Shell>) + Send + 'static) {
@@ -133,7 +136,7 @@ impl Shell {
     fn new_window(self: &Rc<Self>, main: bool) -> Rc<dyn View> {
         let p = self.prefs.borrow().clone();
         let size = if main { (p.width, p.height) } else { ((p.width * 2 / 3).max(720), (p.height * 9 / 10).max(560)) };
-        let opening = Opening { main, size, maximized: main && p.maximized, zoom: p.zoom, look: p.look, tray: self.tray_available(), devtools: self.devtools };
+        let opening = Opening { main, size, maximized: main && p.maximized, look: p.look, tray: self.tray_available(), devtools: self.devtools };
         self.engine.open(opening, Rc::new(|win, ask| with_shell(|s| s.asked(win, ask))))
     }
 
@@ -147,6 +150,9 @@ impl Shell {
             }
         } else if win.showing() != Showing::App {
             win.away(&self.prefs.borrow().look, &link, self.starting.get(), &url, &self.note.borrow());
+        } else {
+            // The page stays as it is, and is told the title bar says the daemon is away.
+            win.daemon_away();
         }
         win.link(&link);
     }
@@ -155,16 +161,21 @@ impl Shell {
     fn clicked(self: &Rc<Self>, alert: String, token: Option<String>) {
         self.note_done("click", serde_json::json!({ "alert": alert, "token": token.is_some() }));
         self.token.replace(token);
-        self.open(None);
+        if alert.is_empty() {
+            // The one that stands for many sessions: the inbox lists them.
+            return self.open(Some("/?inbox=1"), false);
+        }
+        self.open(None, false);
         daemon::call(&self.place, "POST", "/api/shell/click".into(), Some(serde_json::json!({ "alert": alert }).to_string()), |v| {
             if let Some(path) = v.and_then(|v| v.get("path").and_then(|p| p.as_str().map(String::from))) {
-                on_main(move |s| s.open(Some(&path)));
+                on_main(move |s| s.open(Some(&path), true));
             }
         });
     }
 
-    /// Opens the main window, on a path when one is given, and raises it.
-    fn open(self: &Rc<Self>, path: Option<&str>) {
+    /// Opens the main window, on a path when one is given, and raises it. `clicked`: the path is
+    /// where a notification the owner clicked leads; else a link, a launch or the tray brought them.
+    fn open(self: &Rc<Self>, path: Option<&str>, clicked: bool) {
         let existing = self.main.borrow().clone();
         let win = existing.unwrap_or_else(|| {
             let w = self.new_window(true);
@@ -173,19 +184,24 @@ impl Shell {
         });
         if let Some(p) = path.and_then(links::page_path) {
             if win.showing() == Showing::App && *self.link.borrow() == Link::Up {
-                win.go(&p);
+                win.go(&p, clicked);
             } else {
                 win.want(&p);
             }
         }
         self.fill(&win);
-        win.present(self.token.take().as_deref());
-        self.note_done("present", serde_json::json!({ "window": "main", "path": path }));
+        let token = self.token.take();
+        win.present(token.as_deref());
+        self.note_done("present", serde_json::json!({ "window": "main", "path": path, "token": token.is_some() }));
     }
 
     /// A path of the page in a window of its own.
     fn open_window(self: &Rc<Self>, path: &str) {
         let Some(p) = links::page_path(path) else { return };
+        if !links::room_for_window(self.others.borrow().len(), SESSION_WINDOWS) {
+            self.note_done("refused", serde_json::json!({ "window": p, "open": self.others.borrow().len() }));
+            return;
+        }
         let win = self.new_window(false);
         win.want(&p);
         self.others.borrow_mut().push(win.clone());
@@ -269,15 +285,6 @@ impl Shell {
                     self.apply_look();
                 }
             }
-            Ask::Zoom(z) => {
-                let mut p = self.prefs.borrow_mut();
-                p.zoom = z;
-                p.save();
-                drop(p);
-                for w in self.windows() {
-                    w.zoom(z);
-                }
-            }
             Ask::Lost => self.fill(win),
             Ask::Close if win.is_main() => {
                 self.save_size();
@@ -330,11 +337,17 @@ impl Shell {
                 self.needs.set(n);
                 self.show_tray();
             }
-            Event::Notify { key, alert, title, body, urgent } => {
+            Event::Notify { key, alert, title, body, urgent, ack } => {
                 if let Some(n) = self.notifier.borrow().as_ref() {
-                    n.show(APP_ID, &key, &alert, &title, &body, urgent);
+                    n.show(APP_ID, &key, &alert, &title, &body, urgent, ack);
                 }
                 self.note_done("notify", serde_json::json!({ "key": key, "alert": alert, "title": title }));
+            }
+            Event::Refused(why) => {
+                if *self.note.borrow() != why {
+                    *self.note.borrow_mut() = why;
+                    self.refill();
+                }
             }
             Event::Withdraw(key) => {
                 if let Some(n) = self.notifier.borrow().as_ref() {
@@ -355,21 +368,43 @@ impl Shell {
     fn picked(self: &Rc<Self>, p: Pick) {
         self.note_done("pick", serde_json::json!({ "pick": format!("{p:?}") }));
         match p {
-            Pick::Open => self.open(None),
-            Pick::New => self.open(Some("/")),
+            Pick::Open => self.open(None, false),
+            Pick::New => self.open(Some("/"), false),
             Pick::Start => {
-                self.open(None);
+                self.open(None, false);
                 self.start_daemon();
             }
             Pick::Pause => daemon::call(&self.place, "PUT", "/api/snooze".into(), Some(serde_json::json!({ "until_ms": now_ms() + 3_600_000 }).to_string()), |_| {}),
             Pick::Resume => daemon::call(&self.place, "DELETE", "/api/snooze".into(), None, |_| {}),
             Pick::Quit => self.quit(),
-            Pick::QuitAll => {
-                daemon::call(&self.place, "POST", "/api/drain".into(), Some("{}".into()), |_| on_main(|s| s.quit()));
-                // The daemon may already be gone: the app quits all the same.
-                glib::timeout_add_seconds_local_once(6, || with_shell(|s| s.quit()));
-            }
+            Pick::QuitAll => self.quit_all(),
         }
+    }
+
+    /// Quit and stop the daemon. It ends every running turn, so the owner is asked first, and told which.
+    fn quit_all(self: &Rc<Self>) {
+        if *self.link.borrow() != Link::Up {
+            return self.quit();
+        }
+        daemon::call(&self.place, "GET", "/api/shell".into(), None, |v| {
+            let running = v.as_ref().map(running_titles).unwrap_or_default();
+            on_main(move |s| {
+                let (question, detail) = stop_words(&running);
+                s.note_done("confirm", serde_json::json!({ "question": question, "detail": detail }));
+                // The window comes up under the question, so it is seen.
+                s.open(None, false);
+                s.engine.confirm(&question, &detail, "Stop Keel", Box::new(|yes| {
+                    with_shell(|s| {
+                        s.note_done("confirmed", serde_json::json!({ "stop": yes }));
+                        if yes {
+                            daemon::call(&s.place, "POST", "/api/drain".into(), Some("{}".into()), |_| on_main(|s| s.quit()));
+                            // The daemon may already be gone: the app quits all the same.
+                            glib::timeout_add_seconds_local_once(6, || with_shell(|s| s.quit()));
+                        }
+                    })
+                }));
+            });
+        });
     }
 
     /// The words of a launch: the first, and every later one handed over by a second process.
@@ -381,7 +416,8 @@ impl Shell {
                 "--quit" => return self.quit(),
                 "--new" => path = Some("/".to_string()),
                 "--hidden" => hidden = true,
-                "--window" => window = it.next().cloned(),
+                // A launch names a place and nothing more, as a link does.
+                "--window" => window = it.next().map(|p| links::place(p).to_string()),
                 "--url" | "--state-dir" | "--keel" => {
                     it.next();
                 }
@@ -398,11 +434,31 @@ impl Shell {
         }
         if hidden && first && path.is_none() {
             // With no tray to show the mark, a hidden start would be an app nobody can reach.
-            glib::timeout_add_seconds_local_once(3, || with_shell(|s| if !s.tray_available() && s.main.borrow().is_none() { s.open(None) }));
+            glib::timeout_add_seconds_local_once(3, || with_shell(|s| if !s.tray_available() && s.main.borrow().is_none() { s.open(None, false) }));
             return;
         }
-        self.open(path.as_deref());
+        self.open(path.as_deref(), false);
     }
+}
+
+/// The titles of the sessions with a turn at work, as the daemon tells its app (GET /api/shell).
+fn running_titles(shell: &serde_json::Value) -> Vec<String> {
+    shell.get("running").and_then(|r| r.as_array()).map(|a| a.iter().filter_map(|t| t.as_str()).map(String::from).collect()).unwrap_or_default()
+}
+
+/// What the owner is asked before the daemon is stopped.
+fn stop_words(running: &[String]) -> (String, String) {
+    let question = "Stop Keel and quit?".to_string();
+    let detail = match running {
+        [] => "No session is working. Keel stops, and starts again when you open the app.".to_string(),
+        [one] => format!("\u{201c}{one}\u{201d} is working and will be stopped. It can go on when Keel starts again."),
+        many => {
+            let shown: Vec<String> = many.iter().take(4).map(|t| format!("\u{201c}{t}\u{201d}")).collect();
+            let rest = many.len() - shown.len();
+            format!("{} sessions are working and will be stopped: {}{}. They can go on when Keel starts again.", many.len(), shown.join(", "), if rest > 0 { format!(" and {rest} more") } else { String::new() })
+        }
+    };
+    (question, detail)
 }
 
 fn place_from(args: &[String]) -> (Where, bool, bool) {
@@ -450,7 +506,7 @@ fn main() -> glib::ExitCode {
             prefs: RefCell::new(prefs),
             engine: Box::new(engine),
             link: RefCell::new(Link::Down),
-            url: RefCell::new(daemon::find(&place)),
+            url: RefCell::new(daemon::find(&place).url),
             main: RefCell::new(None),
             others: RefCell::new(Vec::new()),
             tray: RefCell::new(None),
@@ -467,14 +523,21 @@ fn main() -> glib::ExitCode {
         SHELL.with(|s| *s.borrow_mut() = Some(shell.clone()));
 
         if let Some(conn) = app.dbus_connection() {
-            match Tray::new(&conn, |p| with_shell(|s| s.picked(p)), |on| with_shell(|s| s.note_done("tray-host", serde_json::json!({ "available": on })))) {
+            // The panel paints a symbolic icon in its own ink; the drawn mark is for a desktop whose theme lacks it.
+            let symbolic = gtk::gdk::Display::default().is_some_and(|d| gtk::IconTheme::for_display(&d).has_icon(tray::SYMBOLIC));
+            match Tray::new(&conn, symbolic, |p| with_shell(|s| s.picked(p)), |on| with_shell(|s| s.note_done("tray-host", serde_json::json!({ "available": on })))) {
                 Ok(t) => *shell.tray.borrow_mut() = Some(t),
                 Err(e) => eprintln!("keel-desktop: no tray mark: {e}"),
             }
-            *shell.notifier.borrow_mut() = Some(notify::Notifier::new(&conn, |alert, token| with_shell(|s| s.clicked(alert, token))));
+            *shell.notifier.borrow_mut() = Some(notify::Notifier::new(
+                &conn,
+                |alert, token| with_shell(|s| s.clicked(alert, token)),
+                // The notification is on screen: the daemon is told, and does not show it itself.
+                |ack| with_shell(|s| daemon::call(&s.place, "POST", "/api/shell/ack".into(), Some(serde_json::json!({ "ack": ack }).to_string()), |_| {})),
+            ));
             // Asked for only: the desktop shows its own dialog for it.
             if shortcut {
-                shortcut::bind(&conn, || with_shell(|s| s.open(None)));
+                shortcut::bind(&conn, || with_shell(|s| s.open(None, false)));
             }
             // A later launch hands its words to this one and ends.
             if let Err(e) = instance::serve(&conn, |args, token| {
@@ -499,4 +562,24 @@ fn main() -> glib::ExitCode {
         with_shell(|s| s.command(&own, is_first));
     });
     app.run_with_args::<&str>(&[])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The review's case: "Quit and Stop the Daemon" stopped a running turn without a word.
+    #[test]
+    fn stopping_the_daemon_names_the_turns_it_ends() {
+        let shell = serde_json::json!({ "attached": true, "running": ["Fix the build", "Untitled session"] });
+        assert_eq!(running_titles(&shell), ["Fix the build", "Untitled session"]);
+        assert!(running_titles(&serde_json::json!({})).is_empty());
+        let (q, d) = stop_words(&["Fix the build".to_string()]);
+        assert_eq!(q, "Stop Keel and quit?");
+        assert!(d.contains("\u{201c}Fix the build\u{201d} is working and will be stopped"));
+        let many: Vec<String> = (1..=6).map(|n| format!("T{n}")).collect();
+        let (_, d) = stop_words(&many);
+        assert!(d.starts_with("6 sessions are working") && d.contains("\u{201c}T4\u{201d} and 2 more") && !d.contains("T5"));
+        assert!(stop_words(&[]).1.starts_with("No session is working"));
+    }
 }
