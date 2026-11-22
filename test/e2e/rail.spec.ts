@@ -3,8 +3,9 @@ import { shoot } from "./shots.ts";
 
 // Feature: the rail always says which session is which. With room it is the
 // list (title, state, time, by folder), with one pane, two or three open at
-// this width. It folds to marks only by choice (the toggle or Ctrl B,
-// remembered) or when the panes leave no room (three in a narrower window); a
+// this width. With less room beside the panes it is still a list of titles,
+// one line a session. It folds to marks only by choice (the toggle or Ctrl B,
+// remembered) or when the panes leave no room for a title (three in a narrow window); a
 // mark is the state's shape and a short code of the title, no two alike, and
 // the card beside the entry under the pointer or the focus gives the title,
 // the state, the folder and the last activity. Without room the toggle lays
@@ -133,8 +134,15 @@ test("the list with room, marks without, the card and the toggle", async ({ page
   await page.getByTestId("rail-toggle").click();
   await expect(side).toHaveAttribute("data-open", "true");
 
-  // A narrower window has no room for the list beside three panes: marks, though the list is the choice.
+  // A narrower window has no room for the list at its width beside three panes: it is the narrow
+  // list, a title a line, and the panes keep their width.
   await page.setViewportSize({ width: 1500, height: 980 });
+  await expect(side).toHaveAttribute("data-narrow", "true");
+  await expect(entry(twin).locator(".k-row-title")).toBeVisible();
+  await expect(entry(twin).getByTestId("rail-code")).toHaveCount(0);
+  await expect(stations).toHaveCount(3);
+  // Narrower still there is no room for a title: marks, though the list is the choice.
+  await page.setViewportSize({ width: 1400, height: 980 });
   await expect(side).not.toHaveAttribute("data-open", "true");
   await expect(stations).toHaveCount(3);
   await expect(entry(twin).getByTestId("rail-code")).toBeVisible();

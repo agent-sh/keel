@@ -42,7 +42,8 @@ test("home: the sessions' state, what needs you, and a place to start", async ({
   try {
     // The page shows one line a session without reading its transcript.
     const fetched: string[] = [];
-    page.on("request", (r) => { const m = /\/api\/sessions\/([0-9a-f-]{20,})$/.exec(new URL(r.url()).pathname); if (m && r.method() === "GET") fetched.push(m[1]!); });
+    // (A list row of a session at work asks once whether a message waits in its queue: that request names no events.)
+    page.on("request", (r) => { const u = new URL(r.url()); const m = /\/api\/sessions\/([0-9a-f-]{20,})$/.exec(u.pathname); if (m && r.method() === "GET" && u.searchParams.get("events") !== "0") fetched.push(m[1]!); });
     // Errors the page raises (an observer told of a size it changed itself is one), kept for the resize below.
     await page.addInitScript(() => { (window as any).__errs = []; addEventListener("error", (e: ErrorEvent) => (window as any).__errs.push(String(e.message))); });
     await page.goto("/");

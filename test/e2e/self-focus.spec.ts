@@ -218,9 +218,16 @@ test("the keyboard goes to the message box when what held it goes away", async (
     await expect(rowOf(page, c)).toHaveCount(0);
     await expect(box).toBeFocused();
 
-    // 5. A control with the keyboard that goes away by itself (its session was deleted elsewhere).
+    // 5. A row with the keyboard whose session was deleted elsewhere does not go from under it: the
+    // list is held still while the keyboard is on a row (rail-stable.spec.ts), so the row stays,
+    // dimmed and saying so, and the keyboard stays on it. It goes when the keyboard and the pointer
+    // (still where the archived row was) have left the list.
     await rowOf(page, d).focus();
     await request.delete(`/api/sessions/${d}`);
+    await expect(rowOf(page, d).getByTestId("row-gone")).toHaveText("Deleted");
+    await expect(rowOf(page, d)).toBeFocused();
+    await box.focus();
+    await page.mouse.move(1000, 420);
     await expect(rowOf(page, d)).toHaveCount(0);
     await expect(box).toBeFocused();
 
@@ -256,8 +263,10 @@ test("the keyboard goes to the message box when what held it goes away", async (
     await page.goto(`/s/${asking}`);
     await expect(page.getByTestId("approval")).toBeVisible({ timeout: 30_000 });
     await page.waitForTimeout(1500); // the card has taken the keyboard by now, if it was going to
-    await rowOf(page, gone).focus();
-    await request.delete(`/api/sessions/${gone}`);
+    // (The control that goes is a row's Archive button, pressed: a row whose session is deleted
+    // elsewhere stays under the keyboard, as in 5.)
+    await rowOf(page, gone).hover();
+    await rowOf(page, gone).getByTestId("row-archive").click();
     await expect(rowOf(page, gone)).toHaveCount(0);
     await page.waitForTimeout(500);
     expect(await active(page), "with a request waiting in the pane").not.toBe("composer");

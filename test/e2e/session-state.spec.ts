@@ -293,6 +293,9 @@ test("keel sessions, the page and keel__sessions_list report the same state", as
   }
 });
 
+// Rows keep their place (rail-stable.spec.ts), so the guarantee is not kept by moving them to the
+// top: such a session is never folded away under "N more", it is counted on the line above the
+// list whatever the list is scrolled to, and a press on the count goes to its row.
 test("a session that needs the owner or failed is never behind the fold, and a failure carries its class", async ({ page, request }) => {
   test.skip(!(await scripted(request)), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
   await page.setViewportSize({ width: 1920, height: 1040 });
@@ -333,12 +336,33 @@ test("a session that needs the owner or failed is never behind the fold, and a f
       await expect(row(page, id).getByTestId("row-class")).toHaveText("billing");
     }
     expect(await stateOf(request, failed[0]!)).toMatchObject({ watch: "fail", cls: "quota" });
-    // They lead the folder (what needs the owner, then what failed), and only finished ones are folded.
+    // They stand where they were made, after the newer ones, and only finished ones are folded.
     const group = page.locator(".k-group").filter({ has: page.locator(`[data-session="${asks}"]`) });
-    expect(await group.locator('[data-testid="session-row"]').evaluateAll((els) => els.slice(0, 4).map((e) => e.getAttribute("data-watch")))).toEqual(["need", "fail", "fail", "fail"]);
-    await expect(group.locator(".k-more")).toHaveText("8 more");
+    expect(await group.locator('[data-testid="session-row"]').evaluateAll((els) => els.map((e) => e.getAttribute("data-watch")))).toEqual(["done", "done", "done", "done", "done", "done", "need", "fail", "fail", "fail"]);
+    await expect(group.locator(".k-more")).toHaveText("4 more");
     await expect(row(page, quiet[0]!)).toHaveCount(0);
+    // The line above the list counts them, and is on screen however short the window is.
+    await expect(page.getByTestId("sum-need")).toHaveText(/1\s*needs you/i);
+    await expect(page.getByTestId("sum-fail")).toHaveText(/3\s*failed/i);
     await shoot(page, "session-state-05-never-folded");
+    await page.setViewportSize({ width: 1920, height: 560 });
+    await page.getByTestId("session-list").evaluate((nav) => { nav.scrollTop = 0; });
+    await expect(row(page, asks)).not.toBeInViewport();
+    await expect(page.getByTestId("sum-need")).toBeInViewport({ ratio: 1 });
+    // One press: its row is on screen with the keyboard on it. The next failure the same way, each in turn.
+    await page.getByTestId("sum-need").click();
+    await expect(row(page, asks)).toBeInViewport({ ratio: 0.95 });
+    await expect(row(page, asks)).toBeFocused();
+    const reached: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      await page.getByTestId("sum-fail").click();
+      await expect.poll(() => page.evaluate(() => document.activeElement?.getAttribute("data-watch"))).toBe("fail");
+      const id = (await page.evaluate(() => document.activeElement?.getAttribute("data-session")))!;
+      await expect(row(page, id)).toBeInViewport({ ratio: 0.95 });
+      reached.push(id);
+      await page.getByTestId("composer").focus();
+    }
+    expect([...reached].sort()).toEqual([...failed].sort());
   } finally {
     await drop(request, made);
   }
@@ -921,14 +945,26 @@ test("twelve sessions in mixed states read apart at a glance, wide and on a phon
       expect(box.height, id).toBeLessThanOrEqual(56); // two lines of text and the row's padding
       expect(box.y + box.height, id).toBeLessThanOrEqual(listBox.y + listBox.height + 1);
     }
-    // Within a folder what needs the owner is first, then what failed, what waits, what works, then what is at rest.
-    const order = await page.getByTestId("session-list").locator('[data-testid="session-row"]').evaluateAll((els) => els.map((e) => [e.getAttribute("data-session"), e.getAttribute("data-watch")]));
+    // Within a folder a row stands where its session was made, the newest first, whatever its state:
+    // the state is the mark and the word. Every row is as high as every other.
+    const order = await page.getByTestId("session-list").locator('[data-testid="session-row"]').evaluateAll((els) => els.map((e) => e.getAttribute("data-session")));
+    for (const ids of [[approval, question, working, job, timer, declined], [plan, silent, parent, failed, stopped, done1]]) expect(order.filter((id) => ids.includes(id!))).toEqual(ids);
+    expect(new Set(await page.getByTestId("session-list").locator('[data-testid="session-row"]').evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().height)))).size).toBe(1);
+    // Sorted by state, the order that was the list's own before: what needs the owner first, then what failed, what waits, what works, what is at rest.
+    await page.getByTestId("list-arrange").click();
+    await page.getByTestId("arrange-sort-state").click();
+    await page.keyboard.press("Escape");
+    await page.mouse.move(1200, 500);
     const tier: Record<string, number> = { need: 0, fail: 1, declined: 1, wait: 2, work: 3, stop: 4, done: 4, idle: 4 };
-    for (const ids of [[approval, question, declined, timer, job, working], [plan, failed, silent, parent, stopped, done1]]) {
-      const tiers = order.filter(([id]) => ids.includes(id!)).map(([, w]) => tier[w!]!);
-      expect(tiers).toEqual([...tiers].sort((a, b) => a - b));
-      expect(tiers).toHaveLength(ids.length);
-    }
+    await expect.poll(async () => {
+      const rows = await page.getByTestId("session-list").locator('[data-testid="session-row"]').evaluateAll((els) => els.map((e) => [e.getAttribute("data-session"), e.getAttribute("data-watch")]));
+      return [[approval, question, declined, timer, job, working], [plan, failed, silent, parent, stopped, done1]].every((ids) => {
+        const tiers = rows.filter(([id]) => ids.includes(id!)).map(([, w]) => tier[w!]!);
+        return tiers.length === ids.length && tiers.every((t, i) => i === 0 || tiers[i - 1]! <= t);
+      });
+    }).toBe(true);
+    await page.getByTestId("list-arrange").click();
+    await page.getByTestId("arrange-reset").click();
     await expect(row(page, declined).getByTestId("row-state")).toHaveText("Declined");
     await expect(row(page, working).getByTestId("row-why")).toHaveText("bun run migrate --table uploads");
     // The stream goes silent after its limit: the row says so.
