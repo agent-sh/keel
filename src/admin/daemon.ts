@@ -201,7 +201,8 @@ export function relaunchArgv(): string[] {
 
 // What a draining daemon takes besides GET, since none of it starts work:
 // its own (errors, awake, the drain), a read whose question is in the body
-// (which paths of a reply are files), what the page says by itself (which
+// (which paths of a reply are files, what the transcript marks on its
+// calls), what the page says by itself (which
 // session the owner is at, alerts they have seen, the unsent draft of a message
 // box, which a reload after the restart brings back), what the owner answers
 // a running turn (the drain is waiting for that turn; the passkey check is
@@ -212,7 +213,7 @@ const DRAIN_PASSES = new RegExp(
     "|presence$|alerts/read$" +
     "|owner-presence/authenticate/(?:start|finish)$" +
     "|sessions/[^/]+/(?:" +
-      "files/exist|interrupt|as-agent/stop|presence|draft(?:/files/[^/]+)?" +
+      "files/exist|call-marks|interrupt|as-agent/stop|presence|draft(?:/files/[^/]+)?" +
       "|(?:approvals|questions|plan|secrets)/[^/]+" +
       "|(?:jobs|terminal|agents)/[^/]+/stop" +
     ")$" +
