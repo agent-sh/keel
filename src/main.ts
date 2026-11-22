@@ -3,7 +3,9 @@ import { parseArgs } from "node:util";
 import { commands } from "./cli/index.ts";
 import { topHelp, unknownCommand } from "./cli/help.ts";
 import { parseBind } from "./core/bind.ts";
-import { versionLine } from "./core/build.ts";
+import { buildId, versionLine } from "./core/build.ts";
+import { configDir } from "./providers/config.ts";
+import { startLine } from "./admin/daemon-log.ts";
 import { daemonApi } from "./server/ui-bundle.ts";
 import { startDaemon } from "./server/start.ts";
 
@@ -55,7 +57,7 @@ if ("error" in bind) {
   process.exit(3);
 }
 
-const g = globalThis as { __keelSignals?: boolean; __keelStop?: (ms: number) => Promise<void> };
+const g = globalThis as { __keelSignals?: boolean; __keelStop?: (ms: number) => Promise<void>; __keelStartSaid?: boolean };
 // A daemon that could not start ends here, with what went wrong. Left alone it
 // serves nothing and stays: it holds the state folder, the modules it loaded
 // keep it alive and take its signals, and under --hot the process waits for an
@@ -87,3 +89,7 @@ if (!g.__keelSignals) {
   }
 }
 console.log(`keel listening on ${d.url} (state ${d.stateDir})`);
+if (!g.__keelStartSaid) {
+  g.__keelStartSaid = true;
+  console.log(startLine({ revision: buildId(), pid: process.pid, url: d.url, state: d.stateDir, config: configDir() }));
+}

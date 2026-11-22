@@ -24,6 +24,7 @@ import { detached } from "../../core/errors.ts";
 import { atSession } from "../../core/error-sites.ts";
 import { gitSync } from "../../core/git.ts";
 import { cutWhere } from "../../admin/life-rows.ts";
+import { agentLine, stopLine } from "../../admin/daemon-log.ts";
 import { installLogs, LEVELS, logAt, logDir, logLines, onLog } from "../../admin/logs.ts";
 import { newestTurn } from "../../admin/marks.ts";
 import { registerHooks } from "../../engine/hooks.ts";
@@ -138,10 +139,21 @@ export const observeRoutes: RouteModule = ({ store, bus, engine, providers, erro
     const e = f.event;
     const at = () => ({ session: e.session_id, turn: engine.turnOf(e.session_id) ?? newestTurn(store, e.session_id)?.id });
     if (e.kind === "turn_end" && e.data?.reason === "restart" && !e.data.crashed) logAt(at(), "[turn] parked for a daemon stop");
+    else if (e.kind === "turn_end" && e.data?.reason === "interrupted") logAt(at(), stopLine(e.data.stopped_by));
     else if (e.kind === "compaction") {
       const n = e.data?.tokens_before;
       logAt({ session: e.session_id, turn: engine.turnOf(e.session_id) }, `[turn] context ${e.data?.mode === "clear" ? "cleared" : e.data?.trigger === "model" ? "started fresh by the model" : e.data?.auto ? "compacted by itself" : "compacted by the owner"}${typeof n === "number" && n > 0 ? `, from ${n} tokens` : ""}`);
     }
+  });
+
+  // An agent's start and end, each once, on its parent's session (the line names the agent).
+  const agentState = (G.__keelAgentStates ??= new Map<string, string>()) as Map<string, string>;
+  bus.on((f) => {
+    if (f.t !== "feature" || f.name !== "automation" || f.data?.kind !== "agent" || !f.data.data?.id) return;
+    const a = f.data.data;
+    const line = agentLine(a, agentState.get(a.id));
+    if (a.ended) agentState.delete(a.id); else agentState.set(a.id, a.status);
+    if (line) logAt({ session: a.parent_id }, `${line} [agent session ${String(a.session_id).slice(-12)}]`, a.status === "failed" ? "warn" : "info");
   });
 
   const bundleFor = (q: { error_id?: string | null; session_id?: string | null; turn_event?: string | null; span_id?: string | null }) => {

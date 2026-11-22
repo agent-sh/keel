@@ -116,7 +116,7 @@ export function DaemonPanel() {
       action: "Restart",
       careful: true,
     });
-    if (ok) await api("/api/drain", { method: "POST", body: JSON.stringify({ restart: true }) });
+    if (ok) await api("/api/drain", { method: "POST", body: JSON.stringify({ restart: true, reason: "asked from Settings, Daemon" }) });
   };
 
   if (!st) return <div className="text-ui text-faint">Asking the daemon.</div>;

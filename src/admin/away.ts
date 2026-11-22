@@ -3,7 +3,10 @@
 // class, how its agents ended, the approvals that wait, the agents parked on
 // a wake of their own, and the spend. Built from the same read as the report
 // across sessions (overview.ts), so the two never disagree, and content-free
-// like it.
+// like it. Before the sessions it tells what the daemon itself went through in
+// that time: each time it went down and came back (how, for how long, the
+// turns that cut and what became of them) and the stalls of its loop with
+// their named causes. Open questions are counted with the approvals.
 //
 // The owner is present while they do something in a page: each page says with
 // its report (POST /api/presence, every 20 s) how long ago its last key,
@@ -14,7 +17,10 @@
 // counted: the time between two absences, when the owner was there, is not.
 // The daemon's own time not running (it was down, or the machine slept) is no
 // absence: nothing happened in it, and no report could arrive.
+import { localDay, localTime, zoneLabel } from "../core/clock.ts";
 import { WATCH_LABEL, WATCH_RANK, type Watch } from "../core/watch.ts";
+import type { DaemonFacts, StallFact } from "./daemon-facts.ts";
+import { type Restart, restartSummary } from "./life-rows.ts";
 import { agentsText, costText, cutText, failedText, fitted, MAX, name, plural, shortId, SINCE_MAX_MS, titleAt, usd, type Overview, type OverviewRow } from "./overview.ts";
 import { dur } from "./timeline-rows.ts";
 
@@ -116,6 +122,7 @@ export type DigestRow = {
   failed: Record<string, number>;
   agents: Record<string, number>;
   approvals: number;
+  questions: number; // questions the session or its agents asked that wait for an answer
   parked: number;
   cost: number;
   unpriced?: true;
@@ -132,12 +139,67 @@ export type Digest = {
   sessions: DigestRow[]; // the sessions in which something happened while the owner was away
   quiet: number; // the other sessions
   // `turns`, `failed`: the sessions' own turns. `agents`: how their agents ended, by outcome.
-  totals: { turns: number; cut?: number; failed: number; agents: Record<string, number>; approvals: number; parked: number; cost: number; unpriced?: true };
+  // `approvals`, `questions`: what waits for the owner now in these sessions (a card in a session where nothing else happened is the Inbox's to tell).
+  totals: { turns: number; cut?: number; failed: number; agents: Record<string, number>; approvals: number; questions: number; parked: number; cost: number; unpriced?: true };
+  // What the daemon went through in the absences: sentences, the oldest first, a bounded few.
+  daemon: string[];
+  // The same in a few words, for one line ("the daemon went down and came back after 29 s, 6 turns cut").
+  daemon_brief?: string;
 };
 
-const waits = (n: number) => (n ? `${plural(n, "approval")} ${n === 1 ? "waits" : "wait"}` : "");
+// What the digest is told besides the sessions' report.
+export type DigestMore = { daemon?: DaemonFacts; questions?: Record<string, number> };
+
+// --- what the daemon went through
+const RESTARTS_TOLD = 3;
+const CAUSES_TOLD = 3;
+const secs = (ms: number) => (ms < 10_000 ? `${(ms / 1000).toFixed(1)} s` : dur(ms));
+// "2 times, 9.9 s in all: 6.0 s blocked by its own code; 3.9 s waiting for a child: sleep 4".
+export function stallsLine(stalls: StallFact[]): string {
+  if (!stalls.length) return "";
+  const total = stalls.reduce((n, s) => n + s.ms, 0);
+  // One entry a cause, the longest first: the cause is what the stall's row says after its duration.
+  const by = new Map<string, { ms: number; n: number }>();
+  for (const s of stalls) {
+    const what = s.what.replace(/^[:\s]+/, "").trim() || "cause not known";
+    const c = by.get(what) ?? by.set(what, { ms: 0, n: 0 }).get(what)!;
+    c.ms += s.ms;
+    c.n++;
+  }
+  const causes = [...by].sort((a, b) => b[1].ms - a[1].ms);
+  const told = causes.slice(0, CAUSES_TOLD).map(([what, c]) => `${secs(c.ms)}${c.n > 1 ? ` (${c.n} times)` : ""} ${what}`);
+  if (causes.length > CAUSES_TOLD) told.push(`${causes.length - CAUSES_TOLD} more causes`);
+  return `The daemon was unresponsive ${stalls.length === 1 ? "once" : `${stalls.length} times`}, ${secs(total)}${stalls.length > 1 ? " in all" : ""}: ${told.join("; ")}.`;
+}
+// The sentences, a bounded few: the newest restarts, then the stalls in one.
+export function daemonLines(f: DaemonFacts | undefined): string[] {
+  if (!f) return [];
+  const out: string[] = [];
+  const told = f.restarts.slice(-RESTARTS_TOLD);
+  if (f.restarts.length > told.length) out.push(`The daemon started ${f.restarts.length} times; the last ${told.length}:`);
+  for (const r of told) out.push(restartSummary(r));
+  const stalls = stallsLine(f.stalls);
+  if (stalls) out.push(stalls);
+  return out;
+}
+const downWords = (r: Restart) => (r.before ? `${r.before.how === "killed" ? "went down" : r.before.how === "crash" ? "ended on a failure" : r.before.how === "restart" ? "restarted" : "was stopped"} and came back after ${dur(Math.max(0, r.up_ms - r.before.down_ms))}` : "started");
+// "the daemon went down and came back after 29 s, 6 turns cut; unresponsive twice".
+export function daemonBrief(f: DaemonFacts | undefined): string {
+  if (!f || (!f.restarts.length && !f.stalls.length)) return "";
+  const cut = f.restarts.reduce((n, r) => n + r.turns.filter((t) => !t.earlier).length, 0);
+  const last = f.restarts.at(-1);
+  const went = !last ? "" : `the daemon ${f.restarts.length > 1 ? `went down ${f.restarts.length} times` : downWords(last)}${cut ? `, ${plural(cut, "turn")} cut` : ""}`;
+  const stalled = f.stalls.length ? `${went ? "" : "the daemon was "}unresponsive ${f.stalls.length === 1 ? "once" : `${f.stalls.length} times`}` : "";
+  return [went, stalled].filter(Boolean).join("; ");
+}
+
+// "1 approval and 2 questions wait", "1 question waits".
+export function waits(approvals: number, questions = 0): string {
+  const parts = [approvals ? plural(approvals, "approval") : "", questions ? plural(questions, "question") : ""].filter(Boolean);
+  return parts.length ? `${parts.join(" and ")} ${approvals + questions === 1 ? "waits" : "wait"}` : "";
+}
 const parked = (n: number) => (n ? `${plural(n, "agent")} parked` : "");
-type Facts = Pick<DigestRow, "turns" | "cut" | "failed" | "agents" | "approvals" | "parked" | "cost" | "unpriced">;
+type Facts = Pick<DigestRow, "turns" | "cut" | "failed" | "agents" | "approvals" | "questions" | "parked" | "cost" | "unpriced">;
 // A row's facts in words; `level`: how much is left out to fit (overview.ts).
 function factsText(r: Facts, level = 0): { text: string; bad?: string } {
   const failed = failedText(r.failed, level >= 3);
@@ -146,68 +208,89 @@ function factsText(r: Facts, level = 0): { text: string; bad?: string } {
     r.turns ? `${plural(r.turns, "turn")} ended${failed ? `, ${failed}` : ""}` : "",
     // A turn a restart cut did not end: said apart ("2 turns cut by a restart" for a session that only waited).
     r.cut ? (r.turns ? cutText(r.cut) : `${plural(r.cut, "turn")} cut by a restart`) : "",
-    ended, waits(r.approvals), parked(r.parked), level >= 4 ? "" : costText(r),
+    ended, waits(r.approvals, r.questions), parked(r.parked), level >= 4 ? "" : costText(r),
   ].filter(Boolean).join("; ");
   return { text, ...(failed ? { bad: failed } : r.agents.failed ? { bad: `${r.agents.failed} failed` } : {}) };
 }
 
-function digestRow(r: OverviewRow): DigestRow | null {
+function digestRow(r: OverviewRow, questions: number): DigestRow | null {
   // Something happened in it while the owner was away: a turn ended, an agent ended, or it spent.
   if (!r.did) return null;
-  const facts: Facts = { turns: r.did.turns, ...(r.did.cut ? { cut: r.did.cut } : {}), failed: r.did.failed, agents: r.did.agents, approvals: r.approvals, parked: r.parked, cost: r.did.cost, ...(r.did.unpriced ? { unpriced: true as const } : {}) };
+  const facts: Facts = { turns: r.did.turns, ...(r.did.cut ? { cut: r.did.cut } : {}), failed: r.did.failed, agents: r.did.agents, approvals: r.approvals, questions, parked: r.parked, cost: r.did.cost, ...(r.did.unpriced ? { unpriced: true as const } : {}) };
   return { id: r.id, title: r.title, watch: r.watch, ...facts, ...factsText(facts) };
 }
 
 // `o`: the report across sessions, read for the absences (overview's `spans`).
-// Null when nothing happened in them: there is nothing to tell.
-export function digest(o: Overview, w: AwayWindow): Digest | null {
-  const rows = o.sessions.map(digestRow).filter((r): r is DigestRow => !!r);
-  if (!rows.length) return null;
+// `more`: what the daemon went through in them, and the open questions by
+// session (an agent's under its parent too). Null when nothing happened in
+// them, to the sessions or to the daemon: there is nothing to tell.
+export function digest(o: Overview, w: AwayWindow, more: DigestMore = {}): Digest | null {
+  const asked = more.questions ?? {};
+  const rows = o.sessions.map((r) => digestRow(r, asked[r.id] ?? 0)).filter((r): r is DigestRow => !!r);
+  const daemon = daemonLines(more.daemon);
+  if (!rows.length && !daemon.length) return null;
   rows.sort((a, b) => WATCH_RANK[a.watch] - WATCH_RANK[b.watch] || b.turns - a.turns);
   const sum = (f: (r: DigestRow) => number) => rows.reduce((n, r) => n + f(r), 0);
   const agents: Record<string, number> = {};
   for (const r of rows) for (const [k, n] of Object.entries(r.agents)) agents[k] = (agents[k] ?? 0) + n;
+  const brief = daemonBrief(more.daemon);
   return {
     from: w.spans[0]!.from, to: w.spans.at(-1)!.to, spans: w.spans, away_ms: w.spans.reduce((n, s) => n + (s.to - s.from), 0), present: w.present, as_of: o.as_of,
     sessions: rows, quiet: o.sessions.length + o.hidden - rows.length,
     totals: {
-      turns: sum((r) => r.turns), ...(sum((r) => r.cut ?? 0) ? { cut: sum((r) => r.cut ?? 0) } : {}), failed: sum((r) => Object.values(r.failed).reduce((n, x) => n + x, 0)), agents, approvals: sum((r) => r.approvals), parked: sum((r) => r.parked),
+      turns: sum((r) => r.turns), ...(sum((r) => r.cut ?? 0) ? { cut: sum((r) => r.cut ?? 0) } : {}), failed: sum((r) => Object.values(r.failed).reduce((n, x) => n + x, 0)), agents,
+      approvals: sum((r) => r.approvals), questions: sum((r) => r.questions), parked: sum((r) => r.parked),
       cost: sum((r) => r.cost), ...(rows.some((r) => r.unpriced) ? { unpriced: true as const } : {}),
     },
+    daemon, ...(brief ? { daemon_brief: brief } : {}),
   };
 }
+
+// The turns a restart cut, in the totals: said there unless the daemon's own account on the same line already counts them.
+const cutSaid = (d: Digest): string => (d.totals.cut && !/\bturns? cut\b/.test(d.daemon_brief ?? "") ? `, ${cutText(d.totals.cut)}` : "");
 
 // "6 of the sessions' own turns ended in 4 sessions, 2 failed; agents: 3 ended, 1 failed; 1 approval waits; 1 agent parked; $0.42 spent in all".
 export function digestTotals(d: Digest): string {
   const t = d.totals;
   const busy = d.sessions.filter((r) => r.turns).length;
   return [
-    `${t.turns} of the sessions' own turns ended${t.turns ? ` in ${plural(busy, "session")}` : ""}${t.failed ? `, ${t.failed} failed` : ""}${t.cut ? `, ${cutText(t.cut)}` : ""}`,
-    agentsText(t.agents), waits(t.approvals), parked(t.parked),
+    `${t.turns} of the sessions' own turns ended${t.turns ? ` in ${plural(busy, "session")}` : ""}${t.failed ? `, ${t.failed} failed` : ""}${cutSaid(d)}`,
+    agentsText(t.agents), waits(t.approvals, t.questions), parked(t.parked),
     `${usd(t.cost)}${t.unpriced ? " + unpriced" : ""} spent in all`,
   ].filter(Boolean).join("; ");
 }
 
-// The same in a few words, for one line: "6 turns ended, 2 failed; 1 agent failed; 1 approval waits".
+// The same in a few words, for one line: "the daemon went down and came back
+// after 29 s, 6 turns cut; 6 turns ended, 2 failed; 1 agent failed; 1 approval and 1 question wait".
 export function digestBrief(d: Digest): string {
   const t = d.totals;
-  return [`${plural(t.turns, "turn")} ended${t.failed ? `, ${t.failed} failed` : ""}${t.cut ? `, ${cutText(t.cut)}` : ""}`, t.agents.failed ? `${plural(t.agents.failed, "agent")} failed` : "", waits(t.approvals)].filter(Boolean).join("; ");
+  return [
+    d.daemon_brief ?? "",
+    t.turns || !d.daemon_brief ? `${plural(t.turns, "turn")} ended${t.failed ? `, ${t.failed} failed` : ""}${cutSaid(d)}` : cutSaid(d).slice(2),
+    t.agents.failed ? `${plural(t.agents.failed, "agent")} failed` : "", waits(t.approvals, t.questions),
+  ].filter(Boolean).join("; ");
 }
 
-// The text form. Times are UTC, as the timeline's. `since`: the window was
-// asked for, not an absence. Twenty rows at most, within the report's bound
-// (overview.ts): the rest are counted.
-const hm = (ts: number, by: number) => (new Date(ts).toISOString().slice(0, 10) === new Date(by).toISOString().slice(0, 10) ? new Date(ts).toISOString().slice(11, 16) : new Date(ts).toISOString().slice(0, 16).replace("T", " "));
+// The text form. Times are local, with the zone's offset said once on the
+// first line (clock.ts), as in every text Keel writes. `since`: the window was asked
+// for, not an absence. The daemon's own account comes first, a few sentences
+// at most; then twenty rows at most, within the report's bound (overview.ts):
+// the rest are counted.
+export const hms = (ts: number, by: number) => (localDay(ts) === localDay(by) ? localTime(ts) : `${localDay(ts)} ${localTime(ts)}`);
 export function digestText(d: Digest, opts: { ids?: boolean; since?: boolean } = {}): string {
   const many = d.spans.length > 1;
-  const span = opts.since ? `From ${hm(d.from, d.as_of)} to ${hm(d.to, d.as_of)} UTC (${dur(d.to - d.from)})`
+  const at = (ts: number) => hms(ts, d.as_of);
+  // The zone is said once, where the old text said UTC: after the last time of the span.
+  const z = zoneLabel(d.as_of);
+  const span = opts.since ? `From ${at(d.from)} to ${at(d.to)} ${z} (${dur(d.to - d.from)})`
     : d.present
-      ? `While you were away, ${many ? `${d.spans.length} times between ${hm(d.from, d.as_of)} and ${hm(d.to, d.as_of)} UTC (${dur(d.away_ms)} in all)` : `${hm(d.from, d.as_of)} to ${hm(d.to, d.as_of)} UTC (${dur(d.away_ms)})`}`
-      : `While you are away, ${many ? `${d.spans.length} times since ${hm(d.from, d.as_of)} UTC (${dur(d.away_ms)} in all)` : `since ${hm(d.from, d.as_of)} UTC (${dur(d.away_ms)})`}`;
+      ? `While you were away, ${many ? `${d.spans.length} times between ${at(d.from)} and ${at(d.to)} ${z} (${dur(d.away_ms)} in all)` : `${at(d.from)} to ${at(d.to)} ${z} (${dur(d.away_ms)})`}`
+      : `While you are away, ${many ? `${d.spans.length} times since ${at(d.from)} ${z} (${dur(d.away_ms)} in all)` : `since ${at(d.from)} ${z} (${dur(d.away_ms)})`}`;
   const shown = d.sessions.slice(0, MAX);
   const more = d.sessions.length - shown.length;
   return fitted((level) => {
-    const out = [`${span}: ${digestTotals(d)}.`];
+    // The first line names what the daemon went through, then the totals; its sentences follow.
+    const out = [`${span}: ${d.daemon_brief ? `${d.daemon_brief}; ` : ""}${digestTotals(d)}.`, ...d.daemon];
     for (const r of shown) out.push(`  ${name(r.title, undefined, titleAt(level))}, ${WATCH_LABEL[r.watch].toLowerCase()}: ${factsText(r, level).text}${opts.ids === false ? "" : `  [session=${shortId(r.id)}]`}`);
     if (more) out.push(`${plural(more, "more session")} with something to tell, not listed.`);
     if (d.quiet) out.push(`${plural(d.quiet, "other session")}: nothing happened.`);

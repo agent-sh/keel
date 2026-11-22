@@ -15,11 +15,14 @@
 // DELETE /api/away   the owner has seen the digest: it is not shown again.
 // Content-free: titles, states, classes, counts, durations and ids.
 import { awayGap, bindPresence, digest, digestText, Presence, TICK_MS, type AwayWindow } from "../../admin/away.ts";
+import { daemonFacts } from "../../admin/daemon-facts.ts";
+import { zonedStamp } from "../../core/clock.ts";
 import { bindOverview, DEFAULT_SINCE, overview, overviewText, tooFarBack, type From } from "../../admin/overview.ts";
 import { dur } from "../../admin/timeline-rows.ts";
 import { parseSince, Timeline } from "../../admin/timeline.ts";
 import { agentCounts, sessionState } from "../../automation/state.ts";
 import { liveOf } from "./timeline.ts";
+import { allPendingQuestions } from "../../tools/interact.ts";
 import type { RouteModule } from "../app.ts";
 
 const bad = (error: string, status = 400) => Response.json({ error }, { status });
@@ -45,6 +48,12 @@ export const overviewRoutes: RouteModule = ({ store, engine }) => {
   clearInterval(g.__keelPresenceTick);
   g.__keelPresenceTick = setInterval(() => presence.tick(), TICK_MS);
   g.__keelPresenceTick.unref?.();
+  // The questions that wait for the owner, by the session that asked and by its parent (an agent's question is its parent's to see).
+  const asked_of = () => {
+    const n: Record<string, number> = {};
+    for (const q of allPendingQuestions()) for (const id of new Set([q.session_id, q.parent_id])) if (id) n[id] = (n[id] ?? 0) + 1;
+    return n;
+  };
   const text = (body: string) => new Response(body + "\n", { headers: { "cache-control": "no-store", "content-type": "text/plain; charset=utf-8" } });
 
   return {
@@ -77,13 +86,13 @@ export const overviewRoutes: RouteModule = ({ store, engine }) => {
         const w: AwayWindow | null = asked ? { spans: [{ from: from_ms, to: now }], present: false } : presence.window(now);
         const asText = q.get("format") === "text";
         const meta = { last_seen: presence.lastSeen, gap_ms: awayGap() };
-        const d = w ? digest(overview(from, { since: w.spans[0]!.from, until: w.spans.at(-1)!.to + 1, spans: w.spans.map((s) => [s.from, s.to + 1] as [number, number]), max: 200 }), w) : null;
+        const d = w ? digest(overview(from, { since: w.spans[0]!.from, until: w.spans.at(-1)!.to + 1, spans: w.spans.map((s) => [s.from, s.to + 1] as [number, number]), max: 200 }), w, { daemon: daemonFacts(store.db, w.spans), questions: asked_of() }) : null;
         // Absences in which nothing happened leave nothing to tell: they go once the owner is back.
         if (w && !d && !asked && w.present) presence.dismiss();
         if (!d) {
           if (!asText) return Response.json({ away: null, ...meta }, { headers: { "cache-control": "no-store" } });
           const last = presence.lastSeen;
-          if (asked) return text(`Nothing happened since ${new Date(from_ms).toISOString().slice(0, 16).replace("T", " ")} UTC.`);
+          if (asked) return text(`Nothing happened since ${zonedStamp(from_ms)}.`);
           return text(w ? "Nothing happened while you were away."
             : `No absence to tell of: ${last === null ? "nobody has been at a page of the daemon yet" : `the owner was at a page of the daemon ${dur(Math.max(now - last, 0))} ago`}. Name a time (since=1h; --since 1h on the command line) for what happened since then.`);
         }

@@ -1,3 +1,4 @@
+import { mcpLine } from "../../admin/daemon-log.ts";
 import { registerSocket, type RouteModule } from "../app.ts";
 import { McpManager } from "../../mcp/manager.ts";
 import { installMcpTools } from "../../mcp/tools.ts";
@@ -29,7 +30,7 @@ const escape = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": 
 
 export const mcpRoutes: RouteModule = (deps) => {
   // Under `bun --hot` this module runs again: close the old servers first.
-  const g = globalThis as { __keelMcp?: McpManager };
+  const g = globalThis as { __keelMcp?: McpManager; __keelMcpSaid?: boolean };
   g.__keelMcp?.dispose();
   // The daemon's manager is the one that reads and writes the owner's server list.
   const m = new McpManager(deps.errors, deps.store.stateDir, deps.workspace, configPath());
@@ -46,6 +47,11 @@ export const mcpRoutes: RouteModule = (deps) => {
   installChromeBridge(m);
   installPhone(m);
   m.start();
+  // Once a process, when the servers had a moment to connect: one line of what was found (daemon-log.ts).
+  if (!g.__keelMcpSaid) {
+    g.__keelMcpSaid = true;
+    setTimeout(() => { try { console.log(mcpLine((g.__keelMcp ?? m).list().map((x: { name: string; state: string }) => ({ name: x.name, state: x.state })))); } catch {} }, Number(process.env.KEEL_MCP_SAID_MS) || 8000).unref?.();
+  }
   // An mcp_tool hook: a tool of a server that is connected or connects in time, called as the hook file's owner asked.
   hookMcp.call = async (server, tool, input, ms) => {
     const client = await m.ensure(server, Math.min(ms, 30_000));

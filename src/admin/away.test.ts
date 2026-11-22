@@ -1,11 +1,15 @@
 import { expect, test } from "bun:test";
-import { ABSENCES, digest, digestBrief, digestText, Presence, TICK_MS } from "./away.ts";
+import { zoneLabel } from "../core/clock.ts";
+import { ABSENCES, daemonBrief, digest, digestBrief, digestText, Presence, stallsLine, TICK_MS, waits } from "./away.ts";
+import type { Restart } from "./life-rows.ts";
 import { TEXT_TOKENS, tokensOf, type Overview, type OverviewRow } from "./overview.ts";
 
 const MIN = 60_000;
 const H = 60 * MIN;
 const GAP = 5 * MIN;
-const T0 = Date.UTC(2026, 0, 5, 22, 0, 0);
+// A local time: the digest's text is in the machine's zone, whatever it is.
+const T0 = new Date(2026, 0, 5, 22, 0, 0).getTime();
+const Z = zoneLabel(T0);
 
 function kept() {
   let v: string | null = null;
@@ -116,10 +120,10 @@ test("the digest tells the sessions in which something happened, and nothing whe
   expect(away.sessions.map((r) => r.title)).toEqual(["Coordinator", "Build"]);
   expect(away.quiet).toBe(4);
   // The headline counts the sessions' own turns, and the agents that failed beside them.
-  expect(away.totals).toEqual({ turns: 6, failed: 3, agents: { completed: 2, failed: 1 }, approvals: 1, parked: 1, cost: 1.254, unpriced: true });
+  expect(away.totals).toEqual({ turns: 6, failed: 3, agents: { completed: 2, failed: 1 }, approvals: 1, questions: 0, parked: 1, cost: 1.254, unpriced: true });
   expect(away.sessions[1]).toMatchObject({ bad: "3 failed (2 rate limit, 1 declined)" });
   expect(digestText(away).split("\n")).toEqual([
-    "While you were away, 2026-01-05 22:00 to 07:00 UTC (9 h): 6 of the sessions' own turns ended in 2 sessions, 3 failed; agents: 3 ended, 1 failed; 1 approval waits; 1 agent parked; $1.25 + unpriced spent in all.",
+    `While you were away, 2026-01-05 22:00:00 to 07:00:00 ${Z} (9 h): 6 of the sessions' own turns ended in 2 sessions, 3 failed; agents: 3 ended, 1 failed; 1 approval waits; 1 agent parked; $1.25 + unpriced spent in all.`,
     '  "Coordinator", working: 1 turn ended; 1 approval waits; 1 agent parked; $0.0040 + unpriced  [session=000000000004]',
     '  "Build", done: 5 turns ended, 3 failed (2 rate limit, 1 declined); agents: 3 ended, 1 failed; $1.25  [session=000000000002]',
     "4 other sessions: nothing happened.",
@@ -128,10 +132,10 @@ test("the digest tells the sessions in which something happened, and nothing whe
   // Several absences are told as that, with the time away in all (not the time between the first and the last).
   const two = digest(o, { spans: [{ from: T0, to: T0 + 2 * H }, { from: T0 + 8 * H, to: T0 + 9 * H }], present: true })!;
   expect(two.away_ms).toBe(3 * H);
-  expect(digestText(two).split("\n")[0]).toStartWith("While you were away, 2 times between 2026-01-05 22:00 and 07:00 UTC (3 h in all): ");
-  expect(digestText({ ...away, present: false }, { ids: false }).split("\n")[0]).toStartWith("While you are away, since 2026-01-05 22:00 UTC (9 h): ");
-  expect(digestText({ ...two, present: false }).split("\n")[0]).toStartWith("While you are away, 2 times since 2026-01-05 22:00 UTC (3 h in all): ");
-  expect(digestText(away, { since: true }).split("\n")[0]).toStartWith("From 2026-01-05 22:00 to 07:00 UTC (9 h): ");
+  expect(digestText(two).split("\n")[0]).toStartWith(`While you were away, 2 times between 2026-01-05 22:00:00 and 07:00:00 ${Z} (3 h in all): `);
+  expect(digestText({ ...away, present: false }, { ids: false }).split("\n")[0]).toStartWith(`While you are away, since 2026-01-05 22:00:00 ${Z} (9 h): `);
+  expect(digestText({ ...two, present: false }).split("\n")[0]).toStartWith(`While you are away, 2 times since 2026-01-05 22:00:00 ${Z} (3 h in all): `);
+  expect(digestText(away, { since: true }).split("\n")[0]).toStartWith(`From 2026-01-05 22:00:00 to 07:00:00 ${Z} (9 h): `);
   // Nothing happened: no digest at all.
   expect(digest(page([row(1, { title: "Quiet" }), row(3, { title: "Old card", watch: "need", approvals: 2 })]), one)).toBeNull();
 });
@@ -151,4 +155,45 @@ test("the digest's text lists twenty sessions within the report's bound and coun
   // Twenty light rows are told in full.
   const light = digestText(digest(page(Array.from({ length: 20 }, (_, i) => row(i, { title: `Session ${i}`, did: { turns: 2, failed: { "rate limit": 1 }, agents: { completed: 1 }, cost: 0.02 } }))), { spans: [{ from: T0, to: T0 + H }], present: true })!);
   expect(light.split("\n")[1]).toBe('  "Session 0", done: 2 turns ended, 1 failed (rate limit); agents: 1 reported; $0.02  [session=000000000000]');
+});
+
+// What the daemon went through in the absence is told first: on the first
+// line in a few words, then a sentence a restart and one for the stalls.
+test("the digest names a kill, what it cut and the stalls of the absence, and counts questions with approvals", () => {
+  const one = { spans: [{ from: T0, to: T0 + 9 * H }], present: true };
+  const down = T0 + 2 * H, up = down + 29_000;
+  const cut = (n: number, state: Restart["turns"][number]["state"]) => ({ turn_event: `t${n}`, end_event: `e${n}`, step: 1, tools: [], ran_ms: 16_000, down_ms: down, crashed: true, session_id: sid(n), title: `Cut ${n}`, state }) as unknown as Restart["turns"][number];
+  const killed: Restart = { id: "2-1", up_ms: up, pid: 2, before: { pid: 1, started_ms: T0 - H, down_ms: down, how: "killed" }, turns: [cut(1, "continued"), cut(2, "continued"), cut(3, "held")], settled_ms: up + 1000 };
+  const stalls = [
+    { ts_ms: T0 + 3 * H, ms: 6000, what: ": blocked by its own code, outside anything it times", kind: "compute" },
+    { ts_ms: T0 + 4 * H, ms: 3900, what: " waiting for a child: the build", kind: "child" },
+  ];
+  const o = page([
+    row(2, { title: "Build", did: { turns: 5, failed: { "rate limit": 2 }, agents: {}, cost: 1.25 } }),
+    row(4, { title: "Asks", watch: "need", approvals: 1, did: { turns: 1, failed: {}, agents: {}, cost: 0 } }),
+  ]);
+  const d = digest(o, one, { daemon: { restarts: [killed], stalls }, questions: { [sid(4)]: 2, [sid(9)]: 1 } })!;
+  expect(d.totals).toMatchObject({ approvals: 1, questions: 2 });
+  const lines = digestText(d).split("\n");
+  expect(lines[0]).toBe(`While you were away, 2026-01-05 22:00:00 to 07:00:00 ${Z} (9 h): the daemon went down and came back after 29 s, 3 turns cut; unresponsive 2 times; 6 of the sessions' own turns ended in 2 sessions, 2 failed; 1 approval and 2 questions wait; $1.25 spent in all.`);
+  expect(lines[1]).toBe("The daemon went down without stopping (killed, or the machine went down) at about 00:00:00 and came back at 00:00:29 (down 29 s); 3 turns were cut: 2 resumed, 1 held for the owner.");
+  expect(lines[2]).toBe("The daemon was unresponsive 2 times, 9.9 s in all: 6.0 s blocked by its own code, outside anything it times; 3.9 s waiting for a child: the build.");
+  expect(lines[3]).toBe('  "Asks", needs you: 1 turn ended; 1 approval and 2 questions wait  [session=000000000004]');
+  // The Inbox's one line says it too, the daemon first.
+  expect(digestBrief(d)).toBe("the daemon went down and came back after 29 s, 3 turns cut; unresponsive 2 times; 6 turns ended, 2 failed; 1 approval and 2 questions wait");
+  // A kill in an absence in which no turn ended is still told.
+  const quiet = digest(page([row(1, { title: "Quiet" })]), one, { daemon: { restarts: [killed], stalls: [] } })!;
+  expect(quiet.sessions).toEqual([]);
+  expect(digestBrief(quiet)).toBe("the daemon went down and came back after 29 s, 3 turns cut");
+  expect(digest(page([row(1, { title: "Quiet" })]), one, { daemon: { restarts: [], stalls: [] } })).toBeNull();
+  // Many restarts and many causes stay a few lines: the newest three starts, the three longest causes.
+  const starts = Array.from({ length: 7 }, (_, i) => ({ ...killed, id: `r${i}`, up_ms: up + i * MIN, before: { ...killed.before!, down_ms: down + i * MIN }, turns: [] }));
+  const causes = Array.from({ length: 9 }, (_, i) => ({ ts_ms: T0 + i, ms: 1000 * (i + 1), what: ` in cause ${i}`, kind: "call" }));
+  const busy = digest(o, one, { daemon: { restarts: starts, stalls: causes } })!;
+  expect(busy.daemon).toHaveLength(5);
+  expect(busy.daemon[0]).toBe("The daemon started 7 times; the last 3:");
+  expect(busy.daemon[4]).toEndWith("9.0 s in cause 8; 8.0 s in cause 7; 7.0 s in cause 6; 6 more causes.");
+  expect(daemonBrief({ restarts: starts, stalls: [] })).toBe("the daemon went down 7 times");
+  expect(stallsLine([stalls[0]!])).toBe("The daemon was unresponsive once, 6.0 s: 6.0 s blocked by its own code, outside anything it times.");
+  expect([waits(0), waits(1), waits(0, 1), waits(2, 1)]).toEqual(["", "1 approval waits", "1 question waits", "2 approvals and 1 question wait"]);
 });

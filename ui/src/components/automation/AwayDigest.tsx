@@ -1,7 +1,9 @@
 // "While you were away", at the top of the Inbox: one line that opens. What
 // happened while the owner was not at a page of the daemon: a row a session
 // with its state now, the turns that ended, what failed and by which class,
-// what waits for the owner, the agents parked, the spend. Closed, it is the
+// what waits for the owner (approvals and questions), the agents parked, the
+// spend; above them, what the daemon itself went through (it went down and
+// came back, the turns that cut, its stalls). Closed, it is the
 // time away and the totals; the alerts below are not said twice. Opened, it
 // has been seen: the daemon lets it go, and the next absence starts a new one
 // (it stays on screen until the Inbox closes). The words are the daemon's
@@ -85,6 +87,11 @@ export function AwayDigest({ onClose }: { onClose: () => void }) {
       </div>
       {open && (
         <div className="border-t border-line pt-1.5">
+          {d.daemon.length > 0 && (
+            <ul className="mx-3 mb-1.5 flex flex-col gap-1 border-l-2 border-warn pl-2.5" data-testid="away-daemon" aria-label="What the daemon went through">
+              {d.daemon.map((line, i) => <li key={i} className="text-caption leading-snug text-fg">{line}</li>)}
+            </ul>
+          )}
           <p className="px-3 pb-1 text-caption text-muted" data-testid="away-totals">{digestTotals(d)}</p>
           <ul className="flex max-h-[24rem] flex-col gap-px overflow-y-auto px-1 pb-1" data-testid="away-rows">
             {d.sessions.map((r) => (

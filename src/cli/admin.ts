@@ -133,7 +133,7 @@ const drainCmd = (restart: boolean, upgrade = false) =>
       const d = await call(url, "/api/daemon");
       const t = v.timeout === undefined ? 120 : Number(v.timeout);
       if (!(t >= 0)) throw new Error("--timeout is a number of seconds");
-      const r = await call(url, "/api/drain", { method: "POST", body: JSON.stringify({ timeout_seconds: t, restart }) });
+      const r = await call(url, "/api/drain", { method: "POST", body: JSON.stringify({ timeout_seconds: t, restart, reason: `keel ${upgrade ? "upgrade" : restart ? "restart" : "drain"} from a terminal` }) });
       console.log(`draining: ${r.running.length} turns running, up to ${t} s`);
       if (v["no-wait"]) return 0;
       const done = await follow(url, d.pid, restart, (t + 90) * 1000);

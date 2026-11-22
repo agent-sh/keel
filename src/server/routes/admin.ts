@@ -24,6 +24,7 @@ import { join } from "node:path";
 import { Awake } from "../../admin/awake.ts";
 import { Daemon } from "../../admin/daemon.ts";
 import { restarts } from "../../admin/life.ts";
+import { settingsChanges, settingsLine } from "../../admin/daemon-log.ts";
 import { restartNeedsEye, restartSummary, restartTurnLine, type Restart } from "../../admin/life-rows.ts";
 import * as activity from "../../automation/activity.ts";
 import { tellCutAgents, tellEarlier } from "../../automation/restart-told.ts";
@@ -91,7 +92,7 @@ export const adminRoutes: RouteModule = (deps) => {
   // A check of earlier backups that runs then is ended for it (Storage.backup).
   daemon.onRestart(async () => {
     if (!settings().backup.before_restart) return;
-    try { await storage.backup("before a restart"); } catch (e) { throw new Error(`The backup before the restart failed: ${(e as Error).message}`, { cause: e }); }
+    try { return (await storage.backup("before a restart")).name; } catch (e) { throw new Error(`The backup before the restart failed: ${(e as Error).message}`, { cause: e }); }
     // Where the restart does not come after all, the backup is still read back.
     finally { storage.checkLater(); }
   });
@@ -165,7 +166,10 @@ export const adminRoutes: RouteModule = (deps) => {
     "/api/settings": {
       GET: () => json({ settings: settings(), ...(settingsUnreadable() !== undefined ? { unreadable: settingsUnreadable() } : {}) }),
       PATCH: async (req: Request) => {
+        const before = settings();
         const r = patchSettings(await body(req));
+        // The log says what changed, by name; never a value that could be a secret (daemon-log.ts).
+        if (r.ok) { const changes = settingsChanges(before, r.settings); if (changes.length) console.log(settingsLine(changes)); }
         return r.ok ? json({ settings: r.settings }) : json({ error: r.error }, r.status ?? 400);
       },
     },
@@ -257,10 +261,12 @@ export const adminRoutes: RouteModule = (deps) => {
       POST: async (req: Request) => {
         const b = (await body(req)) ?? {};
         if (typeof b !== "object" || (b.timeout_seconds !== undefined && !(Number(b.timeout_seconds) >= 0)) || (b.restart !== undefined && typeof b.restart !== "boolean")) {
-          return json({ error: "the body is { timeout_seconds?: number, restart?: boolean }" }, 400);
+          return json({ error: "the body is { timeout_seconds?: number, restart?: boolean, reason?: string }" }, 400);
         }
         const running = daemon.runningSessions();
-        daemon.drain({ timeoutMs: (b.timeout_seconds ?? DRAIN_DEFAULT_S) * 1000, restart: !!b.restart });
+        // `reason`: why it was asked, a few words for the log (keel restart and the page say who asked).
+        const reason = typeof b.reason === "string" && b.reason.trim() ? b.reason.replace(/\s+/g, " ").trim().slice(0, 120) : undefined;
+        daemon.drain({ timeoutMs: (b.timeout_seconds ?? DRAIN_DEFAULT_S) * 1000, restart: !!b.restart, reason });
         return json({ ok: true, running, restart: !!b.restart });
       },
     },
