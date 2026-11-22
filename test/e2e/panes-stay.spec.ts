@@ -82,6 +82,17 @@ async function pick(page: Page, id: string, n: number) {
   await card.getByTestId("question-submit").click();
   return 2;
 }
+// The bar's sentence about the pane's own session: which of its parts show, and how much of the name.
+const barSays = (page: Page, i: number) => slot(page, i).getByTestId("look-says").evaluate((p) => {
+  const box = p.getBoundingClientRect();
+  const shown = (el: Element | null) => { if (!el) return false; const r = el.getBoundingClientRect(); return r.width > 0 && r.top >= box.top - 1 && r.bottom <= box.bottom + 1; };
+  const title = p.querySelector<HTMLElement>('[data-testid="look-title"]')!, state = p.querySelector<HTMLElement>('[data-testid="look-state"]');
+  return {
+    first: shown(p.querySelector(".k-look-this")), lead: shown(p.querySelector(".k-look-lead")), state: shown(state),
+    name: Math.round(title.clientWidth), cut: title.scrollWidth > title.clientWidth + 1,
+    gap: state ? Math.round(state.getBoundingClientRect().left - title.getBoundingClientRect().right) : 0,
+  };
+});
 const waiting = async (request: APIRequestContext, id: string) =>
   (await (await request.get(`/api/sessions/${id}/approvals`)).json()).approvals.length + (await (await request.get(`/api/sessions/${id}/questions`)).json()).pending.length;
 
@@ -410,6 +421,26 @@ test("four panes, a smaller window and a phone", async ({ page, request }) => {
   await shoot(page, "panes-stay-07-four-panes");
   await slot(page, 0).getByTestId("look-back").click();
   await expect(slot(page, 0)).toHaveAttribute("data-station", reader);
+  // Left unanswered, the pane says where what still waits went.
+  await expect(slot(page, 0).getByTestId("pane-note")).toHaveText("Standup notes for Thursday still needs you, in the list");
+  // A look over the coordinator, which needs the owner, in a pane this narrow: the bar still names it. "This pane
+  // holds" gives way before the name does, the state is said after the name, and nothing stands between the two.
+  await slot(page, 1).getByTestId("composer").click();
+  await expect(slot(page, 1)).toHaveAttribute("data-helm", "true");
+  await row(page, q).click();
+  await expect(slot(page, 1)).toHaveAttribute("data-station", q);
+  // (The pointer still on the row of the session now shown: the bar keeps its sentences.)
+  await expect(slot(page, 1).getByTestId("look-state")).toHaveText("needs you.");
+  const narrow = await barSays(page, 1);
+  expect((await slot(page, 1).boundingBox())!.width).toBeLessThan(450);
+  expect(narrow.state, "the bar does not say that the pane's session needs the owner").toBe(true);
+  expect(narrow.lead, "the words stay while the name is cut short").toBe(false);
+  expect(narrow.name, "the name of the pane's session is cut to under eight characters").toBeGreaterThan(64);
+  expect(narrow.gap).toBeLessThan(7);
+  await shoot(page, "panes-stay-16-narrow-bar-needs-you");
+  await slot(page, 1).getByTestId("look-back").click();
+  await expect(slot(page, 1)).toHaveAttribute("data-station", coord);
+  await slot(page, 0).getByTestId("composer").click();
 
   // Two panes of 800 px: the coordinator's title is whole beside a long reason.
   await open(page, [reader, coord]);
@@ -434,6 +465,12 @@ test("four panes, a smaller window and a phone", async ({ page, request }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.locator(`section.k-station[data-station="${q}"]`)).toBeVisible();
   await expect(page.getByTestId("look-bar")).toHaveCount(0);
+  // Opened there, its title is read whole: beside the tools, on a second line when it is long. The reason has the line under it.
+  await page.goto(`/s/${q}`);
+  const phone = page.locator(`section.k-station[data-station="${q}"]`);
+  await expect.poll(async () => Math.round((await phone.boundingBox())!.x)).toBe(0);
+  expect(await phone.getByTestId("station-title").evaluate((el) => el.scrollWidth <= el.clientWidth + 1 && el.scrollHeight <= el.clientHeight + 1), "the title is cut on a phone").toBe(true);
+  expect(await phone.getByTestId("station-head").evaluate((h) => h.querySelector('[data-testid="station-why"]')!.getBoundingClientRect().top >= h.querySelector('[data-testid="station-title"]')!.getBoundingClientRect().bottom - 1)).toBe(true);
   await shoot(page, "panes-stay-10-phone");
   await page.goto("/");
   await expect(page.getByTestId("home-count-need")).toContainText("2 need you");
@@ -448,6 +485,9 @@ async function works(request: APIRequestContext, id: string, ws: string) {
 }
 const phase = async (request: APIRequestContext, id: string) => ((await (await request.get("/api/sessions")).json()).sessions as { id: string; phase: string }[]).find((s) => s.id === id)?.phase;
 const tip = (page: Page) => page.locator(".k-tip");
+// What a held Escape says: within the settle time of the pane showing again, and from then on.
+const SOON = "Esc stops the turn in a moment", AGAIN = "Esc again stops the turn";
+const HELD = /^Esc (again stops the turn|stops the turn in a moment)$/;
 
 test("Escape goes back in a look and never stops the pane's own turn right after", async ({ page, request }) => {
   await scripted(request);
@@ -466,19 +506,26 @@ test("Escape goes back in a look and never stops the pane's own turn right after
     await row(page, other).click();
     await expect(slot(page, 0)).toHaveAttribute("data-station", other);
     await expect(slot(page, 0).locator('.k-view[data-view="look"]').getByTestId("composer")).toBeFocused();
+    // Stop is the same mark in a look as in any pane, with no words of its own.
+    await expect(slot(page, 0).locator('.k-view[data-view="look"]').getByTestId("stop")).toHaveText("");
+    await expect(slot(page, 0).locator('.k-view[data-view="look"]').getByTestId("stop")).toHaveAttribute("aria-label", "Stop the turn");
     await page.keyboard.press("Escape");
     await expect(slot(page, 0)).toHaveAttribute("data-station", coord);
-    // The look's turn goes on, and the pane says where it went.
+    // The look's turn goes on, and the pane says where it went, in the room under the message box and clear of it.
     await expect(slot(page, 0).getByTestId("pane-note")).toHaveText("Draft the 2.4 changelog keeps working, in the list");
+    if (gap === 150) {
+      expect(await slot(page, 0).evaluate((p) => {
+        const box = [...p.querySelectorAll('[data-testid="composer-box"]')].find((x) => !x.closest("[inert]"))!;
+        return p.querySelector('[data-testid="pane-note"]')!.getBoundingClientRect().top - box.getBoundingClientRect().bottom;
+      }), "the note touches the message box").toBeGreaterThanOrEqual(3);
+      await shoot(page, "panes-stay-17-note-under-the-box");
+    }
     await page.waitForTimeout(gap);
     await page.keyboard.press("Escape");
-    await expect(tip(page)).toHaveText("Esc again stops the turn");
+    await expect(tip(page)).toHaveText(gap >= 1000 ? AGAIN : HELD);
     await page.waitForTimeout(700);
     expect(await phase(request, coord), `Escape ${gap} ms after the look was left`).toBe("working");
     expect(await phase(request, other)).toBe("working");
-    // Anything else the owner does ends that: a key in the box, taken out again.
-    await page.keyboard.type("x");
-    await page.keyboard.press("Backspace");
   }
   await expect(page.getByTestId("announce-status")).toHaveCount(1);
 
@@ -492,10 +539,26 @@ test("Escape goes back in a look and never stops the pane's own turn right after
     await expect(slot(page, 0).getByTestId("composer")).toBeFocused();
     await page.waitForTimeout(gap);
     await page.keyboard.press("Escape");
-    await expect(tip(page)).toHaveText("Esc again stops the turn");
+    await expect(tip(page)).toHaveText(gap >= 1000 ? AGAIN : HELD);
     await page.waitForTimeout(700);
     expect(await phase(request, coord), `Escape ${gap} ms after the answered look left`).toBe("working");
-    await page.keyboard.type("x");
+    await drop(request, q);
+  }
+  // A key that was on its way when the pane came back ends nothing (the owner did not go to that pane): a letter
+  // as the keyboard arrives in the coordinator's box, then Escape a quarter of a second later, stops nothing.
+  {
+    const q = await asksWhich(request, "Standup notes, a letter first", ws);
+    await expect(row(page, q)).toHaveAttribute("data-watch", "need");
+    await row(page, q).click();
+    await pick(page, q, 0);
+    await page.waitForFunction((id) => { const p = document.querySelector<HTMLElement>('[data-testid="bridge"] > [data-slot="0"]'); return p?.dataset.station === id && document.activeElement?.getAttribute("data-testid") === "composer" && p.contains(document.activeElement); }, coord, { polling: "raf" });
+    await page.keyboard.type("a");
+    await page.waitForTimeout(250);
+    await page.keyboard.press("Escape");
+    await expect(tip(page)).toHaveText(HELD);
+    await page.waitForTimeout(700);
+    expect(await phase(request, coord), "a letter, then Escape, after the answered look left").toBe("working");
+    await expect(slot(page, 0).getByTestId("composer")).toHaveValue("a");
     await page.keyboard.press("Backspace");
     await drop(request, q);
   }
@@ -504,13 +567,15 @@ test("Escape goes back in a look and never stops the pane's own turn right after
   await page.keyboard.press("Control+Shift+o");
   await expect(slot(page, 0).getByTestId("new-composer")).toBeVisible();
   await page.keyboard.press("Escape");
+  // Escape again and again, at once: nothing stops, and what it says is true while it shows. Within the settle time
+  // Escape does not stop the turn yet, and the words say so; they change by themselves at the moment it does.
+  for (let i = 0; i < 3; i++) { await page.keyboard.press("Escape"); await page.waitForTimeout(120); }
+  await expect(tip(page)).toHaveText(SOON);
   await expect(slot(page, 0)).toHaveAttribute("data-station", coord);
-  await page.keyboard.press("Escape");
-  await expect(tip(page)).toHaveText("Esc again stops the turn");
-  await page.waitForTimeout(700);
   expect(await phase(request, coord)).toBe("working");
-  // Said once, and meant: after the settle time the next Escape stops the turn, as it does in any pane.
-  await page.waitForTimeout(1100);
+  await expect(tip(page)).toHaveText(AGAIN, { timeout: 3000 });
+  expect(await phase(request, coord)).toBe("working");
+  // Said, and meant: the next Escape stops the turn, as it does in any pane.
   await page.keyboard.press("Escape");
   await expect.poll(() => phase(request, coord), { timeout: 15_000 }).not.toBe("working");
 
@@ -528,6 +593,14 @@ test("Escape goes back in a look and never stops the pane's own turn right after
   await expect(slot(page, 0)).toHaveAttribute("data-station", run);
   expect(await waiting(request, run)).toBe(1);
   // From the look's message box Escape goes back, and the bar says so.
+  await slot(page, 0).locator('.k-view[data-view="look"]').getByTestId("composer").click();
+  await expect(slot(page, 0).getByTestId("look-back").locator("kbd")).toBeVisible();
+  // The bar offers Escape only where it leads back. Not while the keyboard is in a field that keeps Escape for
+  // itself: in the list's filter Escape leaves the look where it is.
+  await page.getByTestId("list-filter").focus();
+  await expect(slot(page, 0).getByTestId("look-back").locator("kbd")).toBeHidden();
+  await page.keyboard.press("Escape");
+  await expect(slot(page, 0)).toHaveAttribute("data-station", run);
   await slot(page, 0).locator('.k-view[data-view="look"]').getByTestId("composer").click();
   await expect(slot(page, 0).getByTestId("look-back").locator("kbd")).toBeVisible();
   await page.keyboard.press("Escape");
@@ -676,6 +749,26 @@ test("the row tab is said, stays out of the bar's way and points at a pane out o
   });
   expect(cut.title).toBe(false);
   expect(cut.why && cut.meta > 0, "the reason is cut while the folder still shows").toBe(false);
+  // The coordinator's pane worked in, from a narrow pane to a wide one: a wider pane is never the taller one, the
+  // title is whole, and the reason shows sixteen characters or all it has (beside the title when that much fits,
+  // else on the line under it).
+  await slot(page, 1).getByTestId("composer").click();
+  await expect(slot(page, 1)).toHaveAttribute("data-helm", "true");
+  const sweep: { pane: number; height: number; why: number; whole: number; title: boolean }[] = [];
+  for (let width = 1240; width <= 1900; width += 30) {
+    await page.setViewportSize({ width, height: 1040 });
+    sweep.push(await head(1).evaluate((h) => {
+      const why = h.querySelector<HTMLElement>('[data-testid="station-why"]')!, title = h.querySelector<HTMLElement>('[data-testid="station-title"]')!;
+      return { pane: Math.round(h.getBoundingClientRect().width), height: Math.round(h.getBoundingClientRect().height), why: why.clientWidth, whole: why.scrollWidth, title: title.scrollWidth <= title.clientWidth + 1 };
+    }));
+  }
+  const said = sweep.map((x) => `${x.pane}: ${x.height} px, reason ${x.why} of ${x.whole}`).join("; ");
+  for (const [i, x] of sweep.entries()) {
+    expect(x.title, `the title is cut at ${x.pane} px`).toBe(true);
+    expect(x.why, `the reason has no room at ${x.pane} px (${said})`).toBeGreaterThanOrEqual(Math.min(x.whole, 96) - 1);
+    if (i) expect(x.height, `a wider pane has the taller header (${said})`).toBeLessThanOrEqual(sweep[i - 1]!.height + 1);
+  }
+  await page.setViewportSize({ width: 1920, height: 1040 });
   // The keys on a header tool: the header keeps its height, and a note under it shows the title and the reason whole.
   await slot(page, 0).getByTestId("composer").click();
   const h0 = (await head(0).boundingBox())!.height;
@@ -699,15 +792,19 @@ test("the row tab is said, stays out of the bar's way and points at a pane out o
   // Off the list, it goes.
   await slot(page, 1).hover();
   await expect(slot(page, 0).getByTestId("pane-aim")).toHaveCount(0);
-  // Over a look the tab hangs under the bar: it covers none of the bar's words or keys. At 800 and at 560 px.
+  // A pane with a look says it in its bar, in place of the sentences: nothing lies over the bar's keys or over the
+  // header under the bar. At 800 and at 560 px.
   for (const width of [1920, 1440]) {
     await page.setViewportSize({ width, height: 1040 });
     await row(page, other).click();
     await expect(slot(page, 0).getByTestId("look-bar")).toBeVisible();
     await row(page, more[0]!).hover();
-    await expect(slot(page, 0).getByTestId("pane-aim")).toHaveText("Opens here for a look");
-    const tab = (await slot(page, 0).getByTestId("pane-aim").boundingBox())!, bar = (await slot(page, 0).getByTestId("look-bar").boundingBox())!;
-    expect(tab.y, `the tab lies over the bar in a pane of ${Math.round(bar.width)} px`).toBeGreaterThanOrEqual(bar.y + bar.height - 1);
+    const aim = slot(page, 0).getByTestId("look-bar").getByTestId("pane-aim");
+    await expect(aim).toHaveText("Opens here for a look");
+    await expect(slot(page, 0).getByTestId("pane-aim")).toHaveCount(1);
+    const tab = (await aim.boundingBox())!, bar = (await slot(page, 0).getByTestId("look-bar").boundingBox())!, back = (await slot(page, 0).getByTestId("look-back").boundingBox())!;
+    expect(tab.x + tab.width, `the words lie over the way back in a pane of ${Math.round(bar.width)} px`).toBeLessThanOrEqual(back.x);
+    expect(tab.y + tab.height).toBeLessThanOrEqual(bar.y + bar.height);
     if (width === 1920) await shoot(page, "panes-stay-13-tab-under-the-bar");
     await slot(page, 0).getByTestId("look-back").click();
     await expect(slot(page, 0)).toHaveAttribute("data-station", reader);
