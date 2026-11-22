@@ -620,6 +620,83 @@ test("what waits across sessions is answered in sequence, one key each", async (
   await drop(request, quiet, a, b, c, q);
 });
 
+// The same over two panes, with every kind the sequence meets: none of these sessions has a pane, so
+// each is a look over the pane the sequence began in, in the place of the one before it. A long
+// command is opened, read on to its end and allowed (Enter, End, Enter), the question takes its
+// digit, the plan its Enter once it stood whole in view. After the last the pane shows what it held,
+// the keyboard where it was: eight keys, no pointer.
+test("over two panes, three approvals (one long), a question and a plan are answered in eight keys, and the panes are as they were", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const ws = folder("sequence-kinds");
+  const reader = await create(request, "Reading the notes", ws);
+  const beside = await create(request, "Beside it", ws);
+  const a = await asksToRun(request, "Build the docs", ws, "docs");
+  const long = await create(request, "Prune the old branches", ws);
+  await request.put(`/api/sessions/${long}/permissions`, { data: { mode: "ask", sandbox: "off" } });
+  await request.post(`/api/sessions/${long}/messages`, { data: { text: calls([{ name: "Bash", input: { command: LONG } }]) } });
+  await expect.poll(async () => (await approvals(request, long)).length, { timeout: 30_000 }).toBe(1);
+  const b = await asksToRun(request, "Tag the release", ws, "tag");
+  const q = await create(request, "Pick a color", ws);
+  await ask(request, q, "question");
+  const p = await create(request, "Plan the index", ws);
+  await ask(request, p, "plan");
+
+  await open(page, [reader, beside]);
+  const box = pane(page, reader).getByTestId("composer");
+  await box.click();
+  await expect(box).toBeFocused();
+  for (const id of [a, long, b, q, p]) await expect(row(page, id)).toHaveAttribute("data-watch", "need");
+  const slot0 = page.getByTestId("bridge").locator(':scope > [data-slot="0"]');
+  let count = 0;
+  const press = async (key: string) => { count++; await page.keyboard.press(key); };
+  const at = async (id: string) => { await expect(page).toHaveURL(new RegExp(`/s/${id}$`)); await expect(slot0).toHaveAttribute("data-station", id); await expect(slot0).toHaveAttribute("data-holds", reader); };
+  const ready = async (id: string) => {
+    await at(id);
+    const card = cardIn(page, id, "approval");
+    await expect(card.getByTestId("allow-once")).toBeFocused({ timeout: 8000 });
+    await expect(card.getByTestId("approval")).toHaveAttribute("data-live", "true");
+  };
+
+  await press("Alt+a");
+  await ready(a);
+  await press("Enter");
+  // The long command: its list has the keyboard, Enter opens it, End reads it on to its end, Enter allows.
+  await at(long);
+  const list = cardIn(page, long, "approval"), card = list.getByTestId("approval");
+  await expect(list).toBeFocused();
+  await expect(list).toHaveAttribute("data-keys", "ready");
+  await press("Enter");
+  await expect(card.getByTestId("approval-read-key")).toBeVisible();
+  await press("End");
+  await expect.poll(async () => Number(await card.getAttribute("data-unseen")), { timeout: 5000 }).toBe(0);
+  await ready(long);
+  await press("Enter");
+  await ready(b);
+  await press("Enter");
+  await at(q);
+  const question = cardIn(page, q, "question");
+  await expect(question.getByTestId("question-digit")).toHaveCount(3);
+  await press("2");
+  await at(p);
+  const plan = cardIn(page, p, "plan");
+  await expect(plan.getByTestId("plan-approve")).toBeFocused({ timeout: 8000 });
+  await shoot(page, "answer-keys-18-sequence-plan");
+  await press("Enter");
+
+  // Nothing is left: the pane shows the reader again, the keyboard in its box, the other pane as it was.
+  await expect(page).toHaveURL(new RegExp(`/s/${reader}$`));
+  await expect(slot0).toHaveAttribute("data-station", reader);
+  await expect(slot0.getByTestId("look-bar")).toHaveCount(0);
+  await expect(page.getByTestId("bridge").locator(':scope > [data-slot="1"]')).toHaveAttribute("data-station", beside);
+  await expect(box).toBeFocused();
+  expect(count).toBe(8);
+  for (const id of [a, long, b]) await expect.poll(async () => (await approvals(request, id))[0]).toMatchObject({ state: "allowed", choice: "once" });
+  expect(await answersOf(request, q)).toEqual({ "0": { picked: ["Amber"] } });
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${p}/plan`)).json()).open.length).toBe(0);
+  await drop(request, reader, beside, a, long, b, q, p);
+});
+
 test("the sequence stays with the owner: it goes on through a grant, ends when they do something else, and after a quiet minute", async ({ page, request }) => {
   await scripted(request);
   await settle(request);
