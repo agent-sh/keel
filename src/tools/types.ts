@@ -26,7 +26,8 @@ export type ToolContext = {
   wrapSpawn?: (argv: string[]) => string[];
   // The confinement wrapSpawn applies (set with it): a tool that runs its
   // command on another machine asks that machine for the same.
-  confined?: { sandbox: "workspace-write" | "read-only"; network: boolean };
+  // `since`: when the confinement was set for the call (what its proxy refused after that is the call's).
+  confined?: { sandbox: "workspace-write" | "read-only"; network: boolean; since?: number };
   // The tool_use id of the call being run (set per call by the engine).
   callId?: string;
   // Set on a call a program made (run_code): the id of the turn's call that runs the program.

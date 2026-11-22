@@ -14,6 +14,8 @@ import { isLocal, Presence } from "../../safety/presence.ts";
 import { sandboxStatus } from "../../safety/sandbox.ts";
 import type { Deps, RouteModule } from "../app.ts";
 import { setGitReach } from "../../core/git.ts";
+import { refusedSince } from "../../safety/net-proxy.ts";
+import { sandboxScope, scopeDir } from "../../safety/sandbox-scope.ts";
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (error: string, status = 400) => json({ error }, status);
@@ -50,7 +52,7 @@ export const permissionRoutes: RouteModule = (deps: Deps) => {
       const confined = call.tool.kind === "shell" ? call.ctx.confined : undefined;
       if (!watched && !confined) return;
       const said = typeof result.content === "string" ? result.content : result.content.map((b) => (b.type === "text" ? b.text : "")).join("\n");
-      const shut = confined ? sandboxSaid(said, { linked: !s.machine && !!linkedWorktree(s.workspace), network: !!confined.network, escape: escapeOf(call.tool), ...(s.machine ? {} : { shut: () => gitShut(s.workspace) }) }) : [];
+      const shut = confined ? sandboxSaid(said, { linked: !s.machine && !!linkedWorktree(s.workspace), network: !!confined.network, escape: escapeOf(call.tool), ...(s.machine ? {} : { shut: () => gitShut(s.workspace), refused: () => refusedSince(scopeDir(sandboxScope(s.workspace)), confined.since ?? Date.now()) }) }) : [];
       if (watched?.note) activity.record("approval", "sandbox", s.id, watched.note, { call_id: call.id });
       const text = [watched?.note && `[sandbox] ${watched.note} If this command did that and it was not asked for, put it back and say so.`, ...shut.map((line) => `[sandbox] ${line}`)].filter(Boolean).join("\n\n");
       if (!text) return;

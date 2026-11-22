@@ -22,6 +22,7 @@ import { bytesPerToken } from "../engine/compact.ts";
 import { KEEL_FILE_MAX } from "../core/keel-file.ts";
 import { inFlight, timed } from "../admin/stall.ts";
 import { routeTable } from "./stable-api.ts";
+import { ownPort } from "../safety/net-proxy.ts";
 
 // The seqs of the prompts of a branch, kept while the branch is the same array
 // (the store gives a new one when the branch grows or the head moves).
@@ -552,5 +553,7 @@ export function serve(deps: Deps, opts: { hostname: string; port: number; develo
     },
   } satisfies Partial<Bun.Serve.Options<unknown>>;
   const server = Bun.serve({ ...options, routes: { ...ui.routes(PAGES, embeddedUi), ...routes } } as any);
+  // The sandbox's proxy never connects here, whatever is listed for a sandbox (src/safety/net-proxy.ts).
+  ownPort(server.port);
   return server;
 }

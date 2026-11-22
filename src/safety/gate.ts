@@ -505,7 +505,7 @@ export class Gate {
     const p = this.perm(session.id);
     const ctx: Partial<ToolCall["ctx"]> | undefined =
       !(r.cls.kind === "shell" && r.cls.escalate) && this.sandboxed(session, p) && p.sandbox !== "off"
-        ? { wrapSpawn: (argv) => confine(argv, p, session.workspace, call.ctx.spillDir), confined: { sandbox: p.sandbox, network: p.network } }
+        ? { wrapSpawn: (argv) => confine(argv, p, session.workspace, call.ctx.spillDir), confined: { sandbox: p.sandbox, network: p.network, since: Date.now() } }
         : undefined;
     // A confined command in a linked worktree can write the refs it shares
     // with the other checkouts: they are read now and compared after it

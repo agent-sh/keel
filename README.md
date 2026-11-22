@@ -200,6 +200,47 @@ With a session's sandbox on (workspace-write), a command runs in
 read-only to it except the session's folder, the temporary folder and the
 session's own scratch, and the network is off unless the session turns it on.
 
+### The network of a sandboxed command
+
+A sandboxed command never shares this machine's network. It runs in a
+network namespace of its own: its `localhost` is its own, and nothing that
+listens on this machine is on it. That covers Keel's own API (a local
+caller of your account is the owner to it), your databases and dev servers,
+the display's sockets, the local network and the cloud metadata addresses.
+
+With the session's network on, what leaves goes through a proxy the daemon
+runs for the repository:
+
+- HTTP and HTTPS to public hosts work for programs that use the proxy
+  variables (`HTTP_PROXY`, `HTTPS_PROXY` and their lower-case forms, which
+  the sandbox sets, with `NODE_USE_ENV_PROXY=1` for Node): curl, git over
+  https, bun, npm, pnpm, cargo, go, uv, pip, gh and most others.
+- ssh, and git over ssh, go through the same proxy (the sandbox adds a
+  `ProxyCommand` for every host to ssh's system settings).
+- The proxy resolves the name once and connects to the address it checked.
+  It refuses an address on this machine or a private network (loopback,
+  10/8, 172.16/12, 192.168/16, 100.64/10, link-local with the metadata
+  address, their IPv6 kin and IPv4 addresses written inside IPv6 ones), also
+  when a public name points there, and it never connects to Keel's own
+  port.
+- What does not speak HTTP proxy cannot leave: raw TCP (a database client
+  to a remote server), UDP and QUIC, ping, and a program that resolves names
+  itself. There is no resolver inside and no route an answer could be used
+  on. Java reads no proxy variables: give it `-Dhttps.proxyHost` and
+  `-Dhttps.proxyPort` from `KEEL_SANDBOX_PROXY`, or run it outside.
+- A server a sandboxed command starts listens on the sandbox's own
+  `localhost`: other commands of the same call reach it, your browser and
+  the portal do not. Start a dev server you want to open outside the
+  sandbox.
+
+A command that the proxy refused, or that went around it, is told so in its
+result. With the network off there is no proxy and nothing leaves.
+
+Cost, measured: a command with the network on starts about 19 ms later
+(the relay inside the sandbox); a request takes no measurable extra time;
+the proxy and relay carry about 1.2 GB a second from a local source, with
+the daemon's loop delayed 0.4 ms on average while they do.
+
 A session can commit. That needs git's own files to be writable, so the
 profile opens them and keeps read-only what git would run outside the sandbox
 later, for this checkout or another:

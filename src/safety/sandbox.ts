@@ -4,9 +4,14 @@
 // bwrap is missing or cannot start, sandboxing is unavailable and says why;
 // a session never believes it is confined when it is not.
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { gitViewsDir } from "../core/git.ts";
+import { IN_SANDBOX, proxyDir, RELAY_START, relayFiles } from "./net-proxy.ts";
+import { sandboxRoot, sandboxScope, scopeDir } from "./sandbox-scope.ts";
+
+const SSH_SNIPPETS = "/etc/ssh/ssh_config.d";
+const isDir = (p: string) => { try { return statSync(p).isDirectory(); } catch { return false; } };
 import type { SessionPerm } from "./gate.ts";
 
 export type SandboxStatus = { available: boolean; reason?: string; bwrap?: string; scope: boolean; scopeReason?: string };
@@ -466,9 +471,22 @@ export function gitShut(workspace: string): string | undefined {
 export function confine(argv: string[], perm: Pick<SessionPerm, "sandbox" | "network">, workspace: string, scratch?: string | string[]): string[] {
   const st = sandboxStatus();
   if (perm.sandbox === "off" || !st.available) return argv;
-  const b = [st.bwrap!, "--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc",
+  // A network namespace of its own, always: the host's loopback (Keel's own API among the listeners there), the
+  // local network and the display's abstract sockets are not in it. With the session's network on, what leaves
+  // goes through the proxy this process runs for the repository (src/safety/net-proxy.ts).
+  const b = [st.bwrap!, "--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc", "--unshare-net",
     "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"];
-  if (!perm.network) b.push("--unshare-net");
+  // ssh's system snippets are root's, and in a user namespace they are nobody's: ssh refuses to start over one
+  // ("Bad owner or permissions"). The folder is emptied, and holds the sandbox's own snippet when the network is on.
+  const snippets = isDir(SSH_SNIPPETS);
+  if (snippets) b.push("--tmpfs", SSH_SNIPPETS);
+  let prelude = "";
+  if (perm.network) {
+    const files = relayFiles(sandboxRoot());
+    b.push("--ro-bind", proxyDir(scopeDir(sandboxScope(workspace))), IN_SANDBOX.net, "--ro-bind", process.execPath, IN_SANDBOX.exe, "--ro-bind", files.relay, IN_SANDBOX.relay);
+    if (snippets) b.push("--ro-bind", files.ssh, join(SSH_SNIPPETS, "keel-proxy.conf"));
+    prelude = RELAY_START;
+  }
   // git settings for every confined command, after any the owner's
   // environment already carries (git-config(1), GIT_CONFIG_COUNT).
   const settings = [...SANDBOX_GIT];
@@ -489,6 +507,6 @@ export function confine(argv: string[], perm: Pick<SessionPerm, "sandbox" | "net
   // The settings are added inside, after any the command's own environment
   // carries (git-config(1), GIT_CONFIG_COUNT): the count is the command's,
   // which only the command's own process knows.
-  b.push("--", "/bin/sh", "-c", withGit(settings), "keel-sandbox", ...argv);
+  b.push("--", "/bin/sh", "-c", prelude + withGit(settings), "keel-sandbox", ...argv);
   return st.scope ? [...scopeHead(), ...scopeProps(), "--", ...b] : b;
 }

@@ -69,10 +69,11 @@ test("what a confined command ran into gets one sentence each, in the tool's own
   ]) expect(sandboxSaid(said, { ...at, linked: false })).toEqual([expect.stringMatching(/^The repository's config is read-only in a sandboxed session.*git branch -m renames the branch and then exits 128.* ESCAPE\.$/)]);
   // A branch that was deleted, with git's warning about its settings: nothing to add.
   expect(sandboxSaid("error: could not lock config file /r/.git/config: Read-only file system\nwarning: update of config-file failed\nDeleted branch topic (was 1234567).", at)).toEqual([]);
-  // The network: only when the session's is off.
+  // The network: off says so; on, a command that did not go through the proxy is told how the sandbox's network works.
   const lost = "fatal: unable to access 'https://github.com/o/r/': Could not resolve host: github.com";
   expect(sandboxSaid(lost, at)).toEqual([expect.stringMatching(/^This session's network is off.*The owner turns it on in the session's permissions \("Network in the sandbox"\)\. ESCAPE\.$/)]);
-  expect(sandboxSaid(lost, { ...at, network: true })).toEqual([]);
+  expect(sandboxSaid(lost, { ...at, network: true })).toEqual([expect.stringMatching(/^This session's sandbox has a network of its own\..* ESCAPE\.$/)]);
+  expect(sandboxSaid("Everything up-to-date", { ...at, network: true })).toEqual([]);
   expect(sandboxSaid("ssh: Could not resolve hostname github.com: Temporary failure in name resolution", at)).toHaveLength(1);
   // A session none of git's files is open to (its folder is inside a repository, or its worktree could not be opened): why, and nothing else about git.
   const shut = { ...at, shut: () => "this session's folder is inside the repository at /r, and so on" };

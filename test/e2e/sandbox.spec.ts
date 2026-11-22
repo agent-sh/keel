@@ -150,3 +150,69 @@ test("a sandboxed session commits in its worktree", async ({ page, request }) =>
   expect(shut).toContain("[sandbox] This worktree's sandbox keeps the top of the repository's git directory read-only");
   expect(git(repo, "rev-parse", "--verify", "-q", "refs/heads/main")).toHaveLength(40);
 });
+
+// A sandboxed command is not the owner to the daemon's API. With the
+// session's network on it has a network namespace of its own and a proxy
+// that never connects to this machine: the API's port is not on its
+// loopback, and the proxy refuses it by name. In every mode that runs a
+// confined command without a card: reading another session, widening its own
+// read list, turning its own sandbox off, answering an approval.
+test("a sandboxed command with the network on cannot reach the daemon's API", async ({ page, request, baseURL }) => {
+  const settings = await (await request.get("/api/permissions/settings")).json();
+  test.skip(!settings.sandbox.available, `sandbox unavailable: ${settings.sandbox.reason}`);
+  const port = new URL(baseURL!).port;
+  const ws = join(process.env.HOME!, ".cache/keel-work/bun/e2e-ws", `sandbox-api-${Date.now()}`);
+  mkdirSync(ws, { recursive: true });
+  const { session: other } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU, title: `OTHER-SESSION-${Date.now()}` } })).json();
+  const { session } = await (await request.post("/api/sessions", { data: { workspace: ws, model: HAIKU } })).json();
+  const id = session.id;
+  const before = await (await request.get("/api/permissions/sandbox")).json();
+  // Each act two ways: straight at the port, and through the proxy the sandbox was given.
+  const api = `http://127.0.0.1:${port}`;
+  const acts: [string, string][] = [
+    ["read", `${api}/api/sessions/${other.id}`],
+    ["widen", `-X PUT -H 'content-type: application/json' -d '{"workspace":{"scope":"${ws}","read":["${ws}-elsewhere"]}}' ${api}/api/permissions/sandbox`],
+    ["unconfine", `-X PUT -H 'content-type: application/json' -d '{"sandbox":"off","mode":"full-auto"}' ${api}/api/sessions/${id}/permissions`],
+    ["answer", `-X POST -H 'content-type: application/json' -d '{"choice":"once"}' ${api}/api/sessions/${id}/approvals/any`],
+  ];
+  const command = acts.flatMap(([name, args]) => [
+    `echo "${name} straight: $(curl -s -m 4 --noproxy '*' -o /dev/null -w '%{http_code}' ${args})"`,
+    `echo "${name} by proxy: $(curl -s -m 4 --noproxy '' -x "$HTTP_PROXY" -o /dev/null -w '%{http_code}' ${args})"`,
+  ]).join("; ") + `; curl -s -m 4 --noproxy '' -x "$HTTP_PROXY" ${api}/api/sessions/${other.id} | head -c 300`;
+  await page.goto(`/s/${id}`);
+  const results = async () => ((await (await request.get(`/api/sessions/${id}`)).json()).events as any[]).filter((e) => e.kind === "tool_result").map((e) => String(e.data.results[0].content));
+  let n = 0;
+  for (const mode of ["ask", "auto-edits", "auto", "full-auto"]) {
+    await request.put(`/api/sessions/${id}/permissions`, { data: { mode, sandbox: "workspace-write", network: true } });
+    await page.getByTestId("composer").fill(`script:calls ${JSON.stringify([{ name: "Bash", input: { command } }])}`);
+    await page.keyboard.press("Enter");
+    // Where a mode asks for a command of this shape, the owner allows it: it fails all the same.
+    n++;
+    await expect.poll(async () => (await page.getByTestId("turn-end").count()) >= n || (await page.getByTestId("approval").count()) > 0, { timeout: 60_000 }).toBe(true);
+    if ((await page.getByTestId("turn-end").count()) < n) {
+      const card = page.getByTestId("approval").first();
+      if (await card.getByTestId("approval-expand").count()) await card.getByTestId("approval-expand").click();
+      await expect(card.getByTestId("allow-once")).not.toHaveAttribute("aria-disabled", "true");
+      await card.getByTestId("allow-once").click();
+    }
+    await expect(page.getByTestId("turn-end")).toHaveCount(n, { timeout: 60_000 });
+    const out = (await results()).at(-1)!;
+    for (const [name] of acts) {
+      expect([mode, out]).toEqual([mode, expect.stringContaining(`${name} straight: 000`)]);
+      expect([mode, out]).toEqual([mode, expect.stringContaining(`${name} by proxy: 403`)]);
+    }
+    expect(out).not.toContain(other.title);
+    expect(out).toContain(`Keel's sandbox proxy refused 127.0.0.1:${port}: Keel's own API is never reachable from a sandbox.`);
+    // The command is told, with no way around offered for Keel's own API.
+    expect(out).toContain(`[sandbox] This session's sandbox reaches the network only through Keel's proxy, which refused 127.0.0.1:${port}: Keel's own API is never reachable from a sandbox`);
+    expect(out).not.toContain("dangerouslyDisableSandbox");
+    // Nothing changed: the session is still confined in the mode it was put in, and the read list is as it was.
+    const { perm } = await (await request.get(`/api/sessions/${id}/permissions`)).json();
+    expect([perm.mode, perm.sandbox, perm.network]).toEqual([mode, "workspace-write", true]);
+    expect(await (await request.get("/api/permissions/sandbox")).json()).toEqual(before);
+  }
+  const tool = page.getByTestId("tool-call").last();
+  await tool.click();
+  await expect(tool).toContainText("Keel's own API is never reachable from a sandbox");
+  await shoot(page, "sandbox-09-api-refused");
+});
