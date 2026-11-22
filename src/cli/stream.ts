@@ -396,7 +396,8 @@ export async function runStream(v: any, pos: string[], c0: Client, found: Found,
       return "done";
     } catch (e) {
       const st = (e as ApiError).status;
-      return st === 404 || st === 409 ? "closed" : (e as Error);
+      // (A 409 that says the card is held is no closed card: the answer was not taken, and it still waits.)
+      return st === 404 || (st === 409 && !(e as ApiError).held) ? "closed" : (e as Error);
     }
   };
   const deny = async (k: Card, reason: string): Promise<"done" | "closed" | Error> => {

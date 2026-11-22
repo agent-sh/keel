@@ -399,10 +399,15 @@ const approve = command("approve", APPROVE_USAGE, {
       if (!card) return (console.error("nothing was answered"), EXIT.owner);
     }
     const form = forms.get(card.id)!;
+    // A standing answer stores a rule: it is named wherever it is asked for or given, never a bare "for this session".
+    const standing = choice === "session" || choice === "always";
+    if (standing && !form.grants.length) return (console.error(`keel approve: this request has no rule to grant${form.risk === "high" ? " (it is high risk)" : ""}: answer it once, or deny it`), EXIT.owner);
+    const rule = form.grants.map((g) => line(spelled(g))).join(", ");
+    const grant = choice === "session" ? `Allow ${rule} for this session` : `Always allow ${rule}`;
     const post = (body: Record<string, unknown>) => c.post<any>(`/api/sessions/${card.session_id}/approvals/${card.id}`, { ...body, via: "cli" });
     const done = (r: any) => {
       if (v.json) console.log(JSON.stringify({ ok: true, approval: r.approval ?? card.id, choice }));
-      else console.log(`${choice === "deny" ? "refused" : `allowed (${choice})`}: ${clean(card.tool)} ${line(spelled(card.summary))}`);
+      else console.log(`${choice === "deny" ? "refused" : `allowed (${choice}${standing ? `: ${rule}` : ""})`}: ${clean(card.tool)} ${line(spelled(card.summary))}`);
       return EXIT.ok;
     };
     // A refusal is taken at once, from anywhere.
@@ -415,13 +420,14 @@ const approve = command("approve", APPROVE_USAGE, {
     }
     // An allow: the request is shown before anything asks or answers.
     if (!v.json) showCard(form, sub(card));
+    if (standing && !v.json) console.log(`   ${grant}: every later call the rule covers runs unasked.`);
     if (v.yes) {
       // --yes alone covers what one line shows whole. For any other request the
       // caller says it read all of it: --seen, for a script the owner wrote.
       if (form.hold.length && !v.seen) return (console.error(`keel approve: --yes does not cover this request (${whyHeld(form)}). Read it, then pass --yes --seen, or answer it on a terminal.`), EXIT.owner);
       return done(await post({ choice, ...(v.seen ? { seen: "whole" } : {}) }));
     }
-    const said = (await ask(`${choice === "once" ? "Allow once" : choice === "session" ? "Allow for this session" : "Always allow"}? [y/N] `)).toLowerCase();
+    const said = (await ask(`${standing ? grant : "Allow once"}? [y/N] `)).toLowerCase();
     if (said !== "y" && said !== "yes") return (console.error("left open: nothing was answered (keel approve --deny refuses it)"), EXIT.owner);
     // Shown whole on this terminal, then allowed by the owner's own word.
     return done(await post({ choice, seen: "whole" }));
@@ -451,8 +457,11 @@ const ATTACH_USAGE = `keel attach ID [--thoughts]
   /answer N|TEXT (a question's choice by its number, several as 1,3, or an answer of your own),
   /stop, /detach.
   An approval card is printed whole when it opens. /approve answers the one open card this
-  terminal has printed; a request that is long, cut, marked or high risk is allowed by its
-  id (/approve ID), and so is one of several. /deny is taken at once.
+  terminal has printed; a request that is read first (long, cut, marked, high risk, or one
+  that runs somewhere else) is allowed by its id (/approve ID), and so is one of several.
+  /approve session and /approve always name the rule they store. /deny is taken at once.
+  Without a terminal a request that is read first is not allowed here: keel approve
+  --yes --seen does that, on the word of whoever wrote the script.
   Leaving (/detach, Ctrl-D or Ctrl-C) does not stop the session.`;
 
 type Answer = { picked: string[]; other?: string };
@@ -573,9 +582,19 @@ export async function attachTo(c: Client, sessionId: string, v: { thoughts?: boo
         else if (!a) console.error(`-- ${open.length} requests wait: name one, ${cmd} ID (${open.map((x) => shortId(x.id)).join(", ")})`);
         else if (cmd === "/deny") await c.post(`/api/sessions/${a.session_id}/approvals/${a.id}`, { choice: "deny", reason: words || undefined, via: "cli" });
         else if (!read.has(a.id)) console.error("-- this request is new here, shown above: nothing was answered. Read it, then /approve");
+        // Nobody reads a pipe: printing the request there showed it to no one.
+        else if (read.get(a.id)!.hold.length && !interactive()) console.error(`-- ${holdSaid(read.get(a.id)!)} No terminal is attached, so nothing was answered: keel approve ${sessionId} --approval ${shortId(a.id)} --yes --seen allows it once it was read`);
         else if (read.get(a.id)!.hold.length && named.length !== 1) console.error(`-- ${holdSaid(read.get(a.id)!)} It is printed above: /approve ${shortId(a.id)} allows it`);
-        // (Printed whole on this terminal before the line was typed: that is what `seen` says.)
-        else await c.post(`/api/sessions/${a.session_id}/approvals/${a.id}`, { choice: ["session", "always"].includes(words) ? words : "once", seen: "whole", via: "cli" });
+        else {
+          const f = read.get(a.id)!;
+          const choice = ["session", "always"].includes(words) ? words : "once";
+          if (choice !== "once" && !f.grants.length) console.error("-- this request has no rule to grant: /approve allows it once");
+          else {
+            // (Printed whole on a terminal before the line was typed: that is what `seen` says.)
+            await c.post(`/api/sessions/${a.session_id}/approvals/${a.id}`, { choice, ...(interactive() ? { seen: "whole" } : {}), via: "cli" });
+            if (choice !== "once") console.error(`-- ${choice === "session" ? "allowed for this session" : "always allowed"}: ${f.grants.map((g) => line(spelled(g))).join(", ")}`);
+          }
+        }
       } else if (cmd === "/answer") {
         // The oldest open question. One this terminal had not printed before
         // this line was typed (it opened since the last look, as the one the

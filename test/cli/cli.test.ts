@@ -1175,10 +1175,14 @@ describe("client commands against a running daemon", () => {
       await until("   | echo row 12 >> attach-long.txt");
       const long = (await cards()).find((a) => a.state === "pending");
       await until(`   (read it, then /approve ${long.id.slice(0, 8)}; or /deny)`);
+      // This attach reads a pipe: nobody was shown what it printed, so it allows no request that
+      // is read first, by its id or without. keel approve --yes --seen does, on the script's word.
       type("/approve");
+      type(`/approve ${long.id.slice(0, 8)}`);
       await Bun.sleep(2500);
       expect((await cards()).find((a) => a.id === long.id).state).toBe("pending");
-      type(`/approve ${long.id.slice(0, 8)}`);
+      expect(existsSync(join(WS, "attach-long.txt"))).toBe(false);
+      expect((await k(["approve", sid, "--approval", long.id.slice(0, 8), "--yes", "--seen"])).code).toBe(0);
       await until("-- turn ended", 2);
       expect((await cards()).find((a) => a.id === long.id)).toMatchObject({ state: "allowed", by: { client: "cli", seen: "whole" } });
       expect(readFileSync(join(WS, "attach-long.txt"), "utf8").trim().split("\n").length).toBe(12);
@@ -1206,7 +1210,7 @@ describe("client commands against a running daemon", () => {
       expect(await p.exited).toBe(0);
       const err = await new Response(p.stderr).text();
       expect(err).toContain("-- detached; the session goes on");
-      expect(err).toContain("-- Open the request to read it first: it is 12 lines long. It is printed above: /approve");
+      expect(err.split("-- Open the request to read it first: it is 12 lines long. No terminal is attached, so nothing was answered: keel approve").length - 1).toBe(2);
       expect((await k(["show", sid])).out).toContain("Done with 2 calls.");
     } finally {
       p.kill();
@@ -1275,7 +1279,55 @@ describe("client commands against a running daemon", () => {
     expect((await cardsOf(two)).map((a) => a.state)).toEqual(["pending", "allowed"]);
     expect((await k(["approve", two, "--deny", "--answer", "not this one"])).code).toBe(0);
     expect((await cardsOf(two))[0]).toMatchObject({ state: "denied", reason: "not this one" });
+
+    // A standing answer names the rule it stores, and settles no request that is read first:
+    // the 41-line command beside the short one stays open for its own answer.
+    const LONG2 = Array.from({ length: 41 }, (_, i) => `echo step ${i + 1} >> approve-long2.txt`).join("\n");
+    const pair = await waits([{ name: "Bash", input: { command: "echo s > approve-s.txt" } }, { name: "Bash", input: { command: LONG2 } }], "script:batch");
+    const [small, big] = await cardsOf(pair);
+    const stand = await k(["approve", pair, "--approval", small.id, "--choice", "session", "--yes"]);
+    expect([stand.code, stand.out]).toEqual([0, expect.stringContaining("allowed (session: echo *): Bash echo s > approve-s.txt")]);
+    expect(stand.out).toContain("   Allow echo * for this session: every later call the rule covers runs unasked.");
+    await Bun.sleep(1000);
+    expect((await cardsOf(pair)).map((a) => [a.state, a.choice])).toEqual([["allowed", "session"], ["pending", undefined]]);
+    expect(existsSync(join(WS, "approve-long2.txt"))).toBe(false);
+    // A standing answer on the held one needs the word, as an allow once does.
+    const held2 = await k(["approve", pair, "--approval", big.id, "--choice", "session", "--yes"]);
+    expect([held2.code, held2.err]).toEqual([2, expect.stringContaining("--yes does not cover this request (it is 41 lines long)")]);
+    expect((await k(["approve", pair, "--approval", big.id, "--deny"])).code).toBe(0);
+    // A request with no rule to grant says so.
+    const risky = await waits([{ name: "Bash", input: { command: "sudo -n true" } }]);
+    const none = await k(["approve", risky, "--choice", "always", "--yes", "--seen"]);
+    expect([none.code, none.err]).toEqual([2, expect.stringContaining("this request has no rule to grant (it is high risk): answer it once, or deny it")]);
+    expect((await k(["approve", risky, "--deny"])).code).toBe(0);
   }, 120_000);
+
+  // keel attach on a terminal: a request that is read first is allowed by its id, and a standing answer names its rule.
+  test("attach on a terminal: a held request by its id, and a standing answer says the rule", async () => {
+    const url = json(readFileSync(join(state, "daemon.lock"), "utf8")).url;
+    const LONG = Array.from({ length: 12 }, (_, i) => `echo row ${i + 1} >> attach-tty.txt`).join("\n");
+    const r = await k(["run", "--wait", "--json", "--permission-mode", "ask", `script:calls ${JSON.stringify([{ name: "Bash", input: { command: LONG } }, { name: "Bash", input: { command: "echo t > attach-t.txt" } }])}`]);
+    const sid = json(r.out).session_id as string;
+    const cards = async () => (await (await fetch(`${url}/api/sessions/${sid}/approvals?all`)).json()).approvals as any[];
+    const long = (await cards())[0];
+    let out = "";
+    const steps: [string, string][] = [
+      [`(read it, then /approve ${long.id.slice(0, 8)}; or /deny)`, "/approve\r"],
+      ["It is printed above: /approve", `/approve ${long.id.slice(0, 8)}\r`],
+      ["   | echo t > attach-t.txt", "/approve session\r"],
+      ["-- allowed for this session: echo *", "/detach\r"],
+    ];
+    const p = Bun.spawn([BIN, "attach", sid], {
+      cwd: WS, env: { ...ENV, KEEL_STATE_DIR: state, TERM: "xterm" },
+      terminal: { cols: 200, rows: 50, data: (t, d) => { out += new TextDecoder().decode(d); while (steps.length && out.includes(steps[0]![0])) t.write(steps.shift()![1]); } },
+    });
+    const done = await Promise.race([p.exited, Bun.sleep(40_000).then(() => "late")]);
+    if (done === "late") p.kill();
+    expect([done, steps.map((x) => x[0]), out.includes("-- detached")]).toEqual([0, [], true]);
+    const [a, b] = await cards();
+    expect(a).toMatchObject({ state: "allowed", choice: "once", by: { client: "cli", seen: "whole" } });
+    expect(b).toMatchObject({ state: "allowed", choice: "session", by: { client: "cli", seen: "whole" } });
+  }, 90_000);
 
   // On a terminal: the whole request first (through the pager when it is taller than the window), then the question.
   test("approve on a terminal: the request, then y/N; anything but y leaves it open", async () => {
