@@ -1,4 +1,5 @@
 import { expect, test } from "./isolate.ts";
+import { shoot } from "./shots.ts";
 import { connect, createServer, type Socket } from "node:net";
 
 // Feature: what the page asks the daemon for. A session at work costs no
@@ -184,6 +185,73 @@ test("what changed before the page's socket opened is shown once it opens", asyn
     open.resolve();
     if (made) await request.delete(`/api/sessions/${made}`);
     await request.delete(`/api/sessions/${session.id}`);
+    for (const s of pipes) s.destroy();
+    front.close();
+  }
+});
+
+// A socket that does not open is not waited for: a second after the page
+// loaded the features read their state once without it. Three sessions wait
+// on the owner (an approval, a question, a secret) before the page loads,
+// and the page's socket is held for eight seconds: the rows say what each
+// waits for while the page still reconnects, each feature read once.
+test("what waits on the owner shows while the socket is still held", async ({ page, request, baseURL }) => {
+  const models = (await (await request.get("/api/models")).json()).models as { id: string }[];
+  test.skip(!models.some((m) => m.id === STAND_IN), "the daemon runs without KEEL_SCRIPTED_PROVIDER=1");
+  const daemon = new URL(baseURL!);
+  const HELD_MS = 8000;
+  const pipes = new Set<Socket>();
+  let heldAt = 0, let_through = 0;
+  const front = createServer((c) => {
+    const up = connect(Number(daemon.port), daemon.hostname);
+    pipes.add(c).add(up);
+    for (const [x, y] of [[c, up], [up, c]] as const) { x.on("error", () => y.destroy()); x.on("close", () => y.destroy()); }
+    up.pipe(c);
+    c.once("data", (first) => {
+      const go = () => { up.write(first); c.pipe(up); };
+      if (!/^upgrade:\s*websocket/im.test(first.toString("latin1"))) return go();
+      heldAt ||= Date.now();
+      setTimeout(() => { let_through ||= Date.now(); go(); }, Math.max(0, heldAt + HELD_MS - Date.now()));
+    });
+  });
+  await new Promise<void>((r) => front.listen(0, "127.0.0.1", r));
+  const mk = async (title: string, call: unknown, mode: string) => {
+    const { session } = await (await request.post("/api/sessions", { data: { model: STAND_IN, title } })).json();
+    await request.put(`/api/sessions/${session.id}/permissions`, { data: { mode, sandbox: "off" } });
+    await request.post(`/api/sessions/${session.id}/messages`, { data: { text: `script:calls ${JSON.stringify([call])}` } });
+    return session.id as string;
+  };
+  const ids: string[] = [];
+  try {
+    const approval = await mk("Waits on an approval", { name: "Bash", input: { command: "touch asked.txt" } }, "ask");
+    ids.push(approval);
+    const question = await mk("Waits on an answer", { name: "AskUserQuestion", input: { questions: [{ header: "Color", question: "Which color should I use?", options: [{ label: "Teal" }, { label: "Amber" }], multiSelect: false }] } }, "full-auto");
+    ids.push(question);
+    const secret = await mk("Waits on a secret", { name: "request_secret", input: { name: "SPEC_TOKEN", purpose: "a spec" } }, "full-auto");
+    ids.push(secret);
+    const need = async () => Object.fromEntries(Object.entries((await (await request.get("/api/state")).json()).states as Record<string, { watch: string }>).filter(([id]) => ids.includes(id)).map(([id, s]) => [id, s.watch]));
+    await expect.poll(need, { timeout: 30_000 }).toEqual({ [approval]: "need", [question]: "need", [secret]: "need" });
+
+    const reads: string[] = [];
+    page.on("request", (r) => {
+      const u = new URL(r.url());
+      if (r.method() === "GET" && ["/api/state", "/api/approvals", "/api/automation", "/api/projects", "/api/session-folders", "/api/helper", "/api/bootstrap"].includes(u.pathname)) reads.push(u.pathname);
+    });
+    await page.goto(`http://127.0.0.1:${(front.address() as { port: number }).port}/`);
+    const row = (id: string) => page.locator(`[data-testid="session-row"][data-session="${id}"]`);
+    // Shown well inside the eight seconds, with the socket not open yet.
+    for (const id of ids) await expect(row(id)).toHaveAttribute("data-watch", "need", { timeout: 4000 });
+    await expect(row(approval)).toContainText("touch asked.txt");
+    expect(let_through, "the socket was let through before the rows showed").toBe(0);
+    expect([...reads].sort()).toEqual(["/api/approvals", "/api/automation", "/api/bootstrap", "/api/helper", "/api/projects", "/api/session-folders", "/api/state"]);
+    await shoot(page, "page-reads-01-socket-held");
+
+    // The open reads again, as every open does: once more each, and the rows stand.
+    await expect.poll(() => let_through, { timeout: HELD_MS + 5000 }).toBeGreaterThan(0);
+    await expect.poll(() => reads.filter((p) => p === "/api/state").length, { timeout: 10_000 }).toBe(2);
+    for (const id of ids) await expect(row(id)).toHaveAttribute("data-watch", "need");
+  } finally {
+    for (const id of ids) await request.delete(`/api/sessions/${id}`);
     for (const s of pipes) s.destroy();
     front.close();
   }

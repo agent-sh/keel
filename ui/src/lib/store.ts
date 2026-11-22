@@ -491,9 +491,23 @@ let opened = false;
 // an approval asked for in that moment showed only at the next reconnect.)
 // A feature that arrives after the socket opened reads at once. Returns the
 // feature's `reconnect` listener: one read per open, none before.
+//
+// A socket that is slow to open, or refused, is not waited for without end:
+// a second after the page loaded the features read once without it, so what
+// waits on the owner (an approval, a question, a secret) shows while the
+// page still reconnects. The open reads again, as every open does.
+const LATE_MS = 1000;
+let late = false;
+const unread = new Set<() => void>();
+setTimeout(() => {
+  late = true;
+  if (!opened) for (const read of unread) read();
+  unread.clear();
+}, LATE_MS);
 export function readAtOpen(load: () => Promise<unknown>, at?: string): () => void {
   const read = () => void load().catch((e) => reportError(e, at ? { at } : undefined));
-  if (opened) read();
+  if (opened || late) read();
+  else unread.add(read);
   return read;
 }
 // The folders a new session can start in: read once for the views that ask for it together.
