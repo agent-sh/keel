@@ -309,7 +309,7 @@ test("alerts: agents that fail are one alert a cause, and their coordinator coun
   await expect(page.locator(`[data-testid="home-session"][data-session="${session.id}"]`)).toHaveAttribute("data-watch", "fail");
   const headline = Number((await page.getByTestId("home-count-fail").textContent())?.match(/\d+/)?.[0]);
   await expect(page.getByTestId("sum-fail")).toHaveText(new RegExp(`^\\s*${headline}\\s*failed`, "i"));
-  await shoot(page, "alerts-04-agents-failed");
+  await shoot(page, "alerts-11-agents-failed");
   // Looked at (opened from its home row): it reads as itself again.
   await page.locator(`[data-testid="home-session"][data-session="${session.id}"]`).getByTestId("home-see").click();
   await expect(page).toHaveURL(new RegExp(`/s/${session.id}`));

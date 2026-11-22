@@ -99,7 +99,7 @@ test("a hook's time limit is said as the hook's, under the call and in the timel
   const call = page.getByTestId("tool-call").first();
   await expect(call).toHaveAttribute("data-state", "ok");
   await expect(call.getByTestId("tool-hook-failed")).toHaveText(/timed out \(PreToolUse, 1 s\): sleep 5/);
-  await shoot(page, "hook-events-04-timed-out");
+  await shoot(page, "hook-events-06-timed-out");
   const story = await (await request.get(`/api/sessions/${id}/timeline?format=text`)).text();
   expect(story).toContain("Hook timed out (PreToolUse, 1 s): sleep 5");
   expect(story).not.toContain("Tool error");
