@@ -1,5 +1,5 @@
 import { Bot } from "lucide-react";
-import { lazy, Suspense, useEffect, useMemo } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef } from "react";
 import { isLive, openSession, useAuto } from "../../lib/automation.ts";
 import { safety, useSafety } from "../../lib/safety.ts";
 import { useStore } from "../../lib/store.ts";
@@ -14,11 +14,18 @@ export function ChildApprovals({ parentId }: { parentId: string }) {
   const open = useSafety((s) => s.approvals);
   const questions = useStore((s) => s.questionChildren[parentId]);
   const sessions = useStore((s) => s.sessions);
-  const ids = kids.map((k) => k.session_id).join(",");
+  // An agent's cards come by frames, as every session's do (the page reads all the open cards
+  // when its socket opens): nothing is read for an agent that asks nothing. One that asks is
+  // watched while it asks, so a reconnect reads its cards again, and only the ones that began
+  // or stopped asking are touched: twelve agents turning over read nothing.
+  const asks = kids.filter((k) => open[k.session_id]?.length).map((k) => k.session_id).sort().join(",");
+  const watched = useRef(new Map<string, () => void>());
   useEffect(() => {
-    const release = ids.split(",").filter(Boolean).map((id) => safety.watch(id));
-    return () => release.forEach((f) => f());
-  }, [ids]);
+    const want = new Set(asks.split(",").filter(Boolean));
+    for (const [id, release] of watched.current) if (!want.has(id)) { release(); watched.current.delete(id); }
+    for (const id of want) if (!watched.current.has(id)) watched.current.set(id, safety.watch(id));
+  }, [asks]);
+  useEffect(() => () => { for (const release of watched.current.values()) release(); watched.current.clear(); }, []);
   const asking = new Set([...kids.filter((k) => open[k.session_id]?.length).map((k) => k.session_id), ...(questions ?? [])]);
   if (!asking.size) return null;
   return (
