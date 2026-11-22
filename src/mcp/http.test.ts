@@ -170,3 +170,31 @@ test("the older SSE transport: no stream, and an address of another origin, are 
     plain.stop();
   }
 });
+
+// A server's headers and the request's body go to the address given and
+// nowhere else: a redirect is not followed, on either transport, and the
+// refusal says where it pointed. The other origin sees no request.
+test("no request to a server follows a redirect, on either transport", async () => {
+  const seen: string[] = [];
+  const there = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (req) => { seen.push(`${req.method} ${new URL(req.url).pathname} ${req.headers.get("x-api-key")}`); return new Response("{}"); } });
+  const to = `http://127.0.0.1:${there.port}/mcp`;
+  const here = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => Response.redirect(`${to}?token=elsewhere`, 307) });
+  const origin = `http://127.0.0.1:${here.port}`;
+  const said = `${origin} answered with a redirect to ${to}, which is not followed`;
+  const headers = { "x-api-key": "the-owner-s-key" };
+  const posts = startSseMcp({ moved: to });
+  try {
+    // Streamable HTTP: the POST.
+    await expect(McpClient.connect({ kind: "http", url: `${origin}/mcp`, headers }, 5000, "legacy")).rejects.toThrow(said);
+    // The older transport: the stream's GET, and the POST to the address the stream named.
+    await expect(McpClient.connect({ kind: "http", url: `${origin}/sse`, headers, sse: true }, 5000)).rejects.toThrow(said);
+    await expect(McpClient.connect({ kind: "http", url: posts.url, headers, sse: true }, 5000)).rejects.toThrow(`http://127.0.0.1:${posts.port} answered with a redirect to ${to}, which is not followed`);
+    expect(seen).toEqual([]);
+    // Where it pointed is named without its query.
+    await McpClient.connect({ kind: "http", url: `${origin}/mcp`, headers }, 5000, "legacy").catch((e) => expect(String(e)).not.toContain("elsewhere"));
+  } finally {
+    here.stop(true);
+    there.stop(true);
+    posts.stop();
+  }
+});

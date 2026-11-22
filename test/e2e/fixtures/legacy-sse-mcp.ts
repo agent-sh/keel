@@ -9,8 +9,10 @@
 // what it does; GET /stats says what it saw.
 export type SseStats = { streams_opened: number; streams_closed: number; refused_posts: number; initializes: number; calls: string[]; pongs: unknown[] };
 
-// `endpoint`: what the first event names ("elsewhere": an address of another origin).
-export function startSseMcp(opt: { endpoint?: "path" | "elsewhere" } = {}) {
+// `endpoint`: what the first event names ("elsewhere": an address of another
+// origin). `moved`: the address named for messages answers every POST with a
+// redirect to this one.
+export function startSseMcp(opt: { endpoint?: "path" | "elsewhere"; moved?: string } = {}) {
   const stats: SseStats = { streams_opened: 0, streams_closed: 0, refused_posts: 0, initializes: 0, calls: [], pongs: [] };
   const enc = new TextEncoder();
   const streams = new Map<string, ReadableStreamDefaultController<Uint8Array>>();
@@ -60,6 +62,7 @@ export function startSseMcp(opt: { endpoint?: "path" | "elsewhere" } = {}) {
       if (u.pathname === "/messages" && req.method === "POST") {
         const session = u.searchParams.get("session") ?? "";
         if (!streams.has(session)) return new Response("no such session", { status: 404 });
+        if (opt.moved) return Response.redirect(opt.moved, 307);
         const m = (await req.json()) as any;
         if (m.method && m.id !== undefined) queueMicrotask(() => send(session, { jsonrpc: "2.0", id: m.id, ...answer(m) }));
         else if (!m.method && m.id !== undefined) stats.pongs.push({ id: m.id, result: m.result });

@@ -68,7 +68,7 @@ test("a session's command gets what the editor gave, as given, and of the daemon
     expect(JSON.stringify(sent)).not.toContain("v-probe");
     expect(sent[0]).toMatchObject({ kind: "stdio", command: "${KEEL_TEST_PROBE_VALUE}", args: ["--key=${KEEL_TEST_PROBE_VALUE}"], cwd: "/" });
     expect([sent[0].env.K, "KEEL_TEST_PROBE_VALUE" in sent[0].env]).toEqual(["${KEEL_TEST_PROBE_VALUE}", false]);
-    expect(sent[1]).toEqual({ kind: "http", url: "http://127.0.0.1:9/${KEEL_TEST_PROBE_VALUE}", headers: { Authorization: "Bearer ${KEEL_TEST_PROBE_VALUE}" }, pinned: true });
+    expect(sent[1]).toEqual({ kind: "http", url: "http://127.0.0.1:9/${KEEL_TEST_PROBE_VALUE}", headers: { Authorization: "Bearer ${KEEL_TEST_PROBE_VALUE}" } });
     // What the editor may not set is not kept at all.
     expect([...(m as any).entries.values()].map((e: any) => Object.keys(e.config).sort())).toEqual([["args", "command", "cwd", "env"], ["headers", "url"]]);
   } finally {
@@ -155,7 +155,7 @@ test("what a session's own server does is told as it happens: its start with wha
   const told: string[] = [];
   m.onSessionServer = (e) => void told.push(`${e.what} ${e.name}: ${e.target}${e.error ? ` (${e.error})` : ""}`);
   const fixture = join(import.meta.dir, "../../test/e2e/fixtures/editor-mcp.ts");
-  // An address that redirects, and where it points: a server the editor passed is not followed there.
+  // An address that redirects, and where it points: no server is followed there.
   let hits = 0;
   const there = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => { hits++; return new Response("{}"); } });
   const here = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => Response.redirect(`http://127.0.0.1:${there.port}/mcp`, 307) });
@@ -169,7 +169,7 @@ test("what a session's own server does is told as it happens: its start with wha
     expect(await until(() => told.length >= 3)).toBe(true);
     expect(told.sort()).toEqual([
       expect.stringMatching(/^failed gone: .*no-such-server \(.+\)$/),
-      expect.stringMatching(new RegExp(`^failed moved: http://127\\.0\\.0\\.1:${here.port}/mcp \\(http://127\\.0\\.0\\.1:${here.port} answered with a redirect, which is not followed for a server the editor passed`)),
+      expect.stringMatching(new RegExp(`^failed moved: http://127\\.0\\.0\\.1:${here.port}/mcp \\(http://127\\.0\\.0\\.1:${here.port} answered with a redirect to http://127\\.0\\.0\\.1:${there.port}/mcp, which is not followed`)),
       `started notes: bun ${fixture} --flag`,
     ]);
     expect(hits).toBe(0);
