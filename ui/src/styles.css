@@ -269,10 +269,13 @@
   --default-transition-duration: var(--dur-quick);
   --default-transition-timing-function: var(--ease-out);
   --animate-in: fade-up var(--dur-move) var(--ease-out);
+  /* For what is judged by standing still (an approval's Allow once): it fades in where it stands. */
+  --animate-appear: appear var(--dur-move) var(--ease-out);
   --animate-pop: pop var(--dur-move) var(--ease-out);
   --animate-pulse-dot: pulse-dot 1.4s ease-in-out infinite;
 }
 
+@keyframes appear { from { opacity: 0; } }
 @keyframes fade-up {
   from { opacity: 0; transform: translateY(0.25rem); }
   to { opacity: 1; transform: none; }

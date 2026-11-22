@@ -18,6 +18,7 @@ import { navigate } from "../lib/ui.ts";
 import { useAgentCount } from "../lib/watch.ts";
 import { whenIdle } from "../lib/utils.ts";
 import { machineName, useFleet } from "../lib/fleet.ts";
+import "../lib/gutter.ts";
 
 // The conversation (Markdown, tool rows) is its own chunk: the start page does
 // not need it, and a session link starts loading it with the page.
@@ -106,7 +107,9 @@ export function SessionView({ id, header, missingHeader, panel = true, focus = t
           {/* Until the conversation is here (its events, and the chunk that draws them), the pane says it is loading. */}
           <Boundary><Suspense fallback={<TranscriptLoading />}>{loaded ? transcript : <TranscriptLoading unreached={unreached === id} />}</Suspense></Boundary>
           {/* The stack is one height budget (Composer's Tray): the cards above the box scroll, the box stays. */}
-          <div className="k-compose flex min-h-0 flex-col pr-[var(--sbw,0px)]">
+          {/* Its right padding is the conversation's scroll bar, measured once the conversation is drawn; until then the
+              width a scroll bar takes on this page (lib/gutter.ts), so nothing in it moves sideways as it arrives. */}
+          <div className="k-compose flex min-h-0 flex-col pr-[var(--sbw,var(--k-gutter,0px))]">
             <div className="k-compose-in mx-auto flex min-h-0 w-full max-w-[48rem] flex-col px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6 md:pb-5">
               <SessionCompose id={session.id} parentId={session.parent_id ?? null} working={session.phase === "working"} model={session.model} workspace={session.workspace} folderGone={!!session.workspace_gone} unreached={unreached === id} focus={focus} back={goBack} panel={panel} />
             </div>

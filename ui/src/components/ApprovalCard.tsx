@@ -1078,7 +1078,8 @@ function Card({ a, first, asker, list, many, plain, hot, locked, ripe, live, gra
       data-unseen={unseen?.n}
       className={cn(
         // (Clipped to its corners without being a scroll box: its foot can stay in the region's view.)
-        "k-approval group/card animate-in overflow-clip rounded-2xl border bg-raised shadow-2 outline-none",
+        // (It fades in where it stands: its Allow acts once it stood still, so it does not slide in.)
+        "k-approval group/card animate-appear overflow-clip rounded-2xl border bg-raised shadow-2 outline-none",
         a.risk === "high" ? "border-danger/50" : "border-accent/40",
         // A row: the request, then its answers beside it, or under it where the room ends.
         dense && "flex flex-wrap items-start",

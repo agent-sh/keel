@@ -802,3 +802,54 @@ test("every way to a waiting session lands the keyboard on its list, then on All
     console.log(`\nPATH-TABLE-LANDS\n| Way | Keyboard | Keys |\n| --- | --- | --- |\n${table.filter((x) => x.includes("then Allow once")).join("\n")}\nPATH-TABLE-LANDS-END`);
   }
 });
+
+// A card reached by the Inbox's Review, as a look over a pane beside another: it stands where it
+// lands from its first frame (it fades in, it does not slide; its column does not shift as the
+// conversation under it is drawn), so its Allow once, judged by how long it stood still, takes a
+// press 1.1 s after the card shows. Three times out of three.
+test("a card reached by the Inbox's Review stands still from its first frame, and a press 1.1 s after it is taken", async ({ page, request }) => {
+  test.skip(!(await scripted(request)), "requires the scripted provider");
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 1920, height: 1040 });
+  const reader = (await (await request.post("/api/sessions", { data: { model: MODEL, title: "Review: the pane I read" } })).json()).session as { id: string };
+  const other = (await (await request.post("/api/sessions", { data: { model: MODEL, title: "Review: the pane beside" } })).json()).session as { id: string };
+  const made = [reader.id, other.id];
+  try {
+    await page.goto("/api/daemon");
+    await page.evaluate((slots) => { localStorage.setItem("keel.focus", "false"); localStorage.setItem("keel.panes", JSON.stringify({ count: 2, slots, sizes: {}, active: 0 })); }, [reader.id, other.id]);
+    const takes: string[] = [];
+    for (let rep = 0; rep < 3; rep++) {
+      const s = await asking(request, `Review: rotate ${rep}`, [bash(`touch rotated-${rep}.txt`)]);
+      made.push(s.id);
+      await waits(request, s.id);
+      await page.goto(`/s/${reader.id}`);
+      await page.locator(`section.k-station[data-station="${reader.id}"]`).getByTestId("composer").click();
+      await page.getByTestId("inbox-button").click();
+      const item = page.getByTestId("inbox-item").filter({ hasText: `Review: rotate ${rep}` }).first();
+      await expect(item).toBeVisible();
+      // Every frame from the press on: where its Allow once stands.
+      await page.evaluate(() => {
+        const w = window as unknown as { __at: { t: number; x: number; y: number }[] };
+        w.__at = [];
+        const look = () => {
+          const b = [...document.querySelectorAll<HTMLElement>('[data-testid="allow-once"]')].find((el) => !el.closest("[inert]"));
+          if (b) { const r = b.getBoundingClientRect(); w.__at.push({ t: performance.now(), x: r.x, y: r.y }); }
+          if (w.__at.length < 120) requestAnimationFrame(look);
+        };
+        requestAnimationFrame(look);
+      });
+      await item.getByTestId("inbox-open").first().click();
+      const card = page.locator('.k-view[data-view="look"] [data-testid="approval"]');
+      await expect(card).toBeVisible();
+      await page.waitForTimeout(1100);
+      const moves = await page.evaluate(() => { const a = (window as unknown as { __at: { x: number; y: number }[] }).__at; return a.filter((p, i) => i > 0 && (Math.abs(p.x - a[i - 1]!.x) >= 0.5 || Math.abs(p.y - a[i - 1]!.y) >= 0.5)).length; });
+      expect(moves, `rep ${rep}: frames where Allow once moved after it was drawn`).toBe(0);
+      await card.getByTestId("allow-once").click();
+      await expect.poll(() => states(request, s.id), { message: `rep ${rep}: the press 1.1 s after the card showed`, timeout: 5000 }).toBe("allowed/once");
+      takes.push("taken");
+    }
+    expect(takes).toEqual(["taken", "taken", "taken"]);
+  } finally {
+    await drop(request, made);
+  }
+});
