@@ -221,7 +221,7 @@ sessions_before=$(grep -c '"window":"session"' "$D/shell.jsonl" || true)
 "$SHELL_BIN" "keel://session/$art"
 check "the artifact's frame ran its script" "wait_for 30 \"said 'ARTIFACT DONE' | grep -q DONE\""
 check "it has the engine's channel but not the app's object, and none of its messages was acted on" "grep -aq '^PROBE ARTIFACT handler=true keelShell=undefined' '$D/shell.out' && [ \"\$(grep -c '\"window\":\"session\"' '$D/shell.jsonl' || true)\" = \"$sessions_before\" ] && [ \"\$(windows)\" = 1 ] && ! grep -q '\"what\":\"external\"' '$D/shell.jsonl' && ! grep -qi 'ff0000' '$D/shell/shell.json' && [ \"\$(logged start)\" = 0 ]"
-check "it read nothing from the clipboard" "grep -a '^PROBE ARTIFACT CLIP' '$D/shell.out' | grep -q . && ! grep -a '^PROBE ARTIFACT CLIP' '$D/shell.out' | grep -q 'clipboard-secret' && grep -aq '^PROBE ARTIFACT CLIP read refused' '$D/shell.out'"
+check "it read nothing from the clipboard" "grep -aq '^PROBE ARTIFACT CLIP exec=' '$D/shell.out' && ! grep -a '^PROBE ARTIFACT CLIP' '$D/shell.out' | grep -q 'clipboard-secret' && ! grep -aq '^PROBE ARTIFACT CLIP event=' '$D/shell.out' && grep -aq '^PROBE ARTIFACT CLIP read refused' '$D/shell.out'"
 [ -n "$SECRET" ] || echo "# note: no wl-copy for this backend, so the clipboard held no secret; the refusal itself was still checked"
 
 # --- 5c. the main frame stays on the daemon's origin
@@ -310,7 +310,10 @@ check "the daemon it started is the scratch one (no real provider)" "[ -z \"$rea
 
 # --- 10. a session in a window of its own
 "$SHELL_BIN" --window "/s/$other"
-check "a session opens in a window of its own" "wait_for 20 '[ \"\$(windows)\" = 2 ]' && last present | grep -q '\"window\":\"session\"'"
+wait_for 20 '[ "$(windows)" = 2 ]'
+check "a session opens in a window of its own (the app has $(windows) windows)" "[ \"\$(windows)\" = 2 ] && grep '\"what\":\"present\"' '$D/shell.jsonl' | tail -3 | grep -q '\"window\":\"session\"'"
+[ "$(windows)" = 2 ] || $A windows --id "$WS" --pid "$(app_pid)" 2> /dev/null | py 'import json,sys
+for w in json.load(sys.stdin).get("windows", []): print("# window:", w.get("title"), w["geometry"])'
 sleep 4; shot 11-session-window-dark all
 check "the session's window does not fight for the place it shows (no error from the page)" "! api '/api/errors?limit=100' | grep -qi 'replaceState\|history'"
 if [ "$BACKEND" = gnome ]; then

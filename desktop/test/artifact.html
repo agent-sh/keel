@@ -20,11 +20,14 @@ post({ t: "external", url: "https://example.com/?from=artifact" });
 post({ t: "start" });
 post({ t: "paste" });
 post({ t: "window", path: "/settings", key: "" });
+// The clipboard, the three ways a page has: a paste it starts itself (what arrives in the
+// paste event, and what lands in the field a moment later), and the clipboard's own read.
 const t = document.getElementById("t");
+document.addEventListener("paste", (e) => say("CLIP event=" + JSON.stringify(e.clipboardData.getData("text/plain"))));
 t.focus();
 let pasted = false;
 try { pasted = document.execCommand("paste"); } catch (e) {}
-say("CLIP exec=" + pasted + " value=" + JSON.stringify(t.value));
+setTimeout(() => say("CLIP exec=" + pasted + " field=" + JSON.stringify(t.value)), 600);
 if (navigator.clipboard && navigator.clipboard.readText) navigator.clipboard.readText().then((v) => say("CLIP read=" + JSON.stringify(v)), (e) => say("CLIP read refused"));
 else say("CLIP read refused");
 // A click no owner made.

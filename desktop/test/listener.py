@@ -8,7 +8,14 @@ port, status, secs = int(sys.argv[1]), int(sys.argv[2]), float(sys.argv[3])
 health = len(sys.argv) > 4 and sys.argv[4] == "health"
 s = socket.socket()
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(("127.0.0.1", port))
+for _ in range(100):  # the daemon that had the port may still be letting go of it
+    try:
+        s.bind(("127.0.0.1", port))
+        break
+    except OSError:
+        time.sleep(0.1)
+else:
+    sys.exit(f"could not bind port {port}")
 s.listen(16)
 end = time.time() + secs
 body = b"<script>try{webkit.messageHandlers.keel.postMessage(JSON.stringify({t:'window',path:'/settings'}))}catch(e){}</script>foreign"
