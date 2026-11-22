@@ -63,7 +63,7 @@ test("tabs and segmented choices share one keyboard", async ({ page, request }) 
   await walk(page, page.getByRole("tablist", { name: "Session list" }), ["Sessions", "Archived"]);
   await shoot(page, "seg-01-session-list");
   await page.getByTestId("errors-button").first().click();
-  await walk(page, page.getByRole("tablist", { name: "Which errors" }), ["Open", "Resolved"]);
+  await walk(page, page.getByRole("tablist", { name: "Which errors" }), ["Open", "Recovered", "Resolved"]);
   await page.keyboard.press("Escape");
   await page.getByTestId("inbox-button").first().click();
   await walk(page, page.getByRole("tablist", { name: "Inbox views" }), ["Alerts", "Activity"]);
