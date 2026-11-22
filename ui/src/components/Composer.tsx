@@ -320,8 +320,12 @@ const SessionComposer = memo(function SessionComposer({
     return () => document.removeEventListener("pointerdown", away, true);
   }, [tapped]);
   const rest = narrow && !!session && !tapped && !text && !images.length && !working && !notice && synced;
-  const fit = () => {
-    setShort(low());
+  // Whether the window is low changes with the window and the text size, never with what is
+  // typed: it is not asked at every key (the question makes the browser style the whole page
+  // on the spot, a reply that streams above included).
+  const lowAt = useRef<number | null>(null);
+  const fit = (resized = false) => {
+    if (resized || lowAt.current !== scale) { lowAt.current = scale; setShort(low()); }
     const el = ref.current;
     if (!el) return;
     const box = el.parentElement!;
@@ -354,8 +358,9 @@ const SessionComposer = memo(function SessionComposer({
   fitNow.current = fit;
   useEffect(() => {
     fit();
-    addEventListener("resize", fit);
-    return () => removeEventListener("resize", fit);
+    const resized = () => fit(true);
+    addEventListener("resize", resized);
+    return () => removeEventListener("resize", resized);
   }, [text, scale, short, images.length, notice, synced, info, working, rest]);
   // A pane made wider or narrower (its divider, the list, a side panel) wraps the draft and
   // the tools anew with no resize of the window: measured again then, a frame later (a size
