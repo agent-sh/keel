@@ -9,6 +9,7 @@ import { panels, slash } from "./extend.ts";
 import { fuzzy, isMac, registerCommand } from "./keys.ts";
 import { shell } from "./shell.ts";
 import { getSafetyModes, safety } from "./safety.ts";
+import { archive } from "./sessops.ts";
 import { actions, getState, reportError, ensureModels } from "./store.ts";
 import { leafOf, lineage } from "../../../src/core/tree.ts";
 import { getUI, navigate, notePick, savePref, setScale, setTheme, setUI, stepScale, type ThemePref } from "./ui.ts";
@@ -140,7 +141,7 @@ registerCommand(
   { id: "stop", label: "Stop the turn", group: "Session", keys: "escape", when: () => current()?.phase === "working" && !current()?.parent_id && !lookNow(), run: () => { if (!stopHeld(current()!.id)) void stopHere(current()!); } },
   { id: "to-parent", label: "Back to the session that started this agent", group: "Session", keys: "escape", when: () => !!current()?.parent_id && !lookNow(), run: () => navigate({ name: "session", id: current()!.parent_id! }) },
   { id: "stop-agent", label: "Stop this agent", group: "Session", when: () => current()?.phase === "working" && !!current()?.parent_id, run: () => void stopHere(current()!) },
-  { id: "archive", label: "Archive this session", group: "Session", when: () => !!current(), run: () => { actions.patch(current()!.id, { archived: true }).catch(reportError); navigate({ name: "new" }); } },
+  { id: "archive", label: "Archive this session", group: "Session", when: () => !!current(), run: () => { archive(current()!).catch(reportError); navigate({ name: "new" }); } },
   { id: "copy-link", label: "Copy a link to this session", group: "Session", when: () => !!current(), run: () => void copyOrSay(location.href) },
   { id: "end", label: "Go to the end and follow", group: "Conversation", keys: "end mod+end", when: () => !!current(), run: () => dispatchEvent(new CustomEvent("keel:end", { detail: current()!.id })) }, // the pane worked in, not every transcript on screen
   // The transcript of the pane with the keys moves to the prompt before or after the one it is on.

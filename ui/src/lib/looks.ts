@@ -35,6 +35,7 @@ import { modalOpen } from "./overlay.ts";
 import { getStations, paneOf, stations, target, useStations } from "./stations.ts";
 import { getState, useStore } from "./store.ts";
 import { tipChange, tipSay } from "./tips.ts";
+import { offerUndo } from "./undo.ts";
 import { getUI, navigate } from "./ui.ts";
 import { useSessionStates } from "./watch.ts";
 
@@ -207,11 +208,19 @@ export function leaveLook(id: string, answered = false): boolean {
   return true;
 }
 // Keeps a look: it is the pane's session from now on, in place of the one it lay over.
+// It is offered back for a moment (lib/undo.ts): the look over the pane's own session again.
 export function keepLook(id: string): boolean {
   const slot = getStations().over.indexOf(id);
   if (slot < 0) return false;
+  const was = stations.snapshot();
+  const home = fromHome.has(id);
   fromHome.delete(id);
   stations.place(id, slot);
+  offerUndo(`${titleOf(id)} is kept in the pane`, () => {
+    stations.putBack(was);
+    if (home) fromHome.add(id);
+    navigate({ name: "session", id }, true);
+  });
   return true;
 }
 // Opens a session the owner just made (started from the start page, forked, cloned) where

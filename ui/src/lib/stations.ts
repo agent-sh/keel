@@ -141,6 +141,11 @@ export const stations = {
     const { [state.count]: _, ...rest } = state.sizes;
     set({ seeded: true, sizes: weights ? { ...rest, [state.count]: weights } : rest });
   },
+  // The panes as they are now, to be put back as they were (an act that is undone: lib/undo.ts).
+  snapshot: (): Panes & { count: number } => ({ count: state.count, slots: [...state.slots], over: [...state.over], keys: [...state.keys], active: state.active }),
+  putBack(was: Panes & { count: number }) {
+    set({ seeded: true, count: was.count, slots: [...was.slots], over: [...was.over], keys: [...was.keys], active: was.active });
+  },
   toggleFocus: () => set({ focus: !state.focus }),
   setFocus: (focus: boolean) => set({ focus }),
   // The sessions on screen now (the rail marks them); not kept.

@@ -6,6 +6,7 @@ import { Boundary } from "./components/Boundary.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import "./lib/builtins.ts";
 import { AnswerQueue } from "./components/AnswerQueue.tsx";
+import { UndoToast } from "./components/UndoToast.tsx";
 import "./lib/tools-ui.ts";
 import "./lib/providers-ui.ts";
 import "./lib/admin-ui.ts";
@@ -150,6 +151,7 @@ export function App() {
       <Attention />
       <StaleMarks />
       <AnswerQueue />
+      <UndoToast />
       <div className="k-shell">
         <AdminBand />
         <ArchivedRefusalNotice />

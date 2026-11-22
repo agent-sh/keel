@@ -19,6 +19,7 @@ import { ArrowLeft, ArrowRight, ChevronLeft, ChevronRight, ListTree, Maximize2, 
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, Fragment, type RefObject } from "react";
 import type { Session } from "../../../src/core/types.ts";
 import { isMac, registerCommand } from "../lib/keys.ts";
+import { offerUndo } from "../lib/undo.ts";
 import { AIMS, keepLook, leaveHome, leaveLook, lookNow, noteLook, paneMove, setAim, tellSwap, useAim, useAimed, useNeedUnderLooks, usePaneNote, type Aim } from "../lib/looks.ts";
 import { callsigns, paneMin, panesMax, usePanelSide, useWidth } from "../lib/rail.ts";
 import { useSeenFailure } from "./Attention.tsx";
@@ -80,14 +81,18 @@ registerCommand(
 
 // Closes the pane (the last one stays, empty). The helm moves to a neighbour that shows a session.
 // A look is left instead: its pane shows the session it holds again.
+// A pane that was closed is offered back for a moment (lib/undo.ts): the panes as they were, in their order.
 function closeStation(id: string) {
   if (leaveLook(id)) return;
   const st = getStations();
   const i = st.slots.indexOf(id);
   const shown = st.slots.map((_, j) => shownIn(st, j));
   const next = [...shown.slice(i + 1), ...shown.slice(0, Math.max(0, i)).reverse()].find((x) => x);
+  const was = stations.snapshot();
+  const helm = helmNow() === id;
   stations.close(id);
-  if (helmNow() === id) navigate(next ? { name: "session", id: next } : { name: "new" });
+  if (helm) navigate(next ? { name: "session", id: next } : { name: "new" });
+  if (i >= 0) offerUndo(`Closed ${getState().sessions[id]?.title || "the pane"}`, () => { stations.putBack(was); if (helm) navigate({ name: "session", id }); });
 }
 
 function Tool({ label, onClick, children, testid, on, move }: { label: string; onClick: () => void; children: React.ReactNode; testid?: string; on?: boolean; move?: boolean }) {

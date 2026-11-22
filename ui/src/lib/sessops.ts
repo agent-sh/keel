@@ -5,7 +5,9 @@ import type { Session } from "../../../src/core/types.ts";
 import { confirmAction } from "../components/Confirm.tsx";
 import { actWhenLetGo, listActed, waitsLetGo } from "./list-hold.ts";
 import { pinMark, pinMove, pinnedOrder } from "./list-order.ts";
+import { stations } from "./stations.ts";
 import { actions, api, getState } from "./store.ts";
+import { offerUndo } from "./undo.ts";
 
 export type Marks = { session_id: string; pinned: boolean; accept_messages: boolean; peer_turns: number; unread: boolean };
 
@@ -61,10 +63,16 @@ export const setMaxSteps = (id: string, n: number) => actions.patch(id, { max_st
 
 // Archive; when the session still runs background commands, ask first and
 // stop them with it.
+// An archive is offered back for a moment (lib/undo.ts): the session in the list again, and in
+// the pane it had, the panes in their order.
 export async function archive(s: Session, on = true) {
   listActed(s.id);
+  const was = stations.snapshot();
+  const back = () => { if (on) offerUndo(`Archived ${s.title || "New session"}`, async () => { listActed(s.id); await actions.patch(s.id, { archived: false }); stations.putBack(was); }); };
   try {
-    return await actions.patch(s.id, { archived: on });
+    const r = await actions.patch(s.id, { archived: on });
+    back();
+    return r;
   } catch (e) {
     const jobs = (e as { body?: { jobs?: { command: string }[] } }).body?.jobs;
     if (!on || (e as { status?: number }).status !== 409 || !jobs?.length) throw e;
@@ -74,6 +82,6 @@ export async function archive(s: Session, on = true) {
       action: "Stop and archive",
       danger: true,
     });
-    if (ok) return actions.patch(s.id, { archived: true, stop_shells: true } as any);
+    if (ok) { const r = await actions.patch(s.id, { archived: true, stop_shells: true } as any); back(); return r; }
   }
 }

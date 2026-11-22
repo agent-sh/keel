@@ -710,6 +710,70 @@ test("Escape right after a palette, a menu or the slash menu closed, or a click 
   await drop(request, mine, beside);
 });
 
+// A mis-click on the panes or the list is put back in one press: Keep here (the look over the
+// pane's own session again), a pane closed (the panes in their order), a session archived from
+// its row (in the list again). Each is offered for a moment at the page's lower left, with its
+// button and Ctrl Z.
+test("Keep here, a closed pane and an archive are undone by one key or click, the panes in their order", async ({ page, request }) => {
+  await scripted(request);
+  await settle(request);
+  const ws = folder("panes-stay-undo");
+  const reader = await long(request, "Spike: full-text search over the notes", ws);
+  const coord = await long(request, "Coordinator: release train 2.4", ws);
+  const other = await long(request, "Draft the 2.4 changelog", ws);
+  await open(page, [reader, coord]);
+  const toast = page.getByTestId("undo-toast");
+  const holds = async () => (await look(page)).panes.map((p) => [p.holds, p.shows]);
+  // Keep here by mistake: Ctrl Z puts the look back over the reader.
+  await row(page, other).click();
+  await expect(slot(page, 0)).toHaveAttribute("data-look", "");
+  await slot(page, 0).getByTestId("look-keep").click();
+  await expect(slot(page, 0)).toHaveAttribute("data-holds", other);
+  await expect(toast).toBeVisible();
+  await expect(toast.getByTestId("undo-words")).toHaveText("Draft the 2.4 changelog is kept in the pane");
+  await shoot(page, "panes-stay-20-undo-keep");
+  let t0 = Date.now();
+  await page.keyboard.press("Control+z");
+  await expect.poll(holds, { timeout: 1500 }).toEqual([[reader, other], [coord, coord]]);
+  expect(Date.now() - t0).toBeLessThan(1500);
+  await expect(slot(page, 0)).toHaveAttribute("data-look", "");
+  await expect(toast).toHaveCount(0);
+  await slot(page, 0).getByTestId("look-back").click();
+  await expect.poll(holds).toEqual([[reader, reader], [coord, coord]]);
+  // A pane closed by mistake: its Undo brings it back in its place, worked in again.
+  await slot(page, 0).getByTestId("composer").click();
+  await page.keyboard.press("Alt+w");
+  await expect.poll(holds).toEqual([[coord, coord]]);
+  await expect(toast.getByTestId("undo-words")).toHaveText("Closed Spike: full-text search over the notes");
+  t0 = Date.now();
+  await toast.getByTestId("undo").click();
+  await expect.poll(holds, { timeout: 1500 }).toEqual([[reader, reader], [coord, coord]]);
+  expect(Date.now() - t0).toBeLessThan(1500);
+  await expect(slot(page, 0)).toHaveAttribute("data-helm", "true");
+  // Archived from its row by mistake: Ctrl Z, and it is in the list again.
+  await row(page, other).hover();
+  await row(page, other).getByTestId("row-archive").click();
+  await expect(row(page, other)).toHaveCount(0);
+  await expect(toast.getByTestId("undo-words")).toHaveText("Archived Draft the 2.4 changelog");
+  await shoot(page, "panes-stay-21-undo-archive");
+  t0 = Date.now();
+  await page.keyboard.press("Control+z");
+  await expect(row(page, other)).toBeVisible({ timeout: 1500 });
+  expect(Date.now() - t0).toBeLessThan(1500);
+  await expect.poll(async () => (await (await request.get(`/api/sessions/${other}`)).json()).archived ?? false).toBe(false);
+  // Typed into a field after the act, Ctrl Z is the field's own: nothing of the panes changes.
+  await slot(page, 0).getByTestId("composer").click();
+  await page.keyboard.press("Alt+w");
+  await expect(toast).toBeVisible();
+  await page.getByTestId("list-filter").fill("x");
+  await page.keyboard.press("Control+z");
+  await expect.poll(holds).toEqual([[coord, coord]]);
+  await toast.getByTestId("undo").click();
+  await expect.poll(holds).toEqual([[reader, reader], [coord, coord]]);
+  await page.getByTestId("list-filter").fill("");
+  await drop(request, reader, coord, other);
+});
+
 test("the first pane is drawn once, a double click places only the row it began on, and what the owner starts is placed", async ({ page, request }) => {
   await scripted(request);
   await settle(request);
