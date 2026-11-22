@@ -5,6 +5,7 @@ import type { Session } from "../../../src/core/types.ts";
 import { downSince, liveNow, useStore } from "../lib/store.ts";
 import { WATCH_LABEL, WATCH_RANK, useStatesSince, useWatches, type SessionState, type Watch } from "../lib/watch.ts";
 import { cn } from "../lib/utils.ts";
+import { beatOf, every } from "../lib/clock.ts";
 import { asOf, span } from "../../../src/core/watch.ts";
 
 export { failWord, span, whyText } from "../../../src/core/watch.ts";
@@ -24,8 +25,8 @@ export function useNow(on: boolean, ms = 1000) {
     if (!on) return;
     setNow(stale ? liveNow() : Date.now());
     if (stale) return;
-    const t = setInterval(() => setNow(Date.now()), ms);
-    return () => clearInterval(t);
+    // The page's one clock (lib/clock.ts): shared by every time on screen, and still while the page is hidden.
+    return every(ms, () => setNow(Date.now()));
   }, [on, ms, stale]);
   return now;
 }
@@ -47,6 +48,8 @@ export function stateClock(st: SessionState, at: number, short = false): string 
   if (st.until) return st.until > now ? `${short ? "in" : "due in"} ${span(st.until - now)}` : short ? "due" : "due now";
   return st.since ? span(now - st.since) : "";
 }
+// How often a timed state's clock changes what it says: each second under a minute, a few times a minute after.
+export const tickOf = (st: SessionState) => beatOf(st.until ?? st.since);
 // A state that moves by itself or waits on the owner is timed; one at rest is not.
 export const timed = (st: SessionState) => (st.watch === "need" || st.watch === "work" || st.watch === "wait") && !!(st.since || st.until);
 

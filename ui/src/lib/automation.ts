@@ -15,6 +15,7 @@ import { ASK_KINDS, WRONG_KINDS } from "../../../src/core/state-words.ts";
 import { remoteId, splitId } from "./fleet-ids.ts";
 import { clock } from "./utils.ts";
 import { machineLabel } from "./reach.ts";
+import { every } from "./clock.ts";
 
 export type { Goal, Task };
 export type { Activity, AgentRecord, Alert, AlertSettings, LoopRecord, RunRecord, Snooze, WaitRecord };
@@ -59,6 +60,7 @@ const byId = <T extends { id: string }>(xs: T[]) => Object.fromEntries(xs.map((x
 function applyInbox(unread: Unread, alerts?: Alert[]): boolean {
   if (unread.rev < state.unread.rev) return false;
   set({ unread, rev: Math.max(state.rev, unread.rev), ...(alerts ? { alerts } : {}) });
+  lookSoon();
   return true;
 }
 
@@ -270,7 +272,8 @@ onFeature({
   reconnect: () => reread(),
 });
 
-// Presence: where the owner is in this page, sent when it changes and every 20 s.
+// Presence: where the owner is in this page, sent when it changes and on a beat while the
+// page is visible (a hidden page says once that nobody looks at it, and then nothing).
 // - Which sessions are in view: the one worked in and those in the other panes,
 //   each only while most of its pane is inside the window (a pane scrolled off
 //   it is not seen) and nothing lies over the panes (the Inbox open over them).
@@ -287,6 +290,7 @@ onFeature({
 // An agent that ended is seen the same way, when its own session or the one
 // that started it is in view (lib/agent-seen.ts).
 const CALLS = [...ASK_KINDS, ...WRONG_KINDS];
+const PRESENCE_BEAT_MS = 21_000;
 let sent = { key: "", at: 0 };
 let lastInput = 0;
 let opened: string | null | undefined; // the session the page was on at the last look (undefined: it has just loaded)
@@ -354,7 +358,43 @@ function presence(now = false) {
   // An agent that ended is seen once its session, or the one that started it, is in view.
   if (inView.length) seeAgents(Object.values(state.agents).filter((a) => inView.includes(a.session_id) || inView.includes(a.parent_id)));
 }
-setInterval(() => presence(), 1000);
+// Nothing looks on a tick. What can change where the owner is, or what is in view, says so:
+// - the route (and once more when the panes have followed it), the focus, the page shown or
+//   hidden, a key or the pointer: below;
+// - the panes: one added, taken away, given another session, resized, or scrolled out of the
+//   window (watchPanes);
+// - the inbox: an alert that arrives for a session in view is read (applyInbox, the alert's frame);
+// - a beat while the page is visible, a little under half of how long the daemon takes a page's
+//   word for (45 s), so one late beat loses nothing.
+let lookTimer: ReturnType<typeof setTimeout> | undefined;
+function lookSoon() {
+  lookTimer ??= setTimeout(() => { lookTimer = undefined; presence(); }, 50);
+}
+every(PRESENCE_BEAT_MS, () => presence());
+// The row of panes as it is now: its size and each pane's, the panes in it, the session each
+// shows, and where it is scrolled to.
+let panesRow: Element | null = null;
+const paneSizes = typeof ResizeObserver === "function" ? new ResizeObserver(lookSoon) : null;
+const paneList = typeof MutationObserver === "function" ? new MutationObserver(() => { sizePanes(); lookSoon(); }) : null;
+function sizePanes() {
+  paneSizes?.disconnect();
+  if (!panesRow) return;
+  paneSizes?.observe(panesRow);
+  for (const el of panesRow.children) paneSizes?.observe(el);
+}
+// The page draws its row of panes (Bridge.tsx), or takes it away (null).
+export function watchPanes(row: Element | null) {
+  paneList?.disconnect();
+  panesRow = row;
+  sizePanes();
+  if (row) {
+    paneList?.observe(row, { childList: true });
+    paneList?.observe(row, { attributes: true, attributeFilter: ["data-station"], subtree: true });
+  }
+  lookSoon();
+}
+addEventListener("resize", lookSoon);
+document.addEventListener("scroll", (e) => { if (e.target === panesRow) lookSoon(); }, { capture: true, passive: true });
 // The route changed: where the owner is now is said, and read, at once.
 let routeWas = "";
 onUI(() => {

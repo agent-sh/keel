@@ -25,6 +25,7 @@ import { useSeenFailure } from "./Attention.tsx";
 import { byAttention, getStations, opened, paneOf, shares, shownIn, stations, target, useStations } from "../lib/stations.ts";
 import { getState, useStore } from "../lib/store.ts";
 import { getUI, navigate, savePref, setUI, useUI } from "../lib/ui.ts";
+import { watchPanes } from "../lib/automation.ts";
 import { ago, clock, scrollMotion, when } from "../lib/utils.ts";
 import { sequenceAt } from "../lib/asks.ts";
 import { focusBox } from "../lib/utils.ts";
@@ -37,7 +38,7 @@ import { reportError } from "../lib/store.ts";
 import { Grip } from "./Grip.tsx";
 import { PaneMenu } from "./PaneMenu.tsx";
 import { DRAG, dragSession, setPanes } from "./Panes.tsx";
-import { elapsed, failWord, folderOf, Mark, modelOf, stateClock, timed, useLive, useNow, whyText } from "./Mark.tsx";
+import { elapsed, failWord, folderOf, Mark, modelOf, stateClock, tickOf, timed, useLive, useNow, whyText } from "./Mark.tsx";
 import { SessionHeader } from "./SessionHeader.tsx";
 import { Boundary, SessionView } from "./SessionView.tsx";
 import { Kbd } from "./Kbd.tsx";
@@ -100,7 +101,7 @@ function StationHead({ s, helm, pinned }: { s: Session; helm: boolean; pinned: b
   // One clock for one state: the band shows what the row shows (the step's time, the ask's, the wait's).
   // A machine that does not answer says nothing new: the head reads Offline with when it last told, and its clock stands.
   const offline = useWhere(s)?.reach === "offline";
-  const now = useNow(timed(st) && !offline);
+  const now = useNow(timed(st) && !offline, tickOf(st));
   const focus = useStations((x) => x.focus);
   const panes = useStations((x) => x.count);
   const told = st.text ? whyText(st, now) : "";
@@ -611,6 +612,8 @@ export function Bridge() {
 
   // Phone: the page in view is the helm.
   const track = useRef<HTMLElement>(null);
+  // Where the owner is follows the panes: the row tells when one comes, goes, changes size or scrolls (lib/automation.ts).
+  useEffect(() => { watchPanes(track.current); return () => watchPanes(null); }, []);
   useEffect(() => {
     if (!phone || !track.current) return;
     const io = new IntersectionObserver((es) => {

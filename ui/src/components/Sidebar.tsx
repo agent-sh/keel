@@ -37,7 +37,7 @@ import { finished, ListFind, matches, order, readNote, setArrange, useArrange, u
 import { useLink } from "./Stale.tsx";
 import { useReach } from "../lib/reach.ts";
 import { useAuto } from "../lib/automation.ts";
-import { failWord, folderOf, Mark, modelOf, stateClock, timed, useNow, whyText } from "./Mark.tsx";
+import { failWord, folderOf, Mark, modelOf, stateClock, tickOf, timed, useNow, whyText } from "./Mark.tsx";
 import { AutomationFooter, SessionBadges, SessionChildren } from "./automation/SidebarExtras.tsx";
 import { DRAG, dragSession, PaneCount } from "./Panes.tsx";
 import { PaneMenu } from "./PaneMenu.tsx";
@@ -190,7 +190,7 @@ function Row({ s: given, active, where, gone }: { s: Session; active: boolean; w
   // A machine that does not answer: what its rows say is the last it told, so they are dimmed and their clocks stand.
   // The state says so itself (lib/watch.ts: `offline`, and `as_of` when it was last told), until the machine has stayed heard.
   const offline = !!st.offline;
-  const now = useNow(timed(st) && !offline);
+  const now = useNow(timed(st) && !offline, tickOf(st));
   // A row of one line may have no room for its reason: the card beside it comes sooner.
   const card = useContext(CardCtx)(s, lines === "one" ? 250 : 450, lines === "two");
   // A message of the session waits for the daemon to be back and goes out by itself: said on the
@@ -619,7 +619,7 @@ function RailCard({ s: given, y, left, row, cut }: { s: Session; y: number; left
   const w = st.watch;
   // A machine that does not answer says nothing new: the card reads Offline with when it last told, as the row and the pane's head do, and no clock runs.
   const offline = useWhere(s)?.reach === "offline";
-  const now = useNow(timed(st) && !offline);
+  const now = useNow(timed(st) && !offline, tickOf(st));
   const unread = useAuto((x) => x.unread.sessions[s.id] ?? 0);
   const events = useStore((x) => x.events[s.id]);
   // What it last did or ended with: from the events the page holds, else asked of the daemon (a session never opened here).

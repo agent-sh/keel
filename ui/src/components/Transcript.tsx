@@ -15,6 +15,7 @@ import { useToldState } from "../lib/watch.ts";
 import { composing } from "../lib/keys.ts";
 import { Kbd } from "./Kbd.tsx";
 import { clock, cn, fmtCost, fmtTokens, fmtWait, focusBox, scrollMotion } from "../lib/utils.ts";
+import { every } from "../lib/clock.ts";
 import { TurnFailure } from "./TurnFailure.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
@@ -390,8 +391,7 @@ function Status({ sessionId }: { sessionId: string }) {
   const [, tick] = useState(0);
   useEffect(() => {
     if (st?.kind !== "retry") return;
-    const t = setInterval(() => tick((n) => n + 1), 500);
-    return () => clearInterval(t);
+    return every(500, () => tick((n) => n + 1));
   }, [st]);
   if (!st || st.kind === "idle" || st.kind === "model" || st.kind === "tool") return null;
   if (st.kind === "compacting") {
@@ -450,7 +450,7 @@ function Working({ since, sessionId }: { since?: number; sessionId: string }) {
   const st = useStore((x) => x.status[sessionId]);
   const approving = useSafety((x) => (x.approvals[sessionId]?.length ?? 0) > 0);
   const [, tick] = useState(0);
-  useEffect(() => { const t = setInterval(() => tick((n) => n + 1), 1000); return () => clearInterval(t); }, []);
+  useEffect(() => every(1000, () => tick((n) => n + 1)), []);
   const from = st?.kind === "model" || st?.kind === "tool" ? st.since : since;
   const s = from ? Math.max(0, Math.round((liveNow() - from) / 1000)) : 0; // stopped while the daemon is unreachable
   // What waits on the owner is said as that, in the words every surface uses: an approval, a plan to

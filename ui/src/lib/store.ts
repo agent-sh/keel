@@ -12,6 +12,7 @@ import { dropOrphans, dropSendDrafts } from "./send-drafts.ts";
 import { setRatio } from "../../../src/engine/compact.ts";
 import { answerMakesTry, askGap, askLife, ASKS, BEAT_MS, GRACE_MS, HIDDEN_RESYNC_MS, look, PING, rttOf, SLEPT_MS, SLOW_BEAT_MS, socketBound, step, tripped, type Beat, type Trips } from "./heartbeat.ts";
 import { Scope } from "./scope.ts";
+import { every as onBeat } from "./clock.ts";
 
 export type ProvidersReport = {
   keys_read?: boolean; // false: a key is still being looked for, and an "available" may be unconfirmed
@@ -330,6 +331,7 @@ export const actions = {
       drafts,
     });
     void loadLegacyQuestions(id);
+    pollQuestions();
     // The branch may have changed while the page was away from it (no transcript asked for).
     if (!transcript) headSoon(id);
   },
@@ -688,6 +690,19 @@ async function loadLegacyQuestions(id: string) {
 }
 
 let questionPoll: ReturnType<typeof setInterval> | undefined;
+// A daemon that tells no questions by itself is asked every second for the
+// sessions of it this page holds, on the page's clock (still while the page
+// is hidden). No such session, no beat: a page at rest runs no timer for this.
+let questionBeat: (() => void) | undefined;
+function pollQuestions() {
+  const asked = () => Object.keys(state.events).filter((id) => { const peer = splitId(id); return !!peer && !questionSnapshots.has(peer.machine); });
+  if (questionBeat || !asked().length) return;
+  questionBeat = onBeat(1_000, () => {
+    const ids = asked();
+    if (!ids.length || !state.connected) { questionBeat?.(); questionBeat = undefined; return; }
+    for (const id of ids) if (state.sessions[id]?.phase === "working" || legacyQuestions.has(id)) void loadLegacyQuestions(id);
+  });
+}
 
 // A row that left a list without word of why (another daemon's fresh list no
 // longer has it): out of the session list, neither archived nor gone. One
@@ -1227,12 +1242,7 @@ function sync(ws: WebSocket, quiet = false, again = 0) {
   });
   // Features load their own state here, the first open included.
   for (const l of features) l.reconnect?.();
-  clearInterval(questionPoll);
-  questionPoll = setInterval(() => {
-    for (const id of Object.keys(state.events)) {
-      if (state.sessions[id]?.phase === "working" || legacyQuestions.has(id)) void loadLegacyQuestions(id);
-    }
-  }, 1_000);
+  pollQuestions();
 }
 
 function onMessage(ws: WebSocket, m: MessageEvent) {
